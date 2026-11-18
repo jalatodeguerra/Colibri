@@ -9,7 +9,7 @@ tagged with one of three markers:
 
 - **[Locked]** — agreed during the brainstorm. Changing it means re-opening the discussion.
 - **[Proposed]** — my recommendation, filling in details the brainstorm didn't cover. Review and push back.
-- **[Open]** — a real choice that needs a decision. Listed again in [§17 Open questions](#17-open-questions).
+- **[Open]** — a real choice that needs a decision. Listed again in [§18 Open questions](#18-open-questions).
 
 ---
 
@@ -28,11 +28,12 @@ tagged with one of three markers:
 11. [Memory model](#11-memory-model)
 12. [Strings](#12-strings)
 13. [Modules and packages](#13-modules-and-packages)
-14. [Game-dev features](#14-game-dev-features)
-15. [Tooling and execution modes](#15-tooling-and-execution-modes)
-16. [Implementation plan (Rust)](#16-implementation-plan-rust)
-17. [Open questions](#17-open-questions)
-18. [Prior art](#18-prior-art)
+14. [Concurrency: tasks and coroutines](#14-concurrency-tasks-and-coroutines)
+15. [Game-dev features](#15-game-dev-features)
+16. [Tooling and execution modes](#16-tooling-and-execution-modes)
+17. [Implementation plan (Rust)](#17-implementation-plan-rust)
+18. [Open questions](#18-open-questions)
+19. [Prior art](#19-prior-art)
 
 ---
 
@@ -56,7 +57,8 @@ tagged with one of three markers:
 ### Non-goals
 
 - Audio-plugin / hard-real-time DSP as a first-class target (explicitly dropped).
-- Inheritance, exceptions, macros, operator overloading for arbitrary types (see §14 for the
+- `async`/`await` (Leo uses uncolored tasks and coroutines instead, §14).
+- Inheritance, exceptions, macros, operator overloading for arbitrary types (see §15 for the
   narrow exception on math types), and compile-time metaprogramming in v1.
 - Competing with Rust or C++ on peak performance. "Fast enough for a 2D/3D indie game and
   much faster than Python" is the bar.
@@ -154,7 +156,7 @@ otherwise.
 ```
 fn let var const return if else for in while break continue match
 struct class enum interface impl import pub as
-own borrow weak extern defer test
+own borrow weak extern defer test spawn start
 true false
 ```
 
@@ -215,7 +217,7 @@ const MAX_HP = 100   // compile-time constant, module level or local
 | `bool` | `true` / `false` |
 | `char` | a Unicode scalar value |
 | `str` | immutable UTF-8 string (§12) |
-| `vec2 vec3 vec4` | `f32` vectors, SIMD-backed (§14) |
+| `vec2 vec3 vec4` | `f32` vectors, SIMD-backed (§15) |
 | `()` | unit; functions without `-> T` return it |
 
 Integer overflow traps in debug builds and in `leo run`, wraps in `leo build --release`?
@@ -548,7 +550,7 @@ match load_config() {
 Some failures aren't recoverable values: out-of-bounds index, integer overflow (debug),
 `.expect()` on `err`, division by zero. These **panic**: print a message and stack trace, and
 abort the current program (or, when embedded, return an error to the host without crashing the
-host process). Panics cannot be caught in Leo code. Hot reload (§15.3) can resume after a
+host process). Panics cannot be caught in Leo code. Hot reload (§16.3) can resume after a
 panic in development builds.
 
 ---
@@ -648,12 +650,10 @@ enemies[0].pos += vec2(1, 0)
 
 `for e in enemies` (no `var`) yields copies (or, after optimization, read-only views).
 
-### 11.7 Concurrency [Open]
+### 11.7 Threads
 
-Not part of v1 language design, but the memory model must leave room. Proposal: Leo programs
-are single-threaded by default; concurrency comes later as **isolated workers** with message
-passing (values are deep-copied or moved across), so RC can stay non-atomic. Data-parallel
-helpers for games (`parallel_for` over a `List` of structs) can be offered on top. See Q10.
+Refcounts stay non-atomic because threads don't share reference-typed objects; values move or
+are copied between tasks. See §14.1.
 
 ---
 
@@ -675,24 +675,141 @@ helpers for games (`parallel_for` over a `List` of structs) can be offered on to
 
 ## 13. Modules and packages
 
-[Proposed]
+[Proposed, approved for the doc 2026-11-18] **One file is one module, and one folder is one
+package**, like Go. The folder layout *is* the module tree: there are no header files and no
+`mod` declarations.
 
-- One file is one module. A directory with a `leo.toml` is a package.
-- `import math`, `import game.physics`, `import game.physics as phys`,
-  `import game.physics.{Body, World}`.
-- Everything is private to its module unless marked `pub`.
-- A script (`leo run script.leo`) needs no `leo.toml`. Top-level statements in a script run in
-  order, so `print("hi")` is a valid one-line program. In a package, execution starts at
-  `fn main()`.
+```leo
+// game/player.leo
+pub struct Player {
+    pub name: str
+    hp: i32                  // private: only code in game/player.leo can touch it
+}
+
+pub fn spawn(name: str) -> Player { ... }
+```
+
+```leo
+// main.leo
+import game.player                 // use as `player.spawn(...)`
+import game.enemy as foe           // rename
+import rapier.{World, Body}        // bring names in directly
+
+let p = player.spawn("Ana")
+```
+
+- **Private by default.** Functions, types, constants, struct fields and methods are visible
+  only inside their module unless marked `pub`. A struct with any private field can only be
+  constructed inside its module (use a `pub fn` constructor elsewhere).
+- **Module path = file path.** `game/player.leo` is `game.player`, relative to the package
+  root. A folder's modules form a package; nested folders are sub-packages.
+- **No cyclic imports** between modules. The compiler reports the cycle with the import chain.
+- **Packages and dependencies are listed in `leo.toml`**, and the `leo` tool fetches them
+  (git URLs or local paths in v1, a registry later). Rust crate bindings (§15.5) are declared
+  in the same file.
+- **Scripts need no `leo.toml`.** `leo run script.leo` treats the script's folder as an
+  implicit package, so a script can `import helpers` from `helpers.leo` next to it. Top-level
+  statements in a script run in order, so `print("hi")` is a valid one-line program. In a
+  package, execution starts at `fn main()`.
 - Standard library v1: `io`, `fs`, `path`, `os` (args, env, process), `math`, `rand`,
-  `time`, `json`, `str` helpers, `collections`, `test`. Networking is later.
-- Dependencies in `leo.toml` from git URLs or paths; no registry in v1.
+  `time`, `json`, `str` helpers, `collections`, `task` (§14), `test`. Networking is later.
 
 ---
 
-## 14. Game-dev features
+## 14. Concurrency: tasks and coroutines
 
-### 14.1 Vector and matrix types [Locked: vec2/3/4, Proposed details]
+[Proposed, approved for the doc 2026-11-18] Leo has **no `async`/`await` and no function
+coloring**. Any function can pause, the way Go and Lua work, so libraries never split into
+sync and async versions. There are two tools: **tasks** for parallel work on other threads,
+and **coroutines** for game logic that runs over many frames on the current thread.
+
+### 14.1 Tasks and channels
+
+```leo
+// background work, like Go
+let t = spawn load_level("lvl2.json")     // runs on the runtime's thread pool
+// ... keep rendering the loading screen ...
+let level = t.join()?                     // Task[Result[Level]] -> Result[Level]
+
+// channels to talk between tasks
+let ch = Channel[Msg]()
+spawn worker(ch)
+ch.send(Msg.Job(42))
+let reply = ch.recv()                     // pauses this task until a message arrives
+```
+
+- `spawn f(args)` starts `f` on a worker thread and returns a `Task[T]`. `t.join()` waits for
+  the result; a panic inside the task surfaces as an `err` from `join()` rather than taking
+  down the program.
+- `Channel[T]` is a typed, optionally bounded queue (`Channel[Msg](capacity: 64)`), with
+  `send`, `recv`, `try_recv` and `close`. A `select` over several channels is a later addition.
+- Blocking calls (`join`, `recv`, file and network I/O, `sleep`) pause only the current task.
+  The runtime multiplexes tasks over a small thread pool (M:N scheduling, like Go).
+
+**Memory model interaction.** RC stays non-atomic (§11.1) because **tasks don't share
+reference-typed objects**:
+
+- Arguments to `spawn`, values sent on a channel, and a task's result are **moved** if it is
+  their last use, and otherwise **deep-copied**, so each thread owns its own object graph.
+  Value types (structs, vectors, numbers) are just copied, as always.
+- Truly shared state between threads uses explicit, atomically counted types from `task`:
+  `Shared[T]` (read-only after creation) and `Mutex[T]`. Only types that are safe to share can
+  be put in them; the compiler checks this.
+- Exactly which types can cross a thread boundary, and when a deep copy happens implicitly vs
+  needs to be written out, is open (Q10).
+
+### 14.2 Coroutines for game logic
+
+```leo
+fn door_open(door: Door) {
+    door.play("creak")
+    wait(0.5)                                  // resume half a second later
+    door.rotate(90, over: 1.0)                 // itself waits 1 second while animating
+    wait_until(fn() { player.near(door) })     // resume on the first frame where this is true
+    door.close()
+}
+
+let co = start door_open(front_door)           // returns immediately; runs until its first wait
+// later:
+co.cancel()                                    // e.g. when the door is destroyed
+```
+
+This is the big win for games: cutscenes, AI and animations read top to bottom instead of
+becoming hand-written state machines.
+
+- `start f(args)` creates a coroutine on the **current thread** and runs it until it first
+  pauses. It returns a `Coroutine` handle (`cancel()`, `done()`, `join()` from another
+  coroutine).
+- `wait(seconds)`, `wait_frames(n)` and `wait_until(cond)` pause it. Because a function's
+  argument is evaluated once, `wait_until` takes a closure (`fn() { ... }`) that the scheduler
+  re-checks every frame. A lighter syntax for this is open (Q18).
+- **The game loop resumes coroutines each frame.** The runtime has a per-thread coroutine
+  scheduler, and the host drives it: a Leo game calls `task.tick(dt)` once per frame (the
+  raylib/SDL bindings do this for you), and an engine embedding Leo calls
+  `vm.tick(dt)` (§15.4). Coroutines therefore never run in parallel with each other, so they can
+  share `class` objects freely with no locking.
+- Any function can be called from a coroutine and may itself call `wait`; there is no special
+  coroutine function type. Calling `wait` outside a coroutine, on a thread with no scheduler,
+  is a panic with a clear message.
+- **Cancellation** stops the coroutine at its current pause point and runs its `defer`s, so
+  cleanup code still runs.
+
+### 14.3 Implementation notes
+
+- Uncolored functions require **stackful** coroutines: each task/coroutine has its own small,
+  growable stack. In the tree-walking interpreter and the bytecode VM this is natural (the VM
+  stack is a heap object). For Cranelift native code it means stack switching, as Go and Lua's
+  C API do; this is a known cost of the design and is scheduled for phase 2 alongside the
+  native backend.
+- Tasks need the runtime's thread pool and a thread-safe allocator; both are phase 2 work.
+  **Phase 1 ships coroutines only** (single-threaded), which is enough for the first game, and
+  `spawn` arrives with phase 2.
+
+---
+
+## 15. Game-dev features
+
+### 15.1 Vector and matrix types [Locked: vec2/3/4, Proposed details]
 
 - `vec2`, `vec3`, `vec4` (`f32`), `ivec2/3/4` (`i32`), `mat3`, `mat4`, `quat` are built-in
   value types, laid out for SIMD (vec3 is padded to 16 bytes in memory, packed in C-layout
@@ -702,7 +819,7 @@ helpers for games (`parallel_for` over a `List` of structs) can be offered on to
 - This is the **only** operator overloading in v1: user types can't define `+`. Open whether
   to allow it via an interface later (Q12).
 
-### 14.2 C-layout structs [Locked, Proposed syntax]
+### 15.2 C-layout structs [Locked, Proposed syntax]
 
 ```leo
 @repr(C)
@@ -717,7 +834,7 @@ struct Vertex {
 vectors, fixed arrays, other `@repr(C)` structs, raw pointers), and can be passed to C
 directly or uploaded to the GPU as a byte buffer (`vertices.as_bytes()`).
 
-### 14.3 C FFI [Locked, Proposed syntax]
+### 15.3 C FFI [Locked, Proposed syntax]
 
 ```leo
 @link("raylib")
@@ -734,7 +851,7 @@ extern "C" {
 - `leo bindgen header.h` generates `extern` declarations from C headers (phase 3).
 - The interpreter calls C via `libffi`; native builds call directly.
 
-### 14.4 Embedding in Rust [Locked, Proposed API shape]
+### 15.4 Embedding in Rust [Locked, Proposed API shape]
 
 ```rust
 let mut vm = leo::Vm::new();
@@ -742,7 +859,8 @@ vm.register_fn("spawn_enemy", |x: f32, y: f32| { /* engine code */ });
 vm.load_file("scripts/ai.leo")?;
 let f = vm.get_fn::<(f32,), ()>("update")?;
 f.call(&mut vm, (dt,))?;
-vm.reload_changed()?;            // hot reload, §15.3
+vm.tick(dt)?;                    // resume Leo coroutines for this frame, §14.2
+vm.reload_changed()?;            // hot reload, §16.3
 ```
 
 - `leo-runtime` is a regular Rust crate with no global state; several VMs can coexist.
@@ -751,11 +869,11 @@ vm.reload_changed()?;            // hot reload, §15.3
 - Panics in Leo code become `Err` on the Rust side; they never unwind into the host.
 - Resource limits for embedding (instruction budget, memory cap) are optional VM settings.
 
-### 14.5 Using Rust crates from Leo [Planned, Proposed design]
+### 15.5 Using Rust crates from Leo [Planned, Proposed design]
 
 Rust's game ecosystem (rapier for physics, glam for math, wgpu for graphics, kira for audio)
 would give Leo a lot on day one. Leo's runtime is already Rust, so the same binding layer
-that powers embedding (§14.4) can expose Rust crates to Leo code, the way PyO3 does for
+that powers embedding (§15.4) can expose Rust crates to Leo code, the way PyO3 does for
 Python.
 
 **Why not arbitrary `import some_crate`:** Rust has no stable ABI, and traits, lifetimes,
@@ -826,15 +944,15 @@ crates (`leo-glam`, `leo-rapier`, `leo-kira`, and a higher-level renderer on `wg
 users never write Rust.
 
 **One mechanism, two directions.** `#[leo::export]` is the same API an engine uses to expose
-its own types when embedding Leo (§14.4): build it once, get both.
+its own types when embedding Leo (§15.4): build it once, get both.
 
-Open details are Q17 in §17.
+Open details are Q17 in §18.
 
 ---
 
-## 15. Tooling and execution modes
+## 16. Tooling and execution modes
 
-### 15.1 One binary [Locked]
+### 16.1 One binary [Locked]
 
 ```
 leo run file.leo        # type-check, then interpret (later: JIT)
@@ -849,7 +967,7 @@ leo lsp                 # language server                            [Proposed, 
 `leo run` always type-checks first. There is no "dynamic mode"; the interpreter runs the same
 checked program a native build would.
 
-### 15.2 Execution pipeline [Proposed]
+### 16.2 Execution pipeline [Proposed]
 
 ```
 source → lexer → parser → AST → name resolution → type check → HIR (typed)
@@ -866,7 +984,7 @@ source → lexer → parser → AST → name resolution → type check → HIR (
   §11.3 are IR passes shared by the VM and the native backend.
 - The JIT, when it comes, is the same Cranelift backend driven at runtime per function.
 
-### 15.3 Hot reload [Locked goal, Open semantics]
+### 16.3 Hot reload [Locked goal, Open semantics]
 
 Goal: edit a `.leo` file while the game runs and see the change without restarting.
 
@@ -875,7 +993,7 @@ type-checks against the running program, new function bodies replace old ones at
 call. If a struct's layout changed, reload is refused with a message (or, opt-in, a
 `fn migrate(old) -> New` hook). Global state survives reloads. Exact rules are Q14.
 
-### 15.4 Diagnostics [Proposed]
+### 16.4 Diagnostics [Proposed]
 
 Errors show the source span, a short message, and a hint where possible (Rust/Elm style),
 using a crate like `ariadne` or `miette`. The type checker keeps going after the first error
@@ -883,9 +1001,9 @@ to report several at once.
 
 ---
 
-## 16. Implementation plan (Rust)
+## 17. Implementation plan (Rust)
 
-### 16.1 Workspace layout [Proposed]
+### 17.1 Workspace layout [Proposed]
 
 ```
 leo/
@@ -898,7 +1016,7 @@ leo/
     leo-vm/                  # phase 2 bytecode VM
     leo-codegen/             # phase 2 Cranelift backend (AOT + JIT)
     leo-runtime/             # RC heap, strings, collections, FFI, embedding API
-    leo-bind/                # #[leo::export] macros for embedding and Rust crate bindings (§14.5)
+    leo-bind/                # #[leo::export] macros for embedding and Rust crate bindings (§15.5)
     leo-std/                 # standard library (Leo + Rust natives)
     leo-cli/                 # the `leo` binary
   std/                       # .leo sources of the standard library
@@ -906,7 +1024,7 @@ leo/
   docs/DESIGN.md
 ```
 
-### 16.2 Key technical choices [Proposed]
+### 17.2 Key technical choices [Proposed]
 
 - **Parser:** hand-written recursive descent with Pratt parsing for expressions. Better error
   recovery and messages than a generator.
@@ -918,7 +1036,7 @@ leo/
   Simple, and good enough to validate the language. Phase 2 replaces it with a custom heap
   and explicit RC.
 
-### 16.3 Roadmap [Locked phases, Proposed milestones]
+### 17.3 Roadmap [Locked phases, Proposed milestones]
 
 **Phase 1 — the language works** (lexer, parser, type checker, tree-walking interpreter)
 
@@ -928,7 +1046,8 @@ leo/
 4. Generics, interfaces, closures.
 5. `Result`/`Option`, `?`, `or`, unused-Result warning.
 6. Modules and `import`; minimal std (`fs`, `math`, `time`, `os`).
-7. `leo test`, `leo fmt`. **Milestone:** write real scripts in Leo (e.g. a file-renaming
+7. Coroutines (`start`, `wait`, `wait_until`, `task.tick`), single-threaded.
+8. `leo test`, `leo fmt`. **Milestone:** write real scripts in Leo (e.g. a file-renaming
    tool, a JSON report generator).
 
 **Phase 2 — fast** (IR, bytecode VM / Cranelift, RC optimizations)
@@ -938,7 +1057,9 @@ leo/
 3. Cranelift AOT for `leo build`.
 4. RC optimizations: last-use moves, borrowed params, reuse, struct copy elision.
 5. `own` / `borrow` checking.
-6. Benchmarks vs Python, Lua and LuaJIT; regressions tracked in CI.
+6. Tasks and channels (`spawn`, `Channel[T]`) on a thread pool; stack switching for
+   coroutines in native code.
+7. Benchmarks vs Python, Lua and LuaJIT; regressions tracked in CI.
 
 **Phase 3 — games** (bindings + first demo)
 
@@ -953,7 +1074,7 @@ leo/
 
 ---
 
-## 17. Open questions
+## 18. Open questions
 
 These need a decision before or during phase 1. Each has a recommendation; none are decided.
 
@@ -969,7 +1090,7 @@ These need a decision before or during phase 1. Each has a recommendation; none 
 | Q7 | Interface conformance | Nominal `impl I for T` vs structural (Go) | Nominal |
 | Q8 | `own`/`borrow` rules | Need explicit `move x` at call sites? How strict is local `borrow`? | Infer moves (no `move` keyword); keep `borrow` lexical and conservative; finalize in phase 2 when we have real profiles |
 | Q9 | Cycle collection | `weak` + leak detector only, or add a backup cycle collector | `weak` + leak detector for v1; revisit after the game demo |
-| Q10 | Concurrency model | Isolated workers + messages, shared-memory threads with atomic RC, async/await | Isolated workers; defer design to after phase 2 |
+| Q10 | What crosses a thread boundary | Implicit deep copy of non-moved values sent to `spawn`/channels, or require an explicit `.clone()`; which types may go in `Shared[T]`/`Mutex[T]` | Move when it's the last use, otherwise require explicit `.clone()` so expensive copies are visible; a compiler-derived `Send`-like property decides what can be shared |
 | Q11 | Enum variant lookup | Always qualified, contextual `.Variant`, or unqualified in `match` only | Unqualified in `match`, plus contextual `.Variant` where the type is known |
 | Q12 | Operator overloading | Built-in math types only vs via interfaces (`Add`, `Mul`) | Built-in only in v1 |
 | Q13 | `unsafe` | Mark raw pointer use with `unsafe { }` or not | Yes, an `unsafe` block, only needed for `ptr[T]` operations; plain `extern` calls don't need it |
@@ -977,10 +1098,11 @@ These need a decision before or during phase 1. Each has a recommendation; none 
 | Q15 | Script top-level code | Allow statements at top level in scripts, or always require `main` | Allow in scripts, require `main` in packages |
 | Q16 | Name | "Leo" is a working name; there are existing projects called Leo (e.g. the Aleo smart-contract language) | Decide before publishing anything; file extension `.leo` is also used by Aleo |
 | Q17 | Rust crate bindings details | Static link only vs also dynamic loading for `leo run`; who maintains curated bindings; how much of a crate's API to expose | Static for `leo build`, cached dynamic library for `leo run`; start with glam and rapier only, expanding as the demo game needs |
+| Q18 | Coroutine syntax | `start`/`spawn` as keywords vs library functions taking closures; sugar for `wait_until(fn() { cond })`, e.g. a `wait until cond` statement | Keep `start`/`spawn` keywords; add `wait until <expr>` sugar only if the closure form proves noisy in the demo game |
 
 ---
 
-## 18. Prior art
+## 19. Prior art
 
 | Language | What Leo takes from it |
 |----------|------------------------|
