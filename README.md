@@ -20,7 +20,7 @@ for p in people {
 
 Design phase. Nothing is implemented yet. The language design is in
 [docs/DESIGN.md](docs/DESIGN.md) and is open for review, including the list of
-[open questions](docs/DESIGN.md#17-open-questions).
+[open questions](docs/DESIGN.md#18-open-questions).
 
 ## Highlights (planned)
 
