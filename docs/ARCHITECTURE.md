@@ -518,7 +518,7 @@ turns out to matter, it moves into DESIGN.md.
     iterator over `xs` is live panics ("list modified during iteration"), exactly as inside a
     `for`; a `for` over `xs.iter()` leaves the guard when the loop ends. `enumerate()` is
     general: it works on any `Iter` or `Iterable` and yields `(int, T)`. `Range` is a value of
-    type `Range[int]` (`contains len is_empty iter rev enumerate`); only `int` ranges exist, and an
+    type `Range[int]` (`contains len is_empty iter rev to_list enumerate`); only `int` ranges exist, and an
     open-ended range (`1..`) is not a value.
 23. **`Option`.** `T?` is `Ty::Option(T)`, built in as the prelude enum of §1 (slice 3). `some(x)`
     is only valid applied; `some` alone is an error with a hint. `none` needs an expected type

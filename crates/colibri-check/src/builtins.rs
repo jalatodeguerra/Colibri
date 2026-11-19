@@ -167,6 +167,7 @@ const RANGE_METHODS: &[&str] = &[
     "is_empty",
     "iter",
     "rev",
+    "to_list",
     "enumerate",
     "clone",
 ];
@@ -241,6 +242,7 @@ fn range_sig(name: &str) -> Option<Sig> {
         "is_empty" => sig(Builtin::RangeIsEmpty, vec![], Ty::Bool),
         "iter" => sig(Builtin::Iter, vec![], iter_of(Ty::INT)),
         "rev" => sig(Builtin::RangeRev, vec![], iter_of(Ty::INT)),
+        "to_list" => sig(Builtin::RangeToList, vec![], Ty::List(Box::new(Ty::INT))),
         _ => return None,
     })
 }

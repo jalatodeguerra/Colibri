@@ -1013,6 +1013,8 @@ pub enum Builtin {
     RangeIsEmpty,
     /// `r.rev()`: an iterator that counts down.
     RangeRev,
+    /// `r.to_list()`: the integers of the range as a `List[int]`.
+    RangeToList,
     /// `x.iter()` on a `List`, `Set`, `Map` or `Range`: an iterator object (`Iter[T]`).
     Iter,
     /// `it.enumerate()` on an iterator: `Iter[(int, T)]`. The receiver is already an `Iter`.

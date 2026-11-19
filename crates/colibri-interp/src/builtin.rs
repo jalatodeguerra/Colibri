@@ -76,6 +76,7 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
             | B::ListJoin
             | B::ListSlice
             | B::SetFromList
+            | B::RangeToList
             | B::MapKeys
             | B::MapValues
             | B::Iter
@@ -104,6 +105,7 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
         Value::Str(s) => s.len(),
         Value::Map(m) => m.len(),
         Value::Set(s) => s.len(),
+        Value::Range(r) => usize::try_from(r.len()).unwrap_or(usize::MAX),
         Value::Obj(o) => match o.field(1) {
             Some(Value::Int(n)) => usize::try_from(n).unwrap_or(0),
             _ => return None,
@@ -269,6 +271,7 @@ impl Interp {
             | Builtin::RangeLen
             | Builtin::RangeIsEmpty
             | Builtin::RangeRev
+            | Builtin::RangeToList
             | Builtin::Iter
             | Builtin::IterEnumerate => return self.range_op(fiber, op, args, span),
             Builtin::MapLen

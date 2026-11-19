@@ -15,6 +15,9 @@ use crate::heap::ClassObj;
 use crate::iter::IterObj;
 use crate::value::Value;
 
+/// The most integers `range.to_list()` builds.
+const MAX_RANGE_LIST: u64 = 1 << 27;
+
 /// The text a `StrBuilder` holds. Its object has two fields: the chunks appended so far (a
 /// list of strings, so an append is O(1)) and the total byte length.
 pub(crate) fn builder_text(obj: &ClassObj) -> String {
@@ -234,6 +237,24 @@ impl Interp {
                 Ok(Value::Int(i64::try_from(r.len()).unwrap_or(i64::MAX)))
             }
             (Builtin::RangeIsEmpty, Some(Value::Range(r)), _) => Ok(Value::Bool(r.is_empty())),
+            (Builtin::RangeToList, Some(Value::Range(r)), _) => {
+                if r.len() > MAX_RANGE_LIST {
+                    return Err(self.panic(
+                        fiber,
+                        span,
+                        format!(
+                            "a range of {} integers is too long to turn into a list",
+                            r.len()
+                        ),
+                    ));
+                }
+                let items = if r.inclusive {
+                    (r.start..=r.end).map(Value::Int).collect()
+                } else {
+                    (r.start..r.end).map(Value::Int).collect()
+                };
+                Ok(Value::list(items))
+            }
             (Builtin::RangeRev, Some(Value::Range(r)), _) => {
                 Ok(Value::Iter(IterObj::over_range(**r, true)))
             }
