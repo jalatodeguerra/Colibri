@@ -840,7 +840,7 @@ pub enum Intrinsic {
     /// A method of a number type (`x.wrapping_add(y)`, `x.sqrt()`); the receiver is the first
     /// argument and `Num` is its type.
     NumMethod(NumMethod, Num),
-    /// `wait(seconds: float)`: pauses the running coroutine for game time.
+    /// `wait(seconds: float)`: pauses the running coroutine for scheduler time.
     Wait,
     /// `wait_frames(n: int)`: pauses for `n` ticks.
     WaitFrames,
