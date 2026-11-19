@@ -203,7 +203,7 @@ fn summarize(moves: List[Move]) {
     print("{"total":<14}{files:>6}{bytes:>10}")
 }
 
-fn usage_error(message: str) {
+fn usage_error(message: str) -> ! {
     io.eprintln("organize: {message}")
     io.eprintln(USAGE)
     os.exit(2)
@@ -213,7 +213,6 @@ fn main() -> Result[()] {
     let dirs = args.positional_with(["by", "rules", "match"])
     if dirs.len() != 1 {
         usage_error("expected exactly one folder")
-        return ok(())
     }
     let root = dirs[0]
     let dry = args.flag("dry-run")
@@ -223,12 +222,10 @@ fn main() -> Result[()] {
         "date" => mode = Mode.ByDate
         other => {
             usage_error("--by is `ext` or `date`, not `{other}`")
-            return ok(())
         }
     }
     if !fs.is_dir(root) {
         usage_error("`{root}` is not a folder")
-        return ok(())
     }
     let rules = if let some(file) = args.value("rules") { load_rules(file)? } else { default_rules() }
     var only: Option[regex.Regex] = none
@@ -237,7 +234,6 @@ fn main() -> Result[()] {
             ok(re) => only = some(re)
             err(e) => {
                 usage_error("--match: {e.message()}")
-                return ok(())
             }
         }
     }
