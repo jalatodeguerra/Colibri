@@ -171,7 +171,14 @@ impl Parser<'_> {
         public: bool,
     ) -> PResult<Item> {
         let kind = match self.kind() {
-            TokenKind::Fn => ItemKind::Fn(self.parse_fn_decl(Body::Required)?),
+            TokenKind::Fn => {
+                let rule = if self.interface_mode {
+                    Body::Optional
+                } else {
+                    Body::Required
+                };
+                ItemKind::Fn(self.parse_fn_decl(rule)?)
+            }
             TokenKind::Struct | TokenKind::Class => ItemKind::Struct(self.parse_struct()?),
             TokenKind::Enum => ItemKind::Enum(self.parse_enum()?),
             TokenKind::Interface => ItemKind::Interface(self.parse_interface()?),
@@ -515,7 +522,12 @@ impl Parser<'_> {
                 );
                 return p.fail(Diagnostic::error(message, p.found_span()));
             }
-            let decl = p.parse_fn_decl(member.body())?;
+            let rule = if p.interface_mode && member == Member::Impl {
+                Body::Optional
+            } else {
+                member.body()
+            };
+            let decl = p.parse_fn_decl(rule)?;
             Ok(p.make_item(start, attrs, doc, public, ItemKind::Fn(decl)))
         })
     }

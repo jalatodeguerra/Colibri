@@ -190,6 +190,7 @@ impl FnCtx<'_, '_> {
             deps: Vec::new(),
             generics: Vec::new(),
             self_ty: None,
+            host: None,
         });
         id
     }

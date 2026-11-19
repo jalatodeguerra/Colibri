@@ -73,6 +73,12 @@ impl SourceMap {
         FileId(self.files.len() as u32 - 1)
     }
 
+    /// Whether `file` is one of this map's files (spans of the prelude and of host interfaces
+    /// point at files that are not).
+    pub fn contains(&self, file: FileId) -> bool {
+        (file.0 as usize) < self.files.len()
+    }
+
     pub fn name(&self, file: FileId) -> &str {
         &self.files[file.0 as usize].name
     }

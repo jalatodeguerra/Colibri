@@ -214,17 +214,49 @@ impl FnCtx<'_, '_> {
     ) -> Expr {
         self.add_dep(Dep::Fn(f));
         let info = &self.ck.fns[f.0 as usize];
-        let (name, params, ret, poisoned, generics, self_ty) = (
+        let (name, params, ret, poisoned, generics, self_ty, host) = (
             info.name.clone(),
             info.params.clone(),
             info.ret.clone(),
             info.is_poisoned(),
             info.generics.clone(),
             info.self_ty.clone(),
+            info.host.clone(),
         );
         if poisoned {
             self.check_args_loosely(args);
             return self.error_expr(span);
+        }
+        if let Some(host) = &host {
+            if let Some(cap) = &host.requires
+                && !self.ck.host.is_granted(cap)
+            {
+                self.ck.report(
+                    Diagnostic::error(
+                        format!(
+                            "`{name}` needs the `{cap}` capability, which this host did not grant"
+                        ),
+                        span,
+                    )
+                    .with_hint(format!(
+                        "the host grants it with `VmBuilder::allow(Cap::{})`",
+                        capitalised(cap)
+                    )),
+                );
+            }
+            if host.positional
+                && let Some(named) = args.iter().find(|a| a.name.is_some())
+            {
+                self.check_args_loosely(args);
+                self.ck.report(
+                    Diagnostic::error(
+                        format!("`{name}` takes positional arguments only"),
+                        named.value.span,
+                    )
+                    .with_hint("a host function registered as a closure has unnamed parameters"),
+                );
+                return self.error_expr_typed(span, ret);
+            }
         }
         let outer = generics.len() - self.own_generic_count(f);
         let Some((type_args, map)) = self.instantiate(&generics, outer, explicit, &name, span)
@@ -240,7 +272,11 @@ impl FnCtx<'_, '_> {
         let Some(bound) = self.bind_args(&name, &params, args, span, 0) else {
             return self.error_expr_typed(span, ret);
         };
-        self.finish_call(Callee::Fn(f), None, bound, ret, type_args, span)
+        let callee = match host {
+            Some(host) => Callee::Host(host.id),
+            None => Callee::Fn(f),
+        };
+        self.finish_call(callee, None, bound, ret, type_args, span)
     }
 
     /// How many type parameters function `f` declares itself (not counting its `impl`'s).
@@ -680,6 +716,15 @@ impl FnCtx<'_, '_> {
         };
         self.mk(hir::ExprKind::Block(Box::new(block)), ty, span)
     }
+}
+
+/// `fs` as `Fs`, for the name of a capability in a hint.
+fn capitalised(cap: &str) -> String {
+    let mut chars = cap.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// A parameter with its type's type parameters replaced.

@@ -46,6 +46,61 @@ fn int_of(v: &Value) -> Option<i64> {
     }
 }
 
+/// How many elements a built-in looks at, for the instruction budget: the length of the
+/// receiver for every operation that walks it. Constant-time operations cost nothing extra.
+fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
+    use Builtin as B;
+    let walks = matches!(
+        op,
+        B::Clone
+            | B::ListContains
+            | B::ListIndexOf
+            | B::ListReverse
+            | B::ListExtend
+            | B::ListMap
+            | B::ListFilter
+            | B::ListRetain
+            | B::ListAny
+            | B::ListAll
+            | B::ListFind
+            | B::ListFindIndex
+            | B::ListFold
+            | B::ListForEach
+            | B::ListSort
+            | B::ListSortBy
+            | B::ListSortByKey
+            | B::ListMin
+            | B::ListMax
+            | B::ListSum
+            | B::ListJoin
+            | B::ListSlice
+            | B::SetFromList
+            | B::MapKeys
+            | B::MapValues
+            | B::Iter
+            | B::StrChars
+            | B::StrBytes
+            | B::StrContains
+            | B::StrSplit
+            | B::StrTrim
+            | B::StrToUpper
+            | B::StrToLower
+            | B::StrReplace
+            | B::StrFind
+            | B::StrSlice
+    );
+    if !walks {
+        return None;
+    }
+    Some(match recv? {
+        Value::List(l) => l.len(),
+        Value::Str(s) => s.len(),
+        Value::Map(m) => m.len(),
+        Value::Set(s) => s.len(),
+        _ => return None,
+    })
+}
+
 /// Moves argument `i` out, leaving `()` behind.
 fn take(args: &mut [Value], i: usize) -> Value {
     args.get_mut(i)
@@ -63,6 +118,13 @@ impl Interp {
         mut args: Vec<Value>,
         span: Span,
     ) -> Eval {
+        // Built-ins that look at every element cost a step for each.
+        if let Some(n) = work_of(op, args.first())
+            && let Err(ctl) = self.charge(fiber, span, n)
+        {
+            self.release_all(args);
+            return Err(ctl);
+        }
         let result = self.builtin_inner(fiber, op, &mut args, span);
         self.release_all(args);
         result

@@ -1,0 +1,6 @@
+extern "C" { // error: `extern` blocks need the `ffi` capability, which this host did not grant
+    fn abs(x: int) -> int
+}
+
+fn main() {
+}
