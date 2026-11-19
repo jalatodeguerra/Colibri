@@ -684,3 +684,43 @@ fn unused_code_is_a_warning_that_changes_no_exit_code() {
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "ran\n");
 }
+
+#[test]
+fn new_creates_a_package_that_checks_runs_and_passes_its_tests() {
+    let root = std::env::temp_dir().join(format!("colibri-cli-new-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let dir = root.join("hello_app");
+    let d = dir.to_str().unwrap();
+    let out = colibri(&["new", d]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(dir.join("colibri.toml").is_file());
+    assert!(dir.join("main.colibri").is_file());
+    let manifest = std::fs::read_to_string(dir.join("colibri.toml")).unwrap();
+    assert!(manifest.contains("name = \"hello_app\""), "{manifest}");
+
+    let out = colibri(&["check", d]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = colibri(&["run", d]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Hello, world!\n");
+    let out = colibri(&["test", d]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"), "{out:?}");
+
+    // A folder with something in it is left alone.
+    let out = colibri(&["new", d]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not an empty folder"));
+    // An empty existing folder is fine; an invalid name is refused and creates nothing.
+    std::fs::create_dir_all(root.join("empty_one")).unwrap();
+    let out = colibri(&["new", root.join("empty_one").to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let bad = root.join("my-app");
+    let out = colibri(&["new", bad.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not a valid package name"));
+    assert!(!bad.exists());
+    let _ = std::fs::remove_dir_all(&root);
+}

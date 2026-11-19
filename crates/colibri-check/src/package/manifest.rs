@@ -225,7 +225,7 @@ fn dependency(
 }
 
 /// Whether `s` can be a package or dependency name: what an `import` can say.
-fn is_name(s: &str) -> bool {
+pub fn is_name(s: &str) -> bool {
     let mut chars = s.chars();
     chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
         && chars.all(|c| c.is_alphanumeric() || c == '_')

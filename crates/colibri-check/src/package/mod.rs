@@ -14,7 +14,7 @@ use colibri_syntax::ast::{self, NodeId};
 
 pub use fs::{DiskFs, MemoryFs, SourceFs, normalize};
 pub use loader::{Entry, LoadError, LoadOptions, load, load_with};
-pub use manifest::{Dependency, Manifest};
+pub use manifest::{Dependency, Manifest, is_name as is_package_name};
 
 /// The extension of source files.
 pub const SOURCE_EXT: &str = "colibri";

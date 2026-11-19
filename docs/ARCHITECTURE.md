@@ -1264,6 +1264,13 @@ harness compares warnings exactly, except that unlisted `unused variable` and `u
 warnings are tolerated (most golden files are small demonstrations); a `// warning:` directive
 for one must still match.
 
+### 11.8b `colibri new <name>`
+
+Creates the folder `<name>` (it may exist only if empty) with a `colibri.toml` (`[package]
+name`, checked with the manifest's own `is_name`, so `my-app` is refused) and a `main.colibri`
+holding `greeting`, `main` and a `test` block (`crates/colibri-cli/src/newcmd.rs`). The result
+passes `colibri check`, `run` and `test`.
+
 ### 11.9 Decisions the design documents did not fix
 
 - Imports are always rooted at the tree root; there are no relative imports and no `..`.
