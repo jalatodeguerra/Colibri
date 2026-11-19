@@ -2,7 +2,8 @@
 
 use colibri_check::hir::{Align, FormatSpec, FormatType};
 
-use crate::value::{Value, show, show_float};
+use crate::show::{show, show_float};
+use crate::value::Value;
 
 /// Where padding goes.
 #[derive(Clone, Copy)]
@@ -37,7 +38,7 @@ pub fn format_value(v: &Value, spec: &FormatSpec) -> String {
             (if negative { "-" } else { "" }, digits, true)
         }
         other => {
-            let text = show(other);
+            let text = show(&[], other);
             let text = match spec.precision {
                 Some(p) => text.chars().take(p).collect(),
                 None => text.into_owned(),

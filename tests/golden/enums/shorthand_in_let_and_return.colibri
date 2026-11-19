@@ -1,0 +1,18 @@
+enum Shape { Circle(float), Square(float) }
+
+fn unit() -> Shape {
+    return .Square(1.0)
+}
+
+fn main() {
+    let s: Shape = .Circle(2)
+    print(s)
+    print(unit())
+    var t: Shape = .Square(3.0)
+    t = .Circle(0.5)
+    print(t)
+}
+
+// expect: Circle(2.0)
+// expect: Square(1.0)
+// expect: Circle(0.5)

@@ -1,0 +1,4 @@
+enum Color { Red, Green, Red } // error: the variant `Red` is declared more than once
+
+fn main() {
+}

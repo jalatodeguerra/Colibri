@@ -1,0 +1,6 @@
+fn main() {
+    match 5 {
+        9..1 => print("a") // error: this range pattern is empty
+        _ => print("b")
+    }
+}

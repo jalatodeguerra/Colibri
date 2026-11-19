@@ -1,0 +1,22 @@
+enum Cmd { Move(int), Quit }
+
+fn run(c: Cmd) -> str {
+    return match c {
+        Move(n) if n > 100 => "far"
+        Move(n) if n > 0 => "near {n}"
+        Move(_) => "none"
+        Quit => "quit"
+    }
+}
+
+fn main() {
+    print(run(.Move(500)))
+    print(run(.Move(5)))
+    print(run(.Move(-1)))
+    print(run(.Quit))
+}
+
+// expect: far
+// expect: near 5
+// expect: none
+// expect: quit

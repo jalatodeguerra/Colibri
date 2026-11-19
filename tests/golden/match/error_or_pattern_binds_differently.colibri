@@ -1,0 +1,8 @@
+enum E { A(int), B(int), C }
+
+fn main() {
+    match E.C {
+        A(x) | C => print("ac") // error: `x` is not bound in every alternative
+        _ => print("other")
+    }
+}

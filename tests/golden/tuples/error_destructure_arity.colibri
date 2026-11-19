@@ -1,0 +1,4 @@
+fn main() {
+    let (a, b, c) = (1, 2) // error: this pattern has 3 elements, but the tuple has 2
+    let (d, e) = (1, 2, 3) // error: this pattern has 2 elements, but the tuple has 3
+}

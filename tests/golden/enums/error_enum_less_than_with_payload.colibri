@@ -1,0 +1,5 @@
+enum Cmd { Move(int), Quit }
+
+fn main() {
+    print(Cmd.Quit < Cmd.Move(1)) // error: `<` cannot compare values of type `Cmd`
+}

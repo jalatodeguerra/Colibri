@@ -1,0 +1,12 @@
+struct C { n: int }
+
+impl C {
+    fn inc(var self) {
+        self.n += 1
+    }
+}
+
+fn main() {
+    let c = C { n: 0 }
+    c.inc() // error: cannot call `inc` on `c`, which is not mutable
+}

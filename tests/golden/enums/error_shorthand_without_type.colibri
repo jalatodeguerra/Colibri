@@ -1,0 +1,6 @@
+enum Shape { Circle(float), Dot }
+
+fn main() {
+    let s = .Circle(1.0) // error: cannot tell which enum `.Circle` belongs to
+    print(s)
+}

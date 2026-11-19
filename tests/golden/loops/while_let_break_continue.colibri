@@ -1,0 +1,23 @@
+enum Opt { Some(int), None }
+
+fn main() {
+    var i = 0
+    var cur = Opt.Some(0)
+    while let Some(n) = cur {
+        i += 1
+        cur = .Some(n + 1)
+        if n == 1 {
+            continue
+        }
+        if n == 4 {
+            break
+        }
+        print(n)
+    }
+    print(i)
+}
+
+// expect: 0
+// expect: 2
+// expect: 3
+// expect: 5

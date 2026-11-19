@@ -1,0 +1,10 @@
+enum E { A, B }
+
+fn main() {
+    match E.B {
+        A => print("a")
+        B => print("b")
+        A => print("again") // warning: this arm can never run
+    }
+}
+// expect: b

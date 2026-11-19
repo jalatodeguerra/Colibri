@@ -1,0 +1,11 @@
+fn pair() -> (int, int) => (7, 8)
+
+fn main() {
+    let (_, b) = pair()
+    print(b)
+    let (a, _) = pair()
+    print(a)
+}
+
+// expect: 8
+// expect: 7

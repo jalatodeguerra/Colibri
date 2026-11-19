@@ -1,0 +1,12 @@
+struct C { n: int }
+
+impl C {
+    fn reset(self) {
+        self.n = 0 // error: cannot assign to `self.n`, because `self` is read-only in this method
+    }
+}
+
+fn main() {
+    let c = C { n: 1 }
+    c.reset()
+}

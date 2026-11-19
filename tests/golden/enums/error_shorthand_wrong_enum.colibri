@@ -1,0 +1,9 @@
+enum A { X, Y }
+enum B { P, Q }
+
+fn take(a: A) {}
+
+fn main() {
+    take(.P) // error: the enum `A` has no variant `P`
+    let n: int = .X // error: `.X` builds an enum variant, but `int` is expected here
+}

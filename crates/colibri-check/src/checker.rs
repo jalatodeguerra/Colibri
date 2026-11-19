@@ -8,9 +8,10 @@ use colibri_syntax::ast::{self, BindKind, ItemKind, PatKind, TopLevel, TypeKind}
 use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::FnCtx;
-use crate::hir::{Body, FnDef, FnId, GlobalDef, GlobalId, Program};
+use crate::decls::{AliasInfo, TypeExtra};
+use crate::hir::{Body, FnDef, FnId, GlobalDef, GlobalId, Program, TypeDef};
 use crate::suggest;
-use crate::types::{FnSig, Ty};
+use crate::types::{FnSig, Ty, TypeId};
 
 /// What a module-level name refers to.
 #[derive(Clone, Copy, Debug)]
@@ -32,13 +33,19 @@ pub(crate) struct ParamInfo<'a> {
     pub ty: Ty,
     pub span: Span,
     pub default: Option<&'a ast::Expr>,
+    /// A `var self` receiver: the local is assignable.
+    pub mutable: bool,
 }
 
 pub(crate) struct FnInfo<'a> {
+    /// The source name; `Type.method` for a method.
     pub name: String,
     pub name_span: Span,
     pub span: Span,
+    /// All parameters; a method's first one is `self`.
     pub params: Vec<ParamInfo<'a>>,
+    /// `Some(mutable)` for a method with a `self` receiver (`var self` is `Some(true)`).
+    pub receiver: Option<bool>,
     pub ret: Ty,
     pub ret_span: Option<Span>,
     /// `None` when the declaration uses something unsupported: calls are then checked loosely.
@@ -85,16 +92,24 @@ pub struct Checked {
 }
 
 pub(crate) struct Checker<'a> {
-    file: &'a ast::File,
-    diags: Vec<Diagnostic>,
+    pub file: &'a ast::File,
+    pub diags: Vec<Diagnostic>,
     /// While positive, diagnostics are dropped (re-checking a default argument at a call).
     muted: u32,
     pub values: HashMap<String, ValueRef>,
     /// Type names that exist but cannot be used yet (they were declared with an unsupported
     /// construct), so uses of them do not cascade into "unknown type".
-    poisoned_types: HashSet<String>,
+    pub poisoned_types: HashSet<String>,
     pub fns: Vec<FnInfo<'a>>,
     pub globals: Vec<GlobalInfo<'a>>,
+    /// Every user-defined struct and enum, indexed by [`TypeId`].
+    pub types: Vec<TypeDef>,
+    /// What HIR does not keep about each type, parallel to `types`.
+    pub type_extra: Vec<TypeExtra<'a>>,
+    pub type_ids: HashMap<String, TypeId>,
+    pub aliases: HashMap<String, AliasInfo<'a>>,
+    /// Methods and static functions by owner and name.
+    pub methods: HashMap<(TypeId, String), FnId>,
     script: Vec<&'a ast::Stmt>,
     script_body: Option<Rc<Body>>,
     /// The native stack position where checking started, and how far below it checking may go.
@@ -121,6 +136,11 @@ impl<'a> Checker<'a> {
             poisoned_types: HashSet::new(),
             fns: Vec::new(),
             globals: Vec::new(),
+            types: Vec::new(),
+            type_extra: Vec::new(),
+            type_ids: HashMap::new(),
+            aliases: HashMap::new(),
+            methods: HashMap::new(),
             script: Vec::new(),
             script_body: None,
             stack_base: 0,
@@ -167,6 +187,11 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// How many errors (not warnings) have been reported so far.
+    pub fn error_count(&self) -> usize {
+        self.diags.iter().filter(|d| d.is_error()).count()
+    }
+
     pub fn mute(&mut self) {
         self.muted += 1;
     }
@@ -186,6 +211,17 @@ impl<'a> Checker<'a> {
 
     fn collect(&mut self) {
         let file = self.file;
+        let items: Vec<&'a ast::Item> = file
+            .items
+            .iter()
+            .filter_map(|top| match top {
+                TopLevel::Item(item) => Some(item),
+                TopLevel::Stmt(_) => None,
+            })
+            .collect();
+        // Types first, so every signature can name them whatever the order of the file.
+        self.declare_types(&items);
+        self.define_types(&items);
         for top in &file.items {
             match top {
                 TopLevel::Item(item) => self.collect_item(item),
@@ -201,27 +237,13 @@ impl<'a> Checker<'a> {
         match &item.kind {
             ItemKind::Fn(decl) => self.collect_fn(item, decl),
             ItemKind::Binding(binding) => self.collect_global(item, binding),
-            ItemKind::Struct(s) => {
-                let what = match s.kind {
-                    ast::StructKind::Struct => "`struct`",
-                    ast::StructKind::Class => "`class`",
-                };
-                self.poisoned_types.insert(s.name.name.clone());
-                self.unsupported(what, s.name.span);
-            }
-            ItemKind::Enum(e) => {
-                self.poisoned_types.insert(e.name.name.clone());
-                self.unsupported("`enum`", e.name.span);
-            }
+            // Declared and defined before the other items.
+            ItemKind::Struct(_) | ItemKind::Enum(_) | ItemKind::TypeAlias(_) => {}
             ItemKind::Interface(i) => {
                 self.poisoned_types.insert(i.name.name.clone());
                 self.unsupported("`interface`", i.name.span);
             }
-            ItemKind::TypeAlias(t) => {
-                self.poisoned_types.insert(t.name.name.clone());
-                self.unsupported("`type` alias", t.name.span);
-            }
-            ItemKind::Impl(_) => self.unsupported("`impl`", item.span),
+            ItemKind::Impl(decl) => self.collect_impl(decl, item),
             ItemKind::Import(_) => self.unsupported("`import`", item.span),
             ItemKind::Extern(_) => self.unsupported("`extern`", item.span),
             ItemKind::Test(_) => self.unsupported("`test`", item.span),
@@ -254,10 +276,41 @@ impl<'a> Checker<'a> {
     }
 
     fn collect_fn(&mut self, item: &'a ast::Item, decl: &'a ast::FnDecl) {
+        let id = self.add_fn(item, decl, None);
+        // A clash keeps the later declaration out of the name table but still checks its body.
+        self.declare_value(&decl.name.name, decl.name.span, ValueRef::Fn(id));
+    }
+
+    /// Resolves a function's signature and records it; the body is checked later.
+    pub(crate) fn add_fn(
+        &mut self,
+        item: &'a ast::Item,
+        decl: &'a ast::FnDecl,
+        owner: Option<TypeId>,
+    ) -> FnId {
         let mut poisoned = false;
-        if let Some(receiver) = &decl.receiver {
-            self.unsupported("method declarations", receiver.span);
-            poisoned = true;
+        let mut params: Vec<ParamInfo<'a>> = Vec::new();
+        let mut receiver = None;
+        if let Some(r) = &decl.receiver {
+            match owner {
+                Some(ty) => {
+                    receiver = Some(r.mutable);
+                    params.push(ParamInfo {
+                        name: "self".to_string(),
+                        ty: Ty::Adt(ty, Vec::new()),
+                        span: r.span,
+                        default: None,
+                        mutable: r.mutable,
+                    });
+                }
+                None => {
+                    self.report(
+                        Diagnostic::error("only a method can take `self`", r.span)
+                            .with_hint("declare the function inside an `impl` block"),
+                    );
+                    poisoned = true;
+                }
+            }
         }
         if !decl.generics.is_empty() {
             self.unsupported("generic function", decl.generics[0].name.span);
@@ -270,7 +323,6 @@ impl<'a> Checker<'a> {
             .map(|g| g.name.name.clone())
             .filter(|n| self.poisoned_types.insert(n.clone()))
             .collect();
-        let mut params: Vec<ParamInfo<'a>> = Vec::new();
         for p in &decl.params {
             if params.iter().any(|q| q.name == p.name.name) {
                 self.report(Diagnostic::error(
@@ -299,6 +351,7 @@ impl<'a> Checker<'a> {
                 ty,
                 span: p.name.span,
                 default: p.default.as_ref(),
+                mutable: false,
             });
         }
         let ret = match &decl.ret {
@@ -312,20 +365,24 @@ impl<'a> Checker<'a> {
         if decl.body.is_none() {
             poisoned = true;
         }
+        let name = match owner {
+            Some(ty) => format!("{}.{}", self.types[ty.0 as usize].name, decl.name.name),
+            None => decl.name.name.clone(),
+        };
         let id = FnId(self.fns.len() as u32);
         self.fns.push(FnInfo {
-            name: decl.name.name.clone(),
+            name,
             name_span: decl.name.span,
             span: item.span,
             params,
+            receiver,
             ret,
             ret_span,
             decl: if poisoned { None } else { Some(decl) },
             body: None,
             deps: Vec::new(),
         });
-        // A clash keeps the later declaration out of the name table but still checks its body.
-        self.declare_value(&decl.name.name, decl.name.span, ValueRef::Fn(id));
+        id
     }
 
     fn collect_global(&mut self, item: &'a ast::Item, binding: &'a ast::LetStmt) {
@@ -380,27 +437,19 @@ impl<'a> Checker<'a> {
                         self.unsupported(&format!("the type `{name}`"), t.span);
                         Ty::Error
                     }
-                    _ if self.poisoned_types.contains(name) => Ty::Error,
-                    _ => {
-                        let known = ["int", "float", "bool", "str", "char", "i64", "f64"];
-                        let mut diag = Diagnostic::error(format!("unknown type `{name}`"), t.span);
-                        if let Some(s) = suggest::closest(
-                            name,
-                            known
-                                .into_iter()
-                                .chain(self.poisoned_types.iter().map(String::as_str)),
-                        ) {
-                            diag = diag.with_hint(format!("did you mean `{s}`?"));
+                    _ => match self.type_by_name(name) {
+                        Some(ty) => ty,
+                        None if self.poisoned_types.contains(name) => Ty::Error,
+                        None => {
+                            self.report_unknown_type(name, t.span);
+                            Ty::Error
                         }
-                        self.report(diag);
-                        Ty::Error
-                    }
+                    },
                 }
             }
             TypeKind::Tuple(items) if items.is_empty() => Ty::Unit,
-            TypeKind::Tuple(_) => {
-                self.unsupported("tuple type", t.span);
-                Ty::Error
+            TypeKind::Tuple(items) => {
+                Ty::Tuple(items.iter().map(|item| self.resolve_type(item)).collect())
             }
             TypeKind::Optional(_) => {
                 self.unsupported("optional type (`T?`)", t.span);
@@ -420,6 +469,34 @@ impl<'a> Checker<'a> {
             }
             TypeKind::Error => Ty::Error,
         }
+    }
+
+    fn report_unknown_type(&mut self, name: &str, span: Span) {
+        let mut diag = Diagnostic::error(format!("unknown type `{name}`"), span);
+        let known = ["int", "float", "bool", "str", "char", "i64", "f64"];
+        let declared = self
+            .type_ids
+            .keys()
+            .chain(self.aliases.keys())
+            .chain(self.poisoned_types.iter())
+            .map(String::as_str);
+        if let Some(s) = suggest::closest(name, known.into_iter().chain(declared)) {
+            diag = diag.with_hint(format!("did you mean `{s}`?"));
+        }
+        self.report(diag);
+    }
+
+    /// The user-defined type or alias called `name`, if there is one.
+    pub fn type_by_name(&mut self, name: &str) -> Option<Ty> {
+        if let Some(&id) = self.type_ids.get(name) {
+            return Some(Ty::Adt(id, Vec::new()));
+        }
+        self.alias_ty(name)
+    }
+
+    /// `ty` as shown in a message, with user-defined types by name.
+    pub fn render(&self, ty: &Ty) -> String {
+        ty.render(&self.types)
     }
 
     // ---- module-level values ----
@@ -461,8 +538,19 @@ impl<'a> Checker<'a> {
 
     // ---- bodies ----
 
-    /// Checks each default argument once so its errors are reported once, not per call.
+    /// Checks each default argument and field default once so its errors are reported once,
+    /// not per use.
     fn check_defaults(&mut self) {
+        for t in 0..self.types.len() {
+            let defaults = self.type_extra[t].defaults.clone();
+            for (i, default) in defaults.into_iter().enumerate() {
+                if let Some(default) = default {
+                    let field = &self.types[t].fields()[i];
+                    let (name, ty) = (format!("<default {}>", field.name), field.ty.clone());
+                    FnCtx::new(self, name, None).check_default(default, &ty);
+                }
+            }
+        }
         for f in 0..self.fns.len() {
             let params = self.fns[f].params.clone();
             for p in params {
@@ -486,7 +574,9 @@ impl<'a> Checker<'a> {
             info.ret.clone(),
             info.ret_span,
         );
+        let mutates_self = info.receiver == Some(true);
         let (body, deps) = FnCtx::new(self, name, Some((ret.clone(), ret_span)))
+            .mutating_self(mutates_self)
             .check_fn_body(decl, &params, &ret, ret_span, span);
         let info = &mut self.fns[f.0 as usize];
         info.body = Some(Rc::new(body));
@@ -645,6 +735,7 @@ impl<'a> Checker<'a> {
             init_order,
             script: self.script_body.clone()?,
             main,
+            types: self.types.clone(),
         })
     }
 

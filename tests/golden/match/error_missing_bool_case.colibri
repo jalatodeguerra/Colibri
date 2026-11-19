@@ -1,0 +1,6 @@
+fn main() {
+    let b = true
+    let n = match b { // error: non-exhaustive `match`: missing case: false
+        true => 1
+    }
+}

@@ -1,0 +1,13 @@
+enum Slot { Empty, Full(int) }
+struct Bag { slot: Slot }
+
+fn main() {
+    var a = Bag { slot: .Full(1) }
+    var b = a
+    b.slot = .Empty
+    print(a)
+    print(b)
+}
+
+// expect: Bag { slot: Full(1) }
+// expect: Bag { slot: Empty }

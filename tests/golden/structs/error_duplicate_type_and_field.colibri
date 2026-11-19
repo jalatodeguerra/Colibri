@@ -1,0 +1,5 @@
+struct P { x: int, x: int } // error: the field `x` is declared more than once
+struct P { y: int } // error: the type `P` is defined more than once
+
+fn main() {
+}

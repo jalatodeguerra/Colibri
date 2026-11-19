@@ -1,0 +1,22 @@
+struct P { x: int, y: int }
+
+fn where(p: P) -> str {
+    return match p {
+        P { x: 0, y: 0 } => "origin"
+        P { x: 0, y } => "on y at {y}"
+        P { x, y: 0 } => "on x at {x}"
+        P { x, y } => "at {x},{y}"
+    }
+}
+
+fn main() {
+    print(where(P { x: 0, y: 0 }))
+    print(where(P { x: 0, y: 4 }))
+    print(where(P { x: 3, y: 0 }))
+    print(where(P { x: 1, y: 2 }))
+}
+
+// expect: origin
+// expect: on y at 4
+// expect: on x at 3
+// expect: at 1,2

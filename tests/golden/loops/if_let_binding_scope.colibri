@@ -1,0 +1,12 @@
+enum Opt { Some(int), None }
+
+fn main() {
+    let n = 1
+    if let Some(n) = Opt.Some(9) {
+        print(n)
+    }
+    print(n)
+}
+
+// expect: 9
+// expect: 1

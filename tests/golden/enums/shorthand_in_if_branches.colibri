@@ -1,0 +1,19 @@
+enum Level { Low, High }
+
+fn pick(n: int) -> Level {
+    if n > 10 {
+        return .High
+    }
+    let l: Level = if n > 5 { .High } else { .Low }
+    return l
+}
+
+fn main() {
+    print(pick(20))
+    print(pick(7))
+    print(pick(1))
+}
+
+// expect: High
+// expect: High
+// expect: Low

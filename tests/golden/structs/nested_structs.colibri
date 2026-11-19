@@ -1,0 +1,11 @@
+struct Vec2i { x: int, y: int }
+struct Rect { origin: Vec2i, size: Vec2i }
+
+fn main() {
+    let r = Rect { origin: Vec2i { x: 1, y: 2 }, size: Vec2i { x: 10, y: 20 } }
+    print(r.origin.x + r.size.y)
+    print(r)
+}
+
+// expect: 21
+// expect: Rect { origin: Vec2i { x: 1, y: 2 }, size: Vec2i { x: 10, y: 20 } }

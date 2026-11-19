@@ -1,0 +1,5 @@
+enum Cmd { Move(int) }
+
+fn main() {
+    let c = Cmd.Move("far") // error: expected `int`, found `str`
+}

@@ -1,0 +1,24 @@
+struct Player { name: str, hp: int }
+
+fn heal(p: Player) -> Player {
+    var q = p
+    q.hp += 10
+    return q
+}
+
+fn main() {
+    var a = Player { name: "Ana", hp: 100 }
+    var b = a              // a copy
+    b.hp = 50
+    print(a.hp)            // 100
+    print(b.hp)            // 50
+    let c = heal(a)
+    print("{a.hp} {c.hp}")
+    a = c
+    print(a.hp)
+}
+
+// expect: 100
+// expect: 50
+// expect: 100 110
+// expect: 110

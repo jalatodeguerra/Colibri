@@ -1,0 +1,17 @@
+fn main() {
+    var n = 0
+    'w: while n < 10 {
+        n += 1
+        for k in 0..100 {
+            if k == 3 {
+                continue 'w
+            }
+            if n == 4 {
+                break 'w
+            }
+        }
+    }
+    print(n)
+}
+
+// expect: 4

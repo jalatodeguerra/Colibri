@@ -186,7 +186,7 @@ impl Vm {
             }
             return Err(Error::SignatureMismatch {
                 name: name.to_string(),
-                colibri: sig.to_string(),
+                colibri: sig.render(&program.types),
                 rust,
             });
         }

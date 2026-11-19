@@ -1,0 +1,4 @@
+fn main() {
+    let t = (1, 2)
+    t.0 = 5 // error: cannot assign to `t.0`, because `t` is not mutable
+}

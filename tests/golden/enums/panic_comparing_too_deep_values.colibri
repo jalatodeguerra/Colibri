@@ -1,0 +1,17 @@
+enum Chain { Nil, Cons(int, Chain) }
+
+fn build(n: int) -> Chain {
+    var l = Chain.Nil
+    var i = 0
+    while i < n {
+        l = .Cons(i, l)
+        i += 1
+    }
+    return l
+}
+
+fn main() {
+    print(build(100) == build(100))
+    print(build(50000) == build(50000)) // panic: these values nest too deeply to compare
+}
+// expect: true

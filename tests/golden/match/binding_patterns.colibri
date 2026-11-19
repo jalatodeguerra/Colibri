@@ -1,0 +1,10 @@
+fn main() {
+    let n = 7
+    let s = match n {
+        0 => "zero"
+        other => "got {other}"
+    }
+    print(s)
+}
+
+// expect: got 7

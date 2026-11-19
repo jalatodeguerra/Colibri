@@ -5,14 +5,20 @@
 //! one `exit_scope`, and calls look functions up by id at call time. Hosts use it through
 //! `colibri-runtime`, not directly.
 
+mod compare;
 mod ctl;
 mod eval;
 mod fiber;
 mod format;
+mod pattern;
+mod place;
+mod show;
 mod value;
 
+pub use compare::{TooDeep, values_cmp, values_equal};
 pub use ctl::{Ctl, Eval, PanicInfo, TraceEntry};
 pub use eval::{DEFAULT_NATIVE_STACK_BUDGET, Interp};
 pub use fiber::Fiber;
 pub use format::format_value;
-pub use value::{Value, show, show_float};
+pub use show::{show, show_float};
+pub use value::{EnumVal, StructVal, Value};

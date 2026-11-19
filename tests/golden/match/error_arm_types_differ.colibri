@@ -1,0 +1,6 @@
+fn main() {
+    let r = match 1 {
+        1 => "one"
+        _ => 2 // error: the arms of this `match` give different types: `str` and `{integer}`
+    }
+}

@@ -1,0 +1,10 @@
+fn main() {
+    match 5 {
+        "five" => print("a") // error: this pattern is a `str`, but the value is a `int`
+        _ => print("b")
+    }
+    match "x" {
+        1 => print("a") // error: this pattern is a `{integer}`, but the value is a `str`
+        _ => print("b")
+    }
+}

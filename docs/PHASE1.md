@@ -54,6 +54,7 @@ behind the same `Vm` API.
 |-----------|---------|
 | `// expect: text` | The next line of stdout must equal `text`. All `expect` lines in file order form the whole expected stdout. |
 | `// error: text` | At the end of a source line: a compile diagnostic on that line whose message contains `text`. The program is not run. |
+| `// warning: text` | At the end of a source line: a compile warning on that line whose message contains `text`. Warnings are compared strictly: an unlisted warning fails the file, as does a listed one that does not appear. |
 | `// panic: text` | The run must end in a panic whose message contains `text` (stdout before it is still checked). |
 | `// drops: a, b, c` | Expected drop order, defined with the drop slice (step 4). |
 

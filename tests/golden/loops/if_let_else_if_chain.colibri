@@ -1,0 +1,21 @@
+enum Cmd { Move(int), Say(str), Quit }
+
+fn run(c: Cmd) -> str {
+    if let Move(n) = c {
+        return "move {n}"
+    } else if let Say(s) = c {
+        return "say {s}"
+    } else {
+        return "quit"
+    }
+}
+
+fn main() {
+    print(run(.Move(1)))
+    print(run(.Say("hi")))
+    print(run(.Quit))
+}
+
+// expect: move 1
+// expect: say hi
+// expect: quit

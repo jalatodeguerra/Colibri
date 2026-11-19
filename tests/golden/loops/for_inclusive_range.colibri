@@ -1,0 +1,9 @@
+fn main() {
+    var total = 0
+    for i in 1..=10 {
+        total += i
+    }
+    print(total)
+}
+
+// expect: 55

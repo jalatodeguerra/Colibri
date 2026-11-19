@@ -1,0 +1,7 @@
+struct Box[T] { // error: a generic `struct` is not supported yet
+    value: T
+}
+
+fn main() {
+    print(1)
+}

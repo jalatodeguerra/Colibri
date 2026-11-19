@@ -1,0 +1,23 @@
+enum Opt { Some(int), None }
+
+fn next(n: int) -> Opt {
+    if n > 0 {
+        return .Some(n - 1)
+    }
+    return .None
+}
+
+fn main() {
+    var cur = Opt.Some(3)
+    while let Some(n) = cur {
+        print(n)
+        cur = next(n)
+    }
+    print("done")
+}
+
+// expect: 3
+// expect: 2
+// expect: 1
+// expect: 0
+// expect: done

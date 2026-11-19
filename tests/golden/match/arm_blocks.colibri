@@ -1,0 +1,22 @@
+fn main() {
+    let n = 5
+    let r = match n {
+        0 => 0
+        k => {
+            let doubled = k * 2
+            doubled + 1
+        }
+    }
+    print(r)
+    match n {
+        5 => {
+            print("five")
+            print("really")
+        }
+        _ => {}
+    }
+}
+
+// expect: 11
+// expect: five
+// expect: really

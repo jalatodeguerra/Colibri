@@ -1,0 +1,16 @@
+struct Player { name: str, hp: int }
+
+impl Player {
+    fn new(name: str) -> Player {
+        return Player { name, hp: 100 }
+    }
+    fn with_hp(name: str, hp: int) -> Player => Player { name, hp }
+}
+
+fn main() {
+    print(Player.new("Ana"))
+    print(Player.with_hp("Bo", 5))
+}
+
+// expect: Player { name: "Ana", hp: 100 }
+// expect: Player { name: "Bo", hp: 5 }

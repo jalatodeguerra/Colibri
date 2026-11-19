@@ -1,0 +1,16 @@
+struct Box { w: int }
+
+impl Box {
+    fn grown(self, by: int = 1, times: int = 1) -> int => self.w + by * times
+}
+
+fn main() {
+    let b = Box { w: 10 }
+    print(b.grown())
+    print(b.grown(5))
+    print(b.grown(times: 3, by: 2))
+}
+
+// expect: 11
+// expect: 15
+// expect: 16

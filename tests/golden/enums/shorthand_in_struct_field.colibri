@@ -1,0 +1,9 @@
+enum Team { Red, Blue }
+struct Player { name: str, team: Team }
+
+fn main() {
+    let p = Player { name: "Ana", team: .Blue }
+    print(p)
+}
+
+// expect: Player { name: "Ana", team: Blue }

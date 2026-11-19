@@ -1,0 +1,5 @@
+struct P { x: int }
+
+fn main() {
+    print((1, P { x: 1 }) < (1, P { x: 2 })) // error: `<` cannot compare values of type `({integer}, P)`
+}

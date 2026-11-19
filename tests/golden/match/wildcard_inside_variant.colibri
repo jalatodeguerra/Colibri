@@ -1,0 +1,16 @@
+enum Pair { Two(int, int), One(int) }
+
+fn first(p: Pair) -> int {
+    return match p {
+        Two(a, _) => a
+        One(a) => a
+    }
+}
+
+fn main() {
+    print(first(.Two(5, 6)))
+    print(first(.One(9)))
+}
+
+// expect: 5
+// expect: 9

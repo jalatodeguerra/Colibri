@@ -1,0 +1,15 @@
+struct User { name: str, age: int }
+
+fn make(name: str, age: int) -> User {
+    return User { name, age }
+}
+
+fn main() {
+    let name = "Cy"
+    let u = User { name, age: 30 }
+    print(u)
+    print(make("Di", 7))
+}
+
+// expect: User { name: "Cy", age: 30 }
+// expect: User { name: "Di", age: 7 }

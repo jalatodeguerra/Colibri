@@ -1,0 +1,16 @@
+enum Opt { Some(int), None }
+
+fn main() {
+    var out = 0
+    'a: while let Some(x) = Opt.Some(1) {
+        for j in 0..5 {
+            out += 1
+            if j == 2 {
+                break 'a
+            }
+        }
+    }
+    print(out)
+}
+
+// expect: 3

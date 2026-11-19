@@ -1,0 +1,15 @@
+struct C { n: int }
+
+impl C {
+    fn inc(var self) {
+        self.n += 1
+    }
+}
+
+fn bump(c: C) {
+    c.inc() // error: cannot call `inc` on `c`, because the parameter `c` is immutable
+}
+
+fn main() {
+    bump(C { n: 0 })
+}

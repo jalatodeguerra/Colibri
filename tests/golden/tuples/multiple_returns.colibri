@@ -1,0 +1,18 @@
+fn min_max(a: int, b: int) -> (int, int) {
+    if a < b {
+        return (a, b)
+    }
+    return (b, a)
+}
+
+fn divmod(a: int, b: int) -> (int, int) => (a / b, a % b)
+
+fn main() {
+    let (lo, hi) = min_max(9, 2)
+    print("{lo} {hi}")
+    let (q, r) = divmod(17, 5)
+    print("{q} {r}")
+}
+
+// expect: 2 9
+// expect: 3 2

@@ -6,26 +6,32 @@ use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::FnCtx;
 use crate::checker::{Dep, ParamInfo};
-use crate::hir::{self, Arg, Block, Callee, Expr, FnId, Intrinsic, Stmt, StmtKind};
+use crate::hir::{self, Arg, Block, Callee, Expr, FnId, Intrinsic, LocalId, Place, Stmt, StmtKind};
+use crate::place::Action;
 use crate::types::Ty;
 
 /// An argument matched to a parameter.
-struct Bound {
-    expr: Expr,
+pub(crate) struct Bound {
+    pub expr: Expr,
     /// The position in the source for an explicit argument; `None` for a default.
-    source: Option<usize>,
+    pub source: Option<usize>,
 }
 
 impl FnCtx<'_, '_> {
     #[inline(never)]
     pub fn check_call(&mut self, callee: &ast::Expr, args: &[ast::Arg], span: Span) -> Expr {
-        let ExprKind::Ident(id) = &callee.kind else {
-            let what = match &callee.kind {
-                ExprKind::Field { .. } => "method call",
-                _ => "calling anything but a named function",
-            };
-            self.check_args_loosely(args);
-            return self.unsupported(what, callee.span);
+        let id = match &callee.kind {
+            ExprKind::Ident(id) => id,
+            ExprKind::Field { base, name } => {
+                return self.check_member_call(base, name, args, span);
+            }
+            ExprKind::Paren(inner) if matches!(inner.kind, ExprKind::Ident(_)) => {
+                return self.check_call(inner, args, span);
+            }
+            _ => {
+                self.check_args_loosely(args);
+                return self.unsupported("calling anything but a named function", callee.span);
+            }
         };
         let name = id.name.as_str();
         if let Some(local) = self.lookup_local(name) {
@@ -65,7 +71,7 @@ impl FnCtx<'_, '_> {
     }
 
     /// Checks arguments of a call that cannot be resolved, so their own errors still show.
-    fn check_args_loosely(&mut self, args: &[ast::Arg]) {
+    pub(crate) fn check_args_loosely(&mut self, args: &[ast::Arg]) {
         for a in args {
             self.check_expr(&a.value, None);
         }
@@ -89,7 +95,15 @@ impl FnCtx<'_, '_> {
         let ty = self.default_ty(&value.ty);
         if !matches!(
             ty,
-            Ty::Int(_) | Ty::Float | Ty::Bool | Ty::Char | Ty::Str | Ty::Unit | Ty::Error
+            Ty::Int(_)
+                | Ty::Float
+                | Ty::Bool
+                | Ty::Char
+                | Ty::Str
+                | Ty::Unit
+                | Ty::Error
+                | Ty::Tuple(_)
+                | Ty::Adt(..)
         ) {
             let shown = self.show(&ty);
             self.ck.report(Diagnostic::error(
@@ -109,7 +123,7 @@ impl FnCtx<'_, '_> {
         )
     }
 
-    fn check_fn_call(&mut self, f: FnId, args: &[ast::Arg], span: Span) -> Expr {
+    pub(crate) fn check_fn_call(&mut self, f: FnId, args: &[ast::Arg], span: Span) -> Expr {
         self.add_dep(Dep::Fn(f));
         let info = &self.ck.fns[f.0 as usize];
         let (name, params, ret, poisoned) = (
@@ -122,23 +136,154 @@ impl FnCtx<'_, '_> {
             self.check_args_loosely(args);
             return self.error_expr(span);
         }
-        let Some(bound) = self.bind_args(&name, &params, args, span) else {
+        let Some(bound) = self.bind_args(&name, &params, args, span, 0) else {
             return self.error_expr_typed(span, ret);
         };
-        self.finish_call(Callee::Fn(f), bound, ret, span)
+        self.finish_call(Callee::Fn(f), None, bound, ret, span)
     }
 
-    fn error_expr_typed(&self, span: Span, ty: Ty) -> Expr {
+    /// `base.name(args)`: a call through a type (`Shape.Circle(1)`, `Particle.new()`) or a
+    /// method call on a value.
+    #[inline(never)]
+    fn check_member_call(
+        &mut self,
+        base: &ast::Expr,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Expr {
+        if let ExprKind::Ident(id) = &base.kind
+            && let Some(ty) = self.type_path(id)
+        {
+            return self.check_type_member(ty, name, Some(args), span);
+        }
+        let recv = self.check_expr(base, None);
+        let recv_ty = self.infer.shallow(&recv.ty);
+        let owner = match &recv_ty {
+            Ty::Error => {
+                self.check_args_loosely(args);
+                return self.error_expr(span);
+            }
+            Ty::Adt(id, _) => *id,
+            other => {
+                self.check_args_loosely(args);
+                let shown = self.show(other);
+                self.ck.report(
+                    Diagnostic::error(
+                        format!("methods on the built-in type `{shown}` are not supported yet"),
+                        name.span,
+                    )
+                    .with_hint(
+                        "Colibri is being built in slices; see docs/PHASE1.md for what comes next",
+                    ),
+                );
+                return self.error_expr(span);
+            }
+        };
+        let Some(&f) = self.ck.methods.get(&(owner, name.name.clone())) else {
+            self.check_args_loosely(args);
+            let tname = self.ck.types[owner.0 as usize].name.clone();
+            let methods: Vec<String> = self
+                .ck
+                .methods
+                .keys()
+                .filter(|(t, _)| *t == owner)
+                .map(|(_, n)| n.clone())
+                .collect();
+            let mut diag = Diagnostic::error(
+                format!("`{tname}` has no method `{}`", name.name),
+                name.span,
+            );
+            if let Some(hint) = crate::checker::Checker::did_you_mean(&name.name, &methods) {
+                diag = diag.with_hint(hint);
+            } else if self.ck.types[owner.0 as usize]
+                .fields()
+                .iter()
+                .any(|f| f.name == name.name)
+            {
+                diag = diag.with_hint(format!("`{}` is a field, not a method", name.name));
+            }
+            self.ck.report(diag);
+            return self.error_expr(span);
+        };
+        self.add_dep(Dep::Fn(f));
+        let info = &self.ck.fns[f.0 as usize];
+        let (fname, params, ret, receiver, poisoned) = (
+            info.name.clone(),
+            info.params.clone(),
+            info.ret.clone(),
+            info.receiver,
+            info.is_poisoned(),
+        );
+        let Some(mutable) = receiver else {
+            self.check_args_loosely(args);
+            let tname = self.ck.types[owner.0 as usize].name.clone();
+            self.ck.report(
+                Diagnostic::error(
+                    format!("`{}` is a function of `{tname}`, not a method", name.name),
+                    name.span,
+                )
+                .with_hint(format!(
+                    "call it through the type: `{tname}.{}(...)`",
+                    name.name
+                )),
+            );
+            return self.error_expr(span);
+        };
+        if poisoned {
+            self.check_args_loosely(args);
+            return self.error_expr(span);
+        }
+        let receiver = if mutable {
+            match self.receiver_place(recv, &name.name, base.span) {
+                Some(place) => Receiver::Place(place),
+                None => {
+                    self.check_args_loosely(args);
+                    return self.error_expr_typed(span, ret);
+                }
+            }
+        } else {
+            Receiver::Value(recv)
+        };
+        let Some(bound) = self.bind_args(&fname, &params[1..], args, span, 1) else {
+            return self.error_expr_typed(span, ret);
+        };
+        self.finish_call(Callee::Fn(f), Some(receiver), bound, ret, span)
+    }
+
+    /// The place a `var self` method changes: `recv` must be a variable or a part of one, and
+    /// that variable must be mutable.
+    fn receiver_place(&mut self, recv: Expr, method: &str, span: Span) -> Option<Place> {
+        match recv.kind {
+            hir::ExprKind::Error => None,
+            hir::ExprKind::Read(place) => self
+                .require_mutable(&place, span, Action::Call(method))
+                .then_some(*place),
+            _ => {
+                self.ck.report(
+                    Diagnostic::error(
+                        format!("`{method}` changes its receiver, so it needs a variable, not a temporary value"),
+                        span,
+                    )
+                    .with_hint("store the value in a `var` first, then call the method on it"),
+                );
+                None
+            }
+        }
+    }
+
+    pub(crate) fn error_expr_typed(&self, span: Span, ty: Ty) -> Expr {
         self.mk(hir::ExprKind::Error, ty, span)
     }
 
     /// Matches arguments to parameters; `None` after reporting a problem.
-    fn bind_args(
+    pub(crate) fn bind_args(
         &mut self,
         fname: &str,
         params: &[ParamInfo<'_>],
         args: &[ast::Arg],
         span: Span,
+        first_source: usize,
     ) -> Option<Vec<Bound>> {
         let mut slots: Vec<Option<Bound>> = params.iter().map(|_| None).collect();
         let mut ok = true;
@@ -226,7 +371,7 @@ impl FnCtx<'_, '_> {
             } else {
                 slots[i] = Some(Bound {
                     expr,
-                    source: Some(source),
+                    source: Some(first_source + source),
                 });
             }
         }
@@ -261,10 +406,45 @@ impl FnCtx<'_, '_> {
         ok.then_some(bound)
     }
 
-    /// Builds the call from matched arguments. Arguments run in source order, then defaults in
-    /// parameter order (ARCHITECTURE §6); when that differs from parameter order and more than
-    /// one of them has an effect, they are evaluated into temporaries first.
-    fn finish_call(&mut self, callee: Callee, bound: Vec<Bound>, ret: Ty, span: Span) -> Expr {
+    /// Builds the call from matched arguments (and the receiver of a method call).
+    fn finish_call(
+        &mut self,
+        callee: Callee,
+        receiver: Option<Receiver>,
+        mut bound: Vec<Bound>,
+        ret: Ty,
+        span: Span,
+    ) -> Expr {
+        let mut place = None;
+        match receiver {
+            Some(Receiver::Value(expr)) => bound.insert(
+                0,
+                Bound {
+                    expr,
+                    source: Some(0),
+                },
+            ),
+            Some(Receiver::Place(p)) => place = Some(p),
+            None => {}
+        }
+        let (values, lets, temps) = self.order_args(bound);
+        let mut args: Vec<Arg> = place.into_iter().map(Arg::Place).collect();
+        args.extend(values.into_iter().map(Arg::Value));
+        let call = hir::ExprKind::Call(Box::new(hir::Call {
+            callee,
+            type_args: Vec::new(),
+            args,
+        }));
+        let call = self.mk(call, ret, span);
+        self.wrap_hoisted(call, lets, temps, span)
+    }
+
+    /// Puts matched arguments in evaluation order. Arguments run in source order, then
+    /// defaults in parameter order (ARCHITECTURE §6); when that differs from parameter order
+    /// and more than one of them has an effect, they are evaluated into temporaries first.
+    /// Returns the argument expressions in parameter order and the statements that fill the
+    /// temporaries (with the locals they declare).
+    pub(crate) fn order_args(&mut self, bound: Vec<Bound>) -> (Vec<Expr>, Vec<Stmt>, Vec<LocalId>) {
         // The evaluation rank each argument should have.
         let explicit = bound.iter().filter(|b| b.source.is_some()).count();
         let mut default_rank = explicit;
@@ -288,7 +468,6 @@ impl FnCtx<'_, '_> {
 
         let mut lets = Vec::new();
         let mut temps = Vec::new();
-        let mut args = Vec::new();
         let mut order: Vec<usize> = (0..bound.len()).collect();
         order.sort_by_key(|&i| ranks[i]);
         let mut slots: Vec<Option<Expr>> = bound.into_iter().map(|b| Some(b.expr)).collect();
@@ -317,27 +496,38 @@ impl FnCtx<'_, '_> {
                 slots[i] = Some(self.mk(hir::ExprKind::Read(Box::new(place)), ty, espan));
             }
         }
-        for slot in slots.into_iter().flatten() {
-            args.push(Arg::Value(slot));
-        }
-        let call = hir::ExprKind::Call(Box::new(hir::Call {
-            callee,
-            type_args: Vec::new(),
-            args,
-        }));
-        let call = self.mk(call, ret.clone(), span);
+        (slots.into_iter().flatten().collect(), lets, temps)
+    }
+
+    /// Wraps `value` in a block that first runs the hoisting statements, if there are any.
+    pub(crate) fn wrap_hoisted(
+        &mut self,
+        value: Expr,
+        lets: Vec<Stmt>,
+        temps: Vec<LocalId>,
+        span: Span,
+    ) -> Expr {
         if lets.is_empty() {
-            return call;
+            return value;
         }
+        let ty = value.ty.clone();
         let block = Block {
             locals: temps,
             stmts: lets,
-            tail: Some(Box::new(call)),
-            ty: ret.clone(),
+            tail: Some(Box::new(value)),
+            ty: ty.clone(),
             span,
         };
-        self.mk(hir::ExprKind::Block(Box::new(block)), ret, span)
+        self.mk(hir::ExprKind::Block(Box::new(block)), ty, span)
     }
+}
+
+/// The receiver of a method call.
+enum Receiver {
+    /// `self`: read-only, passed by value.
+    Value(Expr),
+    /// `var self`: a place the method changes in place.
+    Place(Place),
 }
 
 /// Whether `e` is a literal, which can be evaluated at any time. Everything else (even a

@@ -1,0 +1,15 @@
+enum Shape { Circle(float), Rect(float, float), Dot }
+
+fn main() {
+    print(Shape.Circle(1.0) == Shape.Circle(1.0))
+    print(Shape.Circle(1.0) == Shape.Circle(2.0))
+    print(Shape.Circle(1.0) == Shape.Dot)
+    print(Shape.Rect(1.0, 2.0) != Shape.Rect(1.0, 2.0))
+    print(Shape.Dot == Shape.Dot)
+}
+
+// expect: true
+// expect: false
+// expect: false
+// expect: false
+// expect: true

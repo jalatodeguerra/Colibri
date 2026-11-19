@@ -1,0 +1,7 @@
+fn main() {
+    let n = 3
+    let s = match n { // error: non-exhaustive `match`: missing case: _
+        0 => "zero"
+        1..=9 => "small"
+    }
+}

@@ -1,17 +1,23 @@
 //! "Did you mean" suggestions for unknown names.
 
-/// The Levenshtein distance between two strings, counting characters.
+/// The edit distance between two strings, counting characters: insertions, deletions,
+/// substitutions and swaps of two neighbours (so `Quti` is one edit from `Quit`).
 pub fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
+    let mut older: Vec<usize> = Vec::new();
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     for (i, &ca) in a.iter().enumerate() {
         let mut cur = vec![i + 1];
         for (j, &cb) in b.iter().enumerate() {
             let cost = usize::from(ca != cb);
-            cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+            let mut best = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+            if i > 0 && j > 0 && ca == b[j - 1] && a[i - 1] == cb {
+                best = best.min(older[j - 1] + 1);
+            }
+            cur.push(best);
         }
-        prev = cur;
+        older = std::mem::replace(&mut prev, cur);
     }
     prev[b.len()]
 }
@@ -37,6 +43,8 @@ mod tests {
         assert_eq!(edit_distance("", "abc"), 3);
         assert_eq!(edit_distance("kitten", "sitting"), 3);
         assert_eq!(edit_distance("same", "same"), 0);
+        assert_eq!(edit_distance("Quti", "Quit"), 1);
+        assert_eq!(edit_distance("ab", "ba"), 1);
     }
 
     #[test]

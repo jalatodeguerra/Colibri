@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use colibri_syntax::Span;
 
-use crate::types::{FnSig, IntTy, Ty};
+use crate::types::{FnSig, IntTy, Ty, TypeId};
 
 /// A function in [`Program::fns`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -26,7 +26,7 @@ pub struct LocalId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LoopId(pub u32);
 
-/// A field's index in declaration order (struct and class support comes later).
+/// A field's index in declaration order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FieldIdx(pub u32);
 
@@ -41,6 +41,8 @@ pub struct Program {
     pub script: Rc<Body>,
     /// `fn main()` if the file defines it.
     pub main: Option<FnId>,
+    /// Every user-defined struct and enum, indexed by [`TypeId`].
+    pub types: Vec<TypeDef>,
 }
 
 impl Program {
@@ -50,6 +52,65 @@ impl Program {
             .iter()
             .position(|f| f.name == name)
             .map(|i| FnId(i as u32))
+    }
+}
+
+/// A user-defined type (ARCHITECTURE §1: bodies refer to types only by id).
+#[derive(Clone, Debug)]
+pub struct TypeDef {
+    pub name: String,
+    pub span: Span,
+    pub kind: TypeDefKind,
+}
+
+#[derive(Clone, Debug)]
+pub enum TypeDefKind {
+    /// Fields in declaration order; their defaults live at the literals that omit them.
+    Struct {
+        fields: Vec<FieldDef>,
+    },
+    Enum {
+        variants: Vec<VariantDef>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct FieldDef {
+    /// For a positional enum payload, the position (`"0"`, `"1"`).
+    pub name: String,
+    pub ty: Ty,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct VariantDef {
+    pub name: String,
+    pub span: Span,
+    /// The payload, empty for a unit variant.
+    pub fields: Vec<FieldDef>,
+    /// Whether the payload fields have names (`Circle(radius: float)`).
+    pub named: bool,
+}
+
+impl TypeDef {
+    /// The variants of an enum (empty for a struct).
+    pub fn variants(&self) -> &[VariantDef] {
+        match &self.kind {
+            TypeDefKind::Enum { variants } => variants,
+            TypeDefKind::Struct { .. } => &[],
+        }
+    }
+
+    /// The fields of a struct (empty for an enum).
+    pub fn fields(&self) -> &[FieldDef] {
+        match &self.kind {
+            TypeDefKind::Struct { fields } => fields,
+            TypeDefKind::Enum { .. } => &[],
+        }
+    }
+
+    pub fn is_enum(&self) -> bool {
+        matches!(self.kind, TypeDefKind::Enum { .. })
     }
 }
 
@@ -85,6 +146,10 @@ pub struct Body {
     /// The function's top-level block. Its drop list starts with the parameters.
     pub block: Block,
     pub ret: Ty,
+    /// A `var self` method: its first parameter is an in/out receiver. When the call ends,
+    /// the engine takes the final value of local 0 back out and the caller writes it to the
+    /// receiver place (ARCHITECTURE §4).
+    pub mutates_self: bool,
 }
 
 /// How a local's slot is stored.
@@ -139,6 +204,12 @@ pub enum StmtKind {
         place: Place,
         op: Option<BinOp>,
         rhs: Expr,
+    },
+    /// `let (a, b) = init`: destructures with an irrefutable pattern, binding locals declared
+    /// by the enclosing block.
+    LetPat {
+        pat: Pat,
+        init: Expr,
     },
     Return(Option<Expr>),
     Break(LoopId),
@@ -206,8 +277,91 @@ pub enum ExprKind {
         id: LoopId,
         body: Box<Block>,
     },
+    /// `for i in a..b`.
+    For(Box<ForLoop>),
+    /// `Player { .. }`: one value per field in declaration order (defaults already filled).
+    Struct {
+        ty: TypeId,
+        fields: Vec<Expr>,
+    },
+    /// `Shape.Circle(2.0)`: the payload values in declaration order.
+    Variant {
+        ty: TypeId,
+        variant: u32,
+        args: Vec<Expr>,
+    },
+    Tuple(Vec<Expr>),
+    /// A field or tuple element of a value that is not a place (`make().x`).
+    Project(Box<Expr>, ValueProj),
+    /// The first arm whose pattern matches (and whose guard holds) runs. The scrutinee lives
+    /// for the whole construct. Checked exhaustive, so some arm always runs.
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<Arm>,
+    },
     /// Left behind after a diagnostic; never reaches an engine.
     Error,
+}
+
+/// A loop over an integer range. The binding is a fresh local per iteration: it is listed in
+/// `body.locals`, so the body's scope exit releases it each time round.
+#[derive(Debug)]
+pub struct ForLoop {
+    pub id: LoopId,
+    /// `None` for `for _ in ..`.
+    pub binding: Option<LocalId>,
+    pub start: Expr,
+    pub end: Expr,
+    pub inclusive: bool,
+    pub body: Block,
+}
+
+/// A `match` arm. `body.locals` starts with the pattern's bindings, which are bound before the
+/// guard runs and dropped when the arm ends (or when the guard fails).
+#[derive(Debug)]
+pub struct Arm {
+    pub pat: Pat,
+    pub guard: Option<Expr>,
+    pub body: Block,
+}
+
+/// A pattern, typed. Patterns stay patterns in HIR; engines match them directly.
+#[derive(Debug)]
+pub struct Pat {
+    pub kind: PatKind,
+    pub ty: Ty,
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub enum PatKind {
+    Wild,
+    /// A binding, optionally with a sub-pattern: `x` or `pat as x`.
+    Bind(LocalId, Option<Box<Pat>>),
+    /// An integer, char, string or bool literal (a negative integer is already folded).
+    Lit(Lit),
+    /// An integer or char range; a missing bound is open.
+    Range {
+        lo: Option<Lit>,
+        hi: Option<Lit>,
+        inclusive: bool,
+    },
+    /// A module-level `const`, compared by equality when the pattern is tried.
+    Const(GlobalId),
+    /// An enum variant with one sub-pattern per payload field.
+    Variant {
+        ty: TypeId,
+        variant: u32,
+        args: Vec<Pat>,
+    },
+    /// A struct with one sub-pattern per field in declaration order (`_` for omitted ones).
+    Struct {
+        ty: TypeId,
+        fields: Vec<Pat>,
+    },
+    Tuple(Vec<Pat>),
+    /// Alternatives that bind the same locals.
+    Or(Vec<Pat>),
 }
 
 /// A resolved call. Named and default arguments are already positional.
@@ -249,7 +403,8 @@ pub enum Intrinsic {
 #[derive(Debug)]
 pub enum Arg {
     Value(Expr),
-    /// A mutable receiver (`var self`); not produced yet.
+    /// A mutable receiver (`var self`): the engine moves the value in and writes it back when
+    /// the call ends, on every path.
     Place(Place),
 }
 
@@ -269,6 +424,9 @@ pub enum Operand {
     Char,
     Str,
     Unit,
+    /// Structs, enums and tuples: the derived structural `Eq`, and `Ord` for tuples and
+    /// payload-free enums (DESIGN §7.4).
+    Structural,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

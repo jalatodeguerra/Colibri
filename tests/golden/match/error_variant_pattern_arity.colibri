@@ -1,0 +1,9 @@
+enum Shape { Rect(float, float), Dot }
+
+fn main() {
+    match Shape.Dot {
+        Rect(w) => print("one") // error: `Shape.Rect` carries 2 values, but the pattern has 1
+        Dot(x) => print("dot") // error: `Shape.Dot` carries no data
+        _ => print("other")
+    }
+}

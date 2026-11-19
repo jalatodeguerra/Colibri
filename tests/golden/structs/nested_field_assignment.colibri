@@ -1,0 +1,14 @@
+struct Vec2i { x: int, y: int }
+struct Rect { origin: Vec2i, size: Vec2i }
+
+fn main() {
+    var r = Rect { origin: Vec2i { x: 0, y: 0 }, size: Vec2i { x: 1, y: 1 } }
+    let copy = r
+    r.origin.x = 5
+    r.size.y += 9
+    print(r)
+    print(copy)
+}
+
+// expect: Rect { origin: Vec2i { x: 5, y: 0 }, size: Vec2i { x: 1, y: 10 } }
+// expect: Rect { origin: Vec2i { x: 0, y: 0 }, size: Vec2i { x: 1, y: 1 } }

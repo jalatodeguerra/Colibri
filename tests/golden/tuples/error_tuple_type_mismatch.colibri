@@ -1,0 +1,7 @@
+fn f() -> (int, str) {
+    return (1, 2) // error: expected `(int, str)`, found `(int, {integer})`
+}
+
+fn main() {
+    let t: (int, int) = (1, "a", 3) // error: expected `(int, int)`, found `({integer}, str, {integer})`
+}

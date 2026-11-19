@@ -1,0 +1,4 @@
+fn main() {
+    let n = 5
+    print(n.0) // error: `int` is not a tuple, so it has no `.0`
+}

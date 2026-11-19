@@ -1,0 +1,8 @@
+enum E { A, B }
+
+fn main() {
+    match E.A { // error: non-exhaustive `match`: missing case: A
+        A if true => print("a")
+        B => print("b")
+    }
+}

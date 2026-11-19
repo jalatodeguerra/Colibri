@@ -1,0 +1,37 @@
+fn greet(s: str) -> str {
+    return match s {
+        "hello" => "world"
+        "ping" => "pong"
+        _ => "?"
+    }
+}
+
+fn vowel(c: char) -> bool {
+    return match c {
+        'a' | 'e' | 'i' | 'o' | 'u' => true
+        _ => false
+    }
+}
+
+fn yes(b: bool) -> int {
+    return match b {
+        true => 1
+        false => 0
+    }
+}
+
+fn main() {
+    print(greet("hello"))
+    print(greet("ping"))
+    print(greet("x"))
+    print(vowel('e'))
+    print(vowel('z'))
+    print(yes(true) + yes(false))
+}
+
+// expect: world
+// expect: pong
+// expect: ?
+// expect: true
+// expect: false
+// expect: 1

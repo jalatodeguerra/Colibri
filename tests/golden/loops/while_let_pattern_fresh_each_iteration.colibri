@@ -1,0 +1,15 @@
+enum Opt { Some(int), None }
+
+fn main() {
+    var cur = Opt.Some(0)
+    var total = 0
+    while let Some(n) = cur {
+        var local = n
+        local += 100
+        total += local
+        cur = if n < 2 { .Some(n + 1) } else { .None }
+    }
+    print(total)
+}
+
+// expect: 303
