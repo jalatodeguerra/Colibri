@@ -1,0 +1,23 @@
+enum Timeout {
+    Connect
+    Read(ms: int)
+}
+impl IntoError for Timeout {
+    fn message(self) -> str {
+        return match self {
+            Timeout.Connect => "connection timed out"
+            Timeout.Read(ms) => "read timed out after {ms}ms"
+        }
+    }
+}
+let a = Error.from(Timeout.Connect)
+let b = Error.from(Timeout.Read(250))
+print(a)
+print(b.message())
+print(b.context("fetching assets"))
+// The kept value is still the enum, and its own Show is unchanged.
+print(b.as[Timeout]())
+// expect: connection timed out
+// expect: read timed out after 250ms
+// expect: fetching assets: read timed out after 250ms
+// expect: some(Read(ms: 250))

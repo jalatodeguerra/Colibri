@@ -30,12 +30,14 @@ mod matching;
 mod methods;
 mod obligations;
 mod option;
+mod optres;
 mod pat;
 mod place;
 mod prelude;
 mod range;
 mod suggest;
 pub mod traits;
+mod tryop;
 pub mod types;
 mod zonk;
 

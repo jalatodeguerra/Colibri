@@ -176,3 +176,26 @@ fn a_missing_file_is_an_error() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("cannot read"));
 }
+
+#[test]
+fn main_returning_err_reports_on_stderr_and_exits_one() {
+    let path = temp_file(
+        "main_err.colibri",
+        "fn main() -> Result[()] {\n    print(\"start\")\n    return err(\"it broke\")\n}\n",
+    );
+    let out = colibri(&["run", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "start\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.starts_with("error: it broke"), "{stderr}");
+}
+
+#[test]
+fn main_returning_ok_exits_zero() {
+    let path = temp_file(
+        "main_ok.colibri",
+        "fn main() -> Result[()] {\n    print(\"fine\")\n}\n",
+    );
+    let out = colibri(&["run", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+}

@@ -1,0 +1,7 @@
+fn load() -> Result[int, str] {
+    return err("disk on fire")
+}
+print("before")
+let v = load().expect("config is required")
+print("not reached {v}")
+// panic: config is required: disk on fire

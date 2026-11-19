@@ -1,0 +1,6 @@
+fn main() -> Result[()] {
+    print("starting")
+    return err("config is broken")
+}
+// expect: starting
+// main-err: config is broken

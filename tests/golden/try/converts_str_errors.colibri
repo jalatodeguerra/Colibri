@@ -1,0 +1,17 @@
+fn low(n: int) -> Result[int, str] {
+    if n > 10 { return err("{n} is too large") }
+    return ok(n)
+}
+fn high(n: int) -> Result[int] {
+    let v = low(n)?
+    return ok(v)
+}
+print(high(3))
+print(high(30))
+match high(30) {
+    err(e) => print("message: {e.message()}")
+    ok(_) => {}
+}
+// expect: ok(3)
+// expect: err(30 is too large)
+// expect: message: 30 is too large

@@ -1,0 +1,21 @@
+fn get(ok_flag: bool) -> Result[int, str] {
+    if ok_flag { return ok(1) }
+    return err("no")
+}
+let a = get(false) or {
+    print("recovering")
+    42
+}
+print(a)
+let b = get(true) or {
+    print("not printed")
+    42
+}
+print(b)
+let none_int: int? = none
+let c = none_int or { 7 }
+print(c)
+// expect: recovering
+// expect: 42
+// expect: 1
+// expect: 7

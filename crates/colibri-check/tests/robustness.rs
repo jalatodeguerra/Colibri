@@ -280,6 +280,34 @@ fn programs_built_from_statements_do_not_panic() {
         "for i in r { print(i) }",
         "let fs = [fn() => 1, fn() => 2]",
         "print(\"abc\"[..2])",
+        "let r1 = res(a)",
+        "let r2 = res(a)?",
+        "let r3 = res(a) or 0",
+        "let r4 = res(a) or res(1) or 2",
+        "let r5 = res(a) or |e| { return 0 }",
+        "let r6 = res(a) or { return 1 }",
+        "let r7 = opt(a)?",
+        "let r8 = opt(a) or { continue }",
+        "let r9 = opt(a) or |e| { break }",
+        "let r10 = res(a).context(\"c\")?",
+        "let r11 = res(a).map(fn(q) => q + 1).and_then(fn(q) => res(q))",
+        "let r12: Result[int] = err(\"boom\")",
+        "let r13: Result[int, str] = ok(a)",
+        "if let err(e) = res(a) { print(e) }",
+        "match res(a) { ok(v) => print(v), err(e) => print(e) }",
+        "print(res(a).is_ok())",
+        "print(res(a).expect(\"m\"))",
+        "print(opt(a).expect(\"m\"))",
+        "let ee = Error.from(\"x\")",
+        "print(Error.from(a).is[int]())",
+        "print(Error.from(a).as[int]())",
+        "print(Error.from(a).message())",
+        "print(Error.from(a).context(\"c\").cause())",
+        "panic(\"p\")",
+        "ok(a)?",
+        "err(a)",
+        "let r14 = res(a)?.nope",
+        "let r15 = (res(a) or 0)?",
     ];
     let mut rng = Rng(0x1234_5678_9abc_def1);
     for _ in 0..3000 {
@@ -288,7 +316,7 @@ fn programs_built_from_statements_do_not_panic() {
             .map(|_| STMTS[(rng.next() % STMTS.len() as u64) as usize])
             .collect();
         let src = format!(
-            "fn f(x: int, b: float = 1) -> int {{\n{}\n}}\nlet g = 1\nfn main() {{\n{}\n}}\n",
+            "fn res(x: int) -> Result[int, str] => ok(x)\nfn opt(x: int) -> int? => some(x)\nfn f(x: int, b: float = 1) -> int {{\n{}\n}}\nlet g = 1\nfn main() {{\n{}\n}}\n",
             body.join("\n"),
             body.iter().rev().cloned().collect::<Vec<_>>().join("\n")
         );
@@ -383,6 +411,12 @@ fn closure_programs_do_not_panic() {
         "print(S.f)",
         "let e: Iter[int] = xs.iter()",
         "let e = xs.iter().enumerate().enumerate()",
+        "let t1 = fn() => ok(1)?",
+        "let t2 = fn() -> Result[int] { let v = ok(1)?\n return ok(v) }",
+        "let t3 = fn(q) => q?",
+        "let t4 = fn() => none or 1",
+        "let t5 = fn() { let v = err(\"x\") or |e| { return }\n print(v) }",
+        "let t6 = xs.map(fn(q) => ok(q)?)",
     ];
     let mut rng = Rng(0x0dd5_1ced_cafe_f00d);
     for _ in 0..4000 {

@@ -7,7 +7,9 @@ use colibri_syntax::{Diagnostic, Span};
 use crate::body::{FnCtx, LocalKind};
 use crate::checker::{Checker, Dep, ValueRef};
 use crate::hir::{GlobalId, Lit, LocalId, Pat, PatKind};
-use crate::types::{OPTION_TYPE, Ty, TypeId, VARIANT_NONE, VARIANT_SOME};
+use crate::types::{
+    OPTION_TYPE, RESULT_TYPE, Ty, TypeId, VARIANT_ERR, VARIANT_NONE, VARIANT_OK, VARIANT_SOME,
+};
 
 /// The names a pattern binds, and how.
 pub(crate) struct PatCx {
@@ -81,10 +83,8 @@ impl FnCtx<'_, '_> {
             }
             AstPat::Some(inner) => self.option_pat(Some(inner), expected, cx, span),
             AstPat::None => self.option_pat(None, expected, cx, span),
-            AstPat::Ok(_) | AstPat::Err(_) => {
-                self.ck.unsupported("a `Result` pattern", span);
-                self.pat(PatKind::Wild, expected, span)
-            }
+            AstPat::Ok(inner) => self.result_pat(true, inner, expected, cx, span),
+            AstPat::Err(inner) => self.result_pat(false, inner, expected, cx, span),
         }
     }
 
@@ -110,7 +110,9 @@ impl FnCtx<'_, '_> {
                 let word = if inner.is_some() { "some(..)" } else { "none" };
                 self.ck.report(
                     Diagnostic::error(
-                        format!("`{word}` is an `Option` pattern, but the value is a `{shown}`"),
+                        format!(
+                            "`{word}` is an `Option` pattern, but the value has type `{shown}`"
+                        ),
                         span,
                     )
                     .with_hint("only optional values (`T?`) can be matched with `some` and `none`"),
@@ -130,6 +132,63 @@ impl FnCtx<'_, '_> {
                 ty: OPTION_TYPE,
                 variant,
                 args,
+            },
+            expected,
+            span,
+        )
+    }
+
+    /// `ok(p)` and `err(p)`: patterns of the prelude `Result` enum.
+    fn result_pat(
+        &mut self,
+        ok: bool,
+        inner: &ast::Pat,
+        expected: &Ty,
+        cx: &mut PatCx,
+        span: Span,
+    ) -> Pat {
+        let known = self.infer.shallow(expected);
+        let args = match &known {
+            Ty::Adt(RESULT_TYPE, a) if a.len() == 2 => Some(a.clone()),
+            Ty::Infer(_) => {
+                let fresh: Vec<Ty> = (0..2)
+                    .map(|_| self.fresh_var(crate::infer::VarKind::General))
+                    .collect();
+                let _ = self
+                    .infer
+                    .unify(&known, &Ty::Adt(RESULT_TYPE, fresh.clone()));
+                Some(fresh)
+            }
+            Ty::Error => None,
+            other => {
+                let shown = self.show(other);
+                let word = if ok { "ok(..)" } else { "err(..)" };
+                self.ck.report(
+                    Diagnostic::error(
+                        format!("`{word}` is a `Result` pattern, but the value has type `{shown}`"),
+                        span,
+                    )
+                    .with_hint("only a `Result` can be matched with `ok` and `err`"),
+                );
+                None
+            }
+        };
+        let Some(args) = args else {
+            // Still check the inner pattern, so its names exist.
+            self.check_pat(inner, &Ty::Error, cx);
+            return self.pat(PatKind::Wild, expected, span);
+        };
+        let (variant, payload) = if ok {
+            (VARIANT_OK, args[0].clone())
+        } else {
+            (VARIANT_ERR, args[1].clone())
+        };
+        let sub = self.check_pat(inner, &payload, cx);
+        self.pat(
+            PatKind::Variant {
+                ty: RESULT_TYPE,
+                variant,
+                args: vec![sub],
             },
             expected,
             span,

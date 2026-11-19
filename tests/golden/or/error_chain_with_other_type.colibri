@@ -1,0 +1,5 @@
+fn a() -> Result[int, str] => ok(1)
+fn b() -> Result[str, str] => ok("x")
+fn main() {
+    let r = a() or b() // error: the right side of `or` is a `Result[str, str]`, but the left side
+}

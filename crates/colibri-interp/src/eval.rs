@@ -873,6 +873,15 @@ impl Interp {
                 }
             },
             Intrinsic::Format(spec) => Value::Str(Rc::from(format_value(&arg, spec))),
+            Intrinsic::Panic | Intrinsic::ErrorIs(_) | Intrinsic::ErrorAs(_) => {
+                match self.error_intrinsic(fiber, intrinsic, &arg, span) {
+                    Ok(v) => v,
+                    Err(ctl) => {
+                        self.release(arg);
+                        return Err(ctl);
+                    }
+                }
+            }
             Intrinsic::Builtin(_) => Value::Unit,
         };
         self.release(arg);

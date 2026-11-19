@@ -1,0 +1,10 @@
+let a: Result[int, str] = ok(1)
+let b: Result[int, str] = err("x")
+print(a.is_ok())
+print(a.is_err())
+print(b.is_ok())
+print(b.is_err())
+// expect: true
+// expect: false
+// expect: false
+// expect: true

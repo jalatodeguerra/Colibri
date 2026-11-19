@@ -1,0 +1,5 @@
+fn find() -> int? => none
+fn main() {
+    let v = find() or |e| { 0 } // error: `or |e|` needs a `Result`: an `Option` has no error to bind
+    print(v)
+}

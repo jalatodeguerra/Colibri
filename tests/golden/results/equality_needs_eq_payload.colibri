@@ -1,0 +1,3 @@
+fn f(a: Result[fn(), str], b: Result[fn(), str]) -> bool {
+    return a == b // error: `==` cannot compare values of type `Result[fn(), str]`
+}

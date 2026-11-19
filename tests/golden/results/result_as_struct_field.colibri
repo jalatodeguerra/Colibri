@@ -1,0 +1,15 @@
+struct Job {
+    name: str
+    outcome: Result[int, str]
+}
+let jobs = [
+    Job { name: "a", outcome: ok(1) },
+    Job { name: "b", outcome: err("failed") },
+]
+for j in jobs {
+    print("{j.name}: {j.outcome}")
+}
+print(jobs[0])
+// expect: a: ok(1)
+// expect: b: err("failed")
+// expect: Job { name: "a", outcome: ok(1) }

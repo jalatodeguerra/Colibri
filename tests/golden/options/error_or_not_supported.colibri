@@ -1,3 +1,0 @@
-fn f(o: int?) -> int {
-    return o or 0 // error: is not supported yet
-}

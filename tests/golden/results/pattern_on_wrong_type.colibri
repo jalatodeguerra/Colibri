@@ -1,0 +1,11 @@
+fn main() {
+    let x = 5
+    match x {
+        ok(v) => print(v) // error: `ok(..)` is a `Result` pattern, but the value has type `int`
+        _ => print("other")
+    }
+    let o: int? = some(1)
+    if let err(e) = o { // error: `err(..)` is a `Result` pattern, but the value has type `int?`
+        print(e)
+    }
+}

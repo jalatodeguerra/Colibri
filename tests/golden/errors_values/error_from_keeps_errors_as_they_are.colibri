@@ -1,0 +1,6 @@
+let e = Error.from("first")
+let again = Error.from(e)
+print(again)
+print(e == again)
+// expect: first
+// expect: true

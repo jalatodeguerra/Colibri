@@ -1,6 +1,4 @@
 fn main() {
     print(1 | 2) // error: bitwise operator is not supported yet
     print(~1) // error: the `~` operator is not supported yet
-    if let ok(x) = 5 { // error: a `Result` pattern is not supported yet
-    }
 }

@@ -1,0 +1,15 @@
+// DESIGN §10.3
+fn read(path: str) -> Result[str, str] {
+    if path.starts_with("ok") { return ok("text of {path}") }
+    return err("no such file")
+}
+let paths = ["ok1", "bad", "ok2", "worse", "ok3"]
+for path in paths {
+    let text = read(path) or { continue }
+    print(text)
+}
+print("finished")
+// expect: text of ok1
+// expect: text of ok2
+// expect: text of ok3
+// expect: finished

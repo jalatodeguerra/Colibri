@@ -1,0 +1,26 @@
+class Res {
+    name: str
+}
+impl Drop for Res {
+    fn drop(self) {
+        print("drop {self.name}")
+    }
+}
+fn fails() -> Result[int, str] => err("failed")
+fn work() -> int {
+    let a = Res { name: "a" }
+    defer print("deferred")
+    let v = fails() or |e| {
+        let tmp = Res { name: "tmp" }
+        print("handling {e}")
+        return -1
+    }
+    return v
+}
+print(work())
+// expect: handling failed
+// expect: drop tmp
+// expect: deferred
+// expect: drop a
+// expect: -1
+// drops: tmp, a

@@ -302,6 +302,9 @@ impl FnCtx<'_, '_> {
         args: Option<&[ast::Arg]>,
         span: Span,
     ) -> Expr {
+        if ty == crate::types::ERROR_TYPE && name.name == "from" {
+            return self.check_error_from(args, span);
+        }
         let owner_args = match owner_args {
             Some(a) => a,
             None => self.fresh_args(ty),
@@ -590,6 +593,14 @@ impl FnCtx<'_, '_> {
         let (id, targs) = match &ty {
             Ty::Error => {
                 loose(self);
+                return self.error_expr(span);
+            }
+            Ty::Adt(id, _) if *id == crate::types::ERROR_TYPE => {
+                loose(self);
+                self.ck.report(
+                    Diagnostic::error("`Error` cannot be built with `{ ... }`", ty_expr.span)
+                        .with_hint("convert a value that implements `IntoError`: `Error.from(value)`, or return `err(value)` from a function that returns `Result[T]`"),
+                );
                 return self.error_expr(span);
             }
             Ty::Adt(id, targs) if !self.ck.types[id.0 as usize].is_enum() => (*id, targs.clone()),

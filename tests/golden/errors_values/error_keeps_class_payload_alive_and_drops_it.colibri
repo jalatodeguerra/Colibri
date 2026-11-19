@@ -1,0 +1,24 @@
+class Handle {
+    name: str
+}
+impl IntoError for Handle {}
+impl Drop for Handle {
+    fn drop(self) {
+        print("closing {self.name}")
+    }
+}
+fn make() -> Error {
+    return Error.from(Handle { name: "socket" })
+}
+fn main() {
+    let e = make()
+    print("have error")
+    let wrapped = e.context("while connecting")
+    print("wrapped")
+    print(wrapped.is[Handle]())
+}
+// expect: have error
+// expect: wrapped
+// expect: true
+// expect: closing socket
+// drops: socket

@@ -1,0 +1,19 @@
+struct Counter {
+    n: int
+}
+impl Counter {
+    fn step(self, by: int) -> Result[Counter, str] {
+        if by == 0 { return err("zero step") }
+        return ok(Counter { n: self.n + by })
+    }
+    fn twice(self, by: int) -> Result[int, str] {
+        let once = self.step(by)?
+        let again = once.step(by)?
+        return ok(again.n)
+    }
+}
+let c = Counter { n: 1 }
+print(c.twice(5))
+print(c.twice(0))
+// expect: ok(11)
+// expect: err("zero step")

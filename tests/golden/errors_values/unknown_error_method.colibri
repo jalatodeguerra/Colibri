@@ -1,0 +1,4 @@
+fn main() {
+    let e = Error.from("x")
+    print(e.code()) // error: `Error` has no method `code`
+}

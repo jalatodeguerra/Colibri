@@ -1,0 +1,4 @@
+fn main() {
+    let e = Error { } // error: `Error` cannot be built with `{ ... }`
+    let e2 = Error.new("x") // error: `Error` has no function or variant `new`
+}

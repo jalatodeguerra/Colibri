@@ -1,0 +1,15 @@
+let a: Result[int, str] = ok(1)
+let b: Result[int, str] = ok(1)
+let c: Result[int, str] = ok(2)
+let d: Result[int, str] = err("x")
+print(a == b)
+print(a == c)
+print(a != d)
+print(d == err("x"))
+let e: Result[List[int], str] = ok([1, 2])
+print(e == ok([1, 2]))
+// expect: true
+// expect: false
+// expect: true
+// expect: true
+// expect: true

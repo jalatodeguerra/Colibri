@@ -37,6 +37,11 @@ pub(crate) trait Overrides {
     fn clone_value(&mut self, _v: &Value) -> Answer<Value> {
         None
     }
+    /// The message of the root of an `Error`: the user's `IntoError.message`, run on the kept
+    /// value (`None`: use its `Show`).
+    fn error_message(&mut self, _value: &Value, _impl_id: i64) -> Answer<String> {
+        None
+    }
 }
 
 /// No user-written implementations.

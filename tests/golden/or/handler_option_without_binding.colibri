@@ -1,0 +1,12 @@
+fn find(n: int) -> str? {
+    if n == 1 { return some("one") }
+    return none
+}
+fn describe(n: int) -> str {
+    let name = find(n) or { return "unknown" }
+    return "found {name}"
+}
+print(describe(1))
+print(describe(2))
+// expect: found one
+// expect: unknown

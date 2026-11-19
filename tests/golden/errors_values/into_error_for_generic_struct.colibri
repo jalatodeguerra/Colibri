@@ -1,0 +1,9 @@
+struct Wrapped[T] {
+    inner: T
+}
+impl[T] IntoError for Wrapped[T] {}
+let e = Error.from(Wrapped { inner: 5 })
+print(e)
+print(e.is[Wrapped[int]]())
+// expect: Wrapped { inner: 5 }
+// expect: true

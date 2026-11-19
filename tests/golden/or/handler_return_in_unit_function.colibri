@@ -1,0 +1,9 @@
+fn load_config() -> Result[int, str] => err("no config")
+fn start() {
+    let cfg = load_config() or |e| { print("bad config: {e}"); return }
+    print("running with {cfg}")
+}
+start()
+print("done")
+// expect: bad config: no config
+// expect: done

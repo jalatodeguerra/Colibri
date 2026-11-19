@@ -1,0 +1,36 @@
+fn cache_get(k: int) -> int? {
+    print("cache {k}")
+    if k == 1 { return some(100) }
+    return none
+}
+fn disk_load(k: int) -> Result[int, str] {
+    print("disk {k}")
+    if k == 2 { return ok(200) }
+    return err("not on disk")
+}
+fn fetch(k: int) -> Result[int, str] {
+    print("fetch {k}")
+    if k == 3 { return ok(300) }
+    return err("offline")
+}
+fn lookup(k: int) -> Result[int, str] {
+    let v = cache_get(k) or disk_load(k) or fetch(k)?
+    return ok(v)
+}
+print(lookup(1))
+print(lookup(2))
+print(lookup(3))
+print(lookup(4))
+// expect: cache 1
+// expect: ok(100)
+// expect: cache 2
+// expect: disk 2
+// expect: ok(200)
+// expect: cache 3
+// expect: disk 3
+// expect: fetch 3
+// expect: ok(300)
+// expect: cache 4
+// expect: disk 4
+// expect: fetch 4
+// expect: err("offline")

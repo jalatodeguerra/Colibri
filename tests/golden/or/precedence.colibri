@@ -1,0 +1,26 @@
+fn get(ok_flag: bool) -> Result[int, str] {
+    if ok_flag { return ok(1) }
+    return err("no")
+}
+fn flag(ok_flag: bool) -> Result[bool, str] {
+    if ok_flag { return ok(true) }
+    return err("no")
+}
+// `or` binds looser than every binary operator, so the whole right side is the fallback.
+print(get(false) or 1 + 2 * 3)
+print(flag(false) or 2 < 3 || false == false)
+let n = get(false) or 10 - 4
+print(n)
+// ...and tighter than assignment.
+var x = 0
+x = get(false) or 5
+x += get(false) or 5
+print(x)
+// `?` and calls bind tighter than `or`.
+fn id(r: Result[int, str]) -> Result[int, str] => r
+print(id(get(false)) or 3)
+// expect: 7
+// expect: true
+// expect: 6
+// expect: 10
+// expect: 3

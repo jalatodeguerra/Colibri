@@ -12,6 +12,7 @@ use std::borrow::Cow;
 use std::rc::Rc;
 
 use colibri_check::hir::{FieldDef, TypeDef, TypeDefKind};
+use colibri_check::types::ERROR_TYPE;
 
 use crate::hooks::{Overrides, Plain, Stop};
 use crate::value::{ClassObj, Value};
@@ -247,6 +248,7 @@ impl Writer<'_> {
                 self.list(&s.snapshot(), depth);
                 self.out.push_str("])");
             }
+            Value::Obj(obj) if obj.ty() == ERROR_TYPE => self.error(obj, depth),
             Value::Obj(obj) => self.object(obj, depth),
             Value::Weak(w) => match w.upgrade() {
                 Some(obj) => {
@@ -277,6 +279,33 @@ impl Writer<'_> {
             self.value(value, depth + 1);
         }
         self.out.push_str(" }");
+    }
+
+    /// An `Error` shows as its whole chain: the context messages, outermost first, then the
+    /// message of the value it keeps, separated by `: ` (DESIGN §10.2).
+    fn error(&mut self, obj: &Rc<ClassObj>, depth: u32) {
+        let mut cur = Rc::clone(obj);
+        loop {
+            match crate::results::link(&cur) {
+                crate::results::Link::Context(message, cause) => {
+                    self.out.push_str(&message);
+                    self.out.push_str(": ");
+                    cur = cause;
+                }
+                crate::results::Link::Root(value, impl_id) => {
+                    match self.ov.error_message(&value, impl_id) {
+                        Some(Ok(text)) => self.out.push_str(&text),
+                        Some(Err(stop)) => self.stop = Some(stop),
+                        // A string is its own message; anything else shows as it would nested.
+                        None => match &value {
+                            Value::Str(s) => self.out.push_str(s),
+                            other => self.value(other, depth + 1),
+                        },
+                    }
+                    return;
+                }
+            }
+        }
     }
 
     /// A class object: its fields like a struct's, unless it is already being written, which

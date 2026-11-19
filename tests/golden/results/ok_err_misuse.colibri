@@ -1,0 +1,6 @@
+fn main() {
+    let a: Result[int, str] = ok() // error: `ok` takes exactly one value, found 0
+    let b: Result[int, str] = ok(1, 2) // error: `ok` takes exactly one value, found 2
+    let d: Result[int, str] = err(msg: "x") // error: `err` does not take a named argument
+    let c = ok // error: `ok` is a constructor, not a value
+}

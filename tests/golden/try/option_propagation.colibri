@@ -1,0 +1,15 @@
+fn lookup(k: int) -> int? {
+    if k > 0 { return some(k * 10) }
+    return none
+}
+fn pair(a: int, b: int) -> (int, int)? {
+    let x = lookup(a)?
+    let y = lookup(b)?
+    return some((x, y))
+}
+print(pair(1, 2))
+print(pair(0, 2))
+print(pair(1, 0))
+// expect: some((10, 20))
+// expect: none
+// expect: none

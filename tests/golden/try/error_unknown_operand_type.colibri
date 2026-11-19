@@ -1,0 +1,4 @@
+fn f() -> Result[int, str] {
+    let v = missing()? // error: unknown name `missing`
+    return ok(v)
+}
