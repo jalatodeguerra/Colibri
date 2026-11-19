@@ -255,9 +255,9 @@ pub(crate) fn render(doc: &Doc, width: usize) -> String {
                     mode: Mode::Flat,
                     doc: d,
                 };
-                if mode == Mode::Flat {
-                    cmds.push(flat);
-                } else if !d.forced() && fits(flat, &cmds, width as isize - column as isize) {
+                if mode == Mode::Flat
+                    || (!d.forced() && fits(flat, &cmds, width as isize - column as isize))
+                {
                     cmds.push(flat);
                 } else {
                     cmds.push(Cmd {
