@@ -1,7 +1,7 @@
 # Benchmarks
 
 Eight small programs, each written in Colibri and in Python, that exercise one thing each. They
-are the benchmark set behind the VM speed target in [DESIGN §17.4](../docs/DESIGN.md): phase 3 is
+are the benchmark set behind the VM speed target: phase 3 is
 finished when the bytecode VM is faster than CPython 3.13 on every one of them (stage 1); within
 1.5× of Lua 5.4 is a later stage, and needs Lua versions of the same programs.
 
