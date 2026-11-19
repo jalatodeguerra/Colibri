@@ -142,6 +142,9 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
         Value::Set(s) => s.len(),
         // A range too long for `to_list` panics there, so the charge stops at the limit
         // (a saturated length would otherwise exhaust the budget first).
+        // Making an iterator over a range is O(1): what it yields is charged as it is
+        // consumed, not here.
+        Value::Range(_) if op == B::Iter => return None,
         Value::Range(r) => {
             let cap = if op == B::RangeToList {
                 crate::strfn::MAX_RANGE_LIST + 1

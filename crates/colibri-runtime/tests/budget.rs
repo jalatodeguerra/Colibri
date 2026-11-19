@@ -225,6 +225,69 @@ fn sorted() -> int {
 }
 
 #[test]
+fn iter_on_a_huge_range_is_cheap_and_what_it_yields_is_charged() {
+    let (mut vm, _) = vm_with(10_000);
+    vm.load_source(
+        "r.colibri",
+        r#"
+fn first() -> int {
+    for x in (0..9223372036854775807).iter() {
+        return x
+    }
+    return -1
+}
+fn consume() -> int {
+    var n = 0
+    for x in (0..9223372036854775807).iter() {
+        n += x
+    }
+    return n
+}
+fn stepping() -> int {
+    var it = (0..9223372036854775807).iter()
+    var n = 0
+    while true {
+        match it.next() {
+            some(x) => n += x,
+            none => break,
+        }
+    }
+    return n
+}
+fn empty_body() {
+    for _ in (0..9223372036854775807).iter() {
+    }
+}
+fn to_list() -> int => (0..9223372036854775807).to_list().len()
+"#,
+    )
+    .unwrap();
+    // Creating the iterator is constant work.
+    let first = vm.get_fn::<(), i64>("first").unwrap();
+    assert_eq!(first.call(&mut vm, ()).unwrap(), 0);
+    assert!(vm.steps_used() < 100, "{}", vm.steps_used());
+    // The elements are charged as they are consumed.
+    let consume = vm.get_fn::<(), i64>("consume").unwrap();
+    assert!(matches!(
+        consume.call(&mut vm, ()),
+        Err(colibri::Error::BudgetExhausted { .. })
+    ));
+    let empty_body = vm.get_fn::<(), ()>("empty_body").unwrap();
+    assert!(matches!(
+        empty_body.call(&mut vm, ()),
+        Err(colibri::Error::BudgetExhausted { .. })
+    ));
+    let stepping = vm.get_fn::<(), i64>("stepping").unwrap();
+    assert!(matches!(
+        stepping.call(&mut vm, ()),
+        Err(colibri::Error::BudgetExhausted { .. })
+    ));
+    // `to_list` is still charged its length up front (or refused as too long).
+    let to_list = vm.get_fn::<(), i64>("to_list").unwrap();
+    assert!(to_list.call(&mut vm, ()).is_err());
+}
+
+#[test]
 fn top_level_code_has_a_budget_too() {
     let (mut vm, out) = vm_with(1_000);
     let err = vm
