@@ -74,6 +74,13 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
             | B::ListMax
             | B::ListSum
             | B::ListJoin
+            | B::ListZip
+            | B::ListFlatMap
+            | B::ListSorted
+            | B::ListSortedBy
+            | B::ListDedup
+            | B::ListChunks
+            | B::ListWindows
             | B::ListSlice
             | B::SetFromList
             | B::RangeToList
@@ -244,6 +251,13 @@ impl Interp {
             | Builtin::ListMax
             | Builtin::ListSum
             | Builtin::ListJoin
+            | Builtin::ListZip
+            | Builtin::ListFlatMap
+            | Builtin::ListSorted
+            | Builtin::ListSortedBy
+            | Builtin::ListDedup
+            | Builtin::ListChunks
+            | Builtin::ListWindows
             | Builtin::ListSlice => {
                 let Some(list) = list_of(&recv) else {
                     return Err(bad(self, fiber));

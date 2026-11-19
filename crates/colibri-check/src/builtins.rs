@@ -124,6 +124,13 @@ const LIST_METHODS: &[&str] = &[
     "max",
     "sum",
     "join",
+    "zip",
+    "flat_map",
+    "sorted",
+    "sorted_by",
+    "dedup",
+    "chunks",
+    "windows",
     "clone",
 ];
 const MAP_METHODS: &[&str] = &[
@@ -327,6 +334,42 @@ fn list_sig(elem: &Ty, name: &str, fresh: Fresh<'_>) -> Option<Sig> {
                 )
             }
         }
+        "sorted" => ordered(Builtin::ListSorted, vec![], list),
+        "sorted_by" => sig(
+            Builtin::ListSortedBy,
+            vec![("f", func(vec![t.clone(), t], Ty::INT))],
+            list,
+        ),
+        "zip" => {
+            let u = fresh();
+            sig(
+                Builtin::ListZip,
+                vec![("other", Ty::List(Box::new(u.clone())))],
+                Ty::List(Box::new(Ty::Tuple(vec![t, u]))),
+            )
+        }
+        "flat_map" => {
+            let u = fresh();
+            sig(
+                Builtin::ListFlatMap,
+                vec![("f", func(vec![t], Ty::List(Box::new(u.clone()))))],
+                Ty::List(Box::new(u)),
+            )
+        }
+        "dedup" => Sig {
+            need: Need::Eq(t.clone()),
+            ..sig(Builtin::ListDedup, vec![], Ty::Unit)
+        },
+        "chunks" => sig(
+            Builtin::ListChunks,
+            vec![("size", Ty::INT)],
+            Ty::List(Box::new(list)),
+        ),
+        "windows" => sig(
+            Builtin::ListWindows,
+            vec![("size", Ty::INT)],
+            Ty::List(Box::new(list)),
+        ),
         "min" => ordered(Builtin::ListMin, vec![], optional(t.clone())),
         "max" => ordered(Builtin::ListMax, vec![], optional(t.clone())),
         "sum" => Sig {

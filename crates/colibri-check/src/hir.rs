@@ -980,6 +980,16 @@ pub enum Builtin {
     ListMax,
     ListSum,
     ListJoin,
+    /// `xs.zip(ys)`: pairs up to the shorter list.
+    ListZip,
+    ListFlatMap,
+    /// `xs.sorted()`: a sorted copy.
+    ListSorted,
+    ListSortedBy,
+    /// `xs.dedup()`: removes consecutive equal elements in place.
+    ListDedup,
+    ListChunks,
+    ListWindows,
     /// `xs[lo..hi]`: `args` are the list, `lo` and `hi` as `int?` (`none` for an open end) and
     /// whether `hi` is inclusive.
     ListSlice,

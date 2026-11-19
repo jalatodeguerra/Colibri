@@ -566,6 +566,13 @@ turns out to matter, it moves into DESIGN.md.
     every element first and then removes, so the removed objects die together, in order, after
     the last closure call. A `nan` in a `sort`, `min` or `max` panics ("these values are not
     ordered").
+    *More list helpers.* `zip(other) -> List[(T, U)]` (stops at the shorter list),
+    `flat_map(f)` (`f` returns a list), `sorted()` (needs `T: Ord`) and `sorted_by(cmp)` (new
+    sorted lists; the receiver is untouched), `dedup()` (needs `==`; removes *consecutive*
+    equal elements **in place** and returns `()`, like `sort` and `retain`),
+    `chunks(n)` and `windows(n) -> List[List[T]]` (`n < 1` panics; the last chunk may be
+    shorter; `windows` of a size above the length is empty). The closure-taking ones and `dedup`
+    hold the iteration guard exactly like `map` and `retain`, so `wait` in a closure works.
     *Slicing.* `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]` and the `..=` forms are a *copy* (a
     new list sharing the element objects, as every list copy does) and not a place: `xs[0..2] = ..`
     is an error. `s[a..b]` on a `str` is a *byte* range and panics when an end is out of range or

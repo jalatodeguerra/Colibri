@@ -1,0 +1,33 @@
+struct P {
+    name: str
+    age: int
+}
+
+fn main() {
+    let xs = [3, 1, 2]
+    let ys = xs.sorted()
+    print(ys)
+    print(xs)
+    print(["pear", "fig", "apple"].sorted())
+    let empty: List[int] = []
+    print(empty.sorted())
+    let ps = [P { name: "a", age: 30 }, P { name: "b", age: 20 }, P { name: "c", age: 30 }]
+    let by_age = ps.sorted_by(fn(l, r) => l.age - r.age)
+    print(by_age.map(fn(p) => p.name))
+    print(ps.map(fn(p) => p.name))
+    print(xs.sorted_by(fn(l, r) => r - l))
+    print(empty.sorted_by(fn(l, r) => l - r))
+    // sorting a sorted copy does not touch the original
+    ys.push(0)
+    print(xs.len())
+}
+
+// expect: [1, 2, 3]
+// expect: [3, 1, 2]
+// expect: ["apple", "fig", "pear"]
+// expect: []
+// expect: ["b", "a", "c"]
+// expect: ["a", "b", "c"]
+// expect: [3, 2, 1]
+// expect: []
+// expect: 3

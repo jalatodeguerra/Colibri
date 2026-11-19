@@ -1,0 +1,7 @@
+struct P {
+    x: int
+}
+
+fn main() {
+    let xs = [P { x: 1 }].sorted() // error: `sorted` needs values that can be ordered with `<`, but `P` cannot
+}

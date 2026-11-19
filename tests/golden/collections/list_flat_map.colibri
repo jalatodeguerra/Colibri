@@ -1,0 +1,13 @@
+fn main() {
+    let xs = [1, 2, 3]
+    print(xs.flat_map(fn(x) => [x, x * 10]))
+    print(xs.flat_map(fn(x) => if x == 2 { [] } else { [x] }))
+    let empty: List[int] = []
+    print(empty.flat_map(fn(x) => [x]))
+    print([1, 3].flat_map(fn(n) => (0..n).to_list()))
+}
+
+// expect: [1, 10, 2, 20, 3, 30]
+// expect: [1, 3]
+// expect: []
+// expect: [0, 0, 1, 2]

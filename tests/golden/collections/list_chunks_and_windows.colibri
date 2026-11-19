@@ -1,0 +1,27 @@
+fn main() {
+    let xs = [1, 2, 3, 4, 5]
+    print(xs.chunks(2))
+    print(xs.chunks(5))
+    print(xs.chunks(9))
+    print(xs.windows(2))
+    print(xs.windows(5))
+    print(xs.windows(6))
+    let empty: List[int] = []
+    print(empty.chunks(3))
+    print(empty.windows(1))
+    let parts = xs.chunks(2)
+    parts[0].push(99)
+    print(xs)
+    print(parts.map(fn(c) => c.sum()))
+}
+
+// expect: [[1, 2], [3, 4], [5]]
+// expect: [[1, 2, 3, 4, 5]]
+// expect: [[1, 2, 3, 4, 5]]
+// expect: [[1, 2], [2, 3], [3, 4], [4, 5]]
+// expect: [[1, 2, 3, 4, 5]]
+// expect: []
+// expect: []
+// expect: []
+// expect: [1, 2, 3, 4, 5]
+// expect: [102, 7, 5]
