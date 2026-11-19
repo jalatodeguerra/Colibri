@@ -1,0 +1,18 @@
+// `join` on the main fiber drives the event loop until the coroutine ends, then returns its value.
+fn slow(n: int) -> int {
+    wait(1.0)
+    print("slow done")
+    return n * 2
+}
+
+fn main() {
+    let c = go slow(21)
+    print("joining")
+    print("{c.join()}")
+    print("{c.join()}")
+}
+
+// expect: joining
+// expect: slow done
+// expect: 42
+// expect: 42

@@ -523,3 +523,99 @@ fn report_git_flag_adds_the_commit_inside_a_repository() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A server that answers every request after `delay`, from the files of `dir`; counts how many
+/// requests were in flight at once. Returns the base URL and the peak.
+fn serve_slowly(
+    dir: PathBuf,
+    delay: Duration,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
+    let port = listener.local_addr().unwrap().port();
+    let active = std::sync::Arc::new(AtomicUsize::new(0));
+    let peak = std::sync::Arc::new(AtomicUsize::new(0));
+    let reported = peak.clone();
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let (dir, active, peak) = (dir.clone(), active.clone(), peak.clone());
+            thread::spawn(move || {
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                let mut data = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !data.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    data.extend_from_slice(&chunk[..n]);
+                }
+                let head = String::from_utf8_lossy(&data).into_owned();
+                let name = head
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split(' ').nth(1))
+                    .and_then(|p| p.strip_prefix("/data/"))
+                    .unwrap_or("")
+                    .to_string();
+                thread::sleep(delay);
+                let body = fs::read(dir.join(name)).unwrap_or_default();
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+                active.fetch_sub(1, Ordering::SeqCst);
+            });
+        }
+    });
+    (format!("http://127.0.0.1:{port}/data"), reported)
+}
+
+/// Finding 4: with a non-blocking `http` the workers' requests overlap. Four items, each answered
+/// after 300 ms, `--concurrency 4`: the items take about 300 ms together, not 4 x 300 ms.
+#[test]
+fn report_requests_overlap_with_concurrency() {
+    let dir = temp_dir("overlap");
+    let north = fs::read_to_string(fixtures().join("north.json")).unwrap();
+    let items = ["a.json", "b.json", "c.json", "d.json"];
+    for item in items {
+        fs::write(dir.join(item), &north).unwrap();
+    }
+    let list: Vec<String> = items.iter().map(|i| format!("\"{i}\"")).collect();
+    fs::write(
+        dir.join("index.json"),
+        format!("{{\"title\": \"Slow\", \"items\": [{}]}}", list.join(", ")),
+    )
+    .unwrap();
+    let delay = Duration::from_millis(300);
+    let (base, peak) = serve_slowly(dir.clone(), delay);
+    let url = format!("{base}/index.json");
+    let mut runs = Vec::new();
+    for concurrency in ["4", "1"] {
+        let started = std::time::Instant::now();
+        let out = run_script(
+            &report(),
+            &[&url, "--now", NOW, "--concurrency", concurrency],
+        );
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        assert!(text(&out.stdout).contains("Sources: 4 read, 0 failed."));
+        runs.push((
+            started.elapsed(),
+            peak.swap(0, std::sync::atomic::Ordering::SeqCst),
+        ));
+    }
+    let (overlapped, peak4) = runs[0];
+    let (serial, peak1) = runs[1];
+    eprintln!(
+        "concurrency 4: {overlapped:?} (peak {peak4}); concurrency 1: {serial:?} (peak {peak1})"
+    );
+    // The index (300 ms) then four items together (about 300 ms), against five in a row.
+    assert_eq!(peak4, 4, "four requests were in flight at once");
+    assert_eq!(peak1, 1);
+    assert!(overlapped < Duration::from_millis(1000), "{overlapped:?}");
+    assert!(serial >= Duration::from_millis(1500), "{serial:?}");
+    let _ = fs::remove_dir_all(&dir);
+}

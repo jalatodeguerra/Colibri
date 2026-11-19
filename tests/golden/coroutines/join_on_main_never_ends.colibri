@@ -1,0 +1,12 @@
+// Waiting for something nothing can finish is an error, not a hang.
+fn waits_for_signal(s: Signal) {
+    wait_for(s)
+}
+
+fn main() {
+    let s = Signal()
+    let c = go waits_for_signal(s)
+    c.join()
+}
+
+// panic: `join` on the main fiber would wait forever

@@ -22,6 +22,9 @@ pub struct Ctx<'a> {
 /// panic with exactly this message.
 pub(crate) struct RaisedPanic(pub String);
 
+/// The payload of the Rust panic [`Ctx::run_async`] starts when its coroutine is cancelled.
+pub(crate) struct RaisedCancel;
+
 /// The context of a conversion between Rust and Colibri values.
 pub type Cx<'a> = Ctx<'a>;
 
@@ -88,6 +91,31 @@ impl<'a> Ctx<'a> {
     /// is printed), so state the host function needs afterwards must be set first.
     pub fn raise(&mut self, message: impl Into<String>) -> ! {
         std::panic::resume_unwind(Box::new(RaisedPanic(message.into())))
+    }
+
+    /// Runs `work` on a background thread and returns its result, **without blocking the
+    /// other coroutines**: inside a coroutine, the coroutine is suspended until the thread has
+    /// finished and the scheduler resumes it on a later tick (the event loop sleeps until a
+    /// timer or a completion, it does not poll). On the main fiber the call runs the event
+    /// loop while it waits, so coroutines keep running. Inside a callback or a `Drop` hook it
+    /// blocks the calling thread.
+    ///
+    /// Use it for blocking work (network, disk, a subprocess) in a host function; `work` must
+    /// not touch the `Vm` or any Colibri value (it is `Send + 'static`). Other coroutines run
+    /// while this call waits, so the host function must not hold a borrow of host state or
+    /// host objects across it (the borrow checker enforces it for [`Ctx::state_mut`]).
+    ///
+    /// If the calling coroutine is cancelled meanwhile, the host function is unwound (its
+    /// destructors run) and the thread's result is discarded; the thread itself runs to the
+    /// end. A panic of `work` becomes a Colibri panic of the caller.
+    pub fn run_async<R: Send + 'static>(&mut self, work: impl FnOnce() -> R + Send + 'static) -> R {
+        match self.interp.await_external(self.fiber, work) {
+            Ok(r) => r,
+            Err(colibri_interp::ExternalError::Cancelled) => {
+                std::panic::resume_unwind(Box::new(RaisedCancel))
+            }
+            Err(colibri_interp::ExternalError::Failed(message)) => self.raise(message),
+        }
     }
 
     /// The type arguments of the call this host function is running for, in the order of the
