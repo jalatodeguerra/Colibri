@@ -614,6 +614,18 @@ impl FnCtx<'_, '_> {
             );
             return self.pat(PatKind::Wild, expected, span);
         }
+        if self.ck.types[id.0 as usize].is_host_class() {
+            wild_fields(self, cx);
+            let tname = self.ck.types[id.0 as usize].name.clone();
+            self.ck.report(
+                Diagnostic::error(
+                    format!("`{tname}` is a host class and has no fields to match"),
+                    name.span,
+                )
+                .with_hint("bind the object to a name instead and call its methods"),
+            );
+            return self.pat(PatKind::Wild, expected, span);
+        }
         let struct_ty = Ty::Adt(id, self.fresh_args(id));
         if self.infer.unify(expected, &struct_ty).is_err() {
             self.report_pat_mismatch(expected, &struct_ty, span);

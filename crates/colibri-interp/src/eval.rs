@@ -953,6 +953,10 @@ impl Interp {
                     }
                 }
             }
+            Intrinsic::HostAlive => match &arg {
+                Value::Host(r) => Value::Bool(self.host_alive(r.index, r.generation)),
+                _ => Value::Bool(false),
+            },
             Intrinsic::Builtin(_) | Intrinsic::Convert { .. } | Intrinsic::NumMethod(..) => {
                 Value::Unit
             }

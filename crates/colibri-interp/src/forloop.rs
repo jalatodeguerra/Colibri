@@ -27,6 +27,7 @@ fn same_object(a: &Value, b: &Value) -> bool {
         (Value::Map(x), Value::Map(y)) => Rc::ptr_eq(x, y),
         (Value::Set(x), Value::Set(y)) => Rc::ptr_eq(x, y),
         (Value::Obj(x), Value::Obj(y)) => Rc::ptr_eq(x, y),
+        (Value::Host(x), Value::Host(y)) => x.index == y.index && x.generation == y.generation,
         _ => false,
     }
 }

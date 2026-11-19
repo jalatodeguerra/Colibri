@@ -8,17 +8,19 @@ file is fixed.
 ## Crates (phase 1)
 
 Only the crates phase 1 needs exist. The others in DESIGN §17.1 (`colibri-ir`, `colibri-vm`,
-`colibri-bind`, `colibri-std`, `colibri-game`, `colibri-lsp`) are created when their phase starts.
+`colibri-std`, `colibri-game`, `colibri-lsp`) are created when their phase starts.
 
 | Crate | Directory | Role |
 |-------|-----------|------|
 | `colibri-syntax` | `crates/colibri-syntax` | Source map, spans, diagnostics type, lexer, parser, AST |
 | `colibri-check` | `crates/colibri-check` | Name resolution, type checking, typed HIR |
 | `colibri-interp` | `crates/colibri-interp` | Tree-walking interpreter over the HIR (the reference engine) |
-| `colibri-runtime` | `crates/colibri-runtime` | Embedding API: `Vm`, `VmBuilder`, `get_fn`, `call`, `register_fn`, capabilities |
+| `colibri-runtime` | `crates/colibri-runtime` | Embedding API: `Vm`, `VmBuilder`, `get_fn`, `call`, `register_fn`, host classes and handles, capabilities |
+| `colibri-bind` | `crates/colibri-bind` | Proc macros behind `colibri::export` (struct, enum, `impl` and function exports) |
 | `colibri-lang` | `crates/colibri-cli` | The `colibri` binary (DESIGN §17.2: published as `colibri-lang`, binary `colibri`) |
 
-Dependency direction: `syntax → check → interp → runtime → cli`. The runtime is the facade
+Dependency direction: `syntax → check → interp → runtime → cli`; `bind` has no dependencies
+but `syn`/`quote` and is re-exported by `runtime`. The runtime is the facade
 hosts use (`use colibri_runtime as colibri;`). When the bytecode VM lands in phase 3 it slots in
 behind the same `Vm` API.
 
@@ -73,7 +75,7 @@ behind the same `Vm` API.
    The numeric tower: sized integers, `f32`, conversions, bitwise operators (slice 6a, built).
 8. Embedding API: `register_fn`, exported host types, generational handles, `.cbi`, capabilities.
    Part A (host functions, `.cbi`, capabilities, instruction budget, callbacks) is built (slice 7a);
-   exported host types are part B.
+   part B (exported host types, generational handles, `colibri-bind`) is built (slice 7b).
 9. Packages and `import`; `colibri check`, minimal LSP, `colibri test`, `colibri fmt`; core std.
 10. Milestone: a small Rust program with its own game loop running gameplay logic from Colibri.
 

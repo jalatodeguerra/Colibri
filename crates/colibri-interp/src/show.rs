@@ -49,6 +49,12 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
         Value::Dyn(d) => show(types, &d.val),
         Value::Fn(_, name) => Cow::Owned(format!("<fn {name}>")),
         Value::Closure(_) => Cow::Borrowed("<closure>"),
+        Value::Host(r) => {
+            let name = types
+                .get(r.ty.0 as usize)
+                .map_or("host object", |t| t.name.as_str());
+            Cow::Owned(format!("<{name} #{}>", r.index))
+        }
         Value::Cell(_) => Cow::Borrowed("<cell>"),
         Value::Iter(_) => Cow::Borrowed("<iterator>"),
         Value::Range(r) => Cow::Owned(format!(
@@ -79,6 +85,7 @@ pub(crate) fn show_with(
             | Value::Map(_)
             | Value::Set(_)
             | Value::Obj(_)
+            | Value::Host(_)
             | Value::Weak(_)
     ) {
         return Ok(show(types, v).into_owned());
@@ -169,8 +176,10 @@ impl Writer<'_> {
             self.out.push_str("...");
             return;
         }
-        if matches!(v, Value::Struct(_) | Value::Enum(_) | Value::Obj(_))
-            && let Some(answer) = self.ov.show(v)
+        if matches!(
+            v,
+            Value::Struct(_) | Value::Enum(_) | Value::Obj(_) | Value::Host(_)
+        ) && let Some(answer) = self.ov.show(v)
         {
             match answer {
                 Ok(text) => self.out.push_str(&text),
@@ -394,6 +403,7 @@ mod tests {
                 name: "Player".into(),
                 span: SP,
                 params: Vec::new(),
+                sendable: true,
                 kind: TypeDefKind::Struct {
                     fields: vec![field("name"), field("hp")],
                 },
@@ -402,6 +412,7 @@ mod tests {
                 name: "Shape".into(),
                 span: SP,
                 params: Vec::new(),
+                sendable: true,
                 kind: TypeDefKind::Enum {
                     variants: vec![
                         variant("Circle", vec![field("radius")], true),

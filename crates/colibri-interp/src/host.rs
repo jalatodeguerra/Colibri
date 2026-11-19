@@ -19,6 +19,9 @@ use crate::value::Value;
 pub enum HostFault {
     /// The host function panicked (or reported a Colibri panic): the message is the panic's.
     Panic(String),
+    /// A panic with exactly this message, which the host layer worded itself (a destroyed or
+    /// busy host object).
+    Message(String),
 }
 
 /// A host function as the interpreter calls it: the arguments are the caller's references,
@@ -66,6 +69,8 @@ pub(crate) struct HostSide {
     /// Which `Vm` this interpreter belongs to.
     pub vm_id: u64,
     pub drop_queue: RootDropQueue,
+    /// The objects scripts hold for the host (EMBEDDING §3).
+    pub heap: crate::hostheap::HostHeap,
 }
 
 impl Interp {
@@ -341,7 +346,9 @@ impl Interp {
         fiber.host_depth -= 1;
         let outcome = match result {
             Ok(v) => Ok(v),
-            Err(HostFault::Panic(message)) => Err(self.panic(fiber, span, message)),
+            Err(HostFault::Panic(message) | HostFault::Message(message)) => {
+                Err(self.panic(fiber, span, message))
+            }
         };
         fiber.frames.pop();
         outcome

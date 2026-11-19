@@ -27,6 +27,7 @@ fn is_container(v: &Value) -> bool {
             | Value::Map(_)
             | Value::Set(_)
             | Value::Obj(_)
+            | Value::Host(_)
             | Value::Dyn(_)
             | Value::Closure(_)
             | Value::Cell(_)
@@ -88,6 +89,7 @@ impl Interp {
                 let mut fields = rc.take_fields();
                 push_children(work, &mut fields);
             }
+            Value::Host(rc) if Rc::strong_count(&rc) == 1 => self.free_host_object(&rc),
             Value::List(rc) if Rc::strong_count(&rc) == 1 => {
                 let mut items = rc.take_all();
                 push_children(work, &mut items);
@@ -190,5 +192,8 @@ impl Interp {
 impl Drop for Interp {
     fn drop(&mut self) {
         self.shutdown();
+        // Roots and module values are gone; what is left in the host heap dies last, in
+        // index order (EMBEDDING §3).
+        self.drop_host_heap();
     }
 }

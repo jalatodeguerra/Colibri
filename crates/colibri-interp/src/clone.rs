@@ -60,7 +60,9 @@ impl Cloner {
             | Value::Closure(_)
             | Value::Cell(_)
             | Value::Range(_)
-            | Value::Iter(_) => v.clone(),
+            | Value::Iter(_)
+            // There is one host object, however many references name it.
+            | Value::Host(_) => v.clone(),
             Value::Struct(s) => Value::strukt(s.ty, self.clone_all(&s.fields, ov)?),
             Value::Tuple(items) => Value::tuple(self.clone_all(items, ov)?),
             Value::Enum(e) => Value::variant(e.ty, e.variant, self.clone_all(&e.payload, ov)?),

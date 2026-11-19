@@ -450,13 +450,59 @@ fn validate(file: &ast::File) -> Result<(), (u32, String)> {
                             "a class here must be a `@host class`".into(),
                         ));
                     }
+                    if !s.fields.is_empty() || !s.generics.is_empty() {
+                        return Err((
+                            item.span.start,
+                            "a `@host class` has no fields and no type parameters".into(),
+                        ));
+                    }
                 }
             },
             ItemKind::Enum(_) => check_attrs(item, &[])?,
             ItemKind::Impl(decl) => {
                 check_attrs(item, &[])?;
+                if decl.interface.is_some() || !decl.generics.is_empty() {
+                    return Err((
+                        item.span.start,
+                        "an interface `impl` block holds the methods of a `@host class` only"
+                            .into(),
+                    ));
+                }
+                let target = match &decl.target.kind {
+                    ast::TypeKind::Named { path, args } if path.len() == 1 && args.is_empty() => {
+                        path[0].name.as_str()
+                    }
+                    _ => "",
+                };
+                if !is_host_class(file, target) {
+                    return Err((
+                        decl.target.span.start,
+                        "an `impl` block in an interface belongs to a `@host class` declared in the same file".into(),
+                    ));
+                }
                 for member in &decl.items {
                     check_attrs(member, &["requires"])?;
+                    let ItemKind::Fn(f) = &member.kind else {
+                        return Err((
+                            member.span.start,
+                            "an interface `impl` block holds methods only".into(),
+                        ));
+                    };
+                    if f.body.is_some() {
+                        return Err((member.span.start, "an interface method has no body".into()));
+                    }
+                    if f.receiver.is_some_and(|r| r.mutable) {
+                        return Err((
+                            member.span.start,
+                            "a method of a host class takes a plain `self`".into(),
+                        ));
+                    }
+                    if f.name.name == "alive" {
+                        return Err((
+                            f.name.span.start,
+                            "`alive` is built into every host class".into(),
+                        ));
+                    }
                 }
             }
             _ => {
@@ -469,6 +515,21 @@ fn validate(file: &ast::File) -> Result<(), (u32, String)> {
         }
     }
     Ok(())
+}
+
+/// Whether `name` is a `@host class` of `file`.
+fn is_host_class(file: &ast::File, name: &str) -> bool {
+    file.items.iter().any(|top| match top {
+        TopLevel::Item(item) => match &item.kind {
+            ItemKind::Struct(s) => {
+                s.kind == ast::StructKind::Class
+                    && s.name.name == name
+                    && item.attrs.iter().any(|a| a.name.name == "host")
+            }
+            _ => false,
+        },
+        TopLevel::Stmt(_) => false,
+    })
 }
 
 fn check_attrs(item: &ast::Item, allowed: &[&str]) -> Result<(), (u32, String)> {

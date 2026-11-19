@@ -305,7 +305,7 @@ impl FnCtx<'_, '_> {
                 self.name_capture(name, inner);
                 continue;
             }
-            if !self.is_class_ty(&info.ty) {
+            if !self.is_class_ty(&info.ty) || self.is_host_class_ty(&info.ty) {
                 let shown = self.show(&info.ty);
                 self.ck.report(
                     Diagnostic::error(

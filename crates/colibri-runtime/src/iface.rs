@@ -23,6 +23,8 @@ pub(crate) struct HostFnEntry {
     pub requires: Option<Cap>,
     /// Its parameter names are placeholders (`a`, `b`, ..), so scripts cannot name arguments.
     pub positional: bool,
+    /// The real parameter names, when the host gave them (then `positional` is false).
+    pub names: Option<Vec<String>>,
 }
 
 /// The canonical text of an interface.
@@ -60,6 +62,33 @@ pub(crate) fn render(reg: &TypeRegistry, fns: &[HostFnEntry]) -> Rendered {
             }
             TypeDecl::Class { name } => {
                 body.push_str(&format!("@host class {name} {{}}\n"));
+                let methods = reg
+                    .classes
+                    .iter()
+                    .find(|c| c.name == *name)
+                    .map(|c| c.methods.as_slice())
+                    .unwrap_or_default();
+                if !methods.is_empty() {
+                    body.push_str(&format!("impl {name} {{\n"));
+                    for m in methods {
+                        let mut params: Vec<String> = Vec::new();
+                        if m.has_self {
+                            params.push("self".to_string());
+                        }
+                        params.extend(
+                            m.params
+                                .iter()
+                                .zip(&m.sig.params)
+                                .map(|(n, t)| format!("{n}: {t}")),
+                        );
+                        body.push_str(&format!("    fn {}({})", m.name, params.join(", ")));
+                        if m.sig.ret != crate::types::TypeDesc::Unit {
+                            body.push_str(&format!(" -> {}", m.sig.ret));
+                        }
+                        body.push('\n');
+                    }
+                    body.push_str("}\n");
+                }
             }
         }
     }
@@ -80,7 +109,10 @@ pub(crate) fn render(reg: &TypeRegistry, fns: &[HostFnEntry]) -> Rendered {
             .params
             .iter()
             .enumerate()
-            .map(|(i, t)| format!("{}: {t}", param_name(i)))
+            .map(|(i, t)| match &f.names {
+                Some(names) => format!("{}: {t}", names[i]),
+                None => format!("{}: {t}", param_name(i)),
+            })
             .collect();
         line.push_str(&format!("fn {}({})", f.name, params.join(", ")));
         if f.sig.ret != crate::types::TypeDesc::Unit {
@@ -188,6 +220,7 @@ mod tests {
             raw: std::rc::Rc::new(|_, _| unreachable!()),
             requires: cap,
             positional: true,
+            names: None,
         }
     }
 

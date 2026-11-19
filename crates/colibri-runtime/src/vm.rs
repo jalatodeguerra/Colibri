@@ -194,6 +194,39 @@ impl Vm {
         name: &str,
         f: F,
     ) -> Result<Registration<'_>, Error> {
+        self.register_inner(name, None, f)
+    }
+
+    /// Like [`Vm::register_fn`], with real parameter names, so a script may pass arguments by
+    /// name (`spawn_enemy(x: 1.0, y: 2.0)`). One name per Rust parameter (not counting a leading
+    /// `&mut Ctx`). `#[colibri::export] fn` generates a call to this.
+    ///
+    /// ```
+    /// use colibri_runtime as colibri;
+    ///
+    /// # fn main() -> Result<(), colibri::Error> {
+    /// let mut vm = colibri::Vm::new();
+    /// vm.register_fn_named("area", ["width", "height"], |w: f64, h: f64| w * h)?;
+    /// assert!(vm.interface_text().contains("fn area(width: float, height: float) -> float"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn register_fn_named<Marker, F: HostFn<Marker>, const N: usize>(
+        &mut self,
+        name: &str,
+        params: [&str; N],
+        f: F,
+    ) -> Result<Registration<'_>, Error> {
+        let names = params.iter().map(ToString::to_string).collect();
+        self.register_inner(name, Some(names), f)
+    }
+
+    fn register_inner<Marker, F: HostFn<Marker>>(
+        &mut self,
+        name: &str,
+        names: Option<Vec<String>>,
+        f: F,
+    ) -> Result<Registration<'_>, Error> {
         let fail = |message: String| Error::Registration {
             name: name.to_string(),
             message,
@@ -215,12 +248,22 @@ impl Vm {
         if let Some(conflict) = registry.conflicts.first() {
             return Err(fail(conflict.clone()));
         }
+        if let Some(names) = &names
+            && names.len() != sig.params.len()
+        {
+            return Err(fail(format!(
+                "the function takes {} parameter(s) but {} name(s) were given",
+                sig.params.len(),
+                names.len()
+            )));
+        }
         self.host_fns.push(HostFnEntry {
             name: name.to_string(),
             sig,
             raw: f.into_raw(),
             requires: None,
-            positional: true,
+            positional: names.is_none(),
+            names,
         });
         let before = std::mem::replace(&mut self.registry, registry);
         // Whatever the names or types, what is printed must read back.
@@ -233,8 +276,9 @@ impl Vm {
         Ok(Registration { vm: self, index })
     }
 
-    /// Describes a struct or enum of the host to the interface without a function that
-    /// mentions it, so scripts can use it as a type.
+    /// Describes a struct, enum or host class to the interface without a function that
+    /// mentions it, so scripts can use it as a type. A [`crate::HostType`] brings its methods
+    /// along; one that a registered signature mentions is registered automatically.
     pub fn register_type<T: crate::IntoColibri>(&mut self) -> Result<(), Error> {
         if self.program.is_some() {
             return Err(Error::AlreadyLoaded);
@@ -247,8 +291,36 @@ impl Vm {
                 message: conflict.clone(),
             });
         }
-        self.registry = registry;
+        let before = std::mem::replace(&mut self.registry, registry);
+        // Whatever the names, what is printed must read back.
+        if let Err(message) = HostEnv::from_text(&self.rendered().text) {
+            self.registry = before;
+            return Err(Error::Registration {
+                name: std::any::type_name::<T>().to_string(),
+                message,
+            });
+        }
         Ok(())
+    }
+
+    pub(crate) fn interp(&self) -> &Interp {
+        &self.interp
+    }
+
+    pub(crate) fn interp_mut(&mut self) -> &mut Interp {
+        &mut self.interp
+    }
+
+    /// The raw function that implements the host function or method `name` (`World.step`),
+    /// and the capability it needs.
+    fn find_raw(&self, name: &str) -> Option<(crate::host::RawHostFn, Option<Cap>)> {
+        if let Some(entry) = self.host_fns.iter().find(|e| e.name == name) {
+            return Some((entry.raw.clone(), entry.requires));
+        }
+        let (class, method) = name.split_once('.')?;
+        let class = self.registry.classes.iter().find(|c| c.name == class)?;
+        let method = class.methods.iter().find(|m| m.name == method)?;
+        Some((method.raw.clone(), None))
     }
 
     pub(crate) fn set_requires(&mut self, index: usize, cap: Cap) {
@@ -329,13 +401,13 @@ impl Vm {
     /// stays a trap: the checker already refused every call of it.
     fn install_host_fns(&mut self, program: &Program) {
         for (i, def) in program.host_fns.iter().enumerate() {
-            let Some(entry) = self.host_fns.iter().find(|e| e.name == def.name) else {
+            let Some((raw, requires)) = self.find_raw(&def.name) else {
                 continue;
             };
-            if entry.requires.is_some_and(|cap| !self.caps.contains(cap)) {
+            if requires.is_some_and(|cap| !self.caps.contains(cap)) {
                 continue;
             }
-            let imp = trampoline(&entry.name, entry.raw.clone());
+            let imp = trampoline(&def.name, raw);
             self.interp.set_host_fn(HostFnId(i as u32), imp);
         }
     }
@@ -552,6 +624,8 @@ fn trampoline(name: &str, raw: crate::host::RawHostFn) -> HostImpl {
                     HostFault::Panic(message) => {
                         HostFault::Panic(format!("host function `{name}`: {message}"))
                     }
+                    // Worded by the host layer, shown as is.
+                    HostFault::Message(message) => HostFault::Message(message),
                 }),
                 Err(payload) => Err(HostFault::Panic(format!(
                     "host function `{name}` panicked: {}",

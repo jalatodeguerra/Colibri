@@ -884,6 +884,116 @@ Decisions the design documents did not fix:
 - `Option[T]` prints as `Option[T]` in `.cbi` text.
 - `Vm::shutdown` unloads the program and bumps the epoch; the `Vm` can load again.
 - A panic raised inside a reentrant call shows the whole active stack including the host frame.
-- Host classes in `.cbi` produce a checker "not supported yet" error until part B.
+- Host classes in `.cbi` produced a checker "not supported yet" error until part B (§10).
 - `colibri_lang::vm_builder()` (used by goldens) grants nothing; the CLI `run` grants all and
   `check` grants all.
+
+## 10. Slice 7b as built: exported host types, generational handles, `colibri-bind`
+
+Part B of PHASE1 item 8: host classes. The checker, the interpreter, the runtime facade and a new
+proc-macro crate each got a piece; the interface text from §9 stays the only thing the checker
+sees.
+
+**Checker.** A `@host class X {}` in the interface text becomes `TypeDefKind::HostClass` (no
+fields; `TypeDef::is_class()` is true for it, so identity `==`/`is`/`Hash` and `Show` come with
+the class rules, and `is_host_class()` singles it out). Host types are declared right after the
+prelude, so their ids are `FIRST_USER_TYPE + index` in every program using the same interface
+(part A). `TypeDef.sendable` is `false` for host classes and `true` otherwise; nothing reads it
+yet (DESIGN §14.1 `task.run`). `impl X { .. }` blocks of the interface go through the ordinary
+`collect_impl` while `collecting_host` is set, so each method is an inherent method
+(`Checker.methods`) whose `FnInfo.host` is set by `add_fn` (functions and methods alike take their
+`HostFnId` there, in text order). A method call lowers to `Callee::Host(id)` with the receiver as
+`args[0]` (`call_fn_method`); `X.new(..)` goes through the existing static path. `&self` and
+`&mut self` are both plain `self` in the text (`validate` refuses `var self`). Names are
+`Class.method` (`HostFnDef.name`, the stub body, stack traces). `alive() -> bool` is an
+`Intrinsic::HostAlive` on every host class (an exported method named `alive` is refused, in the
+runtime and in `validate`). Compile errors with their own text: `.clone()` ("is a host class and
+cannot be cloned"; `Clone` is not derived either, so a `T: Clone` bound refuses it), a struct
+literal, field access, a struct pattern, `impl Drop`, a `weak` field or weak capture. A script may
+add methods of its own to a host class with an ordinary `impl`.
+
+**Interpreter.** `hostheap.rs` holds the slab: `Slot { generation, live, owner, any, name, cell }`
+with `owner = Script(Weak<HostRef>) | Host` and `cell = Rc<HostCell { flag: Cell<isize>, holder,
+obj: Cell<Option<Rc<dyn Any>>> }>`. A script holds `Value::Host(Rc<HostRef { ty, index,
+generation }>)`; two values are equal when index and generation are. Borrowing is an explicit
+flag, never a `RefCell` panic: `0` free, `n` shared guards, `-1` exclusive. An exclusive guard
+*takes the object out of its cell* and puts it back (and resets the flag) when dropped; a shared
+guard clones the `Rc`. `Option<Box<dyn Any>>` from EMBEDDING §3 became `Cell<Option<Rc<dyn
+Any>>>` because two nested shared borrows need two handles to one object and a guard cannot hold
+a reference into the slab while the `Ctx` is used. The cell records the host function that holds
+the borrow (the `Rc<Body>` of the top frame, so no allocation), which is the `World.step` in the
+conflict message. The host-owned objects need no script reference count; script-owned ones are
+freed by `release`: `dismantle` frees the slot when the last `Rc<HostRef>` goes (`strong_count ==
+1`) and the slot is script-owned, traces the type name (the `// drops:` and `trace_drops` label is
+the class name, after the class hook and the fields of whatever held it, as for any object), and
+runs the Rust `Drop` under `catch_unwind`; a panic there is reported like a panic of a `Drop`
+hook (`dropping the host object `X` panicked: ..`). `Interp::drop` shuts the script down (roots,
+then module values in reverse initialisation order, so hooks may still call host methods) and
+then `drop_host_heap` drops what is left in index order; `Vm::shutdown` leaves the heap alone
+because the host's own objects outlive a program. The hot path is unchanged: `is_container` and
+`dismantle` gained one arm.
+
+**Runtime.** `HostType { const NAME; fn describe(&mut TypeBuilder<Self>) }`. `TypeBuilder`
+has `static_fn`, `method` (`&T`) and `method_mut` (`&mut T`); each takes the name, an array with
+one name per parameter, and a closure. The closure forms are `HostFn` for static functions and
+`HostMethod`/`HostMethodMut` for methods, all with an optional leading `&mut Ctx` (before the
+receiver). The raw function a method becomes borrows the receiver (shared or exclusive) for the
+call only, then converts the other arguments, calls, drops the guard and converts the result. A
+Rust panic unwinds through the guard, so the flag is restored. `TypeRegistry::define_host_type`
+declares the class (before describing its methods, so classes may mention each other and
+themselves) and stores the methods; the printed text is `@host class X {}` and, directly after,
+`impl X { .. }`. A type mentioned by a registered signature (`T` by value, `Handle<T>`,
+`Ref<T>`) registers itself the same way. `register_type` and `register_fn` validate by printing
+and parsing, as before, and roll back on failure.
+
+- `Handle<T> { index, generation, vm }`: `Copy`, `!Send`/`!Sync` (a raw-pointer `PhantomData`).
+  The field is `generation` (`gen` is reserved in edition 2024) and `vm` is the `u64` id of the
+  `Vm`. `FromColibri`/`IntoColibri` convert it; `IntoColibri for Option<T>` asks the hidden
+  `IntoColibri::is_live` so a stale `Handle` becomes `none`. A handle of another `Vm` is
+  `Error::StaleHandle` on the host side and a panic if returned to a script.
+- `Ref<T>` (`FromColibri`, shared guard) and `RefMut<T>` (host side only): `Deref`/`DerefMut`
+  over the guard. `Vm`/`Ctx` have `insert`, `remove`, `get`, `get_mut`, `is_alive`.
+  `remove` is `Result<Option<T>, Error>`: `Ok(None)` for a stale handle, `Err(Error::HostObject)`
+  when borrowed ("cannot remove the host object `X`: it is in use by an enclosing call
+  (`X.step`)") or script-owned. `Error::HostObject(message)` is also what `get` returns for a
+  destroyed or busy object; the message is the text a script would see.
+- `impl<T: HostType> IntoColibri for T` (by value: script-owned). There is no `FromColibri for
+  T`: a host object is borrowed (`Ref<T>`) or named (`Handle<T>`), never moved out of a script.
+- Panics with exact text travel as `HostFault::Message` (the trampoline does not prefix it):
+  `` `Enemy` was destroyed by the host `` and ``host object `World` is already in use by an
+  enclosing call (`World.step`)``. A call through the host side with nothing running says
+  ``host object `World` is already borrowed by the host``.
+
+**`colibri-bind`.** A proc-macro crate (`syn`/`quote`/`proc-macro2`), re-exported as
+`colibri::export`. The expansion is plain `proc_macro2` in `expand.rs` and unit-tested on token
+text; every path goes through `colibri_runtime::__private` (the default; `crate = path` renames
+it). `export(value)` on a struct: all fields `pub`, no generics, named fields, a static `Copy`
+assertion spanned at the type, `IntoColibri`/`FromColibri` through `define_struct` and
+`Cx::new_struct`; on a payload-free enum without explicit numbers: `define_enum` and
+`new_variant`. `export` on a struct writes `impl HostType` whose `describe` calls
+`ExportedMethods::describe_methods`, which `#[export] impl X` writes (only `pub fn`s, `&self`,
+`&mut self` or no receiver, no generics/async/unsafe/by-value `self`, plain parameter names;
+a first `&mut Ctx` after the receiver is passed through and not named). A struct with no
+exported impl says so through `#[diagnostic::on_unimplemented]`; `export(no_methods)` is the
+explicit form. `#[export] fn f(..)` keeps the function and writes `mod f { pub fn register(vm) }`
+(a module and a function share a name because they live in different namespaces), which calls
+`Vm::register_fn_named` with the real parameter names, so scripts may name arguments. Errors are
+`compile_error!` at the offending token; the item is emitted next to them.
+
+Decisions the design documents did not fix:
+
+- `Vm::register_fn_named(name, [..], f)` is public: closures keep `a, b, c` and `@positional`,
+  and a named registration is what the macro needs.
+- Methods and static functions of a class cannot require a capability yet (the interface text
+  allows `@requires` on members and the checker enforces it; the registration side has no knob).
+- `vm.insert` does not register the type; `register_type::<T>()` (or any signature that mentions
+  it) must come first, or converting the handle panics with a message that says so.
+- A `Handle<T>` to a script-owned object is allowed (the host may look at it with `get`), but
+  `remove` refuses: the script owns its lifetime.
+- Cloning a collection or a struct that holds host objects shares them (one object, many
+  references); only a direct `.clone()` on the class is an error.
+- Show is `<World #12>`, the number being the slab index; indexes are reused after a free, the
+  generation is not shown.
+- `Callee::Host` methods do not appear in `// drops:` goldens: the golden harness has no host,
+  so the exact messages and the drop order are tested in `crates/colibri-runtime/tests`.
+- A Rust `Drop` that panics is a Colibri panic at the next statement boundary (hook panics).
