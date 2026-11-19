@@ -1,75 +1,465 @@
 # Colibri
 
-Colibri is a statically typed, general-purpose programming language implemented in Rust. It aims
-for syntax as simple as Go or Python (with braces), static types with local inference, errors
-as values, and memory management by plain reference counting. It is meant for tools and
-automation, servers and embedding in Rust programs, among other uses.
+**A small, statically typed language with the feel of a scripting language.**
+
+Colibri is a general-purpose programming language written in Rust. It reads like Go or Python
+with braces, catches type errors before your program runs, and manages memory with plain
+reference counting instead of a garbage collector. Use it for scripts and command-line tools,
+for automation, or as a scripting language embedded in a Rust program.
+
+> **Status: early and pre-release.** The language, standard library and tooling described below
+> work today on a tree-walking interpreter. The bytecode VM that will replace it is the next
+> phase and is not started. Expect breaking changes. Features that are planned but not built
+> are marked **(planned)**.
 
 ```colibri
-struct Task {
-    title: str
-    done: bool = false
+import fs
+
+struct WordCount {
+    word: str
+    count: int
+}
+
+fn count_words(path: str) -> Result[List[WordCount]] {
+    let text = fs.read(path).context("reading {path}")?
+    var counts = Map[str, int]()
+    for word in text.to_lower().split(" ") {
+        let w = word.trim()
+        if w != "" {
+            counts[w] = counts.get_or(w, 0) + 1
+        }
+    }
+    var words = counts.entries().map(fn(e) => WordCount { word: e.0, count: e.1 })
+    words.sort_by_key(fn(w) => -w.count)
+    return ok(words)
 }
 
 fn main() {
-    var tasks = [Task { title: "write docs" }, Task { title: "ship it" }]
-    tasks[0].done = true
-
-    for t in tasks {
-        let mark = if t.done { "x" } else { " " }
-        print("[{mark}] {t.title}")
+    let words = count_words("notes.txt") or |e| {
+        print("error: {e}")
+        return
     }
-
-    let open = tasks.filter(fn(t) => !t.done).len()
-    print("{open} left")
+    for w in words.filter(fn(w) => w.count > 1) {
+        print("{w.word}: {w.count}")
+    }
 }
 ```
 
-## Status
-
-Phases 1 and 2 are done and on `main`: the language core on a tree-walking interpreter over a
-typed HIR, an embedding API for Rust hosts (`colibri-runtime`), a formatter, a language server
-(diagnostics, hover, go to definition, formatting), 15 standard library modules, a test runner,
-packages with path dependencies, coroutines (`go`, `wait`, groups, signals) and C FFI.
-
-Next is phase 3: a bytecode VM that replaces the tree-walker, `colibri build`, a web target and
-thread tasks. None of it is started. Features that are designed but not built are marked in
-[docs/DESIGN.md](docs/DESIGN.md).
-
-## Building and running
-
-```sh
-cargo build --release
-./target/release/colibri run hello.colibri
+```console
+$ echo "the cat and the dog and the bird" > notes.txt
+$ colibri run words.colibri
+the: 3
+and: 2
+$ rm notes.txt && colibri run words.colibri
+error: reading notes.txt: cannot read `notes.txt`: no such file or directory
 ```
 
-While developing, `cargo run -p colibri-lang -- run hello.colibri` does the same. Commands:
+## Highlights
+
+- **Simple syntax.** Braces, no semicolons, string interpolation (`"{name}"`), a small set of
+  keywords and one obvious way to do common things.
+- **Static types with inference.** Function signatures are annotated; inside function bodies
+  types are inferred. The checker reports several errors at once, with source spans and hints.
+- **Errors are values.** `Result[T]`, `?` to propagate, `or` for a fallback or a handler block,
+  `.context(...)` to add a message, `match` to inspect. No exceptions and no null (`T?` is an
+  option type).
+- **Values and references.** `struct`s are value types (assignment copies), `class`es are
+  reference counted and shared, and `weak` references break cycles. Memory is freed as soon as
+  the last reference goes away, in a predictable order.
+- **Generics and interfaces** from the start: `List[T]`, `fn largest[T: Ord](...)`, interfaces
+  with default methods, enums with data and exhaustive `match`.
+- **Coroutines without colored functions.** `go f()` starts a coroutine and `wait(secs)`,
+  `join()`, groups and signals suspend it. There is no `async`/`await`, so any function can wait.
+- **Batteries for scripting.** 15 standard library modules, including files and paths, JSON,
+  regular expressions, subprocesses, command-line arguments, dates and an HTTP client.
+- **One binary for the whole workflow:** run, check, test, format, a REPL, a language server,
+  hot reload and a leak detector.
+- **Embeddable in Rust.** Load scripts, call their functions with typed arguments, and expose
+  Rust functions and types to them through the `colibri-runtime` crate.
+- **C FFI** with `@repr(C)` structs passed by value.
+
+## A short tour
+
+### Structs, classes and enums
+
+```colibri
+// Structs are values: assigning one makes a copy.
+struct Point {
+    x: float
+    y: float
+}
+
+// Classes are reference counted and shared.
+class Counter {
+    n: int = 0
+}
+
+impl Counter {
+    fn bump(self) {
+        self.n += 1
+    }
+}
+
+enum Shape {
+    Circle(r: float)
+    Rect(w: float, h: float)
+}
+
+fn area(s: Shape) -> float {
+    return match s {
+        Circle(r)  => 3.14159 * r * r
+        Rect(w, h) => w * h
+    }
+}
+
+fn main() {
+    var a = Point { x: 1, y: 2 }
+    var b = a
+    b.x = 10
+    print("{a.x} {b.x}") // 1.0 10.0
+
+    let c = Counter {}
+    let same = c
+    same.bump()
+    print(c.n) // 1
+
+    print(area(.Rect(w: 2, h: 3))) // 6.0
+}
+```
+
+### Generics and interfaces
+
+```colibri
+interface Describe {
+    fn describe(self) -> str
+}
+
+struct User {
+    name: str
+    admin: bool = false
+}
+
+impl Describe for User {
+    fn describe(self) -> str {
+        let role = if self.admin { "admin" } else { "user" }
+        return "{self.name} ({role})"
+    }
+}
+
+fn largest[T: Ord](items: List[T]) -> T? {
+    var best = items.first()?
+    for x in items {
+        if x > best {
+            best = x
+        }
+    }
+    return some(best)
+}
+
+fn print_all[T: Describe](items: List[T]) {
+    for item in items {
+        print(item.describe())
+    }
+}
+
+fn main() {
+    print(largest([3, 9, 4]) or 0) // 9
+    print(largest(["pear", "apple"]) or "") // pear
+    print_all([User { name: "ana", admin: true }, User { name: "bo" }])
+}
+```
+
+### Coroutines
+
+```colibri
+fn fetch(name: str, secs: float) -> str {
+    wait(secs) // suspends this coroutine, not the program
+    return "{name} done"
+}
+
+fn main() {
+    let slow = go fetch("slow", 0.2)
+    let fast = go fetch("fast", 0.1)
+    print(fast.join()) // fast done
+    print(slow.join()) // slow done
+}
+```
+
+Both coroutines wait at the same time, so the program takes 0.2 seconds, not 0.3.
+
+### Tests
+
+Tests live next to the code they test and run with `colibri test`:
+
+```colibri
+fn clamp(x: int, lo: int, hi: int) -> int {
+    if x < lo {
+        return lo
+    }
+    if x > hi {
+        return hi
+    }
+    return x
+}
+
+test "clamp keeps values in range" {
+    assert_eq(clamp(5, 0, 10), 5)
+    assert_eq(clamp(-3, 0, 10), 0)
+    assert_eq(clamp(42, 0, 10), 10)
+}
+```
+
+## Install
+
+Colibri is built from source. You need a recent stable [Rust toolchain](https://rustup.rs) (the
+workspace uses edition 2024) and a C compiler, which builds the bundled `libffi`.
+
+```sh
+git clone https://github.com/jalatodeguerra/leo colibri
+cd colibri
+cargo install --path crates/colibri-cli
+colibri --version
+```
+
+This puts the `colibri` binary in `~/.cargo/bin`. To build without installing, run
+`cargo build --release` and use `./target/release/colibri`.
+
+Development and testing happen on Linux. macOS and Windows are intended targets but are not
+tested yet.
+
+## Quick start
+
+```console
+$ colibri new hello
+Created the package in `hello`.
+Try:  cd hello && colibri run && colibri test
+$ cd hello
+$ colibri run
+Hello, world!
+$ colibri test
+running 1 test
+test main::greeting names who it greets ... ok
+
+1 passed, 0 failed
+```
+
+`colibri new` creates a package: a `colibri.toml` manifest and a `main.colibri` with a
+`main` function and a test. A single file also works without a package: `colibri run
+script.colibri`.
+
+Each file is a module and each folder groups its modules. Items are private to their folder
+unless they are marked `pub`: with `pub fn slugify` in `text/slug.colibri`, `main.colibri` writes
+`import text.slug` and calls `slug.slugify(...)`. Other packages on disk are dependencies in
+`colibri.toml`:
+
+```toml
+[package]
+name = "hello"
+
+[dependencies]
+utils = { path = "../utils" }
+```
+
+### The REPL
+
+```console
+$ colibri repl
+colibri> let x = 21
+colibri> x * 2
+= 42 : int
+colibri> fn sq(n: int) -> int => n * n
+colibri> sq(7)
+= 49 : int
+```
+
+`:help` lists the commands, such as `:type <expr>` and `:load <file>`.
+
+## Commands
 
 | Command | What it does |
 |---------|--------------|
-| `colibri run [file or folder]` | run a script, or the package in a folder |
-| `colibri check [file or folder]` | type-check without running; a folder checks every module of the package |
-| `colibri fmt <paths>` | format source files in place |
-| `colibri test [file or folder]` | run the `test "name" { .. }` blocks |
+| `colibri run [file or folder]` | type-check, then run a script or the package in a folder |
+| `colibri run --watch` | run and hot-reload on every save (see below) |
+| `colibri run --leaks[=error]` | report reference cycles that were never freed |
+| `colibri check [file or folder]` | type-check without running; a folder checks every module |
+| `colibri test [file or folder]` | run the `test "name" { ... }` blocks (`--filter`, `--nocapture`, `--leaks`) |
+| `colibri fmt [paths]` | format files in place (`--check` only reports) |
+| `colibri new <name>` | create a package |
 | `colibri repl` | interactive session |
 | `colibri lsp` | language server on stdin and stdout |
-| `colibri new <name>` | create a new package folder with a manifest, a `main.colibri` and a test |
+| `colibri build` | **(planned)** one executable with the VM and the program's bytecode |
+| `colibri build --web` | **(planned)** the same for the browser, through WebAssembly |
 
-Run the test suite with `cargo test --workspace`.
+Arguments after the file go to the program (`os.args()`, or the `args` module for parsing);
+put them after `--` if they start with a dash.
 
-## Documentation
+## Tooling
 
-- [docs/DESIGN.md](docs/DESIGN.md): the language design, with the status of each decision and the
-  open questions
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the implementation is built
-- [docs/EMBEDDING.md](docs/EMBEDDING.md): embedding Colibri in a Rust program
-- [docs/history](docs/history): the finished phase 1 and 2 implementation plans
+### Editor support
+
+`colibri lsp` is a language server with diagnostics as you type (the whole package is checked,
+including unsaved buffers), hover with types and signatures, go to definition, and formatting.
+Completion and rename are **(planned)**. A VS Code extension with syntax highlighting and the
+language client is in [`editors/vscode`](editors/vscode/README.md).
+
+### Hot reload
+
+`colibri run --watch` keeps a program running and applies your edits on save. A change that only
+touches function bodies is patched into the running program; anything else (a new struct field,
+a changed signature) restarts it, and the optional hooks `fn save_state() -> str` and
+`fn restore_state(s: str)` carry state across the restart. Edits are applied while the program
+is waiting, between event-loop ticks.
+
+```colibri
+fn message() -> str => "hello"
+
+fn tick() {
+    while true {
+        print(message())
+        wait(0.1)
+    }
+}
+
+fn main() {
+    go tick() // main returns; the event loop keeps the coroutine running
+}
+```
+
+Run it with `colibri run --watch live.colibri`, change `"hello"` and save: the tool prints
+`colibri: patched 1 function` and the loop prints the new text without restarting.
+
+### Leak detector
+
+Reference counting cannot free a cycle of objects that point at each other. `--leaks` finds
+those cycles when the program ends and tells you where they were allocated:
+
+```colibri
+class Node {
+    name: str
+    next: Node? = none
+}
+
+fn main() {
+    let a = Node { name: "a" }
+    let b = Node { name: "b", next: some(a) }
+    a.next = some(b) // a cycle: reference counting never frees it
+}
+```
+
+```console
+$ colibri run --leaks cycle.colibri
+warning: 1 leaked reference cycle (reference counting never frees a cycle; make one link `weak`)
+  leak: a cycle of 2 objects: Node(name: "a") -> next -> Node(name: "b") -> next -> Node(name: "a")
+    allocated at Node at cycle.colibri:7, Node at cycle.colibri:8
+```
+
+`--leaks=error` also exits with status 1, which is useful in CI, and `colibri test --leaks`
+checks each test.
+
+### Formatter
+
+`colibri fmt` has no options: there is one canonical layout. `colibri fmt --check` lists files
+that would change and exits with 1, for CI.
+
+## Embedding in Rust
+
+The `colibri-runtime` crate runs Colibri inside a Rust program. Register Rust functions, load a
+script, and call its functions with typed arguments:
+
+```rust
+use colibri_runtime as colibri;
+
+fn main() -> Result<(), colibri::Error> {
+    let mut vm = colibri::Vm::builder().build();
+    vm.register_fn("double", |x: i64| x * 2)?;
+    vm.load_source(
+        "main.colibri",
+        r#"fn greet(name: str) -> str => "Hello, {name}! The answer is {double(21)}.""#,
+    )?;
+    let greet = vm.get_fn::<(&str,), String>("greet")?;
+    println!("{}", greet.call(&mut vm, ("Rust",))?); // Hello, Rust! The answer is 42.
+    Ok(())
+}
+```
+
+The runtime also offers `#[colibri::export]` to expose Rust structs and methods as Colibri
+types, generational handles to host objects, callbacks, capabilities that decide what a script
+may touch (files, the network, processes and the environment, foreign functions), an instruction budget per call, hot reload of embedded
+scripts, and `.cbi` interface files so `colibri check` and the editor know about the host's
+functions. [`examples/host_game`](examples/host_game/README.md) is a complete example: a Rust
+program that runs its logic from Colibri scripts. Script panics come back to the host as errors
+and never crash it.
+
+## Standard library
+
+| Module | Contents |
+|--------|----------|
+| `io` | standard input and output |
+| `fs`, `path` | files, folders, walking trees, metadata; path manipulation |
+| `os` | environment variables, arguments, exit |
+| `process` | run subprocesses, with pipes |
+| `args` | command-line argument parsing |
+| `str` | string helpers and parsing |
+| `json` | `json.encode` and typed `json.decode[T]` |
+| `regex` | regular expressions |
+| `http` | a blocking HTTP client that does not block other coroutines |
+| `time`, `datetime` | clocks and sleeping; dates, times and formatting |
+| `math`, `rand` | math functions; random numbers |
+| `vec` | 2D, 3D and 4D vector types |
+
+`List`, `Map`, `Set` and `StrBuilder` are built in. A Rust program that embeds Colibri decides
+whether its scripts get the standard library (the `colibri-std` crate) and which capabilities
+they have.
+
+## Status and roadmap
+
+**Done** (on `main`):
+
+- The language core: structs, classes, enums, `match`, generics, interfaces, closures,
+  `Result`/`Option` error handling, modules and packages, `weak` references.
+- A tree-walking interpreter over a typed intermediate representation, with a deterministic
+  drop order.
+- The embedding API, the C FFI, coroutines, the 15 std modules above.
+- Tooling: `run`, `check`, `test`, `fmt`, `new`, `repl`, `lsp`, hot reload and the leak detector.
+
+**Next:**
+
+- Arithmetic operator interfaces (`Add`, `Sub`, `Mul`, `Neg`), so that vector types can move out
+  of the core into a library.
+- A shared runtime core, then the **bytecode VM**, which becomes the engine behind `colibri run`,
+  embedding and hot reload. The interpreter is retired once the VM passes every test. The first
+  speed goal is to beat CPython 3.13 on every program in [`benchmarks/`](benchmarks/README.md);
+  the interpreter is about 4 to 10 times slower than CPython today.
+- **(planned)** `colibri build` for single-file executables and `colibri build --web` for the
+  browser.
+- **(planned)** Thread tasks with channels, a debugger (DAP) and a profiler.
+- **(planned)** Using Rust crates from Colibri through generated bindings.
+
+**Not planned:** a JIT, exceptions, inheritance, macros, `async`/`await` and a package registry
+in v1.
 
 ## Examples
 
-- [examples/scripts](examples/scripts/README.md): a file organiser and a JSON/HTTP report
-  generator, written in Colibri
-- [examples/host_game](examples/host_game/README.md): a Rust program that drives its logic from
-  Colibri scripts, as an embedding example
-- [benchmarks](benchmarks/README.md): eight small programs in Colibri and Python, and the
-  baseline the bytecode VM has to beat
+- [`examples/scripts`](examples/scripts/README.md): two real automation programs, a file
+  organiser and a JSON/HTTP report generator.
+- [`examples/host_game`](examples/host_game/README.md): a Rust host program driven by Colibri
+  scripts.
+- [`benchmarks`](benchmarks/README.md): eight small programs in Colibri and Python, with the
+  current timings.
+
+## Contributing
+
+```sh
+cargo test --workspace                                 # unit, golden and integration tests
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Most language behaviour is pinned by golden tests in `tests/golden`: each `.colibri` file lists
+its expected output (`// expect:`), diagnostics (`// error:`) or drop order (`// drops:`).
+
+## License
+
+Dual-licensed under the [MIT license](https://opensource.org/licenses/MIT) or the
+[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), at your option, as declared
+in `Cargo.toml`.
