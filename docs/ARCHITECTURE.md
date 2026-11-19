@@ -1629,6 +1629,9 @@ in a golden; the CLI grants everything).
 - Timeout: 30 s for a whole request by default; `http.set_timeout(s)` changes it for the rest of
   the program (`0` is none, negative or non-finite panics). The setting lives in a state of its
   own in the `Vm`, not in `StdConfig`.
+- Every request goes through one process-wide `ureq::Agent` (`OnceLock`), so connections to a
+  host are kept alive and reused; the timeout is set on each request, not on the agent
+  (test `requests_to_one_host_reuse_the_connection`).
 - ~~A call blocks the whole `Vm`, coroutines included~~ **Superseded by §22**: the request runs
   on a background thread and only the calling coroutine waits.
 - Tests: `crates/colibri-std/tests/http.rs` starts a hand-written HTTP/1.1 server on
