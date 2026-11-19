@@ -1,0 +1,10 @@
+class T { name: str }
+
+fn main() {
+    let a = T { name: "first" }
+    let a = T { name: "second" } // warning: shadows
+    print(a.name)
+}
+
+// expect: second
+// drops: second, first

@@ -1,18 +1,21 @@
 //! Runtime values (ARCHITECTURE §3).
 //!
-//! Only the variants the language slice needs exist. The rest of the architecture's `Value`
-//! (collections, class objects, closures, host handles) joins this enum as those features
-//! land. Strings, structs, tuples and enums are reference counted, so copying a value is a
-//! pointer bump; a write goes through `Rc::make_mut`, which copies only when the value is
-//! shared. That is exact value semantics (DESIGN §7.1), not an accidental copy.
+//! The variants the language needs so far exist; closures and host handles join this enum
+//! as those features land. Strings, structs, tuples and enums are reference counted, so
+//! copying a value is a pointer bump; a write goes through `Rc::make_mut`, which copies only
+//! when the value is shared. That is exact value semantics (DESIGN §7.1), not an accidental
+//! copy. Lists, maps, sets and class objects are reference types (DESIGN §5.3, §7.2): copying
+//! the value shares the object, and equality of the `Rc` is identity.
 
 use std::cell::Cell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use colibri_check::types::TypeId;
 
+pub use crate::heap::{ClassObj, ListObj, MapObj, SetObj};
+
 /// A Colibri value.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Value {
     Unit,
     Bool(bool),
@@ -25,6 +28,37 @@ pub enum Value {
     Tuple(Rc<[Value]>),
     /// Enums are immutable (a payload is not a place), so sharing is unobservable.
     Enum(Rc<EnumVal>),
+    List(Rc<ListObj>),
+    Map(Rc<MapObj>),
+    Set(Rc<SetObj>),
+    /// A class object (reference type).
+    Obj(Rc<ClassObj>),
+    /// The content of a `weak` class field; an empty `Weak` stands for a cleared reference.
+    Weak(Weak<ClassObj>),
+}
+
+impl PartialEq for Value {
+    /// Scalars, strings, structs, tuples and enums by content; reference types and weak
+    /// references by identity. (Colibri's own `==` is [`crate::values_equal`].)
+    fn eq(&self, other: &Value) -> bool {
+        match (self, other) {
+            (Value::Unit, Value::Unit) => true,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Char(a), Value::Char(b)) => a == b,
+            (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::Struct(a), Value::Struct(b)) => a == b,
+            (Value::Tuple(a), Value::Tuple(b)) => a == b,
+            (Value::Enum(a), Value::Enum(b)) => a == b,
+            (Value::List(a), Value::List(b)) => Rc::ptr_eq(a, b),
+            (Value::Map(a), Value::Map(b)) => Rc::ptr_eq(a, b),
+            (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
+            (Value::Obj(a), Value::Obj(b)) => Rc::ptr_eq(a, b),
+            (Value::Weak(a), Value::Weak(b)) => Weak::ptr_eq(a, b),
+            _ => false,
+        }
+    }
 }
 
 /// A struct value: its type and its fields in declaration order.
@@ -64,6 +98,19 @@ impl Value {
             variant,
             payload: payload.into_boxed_slice(),
         }))
+    }
+
+    pub fn list(items: Vec<Value>) -> Value {
+        Value::List(ListObj::new(items))
+    }
+
+    /// The prelude `Option`: `none`, or `some(v)`.
+    pub fn option(inner: Option<Value>) -> Value {
+        use colibri_check::types::{OPTION_TYPE, VARIANT_NONE, VARIANT_SOME};
+        match inner {
+            Some(v) => Value::variant(OPTION_TYPE, VARIANT_SOME, vec![v]),
+            None => Value::variant(OPTION_TYPE, VARIANT_NONE, Vec::new()),
+        }
     }
 
     /// Whether the value owns other values.

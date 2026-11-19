@@ -1,0 +1,20 @@
+fn main() {
+    let xs = [1, 2, 3]
+    print(xs)
+    let names = ["a", "b"]
+    print(names)
+    let empty: List[int] = []
+    print(empty)
+    let nested = [[1], [2, 3], []]
+    print(nested)
+    let chars = ['x', 'y']
+    print(chars)
+    print("xs = {xs}")
+}
+
+// expect: [1, 2, 3]
+// expect: ["a", "b"]
+// expect: []
+// expect: [[1], [2, 3], []]
+// expect: ['x', 'y']
+// expect: xs = [1, 2, 3]

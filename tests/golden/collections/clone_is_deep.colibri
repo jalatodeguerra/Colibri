@@ -1,0 +1,26 @@
+fn main() {
+    let a = [[1, 2], [3]]
+    let b = a.clone()
+    b[0].push(99)
+    print(a)
+    print(b)
+    print(a == b)
+    let m = {"k": [1]}
+    let n = m.clone()
+    n["k"].push(2)
+    print(m)
+    print(n)
+    let s = Set([1])
+    let t = s.clone()
+    t.add(2)
+    print(s)
+    print(t)
+}
+
+// expect: [[1, 2], [3]]
+// expect: [[1, 2, 99], [3]]
+// expect: false
+// expect: {"k": [1]}
+// expect: {"k": [1, 2]}
+// expect: Set([1])
+// expect: Set([1, 2])

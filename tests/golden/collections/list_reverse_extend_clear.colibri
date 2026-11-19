@@ -1,0 +1,16 @@
+fn main() {
+    var xs = [1, 2, 3]
+    xs.reverse()
+    print(xs)
+    xs.extend([7, 8])
+    print(xs)
+    xs.extend(xs)
+    print(xs.len())
+    xs.clear()
+    print(xs)
+}
+
+// expect: [3, 2, 1]
+// expect: [3, 2, 1, 7, 8]
+// expect: 10
+// expect: []

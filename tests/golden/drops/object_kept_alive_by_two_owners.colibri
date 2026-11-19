@@ -1,0 +1,13 @@
+class T { name: str }
+
+fn main() {
+    var xs = [T { name: "a" }]
+    let kept = xs[0]
+    xs.clear()
+    print("list cleared, object lives")
+    print(kept.name)
+}
+
+// expect: list cleared, object lives
+// expect: a
+// drops: a

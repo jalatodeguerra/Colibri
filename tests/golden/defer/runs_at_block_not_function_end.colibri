@@ -1,0 +1,11 @@
+fn main() {
+    {
+        defer print("inner defer")
+        print("inner body")
+    }
+    print("outer body")
+}
+
+// expect: inner body
+// expect: inner defer
+// expect: outer body

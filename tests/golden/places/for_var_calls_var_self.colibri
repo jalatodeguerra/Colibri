@@ -1,0 +1,16 @@
+struct E { hp: int }
+impl E {
+    fn hurt(var self, n: int) {
+        self.hp -= n
+    }
+}
+
+fn main() {
+    var es = [E { hp: 10 }, E { hp: 20 }]
+    for var e in es {
+        e.hurt(3)
+    }
+    print(es)
+}
+
+// expect: [E { hp: 7 }, E { hp: 17 }]

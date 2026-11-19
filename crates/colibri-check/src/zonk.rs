@@ -3,20 +3,30 @@
 
 use colibri_syntax::{Diagnostic, Span};
 
+use crate::derive::unhashable_key;
 use crate::hir::{
-    Anchor, Arg, BinOp, Block, Expr, ExprKind, Lit, LocalInfo, Num, Operand, Pat, PatKind, Place,
-    Stmt, StmtKind, UnOp,
+    Anchor, Arg, BinOp, Block, Expr, ExprKind, ForBinding, ForSource, Lit, LocalInfo, Num, Operand,
+    Pat, PatKind, Place, Stmt, StmtKind, TypeDef, UnOp,
 };
 use crate::infer::InferCtx;
 use crate::types::{IntTy, Ty};
 
 pub(crate) fn zonk_body(
     infer: &mut InferCtx,
+    types: &[TypeDef],
     block: &mut Block,
     locals: &mut [LocalInfo],
     diags: &mut Vec<Diagnostic>,
+    had_errors: bool,
 ) {
-    let mut z = Zonker { infer, diags };
+    let mut z = Zonker {
+        infer,
+        types,
+        diags,
+        reported: Vec::new(),
+        reported_unresolved: false,
+        had_errors,
+    };
     for local in locals {
         z.ty(&mut local.ty, local.span);
     }
@@ -25,7 +35,15 @@ pub(crate) fn zonk_body(
 
 struct Zonker<'a> {
     infer: &'a mut InferCtx,
+    types: &'a [TypeDef],
     diags: &'a mut Vec<Diagnostic>,
+    /// Unhashable key types already reported, so one mistake reports once.
+    reported: Vec<Ty>,
+    /// Whether an unresolved type was already reported in this body: the others are the same
+    /// mistake seen again (the binding, the literal, each use).
+    reported_unresolved: bool,
+    /// The body already has an error, which probably explains any open type or bad key.
+    had_errors: bool,
 }
 
 /// The arithmetic kind of a resolved operand type.
@@ -46,7 +64,9 @@ fn operand_of(ty: &Ty) -> Operand {
         Ty::Char => Operand::Char,
         Ty::Str => Operand::Str,
         Ty::Unit => Operand::Unit,
-        Ty::Tuple(_) | Ty::Adt(..) => Operand::Structural,
+        Ty::Tuple(_) | Ty::Adt(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Option(_) => {
+            Operand::Structural
+        }
         _ => Operand::Int(IntTy::I64),
     }
 }
@@ -59,17 +79,58 @@ fn resolve_binop(op: BinOp, operand: &Ty) -> BinOp {
         BinOp::Arith(a, _) => BinOp::Arith(a, num_of(operand)),
         BinOp::Concat => BinOp::Concat,
         BinOp::Cmp(c, _) => BinOp::Cmp(c, operand_of(operand)),
+        BinOp::Is => BinOp::Is,
     }
 }
 
 impl Zonker<'_> {
     fn ty(&mut self, ty: &mut Ty, span: Span) {
         let (resolved, unresolved) = self.infer.finalize(ty);
-        if unresolved {
+        if unresolved && !self.reported_unresolved && !self.had_errors {
+            self.reported_unresolved = true;
+            let (message, hint) = match &resolved {
+                Ty::List(_) => (
+                    "cannot infer the element type of this list",
+                    "add a type annotation, for example `let xs: List[int] = []`",
+                ),
+                Ty::Map(..) => (
+                    "cannot infer the key and value types of this map",
+                    "add a type annotation, for example `let m: Map[str, int] = {:}`",
+                ),
+                Ty::Set(_) => (
+                    "cannot infer the element type of this set",
+                    "add a type annotation, for example `let s: Set[int] = Set([])`",
+                ),
+                Ty::Option(_) => (
+                    "cannot infer the type of this optional value",
+                    "add a type annotation, for example `let x: int? = none`",
+                ),
+                _ => (
+                    "cannot infer the type of this expression",
+                    "add a type annotation",
+                ),
+            };
+            self.diags
+                .push(Diagnostic::error(message, span).with_hint(hint));
+        }
+        // A key type that only became known through inference is checked here; written
+        // types and literals were checked where they appear.
+        if !self.had_errors
+            && let Some((what, key)) = unhashable_key(self.types, &resolved)
+            && !self.reported.contains(&key)
+        {
+            let shown = key.render(self.types);
+            let role = if what == "Map" {
+                "a `Map` key"
+            } else {
+                "a `Set` element"
+            };
             self.diags.push(
-                Diagnostic::error("cannot infer the type of this expression", span)
-                    .with_hint("add a type annotation"),
+                Diagnostic::error(format!("`{shown}` cannot be used as {role}"), span).with_hint(
+                    "floats and mutable collections are not hashable; use an integer, a string, a tuple or a struct instead",
+                ),
             );
+            self.reported.push(key);
         }
         *ty = resolved;
     }
@@ -105,6 +166,13 @@ impl Zonker<'_> {
                 }
             }
             StmtKind::Break(_) | StmtKind::Continue(_) => {}
+            StmtKind::Defer(inner) => {
+                // The deferred statement is shared by the cleanup list at runtime, but is
+                // still uniquely owned here.
+                if let Some(inner) = std::rc::Rc::get_mut(inner) {
+                    self.stmt(inner);
+                }
+            }
         }
     }
 
@@ -130,7 +198,7 @@ impl Zonker<'_> {
         match &mut p.anchor {
             Anchor::Local(_) | Anchor::Global(_) => {}
             Anchor::ClassField(e, _) => self.expr(e),
-            Anchor::ListElem(a, b) | Anchor::MapEntry(a, b) => {
+            Anchor::ListElem(a, b, _) | Anchor::MapEntry(a, b, _) => {
                 self.expr(a);
                 self.expr(b);
             }
@@ -186,13 +254,34 @@ impl Zonker<'_> {
             ExprKind::Block(b) => self.block(b),
             ExprKind::Loop { body, .. } => self.block(body),
             ExprKind::For(f) => {
-                self.expr(&mut f.start);
-                self.expr(&mut f.end);
+                match &mut f.source {
+                    ForSource::Range { start, end, .. } => {
+                        self.expr(start);
+                        self.expr(end);
+                    }
+                    ForSource::List { list: e, .. }
+                    | ForSource::Map(e)
+                    | ForSource::Set(e)
+                    | ForSource::Enumerate(e)
+                    | ForSource::Chars(e) => self.expr(e),
+                }
+                if let ForBinding::Pat(p) = &mut f.binding {
+                    self.pat(p);
+                }
                 self.block(&mut f.body);
             }
             ExprKind::Struct { fields: items, .. }
+            | ExprKind::Object { fields: items, .. }
             | ExprKind::Variant { args: items, .. }
+            | ExprKind::ListLit(items)
             | ExprKind::Tuple(items) => items.iter_mut().for_each(|item| self.expr(item)),
+            ExprKind::MapLit(entries) => {
+                for (k, v) in entries {
+                    self.expr(k);
+                    self.expr(v);
+                }
+            }
+            ExprKind::ToWeak(inner) | ExprKind::FromWeak(inner) => self.expr(inner),
             ExprKind::Project(base, _) => self.expr(base),
             ExprKind::Match { scrutinee, arms } => {
                 self.expr(scrutinee);

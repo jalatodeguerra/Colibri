@@ -1,0 +1,3 @@
+class C {
+    n: weak int // error: `weak` needs a class
+}

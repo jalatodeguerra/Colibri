@@ -1,0 +1,13 @@
+class T { name: str }
+
+let a = T { name: "a" }
+print("script runs")
+let b = T { name: "b" }
+
+fn main() {
+    print("main runs")
+}
+
+// expect: script runs
+// expect: main runs
+// drops: b, a

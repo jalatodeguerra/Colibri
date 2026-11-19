@@ -1,0 +1,19 @@
+fn main() {
+    let xs = [1, 2, 3, 4, 5]
+    for x in xs {
+        if x == 2 {
+            continue
+        }
+        if x == 4 {
+            break
+        }
+        print(x)
+    }
+    // The iteration guard is gone after break: the list can change again.
+    xs.push(6)
+    print(xs.len())
+}
+
+// expect: 1
+// expect: 3
+// expect: 6

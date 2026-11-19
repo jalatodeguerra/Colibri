@@ -24,8 +24,8 @@ keyed by qualified name so they stay stable across hot reload (§16.3).
   enum Anchor {
       Local(LocalId), Global(GlobalId),
       ClassField(Box<Expr>, FieldIdx),   // Expr yields the object
-      ListElem(Box<Expr>, Box<Expr>),    // list, index
-      MapEntry(Box<Expr>, Box<Expr>),    // map, key
+      ListElem(Box<Expr>, Box<Expr>, String),  // list, index, source text of the list (guard messages)
+      MapEntry(Box<Expr>, Box<Expr>, String),  // map, key, source text of the map
   }
   enum ValueProj { Field(FieldIdx), TupleIdx(u32) }   // struct and tuple steps only
   ```
@@ -111,6 +111,25 @@ the IR); `Assign { place, op: Option<BinOp>, rhs }` (place operands evaluate exa
 `For { binding, var, kind: Range | List | Map | Set | Iter, body }` (guard, fresh binding per
 iteration, write-back); `Defer`, `Go`, labelled `Break`/`Continue`.
 
+- **Slice 3 as built (classes, `Option`, `weak`, collections, places, drops, `defer`).**
+  `TypeDefKind` gains `Class { fields }`, and `FieldDef.weak` marks a `weak T` field (its `ty` is
+  `T`; reads give `T?`). `Program.types[0]` is the prelude `Option` enum (`OPTION_TYPE`; variants
+  `none` = 0, `some` = 1, payload `Ty::Param(0)`), so `Ty::Option(T)` values, patterns, `Show`,
+  `==` and exhaustiveness all use the ordinary enum machinery; user types start at index 1.
+  New expression nodes: `Object { ty, fields }` (a class literal), `ListLit`, `MapLit`,
+  `ToWeak` (a `T` or `T?` stored in a weak field or literal) and `FromWeak` (a weak field read as
+  `T?`). An omitted weak field is `ToWeak(none)`. `Anchor::ListElem` and `MapEntry` carry the
+  source text of the collection (the guard message needs it), `Anchor::ClassField` the object
+  expression. `ForLoop { id, binding: ForBinding, source: ForSource, places, body }` replaces the
+  range-only form: `ForSource` is `Range`, `List { list, name }`, `Map`, `Set`, `Enumerate` or
+  `Chars`, and `ForBinding` is `None`, `Local` or `Pat` (a tuple pattern for `(k, v)`).
+  `StmtKind::Defer(Rc<Stmt>)` registers a statement on the cleanup list. Methods and
+  constructors of `str`, `List`, `Map` and `Set`, `Set(..)` and `x.clone()` are
+  `Callee::Intrinsic(Intrinsic::Builtin(Builtin::..))`: the checker types them through the real
+  unifier (a method signature is a table entry over the receiver's type arguments, so
+  `xs.push(1)` on a `List[?T]` fixes `?T`), and the engine sees only the tag. `BinOp::Is` is
+  identity; `Operand::Structural` now covers `Option` and the collections.
+
 ## 2. Evaluator and future coroutines
 
 The interpreter is a **recursive evaluator**. In phase 2 each coroutine runs it on its own
@@ -124,12 +143,23 @@ rules from the start:
    and `temps: Vec<Value>` (slice 1 frames hold `body`, `slots` and the current source `span`,
    which gives stack traces their line numbers; `type_args` and `cleanups` arrive with generics
    and `defer`). Rust locals never own a droppable Colibri value across a nested
-   `eval`. Operands that are not ownership transfers go through one helper, `eval_temp`, which
-   pushes onto `fiber.temps`; the statement end releases down to its watermark in reverse order.
-   This gives a defined drop order and roots that the leak detector and debugger can enumerate.
-3. **One `exit_scope` on every path.** `eval_block` is `let r = run(); self.exit_scope(); r`, so
-   normal exit, `break`, `return`, panic and cancellation run the same defers and drops in the same
-   order (§10.4).
+   `eval` *unless a second reference to it sits on `fiber.temps`*. Operands go through two
+   helpers: `eval_temp` pushes a value and returns its index, and `eval_twin` pushes a clone and
+   returns the value itself (so a Rust local can use it while the temporary stays rooted). The
+   statement end releases down to its watermark in reverse order. This gives a defined drop
+   order and roots that the leak detector and debugger can enumerate. *As built (slice 3):*
+   because a callee leaves the caller's argument temporaries alone, the temps above an operand
+   are not just that operand, so operands are addressed by index or kept as twins, never "the
+   top of the stack".
+3. **One `exit_scope` on every path.** `eval_block` is
+   `let mark = scope_mark(); let r = run(); self.exit_scope(mark, r)`, so normal exit, `break`,
+   `return`, panic and cancellation run the same defers and drops in the same order (§10.4).
+   *As built:* each frame has one LIFO `cleanups: Vec<Cleanup>` (`Slot(local)` or `Defer(stmt)`).
+   Binding a local pushes it and executing a `defer` pushes its statement, so drops and defers
+   interleave in exactly the order they were registered (a local whose `let` never ran is never
+   released). `exit_scope` pops to the scope's mark and folds a panic raised by a cleanup into
+   the result (§6.5). `Block.locals` is no longer what drops locals; it stays as the declaration
+   list for tools.
 4. **Interpreter methods take `&mut Fiber`**; there is no global "current frame".
 5. **Calls look up `fns[FnId] -> Rc<Body>` at call time** and the frame holds the `Rc`. That is all
    function-level patching needs, including "a suspended coroutine keeps running the old body".
@@ -166,12 +196,19 @@ enum Value {
     Dyn(Rc<DynVal>),            // { impl_id, val }
     Fn(FnId), Host(HostHandle), // HostHandle: type, index, generation
 }
-struct ListObj  { items: RefCell<Vec<Value>>, guard: Cell<u32> }
-struct ClassObj { ty: TypeId, fields: RefCell<Box<[Value]>> }
+struct ListObj  { items: RefCell<Vec<Value>>, guard: Rc<Guard> }
+struct ClassObj { ty: TypeId, fields: RefCell<Box<[Value]>>, released: Cell<bool> }
+struct Guard    { iterations: Cell<u32>, places: Cell<u32>, place_name: RefCell<Rc<str>>, what: &'static str }
 ```
 
 Slice 1's `Value` has `Unit`, `Bool`, `Int`, `Float`, `Char` and `Str(Rc<str>)`; the other
-variants join as their features land. Slice 2 adds `Struct`, `Tuple` and `Enum`.
+variants join as their features land. Slice 2 adds `Struct`, `Tuple` and `Enum`. Slice 3 adds
+`List`, `Map`, `Set`, `Obj` and `Weak` (`Weak<ClassObj>`; a dead or empty weak reference reads as
+`none`). `Value`'s `PartialEq` is a Rust-side convenience (reference types by identity); Colibri's
+`==` is `values_equal`. `Map` and `Set` share one self-written insertion-ordered hash map
+(`ordered.rs`: entries in a `Vec<Option<(k, v)>>` with tombstones, a `HashMap<u64, Bucket>` index
+by key hash, structural key equality, compaction when tombstones outnumber live entries), so
+lookup, insert and remove are O(1) and `List` push and index are O(1).
 
 - **Deep values.** A recursive enum can nest as deep as the program builds it, and Rust's
   recursive `Drop`, `Show` and `==` would overflow the native stack. `StructVal` and `EnumVal`
@@ -187,27 +224,41 @@ variants join as their features land. Slice 2 adds `Struct`, `Tuple` and `Enum`.
   and `update(anchor, f)` where `f` runs no Colibri code. Old values are handed back and released
   after the borrow ends, because a release can run `Drop` hooks. Borrow panics are therefore
   impossible, not merely unobserved.
-- **Mutation guard:** `guard: Cell<u32>` on `List`, `Map` and `Set` counts live places and
-  iterations, held by a Rust RAII `GuardToken` (safe, since every exit is an `Err` return). Every
-  structural operation checks `guard == 0` and otherwise panics with the place's `display` name
-  (§11.6).
+- **Mutation guard:** each `List`, `Map` and `Set` has an `Rc<Guard>` counting live iterations and
+  live places, held by a Rust RAII `GuardToken`. The token holds the `Rc<Guard>`, not the
+  collection, so dropping a token can never drop a collection (safe, since every exit is an `Err`
+  return). Every structural operation and every user write to an element checks the guard first
+  and, when it is held, hands its arguments back with a `Violation`; the interpreter turns that
+  into a panic (message formats in §6.28). A write-back through a place is unguarded because the
+  place holds the guard itself.
 - **Drops are explicit.** `interp.release(v)` is called wherever an owned value dies: scope exit,
   temp end, overwritten store, container removal. It maps one-to-one onto the future IR's `dec`.
-  When `v` is the last reference to a class object: run its `Drop` hook, record the trace event,
-  then take the fields out and release them in declaration order. A collection releases its
-  elements in index (or insertion) order. A debug-only `impl Drop for ClassObj` asserts the fields
-  were already taken, catching any path that bypassed `release`.
-- **`// drops:` tracing:** `Heap.trace: Option<Vec<DropEvent>>`, appended when a class object or
-  host handle is destroyed, before its fields. The label is the object's `name: str` field if it
-  has one, else the type name.
+  When `v` is the last reference (`Rc::strong_count == 1`) to a class object: run its `Drop` hook
+  (none exist yet: no interfaces), record the trace event, then take the fields out and release
+  them in declaration order. A collection releases its elements in index (or insertion) order,
+  a struct, tuple or enum its parts in order, so a death is a depth-first pre-order walk. It is
+  done with an explicit worklist, so a million-node chain cannot overflow the native stack. A
+  value that is not the last reference is just dropped (the count falls), which is why returning
+  a binding's value, or storing it, needs no explicit "move": the slot's release only decrements.
+  A debug-only `impl Drop for ClassObj` asserts the fields were already taken (`released`),
+  catching any path that bypassed `release`; no test may trip it. A strong cycle never reaches
+  count 1, so it is never destroyed or traced (the leak detector of §11.5 is not built yet).
+- **`// drops:` tracing:** `Interp.trace: Option<Vec<String>>`, appended when a class object is
+  destroyed, before its fields. The label is the object's `name: str` field if it has one, else
+  the class name. `VmBuilder::trace_drops(bool)` turns it on and `Vm::take_drop_trace()` takes it
+  (both `#[doc(hidden)]`). Module-level values are released after `main` returns, in reverse
+  initialisation order, by `Vm::shutdown` (also run when the `Vm` is dropped, when it loads
+  another program, and after a panic while loading), and that is part of the trace.
 
 ## 4. Places
 
-- **`enemies[i].pos.x += 1`:** evaluate the anchor operands left to right (`enemies`, then `i`),
-  then the right-hand side, then one `heap.update` that bounds-checks, walks the path with
-  `make_mut` and applies the checked operation. No user code runs between read and write
-  (operators are built in during phase 1), so no guard is needed and an overflow leaves the element
-  untouched.
+- **`enemies[i].pos.x += 1`:** evaluate the anchor operands left to right (`enemies`, then `i`)
+  into a `Resolved` anchor whose objects stay on the temps stack, then the right-hand side,
+  then read, combine and write as separate steps; the read and the write each bounds-check, and
+  the write walks the path with `make_mut`. An overflow leaves the element untouched. *As built:*
+  the write is *guarded* (it panics while the collection is iterated or has a live place), even
+  though no user code can run between read and write, because `xs[i] = v` during `for x in xs`
+  is the same mistake as `xs.push(v)` there (§6.2).
 - **`p.step(dt)` on a local:** a plain slot moves its value into the callee's `self` and back on
   every exit; a `Cell` local copies in and out.
 - **`enemies[i].step(dt)`:** resolve and bounds-check the anchor, take a `GuardToken`, copy the
@@ -217,7 +268,10 @@ variants join as their features land. Slice 2 adds `Struct`, `Tuple` and `Enum`.
   map, write back by key.
 - **`for var e in enemies`:** one `GuardToken` for the whole loop (plain `for` takes one too). Per
   iteration a fresh slot gets `items[i].clone()`, the body runs, and the value is written back on
-  every exit from the iteration, skipped when `Rc::ptr_eq` shows it unchanged.
+  every exit from the iteration, skipped when `Rc::ptr_eq` shows it unchanged. *As built:* the
+  loop holds the *place* guard (`for var`) or the *iteration* guard (`for`), the final value of the
+  binding is taken before the iteration's scope exits, scalars (which have no pointer to compare)
+  are always written back, and the source list stays on the temps stack for the whole loop.
 
 ## 5. Embedding boundary
 
@@ -345,7 +399,90 @@ turns out to matter, it moves into DESIGN.md.
     after a pattern error, so one mistake does not produce a second, misleading one. The
     analysis has a step budget (200 000); when it runs out the match is accepted without
     diagnostics rather than stalling the checker.
-22. **`for`.** Only `for x in a..b` and `a..=b` over integers; each end is evaluated once, the
-    binding is immutable and fresh per iteration, and a range anywhere else (or an open-ended
-    one) reports "not supported yet". Methods on built-in types and generic types report the
-    same.
+22. **`for`.** Over `a..b` / `a..=b` (integers; each end evaluated once), a `List`, a `Map`
+    (`(key, value)` tuples, usually destructured: `for (k, v) in m`), a `Set`,
+    `list.enumerate()` (`(index, item)`) and `s.chars()`. The binding is immutable and fresh per
+    iteration; `for var x in list` makes it a place (§6.28). An open-ended range, a range outside
+    a `for`, a `str` iterated directly, and any other iterable report "not supported yet" or a
+    hint. Methods on generic user types report the same.
+23. **`Option`.** `T?` is `Ty::Option(T)`, built in as the prelude enum of §1 (slice 3). `some(x)`
+    is only valid applied; `some` alone is an error with a hint. `none` needs an expected type
+    (from an annotation, a parameter, a return type, a field or the other branch); otherwise it
+    is "cannot infer the type of this optional value". Matching, `if let`, `while let`, `==`,
+    `!=` and `Show` (`some(3)`, `none`, `some("hi")`) work; `?` and `or` still report "not
+    supported yet", and `Option` has no methods yet.
+24. **Classes (DESIGN §7.2).** A class literal is a struct literal (`Node { name: "n" }`), with
+    the same defaults and field rules. Assignment shares. `==` is identity, `is` is identity
+    for classes and collections and an error on anything else (on `str` the hint says to use
+    `==`). A class method's `self` can always change fields (the object is shared), so
+    `var self` on a class is an error with that hint; a field can be assigned through a `let`
+    binding. A class may refer to its own type directly (it is a reference), unlike a struct. `Show` prints like a struct, and an object that is already being printed prints as
+    `Name {...}`, so a cycle terminates. A struct pattern on a class works.
+25. **`weak` (DESIGN §11.5).** Only a field of a class, whose type is a class, may be `weak`
+    (otherwise an error). Reading the field gives `T?` (`some` while the object lives);
+    assigning accepts `T`, `T?` (`none` clears it); a literal may give `T`, `none`, or omit the
+    field, which means `none` (the §7.2 example builds a `root` with no parent); a default is
+    written as `T?`. A weak reference does not keep its target alive, so
+    `Node { parent: Node { .. } }` is `none` at once.
+26. **Collections (DESIGN §5.2, §5.3).** `[a, b]`, `{k: v}` (a repeated key keeps the first
+    position and the last value), `List[T]()`, `Map[K, V]()`, `Set[T]()`, `Set(list)`. `[]` and
+    `{:}` take their type from context (annotation, parameter, field, assignment, later use);
+    with none the error is "cannot infer the element type of this list" with an annotation
+    example, reported once per body and not at all when the body already has another error.
+    List methods: `len is_empty push pop insert remove clear contains index_of first last
+    reverse extend clone get`; Map: `len is_empty get contains_key insert remove keys values
+    clear clone` and `m[k]`, `m[k] = v`; Set: `len is_empty add remove contains clear clone`;
+    `str` has `len` (bytes) and `is_empty`. `pop`, `get`, `first`, `last`, `index_of`, and
+    `Map.get`/`remove` return `Option`; `Set.remove` returns whether it was present;
+    `List.remove` panics out of bounds. `keys` and `values` return new lists. `enumerate()` and
+    `chars()` exist only directly as the iterable of a `for`. Methods that take a closure
+    (`map`, `filter`, ...) and slicing report "not supported yet". `contains` and `index_of`
+    need `==` on the element.
+    Iteration order is insertion order. `==` on collections is structural (a map ignores order);
+    `is` is identity. `Show` is `[1, 2]`, `{"a": 1}`, `{:}`, `Set([1, 2])`; strings are quoted
+    inside.
+27. **Hashability.** A key (`Map` key, `Set` element) must be hashable: `int`, `bool`, `char`,
+    `str`, `()`, tuples, structs, enums and `Option` of hashable parts (structurally), and class
+    objects (by identity). `List`, `Map` and `Set` are not hashable (mutable; the §5.3 hint says
+    to use a tuple, a struct or its `Show` text), and **`float` is not hashable** (a deliberate
+    choice the docs left open: `nan != nan` and `0.0 == -0.0` break the hash/equality contract;
+    key on a scaled integer or the bits instead). A type that becomes known only by inference is
+    checked after inference.
+28. **Indexing, places and the guard (DESIGN §11.6).** `xs[i]` panics out of range or negative:
+    `index 3 out of bounds for list of length 3`; `insert` says `insert index ..`; a missing map
+    key is `key "k" not found in map` (reads, and `m[k].f += 1`; plain `m[k] = v` inserts).
+    A place's operands evaluate once, left to right, then the right-hand side, then the bounds
+    check. A guarded operation on a held collection panics with
+    `` `enemies` modified while an element is being updated; collect the changes in a separate
+    list and apply them afterwards `` (a live place; the name is the collection's source text),
+    or `list modified during iteration` (also `map`, `set`). Both `for` and `for var` hold the
+    collection for the loop; a `var self` call on an element holds it for the call. Element
+    writes `xs[i] = v` are guarded too, so they panic during any iteration. `for var` is only
+    allowed over a list for now; a `var self` receiver may be any place, including elements of a
+    list held in a `let` (the list is a shared object, so `let` does not freeze its contents).
+29. **`clone` (DESIGN §5.3).** `x.clone()` exists on every type and is deep. It keeps a memo from
+    each original object to its copy, so a substructure shared inside the cloned graph stays
+    shared and a cycle stays a cycle; objects outside the graph are not reached. Class objects
+    are copied (new identity); a `weak` reference whose target was copied points at the copy,
+    otherwise it is kept. `str` is immutable and shared. Recursion is bounded by the native stack
+    budget and then panics with "this value nests too deeply to clone".
+30. **Lifetimes and temporaries as built (DESIGN §11.2).** Bindings die in reverse declaration
+    order at the end of their scope; temporaries at the end of their statement, in reverse
+    creation order (the base of `make().x`, call arguments, operands of `==`). A callee gets its
+    own references to the arguments and the caller keeps its own on its temps, so a temporary
+    argument outlives the call it was passed to. The condition of `if` and `while` is released
+    before the body; a `match`, `if let` or `for` source lives for the whole construct; a
+    block's tail temporaries die when it has produced its value. An overwritten value dies at the
+    store; a returned or stored value is not released because the count only falls. Parameters
+    die with the callee's locals (a `var self` receiver goes back to the caller instead).
+31. **`defer` (DESIGN §6.1).** `defer stmt` takes a call or an assignment (or an `if`/block
+    written as an expression statement); it registers when executed and runs, with the state of
+    the variables at that moment, when the enclosing block exits by any path, last in first out
+    with the drops. `return`, `break` and `continue` are errors inside a `defer`. A panic in a
+    deferred statement does not stop the remaining cleanups: the first panic is reported and the
+    later ones are attached as notes (`PanicInfo.notes`, `Error::Panic.notes`, rendered as
+    `note:` lines). When there is no earlier panic, the first deferred panic is the result.
+32. **Golden harness additions.** `// drops:` is compared only when present (an empty one
+    expects no destruction); several `// panic:` lines must all be contained in the message,
+    and notes are appended to it as `note: ..` lines. The harness shuts the `Vm` down after
+    `main` and includes the module-value drops in the trace.

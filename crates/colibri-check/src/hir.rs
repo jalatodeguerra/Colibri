@@ -41,7 +41,8 @@ pub struct Program {
     pub script: Rc<Body>,
     /// `fn main()` if the file defines it.
     pub main: Option<FnId>,
-    /// Every user-defined struct and enum, indexed by [`TypeId`].
+    /// Every struct, enum and class, indexed by [`TypeId`]. Index 0 is the prelude `Option`
+    /// enum ([`crate::types::OPTION_TYPE`]); user types follow.
     pub types: Vec<TypeDef>,
 }
 
@@ -69,6 +70,10 @@ pub enum TypeDefKind {
     Struct {
         fields: Vec<FieldDef>,
     },
+    /// A reference type with identity (DESIGN §7.2); same field layout as a struct.
+    Class {
+        fields: Vec<FieldDef>,
+    },
     Enum {
         variants: Vec<VariantDef>,
     },
@@ -78,8 +83,12 @@ pub enum TypeDefKind {
 pub struct FieldDef {
     /// For a positional enum payload, the position (`"0"`, `"1"`).
     pub name: String,
+    /// The declared type; for a `weak T` field this is `T` (reads give `T?`).
     pub ty: Ty,
     pub span: Span,
+    /// A `weak` class field (DESIGN §11.5): it stores a weak reference, and reading it gives
+    /// `ty?`.
+    pub weak: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -97,20 +106,24 @@ impl TypeDef {
     pub fn variants(&self) -> &[VariantDef] {
         match &self.kind {
             TypeDefKind::Enum { variants } => variants,
-            TypeDefKind::Struct { .. } => &[],
+            TypeDefKind::Struct { .. } | TypeDefKind::Class { .. } => &[],
         }
     }
 
-    /// The fields of a struct (empty for an enum).
+    /// The fields of a struct or class (empty for an enum).
     pub fn fields(&self) -> &[FieldDef] {
         match &self.kind {
-            TypeDefKind::Struct { fields } => fields,
+            TypeDefKind::Struct { fields } | TypeDefKind::Class { fields } => fields,
             TypeDefKind::Enum { .. } => &[],
         }
     }
 
     pub fn is_enum(&self) -> bool {
         matches!(self.kind, TypeDefKind::Enum { .. })
+    }
+
+    pub fn is_class(&self) -> bool {
+        matches!(self.kind, TypeDefKind::Class { .. })
     }
 }
 
@@ -214,6 +227,10 @@ pub enum StmtKind {
     Return(Option<Expr>),
     Break(LoopId),
     Continue(LoopId),
+    /// `defer stmt`: registers `stmt` on the enclosing block's cleanup list; it runs when the
+    /// block exits, in last-in first-out order with the drops of the block's bindings
+    /// (DESIGN §6.1, ARCHITECTURE §6).
+    Defer(Rc<Stmt>),
 }
 
 /// An assignable location: an anchor plus a path of value projections.
@@ -226,16 +243,18 @@ pub struct Place {
     pub display: String,
 }
 
+/// Where a place starts. Collections and classes are references, so only the innermost one is
+/// the anchor and everything before it is an ordinary read (ARCHITECTURE §1).
 #[derive(Debug)]
 pub enum Anchor {
     Local(LocalId),
     Global(GlobalId),
-    /// A field of a class object (not produced yet).
+    /// A field of a class object: the expression yields the object.
     ClassField(Box<Expr>, FieldIdx),
-    /// A list element: list, index (not produced yet).
-    ListElem(Box<Expr>, Box<Expr>),
-    /// A map entry: map, key (not produced yet).
-    MapEntry(Box<Expr>, Box<Expr>),
+    /// A list element: list, index, and the source text of the list for guard messages.
+    ListElem(Box<Expr>, Box<Expr>, String),
+    /// A map entry: map, key, and the source text of the map for guard messages.
+    MapEntry(Box<Expr>, Box<Expr>, String),
 }
 
 /// A step through a value type (struct field or tuple element).
@@ -277,10 +296,16 @@ pub enum ExprKind {
         id: LoopId,
         body: Box<Block>,
     },
-    /// `for i in a..b`.
+    /// `for i in a..b`, or over a list, map, set or string.
     For(Box<ForLoop>),
     /// `Player { .. }`: one value per field in declaration order (defaults already filled).
     Struct {
+        ty: TypeId,
+        fields: Vec<Expr>,
+    },
+    /// `Node { .. }` for a class: allocates an object with one value per field in declaration
+    /// order (defaults filled; a `weak` field holds a [`ExprKind::ToWeak`]).
+    Object {
         ty: TypeId,
         fields: Vec<Expr>,
     },
@@ -291,6 +316,15 @@ pub enum ExprKind {
         args: Vec<Expr>,
     },
     Tuple(Vec<Expr>),
+    /// `[a, b]`; `[]` is the empty list.
+    ListLit(Vec<Expr>),
+    /// `{k: v}`; `{:}` is the empty map. Insertion-ordered; a repeated key keeps the last value.
+    MapLit(Vec<(Expr, Expr)>),
+    /// A strong reference (or an `Option` of one) stored as a weak one: `StrongToWeak` /
+    /// `OptionToWeak` of ARCHITECTURE §1.
+    ToWeak(Box<Expr>),
+    /// The value of a weak field read as `T?`: `WeakToOption`.
+    FromWeak(Box<Expr>),
     /// A field or tuple element of a value that is not a place (`make().x`).
     Project(Box<Expr>, ValueProj),
     /// The first arm whose pattern matches (and whose guard holds) runs. The scrutinee lives
@@ -303,17 +337,49 @@ pub enum ExprKind {
     Error,
 }
 
-/// A loop over an integer range. The binding is a fresh local per iteration: it is listed in
-/// `body.locals`, so the body's scope exit releases it each time round.
+/// A `for` loop. The binding is fresh per iteration: its locals are listed in `body.locals`,
+/// so the body's scope exit releases them each time round.
 #[derive(Debug)]
 pub struct ForLoop {
     pub id: LoopId,
-    /// `None` for `for _ in ..`.
-    pub binding: Option<LocalId>,
-    pub start: Expr,
-    pub end: Expr,
-    pub inclusive: bool,
+    pub binding: ForBinding,
+    pub source: ForSource,
+    /// `for var x in list`: the element is a place; the final value of the binding is written
+    /// back after each iteration (DESIGN §11.6). Only lists.
+    pub places: bool,
     pub body: Block,
+}
+
+/// What a `for` loop binds each iteration.
+#[derive(Debug)]
+pub enum ForBinding {
+    /// `for _ in ..`
+    None,
+    Local(LocalId),
+    /// `for (k, v) in map`: an irrefutable pattern whose bindings are locals of the body.
+    Pat(Pat),
+}
+
+/// What a `for` loop iterates. Collection sources hold the mutation guard for the whole loop.
+#[derive(Debug)]
+pub enum ForSource {
+    Range {
+        start: Expr,
+        end: Expr,
+        inclusive: bool,
+    },
+    /// Elements of a list; `name` is its source text for guard messages.
+    List {
+        list: Expr,
+        name: String,
+    },
+    /// `(key, value)` tuples in insertion order.
+    Map(Expr),
+    Set(Expr),
+    /// `(index, element)` tuples of `list.enumerate()`.
+    Enumerate(Expr),
+    /// The chars of a `str`.
+    Chars(Expr),
 }
 
 /// A `match` arm. `body.locals` starts with the pattern's bindings, which are bound before the
@@ -389,6 +455,13 @@ pub enum Callee {
     Intrinsic(Intrinsic),
 }
 
+impl Callee {
+    /// The built-in operation of an intrinsic callee.
+    pub fn builtin(op: Builtin) -> Callee {
+        Callee::Intrinsic(Intrinsic::Builtin(op))
+    }
+}
+
 /// Operations built into the compiler.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intrinsic {
@@ -398,6 +471,52 @@ pub enum Intrinsic {
     Show,
     /// The argument formatted with a spec, as a `str`.
     Format(Box<FormatSpec>),
+    /// A method or constructor of a built-in type; the receiver is the first argument.
+    Builtin(Builtin),
+}
+
+/// Methods and constructors of `str`, `List`, `Map` and `Set` (DESIGN §5.2, §5.3), plus the
+/// deep `clone` every type has. The checker types each call through the receiver's type
+/// arguments; the engine only sees these tags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Builtin {
+    /// `x.clone()` on any type: a deep copy (DESIGN §5.3).
+    Clone,
+    StrLen,
+    StrIsEmpty,
+    ListLen,
+    ListIsEmpty,
+    ListPush,
+    ListPop,
+    ListInsert,
+    ListRemove,
+    ListClear,
+    ListContains,
+    ListIndexOf,
+    ListFirst,
+    ListLast,
+    ListReverse,
+    ListExtend,
+    ListGet,
+    MapLen,
+    MapIsEmpty,
+    MapGet,
+    MapContainsKey,
+    MapInsert,
+    MapRemove,
+    MapKeys,
+    MapValues,
+    MapClear,
+    SetLen,
+    SetIsEmpty,
+    SetAdd,
+    SetRemove,
+    SetContains,
+    SetClear,
+    /// `Set[T]()`
+    SetNew,
+    /// `Set(list)`
+    SetFromList,
 }
 
 #[derive(Debug)]
@@ -424,8 +543,9 @@ pub enum Operand {
     Char,
     Str,
     Unit,
-    /// Structs, enums and tuples: the derived structural `Eq`, and `Ord` for tuples and
-    /// payload-free enums (DESIGN §7.4).
+    /// Structs, enums, tuples, `Option` and the collections: the derived structural `Eq`, and
+    /// `Ord` for tuples and payload-free enums (DESIGN §7.4, §5.3). A class inside is compared
+    /// by identity.
     Structural,
 }
 
@@ -456,6 +576,8 @@ pub enum BinOp {
     /// `str + str`
     Concat,
     Cmp(CmpOp, Operand),
+    /// `a is b`: whether two references are the same object (DESIGN §5.3).
+    Is,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

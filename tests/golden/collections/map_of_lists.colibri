@@ -1,0 +1,15 @@
+fn main() {
+    var groups: Map[str, List[int]] = {:}
+    groups["even"] = []
+    groups["odd"] = []
+    for i in 0..6 {
+        if i % 2 == 0 {
+            groups["even"].push(i)
+        } else {
+            groups["odd"].push(i)
+        }
+    }
+    print(groups)
+}
+
+// expect: {"even": [0, 2, 4], "odd": [1, 3, 5]}

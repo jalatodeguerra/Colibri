@@ -1,0 +1,3 @@
+interface Shape { // error: `interface` is not supported yet
+    fn area(self) -> float
+}

@@ -1,0 +1,13 @@
+class Point { x: int, y: int }
+class Named { name: str, p: Point }
+
+fn main() {
+    let p = Point { x: 1, y: 2 }
+    print(p)
+    print(Named { name: "n", p: p })
+    print("p = {p}")
+}
+
+// expect: Point { x: 1, y: 2 }
+// expect: Named { name: "n", p: Point { x: 1, y: 2 } }
+// expect: p = Point { x: 1, y: 2 }

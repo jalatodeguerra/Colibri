@@ -1,2 +1,0 @@
-let xs = [1, 2, 3] // error: list literal is not supported yet
-let m = {"a": 1} // error: map literal is not supported yet

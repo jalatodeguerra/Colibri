@@ -1,0 +1,15 @@
+class T { name: str }
+
+fn main() {
+    var xs = [T { name: "a" }, T { name: "b" }, T { name: "c" }]
+    while let some(t) = xs.pop() {
+        print(t.name)
+    }
+    print("empty")
+}
+
+// expect: c
+// expect: b
+// expect: a
+// expect: empty
+// drops: c, b, a

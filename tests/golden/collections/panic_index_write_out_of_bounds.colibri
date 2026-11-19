@@ -1,0 +1,6 @@
+fn main() {
+    var xs = [1]
+    xs[1] = 5
+}
+
+// panic: index 1 out of bounds for list of length 1

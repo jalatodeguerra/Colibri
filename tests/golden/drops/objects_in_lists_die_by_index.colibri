@@ -1,0 +1,9 @@
+class T { name: str }
+
+fn main() {
+    let xs = [T { name: "x0" }, T { name: "x1" }, T { name: "x2" }]
+    print(xs.len())
+}
+
+// expect: 3
+// drops: x0, x1, x2

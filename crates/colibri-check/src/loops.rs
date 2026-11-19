@@ -4,7 +4,10 @@ use colibri_syntax::ast::{self, ExprKind, Label, PatKind as AstPat};
 use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::{BlockMode, FnCtx, LocalKind, LoopFrame};
-use crate::hir::{self, Arm, Block, Expr, ForLoop, LoopId, Pat, PatKind, Stmt};
+use crate::hir::{
+    self, Arm, Block, Expr, ForBinding, ForLoop, ForSource, LoopId, Pat, PatKind, Stmt,
+};
+use crate::pat::PatCx;
 use crate::types::Ty;
 
 impl FnCtx<'_, '_> {
@@ -18,7 +21,7 @@ impl FnCtx<'_, '_> {
         id
     }
 
-    /// `for i in a..b { body }` and `for i in a..=b { body }`.
+    /// `for` over an integer range, a list, a map, a set, `list.enumerate()` or `str.chars()`.
     #[inline(never)]
     pub fn check_for(
         &mut self,
@@ -39,7 +42,7 @@ impl FnCtx<'_, '_> {
             inclusive,
         } = &head.kind
         else {
-            return self.for_over_other(span, label, mutable, pat, iter, body);
+            return self.for_over_other(span, label, mutable, pat, head, body);
         };
         let (Some(start), Some(end)) = (start, end) else {
             self.ck
@@ -76,16 +79,36 @@ impl FnCtx<'_, '_> {
                 }
             }
         }
+        let source = ForSource::Range {
+            start: lo,
+            end: hi,
+            inclusive: *inclusive,
+        };
+        self.finish_for(span, label, mutable, false, pat, &elem, source, body)
+    }
+
+    /// Builds the loop once its source and element type are known.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_for(
+        &mut self,
+        span: Span,
+        label: Option<&Label>,
+        mutable: bool,
+        places: bool,
+        pat: &ast::Pat,
+        elem: &Ty,
+        source: ForSource,
+        body: &ast::Block,
+    ) -> Expr {
         let id = self.new_loop(label);
-        let (binding, block) = self.loop_body(mutable, pat, &elem, body);
+        let (binding, block) = self.loop_body(mutable, pat, elem, body);
         self.loops.pop();
         self.mk(
             hir::ExprKind::For(Box::new(ForLoop {
                 id,
                 binding,
-                start: lo,
-                end: hi,
-                inclusive: *inclusive,
+                source,
+                places,
                 body: block,
             })),
             Ty::Unit,
@@ -93,8 +116,8 @@ impl FnCtx<'_, '_> {
         )
     }
 
-    /// A `for` over something that is not an integer range: not supported yet, but its parts
-    /// are still checked.
+    /// A `for` over a collection (or `list.enumerate()`, `str.chars()`); anything else is not
+    /// supported yet, but its parts are still checked.
     fn for_over_other(
         &mut self,
         span: Span,
@@ -104,13 +127,68 @@ impl FnCtx<'_, '_> {
         iter: &ast::Expr,
         body: &ast::Block,
     ) -> Expr {
-        let value = self.check_expr(iter, None);
-        if !value.ty.is_error() {
-            let shown = self.show(&value.ty);
+        let special = match &iter.kind {
+            ExprKind::Call { callee, args } if args.is_empty() => match &callee.kind {
+                ExprKind::Field { base, name }
+                    if matches!(name.name.as_str(), "enumerate" | "chars") =>
+                {
+                    Some((&**base, name.name.as_str()))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let value = match special {
+            Some((base, _)) => self.check_expr(base, None),
+            None => self.check_expr(iter, None),
+        };
+        let ty = self.infer.shallow(&value.ty);
+        let name = crate::place::expr_text(iter);
+        let (source, elem, plain_list) = match (special.map(|(_, m)| m), ty) {
+            (_, Ty::Error) => {
+                return self.for_body_only(label, mutable, pat, &Ty::Error, body, span);
+            }
+            (None, Ty::List(t)) => (ForSource::List { list: value, name }, *t, true),
+            (None, Ty::Map(k, v)) => (ForSource::Map(value), Ty::Tuple(vec![*k, *v]), false),
+            (None, Ty::Set(t)) => (ForSource::Set(value), *t, false),
+            (Some("enumerate"), Ty::List(t)) => (
+                ForSource::Enumerate(value),
+                Ty::Tuple(vec![Ty::INT, *t]),
+                false,
+            ),
+            (Some("chars"), Ty::Str) => (ForSource::Chars(value), Ty::Char, false),
+            (Some(method), other) => {
+                let shown = self.show(&other);
+                let wanted = if method == "chars" { "str" } else { "list" };
+                self.ck.report(
+                    Diagnostic::error(
+                        format!("`{method}()` needs a {wanted}, but this is a `{shown}`"),
+                        iter.span,
+                    )
+                    .with_hint("iterators and `Iter` are not supported yet"),
+                );
+                return self.for_body_only(label, mutable, pat, &Ty::Error, body, span);
+            }
+            (None, Ty::Str) => {
+                self.ck.report(
+                    Diagnostic::error("a `str` cannot be looped over directly", iter.span)
+                        .with_hint("loop over its characters: `for c in s.chars() { ... }`"),
+                );
+                return self.for_body_only(label, mutable, pat, &Ty::Error, body, span);
+            }
+            (None, other) => {
+                let shown = self.show(&other);
+                self.ck
+                    .unsupported(&format!("`for` over a `{shown}`"), iter.span);
+                return self.for_body_only(label, mutable, pat, &Ty::Error, body, span);
+            }
+        };
+        if mutable && !plain_list {
             self.ck
-                .unsupported(&format!("`for` over a `{shown}`"), iter.span);
+                .unsupported("`for var` over anything but a list", pat.span);
+            return self.for_body_only(label, false, pat, &elem, body, span);
         }
-        self.for_body_only(label, mutable, pat, &Ty::Error, body, span)
+        self.finish_for(span, label, mutable, mutable, pat, &elem, source, body)
     }
 
     /// Checks a loop body whose loop cannot be built, so its own errors still show.
@@ -129,14 +207,14 @@ impl FnCtx<'_, '_> {
         self.error_expr(span)
     }
 
-    /// The body block of a `for`, with the loop variable as its first local.
+    /// The body block of a `for`, with the loop variables as its first locals.
     fn loop_body(
         &mut self,
         mutable: bool,
         pat: &ast::Pat,
         elem: &Ty,
         body: &ast::Block,
-    ) -> (Option<hir::LocalId>, Block) {
+    ) -> (ForBinding, Block) {
         self.push_scope();
         let binding = match &pat.kind {
             AstPat::Ident(id) => {
@@ -145,12 +223,18 @@ impl FnCtx<'_, '_> {
                 } else {
                     LocalKind::Let
                 };
-                Some(self.declare(&id.name, id.span, elem.clone(), kind))
+                ForBinding::Local(self.declare(&id.name, id.span, elem.clone(), kind))
             }
-            AstPat::Wild | AstPat::Error => None,
+            AstPat::Wild | AstPat::Error => ForBinding::None,
+            AstPat::Tuple(_) if !mutable => {
+                let mut cx = PatCx::new(LocalKind::Let);
+                let checked = self.check_pat(pat, elem, &mut cx);
+                self.require_irrefutable(&checked, elem, pat.span);
+                ForBinding::Pat(checked)
+            }
             _ => {
                 self.ck.unsupported("a pattern in a `for` loop", pat.span);
-                None
+                ForBinding::None
             }
         };
         let (stmts, tail, ty) = self.block_in_scope(body, BlockMode::Stmts);

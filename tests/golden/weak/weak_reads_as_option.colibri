@@ -1,0 +1,21 @@
+class Node {
+    name: str
+    parent: weak Node
+}
+
+fn main() {
+    let a = Node { name: "a" }
+    print(a.parent)
+    let b = Node { name: "b", parent: a }
+    match b.parent {
+        some(p) => print(p.name)
+        none => print("none")
+    }
+    b.parent = a
+    print(b.parent == some(a))
+}
+
+// expect: none
+// expect: a
+// expect: true
+// drops: b, a

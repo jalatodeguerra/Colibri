@@ -1,0 +1,17 @@
+class T { name: str }
+
+fn main() {
+    let outer = T { name: "outer" }
+    var i = 0
+    while true {
+        let t = T { name: "t{i}" }
+        if i == 1 {
+            break
+        }
+        i += 1
+    }
+    print("after loop")
+}
+
+// expect: after loop
+// drops: t0, t1, outer

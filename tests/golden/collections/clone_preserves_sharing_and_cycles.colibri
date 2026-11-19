@@ -1,0 +1,40 @@
+class Node {
+    name: str
+    other: Node?
+}
+
+fn main() {
+    let shared = [1]
+    let pair = (shared, shared)
+    let copy = pair.clone()
+    copy.0.push(2)
+    print(copy.1)
+    print(pair.0)
+    print(copy.0 is copy.1)
+
+    let a = Node { name: "a", other: none }
+    let b = Node { name: "b", other: some(a) }
+    a.other = some(b)
+    let a2 = a.clone()
+    print(a2 is a)
+    match a2.other {
+        some(b2) => {
+            print(b2 is b)
+            match b2.other {
+                some(back) => print(back is a2)
+                none => print("lost")
+            }
+            b2.other = none
+        }
+        none => print("lost")
+    }
+    a.other = none
+}
+
+// expect: [1, 2]
+// expect: [1]
+// expect: true
+// expect: false
+// expect: false
+// expect: true
+// drops: a, b, b, a

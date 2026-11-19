@@ -1,0 +1,6 @@
+fn main() {
+    let xs: List[int] = []
+    print(xs[0])
+}
+
+// panic: index 0 out of bounds for list of length 0

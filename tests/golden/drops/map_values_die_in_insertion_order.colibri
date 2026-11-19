@@ -1,0 +1,15 @@
+class T { name: str }
+
+fn main() {
+    var m: Map[str, T] = {:}
+    m["one"] = T { name: "v1" }
+    m["two"] = T { name: "v2" }
+    m["one"] = T { name: "v1b" }
+    print("rewritten")
+    m.remove("two")
+    print("removed")
+}
+
+// expect: rewritten
+// expect: removed
+// drops: v1, v2, v1b

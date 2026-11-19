@@ -1,0 +1,22 @@
+fn total(xs: List[int]) -> int {
+    var t = 0
+    for x in xs {
+        t += x
+    }
+    return t
+}
+
+struct Bag { items: List[str] = [] }
+
+fn main() {
+    print(total([]))
+    let b = Bag { }
+    print(b.items.len())
+    var later = []
+    later.push(1)
+    print(later)
+}
+
+// expect: 0
+// expect: 0
+// expect: [1]

@@ -1,0 +1,23 @@
+class Item { name: str }
+
+fn pick(flag: bool) -> Item? {
+    if flag {
+        return some(Item { name: "yes" })
+    }
+    return none
+}
+
+fn main() {
+    if let some(it) = pick(true) {
+        print(it.name)
+    }
+    if let some(it) = pick(false) {
+        print(it.name)
+    } else {
+        print("none")
+    }
+}
+
+// expect: yes
+// expect: none
+// drops: yes

@@ -1,0 +1,15 @@
+class T { name: str }
+
+fn bad() {
+    let z = 0
+    print(1 / z)
+}
+
+fn main() {
+    let a = T { name: "a" }
+    defer bad()
+    let b = T { name: "b" }
+}
+
+// panic: division by zero
+// drops: b, a

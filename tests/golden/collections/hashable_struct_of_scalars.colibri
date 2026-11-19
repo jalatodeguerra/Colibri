@@ -1,0 +1,10 @@
+struct Ok1 { a: int, b: str, c: (bool, char) }
+
+fn main() {
+    var s = Set[Ok1]()
+    s.add(Ok1 { a: 1, b: "x", c: (true, 'c') })
+    s.add(Ok1 { a: 1, b: "x", c: (true, 'c') })
+    print(s.len())
+}
+
+// expect: 1

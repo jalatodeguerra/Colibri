@@ -1,0 +1,15 @@
+struct E { hp: int }
+var es = [E { hp: 1 }]
+
+impl E {
+    fn fail(var self) {
+        self.hp = 0
+        es.clear()
+    }
+}
+
+fn main() {
+    es[0].fail()
+}
+
+// panic: `es` modified while an element is being updated

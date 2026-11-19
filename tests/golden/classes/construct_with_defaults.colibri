@@ -1,0 +1,17 @@
+class Player {
+    name: str
+    hp: int = 100
+}
+
+fn main() {
+    let p = Player { name: "ann" }
+    print(p.name)
+    print(p.hp)
+    let q = Player { name: "bob", hp: 5 }
+    print(q.hp)
+}
+
+// expect: ann
+// expect: 100
+// expect: 5
+// drops: bob, ann

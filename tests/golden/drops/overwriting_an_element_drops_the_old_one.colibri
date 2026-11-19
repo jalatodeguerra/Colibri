@@ -1,0 +1,10 @@
+class T { name: str }
+
+fn main() {
+    var xs = [T { name: "old" }]
+    xs[0] = T { name: "new" }
+    print("replaced")
+}
+
+// expect: replaced
+// drops: old, new

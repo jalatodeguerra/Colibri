@@ -1,0 +1,14 @@
+struct Stats { count: int, label: str }
+
+fn main() {
+    var m: Map[str, Stats] = {:}
+    m["a"] = Stats { count: 0, label: "x" }
+    m["a"].count += 1
+    m["a"].count += 1
+    m["a"].label = "y"
+    print(m["a"])
+    print(m)
+}
+
+// expect: Stats { count: 2, label: "y" }
+// expect: {"a": Stats { count: 2, label: "y" }}

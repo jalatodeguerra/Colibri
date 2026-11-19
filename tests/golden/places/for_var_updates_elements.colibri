@@ -1,0 +1,16 @@
+struct Enemy { hp: int }
+
+fn main() {
+    var enemies = [Enemy { hp: 10 }, Enemy { hp: 20 }]
+    for var e in enemies {
+        e.hp -= 1
+    }
+    print(enemies)
+    for var e in enemies {
+        e = Enemy { hp: e.hp * 2 }
+    }
+    print(enemies)
+}
+
+// expect: [Enemy { hp: 9 }, Enemy { hp: 19 }]
+// expect: [Enemy { hp: 18 }, Enemy { hp: 38 }]

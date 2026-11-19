@@ -1,0 +1,5 @@
+struct Bad { xs: List[int] }
+
+fn main() {
+    let s = Set[Bad]() // error: cannot be used
+}

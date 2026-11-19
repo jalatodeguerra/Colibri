@@ -1,0 +1,11 @@
+fn f() -> int {
+    var x = 1
+    defer x += 10
+    return x
+}
+
+fn main() {
+    print(f())
+}
+
+// expect: 1

@@ -13,6 +13,15 @@ use crate::hir::TypeDef;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TypeId(pub u32);
 
+/// The prelude `Option` enum is always the first entry of [`crate::hir::Program::types`]; its
+/// variants are `none` (0) and `some` (1), so `Ty::Option(T)` values and patterns use the
+/// ordinary enum machinery.
+pub const OPTION_TYPE: TypeId = TypeId(0);
+/// The index of `none` in the prelude `Option`.
+pub const VARIANT_NONE: u32 = 0;
+/// The index of `some` in the prelude `Option`.
+pub const VARIANT_SOME: u32 = 1;
+
 /// Identifies a generic type parameter within its declaration (not produced yet).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ParamId(pub u32);

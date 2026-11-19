@@ -1,0 +1,17 @@
+fn main() {
+    let m = {"a": 1, "b": 2}
+    print(m)
+    let e: Map[str, int] = {:}
+    print(e)
+    let e2 = Map[int, str]()
+    print(e2)
+    let dup = {1: "x", 1: "y"}
+    print(dup)
+    print(dup.len())
+}
+
+// expect: {"a": 1, "b": 2}
+// expect: {:}
+// expect: {:}
+// expect: {1: "y"}
+// expect: 1

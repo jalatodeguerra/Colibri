@@ -1,3 +1,0 @@
-class Node { // error: `class` is not supported yet
-    name: str
-}

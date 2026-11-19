@@ -1,0 +1,11 @@
+fn main() {
+    var n = 3
+    defer if n > 2 {
+        print("big")
+    } else {
+        print("small")
+    }
+    n = 1
+}
+
+// expect: small

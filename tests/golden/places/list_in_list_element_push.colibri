@@ -1,0 +1,8 @@
+fn main() {
+    var grid: List[List[int]] = [[1], [2]]
+    grid[0].push(10)
+    grid[1][0] += 5
+    print(grid)
+}
+
+// expect: [[1, 10], [7]]

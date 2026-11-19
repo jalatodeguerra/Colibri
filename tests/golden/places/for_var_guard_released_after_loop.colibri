@@ -1,0 +1,10 @@
+fn main() {
+    var xs = [1, 2]
+    for var x in xs {
+        x += 1
+    }
+    xs.push(9)
+    print(xs)
+}
+
+// expect: [2, 3, 9]

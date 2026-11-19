@@ -1,0 +1,15 @@
+fn f(early: bool) {
+    if early {
+        return
+    }
+    defer print("registered")
+    print("end")
+}
+
+fn main() {
+    f(true)
+    f(false)
+}
+
+// expect: end
+// expect: registered

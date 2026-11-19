@@ -1,0 +1,3 @@
+fn f() {
+    defer if true { return } // error: `return` cannot be used inside `defer`
+}

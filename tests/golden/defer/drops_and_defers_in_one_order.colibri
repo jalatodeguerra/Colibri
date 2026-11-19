@@ -1,0 +1,19 @@
+class T { name: str }
+
+fn note(s: str) {
+    print(s)
+}
+
+fn main() {
+    let a = T { name: "a" }
+    defer note("d1")
+    let b = T { name: "b" }
+    defer note("d2")
+    let c = T { name: "c" }
+    print("body")
+}
+
+// expect: body
+// expect: d2
+// expect: d1
+// drops: c, b, a

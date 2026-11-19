@@ -1,0 +1,17 @@
+fn main() {
+    print([1, 2] == [1, 2])
+    print([1, 2] == [2, 1])
+    print([1] == [1, 2])
+    print([[1], [2]] == [[1], [2]])
+    print(["a"] != ["b"])
+    let e1: List[int] = []
+    let e2: List[int] = []
+    print(e1 == e2)
+}
+
+// expect: true
+// expect: false
+// expect: false
+// expect: true
+// expect: true
+// expect: true

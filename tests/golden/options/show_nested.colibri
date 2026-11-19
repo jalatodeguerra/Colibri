@@ -1,0 +1,20 @@
+fn main() {
+    let a: int?? = some(some(1))
+    let b: int?? = some(none)
+    let c: int?? = none
+    print(a)
+    print(b)
+    print(c)
+    let s: str? = some("hi")
+    print(s)
+    print("{s}")
+    let l: List[int]? = some([1, 2])
+    print(l)
+}
+
+// expect: some(some(1))
+// expect: some(none)
+// expect: none
+// expect: some("hi")
+// expect: some("hi")
+// expect: some([1, 2])

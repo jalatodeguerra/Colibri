@@ -1,0 +1,14 @@
+class Node {
+    name: str
+    parent: weak Node
+}
+
+fn main() {
+    let kid = Node { name: "kid", parent: Node { name: "temp" } }
+    print(kid.parent)
+    print("after")
+}
+
+// expect: none
+// expect: after
+// drops: temp, kid

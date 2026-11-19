@@ -1,0 +1,12 @@
+class T { name: str }
+struct Pair { a: T, b: T }
+
+fn main() {
+    let t = T { name: "shared" }
+    let p = Pair { a: t, b: T { name: "other" } }
+    let q = p
+    print(q.a is t)
+}
+
+// expect: true
+// drops: other, shared

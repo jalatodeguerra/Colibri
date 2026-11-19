@@ -1,0 +1,11 @@
+fn main() {
+    defer print("first registered")
+    defer print("second registered")
+    defer print("third registered")
+    print("body")
+}
+
+// expect: body
+// expect: third registered
+// expect: second registered
+// expect: first registered

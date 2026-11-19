@@ -1,0 +1,14 @@
+class Node {
+    value: int
+    next: Node?
+}
+
+fn main() {
+    var head: Node? = none
+    for i in 0..100000 {
+        head = some(Node { value: i, next: head })
+    }
+    print("built")
+}
+
+// expect: built

@@ -1,0 +1,6 @@
+fn main() {
+    var xs = [1, 2]
+    xs.insert(3, 0)
+}
+
+// panic: insert index 3 out of bounds for list of length 2

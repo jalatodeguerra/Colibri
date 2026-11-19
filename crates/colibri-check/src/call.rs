@@ -19,14 +19,23 @@ pub(crate) struct Bound {
 
 impl FnCtx<'_, '_> {
     #[inline(never)]
-    pub fn check_call(&mut self, callee: &ast::Expr, args: &[ast::Arg], span: Span) -> Expr {
+    pub fn check_call(
+        &mut self,
+        callee: &ast::Expr,
+        args: &[ast::Arg],
+        expected: Option<&Ty>,
+        span: Span,
+    ) -> Expr {
+        if let Some(built) = self.check_constructor(callee, args, expected, span) {
+            return built;
+        }
         let id = match &callee.kind {
             ExprKind::Ident(id) => id,
             ExprKind::Field { base, name } => {
                 return self.check_member_call(base, name, args, span);
             }
             ExprKind::Paren(inner) if matches!(inner.kind, ExprKind::Ident(_)) => {
-                return self.check_call(inner, args, span);
+                return self.check_call(inner, args, expected, span);
             }
             _ => {
                 self.check_args_loosely(args);
@@ -51,7 +60,8 @@ impl FnCtx<'_, '_> {
         }
         match name {
             "print" if !self.ck.values.contains_key(name) => self.check_print(args, span),
-            "some" | "ok" | "err" => {
+            "some" => self.check_some(args, expected, span),
+            "ok" | "err" => {
                 self.check_args_loosely(args);
                 self.unsupported(&format!("`{name}`"), callee.span)
             }
@@ -104,6 +114,10 @@ impl FnCtx<'_, '_> {
                 | Ty::Error
                 | Ty::Tuple(_)
                 | Ty::Adt(..)
+                | Ty::List(_)
+                | Ty::Map(..)
+                | Ty::Set(_)
+                | Ty::Option(_)
         ) {
             let shown = self.show(&ty);
             self.ck.report(Diagnostic::error(
@@ -165,22 +179,28 @@ impl FnCtx<'_, '_> {
                 return self.error_expr(span);
             }
             Ty::Adt(id, _) => *id,
-            other => {
-                self.check_args_loosely(args);
-                let shown = self.show(other);
-                self.ck.report(
-                    Diagnostic::error(
-                        format!("methods on the built-in type `{shown}` are not supported yet"),
-                        name.span,
-                    )
-                    .with_hint(
-                        "Colibri is being built in slices; see docs/PHASE1.md for what comes next",
-                    ),
-                );
-                return self.error_expr(span);
-            }
+            other => match self.check_builtin_method(recv, name, args, span) {
+                Ok(call) => return call,
+                Err(_) => {
+                    self.check_args_loosely(args);
+                    let shown = self.show(other);
+                    self.ck.report(
+                        Diagnostic::error(
+                            format!("methods on the built-in type `{shown}` are not supported yet"),
+                            name.span,
+                        )
+                        .with_hint(
+                            "Colibri is being built in slices; see docs/PHASE1.md for what comes next",
+                        ),
+                    );
+                    return self.error_expr(span);
+                }
+            },
         };
         let Some(&f) = self.ck.methods.get(&(owner, name.name.clone())) else {
+            if name.name == "clone" {
+                return self.check_clone(recv, args, span);
+            }
             self.check_args_loosely(args);
             let tname = self.ck.types[owner.0 as usize].name.clone();
             let methods: Vec<String> = self
@@ -407,7 +427,7 @@ impl FnCtx<'_, '_> {
     }
 
     /// Builds the call from matched arguments (and the receiver of a method call).
-    fn finish_call(
+    pub(crate) fn finish_call(
         &mut self,
         callee: Callee,
         receiver: Option<Receiver>,
@@ -523,7 +543,7 @@ impl FnCtx<'_, '_> {
 }
 
 /// The receiver of a method call.
-enum Receiver {
+pub(crate) enum Receiver {
     /// `self`: read-only, passed by value.
     Value(Expr),
     /// `var self`: a place the method changes in place.

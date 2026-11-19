@@ -1,0 +1,19 @@
+struct Pos { x: int, y: int }
+class Body { pos: Pos, tags: List[str] = [] }
+class World { body: Body, bodies: List[Body] = [] }
+
+fn main() {
+    let w = World { body: Body { pos: Pos { x: 0, y: 0 } } }
+    w.body.pos.x = 5
+    w.body.pos.y += 2
+    w.bodies.push(Body { pos: Pos { x: 1, y: 1 } })
+    w.bodies[0].pos.x += 10
+    w.bodies[0].tags.push("t")
+    print(w.body.pos)
+    print(w.bodies[0].pos)
+    print(w.bodies[0].tags)
+}
+
+// expect: Pos { x: 5, y: 2 }
+// expect: Pos { x: 11, y: 1 }
+// expect: ["t"]

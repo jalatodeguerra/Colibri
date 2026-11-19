@@ -1,0 +1,12 @@
+fn bad(xs: List[int]) {
+    xs.clear()
+}
+
+fn main() {
+    let xs = [1, 2]
+    for x in xs {
+        bad(xs)
+    }
+}
+
+// panic: list modified during iteration

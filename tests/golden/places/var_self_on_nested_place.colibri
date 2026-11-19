@@ -1,0 +1,17 @@
+struct Pos { x: int }
+impl Pos {
+    fn right(var self) {
+        self.x += 1
+    }
+}
+struct E { pos: Pos }
+class W { es: List[E] }
+
+fn main() {
+    let w = W { es: [E { pos: Pos { x: 0 } }] }
+    w.es[0].pos.right()
+    w.es[0].pos.right()
+    print(w.es)
+}
+
+// expect: [E { pos: Pos { x: 2 } }]

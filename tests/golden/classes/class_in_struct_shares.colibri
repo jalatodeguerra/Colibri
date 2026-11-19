@@ -1,0 +1,14 @@
+class Tag { label: str }
+struct Item { id: int, tag: Tag }
+
+fn main() {
+    let t = Tag { label: "a" }
+    let i = Item { id: 1, tag: t }
+    let j = i
+    j.tag.label = "b"
+    print(t.label)
+    print(i.tag is j.tag)
+}
+
+// expect: b
+// expect: true
