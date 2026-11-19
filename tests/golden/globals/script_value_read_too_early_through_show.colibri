@@ -1,0 +1,13 @@
+// The checker does not follow a `Show` implementation that `print` runs, so reading a script
+// value before its line is caught when it happens (DESIGN §4.2).
+struct P {
+    x: int
+}
+impl Show for P {
+    fn show(self) -> str => "P{later}"
+}
+print("start")
+print(P { x: 1 })
+let later = 5
+// expect: start
+// panic: `later` is used before it is initialised

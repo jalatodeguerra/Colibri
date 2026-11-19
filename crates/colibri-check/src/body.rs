@@ -791,7 +791,12 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         let floor = std::mem::replace(&mut self.scope_floor, self.scopes.len());
         self.ck.mute();
         let back = self.ck.enter_module(module);
+        let mark = self.deps.len();
         let mut value = self.check_expr(default, Some(ty));
+        // What the default uses is used by this call: errors point at the call.
+        for dep in &mut self.deps[mark..] {
+            dep.1 = call;
+        }
         let ok = self.infer.coerce(&value.ty, ty).is_ok();
         self.ck.enter_module(back);
         self.ck.unmute();

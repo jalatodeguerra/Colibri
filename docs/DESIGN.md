@@ -368,7 +368,7 @@ var score = 0                         // mutable module state
 A script, and the error for reading a value before the script reaches it:
 
 ```colibri
-var items = []
+var items: List[int] = []
 items.push(1)
 let n = items.len()
 print(n)                              // prints 1
@@ -395,7 +395,11 @@ let total = 10                        // `total` is initialised here, further do
   the declaration (`` `x` is initialised here, further down ``). The use can be indirect, through
   a function the code calls or refers to, and the error then shows the chain of functions
   (`report() -> total`). The check is conservative: referring to a function counts even if it is
-  only called later, for example when it is passed as a value or started with `go`. The hint is
+  only called later, for example when it is passed as a value, started with `go` or used in a
+  `defer`. A call the checker cannot follow (through an interface value or a type-parameter
+  bound, or a `Show`, `Eq` or `Drop` implementation run by `print`, `==` or a drop) is caught
+  when it happens instead: reading a script value before its line panics with
+  `` `x` is used before it is initialised ``. The hint is
   to move the declaration above its first use, or to move the code into a function called after
   it. It is also an error when a value that is initialised before the script runs (an imported
   module's value or a `const`) has an initialiser that reaches a script `let` or `var`:

@@ -462,7 +462,11 @@ turns out to matter, it moves into DESIGN.md.
     the script (an imported module's value or a `const`) whose initialiser reaches a script
     `let`/`var` is the error "`name` is initialised before the script runs, so it cannot use
     `x`". A cycle among script values is reported as the use-before-initialisation error; cycles
-    among dependency-ordered values are reported as before.
+    among dependency-ordered values are reported as before. What a default argument uses is
+    recorded at the call. Dispatch through an interface or a bound and the implicit calls of
+    `Show`/`Eq`/`Drop` record no dependency, so the interpreter also keeps `Interp::uninit`, the
+    names of the script values whose line has not run, and reading one panics (a `Global`
+    anchor checks it when it is resolved; `InitGlobal` and `run_initialisers` clear it).
 17. **Show of composites (DESIGN §7.4).** `print(x)` and `"{x}"` work for every value. At the
     top level a `str` and a `char` print bare; inside a composite they are quoted and escaped
     (the quote, `\\`, `\n`, `\r`, `\t` and `\0` as backslash escapes, other control characters as
@@ -2753,9 +2757,11 @@ A session is one growing program checked as one unit (§11), but only the new co
   entries. Nothing is replayed: earlier statements never run again.
 - The session program is not one file read top to bottom, so the REPL checks with
   `CheckOptions { dependency_order: true }`: dependency order across the whole session, with no
-  use-before-initialisation errors. Each entry still *runs* in source order: an entry that mixes
-  declarations and statements is split into pieces at each point where a declaration follows a
-  statement, and the pieces are committed one after another. So the one-line entry
+  use-before-initialisation errors. Each entry still *runs* in source order: an entry is split
+  into pieces before each `let`/`var` that follows a statement, and the pieces are committed one
+  after another (only the last one shows an expression's value). Other declarations (`fn`,
+  types, `impl`, `const`) stay in the piece where they are written, so one there cannot name a
+  `let`/`var` of a later piece of the same entry. So the one-line entry
   `var items: List[int] = []; items.push(1); let n = items.len()` gives `n == 1`. If a later piece
   fails to check or panics, the earlier pieces have already run and stay committed.
 - `Vm::session_commit` replaces the code tables of the running `Interp` (like a hot-reload
