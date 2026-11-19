@@ -81,7 +81,9 @@ enum Command {
 }
 
 /// Checks `file`, printing every diagnostic to stderr. `Err` is the exit code to stop with.
-fn check(file: &Path, interface_files: &[PathBuf]) -> Result<(), ExitCode> {
+/// With `all_modules`, a package's modules that its entry does not import are checked too
+/// (`colibri check`); `run` needs only what the program uses.
+fn check(file: &Path, interface_files: &[PathBuf], all_modules: bool) -> Result<(), ExitCode> {
     let color = io::stderr().is_terminal();
     let mut interfaces = colibri_std::interfaces();
     for path in interface_files {
@@ -99,7 +101,12 @@ fn check(file: &Path, interface_files: &[PathBuf]) -> Result<(), ExitCode> {
         interfaces,
         caps: colibri::CapSet::all(),
     };
-    match colibri::check_path_with(file, &config) {
+    let checked = if all_modules && file.is_dir() {
+        colibri::check_package_all_with(file, &config)
+    } else {
+        colibri::check_path_with(file, &config)
+    };
+    match checked {
         Ok(report) => {
             eprint!("{}", report.render(color));
             if report.has_errors() {
@@ -116,7 +123,7 @@ fn check(file: &Path, interface_files: &[PathBuf]) -> Result<(), ExitCode> {
 }
 
 fn run(file: &Path, args: Vec<String>, leaks: Option<LeakMode>) -> ExitCode {
-    if let Err(code) = check(file, &[]) {
+    if let Err(code) = check(file, &[], false) {
         return code;
     }
     let color = io::stderr().is_terminal();
@@ -181,7 +188,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     on_big_stack(move || match cli.command {
         Command::Check { file, interfaces } => {
-            match check(&file.unwrap_or_else(|| PathBuf::from(".")), &interfaces) {
+            match check(&file.unwrap_or_else(|| PathBuf::from(".")), &interfaces, true) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(code) => code,
             }

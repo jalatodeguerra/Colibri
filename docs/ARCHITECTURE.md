@@ -1848,8 +1848,10 @@ under the package root**, including ones nobody imports (skipping folders that s
 folders with their own `colibri.toml`, which are other packages). `import`ed modules of a script
 are loaded as always; stray siblings of a script are not (they are not part of it, §11.1). The
 extra modules come first in initialisation order, the entry last. Nothing runs at load: no
-initialisers, no top-level statements. `colibri check` does *not* use this option, so a file
-that nobody imports stays unchecked there, as before; `colibri test` checks it.
+initialisers, no top-level statements. `colibri check <package folder>` and `colibri test` use
+this option, so a module that nobody imports is checked there; `colibri run` and the single-file
+`colibri check file.colibri` check only what the entry imports (`colibri::check_package_all_with`
+is the library entry for the first).
 
 ### Isolation: fresh module state per test
 
@@ -1950,7 +1952,6 @@ hint: an endless loop? raise the limit with `--budget <steps>` (0 is unlimited)
 
 ### Known limitations
 
-- `colibri check` does not look at modules a package's entry does not import.
 - No parallel runs, no per-test timeout in time (only the step budget), no test attributes
   (`@skip`, `@should_panic`), no setup/teardown hooks other than module initialisers and
   `defer`, no `assert_ne`, no float tolerance helper, no source text in the `assert` message.

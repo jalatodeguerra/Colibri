@@ -285,7 +285,7 @@ pub fn check_sources_with(files: &[(&str, &str)], config: &CheckConfig) -> Repor
     for (path, text) in files {
         fs.insert(path, *text);
     }
-    check_entry(&fs, Entry::File(Path::new(entry)), config).unwrap_or_else(|e| {
+    check_entry(&fs, Entry::File(Path::new(entry)), config, false).unwrap_or_else(|e| {
         // Unreachable for files in memory except an unusable entry name; say so in a report.
         let mut sources = SourceMap::new();
         let file = sources.add_file(entry.to_string(), String::new());
@@ -296,7 +296,12 @@ pub fn check_sources_with(files: &[(&str, &str)], config: &CheckConfig) -> Repor
     })
 }
 
-fn check_entry(fs: &dyn SourceFs, entry: Entry<'_>, config: &CheckConfig) -> Result<Report, Error> {
+fn check_entry(
+    fs: &dyn SourceFs,
+    entry: Entry<'_>,
+    config: &CheckConfig,
+    all_modules: bool,
+) -> Result<Report, Error> {
     let mut env = colibri_check::HostEnv::new();
     for interface in &config.interfaces {
         env.merge(interface.env.clone());
@@ -305,11 +310,13 @@ fn check_entry(fs: &dyn SourceFs, entry: Entry<'_>, config: &CheckConfig) -> Res
         env.grant(cap.name());
     }
     let mut sources = SourceMap::new();
-    let loaded = colibri_check::package::load(fs, &mut sources, entry, &env.named_modules())
-        .map_err(|e| Error::Io {
-            path: e.path,
-            message: e.message,
-        })?;
+    let options = colibri_check::package::LoadOptions { all_modules };
+    let loaded =
+        colibri_check::package::load_with(fs, &mut sources, entry, &env.named_modules(), options)
+            .map_err(|e| Error::Io {
+                path: e.path,
+                message: e.message,
+            })?;
     let mut diagnostics = loaded.diagnostics.clone();
     // A tree with syntax errors would only produce follow-on errors.
     if !loaded.has_errors() {
@@ -347,13 +354,22 @@ pub fn check_file_with_stack_budget(
 
 /// Like [`check_source_with`], reading the source from a file.
 pub fn check_file_with(path: impl AsRef<Path>, config: &CheckConfig) -> Result<Report, Error> {
-    check_entry(&DiskFs, Entry::File(path.as_ref()), config)
+    check_entry(&DiskFs, Entry::File(path.as_ref()), config, false)
 }
 
 /// Checks the package in folder `dir` (its `colibri.toml` and everything its `main.colibri`
 /// imports) without running it; see [`Vm::load_package`].
 pub fn check_package_with(dir: impl AsRef<Path>, config: &CheckConfig) -> Result<Report, Error> {
-    check_entry(&DiskFs, Entry::Package(dir.as_ref()), config)
+    check_entry(&DiskFs, Entry::Package(dir.as_ref()), config, false)
+}
+
+/// Like [`check_package_with`], and also checks every `.colibri` file under the package root,
+/// including modules `main.colibri` does not import (see [`Vm::load_tests`]).
+pub fn check_package_all_with(
+    dir: impl AsRef<Path>,
+    config: &CheckConfig,
+) -> Result<Report, Error> {
+    check_entry(&DiskFs, Entry::Package(dir.as_ref()), config, true)
 }
 
 /// [`check_package_with`] for a folder, [`check_file_with`] for anything else: what `colibri

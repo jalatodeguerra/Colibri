@@ -631,3 +631,38 @@ fn run_leaks_is_quiet_when_nothing_leaks() {
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stderr.is_empty());
 }
+
+/// A package whose `stray.colibri` has a type error and is imported by nobody.
+fn package_with_stray_module(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("colibri-cli-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("colibri.toml"), "[package]\nname = \"demo\"\n").unwrap();
+    std::fs::write(dir.join("main.colibri"), "fn main() {\n    print(1)\n}\n").unwrap();
+    std::fs::write(
+        dir.join("sub/stray.colibri"),
+        "pub fn bad() -> int => \"text\"\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn check_looks_at_package_modules_the_entry_does_not_import() {
+    let dir = package_with_stray_module("check_stray");
+    let out = colibri(&["check", dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("stray.colibri"));
+    // `run` only needs what the program uses.
+    let out = colibri(&["run", dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+}
+
+#[test]
+fn check_of_a_package_with_a_script_beside_it_is_unchanged() {
+    let dir = package_with_stray_module("check_script");
+    // A single file keeps checking only what it imports.
+    let out = colibri(&["check", dir.join("main.colibri").to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+}
