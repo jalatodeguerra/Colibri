@@ -25,6 +25,7 @@ pub mod hir;
 pub mod host;
 mod ifaces;
 pub mod infer;
+pub mod insight;
 mod iter;
 mod loops;
 mod matching;
@@ -99,4 +100,19 @@ pub fn check_modules(
     budget: usize,
 ) -> Checked {
     checker::Checker::new(inputs, packages, host, budget).run()
+}
+
+/// Like [`check_modules`], and also records what every expression and name resolved to, for
+/// hover and go to definition (see [`insight`]). Only this entry point pays for it. The
+/// [`insight::Insight`] is built even when the program has errors.
+pub fn check_modules_with_insight(
+    inputs: &[ModuleInput<'_>],
+    packages: &[package::PackageNode],
+    host: &HostEnv,
+    budget: usize,
+) -> (Checked, insight::Insight) {
+    let (checked, insight) = checker::Checker::new(inputs, packages, host, budget)
+        .recording()
+        .run_with_insight();
+    (checked, insight.unwrap_or_default())
 }

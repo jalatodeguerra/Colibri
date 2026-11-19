@@ -1,19 +1,31 @@
 {
   "name": "colibri",
   "displayName": "Colibri",
-  "description": "Syntax highlighting for the Colibri programming language",
+  "description": "Syntax highlighting and language server support for the Colibri programming language",
   "version": "0.1.0",
   "publisher": "colibri-lang",
   "license": "MIT OR Apache-2.0",
-  "repository": { "type": "git", "url": "https://github.com/jalatodeguerra/leo" },
-  "engines": { "vscode": "^1.80.0" },
-  "categories": ["Programming Languages"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jalatodeguerra/leo"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
   "contributes": {
     "languages": [
       {
         "id": "colibri",
-        "aliases": ["Colibri", "colibri"],
-        "extensions": [".colibri"],
+        "aliases": [
+          "Colibri",
+          "colibri"
+        ],
+        "extensions": [
+          ".colibri"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -23,6 +35,31 @@
         "scopeName": "source.colibri",
         "path": "./syntaxes/colibri.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Colibri",
+      "properties": {
+        "colibri.server.path": {
+          "type": "string",
+          "default": "colibri",
+          "description": "The `colibri` executable that runs `colibri lsp`."
+        },
+        "colibri.interfaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Interface files (`.cbi`) describing what the host program provides, relative to the workspace folder. `.cbi` files next to a `colibri.toml` are found without being listed. Restart the server after changing."
+        }
+      }
+    }
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:colibri"
+  ],
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
   }
 }

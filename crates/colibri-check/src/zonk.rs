@@ -9,6 +9,7 @@ use crate::hir::{
     Storage, UnOp,
 };
 use crate::infer::InferCtx;
+use crate::insight::{RawFact, Target, expr_facts, type_fact};
 use crate::types::{IntTy, Ty};
 
 pub(crate) fn zonk_body(
@@ -17,6 +18,7 @@ pub(crate) fn zonk_body(
     locals: &mut [LocalInfo],
     diags: &mut Vec<Diagnostic>,
     had_errors: bool,
+    facts: Option<&mut Vec<RawFact>>,
 ) {
     let mut z = Zonker {
         infer,
@@ -24,9 +26,32 @@ pub(crate) fn zonk_body(
         reported_unresolved: false,
         had_errors,
         storage: Vec::new(),
+        facts,
+        locals: Vec::new(),
     };
     for local in locals.iter_mut() {
         z.ty(&mut local.ty, local.span);
+    }
+    if z.facts.is_some() {
+        z.locals = locals
+            .iter()
+            .map(|l| (l.name.clone(), l.mutable, l.span, l.ty.clone()))
+            .collect();
+        if let Some(out) = z.facts.as_deref_mut() {
+            for (name, mutable, span, ty) in &z.locals {
+                if name != "<temp>" && !ty.is_error() {
+                    out.push(RawFact {
+                        span: *span,
+                        ty: ty.clone(),
+                        target: Target::Local {
+                            name: name.clone(),
+                            mutable: *mutable,
+                            def: *span,
+                        },
+                    });
+                }
+            }
+        }
     }
     z.storage = locals.iter().map(|l| l.storage).collect();
     z.block(block);
@@ -42,6 +67,10 @@ struct Zonker<'a> {
     had_errors: bool,
     /// How each local of the body is stored, to give captures of cell variables their mode.
     storage: Vec<Storage>,
+    /// Where to record what each expression is (see [`crate::insight`]), when asked to.
+    facts: Option<&'a mut Vec<RawFact>>,
+    /// Name, mutability, declaration and type of each local, kept only when recording.
+    locals: Vec<(String, bool, Span, Ty)>,
 }
 
 /// The arithmetic kind of a resolved operand type.
@@ -269,6 +298,9 @@ impl Zonker<'_> {
 
     fn expr(&mut self, e: &mut Expr) {
         self.ty(&mut e.ty, e.span);
+        if let Some(out) = self.facts.as_deref_mut() {
+            type_fact(e, out);
+        }
         match &mut e.kind {
             ExprKind::Lit(lit) => self.literal(lit, &e.ty, e.span),
             ExprKind::Read(p) => self.place(p),
@@ -406,6 +438,11 @@ impl Zonker<'_> {
                 }
             }
             ExprKind::Error => {}
+        }
+        if let Some(out) = self.facts.as_deref_mut() {
+            let locals = &self.locals;
+            let lookup = |id: crate::hir::LocalId| locals.get(id.0 as usize).cloned();
+            expr_facts(e, &lookup, out);
         }
     }
 }
