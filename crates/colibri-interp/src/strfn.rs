@@ -16,7 +16,7 @@ use crate::iter::IterObj;
 use crate::value::Value;
 
 /// The most integers `range.to_list()` builds.
-const MAX_RANGE_LIST: u64 = 1 << 27;
+pub(crate) const MAX_RANGE_LIST: u64 = 1 << 27;
 
 /// The text a `StrBuilder` holds. Its object has two fields: the chunks appended so far (a
 /// list of strings, so an append is O(1)) and the total byte length.
@@ -239,13 +239,12 @@ impl Interp {
             (Builtin::RangeIsEmpty, Some(Value::Range(r)), _) => Ok(Value::Bool(r.is_empty())),
             (Builtin::RangeToList, Some(Value::Range(r)), _) => {
                 if r.len() > MAX_RANGE_LIST {
+                    // `len` saturates at `u64::MAX`: only the full inclusive range gets there.
+                    let n = u128::from(r.len()) + u128::from(r.len() == u64::MAX);
                     return Err(self.panic(
                         fiber,
                         span,
-                        format!(
-                            "a range of {} integers is too long to turn into a list",
-                            r.len()
-                        ),
+                        format!("a range of {n} integers is too long to turn into a list"),
                     ));
                 }
                 let items = if r.inclusive {

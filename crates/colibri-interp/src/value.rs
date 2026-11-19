@@ -79,10 +79,11 @@ pub struct RangeVal {
 }
 
 impl RangeVal {
-    /// How many integers the range holds.
+    /// How many integers the range holds, saturating at `u64::MAX` (the full
+    /// inclusive `i64` range holds 2^64).
     pub fn len(&self) -> u64 {
         let span = i128::from(self.end) - i128::from(self.start) + i128::from(self.inclusive);
-        u64::try_from(span.max(0)).unwrap_or(0)
+        u64::try_from(span.max(0)).unwrap_or(u64::MAX)
     }
 
     pub fn is_empty(&self) -> bool {

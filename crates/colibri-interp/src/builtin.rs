@@ -120,7 +120,16 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
         Value::Str(s) => s.len(),
         Value::Map(m) => m.len(),
         Value::Set(s) => s.len(),
-        Value::Range(r) => usize::try_from(r.len()).unwrap_or(usize::MAX),
+        // A range too long for `to_list` panics there, so the charge stops at the limit
+        // (a saturated length would otherwise exhaust the budget first).
+        Value::Range(r) => {
+            let cap = if op == B::RangeToList {
+                crate::strfn::MAX_RANGE_LIST + 1
+            } else {
+                u64::MAX
+            };
+            usize::try_from(r.len().min(cap)).unwrap_or(usize::MAX)
+        }
         Value::Obj(o) => match o.field(1) {
             Some(Value::Int(n)) => usize::try_from(n).unwrap_or(0),
             _ => return None,
