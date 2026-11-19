@@ -1405,7 +1405,7 @@ time and sleeping".
   (`none` at end of input), `read_all() -> Result[str]`. `print` stays a builtin.
 - `fs`: `read`, `read_bytes`, `write`, `write_bytes`, `append`, `exists`, `is_file`, `is_dir`,
   `list` (sorted names), `create_dir` (like `mkdir -p`), `remove`, `remove_dir` (recursive), `copy`,
-  `rename`, `size`. Failures are `err` with the message of the OS error and the path.
+  `rename`, `size`, `modified` (seconds since the Unix epoch, a float). Failures are `err` with the message of the OS error and the path.
 - `path`: pure string functions with `/` separators only: `join`, `file_name`, `stem`, `ext`,
   `with_ext`, `parent`, `is_absolute`, `normalize`, `split`.
 - `os`: see the table; `args() -> List[str]`, `platform() -> str`, `env(name) -> Option[str]`,

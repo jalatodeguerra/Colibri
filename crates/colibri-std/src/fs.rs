@@ -108,5 +108,14 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             .map_err(|e| fail("look at", &path, &e))
             .and_then(|meta| i64::try_from(meta.len()).map_err(|_| format!("`{path}` is too big")))
     });
+    // Last modification, in seconds since the Unix epoch (like `time.unix()`).
+    fs_fn!("modified", ["path"], |path: String| {
+        let meta = std::fs::metadata(&path).map_err(|e| fail("look at", &path, &e))?;
+        let time = meta.modified().map_err(|e| fail("look at", &path, &e))?;
+        Ok::<_, String>(match time.duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_secs_f64(),
+            Err(e) => -e.duration().as_secs_f64(),
+        })
+    });
     Ok(())
 }
