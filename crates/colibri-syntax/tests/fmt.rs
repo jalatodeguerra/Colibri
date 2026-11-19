@@ -100,6 +100,12 @@ type Style = fn(usize, &str) -> String;
 /// Puts a comment on every line of every golden file, in three styles, and formats the
 /// result. `format_source` itself checks that the program and every comment survive.
 #[test]
+fn hashed_raw_strings_round_trip() {
+    let src = "let j = r#\"[{\"a\": 1}]\"#\nlet k = r##\"x \"# y\"##\n";
+    check(src, src);
+}
+
+#[test]
 fn comments_everywhere_survive() {
     let styles: [(&str, Style); 3] = [
         ("trailing", |n, line| format!("{line} // t{n}")),
@@ -142,7 +148,7 @@ fn comments_everywhere_survive() {
 fn indentation_of_the_input_does_not_matter() {
     let mut failures = Vec::new();
     for (path, src) in parseable_golden() {
-        if src.contains("\"\"\"") || src.contains("/*") {
+        if src.contains("\"\"\"") || src.contains("/*") || src.contains("r#\"") {
             continue; // the text of these depends on the layout
         }
         let flat: String = src
