@@ -324,3 +324,40 @@ fn an_unlimited_vm_never_runs_out() {
     assert_eq!(f.call(&mut vm, ()).unwrap(), 200_000);
     assert!(vm.steps_used() > 200_000);
 }
+
+const SET_ALGEBRA: &str = "struct K { v: int }
+impl Eq for K { fn eq(self, o: K) -> bool => self.v == o.v }
+fn ints() -> int {
+    let a = Set((0..5000).to_list())
+    let b = Set((2500..7500).to_list())
+    return a.union(b).len()
+}
+fn ks() -> int {
+    let a = Set((0..400).to_list().map(fn(i) => K { v: i }))
+    let b = Set((200..600).to_list().map(fn(i) => K { v: i }))
+    return a.union(b).len()
+}
+";
+
+#[test]
+fn set_algebra_on_ints_ignores_an_unrelated_user_eq() {
+    // A scan per element would take about 25 million steps.
+    let (mut vm, _) = vm_with(500_000);
+    vm.load_source("sets.colibri", SET_ALGEBRA).unwrap();
+    let ints = vm.get_fn::<(), i64>("ints").unwrap();
+    assert_eq!(ints.call(&mut vm, ()).unwrap(), 7500);
+}
+
+#[test]
+fn set_algebra_by_a_user_eq_charges_the_comparisons() {
+    let (mut vm, _) = vm_with(50_000);
+    vm.load_source("sets.colibri", SET_ALGEBRA).unwrap();
+    let ks = vm.get_fn::<(), i64>("ks").unwrap();
+    // 400 x 400 comparisons do not fit in 50 000 steps.
+    let err = ks.call(&mut vm, ()).unwrap_err();
+    exhausted(&err);
+    let (mut vm, _) = vm_with(5_000_000);
+    vm.load_source("sets.colibri", SET_ALGEBRA).unwrap();
+    let ks = vm.get_fn::<(), i64>("ks").unwrap();
+    assert_eq!(ks.call(&mut vm, ()).unwrap(), 600);
+}

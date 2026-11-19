@@ -40,6 +40,26 @@ fn set_of(v: &Value) -> Option<Rc<SetObj>> {
     }
 }
 
+/// Whether a value can never be compared by a user-written `Eq`: the primitives (a user
+/// cannot implement `Eq` for them) and tuples of them. Everything else might be.
+pub(crate) fn never_user_eq(v: &Value) -> bool {
+    match v {
+        Value::Unit
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::U64(_)
+        | Value::Ptr(_)
+        | Value::Float(_)
+        | Value::F32(_)
+        | Value::Vec(_)
+        | Value::IVec(_)
+        | Value::Char(_)
+        | Value::Str(_) => true,
+        Value::Tuple(items) => items.iter().all(never_user_eq),
+        _ => false,
+    }
+}
+
 fn int_of(v: &Value) -> Option<i64> {
     match v {
         Value::Int(i) => Some(*i),
@@ -498,7 +518,7 @@ impl Interp {
                 | Builtin::MapEntries
                 | Builtin::MapClear
         ) {
-            let keys = if self.has_custom_eq() {
+            let keys = if self.has_custom_eq() && !args.get(1).is_some_and(never_user_eq) {
                 map.keys()
             } else {
                 Vec::new()
@@ -592,7 +612,7 @@ impl Interp {
             op,
             Builtin::SetLen | Builtin::SetIsEmpty | Builtin::SetClear
         ) {
-            let keys = if self.has_custom_eq() {
+            let keys = if self.has_custom_eq() && !args.get(1).is_some_and(never_user_eq) {
                 set.snapshot()
             } else {
                 Vec::new()
@@ -640,19 +660,22 @@ impl Interp {
     }
 
     /// Whether `item` is in the set whose elements are `items`: by the user-written `Eq` of
-    /// the element type when there is one (a scan), else by structure.
+    /// the element type when `scan` (some element may have one), else by structure.
     fn set_has(
         &mut self,
         fiber: &mut Fiber,
         set: &SetObj,
         items: &[Value],
         item: &Value,
+        scan: bool,
         span: Span,
     ) -> Eval<bool> {
-        if !self.has_custom_eq() {
+        if !scan {
             return Ok(set.contains(item));
         }
         for x in items {
+            // One step per comparison actually made: a user `Eq` may do anything.
+            self.charge(fiber, span, 1)?;
             if self.eq_deep(fiber, x, item, span)? {
                 return Ok(true);
             }
@@ -694,6 +717,10 @@ impl Interp {
         (rset, right): (&SetObj, &[Value]),
         span: Span,
     ) -> Eval {
+        // Only elements that may have a user `Eq` need the scan; all elements of a set share
+        // one type, so the first of each side tells.
+        let scan = self.has_custom_eq()
+            && !(left.first().is_none_or(never_user_eq) && right.first().is_none_or(never_user_eq));
         // Which elements of `side` are (not) in `other`.
         let pick = |this: &mut Self,
                     fiber: &mut Fiber,
@@ -703,7 +730,7 @@ impl Interp {
          -> Eval<Vec<Value>> {
             let mut out = Vec::new();
             for x in side {
-                if this.set_has(fiber, other.0, other.1, x, span)? == wanted {
+                if this.set_has(fiber, other.0, other.1, x, scan, span)? == wanted {
                     out.push(x.clone());
                 }
             }
