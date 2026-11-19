@@ -82,6 +82,8 @@ pub(crate) struct ModInfo<'a> {
     /// The package (folder) a source module is in; `None` for host modules and the base.
     pub package: Option<usize>,
     pub entry: bool,
+    /// An unimported module of the package (see `ModuleMeta::script`).
+    pub script: bool,
     /// Not a module of a dependency: the program's own (false for a dependency's).
     pub root: bool,
     pub imports: Option<&'a HashMap<NodeId, ImportTarget>>,

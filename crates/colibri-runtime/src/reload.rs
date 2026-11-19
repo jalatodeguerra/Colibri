@@ -223,6 +223,14 @@ impl SourceFs for RecordingFs<'_> {
     fn list(&self, dir: &Path) -> Vec<String> {
         self.inner.list(dir)
     }
+
+    fn is_symlink(&self, path: &Path) -> bool {
+        self.inner.is_symlink(path)
+    }
+
+    fn canonical(&self, path: &Path) -> PathBuf {
+        self.inner.canonical(path)
+    }
 }
 
 /// What makes two programs "the same declarations" for patching, in labelled parts, plus one

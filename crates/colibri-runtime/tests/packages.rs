@@ -524,3 +524,103 @@ fn lints_are_reported_for_the_apps_code_not_a_dependencys() {
     assert!(!warnings.contains("spare"), "{warnings}");
     assert!(!warnings.contains("unused import `helper`"), "{warnings}");
 }
+
+const APP_MANIFEST: &str = "[package]\nname = \"app\"\n";
+
+fn check_all(dir: &Path) -> colibri::Report {
+    colibri::check_package_all_with(dir, &colibri::CheckConfig::default()).unwrap()
+}
+
+#[test]
+fn a_module_nobody_imports_may_have_top_level_statements() {
+    let dir = tree(
+        "script-module",
+        &[
+            ("colibri.toml", APP_MANIFEST),
+            (
+                "main.colibri",
+                "import util\nfn main() { print(\"{util.f()}\") }\n",
+            ),
+            ("util.colibri", "pub fn f() -> int { return 1 }\n"),
+            ("examples/demo.colibri", "print(\"demo script\")\n"),
+        ],
+    );
+    let report = check_all(&dir);
+    assert!(!report.has_errors(), "{}", report.render(false));
+    // The statements are still checked.
+    std::fs::write(dir.join("examples/demo.colibri"), "print(1 + \"a\")\n").unwrap();
+    let report = check_all(&dir);
+    assert!(report.has_errors(), "{}", report.render(false));
+    // `run` does not load it at all, and it never runs under `test`.
+    std::fs::write(
+        dir.join("examples/demo.colibri"),
+        "print(\"demo script\")\n",
+    )
+    .unwrap();
+    let (mut vm, out) = vm();
+    vm.load_tests(&dir).unwrap();
+    assert_eq!(out.contents(), "");
+}
+
+#[test]
+fn an_imported_module_still_may_not_have_top_level_statements() {
+    let dir = tree(
+        "imported-stmt",
+        &[
+            ("colibri.toml", APP_MANIFEST),
+            (
+                "main.colibri",
+                "import util\nfn main() { print(\"{util.f()}\") }\n",
+            ),
+            (
+                "util.colibri",
+                "print(\"hi\")\npub fn f() -> int { return 1 }\n",
+            ),
+        ],
+    );
+    let report = check_all(&dir);
+    assert!(
+        report
+            .render(false)
+            .contains("top-level statements are only allowed in the entry file"),
+        "{}",
+        report.render(false)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_folder_walk_does_not_follow_links() {
+    use std::os::unix::fs::symlink;
+    let dir = tree(
+        "links",
+        &[
+            ("colibri.toml", APP_MANIFEST),
+            ("main.colibri", "fn main() { print(\"main\") }\n"),
+            (
+                "sub/m.colibri",
+                "pub fn f() -> int {\n    let spare = 1\n    return 2\n}\n",
+            ),
+        ],
+    );
+    symlink("../sub", dir.join("sub/again")).unwrap();
+    symlink("sub", dir.join("subl")).unwrap();
+    symlink("sub/m.colibri", dir.join("linked.colibri")).unwrap();
+    let report = check_all(&dir);
+    let text = report.render(false);
+    assert!(!report.has_errors(), "{text}");
+    assert_eq!(
+        text.matches("Warning: unused variable `spare`").count(),
+        1,
+        "{text}"
+    );
+    // A file reached through a link and by its own name is one module.
+    let (mut vm, _) = vm();
+    vm.load_tests(&dir).unwrap();
+    assert_eq!(
+        vm.render_warnings(false)
+            .matches("Warning: unused variable `spare`")
+            .count(),
+        1
+    );
+}

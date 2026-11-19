@@ -489,6 +489,7 @@ mod tests {
             name: String::new(),
             package: 0,
             entry: true,
+            script: false,
             dependency: false,
             ffi: true,
             imports: HashMap::new(),

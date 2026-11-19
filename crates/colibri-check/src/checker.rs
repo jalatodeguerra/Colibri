@@ -233,6 +233,9 @@ pub(crate) struct Checker<'a> {
     pub derived_impls: HashMap<(TypeKey, TypeId), ImplId>,
     /// The entry file's top-level statements and `let`/`var` bindings, in source order.
     script: Vec<ScriptStep<'a>>,
+    /// The top-level statements of unimported modules (scripts of the package): checked in
+    /// their own module, never run.
+    module_scripts: Vec<(ModId, Vec<&'a ast::Stmt>)>,
     script_body: Option<Rc<Body>>,
     /// For each step of the script, the module-level items it refers to (see
     /// [`FnCtx::check_script`]).
@@ -358,6 +361,7 @@ impl<'a> Checker<'a> {
             files: Vec::new(),
             package: None,
             entry: false,
+            script: false,
             root: false,
             imports: None,
             scope: Scope::default(),
@@ -385,6 +389,7 @@ impl<'a> Checker<'a> {
                 kind: ModKind::Host,
                 package: None,
                 entry: false,
+                script: false,
                 root: false,
                 imports: None,
                 scope: Scope::default(),
@@ -402,6 +407,7 @@ impl<'a> Checker<'a> {
                 files: vec![input.file],
                 package: Some(meta.package),
                 entry: meta.entry,
+                script: meta.script,
                 root: !meta.dependency,
                 imports: Some(&meta.imports),
                 scope: Scope::default(),
@@ -456,6 +462,7 @@ impl<'a> Checker<'a> {
             impl_by_key: HashMap::new(),
             derived_impls: HashMap::new(),
             script: Vec::new(),
+            module_scripts: Vec::new(),
             script_body: None,
             script_deps: Vec::new(),
             dependency_order: false,
@@ -506,6 +513,7 @@ impl<'a> Checker<'a> {
             self.script.retain(|s| matches!(s, ScriptStep::Stmt(_)));
         }
         self.check_script();
+        self.check_module_scripts();
         self.lint_unused_imports();
         let script_globals: Vec<GlobalId> = self
             .script
@@ -686,6 +694,12 @@ impl<'a> Checker<'a> {
                                 }
                                 TopLevel::Stmt(stmt) if entry => {
                                     self.script.push(ScriptStep::Stmt(stmt));
+                                }
+                                TopLevel::Stmt(stmt) if self.mods[m.0 as usize].script => {
+                                    match self.module_scripts.last_mut() {
+                                        Some((last, stmts)) if *last == m => stmts.push(stmt),
+                                        _ => self.module_scripts.push((m, vec![stmt])),
+                                    }
                                 }
                                 TopLevel::Stmt(stmt) => {
                                     if !reported {
@@ -1500,6 +1514,18 @@ impl<'a> Checker<'a> {
         self.enter_module(back);
         self.script_body = Some(Rc::new(body));
         self.script_deps = deps;
+    }
+
+    /// The statements of unimported modules are checked as a body of their module whose result
+    /// is dropped: they are never part of the program that runs.
+    fn check_module_scripts(&mut self) {
+        for (m, stmts) in std::mem::take(&mut self.module_scripts) {
+            let steps: Vec<ScriptStep<'a>> = stmts.into_iter().map(ScriptStep::Stmt).collect();
+            let span = self.file.span;
+            let back = self.enter_module(m);
+            let _ = FnCtx::new(self, "<script>".to_string(), None).check_script(&steps, span);
+            self.enter_module(back);
+        }
     }
 
     /// The entry file's `fn main`, if it has one.
