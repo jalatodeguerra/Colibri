@@ -84,6 +84,7 @@ impl FnCtx<'_, '_> {
                 handler,
             } => self.check_or_handler(lhs, binding.as_ref(), handler, span, expected),
             ExprKind::Try(inner) => self.check_try(inner, span),
+            ExprKind::Go(call) => self.check_go(call, span),
             ExprKind::Field { base, name } => self.check_field_expr(base, name, span),
             ExprKind::TupleIndex { base, index } => self.check_tuple_index_expr(base, *index, span),
             ExprKind::Index { base, args } => self.check_index_expr(base, args, e),

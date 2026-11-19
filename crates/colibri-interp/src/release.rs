@@ -151,7 +151,10 @@ impl Interp {
     /// else its class name.
     fn trace_destroy(&mut self, obj: &ClassObj) {
         // An `Error` is plumbing, not a game object: its kept value is traced when it dies.
-        if self.trace.is_none() || obj.ty() == colibri_check::types::ERROR_TYPE {
+        if self.trace.is_none()
+            || obj.ty() == colibri_check::types::ERROR_TYPE
+            || obj.ty() == colibri_check::types::COROUTINE_TYPE
+        {
             return;
         }
         let label = self.types.get(obj.ty().0 as usize).map(|def| {
@@ -174,6 +177,8 @@ impl Interp {
     /// empty, like [`Interp::shutdown`] but keeping the host's roots (the program stays loaded).
     /// Used between tests: a `Drop` hook that panics here has nobody to tell.
     pub fn release_globals(&mut self) {
+        self.cancel_all_coroutines();
+        self.sched_forget_failures();
         let outermost = self.begin_entry();
         let order: Vec<usize> = self.inits.iter().map(|(g, _)| g.0 as usize).collect();
         for g in order.into_iter().rev() {
@@ -189,6 +194,8 @@ impl Interp {
     /// Ends the program's life: module-level values die in reverse initialisation order
     /// (DESIGN §11.2). Safe to call twice.
     pub fn shutdown(&mut self) {
+        // Coroutines unwind first: their locals may use module-level values.
+        self.cancel_all_coroutines();
         let outermost = self.begin_entry();
         // Roots die first, then the module's values (EMBEDDING §3).
         self.clear_roots();

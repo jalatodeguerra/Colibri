@@ -336,7 +336,6 @@ pub fn dump_stmt(s: &Stmt) -> String {
         }
         StmtKind::Continue { label: l } => list("continue", label(l).into_iter().collect()),
         StmtKind::Defer(inner) => list("defer", vec![dump_stmt(inner)]),
-        StmtKind::Go(e) => list("go", vec![dump_expr(e)]),
         StmtKind::For {
             label: l,
             mutable,
@@ -516,6 +515,7 @@ pub fn dump_expr(e: &Expr) -> String {
             ],
         ),
         ExprKind::Try(inner) => list("try", vec![dump_expr(inner)]),
+        ExprKind::Go(call) => list("go", vec![dump_expr(call)]),
         ExprKind::Call { callee, args } => {
             let mut parts = vec![dump_expr(callee)];
             parts.extend(args.iter().map(dump_arg));

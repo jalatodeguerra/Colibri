@@ -431,6 +431,12 @@ pub enum ExprKind {
     /// `a || b`; `b` runs only when `a` is false.
     Or(Box<Expr>, Box<Expr>),
     Call(Box<Call>),
+    /// `go call(..)` (DESIGN §14.2): the operand is an [`ExprKind::Call`] whose callee is
+    /// a function, a function value, an interface method or a host function (never a `var self`
+    /// receiver or an intrinsic). The arguments are evaluated on the caller's fiber, the call
+    /// itself runs on a new coroutine, and the value is its `Coroutine[T]` handle, where `T`
+    /// is the call's type.
+    Go(Box<Expr>),
     /// Concatenates its string parts (the desugaring of string interpolation).
     StrConcat(Vec<Expr>),
     If {
@@ -738,6 +744,16 @@ pub enum Intrinsic {
     /// A method of a number type (`x.wrapping_add(y)`, `x.sqrt()`); the receiver is the first
     /// argument and `Num` is its type.
     NumMethod(NumMethod, Num),
+    /// `wait(seconds: float)`: pauses the running coroutine for game time.
+    Wait,
+    /// `wait_frames(n: int)`: pauses for `n` ticks.
+    WaitFrames,
+    /// `wait_until(cond: fn() -> bool)`: pauses until `cond()` is true, checked at every tick.
+    WaitUntil,
+    /// `wait_real(seconds: float)`: pauses for wall-clock time.
+    WaitReal,
+    /// `task.tick(dt: float)`: resumes the coroutines that are due.
+    TaskTick,
 }
 
 /// The methods of the numeric types (DESIGN §5.1, Q6).
@@ -880,6 +896,13 @@ pub enum Builtin {
     ErrorContext,
     /// `e.cause() -> Error?`
     ErrorCause,
+    // ---- Coroutine[T] (DESIGN §14.2) ----
+    /// `c.cancel()`
+    CoroutineCancel,
+    /// `c.done() -> bool`
+    CoroutineDone,
+    /// `c.join() -> T`
+    CoroutineJoin,
 }
 
 #[derive(Debug)]

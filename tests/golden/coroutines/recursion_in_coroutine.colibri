@@ -1,0 +1,16 @@
+fn depth(n: int) -> int {
+    if n == 0 { return 0 }
+    return 1 + depth(n - 1)
+}
+
+fn runaway() {
+    let n = depth(1000000)
+    print(n)
+}
+
+fn main() {
+    go runaway()
+}
+
+// A coroutine has its own native stack budget: deep recursion is a clean panic.
+// panic: stack overflow

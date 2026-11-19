@@ -1,0 +1,3 @@
+fn main() {
+    let a = go 5 // error: `go` must be followed by a function call
+}

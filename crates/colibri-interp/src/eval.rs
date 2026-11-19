@@ -50,7 +50,7 @@ pub struct Interp {
     script: Option<Rc<Body>>,
     out: Box<dyn Write>,
     max_depth: usize,
-    native_stack_budget: usize,
+    pub(crate) native_stack_budget: usize,
     /// The labels of destroyed class objects, when tracing is on (`set_trace_drops`).
     pub(crate) trace: Option<Vec<String>>,
     /// Interface implementations and the user-written methods that replace derived behaviour.
@@ -63,6 +63,8 @@ pub struct Interp {
     pub(crate) budget: crate::budget::Budget,
     /// What the embedding program attached: host functions, state and roots.
     pub(crate) host: crate::host::HostSide,
+    /// The coroutine scheduler (ARCHITECTURE §16).
+    pub(crate) sched: crate::coro::Scheduler,
 }
 
 /// The default for [`Interp::set_native_stack_budget`]: small enough for a default test thread.
@@ -98,6 +100,7 @@ impl Interp {
             hook_depth: 0,
             budget: crate::budget::Budget::new(),
             host: crate::host::HostSide::default(),
+            sched: crate::coro::Scheduler::new(),
         }
     }
 
@@ -571,6 +574,7 @@ impl Interp {
             ExprKind::Call(call) => {
                 self.eval_call(fiber, &call.callee, &call.type_args, &call.args, e.span)
             }
+            ExprKind::Go(call) => self.eval_go(fiber, call, e.span),
             ExprKind::Coerce(inner, how) => {
                 let value = self.eval(fiber, inner)?;
                 Ok(self.coerce(value, how))
@@ -863,7 +867,7 @@ impl Interp {
             }
         }
         match callee {
-            Callee::Fn(id) => {
+            Callee::Fn(id) if receiver.is_some() => {
                 let Some(body) = self.fns.get(id.0 as usize).cloned() else {
                     return Err(self.internal(fiber, span, "unknown function"));
                 };
@@ -875,9 +879,50 @@ impl Interp {
                 };
                 self.call_with_receiver(fiber, body, values, place, span)
             }
+            Callee::Bound { iface, method } | Callee::Dyn { iface, method }
+                if receiver.is_some() =>
+            {
+                self.call_interface(fiber, *iface, *method, values, receiver, span)
+            }
+            Callee::Fn(_)
+            | Callee::Host(_)
+            | Callee::Bound { .. }
+            | Callee::Dyn { .. }
+            | Callee::Value => self.call_values(fiber, callee, type_args, values, span),
+            Callee::Intrinsic(intrinsic) => {
+                if let Some(place) = receiver {
+                    let r = self.resolve_anchor(fiber, place, span)?;
+                    let v = self.get_resolved(fiber, &r, &place.path, span)?;
+                    values.insert(0, v);
+                }
+                self.intrinsic(fiber, intrinsic, values, span)
+            }
+        }
+    }
+
+    /// Calls `callee` with already evaluated arguments (the callee owns them): everything but
+    /// a `var self` receiver. `go` runs this on the new coroutine's fiber.
+    pub(crate) fn call_values(
+        &mut self,
+        fiber: &mut Fiber,
+        callee: &Callee,
+        type_args: &[Ty],
+        mut values: Vec<Value>,
+        span: Span,
+    ) -> Eval {
+        match callee {
+            Callee::Fn(id) => {
+                let Some(body) = self.fns.get(id.0 as usize).cloned() else {
+                    return Err(self.internal(fiber, span, "unknown function"));
+                };
+                if let Some(frame) = fiber.frames.last_mut() {
+                    frame.span = span;
+                }
+                self.call_body(fiber, body, values)
+            }
             Callee::Host(id) => self.call_host(fiber, *id, type_args, values, span),
             Callee::Bound { iface, method } | Callee::Dyn { iface, method } => {
-                self.call_interface(fiber, *iface, *method, values, receiver, span)
+                self.call_interface(fiber, *iface, *method, values, None, span)
             }
             Callee::Value => {
                 if values.is_empty() {
@@ -889,14 +934,7 @@ impl Interp {
                 }
                 self.call_function_value(fiber, &f, values, span)
             }
-            Callee::Intrinsic(intrinsic) => {
-                if let Some(place) = receiver {
-                    let r = self.resolve_anchor(fiber, place, span)?;
-                    let v = self.get_resolved(fiber, &r, &place.path, span)?;
-                    values.insert(0, v);
-                }
-                self.intrinsic(fiber, intrinsic, values, span)
-            }
+            Callee::Intrinsic(_) => Err(self.internal(fiber, span, "an intrinsic is not a call")),
         }
     }
 
@@ -951,6 +989,16 @@ impl Interp {
         if let Intrinsic::Builtin(op) = intrinsic {
             return self.builtin(fiber, *op, args, span);
         }
+        if matches!(
+            intrinsic,
+            Intrinsic::Wait
+                | Intrinsic::WaitFrames
+                | Intrinsic::WaitUntil
+                | Intrinsic::WaitReal
+                | Intrinsic::TaskTick
+        ) {
+            return self.coro_intrinsic(fiber, intrinsic, args, span);
+        }
         if matches!(intrinsic, Intrinsic::Assert | Intrinsic::AssertEq) {
             return self.assertion(fiber, intrinsic, args, span);
         }
@@ -1003,7 +1051,12 @@ impl Interp {
             | Intrinsic::Assert
             | Intrinsic::AssertEq
             | Intrinsic::Convert { .. }
-            | Intrinsic::NumMethod(..) => Value::Unit,
+            | Intrinsic::NumMethod(..)
+            | Intrinsic::Wait
+            | Intrinsic::WaitFrames
+            | Intrinsic::WaitUntil
+            | Intrinsic::WaitReal
+            | Intrinsic::TaskTick => Value::Unit,
         };
         self.release(arg);
         Ok(result)

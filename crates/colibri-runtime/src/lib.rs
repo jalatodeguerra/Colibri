@@ -160,7 +160,7 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 /// }
 /// ```
 pub use colibri_bind::export;
-pub use colibri_interp::DEFAULT_NATIVE_STACK_BUDGET;
+pub use colibri_interp::{Clock, DEFAULT_NATIVE_STACK_BUDGET, SystemClock};
 pub use colibri_syntax::{Diagnostic, Severity, SourceMap, Span};
 pub use convert::{Args, FromColibri, IntoColibri, Value, ValueKind};
 pub use ctx::{Caller, Ctx, Cx};

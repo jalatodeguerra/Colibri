@@ -1,0 +1,23 @@
+import testclock
+
+fn sleeper() {
+    wait_real(2.0)
+    print("two real seconds")
+}
+
+fn main() {
+    go sleeper()
+    task.tick(10.0)
+    print("game time passes, real time does not")
+    testclock.advance(1.0)
+    task.tick(0.0)
+    print("one second")
+    testclock.advance(1.0)
+    task.tick(0.0)
+    print("done")
+}
+
+// expect: game time passes, real time does not
+// expect: one second
+// expect: two real seconds
+// expect: done

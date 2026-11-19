@@ -37,8 +37,12 @@ pub const INTO_ERROR: TypeId = TypeId(10);
 /// The built-in `Error` (DESIGN §10.1): a reference type, declared in the prelude as an
 /// empty `class` so the checker treats it as one (identity equality, no fields to build).
 pub const ERROR_TYPE: TypeId = TypeId(11);
+/// The built-in `Coroutine[T]` (DESIGN §14.2): a reference type declared in the prelude as an
+/// empty generic `class`, like `Error`. `T` is the type the coroutine's function returns
+/// (what `join()` gives back).
+pub const COROUTINE_TYPE: TypeId = TypeId(12);
 /// The first id a user-defined type can have.
-pub const FIRST_USER_TYPE: u32 = 12;
+pub const FIRST_USER_TYPE: u32 = 13;
 /// The index of `ok` in the prelude `Result`.
 pub const VARIANT_OK: u32 = 0;
 /// The index of `err` in the prelude `Result`.

@@ -13,10 +13,11 @@ use crate::checker::ParamInfo;
 use crate::hir::{self, Builtin, Callee, Expr};
 use crate::modules::BASE;
 use crate::optres::{
-    ERROR_METHODS, OPTION_METHODS, RESULT_METHODS, error_sig, option_sig, result_sig,
+    COROUTINE_METHODS, ERROR_METHODS, OPTION_METHODS, RESULT_METHODS, coroutine_sig, error_sig,
+    option_sig, result_sig,
 };
 use crate::suggest;
-use crate::types::{ERROR_TYPE, ITER, RESULT_TYPE, Ty};
+use crate::types::{COROUTINE_TYPE, ERROR_TYPE, ITER, RESULT_TYPE, Ty};
 
 /// What a method needs of the element type beyond its signature.
 #[derive(Clone)]
@@ -365,6 +366,7 @@ pub(crate) fn builtin_method_exists(ty: &Ty, name: &str) -> bool {
             result_sig(&a[0], &a[1], name, &mut fresh).is_some()
         }
         Ty::Adt(ERROR_TYPE, _) => error_sig(name).is_some(),
+        Ty::Adt(COROUTINE_TYPE, a) if a.len() == 1 => coroutine_sig(&a[0], name).is_some(),
         _ => false,
     }
 }
@@ -396,6 +398,9 @@ impl FnCtx<'_, '_> {
                 RESULT_METHODS,
             ),
             Ty::Adt(ERROR_TYPE, _) => (error_sig(&name.name), ERROR_METHODS),
+            Ty::Adt(COROUTINE_TYPE, a) if a.len() == 1 => {
+                (coroutine_sig(&a[0], &name.name), COROUTINE_METHODS)
+            }
             _ => return Err(recv),
         };
         let Some(sig) = sig else {

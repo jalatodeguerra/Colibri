@@ -1,0 +1,25 @@
+fn work() {
+    defer {
+        print("defer runs")
+        wait(1.0)
+        print("defer waited")
+    }
+    let xs = [1, 2, 3]
+    xs.for_each(fn(x) {
+        print("item {x}")
+        wait(1.0)
+    })
+}
+
+fn main() {
+    go work()
+    for i in 0..5 {
+        task.tick(1.0)
+    }
+}
+
+// expect: item 1
+// expect: item 2
+// expect: item 3
+// expect: defer runs
+// expect: defer waited
