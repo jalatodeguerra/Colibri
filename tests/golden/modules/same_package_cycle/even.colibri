@@ -1,0 +1,6 @@
+import odd
+
+pub fn is_even(n: int) -> bool {
+    if n == 0 { return true }
+    return odd.is_odd(n - 1)
+}

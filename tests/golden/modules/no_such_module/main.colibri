@@ -1,0 +1,3 @@
+import nothing.here // error: no module
+import std.io // error: no module
+fn main() {}

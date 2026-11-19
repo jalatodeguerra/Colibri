@@ -93,6 +93,9 @@ impl FnCtx<'_, '_> {
                 }
             },
             ExprKind::Field { base, name } => {
+                if let Some(q) = self.qualified_parts(base, name) {
+                    return self.ident_place(&q, target.span);
+                }
                 let base_place = self.place_base(base)?;
                 let base_ty = base_place.ty();
                 let (idx, ty) = self.field_of(&base_ty, name, base.span)?;

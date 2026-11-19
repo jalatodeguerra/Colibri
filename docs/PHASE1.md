@@ -61,6 +61,21 @@ behind the same `Vm` API.
 | `// main-err: text` | `main` returns `err(e)`: the run ends with `Error::MainReturnedErr` whose message (the whole error chain) contains `text`. The CLI prints `error: ..` to stderr and exits 1 (a panic exits 101). |
 | `// drops: a, b, c` | The class objects destroyed, in order, up to and including the module-level values released after `main` (reverse initialisation order). An object is labelled by its `name: str` field if it has one, else its class name. Compared only when the directive is present; `// drops:` alone expects none. |
 
+### Folders as tests
+
+A folder under `tests/golden/` that holds a `main.colibri` is one test (named `dir/`), and the
+files in it, at any depth, are one program: the harness runs `Vm::load_file(dir/main.colibri)`, so
+the folder is the implicit package and its subfolders are packages (ARCHITECTURE §11). The folder
+is not searched for further tests. Directives are read from every `.colibri` file in it:
+
+- `// error:` and `// warning:` apply to the line of the file that carries them, and the
+  diagnostic must be reported in that same file (the harness compares file and line).
+- `// expect:` lines form the expected stdout: those of `main.colibri` first, then those of the
+  other files in path order.
+- `// drops:`, `// panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only.
+
+Package tests live in `tests/golden/modules/`.
+
 ## PR sequence
 
 1. Workspace skeleton, CI (fmt, clippy, test), golden-test harness, syntax highlighting grammar.
@@ -76,8 +91,8 @@ behind the same `Vm` API.
 8. Embedding API: `register_fn`, exported host types, generational handles, `.cbi`, capabilities.
    Part A (host functions, `.cbi`, capabilities, instruction budget, callbacks) is built (slice 7a);
    part B (exported host types, generational handles, `colibri-bind`) is built (slice 7b).
-9. Packages and `import`; `colibri check`, minimal LSP, `colibri test`, `colibri fmt` (built:
-   ARCHITECTURE §12); core std.
+9. Packages and `import` (built, slice 8: ARCHITECTURE §11); `colibri check`, minimal LSP,
+   `colibri test`, `colibri fmt` (built: ARCHITECTURE §12); core std.
 10. Milestone: a small Rust program with its own game loop running gameplay logic from Colibri.
 
 Large steps may split into several PRs.

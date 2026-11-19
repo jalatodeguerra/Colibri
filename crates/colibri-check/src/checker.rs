@@ -7,6 +7,7 @@ use std::rc::Rc;
 use colibri_syntax::ast::{self, BindKind, ItemKind, PatKind, TopLevel, TypeKind};
 use colibri_syntax::{Diagnostic, Span};
 
+use crate::ModuleInput;
 use crate::body::FnCtx;
 use crate::decls::{AliasInfo, TypeExtra};
 use crate::generics::SigCtx;
@@ -16,7 +17,9 @@ use crate::hir::{
 };
 use crate::host::{self, HOST_FILE, HostEnv};
 use crate::ifaces::IfaceInfo;
+use crate::modules::{AliasId, BASE, Exports, ModId, ModInfo, ModKind, Scope};
 use crate::obligations::Obligation;
+use crate::package::{ModuleMeta, PackageNode};
 use crate::prelude;
 use crate::suggest;
 use crate::traits::{BoundRef, GenericParamInfo, ImplInfo};
@@ -54,6 +57,8 @@ pub(crate) struct ParamInfo<'a> {
     pub default: Option<&'a ast::Expr>,
     /// A `var self` receiver: the local is assignable.
     pub mutable: bool,
+    /// The module whose names the default is written in.
+    pub module: ModId,
 }
 
 pub(crate) struct FnInfo<'a> {
@@ -78,6 +83,10 @@ pub(crate) struct FnInfo<'a> {
     pub self_ty: Option<Ty>,
     /// Set for a function the host provides; it has no body.
     pub host: Option<HostFnInfo>,
+    /// The module whose names the signature and body use.
+    pub module: ModId,
+    /// Marked `pub` (exported from its package). Host functions are.
+    pub public: bool,
 }
 
 impl FnInfo<'_> {
@@ -106,6 +115,7 @@ pub(crate) struct GlobalInfo<'a> {
     state: GlobalState,
     pub body: Option<Rc<Body>>,
     pub deps: Vec<Dep>,
+    pub module: ModId,
 }
 
 /// The result of checking a file.
@@ -118,7 +128,20 @@ pub struct Checked {
 }
 
 pub(crate) struct Checker<'a> {
+    /// The entry file: where problems with no better place are reported.
     pub file: &'a ast::File,
+    /// Every module: the base (prelude, default host module), the named host modules, then the
+    /// source modules in initialisation order.
+    pub mods: Vec<ModInfo<'a>>,
+    /// The module being checked; its scope is in the fields below.
+    pub cur_mod: ModId,
+    /// Where the source modules start in `mods`.
+    pub source_base: u32,
+    pub package_names: Vec<String>,
+    /// Imported module names of the current scope.
+    pub mod_aliases: HashMap<String, ModId>,
+    /// Where imported names came from (current scope), for clash messages.
+    pub origins: HashMap<String, String>,
     /// What the host provides and which capabilities it granted.
     pub host: &'a HostEnv,
     /// Set while the items of the host interface are collected.
@@ -141,7 +164,11 @@ pub(crate) struct Checker<'a> {
     /// What HIR does not keep about each type, parallel to `types`.
     pub type_extra: Vec<TypeExtra<'a>>,
     pub type_ids: HashMap<String, TypeId>,
-    pub aliases: HashMap<String, AliasInfo<'a>>,
+    pub aliases: HashMap<String, AliasId>,
+    /// Every type alias, indexed by [`AliasId`].
+    pub alias_infos: Vec<AliasInfo<'a>>,
+    /// How many types have been checked for infinite size.
+    pub infinite_checked: usize,
     /// Methods and static functions by owner and name (inherent `impl` blocks).
     pub methods: HashMap<(TypeId, String), FnId>,
     /// Whether every declaration is collected, so bounds can be decided at once instead of
@@ -262,9 +289,62 @@ pub(crate) fn stack_position() -> usize {
 pub(crate) const BUILTIN_FNS: &[&str] = &["print", "panic"];
 
 impl<'a> Checker<'a> {
-    pub fn new(file: &'a ast::File, host: &'a HostEnv, stack_budget: usize) -> Self {
+    pub fn new(
+        inputs: &[ModuleInput<'a>],
+        packages: &[PackageNode],
+        host: &'a HostEnv,
+        stack_budget: usize,
+    ) -> Self {
+        let file = inputs.last().map_or(prelude::prelude(), |m| m.file);
+        let mut mods = vec![ModInfo {
+            name: "host".to_string(),
+            kind: ModKind::Base,
+            files: Vec::new(),
+            package: None,
+            entry: false,
+            imports: None,
+            scope: Scope::default(),
+            exports: Exports::default(),
+            alias_spans: HashMap::new(),
+        }];
+        for name in host.named_modules() {
+            mods.push(ModInfo {
+                files: host.module_files(&name),
+                name,
+                kind: ModKind::Host,
+                package: None,
+                entry: false,
+                imports: None,
+                scope: Scope::default(),
+                exports: Exports::default(),
+                alias_spans: HashMap::new(),
+            });
+        }
+        let source_base = mods.len() as u32;
+        for input in inputs {
+            let meta: &'a ModuleMeta = input.meta;
+            mods.push(ModInfo {
+                name: meta.name.clone(),
+                kind: ModKind::Source,
+                files: vec![input.file],
+                package: Some(meta.package),
+                entry: meta.entry,
+                imports: Some(&meta.imports),
+                scope: Scope::default(),
+                exports: Exports::default(),
+                alias_spans: HashMap::new(),
+            });
+        }
         Checker {
             file,
+            mods,
+            cur_mod: BASE,
+            source_base,
+            package_names: packages.iter().map(|p| p.name.clone()).collect(),
+            mod_aliases: HashMap::new(),
+            origins: HashMap::new(),
+            alias_infos: Vec::new(),
+            infinite_checked: 0,
             host,
             collecting_host: false,
             host_fn_count: 0,
@@ -367,7 +447,6 @@ impl<'a> Checker<'a> {
     // ---- collecting declarations ----
 
     fn collect(&mut self) {
-        let file = self.file;
         let prelude_file: &'static ast::File = prelude::prelude();
         let prelude_items: Vec<&'a ast::Item> = prelude_file
             .items
@@ -377,29 +456,15 @@ impl<'a> Checker<'a> {
                 TopLevel::Stmt(_) => None,
             })
             .collect();
-        let items: Vec<&'a ast::Item> = file
-            .items
-            .iter()
-            .filter_map(|top| match top {
-                TopLevel::Item(item) => Some(item),
-                TopLevel::Stmt(_) => None,
-            })
-            .collect();
-        let host_items: Vec<&'a ast::Item> = self.host.items().collect();
-        let all: Vec<&'a ast::Item> = prelude_items
-            .iter()
-            .chain(&host_items)
-            .chain(&items)
-            .copied()
-            .collect();
-        // Types first, so every signature can name them whatever the order of the file.
+        let host: &'a HostEnv = self.host;
+        // The base: the prelude and the default host module, whose names every module sees.
         // Host types come right after the prelude's, so their ids are the same in every
         // program that uses the same interface.
-        let before_user = prelude_items.len() + host_items.len();
-        self.declare_types(&all[..before_user]);
-        self.host_type_count = self.types.len() as u32 - crate::types::FIRST_USER_TYPE;
-        self.declare_types(&all[before_user..]);
-        self.define_types(&all);
+        let host_items: Vec<&'a ast::Item> = host.default_items().collect();
+        let base_items: Vec<&'a ast::Item> =
+            prelude_items.iter().chain(&host_items).copied().collect();
+        self.declare_types(&base_items);
+        self.define_types(&base_items);
         for item in &prelude_items {
             self.collect_item(item);
         }
@@ -408,14 +473,90 @@ impl<'a> Checker<'a> {
             self.collect_host_item(item);
         }
         self.collecting_host = false;
-        for top in &file.items {
-            match top {
-                TopLevel::Item(item) => self.collect_item(item),
-                TopLevel::Stmt(stmt) => self.script.push(stmt),
+        // Every other module starts from a copy of the base.
+        let base_scope = self.snapshot_scope();
+        for m in 1..self.mods.len() {
+            self.mods[m].scope = base_scope.clone();
+        }
+        let others: Vec<ModId> = (1..self.mods.len() as u32).map(ModId).collect();
+        // Types first, so every signature can name them whatever the order of the files.
+        let mut module_items: Vec<Vec<&'a ast::Item>> = Vec::new();
+        let mut host_end = self.types.len();
+        for &m in &others {
+            let items = self.mods[m.0 as usize].items();
+            self.enter_module(m);
+            self.declare_types(&items);
+            if self.mods[m.0 as usize].kind == ModKind::Host {
+                host_end = self.types.len();
+            }
+            module_items.push(items);
+        }
+        self.host_type_count = host_end as u32 - crate::types::FIRST_USER_TYPE;
+        for &m in &others {
+            self.bind_imports_types(m);
+        }
+        for (k, &m) in others.iter().enumerate() {
+            self.enter_module(m);
+            self.define_adts(&module_items[k]);
+        }
+        for (k, &m) in others.iter().enumerate() {
+            self.enter_module(m);
+            self.define_interfaces(&module_items[k]);
+        }
+        for &m in &others {
+            self.enter_module(m);
+            self.define_aliases();
+        }
+        let mut from = self.infinite_checked;
+        self.check_infinite_sizes(&mut from);
+        for (k, &m) in others.iter().enumerate() {
+            self.enter_module(m);
+            match self.mods[m.0 as usize].kind {
+                ModKind::Host => {
+                    self.collecting_host = true;
+                    for item in &module_items[k] {
+                        self.collect_host_item(item);
+                    }
+                    self.collecting_host = false;
+                }
+                _ => {
+                    let entry = self.mods[m.0 as usize].entry;
+                    let tops: Vec<&'a ast::File> = self.mods[m.0 as usize].files.clone();
+                    for file in tops {
+                        let mut reported = false;
+                        for top in &file.items {
+                            match top {
+                                TopLevel::Item(item) => self.collect_item(item),
+                                TopLevel::Stmt(stmt) if entry => self.script.push(stmt),
+                                TopLevel::Stmt(stmt) => {
+                                    if !reported {
+                                        reported = true;
+                                        self.report_top_level_statement(m, stmt.span);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
+        for &m in &others {
+            self.bind_imports_values(m);
+        }
+        self.enter_module(BASE);
         self.collected = true;
         self.flush_pending();
+    }
+
+    fn report_top_level_statement(&mut self, m: ModId, span: Span) {
+        let name = self.mods[m.0 as usize].name.clone();
+        self.report(
+            Diagnostic::error(
+                format!("top-level statements are only allowed in the entry file, not in `{name}`"),
+                span,
+            )
+            .with_hint("an imported module holds declarations only (`fn`, `struct`, `let`, ...); move the statement into a function and call it from the entry file"),
+        );
     }
 
     /// A declaration of the host interface. Types were declared with everything else; a
@@ -425,7 +566,7 @@ impl<'a> Checker<'a> {
         match &item.kind {
             ItemKind::Fn(decl) => {
                 let id = self.add_fn(item, decl, &SigCtx::default());
-                self.declare_value(&decl.name.name, decl.name.span, ValueRef::Fn(id));
+                self.declare_value(&decl.name.name, decl.name.span, ValueRef::Fn(id), true);
             }
             ItemKind::Impl(decl) => self.collect_impl(decl, item),
             _ => {}
@@ -445,7 +586,8 @@ impl<'a> Checker<'a> {
             | ItemKind::TypeAlias(_)
             | ItemKind::Interface(_) => {}
             ItemKind::Impl(decl) => self.collect_impl(decl, item),
-            ItemKind::Import(_) => self.unsupported("`import`", item.span),
+            // Bound after every declaration is known (`bind_imports_types` / `_values`).
+            ItemKind::Import(_) => {}
             ItemKind::Extern(_) if !self.host.is_granted("ffi") => {
                 let diag = Diagnostic::error(
                     "`extern` blocks need the `ffi` capability, which this host did not grant",
@@ -461,7 +603,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Declares a module-level name, reporting a clash.
-    fn declare_value(&mut self, name: &str, span: Span, value: ValueRef) -> bool {
+    fn declare_value(&mut self, name: &str, span: Span, value: ValueRef, public: bool) -> bool {
         if BUILTIN_FNS.contains(&name) {
             self.report(Diagnostic::error(
                 format!("`{name}` is a built-in function and cannot be redefined"),
@@ -493,13 +635,19 @@ impl<'a> Checker<'a> {
             return false;
         }
         self.values.insert(name.to_string(), value);
+        self.export_value(name, value, public);
         true
     }
 
     fn collect_fn(&mut self, item: &'a ast::Item, decl: &'a ast::FnDecl) {
         let id = self.add_fn(item, decl, &SigCtx::default());
         // A clash keeps the later declaration out of the name table but still checks its body.
-        self.declare_value(&decl.name.name, decl.name.span, ValueRef::Fn(id));
+        self.declare_value(
+            &decl.name.name,
+            decl.name.span,
+            ValueRef::Fn(id),
+            item.public,
+        );
     }
 
     /// Resolves a function's signature and records it; the body is checked later.
@@ -522,9 +670,14 @@ impl<'a> Checker<'a> {
             }
         });
         let poisoned = sig.poisoned || (decl.body.is_none() && host.is_none());
+        // A function of a module other than the entry is named after its module.
+        let prefix = match &self.mods[self.cur_mod.0 as usize] {
+            m if m.kind == ModKind::Source && !m.entry => format!("{}.", m.name),
+            _ => String::new(),
+        };
         let name = match &ctx.owner {
-            Some(owner) => format!("{owner}.{}", decl.name.name),
-            None => decl.name.name.clone(),
+            Some(owner) => format!("{prefix}{owner}.{}", decl.name.name),
+            None => format!("{prefix}{}", decl.name.name),
         };
         let id = FnId(self.fns.len() as u32);
         self.fns.push(FnInfo {
@@ -540,7 +693,9 @@ impl<'a> Checker<'a> {
             deps: Vec::new(),
             generics: sig.generics,
             self_ty: ctx.self_ty.clone(),
+            public: item.public || self.collecting_host,
             host,
+            module: self.cur_mod,
         });
         id
     }
@@ -567,8 +722,9 @@ impl<'a> Checker<'a> {
             state: GlobalState::Unchecked,
             body: None,
             deps: Vec::new(),
+            module: self.cur_mod,
         });
-        self.declare_value(&name.name, name.span, ValueRef::Global(id));
+        self.declare_value(&name.name, name.span, ValueRef::Global(id), item.public);
     }
 
     // ---- types ----
@@ -577,11 +733,16 @@ impl<'a> Checker<'a> {
     pub fn resolve_type(&mut self, t: &ast::TypeExpr) -> Ty {
         match &t.kind {
             TypeKind::Named { path, args } => {
-                if path.len() != 1 {
-                    self.unsupported("qualified type name", t.span);
-                    return Ty::Error;
+                // `player.Player` is the name `player.Player` in the scope (ARCHITECTURE §11.3).
+                if path.len() == 1 {
+                    return self.resolve_named(path[0].name.as_str(), args, t.span);
                 }
-                self.resolve_named(path[0].name.as_str(), args, t.span)
+                let name = path
+                    .iter()
+                    .map(|i| i.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                self.resolve_named(&name, args, t.span)
             }
             TypeKind::Tuple(items) if items.is_empty() => Ty::Unit,
             TypeKind::Tuple(items) => {
@@ -659,8 +820,8 @@ impl<'a> Checker<'a> {
         if let Some(&id) = self.type_ids.get(name) {
             return self.instantiate_type(id, args, span);
         }
-        if self.aliases.contains_key(name) {
-            return self.alias_instance(name, args, span);
+        if let Some(&alias) = self.aliases.get(name) {
+            return self.alias_instance(alias, args, span);
         }
         if !args.is_empty() && !self.poisoned_types.contains(name) {
             let known = Ty::numeric_by_name(name).is_some()
@@ -828,6 +989,12 @@ impl<'a> Checker<'a> {
     }
 
     fn report_unknown_type(&mut self, name: &str, span: Span) {
+        if let Some((alias, member)) = self.split_qualified(name)
+            && let Some(diag) = self.unknown_member(alias, member, span)
+        {
+            self.report(diag);
+            return;
+        }
         let mut diag = Diagnostic::error(format!("unknown type `{name}`"), span);
         let known = ["int", "float", "bool", "str", "char", "i64", "f64"];
         let declared = self
@@ -852,13 +1019,14 @@ impl<'a> Checker<'a> {
                 Ty::Adt(id, Vec::new())
             });
         }
-        if let Some(alias) = self.aliases.get(name) {
+        if let Some(&id) = self.aliases.get(name) {
+            let alias = &self.alias_infos[id.0 as usize];
             // A generic alias cannot stand alone; it is usable only with its arguments.
             if !alias.generics.is_empty() {
                 return Some(Ty::Error);
             }
             let span = alias.name_span;
-            return Some(self.alias_instance(name, &[], span));
+            return Some(self.alias_instance(id, &[], span));
         }
         None
     }
@@ -892,12 +1060,15 @@ impl<'a> Checker<'a> {
         let declared = info.ty.clone();
         let annotation_span = info.annotation_span;
         let span = info.span;
+        let module = info.module;
+        let back = self.enter_module(module);
         let (body, ty, deps) = FnCtx::new(self, format!("<init {name}>"), None).check_initialiser(
             &decl.init,
             declared.as_ref(),
             annotation_span,
             span,
         );
+        self.enter_module(back);
         let info = &mut self.globals[g.0 as usize];
         info.ty = Some(ty);
         info.body = Some(Rc::new(body));
@@ -923,9 +1094,11 @@ impl<'a> Checker<'a> {
                         field.ty.clone()
                     };
                     let generics = self.type_extra[t].generics.clone();
+                    let back = self.enter_module(self.type_extra[t].module.unwrap_or(BASE));
                     let mark = self.enter_generics(&generics);
                     FnCtx::new(self, name, None).check_default(default, &ty);
                     self.leave_generics(mark);
+                    self.enter_module(back);
                 }
             }
         }
@@ -933,6 +1106,7 @@ impl<'a> Checker<'a> {
             let params = self.fns[f].params.clone();
             let generics = self.fns[f].generics.clone();
             let self_ty = self.fns[f].self_ty.clone();
+            let back = self.enter_module(self.fns[f].module);
             let mark = self.enter_generics(&generics);
             let saved = std::mem::replace(&mut self.self_ty, self_ty);
             for p in params {
@@ -943,6 +1117,7 @@ impl<'a> Checker<'a> {
             }
             self.self_ty = saved;
             self.leave_generics(mark);
+            self.enter_module(back);
         }
     }
 
@@ -963,6 +1138,8 @@ impl<'a> Checker<'a> {
         );
         let mutates_self = info.receiver == Some(true);
         let (generics, self_ty) = (info.generics.clone(), info.self_ty.clone());
+        let module = info.module;
+        let back = self.enter_module(module);
         let mark = self.enter_generics(&generics);
         let saved = std::mem::replace(&mut self.self_ty, self_ty);
         let (body, deps) = FnCtx::new(self, name, Some((ret.clone(), ret_span)))
@@ -970,6 +1147,7 @@ impl<'a> Checker<'a> {
             .check_fn_body(decl, &params, &ret, ret_span, span);
         self.self_ty = saved;
         self.leave_generics(mark);
+        self.enter_module(back);
         let info = &mut self.fns[f.0 as usize];
         info.body = Some(Rc::new(body));
         info.deps = deps;
@@ -978,14 +1156,22 @@ impl<'a> Checker<'a> {
     fn check_script(&mut self) {
         let stmts = std::mem::take(&mut self.script);
         let span = self.file.span;
+        let back = self.enter_module(self.entry_mod());
         // The script runs after every initialiser, so its dependencies need no ordering.
         let body = FnCtx::new(self, "<script>".to_string(), None).check_script(&stmts, span);
+        self.enter_module(back);
         self.script_body = Some(Rc::new(body));
     }
 
     /// `fn main` must be callable with no arguments and return nothing.
     fn check_main(&mut self) -> Option<FnId> {
-        let ValueRef::Fn(id) = *self.values.get("main")? else {
+        let entry = self.entry_mod();
+        let ValueRef::Fn(id) = self.mods[entry.0 as usize]
+            .exports
+            .values
+            .get("main")?
+            .target
+        else {
             return None;
         };
         let info = &self.fns[id.0 as usize];
@@ -1113,6 +1299,7 @@ impl<'a> Checker<'a> {
                         h.id,
                         HostFnDef {
                             name: f.name.clone(),
+                            module: self.mods[f.module.0 as usize].name.clone(),
                             f: FnId(i as u32),
                             requires: h.requires.clone(),
                         },
@@ -1181,6 +1368,11 @@ impl<'a> Checker<'a> {
             host_fns,
             host_types: self.host_type_count,
         })
+    }
+
+    /// The module the program starts from.
+    pub fn entry_mod(&self) -> ModId {
+        ModId(self.mods.len() as u32 - 1)
     }
 
     /// Names in scope at module level, for "did you mean".

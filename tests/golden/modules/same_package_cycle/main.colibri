@@ -1,0 +1,7 @@
+import even
+import odd
+
+fn main() {
+    print("{even.is_even(10)} {odd.is_odd(7)}")
+}
+// expect: true true

@@ -6,6 +6,7 @@ use std::fmt;
 use std::any::TypeId as AnyTypeId;
 
 use colibri_check::hir::{Program, TypeDefKind};
+use colibri_check::host::DEFAULT_MODULE;
 use colibri_check::types::{ERROR_TYPE, FIRST_USER_TYPE, IntTy, RESULT_TYPE, Ty};
 
 use crate::class::{HostType, TypeBuilder};
@@ -89,6 +90,24 @@ impl fmt::Display for TypeDesc {
 }
 
 impl TypeDesc {
+    /// The names of the structs, enums and host classes this type mentions.
+    pub(crate) fn mentions<'a>(&'a self, out: &mut Vec<&'a str>) {
+        match self {
+            TypeDesc::List(t) | TypeDesc::Option(t) | TypeDesc::Result(t) => t.mentions(out),
+            TypeDesc::Tuple(items) => items.iter().for_each(|t| t.mentions(out)),
+            TypeDesc::Map(k, v) => {
+                k.mentions(out);
+                v.mentions(out);
+            }
+            TypeDesc::Fn(params, ret) => {
+                params.iter().for_each(|t| t.mentions(out));
+                ret.mentions(out);
+            }
+            TypeDesc::Value(name) | TypeDesc::Host(name) => out.push(name),
+            _ => {}
+        }
+    }
+
     /// The description of a checked Colibri type, if the embedding API can express it. `program`
     /// says which structs and enums are the host's own.
     pub(crate) fn of(ty: &Ty, program: &Program) -> Option<TypeDesc> {
@@ -174,6 +193,11 @@ impl TypeDecl {
 #[derive(Clone, Debug, Default)]
 pub struct TypeRegistry {
     pub(crate) decls: Vec<TypeDecl>,
+    /// The host module each declaration belongs to, parallel to `decls`: the one that was
+    /// being registered into when the type was first described (`None` is the default).
+    pub(crate) decl_modules: Vec<Option<String>>,
+    /// The module registrations go into now; `None` is the default `host` module.
+    pub(crate) current_module: Option<String>,
     /// The host classes described through [`HostType`], with their methods.
     pub(crate) classes: Vec<ClassEntry>,
     /// Types described twice in different ways.
@@ -185,9 +209,21 @@ impl TypeRegistry {
         Self::default()
     }
 
+    /// The module a type belongs to; the default module for one that is not known.
+    pub(crate) fn module_of(&self, type_name: &str) -> &str {
+        self.decls
+            .iter()
+            .position(|d| d.name() == type_name)
+            .and_then(|i| self.decl_modules[i].as_deref())
+            .unwrap_or(DEFAULT_MODULE)
+    }
+
     fn define(&mut self, decl: TypeDecl) {
         match self.decls.iter().find(|d| d.name() == decl.name()) {
-            None => self.decls.push(decl),
+            None => {
+                self.decls.push(decl);
+                self.decl_modules.push(self.current_module.clone());
+            }
             Some(existing) if *existing == decl => {}
             Some(_) => self.conflicts.push(format!(
                 "the type `{}` is described in two different ways",
@@ -244,6 +280,7 @@ impl TypeRegistry {
         self.classes.push(ClassEntry {
             name: name.to_string(),
             any,
+            module: self.current_module.clone(),
             methods: Vec::new(),
         });
         let mut builder = TypeBuilder::<T>::new(self);
@@ -259,6 +296,8 @@ impl TypeRegistry {
 pub(crate) struct ClassEntry {
     pub name: String,
     pub any: AnyTypeId,
+    /// `None` is the default module.
+    pub module: Option<String>,
     pub methods: Vec<MethodEntry>,
 }
 

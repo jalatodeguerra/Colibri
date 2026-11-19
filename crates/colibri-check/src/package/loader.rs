@@ -1,0 +1,841 @@
+//! Loading a program: the trees (a root folder and its dependencies), the modules reachable by
+//! `import` from the entry, the packages they form and the order they initialise in.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
+
+use colibri_syntax::ast::{self, ItemKind, NodeId, TopLevel};
+use colibri_syntax::{Diagnostic, FileId, SourceMap, Span, parse_file};
+
+use super::fs::{SourceFs, normalize};
+use super::manifest::{self, Manifest};
+use super::{
+    ImportTarget, LIB_FILE, Loaded, MAIN_FILE, ModuleMeta, PackageNode, SOURCE_EXT, std_module,
+};
+
+/// The manifest's file name.
+pub const MANIFEST_FILE: &str = "colibri.toml";
+
+/// Where a program starts.
+#[derive(Clone, Copy, Debug)]
+pub enum Entry<'a> {
+    /// A script: its folder is the tree root (and the implicit package); a `colibri.toml` in
+    /// that folder is read for its name and dependencies, but is not required.
+    File(&'a Path),
+    /// A package: a folder with a `colibri.toml`, started from its `main.colibri`.
+    Package(&'a Path),
+}
+
+/// The program cannot be loaded at all (no diagnostic has a place to point to).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadError {
+    pub path: String,
+    pub message: String,
+}
+
+/// A root folder, its name and the trees of its dependencies.
+struct Tree {
+    root: PathBuf,
+    name: String,
+    /// A dependency of another tree: its modules are named after it.
+    is_dep: bool,
+    manifest_name: Option<String>,
+    deps: Vec<(String, usize)>,
+}
+
+struct Disc {
+    file: ast::File,
+    name: String,
+    tree: usize,
+    package: usize,
+    entry: bool,
+    imports: Vec<(NodeId, ImportTarget)>,
+}
+
+/// One way an import could be satisfied.
+enum Candidate {
+    Local {
+        file: PathBuf,
+        tree: usize,
+        rel: PathBuf,
+    },
+    Dependency {
+        name: String,
+        file: PathBuf,
+        tree: usize,
+        rel: PathBuf,
+    },
+    Host(String),
+    Std(String),
+}
+
+impl Candidate {
+    fn describe(&self) -> String {
+        match self {
+            Candidate::Local { file, .. } => format!("the file `{}`", file.display()),
+            Candidate::Dependency { name, file, .. } => {
+                format!("the dependency `{name}` (`{}`)", file.display())
+            }
+            Candidate::Host(name) => format!("the host module `{name}`"),
+            Candidate::Std(name) => format!("the standard library module `{name}`"),
+        }
+    }
+}
+
+struct Loader<'a> {
+    fs: &'a dyn SourceFs,
+    sources: &'a mut SourceMap,
+    host_modules: &'a [String],
+    trees: Vec<Tree>,
+    trees_by_dir: HashMap<PathBuf, usize>,
+    discs: Vec<Option<Disc>>,
+    by_path: HashMap<PathBuf, usize>,
+    pending: VecDeque<usize>,
+    packages: Vec<PackageNode>,
+    package_keys: HashMap<(usize, PathBuf), usize>,
+    diags: Vec<Diagnostic>,
+}
+
+/// Loads the program that starts at `entry`, reading through `fs` and adding every file it
+/// reads to `sources` (so spans name their files). `host_modules` are the named host modules
+/// `import` may resolve to.
+pub fn load(
+    fs: &dyn SourceFs,
+    sources: &mut SourceMap,
+    entry: Entry<'_>,
+    host_modules: &[String],
+) -> Result<Loaded, LoadError> {
+    let mut loader = Loader {
+        fs,
+        sources,
+        host_modules,
+        trees: Vec::new(),
+        trees_by_dir: HashMap::new(),
+        discs: Vec::new(),
+        by_path: HashMap::new(),
+        pending: VecDeque::new(),
+        packages: Vec::new(),
+        package_keys: HashMap::new(),
+        diags: Vec::new(),
+    };
+    let (root, file, require_manifest) = match entry {
+        Entry::File(path) => {
+            let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
+            let name = path
+                .file_name()
+                .map(PathBuf::from)
+                .ok_or_else(|| LoadError {
+                    path: path.display().to_string(),
+                    message: "this is not a file".to_string(),
+                })?;
+            (root, name, false)
+        }
+        Entry::Package(dir) => (dir.to_path_buf(), PathBuf::from(MAIN_FILE), true),
+    };
+    if require_manifest && !fs.is_dir(&root) {
+        return Err(LoadError {
+            path: root.display().to_string(),
+            message: "no such folder".to_string(),
+        });
+    }
+    let tree = loader
+        .load_tree(&root, require_manifest, false)
+        .map_err(|message| LoadError {
+            path: root.join(MANIFEST_FILE).display().to_string(),
+            message,
+        })?;
+    let entry_path = match entry {
+        Entry::File(path) => path.to_path_buf(),
+        Entry::Package(_) => root.join(&file),
+    };
+    if matches!(entry, Entry::Package(_)) && !fs.is_file(&entry_path) {
+        return Err(LoadError {
+            path: entry_path.display().to_string(),
+            message: "the package has no `main.colibri` to start from".to_string(),
+        });
+    }
+    let text = fs.read(&entry_path).map_err(|message| LoadError {
+        path: entry_path.display().to_string(),
+        message,
+    })?;
+    let entry_id = loader.add_module(&entry_path, text, tree, &file, true);
+    loader.pending.push_back(entry_id);
+    while let Some(id) = loader.pending.pop_front() {
+        loader.resolve_imports(id);
+    }
+    Ok(loader.finish(entry_id))
+}
+
+impl Loader<'_> {
+    /// Reads the manifest of the tree rooted at `dir` (and, recursively, its dependencies).
+    /// `Err` is a message about the folder itself.
+    fn load_tree(
+        &mut self,
+        dir: &Path,
+        require_manifest: bool,
+        is_dep: bool,
+    ) -> Result<usize, String> {
+        let key = normalize(dir);
+        if let Some(&t) = self.trees_by_dir.get(&key) {
+            return Ok(t);
+        }
+        let manifest_path = dir.join(MANIFEST_FILE);
+        let mut manifest: Option<(Manifest, FileId)> = None;
+        if self.fs.is_file(&manifest_path) {
+            let text = self
+                .fs
+                .read(&manifest_path)
+                .map_err(|e| format!("cannot read it: {e}"))?;
+            let file = self
+                .sources
+                .add_file(manifest_path.display().to_string(), text.clone());
+            match manifest::parse(file, &text) {
+                Ok(m) => manifest = Some((m, file)),
+                Err(diags) => self.diags.extend(diags),
+            }
+        } else if require_manifest {
+            return Err(format!(
+                "there is no `{MANIFEST_FILE}` in `{}`",
+                display_dir(dir)
+            ));
+        }
+        let folder_name = key
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "main".to_string());
+        let tree = self.trees.len();
+        self.trees.push(Tree {
+            root: dir.to_path_buf(),
+            name: manifest
+                .as_ref()
+                .map_or(folder_name, |(m, _)| m.name.clone()),
+            is_dep,
+            manifest_name: manifest.as_ref().map(|(m, _)| m.name.clone()),
+            deps: Vec::new(),
+        });
+        self.trees_by_dir.insert(key, tree);
+        if let Some((m, _)) = &manifest {
+            for dep in &m.dependencies {
+                let dep_dir = normalize(&dir.join(&dep.path));
+                if !self.fs.is_dir(&dep_dir) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!(
+                                "the dependency `{}` is not at `{}`: no such folder",
+                                dep.name,
+                                display_dir(&dep_dir)
+                            ),
+                            dep.path_span,
+                        )
+                        .with_hint("`path` is relative to the folder of this `colibri.toml`"),
+                    );
+                    continue;
+                }
+                match self.load_tree(&dep_dir, true, true) {
+                    Ok(t) => {
+                        if self.trees[t]
+                            .manifest_name
+                            .as_deref()
+                            .is_some_and(|n| n != dep.name)
+                        {
+                            let found = self.trees[t].manifest_name.clone().unwrap_or_default();
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!(
+                                        "the dependency `{}` is called `{found}` in its own `{MANIFEST_FILE}`",
+                                        dep.name
+                                    ),
+                                    dep.name_span,
+                                )
+                                .with_hint("the name before `=` and the package `name` must agree"),
+                            );
+                        }
+                        self.trees[tree].deps.push((dep.name.clone(), t));
+                    }
+                    Err(message) => self.diags.push(Diagnostic::error(
+                        format!("the dependency `{}`: {message}", dep.name),
+                        dep.path_span,
+                    )),
+                }
+            }
+        }
+        Ok(tree)
+    }
+
+    /// Registers and parses a file as a module of `tree`; `rel` is its path under the root.
+    fn add_module(
+        &mut self,
+        path: &Path,
+        text: String,
+        tree: usize,
+        rel: &Path,
+        entry: bool,
+    ) -> usize {
+        let file_id = self
+            .sources
+            .add_file(path.display().to_string(), text.clone());
+        let (file, diags) = parse_file(file_id, &text);
+        self.diags.extend(diags);
+        let package = self.package_of(tree, rel);
+        let name = self.module_name(tree, rel, entry);
+        let id = self.discs.len();
+        self.discs.push(Some(Disc {
+            file,
+            name,
+            tree,
+            package,
+            entry,
+            imports: Vec::new(),
+        }));
+        self.by_path.insert(normalize(path), id);
+        id
+    }
+
+    fn module_name(&self, tree: usize, rel: &Path, entry: bool) -> String {
+        let stem = rel.with_extension("");
+        let dotted = dotted(&stem);
+        if entry {
+            return stem
+                .file_name()
+                .map_or(dotted, |n| n.to_string_lossy().into_owned());
+        }
+        let t = &self.trees[tree];
+        if t.is_dep {
+            if dotted == "lib" {
+                t.name.clone()
+            } else {
+                format!("{}.{dotted}", t.name)
+            }
+        } else {
+            dotted
+        }
+    }
+
+    fn package_of(&mut self, tree: usize, rel: &Path) -> usize {
+        let dir = rel.parent().map(Path::to_path_buf).unwrap_or_default();
+        if let Some(&p) = self.package_keys.get(&(tree, dir.clone())) {
+            return p;
+        }
+        let t = &self.trees[tree];
+        let name = match (dir.as_os_str().is_empty(), t.is_dep) {
+            (true, _) => t.name.clone(),
+            (false, true) => format!("{}.{}", t.name, dotted(&dir)),
+            (false, false) => dotted(&dir),
+        };
+        self.packages.push(PackageNode { name });
+        let p = self.packages.len() - 1;
+        self.package_keys.insert((tree, dir), p);
+        p
+    }
+
+    fn resolve_imports(&mut self, id: usize) {
+        let tree = self.discs[id].as_ref().map_or(0, |d| d.tree);
+        let imports: Vec<(NodeId, ast::Import, Span)> = match &self.discs[id] {
+            Some(disc) => disc
+                .file
+                .items
+                .iter()
+                .filter_map(|top| match top {
+                    TopLevel::Item(item) => match &item.kind {
+                        ItemKind::Import(imp) => Some((item.id, imp.clone(), item.span)),
+                        _ => None,
+                    },
+                    TopLevel::Stmt(_) => None,
+                })
+                .collect(),
+            None => return,
+        };
+        let mut resolved = Vec::new();
+        for (node, imp, item_span) in imports {
+            let target = self.resolve_import(tree, &imp, item_span);
+            resolved.push((node, target));
+        }
+        if let Some(disc) = &mut self.discs[id] {
+            disc.imports = resolved;
+        }
+    }
+
+    /// The candidates an import path can mean, in a fixed order.
+    fn candidates(&self, tree: usize, path: &[&str]) -> Vec<Candidate> {
+        let mut out = Vec::new();
+        let t = &self.trees[tree];
+        // 1. A file of this tree.
+        let mut rel: PathBuf = path.iter().collect();
+        rel.set_extension(SOURCE_EXT);
+        let file = t.root.join(&rel);
+        if self.fs.is_file(&file) {
+            out.push(Candidate::Local { file, tree, rel });
+        }
+        // 2. A dependency of this tree.
+        if let Some(&(_, dep)) = t.deps.iter().find(|(n, _)| n == path[0]) {
+            let rel: PathBuf = if path.len() == 1 {
+                PathBuf::from(LIB_FILE)
+            } else {
+                let mut r: PathBuf = path[1..].iter().collect();
+                r.set_extension(SOURCE_EXT);
+                r
+            };
+            let file = self.trees[dep].root.join(&rel);
+            if self.fs.is_file(&file) {
+                out.push(Candidate::Dependency {
+                    name: path[0].to_string(),
+                    file,
+                    tree: dep,
+                    rel,
+                });
+            }
+        }
+        // 3. A named host module.
+        if path.len() == 1 && self.host_modules.iter().any(|m| m == path[0]) {
+            out.push(Candidate::Host(path[0].to_string()));
+        }
+        // 4. The standard library.
+        if let Some(name) = std_module(path) {
+            out.push(Candidate::Std(name));
+        }
+        out
+    }
+
+    fn resolve_import(&mut self, tree: usize, imp: &ast::Import, item_span: Span) -> ImportTarget {
+        let names: Vec<&str> = imp.path.iter().map(|i| i.name.as_str()).collect();
+        let span = match (imp.path.first(), imp.path.last()) {
+            (Some(a), Some(b)) => a.span.to(b.span),
+            _ => item_span,
+        };
+        let dotted_path = names.join(".");
+        let mut candidates = self.candidates(tree, &names);
+        match candidates.len() {
+            0 => {
+                self.report_missing(tree, &names, span);
+                ImportTarget::Failed
+            }
+            1 => match candidates.remove(0) {
+                Candidate::Host(name) => ImportTarget::Host(name),
+                Candidate::Std(_) => ImportTarget::Failed,
+                Candidate::Local { file, tree, rel }
+                | Candidate::Dependency {
+                    file, tree, rel, ..
+                } => {
+                    let key = normalize(&file);
+                    if let Some(&id) = self.by_path.get(&key) {
+                        return ImportTarget::Module(id);
+                    }
+                    match self.fs.read(&file) {
+                        Ok(text) => {
+                            let id = self.add_module(&file, text, tree, &rel, false);
+                            self.pending.push_back(id);
+                            ImportTarget::Module(id)
+                        }
+                        Err(e) => {
+                            self.diags.push(Diagnostic::error(
+                                format!("cannot read `{}`: {e}", file.display()),
+                                span,
+                            ));
+                            ImportTarget::Failed
+                        }
+                    }
+                }
+            },
+            _ => {
+                let list: Vec<String> = candidates.iter().map(Candidate::describe).collect();
+                let hint = if candidates.iter().any(|c| matches!(c, Candidate::Std(_))) {
+                    format!(
+                        "rename the file or the dependency, or write `import std.{dotted_path}` for the standard library"
+                    )
+                } else {
+                    "rename the file or the dependency so that only one matches".to_string()
+                };
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "`import {dotted_path}` is ambiguous: it could be {}",
+                            list.join(", or ")
+                        ),
+                        span,
+                    )
+                    .with_hint(hint),
+                );
+                ImportTarget::Failed
+            }
+        }
+    }
+
+    fn report_missing(&mut self, tree: usize, names: &[&str], span: Span) {
+        let dotted_path = names.join(".");
+        let t = &self.trees[tree];
+        let mut diag = Diagnostic::error(format!("no module `{dotted_path}`"), span);
+        if names[0] == "host" {
+            diag = diag.with_hint(
+                "the default `host` module is always in scope; its names need no import",
+            );
+            self.diags.push(diag);
+            return;
+        }
+        if names[0] == "std" {
+            diag = diag.with_hint("the standard library has no modules yet");
+            self.diags.push(diag);
+            return;
+        }
+        // `import a.b.X`: a module followed by a name.
+        for cut in (1..names.len()).rev() {
+            let prefix = &names[..cut];
+            if !self.candidates(tree, prefix).is_empty() {
+                let rest = names[cut..].join(", ");
+                diag = diag.with_hint(format!(
+                    "`{}` is a module; to bring in a name from it write `import {}.{{{rest}}}`",
+                    prefix.join("."),
+                    prefix.join(".")
+                ));
+                self.diags.push(diag);
+                return;
+            }
+        }
+        let mut rel: PathBuf = names.iter().collect();
+        let folder = t.root.join(&rel);
+        rel.set_extension(SOURCE_EXT);
+        let mut hint = format!("looked for `{}`", t.root.join(&rel).display());
+        if let Some((_, dep)) = t.deps.iter().find(|(n, _)| n == names[0]) {
+            hint.push_str(&format!(
+                " and in the dependency `{}` (`{}`)",
+                names[0],
+                self.trees[*dep].root.display()
+            ));
+        }
+        if self.fs.is_dir(&folder) {
+            let modules: Vec<String> = self
+                .fs
+                .list(&folder)
+                .into_iter()
+                .filter_map(|f| {
+                    f.strip_suffix(&format!(".{SOURCE_EXT}"))
+                        .map(str::to_string)
+                })
+                .map(|stem| format!("{dotted_path}.{stem}"))
+                .collect();
+            if !modules.is_empty() {
+                hint = format!(
+                    "`{dotted_path}` is a folder (a package), not a module; import one of its modules: {}",
+                    modules.join(", ")
+                );
+            }
+        }
+        self.diags.push(diag.with_hint(hint));
+    }
+
+    /// Orders the modules, finds cycles between packages and assembles the result.
+    fn finish(mut self, entry: usize) -> Loaded {
+        // Post-order of the import graph from the entry: imports first.
+        let n = self.discs.len();
+        let edges: Vec<Vec<usize>> = (0..n)
+            .map(|i| {
+                self.discs[i]
+                    .as_ref()
+                    .map(|d| {
+                        d.imports
+                            .iter()
+                            .filter_map(|(_, t)| match t {
+                                ImportTarget::Module(m) => Some(*m),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        let mut order: Vec<usize> = Vec::with_capacity(n);
+        let mut seen = vec![false; n];
+        seen[entry] = true;
+        let mut stack: Vec<(usize, usize)> = vec![(entry, 0)];
+        while let Some(&(node, next)) = stack.last() {
+            match edges[node].get(next) {
+                Some(&to) => {
+                    if let Some(top) = stack.last_mut() {
+                        top.1 += 1;
+                    }
+                    if !seen[to] {
+                        seen[to] = true;
+                        stack.push((to, 0));
+                    }
+                }
+                None => {
+                    order.push(node);
+                    stack.pop();
+                }
+            }
+        }
+        self.report_package_cycles();
+        let mut new_index = vec![usize::MAX; n];
+        for (new, &old) in order.iter().enumerate() {
+            new_index[old] = new;
+        }
+        let mut files = Vec::with_capacity(n);
+        let mut metas = Vec::with_capacity(n);
+        for &old in &order {
+            let Some(disc) = self.discs[old].take() else {
+                continue;
+            };
+            let imports = disc
+                .imports
+                .into_iter()
+                .map(|(node, target)| {
+                    let target = match target {
+                        ImportTarget::Module(m) => ImportTarget::Module(new_index[m]),
+                        other => other,
+                    };
+                    (node, target)
+                })
+                .collect();
+            metas.push(ModuleMeta {
+                name: disc.name,
+                package: disc.package,
+                entry: disc.entry,
+                imports,
+            });
+            files.push(disc.file);
+        }
+        Loaded {
+            files,
+            metas,
+            packages: self.packages,
+            diagnostics: self.diags,
+        }
+    }
+
+    /// Import cycles between modules of different packages are an error (DESIGN §13).
+    fn report_package_cycles(&mut self) {
+        // (from package, to package, the import's path span)
+        let mut pkg_edges: Vec<(usize, usize, Span)> = Vec::new();
+        for d in self.discs.iter().flatten() {
+            for (node, target) in &d.imports {
+                let ImportTarget::Module(to) = target else {
+                    continue;
+                };
+                let Some(to_pkg) = self.discs[*to].as_ref().map(|t| t.package) else {
+                    continue;
+                };
+                if to_pkg == d.package {
+                    continue;
+                }
+                let span = d
+                    .file
+                    .items
+                    .iter()
+                    .find_map(|top| match top {
+                        TopLevel::Item(item) if item.id == *node => match &item.kind {
+                            ItemKind::Import(imp) => match (imp.path.first(), imp.path.last()) {
+                                (Some(a), Some(b)) => Some(a.span.to(b.span)),
+                                _ => Some(item.span),
+                            },
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .unwrap_or(d.file.span);
+                pkg_edges.push((d.package, to_pkg, span));
+            }
+        }
+        let count = self.packages.len();
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); count];
+        for (idx, (from, _, _)) in pkg_edges.iter().enumerate() {
+            adj[*from].push(idx);
+        }
+        #[derive(Clone, Copy, PartialEq)]
+        enum Color {
+            White,
+            Grey,
+            Black,
+        }
+        let mut color = vec![Color::White; count];
+        let mut reported: HashSet<Vec<usize>> = HashSet::new();
+        for start in 0..count {
+            if color[start] != Color::White {
+                continue;
+            }
+            // (package, next edge to try); `path` holds the edges taken to get here.
+            let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
+            let mut path: Vec<usize> = Vec::new();
+            color[start] = Color::Grey;
+            while let Some(&(node, next)) = stack.last() {
+                match adj[node].get(next) {
+                    None => {
+                        color[node] = Color::Black;
+                        stack.pop();
+                        path.pop();
+                    }
+                    Some(&edge) => {
+                        if let Some(top) = stack.last_mut() {
+                            top.1 += 1;
+                        }
+                        let to = pkg_edges[edge].1;
+                        match color[to] {
+                            Color::White => {
+                                color[to] = Color::Grey;
+                                stack.push((to, 0));
+                                path.push(edge);
+                            }
+                            Color::Black => {}
+                            Color::Grey => {
+                                let from = stack.iter().position(|&(p, _)| p == to).unwrap_or(0);
+                                let mut cycle: Vec<usize> = path[from..].to_vec();
+                                cycle.push(edge);
+                                let mut key: Vec<usize> =
+                                    cycle.iter().map(|&e| pkg_edges[e].0).collect();
+                                key.sort_unstable();
+                                if reported.insert(key) {
+                                    self.report_cycle(&cycle, &pkg_edges);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn report_cycle(&mut self, cycle: &[usize], pkg_edges: &[(usize, usize, Span)]) {
+        let name = |p: usize| self.packages[p].name.clone();
+        let mut chain: Vec<String> = cycle
+            .iter()
+            .map(|&e| format!("`{}`", name(pkg_edges[e].0)))
+            .collect();
+        chain.push(format!("`{}`", name(pkg_edges[cycle[0]].0)));
+        let first = pkg_edges[cycle[0]];
+        let mut diag = Diagnostic::error(
+            format!("import cycle between packages: {}", chain.join(" -> ")),
+            first.2,
+        )
+        .with_hint(
+            "files of one package may import each other, but packages may not import in a circle; move what they share into a third package",
+        );
+        for &e in &cycle[1..] {
+            let (from, to, span) = pkg_edges[e];
+            diag = diag.with_label(
+                span,
+                format!("`{}` imports `{}` here", name(from), name(to)),
+            );
+        }
+        self.diags.push(diag);
+    }
+}
+
+/// `a/b` as `a.b`.
+fn dotted(path: &Path) -> String {
+    path.components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn display_dir(dir: &Path) -> String {
+    if dir.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        dir.display().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::package::fs::MemoryFs;
+
+    fn load_mem(files: &[(&str, &str)], host: &[&str]) -> (Loaded, SourceMap) {
+        let mut fs = MemoryFs::new();
+        for (p, t) in files {
+            fs.insert(p, *t);
+        }
+        let mut sources = SourceMap::new();
+        let host: Vec<String> = host.iter().map(|s| s.to_string()).collect();
+        let loaded =
+            load(&fs, &mut sources, Entry::File(Path::new(files[0].0)), &host).expect("loads");
+        (loaded, sources)
+    }
+
+    fn messages(l: &Loaded) -> Vec<String> {
+        l.diagnostics.iter().map(|d| d.message.clone()).collect()
+    }
+
+    #[test]
+    fn modules_come_in_initialisation_order_with_the_entry_last() {
+        let (l, _) = load_mem(
+            &[
+                ("m.colibri", "import a\nimport b\n"),
+                ("a.colibri", "import b\n"),
+                ("b.colibri", ""),
+            ],
+            &[],
+        );
+        assert!(!l.has_errors(), "{:?}", messages(&l));
+        let names: Vec<_> = l.metas.iter().map(|m| m.name.clone()).collect();
+        assert_eq!(names, ["b", "a", "m"].map(String::from));
+        assert!(l.metas.last().unwrap().entry);
+    }
+
+    #[test]
+    fn a_missing_module_is_reported_at_the_import() {
+        let (l, _) = load_mem(&[("m.colibri", "import nothing\n")], &[]);
+        assert!(
+            messages(&l)
+                .iter()
+                .any(|m| m.contains("no module `nothing`"))
+        );
+    }
+
+    #[test]
+    fn a_local_file_and_a_host_module_are_ambiguous() {
+        let (l, _) = load_mem(
+            &[("m.colibri", "import physics\n"), ("physics.colibri", "")],
+            &["physics"],
+        );
+        let msgs = messages(&l);
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("physics") && m.contains("ambiguous")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn a_host_module_resolves_without_a_file() {
+        let (l, _) = load_mem(&[("m.colibri", "import physics\n")], &["physics"]);
+        assert!(!l.has_errors(), "{:?}", messages(&l));
+        assert!(
+            l.metas[0]
+                .imports
+                .values()
+                .any(|t| matches!(t, ImportTarget::Host(n) if n == "physics"))
+        );
+    }
+
+    #[test]
+    fn cycles_between_packages_are_listed() {
+        let (l, _) = load_mem(
+            &[
+                ("m.colibri", "import a.x\n"),
+                ("a/x.colibri", "import b.y\n"),
+                ("b/y.colibri", "import a.x\n"),
+            ],
+            &[],
+        );
+        let msgs = messages(&l);
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("cycle") && m.contains("`a`") && m.contains("`b`")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn cycles_inside_a_package_are_fine() {
+        let (l, _) = load_mem(
+            &[
+                ("m.colibri", "import a\n"),
+                ("a.colibri", "import b\n"),
+                ("b.colibri", "import a\n"),
+            ],
+            &[],
+        );
+        assert!(!l.has_errors(), "{:?}", messages(&l));
+    }
+}

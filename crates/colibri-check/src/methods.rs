@@ -97,6 +97,11 @@ impl FnCtx<'_, '_> {
         if let Ty::Adt(id, _) = &recv_ty
             && let Some(&f) = self.ck.methods.get(&(*id, name.name.clone()))
         {
+            if !self.ck.fn_visible(f) {
+                self.check_args_loosely(args);
+                self.ck.report_private("method", &name.name, *id, name.span);
+                return self.error_expr(span);
+            }
             return self.call_fn_method(f, None, recv, name, base.span, explicit, args, span);
         }
         // 1b. `alive()` of a class of the host
@@ -684,9 +689,15 @@ impl FnCtx<'_, '_> {
     pub(crate) fn resolve_type_infer(&mut self, t: &ast::TypeExpr) -> Ty {
         if let TypeKind::Named { path, args } = &t.kind
             && args.is_empty()
-            && path.len() == 1
+            && (path.len() == 1 || self.ck.mod_aliases.contains_key(&path[0].name))
             && self.ck.scoped_param(&path[0].name).is_none()
-            && let Some(&id) = self.ck.type_ids.get(path[0].name.as_str())
+            && let Some(&id) = self.ck.type_ids.get(
+                &path
+                    .iter()
+                    .map(|i| i.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("."),
+            )
         {
             let def = &self.ck.types[id.0 as usize];
             if !def.is_interface() && !def.params.is_empty() {

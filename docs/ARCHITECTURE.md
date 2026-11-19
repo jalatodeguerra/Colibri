@@ -998,6 +998,211 @@ Decisions the design documents did not fix:
   so the exact messages and the drop order are tested in `crates/colibri-runtime/tests`.
 - A Rust `Drop` that panics is a Colibri panic at the next statement boundary (hook panics).
 
+## 11. Slice 8 as built: packages and `import`
+
+PHASE1 item 9, first half: DESIGN §13 (modules and packages) and §4.2 (initialisation order).
+`colibri test`, `colibri fmt`, the language server and the standard library are later PRs; `std`
+only has room reserved (see "Name resolution of an import").
+
+### 11.1 The module tree
+
+**One file is one module, one folder is one package.** Every import path is rooted at the *tree
+root*, never relative to the importing file, so a file means the same thing from anywhere:
+
+| Run as | Tree root | Entry |
+|--------|-----------|-------|
+| `colibri run script.colibri` | the script's folder | `script.colibri` |
+| `colibri run` / `colibri run dir` | the folder with `colibri.toml` | `main.colibri` |
+| `Vm::load_file(path)` | the file's folder | the file |
+| `Vm::load_package(dir)` | `dir` | `dir/main.colibri` |
+| `Vm::load_sources(&[(path, text)])` | the folder of the first path | the first file |
+| `Vm::load_source(name, text)` | none: one file, no siblings | the source |
+
+A *tree* is a root folder, a name and its dependencies (the entries of `[dependencies]` in its
+`colibri.toml`, if there is one; `run script.colibri` reads a `colibri.toml` next to the script
+only for its dependencies and name). A dependency is a tree of its own, with its own root.
+
+`a/b/c.colibri` in a tree is the module `a.b.c`; its package is the folder `a/b`. The files
+directly in the root form the *root package*, named after the manifest (or the folder). So with
+`game/player.colibri`, `game/enemy.colibri` and `main.colibri`, the modules `game.player` and
+`game.enemy` share the package `game`, and `main` is in the root package. A subfolder is a
+separate package, **also for scripts without a manifest**: `import util.strings` finds
+`util/strings.colibri` next to the script, and it can only use what that file marks `pub`
+(the implicit package is the script's folder, not its subtree). Only modules reachable by
+`import` from the entry are loaded and checked; a stray file nobody imports is ignored.
+
+The loader (`colibri_check::package`) reads the files through a `SourceFs` (the real file system,
+or the in-memory one `load_sources` uses), parses each module once into the shared `SourceMap`
+(so every `Span` already names its file), resolves every `import` item to a module and returns
+`Loaded { files, metas, packages }`. **Module order is initialisation order**: the post-order of
+a depth-first walk over the imports starting at the entry (imports of a module are followed in
+source order, a module already on the walk is skipped, so cycles terminate), so an imported
+module comes before its importer and the entry is last. `FileId`s follow discovery order instead,
+so the entry file is `FileId(0)`.
+
+### 11.2 Name resolution of an import
+
+`import a.b` resolves to one of these candidates; exactly one must exist:
+
+1. **local**: `a/b.colibri` under the root of the importing module's tree;
+2. **dependency**: `a` is the name of a dependency of that tree, and `b.colibri` exists under the
+   dependency's root (`import foo` alone means `foo/lib.colibri`, the library's root module);
+3. **host**: `a` is one named host module (`vm.module("physics")`, `.cbi` header `module =
+   "physics"`) and there is no `b`;
+4. **std**: the standard library. Nothing is registered yet (`std_module` returns none), but the
+   resolver already asks it, so adding `std.math` later changes no rule.
+
+Zero candidates is `no module `a.b``, with what was looked for, and, when `a` is a folder, its
+modules. More than one is `` `import math` is ambiguous ``, listing every candidate (file path,
+dependency name, `std.math`); rename the file or the dependency, or write `import std.math`.
+`import a.b.X` (a name, not a module) says to write `import a.b.{X}`.
+
+### 11.3 One check for the whole program
+
+The checker takes the modules in initialisation order and produces **one HIR `Program`** for
+all of them (`check_modules`; `check_with_host` is the one-module case, used by everything that
+had one file before). Items from all modules live in the same tables (`fns`, `globals`, `types`,
+...), so ids need no per-module space, hot reload patches by id as before and the engines do not
+know modules exist. Per module the checker keeps a `Scope`:
+
+```text
+Scope { values, type_ids, aliases, poisoned_types, modules }   // name -> entity
+```
+
+Today's lookups (`self.values.get(name)`, `self.type_ids.get(name)`, ...) are untouched: the
+`Checker` holds the tables of the module being checked in those fields and *swaps* them when it
+moves to another module (`enter_module`, a handful of `mem::swap`s). Entering a module happens
+wherever an item is looked at: collecting its declarations, checking a function, initialiser or
+default argument, and resolving an alias lazily on first use from another module. A scope starts
+as a copy of the *base* (prelude and default `host` module names), then gets:
+
+1. the module's own declarations (types first, so every signature may name any of them);
+2. `import a.b` binds the module under its last segment (`b`), `as c` under `c`. Every item the
+   module exports is entered into the scope as the dotted name `b.name`; **a qualified name is
+   a scope entry whose name contains a dot**, so `player.spawn(..)`, `player.Player { .. }`,
+   `player.Shape.Circle(1)`, `x: player.Player` and patterns all resolve through the lookups
+   that already exist, after the few places that read `Field(Ident(player), spawn)` turn it
+   into the name `"player.spawn"` (`FnCtx::qualified`). A local variable called `player` wins
+   over the module, as any local wins over a global;
+3. `import a.b.{X, Y as Z}` enters those names (types, functions and values) directly.
+
+An item's *exports* are recorded when it is declared (`Export { target, public }`, per module). A
+name is entered into a scope if the item is `pub` or the importing module is in the same package.
+A name that exists but is hidden still gets a precise message: `` `hp` is private to the package
+`game` ``, with the hint to mark it `pub`.
+
+**Ambiguity.** A name entered into a scope twice for different entities (an own item and an
+import, two imports, a module alias and a value) is an error at the second entry, ``the name `X`
+is ambiguous``, listing every candidate (`this module`, `game.player.X`, `rapier.X`). The same
+entity imported twice is not a clash. A user declaration that collides with a prelude or default
+host name keeps its older message (``is a host function and cannot be redefined``).
+
+**Visibility.** `pub` on a function, type, interface, alias or module-level value exports it from
+its package; everything else is visible to every module of the same package (and a file in another
+package never sees it). A struct or class field without `pub` is *package-visible*: another
+package cannot read or write it, match it in a pattern, or construct the type with a literal; the
+error for a literal says which fields are not exported and points at the exported functions of the
+type's module that return the type ("use a constructor: `player.spawn`"). Enum variants and their
+payloads are as visible as the enum; a method or associated function of a type from another package
+needs `pub` to be called from outside that package (`obj.hidden()` and `Type.make()` are errors
+there), like a free function. Host items are all
+exported. The prelude and `host` items carry no package.
+
+**Cycles.** Imports between modules of one package may form cycles (the checker declares every
+module before it resolves any import, so order never matters). Between *packages* a cycle is an
+error found by the loader: ``import cycle between packages `a` -> `b` -> `a` ``, with a label on
+each import of the cycle.
+
+**Top-level statements** exist only in the entry module. Any other module that has one gets an
+error at its first statement ("only the entry file may have top-level statements"); its
+declarations are still checked. `fn main` is looked up in the entry module only. Function names
+in the HIR (`FnDef.name`, stack traces, `Vm::get_fn`) are the plain name in the entry module and
+the dotted module path before it in any other (`game.player.spawn`, `game.player.Player.update`);
+host items are never prefixed.
+
+### 11.4 Initialisation and drop order
+
+Globals are numbered module by module in module order, in declaration order inside a module. The
+existing dependency walk (`init_order`) starts from each global in that order and visits what it
+uses first, through functions too, whatever module it is in, and reports a cycle through values
+as before (naming the chain, now across files). So (§4.2): a value runs after every value it
+reads; otherwise an imported module's values run before its importer's, and a module's own in
+declaration order. The interpreter drops module values in reverse initialisation order
+(§11.2 of DESIGN), which therefore holds across modules without any new code.
+
+### 11.5 Diagnostics across files
+
+A `Diagnostic` points at one file through its span, and its labels may point at others (a cycle,
+"first defined here", "declared in"). The renderer builds one `ariadne` cache of every file a
+report mentions. Parse errors of all loaded files are reported together and checking is skipped
+if any file has one, as for a single file. The entry file is `FileId(0)` and the "in the host
+interface" messages are anchored at its start. Stack frames and panics name the file of the code
+that was running (`Span.file`), which the `SourceMap` knows by the path it was loaded from
+(relative to what was given: `load_file("games/x/main.colibri")` shows `games/x/util.colibri`).
+
+### 11.6 `colibri.toml`
+
+A minimal TOML subset is parsed by hand (`colibri_check::package::toml`, about 200 lines; the
+`toml` crate would bring `serde`, `indexmap` and `winnow` for four keys): comments, `[tables]`,
+`key = "string"`, `key = { inline = "tables" }`, bare and quoted keys, and a clear error with
+line and column for anything else. Understood:
+
+```toml
+[package]
+name = "mygame"
+
+[dependencies]
+physics = { path = "../physics" }
+```
+
+`name` is required in package mode. A dependency needs `path`; `git = ".."`, `version = ".."`
+and `registry` say ``not supported yet``. `colibri.lock`, capabilities and any other table or key
+are errors, not silently ignored ("unknown key"). A dependency folder must have a `colibri.toml`
+whose `name` equals the key it is listed under. Execution of a package starts at `fn main()`
+of `main.colibri`, after the module values are initialised and the top-level statements of
+`main.colibri` (if any) have run.
+
+### 11.7 Named host modules
+
+`vm.module("physics")` returns a `HostModule` with `register_fn`, `register_fn_named` and
+`register_type`; `vm.register_fn(..)` is the same thing on the default `host` module, whose names
+stay in scope everywhere without an import. `import physics` binds the module (`physics.step()`),
+`import physics.{World}` brings names in. A module's interface (`.cbi`) is its own file with
+`module = "physics"`; `HostEnv` merges files of the same module and `colibri check --interface`
+may name several. Items are keyed by `(module, name)`: `HostFnEntry.module`, the decl list of the
+`TypeRegistry` and `HostFnDef.module` in the HIR. A type is declared in the module that first
+described it, and a module's signatures may mention types of their own module and of the default
+one only (registering a function that mentions another named module's type is
+`Error::Registration`), because that is what the `.cbi` text of a module can express. Type names
+stay unique across a `Vm`.
+
+### 11.8 Golden tests for packages
+
+A directory under `tests/golden` that has a `main.colibri` is **one test**: the package rooted
+there (`Vm::load_package`), not a test per file. Directives are read from every `.colibri` file in
+the directory tree: an `// error:`, `// warning:` or `// panic:` line refers to the line of the
+file it is in (the harness compares file and line); the expected stdout is the `// expect:`
+lines of `main.colibri` followed by those of the other files in path order; `// drops:`, `//
+panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only. See PHASE1.md.
+
+### 11.9 Decisions the design documents did not fix
+
+- Imports are always rooted at the tree root; there are no relative imports and no `..`.
+- A subfolder is its own package, scripts included; the entry's folder is the implicit package.
+- `import foo` of a dependency means `foo/lib.colibri`; `import foo.x` is `foo/x.colibri`.
+- `import a.b.{X}` binds only `X`, not `b`.
+- A package that is not imported is not checked (there is no "check everything under here").
+- `main.colibri` is the entry of a package, and may hold top-level statements, which run before
+  `main`. `colibri run script.colibri` in a folder with a manifest takes its dependencies from it.
+- Ambiguity is reported where a name is *entered* (import time), so it appears even when the name
+  is never used.
+- Methods and associated functions are exported with `pub`, like fields and free functions.
+- Initialisation order between independent values follows module order (imports first).
+- No orphan rule: a module may add methods or interface impls to a type of another package it
+  can name. Methods added to a type from another package see only its exported fields.
+- Only one level of qualification (`player.spawn`): modules are bound by their last segment.
+- A module that gets two names (`import a.b` and `import a.b as c`) is allowed; both work.
+
 ## 12. Formatter (`colibri fmt`)
 
 `colibri fmt` is the canonical formatter of DESIGN §16.1: no options. It lives in the module

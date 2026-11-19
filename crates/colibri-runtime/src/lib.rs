@@ -171,9 +171,11 @@ pub use host::{HostFault, HostFn, Plain, RawHostFn, Registration, WithCtx};
 pub use iface::Interface;
 pub use render::render_diagnostic;
 pub use types::{SigDesc, TypeDesc, TypeRegistry};
-pub use vm::{DEFAULT_MAX_CALL_DEPTH, Vm, VmBuilder};
+pub use vm::{DEFAULT_MAX_CALL_DEPTH, HostModule, Vm, VmBuilder};
 
 use std::path::Path;
+
+use colibri_check::package::{DiskFs, Entry, MemoryFs, SourceFs};
 
 /// What `#[colibri::export]` expands to. Not part of the API: the names may change with the
 /// VM, which is why the macro only goes through this module (EMBEDDING §0 C).
@@ -248,26 +250,66 @@ pub fn check_source_with_stack_budget(name: &str, source: &str, budget: usize) -
 
 /// Like [`check_source`], against the host interfaces and capabilities of `config`.
 pub fn check_source_with(name: &str, source: &str, config: &CheckConfig) -> Report {
-    let mut sources = SourceMap::new();
-    let file = sources.add_file(name, source);
-    let (ast, mut diagnostics) = colibri_syntax::parse_file(file, source);
-    if !diagnostics.iter().any(Diagnostic::is_error) {
-        let mut env = colibri_check::HostEnv::new();
-        for interface in &config.interfaces {
-            env.merge(interface.env.clone());
-        }
-        for cap in config.caps.iter() {
-            env.grant(cap.name());
-        }
-        diagnostics = colibri_check::check_with_host(&ast, &env, config.stack_budget).diagnostics;
-    }
-    Report {
-        sources,
-        diagnostics,
-    }
+    check_sources_with(&[(name, source)], config)
 }
 
-/// Like [`check_source`], reading the source from a file.
+/// Checks a program given as text without running it: `(path, text)` pairs as in
+/// [`Vm::load_sources`] (the first is the entry, and its folder the root of `import`s).
+pub fn check_sources_with(files: &[(&str, &str)], config: &CheckConfig) -> Report {
+    let Some((entry, _)) = files.first() else {
+        return Report {
+            sources: SourceMap::new(),
+            diagnostics: Vec::new(),
+        };
+    };
+    let mut fs = MemoryFs::new();
+    for (path, text) in files {
+        fs.insert(path, *text);
+    }
+    check_entry(&fs, Entry::File(Path::new(entry)), config).unwrap_or_else(|e| {
+        // Unreachable for files in memory except an unusable entry name; say so in a report.
+        let mut sources = SourceMap::new();
+        let file = sources.add_file(entry.to_string(), String::new());
+        Report {
+            sources,
+            diagnostics: vec![Diagnostic::error(e.to_string(), Span::new(file, 0, 0))],
+        }
+    })
+}
+
+fn check_entry(fs: &dyn SourceFs, entry: Entry<'_>, config: &CheckConfig) -> Result<Report, Error> {
+    let mut env = colibri_check::HostEnv::new();
+    for interface in &config.interfaces {
+        env.merge(interface.env.clone());
+    }
+    for cap in config.caps.iter() {
+        env.grant(cap.name());
+    }
+    let mut sources = SourceMap::new();
+    let loaded = colibri_check::package::load(fs, &mut sources, entry, &env.named_modules())
+        .map_err(|e| Error::Io {
+            path: e.path,
+            message: e.message,
+        })?;
+    let mut diagnostics = loaded.diagnostics.clone();
+    // A tree with syntax errors would only produce follow-on errors.
+    if !loaded.has_errors() {
+        diagnostics = colibri_check::check_modules(
+            &loaded.inputs(),
+            &loaded.packages,
+            &env,
+            config.stack_budget,
+        )
+        .diagnostics;
+    }
+    Ok(Report {
+        sources,
+        diagnostics,
+    })
+}
+
+/// Like [`check_source`], reading the source from a file. The file's folder is its implicit
+/// package: what it `import`s is read from there and checked with it (see [`Vm::load_file`]).
 pub fn check_file(path: impl AsRef<Path>) -> Result<Report, Error> {
     check_file_with(path, &CheckConfig::default())
 }
@@ -286,14 +328,22 @@ pub fn check_file_with_stack_budget(
 
 /// Like [`check_source_with`], reading the source from a file.
 pub fn check_file_with(path: impl AsRef<Path>, config: &CheckConfig) -> Result<Report, Error> {
+    check_entry(&DiskFs, Entry::File(path.as_ref()), config)
+}
+
+/// Checks the package in folder `dir` (its `colibri.toml` and everything its `main.colibri`
+/// imports) without running it; see [`Vm::load_package`].
+pub fn check_package_with(dir: impl AsRef<Path>, config: &CheckConfig) -> Result<Report, Error> {
+    check_entry(&DiskFs, Entry::Package(dir.as_ref()), config)
+}
+
+/// [`check_package_with`] for a folder, [`check_file_with`] for anything else: what `colibri
+/// check <path>` does.
+pub fn check_path_with(path: impl AsRef<Path>, config: &CheckConfig) -> Result<Report, Error> {
     let path = path.as_ref();
-    let text = std::fs::read_to_string(path).map_err(|e| Error::Io {
-        path: path.display().to_string(),
-        message: e.to_string(),
-    })?;
-    Ok(check_source_with(
-        &path.display().to_string(),
-        &text,
-        config,
-    ))
+    if path.is_dir() {
+        check_package_with(path, config)
+    } else {
+        check_file_with(path, config)
+    }
 }

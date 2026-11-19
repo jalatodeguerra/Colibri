@@ -1,7 +1,7 @@
 //! The `colibri` command line tool.
 
 use std::io::{self, IsTerminal};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -20,11 +20,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run a Colibri program
-    Run { file: PathBuf },
-    /// Type-check a Colibri program without running it
+    /// Run a Colibri script, or the package in a folder (the current folder by default)
+    Run { file: Option<PathBuf> },
+    /// Type-check a Colibri script or package without running it
     Check {
-        file: PathBuf,
+        file: Option<PathBuf>,
         /// An interface file (`.cbi`) describing what the embedding program provides; may be
         /// given more than once
         #[arg(long = "interface", value_name = "FILE")]
@@ -41,7 +41,7 @@ enum Command {
 }
 
 /// Checks `file`, printing every diagnostic to stderr. `Err` is the exit code to stop with.
-fn check(file: &PathBuf, interface_files: &[PathBuf]) -> Result<(), ExitCode> {
+fn check(file: &Path, interface_files: &[PathBuf]) -> Result<(), ExitCode> {
     let color = io::stderr().is_terminal();
     let mut interfaces = Vec::new();
     for path in interface_files {
@@ -59,7 +59,7 @@ fn check(file: &PathBuf, interface_files: &[PathBuf]) -> Result<(), ExitCode> {
         interfaces,
         caps: colibri::CapSet::all(),
     };
-    match colibri::check_file_with(file, &config) {
+    match colibri::check_path_with(file, &config) {
         Ok(report) => {
             eprint!("{}", report.render(color));
             if report.has_errors() {
@@ -75,13 +75,13 @@ fn check(file: &PathBuf, interface_files: &[PathBuf]) -> Result<(), ExitCode> {
     }
 }
 
-fn run(file: &PathBuf) -> ExitCode {
+fn run(file: &Path) -> ExitCode {
     if let Err(code) = check(file, &[]) {
         return code;
     }
     let color = io::stderr().is_terminal();
     let mut vm = colibri_lang::vm_builder().allow_all().build();
-    match vm.load_file(file).and_then(|()| vm.run_main()) {
+    match vm.load_path(file).and_then(|()| vm.run_main()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e @ colibri::Error::Panic { .. }) => {
             eprint!("{}", e.render(color));
@@ -97,11 +97,13 @@ fn run(file: &PathBuf) -> ExitCode {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     on_big_stack(move || match cli.command {
-        Command::Check { file, interfaces } => match check(&file, &interfaces) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(code) => code,
-        },
-        Command::Run { file } => run(&file),
+        Command::Check { file, interfaces } => {
+            match check(&file.unwrap_or_else(|| PathBuf::from(".")), &interfaces) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(code) => code,
+            }
+        }
+        Command::Run { file } => run(&file.unwrap_or_else(|| PathBuf::from("."))),
         Command::Fmt { paths, check } => colibri_lang::fmt::run(&paths, check),
     })
 }
