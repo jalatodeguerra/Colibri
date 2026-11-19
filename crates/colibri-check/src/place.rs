@@ -98,6 +98,14 @@ impl FnCtx<'_, '_> {
                 }
                 let base_place = self.place_base(base)?;
                 let base_ty = base_place.ty();
+                if let Ty::Vec(v) = self.infer.shallow(&base_ty) {
+                    let (proj, ty) = self.vec_place_step(v, name, target.span)?;
+                    let mut place = self.value_part(base_place, base)?;
+                    place.path.push(proj);
+                    place.ty = ty;
+                    place.display = format!("{}.{}", place.display, name.name);
+                    return Some(place);
+                }
                 let (idx, ty) = self.field_of(&base_ty, name, base.span)?;
                 if self.is_class_ty(&base_ty) {
                     let object = self.base_object(base_place, base)?;

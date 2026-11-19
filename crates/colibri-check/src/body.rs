@@ -1221,6 +1221,26 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             AssignOp::Shr => Some((BitOp::Shr, ">>=")),
             _ => None,
         };
+        if let Ty::Vec(v) = self.infer.shallow(&place_ty)
+            && let Some(arith) = arith
+        {
+            let sym = match arith {
+                ArithOp::Add => "+=",
+                ArithOp::Sub => "-=",
+                ArithOp::Mul => "*=",
+                ArithOp::Div => "/=",
+                ArithOp::Rem => "%=",
+            };
+            let (bop, rhs) = self.check_vec_assign_op(v, arith, sym, rhs, span)?;
+            return Some(Stmt {
+                span,
+                kind: hir::StmtKind::Assign {
+                    place,
+                    op: Some(bop),
+                    rhs,
+                },
+            });
+        }
         let reason = Some((target.span, format!("this is `{}`", self.show(&place_ty))));
         let stored = if weak && op == AssignOp::Assign {
             rhs = self.coerce_to_weak(rhs, &place_ty, reason.clone())?;
@@ -1285,6 +1305,13 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             return;
         }
         let mut diag = Diagnostic::error(format!("unknown name `{name}`"), span);
+        if crate::types::VecTy::from_name(name).is_some() {
+            diag = diag.with_hint(format!(
+                "the vector types are in the `vec` module: write `import vec` and then `vec.{name}(..)`, or `import vec.{{{name}}}`"
+            ));
+            self.ck.report(diag);
+            return;
+        }
         let owners: Vec<&str> = self
             .ck
             .types

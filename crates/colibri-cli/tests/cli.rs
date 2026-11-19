@@ -164,7 +164,10 @@ fn check_prints_warnings_and_exits_zero() {
 
 #[test]
 fn unsupported_features_are_clean_errors() {
-    let path = temp_file("unsupported.colibri", "fn id(x: vec2) -> vec2 => x\n");
+    let path = temp_file(
+        "unsupported.colibri",
+        "@inline\nfn id(x: int) -> int => x\n",
+    );
     let out = colibri(&["run", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("is not supported yet"));

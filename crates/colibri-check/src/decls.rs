@@ -18,7 +18,7 @@ use crate::types::{Ty, TypeId};
 /// Names that cannot be redefined as types.
 const BUILTIN_TYPES: &[&str] = &[
     "int", "float", "bool", "str", "char", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-    "f32", "f64", "vec2", "vec3", "vec4", "List", "Map", "Set", "Option", "Result", "ptr", "cstr",
+    "f32", "f64", "List", "Map", "Set", "Option", "Result", "ptr", "cstr",
 ];
 
 /// What HIR does not keep about a user type.

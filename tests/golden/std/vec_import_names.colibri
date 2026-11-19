@@ -1,0 +1,15 @@
+import vec.{vec2, ivec2}
+import vec as v
+
+fn len_of(p: vec2) -> f32 => p.len()
+
+fn main() {
+    let p: vec2 = vec2(3, 4)
+    print(len_of(p))
+    let q: v.vec3 = v.vec3(1, 2, 3)
+    print(q.z)
+    print(ivec2(1, 2) + ivec2(1, 1))
+}
+// expect: 5.0
+// expect: 3.0
+// expect: ivec2(2, 3)

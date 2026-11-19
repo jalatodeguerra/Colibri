@@ -52,6 +52,8 @@ fn feed(v: &Value, h: &mut DefaultHasher, depth: u32) {
         Value::Ptr(p) => p.hash(h),
         Value::Float(x) => x.to_bits().hash(h),
         Value::F32(x) => x.to_bits().hash(h),
+        Value::Vec(v) => v.c[..v.n as usize].iter().for_each(|x| x.to_bits().hash(h)),
+        Value::IVec(v) => v.hash(h),
         Value::Char(c) => c.hash(h),
         Value::Str(s) => s.hash(h),
         Value::Tuple(items) => items.iter().for_each(|x| feed(x, h, depth + 1)),

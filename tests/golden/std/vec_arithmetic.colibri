@@ -1,0 +1,59 @@
+import vec
+
+fn main() {
+    let a = vec.vec2(1, 2)
+    let b = vec.vec2(3, 4)
+    print(a + b)
+    print(b - a)
+    print(a * b)
+    print(b / a)
+    print(a * 2)
+    print(2 * a)
+    print(b / 2)
+    print(-a)
+    // a `float` scalar narrows to `f32`
+    let dt: float = 0.5
+    print(a * dt)
+    print(dt * a)
+    var p = a
+    p += b
+    p -= vec.vec2(1, 1)
+    p *= 2
+    p /= 4
+    p *= dt
+    print(p)
+    // f32 arithmetic is single precision
+    print(vec.vec2(0.1, 0.2) + vec.vec2(0.2, 0.1))
+    // integer vectors
+    let i = vec.ivec3(7, -7, 2)
+    print(i / 2)
+    print(i * 3)
+    print(i - vec.ivec3(1, 1, 1))
+    print(-i)
+    print(2 * i)
+    var j = i
+    j += vec.ivec3(1, 1, 1)
+    j *= 2
+    print(j)
+    // float division by zero follows IEEE
+    print(a / vec.vec2(0, 1))
+}
+// expect: vec2(4.0, 6.0)
+// expect: vec2(2.0, 2.0)
+// expect: vec2(3.0, 8.0)
+// expect: vec2(3.0, 2.0)
+// expect: vec2(2.0, 4.0)
+// expect: vec2(2.0, 4.0)
+// expect: vec2(1.5, 2.0)
+// expect: vec2(-1.0, -2.0)
+// expect: vec2(0.5, 1.0)
+// expect: vec2(0.5, 1.0)
+// expect: vec2(0.75, 1.25)
+// expect: vec2(0.3, 0.3)
+// expect: ivec3(3, -3, 1)
+// expect: ivec3(21, -21, 6)
+// expect: ivec3(6, -8, 1)
+// expect: ivec3(-7, 7, -2)
+// expect: ivec3(14, -14, 4)
+// expect: ivec3(16, -12, 6)
+// expect: vec2(inf, 2.0)

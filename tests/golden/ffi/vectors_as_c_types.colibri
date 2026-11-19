@@ -1,0 +1,57 @@
+// caps: ffi
+// A vector is `n` consecutive `f32` (or `i32`) in C: `vec3` is 12 bytes with alignment 4, so a
+// `@repr(C)` struct can hold vectors and a `ptr[vec3]` reads and writes them in memory.
+import vec
+
+@link("c")
+extern "C" {
+    fn calloc(count: u64, size: u64) -> ptr[u8]
+    fn free(p: ptr[u8])
+    fn memcpy(dst: ptr[u8], src: ptr[u8], n: u64) -> ptr[u8]
+}
+
+@repr(C)
+struct Vertex {
+    pos: vec.vec3
+    uv: vec.vec2
+    cell: vec.ivec2
+}
+
+fn main() {
+    print((size_of[vec.vec2](), size_of[vec.vec3](), size_of[vec.vec4]()))
+    print((size_of[vec.ivec3](), align_of[vec.vec3]()))
+    print((size_of[Vertex](), align_of[Vertex]()))
+
+    let buf = calloc(4, 12)
+    let vs = unsafe { buf.cast[vec.vec3]() }
+    unsafe {
+        vs.write(vec.vec3(1, 2, 3))
+        vs.offset(1).write(vec.vec3(4, 5.5, 6))
+        print(vs.read())
+        print(vs.offset(1).read())
+    }
+    // the bytes are three consecutive floats
+    let floats = unsafe { buf.cast[f32]() }
+    unsafe { print(floats.offset(4).read()) }
+
+    let ints = unsafe { buf.cast[vec.ivec2]() }
+    unsafe {
+        ints.write(vec.ivec2(7, -8))
+        print(ints.read())
+    }
+
+    let vp = unsafe { buf.cast[Vertex]() }
+    unsafe {
+        vp.write(Vertex { pos: vec.vec3(1, 2, 3), uv: vec.vec2(0.5, 0.25), cell: vec.ivec2(3, 4) })
+        print(vp.read())
+    }
+    free(buf)
+}
+// expect: (8, 12, 16)
+// expect: (12, 4)
+// expect: (28, 4)
+// expect: vec3(1.0, 2.0, 3.0)
+// expect: vec3(4.0, 5.5, 6.0)
+// expect: 5.5
+// expect: ivec2(7, -8)
+// expect: Vertex { pos: vec3(1.0, 2.0, 3.0), uv: vec2(0.5, 0.25), cell: ivec2(3, 4) }

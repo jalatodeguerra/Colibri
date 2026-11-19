@@ -1,0 +1,15 @@
+import vec
+
+struct Wrapper { v: vec.vec2 }
+
+fn takes(v: vec.vec2) -> f32 => v.x
+
+fn main() {
+    let a = vec.vec2(1, 2)
+    print(takes(vec.vec3(1, 2, 3))) // error: expected `vec2`, found `vec3`
+    print(takes(1)) // error: expected `vec2`
+    let w = Wrapper { v: vec.ivec2(1, 2) } // error: expected `vec2`, found `ivec2`
+    let x: Set[vec.vec2] = Set([a]) // error: cannot be used as a `Set` element
+    let y: Map[vec.vec2, int] = {:} // error: cannot be used as a `Map` key
+    print(vec.vec2.x) // error:
+}

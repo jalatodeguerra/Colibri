@@ -53,7 +53,7 @@ pub use rand::Rng;
 /// The modules of the standard library built so far, in the order they are registered.
 pub const MODULES: &[&str] = &[
     "io", "fs", "path", "os", "math", "rand", "time", "str", "json", "regex", "http", "args",
-    "process", "datetime",
+    "process", "datetime", "vec",
 ];
 
 /// Registers the standard library into `vm` with the default [`StdConfig`]. It must happen
@@ -80,6 +80,7 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
     args::register(vm)?;
     process::register(vm)?;
     datetime::register(vm)?;
+    colibri_runtime::install_vec(vm)?;
     Ok(())
 }
 

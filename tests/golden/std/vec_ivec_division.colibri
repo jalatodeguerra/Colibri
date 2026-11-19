@@ -1,0 +1,7 @@
+import vec
+
+fn main() {
+    print(vec.ivec2(7, -7) / vec.ivec2(2, 2))
+    print(vec.ivec2(1, 1) / vec.ivec2(1, 0)) // panic: division by zero
+}
+// expect: ivec2(3, -3)

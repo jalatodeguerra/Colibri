@@ -161,9 +161,72 @@ impl IntTy {
     }
 }
 
+/// A built-in vector type: `vec2`..`vec4` (`f32` components) or `ivec2`..`ivec4` (`i32`
+/// components), DESIGN §15.1. A plain value, copied by value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct VecTy {
+    /// Whether the components are `i32` (`ivecN`) rather than `f32` (`vecN`).
+    pub int: bool,
+    /// The number of components, 2 to 4.
+    pub n: u8,
+}
+
+impl VecTy {
+    /// Every vector type.
+    pub const ALL: [VecTy; 6] = [
+        VecTy { int: false, n: 2 },
+        VecTy { int: false, n: 3 },
+        VecTy { int: false, n: 4 },
+        VecTy { int: true, n: 2 },
+        VecTy { int: true, n: 3 },
+        VecTy { int: true, n: 4 },
+    ];
+
+    /// The type a name written in source stands for.
+    pub fn from_name(name: &str) -> Option<VecTy> {
+        VecTy::ALL.into_iter().find(|v| v.name() == name)
+    }
+
+    /// The type's name as written in source.
+    pub fn name(self) -> &'static str {
+        match (self.int, self.n) {
+            (false, 2) => "vec2",
+            (false, 3) => "vec3",
+            (false, _) => "vec4",
+            (true, 2) => "ivec2",
+            (true, 3) => "ivec3",
+            (true, _) => "ivec4",
+        }
+    }
+
+    /// The type of one component.
+    pub fn scalar(self) -> Ty {
+        if self.int {
+            Ty::Int(IntTy::I32)
+        } else {
+            Ty::F32
+        }
+    }
+
+    /// The vector type of the same kind with `n` components.
+    pub fn with_len(self, n: u8) -> VecTy {
+        VecTy { n, ..self }
+    }
+
+    /// The same number of components of the other kind (`vec3` and `ivec3`).
+    pub fn other_kind(self) -> VecTy {
+        VecTy {
+            int: !self.int,
+            n: self.n,
+        }
+    }
+}
+
 /// A Colibri type.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ty {
+    /// `vec2`..`vec4`, `ivec2`..`ivec4`.
+    Vec(VecTy),
     Int(IntTy),
     /// `float` (`f64`).
     Float,
@@ -313,6 +376,7 @@ impl fmt::Display for Shown<'_> {
             Ty::Int(i) => f.write_str(i.name()),
             Ty::Float => f.write_str("float"),
             Ty::F32 => f.write_str("f32"),
+            Ty::Vec(v) => f.write_str(v.name()),
             Ty::Bool => f.write_str("bool"),
             Ty::Char => f.write_str("char"),
             Ty::Str => f.write_str("str"),

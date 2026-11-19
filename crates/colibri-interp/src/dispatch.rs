@@ -92,6 +92,8 @@ pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
         Value::Ptr(_) => TypeKey::Ptr,
         Value::Float(_) => TypeKey::Float,
         Value::F32(_) => TypeKey::F32,
+        Value::Vec(v) => TypeKey::Vec(colibri_check::types::VecTy { int: false, n: v.n }),
+        Value::IVec(v) => TypeKey::Vec(colibri_check::types::VecTy { int: true, n: v.n }),
         Value::Char(_) => TypeKey::Char,
         Value::Str(_) => TypeKey::Str,
         Value::Struct(s) => TypeKey::Adt(s.ty),
@@ -390,6 +392,12 @@ impl Interp {
             Coercion::F32ToFloat => {
                 return match value {
                     Value::F32(x) => Value::Float(f64::from(x)),
+                    other => other,
+                };
+            }
+            Coercion::FloatToF32 => {
+                return match value {
+                    Value::Float(x) => Value::F32(x as f32),
                     other => other,
                 };
             }
