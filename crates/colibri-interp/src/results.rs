@@ -344,7 +344,12 @@ impl Interp {
     }
 
     /// `compare(a, b)`: -1, 0 or 1, honouring a user-written `impl Ord`. A `nan` panics.
-    pub(crate) fn compare_values(&mut self, fiber: &mut Fiber, args: Vec<Value>, span: Span) -> Eval {
+    pub(crate) fn compare_values(
+        &mut self,
+        fiber: &mut Fiber,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Eval {
         let result = match args.as_slice() {
             [a, b] => self.cmp_deep(fiber, a, b, span).and_then(|o| match o {
                 Some(o) => Ok(Value::Int(o as i64)),

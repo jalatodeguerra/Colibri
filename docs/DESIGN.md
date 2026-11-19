@@ -290,7 +290,7 @@ true false
 |------|----------|
 | Integer | `42`, `1_000_000`, `0xFF`, `0b1010` |
 | Float | `3.14`, `1e-9`, `2.0` |
-| String | `"hello {name}"`, raw: `r"C:\path\{not interpolated}"` |
+| String | `"hello {name}"`, raw: `r"C:\path\{not interpolated}"`, raw with quotes: `r#"{"name": "pen"}"#` [Proposed, built 2026-11-19] |
 | Multi-line string | `"""..."""` (strips common indentation), raw: `r"""..."""` |
 | Char | `'a'`, `'\n'` |
 | List | `[1, 2, 3]` |
@@ -514,6 +514,12 @@ log("disk full", level: "warn")              // named argument
   `let s = if x > 0 { "pos" } else { log("neg"); "neg" }`.
 - A function returning `Result[()]` (or `Result[(), E]`) that reaches the end of its body
   returns `ok(())`, so fallible procedures don't end in `return ok(())`.
+- **`-> !` marks a function that never returns** (`fn die(msg: str) -> ! { ... }`): its body must
+  end in `panic`, `os.exit`, another `-> !` call or a `while true` without `break`, and cannot
+  `return`. A call to such a function ends the flow (no `return` is needed after it) and has
+  the type of whatever is expected, so `let mode = match x { "a" => A, other => die("bad") }`
+  works. `panic` and `os.exit` are `-> !`. `!` is only allowed as a return type.
+  [Proposed, built 2026-11-19]
 - `pub` controls visibility (§13).
 - `defer` runs a statement when the enclosing block exits, including on panic and coroutine
   cancellation (§10.4): `let f = fs.open(path)?` then `defer f.close()`.
@@ -645,7 +651,10 @@ Structs, enums and tuples derive `Eq`, `Hash`, `Show`, `Clone` and the serializa
 §7.5 automatically, whenever all their fields support them. No declaration is needed, so
 `print("{hero.pos}")` and `if a == b` just work. A type can override any of them with an explicit
 `impl`. `Ord` is derived only for enums without payloads and for tuples; structs implement it
-explicitly. Classes derive `Show` (fields) and `Clone` (deep), but `Eq` and `Hash` stay identity
+explicitly. `compare(a, b) -> int` (-1, 0 or 1) orders two values of any `Ord` type, and since
+tuples are ordered, tie-breaks and mixed directions are tuples:
+`xs.sort_by(fn(a, b) => compare((b.total, a.name), (a.total, b.name)))` is "highest total first,
+then name". A `nan` panics, as in `sort`. [Proposed, built 2026-11-19] Classes derive `Show` (fields) and `Clone` (deep), but `Eq` and `Hash` stay identity
 unless implemented.
 
 ### 7.5 Type descriptors, serialization and reflection [Proposed]
@@ -836,6 +845,9 @@ match load_level(path) {
 let text = fs.read(path).context("loading level {path}")?   // wrap with context
 ```
 
+- `error(msg: str) -> Error` builds an `Error` from a message (the same as `Error.from(msg)`
+  for a `str`): `return err(error("bad input"))`. `err("bad input")` also works wherever the
+  expected type is `Result[T]`. [Proposed, built 2026-11-19]
 - `e.is[T]() -> bool` and `e.as[T]() -> T?` use the runtime type descriptors of §7.5.
 - `e.context(msg)` wraps an error with a message; `e.cause()` walks the chain; `{e}` prints the
   whole chain. Debug builds capture a backtrace.
@@ -1062,9 +1074,14 @@ reference-typed objects. See §14.1.
   layout.
 - Interpolation takes any expression: `"{a + b}"`, `"{p.pos}"`, including expressions with
   their own quotes: `"{m["key"]}"`. The value must implement `Show`. Format specs:
-  `"{x:.2}"`, `"{n:>8}"`, `"{id:x}"` (Python-like subset).
+  `"{x:.2}"`, `"{n:>8}"`, `"{id:x}"` (Python-like subset). Precision rounds the exact value
+  half to even (`{54.125:.2}` is `54.12`, `{2.5:.0}` is `2`), as in Rust and C.
 - Literal braces are written `{{` and `}}`. Raw strings `r"..."` and raw multi-line strings
   `r"""..."""` don't interpolate, which suits shaders and JSON, full of braces.
+- **Hashed raw strings** `r#"..."#` (any number of `#`: `r##"..."##`) hold `"` and braces
+  verbatim, with no escapes and no interpolation; the string ends at a `"` followed by the same
+  number of `#`. They may span lines and are not indentation-stripped. JSON in a test reads as
+  JSON: `json.decode[Item](r#"{"name": "pen", "qty": 3}"#)`. [Proposed, built 2026-11-19]
 - Indexing a `str` by integer is not allowed (it isn't O(1) in UTF-8); use `s.chars()`,
   `s.bytes()`, and slicing by byte range `s[0..4]` (panics on a non-boundary).
 - **Slices copy** in v1: `s[0..4]` is a new string, so a small slice never keeps a huge string

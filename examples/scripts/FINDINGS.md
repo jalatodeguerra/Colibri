@@ -6,12 +6,14 @@ program, medium forces a workaround, low is rough edges. "Fixed" ones have a gol
 1. **`fs.modified` did not exist** (medium, fixed). The date mode needs a modification time and
    `fs` only had `size`. Added `fs.modified(path) -> Result[float]`, unix seconds, with the
    golden `std/fs_modified`. `fs.stat` and `fs.set_modified` were added later (fixed).
-2. **No way to write a diverging function** (medium). `fn die(msg: str) -> !` is a syntax error
+2. **No way to write a diverging function** (medium, fixed). `fn die(msg: str) -> !` is a syntax error
    (`expected a type, found !`), and `os.exit(2)` in a helper leaves its caller's flow
    unchanged, so every call site needs a dead `return ok(())` after `usage_error(..)`, and
    `let mode = match x { .. other => usage_error(..) }` is not possible. A generic
    `fn f[T]() -> T { os.exit(2) }` fails too ("must return `T`"). Suggest: a `!` return type in
    source (the checker already has `Ty::Never`), and give `os.exit` that type.
+   Fixed: `fn die(msg: str) -> !`, `os.exit` and `panic` are `-> !`, a `while true` without
+   `break` diverges too (goldens `never/`, ARCHITECTURE §23).
 3. **`join_all` and `join` do not work from `main`** (medium, fixed: they and `wait(s)` now run the event loop on the main fiber, ARCHITECTURE section 22). `main` cannot wait for a
    `CoGroup`, so `fetch_all` hand-rolls `while group.count() > 0 { task.tick(0.0) }`. That is
    a correct idiom but not an obvious one (the error says "can only pause a coroutine").
@@ -35,16 +37,24 @@ program, medium forces a workaround, low is rough edges. "Fixed" ones have a gol
 8. **Empty collection literals** (low). `{}` is an empty block (the error explains and
    suggests `{:}`), `Set()` needs `Set[str]()` (also explained). Both messages are good; the
    forms are still a trap for people coming from Python. No change suggested.
-9. **Errors are built with `Error.from("text")`** (low). `err(Error.from(".."))` is
+9. **Errors are built with `Error.from("text")`** (low, fixed). `err(Error.from(".."))` is
    verbose for the most common "this failed" return in a script; suggest `error("..")`
    as a prelude function or `err("..")` coercing a `str` for `Result[T]`.
-10. **`sort_by` wants an `int` comparator** (low). Sorting by a float descending, with a name
+   Fixed: `error("..")` is a prelude function; `err("..")` already coerced a `str` where the
+   expected type is `Result[T]` (golden `errors/error_function`).
+10. **`sort_by` wants an `int` comparator** (low, fixed). Sorting by a float descending, with a name
     tie-break, is a six-line closure with `-1`/`1`; `sort_by_key` with a negated key does not
     give the tie-break. Suggest an `Ordering` result or `cmp(a, b)` on ordered types.
-11. **`{x:.2}` rounds ties to even** (low, informational). `54.125` prints `54.12`, as
+    Fixed: `compare(a, b) -> int` on ordered types; tuples give tie-breaks:
+    `compare((b.total, a.name), (a.total, b.name))` (goldens `compare/`).
+11. **`{x:.2}` rounds ties to even** (low, informational, documented). `54.125` prints `54.12`, as
     in Rust and C. Worth one line in the format-spec docs because report scripts hit it.
 12. **Things that worked without friction**: typed `json.decode` of maps and structs with
     path-carrying errors (`$.images`), `.context(..)` chains from `main`, `args.positional_with`,
     `regex`, `datetime.format(from_unix(..))`, `process.output` and its failure as a `Result`,
     mutation through `totals[i].files += 1`, `if let .. else` as an expression, shared class
     objects between coroutines, `CoGroup.go`, and the `colibri check` messages.
+13. **Raw strings could not hold `"`** (medium, fixed). `r"..."` ends at the first quote and
+    normal strings need `{{`, so JSON in a test was `"[{{\"name\": \"pen\"}}]"`. Added
+    `r#"..."#` (any number of `#`): `r#"[{"name": "pen"}]"#`, verbatim, no interpolation
+    (goldens `strings/raw_hashed_*`, `tests/raw_json_in_a_test_block`).

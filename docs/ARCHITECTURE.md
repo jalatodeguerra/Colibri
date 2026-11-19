@@ -417,6 +417,9 @@ turns out to matter, it moves into DESIGN.md.
     `x X b o` (integers; negative numbers print a sign and the magnitude). On a float `.N` means
     N digits after the point (Python's bare `.N` means significant digits, which is never what
     `{dt:.2}` intends); on a `str` it truncates. The `0` flag zero-pads numbers after the sign.
+    A `.N` on a float rounds the exact binary value to N digits, a tie going to the even
+    digit (round-half-to-even, as in Rust and C): `{54.125:.2}` is `54.12`, `{2.5:.0}` is `2`,
+    `{3.5:.0}` is `4`, and `{2.675:.2}` is `2.67` because 2.675 is slightly below the tie.
     `char` and `bool` take width, fill and align like strings. No `+`, `#` or `,` flags. Specs
     are validated against the static type at compile time.
 12. **Function bodies.** A `{ }` body is a statement block (DESIGN §6.1, "one rule for bodies"):
@@ -2869,3 +2872,62 @@ method. Suspending inside a host function is exactly what §3 said the tree-walk
 
 `wait_real`, `wait_until`, `wait_frames`, `wait_for` on the main fiber; a thread pool or a limit
 on simultaneous operations; async `fs` and `process`.
+
+## 23. Phase 2 findings fixes, part A
+
+Language-level fixes for the findings in `examples/scripts/FINDINGS.md` (2, 9, 10, 11 and the
+raw-string item 13). Each is a golden test folder: `never/`, `errors/error_function*`,
+`compare/`, `strings/raw_hashed_*`.
+
+### Decisions the design documents did not fix
+
+- **`!` is a return type only.** `TypeKind::Never` parses anywhere a type does, but the checker
+  resolves it only after `->` (`Checker::resolve_ret_type`: `fn` declarations, interface
+  methods, closure results and `fn(..) -> !` types); elsewhere it is "`!` is only allowed as a
+  return type". A `-> !` body that can end is "declared `-> !`, but its body can end"; `return`
+  in it (with or without a value) is an error. A call to a `-> !` function has type `Ty::Never`
+  already (the call's type is the declared result), so the existing flow rule (a statement of
+  type `!` diverges; `!` coerces to any type) covers helper calls, `match` arms and `if`
+  branches with no new machinery.
+- **`while true` without a `break` diverges.** `StmtKind::While` whose condition is the literal
+  `true` and that no `break` leaves (recorded in `FnCtx::broken_loops` by loop id; ids are per
+  frame, so a closure's loop may mark an outer id, which only makes the answer cautious) has
+  type `!`. `while cond` and `for` still fall through; there is no `loop` keyword.
+- **Host functions declare `!` with a Rust return type.** `colibri::Never` is an uninhabited
+  enum implementing `IntoColibri` with `TypeDesc::Never`, printed as `!` in `.cbi` text
+  (`fn exit(code: int) -> !`) and read back by the same parser. A host function ending in
+  `ctx.raise(..)` (type `!`) coerces to it. `os.exit` is the first user.
+- **`error(msg)` is a prelude function, not a keyword or a method.** `check_error_fn` checks one
+  unnamed `str` argument and converts it as `Error.from` does (`convert_error`). A program's own
+  `error` function, value or local wins (the call falls to the prelude only when the name is
+  unbound), so no existing program changes meaning. It is not in `BUILTIN_FNS`, so it can be
+  redefined. The `err("text")` coercion that finding 9 asked for already existed (`check_ok_err`:
+  where the expected type is `Result[T]` an `err(x)` converts an `IntoError` value, and `str`
+  implements it); it fails only where nothing gives the expected type (`let r = err(..)`),
+  which is what `error(..)` is for. No new coercion was added: widening `str` to `Error` in
+  general would make `let e: Error = "x"` legal and hide mistakes.
+- **`compare(a, b) -> int` is a checked intrinsic like `assert_eq`.** Both arguments must unify
+  and support `<` (`supports_ord`: numbers, `str`, `char`, `bool`, payload-free enums, tuples of
+  ordered types, types with `impl Ord`). The result is -1, 0 or 1 (`Ordering as i64`) and honours
+  user `impl Ord` at every level (`Interp::cmp_deep`). Unordered values (a `nan`) panic with the
+  message `sort` uses, "these values are not ordered (a `nan`)", rather than inventing a total
+  order, so a `nan` is as loud in `compare` as in `sort`, `min` and `max`. The tie-break idiom is
+  a tuple on each side: `compare((b.total, a.name), (a.total, b.name))` sorts the total
+  descending and the name ascending; swap which side holds `a` and `b` per field for the
+  direction. No `Ordering` enum and no `then` method were added. A program's own `compare`
+  function wins.
+- **Hashed raw strings `r#"..."#`.** The lexer counts the `#`s after `r`, takes everything up
+  to `"` plus the same number of `#` verbatim (no escapes, no interpolation, may span lines, no
+  indentation stripping, CRLF still normalised) and emits an ordinary `Str` token with one
+  literal part; the formatter copies string tokens from the source, so it round-trips them.
+  `r"..."` and `r"""..."""` are unchanged. An unterminated one is "unterminated raw string
+  literal". The VS Code grammar has a `string.quoted.hashed.raw.colibri` rule with a back
+  reference to the opening hashes; the language server asks the checker and lexer, so it needed
+  no change.
+- **Format precision** rounds half to even (§1 decision 11).
+
+### Not built
+
+`Ordering` as a type; `compare` on structs without `impl Ord` (derive `Ord` for structs is
+still open, DESIGN §7.4); a `loop` keyword; `!` in type positions other than a result (a
+function parameter of type `!`, `List[!]`).
