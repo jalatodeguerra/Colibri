@@ -135,6 +135,7 @@ impl FnCtx<'_, '_> {
     pub(crate) fn check_ident(&mut self, id: &ast::Ident, span: Span) -> Expr {
         let name = id.name.as_str();
         if let Some(local) = self.lookup_local(name) {
+            self.flags[local.0 as usize].read = true;
             let ty = self.local_ty(local);
             let place = Place {
                 anchor: Anchor::Local(local),

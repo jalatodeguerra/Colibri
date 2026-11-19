@@ -666,3 +666,21 @@ fn check_of_a_package_with_a_script_beside_it_is_unchanged() {
     let out = colibri(&["check", dir.join("main.colibri").to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
 }
+
+#[test]
+fn unused_code_is_a_warning_that_changes_no_exit_code() {
+    let path = temp_file(
+        "unused_code.colibri",
+        "import math\n\nfn main() {\n    let left_over = 1\n    print(\"ran\")\n}\n",
+    );
+    let file = path.to_str().unwrap();
+    let out = colibri(&["check", file]);
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Warning"), "{stderr}");
+    assert!(stderr.contains("unused variable `left_over`"), "{stderr}");
+    assert!(stderr.contains("unused import `math`"), "{stderr}");
+    let out = colibri(&["run", file]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ran\n");
+}

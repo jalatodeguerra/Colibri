@@ -489,6 +489,14 @@ pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), Str
 }
 
 /// Every expected warning must appear, and every warning must be expected.
+/// The unused-code warnings (`unused variable`, `unused import`) are tolerated when a golden
+/// file does not list them: most golden programs are small demonstrations that leave values
+/// unused. A `// warning: unused variable` directive still has to be matched (it is checked
+/// above), so a test can pin one.
+fn is_unused_code_lint(message: &str) -> bool {
+    message.starts_with("unused variable") || message.starts_with("unused import")
+}
+
 fn compare_warnings(expected: &[Located], actual: &[Located]) -> Vec<String> {
     let at = |file: &str, line: usize| {
         if file.is_empty() {
@@ -510,6 +518,9 @@ fn compare_warnings(expected: &[Located], actual: &[Located]) -> Vec<String> {
         }
     }
     for (file, line, msg) in actual {
+        if is_unused_code_lint(msg) {
+            continue;
+        }
         if !expected
             .iter()
             .any(|(f, l, t)| f == file && l == line && msg.contains(t.as_str()))

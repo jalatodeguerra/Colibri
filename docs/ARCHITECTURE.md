@@ -44,8 +44,7 @@ keyed by qualified name so they stay stable across hot reload (§16.3).
   `Variant { enum, idx, args }`, `Tuple`, `ListLit`, `MapLit`.
 - **Generics** keep type parameters and one uniform body. Every generic call records its
   `type_args` (which may mention the enclosing function's parameters); the interpreter passes them
-  as a hidden per-frame vector. The checker marks functions that actually need them at runtime
-  (`json.decode[T]`, `e.is[T]()`) so the VM can drop them elsewhere. `Bound` calls dispatch
+  as a hidden per-frame vector. `Bound` calls dispatch
   through `impls[(runtime type, iface)]`.
 - **Implicit conversions are explicit `Coerce` nodes:** `ToDyn(ImplId)`, `F32ToFloat`,
   `IntoError(ImplId)`, `StrongToWeak`, `WeakToOption`.
@@ -158,8 +157,8 @@ iteration, write-back); `Defer`, `Go`, labelled `Break`/`Continue`.
   (the `impl`'s or interface's first, then the function's own), also for method calls;
   `FnDef.type_params` says how many. They may mention the caller's own parameters. The
   interpreter does not need them (generic code runs with one uniform representation and `Bound`
-  calls dispatch on the receiver's runtime type), so `Body.needs_type_args` is `false` for every
-  function; it is the hook for `json.decode[T]` and friends. `Callee::Bound { iface, method }` is
+  calls dispatch on the receiver's runtime type), so a body carries no flag for them; a
+  future `json.decode[T]` would need one. `Callee::Bound { iface, method }` is
   a method called through a bound or a derived implementation, `Callee::Dyn { iface, method }` a
   method called on an interface value; `method` is the index in the interface's declaration
   order. A call of a method that an `impl` provides (or an interface default) on a concrete
@@ -1243,6 +1242,28 @@ file it is in (the harness compares file and line); the expected stdout is the `
 lines of `main.colibri` followed by those of the other files in path order; `// drops:`, `//
 panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only. See history/PHASE1.md.
 
+### 11.8a Warnings (`Severity::Warning`)
+
+`Diagnostic` has a `severity`; a warning renders as "Warning:" and never changes an exit code
+(`run`, `check` and `test` print warnings to stderr; `has_errors()` ignores them). The language
+server publishes them with `DiagnosticSeverity::WARNING`. The REPL shows errors only. Besides
+shadowing, unreachable arms and an ignored `Result`, the checker reports unused code:
+
+- `unused variable `x``: a plain `let` or `var` local that is never read. A name that starts
+  with `_` is exempt; so are parameters, `for` variables, pattern bindings and module-level
+  values. A plain `x = value` is not a read (`x += 1`, `x.f = v` and `x[i] = v` are, to stay on
+  the safe side), and a closure that captures `x` counts as a read. Found when the scope closes
+  (`FnCtx::pop_scope`, flags `read` and `lint_unused` on `LocalFlags`).
+- `unused import`: a module of the program's own packages (not a dependency's) that imports a
+  module or a name and never mentions the bound name. Syntactic (`unused.rs` collects every
+  identifier written outside `import` items), so a local that shadows the name hides the
+  warning, but a used import is never reported. Skipped when the program has errors.
+
+Warnings in the prelude or a host interface are dropped (`Checker::report_lint`). The golden
+harness compares warnings exactly, except that unlisted `unused variable` and `unused import`
+warnings are tolerated (most golden files are small demonstrations); a `// warning:` directive
+for one must still match.
+
 ### 11.9 Decisions the design documents did not fix
 
 - Imports are always rooted at the tree root; there are no relative imports and no `..`.
@@ -1997,15 +2018,13 @@ unless said otherwise.
     itself panics. Outside a coroutine, `join` on an **unfinished** coroutine panics like `wait`
     does; on a finished one it just returns the value.
 - Builtins (reserved names, `BUILTIN_FNS`, also reserved against host registration):
-  `wait(seconds: float)`, `wait_frames(n: int)`, `wait_until(cond: fn() -> bool)`,
+  `wait(seconds: float)`, `wait_until(cond: fn() -> bool)`,
   `wait_real(seconds: float)`. They are HIR intrinsics (`Intrinsic::Wait` ..) of type `()`. Any
   function may call them; the check is at run time.
   - `wait(s)` counts **scheduler time**: the sum of the `dt` of the ticks (`vm.tick(dt)`,
     `task.tick(dt)`), and under the event loop (below) the real time that passed. A negative `s`
     is 0, NaN panics. The wake test has 1e-9 slack so five `wait(0.1)` equal a `wait(0.5)`.
     `wait(0)` pauses until the next tick (even a `tick(0.0)`).
-  - `wait_frames(n)` waits `max(n, 1)` ticks, a frame being one scheduler tick (the counter
-    advances at the start of every tick).
   - `wait_until(cond)`: the condition is evaluated **on the coroutine's own stack**: first at
     once (if true no pause happens), then once per tick (the coroutine is resumed every tick,
     runs `cond()` and pauses again if false). So a condition may do anything a closure can, and
@@ -2095,7 +2114,7 @@ failure of that coroutine (queued as above). A cancelled coroutine's `join` pani
 - **`colibri run` does not cancel coroutines when `main` returns.** It runs the **event loop**
   (`Vm::run_event_loop`) until no coroutine is left: tick with the time elapsed on the clock,
   then sleep until the next timed wake (`Time`/`Real`); coroutines that must be checked at every
-  tick (`wait_until`, `wait_frames`, `join`) are polled every 1 ms (`run_event_loop_polling`).
+  tick (`wait_until`, `join`) are polled every 1 ms (`run_event_loop_polling`).
   A coroutine panic ends the loop with that panic, so the program exits 101 like a panic in
   `main`. `fn main` returning does not end a program that still has coroutines; `os.exit` does.
   Scheduler time under the loop is real time, so `wait(1.0)` is one second there.
@@ -2906,8 +2925,8 @@ Inside a coroutine nothing changed (they pause). Details:
   (`host_depth > 0`), inside a `Drop` hook, inside a tick, or while shutting down.
 - A wait that nothing can end (a joined coroutine that only waits for a signal, with no timer
   or completion pending) panics "would wait forever" instead of hanging.
-- `wait_frames`, `wait_until`, `wait_real` and `wait_for` still panic on the main fiber: they
-  count ticks or need an emitter, and `main` has no tick to count. They could be added the same
+- `wait_until`, `wait_real` and `wait_for` still panic on the main fiber: they
+  need ticks or an emitter, and `main` has no tick to count. They could be added the same
   way.
 - Time spent in `main` between waits is not credited to scheduler time (as before the loop starts
   after `main`): a `wait(1.0)` coroutine started in main and then 5 s of computation is still due
@@ -2962,7 +2981,7 @@ method. Suspending inside a host function is exactly what §3 said the tree-walk
 
 ### Not built
 
-`wait_real`, `wait_until`, `wait_frames`, `wait_for` on the main fiber; a thread pool or a limit
+`wait_real`, `wait_until`, `wait_for` on the main fiber; a thread pool or a limit
 on simultaneous operations; async `fs` and `process`.
 
 ## 23. Phase 2 findings fixes, part A

@@ -1,0 +1,7 @@
+// A golden file need not list the unused-code warnings it triggers.
+fn main() {
+    let never_read = 1
+    var also_never_read = 2
+    print("ok")
+}
+// expect: ok

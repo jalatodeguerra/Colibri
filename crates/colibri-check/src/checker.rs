@@ -506,6 +506,7 @@ impl<'a> Checker<'a> {
             self.script.retain(|s| matches!(s, ScriptStep::Stmt(_)));
         }
         self.check_script();
+        self.lint_unused_imports();
         let script_globals: Vec<GlobalId> = self
             .script
             .iter()
@@ -550,6 +551,22 @@ impl<'a> Checker<'a> {
         if self.muted == 0 {
             self.diags.push(diag);
         }
+    }
+
+    /// Reports a lint warning (unused code): not in the prelude or a host interface, and once
+    /// per place even if a body is checked again.
+    pub fn report_lint(&mut self, diag: Diagnostic) {
+        if prelude::in_prelude(diag.span) || diag.span.file == HOST_FILE {
+            return;
+        }
+        if self
+            .diags
+            .iter()
+            .any(|d| d.span == diag.span && d.message == diag.message)
+        {
+            return;
+        }
+        self.report(diag);
     }
 
     /// How many errors (not warnings) have been reported so far.

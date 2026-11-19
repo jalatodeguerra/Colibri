@@ -291,6 +291,7 @@ impl FnCtx<'_, '_> {
             let name = cap.name.name.as_str();
             self.enter_parent();
             let found = self.lookup_local(name).map(|o| {
+                self.flags[o.0 as usize].read = true;
                 if !cap.weak {
                     self.flags[o.0 as usize].captured = true;
                 }
@@ -349,6 +350,7 @@ impl FnCtx<'_, '_> {
         let i = outer.0 as usize;
         if let Some(flags) = self.flags.get_mut(i) {
             flags.captured = true;
+            flags.read = true;
         }
         let out = (self.locals[i].clone(), self.kinds[i]);
         self.leave_parent();
