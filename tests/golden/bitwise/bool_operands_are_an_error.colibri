@@ -1,0 +1,7 @@
+fn main() {
+    let a = true & false // error: `&` cannot be applied to a value of type `bool`
+    let b = true | false // error: `|` cannot be applied to a value of type `bool`
+    let c = true ^ false // error: `^` cannot be applied to a value of type `bool`
+    let d = ~true // error: `~` cannot be applied to a value of type `bool`
+    let e = true << 1 // error: `<<` cannot be applied to a value of type `bool`
+}

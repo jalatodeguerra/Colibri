@@ -1,0 +1,5 @@
+fn main() {
+    let x: u32 = 1
+    let n = 32
+    print(x >> n) // panic: shift by 32 is out of range for `u32`
+}

@@ -4,8 +4,9 @@
 use colibri_syntax::{Diagnostic, Span};
 
 use crate::hir::{
-    Anchor, Arg, BinOp, Block, Builtin, Callee, CaptureMode, Expr, ExprKind, ForBinding, ForSource,
-    Intrinsic, Lit, LocalInfo, Num, Operand, Pat, PatKind, Place, Stmt, StmtKind, Storage, UnOp,
+    Anchor, Arg, BinOp, BitOp, Block, Builtin, Callee, CaptureMode, Expr, ExprKind, ForBinding,
+    ForSource, Intrinsic, Lit, LocalInfo, Num, Operand, Pat, PatKind, Place, Stmt, StmtKind,
+    Storage, UnOp,
 };
 use crate::infer::InferCtx;
 use crate::types::{IntTy, Ty};
@@ -45,10 +46,14 @@ struct Zonker<'a> {
 
 /// The arithmetic kind of a resolved operand type.
 fn num_of(ty: &Ty) -> Num {
+    Num::of(ty).unwrap_or(Num::Int(IntTy::I64))
+}
+
+/// The integer type of a resolved operand of a bitwise operator (`int` after an error).
+fn int_of(ty: &Ty) -> IntTy {
     match ty {
-        Ty::Float => Num::Float,
-        Ty::Int(i) => Num::Int(*i),
-        _ => Num::Int(IntTy::I64),
+        Ty::Int(i) => *i,
+        _ => IntTy::I64,
     }
 }
 
@@ -56,6 +61,7 @@ fn num_of(ty: &Ty) -> Num {
 fn operand_of(ty: &Ty) -> Operand {
     match ty {
         Ty::Float => Operand::Float,
+        Ty::F32 => Operand::F32,
         Ty::Int(i) => Operand::Int(*i),
         Ty::Bool => Operand::Bool,
         Ty::Char => Operand::Char,
@@ -80,6 +86,7 @@ fn resolve_binop(op: BinOp, operand: &Ty) -> BinOp {
     match op {
         BinOp::Arith(..) | BinOp::Concat if *operand == Ty::Str => BinOp::Concat,
         BinOp::Arith(a, _) => BinOp::Arith(a, num_of(operand)),
+        BinOp::Bit(b, _) => BinOp::Bit(b, int_of(operand)),
         BinOp::Concat => BinOp::Concat,
         BinOp::Cmp(c, _) => BinOp::Cmp(c, operand_of(operand)),
         BinOp::Is => BinOp::Is,
@@ -160,8 +167,79 @@ impl Zonker<'_> {
         }
     }
 
+    fn error(&mut self, message: String, span: Span) {
+        self.diags.push(Diagnostic::error(message, span));
+    }
+
+    /// A bitwise operand whose type turned out, after inference, not to be an integer (an
+    /// untyped literal that something else made a float).
+    fn require_integer(&mut self, symbol: &str, ty: &Ty, span: Span) {
+        if !matches!(ty, Ty::Int(_) | Ty::Error) {
+            self.error(
+                format!("`{symbol}` cannot be applied to a value of type `{ty}`"),
+                span,
+            );
+        }
+    }
+
+    /// Gives an untyped literal its final form: an integer literal used as a float becomes
+    /// one, and an integer literal must fit the type it ended up with.
+    fn literal(&mut self, lit: &mut Lit, ty: &Ty, span: Span) {
+        let value = match lit {
+            Lit::Int(i) => Some(i128::from(*i)),
+            Lit::U64(u) => Some(i128::from(*u)),
+            _ => None,
+        };
+        match (ty, value) {
+            (Ty::Int(t), Some(v)) => {
+                if !t.fits(v) {
+                    self.literal_does_not_fit(v, *t, span);
+                } else if *t == IntTy::U64 {
+                    *lit = Lit::U64(v as u64);
+                } else {
+                    *lit = Lit::Int(v as i64);
+                }
+            }
+            (Ty::Float, Some(v)) => *lit = Lit::Float(v as f64),
+            (Ty::F32, Some(v)) => *lit = Lit::F32(v as f32),
+            (Ty::F32, None) => {
+                if let Lit::Float(x) = lit {
+                    *lit = Lit::F32(*x as f32);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn literal_does_not_fit(&mut self, value: i128, ty: IntTy, span: Span) {
+        let name = ty.name();
+        self.diags.push(
+            Diagnostic::error(format!("literal {value} does not fit in `{name}`"), span)
+                .with_hint(format!("`{name}` holds {} to {}", ty.min(), ty.max())),
+        );
+    }
+
     fn pat(&mut self, p: &mut Pat) {
         self.ty(&mut p.ty, p.span);
+        if let Ty::Int(t) = p.ty {
+            let bounds = match &p.kind {
+                PatKind::Lit(Lit::Int(v)) => vec![*v],
+                PatKind::Range { lo, hi, .. } => [lo, hi]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|l| match l {
+                        Lit::Int(v) => Some(*v),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for v in bounds {
+                if !t.fits(i128::from(v)) {
+                    self.literal_does_not_fit(i128::from(v), t, p.span);
+                }
+            }
+        }
         match &mut p.kind {
             PatKind::Bind(_, Some(inner)) => self.pat(inner),
             PatKind::Variant { args: items, .. }
@@ -192,24 +270,43 @@ impl Zonker<'_> {
     fn expr(&mut self, e: &mut Expr) {
         self.ty(&mut e.ty, e.span);
         match &mut e.kind {
-            ExprKind::Lit(lit) => {
-                // An untyped integer literal used as a float.
-                if let Lit::Int(i) = lit
-                    && e.ty == Ty::Float
-                {
-                    *lit = Lit::Float(*i as f64);
-                }
-            }
+            ExprKind::Lit(lit) => self.literal(lit, &e.ty, e.span),
             ExprKind::Read(p) => self.place(p),
             ExprKind::Unary(op, x) => {
                 self.expr(x);
-                if let UnOp::Neg(_) = op {
-                    *op = UnOp::Neg(num_of(&x.ty));
+                match op {
+                    UnOp::Neg(_) => {
+                        if let Ty::Int(t) = x.ty
+                            && !t.is_signed()
+                        {
+                            self.error(
+                                format!("cannot negate a value of type `{}`", t.name()),
+                                e.span,
+                            );
+                        }
+                        *op = UnOp::Neg(num_of(&x.ty));
+                    }
+                    UnOp::BitNot(_) => {
+                        self.require_integer("~", &x.ty, e.span);
+                        *op = UnOp::BitNot(int_of(&x.ty));
+                    }
+                    UnOp::Not => {}
                 }
             }
             ExprKind::Binary(op, l, r) => {
                 self.expr(l);
                 self.expr(r);
+                if let BinOp::Bit(b, _) = op {
+                    let symbol = match b {
+                        BitOp::And => "&",
+                        BitOp::Or => "|",
+                        BitOp::Xor => "^",
+                        BitOp::Shl => "<<",
+                        BitOp::Shr => ">>",
+                    };
+                    self.require_integer(symbol, &l.ty, e.span);
+                    self.require_integer(symbol, &r.ty, e.span);
+                }
                 *op = resolve_binop(*op, &l.ty);
             }
             ExprKind::And(l, r) | ExprKind::Or(l, r) => {

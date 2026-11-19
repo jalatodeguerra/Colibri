@@ -1,4 +1,4 @@
 fn main() {
     let n = 5
-    print(n.is[int]()) // error: methods on the built-in type `int` are not supported yet
+    print(n.is[int]()) // error: `int` has no method `is`
 }

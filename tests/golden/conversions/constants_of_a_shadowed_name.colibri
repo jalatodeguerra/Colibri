@@ -1,0 +1,9 @@
+struct Limits {
+    MAX: int
+}
+
+fn main() {
+    let u8 = Limits { MAX: 9 }
+    print(u8.MAX)
+}
+// expect: 9

@@ -1,0 +1,5 @@
+fn main() {
+    let a: u8 = u8.MAX
+    let b: i32 = i32.MIN
+    let c: int = u32.MAX // error: expected `int`, found `u32`
+}

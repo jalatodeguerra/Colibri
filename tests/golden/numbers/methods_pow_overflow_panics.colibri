@@ -1,0 +1,6 @@
+fn main() {
+    let c: u8 = 2
+    print(c.pow(7))
+    print(c.pow(8)) // panic: integer overflow
+}
+// expect: 128

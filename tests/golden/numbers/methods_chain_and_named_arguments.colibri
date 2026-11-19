@@ -1,0 +1,12 @@
+fn main() {
+    let x: u8 = 250
+    print(x.wrapping_add(10).wrapping_mul(3))
+    print(x.wrapping_add(other: 10))
+    print(x.checked_sub(other: 251))
+    let y: int = 3
+    print(y.pow(exp: 4))
+}
+// expect: 12
+// expect: 4
+// expect: none
+// expect: 81

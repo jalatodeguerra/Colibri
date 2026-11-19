@@ -1,0 +1,18 @@
+struct Flags {
+    bits: u8
+}
+
+fn main() {
+    var f = Flags { bits: 0 }
+    f.bits |= 4
+    f.bits <<= 1
+    f.bits ^= 1
+    print(f.bits)
+    var xs: List[u16] = [0x00FF, 0xF000]
+    xs[0] ^= 0xFFFF
+    xs[1] >>= 12
+    xs[1] &= 0b101
+    print(xs)
+}
+// expect: 9
+// expect: [65280, 5]

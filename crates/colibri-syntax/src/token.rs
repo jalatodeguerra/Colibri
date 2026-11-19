@@ -123,6 +123,11 @@ pub enum TokenKind {
     StarEq,
     SlashEq,
     PercentEq,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    ShlEq,
+    ShrEq,
     AndAnd,
     OrOr,
     Bang,
@@ -192,6 +197,8 @@ pub(crate) const KEYWORDS: &[(&str, TokenKind)] = &[
 /// Punctuation and operators, longest spelling first so that scanning the
 /// table in order gives maximal munch.
 pub(crate) const OPERATORS: &[(&str, TokenKind)] = &[
+    ("<<=", TokenKind::ShlEq),
+    (">>=", TokenKind::ShrEq),
     ("..=", TokenKind::DotDotEq),
     ("..", TokenKind::DotDot),
     ("->", TokenKind::Arrow),
@@ -207,6 +214,9 @@ pub(crate) const OPERATORS: &[(&str, TokenKind)] = &[
     ("*=", TokenKind::StarEq),
     ("/=", TokenKind::SlashEq),
     ("%=", TokenKind::PercentEq),
+    ("&=", TokenKind::AmpEq),
+    ("|=", TokenKind::PipeEq),
+    ("^=", TokenKind::CaretEq),
     ("&&", TokenKind::AndAnd),
     ("||", TokenKind::OrOr),
     ("(", TokenKind::LParen),

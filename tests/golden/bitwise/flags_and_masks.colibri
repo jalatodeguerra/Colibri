@@ -1,0 +1,40 @@
+const READ: u8 = 1
+const WRITE: u8 = 2
+const EXEC: u8 = 4
+
+fn describe(perms: u8) -> str {
+    var out = ""
+    if perms & READ != 0 {
+        out += "r"
+    } else {
+        out += "-"
+    }
+    if perms & WRITE != 0 {
+        out += "w"
+    } else {
+        out += "-"
+    }
+    if perms & EXEC != 0 {
+        out += "x"
+    } else {
+        out += "-"
+    }
+    return out
+}
+
+fn main() {
+    var perms: u8 = READ | EXEC
+    print(describe(perms))
+    perms |= WRITE
+    print(describe(perms))
+    perms &= ~READ
+    print(describe(perms))
+    perms ^= EXEC
+    print(describe(perms))
+    print(perms)
+}
+// expect: r-x
+// expect: rwx
+// expect: -wx
+// expect: -w-
+// expect: 2

@@ -19,6 +19,7 @@ mod heap;
 mod hooks;
 mod iter;
 mod listfn;
+mod num;
 mod ordered;
 mod pattern;
 mod place;

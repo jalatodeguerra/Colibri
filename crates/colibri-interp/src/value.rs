@@ -22,9 +22,15 @@ pub use crate::iter::IterObj;
 pub enum Value {
     Unit,
     Bool(bool),
-    /// Every integer width (`int` is 64-bit; narrower types are range-checked on operations).
+    /// Every integer type but `u64` (`int` is 64-bit; narrower types are range-checked on
+    /// operations by the width the operator carries).
     Int(i64),
+    /// A `u64` (every value of that type, so `Show`, comparison and hashing need no static
+    /// type; the other unsigned widths fit `Int`). ARCHITECTURE §6.
+    U64(u64),
     Float(f64),
+    /// An `f32`, rounded to single precision after every operation.
+    F32(f32),
     Char(char),
     Str(Rc<str>),
     Struct(Rc<StructVal>),
@@ -95,7 +101,9 @@ impl PartialEq for Value {
             (Value::Unit, Value::Unit) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::U64(a), Value::U64(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::F32(a), Value::F32(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Struct(a), Value::Struct(b)) => a == b,

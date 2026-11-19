@@ -1,0 +1,5 @@
+fn main() {
+    let a = u8() // error: `u8(..)` takes exactly one argument, found 0
+    let b = int(1, 2) // error: `int(..)` takes exactly one argument, found 2
+    let c = f32(x: 1.0) // error: `f32(..)` does not take a named argument
+}

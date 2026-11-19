@@ -1,0 +1,6 @@
+fn main() {
+    print(u8(255))
+    print(u8(256)) // error: literal 256 does not fit in `u8`
+    print(i8(-129)) // error: literal -129 does not fit in `i8`
+    print(u8(-1)) // error: literal -1 does not fit in `u8`
+}

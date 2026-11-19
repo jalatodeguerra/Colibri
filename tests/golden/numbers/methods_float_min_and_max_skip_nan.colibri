@@ -1,0 +1,12 @@
+fn main() {
+    let nan = float.NAN
+    print(nan.min(1.0))
+    print(nan.max(1.0))
+    let one: float = 1.0
+    print(one.min(nan))
+    print(nan.min(nan))
+}
+// expect: 1.0
+// expect: 1.0
+// expect: 1.0
+// expect: nan

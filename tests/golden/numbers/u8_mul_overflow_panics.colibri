@@ -1,0 +1,6 @@
+fn main() {
+    let a: u8 = 16
+    print(a * 15)
+    print(a * 16) // panic: integer overflow
+}
+// expect: 240

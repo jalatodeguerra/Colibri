@@ -1,0 +1,6 @@
+fn main() {
+    let a: u64 = 4294967295
+    print(u32(a))
+    print(u32(a + 1)) // panic: value 4294967296 does not fit in `u32`
+}
+// expect: 4294967295

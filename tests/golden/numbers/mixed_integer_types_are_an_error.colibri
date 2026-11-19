@@ -1,0 +1,9 @@
+fn main() {
+    let a: i32 = 1
+    let b: int = 2
+    let c = a + b // error: cannot apply `+` to `i32` and `int`
+    let d: u8 = 1
+    let e: u16 = 2
+    print(d < e) // error: cannot apply `<` to `u8` and `u16`
+    print(a == b) // error: cannot apply `==` to `i32` and `int`
+}

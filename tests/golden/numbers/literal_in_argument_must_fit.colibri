@@ -1,0 +1,6 @@
+fn takes(x: u16) -> u16 => x
+
+fn main() {
+    print(takes(65535))
+    print(takes(65536)) // error: literal 65536 does not fit in `u16`
+}

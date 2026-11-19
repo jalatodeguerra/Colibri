@@ -28,6 +28,7 @@ mod iter;
 mod loops;
 mod matching;
 mod methods;
+mod numeric;
 mod obligations;
 mod option;
 mod optres;

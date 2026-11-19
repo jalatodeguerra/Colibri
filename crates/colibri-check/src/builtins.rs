@@ -500,7 +500,7 @@ impl FnCtx<'_, '_> {
             }
             Need::Number(ty) => {
                 let t = self.default_ty(ty);
-                if matches!(t, Ty::Int(_) | Ty::Float | Ty::Error) {
+                if matches!(t, Ty::Int(crate::types::IntTy::I64) | Ty::Float | Ty::Error) {
                     return true;
                 }
                 let shown = self.show(&t);
@@ -509,7 +509,7 @@ impl FnCtx<'_, '_> {
                         format!("`sum` needs a list of `int` or `float`, but this is a list of `{shown}`"),
                         at,
                     )
-                    .with_hint("add the elements yourself with `fold`, or map them to numbers first"),
+                    .with_hint("add the elements yourself with `fold`, or map them to `int` or `float` first"),
                 );
                 false
             }

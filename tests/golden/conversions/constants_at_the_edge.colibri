@@ -1,0 +1,14 @@
+fn main() {
+    print(i8.MIN / 2)
+    print(u64.MAX / 2)
+    print(u64.MAX - u64.MAX)
+    print(i32.MAX.wrapping_add(1))
+    print(i64.MIN.wrapping_sub(1))
+    print(int.MAX == i64.MAX)
+}
+// expect: -64
+// expect: 9223372036854775807
+// expect: 0
+// expect: -2147483648
+// expect: 9223372036854775807
+// expect: true

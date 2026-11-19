@@ -1,0 +1,26 @@
+interface Show2 {
+    fn label(self) -> str
+}
+
+impl Show2 for u64 {
+    fn label(self) -> str => "u64 {self}"
+}
+
+impl Show2 for f32 {
+    fn label(self) -> str => "f32 {self}"
+}
+
+fn main() {
+    let a: u64 = 18446744073709551615
+    let b: f32 = 0.1
+    print(a.label())
+    print(b.label())
+    let shapes: List[Show2] = [a, b]
+    for s in shapes {
+        print(s.label())
+    }
+}
+// expect: u64 18446744073709551615
+// expect: f32 0.1
+// expect: u64 18446744073709551615
+// expect: f32 0.1

@@ -190,8 +190,8 @@ impl InferCtx {
     fn bind_to(&mut self, v: TyVar, ty: &Ty) -> Result<(), Mismatch> {
         let ok = match self.kind(v) {
             VarKind::General => !self.occurs(v, ty),
-            VarKind::IntLit => matches!(ty, Ty::Int(_) | Ty::Float),
-            VarKind::FloatLit => matches!(ty, Ty::Float),
+            VarKind::IntLit => matches!(ty, Ty::Int(_) | Ty::Float | Ty::F32),
+            VarKind::FloatLit => matches!(ty, Ty::Float | Ty::F32),
         };
         if ok {
             self.bind(v, ty.clone());
@@ -234,6 +234,19 @@ mod tests {
         let lit = cx.fresh(VarKind::FloatLit);
         assert!(cx.unify(&lit, &Ty::INT).is_err());
         assert!(cx.unify(&lit, &Ty::Float).is_ok());
+        let lit = cx.fresh(VarKind::FloatLit);
+        assert!(cx.unify(&lit, &Ty::Int(crate::types::IntTy::U8)).is_err());
+        assert!(cx.unify(&lit, &Ty::F32).is_ok());
+    }
+
+    #[test]
+    fn f32_and_float_are_distinct() {
+        let mut cx = InferCtx::new();
+        assert!(cx.unify(&Ty::F32, &Ty::Float).is_err());
+        assert!(
+            cx.unify(&Ty::Int(crate::types::IntTy::U8), &Ty::INT)
+                .is_err()
+        );
     }
 
     #[test]

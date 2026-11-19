@@ -1,0 +1,8 @@
+fn main() {
+    let a: u8 = 3
+    match a {
+        0 => print("zero")
+        256 => print("big") // error: literal 256 does not fit in `u8`
+        _ => print("other")
+    }
+}

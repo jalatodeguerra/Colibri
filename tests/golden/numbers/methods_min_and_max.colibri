@@ -1,0 +1,28 @@
+fn main() {
+    let a: u8 = 200
+    let b: u8 = 100
+    print(a.min(b))
+    print(a.max(b))
+    let c: i32 = -3
+    print(c.min(2))
+    print(c.max(2))
+    let d: u64 = 18446744073709551615
+    print(d.min(1))
+    print(d.max(1))
+    print((5).min(3))
+    let e: float = 1.5
+    print(e.min(0.5))
+    print(e.max(2))
+    let f: f32 = 0.25
+    print(f.max(0.5))
+}
+// expect: 100
+// expect: 200
+// expect: -3
+// expect: 2
+// expect: 1
+// expect: 18446744073709551615
+// expect: 3
+// expect: 0.5
+// expect: 2.0
+// expect: 0.5

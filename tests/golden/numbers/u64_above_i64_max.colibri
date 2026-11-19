@@ -1,0 +1,20 @@
+fn main() {
+    let a: u64 = 9223372036854775808
+    let b: u64 = 9223372036854775807
+    print(a)
+    print(a + b)
+    print(a - b)
+    print(a / 2)
+    print(a % 1000)
+    print(a * 1)
+    print(a > b)
+    print(a == 9223372036854775808)
+}
+// expect: 9223372036854775808
+// expect: 18446744073709551615
+// expect: 1
+// expect: 4611686018427387904
+// expect: 808
+// expect: 9223372036854775808
+// expect: true
+// expect: true

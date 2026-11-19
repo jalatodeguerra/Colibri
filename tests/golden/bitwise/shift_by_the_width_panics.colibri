@@ -1,0 +1,7 @@
+fn main() {
+    let n = 63
+    print(1 << n)
+    let m = 64
+    print(1 << m) // panic: shift by 64 is out of range for `int`
+}
+// expect: -9223372036854775808

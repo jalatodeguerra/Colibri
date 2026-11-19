@@ -1,0 +1,26 @@
+fn main() {
+    print(int(2.9))
+    print(int(-2.9))
+    print(int(0.999))
+    print(int(-0.5))
+    let x: float = 1234.56
+    print(i32(x))
+    print(u8(255.99))
+    print(u8(-0.9))
+    let y: f32 = 7.75
+    print(int(y))
+    print(u16(y))
+    print(int(9.2e18))
+    print(u64(1.0e19))
+}
+// expect: 2
+// expect: -2
+// expect: 0
+// expect: 0
+// expect: 1234
+// expect: 255
+// expect: 0
+// expect: 7
+// expect: 7
+// expect: 9200000000000000000
+// expect: 10000000000000000000

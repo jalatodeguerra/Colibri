@@ -1,0 +1,7 @@
+fn main() {
+    let a: u64 = 3
+    let b: u64 = 4
+    print(b - a)
+    print(a - b) // panic: integer overflow
+}
+// expect: 1

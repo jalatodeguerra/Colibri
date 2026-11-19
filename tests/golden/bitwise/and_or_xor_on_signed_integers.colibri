@@ -1,0 +1,21 @@
+fn main() {
+    let a: i32 = -1
+    print(a & 0x0F)
+    let b: i32 = -16
+    print(b | 3)
+    let c: i8 = -1
+    print(c ^ 0x55)
+    let d: int = 5
+    print(d & -2)
+    let e: int = -8
+    print(e & -3)
+    print(e | -3)
+    print(e ^ e)
+}
+// expect: 15
+// expect: -13
+// expect: -86
+// expect: 4
+// expect: -8
+// expect: -3
+// expect: 0

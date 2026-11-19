@@ -1,0 +1,20 @@
+fn main() {
+    let x: u32 = 0xDEADBEEF
+    print((x >> 28) & 0xF)
+    print((x >> 16) & 0xFFFF)
+    print(x & 0xFF)
+    print(x >> 24)
+    print("{x:X}")
+    let packed = (u32(7) << 16) | u32(300)
+    print(packed)
+    print(packed >> 16)
+    print(packed & 0xFFFF)
+}
+// expect: 13
+// expect: 57005
+// expect: 239
+// expect: 222
+// expect: DEADBEEF
+// expect: 459052
+// expect: 7
+// expect: 300

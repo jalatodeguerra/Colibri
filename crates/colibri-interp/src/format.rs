@@ -2,7 +2,7 @@
 
 use colibri_check::hir::{Align, FormatSpec, FormatType};
 
-use crate::show::{show, show_float};
+use crate::show::{show, show_f32, show_float};
 use crate::value::Value;
 
 /// Where padding goes.
@@ -19,21 +19,25 @@ enum Place {
 /// so combinations that cannot occur fall back to the `Show` form.
 pub fn format_value(v: &Value, spec: &FormatSpec) -> String {
     let (sign, body, numeric) = match v {
-        Value::Int(i) => {
-            let digits = match spec.ty {
-                None => i.unsigned_abs().to_string(),
-                Some(FormatType::LowerHex) => format!("{:x}", i.unsigned_abs()),
-                Some(FormatType::UpperHex) => format!("{:X}", i.unsigned_abs()),
-                Some(FormatType::Binary) => format!("{:b}", i.unsigned_abs()),
-                Some(FormatType::Octal) => format!("{:o}", i.unsigned_abs()),
-            };
-            (if *i < 0 { "-" } else { "" }, digits, true)
-        }
+        Value::Int(i) => (
+            if *i < 0 { "-" } else { "" },
+            int_digits(i.unsigned_abs(), spec),
+            true,
+        ),
+        Value::U64(u) => ("", int_digits(*u, spec), true),
         Value::Float(x) => {
             let negative = x.is_sign_negative() && !x.is_nan();
             let digits = match spec.precision {
                 Some(p) if x.is_finite() => format!("{:.*}", p, x.abs()),
                 _ => show_float(x.abs()),
+            };
+            (if negative { "-" } else { "" }, digits, true)
+        }
+        Value::F32(x) => {
+            let negative = x.is_sign_negative() && !x.is_nan();
+            let digits = match spec.precision {
+                Some(p) if x.is_finite() => format!("{:.*}", p, x.abs()),
+                _ => show_f32(x.abs()),
             };
             (if negative { "-" } else { "" }, digits, true)
         }
@@ -47,6 +51,17 @@ pub fn format_value(v: &Value, spec: &FormatSpec) -> String {
         }
     };
     pad(sign, &body, spec, numeric)
+}
+
+/// The digits of an integer's magnitude in the base the spec asks for.
+fn int_digits(magnitude: u64, spec: &FormatSpec) -> String {
+    match spec.ty {
+        None => magnitude.to_string(),
+        Some(FormatType::LowerHex) => format!("{magnitude:x}"),
+        Some(FormatType::UpperHex) => format!("{magnitude:X}"),
+        Some(FormatType::Binary) => format!("{magnitude:b}"),
+        Some(FormatType::Octal) => format!("{magnitude:o}"),
+    }
 }
 
 fn pad(sign: &str, body: &str, spec: &FormatSpec, numeric: bool) -> String {

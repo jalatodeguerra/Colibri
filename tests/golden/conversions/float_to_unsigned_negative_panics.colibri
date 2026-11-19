@@ -1,0 +1,5 @@
+fn main() {
+    print(u8(0.0 - 0.5))
+    print(u8(0.0 - 1.0)) // panic: value -1.0 does not fit in `u8`
+}
+// expect: 0

@@ -1,0 +1,22 @@
+fn average(xs: List[u8]) -> float {
+    var total = 0
+    for x in xs {
+        total += int(x)
+    }
+    return float(total) / float(xs.len())
+}
+
+fn main() {
+    let a: u8 = 200
+    let b: u8 = 100
+    print(int(a) + int(b))
+    print(u8(int(a) - int(b)))
+    print(average([10, 20, 30, 255]))
+    let n: i32 = 7
+    let f = f32(n) * 0.5
+    print(f)
+}
+// expect: 300
+// expect: 100
+// expect: 78.75
+// expect: 3.5

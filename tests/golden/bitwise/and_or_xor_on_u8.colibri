@@ -1,0 +1,20 @@
+fn main() {
+    let a: u8 = 0b1100_1010
+    let b: u8 = 0b0101_0110
+    print(a & b)
+    print(a | b)
+    print(a ^ b)
+    print("{a & b:08b}")
+    print("{a | b:08b}")
+    print("{a ^ b:08b}")
+    print(a & a == a)
+    print(a ^ a)
+}
+// expect: 66
+// expect: 222
+// expect: 156
+// expect: 01000010
+// expect: 11011110
+// expect: 10011100
+// expect: true
+// expect: 0

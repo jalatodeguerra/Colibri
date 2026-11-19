@@ -1,0 +1,4 @@
+fn main() {
+    let a: int = 3
+    print(a.pow(1000000000000)) // panic: integer overflow
+}

@@ -6,7 +6,7 @@ use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::FnCtx;
 use crate::hir::{self, Builtin, Expr, Lit};
-use crate::types::{OPTION_TYPE, Ty, VARIANT_NONE, VARIANT_SOME};
+use crate::types::{IntTy, OPTION_TYPE, Ty, VARIANT_NONE, VARIANT_SOME};
 
 impl FnCtx<'_, '_> {
     /// `a..b` and `a..=b` as a value of type `Range[int]`.
@@ -43,8 +43,18 @@ impl FnCtx<'_, '_> {
         }
         let elem = self.default_ty(&lo.ty);
         match elem {
-            Ty::Int(_) => {}
+            Ty::Int(IntTy::I64) => {}
             Ty::Error => return self.error_expr(span),
+            Ty::Int(other) => {
+                self.ck.report(
+                    Diagnostic::error(
+                        format!("a range value is a `Range[int]`, found ends of type `{}`", other.name()),
+                        span,
+                    )
+                    .with_hint("convert the ends with `int(x)`; a `for` loop accepts the narrower integer types directly"),
+                );
+                return self.error_expr(span);
+            }
             other => {
                 let shown = self.show(&other);
                 self.ck.report(

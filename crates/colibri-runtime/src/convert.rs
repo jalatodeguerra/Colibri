@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use colibri_check::types::Ty;
+use colibri_check::types::{IntTy, Ty};
 use colibri_interp::Value as Inner;
 
 use crate::error::Error;
@@ -18,8 +18,18 @@ pub struct Value(pub(crate) Inner);
 pub enum Type {
     Unit,
     Bool,
+    /// `int`, which is also `i64`.
     Int,
+    I8,
+    I16,
+    I32,
+    U8,
+    U16,
+    U32,
+    U64,
+    /// `float`, which is also `f64`.
     Float,
+    F32,
     Char,
     Str,
 }
@@ -30,8 +40,16 @@ impl Type {
         Some(match ty {
             Ty::Unit => Type::Unit,
             Ty::Bool => Type::Bool,
-            Ty::Int(colibri_check::types::IntTy::I64) => Type::Int,
+            Ty::Int(IntTy::I64) => Type::Int,
+            Ty::Int(IntTy::I8) => Type::I8,
+            Ty::Int(IntTy::I16) => Type::I16,
+            Ty::Int(IntTy::I32) => Type::I32,
+            Ty::Int(IntTy::U8) => Type::U8,
+            Ty::Int(IntTy::U16) => Type::U16,
+            Ty::Int(IntTy::U32) => Type::U32,
+            Ty::Int(IntTy::U64) => Type::U64,
             Ty::Float => Type::Float,
+            Ty::F32 => Type::F32,
             Ty::Char => Type::Char,
             Ty::Str => Type::Str,
             _ => return None,
@@ -45,7 +63,15 @@ impl fmt::Display for Type {
             Type::Unit => "()",
             Type::Bool => "bool",
             Type::Int => "int",
+            Type::I8 => "i8",
+            Type::I16 => "i16",
+            Type::I32 => "i32",
+            Type::U8 => "u8",
+            Type::U16 => "u16",
+            Type::U32 => "u32",
+            Type::U64 => "u64",
             Type::Float => "float",
+            Type::F32 => "f32",
             Type::Char => "char",
             Type::Str => "str",
         })
@@ -102,9 +128,40 @@ macro_rules! scalar {
 }
 
 scalar!(i64, Type::Int, Int);
+scalar!(u64, Type::U64, U64);
 scalar!(f64, Type::Float, Float);
+scalar!(f32, Type::F32, F32);
 scalar!(bool, Type::Bool, Bool);
 scalar!(char, Type::Char, Char);
+
+/// The integer types stored as `Int(i64)`: every value of the Colibri type fits, so reading
+/// one back narrows without loss (a value out of range is an interpreter bug, reported as
+/// an error instead of truncated).
+macro_rules! narrow_int {
+    ($($rust:ty => $ty:expr),*) => {$(
+        impl IntoColibri for $rust {
+            fn colibri_type() -> Type {
+                $ty
+            }
+            fn into_colibri(self) -> Value {
+                Value(Inner::Int(i64::from(self)))
+            }
+        }
+        impl FromColibri for $rust {
+            fn colibri_type() -> Type {
+                $ty
+            }
+            fn from_colibri(value: Value) -> Result<Self, Error> {
+                match value.0 {
+                    Inner::Int(v) => <$rust>::try_from(v).map_err(|_| wrong($ty, &Inner::Int(v))),
+                    other => Err(wrong($ty, &other)),
+                }
+            }
+        }
+    )*};
+}
+
+narrow_int!(i8 => Type::I8, i16 => Type::I16, i32 => Type::I32, u8 => Type::U8, u16 => Type::U16, u32 => Type::U32);
 
 impl IntoColibri for () {
     fn colibri_type() -> Type {
@@ -195,6 +252,25 @@ mod tests {
             Some("hi")
         );
         assert!(<()>::from_colibri(().into_colibri()).is_ok());
+    }
+
+    #[test]
+    fn sized_numbers_round_trip() {
+        assert_eq!(u8::from_colibri(255u8.into_colibri()).ok(), Some(255));
+        assert_eq!(i8::from_colibri((-128i8).into_colibri()).ok(), Some(-128));
+        assert_eq!(
+            u32::from_colibri(u32::MAX.into_colibri()).ok(),
+            Some(u32::MAX)
+        );
+        assert_eq!(
+            u64::from_colibri(u64::MAX.into_colibri()).ok(),
+            Some(u64::MAX)
+        );
+        assert_eq!(f32::from_colibri(0.1f32.into_colibri()).ok(), Some(0.1f32));
+        assert_eq!(<u16 as IntoColibri>::colibri_type().to_string(), "u16");
+        assert!(u8::from_colibri(300i64.into_colibri()).is_err());
+        assert!(i64::from_colibri(1u8.into_colibri()).is_ok());
+        assert!(f64::from_colibri(1f32.into_colibri()).is_err());
     }
 
     #[test]

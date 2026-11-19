@@ -1,0 +1,10 @@
+fn takes(x: f32) -> f32 => x
+
+fn main() {
+    let d: float = 0.5
+    let a: f32 = d // error: expected `f32`, found `float`
+    print(takes(d)) // error: expected `f32`, found `float`
+    var f: f32 = 1.0
+    f = d // error: expected `f32`, found `float`
+    f += d // error: expected `f32`, found `float`
+}

@@ -1,0 +1,3 @@
+fn main() {
+    print(int(9.3e18)) // panic: does not fit in `int`
+}

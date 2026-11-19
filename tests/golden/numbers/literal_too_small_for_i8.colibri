@@ -1,0 +1,4 @@
+fn main() {
+    let a: i8 = -128
+    let b: i8 = -129 // error: literal -129 does not fit in `i8`
+}

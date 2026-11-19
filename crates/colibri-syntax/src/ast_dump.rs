@@ -308,6 +308,11 @@ fn assign_str(op: AssignOp) -> &'static str {
         AssignOp::Mul => "*=",
         AssignOp::Div => "/=",
         AssignOp::Rem => "%=",
+        AssignOp::BitAnd => "&=",
+        AssignOp::BitOr => "|=",
+        AssignOp::BitXor => "^=",
+        AssignOp::Shl => "<<=",
+        AssignOp::Shr => ">>=",
     }
 }
 

@@ -1,0 +1,16 @@
+fn checksum(data: List[u8]) -> u8 {
+    var sum: u8 = 0
+    for b in data {
+        sum = sum.wrapping_add(b)
+    }
+    return sum.wrapping_sub(0).wrapping_mul(1)
+}
+
+fn main() {
+    print(checksum([100, 100, 100]))
+    print(checksum([255, 1]))
+    print(checksum([]))
+}
+// expect: 44
+// expect: 0
+// expect: 0

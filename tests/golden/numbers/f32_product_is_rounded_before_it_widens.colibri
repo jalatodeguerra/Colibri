@@ -1,0 +1,11 @@
+fn main() {
+    let a: f32 = 0.1
+    let b: f32 = 0.1
+    let x: float = a * b
+    let y: float = a
+    let z: float = b
+    print(x)
+    print(x == y * z)
+}
+// expect: 0.010000000707805157
+// expect: false

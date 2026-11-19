@@ -162,6 +162,7 @@ impl FnCtx<'_, '_> {
             ty,
             Ty::Int(_)
                 | Ty::Float
+                | Ty::F32
                 | Ty::Bool
                 | Ty::Char
                 | Ty::Str

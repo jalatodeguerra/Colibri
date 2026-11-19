@@ -549,10 +549,8 @@ impl<'a> Checker<'a> {
             return self.alias_instance(name, args, span);
         }
         if !args.is_empty() && !self.poisoned_types.contains(name) {
-            let known = matches!(
-                name,
-                "int" | "i64" | "float" | "f64" | "bool" | "str" | "char"
-            );
+            let known = Ty::numeric_by_name(name).is_some()
+                || matches!(name, "int" | "bool" | "str" | "char");
             if known {
                 self.report(Diagnostic::error(
                     format!("`{name}` takes no type arguments"),
@@ -562,13 +560,13 @@ impl<'a> Checker<'a> {
             }
         }
         match name {
-            "int" | "i64" => Ty::INT,
-            "float" | "f64" => Ty::Float,
             "bool" => Ty::Bool,
             "str" => Ty::Str,
             "char" => Ty::Char,
-            "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64" | "f32" | "vec2" | "vec3"
-            | "vec4" => {
+            _ if Ty::numeric_by_name(name).is_some() => {
+                Ty::numeric_by_name(name).unwrap_or(Ty::Error)
+            }
+            "vec2" | "vec3" | "vec4" => {
                 self.unsupported(&format!("the type `{name}`"), span);
                 Ty::Error
             }

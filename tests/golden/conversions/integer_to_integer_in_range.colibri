@@ -1,0 +1,28 @@
+fn main() {
+    let a: int = 200
+    print(u8(a))
+    print(i16(a))
+    print(u64(a))
+    let b: int = -128
+    print(i8(b))
+    print(i32(b))
+    let c: u8 = 255
+    print(int(c))
+    print(i16(c))
+    print(u32(c))
+    print(u64(c))
+    let d: i32 = -5
+    print(int(d))
+    print(i64(d))
+}
+// expect: 200
+// expect: 200
+// expect: 200
+// expect: -128
+// expect: -128
+// expect: 255
+// expect: 255
+// expect: 255
+// expect: 255
+// expect: -5
+// expect: -5

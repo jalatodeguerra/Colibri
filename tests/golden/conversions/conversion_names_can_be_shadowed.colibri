@@ -1,0 +1,5 @@
+fn main() {
+    let u8 = 3
+    print(u8 + 1)
+}
+// expect: 4

@@ -334,7 +334,7 @@ impl<'a> Lexer<'a> {
                 format!("invalid suffix `{suffix}` on number literal"),
                 self.span(start, self.pos),
             )
-            .with_hint("number literals take their type from context; use `as` to convert"),
+            .with_hint("number literals take their type from context; annotate the binding (`let x: u8 = 255`) or convert with a call such as `u8(x)`"),
         );
     }
 

@@ -1,0 +1,17 @@
+fn main() {
+    let x: u8 = 0b1000_0001
+    print(x << 1)
+    print(x << 4)
+    print(x << 7)
+    let y: u32 = 0xFFFF_FFFF
+    print(y << 16)
+    let z: u64 = 18446744073709551615
+    print(z << 63)
+    print(z << 32)
+}
+// expect: 2
+// expect: 16
+// expect: 128
+// expect: 4294901760
+// expect: 9223372036854775808
+// expect: 18446744069414584320

@@ -59,8 +59,9 @@ pub struct Program {
 /// type arguments, since the engine runs generic code with one uniform representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TypeKey {
-    Int,
+    Int(IntTy),
     Float,
+    F32,
     Bool,
     Char,
     Str,
@@ -482,6 +483,8 @@ pub enum Coercion {
     /// `Result[T, E]` becomes `Result[T, Error]`: the payload of `err` is converted as by
     /// [`Coercion::IntoError`].
     ResultIntoError(ErrorConv),
+    /// An `f32` becomes a `float` (DESIGN §5.1); lossless.
+    F32ToFloat,
 }
 
 /// How a value is turned into an `Error`: the engine records the implementation with the error
@@ -600,7 +603,12 @@ pub enum Lit {
     Unit,
     Bool(bool),
     Int(i64),
+    /// An integer above `i64::MAX`: only a `u64` literal can be one (the checker turns every
+    /// literal of type `u64` into this form).
+    U64(u64),
     Float(f64),
+    /// A literal of type `f32`, already rounded.
+    F32(f32),
     Char(char),
     Str(Rc<str>),
 }
@@ -652,6 +660,38 @@ pub enum Intrinsic {
     ErrorIs(TypeKey),
     /// `e.as[T]() -> T?`: the value an `Error` keeps, if it has this runtime type.
     ErrorAs(TypeKey),
+    /// A conversion call `u8(x)`, `float(x)`, `f32(x)`: from the argument's type to the named
+    /// one (DESIGN §5.1). Integer conversions that lose the value panic.
+    Convert { from: Num, to: Num },
+    /// A method of a number type (`x.wrapping_add(y)`, `x.sqrt()`); the receiver is the first
+    /// argument and `Num` is its type.
+    NumMethod(NumMethod, Num),
+}
+
+/// The methods of the numeric types (DESIGN §5.1, Q6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NumMethod {
+    WrappingAdd,
+    WrappingSub,
+    WrappingMul,
+    CheckedAdd,
+    CheckedSub,
+    CheckedMul,
+    CheckedDiv,
+    SaturatingAdd,
+    SaturatingSub,
+    SaturatingMul,
+    /// Integers and floats.
+    Abs,
+    Min,
+    Max,
+    /// Integers: `x.pow(n)` traps on overflow.
+    Pow,
+    Sqrt,
+    Floor,
+    Ceil,
+    Round,
+    IsNan,
 }
 
 /// Methods and constructors of `str`, `List`, `Map` and `Set` (DESIGN §5.2, §5.3), plus the
@@ -778,11 +818,36 @@ pub enum Arg {
     Place(Place),
 }
 
-/// Arithmetic operand kind: integer width or float.
+/// A numeric type as an operation sees it: integer width, `f32` or `float`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Num {
     Int(IntTy),
+    F32,
     Float,
+}
+
+impl Num {
+    /// `int`.
+    pub const INT: Num = Num::Int(IntTy::I64);
+
+    /// The numeric type `ty` is, if it is one.
+    pub fn of(ty: &Ty) -> Option<Num> {
+        match ty {
+            Ty::Int(i) => Some(Num::Int(*i)),
+            Ty::F32 => Some(Num::F32),
+            Ty::Float => Some(Num::Float),
+            _ => None,
+        }
+    }
+
+    /// The source name of the type.
+    pub fn name(self) -> &'static str {
+        match self {
+            Num::Int(i) => i.name(),
+            Num::F32 => "f32",
+            Num::Float => "float",
+        }
+    }
 }
 
 /// What a comparison compares.
@@ -790,6 +855,7 @@ pub enum Num {
 pub enum Operand {
     Int(IntTy),
     Float,
+    F32,
     Bool,
     Char,
     Str,
@@ -809,6 +875,16 @@ pub enum ArithOp {
     Rem,
 }
 
+/// A bitwise operator (DESIGN §5.1). `Shl` and `Shr` take any integer type as the count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitOp {
+    And,
+    Or,
+    Xor,
+    Shl,
+    Shr,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CmpOp {
     Eq,
@@ -824,6 +900,8 @@ pub enum CmpOp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinOp {
     Arith(ArithOp, Num),
+    /// `& | ^ << >>` on integers of this type (the left operand's).
+    Bit(BitOp, IntTy),
     /// `str + str`
     Concat,
     Cmp(CmpOp, Operand),
@@ -835,6 +913,8 @@ pub enum BinOp {
 pub enum UnOp {
     Neg(Num),
     Not,
+    /// `~x` on an integer of this type.
+    BitNot(IntTy),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -10,8 +10,8 @@ use crate::body::{BlockMode, FnCtx};
 use crate::checker::{Dep, ValueRef};
 use crate::format;
 use crate::hir::{
-    self, Anchor, ArithOp, BinOp, Block, CmpOp, Expr, Intrinsic, Lit, Num, Operand, Place, Stmt,
-    UnOp,
+    self, Anchor, ArithOp, BinOp, BitOp, Block, CmpOp, Expr, Intrinsic, Lit, Num, Operand, Place,
+    Stmt, UnOp,
 };
 use crate::infer::VarKind;
 use crate::types::{IntTy, Ty};
@@ -111,16 +111,13 @@ impl FnCtx<'_, '_> {
 
     #[inline(never)]
     fn check_int(&mut self, n: u64, expected: Option<&Ty>, span: Span) -> Expr {
-        match i64::try_from(n) {
-            Ok(v) => self.literal(Lit::Int(v), VarKind::IntLit, expected, span),
-            Err(_) => {
-                self.ck.report(
-                    Diagnostic::error("this integer literal does not fit in `int`", span)
-                        .with_hint("`int` is a 64-bit signed integer: at most 9223372036854775807"),
-                );
-                self.error_expr(span)
-            }
-        }
+        // Whether the literal fits its final type is decided when that type is known
+        // (`zonk`); a value above `i64::MAX` can only ever be a `u64`.
+        let lit = match i64::try_from(n) {
+            Ok(v) => Lit::Int(v),
+            Err(_) => Lit::U64(n),
+        };
+        self.literal(lit, VarKind::IntLit, expected, span)
     }
 
     /// An untyped numeric literal: a fresh literal variable, bound at once to the expected type
@@ -178,6 +175,15 @@ impl FnCtx<'_, '_> {
                     self.ck.report(
                         Diagnostic::error(format!("`{name}` is a constructor, not a value"), span)
                             .with_hint(format!("call it: `{name}(x)`")),
+                    );
+                    self.error_expr(span)
+                }
+                _ if Ty::numeric_by_name(name).is_some() => {
+                    self.ck.report(
+                        Diagnostic::error(format!("`{name}` is a type, not a value"), span)
+                            .with_hint(format!(
+                                "convert with `{name}(x)`, or use a constant such as `{name}.MAX`"
+                            )),
                     );
                     self.error_expr(span)
                 }
@@ -243,7 +249,7 @@ impl FnCtx<'_, '_> {
         let spec = spec.filter(|s| !s.is_empty());
         if !matches!(
             ty,
-            Ty::Int(_) | Ty::Float | Ty::Bool | Ty::Char | Ty::Str | Ty::Unit
+            Ty::Int(_) | Ty::Float | Ty::F32 | Ty::Bool | Ty::Char | Ty::Str | Ty::Unit
         ) {
             let shown = self.show(&ty);
             if !matches!(
@@ -324,10 +330,19 @@ impl FnCtx<'_, '_> {
             AstUn::Neg => {
                 // `-9223372036854775808` has no positive counterpart in `int`, so a negated
                 // literal is folded into one.
-                if let ExprKind::Int(n) = operand.kind
-                    && n <= i64::MAX as u64 + 1
-                {
-                    let value = (n as i128).wrapping_neg() as i64;
+                if let ExprKind::Int(n) = operand.kind {
+                    let Some(value) = i64::try_from(-(n as i128)).ok() else {
+                        self.ck.report(
+                            Diagnostic::error(
+                                format!("literal -{n} does not fit in any integer type"),
+                                span,
+                            )
+                            .with_hint(
+                                "`int` is a 64-bit signed integer: at least -9223372036854775808",
+                            ),
+                        );
+                        return self.error_expr(span);
+                    };
                     return self.literal(Lit::Int(value), VarKind::IntLit, expected, span);
                 }
                 let value = self.check_expr(operand, expected);
@@ -337,6 +352,12 @@ impl FnCtx<'_, '_> {
                         format!("cannot negate a value of type `{shown}`"),
                         span,
                     ));
+                    return self.error_expr(span);
+                }
+                if let Ty::Int(t) = self.infer.shallow(&value.ty)
+                    && !t.is_signed()
+                {
+                    self.report_unsigned_neg(t, span);
                     return self.error_expr(span);
                 }
                 let ty = value.ty.clone();
@@ -357,8 +378,122 @@ impl FnCtx<'_, '_> {
                     span,
                 )
             }
-            AstUn::BitNot => self.unsupported("the `~` operator", span),
+            AstUn::BitNot => {
+                let hint = expected.filter(|t| matches!(t, Ty::Int(_)));
+                let value = self.check_expr(operand, hint);
+                if !self.require_integer("~", &value, span) {
+                    return self.error_expr(span);
+                }
+                let ty = value.ty.clone();
+                self.mk(
+                    hir::ExprKind::Unary(UnOp::BitNot(IntTy::I64), Box::new(value)),
+                    ty,
+                    span,
+                )
+            }
         }
+    }
+
+    /// `-x` on an unsigned integer has no value for most `x`; it is an error, not a wrap.
+    pub(crate) fn report_unsigned_neg(&mut self, ty: IntTy, span: Span) {
+        let name = ty.name();
+        self.ck.report(
+            Diagnostic::error(format!("cannot negate a value of type `{name}`"), span)
+                .with_hint(format!(
+                    "`{name}` is unsigned; subtract from zero with `wrapping_sub`, or convert first with `int(x)`"
+                )),
+        );
+    }
+
+    /// Whether `value` is (or may still become) an integer, for the bitwise operators;
+    /// otherwise reports why not.
+    pub(crate) fn require_integer(&mut self, symbol: &str, value: &Expr, span: Span) -> bool {
+        self.require_integer_ty(symbol, &value.ty, value.span, span)
+    }
+
+    /// [`FnCtx::require_integer`] for a type whose value is at `value_span`.
+    pub(crate) fn require_integer_ty(
+        &mut self,
+        symbol: &str,
+        ty: &Ty,
+        value_span: Span,
+        span: Span,
+    ) -> bool {
+        let ty = self.infer.shallow(ty);
+        let ok = match &ty {
+            Ty::Int(_) | Ty::Error => true,
+            _ => self.infer.unbound_kind(&ty) == Some(VarKind::IntLit),
+        };
+        if ok {
+            return true;
+        }
+        let shown = self.show(&ty);
+        let hint = match symbol {
+            "&" | "|" if ty == Ty::Bool => {
+                let logic = if symbol == "&" { "&&" } else { "||" };
+                format!("`{symbol}` works on integers; use `{logic}` for booleans")
+            }
+            "^" if ty == Ty::Bool => {
+                "`^` works on integers; compare booleans with `!=`".to_string()
+            }
+            "~" if ty == Ty::Bool => "`~` works on integers; use `!` for booleans".to_string(),
+            _ => format!("`{symbol}` works on integer types (`int`, `u8`, `u32`, ...)"),
+        };
+        self.ck.report(
+            Diagnostic::error(
+                format!("`{symbol}` cannot be applied to a value of type `{shown}`"),
+                span,
+            )
+            .with_label(value_span, format!("this is `{shown}`"))
+            .with_hint(hint),
+        );
+        false
+    }
+
+    /// `& | ^ << >>` on integers (DESIGN §5.1). The operands of `& | ^` have one type; a shift
+    /// takes its count in any integer type, and the result has the type of the left operand.
+    #[inline(never)]
+    fn check_bitwise(
+        &mut self,
+        op: AstBin,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Expr {
+        let (bit, symbol) = match op {
+            AstBin::BitAnd => (BitOp::And, "&"),
+            AstBin::BitOr => (BitOp::Or, "|"),
+            AstBin::BitXor => (BitOp::Xor, "^"),
+            AstBin::Shl => (BitOp::Shl, "<<"),
+            _ => (BitOp::Shr, ">>"),
+        };
+        let hint = expected.filter(|t| matches!(t, Ty::Int(_)));
+        let mut l = self.check_expr(lhs, hint);
+        let shift = matches!(bit, BitOp::Shl | BitOp::Shr);
+        let mut r = if shift {
+            let r = self.check_expr(rhs, None);
+            self.default_ty(&r.ty);
+            r
+        } else {
+            self.check_expr(rhs, Some(&l.ty))
+        };
+        let (lok, rok) = (
+            self.require_integer(symbol, &l, span),
+            self.require_integer(symbol, &r, span),
+        );
+        if !(lok && rok) {
+            return self.error_expr(span);
+        }
+        if !shift && !self.unify_operands(op, &mut l, &mut r, span) {
+            return self.error_expr(span);
+        }
+        let ty = l.ty.clone();
+        self.mk(
+            hir::ExprKind::Binary(BinOp::Bit(bit, IntTy::I64), Box::new(l), Box::new(r)),
+            ty,
+            span,
+        )
     }
 
     #[inline(never)]
@@ -407,13 +542,13 @@ impl FnCtx<'_, '_> {
             }
             AstBin::Is => return self.check_is(lhs, rhs, span),
             AstBin::BitOr | AstBin::BitXor | AstBin::BitAnd | AstBin::Shl | AstBin::Shr => {
-                return self.unsupported("bitwise operator", span);
+                return self.check_bitwise(op, lhs, rhs, span, expected);
             }
             _ => return self.error_expr(span),
         };
-        let l = self.check_expr(lhs, None);
-        let r = self.check_expr(rhs, Some(&l.ty));
-        if !self.unify_operands(op, &l, &r, span) {
+        let mut l = self.check_expr(lhs, None);
+        let mut r = self.check_expr(rhs, Some(&l.ty));
+        if !self.unify_operands(op, &mut l, &mut r, span) {
             return self.error_expr(span);
         }
         let equality = matches!(cmp, CmpOp::Eq | CmpOp::Ne);
@@ -451,9 +586,9 @@ impl FnCtx<'_, '_> {
     /// `a is b`: whether two references are the same object (DESIGN §5.3).
     #[inline(never)]
     fn check_is(&mut self, lhs: &ast::Expr, rhs: &ast::Expr, span: Span) -> Expr {
-        let l = self.check_expr(lhs, None);
-        let r = self.check_expr(rhs, Some(&l.ty));
-        if !self.unify_operands(AstBin::Is, &l, &r, span) {
+        let mut l = self.check_expr(lhs, None);
+        let mut r = self.check_expr(rhs, Some(&l.ty));
+        if !self.unify_operands(AstBin::Is, &mut l, &mut r, span) {
             return self.error_expr(span);
         }
         let ty = self.infer.shallow(&l.ty);
@@ -494,10 +629,13 @@ impl FnCtx<'_, '_> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Expr {
-        let hint = expected.filter(|t| matches!(t, Ty::Int(_) | Ty::Float | Ty::Str));
-        let l = self.check_expr(lhs, hint);
-        let r = self.check_expr(rhs, Some(&l.ty));
-        if !self.unify_operands(op, &l, &r, span) {
+        // A `float` hint is left out on purpose: it would widen an `f32` operand, while
+        // `a * b` on two `f32` is an `f32` product that widens afterwards. A literal adapts
+        // later anyway.
+        let hint = expected.filter(|t| matches!(t, Ty::Int(_) | Ty::F32 | Ty::Str));
+        let mut l = self.check_expr(lhs, hint);
+        let mut r = self.check_expr(rhs, Some(&l.ty));
+        if !self.unify_operands(op, &mut l, &mut r, span) {
             return self.error_expr(span);
         }
         let ok = match self.infer.shallow(&l.ty) {
@@ -533,10 +671,25 @@ impl FnCtx<'_, '_> {
         )
     }
 
-    /// Makes both operands one type, or reports why that cannot be.
-    fn unify_operands(&mut self, op: AstBin, l: &Expr, r: &Expr, span: Span) -> bool {
+    /// Makes both operands one type, or reports why that cannot be. The one exception is an
+    /// `f32` meeting a `float`: the `f32` operand widens and the operation is a `float` one
+    /// (DESIGN §5.1).
+    fn unify_operands(&mut self, op: AstBin, l: &mut Expr, r: &mut Expr, span: Span) -> bool {
         if self.infer.unify(&l.ty, &r.ty).is_ok() {
             return true;
+        }
+        match (self.infer.shallow(&l.ty), self.infer.shallow(&r.ty)) {
+            (Ty::F32, Ty::Float) => {
+                let narrow = std::mem::replace(l, self.error_expr(span));
+                *l = self.widen_f32(narrow);
+                return true;
+            }
+            (Ty::Float, Ty::F32) => {
+                let narrow = std::mem::replace(r, self.error_expr(span));
+                *r = self.widen_f32(narrow);
+                return true;
+            }
+            _ => {}
         }
         let (lt, rt) = (self.show(&l.ty), self.show(&r.ty));
         let mut diag = Diagnostic::error(
@@ -545,10 +698,9 @@ impl FnCtx<'_, '_> {
         )
         .with_label(l.span, format!("this is `{lt}`"))
         .with_label(r.span, format!("this is `{rt}`"));
-        let numeric = |t: &str| matches!(t, "int" | "float" | "{integer}" | "{float}");
-        if numeric(&lt) && numeric(&rt) {
+        if crate::body::numeric_hint(&lt, &rt).is_some() {
             diag = diag.with_hint(
-                "`int` and `float` never mix implicitly; write the literal as a float (`2.0`) or convert the value explicitly",
+                "numbers of different types never mix (only `f32` widens to `float`); convert one side explicitly, for example `int(x)` or `f32(x)`, or write the literal with the right type",
             );
         } else if lt == "str" || rt == "str" {
             diag = diag.with_hint("both sides must have the same type");
@@ -707,6 +859,11 @@ fn op_symbol(op: AstBin) -> &'static str {
         AstBin::Gt => ">",
         AstBin::Ge => ">=",
         AstBin::Is => "is",
+        AstBin::BitAnd => "&",
+        AstBin::BitOr => "|",
+        AstBin::BitXor => "^",
+        AstBin::Shl => "<<",
+        AstBin::Shr => ">>",
         _ => "?",
     }
 }

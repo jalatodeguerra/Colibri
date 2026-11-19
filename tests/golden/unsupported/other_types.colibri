@@ -1,1 +1,1 @@
-fn f(a: i32) {} // error: the type `i32` is not supported yet
+fn f(a: vec2) {} // error: the type `vec2` is not supported yet

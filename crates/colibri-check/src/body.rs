@@ -9,8 +9,8 @@ use colibri_syntax::{Diagnostic, Span};
 use crate::checker::{Checker, Dep, ParamInfo, ValueRef};
 use crate::exhaust::{self, ArmInfo};
 use crate::hir::{
-    self, ArithOp, BinOp, Block, Body, CaptureMode, Expr, FnId, LocalId, LocalInfo, LoopId, Num,
-    Stmt, Storage,
+    self, ArithOp, BinOp, BitOp, Block, Body, CaptureMode, Expr, FnId, LocalId, LocalInfo, LoopId,
+    Num, Stmt, Storage,
 };
 use crate::infer::{InferCtx, VarKind};
 use crate::obligations::Obligation;
@@ -166,6 +166,30 @@ pub(crate) struct GenericCall {
 }
 
 /// Whether `ty` is `Result[(), E]`, the type of a procedure that can fail (DESIGN §6.1).
+/// Whether a shown type is a number type (or an untyped numeric literal).
+fn numeric_name(t: &str) -> bool {
+    matches!(t, "float" | "f32" | "{integer}" | "{float}") || IntTy::from_name(t).is_some()
+}
+
+/// The hint for a mismatch between two numeric types (DESIGN §5.1): only `f32` widens to
+/// `float` implicitly, everything else converts by a call that names the target.
+pub(crate) fn numeric_hint(expected: &str, found: &str) -> Option<String> {
+    if !(numeric_name(expected) && numeric_name(found)) {
+        return None;
+    }
+    Some(match (expected, found) {
+        ("f32", "float") => {
+            "`float` never narrows to `f32` implicitly; convert it with `f32(x)`".to_string()
+        }
+        (_, "{float}") => {
+            "a float literal never becomes an integer; write an integer literal, or convert a float value with `int(x)`".to_string()
+        }
+        _ => format!(
+            "numbers never convert implicitly (only `f32` widens to `float`); convert with `{expected}(x)`"
+        ),
+    })
+}
+
 fn is_unit_result(ty: &Ty) -> bool {
     matches!(ty, Ty::Adt(crate::types::RESULT_TYPE, args) if args.first() == Some(&Ty::Unit))
 }
@@ -396,11 +420,8 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         if let Some((s, text)) = reason {
             diag = diag.with_label(s, text);
         }
-        let numeric = |t: &str| matches!(t, "int" | "float");
-        if numeric(&exp) && numeric(&got) {
-            diag = diag.with_hint(
-                "`int` and `float` never convert implicitly; write the literal as `2.0` (or `2`) or convert the value explicitly",
-            );
+        if let Some(hint) = numeric_hint(&exp, &got) {
+            diag = diag.with_hint(hint);
         } else if exp == "()" {
             diag = diag.with_hint("this position has no value; if a value is wanted, declare a return type with `-> T`");
         } else if got == "()" {
@@ -1132,24 +1153,40 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     ) -> Option<Stmt> {
         let place = self.check_place(target)?;
         let weak = self.is_weak_place(&place);
-        let mut rhs = self.check_expr(value, Some(&place.ty));
         let place_ty = place.ty.clone();
-        let hir_op = match op {
-            AssignOp::Assign => None,
+        // A shift count may have any integer type; every other right-hand side has the type
+        // of the place.
+        let shift = matches!(op, AssignOp::Shl | AssignOp::Shr);
+        let mut rhs = self.check_expr(value, if shift { None } else { Some(&place_ty) });
+        if shift {
+            self.default_ty(&rhs.ty);
+        }
+        let arith = match op {
             AssignOp::Add => Some(ArithOp::Add),
             AssignOp::Sub => Some(ArithOp::Sub),
             AssignOp::Mul => Some(ArithOp::Mul),
             AssignOp::Div => Some(ArithOp::Div),
             AssignOp::Rem => Some(ArithOp::Rem),
+            _ => None,
+        };
+        let bit = match op {
+            AssignOp::BitAnd => Some((BitOp::And, "&=")),
+            AssignOp::BitOr => Some((BitOp::Or, "|=")),
+            AssignOp::BitXor => Some((BitOp::Xor, "^=")),
+            AssignOp::Shl => Some((BitOp::Shl, "<<=")),
+            AssignOp::Shr => Some((BitOp::Shr, ">>=")),
+            _ => None,
         };
         let reason = Some((target.span, format!("this is `{}`", self.show(&place_ty))));
-        let stored = if weak && hir_op.is_none() {
+        let stored = if weak && op == AssignOp::Assign {
             rhs = self.coerce_to_weak(rhs, &place_ty, reason.clone())?;
+            true
+        } else if shift {
             true
         } else {
             self.expect(&rhs, &place_ty, reason)
         };
-        if stored && let Some(arith) = hir_op {
+        if stored && let Some(arith) = arith {
             let ok = match self.infer.shallow(&place_ty) {
                 Ty::Error => true,
                 Ty::Str => arith == ArithOp::Add,
@@ -1170,13 +1207,19 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 ));
             }
         }
-        let op = hir_op.map(|a| {
-            if self.infer.shallow(&place_ty) == Ty::Str {
-                BinOp::Concat
-            } else {
-                BinOp::Arith(a, Num::Int(IntTy::I64))
+        if stored && let Some((_, sym)) = bit {
+            let symbol = sym.trim_end_matches('=');
+            self.require_integer_ty(symbol, &place_ty, target.span, span);
+            if shift {
+                self.require_integer_ty(symbol, &rhs.ty, rhs.span, span);
             }
-        });
+        }
+        let op = match (arith, bit) {
+            (Some(_), _) if self.infer.shallow(&place_ty) == Ty::Str => Some(BinOp::Concat),
+            (Some(a), _) => Some(BinOp::Arith(a, Num::Int(IntTy::I64))),
+            (None, Some((b, _))) => Some(BinOp::Bit(b, IntTy::I64)),
+            (None, None) => None,
+        };
         Some(Stmt {
             span,
             kind: hir::StmtKind::Assign { place, op, rhs },
@@ -1238,7 +1281,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     /// Whether `ty` is (or may still become) an integer or float.
     pub fn is_numeric(&self, ty: &Ty) -> bool {
         match self.infer.shallow(ty) {
-            Ty::Int(_) | Ty::Float => true,
+            Ty::Int(_) | Ty::Float | Ty::F32 => true,
             t => matches!(
                 self.infer.unbound_kind(&t),
                 Some(VarKind::IntLit | VarKind::FloatLit)

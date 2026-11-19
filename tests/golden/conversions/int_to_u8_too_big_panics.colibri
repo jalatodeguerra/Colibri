@@ -1,0 +1,7 @@
+fn main() {
+    let a: int = 255
+    print(u8(a))
+    let b: int = 300
+    print(u8(b)) // panic: value 300 does not fit in `u8`
+}
+// expect: 255

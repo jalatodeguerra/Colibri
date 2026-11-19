@@ -99,7 +99,10 @@ impl FnCtx<'_, '_> {
         {
             return self.call_fn_method(f, None, recv, name, base.span, explicit, args, span);
         }
-        // 2. a method of a built-in type
+        // 2. a method of a number type, or of another built-in type
+        if recv_ty.is_number() && crate::numeric::num_method_exists(&recv_ty, &name.name) {
+            return self.check_num_method(recv, &recv_ty, name, args, span);
+        }
         if name.name != "clone" && builtin_method_exists(&recv_ty, &name.name) {
             return match self.check_builtin_method(recv, name, args, span) {
                 Ok(call) | Err(call) => call,
@@ -547,6 +550,10 @@ impl FnCtx<'_, '_> {
                 return self.check_enumerate(recv, args, span);
             }
             _ => {}
+        }
+        if recv_ty.is_number() {
+            // Reports the missing method together with what the type does have.
+            return self.check_num_method(recv, recv_ty, name, args, span);
         }
         let recv = match self.check_builtin_method(recv, name, args, span) {
             Ok(call) => return call,

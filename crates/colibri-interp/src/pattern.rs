@@ -97,6 +97,7 @@ impl Interp {
 fn lit_matches(lit: &Lit, v: &Value) -> bool {
     match (lit, v) {
         (Lit::Int(a), Value::Int(b)) => a == b,
+        (Lit::Int(a), Value::U64(b)) => u64::try_from(*a) == Ok(*b),
         (Lit::Char(a), Value::Char(b)) => a == b,
         (Lit::Bool(a), Value::Bool(b)) => a == b,
         (Lit::Str(a), Value::Str(b)) => a == b,
@@ -108,6 +109,7 @@ fn lit_matches(lit: &Lit, v: &Value) -> bool {
 fn lit_cmp(v: &Value, lit: &Lit) -> Option<Ordering> {
     match (v, lit) {
         (Value::Int(a), Lit::Int(b)) => Some(a.cmp(b)),
+        (Value::U64(a), Lit::Int(b)) => Some(i128::from(*a).cmp(&i128::from(*b))),
         (Value::Char(a), Lit::Char(b)) => Some(a.cmp(b)),
         _ => None,
     }

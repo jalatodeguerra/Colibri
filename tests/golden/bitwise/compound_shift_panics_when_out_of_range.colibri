@@ -1,0 +1,7 @@
+fn main() {
+    var x: u8 = 1
+    x <<= 7
+    print(x)
+    x >>= 8 // panic: shift by 8 is out of range for `u8`
+}
+// expect: 128

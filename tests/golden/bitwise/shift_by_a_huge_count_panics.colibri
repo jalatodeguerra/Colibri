@@ -1,0 +1,5 @@
+fn main() {
+    let x: i8 = 1
+    let n: u64 = 18446744073709551615
+    print(x << n) // panic: shift by 18446744073709551615 is out of range for `i8`
+}

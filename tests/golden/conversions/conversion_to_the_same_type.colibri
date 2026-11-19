@@ -1,0 +1,13 @@
+fn main() {
+    let a: u8 = 5
+    print(u8(a))
+    let b = 1.5
+    print(float(b))
+    let c: f32 = 0.5
+    print(f32(c))
+    print(int(7))
+}
+// expect: 5
+// expect: 1.5
+// expect: 0.5
+// expect: 7

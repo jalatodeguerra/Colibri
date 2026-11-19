@@ -29,7 +29,9 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
         Value::Bool(true) => Cow::Borrowed("true"),
         Value::Bool(false) => Cow::Borrowed("false"),
         Value::Int(i) => Cow::Owned(i.to_string()),
+        Value::U64(i) => Cow::Owned(i.to_string()),
         Value::Float(x) => Cow::Owned(show_float(*x)),
+        Value::F32(x) => Cow::Owned(show_f32(*x)),
         Value::Char(c) => Cow::Owned(c.to_string()),
         Value::Str(s) => Cow::Borrowed(s),
         Value::Struct(_)
@@ -101,6 +103,18 @@ pub(crate) fn show_with(
 /// floats: `1.5`, `2.0`, `-0.0`, `1e-7`, `1e16` (Rust's `{:?}` rules: exponent form below
 /// `1e-4` and from `1e16` up), plus `inf`, `-inf` and `nan`.
 pub fn show_float(x: f64) -> String {
+    if x.is_nan() {
+        "nan".to_string()
+    } else if x.is_infinite() {
+        if x > 0.0 { "inf" } else { "-inf" }.to_string()
+    } else {
+        format!("{x:?}")
+    }
+}
+
+/// An `f32` shows as the shortest text that reads back as the same `f32` (`0.1`, not
+/// `0.10000000149011612`), in the same style as [`show_float`].
+pub fn show_f32(x: f32) -> String {
     if x.is_nan() {
         "nan".to_string()
     } else if x.is_infinite() {

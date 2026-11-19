@@ -1,0 +1,32 @@
+fn main() {
+    let a: float = 2.0
+    print(a.sqrt())
+    let b: float = 16.0
+    print(b.sqrt())
+    let c: float = -1.5
+    print(c.floor())
+    print(c.ceil())
+    print(c.round())
+    let d: float = 2.5
+    print(d.round())
+    print(d.floor())
+    print(d.ceil())
+    let e: float = 0.4
+    print(e.round())
+    let f: float = -2.5
+    print(f.round())
+    print(c.sqrt().is_nan())
+    print(a.is_nan())
+}
+// expect: 1.4142135623730951
+// expect: 4.0
+// expect: -2.0
+// expect: -1.0
+// expect: -2.0
+// expect: 3.0
+// expect: 2.0
+// expect: 3.0
+// expect: 0.0
+// expect: -3.0
+// expect: true
+// expect: false
