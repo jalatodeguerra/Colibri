@@ -10,6 +10,7 @@ mod builtin;
 mod clone;
 mod closure;
 mod compare;
+mod coro;
 mod ctl;
 mod dispatch;
 mod eval;
@@ -35,6 +36,7 @@ mod value;
 
 pub use budget::GRACE_STEPS;
 pub use compare::{TooDeep, values_cmp, values_equal};
+pub use coro::{Clock, SystemClock};
 pub use ctl::{Ctl, Eval, PanicInfo, TraceEntry};
 pub use eval::{DEFAULT_NATIVE_STACK_BUDGET, Interp};
 pub use fiber::Fiber;

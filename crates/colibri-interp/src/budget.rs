@@ -58,6 +58,15 @@ impl Budget {
         }
     }
 
+    /// An armed budget for one resumption of a coroutine by the scheduler.
+    pub fn fresh(allotment: Option<u64>) -> Budget {
+        let mut b = Budget::new();
+        b.allotment = allotment;
+        b.arm();
+        b.depth = 1;
+        b
+    }
+
     fn arm(&mut self) {
         let start = self
             .allotment

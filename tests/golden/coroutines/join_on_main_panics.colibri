@@ -1,0 +1,10 @@
+fn slow() {
+    wait(1.0)
+}
+
+fn main() {
+    let c = go slow()
+    c.join()
+}
+
+// panic: `join` can only pause a coroutine

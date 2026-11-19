@@ -1,0 +1,20 @@
+fn boom(n: int) {
+    wait(1.0)
+    let xs = [1, 2]
+    print(xs[n])
+}
+
+fn fine() {
+    wait(1.0)
+    print("fine runs in the same tick")
+}
+
+fn main() {
+    go boom(5)
+    go fine()
+    task.tick(1.0)
+    print("not reached")
+}
+
+// panic: out of bounds
+// expect: fine runs in the same tick

@@ -1,0 +1,20 @@
+fn compute(n: int) -> int {
+    wait(1.0)
+    return n * 2
+}
+
+fn parent() {
+    let c: Coroutine[int] = go compute(21)
+    print("done? {c.done()}")
+    let v = c.join()
+    print("joined {v} done? {c.done()}")
+    print("again {c.join()}")
+}
+
+fn main() {
+    go parent()
+}
+
+// expect: done? false
+// expect: joined 42 done? true
+// expect: again 42

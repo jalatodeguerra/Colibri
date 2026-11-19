@@ -1,0 +1,9 @@
+fn bad() {
+    task.tick(1.0)
+}
+
+fn main() {
+    go bad()
+}
+
+// panic: `task.tick` cannot be called from a coroutine

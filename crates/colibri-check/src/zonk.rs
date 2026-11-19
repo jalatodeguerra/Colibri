@@ -435,9 +435,10 @@ impl Zonker<'_> {
                     self.expr(v);
                 }
             }
-            ExprKind::ToWeak(inner) | ExprKind::FromWeak(inner) | ExprKind::Coerce(inner, _) => {
-                self.expr(inner)
-            }
+            ExprKind::ToWeak(inner)
+            | ExprKind::FromWeak(inner)
+            | ExprKind::Go(inner)
+            | ExprKind::Coerce(inner, _) => self.expr(inner),
             ExprKind::Project(base, _) => self.expr(base),
             ExprKind::Match { scrutinee, arms } => {
                 self.expr(scrutinee);

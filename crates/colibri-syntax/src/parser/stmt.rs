@@ -198,7 +198,6 @@ impl Parser<'_> {
                 let inner = self.make_stmt(inner_start, kind);
                 (StmtKind::Defer(Box::new(inner)), blocklike)
             }
-            TokenKind::Go => self.parse_go()?,
             TokenKind::For | TokenKind::While => (self.parse_loop(None)?, true),
             TokenKind::Label(_) => (self.parse_labelled_loop()?, true),
             TokenKind::LBrace => {
@@ -285,18 +284,6 @@ impl Parser<'_> {
             None
         };
         Ok(StmtKind::Break { label, value })
-    }
-
-    /// `go call(args)`
-    fn parse_go(&mut self) -> PResult<(StmtKind, bool)> {
-        self.bump();
-        let call = self.parse_expr()?;
-        if !matches!(call.kind, ExprKind::Call { .. }) {
-            let diag = Diagnostic::error("`go` must be followed by a function call", call.span)
-                .with_hint("write `go work(args)` to start a coroutine");
-            self.report(diag);
-        }
-        Ok((StmtKind::Go(call), false))
     }
 
     /// `'outer: for ...` or `'outer: while ...`.

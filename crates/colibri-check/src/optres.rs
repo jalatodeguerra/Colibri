@@ -111,6 +111,18 @@ pub(crate) fn error_sig(name: &str) -> Option<Sig> {
     })
 }
 
+pub(crate) const COROUTINE_METHODS: &[&str] = &["cancel", "done", "join", "clone"];
+
+/// The signature of a method of `Coroutine[T]`.
+pub(crate) fn coroutine_sig(t: &Ty, name: &str) -> Option<Sig> {
+    Some(match name {
+        "cancel" => sig(Builtin::CoroutineCancel, vec![], Ty::Unit),
+        "done" => sig(Builtin::CoroutineDone, vec![], Ty::Bool),
+        "join" => sig(Builtin::CoroutineJoin, vec![], t.clone()),
+        _ => return None,
+    })
+}
+
 impl FnCtx<'_, '_> {
     /// The receiver of a built-in method and its type. `r.context(msg)` on a `Result[T, E]`
     /// first converts the error to `Error` (through `IntoError`), so the method itself only

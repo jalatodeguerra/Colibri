@@ -1,0 +1,17 @@
+struct P { x: int }
+
+impl P {
+    fn bump(var self) { self.x += 1 }
+}
+
+fn f() -> int { return 1 }
+
+fn main() {
+    let b: int = go f() // error: expected
+    var p = P { x: 1 }
+    go p.bump() // error: `go` cannot start this call
+    wait("soon") // error: expected
+    let c = go f()
+    let n: int = c.join()
+    c.nope() // error: no method `nope`
+}

@@ -300,7 +300,16 @@ pub(crate) fn stack_position() -> usize {
 }
 
 /// Names that exist without a declaration.
-pub(crate) const BUILTIN_FNS: &[&str] = &["print", "panic", "assert", "assert_eq"];
+pub(crate) const BUILTIN_FNS: &[&str] = &[
+    "print",
+    "panic",
+    "assert",
+    "assert_eq",
+    "wait",
+    "wait_frames",
+    "wait_until",
+    "wait_real",
+];
 
 impl<'a> Checker<'a> {
     pub fn new(

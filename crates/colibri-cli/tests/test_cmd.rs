@@ -366,3 +366,14 @@ fn a_missing_path_is_an_error() {
     assert_eq!(out.status.code(), Some(1));
     assert!(!stderr(&out).is_empty());
 }
+
+#[test]
+fn coroutines_do_not_leak_into_the_next_test() {
+    let out = test_script(
+        "coroutines",
+        "var hits = 0\n\nfn w() {\n    wait(10.0)\n    hits += 1\n}\n\ntest \"a starts one\" {\n    go w()\n    task.tick(1.0)\n}\n\ntest \"b sees nothing\" {\n    assert_eq(hits, 0)\n    task.tick(100.0)\n    assert_eq(hits, 0)\n}\n",
+        &[],
+    );
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert!(stdout(&out).contains("2 passed"), "{}", stdout(&out));
+}

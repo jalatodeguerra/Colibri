@@ -103,7 +103,12 @@ fn run(file: &Path, args: Vec<String>) -> ExitCode {
     }
     let color = io::stderr().is_terminal();
     let mut vm = colibri_lang::build_vm(colibri_lang::vm_builder().allow_all(), args);
-    match vm.load_path(file).and_then(|()| vm.run_main()) {
+    // After `main`, coroutines keep running (timed by the real clock) until none is left.
+    let outcome = vm
+        .load_path(file)
+        .and_then(|()| vm.run_main())
+        .and_then(|()| vm.run_event_loop());
+    match outcome {
         Ok(()) => ExitCode::SUCCESS,
         // `os.exit(n)` ends the program as a panic does; the code is what it asked for.
         Err(colibri::Error::Panic { .. }) if colibri_std::exit_code(&mut vm).is_some() => {

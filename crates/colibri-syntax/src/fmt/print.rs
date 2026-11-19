@@ -254,7 +254,7 @@ fn open_end(e: &Expr) -> bool {
         ExprKind::Range { end: None, .. } => true,
         ExprKind::Range { end: Some(x), .. } => open_end(x),
         ExprKind::Binary { rhs, .. } | ExprKind::Or { rhs, .. } => open_end(rhs),
-        ExprKind::Unary { expr, .. } => open_end(expr),
+        ExprKind::Unary { expr, .. } | ExprKind::Go(expr) => open_end(expr),
         ExprKind::Closure(c) => matches!(&*c.body, FnBody::Expr(b) if open_end(b)),
         _ => false,
     }
@@ -264,7 +264,7 @@ fn stmt_open_end(s: &Stmt) -> bool {
     match &s.kind {
         StmtKind::Let(l) => open_end(&l.init),
         StmtKind::Assign { value, .. } => open_end(value),
-        StmtKind::Expr(e) | StmtKind::Go(e) => open_end(e),
+        StmtKind::Expr(e) => open_end(e),
         StmtKind::Return(Some(e)) => open_end(e),
         StmtKind::Break { value: Some(e), .. } => open_end(e),
         StmtKind::Defer(inner) => stmt_open_end(inner),
@@ -1127,7 +1127,6 @@ impl<'a> Fmt<'a> {
                 None => text("continue"),
             },
             StmtKind::Defer(inner) => concat(vec![text("defer "), self.stmt(inner)]),
-            StmtKind::Go(e) => concat(vec![text("go "), self.expr(e)]),
             StmtKind::For {
                 label,
                 mutable,
@@ -1589,6 +1588,7 @@ impl<'a> Fmt<'a> {
                 };
                 concat(vec![text(sign), self.expr(expr)])
             }
+            ExprKind::Go(call) => concat(vec![text("go "), self.expr(call)]),
             ExprKind::Binary { .. } | ExprKind::Or { .. } => self.binary_chain(e),
             ExprKind::Range {
                 start,
