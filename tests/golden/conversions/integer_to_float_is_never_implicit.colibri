@@ -1,3 +1,4 @@
+// allow: unused
 fn half(x: float) -> float => x / 2.0
 
 fn main() {

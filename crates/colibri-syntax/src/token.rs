@@ -249,10 +249,53 @@ pub(crate) const OPERATORS: &[(&str, TokenKind)] = &[
 impl TokenKind {
     /// The keyword spelled `word`, if it is one.
     pub fn keyword(word: &str) -> Option<TokenKind> {
-        KEYWORDS
-            .iter()
-            .find(|(text, _)| *text == word)
-            .map(|(_, kind)| kind.clone())
+        // A `match` on strings compiles to a decision tree (by length, then bytes), so an
+        // identifier that is not a keyword is rejected without comparing it to each one.
+        // `KEYWORDS` is the table `fixed_text` reads; a test keeps the two in step.
+        Some(match word {
+            "fn" => TokenKind::Fn,
+            "let" => TokenKind::Let,
+            "var" => TokenKind::Var,
+            "const" => TokenKind::Const,
+            "type" => TokenKind::Type,
+            "return" => TokenKind::Return,
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
+            "for" => TokenKind::For,
+            "in" => TokenKind::In,
+            "while" => TokenKind::While,
+            "break" => TokenKind::Break,
+            "continue" => TokenKind::Continue,
+            "match" => TokenKind::Match,
+            "struct" => TokenKind::Struct,
+            "class" => TokenKind::Class,
+            "enum" => TokenKind::Enum,
+            "interface" => TokenKind::Interface,
+            "impl" => TokenKind::Impl,
+            "import" => TokenKind::Import,
+            "pub" => TokenKind::Pub,
+            "as" => TokenKind::As,
+            "is" => TokenKind::Is,
+            "self" => TokenKind::SelfKw,
+            "own" => TokenKind::Own,
+            "borrow" => TokenKind::Borrow,
+            "weak" => TokenKind::Weak,
+            "extern" => TokenKind::Extern,
+            "unsafe" => TokenKind::Unsafe,
+            "defer" => TokenKind::Defer,
+            "test" => TokenKind::Test,
+            "go" => TokenKind::Go,
+            "some" => TokenKind::Some,
+            "none" => TokenKind::None,
+            "ok" => TokenKind::Ok,
+            "err" => TokenKind::Err,
+            "or" => TokenKind::Or,
+            "and" => TokenKind::And,
+            "not" => TokenKind::Not,
+            "true" => TokenKind::True,
+            "false" => TokenKind::False,
+            _ => return None,
+        })
     }
 
     /// The fixed source text of a keyword or punctuation token.
@@ -307,5 +350,49 @@ impl fmt::Display for TokenKind {
             TokenKind::Eof => f.write_str("Eof"),
             _ => unreachable!("fixed-text tokens are handled above"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keyword_agrees_with_the_table() {
+        for (text, kind) in KEYWORDS {
+            assert_eq!(TokenKind::keyword(text).as_ref(), Some(kind), "{text}");
+        }
+        for word in ["", "f", "fnn", "Fn", "lets", "x", "selff", "_", "trues"] {
+            assert_eq!(TokenKind::keyword(word), None, "{word}");
+        }
+    }
+
+    /// The other direction: every word the `match` in `keyword` accepts is in `KEYWORDS`
+    /// (so `fixed_text` and `Display` know it). Read from the source of `keyword` itself.
+    #[test]
+    fn every_keyword_in_the_match_is_in_the_table() {
+        let source = include_str!("token.rs");
+        let start = source
+            .find("Some(match word {")
+            .expect("the match is there");
+        let body = &source[start..];
+        let end = body.find("_ => return None").expect("the match ends");
+        let mut seen = 0;
+        for line in body[..end].lines().skip(1) {
+            let Some((word, kind)) = line.trim().split_once(" => TokenKind::") else {
+                continue;
+            };
+            let word = word.trim_matches('"');
+            let kind = kind.trim_end_matches(',');
+            let entry = KEYWORDS.iter().find(|(text, _)| *text == word);
+            assert!(
+                entry.is_some(),
+                "`{word}` is in `keyword` but not in KEYWORDS"
+            );
+            let rendered = format!("{:?}", entry.map(|(_, k)| k).unwrap());
+            assert_eq!(rendered, kind, "`{word}` maps to different kinds");
+            seen += 1;
+        }
+        assert_eq!(seen, KEYWORDS.len(), "the two lists have different lengths");
     }
 }

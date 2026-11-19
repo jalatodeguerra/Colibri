@@ -1,5 +1,6 @@
 //! `str`: what the string methods (`len`, `trim`, `split`, `replace`, ...) do not cover:
-//! parsing numbers, lines, repeating and padding. Widths count characters, not bytes.
+//! parsing numbers, lines, repeating and trimming prefixes. (Padding is a method of `str`:
+//! `s.pad_left(width)`, `s.pad_right_with(width, fill)`.)
 
 use colibri_runtime::{Ctx, Error, Vm};
 
@@ -21,22 +22,6 @@ fn parse_int(text: &str) -> Result<i64, String> {
 fn parse_float(text: &str) -> Result<f64, String> {
     text.parse::<f64>()
         .map_err(|_| format!("cannot read `{text}` as a float"))
-}
-
-fn pad(cx: &mut Ctx, text: &str, width: i64, fill: char, left: bool) -> String {
-    let Ok(width) = usize::try_from(width) else {
-        cx.raise(format!("the width {width} is not allowed"));
-    };
-    let len = text.chars().count();
-    if len >= width {
-        return text.to_string();
-    }
-    let padding: String = std::iter::repeat_n(fill, width - len).collect();
-    if left {
-        format!("{padding}{text}")
-    } else {
-        format!("{text}{padding}")
-    }
 }
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
@@ -68,16 +53,6 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             }
             text.repeat(times)
         },
-    ))?;
-    plain(m.register_fn_named(
-        "pad_left",
-        ["text", "width", "fill"],
-        |cx: &mut Ctx, text: String, width: i64, fill: char| pad(cx, &text, width, fill, true),
-    ))?;
-    plain(m.register_fn_named(
-        "pad_right",
-        ["text", "width", "fill"],
-        |cx: &mut Ctx, text: String, width: i64, fill: char| pad(cx, &text, width, fill, false),
     ))?;
     plain(m.register_fn_named("trim_start", ["text"], |text: String| {
         text.trim_start().to_string()

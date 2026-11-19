@@ -1,3 +1,4 @@
+// allow: unused
 class Plain { n: int }
 class Named { name: str, n: int }
 class NamedBadly { name: int }

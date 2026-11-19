@@ -45,6 +45,7 @@ mod suggest;
 pub mod traits;
 mod tryop;
 pub mod types;
+mod unused;
 mod vector;
 mod zonk;
 
@@ -76,6 +77,7 @@ pub fn check_with_host(file: &colibri_syntax::ast::File, host: &HostEnv, budget:
         name: String::new(),
         package: 0,
         entry: true,
+        script: false,
         dependency: false,
         ffi: true,
         imports: std::collections::HashMap::new(),

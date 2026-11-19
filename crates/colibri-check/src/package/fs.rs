@@ -12,6 +12,15 @@ pub trait SourceFs {
     fn is_dir(&self, path: &Path) -> bool;
     /// The names of the entries of a folder, sorted (empty if it is not one).
     fn list(&self, dir: &Path) -> Vec<String>;
+    /// Whether the path is itself a symbolic link (a folder walk does not follow those).
+    fn is_symlink(&self, _path: &Path) -> bool {
+        false
+    }
+    /// The path with links resolved, so two names of one file compare equal. Where there are no
+    /// links this is [`normalize`].
+    fn canonical(&self, path: &Path) -> PathBuf {
+        normalize(path)
+    }
 }
 
 /// The operating system's files.
@@ -29,6 +38,14 @@ impl SourceFs for DiskFs {
 
     fn is_dir(&self, path: &Path) -> bool {
         or_dot(path).is_dir()
+    }
+
+    fn is_symlink(&self, path: &Path) -> bool {
+        std::fs::symlink_metadata(or_dot(path)).is_ok_and(|m| m.file_type().is_symlink())
+    }
+
+    fn canonical(&self, path: &Path) -> PathBuf {
+        std::fs::canonicalize(or_dot(path)).unwrap_or_else(|_| normalize(path))
     }
 
     fn list(&self, dir: &Path) -> Vec<String> {

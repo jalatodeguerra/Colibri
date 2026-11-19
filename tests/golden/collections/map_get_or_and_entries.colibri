@@ -1,0 +1,37 @@
+class Item {
+    name: str
+}
+
+fn main() {
+    let m = {"a": 1, "b": 2}
+    print(m.get_or("a", 0))
+    print(m.get_or("z", 0))
+    print(m.len())
+    print(m.entries())
+    let empty: Map[str, int] = {:}
+    print(empty.get_or("a", 7))
+    print(empty.entries())
+    // entries is a new list; changing it does not change the map
+    let es = m.entries()
+    es.clear()
+    print(m.len())
+    for (k, v) in m.entries() {
+        m[k] = v * 10
+    }
+    print(m)
+    let objs = {1: Item { name: "one" }}
+    print(objs.get_or(2, Item { name: "fallback" }).name)
+    print(objs.get_or(1, Item { name: "fallback" }).name)
+}
+
+// expect: 1
+// expect: 0
+// expect: 2
+// expect: [("a", 1), ("b", 2)]
+// expect: 7
+// expect: []
+// expect: 2
+// expect: {"a": 10, "b": 20}
+// expect: fallback
+// expect: one
+// drops: fallback, fallback, one

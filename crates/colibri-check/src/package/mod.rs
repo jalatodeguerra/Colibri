@@ -14,7 +14,7 @@ use colibri_syntax::ast::{self, NodeId};
 
 pub use fs::{DiskFs, MemoryFs, SourceFs, normalize};
 pub use loader::{Entry, LoadError, LoadOptions, load, load_with};
-pub use manifest::{Dependency, Manifest};
+pub use manifest::{Dependency, Manifest, is_name as is_package_name};
 
 /// The extension of source files.
 pub const SOURCE_EXT: &str = "colibri";
@@ -43,6 +43,9 @@ pub struct ModuleMeta {
     /// The package (folder) the module belongs to: an index into [`Loaded::packages`].
     pub package: usize,
     pub entry: bool,
+    /// Not the entry, and no module imports it: a file of the package that is run on its own
+    /// (an example, a tool). It may have top-level statements; they are checked, never run.
+    pub script: bool,
     /// The module belongs to a dependency of the program, not to the program's own tree.
     pub dependency: bool,
     /// The package may contain `extern` blocks (DESIGN §15.3): its `colibri.toml` says

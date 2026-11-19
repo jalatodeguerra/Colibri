@@ -1,3 +1,4 @@
+// allow: unused
 class Part { name: str }
 class Whole { name: str, first: Part, second: Part }
 

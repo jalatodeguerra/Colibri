@@ -1,0 +1,5 @@
+fn main() {
+    print((0..1000000000000).to_list().len())
+}
+
+// panic: a range of 1000000000000 integers is too long to turn into a list

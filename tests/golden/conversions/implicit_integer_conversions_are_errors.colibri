@@ -1,3 +1,4 @@
+// allow: unused
 fn takes_int(x: int) -> int => x
 fn takes_u8(x: u8) -> u8 => x
 

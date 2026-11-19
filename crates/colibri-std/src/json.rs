@@ -17,8 +17,11 @@
 //! | `enum` without data | the variant name as a string |
 //!
 //! Not supported (a clear error, never a wrong result): enums with data, classes, generic
-//! structs, functions, `Map` with keys that are not `str`. `@rename`, `@skip` and defaults for
-//! missing fields wait for attributes on user types.
+//! structs, functions, `Map` with keys that are not `str`. `@rename` and `@skip` wait for
+//! attributes on user types. A struct field that has a default may be absent from the object
+//! and takes its default; one without a default is an error (unless it is an `Option`).
+
+use std::rc::Rc;
 
 use colibri_runtime::reflect::{IntTy, OPTION_TYPE, Ty, TypeDef, TypeDefKind, TypeId};
 use colibri_runtime::{Ctx, Error, Value, ValueKind, Vm};
@@ -467,8 +470,10 @@ fn encode(cx: &Ctx, value: &Value, indent: Option<usize>) -> Result<String, Stri
 
 // ---- decoding ----
 
-struct Decoder<'a> {
-    defs: &'a [TypeDef],
+struct Decoder<'a, 'b> {
+    defs: Rc<[TypeDef]>,
+    /// Computes the default of a struct field that the JSON leaves out.
+    cx: &'a mut Ctx<'b>,
 }
 
 fn found(json: &Json) -> String {
@@ -488,7 +493,7 @@ fn found(json: &Json) -> String {
     }
 }
 
-impl Decoder<'_> {
+impl Decoder<'_, '_> {
     fn show(&self, ty: &Ty) -> String {
         match ty {
             Ty::Int(i) => i.name().to_string(),
@@ -511,7 +516,7 @@ impl Decoder<'_> {
             Ty::Option(t) => format!("{}?", self.show(t)),
             Ty::Map(k, v) => format!("Map[{}, {}]", self.show(k), self.show(v)),
             Ty::Adt(id, args) | Ty::Dyn(id, args) => {
-                let name = type_name(self.defs, *id);
+                let name = type_name(&self.defs, *id);
                 if args.is_empty() {
                     name
                 } else {
@@ -536,7 +541,7 @@ impl Decoder<'_> {
         ))
     }
 
-    fn decode(&self, json: &Json, ty: &Ty, at: &str) -> Result<Value, String> {
+    fn decode(&mut self, json: &Json, ty: &Ty, at: &str) -> Result<Value, String> {
         match ty {
             Ty::Int(int) => self.int(json, *int, at),
             Ty::Float | Ty::F32 => {
@@ -652,8 +657,9 @@ impl Decoder<'_> {
         })
     }
 
-    fn adt(&self, json: &Json, id: TypeId, args: &[Ty], at: &str) -> Result<Value, String> {
-        let Some(def) = self.defs.get(id.0 as usize) else {
+    fn adt(&mut self, json: &Json, id: TypeId, args: &[Ty], at: &str) -> Result<Value, String> {
+        let defs = Rc::clone(&self.defs);
+        let Some(def) = defs.get(id.0 as usize) else {
             return Err(format!("json: at `{at}`: cannot decode this type"));
         };
         if !args.is_empty() {
@@ -672,6 +678,17 @@ impl Decoder<'_> {
                     let here = format!("{at}.{}", field.name);
                     match entries.iter().find(|(k, _)| *k == field.name) {
                         Some((_, v)) => values.push(self.decode(v, &field.ty, &here)?),
+                        // A field with a default may be left out (DESIGN §7.5).
+                        None if let Some(f) = field.default => {
+                            match self.cx.call_field_default(f) {
+                                Ok(v) => values.push(v),
+                                Err(e) => {
+                                    return Err(format!(
+                                        "json: at `{here}`: the default value failed: {e}"
+                                    ));
+                                }
+                            }
+                        }
                         None if matches!(field.ty, Ty::Option(_)) => {
                             values.push(Value::option(None));
                         }
@@ -724,15 +741,17 @@ impl Decoder<'_> {
     }
 }
 
-fn decode(cx: &Ctx, text: &str) -> Result<Value, String> {
+fn decode(cx: &mut Ctx, text: &str) -> Result<Value, String> {
     let Some(ty) = cx.type_args().first() else {
         return Err("json.decode: the call has no type (internal error)".to_string());
     };
     let json = Parser { text, pos: 0 }.document()?;
+    let ty = ty.clone();
     Decoder {
-        defs: cx.type_defs(),
+        defs: cx.type_defs_shared(),
+        cx,
     }
-    .decode(&json, ty, "$")
+    .decode(&json, &ty, "$")
 }
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {

@@ -11,10 +11,97 @@ use colibri_syntax::Span;
 use crate::ctl::Eval;
 use crate::eval::Interp;
 use crate::fiber::Fiber;
+use crate::heap::ClassObj;
 use crate::iter::IterObj;
 use crate::value::Value;
 
+/// The most integers `range.to_list()` builds.
+pub(crate) const MAX_RANGE_LIST: u64 = 1 << 27;
+
+/// The text a `StrBuilder` holds. Its object has two fields: the chunks appended so far (a
+/// list of strings, so an append is O(1)) and the total byte length.
+pub(crate) fn builder_text(obj: &ClassObj) -> String {
+    obj.with_fields(|fields| match fields.first() {
+        Some(Value::List(chunks)) => chunks.with(|items| {
+            let mut out = String::with_capacity(match fields.get(1) {
+                Some(Value::Int(n)) => usize::try_from(*n).unwrap_or(0),
+                _ => 0,
+            });
+            for item in items {
+                if let Value::Str(s) = item {
+                    out.push_str(s);
+                }
+            }
+            out
+        }),
+        _ => String::new(),
+    })
+}
+
 impl Interp {
+    /// A `StrBuilder` method; `args[0]` is the builder.
+    pub(crate) fn str_builder_op(
+        &mut self,
+        fiber: &mut Fiber,
+        op: Builtin,
+        args: &[Value],
+        span: Span,
+    ) -> Eval {
+        let Some(Value::Obj(obj)) = args.first() else {
+            return Err(self.internal(fiber, span, "a string builder method on a non-builder"));
+        };
+        let Some(Value::List(chunks)) = obj.field(0) else {
+            return Err(self.internal(fiber, span, "a malformed string builder"));
+        };
+        let total = |obj: &ClassObj| match obj.field(1) {
+            Some(Value::Int(n)) => n,
+            _ => 0,
+        };
+        let text = match (op, args.get(1)) {
+            (Builtin::StrBuilderPush, Some(Value::Str(s))) => Some(Rc::clone(s)),
+            (Builtin::StrBuilderPushChar, Some(Value::Char(c))) => {
+                Some(Rc::from(c.encode_utf8(&mut [0; 4]) as &str))
+            }
+            _ => None,
+        };
+        if let Some(piece) = text {
+            if !piece.is_empty() {
+                let n = total(obj) + piece.len() as i64;
+                if chunks.push(Value::Str(piece)).is_err() {
+                    return Err(self.internal(fiber, span, "a string builder was held"));
+                }
+                let _ = obj.set_field(1, Value::Int(n));
+            }
+            return Ok(Value::Unit);
+        }
+        Ok(match op {
+            Builtin::StrBuilderLen => Value::Int(total(obj)),
+            Builtin::StrBuilderIsEmpty => Value::Bool(total(obj) == 0),
+            Builtin::StrBuilderClear => {
+                let old = chunks.replace_all(Vec::new());
+                self.release_all(old);
+                let _ = obj.set_field(1, Value::Int(0));
+                Value::Unit
+            }
+            Builtin::StrBuilderToStr => {
+                if chunks.len() == 1
+                    && let Some(only @ Value::Str(_)) = chunks.at(0)
+                {
+                    return Ok(only);
+                }
+                // Join once and keep the joined text as the only chunk, so asking again (or
+                // appending a little more) does not walk the pieces a second time.
+                let joined: Rc<str> = Rc::from(builder_text(obj));
+                if !joined.is_empty() {
+                    let old = chunks.replace_all(vec![Value::Str(Rc::clone(&joined))]);
+                    self.release_all(old);
+                }
+                Value::Str(joined)
+            }
+            _ => return Err(self.internal(fiber, span, "ill-typed built-in call")),
+        })
+    }
+
     /// A `str` method; `args[0]` is the receiver.
     pub(crate) fn str_op(
         &mut self,
@@ -150,6 +237,23 @@ impl Interp {
                 Ok(Value::Int(i64::try_from(r.len()).unwrap_or(i64::MAX)))
             }
             (Builtin::RangeIsEmpty, Some(Value::Range(r)), _) => Ok(Value::Bool(r.is_empty())),
+            (Builtin::RangeToList, Some(Value::Range(r)), _) => {
+                if r.len() > MAX_RANGE_LIST {
+                    // `len` saturates at `u64::MAX`: only the full inclusive range gets there.
+                    let n = u128::from(r.len()) + u128::from(r.len() == u64::MAX);
+                    return Err(self.panic(
+                        fiber,
+                        span,
+                        format!("a range of {n} integers is too long to turn into a list"),
+                    ));
+                }
+                let items = if r.inclusive {
+                    (r.start..=r.end).map(Value::Int).collect()
+                } else {
+                    (r.start..r.end).map(Value::Int).collect()
+                };
+                Ok(Value::list(items))
+            }
             (Builtin::RangeRev, Some(Value::Range(r)), _) => {
                 Ok(Value::Iter(IterObj::over_range(**r, true)))
             }

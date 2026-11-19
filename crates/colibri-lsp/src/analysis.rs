@@ -37,6 +37,17 @@ impl SourceFs for Overlay<'_> {
             || DiskFs.is_dir(path)
     }
 
+    fn is_symlink(&self, path: &Path) -> bool {
+        !self.buffers.contains_key(&normalize(path)) && DiskFs.is_symlink(path)
+    }
+
+    fn canonical(&self, path: &Path) -> PathBuf {
+        if self.buffers.contains_key(&normalize(path)) {
+            return normalize(path);
+        }
+        DiskFs.canonical(path)
+    }
+
     fn list(&self, dir: &Path) -> Vec<String> {
         let dir_norm = normalize(dir);
         let mut names = DiskFs.list(dir);

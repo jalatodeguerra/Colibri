@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let xs = [1, 2, 3]
     let ys = xs.filter(fn(n) => n + 1) // error: expected `bool`, found `{integer}`

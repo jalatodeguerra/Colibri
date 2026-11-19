@@ -26,7 +26,7 @@ colibri run organize/organize.colibri -- <dir> [--dry-run] [--by ext|date]
   (case-insensitive, last extension only, so `a.tar.gz` is `gz`). `--rules` replaces the
   categories with a JSON object decoded as `Map[str, List[str]]`
   ([`rules.example.json`](organize/rules.example.json)); unlisted extensions go to `other`.
-- `--by date`: `<dir>/<year>/<month>/` from the modification time (`fs.modified`, UTC).
+- `--by date`: `<dir>/<year>/<month>/` from the modification time (`fs.stat(path).modified`, UTC).
 - The folder is walked recursively; hidden files are skipped; files already in their target
   folder stay (so a second run prints `nothing to do`). Emptied folders are left behind
   (FINDINGS 5).

@@ -298,7 +298,7 @@ fn errors_prevent_a_program_but_not_more_diagnostics() {
 
 #[test]
 fn warnings_do_not_prevent_a_program() {
-    let src = "fn f() {\n    let x = 1\n    let x = 2\n}\n";
+    let src = "fn f() {\n    let x = 1\n    print(x)\n    let x = 2\n    print(x)\n}\n";
     let (ast, _) = parse_file(FileId(0), src);
     let checked = colibri_check::check(&ast);
     assert!(checked.program.is_some());
@@ -309,7 +309,7 @@ fn warnings_do_not_prevent_a_program() {
 
 #[test]
 fn unknown_names_get_suggestions() {
-    let src = "fn main() {\n    let counter = 1\n    print(countr)\n}\n";
+    let src = "fn main() {\n    let counter = 1\n    print(counter)\n    print(countr)\n}\n";
     let (ast, _) = parse_file(FileId(0), src);
     let checked = colibri_check::check(&ast);
     let hint = checked.diagnostics[0].hint.as_deref();
@@ -512,5 +512,57 @@ fn generic_errors_are_diagnosed_not_panicked() {
     assert!(
         messages.iter().any(|m| m.contains("takes 1 type argument")),
         "{messages:?}"
+    );
+}
+
+fn warnings_of(src: &str) -> Vec<String> {
+    let (ast, _) = parse_file(FileId(0), src);
+    let checked = colibri_check::check(&ast);
+    checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+#[test]
+fn unused_locals_warn_and_underscore_names_do_not() {
+    let w = warnings_of(
+        "fn f() {\n    let a = 1\n    var b = 2\n    b = 3\n    let _c = 4\n    let d = 5\n    print(d)\n}\n",
+    );
+    assert_eq!(w, ["unused variable `a`", "unused variable `b`"]);
+}
+
+#[test]
+fn a_local_counts_as_used_when_read_captured_or_changed_through_a_field() {
+    let src = "struct P { x: int }\nfn f() {\n    let a = 1\n    let g = fn() => a\n    print(g())\n    var p = P { x: 1 }\n    p.x = 2\n    var n = 0\n    n += 1\n}\n";
+    assert!(warnings_of(src).is_empty(), "{:?}", warnings_of(src));
+}
+
+#[test]
+fn unused_variable_in_a_closure_body_warns_once() {
+    let w = warnings_of("fn f() {\n    let g = fn() {\n        let z = 1\n    }\n    g()\n}\n");
+    assert_eq!(w, ["unused variable `z`"]);
+}
+
+#[test]
+fn converting_text_to_a_number_points_at_the_parse_functions() {
+    let hint = |src: &str| {
+        let (ast, _) = parse_file(FileId(0), src);
+        let checked = colibri_check::check(&ast);
+        checked.diagnostics[0].hint.clone().unwrap_or_default()
+    };
+    let h = hint("let a = int(\"42\")\n");
+    assert!(h.contains("str.parse_int(text)"), "{h}");
+    let h = hint("let a = float(\"1.5\")\n");
+    assert!(h.contains("str.parse_float(text)"), "{h}");
+    let h = hint("let a = u8(\"1\")\n");
+    assert!(h.contains("parse_int") && h.contains("`u8(..)`"), "{h}");
+    // Other types keep the general hint.
+    let h = hint("let a = int(true)\n");
+    assert!(
+        h.contains("converts between number types; this is a `bool`"),
+        "{h}"
     );
 }

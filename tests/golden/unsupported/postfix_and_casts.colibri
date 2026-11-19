@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let a = 1 as float // error: cannot convert to `float` with `as`
     let b = "s".center(3) // error: `str` has no method `center`

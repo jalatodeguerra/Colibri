@@ -1,0 +1,5 @@
+fn main() {
+    print([1, 2].chunks(0))
+}
+
+// panic: `chunks` needs a size of at least 1, found 0

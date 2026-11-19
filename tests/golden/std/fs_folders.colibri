@@ -18,7 +18,7 @@ fn main() -> Result[()] {
     fs.rename(path.join(root, "m.txt"), path.join(root, "moved.txt"))?
     print(fs.list(root)?)
     print(fs.read(path.join(root, "copy.txt"))?)
-    fs.remove_dir(root)?
+    fs.remove_tree(root)?
     print(fs.exists(root))
     return ok(())
 }

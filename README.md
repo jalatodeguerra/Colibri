@@ -48,11 +48,12 @@ While developing, `cargo run -p colibri-lang -- run hello.colibri` does the same
 | Command | What it does |
 |---------|--------------|
 | `colibri run [file or folder]` | run a script, or the package in a folder |
-| `colibri check [file or folder]` | type-check without running |
+| `colibri check [file or folder]` | type-check without running; a folder checks every module of the package |
 | `colibri fmt <paths>` | format source files in place |
 | `colibri test [file or folder]` | run the `test "name" { .. }` blocks |
 | `colibri repl` | interactive session |
 | `colibri lsp` | language server on stdin and stdout |
+| `colibri new <name>` | create a new package folder with a manifest, a `main.colibri` and a test |
 
 Run the test suite with `cargo test --workspace`.
 

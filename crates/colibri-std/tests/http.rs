@@ -301,3 +301,58 @@ fn https_to_a_closed_port_fails_cleanly() {
     );
     assert_eq!(out, "err\n");
 }
+
+/// A server that keeps connections open and counts them: `(base URL, connections accepted)`.
+fn serve_keep_alive() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
+    let port = listener.local_addr().unwrap().port();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&accepted);
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            count.fetch_add(1, Ordering::SeqCst);
+            thread::spawn(move || {
+                let mut data = Vec::new();
+                let mut chunk = [0u8; 1024];
+                // One response per request head, until the client closes.
+                loop {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    data.extend_from_slice(&chunk[..n]);
+                    while let Some(i) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                        data.drain(..i + 4);
+                        let reply = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+                        if stream.write_all(reply.as_bytes()).is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    (format!("http://127.0.0.1:{port}"), accepted)
+}
+
+#[test]
+fn requests_to_one_host_reuse_the_connection() {
+    let (base, accepted) = serve_keep_alive();
+    let out = run(
+        &base,
+        r#"
+    for i in 0..5 {
+        let r = http.get("{base}/n") or panic("request failed")
+        print(r.body)
+    }
+"#,
+    );
+    assert_eq!(out, "ok\nok\nok\nok\nok\n");
+    assert_eq!(
+        accepted.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "five requests, one connection"
+    );
+}

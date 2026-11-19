@@ -1,0 +1,8 @@
+fn main() {
+    let b = StrBuilder {} // error: `StrBuilder` cannot be built with `{ ... }`
+    let s = Signal {} // error: `Signal` cannot be built with `{ ... }`
+    let g = CoGroup {} // error: `CoGroup` cannot be built with `{ ... }`
+    b.push("x")
+    print(s)
+    print(g)
+}

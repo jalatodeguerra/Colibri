@@ -1,0 +1,23 @@
+fn main() {
+    let xs = [1, 1, 2, 2, 2, 1, 3, 3]
+    xs.dedup()
+    print(xs)
+    let one = [5]
+    one.dedup()
+    print(one)
+    let empty: List[int] = []
+    empty.dedup()
+    print(empty)
+    let words = ["a", "a", "b", "a"]
+    words.dedup()
+    print(words)
+    let nested = [[1], [1], [2]]
+    nested.dedup()
+    print(nested)
+}
+
+// expect: [1, 2, 1, 3]
+// expect: [5]
+// expect: []
+// expect: ["a", "b", "a"]
+// expect: [[1], [2]]

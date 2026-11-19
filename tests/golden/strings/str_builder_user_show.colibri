@@ -1,0 +1,18 @@
+struct P {
+    x: int
+    y: int
+}
+
+impl Show for P {
+    fn show(self) -> str => "<{self.x},{self.y}>"
+}
+
+fn main() {
+    let b = StrBuilder()
+    b.write(P { x: 1, y: 2 })
+    b.push(" and ")
+    b.write(some(3))
+    print(b.to_str())
+}
+
+// expect: <1,2> and some(3)

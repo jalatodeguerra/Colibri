@@ -233,6 +233,12 @@ pub(crate) struct Checker<'a> {
     pub derived_impls: HashMap<(TypeKey, TypeId), ImplId>,
     /// The entry file's top-level statements and `let`/`var` bindings, in source order.
     script: Vec<ScriptStep<'a>>,
+    /// The top-level statements of unimported modules (scripts of the package): checked in
+    /// their own module, never run.
+    module_scripts: Vec<(ModId, Vec<&'a ast::Stmt>)>,
+    /// The modules in `module_scripts`: nothing of them runs, neither their initialisers nor
+    /// their tests (they are checked completely all the same).
+    inert_mods: HashSet<ModId>,
     script_body: Option<Rc<Body>>,
     /// For each step of the script, the module-level items it refers to (see
     /// [`FnCtx::check_script`]).
@@ -271,6 +277,7 @@ fn prelude_option(span: Span) -> TypeDef {
                         ty: Ty::Param(ParamId(0), "T".into()),
                         span,
                         weak: false,
+                        default: None,
                     }],
                     named: false,
                 },
@@ -290,6 +297,7 @@ fn prelude_result(span: Span) -> TypeDef {
             ty: Ty::Param(ParamId(param), pname.into()),
             span,
             weak: false,
+            default: None,
         }],
         named: false,
     };
@@ -321,7 +329,6 @@ fn host_stub_body(f: &FnInfo<'_>) -> Body {
         },
         ret: f.ret.clone(),
         mutates_self: false,
-        needs_type_args: false,
     }
 }
 
@@ -338,7 +345,6 @@ pub(crate) const BUILTIN_FNS: &[&str] = &[
     "assert",
     "assert_eq",
     "wait",
-    "wait_frames",
     "wait_until",
     "wait_real",
     "wait_for",
@@ -358,6 +364,7 @@ impl<'a> Checker<'a> {
             files: Vec::new(),
             package: None,
             entry: false,
+            script: false,
             root: false,
             imports: None,
             scope: Scope::default(),
@@ -385,6 +392,7 @@ impl<'a> Checker<'a> {
                 kind: ModKind::Host,
                 package: None,
                 entry: false,
+                script: false,
                 root: false,
                 imports: None,
                 scope: Scope::default(),
@@ -402,6 +410,7 @@ impl<'a> Checker<'a> {
                 files: vec![input.file],
                 package: Some(meta.package),
                 entry: meta.entry,
+                script: meta.script,
                 root: !meta.dependency,
                 imports: Some(&meta.imports),
                 scope: Scope::default(),
@@ -456,6 +465,8 @@ impl<'a> Checker<'a> {
             impl_by_key: HashMap::new(),
             derived_impls: HashMap::new(),
             script: Vec::new(),
+            module_scripts: Vec::new(),
+            inert_mods: HashSet::new(),
             script_body: None,
             script_deps: Vec::new(),
             dependency_order: false,
@@ -506,6 +517,8 @@ impl<'a> Checker<'a> {
             self.script.retain(|s| matches!(s, ScriptStep::Stmt(_)));
         }
         self.check_script();
+        self.check_module_scripts();
+        self.lint_unused_imports();
         let script_globals: Vec<GlobalId> = self
             .script
             .iter()
@@ -515,6 +528,7 @@ impl<'a> Checker<'a> {
             })
             .collect();
         let mut init_order = self.init_order(&script_globals);
+        init_order.retain(|g| !self.inert_mods.contains(&self.globals[g.0 as usize].module));
         if script_mode {
             self.check_script_order();
         }
@@ -550,6 +564,22 @@ impl<'a> Checker<'a> {
         if self.muted == 0 {
             self.diags.push(diag);
         }
+    }
+
+    /// Reports a lint warning (unused code): not in the prelude or a host interface, and once
+    /// per place even if a body is checked again.
+    pub fn report_lint(&mut self, diag: Diagnostic) {
+        if prelude::in_prelude(diag.span) || diag.span.file == HOST_FILE {
+            return;
+        }
+        if self
+            .diags
+            .iter()
+            .any(|d| d.span == diag.span && d.message == diag.message)
+        {
+            return;
+        }
+        self.report(diag);
     }
 
     /// How many errors (not warnings) have been reported so far.
@@ -669,6 +699,13 @@ impl<'a> Checker<'a> {
                                 }
                                 TopLevel::Stmt(stmt) if entry => {
                                     self.script.push(ScriptStep::Stmt(stmt));
+                                }
+                                TopLevel::Stmt(stmt) if self.mods[m.0 as usize].script => {
+                                    self.inert_mods.insert(m);
+                                    match self.module_scripts.last_mut() {
+                                        Some((last, stmts)) if *last == m => stmts.push(stmt),
+                                        _ => self.module_scripts.push((m, vec![stmt])),
+                                    }
                                 }
                                 TopLevel::Stmt(stmt) => {
                                     if !reported {
@@ -1316,9 +1353,39 @@ impl<'a> Checker<'a> {
                     let generics = self.type_extra[t].generics.clone();
                     let back = self.enter_module(self.type_extra[t].module.unwrap_or(BASE));
                     let mark = self.enter_generics(&generics);
-                    FnCtx::new(self, name, None).check_default(default, &ty);
+                    let body = FnCtx::new(self, name.clone(), None).check_default(default, &ty);
                     self.leave_generics(mark);
                     self.enter_module(back);
+                    let module = self.type_extra[t].module.unwrap_or(BASE);
+                    // A plain struct's default also gets a function of its own, for code
+                    // that builds the struct without a literal (`json.decode`).
+                    let plain = generics.is_empty()
+                        && !self.types[t].fields()[i].weak
+                        && matches!(self.types[t].kind, TypeDefKind::Struct { .. });
+                    if plain {
+                        let (tname, tspan) = (self.types[t].name.clone(), self.types[t].span);
+                        let f = FnId(self.fns.len() as u32);
+                        self.fns.push(FnInfo {
+                            name: format!("{tname}.{name}"),
+                            name_span: tspan,
+                            span: body.span,
+                            params: Vec::new(),
+                            receiver: None,
+                            ret: ty.clone(),
+                            ret_span: None,
+                            decl: None,
+                            body: Some(Rc::new(body)),
+                            deps: Vec::new(),
+                            generics: Vec::new(),
+                            self_ty: None,
+                            host: None,
+                            module,
+                            public: false,
+                        });
+                        if let TypeDefKind::Struct { fields } = &mut self.types[t].kind {
+                            fields[i].default = Some(f);
+                        }
+                    }
                 }
             }
         }
@@ -1453,6 +1520,18 @@ impl<'a> Checker<'a> {
         self.enter_module(back);
         self.script_body = Some(Rc::new(body));
         self.script_deps = deps;
+    }
+
+    /// The statements of unimported modules are checked as a body of their module whose result
+    /// is dropped: they are never part of the program that runs.
+    fn check_module_scripts(&mut self) {
+        for (m, stmts) in std::mem::take(&mut self.module_scripts) {
+            let steps: Vec<ScriptStep<'a>> = stmts.into_iter().map(ScriptStep::Stmt).collect();
+            let span = self.file.span;
+            let back = self.enter_module(m);
+            let _ = FnCtx::new(self, "<script>".to_string(), None).check_script(&steps, span);
+            self.enter_module(back);
+        }
     }
 
     /// The entry file's `fn main`, if it has one.
@@ -1821,7 +1900,8 @@ impl<'a> Checker<'a> {
             script_from,
             script: self.script_body.clone()?,
             main,
-            tests: self.assemble_tests(),
+            tests: self.assemble_tests(false),
+            skipped_tests: self.assemble_tests(true),
             types: self.types.clone(),
             host_fns,
             host_types: self.host_type_count,
@@ -1829,9 +1909,11 @@ impl<'a> Checker<'a> {
         })
     }
 
-    fn assemble_tests(&self) -> Vec<TestDef> {
+    /// The tests that run (`skipped` false) or the ones of an inert script module, which do not.
+    fn assemble_tests(&self, skipped: bool) -> Vec<TestDef> {
         self.tests
             .iter()
+            .filter(|t| self.inert_mods.contains(&t.module) == skipped)
             .map(|t| {
                 let m = &self.mods[t.module.0 as usize];
                 TestDef {

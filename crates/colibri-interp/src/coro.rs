@@ -10,9 +10,10 @@
 //! The `Interp` must not move while a coroutine exists (the suspended stacks hold references
 //! into it); the runtime keeps it in a `Box`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::{Rc, Weak};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use colibri_check::hir::{Callee, Expr, ExprKind, Intrinsic};
@@ -50,11 +51,14 @@ pub trait Clock {
     /// external operation finished (`wake` blocks for up to `timeout` real time and says
     /// whether something arrived). The event loop calls this instead of `sleep` while
     /// background operations are pending (ARCHITECTURE section 22). The default is for fake
-    /// clocks: it gives real time a millisecond to deliver, then moves forward by at most that.
-    fn sleep_interruptible(&mut self, seconds: f64, wake: &mut dyn FnMut(Duration) -> bool) {
-        if !wake(Duration::from_millis(1)) {
-            self.sleep(seconds.min(0.001));
-        }
+    /// clocks: it waits for real time and **does not move the clock**, so what a program
+    /// does at a given fake time does not depend on how long an operation really takes (a
+    /// coroutine that counts `wait(0.01)` while a program runs sees the same count every
+    /// time). The cost: timers wait for background operations to end, so an operation that
+    /// needs a later timer of the same program to fire cannot finish under such a clock;
+    /// a clock that wants timers to run meanwhile overrides this.
+    fn sleep_interruptible(&mut self, _seconds: f64, wake: &mut dyn FnMut(Duration) -> bool) {
+        wake(Duration::from_millis(20));
     }
 }
 
@@ -108,12 +112,197 @@ pub enum ExternalError {
     Failed(String),
 }
 
-/// Background operations: threads that post their id here when they finish.
+/// Tells a background operation that nobody waits for its result any more. Cancelling is
+/// synchronous: the hooks given to [`CancelToken::on_cancel`] run on the cancelling side,
+/// before it goes on. An operation that holds something that must not outlive its waiter (a
+/// child process) registers a hook that releases it, instead of noticing a flag some time
+/// later.
+#[derive(Default)]
+pub struct CancelToken {
+    flag: AtomicBool,
+    hooks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+}
+
+impl CancelToken {
+    /// A token that has been cancelled already: every hook given to
+    /// [`CancelToken::on_cancel`] runs at once.
+    pub fn cancelled() -> Self {
+        Self {
+            flag: AtomicBool::new(true),
+            hooks: Mutex::default(),
+        }
+    }
+
+    /// Whether the waiter has given up.
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Runs `hook` when the operation is cancelled, on the cancelling thread; at once if it
+    /// has been. A hook runs at most once and must not wait for the operation.
+    pub fn on_cancel(&self, hook: impl FnOnce() + Send + 'static) {
+        let mut hooks = self
+            .hooks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Checked under the lock `cancel` takes, so a hook is never lost between the two.
+        if self.is_cancelled() {
+            drop(hooks);
+            hook();
+        } else {
+            hooks.push(Box::new(hook));
+        }
+    }
+
+    fn cancel(&self) {
+        let hooks = {
+            let mut hooks = self
+                .hooks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.flag.store(true, Ordering::SeqCst);
+            std::mem::take(&mut *hooks)
+        };
+        for hook in hooks {
+            hook();
+        }
+    }
+}
+
+/// A piece of background work for the pool.
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Idle workers kept for reuse; the ones above this many end after [`IDLE_LIFETIME`].
+const CORE_THREADS: usize = 4;
+/// How long a worker above the core waits for more work before it ends.
+const IDLE_LIFETIME: Duration = Duration::from_secs(5);
+
+/// What the pool and its workers share.
+struct PoolState {
+    /// Jobs an idle worker has been told about and not yet taken.
+    queue: VecDeque<Job>,
+    /// Workers waiting for a job.
+    idle: usize,
+    /// Workers alive.
+    workers: usize,
+    closed: bool,
+}
+
+struct PoolShared {
+    state: Mutex<PoolState>,
+    wake: Condvar,
+}
+
+impl PoolShared {
+    fn lock(&self) -> std::sync::MutexGuard<'_, PoolState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// The threads that run background operations. Background operations mostly wait (for a
+/// socket, a disk, a child process), and one may wait for another to be started, so there
+/// is no upper limit: a job goes to an idle worker if there is one, and otherwise to a new
+/// thread. It never waits behind a blocked worker. Idle workers are kept for reuse; those
+/// above [`CORE_THREADS`] end after [`IDLE_LIFETIME`]. All end when the pool is dropped
+/// (after the job they are running).
+struct Pool {
+    shared: Arc<PoolShared>,
+}
+
+impl Pool {
+    fn new() -> Self {
+        Pool {
+            shared: Arc::new(PoolShared {
+                state: Mutex::new(PoolState {
+                    queue: VecDeque::new(),
+                    idle: 0,
+                    workers: 0,
+                    closed: false,
+                }),
+                wake: Condvar::new(),
+            }),
+        }
+    }
+
+    /// Runs `job` on an idle worker, or on a new thread if none is idle.
+    fn submit(&self, job: Job) -> Result<(), String> {
+        let mut state = self.shared.lock();
+        if state.closed {
+            return Err("the background pool is closed".to_string());
+        }
+        if state.idle > state.queue.len() {
+            state.queue.push_back(job);
+            drop(state);
+            self.shared.wake.notify_one();
+            return Ok(());
+        }
+        // The job moves into the thread; a failed spawn drops it with the closure.
+        let shared = Arc::clone(&self.shared);
+        state.workers += 1;
+        let spawned = std::thread::Builder::new()
+            .name("colibri-async".to_string())
+            .spawn(move || Pool::work(&shared, job));
+        if let Err(e) = spawned {
+            state.workers -= 1;
+            return Err(format!("cannot start a background thread: {e}"));
+        }
+        Ok(())
+    }
+
+    fn work(shared: &PoolShared, first: Job) {
+        let run = |job: Job| {
+            // A job that panics must not take its worker with it (the closure `submit` is
+            // given reports the panic to the waiter itself).
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+        };
+        run(first);
+        let mut state = shared.lock();
+        loop {
+            if let Some(job) = state.queue.pop_front() {
+                drop(state);
+                run(job);
+                state = shared.lock();
+                continue;
+            }
+            if state.closed {
+                state.workers -= 1;
+                return;
+            }
+            state.idle += 1;
+            let (next, timeout) = shared
+                .wake
+                .wait_timeout(state, IDLE_LIFETIME)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            state.idle -= 1;
+            if timeout.timed_out() && state.queue.is_empty() && state.workers > CORE_THREADS {
+                state.workers -= 1;
+                return;
+            }
+        }
+    }
+}
+
+impl Drop for Pool {
+    fn drop(&mut self) {
+        self.shared.lock().closed = true;
+        self.shared.wake.notify_all();
+    }
+}
+
+/// Background operations: pool threads that post their id here when they finish.
 struct Externals {
+    pool: Pool,
     tx: mpsc::Sender<u64>,
     rx: mpsc::Receiver<u64>,
     /// Started and not yet finished or abandoned.
     pending: HashSet<u64>,
+    /// The tokens of the operations in `pending` that can still be cancelled. When the
+    /// scheduler is dropped (the `Vm` ends) they are cancelled, so a child process does not
+    /// outlive the program.
+    tokens: HashMap<u64, Arc<CancelToken>>,
     /// Finished, not yet collected by the waiter.
     completed: HashSet<u64>,
 }
@@ -122,11 +311,19 @@ impl Externals {
     fn new() -> Self {
         let (tx, rx) = mpsc::channel();
         Externals {
+            pool: Pool::new(),
             tx,
             rx,
             pending: HashSet::new(),
+            tokens: HashMap::new(),
             completed: HashSet::new(),
         }
+    }
+
+    /// The operation is over for the waiter, whichever way.
+    fn forget(&mut self, id: u64) {
+        self.pending.remove(&id);
+        self.tokens.remove(&id);
     }
 
     fn note(&mut self, id: u64) {
@@ -151,6 +348,14 @@ impl Externals {
                 true
             }
             Err(_) => false,
+        }
+    }
+}
+
+impl Drop for Externals {
+    fn drop(&mut self) {
+        for (_, token) in self.tokens.drain() {
+            token.cancel();
         }
     }
 }
@@ -193,8 +398,6 @@ enum Wake {
     Ready,
     /// When scheduler time reaches this.
     Time(f64),
-    /// When the tick counter reaches this.
-    Frame(u64),
     /// When the real clock reaches this.
     Real(f64),
     /// When this coroutine handle is finished.
@@ -347,6 +550,26 @@ fn signal_id(v: &Value) -> Option<u64> {
 
 const PANICKED_THREAD: &str = "the background operation failed (its thread panicked)";
 
+/// The text of a panic payload (`panic!("..")` gives a `&str` or a `String`).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "(no message)".to_string())
+}
+
+/// A finished operation's result, or why there is none.
+fn unwrap_outcome<R>(outcome: Result<Result<R, String>, ()>) -> Result<R, ExternalError> {
+    match outcome {
+        Ok(Ok(r)) => Ok(r),
+        Ok(Err(message)) => Err(ExternalError::Failed(format!(
+            "the background operation panicked: {message}"
+        ))),
+        Err(_) => Err(ExternalError::Failed(PANICKED_THREAD.to_string())),
+    }
+}
+
 /// How driving the scheduler from the main fiber ended.
 enum Drive {
     Done,
@@ -409,7 +632,7 @@ impl Interp {
 
     /// How long until the next coroutine needs a tick, for an event loop: `None` when nothing
     /// is alive or every live coroutine waits for a signal (nothing but an emit can wake it), `Some(0.0)`-ish small polling interval when something is checked at every tick
-    /// (`wait_until`, `wait_frames`, `join`), else the time to the earliest timed wake.
+    /// (`wait_until`, `join`), else the time to the earliest timed wake.
     pub fn next_wake(&mut self, poll: f64) -> Option<f64> {
         let mut best: Option<f64> = None;
         let mut real_now: Option<f64> = None;
@@ -434,9 +657,7 @@ impl Interp {
                 }
                 // Only a completion (which ends the sleep) can wake it.
                 Wake::External(_) => f64::INFINITY,
-                Wake::Ready | Wake::Frame(_) | Wake::Join(_) | Wake::Group(_) | Wake::Signal(_) => {
-                    poll
-                }
+                Wake::Ready | Wake::Join(_) | Wake::Group(_) | Wake::Signal(_) => poll,
             };
             best = Some(best.map_or(delay, |b| b.min(delay)));
         }
@@ -517,7 +738,6 @@ impl Interp {
                 Wake::Group(g) => s.groups.get(g).is_none_or(|m| m.iter().all(|c| *c == e.id)),
                 Wake::Ready => true,
                 Wake::Time(d) => s.time + TIME_EPSILON >= *d,
-                Wake::Frame(f) => s.frame >= *f,
                 Wake::Real(d) => *real_now.get_or_insert_with(|| s.clock.now()) >= *d,
                 Wake::Join(w) => w.upgrade().is_none_or(|h| handle_status(&h) != RUNNING),
                 Wake::External(op) => s.ext.completed.contains(op),
@@ -914,7 +1134,7 @@ impl Interp {
         Ok(())
     }
 
-    /// `wait`, `wait_frames`, `wait_until`, `wait_real` and `task.tick`.
+    /// `wait`, `wait_until`, `wait_real` and `task.tick`.
     pub(crate) fn coro_intrinsic(
         &mut self,
         fiber: &mut Fiber,
@@ -924,7 +1144,6 @@ impl Interp {
     ) -> Eval {
         let name = match intrinsic {
             Intrinsic::Wait => "wait",
-            Intrinsic::WaitFrames => "wait_frames",
             Intrinsic::WaitUntil => "wait_until",
             Intrinsic::WaitReal => "wait_real",
             Intrinsic::WaitFor => "wait_for",
@@ -988,12 +1207,6 @@ impl Interp {
                 } else {
                     Wake::Real(self.sched.clock.now() + s)
                 };
-                self.suspend(fiber, id, wake)?;
-                Ok(Value::Unit)
-            }
-            (Intrinsic::WaitFrames, Value::Int(n)) => {
-                let n = n.max(1) as u64;
-                let wake = Wake::Frame(self.sched.frame.saturating_add(n));
                 self.suspend(fiber, id, wake)?;
                 Ok(Value::Unit)
             }
@@ -1134,7 +1347,8 @@ impl Interp {
 
     // ---- background operations ----
 
-    /// Runs `work` on a background thread and waits for its result without blocking other
+    /// Runs `work` on a background thread (an idle one of the pool, or a new one: an
+    /// operation never waits behind another) and waits for its result without blocking other
     /// coroutines: the calling coroutine is suspended with `Wake::External`, and the event
     /// loop (or the host's `tick`) resumes it once the thread has finished. On the main
     /// fiber the wait runs the event loop instead, so coroutines keep running. Where neither
@@ -1142,28 +1356,45 @@ impl Interp {
     /// called from a host function (host depth 1); it must not hold a borrow of host objects
     /// across the call, because other coroutines run meanwhile. `Err(Cancelled)` means the
     /// coroutine was cancelled while waiting: the host function must unwind (its result would
-    /// be discarded).
+    /// be discarded; an operation whose thread has not started it yet is dropped).
     pub fn await_external<R: Send + 'static>(
         &mut self,
         fiber: &mut Fiber,
         work: impl FnOnce() -> R + Send + 'static,
     ) -> Result<R, ExternalError> {
+        self.await_external_with(fiber, move |_| work())
+    }
+
+    /// [`Interp::await_external`] for work that can stop early: `work` is given a
+    /// [`CancelToken`] that is cancelled when the waiting coroutine is cancelled or the `Vm`
+    /// ends. An operation that holds a child process registers a hook that kills it; the hook
+    /// runs on the cancelling side before it goes on, so nothing is left running.
+    pub fn await_external_with<R: Send + 'static>(
+        &mut self,
+        fiber: &mut Fiber,
+        work: impl FnOnce(&CancelToken) -> R + Send + 'static,
+    ) -> Result<R, ExternalError> {
         let op = self.sched.next_id;
         self.sched.next_id += 1;
-        let (result_tx, result_rx) = mpsc::channel::<R>();
+        let (result_tx, result_rx) = mpsc::channel::<Result<R, String>>();
         let notify = Notify(self.sched.ext.tx.clone(), op);
+        // Set when the waiter gives up, so an operation still in the queue is not run.
+        let token = Arc::new(CancelToken::default());
+        let skip = Arc::clone(&token);
         self.sched.ext.pending.insert(op);
-        let spawned = std::thread::Builder::new()
-            .name("colibri-async".to_string())
-            .spawn(move || {
-                let _notify = notify;
-                let _ = result_tx.send(work());
-            });
-        if let Err(e) = spawned {
-            self.sched.ext.pending.remove(&op);
-            return Err(ExternalError::Failed(format!(
-                "cannot start a background thread: {e}"
-            )));
+        self.sched.ext.tokens.insert(op, Arc::clone(&token));
+        let queued = self.sched.ext.pool.submit(Box::new(move || {
+            let _notify = notify;
+            if skip.is_cancelled() {
+                return;
+            }
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&skip)))
+                .map_err(|payload| panic_message(payload.as_ref()));
+            let _ = result_tx.send(outcome);
+        }));
+        if let Err(message) = queued {
+            self.sched.ext.forget(op);
+            return Err(ExternalError::Failed(message));
         }
         let coro = fiber.coro.as_ref().map(|c| c.id);
         let suspendable = fiber.host_depth <= 1 && self.hook_depth == 0;
@@ -1171,6 +1402,7 @@ impl Interp {
             let mut outcome = Ok(());
             while !self.sched.ext.completed.contains(&op) {
                 if self.suspend(fiber, id, Wake::External(op)).is_err() {
+                    token.cancel();
                     outcome = Err(ExternalError::Cancelled);
                     break;
                 }
@@ -1182,15 +1414,13 @@ impl Interp {
         } else {
             // Nothing can run meanwhile: block this thread until the result is there.
             let blocked = result_rx.recv();
-            self.sched.ext.pending.remove(&op);
-            return blocked.map_err(|_| ExternalError::Failed(PANICKED_THREAD.to_string()));
+            self.sched.ext.forget(op);
+            return unwrap_outcome(blocked.map_err(|_| ()));
         };
-        self.sched.ext.pending.remove(&op);
+        self.sched.ext.forget(op);
         self.sched.ext.completed.remove(&op);
         waited?;
-        result_rx
-            .try_recv()
-            .map_err(|_| ExternalError::Failed(PANICKED_THREAD.to_string()))
+        unwrap_outcome(result_rx.try_recv().map_err(|_| ()))
     }
 
     // ---- handle methods ----

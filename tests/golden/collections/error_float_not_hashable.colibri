@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let s = Set[float]() // error: cannot be used
     let m = Map[float, int]() // error: cannot be used

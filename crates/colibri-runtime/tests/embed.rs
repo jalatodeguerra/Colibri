@@ -288,7 +288,7 @@ fn warnings_do_not_stop_a_program() {
     let (mut vm, _) = vm_with_output();
     vm.load_source(
         "warn.colibri",
-        "fn f() -> int {\n    let x = 1\n    let x = 2\n    return x\n}\n",
+        "fn f() -> int {\n    let x = 1\n    print(x)\n    let x = 2\n    return x\n}\n",
     )
     .unwrap();
     assert_eq!(vm.warnings().len(), 1);

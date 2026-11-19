@@ -286,6 +286,9 @@ impl Writer<'_> {
             Value::Obj(obj) if obj.ty() == colibri_check::types::COGROUP_TYPE => {
                 self.out.push_str("<CoGroup>");
             }
+            Value::Obj(obj) if obj.ty() == colibri_check::types::STR_BUILDER_TYPE => {
+                self.out.push_str(&crate::strfn::builder_text(obj));
+            }
             Value::Obj(obj) if obj.ty() == colibri_check::types::SIGNAL_TYPE => {
                 self.out.push_str("<Signal>");
             }
@@ -404,6 +407,7 @@ mod tests {
             ty: Ty::INT,
             span: SP,
             weak: false,
+            default: None,
         }
     }
 

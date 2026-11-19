@@ -1,0 +1,13 @@
+fn main() {
+    let lo = -9223372036854775807 - 1
+    let hi = 9223372036854775807
+    let r = lo..=hi
+    print(r.len())
+    print(r.is_empty())
+    let xs = r.to_list()
+    print(xs.len())
+}
+
+// expect: 9223372036854775807
+// expect: false
+// panic: a range of 18446744073709551616 integers is too long to turn into a list

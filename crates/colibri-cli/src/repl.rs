@@ -242,7 +242,7 @@ impl Session {
 
     /// Runs the coroutines that are due now (on the real time that passed since the last
     /// entry) without sleeping, until none is. A coroutine that keeps asking to run on the
-    /// next tick (`wait_frames(1)` in a loop) is left for the next entry.
+    /// next tick (`wait(0.0)` in a loop) is left for the next entry.
     fn settle(&mut self) {
         let dt = self.last_tick.elapsed().as_secs_f64();
         self.last_tick = Instant::now();

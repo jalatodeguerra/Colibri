@@ -1095,7 +1095,6 @@ impl Interp {
         if matches!(
             intrinsic,
             Intrinsic::Wait
-                | Intrinsic::WaitFrames
                 | Intrinsic::WaitUntil
                 | Intrinsic::WaitReal
                 | Intrinsic::WaitFor
@@ -1173,7 +1172,6 @@ impl Interp {
             | Intrinsic::VecSwizzle { .. }
             | Intrinsic::VecMethod(..)
             | Intrinsic::Wait
-            | Intrinsic::WaitFrames
             | Intrinsic::WaitUntil
             | Intrinsic::WaitReal
             | Intrinsic::WaitFor

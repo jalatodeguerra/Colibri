@@ -74,6 +74,12 @@ const GATED: &[(&str, &str, &str, colibri::Cap)] = &[
         "fs.remove_dir(\"x\")",
         colibri::Cap::Fs,
     ),
+    (
+        "fs",
+        "fs.remove_tree",
+        "fs.remove_tree(\"x\")",
+        colibri::Cap::Fs,
+    ),
     ("os", "os.env", "os.env(\"A\")", colibri::Cap::Os),
     ("os", "os.vars", "os.vars()", colibri::Cap::Os),
     (
@@ -506,7 +512,7 @@ fn files_are_written_and_read_in_a_scratch_folder() {
     run(
         &mut vm,
         &format!(
-            "import fs\nimport path\nfn main() -> Result[()] {{\n    let file = path.join(\"{dir}\", \"a.txt\")\n    fs.write(file, \"héllo\")?\n    print(fs.read(file)?)\n    print(fs.size(file)?)\n    print(fs.read(path.join(\"{dir}\", \"nope\")).is_err())\n    return ok(())\n}}\n"
+            "import fs\nimport path\nfn main() -> Result[()] {{\n    let file = path.join(\"{dir}\", \"a.txt\")\n    fs.write(file, \"héllo\")?\n    print(fs.read(file)?)\n    print(fs.stat(file)?.size)\n    print(fs.read(path.join(\"{dir}\", \"nope\")).is_err())\n    return ok(())\n}}\n"
         ),
     )
     .unwrap();
@@ -651,4 +657,163 @@ fn an_unfinished_child_is_killed_when_it_is_dropped() {
     .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert!(!marker.exists(), "the child outlived its handle");
+}
+
+// ---- process in coroutines ----
+
+/// `process.run` waits on a background thread: a coroutine that is not waiting for the
+/// program keeps running meanwhile (real clock; `sh` is on every platform the tests run on).
+#[cfg(unix)]
+#[test]
+fn coroutines_make_progress_while_a_child_process_runs() {
+    let (mut vm, out) = vm(&[colibri::Cap::Os]);
+    run(
+        &mut vm,
+        r#"import process
+
+var ticks = 0
+var finished_at = 0
+
+fn ticker() {
+    while true {
+        ticks += 1
+        wait(0.01)
+    }
+}
+
+fn runner() -> int {
+    let r = process.run("sh", ["-c", "sleep 0.4; echo done"]) or |e| { panic(e.message()) }
+    finished_at = ticks
+    return r.status
+}
+
+fn main() {
+    let t = go ticker()
+    let r = go runner()
+    print(r.join())
+    t.cancel()
+    // About forty ticks happened while the child slept; with a blocked `Vm` there would be one.
+    print(finished_at > 10)
+}
+"#,
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "0\ntrue\n");
+}
+
+/// Two children started by two coroutines run at the same time.
+#[cfg(unix)]
+#[test]
+fn child_processes_of_different_coroutines_overlap() {
+    let (mut vm, out) = vm(&[colibri::Cap::Os]);
+    let start = std::time::Instant::now();
+    run(
+        &mut vm,
+        r#"import process
+
+fn one(n: int) -> str {
+    let r = process.shell("sleep 0.4; echo {n}") or |e| { panic(e.message()) }
+    return r.stdout.trim()
+}
+
+fn main() {
+    let a = go one(1)
+    let b = go one(2)
+    print(a.join() + b.join())
+}
+"#,
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "12\n");
+    let took = start.elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(750),
+        "two 0.4 s programs should overlap, took {took:?}"
+    );
+}
+
+/// Cancelling the coroutine that waits for a program stops the program.
+#[cfg(unix)]
+#[test]
+fn cancelling_a_coroutine_stops_its_child_process() {
+    let scratch = Scratch::new("cancel-child");
+    let marker = scratch
+        .0
+        .join("marker")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let (mut vm, out) = vm(&[colibri::Cap::Os, colibri::Cap::Fs]);
+    run(
+        &mut vm,
+        &format!(
+            r#"import process
+import fs
+
+fn job() {{
+    let _ = process.run("sh", ["-c", "sleep 0.5; touch {marker}"])
+    print("never")
+}}
+
+fn main() {{
+    let c = go job()
+    wait(0.1)
+    c.cancel()
+    wait(0.8)
+    print(fs.exists("{marker}"))
+}}
+"#
+        ),
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "false\n");
+}
+
+// ---- removed functions say what replaced them ----
+
+#[test]
+fn a_removed_function_names_its_replacement() {
+    let cases = [
+        ("fs", "size", "fs.stat(path)?.size"),
+        ("fs", "modified", "fs.stat(path)?.modified"),
+        ("fs", "remove_empty_dir", "fs.remove_dir"),
+        ("str", "pad_left", "s.pad_left(width)"),
+        ("str", "pad_right", "s.pad_right(width)"),
+    ];
+    for (module, item, hint) in cases {
+        let (mut first, _) = vm(&[colibri::Cap::Fs]);
+        // Qualified use, and a named import.
+        let qualified = compile_error(
+            &mut first,
+            &format!("import {module}\nfn main() {{\n    let _ = {module}.{item}(\"x\")\n}}\n"),
+        );
+        assert!(
+            qualified.contains(&format!("has no `{item}`")) && qualified.contains(hint),
+            "{module}.{item}: {qualified}"
+        );
+        let (mut second, _) = vm(&[colibri::Cap::Fs]);
+        let named = compile_error(
+            &mut second,
+            &format!("import {module}.{{{item}}}\nfn main() {{}}\n"),
+        );
+        assert!(named.contains(hint), "{module}.{{{item}}}: {named}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn stat_follow_looks_through_a_symlink_and_stat_does_not() {
+    let scratch = Scratch::new("stat-follow");
+    let dir = scratch.0.to_string_lossy().replace('\\', "/");
+    std::fs::write(scratch.0.join("target.txt"), "twelve bytes").unwrap();
+    std::os::unix::fs::symlink(scratch.0.join("target.txt"), scratch.0.join("link")).unwrap();
+    std::os::unix::fs::symlink(scratch.0.join("missing"), scratch.0.join("dangling")).unwrap();
+    let (mut vm, out) = vm(&[colibri::Cap::Fs]);
+    run(
+        &mut vm,
+        &format!(
+            "import fs\nfn main() -> Result[()] {{\n    let direct = fs.stat(\"{dir}/link\")?\n    let through = fs.stat_follow(\"{dir}/link\")?\n    print(\"{{direct.kind}} {{through.kind}} {{through.size}}\")\n    print(fs.stat_follow(\"{dir}/dangling\").is_err())\n    print(fs.stat(\"{dir}/dangling\")?.kind)\n    return ok(())\n}}\n"
+        ),
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "symlink file 12\ntrue\nsymlink\n");
 }

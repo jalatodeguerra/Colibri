@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let n = 1
     let f = fn() {

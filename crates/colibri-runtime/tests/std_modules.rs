@@ -263,3 +263,272 @@ fn a_capability_of_a_std_function_is_checked_like_any_other() {
         "{err}"
     );
 }
+
+// ---- lazy modules ----
+
+mod lazy {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    macro_rules! counted {
+        ($counter:ident, $register:ident, $module:literal) => {
+            static $counter: AtomicUsize = AtomicUsize::new(0);
+            fn $register(vm: &mut colibri::Vm) -> Result<(), colibri::Error> {
+                $counter.fetch_add(1, Ordering::SeqCst);
+                vm.std_module($module)
+                    .register_fn_named("twice", ["x"], |x: i64| x * 2)
+                    .map(|_| ())
+            }
+        };
+    }
+
+    counted!(NOT_IMPORTED, register_not_imported, "idle");
+    #[test]
+    fn a_module_nobody_imports_is_never_registered() {
+        let (mut vm, out) = vm();
+        vm.lazy_std_module("idle", register_not_imported);
+        assert_eq!(vm.module_names(), ["host", "std.idle"]);
+        vm.load_source("a.colibri", "print(1)\n").unwrap();
+        assert_eq!(out.contents(), "1\n");
+        assert_eq!(NOT_IMPORTED.load(Ordering::SeqCst), 0);
+    }
+
+    counted!(IMPORTED, register_imported, "busy");
+    #[test]
+    fn an_import_registers_the_module_once() {
+        let (mut vm, out) = vm();
+        vm.lazy_std_module("busy", register_imported);
+        vm.load_source(
+            "a.colibri",
+            "import busy\nimport std.busy as again\nprint(busy.twice(2) + again.twice(1))\n",
+        )
+        .unwrap();
+        assert_eq!(out.contents(), "6\n");
+        assert_eq!(IMPORTED.load(Ordering::SeqCst), 1);
+        assert_eq!(vm.module_names(), ["host", "std.busy"]);
+    }
+
+    counted!(BY_NAME, register_by_name, "named");
+    #[test]
+    fn asking_for_the_module_by_name_registers_it() {
+        let (mut vm, _) = vm();
+        vm.lazy_std_module("named", register_by_name);
+        assert_eq!(BY_NAME.load(Ordering::SeqCst), 0);
+        let text = vm.std_module("named").interface_text();
+        assert!(text.contains("fn twice(x: int) -> int"), "{text}");
+        assert_eq!(BY_NAME.load(Ordering::SeqCst), 1);
+        // And once only.
+        vm.std_module("named");
+        assert_eq!(BY_NAME.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_name_that_is_not_declared_is_unknown_as_before() {
+        let (mut vm, _) = vm();
+        vm.lazy_std_module("known", register_by_name_unused);
+        let err = vm
+            .load_source("a.colibri", "import unknown\nfn main() {}\n")
+            .unwrap_err()
+            .render(false);
+        assert!(err.contains("unknown"), "{err}");
+    }
+
+    fn register_by_name_unused(_: &mut colibri::Vm) -> Result<(), colibri::Error> {
+        Ok(())
+    }
+
+    counted!(IN_SESSION, register_in_session, "session");
+    #[test]
+    fn a_session_has_every_module() {
+        let (mut vm, _) = vm();
+        vm.lazy_std_module("session", register_in_session);
+        vm.session_start().unwrap();
+        assert_eq!(IN_SESSION.load(Ordering::SeqCst), 1);
+        let check = vm
+            .session_check("import session\nlet x = session.twice(4)\n")
+            .unwrap();
+        vm.session_commit(check, &[], &[]).unwrap();
+    }
+
+    counted!(AFTER_RELOAD, register_after_reload, "later");
+    #[test]
+    fn a_reload_can_start_importing_a_module() {
+        let dir = std::env::temp_dir().join(format!("colibri-lazy-reload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.colibri");
+        std::fs::write(&file, "fn n() -> int => 1\n").unwrap();
+        let (mut vm, _) = vm();
+        vm.lazy_std_module("later", register_after_reload);
+        vm.load_file(&file).unwrap();
+        assert_eq!(AFTER_RELOAD.load(Ordering::SeqCst), 0);
+        // Same length, so only the content tells that it changed; the bump of the mtime is
+        // what `reload_changed` polls.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&file, "import later\nfn n() -> int => later.twice(21)\n").unwrap();
+        vm.reload_changed().unwrap();
+        assert_eq!(AFTER_RELOAD.load(Ordering::SeqCst), 1);
+        let n: i64 = vm
+            .get_fn::<(), i64>("n")
+            .unwrap()
+            .call(&mut vm, ())
+            .unwrap();
+        assert_eq!(n, 42);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- a host type that clashes with the module's, and a module that panics ----
+
+    struct Mine;
+    impl colibri::HostType for Mine {
+        const NAME: &'static str = "Child";
+        fn describe(d: &mut colibri::TypeBuilder<'_, Self>) {
+            d.method("id", [], |_: &Mine| 1i64);
+        }
+    }
+
+    struct Std;
+    impl colibri::HostType for Std {
+        const NAME: &'static str = "Child";
+        fn describe(d: &mut colibri::TypeBuilder<'_, Self>) {
+            d.method("id", [], |_: &Std| 2i64);
+        }
+    }
+
+    fn register_clashing(vm: &mut colibri::Vm) -> Result<(), colibri::Error> {
+        vm.std_module("clash").register_type::<Std>()
+    }
+
+    fn check_clash_is_an_error(vm: &mut colibri::Vm) {
+        let err = vm
+            .load_source("a.colibri", "import clash\nfn main() {}\n")
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(matches!(err, colibri::Error::Registration { .. }), "{text}");
+        assert!(text.contains("std.clash"), "{text}");
+        assert!(text.contains("two different Rust types"), "{text}");
+        // The same failure again, not a panic and not a second registration.
+        let again = vm
+            .load_source("a.colibri", "import clash\nfn main() {}\n")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(again, text);
+        // A program that does not import it still loads, and then the guard against
+        // registering after a load is on.
+        vm.load_source("b.colibri", "fn main() {}\n").unwrap();
+        assert!(matches!(
+            vm.register_fn("late", || 1i64),
+            Err(colibri::Error::AlreadyLoaded)
+        ));
+    }
+
+    #[test]
+    fn a_host_type_clash_before_the_module_is_declared_is_a_load_error() {
+        let (mut vm, _) = vm();
+        vm.register_type::<Mine>().unwrap();
+        vm.lazy_std_module("clash", register_clashing);
+        check_clash_is_an_error(&mut vm);
+    }
+
+    #[test]
+    fn a_host_type_clash_after_the_module_is_declared_is_a_load_error() {
+        let (mut vm, _) = vm();
+        vm.lazy_std_module("clash", register_clashing);
+        vm.register_type::<Mine>().unwrap();
+        check_clash_is_an_error(&mut vm);
+    }
+
+    #[test]
+    fn a_failed_module_fails_every_session_entry_point() {
+        let (mut vm, _) = vm();
+        vm.register_type::<Mine>().unwrap();
+        vm.lazy_std_module("clash", register_clashing);
+        let first = vm.session_start().unwrap_err().to_string();
+        assert!(first.contains("std.clash"), "{first}");
+        // Retrying reports the same error, it does not start a session around a
+        // half-registered module.
+        let second = vm.session_start().unwrap_err().to_string();
+        assert_eq!(second, first);
+        let load = vm
+            .load_source("a.colibri", "import clash\nfn main() {}\n")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(second, load);
+        let check = vm
+            .session_check("import clash\nlet x = 1\n")
+            .err()
+            .expect("the check fails")
+            .to_string();
+        assert_eq!(check, load);
+    }
+
+    fn register_panicking(_: &mut colibri::Vm) -> Result<(), colibri::Error> {
+        panic!("a bug in the module")
+    }
+
+    #[test]
+    fn a_panicking_registration_leaves_the_vm_consistent() {
+        let (mut vm, _) = vm();
+        vm.lazy_std_module("boom", register_panicking);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = vm.load_source("a.colibri", "import boom\nfn main() {}\n");
+        }));
+        assert!(outcome.is_err());
+        // The module counts as failed: importing it again is an error, not a retry.
+        let err = vm
+            .load_source("a.colibri", "import boom\nfn main() {}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("std.boom"), "{err}");
+        // And `bulk` was restored: after a load, registering is refused.
+        vm.load_source("b.colibri", "fn main() {}\n").unwrap();
+        assert!(matches!(
+            vm.register_fn("late", || 1i64),
+            Err(colibri::Error::AlreadyLoaded)
+        ));
+    }
+}
+
+#[test]
+fn a_field_default_call_refuses_a_function_that_takes_parameters() {
+    let (mut vm, out) = vm();
+    vm.std_module("demo")
+        .register_fn_named("probe", [], |cx: &mut Ctx| {
+            // The real default of `S.x`.
+            let defs = cx.type_defs_shared();
+            let default = defs
+                .iter()
+                .find(|t| t.name == "S")
+                .and_then(|t| match &t.kind {
+                    reflect::TypeDefKind::Struct { fields } => fields[0].default,
+                    _ => None,
+                })
+                .unwrap();
+            let value = cx.call_field_default(default).unwrap();
+            let mut refused = 0;
+            // Every function of the program, whatever it takes: none may be called with
+            // missing arguments.
+            for id in 0..64 {
+                if id != default.0
+                    && let Err(e) = cx.call_field_default(reflect::FnId(id))
+                    && e.to_string().contains("takes 1 parameter")
+                {
+                    refused += 1;
+                }
+            }
+            let ValueKind::Int(n) = value.kind() else {
+                panic!("not an int")
+            };
+            format!("{n} refused {refused}")
+        })
+        .unwrap();
+    vm.load_source(
+        "a.colibri",
+        "import demo\nstruct S { x: int = 5 }\nfn add_one(a: int) -> int => a + 1\nfn main() {\n    print(demo.probe())\n}\n",
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    let text = out.contents();
+    assert!(text.starts_with("5 refused "), "{text}");
+    assert!(!text.starts_with("5 refused 0"), "{text}");
+}

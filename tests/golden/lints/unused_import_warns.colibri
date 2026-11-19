@@ -1,0 +1,11 @@
+import math // warning: unused import `math`
+import rand as dice // warning: unused import `rand`
+import time
+import path.{join, split} // warning: unused import `split` from `path`
+
+fn main() {
+    print(time.now() >= 0.0)
+    print(join("a", "b"))
+}
+// expect: true
+// expect: a/b

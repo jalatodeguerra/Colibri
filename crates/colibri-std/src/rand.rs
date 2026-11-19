@@ -4,6 +4,12 @@
 //! release of this crate: the seed is expanded to 256 bits of state with SplitMix64, and each
 //! number comes from xoshiro256** (Blackman and Vigna, 2018). Floats take the top 53 bits;
 //! integer ranges use Lemire's multiply-and-reject method, so every value is equally likely.
+//!
+//! The module functions (`rand.int`, `rand.float`, `rand.bool`, `rand.chance`, `rand.seed`) are
+//! the methods of one default `Rng` that belongs to the `Vm` (`rand.seed(n)` replaces it with
+//! `Rng.new(n)`): the same algorithm, so `rand.seed(7)` followed by `rand.int(0, 9)` gives what
+//! `Rng.new(7).int(0, 9)` gives. Use an `Rng` of your own for a sequence that other code cannot
+//! disturb.
 
 use colibri_runtime::{Ctx, Error, HostType, TypeBuilder, Value, Vm};
 

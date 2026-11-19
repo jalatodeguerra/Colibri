@@ -17,7 +17,9 @@ use crate::optres::{
     SIGNAL_METHODS, cogroup_sig, coroutine_sig, error_sig, option_sig, result_sig, signal_sig,
 };
 use crate::suggest;
-use crate::types::{COGROUP_TYPE, COROUTINE_TYPE, ERROR_TYPE, ITER, RESULT_TYPE, SIGNAL_TYPE, Ty};
+use crate::types::{
+    COGROUP_TYPE, COROUTINE_TYPE, ERROR_TYPE, ITER, RESULT_TYPE, SIGNAL_TYPE, STR_BUILDER_TYPE, Ty,
+};
 
 /// What a method needs of the element type beyond its signature.
 #[derive(Clone)]
@@ -122,17 +124,26 @@ const LIST_METHODS: &[&str] = &[
     "max",
     "sum",
     "join",
+    "zip",
+    "flat_map",
+    "sorted",
+    "sorted_by",
+    "dedup",
+    "chunks",
+    "windows",
     "clone",
 ];
 const MAP_METHODS: &[&str] = &[
     "len",
     "is_empty",
     "get",
+    "get_or",
     "contains_key",
     "insert",
     "remove",
     "keys",
     "values",
+    "entries",
     "clear",
     "iter",
     "enumerate",
@@ -145,8 +156,25 @@ const SET_METHODS: &[&str] = &[
     "remove",
     "contains",
     "clear",
+    "union",
+    "intersection",
+    "difference",
+    "symmetric_difference",
+    "is_subset",
+    "is_superset",
+    "is_disjoint",
     "iter",
     "enumerate",
+    "clone",
+];
+const STR_BUILDER_METHODS: &[&str] = &[
+    "push",
+    "push_char",
+    "write",
+    "len",
+    "is_empty",
+    "clear",
+    "to_str",
     "clone",
 ];
 const RANGE_METHODS: &[&str] = &[
@@ -155,6 +183,7 @@ const RANGE_METHODS: &[&str] = &[
     "is_empty",
     "iter",
     "rev",
+    "to_list",
     "enumerate",
     "clone",
 ];
@@ -210,6 +239,18 @@ fn str_sig(name: &str) -> Option<Sig> {
     })
 }
 
+fn str_builder_sig(name: &str) -> Option<Sig> {
+    Some(match name {
+        "push" => sig(Builtin::StrBuilderPush, vec![("s", Ty::Str)], Ty::Unit),
+        "push_char" => sig(Builtin::StrBuilderPushChar, vec![("c", Ty::Char)], Ty::Unit),
+        "len" => sig(Builtin::StrBuilderLen, vec![], Ty::INT),
+        "is_empty" => sig(Builtin::StrBuilderIsEmpty, vec![], Ty::Bool),
+        "clear" => sig(Builtin::StrBuilderClear, vec![], Ty::Unit),
+        "to_str" => sig(Builtin::StrBuilderToStr, vec![], Ty::Str),
+        _ => return None,
+    })
+}
+
 fn range_sig(name: &str) -> Option<Sig> {
     Some(match name {
         "contains" => sig(Builtin::RangeContains, vec![("value", Ty::INT)], Ty::Bool),
@@ -217,6 +258,7 @@ fn range_sig(name: &str) -> Option<Sig> {
         "is_empty" => sig(Builtin::RangeIsEmpty, vec![], Ty::Bool),
         "iter" => sig(Builtin::Iter, vec![], iter_of(Ty::INT)),
         "rev" => sig(Builtin::RangeRev, vec![], iter_of(Ty::INT)),
+        "to_list" => sig(Builtin::RangeToList, vec![], Ty::List(Box::new(Ty::INT))),
         _ => return None,
     })
 }
@@ -301,6 +343,42 @@ fn list_sig(elem: &Ty, name: &str, fresh: Fresh<'_>) -> Option<Sig> {
                 )
             }
         }
+        "sorted" => ordered(Builtin::ListSorted, vec![], list),
+        "sorted_by" => sig(
+            Builtin::ListSortedBy,
+            vec![("f", func(vec![t.clone(), t], Ty::INT))],
+            list,
+        ),
+        "zip" => {
+            let u = fresh();
+            sig(
+                Builtin::ListZip,
+                vec![("other", Ty::List(Box::new(u.clone())))],
+                Ty::List(Box::new(Ty::Tuple(vec![t, u]))),
+            )
+        }
+        "flat_map" => {
+            let u = fresh();
+            sig(
+                Builtin::ListFlatMap,
+                vec![("f", func(vec![t], Ty::List(Box::new(u.clone()))))],
+                Ty::List(Box::new(u)),
+            )
+        }
+        "dedup" => Sig {
+            need: Need::Eq(t.clone()),
+            ..sig(Builtin::ListDedup, vec![], Ty::Unit)
+        },
+        "chunks" => sig(
+            Builtin::ListChunks,
+            vec![("size", Ty::INT)],
+            Ty::List(Box::new(list)),
+        ),
+        "windows" => sig(
+            Builtin::ListWindows,
+            vec![("size", Ty::INT)],
+            Ty::List(Box::new(list)),
+        ),
         "min" => ordered(Builtin::ListMin, vec![], optional(t.clone())),
         "max" => ordered(Builtin::ListMax, vec![], optional(t.clone())),
         "sum" => Sig {
@@ -353,6 +431,16 @@ fn map_sig(key: &Ty, value: &Ty, name: &str) -> Option<Sig> {
         "len" => sig(Builtin::MapLen, vec![], Ty::INT),
         "is_empty" => sig(Builtin::MapIsEmpty, vec![], Ty::Bool),
         "get" => sig(Builtin::MapGet, vec![("key", k)], optional(v)),
+        "get_or" => sig(
+            Builtin::MapGetOr,
+            vec![("key", k), ("default", v.clone())],
+            v,
+        ),
+        "entries" => sig(
+            Builtin::MapEntries,
+            vec![],
+            Ty::List(Box::new(Ty::Tuple(vec![k, v]))),
+        ),
         "contains_key" => sig(Builtin::MapContainsKey, vec![("key", k)], Ty::Bool),
         "insert" => sig(Builtin::MapInsert, vec![("key", k), ("value", v)], Ty::Unit),
         "remove" => sig(Builtin::MapRemove, vec![("key", k)], optional(v)),
@@ -370,6 +458,8 @@ fn map_sig(key: &Ty, value: &Ty, name: &str) -> Option<Sig> {
 
 fn set_sig(elem: &Ty, name: &str) -> Option<Sig> {
     let t = elem.clone();
+    let set_ty = || Ty::Set(Box::new(elem.clone()));
+    let set = set_ty();
     Some(match name {
         "len" => sig(Builtin::SetLen, vec![], Ty::INT),
         "is_empty" => sig(Builtin::SetIsEmpty, vec![], Ty::Bool),
@@ -377,6 +467,17 @@ fn set_sig(elem: &Ty, name: &str) -> Option<Sig> {
         "remove" => sig(Builtin::SetRemove, vec![("item", t)], Ty::Bool),
         "contains" => sig(Builtin::SetContains, vec![("item", t)], Ty::Bool),
         "clear" => sig(Builtin::SetClear, vec![], Ty::Unit),
+        "union" => sig(Builtin::SetUnion, vec![("other", set)], set_ty()),
+        "intersection" => sig(Builtin::SetIntersection, vec![("other", set)], set_ty()),
+        "difference" => sig(Builtin::SetDifference, vec![("other", set)], set_ty()),
+        "symmetric_difference" => sig(
+            Builtin::SetSymmetricDifference,
+            vec![("other", set)],
+            set_ty(),
+        ),
+        "is_subset" => sig(Builtin::SetIsSubset, vec![("other", set)], Ty::Bool),
+        "is_superset" => sig(Builtin::SetIsSuperset, vec![("other", set)], Ty::Bool),
+        "is_disjoint" => sig(Builtin::SetIsDisjoint, vec![("other", set)], Ty::Bool),
         "iter" => sig(Builtin::Iter, vec![], iter_of(t)),
         _ => return None,
     })
@@ -399,6 +500,7 @@ pub(crate) fn builtin_method_exists(ty: &Ty, name: &str) -> bool {
         Ty::Adt(COROUTINE_TYPE, a) if a.len() == 1 => coroutine_sig(&a[0], name).is_some(),
         Ty::Adt(COGROUP_TYPE, _) => name == "go" || cogroup_sig(name).is_some(),
         Ty::Adt(SIGNAL_TYPE, _) => signal_sig(name).is_some(),
+        Ty::Adt(STR_BUILDER_TYPE, _) => name == "write" || str_builder_sig(name).is_some(),
         _ => false,
     }
 }
@@ -435,6 +537,12 @@ impl FnCtx<'_, '_> {
             }
             Ty::Adt(COGROUP_TYPE, _) => (cogroup_sig(&name.name), COGROUP_METHODS),
             Ty::Adt(SIGNAL_TYPE, _) => (signal_sig(&name.name), SIGNAL_METHODS),
+            Ty::Adt(STR_BUILDER_TYPE, _) => {
+                if name.name == "write" {
+                    return Ok(self.check_str_builder_write(recv, args, span));
+                }
+                (str_builder_sig(&name.name), STR_BUILDER_METHODS)
+            }
             _ => return Err(recv),
         };
         let Some(sig) = sig else {
@@ -589,6 +697,24 @@ impl FnCtx<'_, '_> {
             diag = diag.with_hint(hint);
         }
         self.ck.report(diag);
+    }
+
+    /// `b.write(v)` on a `StrBuilder`: appends the `Show` text of any value, as the hole of a
+    /// string interpolation would.
+    fn check_str_builder_write(&mut self, recv: Expr, args: &[ast::Arg], span: Span) -> Expr {
+        let [arg] = args else {
+            self.check_args_loosely(args);
+            self.ck.report(Diagnostic::error(
+                format!("`write` takes one value, found {} arguments", args.len()),
+                span,
+            ));
+            return self.error_expr(span);
+        };
+        let text = self.check_hole(&arg.value, None);
+        if text.ty.is_error() {
+            return self.error_expr(span);
+        }
+        self.builtin_call(Builtin::StrBuilderPush, vec![recv, text], Ty::Unit, span)
     }
 
     /// `x.clone()`: a deep copy of any value (DESIGN §5.3, §7.4).

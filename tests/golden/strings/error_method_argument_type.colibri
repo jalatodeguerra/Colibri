@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let s = "abc".contains(1) // error: expected `str`, found `{integer}`
 }

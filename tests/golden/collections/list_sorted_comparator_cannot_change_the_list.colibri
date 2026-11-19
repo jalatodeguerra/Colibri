@@ -1,0 +1,10 @@
+// allow: unused
+fn main() {
+    var xs = [3, 1, 2]
+    let ys = xs.sorted_by(fn(a, b) {
+        xs.push(0)
+        return a - b
+    })
+}
+
+// panic: list modified during iteration

@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let n: u8 = 4
     let r = n..n // error: a range value is a `Range[int]`, found ends of type `u8`

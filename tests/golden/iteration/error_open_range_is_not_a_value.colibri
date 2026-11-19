@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let r = 1.. // error: an open-ended range is not a value
 }

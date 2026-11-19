@@ -1,0 +1,4 @@
+// There are no frames in a general-purpose program: `wait(seconds)` and `wait_until(cond)`.
+fn main() {
+    wait_frames(1) // error: unknown name `wait_frames`
+}

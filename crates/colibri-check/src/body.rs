@@ -47,6 +47,10 @@ pub(crate) struct LocalFlags {
     /// It is assigned (or changed by a `var self` call) somewhere after its initialisation,
     /// in this body or in a closure that captures it.
     pub assigned: bool,
+    /// Its value is read somewhere (or a closure captures it, or a place inside it is used).
+    pub read: bool,
+    /// An unused-variable warning applies to it if nothing reads it: a plain `let` or `var`.
+    pub lint_unused: bool,
 }
 
 /// One variable a closure captures, as recorded while its body is checked.
@@ -170,6 +174,8 @@ pub(crate) struct FnCtx<'c, 'a> {
     pub generic_calls: Vec<GenericCall>,
     /// How many `unsafe` blocks enclose the code being checked (a closure starts again at 0).
     pub(crate) unsafe_depth: u32,
+    /// The target of a plain `x = value` is being resolved: naming `x` there is not a read.
+    pub(crate) whole_assign_target: bool,
 }
 
 /// A call with type arguments that are inferred, kept so one that is never fixed is reported.
@@ -242,6 +248,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             obligations: Vec::new(),
             generic_calls: Vec::new(),
             unsafe_depth: 0,
+            whole_assign_target: false,
         }
     }
 
@@ -281,7 +288,23 @@ impl<'c, 'a> FnCtx<'c, 'a> {
 
     /// Closes the innermost scope and returns its locals (the block's drop list).
     pub fn pop_scope(&mut self) -> Vec<LocalId> {
-        self.scopes.pop().map(|s| s.locals).unwrap_or_default()
+        let locals = self.scopes.pop().map(|s| s.locals).unwrap_or_default();
+        // Only the program's own packages are linted, not a dependency's code.
+        let own = self.ck.mods[self.ck.cur_mod.0 as usize].root;
+        for l in &locals {
+            let f = self.flags[l.0 as usize];
+            if own && f.lint_unused && !f.read {
+                let info = &self.locals[l.0 as usize];
+                let span = info.span;
+                let name = info.name.clone();
+                let diag = Diagnostic::warning(format!("unused variable `{name}`"), span)
+                    .with_hint(format!(
+                        "use it, or rename it `_{name}` to say it is unused on purpose"
+                    ));
+                self.ck.report_lint(diag);
+            }
+        }
+        locals
     }
 
     /// Declares a binding in the innermost scope and returns its slot.
@@ -520,7 +543,6 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             block,
             ret,
             mutates_self: self.self_mut,
-            needs_type_args: false,
         }
     }
 
@@ -759,7 +781,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     }
 
     /// Checks a default argument against its parameter type (once, to report its errors).
-    pub fn check_default(mut self, default: &ast::Expr, ty: &Ty) {
+    pub fn check_default(mut self, default: &ast::Expr, ty: &Ty) -> Body {
         self.push_scope();
         let value = self.check_expr(default, Some(ty));
         self.expect(
@@ -776,7 +798,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             span,
             tail: Some(Box::new(value)),
         };
-        self.finish(block, ty.clone(), span, 0);
+        self.finish(block, ty.clone(), span, 0)
     }
 
     /// Re-checks a default argument at a call site, in the callee's module-level scope, with
@@ -1052,6 +1074,9 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         match &l.pat.kind {
             PatKind::Ident(name) => {
                 let local = self.declare(&name.name, name.span, ty, kind);
+                if kind != LocalKind::Const && !name.name.starts_with('_') {
+                    self.flags[local.0 as usize].lint_unused = true;
+                }
                 out.push(Stmt {
                     span: s.span,
                     kind: hir::StmtKind::Let { local, init: value },
@@ -1270,7 +1295,11 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         target: &ast::Expr,
         value: &ast::Expr,
     ) -> Option<Stmt> {
-        let place = self.check_place(target)?;
+        self.whole_assign_target =
+            op == AssignOp::Assign && matches!(target.kind, ExprKind::Ident(_));
+        let place = self.check_place(target);
+        self.whole_assign_target = false;
+        let place = place?;
         let weak = self.is_weak_place(&place);
         let place_ty = place.ty.clone();
         // A shift count may have any integer type; every other right-hand side has the type
@@ -1384,6 +1413,13 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             diag = diag.with_hint(format!(
                 "the vector types are in the `vec` module: write `import vec` and then `vec.{name}(..)`, or `import vec.{{{name}}}`"
             ));
+            self.ck.report(diag);
+            return;
+        }
+        if name == "wait_frames" {
+            diag = diag.with_hint(
+                "there is no `wait_frames`; use `wait(seconds)`, or `wait_until(cond)` to wait for a condition",
+            );
             self.ck.report(diag);
             return;
         }

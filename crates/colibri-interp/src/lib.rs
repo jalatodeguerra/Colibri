@@ -41,7 +41,7 @@ pub use vecmath::{FVec, IVec};
 
 pub use budget::GRACE_STEPS;
 pub use compare::{TooDeep, values_cmp, values_equal};
-pub use coro::{Clock, ExternalError, SystemClock};
+pub use coro::{CancelToken, Clock, ExternalError, SystemClock};
 pub use ctl::{Ctl, Eval, PanicInfo, TraceEntry};
 pub use eval::{DEFAULT_NATIVE_STACK_BUDGET, Interp};
 pub use fiber::Fiber;

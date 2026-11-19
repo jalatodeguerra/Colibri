@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let s = "abc".trim(1) // error: `str.trim` takes 0 arguments, found 1
 }

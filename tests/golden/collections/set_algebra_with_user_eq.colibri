@@ -1,0 +1,34 @@
+struct Key {
+    id: int
+    tag: str
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool => self.id == other.id
+}
+
+fn tags(s: Set[Key]) -> str {
+    var out = ""
+    for k in s {
+        out += k.tag + "|"
+    }
+    return out
+}
+
+fn main() {
+    let a = Set([Key { id: 1, tag: "a1" }, Key { id: 2, tag: "a2" }])
+    let b = Set([Key { id: 2, tag: "b2" }, Key { id: 3, tag: "b3" }])
+    print(tags(a.union(b)))
+    print(tags(a.intersection(b)))
+    print(tags(a.difference(b)))
+    print(tags(a.symmetric_difference(b)))
+    print(a.is_subset(b))
+    print(a.is_disjoint(b))
+}
+
+// expect: a1|a2|b3|
+// expect: a2|
+// expect: a1|
+// expect: a1|b3|
+// expect: false
+// expect: false

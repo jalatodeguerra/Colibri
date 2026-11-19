@@ -1,6 +1,7 @@
 // caps: os
 // A coroutine that polls a child with `try_wait` and `wait(0.01)` leaves the other coroutines
-// running while the program works; `join` and `run` block everything until the program ends.
+// running while the program works; `join` blocks everything until the program ends (`run`
+// waits on a background thread and lets the other coroutines run).
 import process
 
 fn runner() -> int {

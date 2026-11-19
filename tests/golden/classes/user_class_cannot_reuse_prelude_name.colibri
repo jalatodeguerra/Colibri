@@ -1,0 +1,7 @@
+class StrBuilder { // error: `StrBuilder` is a built-in type and cannot be redefined
+    parts: List[str]
+}
+
+class Signal {} // error: `Signal` is a built-in type and cannot be redefined
+
+fn main() {}
