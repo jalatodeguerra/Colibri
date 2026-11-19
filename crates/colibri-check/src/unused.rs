@@ -8,12 +8,13 @@ use std::collections::HashSet;
 use colibri_syntax::Diagnostic;
 use colibri_syntax::ast::{
     Arg, ArmBody, Block, Closure, Expr, ExprKind, File, FnBody, GenericParam, ImportKind, IndexArg,
-    Item, ItemKind, LetStmt, Pat, PatKind, Stmt, StmtKind, StrSeg, TopLevel, TypeExpr, TypeKind,
-    VariantPayload,
+    Item, ItemKind, LetStmt, NodeId, Pat, PatKind, Stmt, StmtKind, StrSeg, TopLevel, TypeExpr,
+    TypeKind, VariantPayload,
 };
 
 use crate::checker::Checker;
-use crate::modules::ModKind;
+use crate::modules::{ModInfo, ModKind};
+use crate::package::ImportTarget;
 
 /// Every name that is written in the code of `file`, outside its `import` items.
 #[derive(Default)]
@@ -358,7 +359,44 @@ impl Mentions {
     }
 }
 
+/// Whether evaluating an initialiser can do anything but build a constant.
+fn is_plain_literal(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Char(_)
+        | ExprKind::Bool(_)
+        | ExprKind::None => true,
+        ExprKind::Str(segs) => segs.iter().all(|s| matches!(s, StrSeg::Lit(_))),
+        ExprKind::Paren(e) => is_plain_literal(e),
+        ExprKind::Unary { expr, .. } => is_plain_literal(expr),
+        ExprKind::List(es) | ExprKind::Tuple(es) => es.iter().all(is_plain_literal),
+        ExprKind::Map(kvs) => kvs
+            .iter()
+            .all(|(k, v)| is_plain_literal(k) && is_plain_literal(v)),
+        _ => false,
+    }
+}
+
 impl Checker<'_> {
+    /// Whether the module an `import` item names runs code when it loads: a top-level
+    /// statement, or a `let`/`var` whose initialiser is not a plain literal.
+    fn import_has_load_effects(&self, importer: &ModInfo<'_>, import_item: NodeId) -> bool {
+        let Some(ImportTarget::Module(i)) = importer.imports.and_then(|m| m.get(&import_item))
+        else {
+            return false;
+        };
+        let target = &self.mods[self.source_base as usize + *i];
+        target.files.iter().any(|f| {
+            f.items.iter().any(|top| match top {
+                TopLevel::Stmt(_) => true,
+                TopLevel::Item(item) => {
+                    matches!(&item.kind, ItemKind::Binding(b) if !is_plain_literal(&b.init))
+                }
+            })
+        })
+    }
+
     /// Warns about the imports of the program's own modules that bind nothing used. Only when
     /// the program has no errors: a name that failed to resolve would give a wrong answer.
     pub(crate) fn lint_unused_imports(&mut self) {
@@ -394,15 +432,22 @@ impl Checker<'_> {
                                 },
                             };
                             if !bound.name.starts_with('_') && !used.0.contains(&bound.name) {
+                                let mut hint = format!(
+                                    "nothing named `{}` is used; remove the import",
+                                    bound.name
+                                );
+                                if self.import_has_load_effects(info, item.id) {
+                                    hint.push_str(&format!(
+                                        ", or keep it for what the module does when it loads: `import {path} as _{}`",
+                                        bound.name
+                                    ));
+                                }
                                 found.push(
                                     Diagnostic::warning(
                                         format!("unused import `{path}`"),
                                         item.span,
                                     )
-                                    .with_hint(format!(
-                                        "nothing named `{}` is used; remove the import",
-                                        bound.name
-                                    )),
+                                    .with_hint(hint),
                                 );
                             }
                         }

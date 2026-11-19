@@ -426,3 +426,72 @@ fn each_module_has_its_own_interface_that_round_trips() {
     // The default module's interface is not this file.
     assert!(vm.verify_interface(path).is_err());
 }
+
+const REGISTRY: &str = "let started = announce()\nfn announce() -> int {\n    print(\"registry initialised\")\n    return 1\n}\n";
+
+fn warnings_of(name: &str, files: &[(&str, &str)]) -> String {
+    let dir = tree(name, files);
+    let (mut vm, _) = vm();
+    vm.load_package(&dir).unwrap();
+    vm.render_warnings(false)
+}
+
+#[test]
+fn an_unused_import_of_a_module_with_load_effects_says_how_to_keep_it() {
+    let warnings = warnings_of(
+        "effects",
+        &[
+            ("colibri.toml", "[package]\nname = \"app\"\n"),
+            (
+                "main.colibri",
+                "import registry\nfn main() { print(\"main\") }\n",
+            ),
+            ("registry.colibri", REGISTRY),
+        ],
+    );
+    assert!(warnings.contains("unused import `registry`"), "{warnings}");
+    assert!(
+        warnings.contains("`import registry as _registry`"),
+        "{warnings}"
+    );
+}
+
+#[test]
+fn an_unused_import_of_a_pure_module_just_says_remove_it() {
+    let warnings = warnings_of(
+        "pure",
+        &[
+            ("colibri.toml", "[package]\nname = \"app\"\n"),
+            (
+                "main.colibri",
+                "import util\nfn main() { print(\"main\") }\n",
+            ),
+            (
+                "util.colibri",
+                "let LIMIT = 10\nlet NAME = \"x\"\npub fn f() -> int { return LIMIT }\n",
+            ),
+        ],
+    );
+    assert!(warnings.contains("unused import `util`"), "{warnings}");
+    assert!(!warnings.contains("as _util"), "{warnings}");
+}
+
+#[test]
+fn an_underscore_alias_keeps_the_import_without_a_warning_and_still_loads_it() {
+    let dir = tree(
+        "underscore",
+        &[
+            ("colibri.toml", "[package]\nname = \"app\"\n"),
+            (
+                "main.colibri",
+                "import registry as _registry\nfn main() { print(\"main\") }\n",
+            ),
+            ("registry.colibri", REGISTRY),
+        ],
+    );
+    let (mut vm, out) = vm();
+    vm.load_package(&dir).unwrap();
+    assert_eq!(vm.render_warnings(false), "");
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "registry initialised\nmain\n");
+}
