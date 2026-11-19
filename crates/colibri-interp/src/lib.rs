@@ -7,6 +7,7 @@
 
 mod budget;
 mod builtin;
+mod cffi;
 mod clone;
 mod closure;
 mod compare;

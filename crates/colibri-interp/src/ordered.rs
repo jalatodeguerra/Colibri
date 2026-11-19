@@ -49,6 +49,7 @@ fn feed(v: &Value, h: &mut DefaultHasher, depth: u32) {
         Value::Bool(b) => b.hash(h),
         Value::Int(i) => i.hash(h),
         Value::U64(i) => i.hash(h),
+        Value::Ptr(p) => p.hash(h),
         Value::Float(x) => x.to_bits().hash(h),
         Value::F32(x) => x.to_bits().hash(h),
         Value::Char(c) => c.hash(h),

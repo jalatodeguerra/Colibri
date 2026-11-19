@@ -67,6 +67,50 @@ pub struct Program {
     /// standard library), in source order: the entry module first, then the other modules in
     /// load order (ARCHITECTURE §15). Their bodies are ordinary entries of [`Program::fns`].
     pub tests: Vec<TestDef>,
+    /// The C layout of every `@repr(C)` struct (DESIGN §15.2), by type.
+    pub c_layouts: std::collections::BTreeMap<TypeId, CLayout>,
+}
+
+/// A type at the C boundary (DESIGN §15.3): what an `extern` signature, a `@repr(C)` field or
+/// the element of a `ptr[T]` may be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CTy {
+    /// No value: a function that returns nothing, or `ptr[()]` (`void *`).
+    Void,
+    Bool,
+    Int(IntTy),
+    F32,
+    F64,
+    /// `ptr[T]`, or `ptr[T]?` when `nullable` (NULL is `none`).
+    Ptr {
+        nullable: bool,
+    },
+    /// `cstr`, or `cstr?` when `nullable`. Only in an `extern` signature.
+    CStr {
+        nullable: bool,
+    },
+    /// A `@repr(C)` struct, by value.
+    Struct(TypeId),
+}
+
+/// The layout of a `@repr(C)` struct on the platform's C ABI: sequential fields, each at the
+/// next multiple of its alignment, the whole padded to the largest alignment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CLayout {
+    pub fields: Vec<CTy>,
+    pub offsets: Vec<usize>,
+    pub size: usize,
+    pub align: usize,
+}
+
+/// What an `extern "C"` function is: which library, which symbol, and its C signature.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternDef {
+    /// The `@link("name")` of its block; `None` looks in the running program.
+    pub lib: Option<String>,
+    pub symbol: String,
+    pub params: Vec<CTy>,
+    pub ret: CTy,
 }
 
 /// A `test "name" { .. }` block, compiled as a function `() -> Result[()]`.
@@ -95,6 +139,9 @@ pub struct HostFnDef {
     pub f: FnId,
     /// The capability the function needs (`fs`, `os`, `net`, `ffi`), if any.
     pub requires: Option<String>,
+    /// For a function declared in an `extern "C"` block: the C function it calls. The host
+    /// does not provide it; the runtime binds it to the library at load time.
+    pub ext: Option<ExternDef>,
 }
 
 /// What a runtime value's type looks like to interface dispatch: the head of a type, without
@@ -113,6 +160,7 @@ pub enum TypeKey {
     Map,
     Set,
     Range,
+    Ptr,
     /// A struct, enum or class (`Option` is the enum at [`crate::types::OPTION_TYPE`]).
     Adt(TypeId),
 }
@@ -716,6 +764,24 @@ impl Callee {
     }
 }
 
+/// A method of `ptr[T]`. Every one but `Addr` needs an `unsafe` block, which the checker has
+/// already enforced.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PtrOp {
+    /// `p.read() -> T`
+    Read(CTy),
+    /// `p.write(v)`
+    Write(CTy),
+    /// `p.offset(n) -> ptr[T]`: `n` elements of `size` bytes further.
+    Offset { size: usize },
+    /// `p.cast[U]() -> ptr[U]`: the same address.
+    Cast,
+    /// `p.addr() -> u64`
+    Addr,
+    /// `p.read_str() -> str`: the NUL-terminated string at the address.
+    ReadStr,
+}
+
 /// Operations built into the compiler.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intrinsic {
@@ -738,6 +804,8 @@ pub enum Intrinsic {
     ErrorIs(TypeKey),
     /// `e.as[T]() -> T?`: the value an `Error` keeps, if it has this runtime type.
     ErrorAs(TypeKey),
+    /// A method of `ptr[T]` (DESIGN §15.3); the receiver is the first argument.
+    Ptr(PtrOp),
     /// `object.alive()` on a class of the host: whether the host still has the object. The
     /// receiver is the only argument.
     HostAlive,

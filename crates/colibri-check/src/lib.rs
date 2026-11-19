@@ -18,6 +18,7 @@ mod decls;
 mod derive;
 pub mod exhaust;
 mod expr;
+mod ffi;
 mod fnvalue;
 pub mod format;
 mod generics;
@@ -75,6 +76,7 @@ pub fn check_with_host(file: &colibri_syntax::ast::File, host: &HostEnv, budget:
         package: 0,
         entry: true,
         dependency: false,
+        ffi: true,
         imports: std::collections::HashMap::new(),
     };
     let packages = [package::PackageNode {

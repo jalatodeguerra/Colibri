@@ -33,6 +33,7 @@ fn scalar_eq(a: &Value, b: &Value) -> Option<bool> {
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::U64(x), Value::U64(y)) => x == y,
+        (Value::Ptr(x), Value::Ptr(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => x == y,
         (Value::F32(x), Value::F32(y)) => x == y,
         (Value::Char(x), Value::Char(y)) => x == y,

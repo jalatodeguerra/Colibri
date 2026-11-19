@@ -13,7 +13,7 @@ pub(crate) fn has_infer(ty: &Ty) -> bool {
     match ty {
         Ty::Infer(_) => true,
         Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().any(has_infer),
-        Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) => has_infer(t),
+        Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) | Ty::Ptr(t) => has_infer(t),
         Ty::Map(a, b) => has_infer(a) || has_infer(b),
         Ty::Fn(ps, r) => ps.iter().any(has_infer) || has_infer(r),
         _ => false,

@@ -67,6 +67,8 @@ pub struct Interp {
     pub(crate) sched: crate::coro::Scheduler,
     /// The registry of the leak detector, when it is on (ARCHITECTURE §18).
     pub(crate) leaks: Option<Box<crate::leaks::LeakTracker>>,
+    /// The C layout of every `@repr(C)` struct of the loaded program, and the open libraries.
+    pub(crate) cffi: crate::cffi::CffiState,
 }
 
 /// The default for [`Interp::set_native_stack_budget`]: small enough for a default test thread.
@@ -104,6 +106,7 @@ impl Interp {
             host: crate::host::HostSide::default(),
             sched: crate::coro::Scheduler::new(),
             leaks: None,
+            cffi: crate::cffi::CffiState::default(),
         }
     }
 
@@ -138,6 +141,7 @@ impl Interp {
             .map(|&g| (g, Rc::clone(&program.globals[g.0 as usize].init)))
             .collect();
         self.script = Some(Rc::clone(&program.script));
+        self.cffi.load(program);
     }
 
     /// Swaps in the bodies of a re-checked program that has the same declarations as the loaded
@@ -157,6 +161,7 @@ impl Interp {
             .map(|&g| (g, Rc::clone(&program.globals[g.0 as usize].init)))
             .collect();
         self.script = Some(Rc::clone(&program.script));
+        self.cffi.load(program);
         // The host's view of the host functions' (empty) bodies.
         self.host.bodies = program
             .host_fns
@@ -1020,6 +1025,9 @@ impl Interp {
         if let Intrinsic::Builtin(op) = intrinsic {
             return self.builtin(fiber, *op, args, span);
         }
+        if let Intrinsic::Ptr(op) = intrinsic {
+            return self.ptr_intrinsic(fiber, op, args, span);
+        }
         if matches!(
             intrinsic,
             Intrinsic::Wait
@@ -1082,6 +1090,7 @@ impl Interp {
                 _ => Value::Bool(false),
             },
             Intrinsic::Builtin(_)
+            | Intrinsic::Ptr(_)
             | Intrinsic::Assert
             | Intrinsic::AssertEq
             | Intrinsic::Convert { .. }

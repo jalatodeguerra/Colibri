@@ -160,6 +160,16 @@ pub(crate) struct Checker<'a> {
     pub(crate) host_typed: Vec<bool>,
     /// The type ids of host declarations are `FIRST_USER_TYPE ..` this far.
     host_type_count: u32,
+    /// The `@repr(C)` structs (DESIGN §15.2) and their layouts, once computed.
+    pub(crate) repr_c: HashSet<TypeId>,
+    pub(crate) c_layouts: std::collections::BTreeMap<TypeId, crate::hir::CLayout>,
+    pub(crate) c_layout_visiting: HashSet<TypeId>,
+    /// The C function behind each function of an `extern` block, by its [`HostFnId`].
+    pub(crate) host_ext: HashMap<u32, crate::hir::ExternDef>,
+    /// Set while the signature of an `extern` function is resolved: `cstr` is allowed.
+    pub(crate) in_extern: bool,
+    /// Set while the functions of an `extern` block are collected: its `@link`.
+    pub(crate) extern_lib: Option<Option<String>>,
     pub diags: Vec<Diagnostic>,
     /// What the zonker records for [`crate::insight`], when asked to.
     pub facts: Option<Vec<crate::insight::RawFact>>,
@@ -331,6 +341,7 @@ impl<'a> Checker<'a> {
             scope: Scope::default(),
             exports: Exports::default(),
             alias_spans: HashMap::new(),
+            ffi: false,
         }];
         for name in host.named_modules() {
             mods.push(ModInfo {
@@ -344,6 +355,7 @@ impl<'a> Checker<'a> {
                 scope: Scope::default(),
                 exports: Exports::default(),
                 alias_spans: HashMap::new(),
+                ffi: false,
             });
         }
         let source_base = mods.len() as u32;
@@ -360,6 +372,7 @@ impl<'a> Checker<'a> {
                 scope: Scope::default(),
                 exports: Exports::default(),
                 alias_spans: HashMap::new(),
+                ffi: meta.ffi,
             });
         }
         Checker {
@@ -377,6 +390,12 @@ impl<'a> Checker<'a> {
             host_fn_count: 0,
             host_typed: Vec::new(),
             host_type_count: 0,
+            repr_c: HashSet::new(),
+            c_layouts: std::collections::BTreeMap::new(),
+            c_layout_visiting: HashSet::new(),
+            host_ext: HashMap::new(),
+            in_extern: false,
+            extern_lib: None,
             diags: Vec::new(),
             facts: None,
             muted: 0,
@@ -554,6 +573,7 @@ impl<'a> Checker<'a> {
         }
         let mut from = self.infinite_checked;
         self.check_infinite_sizes(&mut from);
+        self.layout_repr_c();
         for (k, &m) in others.iter().enumerate() {
             self.enter_module(m);
             match self.mods[m.0 as usize].kind {
@@ -622,7 +642,28 @@ impl<'a> Checker<'a> {
 
     fn collect_item(&mut self, item: &'a ast::Item) {
         for attr in &item.attrs {
-            self.unsupported(&format!("the attribute `@{}`", attr.name.name), attr.span);
+            let known = match (&item.kind, attr.name.name.as_str()) {
+                // Read when the struct is declared, and by `collect_extern`.
+                (ItemKind::Struct(_), "repr") | (ItemKind::Extern(_), "link") => true,
+                (_, "repr") => {
+                    self.report(Diagnostic::error(
+                        "`@repr(C)` applies to a `struct`",
+                        attr.span,
+                    ));
+                    true
+                }
+                (_, "link") => {
+                    self.report(Diagnostic::error(
+                        "`@link` applies to an `extern \"C\"` block",
+                        attr.span,
+                    ));
+                    true
+                }
+                _ => false,
+            };
+            if !known {
+                self.unsupported(&format!("the attribute `@{}`", attr.name.name), attr.span);
+            }
         }
         match &item.kind {
             ItemKind::Fn(decl) => self.collect_fn(item, decl),
@@ -635,22 +676,20 @@ impl<'a> Checker<'a> {
             ItemKind::Impl(decl) => self.collect_impl(decl, item),
             // Bound after every declaration is known (`bind_imports_types` / `_values`).
             ItemKind::Import(_) => {}
-            ItemKind::Extern(_) if !self.host.is_granted("ffi") => {
-                let diag = Diagnostic::error(
-                    "`extern` blocks need the `ffi` capability, which this host did not grant",
-                    item.span,
-                )
-                .with_hint("the host grants it with `VmBuilder::allow(Cap::Ffi)`");
-                self.report(diag);
-            }
-            ItemKind::Extern(_) => self.unsupported("`extern`", item.span),
+            ItemKind::Extern(block) => self.collect_extern(item, block),
             ItemKind::Test(decl) => self.collect_test(item, decl),
             ItemKind::Error => {}
         }
     }
 
     /// Declares a module-level name, reporting a clash.
-    fn declare_value(&mut self, name: &str, span: Span, value: ValueRef, public: bool) -> bool {
+    pub(crate) fn declare_value(
+        &mut self,
+        name: &str,
+        span: Span,
+        value: ValueRef,
+        public: bool,
+    ) -> bool {
         if BUILTIN_FNS.contains(&name) {
             self.report(Diagnostic::error(
                 format!("`{name}` is a built-in function and cannot be redefined"),
@@ -659,7 +698,8 @@ impl<'a> Checker<'a> {
             return false;
         }
         if let Some(ValueRef::Fn(f)) = self.values.get(name).copied()
-            && self.fns[f.0 as usize].host.is_some()
+            && let Some(host) = &self.fns[f.0 as usize].host
+            && !self.host_ext.contains_key(&host.id.0)
         {
             self.report(
                 Diagnostic::error(
@@ -707,15 +747,20 @@ impl<'a> Checker<'a> {
         let saved = std::mem::replace(&mut self.self_ty, ctx.self_ty.clone());
         let sig = self.resolve_sig(decl, ctx);
         self.self_ty = saved;
-        let host = self.collecting_host.then(|| {
+        let is_extern = self.extern_lib.is_some();
+        let host = (self.collecting_host || is_extern).then(|| {
             let id = HostFnId(self.host_fn_count);
             self.host_fn_count += 1;
-            let typed = item.attrs.iter().any(|a| a.name.name == "typed");
+            let typed = !is_extern && item.attrs.iter().any(|a| a.name.name == "typed");
             self.host_typed.push(typed);
             HostFnInfo {
                 id,
-                requires: host::requires_of(item),
-                positional: item.attrs.iter().any(|a| a.name.name == "positional"),
+                requires: if is_extern {
+                    Some("ffi".to_string())
+                } else {
+                    host::requires_of(item)
+                },
+                positional: !is_extern && item.attrs.iter().any(|a| a.name.name == "positional"),
             }
         });
         let poisoned = sig.poisoned || (decl.body.is_none() && host.is_none());
@@ -869,6 +914,12 @@ impl<'a> Checker<'a> {
                 return self.resolve_builtin_generic(name, args, span);
             }
             "Result" => return self.resolve_result(args, span),
+            "ptr" if !self.type_ids.contains_key(name) && !self.aliases.contains_key(name) => {
+                return self.resolve_ptr(args, span);
+            }
+            "cstr" if !self.type_ids.contains_key(name) && !self.aliases.contains_key(name) => {
+                return self.resolve_cstr(args, span);
+            }
             _ => {}
         }
         if let Some(&id) = self.type_ids.get(name) {
@@ -1427,6 +1478,7 @@ impl<'a> Checker<'a> {
                             module: self.mods[f.module.0 as usize].name.clone(),
                             f: FnId(i as u32),
                             requires: h.requires.clone(),
+                            ext: self.host_ext.get(&h.id.0).cloned(),
                         },
                     ));
                     Rc::new(host_stub_body(f))
@@ -1493,6 +1545,7 @@ impl<'a> Checker<'a> {
             types: self.types.clone(),
             host_fns,
             host_types: self.host_type_count,
+            c_layouts: self.c_layouts.clone(),
         })
     }
 

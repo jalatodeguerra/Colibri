@@ -9,4 +9,10 @@ repository.workspace = true
 [dependencies]
 colibri-syntax = { path = "../colibri-syntax" }
 colibri-check = { path = "../colibri-check" }
+colibri-ffi = { path = "../colibri-ffi", optional = true }
 corosensei = "0.3.4"
+
+[features]
+# Calls into C libraries (`extern` blocks, `ptr[T]`): libffi and dlopen. Without it, a program
+# with an `extern` block fails to load with a message that says so.
+ffi = ["dep:colibri-ffi"]

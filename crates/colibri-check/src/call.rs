@@ -462,6 +462,7 @@ impl FnCtx<'_, '_> {
                 | Ty::Option(_)
                 | Ty::Fn(..)
                 | Ty::Range(_)
+                | Ty::Ptr(_)
         ) {
             let shown = self.show(&ty);
             self.ck.report(Diagnostic::error(
@@ -695,6 +696,13 @@ impl FnCtx<'_, '_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Expr {
+        if let ExprKind::Ident(id) = &base.kind
+            && matches!(id.name.as_str(), "size_of" | "align_of")
+            && self.lookup_local(&id.name).is_none()
+            && self.lookup_fn(&id.name).is_none()
+        {
+            return self.check_size_of(id, type_args, args, span);
+        }
         let qualified = self.qualified(base);
         let ident = match &base.kind {
             ExprKind::Ident(id) => Some(id),

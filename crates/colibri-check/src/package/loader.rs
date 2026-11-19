@@ -41,6 +41,8 @@ struct Tree {
     /// A dependency of another tree: its modules are named after it.
     is_dep: bool,
     manifest_name: Option<String>,
+    /// The manifest allows `extern` blocks (or there is none: a script).
+    ffi: bool,
     deps: Vec<(String, usize)>,
 }
 
@@ -240,6 +242,8 @@ impl Loader<'_> {
                 .map_or(folder_name, |(m, _)| m.name.clone()),
             is_dep,
             manifest_name: manifest.as_ref().map(|(m, _)| m.name.clone()),
+            // A script with no manifest is the program itself: its host decides.
+            ffi: manifest.as_ref().is_none_or(|(m, _)| m.ffi),
             deps: Vec::new(),
         });
         self.trees_by_dir.insert(key, tree);
@@ -688,6 +692,7 @@ impl Loader<'_> {
                 package: disc.package,
                 entry: disc.entry,
                 dependency: self.trees[disc.tree].is_dep,
+                ffi: self.trees[disc.tree].ffi,
                 imports,
             });
             files.push(disc.file);
