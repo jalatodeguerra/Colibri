@@ -137,6 +137,31 @@ impl Interp {
         self.script = Some(Rc::clone(&program.script));
     }
 
+    /// Swaps in the bodies of a re-checked program that has the same declarations as the loaded
+    /// one (hot reload, ARCHITECTURE §17): every function id, global id and type id means what
+    /// it meant before. Module-level values and live coroutines are untouched; a call made from
+    /// now on runs the new body, while a coroutine suspended inside an old body keeps the
+    /// `Rc<Body>` it holds and finishes on the old code. The caller has checked that the
+    /// declarations are identical.
+    pub fn patch(&mut self, program: &Program) {
+        debug_assert_eq!(self.fns.len(), program.fns.len());
+        self.fns = program.fns.iter().map(|f| Rc::clone(&f.body)).collect();
+        self.types = Rc::from(program.types.clone());
+        self.dispatch = crate::dispatch::Tables::new(program);
+        self.inits = program
+            .init_order
+            .iter()
+            .map(|&g| (g, Rc::clone(&program.globals[g.0 as usize].init)))
+            .collect();
+        self.script = Some(Rc::clone(&program.script));
+        // The host's view of the host functions' (empty) bodies.
+        self.host.bodies = program
+            .host_fns
+            .iter()
+            .map(|h| Rc::clone(&program.fns[h.f.0 as usize].body))
+            .collect();
+    }
+
     /// Runs the module-level initialisers in dependency order, then the top-level statements.
     pub fn run_module(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
         // The initialisers and the top-level statements share one allotment.

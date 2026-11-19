@@ -369,8 +369,8 @@ lookup, insert and remove are O(1) and `List` push and index are O(1).
   `Err` the `Vm` stays usable, with module state intact.
 
 Slice 1 details. A `Vm` loads one program (`load_source`/`load_file`: parse, check, run the
-module initialisers and top-level statements); a second load is `Error::AlreadyLoaded` until hot
-reload exists. Compile errors come back as `Error::Compile(Report)`, where a `Report` holds the
+module initialisers and top-level statements); a second load is `Error::AlreadyLoaded`; the program is replaced by
+hot reload (§17) instead. Compile errors come back as `Error::Compile(Report)`, where a `Report` holds the
 diagnostics and the `SourceMap` they point into and renders itself (`Error::render(color)`, with
 `ariadne`, which therefore lives in `colibri-runtime`). If the top-level code panics, the program
 is discarded, because its module state is half built. `colibri::check_source` / `check_file`
@@ -1981,3 +1981,151 @@ a generic prelude class and a value slot per waiter; it can be added without cha
 signal does not buffer emits; `join_all` polls and ignores itself; group `cancel` leaves the
 group reusable; the event loop does not wait for signal-only programs; hosts emit by calling a
 Colibri function that emits (no Rust-side `Signal` handle yet).
+
+## 17. Hot reload as built
+
+PHASE2 step 5 (DESIGN §16.3, §15.4). The pieces: `colibri-runtime/src/reload.rs` (change
+detection, fingerprints, outcome types), `Vm::reload_changed` and friends in `vm.rs`,
+`Interp::patch` in `colibri-interp/src/eval.rs`, and `colibri run --watch` in
+`colibri-cli/src/watch.rs`. The wording is general: any long-running program, server, tool or
+embedded script can use it.
+
+### Surface
+
+```text
+vm.reload_changed()                     -> Result<ReloadOutcome, Error>
+vm.reload_changed_with(ReloadOptions { force_restart })
+vm.run_event_loop_watching(poll, max_sleep, |vm| ..)   // a hook between ticks
+enum ReloadOutcome { Unchanged, Patched { functions }, Restarted { reason, state_carried },
+                     CheckFailed(Report) }
+```
+
+### Which files, and how a change is noticed
+
+- Only programs loaded from disk (`load_file`, `load_package`, `load_path`) can reload;
+  `load_source`/`load_sources`/`load_tests` programs report `Unchanged` forever. `Vm::shutdown`
+  forgets the files.
+- The files are exactly the ones the loader **read** (a `RecordingFs` wraps the `SourceFs`):
+  every module file and every `colibri.toml`, dependencies included, as absolute paths with a
+  hash of the text the checker saw. A load that fails (syntax or check errors, an unreadable
+  file) still records them, so fixing the file loads the program.
+- Polling is `std::fs::metadata` (mtime and length) per file; only a file whose metadata moved
+  is read and hashed, and a changed hash is what counts (touching a file or saving it
+  unchanged is `Unchanged`). Because timestamps are coarse, a file whose mtime was within 2 s
+  of being read is compared by **content on every poll** until it has aged (git's "racy"
+  rule); an edit of the same length in the same clock tick is therefore never missed. No
+  file-watcher dependency; a new file that would make a failed import resolve is only seen
+  when a watched file changes (directories are not watched).
+
+### The decision: patch or restart
+
+The new sources are loaded and checked as a whole program into a fresh `Program` (the old one
+is untouched), then compared with the running program by a **fingerprint**: hashes of the
+`Debug` text of the HIR with every `Span { .. }` removed (so moving code, comments and
+reformatting change nothing), in parts:
+
+1. functions: the table of `(name, signature, type parameter count, host id)` in order, and
+   `main`;
+2. structs, classes, enums and interfaces (`Program::types`);
+3. interface implementations (`impls`);
+4. module-level declarations: `(name, type, mutability)` of every global and the init order;
+5. module-level initialisers and the top-level statements (their bodies);
+6. the host interface (`host_fns`, `host_types`) and the `test` blocks.
+
+All parts equal means the two programs allocate identical ids: `FnId`, `GlobalId` and
+`TypeId` are positions in these tables, so a body that mentions `FnId(7)` means the same
+function in both. Then the change is a **patch**: `Interp::patch` replaces `fns` (every body,
+also the unchanged ones, so spans refer to the new `SourceMap`), the type and dispatch tables
+and the stored init bodies, and the `Vm` replaces its `Program`, sources and warnings. The
+epoch does not move, so `Fn` handles and callbacks stay valid. `functions` counts the bodies
+whose own fingerprint changed; a patch with none (only comments or spacing) is reported as
+`Unchanged`. Anything else, including a changed module-level initialiser or top-level
+statement (it would not re-run), is a **restart**, and `reason` names the first differing
+part.
+
+Cost: one `Debug` pass per function body of the new program, hashed without building a big
+string; the running program's fingerprint is computed at the first reload and kept.
+
+### Patch semantics
+
+- Module-level initialisers and top-level statements do not re-run; module values, class
+  objects and `var`s keep their state.
+- A call made after the patch uses the new body (the interpreter looks up `fns[FnId]` at call
+  time). A coroutine suspended in an old body holds that `Rc<Body>` and finishes on it; calls
+  it makes after resuming use the new table. A closure created before the patch keeps its old
+  body.
+- Stack traces of old, unchanged-in-place bodies still point at the old spans, resolved
+  against the new sources, so a line number in a trace from a coroutine still on old code can
+  be off. (DESIGN: "the editor shows which coroutines are still on old code" is not built.)
+
+### Restart semantics
+
+1. If the old program defines `fn save_state() -> str`, it is called first. A panic there, or a
+   `save_state` with another signature, aborts the reload with `Err` and the old program keeps
+   running (the edit counts as seen; edit again to retry).
+2. All coroutines are cancelled (newest first, running `defer`s and drops), the roots and
+   module values are released, exactly as `shutdown` does, and the epoch moves (handles and
+   callbacks from before are `StaleHandle`).
+3. The new program is installed: module initialisers and top-level statements run. A panic
+   there is `Err(Panic)`; the `Vm` has no program until the next edit, which loads again.
+4. If a state text was saved and the new program defines `fn restore_state(s: str)`, it is
+   called; `state_carried` says so. Without a `save_state` in the old program, or a
+   `restore_state` in the new one, the text is dropped (no error).
+5. `main` is **not** called: `Restarted` tells the host, which decides. The CLI calls it.
+
+The host's registered functions and types, capabilities, the instruction budget, the clock,
+the output writer and `insert_state` values live in the `Vm`, not the program, so they all
+stay in place.
+
+### Check errors
+
+If the new text does not parse or check, nothing changes and `CheckFailed(Report)` carries the
+diagnostics. The attempt is remembered as seen: the same broken text is reported once, and the
+next `Unchanged` comes until a file changes again. An I/O error (a file vanished while an
+editor replaced it) is `Err(Error::Io)` and is **not** remembered, so the next call retries.
+
+### `colibri run --watch`
+
+`main`, then the event loop run as usual, but the loop is `run_event_loop_watching` with a hook
+that calls `reload_changed` between ticks and never sleeps longer than 150 ms. A patch prints
+`colibri: patched N functions`; a restart prints `colibri: restarted (reason[, state carried])`
+and calls `main` again; check errors print the diagnostics and `keeping the old program`.
+After `main` and the loop end, or after a panic (printed, exit code not used), the tool prints
+`waiting for a change`, polls every 150 ms and **restarts** (forced) on the next edit, then
+runs `main` again. `os.exit` still ends the process. A program that fails to check at start
+waits the same way.
+
+Safe points are therefore: between event-loop ticks, and when the program is idle. A `main`
+that never returns and never yields to the scheduler cannot be reloaded: patching inside a
+running call would need a re-entrant safepoint check from the instruction-budget machinery,
+which is not built.
+
+### Measured
+
+A generated program of 1,000 functions (about 12,000 lines), one body edited, second reload
+(running program already fingerprinted): about 50 ms in a release build, 170 ms unoptimised
+(`tests/reload.rs`, DESIGN §17.4 asks for under 200 ms). The first reload costs about twice that
+(it fingerprints the running program too).
+
+### Decisions the design documents did not fix
+
+- **Snapshot is text, not §7.5.** Reflection and serialization (DESIGN §7.5) are not built, so
+  the hooks are `fn save_state() -> str` and `fn restore_state(s: str)`; programs encode with
+  `json` or any format they like. The names and the "optional pair" semantics are DESIGN's.
+  This is a deviation to revisit when §7.5 exists (a `Snapshot` type could then replace `str`
+  without changing the rest).
+- A module-level initialiser or top-level statement change is a restart (DESIGN says
+  initialisers do not re-run; silently keeping the old value would be surprising).
+- Check errors are an *outcome* (`CheckFailed`), not `Err`, so `vm.reload_changed()?` in a
+  host's frame loop does not abort the host over a typo.
+- `Restarted` does not call `main`; the CLI does. After an ended or panicked CLI run the reload
+  is always a restart, so a re-run starts from fresh state.
+- Fingerprints use `Debug` text with spans stripped, which needed no HIR changes. It is
+  conservative: a difference it cannot tell apart from a real one leads to a restart, never to
+  a wrong patch.
+
+### Not built
+
+Reload from inside a call (safepoint in the evaluator); a list of coroutines still on old code;
+watching directories; reloading `load_sources`/`load_tests` programs; a `Snapshot` type
+(§7.5).

@@ -23,6 +23,12 @@ enum Command {
     /// Run a Colibri script, or the package in a folder (the current folder by default)
     Run {
         file: Option<PathBuf>,
+        /// Keep running and reload the program when its source files change: edits that only
+        /// touch function bodies are patched into the running program, other edits restart
+        /// it (`save_state() -> str` and `restore_state(s: str)` carry state across), and a
+        /// panic or the end of the program waits for the next edit
+        #[arg(long)]
+        watch: bool,
         /// Arguments for the script, which it reads with `os.args()` (after `--` if they
         /// start with a dash)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -148,7 +154,14 @@ fn main() -> ExitCode {
                 Err(code) => code,
             }
         }
-        Command::Run { file, args } => run(&file.unwrap_or_else(|| PathBuf::from(".")), args),
+        Command::Run { file, watch, args } => {
+            let file = file.unwrap_or_else(|| PathBuf::from("."));
+            if watch {
+                colibri_lang::watch::run(&file, args)
+            } else {
+                run(&file, args)
+            }
+        }
         Command::Test {
             file,
             filter,
