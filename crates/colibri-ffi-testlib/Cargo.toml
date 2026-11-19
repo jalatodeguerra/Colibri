@@ -1,0 +1,11 @@
+[package]
+name = "colibri-ffi-testlib"
+description = "A small C library that the FFI tests of Colibri call (compiled when the tests are built)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[build-dependencies]
+cc = "1"

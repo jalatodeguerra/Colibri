@@ -89,6 +89,7 @@ pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
         // Narrow integers carry no width; `impl` for them is not accepted (check/ifaces.rs).
         Value::Int(_) => TypeKey::Int(IntTy::I64),
         Value::U64(_) => TypeKey::Int(IntTy::U64),
+        Value::Ptr(_) => TypeKey::Ptr,
         Value::Float(_) => TypeKey::Float,
         Value::F32(_) => TypeKey::F32,
         Value::Char(_) => TypeKey::Char,

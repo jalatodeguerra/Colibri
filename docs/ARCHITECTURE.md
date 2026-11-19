@@ -2237,3 +2237,216 @@ one link is not reported (`leaks/weak_breaks_the_cycle`). A weak capture is the 
 ### Not built
 
 `mem.report_cycles()`, `mem.collect_cycles()`, a leak report for cycles through host objects.
+
+## 19. C FFI as built
+
+PHASE2 step 7 (DESIGN §15.2, §15.3, Q13). A program can declare C functions in `extern "C"`
+blocks and call them with numbers, strings, raw pointers and `@repr(C)` structs by value. C
+calling Colibri (callbacks, function pointers) is not built, and neither is `colibri bindgen`.
+
+```colibri
+@repr(C)
+struct DivT { quot: i32, rem: i32 }
+
+@link("c")
+extern "C" {
+    fn div(num: i32, den: i32) -> DivT
+    fn getenv(name: cstr) -> cstr?
+    fn malloc(n: u64) -> ptr[u8]
+    fn free(p: ptr[u8])
+}
+```
+
+### Crates
+
+- `colibri-ffi` (new): knows nothing of Colibri values. `CType`/`CStruct` (a type with the
+  offsets, size and alignment the caller computed), `Val` (a value on its way in or out),
+  `Library`/`Libraries` (dlopen, below) and `Function` (a symbol with a prepared libffi `Cif`).
+  `Function::new` builds the libffi struct type and *checks the caller's layout against the one
+  libffi computes*; a disagreement is an error at load time. Reading and writing raw memory
+  (`read_memory`, `write_memory`, `read_cstring`) lives here too, so every `unsafe` block of the
+  feature is in this crate and `colibri-interp/src/cffi.rs`.
+- `colibri-ffi-testlib` (new, not published): `build.rs` compiles `c/testlib.c` into a shared
+  library with the compiler the `cc` crate finds, and exports its path as `PATH`. The C library
+  has scalars of every width, strings in and out, pointers, and structs chosen to exercise ABI
+  classification (two ints in one register, two doubles, two floats in one SSE register, an
+  int plus a double, a double plus a packed int/float/byte tail, 32 bytes through memory, a nested
+  struct, padding, a ladder of growing widths) and `ct_layout(type, field)`, which reports
+  `sizeof`, `alignof` and `offsetof` as the C compiler sees them.
+- `colibri-check` gets `ffi.rs` (attributes, layout, `extern` blocks, `ptr` and `unsafe`);
+  `colibri-interp` gets `cffi.rs` (binding, conversion, pointer operations); `colibri-runtime`
+  binds the functions when a program loads.
+
+### Dependencies and what they need to build
+
+- `libffi` 5 with its bundled `libffi-sys`: builds libffi from its own sources with the `cc`
+  crate. It needs a C compiler and **no** autotools, no system libffi and no `pkg-config`. (It was
+  built here with gcc; `libtool` was not installed and did not matter.)
+- `libloading` 0.8: `dlopen`/`LoadLibrary`.
+- `cc` 1 (build dependency of `libffi-sys` and of the test library).
+- Cargo feature `ffi`: `colibri-interp/ffi` (optional dependency on `colibri-ffi`),
+  `colibri-runtime/ffi` (default on), `colibri-lang/ffi` (default on, forwards to the runtime).
+  `colibri-std` and `colibri-lsp` depend on the runtime with `default-features = false`, so an
+  embedder that does the same gets no libffi at all. Without the feature the interpreter's
+  `bind_extern` returns an error that says so and the program fails to load (`Error::Ffi`); the
+  checker still accepts `extern` blocks, because its job does not depend on the build.
+
+### Types
+
+- **`ptr[T]`** is `Ty::Ptr(T)`, a value `Value::Ptr(usize)`, shown as `0x7f...`. It has `==`,
+  `Hash`, `Show`, can be stored in structs, collections and `@repr(C)` fields, and has no order.
+  `T` is `()` (a `void *`), a C number, `bool`, another pointer, or a `@repr(C)` struct (which may
+  be empty, to name an opaque handle: `@repr(C) struct Sqlite3 {}` and `ptr[Sqlite3]`).
+- **A `ptr[T]` is never NULL.** NULL is `none`, in the type `ptr[T]?`. At the boundary (a
+  parameter, a return, a `@repr(C)` field, a `read`) `ptr[T]?` maps NULL to `none`, and a NULL
+  arriving where plain `ptr[T]` was declared is a panic that says to declare `ptr[T]?`. The
+  language has no way to make a pointer out of an integer, so a valid-looking pointer only comes
+  from C.
+- **`cstr`** exists only in the signature of an `extern` function (`cstr` anywhere else is an
+  error). It *is* a `str` to Colibri (`Ty::Str`); the declaration remembers it was written
+  `cstr`. `cstr?` is `str?`: `none` is NULL, and a `str` is *not* implicitly `some` (Colibri has no
+  such conversion), so a nullable parameter is called with `some("x")`.
+- **Integers:** `i8..i64`, `u8..u64`, `int` (= `i64`), `float` (= `f64`), `f32`, `bool` map to the
+  C types of the same width (`int` is `int64_t`, not C `int`: use `i32` for that). `size_t` is
+  `u64` on the 64-bit targets Colibri runs on. `char` is not a C type. A unit return is `void`.
+- **Not C types, with an error that says so:** `str` (write `cstr`), `char`, collections, tuples,
+  options other than `ptr[T]?`, classes, plain structs (mark them `@repr(C)`), interface values,
+  functions, generics. A fixed-size array `[T; N]` does not exist in the language yet
+  ("fixed-size array type is not supported yet"), so DESIGN §15.2's `color: [u8; 4]` waits for it;
+  declare the four fields, or a `ptr[u8]`. Vectors (`vec3`, §15.1) are not built either.
+
+### `@repr(C)` structs
+
+`@repr(C) struct` is an ordinary Colibri struct (literals, fields, copies, `impl`, derived `Eq`
+and `Show`) plus a layout: the fields in order, each at the next multiple of its alignment, the
+whole padded to the largest alignment (so `u8, u32, u16` is 12 bytes, align 4). Allowed fields are
+the C types above, other `@repr(C)` structs by value, `ptr[T]` and `ptr[T]?`; anything else is an
+error at the field. A `cstr` field is refused (it would outlive the copy made for a call): use
+`ptr[u8]`. Not allowed: generics, classes, `@repr(packed)` or any other `@repr`. A struct with no
+fields is allowed (size 0), cannot be passed by value, and is the way to name an opaque handle.
+The layout is computed once by the checker (`Program.c_layouts`) and handed to libffi, which
+re-computes it and must agree. `size_of[T]()` and `align_of[T]()` (builtins, folded to an `int`
+literal at check time) show it; the tests compare them with the C compiler's.
+
+### Extern blocks
+
+`extern "C" { fn name(params) -> ret }` with optional `@link("lib")` on the block. The parser
+already accepted the syntax; the checker now turns each function into a *host function with a C
+signature*: it gets a `HostFnId` after the host's own, `HostFnDef.ext = Some(ExternDef { lib,
+symbol, params, ret })`, requires `ffi`, and a call is an ordinary `Callee::Host`. So tracing,
+call depth, the instruction budget, `go`, hot-reload fingerprints and the "a host function is not
+a value" rule all apply with no new code. The function name is the C symbol (there is no
+`@symbol` rename). Errors: a body, generics, defaults, `self`, an ABI other than `"C"`, a second
+`@link`, any attribute but `@link`, a type that is not a C type, an empty struct by value.
+Variadic functions (`printf`) are not supported.
+
+**Calling needs no `unsafe`** (DESIGN §15.3: the capability guards the declaration). The
+declaration is trusted: a wrong signature corrupts memory as it would in C.
+
+### Capability
+
+A program with an `extern` block needs both of:
+
+1. **The host's `Cap::Ffi`** (`VmBuilder::allow(Cap::Ffi)`; the interface name is `ffi`). Without
+   it the checker reports once, at the block: "`extern` blocks need the `ffi` capability, which
+   this host did not grant". The functions of a refused block still exist (poisoned), so uses do
+   not add errors. `colibri run`, `check`, `test` and the LSP grant everything.
+2. **`ffi = true` in the `[package]` table of the package's `colibri.toml`**, for every package
+   with an `extern` block, dependencies included: the program's own `ffi = true` does not cover
+   them, and the error names the package ("the package `shim` cannot contain `extern` blocks: it
+   has not declared the `ffi` capability"). A script with no manifest is the program itself and
+   needs only the host's grant. (`ModuleMeta.ffi`; the TOML subset gained booleans, and
+   `ffi = "yes"` is an error.) A manifest key was chosen over a `[capabilities]` table because
+   DESIGN names exactly `ffi = true` and there is one capability; a table can come with a second.
+
+### Libraries
+
+`@link("name")` opens a library once per program (`Libraries`) and every function of the block
+is looked up in it **at load time**, so a missing library or symbol is `Error::Ffi` from the
+load and not a surprise on the first call (the cost: an `extern` block that is never used still
+has to resolve; there is no conditional compilation yet to guard a platform-specific block).
+Resolution, in order: a name with a `/`, a `\` or a library extension is a path, taken as is
+(`@link("./libfoo.so")`); otherwise the platform's file name (`libNAME.so`, `libNAME.dylib` and
+the Homebrew and `/usr/local` folders, `NAME.dll`), then on Linux the highest `libNAME.so.N` in
+the usual library folders (so `libz.so.1` works without the development package), with `m`, `c`,
+`dl` and `pthread` mapped to their versioned glibc names. For `c`, `m`, `dl`, `pthread`, `rt`
+and `util` the symbols already in the process are the last resort, and an `extern` block with no
+`@link` looks only in the running program, which is enough for libc. On Windows `c` and `m`
+also try `ucrtbase.dll` and `msvcrt.dll`. Windows and macOS paths are written but untested here.
+
+### Values and strings
+
+- Calls copy: a `str` argument becomes a temporary NUL-terminated copy that lives for the call.
+  **Deviation from DESIGN §12/§15.3:** strings do not carry a hidden NUL in the interpreter
+  (`Value::Str(Rc<str>)`), so `cstr` is not free: it is one allocation and copy per string
+  argument. A string with a NUL byte inside is a panic ("a string with a NUL character cannot be
+  passed as a `cstr`").
+- A `cstr` result is copied into a new `str` *before* the argument copies are freed (a function
+  may hand its argument back). NULL is a panic for `cstr` and `none` for `cstr?`; bytes that are
+  not UTF-8 are a panic ("the C string is not valid UTF-8"). The pointed-to memory is never freed:
+  for a string C allocated, declare the result `ptr[u8]` and free it yourself.
+- Structs by value go in and out through libffi (`Type::structure`), so classification (registers
+  versus memory, the SSE/INTEGER eightbyte rules) is libffi's. Values are encoded into a byte
+  buffer by the checker's offsets; returned integers are read through the full machine word
+  libffi writes. A struct with a `cstr` field is refused.
+- A C panic cannot be caught: a crash in C is a crash of the process. `print` output is flushed
+  before each call so it comes before anything C writes, but C's own `stdout` buffer is separate
+  (it flushes at exit when stdout is a pipe): call `fflush(none)` after `puts`.
+
+### `unsafe` and the methods of `ptr[T]`
+
+`unsafe { ... }` was already a keyword and a block expression; it is now an ordinary block that
+raises `FnCtx.unsafe_depth`. A closure written inside starts again at zero (it may run later,
+outside the block). The methods (a dispatch on `Ty::Ptr`, `Intrinsic::Ptr(PtrOp)`):
+
+| Method | Needs `unsafe` | Meaning |
+|---|---|---|
+| `p.read() -> T` | yes | reads a `T` at the address (a struct too; `ptr[()]` has no `read`) |
+| `p.write(v)` | yes | writes a `T` |
+| `p.offset(n) -> ptr[T]` | yes | `n` elements (of `size_of[T]()` bytes) further; panics if the address would leave the address space or become 0 |
+| `p.cast[U]() -> ptr[U]` | yes | the same address as another pointee type |
+| `p.read_str() -> str` | yes | the NUL-terminated UTF-8 string at a `ptr[u8]` or `ptr[i8]` |
+| `p.addr() -> u64` | no | the address |
+
+Passing, returning, storing, comparing (`==`, `== none`) and printing a pointer are safe. There is
+no address-of (`&x`) and no integer-to-pointer conversion, so pointers come from C: `malloc` and
+`free` from `@link("c")` are how the tests make memory. There is no bounds checking and no use of
+`ptr[T]` after `free` is detected; that is what `unsafe` says.
+
+### Tests
+
+- `crates/colibri-ffi/tests/testlib.rs`: `Function` against every C test function.
+- `crates/colibri-runtime/tests/ffi.rs`: scripts against the test library (scalars, strings,
+  pointers, every struct), `size_of`/`align_of` against `ct_layout` (size and alignment of
+  twelve structs, offsets of the padded ones read back through raw memory), the capability checks
+  (no `Cap::Ffi`, a package and a dependency without `ffi = true`, a script without a manifest),
+  every declaration error, a missing library or symbol. `tests/no_ffi.rs` covers the build with
+  the feature off (`cargo test -p colibri-runtime --no-default-features`).
+- `tests/golden/ffi/`: libc and libm only (`strlen`, `abs`, `cos`, `sqrt`, `div` returning a
+  struct, `malloc`/`calloc`/`memcpy`/`strchr` through `ptr[u8]`), the layout of `@repr(C)`
+  structs, the errors, and a package with and without `ffi = true`. They avoid platform-specific
+  symbols (`getpid`, `htons` and `strerror` text are the only ones that differ between systems
+  and are used only through comparisons that hold on Linux and macOS); the `// skip:` directive
+  is unconditional, so nothing is skipped and a Windows run would have to supply its own names.
+- The LSP check (`colibri-lsp/tests/lsp.rs`) and `colibri fmt` need nothing new: attributes,
+  `extern` blocks and `unsafe` already parsed and printed.
+
+### Decisions the design documents did not fix
+
+- Pointers are non-null, NULL is `ptr[T]?`'s `none` (above).
+- `int` is `i64`, as everywhere; C `int` is `i32`, `long` is `i64` (LP64) and `size_t` is `u64`.
+- Resolution is eager (at load); libraries are never unloaded.
+- `ffi = true` lives in `[package]`; the host's capability and the package's declaration are both
+  needed, and a script without a manifest is exempt from the second.
+- `cstr` is a signature-only name for `str`; a returned `cstr` is copied (never owned or freed).
+- `read`/`write`/`offset`/`cast`/`read_str`, `size_of` and `align_of` are the whole unsafe
+  surface. There is no `offset_of` (the tests check offsets through memory) and no `alloc`.
+- A C library's own state, threads and signal handlers are the program's business. The
+  interpreter is single-threaded, and C is called on the thread that runs the script.
+
+### Not built
+
+Callbacks (a Colibri function as a C function pointer), function-pointer types, variadic
+functions, `colibri bindgen`, unions, bit fields, `@repr(packed)`/`align`, fixed-size arrays in
+structs (the language has none), `long double` and complex numbers, `@when(os == ..)` to guard a
+platform-specific block, and a bytecode-VM path (the VM will call the same `colibri-ffi`).

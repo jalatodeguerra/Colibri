@@ -1,0 +1,67 @@
+// caps: ffi
+// `ptr[T]` values can be passed, stored and compared in safe code; using one needs `unsafe`.
+
+@link("c")
+extern "C" {
+    fn malloc(size: u64) -> ptr[u8]
+    fn calloc(count: u64, size: u64) -> ptr[u8]
+    fn free(p: ptr[u8])
+    fn memset(p: ptr[u8], byte: i32, n: u64) -> ptr[u8]
+    fn memcpy(dst: ptr[u8], src: ptr[u8], n: u64) -> ptr[u8]
+    fn strlen(s: ptr[u8]) -> u64
+    fn strchr(s: ptr[u8], c: i32) -> ptr[u8]?
+}
+
+fn main() {
+    let buf = calloc(16, 1)
+    let ints = unsafe { buf.cast[i32]() }
+    unsafe {
+        ints.write(7)
+        ints.offset(1).write(-8)
+        ints.offset(2).write(9)
+        print(ints.read() + ints.offset(1).read() + ints.offset(2).read())
+    }
+
+    // Copy the ints and look at the bytes.
+    let copy = malloc(16)
+    memcpy(copy, buf, 12)
+    unsafe {
+        print(copy.read()) // little-endian low byte of 7 on x86 and arm
+        print(copy.cast[i32]().offset(1).read())
+    }
+    print(copy == buf)
+    print(copy == copy)
+
+    // Text: write "abc" with a terminator, search it, read it back.
+    let text = malloc(8)
+    unsafe {
+        text.write(97)
+        text.offset(1).write(98)
+        text.offset(2).write(99)
+        text.offset(3).write(0)
+    }
+    print(strlen(text))
+    match strchr(text, 99) {
+        some(p) => print(p.addr() - text.addr())
+        none    => print("not found")
+    }
+    print(strchr(text, 122) == none)
+    unsafe { print(text.read_str()) }
+
+    memset(text, 0, 8)
+    unsafe { print(text.read_str() == "") }
+
+    free(text)
+    free(copy)
+    free(buf)
+}
+// expect: 8
+// expect: 7
+// expect: -8
+// expect: false
+// expect: true
+// expect: 3
+// expect: 2
+// expect: true
+// expect: abc
+// expect: true

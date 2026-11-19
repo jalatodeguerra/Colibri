@@ -52,6 +52,7 @@ impl Cloner {
             | Value::Bool(_)
             | Value::Int(_)
             | Value::U64(_)
+            | Value::Ptr(_)
             | Value::Float(_)
             | Value::F32(_)
             | Value::Char(_)

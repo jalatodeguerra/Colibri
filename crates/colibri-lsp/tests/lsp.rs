@@ -685,3 +685,55 @@ fn a_type_error_inside_a_test_block_is_a_diagnostic() {
     assert_eq!(c.diags(&file).len(), 1);
     c.shutdown();
 }
+
+const FFI_PROGRAM: &str = "\
+@repr(C)
+struct Point { x: i32, y: i32 }
+
+@link(\"c\")
+extern \"C\" {
+    fn malloc(n: u64) -> ptr[Point]
+    fn free(p: ptr[Point])
+}
+
+fn main() {
+    let p = malloc(u64(size_of[Point]()))
+    unsafe { p.write(Point { x: 1, y: 2 }) }
+    free(p)
+}
+";
+
+#[test]
+fn ffi_declarations_check_hover_and_format_in_the_editor() {
+    let dir = temp_dir("ffi");
+    let file = dir.join("a.colibri");
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&file, FFI_PROGRAM);
+    assert!(c.diags(&file).is_empty(), "{:?}", c.diags(&file));
+    let (l, col) = pos_of(FFI_PROGRAM, "malloc(u64");
+    assert_eq!(
+        hover_text(&c.hover(&file, l, col + 2)),
+        "```colibri\nfn malloc(n: u64) -> ptr[Point]\n```"
+    );
+    // Already formatted: the formatter keeps attributes, `extern` blocks and `unsafe`.
+    let edits = c.request(
+        "textDocument/formatting",
+        json!({"textDocument": {"uri": uri(&file)}, "options": {"tabSize": 4, "insertSpaces": true}}),
+    );
+    assert_eq!(edits, json!([]));
+    // Reading through a pointer outside `unsafe` is a diagnostic at the call.
+    let unsafe_less = FFI_PROGRAM.replace(
+        "unsafe { p.write(Point { x: 1, y: 2 }) }",
+        "p.write(Point { x: 1, y: 2 })",
+    );
+    c.change(&file, &unsafe_less);
+    let diags = c.diags(&file);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("needs an `unsafe` block")
+    );
+    c.shutdown();
+}

@@ -147,8 +147,21 @@ fn spawn_enemy(a: f32, b: f32) -> Enemy
   default is none; the CLI grants all.
 - `@requires(cap)` on host items (set with `vm.register_fn(..).requires(Cap::Fs)`); a checker error
   at the use site: `` `read_save` needs the `fs` capability, which this host did not grant ``.
-  Ungranted functions are not installed (trap slot). `extern` blocks are an error without `Ffi`. The
-  std slice then only tags its modules.
+  Ungranted functions are not installed (trap slot). `extern` blocks are an error without `Ffi`
+  (and, per package, without `ffi = true`; see below). The std slice then only tags its modules.
+- **`Cap::Ffi` and the `ffi` cargo feature** (ARCHITECTURE §19). `extern "C"` blocks need both
+  halves: the host grants `Cap::Ffi` (`VmBuilder::allow(Cap::Ffi)`; a `Vm` without it rejects a
+  program that has an `extern` block when it is checked: "`extern` blocks need the `ffi`
+  capability, which this host did not grant") and the package declares `ffi = true` in its
+  `colibri.toml` (a script without a manifest needs only the host's grant). The host's grant
+  covers the program's own code, and every dependency still has to say it wants C itself. Nothing
+  else changes for a host that does not grant it, which is what makes Colibri usable for mods.
+  `colibri-runtime`'s `ffi` feature (on by default) brings in libffi and `dlopen`; an embedder
+  that wants neither builds with `default-features = false`, and a program with an `extern`
+  block then fails to load with `Error::Ffi("... this build of Colibri has no C FFI ...")`.
+  `colibri-std` and `colibri-lsp` do not enable the feature themselves, so
+  `default-features = false` on the runtime really turns it off. A library that cannot be
+  opened, or a symbol it lacks, is also `Error::Ffi`, at load time and not at the first call.
 - **Instruction budget:** one step per statement executed, per call (Colibri or host), per loop
   iteration, per element in looping built-ins. Approximate and engine-specific; the only guarantee
   is that unbounded work exhausts it. `.instruction_budget(n)` is an allotment per outermost host

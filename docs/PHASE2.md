@@ -31,7 +31,9 @@ section ("as built") for the decisions it had to make.
 6. **The leak detector** (DESIGN §11.5, Q9), built as trial deletion: `colibri run --leaks`,
    `colibri test --leaks`, `VmBuilder::track_leaks` and `Vm::find_leaks`, and the golden
    directive `// leaks:`. Report only. Built: ARCHITECTURE §18.
-7. **`@repr(C)` structs and the C FFI** (DESIGN §15.2, §15.3).
+7. **`@repr(C)` structs and the C FFI** (DESIGN §15.2, §15.3): `extern "C"` blocks with
+   `@link`, structs by value through libffi, `ptr[T]` and `unsafe`, `ffi = true` in
+   `colibri.toml`, `Cap::Ffi` and the `ffi` cargo feature. Built: ARCHITECTURE §19.
 8. **Milestone:** real automation scripts written in Colibri (a file organiser, a JSON/HTTP
    report generator).
 

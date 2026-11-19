@@ -30,6 +30,7 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
         Value::Bool(false) => Cow::Borrowed("false"),
         Value::Int(i) => Cow::Owned(i.to_string()),
         Value::U64(i) => Cow::Owned(i.to_string()),
+        Value::Ptr(p) => Cow::Owned(format!("0x{p:x}")),
         Value::Float(x) => Cow::Owned(show_float(*x)),
         Value::F32(x) => Cow::Owned(show_f32(*x)),
         Value::Char(c) => Cow::Owned(c.to_string()),

@@ -2,7 +2,7 @@
 //!
 //! Understood: `#` comments, `[table]` and `[a.b]` headers, `key = "string"` (basic strings with
 //! the usual escapes, and `'literal'` strings), `key = { inline = "tables" }` on one line, and
-//! bare or quoted keys. Everything else (numbers, booleans, arrays, dotted keys, multi-line
+//! bare or quoted keys, and the booleans `true` and `false`. Everything else (numbers, arrays, dotted keys, multi-line
 //! strings) is an error that says what was found, with its line and column. Duplicate keys and
 //! tables are errors.
 
@@ -18,6 +18,7 @@ pub struct Value {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ValueKind {
     Str(String),
+    Bool(bool),
     Table(Vec<Entry>),
 }
 
@@ -247,7 +248,18 @@ impl Parser<'_> {
                 Err(self.error("numbers are not supported in `colibri.toml`: use a string"))
             }
             Some('t' | 'f') => {
-                Err(self.error("booleans are not supported in `colibri.toml`: use a string"))
+                for (word, value) in [("true", true), ("false", false)] {
+                    if self.rest().starts_with(word) {
+                        for _ in 0..word.len() {
+                            self.bump();
+                        }
+                        return Ok(Value {
+                            span: self.span(start, self.pos),
+                            kind: ValueKind::Bool(value),
+                        });
+                    }
+                }
+                Err(self.error("expected a string, `true`, `false` or `{`"))
             }
             Some(c) => Err(self.error(format!("expected a string or `{{`, found `{c}`"))),
             None => Err(self.error("expected a value, found the end of the file")),
@@ -364,7 +376,7 @@ mod tests {
     #[test]
     fn errors_say_what_is_wrong() {
         assert!(err("a = 1\n").contains("numbers are not supported"));
-        assert!(err("a = true\n").contains("booleans"));
+        assert!(err("a = tru\n").contains("`true`"));
         assert!(err("a = [\"x\"]\n").contains("arrays"));
         assert!(err("a.b = \"x\"\n").contains("dotted keys"));
         assert!(err("a = \"x\nb = \"y\"\n").contains("not closed"));

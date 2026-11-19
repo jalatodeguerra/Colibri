@@ -84,6 +84,7 @@ pub(crate) fn key_of(ty: &Ty) -> Option<TypeKey> {
         Ty::Map(..) => TypeKey::Map,
         Ty::Set(_) => TypeKey::Set,
         Ty::Range(_) => TypeKey::Range,
+        Ty::Ptr(_) => TypeKey::Ptr,
         Ty::Option(_) => TypeKey::Adt(OPTION_TYPE),
         Ty::Adt(id, _) => TypeKey::Adt(*id),
         _ => return None,
@@ -134,7 +135,7 @@ pub(crate) fn match_ty(
         (Ty::Map(a, b), Ty::Map(c, d)) => {
             match_ty(a, c, params, subst) && match_ty(b, d, params, subst)
         }
-        (Ty::Range(a), Ty::Range(b)) => match_ty(a, b, params, subst),
+        (Ty::Range(a), Ty::Range(b)) | (Ty::Ptr(a), Ty::Ptr(b)) => match_ty(a, b, params, subst),
         (Ty::Fn(a, r), Ty::Fn(b, s)) => all(a, b, subst) && match_ty(r, s, params, subst),
         _ => pattern == ty,
     }
@@ -341,6 +342,7 @@ impl Env<'_> {
             | Ty::Char
             | Ty::Str
             | Ty::Unit
+            | Ty::Ptr(_)
             | Ty::Range(_) => Part::Ok,
             Ty::Tuple(items) => Part::Inside(items.clone()),
             Ty::List(t) | Ty::Set(t) | Ty::Option(t) => Part::Inside(vec![(**t).clone()]),
@@ -372,7 +374,7 @@ impl Env<'_> {
     /// mutable collection; a class hashes by identity (DESIGN §5.3).
     fn hash_part(&self, ty: &Ty) -> Part {
         match ty {
-            Ty::Int(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Unit => Part::Ok,
+            Ty::Int(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Unit | Ty::Ptr(_) => Part::Ok,
             Ty::Tuple(items) => Part::Inside(items.clone()),
             Ty::Option(t) => Part::Inside(vec![(**t).clone()]),
             Ty::Adt(id, _) if self.is_class(*id) => Part::Ok,

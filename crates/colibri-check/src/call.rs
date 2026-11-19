@@ -120,6 +120,13 @@ impl FnCtx<'_, '_> {
             // downcast of an `Error`.)
             ExprKind::Field { name, .. } => {
                 matches!(name.name.as_str(), "is" | "as")
+                    // `p.cast[u8]()` on a `ptr[T]`, unless some struct has a field `cast`.
+                    || (name.name == "cast"
+                        && !self
+                            .ck
+                            .types
+                            .iter()
+                            .any(|t| t.fields().iter().any(|f| f.name == "cast")))
                     || self.ck.methods.iter().any(|((_, n), f)| {
                         n == &name.name && !self.ck.fns[f.0 as usize].generics.is_empty()
                     })
@@ -462,6 +469,7 @@ impl FnCtx<'_, '_> {
                 | Ty::Option(_)
                 | Ty::Fn(..)
                 | Ty::Range(_)
+                | Ty::Ptr(_)
         ) {
             let shown = self.show(&ty);
             self.ck.report(Diagnostic::error(
@@ -695,6 +703,13 @@ impl FnCtx<'_, '_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Expr {
+        if let ExprKind::Ident(id) = &base.kind
+            && matches!(id.name.as_str(), "size_of" | "align_of")
+            && self.lookup_local(&id.name).is_none()
+            && self.lookup_fn(&id.name).is_none()
+        {
+            return self.check_size_of(id, type_args, args, span);
+        }
         let qualified = self.qualified(base);
         let ident = match &base.kind {
             ExprKind::Ident(id) => Some(id),

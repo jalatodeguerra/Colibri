@@ -1,0 +1,15 @@
+// caps: ffi
+// A `ptr[T]` is never NULL; C returning NULL for one is a panic that says how to allow it.
+
+@link("c")
+extern "C" {
+    fn getenv(name: cstr) -> cstr
+}
+
+fn main() {
+    print("before")
+    print(getenv("COLIBRI_SURELY_NOT_SET_0xDEAD"))
+}
+// expect: before
+// panic: C returned NULL for a `cstr`
+// panic: cstr?

@@ -83,7 +83,7 @@ fn has_param(ty: &Ty) -> bool {
         Ty::Param(..) => true,
         Ty::Tuple(items) => items.iter().any(has_param),
         Ty::Adt(_, args) | Ty::Dyn(_, args) => args.iter().any(has_param),
-        Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) => has_param(t),
+        Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) | Ty::Ptr(t) => has_param(t),
         Ty::Map(k, v) => has_param(k) || has_param(v),
         Ty::Fn(params, ret) => params.iter().any(has_param) || has_param(ret),
         _ => false,
@@ -121,6 +121,7 @@ fn operand_of(ty: &Ty) -> Operand {
         | Ty::Set(_)
         | Ty::Option(_)
         | Ty::Range(_)
+        | Ty::Ptr(_)
         | Ty::Param(..) => Operand::Structural,
         _ => Operand::Int(IntTy::I64),
     }
