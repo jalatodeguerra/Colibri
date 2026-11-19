@@ -675,15 +675,10 @@ impl FnCtx<'_, '_> {
             }
             other => {
                 let shown = self.show(other);
-                self.ck.report(
-                    Diagnostic::error(
-                        format!("methods on the built-in type `{shown}` are not supported yet"),
-                        name.span,
-                    )
-                    .with_hint(
-                        "Colibri is being built in slices; see docs/PHASE1.md for what comes next",
-                    ),
-                );
+                self.ck.report(Diagnostic::error(
+                    format!("methods on the built-in type `{shown}` are not supported yet"),
+                    name.span,
+                ));
             }
         }
         self.error_expr(span)

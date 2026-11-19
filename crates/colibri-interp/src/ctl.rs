@@ -12,7 +12,7 @@ pub enum Ctl {
     Continue(LoopId),
     Return(Value),
     Panic(Box<PanicInfo>),
-    /// Reserved for coroutine cancellation (phase 2); unwinds like a panic without a message.
+    /// Coroutine cancellation: unwinds like a panic without a message.
     Cancel,
 }
 

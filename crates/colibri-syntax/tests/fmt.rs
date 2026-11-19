@@ -316,10 +316,12 @@ fn a_one_line_block_holds_no_nested_block_statement() {
 #[test]
 fn long_lists_go_one_per_line_with_a_trailing_comma() {
     let items: Vec<String> = (0..12).map(|i| format!("item_number_{i}")).collect();
-    let src = format!("let xs = [{}]\n", items.join(", "));
+    // Calls are not simple items: one per line.
+    let calls: Vec<String> = items.iter().map(|i| format!("{i}()")).collect();
+    let src = format!("let xs = [{}]\n", calls.join(", "));
     let mut expected = String::from("let xs = [\n");
-    for item in &items {
-        expected.push_str(&format!("    {item},\n"));
+    for call in &calls {
+        expected.push_str(&format!("    {call},\n"));
     }
     expected.push_str("]\n");
     check(&src, &expected);
@@ -709,4 +711,167 @@ fn test_items_are_formatted_like_functions() {
         "fn f() -> int => 1\ntest \"q\" {\n    let n = g()?\n    assert_eq(n,1)\n}\nfn g() -> Result[int] => ok(1)\n",
         "fn f() -> int => 1\ntest \"q\" {\n    let n = g()?\n    assert_eq(n, 1)\n}\nfn g() -> Result[int] => ok(1)\n",
     );
+}
+
+/// Formats `src`, checks the output is `expected` and that formatting it again changes nothing.
+fn check_stable(src: &str, expected: &str) {
+    check(src, expected);
+    check(expected, expected);
+}
+
+#[test]
+fn long_signatures_break_the_parameters_before_the_return_type() {
+    check_stable(
+        "fn plan(files: List[Entry], root: str, another_parameter_name: int, yet_another: str) -> Result[List[Move]] { g()\nh() }",
+        "fn plan(\n    files: List[Entry],\n    root: str,\n    another_parameter_name: int,\n    yet_another: str,\n) -> Result[List[Move]] {\n    g()\n    h()\n}\n",
+    );
+    // The return type is broken only when it still does not fit after the parameters.
+    let long_ret = format!("Result[List[Move], {}]", "E".repeat(95));
+    let out = fmt(&format!("fn plan(files: List[Entry]) -> {long_ret} {{}}"));
+    assert!(
+        out.starts_with("fn plan(\n    files: List[Entry],\n) -> Result[\n"),
+        "{out}"
+    );
+    check(&out, &out);
+    // No parameters: nothing to break first.
+    let out = fmt(&format!("fn plan() -> {long_ret} {{}}"));
+    assert!(out.starts_with("fn plan() -> Result[\n"), "{out}");
+    // A signature that fits is untouched.
+    check_stable(
+        "fn f(a: int) -> Result[int] {}",
+        "fn f(a: int) -> Result[int] {}\n",
+    );
+}
+
+#[test]
+fn long_lists_of_simple_items_are_filled() {
+    let nums: Vec<String> = (1..=31).map(|i| i.to_string()).collect();
+    let src = format!("let xs = [{}]\n", nums.join(", "));
+    check_stable(
+        &src,
+        "let xs = [\n    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,\n    27, 28, 29, 30, 31,\n]\n",
+    );
+    check_stable(
+        r#"let n = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa", "lambda", "mu"]"#,
+        "let n = [\n    \"alpha\", \"beta\", \"gamma\", \"delta\", \"epsilon\", \"zeta\", \"eta\", \"theta\", \"iota\", \"kappa\", \"lambda\",\n    \"mu\",\n]\n",
+    );
+    // Negative numbers, names, chars, bools and none are simple too.
+    let mixed = "let m = [-1, -2.5, a_name, 'c', true, none, -300000, -400000, -500000, -600000, -700000, -800000, -900000, 1000000]";
+    let out = fmt(mixed);
+    assert_eq!(out.lines().count(), 4, "{out}");
+    check(&out, &out);
+    // One more complex item and the list goes one per line.
+    let complex = format!("let xs = [{}, f(x)]\n", nums.join(", "));
+    let out = fmt(&complex);
+    assert!(out.contains("    1,\n    2,\n"), "{out}");
+    check(&out, &out);
+    for src in [
+        "let xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, [1]]",
+        "let xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, a.b, 24, 25, 26, 27, 28, 29, 30]",
+        "let xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 1 + 2, 24, 25, 26, 27, 28, 29, 30]",
+    ] {
+        let out = fmt(src);
+        assert!(out.contains("    1,\n    2,\n"), "{out}");
+        check(&out, &out);
+    }
+}
+
+#[test]
+fn short_simple_lists_keep_the_existing_rules() {
+    check_stable("let xs = [1, 2, 3]", "let xs = [1, 2, 3]\n");
+    // Magic trailing comma with one item per line stays that way.
+    check_stable(
+        "let xs = [\n    1,\n    2,\n]",
+        "let xs = [\n    1,\n    2,\n]\n",
+    );
+    // No trailing comma: collapsed.
+    check_stable("let xs = [\n    1,\n    2\n]", "let xs = [1, 2]\n");
+}
+
+#[test]
+fn comments_in_simple_lists_are_kept() {
+    let src = "let xs = [\n    1, // one\n    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,\n    // last\n]\n";
+    let out = fmt(src);
+    assert!(out.contains("// one") && out.contains("// last"), "{out}");
+    check(&out, &out);
+}
+
+#[test]
+fn if_else_blocks_break_together() {
+    check_stable(
+        "if let Some(value) = lookup_something_long(table, key_with_long_name) { print(\"found a value {value} and more text here\") } else { print(\"nothing\") }",
+        "if let Some(value) = lookup_something_long(table, key_with_long_name) {\n    print(\"found a value {value} and more text here\")\n} else {\n    print(\"nothing\")\n}\n",
+    );
+    check_stable(
+        "if cond_with_a_long_name_xxxxxxxxxxxxxxxxxxxxxxxxx { short() } else { a_second_branch_with_a_long_name_xxxxxxxxxxxxxxxxxxxxxx() }",
+        "if cond_with_a_long_name_xxxxxxxxxxxxxxxxxxxxxxxxx {\n    short()\n} else {\n    a_second_branch_with_a_long_name_xxxxxxxxxxxxxxxxxxxxxx()\n}\n",
+    );
+    // An else-if chain breaks as a whole.
+    check_stable(
+        "let r = if aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa { 1 } else if bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb { 2 } else { some_long_value_name_xxxxxxx }",
+        "let r = if aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa {\n    1\n} else if bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb {\n    2\n} else {\n    some_long_value_name_xxxxxxx\n}\n",
+    );
+    // That fits stays on one line.
+    check_stable(
+        "let a = if c { 1 } else { 2 }",
+        "let a = if c { 1 } else { 2 }\n",
+    );
+    // A comment before `else` keeps its own line.
+    let out = fmt("if c { 1 }\n// why\nelse { 2 }");
+    assert!(out.contains("// why"), "{out}");
+    check(&out, &out);
+}
+
+#[test]
+fn if_else_inside_an_expression_does_not_force_the_enclosing_group_to_break() {
+    for src in [
+        "print(if x > 0 { 1 } else { -1 })",
+        "print(get(false) or if n > 3 { 100 } else { 200 })",
+        "print(a.and_then(fn(x) => if x > 2 { some(\"big\") } else { none }))",
+        "print(f(if c { 1 } else { 2 }, 3))",
+        "let v = [if c { 1 } else { 2 }, 3]",
+        "let t = (if r > 0 { 1 } else { 2 }) * 3",
+        "let w = if a { 1 } else if b { 2 } else { 3 }",
+    ] {
+        check_stable(src, &format!("{src}\n"));
+    }
+}
+
+#[test]
+fn match_arms_with_an_if_body_keep_their_alignment() {
+    check_stable(
+        "match x {\n    A => 1\n    LongName => if c { 1 } else { 2 }\n    B => 3\n}",
+        "match x {\n    A        => 1\n    LongName => if c { 1 } else { 2 }\n    B        => 3\n}\n",
+    );
+}
+
+#[test]
+fn only_short_simple_items_are_filled() {
+    // Items wider than 12 columns: one per line, as for any list.
+    let long = [
+        "\"2026-11-19 10:00\"",
+        "\"2026-11-20 11:00\"",
+        "\"2026-11-21 12:00\"",
+        "\"2026-11-22 13:00\"",
+        "\"2026-11-23 14:00\"",
+        "\"2026-11-24 15:00\"",
+    ];
+    let out = fmt(&format!("let xs = [{}]", long.join(", ")));
+    assert_eq!(out.lines().count(), 8, "{out}");
+    check(&out, &out);
+    // Exactly 12 columns still fills.
+    let twelve = format!("\"{}\"", "a".repeat(10));
+    let items = vec![twelve; 10];
+    let out = fmt(&format!("let xs = [{}]", items.join(", ")));
+    assert_eq!(out.lines().count(), 4, "{out}");
+}
+
+#[test]
+fn a_block_holding_only_a_block_comment_is_stable() {
+    check_stable(
+        "fn f() {\n    if c { print(\"one\") } else { /* nothing */ }\n}",
+        "fn f() {\n    if c { print(\"one\") } else {\n        /* nothing */\n    }\n}\n",
+    );
+    let out = fmt("fn f() { /* x */ }");
+    check(&out, &out);
 }

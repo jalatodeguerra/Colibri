@@ -42,9 +42,14 @@ enum Mode {
 fn default_rules() -> Map[str, List[str]] {
     return {
         "images": ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic"],
-        "documents": ["pdf", "doc", "docx", "txt", "md", "odt", "rtf", "xls", "xlsx", "csv", "ppt", "pptx"],
+        "documents": [
+            "pdf", "doc", "docx", "txt", "md", "odt", "rtf", "xls", "xlsx", "csv", "ppt", "pptx",
+        ],
         "archives": ["zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar"],
-        "code": ["rs", "py", "js", "ts", "c", "h", "cpp", "go", "java", "sh", "colibri", "json", "toml", "yaml", "yml", "html", "css"],
+        "code": [
+            "rs", "py", "js", "ts", "c", "h", "cpp", "go", "java", "sh", "colibri", "json", "toml",
+            "yaml", "yml", "html", "css",
+        ],
     }
 }
 
@@ -102,7 +107,12 @@ fn free_name(root: str, folder: str, file: str, taken: Set[str]) -> str {
     return candidate
 }
 
-fn plan(root: str, mode: Mode, table: Map[str, str], only: Option[regex.Regex]) -> Result[List[Move]] {
+fn plan(
+    root: str,
+    mode: Mode,
+    table: Map[str, str],
+    only: Option[regex.Regex],
+) -> Result[List[Move]] {
     let files = walk(root)?
     var moves: List[Move] = []
     var taken: Set[str] = Set[str]()
@@ -117,7 +127,7 @@ fn plan(root: str, mode: Mode, table: Map[str, str], only: Option[regex.Regex]) 
             }
         }
         let bucket = match mode {
-            ByExt => bucket_of(name, table)
+            ByExt  => bucket_of(name, table)
             ByDate => date_bucket(path.join(root, rel))?
         }
         pending.push((rel, name, bucket))
@@ -218,7 +228,7 @@ fn main() -> Result[()] {
     let dry = args.flag("dry-run")
     var mode = Mode.ByExt
     match args.value("by") or "ext" {
-        "ext" => {}
+        "ext"  => {}
         "date" => mode = Mode.ByDate
         other => {
             usage_error("--by is `ext` or `date`, not `{other}`")
@@ -227,7 +237,11 @@ fn main() -> Result[()] {
     if !fs.is_dir(root) {
         usage_error("`{root}` is not a folder")
     }
-    let rules = if let some(file) = args.value("rules") { load_rules(file)? } else { default_rules() }
+    let rules = if let some(file) = args.value("rules") {
+        load_rules(file)?
+    } else {
+        default_rules()
+    }
     var only: Option[regex.Regex] = none
     if let some(pattern) = args.value("match") {
         match regex.compile(pattern) {

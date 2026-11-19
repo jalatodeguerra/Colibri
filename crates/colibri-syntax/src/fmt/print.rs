@@ -6,12 +6,17 @@
 //! they trail (`take_trailing`), or before a closing bracket (`dangling`).
 
 use super::comments::{Comment, Tok, scan};
-use super::doc::{Doc, broken_group, concat, group, if_break, indent, join, render, shared, text};
+use super::doc::{
+    Doc, broken_group, concat, group, if_break, indent, join, render, shared, text, unit,
+};
 use crate::ast::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::{Span, TokenKind};
+
+/// The widest item (in columns) a list may have to be filled instead of one item per line.
+const FILL_ITEM_WIDTH: usize = 12;
 
 /// The line width.
 pub(crate) const WIDTH: usize = 100;
@@ -148,6 +153,54 @@ fn is_nil(doc: &Doc) -> bool {
         Doc::Nil => true,
         Doc::Concat(parts) => parts.iter().all(is_nil),
         _ => false,
+    }
+}
+
+/// Whether `e` is a "simple" list item, one that a list fills lines with (documented in
+/// ARCHITECTURE section 12): a number, `true`/`false`, `none`, a char, a string written on one
+/// line, a plain name, or a negated number. Calls, field accesses, operators, nested
+/// collections and struct literals are not simple.
+fn is_simple_item(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Char(_)
+        | ExprKind::Bool(_)
+        | ExprKind::None
+        | ExprKind::Str(_)
+        | ExprKind::Ident(_) => true,
+        ExprKind::Unary {
+            op: UnOp::Neg,
+            expr,
+        } => matches!(expr.kind, ExprKind::Int(_) | ExprKind::Float(_)),
+        _ => false,
+    }
+}
+
+/// The width of `doc` if it is nothing but text on a single line (no comments around it).
+fn plain_width(doc: &Doc) -> Option<usize> {
+    match doc {
+        Doc::Text(s) if !s.contains('\n') => Some(s.chars().count()),
+        Doc::Concat(parts) => {
+            let mut total = 0;
+            for part in parts {
+                if !is_nil(part) {
+                    total += plain_width(part)?;
+                }
+            }
+            Some(total)
+        }
+        _ => None,
+    }
+}
+
+/// `dangling` (comments before a `}` with nothing else in the block) with its line suffixes as
+/// plain text, so they are printed at the indentation of their own line.
+fn alone_in_braces(dangling: Doc) -> Doc {
+    match dangling {
+        Doc::LineSuffix(s) => concat(vec![text(s.trim_start().to_string()), Doc::BreakParent]),
+        Doc::Concat(parts) => concat(parts.into_iter().map(alone_in_braces).collect()),
+        other => other,
     }
 }
 
@@ -545,10 +598,20 @@ impl<'a> Fmt<'a> {
     /// `{ .. }` around a finished sequence. `one_element` allows `{ x }` on one line for a
     /// single element; `many` allows `{ a, b }` for declaration bodies.
     fn seq_braces(&mut self, seq: Seq, close: u32, many: bool) -> Doc {
-        let dangling = self.dangling(close, seq.last_end);
+        self.seq_braces_pair(seq, close, many).0
+    }
+
+    /// `seq_braces`, and for a block that may stay on one line its one-line and expanded forms.
+    fn seq_braces_pair(&mut self, seq: Seq, close: u32, many: bool) -> (Doc, Option<(Doc, Doc)>) {
+        let mut dangling = self.dangling(close, seq.last_end);
+        if seq.elems.is_empty() && is_nil(&seq.open_comments) {
+            // Comments alone in the braces go on their own line: a line suffix would be
+            // flushed after the indentation and sit one space too far right.
+            dangling = alone_in_braces(dangling);
+        }
         let quiet = is_nil(&dangling) && is_nil(&seq.open_comments);
         if seq.elems.is_empty() && quiet {
-            return text("{}");
+            return (text("{}"), None);
         }
         let one_line = seq.one_line && quiet && !seq.elems.is_empty();
         let single = if one_line && seq.elems.len() == 1 && !many {
@@ -576,18 +639,21 @@ impl<'a> Fmt<'a> {
             ])
         };
         if let Some(elem) = single {
-            return group(concat(vec![
+            let pair = (!elem.forced())
+                .then(|| (concat(vec![text("{ "), elem.clone(), text(" }")]), expanded));
+            let doc = group(concat(vec![
                 text("{"),
                 indent(concat(vec![Doc::Line, elem])),
                 Doc::Line,
                 text("}"),
             ]));
+            return (doc, pair);
         }
         if let Some(flat) = flat_many {
             let first = concat(vec![text("{ "), flat, text(" }")]);
-            return Doc::Either(Box::new(first), Box::new(expanded));
+            return (Doc::Either(Box::new(first), Box::new(expanded)), None);
         }
-        expanded
+        (expanded, None)
     }
 
     // ---- lists ----
@@ -650,6 +716,51 @@ impl<'a> Fmt<'a> {
             magic,
             dangling: has_dangling,
         }
+    }
+
+    /// A list literal of simple items (`is_simple_item`) that does not use the magic trailing
+    /// comma: on one line if it fits, else as many items per line as fit, a trailing comma and
+    /// the `]` on its own line. `widths` are the widths of the items.
+    fn filled_list(&mut self, close: u32, items: Vec<Doc>, widths: &[usize]) -> Doc {
+        let last_end = if items.is_empty() {
+            None
+        } else {
+            Some(self.last_elem_end)
+        };
+        let dangling = self.dangling(close, last_end);
+        if !is_nil(&dangling) || items.is_empty() {
+            return group(concat(vec![
+                text("["),
+                indent(concat(vec![
+                    Doc::SoftLine,
+                    join(&concat(vec![text(","), Doc::Line]), items),
+                    if_break(text(","), Doc::Nil),
+                    dangling,
+                ])),
+                Doc::SoftLine,
+                text("]"),
+            ]));
+        }
+        let mut body = Vec::new();
+        let count = items.len();
+        for (i, item) in items.into_iter().enumerate() {
+            body.push(item);
+            if i + 1 < count {
+                // The next item and the comma after it must fit on the line.
+                body.push(text(","));
+                body.push(Doc::FillSep(widths[i + 1] + 1));
+            }
+        }
+        group(concat(vec![
+            text("["),
+            indent(concat(vec![
+                Doc::SoftLine,
+                concat(body),
+                if_break(text(","), Doc::Nil),
+            ])),
+            Doc::SoftLine,
+            text("]"),
+        ]))
     }
 
     fn list(&mut self, spec: ListSpec, close: u32, items: Vec<Doc>, open_comments: Doc) -> Doc {
@@ -916,7 +1027,8 @@ impl<'a> Fmt<'a> {
         parts.push(params.unwrap_or_else(|| text("()")));
         if let Some(ret) = &decl.ret {
             parts.push(text(" -> "));
-            parts.push(self.ty(ret));
+            // Measured flat by the parameter list, which therefore breaks before the type.
+            parts.push(unit(self.ty(ret)));
         }
         match &decl.body {
             Some(FnBody::Block(b)) => {
@@ -1041,6 +1153,12 @@ impl<'a> Fmt<'a> {
     // ---- statements ----
 
     fn block(&mut self, b: &Block) -> Doc {
+        self.block_pair(b).0
+    }
+
+    /// A block, and when it may stay on one line (`{ x }`) its two forms: the one-line one and
+    /// the expanded one. `if`/`else` chains use them to break all their blocks together.
+    fn block_pair(&mut self, b: &Block) -> (Doc, Option<(Doc, Doc)>) {
         let open = b.span.start;
         let close = b.span.end.saturating_sub(1);
         let mut seq = self.new_seq(open, close);
@@ -1079,7 +1197,7 @@ impl<'a> Fmt<'a> {
         if b.stmts.iter().any(nested_stmt) || b.tail.as_deref().is_some_and(nested) {
             seq.one_line = false;
         }
-        self.seq_braces(seq, close, false)
+        self.seq_braces_pair(seq, close, false)
     }
 
     fn let_stmt(&mut self, l: &LetStmt) -> Doc {
@@ -1502,11 +1620,27 @@ impl<'a> Fmt<'a> {
             ExprKind::List(items) => {
                 let close = e.span.end - 1;
                 let open_c = self.open_comments(close);
-                let docs = items
+                let docs: Vec<Doc> = items
                     .iter()
                     .map(|a| self.element(a.span.start, a.span.end, |f| f.expr(a)))
                     .collect();
-                self.list(BRACKET, close, docs, open_c)
+                // The magic trailing comma keeps one item per line, unless some items share a
+                // line: that is a filled list (our own output), which is filled again.
+                let one_per_line = items
+                    .windows(2)
+                    .all(|w| self.sl(w[0].span.end, w[1].span.start).contains('\n'));
+                let widths: Option<Vec<usize>> = if items.iter().all(is_simple_item) {
+                    docs.iter().map(plain_width).collect()
+                } else {
+                    None
+                }
+                .filter(|w: &Vec<usize>| w.iter().all(|&n| n <= FILL_ITEM_WIDTH));
+                match widths {
+                    Some(widths) if is_nil(&open_c) && !(self.magic(close) && one_per_line) => {
+                        self.filled_list(close, docs, &widths)
+                    }
+                    _ => self.list(BRACKET, close, docs, open_c),
+                }
             }
             ExprKind::Map(entries) => {
                 if entries.is_empty() {
@@ -1649,13 +1783,27 @@ impl<'a> Fmt<'a> {
             ),
             _ => unreachable!("if_expr is called on if expressions"),
         };
-        let mut parts = vec![head, text(" "), self.block(then)];
+        // `flat` and `broken` are the chain with every block on one line and with every block
+        // expanded; they are used when every block of the chain may stay on one line, so that
+        // if one block has to break, all of them do.
+        let head_forced = head.forced();
+        let head = shared(head);
+        let (then_doc, then_pair) = self.block_pair(then);
+        let mut parts = vec![head, text(" "), then_doc];
+        let mut balanced = then_pair.is_some() && !head_forced;
+        let mut flat = vec![parts[0].clone(), text(" ")];
+        let mut broken = flat.clone();
+        if let Some((f, x)) = then_pair {
+            flat.push(f);
+            broken.push(x);
+        }
         if let Some(else_) = else_ {
             let else_pos = self
                 .toks
                 .get(self.tok_from(then.span.end))
                 .map_or(else_.span.start, |t| t.start);
             let (comments, own_line) = self.take_leading_ex(else_pos);
+            balanced &= !own_line && is_nil(&comments);
             if own_line {
                 parts.push(Doc::HardLine);
             } else {
@@ -1663,7 +1811,40 @@ impl<'a> Fmt<'a> {
             }
             parts.push(comments);
             parts.push(text("else "));
-            parts.push(self.expr(else_));
+            match &else_.kind {
+                ExprKind::Block(b) if balanced => {
+                    let (doc, pair) = self.block_pair(b);
+                    parts.push(doc);
+                    match pair {
+                        Some((f, x)) => {
+                            flat.extend([text(" else "), f]);
+                            broken.extend([text(" else "), x]);
+                        }
+                        None => balanced = false,
+                    }
+                }
+                ExprKind::If { .. } | ExprKind::IfLet { .. } if balanced => {
+                    let doc = self.if_expr(else_);
+                    // A nested chain that is balanced is an `Either` of its two forms.
+                    match &doc {
+                        Doc::Either(f, x) => {
+                            flat.extend([text(" else "), (**f).clone()]);
+                            broken.extend([text(" else "), (**x).clone()]);
+                        }
+                        _ => balanced = false,
+                    }
+                    parts.push(doc);
+                }
+                _ => {
+                    balanced = false;
+                    parts.push(self.expr(else_));
+                }
+            }
+        } else {
+            balanced = false;
+        }
+        if balanced {
+            return Doc::Either(Box::new(concat(flat)), Box::new(concat(broken)));
         }
         concat(parts)
     }

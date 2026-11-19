@@ -1,5 +1,5 @@
 //! Runs every `tests/golden/**/*.colibri` file at the repo root as one trial, and every folder
-//! that holds a `main.colibri` as one trial (its files are one program: see PHASE1.md).
+//! that holds a `main.colibri` as one trial (its files are one program: see docs/history/PHASE1.md).
 
 use std::fs;
 use std::path::{Path, PathBuf};

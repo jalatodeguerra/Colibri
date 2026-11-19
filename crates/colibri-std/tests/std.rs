@@ -296,10 +296,9 @@ fn a_dependency_named_std_cannot_shadow_the_standard_library() {
 fn modules_that_are_not_built_say_when_they_come() {
     let (mut vm, _) = vm(&[]);
     for (module, wanted) in [
-        ("task", "is not available until phase 2"),
-        ("mem", "is not available until phase 3"),
-        ("reflect", "is not available until phase 2"),
-        ("game", "is not available until phase 2"),
+        ("task", "does not exist yet"),
+        ("mem", "does not exist yet"),
+        ("reflect", "does not exist yet"),
         ("collections", "`List`, `Map` and `Set` are built in"),
     ] {
         for path in [module.to_string(), format!("std.{module}")] {

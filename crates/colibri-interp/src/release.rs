@@ -155,7 +155,7 @@ impl Interp {
     /// Records the destruction of `obj` when tracing: its `name: str` field if it has one,
     /// else its class name.
     fn trace_destroy(&mut self, obj: &ClassObj) {
-        // An `Error` is plumbing, not a game object: its kept value is traced when it dies.
+        // An `Error` is plumbing, not a user object: its kept value is traced when it dies.
         if self.trace.is_none()
             || obj.ty() == colibri_check::types::ERROR_TYPE
             || obj.ty() == colibri_check::types::COROUTINE_TYPE

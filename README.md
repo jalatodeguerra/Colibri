@@ -1,58 +1,74 @@
 # Colibri
 
-Colibri is a statically typed programming language for **game scripting and general scripting**,
-implemented in Rust. It aims for syntax as simple as Go or Python (with braces), memory
-management by plain reference counting, and one bytecode VM that runs scripts, hot reload,
-embedding in Rust engines, the web and shipped games.
+Colibri is a statically typed, general-purpose programming language implemented in Rust. It aims
+for syntax as simple as Go or Python (with braces), static types with local inference, errors
+as values, and memory management by plain reference counting. It is meant for tools and
+automation, servers and embedding in Rust programs, among other uses.
 
 ```colibri
-fn greet(name: str) -> str {
-    return "Hello, {name}!"
+struct Task {
+    title: str
+    done: bool = false
 }
 
-let people = ["Ana", "Leo"]
-for p in people {
-    print(greet(p))
+fn main() {
+    var tasks = [Task { title: "write docs" }, Task { title: "ship it" }]
+    tasks[0].done = true
+
+    for t in tasks {
+        let mark = if t.done { "x" } else { " " }
+        print("[{mark}] {t.title}")
+    }
+
+    let open = tasks.filter(fn(t) => !t.done).len()
+    print("{open} left")
 }
 ```
 
 ## Status
 
-Phase 1 has started: the workspace, CI, golden-test harness and editor grammar exist; the
-language itself is not implemented yet. The implementation plan is in
-[docs/PHASE1.md](docs/PHASE1.md). The language design is in [docs/DESIGN.md](docs/DESIGN.md) and
-is open for review, including the list of [open questions](docs/DESIGN.md#18-open-questions).
+Phases 1 and 2 are done and on `main`: the language core on a tree-walking interpreter over a
+typed HIR, an embedding API for Rust hosts (`colibri-runtime`), a formatter, a language server
+(diagnostics, hover, go to definition, formatting), 15 standard library modules, a test runner,
+packages with path dependencies, coroutines (`go`, `wait`, groups, signals) and C FFI.
+
+Next is phase 3: a bytecode VM that replaces the tree-walker, `colibri build`, a web target and
+thread tasks. None of it is started. Features that are designed but not built are marked in
+[docs/DESIGN.md](docs/DESIGN.md).
+
+## Building and running
+
+```sh
+cargo build --release
+./target/release/colibri run hello.colibri
+```
+
+While developing, `cargo run -p colibri-lang -- run hello.colibri` does the same. Commands:
+
+| Command | What it does |
+|---------|--------------|
+| `colibri run [file or folder]` | run a script, or the package in a folder |
+| `colibri check [file or folder]` | type-check without running |
+| `colibri fmt <paths>` | format source files in place |
+| `colibri test [file or folder]` | run the `test "name" { .. }` blocks |
+| `colibri repl` | interactive session |
+| `colibri lsp` | language server on stdin and stdout |
+
+Run the test suite with `cargo test --workspace`.
+
+## Documentation
+
+- [docs/DESIGN.md](docs/DESIGN.md): the language design, with the status of each decision and the
+  open questions
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the implementation is built
+- [docs/EMBEDDING.md](docs/EMBEDDING.md): embedding Colibri in a Rust program
+- [docs/history](docs/history): the finished phase 1 and 2 implementation plans
 
 ## Examples
 
 - [examples/scripts](examples/scripts/README.md): a file organiser and a JSON/HTTP report
-  generator, written in Colibri and run with `colibri run`.
-- [examples/host_game](examples/host_game/README.md): a Rust game loop driven by Colibri scripts.
-
-## Building
-
-```sh
-cargo build
-cargo test
-cargo run -p colibri-lang -- --version
-```
-
-## Highlights (planned)
-
-- Game scripting first: coroutines for game logic, `vec2`/`vec3`/`vec4`, a built-in game kit, hot reload
-- Embeddable in Rust engines from day one, with easy C FFI
-- One engine, the bytecode VM, for scripts, embedding, the web and shipped games
-- Static types with local inference, generics (`List[T]`, `fn max[T](a: T, b: T)`)
-- Plain reference counting with value-type structs and `weak` refs; no tracing GC
-- Errors as values: `Result[T]`, `?`, `or` fallback, no exceptions
-- Enums with exhaustive `match`, interfaces, no inheritance
-- One `colibri` binary: `run`, `build`, `test`, `fmt`, `check`, `lsp`
-
-## Roadmap
-
-1. Language core on a tree-walking interpreter, embeddable in Rust from the start
-2. Game slice: vector types, coroutines, a built-in game kit, hot reload, and a first small game
-3. The bytecode VM, `colibri build` for desktop and the web
-4. General scripting: `regex`, `http`, subprocesses, a REPL
-
-Stretch goals: native builds via Cranelift, RC elision, an ownership checker.
+  generator, written in Colibri
+- [examples/host_game](examples/host_game/README.md): a Rust program that drives its logic from
+  Colibri scripts, as an embedding example
+- [benchmarks](benchmarks/README.md): eight small programs in Colibri and Python, and the
+  baseline the bytecode VM has to beat

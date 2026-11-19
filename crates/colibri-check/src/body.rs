@@ -423,7 +423,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         self.mk(hir::ExprKind::Error, Ty::Error, span)
     }
 
-    /// Reports a construct the current slice does not implement and returns a placeholder.
+    /// Reports a construct the checker does not support and returns a placeholder.
     pub fn unsupported(&mut self, what: &str, span: Span) -> Expr {
         self.ck.unsupported(what, span);
         self.error_expr(span)

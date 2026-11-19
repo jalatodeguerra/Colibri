@@ -1,0 +1,8 @@
+// Integer arithmetic in a counted loop.
+fn main() {
+    var sum = 0
+    for i in 0..5000000 {
+        sum += i % 7
+    }
+    print(sum)
+}
