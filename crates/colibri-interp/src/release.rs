@@ -161,6 +161,7 @@ impl Interp {
             || obj.ty() == colibri_check::types::COROUTINE_TYPE
             || obj.ty() == colibri_check::types::COGROUP_TYPE
             || obj.ty() == colibri_check::types::SIGNAL_TYPE
+            || obj.ty() == colibri_check::types::STR_BUILDER_TYPE
         {
             return;
         }

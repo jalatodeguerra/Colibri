@@ -9,7 +9,7 @@ use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use colibri_check::hir::Program;
+use colibri_check::hir::{Program, TypeDefKind};
 use colibri_check::package::{Entry, SourceFs};
 
 use crate::error::Report;
@@ -223,6 +223,14 @@ impl SourceFs for RecordingFs<'_> {
     fn list(&self, dir: &Path) -> Vec<String> {
         self.inner.list(dir)
     }
+
+    fn is_symlink(&self, path: &Path) -> bool {
+        self.inner.is_symlink(path)
+    }
+
+    fn canonical(&self, path: &Path) -> PathBuf {
+        self.inner.canonical(path)
+    }
 }
 
 /// What makes two programs "the same declarations" for patching, in labelled parts, plus one
@@ -262,6 +270,19 @@ impl Fingerprint {
             .iter()
             .map(|&g| hash_debug(&*program.globals[g.0 as usize].init))
             .collect();
+        // The default of a field is inlined at every literal that omits it, and called by
+        // `json.decode`: a patch would change one and not the other, so a changed default
+        // expression counts as a change of the type.
+        let defaults: Vec<u64> = program
+            .types
+            .iter()
+            .flat_map(|t| match &t.kind {
+                TypeDefKind::Struct { fields } | TypeDefKind::Class { fields } => fields.as_slice(),
+                _ => &[],
+            })
+            .filter_map(|field| field.default)
+            .map(|f| hash_debug(&*program.fns[f.0 as usize].body))
+            .collect();
         let tests: Vec<_> = program
             .tests
             .iter()
@@ -274,7 +295,7 @@ impl Fingerprint {
             ),
             (
                 "a struct, class, enum or interface",
-                hash_debug(&program.types),
+                hash_debug(&(&program.types, &defaults)),
             ),
             ("an interface implementation", hash_debug(&program.impls)),
             (

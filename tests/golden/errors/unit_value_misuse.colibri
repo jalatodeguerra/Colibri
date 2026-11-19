@@ -1,3 +1,4 @@
+// allow: unused
 fn nothing() {}
 fn main() {
     let x: int = nothing() // error: expected `int`, found `()`

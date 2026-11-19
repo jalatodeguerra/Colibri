@@ -1,0 +1,5 @@
+// allow: unused
+fn main() {
+    let m = {"a": 1}
+    let v = m.get_or("a", "zero") // error: expected `{integer}`, found `str`
+}

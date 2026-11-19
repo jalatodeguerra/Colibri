@@ -631,3 +631,109 @@ fn run_leaks_is_quiet_when_nothing_leaks() {
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stderr.is_empty());
 }
+
+/// A package whose `stray.colibri` has a type error and is imported by nobody.
+fn package_with_stray_module(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("colibri-cli-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("colibri.toml"), "[package]\nname = \"demo\"\n").unwrap();
+    std::fs::write(dir.join("main.colibri"), "fn main() {\n    print(1)\n}\n").unwrap();
+    std::fs::write(
+        dir.join("sub/stray.colibri"),
+        "pub fn bad() -> int => \"text\"\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn check_looks_at_package_modules_the_entry_does_not_import() {
+    let dir = package_with_stray_module("check_stray");
+    let out = colibri(&["check", dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("stray.colibri"));
+    // `run` only needs what the program uses.
+    let out = colibri(&["run", dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+}
+
+#[test]
+fn check_of_a_package_with_a_script_beside_it_is_unchanged() {
+    let dir = package_with_stray_module("check_script");
+    // A single file keeps checking only what it imports.
+    let out = colibri(&["check", dir.join("main.colibri").to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+}
+
+#[test]
+fn unused_code_is_a_warning_that_changes_no_exit_code() {
+    let path = temp_file(
+        "unused_code.colibri",
+        "import math\n\nfn main() {\n    let left_over = 1\n    print(\"ran\")\n}\n",
+    );
+    let file = path.to_str().unwrap();
+    let out = colibri(&["check", file]);
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Warning"), "{stderr}");
+    assert!(stderr.contains("unused variable `left_over`"), "{stderr}");
+    assert!(stderr.contains("unused import `math`"), "{stderr}");
+    let out = colibri(&["run", file]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ran\n");
+}
+
+#[test]
+fn new_creates_a_package_that_checks_runs_and_passes_its_tests() {
+    let root = std::env::temp_dir().join(format!("colibri-cli-new-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let dir = root.join("hello_app");
+    let d = dir.to_str().unwrap();
+    let out = colibri(&["new", d]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(dir.join("colibri.toml").is_file());
+    assert!(dir.join("main.colibri").is_file());
+    let manifest = std::fs::read_to_string(dir.join("colibri.toml")).unwrap();
+    assert!(manifest.contains("name = \"hello_app\""), "{manifest}");
+
+    let out = colibri(&["check", d]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = colibri(&["run", d]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Hello, world!\n");
+    let out = colibri(&["test", d]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+        "{out:?}"
+    );
+
+    // A folder with something in it is left alone.
+    let out = colibri(&["new", d]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not an empty folder"));
+    // An empty existing folder is fine; an invalid name is refused and creates nothing.
+    std::fs::create_dir_all(root.join("empty_one")).unwrap();
+    let out = colibri(&["new", root.join("empty_one").to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let bad = root.join("my-app");
+    let out = colibri(&["new", bad.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not a valid package name"));
+    assert!(!bad.exists());
+    // A keyword cannot be imported, so it is no package name either.
+    let kw = root.join("fn");
+    let out = colibri(&["new", kw.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not a valid package name"));
+    assert!(!kw.exists());
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -1,4 +1,4 @@
-struct Error { // error: the type `Error` is defined more than once
+struct Error { // error: `Error` is a built-in type and cannot be redefined
     code: int
 }
 enum Result { // error: `Result` is a built-in type and cannot be redefined

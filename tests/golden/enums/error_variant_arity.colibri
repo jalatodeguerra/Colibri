@@ -1,3 +1,4 @@
+// allow: unused
 enum Shape { Circle(float), Rect(float, float), Dot }
 
 fn main() {

@@ -22,6 +22,9 @@ use crate::fiber::Fiber;
 use crate::heap::ListObj;
 use crate::value::Value;
 
+/// The most elements `chunks` and `windows` build in one call.
+const MAX_PIECES: usize = 1 << 27;
+
 /// The position-wise comparison of a sort.
 type Compare<'a> = dyn FnMut(&mut Interp, &mut Fiber, usize, usize) -> Eval<Ordering> + 'a;
 
@@ -223,7 +226,139 @@ impl Interp {
                 Ok(Value::Unit)
             }
             Builtin::ListSort | Builtin::ListSortBy | Builtin::ListSortByKey => {
-                self.sort_list(fiber, op, list, arg(args, 1), span)
+                self.sort_list(fiber, op, list, arg(args, 1), true, span)
+            }
+            Builtin::ListSorted => {
+                self.sort_list(fiber, Builtin::ListSort, list, Value::Unit, false, span)
+            }
+            Builtin::ListSortedBy => {
+                self.sort_list(fiber, Builtin::ListSortBy, list, arg(args, 1), false, span)
+            }
+            Builtin::ListZip => {
+                let Some(Value::List(other)) = args.get(1) else {
+                    return Err(self.internal(fiber, span, "ill-typed `zip`"));
+                };
+                let (a, b) = (list.snapshot(), other.snapshot());
+                let pairs = a
+                    .iter()
+                    .zip(&b)
+                    .map(|(x, y)| Value::tuple(vec![x.clone(), y.clone()]))
+                    .collect();
+                self.release_all(a);
+                self.release_all(b);
+                Ok(Value::list(pairs))
+            }
+            Builtin::ListFlatMap => {
+                let f = arg(args, 1);
+                let _hold = list.iter_hold();
+                let mut out = Vec::new();
+                let mut i = 0;
+                while let Some(item) = list.at(i) {
+                    match self.call_fn(fiber, &f, vec![item], span) {
+                        Ok(Value::List(inner)) => {
+                            let more = inner.snapshot();
+                            out.extend(more);
+                            self.release(Value::List(inner));
+                        }
+                        Ok(other) => {
+                            self.release(other);
+                            self.release_all(out);
+                            return Err(self.internal(fiber, span, "ill-typed `flat_map`"));
+                        }
+                        Err(ctl) => {
+                            self.release_all(out);
+                            return Err(ctl);
+                        }
+                    }
+                    i += 1;
+                }
+                Ok(Value::list(out))
+            }
+            Builtin::ListDedup => {
+                if let Err(v) = list.check_guard() {
+                    return Err(self.violation(fiber, span, v));
+                }
+                let items = list.snapshot();
+                let mut keep = vec![true; items.len()];
+                {
+                    let _hold = list.iter_hold();
+                    for i in 1..items.len() {
+                        match self.eq_deep(fiber, &items[i - 1], &items[i], span) {
+                            Ok(same) => keep[i] = !same,
+                            Err(ctl) => {
+                                self.release_all(items);
+                                return Err(ctl);
+                            }
+                        }
+                    }
+                }
+                if let Err(v) = list.check_guard() {
+                    self.release_all(items);
+                    return Err(self.violation(fiber, span, v));
+                }
+                let kept: Vec<Value> = items
+                    .iter()
+                    .zip(&keep)
+                    .filter(|(_, k)| **k)
+                    .map(|(v, _)| v.clone())
+                    .collect();
+                self.release_all(items);
+                let old = list.replace_all(kept);
+                self.release_all(old);
+                Ok(Value::Unit)
+            }
+            Builtin::ListChunks | Builtin::ListWindows => {
+                let Some(Value::Int(size)) = args.get(1) else {
+                    return Err(self.internal(fiber, span, "ill-typed `chunks`"));
+                };
+                let name = if op == Builtin::ListChunks {
+                    "chunks"
+                } else {
+                    "windows"
+                };
+                let Ok(size @ 1..) = usize::try_from(*size) else {
+                    return Err(self.panic(
+                        fiber,
+                        span,
+                        format!("`{name}` needs a size of at least 1, found {size}"),
+                    ));
+                };
+                let items = list.snapshot();
+                // The number of elements in all the pieces, worked out before building any.
+                let total = if op == Builtin::ListChunks {
+                    items.len()
+                } else {
+                    (items.len() + 1)
+                        .saturating_sub(size)
+                        .saturating_mul(size.min(items.len()))
+                };
+                if total > MAX_PIECES {
+                    self.release_all(items);
+                    return Err(self.panic(
+                        fiber,
+                        span,
+                        format!(
+                            "`{name}` would make a list of {total} elements, which is too many"
+                        ),
+                    ));
+                }
+                if let Err(ctl) = self.charge(fiber, span, total) {
+                    self.release_all(items);
+                    return Err(ctl);
+                }
+                let out = if op == Builtin::ListChunks {
+                    items
+                        .chunks(size)
+                        .map(|p| Value::list(p.to_vec()))
+                        .collect()
+                } else {
+                    items
+                        .windows(size)
+                        .map(|p| Value::list(p.to_vec()))
+                        .collect()
+                };
+                self.release_all(items);
+                Ok(Value::list(out))
             }
             Builtin::ListMin | Builtin::ListMax => {
                 let items = list.snapshot();
@@ -287,16 +422,19 @@ impl Interp {
         self.panic(fiber, span, "these values are not ordered (a `nan`)")
     }
 
-    /// `sort`, `sort_by` and `sort_by_key`: a stable sort of a copy, written back whole.
+    /// `sort`, `sort_by` and `sort_by_key`: a stable sort of a copy, written back whole. With
+    /// `in_place` false (`sorted`, `sorted_by`) the list is left alone and the sorted copy is
+    /// the result.
     fn sort_list(
         &mut self,
         fiber: &mut Fiber,
         op: Builtin,
         list: &Rc<ListObj>,
         f: Value,
+        in_place: bool,
         span: Span,
     ) -> Eval {
-        if let Err(v) = list.check_guard() {
+        if in_place && let Err(v) = list.check_guard() {
             return Err(self.violation(fiber, span, v));
         }
         let items = list.snapshot();
@@ -311,12 +449,15 @@ impl Interp {
                 return Err(ctl);
             }
         };
-        if let Err(v) = list.check_guard() {
+        if in_place && let Err(v) = list.check_guard() {
             self.release_all(items);
             return Err(self.violation(fiber, span, v));
         }
         let sorted: Vec<Value> = order.iter().map(|&i| items[i].clone()).collect();
         self.release_all(items);
+        if !in_place {
+            return Ok(Value::list(sorted));
+        }
         let old = list.replace_all(sorted);
         self.release_all(old);
         Ok(Value::Unit)

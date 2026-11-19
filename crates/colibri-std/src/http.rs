@@ -10,6 +10,7 @@
 //!   header sent several times is joined with `, `) and `body: str`. A body that is not valid
 //!   UTF-8 is decoded lossily (invalid sequences become U+FFFD): v1 has no byte-body variant.
 //!   Parse JSON with `json.decode[T](response.body)`.
+//! * Connections are kept and reused: every request goes through one `ureq::Agent`.
 //! * Redirects are followed (up to 10). The proxy variables of the process (`HTTP_PROXY`,
 //!   `HTTPS_PROXY`, `NO_PROXY`) are honoured.
 //! * Timeouts: 30 seconds for a whole request by default; `http.set_timeout(seconds)` changes
@@ -23,6 +24,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use colibri_runtime::{Cap, Ctx, Cx, Error, IntoColibri, TypeDesc, TypeRegistry, Value, Vm};
@@ -66,6 +68,20 @@ impl IntoColibri for Response {
     }
 }
 
+/// The agent every request goes through, so connections to the same host are kept and reused.
+/// It has no timeout of its own: each request sets it.
+fn agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(None)
+            // A 404 is a response, not a failure.
+            .http_status_as_error(false)
+            .build()
+            .into()
+    })
+}
+
 fn perform(
     timeout: Option<Duration>,
     method: &str,
@@ -74,12 +90,6 @@ fn perform(
     body: Option<String>,
 ) -> Result<Response, String> {
     let fail = |e: &dyn std::fmt::Display| format!("http: {method} {url} failed: {e}");
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(timeout)
-        // A 404 is a response, not a failure.
-        .http_status_as_error(false)
-        .build()
-        .into();
     let mut builder = ureq::http::Request::builder().method(method).uri(url);
     for (name, value) in headers {
         builder = builder.header(name.as_str(), value.as_str());
@@ -87,6 +97,12 @@ fn perform(
     let request = builder
         .body(body.unwrap_or_default())
         .map_err(|e| fail(&e))?;
+    // The timeout is the request's own, so one agent serves every setting.
+    let agent = agent();
+    let request = agent
+        .configure_request(request)
+        .timeout_global(timeout)
+        .build();
     let mut response = agent.run(request).map_err(|e| fail(&e))?;
     let status = i64::from(response.status().as_u16());
     let mut out_headers: BTreeMap<String, String> = BTreeMap::new();

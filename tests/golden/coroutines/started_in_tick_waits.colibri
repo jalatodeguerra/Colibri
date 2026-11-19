@@ -1,6 +1,6 @@
 fn child() {
     print("child")
-    wait_frames(1)
+    wait(0.0)
     print("child again")
 }
 

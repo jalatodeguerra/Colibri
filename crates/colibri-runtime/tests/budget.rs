@@ -225,6 +225,69 @@ fn sorted() -> int {
 }
 
 #[test]
+fn iter_on_a_huge_range_is_cheap_and_what_it_yields_is_charged() {
+    let (mut vm, _) = vm_with(10_000);
+    vm.load_source(
+        "r.colibri",
+        r#"
+fn first() -> int {
+    for x in (0..9223372036854775807).iter() {
+        return x
+    }
+    return -1
+}
+fn consume() -> int {
+    var n = 0
+    for x in (0..9223372036854775807).iter() {
+        n += x
+    }
+    return n
+}
+fn stepping() -> int {
+    var it = (0..9223372036854775807).iter()
+    var n = 0
+    while true {
+        match it.next() {
+            some(x) => n += x,
+            none => break,
+        }
+    }
+    return n
+}
+fn empty_body() {
+    for _ in (0..9223372036854775807).iter() {
+    }
+}
+fn to_list() -> int => (0..9223372036854775807).to_list().len()
+"#,
+    )
+    .unwrap();
+    // Creating the iterator is constant work.
+    let first = vm.get_fn::<(), i64>("first").unwrap();
+    assert_eq!(first.call(&mut vm, ()).unwrap(), 0);
+    assert!(vm.steps_used() < 100, "{}", vm.steps_used());
+    // The elements are charged as they are consumed.
+    let consume = vm.get_fn::<(), i64>("consume").unwrap();
+    assert!(matches!(
+        consume.call(&mut vm, ()),
+        Err(colibri::Error::BudgetExhausted { .. })
+    ));
+    let empty_body = vm.get_fn::<(), ()>("empty_body").unwrap();
+    assert!(matches!(
+        empty_body.call(&mut vm, ()),
+        Err(colibri::Error::BudgetExhausted { .. })
+    ));
+    let stepping = vm.get_fn::<(), i64>("stepping").unwrap();
+    assert!(matches!(
+        stepping.call(&mut vm, ()),
+        Err(colibri::Error::BudgetExhausted { .. })
+    ));
+    // `to_list` is still charged its length up front (or refused as too long).
+    let to_list = vm.get_fn::<(), i64>("to_list").unwrap();
+    assert!(to_list.call(&mut vm, ()).is_err());
+}
+
+#[test]
 fn top_level_code_has_a_budget_too() {
     let (mut vm, out) = vm_with(1_000);
     let err = vm
@@ -323,4 +386,41 @@ fn an_unlimited_vm_never_runs_out() {
     let f = vm.get_fn::<(), i64>("f").unwrap();
     assert_eq!(f.call(&mut vm, ()).unwrap(), 200_000);
     assert!(vm.steps_used() > 200_000);
+}
+
+const SET_ALGEBRA: &str = "struct K { v: int }
+impl Eq for K { fn eq(self, o: K) -> bool => self.v == o.v }
+fn ints() -> int {
+    let a = Set((0..5000).to_list())
+    let b = Set((2500..7500).to_list())
+    return a.union(b).len()
+}
+fn ks() -> int {
+    let a = Set((0..400).to_list().map(fn(i) => K { v: i }))
+    let b = Set((200..600).to_list().map(fn(i) => K { v: i }))
+    return a.union(b).len()
+}
+";
+
+#[test]
+fn set_algebra_on_ints_ignores_an_unrelated_user_eq() {
+    // A scan per element would take about 25 million steps.
+    let (mut vm, _) = vm_with(500_000);
+    vm.load_source("sets.colibri", SET_ALGEBRA).unwrap();
+    let ints = vm.get_fn::<(), i64>("ints").unwrap();
+    assert_eq!(ints.call(&mut vm, ()).unwrap(), 7500);
+}
+
+#[test]
+fn set_algebra_by_a_user_eq_charges_the_comparisons() {
+    let (mut vm, _) = vm_with(50_000);
+    vm.load_source("sets.colibri", SET_ALGEBRA).unwrap();
+    let ks = vm.get_fn::<(), i64>("ks").unwrap();
+    // 400 x 400 comparisons do not fit in 50 000 steps.
+    let err = ks.call(&mut vm, ()).unwrap_err();
+    exhausted(&err);
+    let (mut vm, _) = vm_with(5_000_000);
+    vm.load_source("sets.colibri", SET_ALGEBRA).unwrap();
+    let ks = vm.get_fn::<(), i64>("ks").unwrap();
+    assert_eq!(ks.call(&mut vm, ()).unwrap(), 600);
 }

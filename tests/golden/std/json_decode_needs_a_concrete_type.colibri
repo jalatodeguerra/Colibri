@@ -1,3 +1,4 @@
+// allow: unused
 import json
 
 struct Point { x: int, y: int }

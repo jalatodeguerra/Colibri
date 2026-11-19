@@ -636,6 +636,31 @@ impl FnCtx<'_, '_> {
             );
             return self.pat(PatKind::Wild, expected, span);
         }
+        if let Some(maker) = crate::types::prelude_class_maker(id) {
+            wild_fields(self, cx);
+            let tname = self.ck.types[id.0 as usize].name.clone();
+            self.ck.report(
+                Diagnostic::error(
+                    format!("`{tname}` is a built-in class and has no fields to match"),
+                    name.span,
+                )
+                .with_hint(format!(
+                    "`{tname}` is built with {maker}; bind the value to a name and call its methods"
+                )),
+            );
+            return self.pat(PatKind::Wild, expected, span);
+        }
+        if id == crate::types::ERROR_TYPE {
+            wild_fields(self, cx);
+            self.ck.report(
+                Diagnostic::error(
+                    "`Error` is a built-in class and has no fields to match",
+                    name.span,
+                )
+                .with_hint("bind the error to a name and call its methods"),
+            );
+            return self.pat(PatKind::Wild, expected, span);
+        }
         if self.ck.types[id.0 as usize].is_host_class() {
             wild_fields(self, cx);
             let tname = self.ck.types[id.0 as usize].name.clone();

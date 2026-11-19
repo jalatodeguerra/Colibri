@@ -256,7 +256,7 @@ loop {
 ```
 
 - `vm.tick(dt) -> Result<(), Error>` adds `dt` seconds to scheduler time (what `wait(s)` counts;
-  `tick(0.0)` pauses it), advances the tick counter (`wait_frames`), and resumes every due
+  `tick(0.0)` pauses it), advances the tick counter, and resumes every due
   coroutine once in the order the coroutines were started. A coroutine started during a tick is
   resumed from the next one. A panic in a coroutine ends only that coroutine and is returned as
   `Error::Panic` (further ones are notes); running out of the instruction budget is
@@ -294,18 +294,28 @@ loop {
   drives `vm.tick` itself and does not want this keeps scripts from calling them.
 - **`Ctx::run_async(work) -> R`** is the host API for blocking work that must not stop the
   other coroutines. Inside a host function, `cx.run_async(move || do_blocking_thing(args))`
-  runs the closure (`Send + 'static`, no Colibri values, no `Vm`) on a background thread and
+  runs the closure (`Send + 'static`, no Colibri values, no `Vm`) on a background thread (an idle one
+  of the `Vm`'s pool, else a new one: there is no limit, and an operation never waits behind
+  another; idle threads beyond four end after a few seconds) and
   suspends the calling coroutine until it finishes; the scheduler resumes it on a later tick,
   and the event loop sleeps until a timer or a completion instead of polling. On the main
   fiber the call runs the event loop meanwhile; inside a callback or a `Drop` hook it just
   blocks. Rules: do not hold a borrow of host objects across the call (other coroutines run);
   if the coroutine is cancelled while waiting, the host function is unwound by a Rust panic
-  that the trampoline turns into a clean cancellation (the thread's result is discarded); a
-  panic of the work is a Colibri panic of the caller. A host driving `vm.tick(dt)` itself gets
-  the completions at its ticks. `http` is built on it (ARCHITECTURE §22).
+  that the trampoline turns into a clean cancellation (the result is discarded; work that has not started yet never runs); a panic of the work is a Colibri panic of the caller. Work that can
+  stop early takes `cx.run_async_cancellable(|token| ..)`, which hands it a `CancelToken`: it is
+  cancelled when the coroutine is cancelled or the `Vm` is dropped, and `token.on_cancel(hook)`
+  registers a hook that runs on the cancelling side before it goes on (`process.run`, `run_with`, `shell` and `status` kill the program they started in one; not the
+  processes that program started in turn, as in Python and Go: `shell("sleep 30")` kills `sh`, and a
+  `sleep` that dash forked survives, and the output readers of a killed program end when its pipes
+  close; no process group is used, so Ctrl-C from the terminal still reaches children); work that blocks for a long
+  time holds its thread meanwhile, which costs a stack and nothing else. A host driving `vm.tick(dt)` itself gets
+  the completions at its ticks. `http` and `process` are built on it (ARCHITECTURE §22).
 - The `Clock` trait has a third method with a default, `sleep_interruptible(seconds, wake)`,
   which the event loop calls while operations are in flight; a custom clock for tests can keep
-  the default.
+  the default, which waits for real time without moving the clock (so a program's behaviour at a
+  fake time does not depend on how long an operation really takes; timers wait for the
+  operations meanwhile).
 
 ## 11. Hot reload from a host
 

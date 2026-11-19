@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let a: u8 = 5
     let b = -a // error: cannot negate a value of type `u8`

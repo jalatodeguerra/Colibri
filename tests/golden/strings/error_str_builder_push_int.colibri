@@ -1,0 +1,4 @@
+fn main() {
+    let b = StrBuilder()
+    b.push(1) // error: expected `str`, found `{integer}`
+}

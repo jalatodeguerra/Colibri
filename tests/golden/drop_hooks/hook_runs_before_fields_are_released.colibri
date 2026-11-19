@@ -1,3 +1,4 @@
+// allow: unused
 class Inner { name: str }
 class Outer { name: str, inner: Inner }
 

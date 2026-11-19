@@ -1,0 +1,15 @@
+class Holder {
+    name: str
+    out: StrBuilder
+}
+
+fn main() {
+    let h = Holder { name: "h", out: StrBuilder() }
+    h.out.push("x")
+    let again = h.out.clone()
+    again.push("y")
+    print(h.out.to_str() + again.to_str())
+}
+
+// expect: xxy
+// drops: h

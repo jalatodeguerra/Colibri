@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let a: i8 = 127
     let b: i8 = 128 // error: literal 128 does not fit in `i8`

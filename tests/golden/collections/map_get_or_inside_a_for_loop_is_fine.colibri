@@ -1,0 +1,10 @@
+fn main() {
+    let m = {"a": 1}
+    for (k, v) in m {
+        print(m.get_or(k, 0) + v)
+        print(m.entries().len())
+    }
+}
+
+// expect: 2
+// expect: 1

@@ -1,0 +1,8 @@
+fn main() {
+    match StrBuilder() {
+        StrBuilder {} => print(1) // error: `StrBuilder` is a built-in class and has no fields to match
+    }
+    match StrBuilder() {
+        StrBuilder { .. } => print(2) // error: `StrBuilder` is a built-in class and has no fields to match
+    }
+}

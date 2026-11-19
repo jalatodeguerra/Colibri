@@ -1,3 +1,4 @@
+// allow: unused
 class T { name: str }
 
 let g = T { name: "g" }

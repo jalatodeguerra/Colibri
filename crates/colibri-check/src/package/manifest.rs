@@ -107,7 +107,7 @@ fn package(
                             format!("`{s}` is not a valid package name"),
                             entry.value.span,
                         )
-                        .with_hint("use letters, digits and `_`, starting with a letter or `_`"),
+                        .with_hint("use letters, digits and `_`, starting with a letter or `_`, and not a keyword"),
                     );
                 }
                 *name = Some((s.clone(), entry.value.span));
@@ -145,7 +145,7 @@ fn dependency(
                 format!("`{name}` is not a valid dependency name"),
                 name_span,
             )
-            .with_hint("it is the name `import` uses: letters, digits and `_`"),
+            .with_hint("it is the name `import` uses: letters, digits and `_`, not a keyword"),
         );
         return;
     }
@@ -224,11 +224,13 @@ fn dependency(
     }
 }
 
-/// Whether `s` can be a package or dependency name: what an `import` can say.
-fn is_name(s: &str) -> bool {
+/// Whether `s` can be a package or dependency name: what an `import` can say (so not a
+/// keyword either: `import fn` does not parse).
+pub fn is_name(s: &str) -> bool {
     let mut chars = s.chars();
     chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
         && chars.all(|c| c.is_alphanumeric() || c == '_')
+        && colibri_syntax::TokenKind::keyword(s).is_none()
 }
 
 #[cfg(test)]
@@ -292,6 +294,8 @@ mod tests {
         );
         assert!(errs("name = \"x\"\n")[0].contains("must be inside a table"));
         assert!(errs("[package]\nname = \"my game\"\n")[0].contains("not a valid package name"));
+        assert!(errs("[package]\nname = \"if\"\n")[0].contains("not a valid package name"));
+        assert!(!is_name("fn") && !is_name("true") && is_name("fnord") && is_name("game_2"));
         assert!(errs("[package]\nname = { a = \"b\" }\n")[0].contains("must be a string"));
         assert!(
             errs("[package]\nname = \"x\"\nversion = \"1\"\n")[0].contains("unknown key `version`")

@@ -1,0 +1,25 @@
+fn main() {
+    let a = [1, 2, 3]
+    let b = ["x", "y"]
+    print(a.zip(b))
+    print(b.zip(a))
+    let empty: List[int] = []
+    print(a.zip(empty))
+    print(empty.zip(a))
+    let pairs = a.zip(["p", "q", "r"])
+    for (n, s) in pairs {
+        print("{n}{s}")
+    }
+    // the result is a new list
+    pairs.push((9, "z"))
+    print(a.len())
+}
+
+// expect: [(1, "x"), (2, "y")]
+// expect: [("x", 1), ("y", 2)]
+// expect: []
+// expect: []
+// expect: 1p
+// expect: 2q
+// expect: 3r
+// expect: 3

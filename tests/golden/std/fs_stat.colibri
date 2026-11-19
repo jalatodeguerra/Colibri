@@ -12,13 +12,13 @@ fn main() -> Result[()] {
     print(f.size)
     print(f.readonly)
     print(f.modified > 1577836800.0)
-    print(f.modified == fs.modified(path.join(root, "f.txt"))?)
+    print(f.modified == fs.stat(path.join(root, "f.txt"))?.modified)
     print(fs.stat(path.join(root, "sub"))?.kind)
     match fs.stat(path.join(root, "nope")) {
         ok(_) => print("unexpected")
         err(e) => print(e.message().replace(os.temp_dir(), "<dir>"))
     }
-    fs.remove_dir(root)?
+    fs.remove_tree(root)?
     return ok(())
 }
 

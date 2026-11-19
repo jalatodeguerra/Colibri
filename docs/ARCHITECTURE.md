@@ -44,8 +44,7 @@ keyed by qualified name so they stay stable across hot reload (§16.3).
   `Variant { enum, idx, args }`, `Tuple`, `ListLit`, `MapLit`.
 - **Generics** keep type parameters and one uniform body. Every generic call records its
   `type_args` (which may mention the enclosing function's parameters); the interpreter passes them
-  as a hidden per-frame vector. The checker marks functions that actually need them at runtime
-  (`json.decode[T]`, `e.is[T]()`) so the VM can drop them elsewhere. `Bound` calls dispatch
+  as a hidden per-frame vector. `Bound` calls dispatch
   through `impls[(runtime type, iface)]`.
 - **Implicit conversions are explicit `Coerce` nodes:** `ToDyn(ImplId)`, `F32ToFloat`,
   `IntoError(ImplId)`, `StrongToWeak`, `WeakToOption`.
@@ -158,8 +157,8 @@ iteration, write-back); `Defer`, `Go`, labelled `Break`/`Continue`.
   (the `impl`'s or interface's first, then the function's own), also for method calls;
   `FnDef.type_params` says how many. They may mention the caller's own parameters. The
   interpreter does not need them (generic code runs with one uniform representation and `Bound`
-  calls dispatch on the receiver's runtime type), so `Body.needs_type_args` is `false` for every
-  function; it is the hook for `json.decode[T]` and friends. `Callee::Bound { iface, method }` is
+  calls dispatch on the receiver's runtime type), so a body carries no flag for them; a
+  future `json.decode[T]` would need one. `Callee::Bound { iface, method }` is
   a method called through a bound or a derived implementation, `Callee::Dyn { iface, method }` a
   method called on an interface value; `method` is the index in the interface's declaration
   order. A call of a method that an `impl` provides (or an interface default) on a concrete
@@ -518,7 +517,7 @@ turns out to matter, it moves into DESIGN.md.
     iterator over `xs` is live panics ("list modified during iteration"), exactly as inside a
     `for`; a `for` over `xs.iter()` leaves the guard when the loop ends. `enumerate()` is
     general: it works on any `Iter` or `Iterable` and yields `(int, T)`. `Range` is a value of
-    type `Range[int]` (`contains len is_empty iter rev enumerate`); only `int` ranges exist, and an
+    type `Range[int]` (`contains len is_empty iter rev to_list enumerate`); only `int` ranges exist, and an
     open-ended range (`1..`) is not a value.
 23. **`Option`.** `T?` is `Ty::Option(T)`, built in as the prelude enum of §1 (slice 3). `some(x)`
     is only valid applied; `some` alone is an error with a hint. `none` needs an expected type
@@ -550,7 +549,8 @@ turns out to matter, it moves into DESIGN.md.
     `str` has `len` (bytes), `is_empty`, `chars bytes contains starts_with ends_with split trim
     to_upper to_lower replace find` (slice 4b). `pop`, `get`, `first`, `last`, `index_of`, and
     `Map.get`/`remove` return `Option`; `Set.remove` returns whether it was present;
-    `List.remove` panics out of bounds. `keys` and `values` return new lists. `contains` and
+    `List.remove` panics out of bounds. `keys`, `values` and `entries` (`List[(K, V)]`) return new lists; `get_or(key, default)` gives the
+    value or `default`. `contains` and
     `index_of` need `==` on the element. Slice 4b adds, on `List`: `iter map filter retain any all
     find find_index fold for_each sort sort_by sort_by_key min max sum join enumerate`, and on
     `Map`/`Set`: `iter enumerate`. `sort` is stable and needs `T: Ord`; `sort_by` takes
@@ -566,6 +566,18 @@ turns out to matter, it moves into DESIGN.md.
     every element first and then removes, so the removed objects die together, in order, after
     the last closure call. A `nan` in a `sort`, `min` or `max` panics ("these values are not
     ordered").
+    *More list helpers.* `zip(other) -> List[(T, U)]` (stops at the shorter list),
+    `flat_map(f)` (`f` returns a list), `sorted()` (needs `T: Ord`) and `sorted_by(cmp)` (new
+    sorted lists; the receiver is untouched), `dedup()` (needs `==`; removes *consecutive*
+    equal elements **in place** and returns `()`, like `sort` and `retain`),
+    `chunks(n)` and `windows(n) -> List[List[T]]` (`n < 1` panics; the last chunk may be
+    shorter; `windows` of a size above the length is empty). The closure-taking ones and `dedup`
+    hold the iteration guard exactly like `map` and `retain`, so `wait` in a closure works.
+    *Set algebra.* `a.union(b)`, `intersection`, `difference`, `symmetric_difference` return new
+    sets holding the elements of the receiver first (in its order), then those of the argument
+    (for `symmetric_difference`: the receiver's elements not in `b`, then `b`'s not in `a`);
+    `is_subset`, `is_superset` and `is_disjoint` return `bool`. Nothing is mutated, so they work
+    inside a `for` over either set; a user `Eq` is honoured (a scan, like `contains`).
     *Slicing.* `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]` and the `..=` forms are a *copy* (a
     new list sharing the element objects, as every list copy does) and not a place: `xs[0..2] = ..`
     is an error. `s[a..b]` on a `str` is a *byte* range and panics when an end is out of range or
@@ -576,6 +588,14 @@ turns out to matter, it moves into DESIGN.md.
     Iteration order is insertion order. `==` on collections is structural (a map ignores order);
     `is` is identity. `Show` is `[1, 2]`, `{"a": 1}`, `{:}`, `Set([1, 2])`; strings are quoted
     inside.
+    *`StrBuilder` (DESIGN §12).* `StrBuilder()` is a built-in reference type declared in the
+    prelude as an empty `class` (type id `STR_BUILDER_TYPE`), like `Signal`; its object holds two
+    hidden fields: a list of the `str` chunks appended so far and the total byte length, so an
+    append is O(1) and `to_str` joins once (and keeps the joined text as the single chunk).
+    Methods: `push(s: str)`, `push_char(c: char)`, `write(v)` (any value the interpolation
+    `"{v}"` accepts, including a user `Show`; the checker lowers it to `push("{v}")`), `len()`
+    (bytes), `is_empty()`, `clear()`, `to_str()` (the builder stays usable). Equality is identity,
+    `clone()` is a separate builder, `Show` is the built text. `s += x` stays quadratic.
 27. **Hashability.** A key (`Map` key, `Set` element) must be hashable: `int`, `bool`, `char`,
     `str`, `()`, tuples, structs, enums and `Option` of hashable parts (structurally), and class
     objects (by identity). `List`, `Map` and `Set` are not hashable (mutable; the §5.3 hint says
@@ -1055,7 +1075,8 @@ directly in the root form the *root package*, named after the manifest (or the f
 separate package, **also for scripts without a manifest**: `import util.strings` finds
 `util/strings.colibri` next to the script, and it can only use what that file marks `pub`
 (the implicit package is the script's folder, not its subtree). Only modules reachable by
-`import` from the entry are loaded and checked; a stray file nobody imports is ignored.
+`import` from the entry are loaded and checked for `run`; a stray file nobody imports is ignored
+there (`colibri check` and `colibri test` on a package folder also check such files, §15).
 
 The loader (`colibri_check::package`) reads the files through a `SourceFs` (the real file system,
 or the in-memory one `load_sources` uses), parses each module once into the shared `SourceMap`
@@ -1141,7 +1162,18 @@ each import of the cycle.
 
 **Top-level statements** exist only in the entry module. Any other module that has one gets an
 error at its first statement ("only the entry file may have top-level statements"); its
-declarations are still checked. `fn main` is looked up in the entry module only. Function names
+declarations are still checked. The exception is a *script module*: when the whole package is
+loaded (`LoadOptions::all_modules`: `colibri check <folder>`, `colibri test`), a module that no other
+module imports (`ModuleMeta::script`, e.g. `examples/demo.colibri`) may have top-level statements.
+They are checked in their own module (`Checker::check_module_scripts`) and the result is dropped, so
+they never run, also not under `colibri test`. Nothing else of such a module runs either: its
+module-level `let`/`var` are left out of `Program::init_order` (they are still type-checked), and its
+`test` blocks go to `Program::skipped_tests` instead of `Program::tests` (`colibri test <folder>` says
+`skipped N tests in <file>`; `colibri test <file>` runs them, because there the file is the entry).
+A module nothing imports that has no top-level statement is an ordinary module: its initialisers and
+tests run. (For an entry script `colibri test script.colibri` runs the `let`/`var` initialisers before
+each test, in source order, but not its statements.) The folder walk does not follow symbolic links to
+folders, and modules are deduplicated on `SourceFs::canonical` (the resolved path). `fn main` is looked up in the entry module only. Function names
 in the HIR (`FnDef.name`, stack traces, `Vm::get_fn`) are the plain name in the entry module and
 the dotted module path before it in any other (`game.player.spawn`, `game.player.Player.update`);
 host items are never prefixed.
@@ -1219,7 +1251,42 @@ there (`Vm::load_package`), not a test per file. Directives are read from every 
 the directory tree: an `// error:`, `// warning:` or `// panic:` line refers to the line of the
 file it is in (the harness compares file and line); the expected stdout is the `// expect:`
 lines of `main.colibri` followed by those of the other files in path order; `// drops:`, `//
-panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only. See history/PHASE1.md.
+panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only. A file whose leading
+comment lines contain `// allow: unused` may leave its unused-variable and unused-import
+warnings unlisted; every other file must list them with `// warning:` or have none. See history/PHASE1.md.
+
+### 11.8a Warnings (`Severity::Warning`)
+
+`Diagnostic` has a `severity`; a warning renders as "Warning:" and never changes an exit code
+(`run`, `check` and `test` print warnings to stderr; `has_errors()` ignores them). The language
+server publishes them with `DiagnosticSeverity::WARNING`. The REPL shows errors only. Besides
+shadowing, unreachable arms and an ignored `Result`, the checker reports unused code:
+
+- `unused variable `x``: a plain `let` or `var` local that is never read. A name that starts
+  with `_` is exempt; so are parameters, `for` variables, pattern bindings and module-level
+  values. A plain `x = value` is not a read (`x += 1`, `x.f = v` and `x[i] = v` are, to stay on
+  the safe side), and a closure that captures `x` counts as a read. Found when the scope closes
+  (`FnCtx::pop_scope`, flags `read` and `lint_unused` on `LocalFlags`), and only in modules of the
+  program's own packages, not in a dependency's.
+- `unused import`: a module of the program's own packages (not a dependency's) that imports a
+  module or a name and never mentions the bound name. Syntactic (`unused.rs` collects every
+  identifier written outside `import` items), so a local that shadows the name hides the
+  warning, but a used import is never reported. Skipped when the program has errors. An alias
+  that starts with `_` (`import registry as _registry`) silences it; the hint offers that when
+  the imported module runs code as it loads (a top-level statement, or a `let`/`var` whose
+  initialiser is not a plain literal).
+
+Warnings in the prelude or a host interface are dropped (`Checker::report_lint`). The golden
+harness compares warnings exactly, except that unlisted `unused variable` and `unused import`
+warnings are tolerated in a file that starts with the directive `// allow: unused` (small
+demonstrations); a `// warning:` directive for one must still match.
+
+### 11.8b `colibri new <name>`
+
+Creates the folder `<name>` (it may exist only if empty) with a `colibri.toml` (`[package]
+name`, checked with the manifest's own `is_name`, so `my-app` is refused) and a `main.colibri`
+holding `greeting`, `main` and a `test` block (`crates/colibri-cli/src/newcmd.rs`). The result
+passes `colibri check`, `run` and `test`.
 
 ### 11.9 Decisions the design documents did not fix
 
@@ -1386,6 +1453,26 @@ any embedding that wants it (and the language server, which should call
 real process (system clock, process environment, real stdin). `interfaces()` gives the same
 interfaces without a `Vm`, for `colibri check`.
 
+`install` only declares the modules (`Vm::lazy_std_module(name, register)`): a module has a
+name from then on, so `import` finds it and `Vm::module_names()` lists it, but its functions are
+registered, and its interface generated, parsed and checked, the first time something needs it:
+a program that imports it (`check_entry` reads the files, registers the lazy modules the
+`import`s name, then builds the interface environment), `Vm::std_module(name)` or
+`Vm::module(name)`, `Vm::materialize_all`, or `session_start` (a session may import anything
+later, so it has every module and the host types keep their ids). An unregistered module is
+printed as an empty interface, so the checker sees its name and no items. A module is registered
+in one go: the per-registration interface check (print and parse back) runs once at its end.
+A registration that fails (an embedder's host type named like one of the module's, say) is
+an `Error::Registration` of the load that imports the module, not a panic; the failure is
+remembered (`Vm::failed`), so the same load fails the same way again and the module is not
+registered a second time on top of what it had registered. `bulk` is restored by a drop guard,
+also when a registration panics. `lazy_std_module` and `materialize_all` are `#[doc(hidden)]`:
+they are for `colibri-std`, and the rule that a module registers into its own name only is not
+enforced. A clash is found when the module is needed, not when the embedder registers its type
+(that would need each lazy module to declare its type names).
+`colibri_std::interfaces()` asks for every module by name, so the language server and `colibri
+check` see all of them.
+
 ### Names and resolution
 
 A std module's interface name is `std.<name>` (`std.math`). `Vm::std_module(name)` is the only way
@@ -1462,8 +1549,8 @@ time and sleeping".
 - `io`: `write(text)` (no newline), `eprint`, `eprintln` (stderr), `read_line() -> Result[Option[str]]`
   (`none` at end of input), `read_all() -> Result[str]`. `print` stays a builtin.
 - `fs`: `read`, `read_bytes`, `write`, `write_bytes`, `append`, `exists`, `is_file`, `is_dir`,
-  `list` (sorted names), `create_dir` (like `mkdir -p`), `remove`, `remove_dir` (recursive), `copy`,
-  `rename`, `size`, `modified` (seconds since the Unix epoch, a float). Failures are `err` with the message of the OS error and the path.
+  `list` (sorted names), `create_dir` (like `mkdir -p`), `remove`, `remove_dir` (an empty folder), `remove_tree` (a folder and everything in it), `copy`,
+  `rename`, `stat` and `stat_follow` (size, modified time as seconds since the Unix epoch, and more; `stat_follow` follows a symlink), `walk`, `set_modified`. Failures are `err` with the message of the OS error and the path.
 - `path`: pure string functions with `/` separators only: `join`, `file_name`, `stem`, `ext`,
   `with_ext`, `parent`, `is_absolute`, `normalize`, `split`.
 - `os`: see the table; `args() -> List[str]`, `platform() -> str`, `env(name) -> Option[str]`,
@@ -1475,7 +1562,8 @@ time and sleeping".
   cosh tanh exp exp2 ln log2 log10 log(x, base) cbrt sqrt floor ceil round trunc fract radians
   degrees signf atan2 pow hypot lerp is_nan is_finite clampf`; integer functions `min max clamp
   abs sign floor_div floor_mod gcd`. Integer division by zero and an empty clamp range panic.
-- `rand`: module functions on a global generator (`seed`, `int(lo, hi)` half-open, `float`,
+- `rand`: module functions on one default `Rng` that belongs to the `Vm` (`rand.seed(n)` replaces
+  it with `Rng.new(n)`, so both give the same sequence for a seed) (`seed`, `int(lo, hi)` half-open, `float`,
   `bool`, `chance(p)`, `choice`, `shuffled`) and the host class `rand.Rng` (`Rng.new(seed)`,
   `int`, `float`, `bool`, `chance`). Seeding is SplitMix64 into xoshiro256**; `below` uses
   Lemire's unbiased method; floats use the top 53 bits. Same seed, same sequence on every
@@ -1486,7 +1574,7 @@ time and sleeping".
   `monotonic() -> int` (nanoseconds), `unix() -> float`, `sleep(seconds)` (rejects negative and
   non-finite durations).
 - `str`: only what is not already a method: `parse_int`, `parse_float`, `parse_bool` (all
-  `Result`), `lines`, `repeat`, `pad_left`, `pad_right`, `trim_start`, `trim_end`, `strip_prefix`,
+  `Result`), `lines`, `repeat`, `trim_start`, `trim_end`, `strip_prefix`,
   `strip_suffix`.
 - `json`: `encode[T](value) -> Result[str]`, `pretty[T]`, `@typed decode[T](text) -> Result[T]`.
   Mapping: `int`/sized ints, `float`, `bool`, `str`, `char` (one-character string), `List`,
@@ -1515,11 +1603,16 @@ and use the hardware.
 - The `time` and `io` capability split in the table above; `os.args` and `os.platform` are open.
 - Integer-only `min max clamp abs sign` (`clampf`, `signf` for floats); `rand.int` is half-open and
   panics on an empty range.
-- Paths use `/` only; `fs.list` is sorted; `fs.create_dir` creates parents; `fs.remove_dir` is
-  recursive; `os.vars` is sorted.
+- Paths use `/` only; `fs.list` is sorted; `fs.create_dir` creates parents; `fs.remove_dir` removes
+  an empty folder and `fs.remove_tree` a whole tree; `os.vars` is sorted.
 - Goldens get a fixed `StdConfig`, and `// caps: fs, os` grants capabilities per file
   (history/PHASE1.md).
-- Not done: `@rename`/`@skip` and field defaults in `json` (no attribute support in the
+- A field with a default may be absent from the object: the checker gives every plain
+  (non-generic) struct field default a hidden zero-argument function (`FieldDef::default`),
+  and `json.decode` calls it through `Ctx::call_field_default`. Literals inline the same
+  expression, so hot reload counts a changed default expression as a change of the struct (a
+  restart, not a patch; `Fingerprint`), otherwise `json.decode` and `T {}` would disagree.
+- Not done: `@rename`/`@skip` in `json` (no attribute support in the
   checked types yet), JSON for data enums, typed error enums.
 
 ### `regex` (phase 2, part B)
@@ -1563,6 +1656,9 @@ in a golden; the CLI grants everything).
 - Timeout: 30 s for a whole request by default; `http.set_timeout(s)` changes it for the rest of
   the program (`0` is none, negative or non-finite panics). The setting lives in a state of its
   own in the `Vm`, not in `StdConfig`.
+- Every request goes through one process-wide `ureq::Agent` (`OnceLock`), so connections to a
+  host are kept alive and reused; the timeout is set on each request, not on the agent
+  (test `requests_to_one_host_reuse_the_connection`).
 - ~~A call blocks the whole `Vm`, coroutines included~~ **Superseded by §22**: the request runs
   on a background thread and only the calling coroutine waits.
 - Tests: `crates/colibri-std/tests/http.rs` starts a hand-written HTTP/1.1 server on
@@ -1607,8 +1703,28 @@ set, then `options.env`; `os.env` under a `Fixed` source does not restrict child
 input is closed unless `options.input` gives text, so a child never reads the script's stdin.
 Output is drained on threads, so a program writing a lot cannot deadlock.
 
-Blocking: host functions cannot suspend (waits panic inside host calls, §16), so `run`, `shell`,
-`status` and `Child.join` block the whole `Vm`, every coroutine included. For concurrency,
+Blocking: `run`, `run_with`, `shell` and `status` wait on a background thread through
+`Ctx::run_async_cancellable` (§22): inside a coroutine only that coroutine waits and the others
+keep running, and on the main fiber the wait runs the event loop. The running
+program is shared (`Arc<Mutex<Child>>`) between the worker and a hook on the operation's
+`CancelToken` (`colibri_interp::CancelToken`, handed out by `run_async_cancellable`): whoever
+cancels runs the hook synchronously, which kills and collects the program before `cancel()`
+returns, and the `Vm`'s drop cancels every operation still running (`Externals::drop`), so a
+program that panics, calls `os.exit` or just ends does not leave children behind (the CLI drops
+its `Vm` before it exits; `crates/colibri-cli/tests/children.rs`). Children are not put in a
+process group, so Ctrl-C from the terminal still reaches them and `status` keeps the terminal.
+On Linux and macOS the worker blocks in `waitid(WEXITED | WNOWAIT)` (no polling, and the process
+is not collected until the lock holder does it, so a kill never hits a reused process number);
+elsewhere it polls `try_wait` with naps growing from 0.1 ms to 5 ms. A cancelled or shut-down
+`run`, `run_with`, `shell` or `status` kills the program it started and nothing that program
+started in turn, the same rule as Python and Go (decided: no process groups, so that Ctrl-C from
+the terminal still reaches the children). `shell("sleep 30")` kills `/bin/sh`; where `sh` is dash it
+forks `sleep`, which survives. For `run`, `run_with` and `shell` the threads that read the killed
+program's output end only when its pipes close, i.e. when the last process holding them has ended.
+If the token is already cancelled when `share` registers the hook, the hook collects the child at
+once and `wait_for` returns without waiting for the (possibly reused) process number. `Child.join` and
+`Child.kill` still block the whole `Vm`: a host object stays borrowed while a method runs, so a
+method cannot suspend. For concurrency with a `Child`,
 `spawn` returns at once with a host class `Child` (`id()`, `try_wait() -> Result[Option[Output]]`,
 `join() -> Result[Output]`, `kill() -> Result[Output]`); a coroutine polls `try_wait` with
 `wait(0.01)` between calls (golden `process_polling_in_a_coroutine`). `try_wait` repeats its
@@ -1652,21 +1768,27 @@ output; weekday numbering; floats for instants and spans.
   created: float?, readonly: bool }`. `kind` is a `str` (`"file"`, `"dir"`, `"symlink"`,
   `"other"`) rather than an enum: std has no enum registration helper yet and the values
   compare and `match` fine as text. `stat` does not follow a final symlink (it uses
-  `symlink_metadata`), unlike `fs.size`/`fs.modified`/`is_dir`. `created` is `none` where the
-  platform does not record it. Times are Unix seconds, as for `fs.modified`.
+  `symlink_metadata`), unlike `is_dir` (the former `fs.size`/`fs.modified` followed it; they are gone, `stat` has both fields, and `fs.stat_follow(path)` is `stat` through a symlink: the size and time of its target). `created` is `none` where the
+  platform does not record it. Times are Unix seconds.
 - `fs.walk(path) -> Result[List[str]]`: every file and folder below `path`, relative to it,
   `/`-separated, sorted lexically as a whole (so a folder precedes its contents). Symlinks are
   listed but never followed, so a link cycle cannot loop. There is no `walk_files`; filter with
   `fs.stat(..).kind`.
-- `fs.remove_empty_dir(path)` is non-recursive and fails with "directory not empty".
-  `fs.remove_dir` stays recursive (`remove_dir_all`) for compatibility; its doc comment says so.
+- `fs.remove_dir(path)` is non-recursive and fails ("cannot remove the folder `p`: it is not empty (use `fs.remove_tree` ...)"); `fs.remove_tree(path)`
+  is the recursive one (`remove_dir_all`). The plain name is the safe one.
+- A removed std function (`fs.size`, `fs.modified`, `fs.remove_empty_dir`, `str.pad_left`,
+  `str.pad_right`) gets a replacement hint on the "the module `std.fs` has no `size`" error
+  (`removed_item_hint` in `colibri-check/src/modules.rs`; add a line there when removing another).
+  The interface text of std has no doc comments (host registrations carry none), so the
+  `stat`/`stat_follow` difference is documented in the comments of `colibri-std/src/fs.rs` and here.
 - `fs.set_modified(path, unix_seconds) -> Result[()]` uses `File::set_modified` on a read-only
   handle (works for files and, on Unix, folders); non-finite or absurd times are an `err`.
 - `str` methods (byte offsets, like `find`): `rfind(sub) -> int?`, `split_once(sep)` and
   `rsplit_once(sep)` -> `(str, str)?` (an empty separator panics, like `split`),
   `pad_left(width)`/`pad_right(width)` padding with a space, and `pad_left_with(width, fill)`/
-  `pad_right_with(width, fill)` where `fill` is a `char`, as in the module functions. Widths
-  count characters; a negative width panics. The `str` module's `pad_left`/`pad_right` are kept.
+  `pad_right_with(width, fill)` where `fill` is a `char`, Widths
+  count characters; a negative width panics. The `str` module has no padding functions: the methods
+  are the only spelling.
   The methods are checker built-ins (`Builtin::StrRFind`, `StrSplitOnce`, `StrRSplitOnce`,
   `StrPadLeft`, `StrPadRight`), not std registrations. No `last_index_of`: `rfind` covers it.
 
@@ -1827,8 +1949,10 @@ under the package root**, including ones nobody imports (skipping folders that s
 folders with their own `colibri.toml`, which are other packages). `import`ed modules of a script
 are loaded as always; stray siblings of a script are not (they are not part of it, §11.1). The
 extra modules come first in initialisation order, the entry last. Nothing runs at load: no
-initialisers, no top-level statements. `colibri check` does *not* use this option, so a file
-that nobody imports stays unchecked there, as before; `colibri test` checks it.
+initialisers, no top-level statements. `colibri check <package folder>` and `colibri test` use
+this option, so a module that nobody imports is checked there; `colibri run` and the single-file
+`colibri check file.colibri` check only what the entry imports (`colibri::check_package_all_with`
+is the library entry for the first).
 
 ### Isolation: fresh module state per test
 
@@ -1929,7 +2053,6 @@ hint: an endless loop? raise the limit with `--budget <steps>` (0 is unlimited)
 
 ### Known limitations
 
-- `colibri check` does not look at modules a package's entry does not import.
 - No parallel runs, no per-test timeout in time (only the step budget), no test attributes
   (`@skip`, `@should_panic`), no setup/teardown hooks other than module initialisers and
   `defer`, no `assert_ne`, no float tolerance helper, no source text in the `assert` message.
@@ -1974,15 +2097,13 @@ unless said otherwise.
     itself panics. Outside a coroutine, `join` on an **unfinished** coroutine panics like `wait`
     does; on a finished one it just returns the value.
 - Builtins (reserved names, `BUILTIN_FNS`, also reserved against host registration):
-  `wait(seconds: float)`, `wait_frames(n: int)`, `wait_until(cond: fn() -> bool)`,
+  `wait(seconds: float)`, `wait_until(cond: fn() -> bool)`,
   `wait_real(seconds: float)`. They are HIR intrinsics (`Intrinsic::Wait` ..) of type `()`. Any
   function may call them; the check is at run time.
   - `wait(s)` counts **scheduler time**: the sum of the `dt` of the ticks (`vm.tick(dt)`,
     `task.tick(dt)`), and under the event loop (below) the real time that passed. A negative `s`
     is 0, NaN panics. The wake test has 1e-9 slack so five `wait(0.1)` equal a `wait(0.5)`.
     `wait(0)` pauses until the next tick (even a `tick(0.0)`).
-  - `wait_frames(n)` waits `max(n, 1)` ticks, a frame being one scheduler tick (the counter
-    advances at the start of every tick).
   - `wait_until(cond)`: the condition is evaluated **on the coroutine's own stack**: first at
     once (if true no pause happens), then once per tick (the coroutine is resumed every tick,
     runs `cond()` and pauses again if false). So a condition may do anything a closure can, and
@@ -2072,7 +2193,7 @@ failure of that coroutine (queued as above). A cancelled coroutine's `join` pani
 - **`colibri run` does not cancel coroutines when `main` returns.** It runs the **event loop**
   (`Vm::run_event_loop`) until no coroutine is left: tick with the time elapsed on the clock,
   then sleep until the next timed wake (`Time`/`Real`); coroutines that must be checked at every
-  tick (`wait_until`, `wait_frames`, `join`) are polled every 1 ms (`run_event_loop_polling`).
+  tick (`wait_until`, `join`) are polled every 1 ms (`run_event_loop_polling`).
   A coroutine panic ends the loop with that panic, so the program exits 101 like a panic in
   `main`. `fn main` returning does not end a program that still has coroutines; `os.exit` does.
   Scheduler time under the loop is real time, so `wait(1.0)` is one second there.
@@ -2883,8 +3004,8 @@ Inside a coroutine nothing changed (they pause). Details:
   (`host_depth > 0`), inside a `Drop` hook, inside a tick, or while shutting down.
 - A wait that nothing can end (a joined coroutine that only waits for a signal, with no timer
   or completion pending) panics "would wait forever" instead of hanging.
-- `wait_frames`, `wait_until`, `wait_real` and `wait_for` still panic on the main fiber: they
-  count ticks or need an emitter, and `main` has no tick to count. They could be added the same
+- `wait_until`, `wait_real` and `wait_for` still panic on the main fiber: they
+  need ticks or an emitter, and `main` has no tick to count. They could be added the same
   way.
 - Time spent in `main` between waits is not credited to scheduler time (as before the loop starts
   after `main`): a `wait(1.0)` coroutine started in main and then 5 s of computation is still due
@@ -2900,23 +3021,29 @@ coroutine runs on a native stack of its own, and a host function called from it 
 like any evaluator frame. So the mechanism is `Ctx::run_async(work)`, called inside the host
 function (host depth 1):
 
-1. `Interp::await_external` allocates an operation id, spawns a thread that runs `work`, sends the
-   result on a one-shot channel and, from a drop guard (so also when `work` panics), posts the id
-   on the scheduler's completion channel (`Externals`: pending and completed sets).
+1. `Interp::await_external` allocates an operation id and starts `work` on the interpreter's
+   thread pool (`Pool`: an idle worker takes it, otherwise a new thread is started; there is no
+   upper limit and a job never waits behind a blocked worker. Workers wait for more work and the
+   ones above four end after 5 s idle). The job sends the result on a
+   one-shot channel and, from a drop guard (so also when `work` panics; a panic does not end the
+   worker), posts the id on the scheduler's completion channel (`Externals`: pending and
+   completed sets).
 2. In a coroutine, `suspend(.., Wake::External(id))` suspends the whole coroutine, host frame
    included. `tick_core` drains the completion channel at the start of every tick and a coroutine
    with `Wake::External(id)` is due when `id` is completed; the host function then reads its result
    and returns normally. `next_wake` contributes infinity for such a coroutine (no polling).
 3. `Interp::clock_sleep` (used by the event loop) waits with `recv_timeout` on the completion
    channel while operations are pending (`Clock::sleep_interruptible`; the wall clock sleeps in
-   it, the default for fake clocks gives real time 1 ms and then moves the fake time by at most
-   1 ms), so it wakes at the earlier of the next timer and a completion, with no busy loop.
+   it, the default for fake clocks waits for real time and does not move the fake time at all, so a
+   program's behaviour at a fake time does not depend on how long an operation really takes;
+   timers then wait for the operations, and an operation that needs a later timer of the same
+   program cannot finish under such a clock), so it wakes at the earlier of the next timer and a completion, with no busy loop.
    `tests/async_ops.rs` asserts one resumption to finish, no polling.
 4. Cancelling a waiting coroutine resumes it with the cancel signal; `run_async` then unwinds the
    host function with a Rust panic payload (`RaisedCancel`, like `Ctx::raise`) that the trampoline
-   turns into `HostFault::Cancel`, which `call_host` maps to `Ctl::Cancel`. The thread finishes by
-   itself and its result is dropped (the id is no longer pending, so the late completion is
-   ignored).
+   turns into `HostFault::Cancel`, which `call_host` maps to `Ctl::Cancel`. Work that already runs
+   finishes by itself and its result is dropped (the id is no longer pending, so the late
+   completion is ignored); work whose thread has not begun it is flagged and skipped.
 5. Outside a coroutine (the main fiber) the call drives the loop until the completion arrives, so
    coroutines started earlier keep running during a blocking `http.get` in `main`. Where driving is
    impossible (a host callback on the way, a `Drop` hook, a tick) it blocks on the channel.
@@ -2931,16 +3058,20 @@ responses: with `--concurrency 4` the server sees four requests in flight at onc
 ### Decisions the design documents did not fix
 
 `wait(s)` on the main fiber runs the loop (rather than panicking); one general facility
-(`Ctx::run_async`) instead of an http-only one, with a thread per operation (no pool: operations
-are rare and long, and a pool would put an arbitrary cap on concurrency); the host function stays
+(`Ctx::run_async`) instead of an http-only one. It first used a thread per operation; it now reuses threads
+(idle ones wait a few seconds, those above four then end). A fixed-size pool was tried and
+dropped: operations that wait (a request answered only after a later request, a long child
+process) held a worker each, so a later operation, even one that would have unblocked them or one
+with a short timeout, waited in the queue behind them (a deadlock for programs that worked with a
+thread per operation). So there is no cap; an operation that waits long holds its thread, which
+costs a stack. The host function stays
 on the coroutine's stack while waiting (so it must hold no borrows; documented); main-fiber `http`
 drives the loop; `HostFault::Cancel` is a new public variant, and `Clock` gained a defaulted
-method. Suspending inside a host function is exactly what §3 said the tree-walker could do but should not (to agree with the bytecode VM): it is allowed only for `run_async`, at host depth 1, and the VM will need the same facility as a re-entrant host call (a pending token that the VM resumes), which is why the API is a closure that returns a value and not a stack trick. `process` (`status`, `Child.join`) still blocks; it could use `run_async` the same way.
+method. Suspending inside a host function is exactly what §3 said the tree-walker could do but should not (to agree with the bytecode VM): it is allowed only for `run_async`, at host depth 1, and the VM will need the same facility as a re-entrant host call (a pending token that the VM resumes), which is why the API is a closure that returns a value and not a stack trick. `process.run`, `run_with`, `shell` and `status` now use it (`run_async_cancellable`, which also tells the work when its coroutine was cancelled); `Child.join` still blocks.
 
 ### Not built
 
-`wait_real`, `wait_until`, `wait_frames`, `wait_for` on the main fiber; a thread pool or a limit
-on simultaneous operations; async `fs` and `process`.
+`wait_real`, `wait_until`, `wait_for` on the main fiber; async `fs`.
 
 ## 23. Phase 2 findings fixes, part A
 

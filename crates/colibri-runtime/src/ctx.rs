@@ -105,11 +105,34 @@ impl<'a> Ctx<'a> {
     /// while this call waits, so the host function must not hold a borrow of host state or
     /// host objects across it (the borrow checker enforces it for [`Ctx::state_mut`]).
     ///
+    /// `work` runs on an idle thread of the `Vm`'s pool, or on a new one: there is no limit,
+    /// and an operation never waits behind another (one may wait for a later one to be
+    /// started). Idle threads are reused; those beyond a few end after some seconds. Work that
+    /// blocks for a long time (a child process) holds its thread meanwhile.
+    ///
     /// If the calling coroutine is cancelled meanwhile, the host function is unwound (its
-    /// destructors run) and the thread's result is discarded; the thread itself runs to the
-    /// end. A panic of `work` becomes a Colibri panic of the caller.
+    /// destructors run) and the result is discarded; `work` that already started runs to the
+    /// end, one whose thread has not begun it never runs. A panic of `work` becomes a Colibri panic of the caller.
     pub fn run_async<R: Send + 'static>(&mut self, work: impl FnOnce() -> R + Send + 'static) -> R {
         match self.interp.await_external(self.fiber, work) {
+            Ok(r) => r,
+            Err(colibri_interp::ExternalError::Cancelled) => {
+                std::panic::resume_unwind(Box::new(RaisedCancel))
+            }
+            Err(colibri_interp::ExternalError::Failed(message)) => self.raise(message),
+        }
+    }
+
+    /// [`Ctx::run_async`] for work that can stop early: `work` is given a [`CancelToken`]
+    /// that is cancelled when the waiting coroutine is cancelled, or when the `Vm` ends while
+    /// the operation runs. The token's hooks run on the cancelling side before it goes on: an
+    /// operation that holds a child process registers a hook that kills it (`process.run`
+    /// does), so nothing is left running and no pool thread waits for a result nobody wants.
+    pub fn run_async_cancellable<R: Send + 'static>(
+        &mut self,
+        work: impl FnOnce(&colibri_interp::CancelToken) -> R + Send + 'static,
+    ) -> R {
+        match self.interp.await_external_with(self.fiber, work) {
             Ok(r) => r,
             Err(colibri_interp::ExternalError::Cancelled) => {
                 std::panic::resume_unwind(Box::new(RaisedCancel))
@@ -130,6 +153,40 @@ impl<'a> Ctx<'a> {
     /// descriptors a serializer reads (DESIGN §7.5).
     pub fn type_defs(&self) -> &[TypeDef] {
         self.interp.type_defs()
+    }
+
+    /// [`Ctx::type_defs`], shared, so a serializer can read them while it calls
+    /// [`Ctx::call_field_default`].
+    pub fn type_defs_shared(&self) -> std::rc::Rc<[TypeDef]> {
+        self.interp.type_defs_shared()
+    }
+
+    /// Computes the default value of a struct field: `f` is [`FieldDef::default`]
+    /// (`reflect::FieldDef`). A panic in the default expression comes back as an error, and
+    /// so does a `f` that is not a function of the loaded program or takes parameters (a
+    /// default never does).
+    pub fn call_field_default(&mut self, f: FnId) -> Result<Value, Error> {
+        match self.interp.fn_param_count(f) {
+            Some(0) => {}
+            Some(n) => {
+                return Err(Error::Convert(format!(
+                    "function {} is not a field default: it takes {n} parameter(s)",
+                    f.0
+                )));
+            }
+            None => {
+                return Err(Error::Convert(format!(
+                    "function {} is not a function of the loaded program",
+                    f.0
+                )));
+            }
+        }
+        let result = self.interp.call(self.fiber, f, Vec::new());
+        self.interp.flush();
+        match result {
+            Ok(v) => Ok(Value(v)),
+            Err(info) => Err(panic_error(self.interp, *info)),
+        }
     }
 
     /// The type id of a struct, enum or class the host declared.

@@ -242,7 +242,7 @@ fn syntax_errors_warnings_and_hints() {
     assert_eq!(diags[0]["severity"], 1);
 
     // A shadowing warning has a label (related information) and a hint.
-    let text = "fn main() {\n    let a = 1\n    let a = 2\n    print(a)\n}\n";
+    let text = "fn main() {\n    let a = 1\n    print(a)\n    let a = 2\n    print(a)\n}\n";
     c.change(&file, text);
     let diags = c.diags(&file);
     assert_eq!(diags.len(), 1, "{diags:?}");
@@ -463,10 +463,10 @@ fn hover_still_works_for_a_program_with_a_type_error_elsewhere() {
     let dir = temp_dir("hover_err");
     let file = dir.join("a.colibri");
     let mut c = Client::start(Some(&dir), Value::Null);
-    let text = "fn main() {\n    let a = 1\n    let b: str = a\n}\n";
+    let text = "fn main() {\n    let a = 1\n    let b: str = a\n    print(b)\n}\n";
     c.open(&file, text);
     assert_eq!(c.diags(&file).len(), 1);
-    let (l, col) = pos_of(text, "a\n}");
+    let (l, col) = pos_of(text, "a\n    print(b)");
     assert_eq!(
         hover_text(&c.hover(&file, l, col)),
         "```colibri\na: int\n```"
@@ -735,5 +735,25 @@ fn ffi_declarations_check_hover_and_format_in_the_editor() {
             .unwrap()
             .contains("needs an `unsafe` block")
     );
+    c.shutdown();
+}
+
+#[test]
+fn unused_variables_are_published_as_warnings() {
+    let dir = temp_dir("unused");
+    let file = dir.join("a.colibri");
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&file, "fn main() {\n    let spare = 1\n}\n");
+    let diags = c.diags(&file);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0]["severity"], 2);
+    assert!(
+        diags[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unused variable `spare`")
+    );
+    // Editors fade unused code (`DiagnosticTag::Unnecessary` = 1).
+    assert_eq!(diags[0]["tags"], serde_json::json!([1]));
     c.shutdown();
 }

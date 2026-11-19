@@ -366,7 +366,11 @@ impl FnCtx<'_, '_> {
 
     fn ident_place(&mut self, id: &ast::Ident, span: Span) -> Option<Place> {
         let name = id.name.as_str();
+        let plain_assign = std::mem::take(&mut self.whole_assign_target);
         if let Some(local) = self.lookup_local(name) {
+            if !plain_assign {
+                self.flags[local.0 as usize].read = true;
+            }
             return Some(self.local_place(local, name));
         }
         match self.ck.values.get(name).copied() {

@@ -21,7 +21,7 @@ v0.5 brings the document in line with the implementation and records the decisio
 made on 2026-11-19 about the road to the VM:
 
 - **Status and markers.** The status line says what is built. Described-but-unbuilt features are
-  marked **[Not built yet]** where they appear (§3.6, §5.2, §6.1, §7.5, §10.2, §12, §13, §13.1,
+  marked **[Not built yet]** where they appear (§3.6, §5.2, §6.1, §7.5, §10.2, §13, §13.1,
   §14.1, §15.2, §15.4, §16.1, §16.5, §16.7). Game-first wording is gone from the goals and the sample (§1, §2).
 - **Vectors leave the language core** (§15.1, Q12): they will become a library of ordinary
   structs built on new operator interfaces `Add`, `Sub`, `Mul` and `Neg`. Decided and planned,
@@ -37,7 +37,7 @@ made on 2026-11-19 about the road to the VM:
   closures (`map`, `filter`, `sort_by`, ...) will be written in Colibri so they can pause
   (§14.3).
 - **macOS and Windows testing** must be set up before the VM (§17.5). CI is down at the moment.
-- **`wait_frames(n)` is being removed** from the language; §14.2 no longer documents it, and
+- **`wait_frames(n)` is removed** from the language; §14.2 no longer documents it, and
   `wait(seconds)` and `wait_until(cond)` remain. Scheduler wording talks about advancing the
   scheduler, not game frames.
 - **Game kit moved out** (§15.6) to [notes/game-kit.md](notes/game-kit.md). The heading stays so
@@ -759,8 +759,8 @@ variants, attributes). The same descriptors serve several features, so they're b
 
 - `json.encode(x)` and `json.decode[T](text) -> Result[T]`, with `@rename("x")`, `@skip` and
   default-on-missing field handling. Other formats (TOML, a binary format) use the same API.
-  `json.encode` and `json.decode[T]` are built; `@rename`, `@skip` and default-on-missing field
-  handling are **[Not built yet]**.
+  `json.encode`, `json.decode[T]` and default-on-missing fields are built; `@rename` and `@skip`
+  are **[Not built yet]**.
 - Deep copy for thread sends (§14.1), `Show`, `Clone`, the leak detector (§11.5), the debugger
   (§16.5) and hot reload layout checks (§16.3).
 - A small read-only reflection API (`reflect.fields[T]()`) for tools such as editors and
@@ -1184,7 +1184,12 @@ reference-typed objects. See §14.1.
   `s.bytes()`, and slicing by byte range `s[0..4]` (panics on a non-boundary).
 - **Slices copy** in v1: `s[0..4]` is a new string, so a small slice never keeps a huge string
   alive. A non-copying view type can come later if profiles ask for it.
-- `StrBuilder` for efficient building; `+` concatenates strings. **[Not built yet]** (`StrBuilder`; `+` is built.)
+- `StrBuilder` for efficient building; `+` concatenates strings. `s += x` in a loop copies the
+  string every time, so build long text with `let b = StrBuilder()`, then `b.push(s)`,
+  `b.push_char(c)` or `b.write(value)` (anything with `Show`), and `b.to_str()` at the end. It also
+  has `len()`, `is_empty()` and `clear()`, and it is a reference type like `List`. Like the other
+  built-in classes (`Error`, `Coroutine`, `CoGroup`, `Signal`) it is built only with its
+  function, never with `StrBuilder {}`, and a program cannot define a type with one of these names.
 
 ---
 
@@ -1237,6 +1242,10 @@ let c = cart.new_cart("Ana")
   implicit package, so a script can `import helpers` from `helpers.colibri` next to it.
 - **Top-level statements are allowed only in the entry file of a script** (Q15). Imported modules
   hold declarations only. In a package with `colibri.toml`, execution starts at `fn main()`.
+  A package folder may also hold runnable scripts (an `examples/demo.colibri` that nothing
+  imports): `colibri check` and `colibri test` on the folder type-check their statements but
+  never run them.
+- **Package and dependency names cannot be keywords**, because `import fn` could not be written.
 
 ### 13.1 Standard library [Proposed]
 
@@ -1698,6 +1707,11 @@ Goal: edit a `.colibri` file while the program runs and see the change without r
 Errors show the source span, a short message, and a hint where possible (Rust/Elm style), using a
 crate like `ariadne` or `miette`. The type checker keeps going after the first error to report
 several at once.
+
+Warnings never change an exit code. Two are built: an **unused local variable** and an **unused
+import**, reported only for the program's own packages, not for its dependencies. A name that
+starts with `_` is never reported, so an import kept for what its module does when it loads is
+written `import registry as _registry`.
 
 ### 16.5 Editor support, debugging and profiling [Proposed]
 

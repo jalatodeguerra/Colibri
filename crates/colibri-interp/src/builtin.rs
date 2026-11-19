@@ -7,12 +7,13 @@
 use std::rc::Rc;
 
 use colibri_check::hir::Builtin;
+use colibri_check::types::STR_BUILDER_TYPE;
 use colibri_syntax::Span;
 
 use crate::ctl::{Ctl, Eval};
 use crate::eval::Interp;
 use crate::fiber::Fiber;
-use crate::heap::{ListError, ListObj, MapObj, OutOfBounds, SetObj, Violation};
+use crate::heap::{ClassObj, ListError, ListObj, MapObj, OutOfBounds, SetObj, Violation};
 use crate::ordered::OrderedMap;
 use crate::show::show;
 use crate::value::Value;
@@ -36,6 +37,26 @@ fn set_of(v: &Value) -> Option<Rc<SetObj>> {
     match v {
         Value::Set(s) => Some(Rc::clone(s)),
         _ => None,
+    }
+}
+
+/// Whether a value can never be compared by a user-written `Eq`: the primitives (a user
+/// cannot implement `Eq` for them) and tuples of them. Everything else might be.
+pub(crate) fn never_user_eq(v: &Value) -> bool {
+    match v {
+        Value::Unit
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::U64(_)
+        | Value::Ptr(_)
+        | Value::Float(_)
+        | Value::F32(_)
+        | Value::Vec(_)
+        | Value::IVec(_)
+        | Value::Char(_)
+        | Value::Str(_) => true,
+        Value::Tuple(items) => items.iter().all(never_user_eq),
+        _ => false,
     }
 }
 
@@ -73,9 +94,25 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
             | B::ListMax
             | B::ListSum
             | B::ListJoin
+            | B::ListZip
+            | B::ListFlatMap
+            | B::ListSorted
+            | B::ListSortedBy
+            | B::ListDedup
+            | B::ListChunks
+            | B::ListWindows
             | B::ListSlice
             | B::SetFromList
+            | B::RangeToList
+            | B::SetUnion
+            | B::SetIntersection
+            | B::SetDifference
+            | B::SetSymmetricDifference
+            | B::SetIsSubset
+            | B::SetIsSuperset
+            | B::SetIsDisjoint
             | B::MapKeys
+            | B::MapEntries
             | B::MapValues
             | B::Iter
             | B::StrChars
@@ -93,6 +130,7 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
             | B::StrPadLeft
             | B::StrPadRight
             | B::StrSlice
+            | B::StrBuilderToStr
     );
     if !walks {
         return None;
@@ -102,6 +140,23 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
         Value::Str(s) => s.len(),
         Value::Map(m) => m.len(),
         Value::Set(s) => s.len(),
+        // A range too long for `to_list` panics there, so the charge stops at the limit
+        // (a saturated length would otherwise exhaust the budget first).
+        // Making an iterator over a range is O(1): what it yields is charged as it is
+        // consumed, not here.
+        Value::Range(_) if op == B::Iter => return None,
+        Value::Range(r) => {
+            let cap = if op == B::RangeToList {
+                crate::strfn::MAX_RANGE_LIST + 1
+            } else {
+                u64::MAX
+            };
+            usize::try_from(r.len().min(cap)).unwrap_or(usize::MAX)
+        }
+        Value::Obj(o) => match o.field(1) {
+            Some(Value::Int(n)) => usize::try_from(n).unwrap_or(0),
+            _ => return None,
+        },
         _ => return None,
     })
 }
@@ -178,6 +233,16 @@ impl Interp {
                 return self.cogroup_builtin(fiber, op, &recv, span);
             }
             Builtin::SignalEmit => return self.signal_builtin(fiber, &recv, span),
+            Builtin::StrBuilderNew => Value::Obj(ClassObj::new(
+                STR_BUILDER_TYPE,
+                vec![Value::list(Vec::new()), Value::Int(0)],
+            )),
+            Builtin::StrBuilderPush
+            | Builtin::StrBuilderPushChar
+            | Builtin::StrBuilderLen
+            | Builtin::StrBuilderIsEmpty
+            | Builtin::StrBuilderClear
+            | Builtin::StrBuilderToStr => return self.str_builder_op(fiber, op, args, span),
             Builtin::SetNew => Value::Set(SetObj::new(OrderedMap::new())),
             Builtin::SetFromList => {
                 let Some(list) = list_of(&recv) else {
@@ -226,6 +291,13 @@ impl Interp {
             | Builtin::ListMax
             | Builtin::ListSum
             | Builtin::ListJoin
+            | Builtin::ListZip
+            | Builtin::ListFlatMap
+            | Builtin::ListSorted
+            | Builtin::ListSortedBy
+            | Builtin::ListDedup
+            | Builtin::ListChunks
+            | Builtin::ListWindows
             | Builtin::ListSlice => {
                 let Some(list) = list_of(&recv) else {
                     return Err(bad(self, fiber));
@@ -253,11 +325,14 @@ impl Interp {
             | Builtin::RangeLen
             | Builtin::RangeIsEmpty
             | Builtin::RangeRev
+            | Builtin::RangeToList
             | Builtin::Iter
             | Builtin::IterEnumerate => return self.range_op(fiber, op, args, span),
             Builtin::MapLen
             | Builtin::MapIsEmpty
             | Builtin::MapGet
+            | Builtin::MapGetOr
+            | Builtin::MapEntries
             | Builtin::MapContainsKey
             | Builtin::MapInsert
             | Builtin::MapRemove
@@ -274,7 +349,14 @@ impl Interp {
             | Builtin::SetAdd
             | Builtin::SetRemove
             | Builtin::SetContains
-            | Builtin::SetClear => {
+            | Builtin::SetClear
+            | Builtin::SetUnion
+            | Builtin::SetIntersection
+            | Builtin::SetDifference
+            | Builtin::SetSymmetricDifference
+            | Builtin::SetIsSubset
+            | Builtin::SetIsSuperset
+            | Builtin::SetIsDisjoint => {
                 let Some(set) = set_of(&recv) else {
                     return Err(bad(self, fiber));
                 };
@@ -436,9 +518,10 @@ impl Interp {
                 | Builtin::MapIsEmpty
                 | Builtin::MapKeys
                 | Builtin::MapValues
+                | Builtin::MapEntries
                 | Builtin::MapClear
         ) {
-            let keys = if self.has_custom_eq() {
+            let keys = if self.has_custom_eq() && !args.get(1).is_some_and(never_user_eq) {
                 map.keys()
             } else {
                 Vec::new()
@@ -449,6 +532,16 @@ impl Interp {
             Builtin::MapLen => Value::Int(map.len() as i64),
             Builtin::MapIsEmpty => Value::Bool(map.is_empty()),
             Builtin::MapGet => Value::option(args.get(1).and_then(|k| map.get(k))),
+            Builtin::MapGetOr => match args.get(1).and_then(|k| map.get(k)) {
+                Some(v) => v,
+                None => args.get(2).cloned().unwrap_or(Value::Unit),
+            },
+            Builtin::MapEntries => Value::list(
+                map.snapshot()
+                    .into_iter()
+                    .map(|(k, v)| Value::tuple(vec![k, v]))
+                    .collect(),
+            ),
             Builtin::MapContainsKey => {
                 Value::Bool(args.get(1).is_some_and(|k| map.contains_key(k)))
             }
@@ -506,11 +599,23 @@ impl Interp {
         args: &mut [Value],
         span: Span,
     ) -> Eval {
+        if matches!(
+            op,
+            Builtin::SetUnion
+                | Builtin::SetIntersection
+                | Builtin::SetDifference
+                | Builtin::SetSymmetricDifference
+                | Builtin::SetIsSubset
+                | Builtin::SetIsSuperset
+                | Builtin::SetIsDisjoint
+        ) {
+            return self.set_algebra(fiber, op, set, args, span);
+        }
         if !matches!(
             op,
             Builtin::SetLen | Builtin::SetIsEmpty | Builtin::SetClear
         ) {
-            let keys = if self.has_custom_eq() {
+            let keys = if self.has_custom_eq() && !args.get(1).is_some_and(never_user_eq) {
                 set.snapshot()
             } else {
                 Vec::new()
@@ -555,6 +660,117 @@ impl Interp {
             },
             _ => return Err(self.internal(fiber, span, "ill-typed built-in call")),
         })
+    }
+
+    /// Whether `item` is in the set whose elements are `items`: by the user-written `Eq` of
+    /// the element type when `scan` (some element may have one), else by structure.
+    fn set_has(
+        &mut self,
+        fiber: &mut Fiber,
+        set: &SetObj,
+        items: &[Value],
+        item: &Value,
+        scan: bool,
+        span: Span,
+    ) -> Eval<bool> {
+        if !scan {
+            return Ok(set.contains(item));
+        }
+        for x in items {
+            // One step per comparison actually made: a user `Eq` may do anything.
+            self.charge(fiber, span, 1)?;
+            if self.eq_deep(fiber, x, item, span)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// `union`, `intersection`, `difference`, `symmetric_difference` (new sets: the elements of
+    /// the receiver in its order, then those of `other`) and `is_subset`, `is_superset`,
+    /// `is_disjoint`. Both sets are held while a user `Eq` may run.
+    fn set_algebra(
+        &mut self,
+        fiber: &mut Fiber,
+        op: Builtin,
+        set: &Rc<SetObj>,
+        args: &mut [Value],
+        span: Span,
+    ) -> Eval {
+        let Some(other) = args.get(1).and_then(set_of) else {
+            return Err(self.internal(fiber, span, "ill-typed built-in call"));
+        };
+        self.charge(fiber, span, other.len())?;
+        let (left, right) = (set.snapshot(), other.snapshot());
+        let result = {
+            let _hold_left = set.iter_hold();
+            let _hold_right = other.iter_hold();
+            self.set_algebra_inner(fiber, op, (set, &left), (&other, &right), span)
+        };
+        self.release_all(left);
+        self.release_all(right);
+        result
+    }
+
+    fn set_algebra_inner(
+        &mut self,
+        fiber: &mut Fiber,
+        op: Builtin,
+        (lset, left): (&SetObj, &[Value]),
+        (rset, right): (&SetObj, &[Value]),
+        span: Span,
+    ) -> Eval {
+        // Only elements that may have a user `Eq` need the scan; all elements of a set share
+        // one type, so the first of each side tells.
+        let scan = self.has_custom_eq()
+            && !(left.first().is_none_or(never_user_eq) && right.first().is_none_or(never_user_eq));
+        // Which elements of `side` are (not) in `other`.
+        let pick = |this: &mut Self,
+                    fiber: &mut Fiber,
+                    side: &[Value],
+                    other: (&SetObj, &[Value]),
+                    wanted: bool|
+         -> Eval<Vec<Value>> {
+            let mut out = Vec::new();
+            for x in side {
+                if this.set_has(fiber, other.0, other.1, x, scan, span)? == wanted {
+                    out.push(x.clone());
+                }
+            }
+            Ok(out)
+        };
+        let (l, r) = ((lset, left), (rset, right));
+        let items = match op {
+            Builtin::SetUnion => {
+                let mut items = left.to_vec();
+                items.extend(pick(self, fiber, right, l, false)?);
+                items
+            }
+            Builtin::SetIntersection => pick(self, fiber, left, r, true)?,
+            Builtin::SetDifference => pick(self, fiber, left, r, false)?,
+            Builtin::SetSymmetricDifference => {
+                let mut items = pick(self, fiber, left, r, false)?;
+                items.extend(pick(self, fiber, right, l, false)?);
+                items
+            }
+            Builtin::SetIsSubset => {
+                return Ok(Value::Bool(pick(self, fiber, left, r, false)?.is_empty()));
+            }
+            Builtin::SetIsSuperset => {
+                return Ok(Value::Bool(pick(self, fiber, right, l, false)?.is_empty()));
+            }
+            Builtin::SetIsDisjoint => {
+                return Ok(Value::Bool(pick(self, fiber, left, r, true)?.is_empty()));
+            }
+            _ => return Err(self.internal(fiber, span, "ill-typed built-in call")),
+        };
+        let out = SetObj::new(OrderedMap::new());
+        for item in items {
+            if let Ok((_, Some(spare))) = out.add(item) {
+                self.release(spare);
+            }
+        }
+        Ok(Value::Set(out))
     }
 
     /// The `Show` text of a value, for panic messages.

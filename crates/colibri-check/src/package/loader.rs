@@ -302,12 +302,17 @@ impl Loader<'_> {
             let path = dir.join(&name);
             let rel_path = rel.join(&name);
             if self.fs.is_dir(&path) {
+                // A link to a folder is not followed: its files are reached where they are
+                // (and a link back up the tree would never end).
+                if self.fs.is_symlink(&path) {
+                    continue;
+                }
                 let own_tree = self.fs.is_file(&path.join(MANIFEST_FILE));
                 if !name.starts_with('.') && !own_tree {
                     self.add_tree_modules(tree, &path, &rel_path);
                 }
             } else if name.ends_with(&format!(".{SOURCE_EXT}"))
-                && !self.by_path.contains_key(&normalize(&path))
+                && !self.by_path.contains_key(&self.fs.canonical(&path))
                 && let Ok(text) = self.fs.read(&path)
             {
                 let id = self.add_module(&path, text, tree, &rel_path, false);
@@ -341,7 +346,7 @@ impl Loader<'_> {
             entry,
             imports: Vec::new(),
         }));
-        self.by_path.insert(normalize(path), id);
+        self.by_path.insert(self.fs.canonical(path), id);
         id
     }
 
@@ -478,7 +483,7 @@ impl Loader<'_> {
                 | Candidate::Dependency {
                     file, tree, rel, ..
                 } => {
-                    let key = normalize(&file);
+                    let key = self.fs.canonical(&file);
                     if let Some(&id) = self.by_path.get(&key) {
                         return ImportTarget::Module(id);
                     }
@@ -632,6 +637,15 @@ impl Loader<'_> {
                     .unwrap_or_default()
             })
             .collect();
+        // A module nothing imports (loaded by `all_modules`) is a script of its own.
+        let mut imported = vec![false; n];
+        for (from, targets) in edges.iter().enumerate() {
+            for &to in targets {
+                if to != from {
+                    imported[to] = true;
+                }
+            }
+        }
         let mut order: Vec<usize> = Vec::with_capacity(n);
         let mut seen = vec![false; n];
         seen[entry] = true;
@@ -691,6 +705,7 @@ impl Loader<'_> {
                 name: disc.name,
                 package: disc.package,
                 entry: disc.entry,
+                script: !disc.entry && !imported[old],
                 dependency: self.trees[disc.tree].is_dep,
                 ffi: self.trees[disc.tree].ffi,
                 imports,

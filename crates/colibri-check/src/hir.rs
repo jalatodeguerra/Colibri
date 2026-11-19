@@ -72,6 +72,10 @@ pub struct Program {
     /// standard library), in source order: the entry module first, then the other modules in
     /// load order (ARCHITECTURE §15). Their bodies are ordinary entries of [`Program::fns`].
     pub tests: Vec<TestDef>,
+    /// The `test` blocks of script modules (modules of a package that nothing imports and
+    /// that have top-level statements): checked, but never run, because running them would need
+    /// the script's own initialisers.
+    pub skipped_tests: Vec<TestDef>,
     /// The C layout of every `@repr(C)` struct (DESIGN §15.2), by type.
     pub c_layouts: std::collections::BTreeMap<TypeId, CLayout>,
 }
@@ -259,6 +263,10 @@ pub struct FieldDef {
     /// A `weak` class field (DESIGN §11.5): it stores a weak reference, and reading it gives
     /// `ty?`.
     pub weak: bool,
+    /// For a field of a struct that has a default value, a zero-argument function that
+    /// computes it. Literals inline the default expression; this is for code that builds a
+    /// struct without a literal (`json.decode`), where an absent field takes its default.
+    pub default: Option<FnId>,
 }
 
 #[derive(Clone, Debug)]
@@ -364,9 +372,6 @@ pub struct Body {
     /// the engine takes the final value of local 0 back out and the caller writes it to the
     /// receiver place (ARCHITECTURE §4).
     pub mutates_self: bool,
-    /// The body reads its hidden type-argument vector at runtime (ARCHITECTURE §1). Nothing
-    /// does yet (no `json.decode[T]`, no `e.is[T]()`), so the engines may drop `type_args`.
-    pub needs_type_args: bool,
 }
 
 /// How a local's slot is stored.
@@ -842,8 +847,6 @@ pub enum Intrinsic {
     NumMethod(NumMethod, Num),
     /// `wait(seconds: float)`: pauses the running coroutine for scheduler time.
     Wait,
-    /// `wait_frames(n: int)`: pauses for `n` ticks.
-    WaitFrames,
     /// `wait_until(cond: fn() -> bool)`: pauses until `cond()` is true, checked at every tick.
     WaitUntil,
     /// `wait_real(seconds: float)`: pauses for wall-clock time.
@@ -939,6 +942,10 @@ pub enum Builtin {
     MapLen,
     MapIsEmpty,
     MapGet,
+    /// `m.get_or(key, default)`
+    MapGetOr,
+    /// `m.entries() -> List[(K, V)]`
+    MapEntries,
     MapContainsKey,
     MapInsert,
     MapRemove,
@@ -951,8 +958,23 @@ pub enum Builtin {
     SetRemove,
     SetContains,
     SetClear,
+    SetUnion,
+    SetIntersection,
+    SetDifference,
+    SetSymmetricDifference,
+    SetIsSubset,
+    SetIsSuperset,
+    SetIsDisjoint,
     /// `Set[T]()`
     SetNew,
+    /// `StrBuilder()`
+    StrBuilderNew,
+    StrBuilderPush,
+    StrBuilderPushChar,
+    StrBuilderLen,
+    StrBuilderIsEmpty,
+    StrBuilderClear,
+    StrBuilderToStr,
     /// `Set(list)`
     SetFromList,
     // ---- closure-taking and ordering list methods (DESIGN §6.3, §9.2) ----
@@ -972,6 +994,16 @@ pub enum Builtin {
     ListMax,
     ListSum,
     ListJoin,
+    /// `xs.zip(ys)`: pairs up to the shorter list.
+    ListZip,
+    ListFlatMap,
+    /// `xs.sorted()`: a sorted copy.
+    ListSorted,
+    ListSortedBy,
+    /// `xs.dedup()`: removes consecutive equal elements in place.
+    ListDedup,
+    ListChunks,
+    ListWindows,
     /// `xs[lo..hi]`: `args` are the list, `lo` and `hi` as `int?` (`none` for an open end) and
     /// whether `hi` is inclusive.
     ListSlice,
@@ -1005,6 +1037,8 @@ pub enum Builtin {
     RangeIsEmpty,
     /// `r.rev()`: an iterator that counts down.
     RangeRev,
+    /// `r.to_list()`: the integers of the range as a `List[int]`.
+    RangeToList,
     /// `x.iter()` on a `List`, `Set`, `Map` or `Range`: an iterator object (`Iter[T]`).
     Iter,
     /// `it.enumerate()` on an iterator: `Iter[(int, T)]`. The receiver is already an `Iter`.

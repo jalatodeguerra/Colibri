@@ -1,0 +1,23 @@
+fn work() {
+    let xs = [3, 1, 2]
+    let flat = xs.flat_map(fn(x) {
+        wait(1.0)
+        return [x, x]
+    })
+    print(flat)
+    let sorted = xs.sorted_by(fn(a, b) {
+        wait(1.0)
+        return a - b
+    })
+    print(sorted)
+}
+
+fn main() {
+    go work()
+    for i in 0..40 {
+        task.tick(1.0)
+    }
+}
+
+// expect: [3, 3, 1, 1, 2, 2]
+// expect: [1, 2, 3]

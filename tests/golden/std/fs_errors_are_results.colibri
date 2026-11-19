@@ -18,7 +18,7 @@ fn main() -> Result[()] {
     print(fs.remove(missing).is_err())
     print(fs.copy(missing, path.join(dir, "copy.txt")).is_err())
     print(fs.rename(missing, path.join(dir, "other.txt")).is_err())
-    print(fs.size(missing).is_err())
+    print(fs.stat(missing).is_err())
     // A folder is not a file, and a file is not a folder.
     let folder = path.join(dir, "folder")
     fs.create_dir(folder)?

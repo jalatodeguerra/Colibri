@@ -1,0 +1,51 @@
+import json
+
+fn default_name() -> str {
+    return "anon"
+}
+
+const BASE: int = 40
+
+struct Point {
+    x: int
+    y: int = 0
+}
+
+struct Player {
+    name: str = default_name()
+    tags: List[str] = []
+    hp: int = BASE + 2
+    at: Point = Point { x: 1, y: 2 }
+    nick: str?
+    boost: int? = some(7)
+    score: float = 1.5
+}
+
+struct Team {
+    title: str
+    lead: Player
+    others: List[Player] = []
+}
+
+fn main() {
+    // An absent field takes its default; the default may be any expression.
+    print(json.decode[Player](r"""{}"""))
+    // A field that is present wins over its default, `null` included for an option.
+    print(json.decode[Player](r"""{"name": "Ann", "tags": ["a"], "hp": 3, "nick": "A", "boost": null}"""))
+    // Defaults apply at every level.
+    print(json.decode[Team](r"""{"title": "T", "lead": {"at": {"x": 9}}, "others": [{}, {"hp": 1}]}"""))
+    let t: Team = json.decode(r"""{"title": "T", "lead": {}}""").expect("decodes")
+    print(t.others.len())
+    // A field without a default is still required, whatever the defaults around it.
+    print(json.decode[Point](r"""{}"""))
+    print(json.decode[Team](r"""{"lead": {}}"""))
+    print(json.decode[Team](r"""{"title": "T", "lead": {"at": {"y": 1}}}"""))
+}
+
+// expect: ok(Player { name: "anon", tags: [], hp: 42, at: Point { x: 1, y: 2 }, nick: none, boost: some(7), score: 1.5 })
+// expect: ok(Player { name: "Ann", tags: ["a"], hp: 3, at: Point { x: 1, y: 2 }, nick: some("A"), boost: none, score: 1.5 })
+// expect: ok(Team { title: "T", lead: Player { name: "anon", tags: [], hp: 42, at: Point { x: 9, y: 0 }, nick: none, boost: some(7), score: 1.5 }, others: [Player { name: "anon", tags: [], hp: 42, at: Point { x: 1, y: 2 }, nick: none, boost: some(7), score: 1.5 }, Player { name: "anon", tags: [], hp: 1, at: Point { x: 1, y: 2 }, nick: none, boost: some(7), score: 1.5 }] })
+// expect: 0
+// expect: err(json: at `$`: the object has no field `x` (a `Point` needs it))
+// expect: err(json: at `$`: the object has no field `title` (a `Team` needs it))
+// expect: err(json: at `$.lead.at`: the object has no field `x` (a `Point` needs it))

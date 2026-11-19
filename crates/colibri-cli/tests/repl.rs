@@ -130,7 +130,7 @@ fn closures_survive_later_declarations() {
 
 #[test]
 fn coroutines_run_when_due() {
-    let input = "fn work() {\n  print(\"a\")\n  wait_frames(1)\n  print(\"b\")\n}\nlet c = go work()\nprint(\"after\")\n";
+    let input = "fn work() {\n  print(\"a\")\n  wait(0.0)\n  print(\"b\")\n}\nlet c = go work()\nprint(\"after\")\n";
     let (out, err) = repl(input);
     assert_eq!(out, "a\nb\nafter\n", "{err}");
 }
@@ -169,5 +169,12 @@ fn an_entry_runs_top_to_bottom() {
 fn only_the_last_piece_of_an_entry_shows_its_value() {
     let (out, err) = repl("let y = 1; y + 1; let z = y; print(f()); fn f() -> int => z\n");
     assert_eq!(out, "1\n");
+    assert_eq!(err, "");
+}
+
+#[test]
+fn the_repl_does_not_show_unused_code_warnings() {
+    let (out, err) = repl("import math\nfn f() {\n  let unused = 1\n}\nf()\n");
+    assert_eq!(out, "", "{err}");
     assert_eq!(err, "");
 }

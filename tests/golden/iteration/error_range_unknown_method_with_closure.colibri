@@ -1,0 +1,4 @@
+// allow: unused
+fn main() {
+    let xs = (0..3).map(fn(x) => x * 2) // error: `Range[int]` has no method `map`
+}

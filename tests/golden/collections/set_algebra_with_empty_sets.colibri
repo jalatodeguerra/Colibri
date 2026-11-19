@@ -1,0 +1,31 @@
+fn main() {
+    let a = Set(["x", "y"])
+    let empty = Set[str]()
+    print(a.union(empty))
+    print(empty.union(a))
+    print(a.intersection(empty))
+    print(a.difference(empty))
+    print(empty.difference(a))
+    print(a.symmetric_difference(empty))
+    print(empty.is_subset(a))
+    print(a.is_subset(empty))
+    print(a.is_superset(empty))
+    print(empty.is_superset(a))
+    print(empty.is_disjoint(a))
+    print(empty.is_subset(empty))
+    print(empty.is_disjoint(empty))
+}
+
+// expect: Set(["x", "y"])
+// expect: Set(["x", "y"])
+// expect: Set([])
+// expect: Set(["x", "y"])
+// expect: Set([])
+// expect: Set(["x", "y"])
+// expect: true
+// expect: false
+// expect: true
+// expect: false
+// expect: true
+// expect: true
+// expect: true

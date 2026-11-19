@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let a = u8.BIG // error: `u8` has no constant `BIG`
     let b = int.MAXIMUM // error: `int` has no constant `MAXIMUM`

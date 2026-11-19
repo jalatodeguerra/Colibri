@@ -22,7 +22,7 @@ fn main() -> Result[()] {
         ok(_) => print("unexpected")
         err(e) => print(e.message().replace(os.temp_dir(), "<dir>"))
     }
-    fs.remove_dir(root)?
+    fs.remove_tree(root)?
     return ok(())
 }
 

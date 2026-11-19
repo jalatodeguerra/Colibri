@@ -1,3 +1,4 @@
+// allow: unused
 class Res { name: str }
 
 fn listener(s: Signal, tag: str) {

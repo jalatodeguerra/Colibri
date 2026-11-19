@@ -48,6 +48,21 @@ pub fn run(options: &Options) -> ExitCode {
     }
     vm.set_instruction_budget((options.budget > 0).then_some(options.budget));
 
+    // A script's tests are not run by a folder: its initialisers would run.
+    let mut skipped: Vec<(String, usize)> = Vec::new();
+    for t in vm.skipped_tests().into_iter().filter(|t| t.root) {
+        match skipped.iter_mut().find(|(f, _)| *f == t.file) {
+            Some((_, n)) => *n += 1,
+            None => skipped.push((t.file, 1)),
+        }
+    }
+    for (file, n) in &skipped {
+        eprintln!(
+            "skipped {n} test{} in {file}: a script's tests run with `colibri test {file}`",
+            if *n == 1 { "" } else { "s" }
+        );
+    }
+
     let all: Vec<colibri::TestInfo> = vm.tests().into_iter().filter(|t| t.root).collect();
     let selected: Vec<&colibri::TestInfo> = all
         .iter()

@@ -1,0 +1,16 @@
+class Tag {
+    name: str
+}
+
+impl Eq for Tag {
+    fn eq(self, other: Tag) -> bool => self.name == other.name
+}
+
+fn main() {
+    let xs = [Tag { name: "a" }, Tag { name: "a" }, Tag { name: "b" }]
+    xs.dedup()
+    print(xs.len())
+}
+
+// expect: 2
+// drops: a, a, b

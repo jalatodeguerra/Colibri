@@ -83,7 +83,6 @@ const RESERVED_NAMES: &[&str] = &[
     "ok",
     "err",
     "wait",
-    "wait_frames",
     "wait_until",
     "wait_real",
     "wait_for",
@@ -212,6 +211,9 @@ impl VmBuilder {
             host_fns: Vec::new(),
             host_consts: Vec::new(),
             modules: Vec::new(),
+            pending: Vec::new(),
+            bulk: false,
+            failed: Vec::new(),
             reload: None,
         }
     }
@@ -239,9 +241,54 @@ pub struct Vm {
     /// The named host modules (`vm.module("physics")`) that have something registered, in the
     /// order they got it. The default `host` module always exists and is not listed.
     modules: Vec<String>,
+    /// Standard modules declared with [`Vm::lazy_std_module`] and not registered yet, by their
+    /// interface name (`std.fs`). They are in `modules` already, so the order of the modules
+    /// does not depend on what a program imports.
+    pending: Vec<(String, LazyModule)>,
+    /// A module is being registered in one go: each registration skips the interface check,
+    /// and the whole module is checked once at the end.
+    bulk: bool,
+    /// Lazy modules whose registration failed (or is running), with the reason.
+    failed: Vec<(String, String)>,
     /// Where the program came from and which files it was built from, for
     /// [`Vm::reload_changed`]. Kept when a load fails, so that fixing the file loads it.
     reload: Option<ReloadState>,
+}
+
+/// Registers a module that was declared lazily.
+type LazyModule = fn(&mut Vm) -> Result<(), Error>;
+
+/// Marks a `Vm` as registering a module in one go for as long as it lives, also when the
+/// registration panics.
+struct BulkGuard<'a> {
+    vm: &'a mut Vm,
+    before: bool,
+}
+
+impl<'a> BulkGuard<'a> {
+    fn new(vm: &'a mut Vm) -> Self {
+        let before = std::mem::replace(&mut vm.bulk, true);
+        BulkGuard { vm, before }
+    }
+}
+
+impl std::ops::Deref for BulkGuard<'_> {
+    type Target = Vm;
+    fn deref(&self) -> &Vm {
+        self.vm
+    }
+}
+
+impl std::ops::DerefMut for BulkGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Vm {
+        self.vm
+    }
+}
+
+impl Drop for BulkGuard<'_> {
+    fn drop(&mut self) {
+        self.vm.bulk = self.before;
+    }
 }
 
 impl Default for Vm {
@@ -347,6 +394,7 @@ impl Vm {
     /// # }
     /// ```
     pub fn module(&mut self, name: &str) -> HostModule<'_> {
+        let _ = self.materialize(name);
         HostModule {
             vm: self,
             name: name.to_string(),
@@ -360,11 +408,149 @@ impl Vm {
     /// crate registers its modules, and it is the only way to get one: [`Vm::module`] refuses
     /// the reserved name `std`.
     pub fn std_module(&mut self, name: &str) -> HostModule<'_> {
+        let name = format!("{}{name}", colibri_check::host::STD_PREFIX);
+        // A failure is kept and reported by the load that imports the module.
+        let _ = self.materialize(&name);
         HostModule {
             vm: self,
-            name: format!("{}{name}", colibri_check::host::STD_PREFIX),
+            name,
             std: true,
         }
+    }
+
+    /// Declares the standard module `name` without registering it: `register` runs the first
+    /// time something needs the module (a program that imports it, [`Vm::std_module`] or
+    /// [`Vm::module`] with its name, a session). Until then the module has a name, so
+    /// `import` finds it and [`Vm::module_names`] lists it, and no interface text is
+    /// generated, parsed or checked for it. `register` must register into `name` only (not
+    /// enforced). A registration that fails (a host type of the embedder with the name of
+    /// one of the module's) is an error of the load that imports the module.
+    ///
+    /// For the `colibri-std` crate; not part of the embedding API, hence hidden.
+    #[doc(hidden)]
+    pub fn lazy_std_module(&mut self, name: &str, register: fn(&mut Vm) -> Result<(), Error>) {
+        let name = format!("{}{name}", colibri_check::host::STD_PREFIX);
+        if self.pending.iter().any(|(n, _)| *n == name) || self.modules.contains(&name) {
+            return;
+        }
+        self.note_module(&name);
+        self.pending.push((name, register));
+    }
+
+    /// Registers the module `name` if it was declared lazily and not registered yet. A module
+    /// whose registration failed (now or earlier) reports that failure every time: what it
+    /// had registered before failing stays, so it is not registered again.
+    fn materialize(&mut self, name: &str) -> Result<(), Error> {
+        if let Some((_, message)) = self.failed.iter().find(|(n, _)| n == name) {
+            return Err(Error::Registration {
+                name: name.to_string(),
+                message: message.clone(),
+            });
+        }
+        let Some(at) = self.pending.iter().position(|(n, _)| n == name) else {
+            return Ok(());
+        };
+        let (_, register) = self.pending.remove(at);
+        self.register_in_bulk(name, register)
+    }
+
+    /// Runs `register` for `module` with the interface check done once at its end. A failure
+    /// (a host type of the embedder with the name of one of the module's, say) is an error
+    /// of the load or call that needed the module, and is remembered. The module counts as
+    /// failed while `register` runs, so that a panic in it leaves it failed too.
+    fn register_in_bulk(&mut self, module: &str, register: LazyModule) -> Result<(), Error> {
+        self.failed.push((
+            module.to_string(),
+            "its registration did not finish (it panicked)".to_string(),
+        ));
+        let at = self.failed.len() - 1;
+        let result = {
+            let mut guard = BulkGuard::new(self);
+            register(&mut guard)
+        };
+        let outcome = result
+            .map_err(|e| format!("registering the module failed: {e}"))
+            .and_then(|()| {
+                self.validate_interfaces(module)
+                    .map_err(|m| format!("the interface of the module is not valid: {m}"))
+            });
+        match outcome {
+            Ok(()) => {
+                self.failed.remove(at);
+                Ok(())
+            }
+            Err(message) => {
+                self.failed[at].1 = message.clone();
+                Err(Error::Registration {
+                    name: module.to_string(),
+                    message,
+                })
+            }
+        }
+    }
+
+    /// Registers every module that was declared lazily and not registered yet; the first
+    /// failure is returned (the others are still tried).
+    #[doc(hidden)]
+    pub fn materialize_all(&mut self) -> Result<(), Error> {
+        let mut first = None;
+        while let Some((name, register)) = self.pending.pop() {
+            if let Err(e) = self.register_in_bulk(&name, register) {
+                first.get_or_insert(e);
+            }
+        }
+        // A module that failed on an earlier call is not tried again, but it is still failed.
+        if first.is_none() {
+            first = self
+                .failed
+                .first()
+                .map(|(name, message)| Error::Registration {
+                    name: name.clone(),
+                    message: message.clone(),
+                });
+        }
+        first.map_or(Ok(()), Err)
+    }
+
+    /// The error of a module the program imports whose registration failed earlier, the same
+    /// one a load reports. Registers nothing.
+    fn check_imports_not_failed(
+        &self,
+        loaded: &colibri_check::package::Loaded,
+    ) -> Result<(), Error> {
+        use colibri_check::package::ImportTarget;
+        for meta in &loaded.metas {
+            for target in meta.imports.values() {
+                if let ImportTarget::Host(name) = target
+                    && let Some((_, message)) = self.failed.iter().find(|(n, _)| n == name)
+                {
+                    return Err(Error::Registration {
+                        name: name.clone(),
+                        message: message.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Registers the lazy modules that the program imports.
+    fn materialize_imports(
+        &mut self,
+        loaded: &colibri_check::package::Loaded,
+    ) -> Result<(), Error> {
+        if self.pending.is_empty() && self.failed.is_empty() {
+            return Ok(());
+        }
+        use colibri_check::package::ImportTarget;
+        for meta in &loaded.metas {
+            for target in meta.imports.values() {
+                if let ImportTarget::Host(name) = target {
+                    self.materialize(name)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The names of the host modules that have an interface: `host` first, then the named
@@ -386,7 +572,7 @@ impl Vm {
             name: name.to_string(),
             message,
         };
-        if self.program.is_some() {
+        if self.program.is_some() && !self.bulk {
             return Err(Error::AlreadyLoaded);
         }
         Self::check_module_name(module).map_err(fail)?;
@@ -436,7 +622,7 @@ impl Vm {
         let before = std::mem::replace(&mut self.registry, registry);
         let added = self.note_module(module);
         // Whatever the names or types, what is printed must read back.
-        if let Err(message) = self.validate_interfaces(module) {
+        if let Err(message) = self.validate_registration(module) {
             self.host_fns.pop();
             self.registry = before;
             self.forget_module(module, added);
@@ -459,7 +645,7 @@ impl Vm {
             name: type_name.to_string(),
             message,
         };
-        if self.program.is_some() {
+        if self.program.is_some() && !self.bulk {
             return Err(Error::AlreadyLoaded);
         }
         Self::check_module_name(module).map_err(fail)?;
@@ -473,7 +659,7 @@ impl Vm {
         let before = std::mem::replace(&mut self.registry, registry);
         let added = self.note_module(module);
         // Whatever the names, what is printed must read back.
-        if let Err(message) = self.validate_interfaces(module) {
+        if let Err(message) = self.validate_registration(module) {
             self.registry = before;
             self.forget_module(module, added);
             return Err(fail(message));
@@ -508,6 +694,16 @@ impl Vm {
     fn forget_module(&mut self, module: &str, added: bool) {
         if added {
             self.modules.retain(|m| m != module);
+        }
+    }
+
+    /// [`Vm::validate_interfaces`] after one registration, unless the module is being
+    /// registered in one go.
+    fn validate_registration(&self, touched: &str) -> Result<(), String> {
+        if self.bulk {
+            Ok(())
+        } else {
+            self.validate_interfaces(touched)
         }
     }
 
@@ -627,7 +823,7 @@ impl Vm {
             name: name.to_string(),
             message,
         };
-        if self.program.is_some() {
+        if self.program.is_some() && !self.bulk {
             return Err(Error::AlreadyLoaded);
         }
         Self::check_module_name(module).map_err(fail)?;
@@ -662,7 +858,7 @@ impl Vm {
             value,
         });
         let added = self.note_module(module);
-        if let Err(message) = self.validate_interfaces(module) {
+        if let Err(message) = self.validate_registration(module) {
             self.host_consts.pop();
             self.forget_module(module, added);
             return Err(fail(message));
@@ -903,33 +1099,51 @@ impl Vm {
         self.install(checked?, mode)
     }
 
-    /// Reads and checks a program without touching the loaded one.
+    /// Reads and checks a program without touching the loaded one. The lazy standard modules
+    /// the program imports are registered first.
     fn check_entry(
-        &self,
+        &mut self,
         fs: &dyn SourceFs,
         entry: Entry<'_>,
         mode: LoadMode,
     ) -> Result<Checked, Error> {
-        let env = self.host_env()?;
+        let (sources, loaded) = self.read_program(fs, entry, mode)?;
+        self.materialize_imports(&loaded)?;
+        self.check_loaded(sources, loaded, mode)
+    }
+
+    /// Reads the files of a program: the syntax trees and what each `import` names.
+    fn read_program(
+        &self,
+        fs: &dyn SourceFs,
+        entry: Entry<'_>,
+        mode: LoadMode,
+    ) -> Result<(SourceMap, colibri_check::package::Loaded), Error> {
         let mut sources = SourceMap::new();
         let options = colibri_check::package::LoadOptions {
             all_modules: mode == LoadMode::Tests,
         };
-        let loaded = colibri_check::package::load_with(
-            fs,
-            &mut sources,
-            entry,
-            &env.named_modules(),
-            options,
-        )
-        .map_err(|e| Error::Io {
-            path: e.path,
-            message: e.message,
-        })?;
+        let names: Vec<String> = self.modules.clone();
+        let loaded = colibri_check::package::load_with(fs, &mut sources, entry, &names, options)
+            .map_err(|e| Error::Io {
+                path: e.path,
+                message: e.message,
+            })?;
+        Ok((sources, loaded))
+    }
+
+    /// Checks a program that was read, against the host as it is now.
+    fn check_loaded(
+        &self,
+        sources: SourceMap,
+        loaded: colibri_check::package::Loaded,
+        mode: LoadMode,
+    ) -> Result<Checked, Error> {
         let mut diagnostics = loaded.diagnostics.clone();
         let mut program = None;
         // A tree with syntax errors would only produce follow-on errors.
         if !loaded.has_errors() {
+            let env = self.host_env()?;
             let checked = colibri_check::check_modules_with(
                 &loaded.inputs(),
                 &loaded.packages,
@@ -1176,7 +1390,7 @@ impl Vm {
     /// Advances scheduler time by `dt` seconds and resumes every coroutine that is due, once,
     /// in the order the coroutines were started (DESIGN §14.2, ARCHITECTURE §16). A coroutine
     /// started during the tick waits for the next one. `tick(0.0)` pauses time: only coroutines
-    /// waiting on `wait_until`, `wait_frames` or `wait(0)` can move.
+    /// waiting on `wait_until` or `wait(0)` can move.
     ///
     /// A panic in a coroutine ends that coroutine only; the others still run in this tick, and
     /// the first panic is returned as [`Error::Panic`] (the rest ride along as notes). The `Vm`
@@ -1208,7 +1422,7 @@ impl Vm {
     /// Runs the event loop until no coroutine is alive: what `colibri run` does after `main`.
     /// It ticks the scheduler with the time elapsed on the [`VmBuilder::clock`], then sleeps on
     /// that clock until the next timed wake (`wait`, `wait_real`); coroutines that poll at
-    /// every tick (`wait_until`, `wait_frames`, `join`) are checked every `poll` seconds,
+    /// every tick (`wait_until`, `join`) are checked every `poll` seconds,
     /// 1 ms by default ([`Vm::run_event_loop_polling`]). A panic in a coroutine ends the loop
     /// with that error; the remaining coroutines stay alive (and are cancelled at shutdown).
     pub fn run_event_loop(&mut self) -> Result<(), Error> {
@@ -1279,12 +1493,27 @@ impl Vm {
     /// those). Empty before a program is loaded. The index in the list is the id
     /// [`Vm::run_test`] takes.
     pub fn tests(&self) -> Vec<TestInfo> {
+        self.test_infos(false)
+    }
+
+    /// The `test` blocks of script modules (a module of the package that nothing imports and
+    /// that has top-level statements): they are checked but cannot run in a `colibri test` of
+    /// the folder, since that would run the script's initialisers. The ids are not valid for
+    /// [`Vm::run_test`].
+    pub fn skipped_tests(&self) -> Vec<TestInfo> {
+        self.test_infos(true)
+    }
+
+    fn test_infos(&self, skipped: bool) -> Vec<TestInfo> {
         let Some(program) = &self.program else {
             return Vec::new();
         };
-        program
-            .tests
-            .iter()
+        let list = if skipped {
+            &program.skipped_tests
+        } else {
+            &program.tests
+        };
+        list.iter()
             .enumerate()
             .map(|(id, t)| {
                 let sources = &self.sources;

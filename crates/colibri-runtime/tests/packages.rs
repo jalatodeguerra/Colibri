@@ -426,3 +426,201 @@ fn each_module_has_its_own_interface_that_round_trips() {
     // The default module's interface is not this file.
     assert!(vm.verify_interface(path).is_err());
 }
+
+const REGISTRY: &str = "let started = announce()\nfn announce() -> int {\n    print(\"registry initialised\")\n    return 1\n}\n";
+
+fn warnings_of(name: &str, files: &[(&str, &str)]) -> String {
+    let dir = tree(name, files);
+    let (mut vm, _) = vm();
+    vm.load_package(&dir).unwrap();
+    vm.render_warnings(false)
+}
+
+#[test]
+fn an_unused_import_of_a_module_with_load_effects_says_how_to_keep_it() {
+    let warnings = warnings_of(
+        "effects",
+        &[
+            ("colibri.toml", "[package]\nname = \"app\"\n"),
+            (
+                "main.colibri",
+                "import registry\nfn main() { print(\"main\") }\n",
+            ),
+            ("registry.colibri", REGISTRY),
+        ],
+    );
+    assert!(warnings.contains("unused import `registry`"), "{warnings}");
+    assert!(
+        warnings.contains("`import registry as _registry`"),
+        "{warnings}"
+    );
+}
+
+#[test]
+fn an_unused_import_of_a_pure_module_just_says_remove_it() {
+    let warnings = warnings_of(
+        "pure",
+        &[
+            ("colibri.toml", "[package]\nname = \"app\"\n"),
+            (
+                "main.colibri",
+                "import util\nfn main() { print(\"main\") }\n",
+            ),
+            (
+                "util.colibri",
+                "let LIMIT = 10\nlet NAME = \"x\"\npub fn f() -> int { return LIMIT }\n",
+            ),
+        ],
+    );
+    assert!(warnings.contains("unused import `util`"), "{warnings}");
+    assert!(!warnings.contains("as _util"), "{warnings}");
+}
+
+#[test]
+fn an_underscore_alias_keeps_the_import_without_a_warning_and_still_loads_it() {
+    let dir = tree(
+        "underscore",
+        &[
+            ("colibri.toml", "[package]\nname = \"app\"\n"),
+            (
+                "main.colibri",
+                "import registry as _registry\nfn main() { print(\"main\") }\n",
+            ),
+            ("registry.colibri", REGISTRY),
+        ],
+    );
+    let (mut vm, out) = vm();
+    vm.load_package(&dir).unwrap();
+    assert_eq!(vm.render_warnings(false), "");
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "registry initialised\nmain\n");
+}
+
+#[test]
+fn lints_are_reported_for_the_apps_code_not_a_dependencys() {
+    let dir = tree(
+        "deplint",
+        &[
+            (
+                "app/colibri.toml",
+                "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n",
+            ),
+            (
+                "app/main.colibri",
+                "import lib\nfn main() {\n    let mine = 1\n    print(\"{lib.f()}\")\n}\n",
+            ),
+            ("lib/colibri.toml", "[package]\nname = \"lib\"\n"),
+            (
+                "lib/lib.colibri",
+                "import helper\npub fn f() -> int {\n    let spare = 1\n    return 2\n}\n",
+            ),
+            ("lib/helper.colibri", "pub fn g() -> int { return 1 }\n"),
+        ],
+    );
+    let (mut vm, _) = vm();
+    vm.load_package(dir.join("app")).unwrap();
+    let warnings = vm.render_warnings(false);
+    assert!(warnings.contains("unused variable `mine`"), "{warnings}");
+    assert!(!warnings.contains("spare"), "{warnings}");
+    assert!(!warnings.contains("unused import `helper`"), "{warnings}");
+}
+
+const APP_MANIFEST: &str = "[package]\nname = \"app\"\n";
+
+fn check_all(dir: &Path) -> colibri::Report {
+    colibri::check_package_all_with(dir, &colibri::CheckConfig::default()).unwrap()
+}
+
+#[test]
+fn a_module_nobody_imports_may_have_top_level_statements() {
+    let dir = tree(
+        "script-module",
+        &[
+            ("colibri.toml", APP_MANIFEST),
+            (
+                "main.colibri",
+                "import util\nfn main() { print(\"{util.f()}\") }\n",
+            ),
+            ("util.colibri", "pub fn f() -> int { return 1 }\n"),
+            ("examples/demo.colibri", "print(\"demo script\")\n"),
+        ],
+    );
+    let report = check_all(&dir);
+    assert!(!report.has_errors(), "{}", report.render(false));
+    // The statements are still checked.
+    std::fs::write(dir.join("examples/demo.colibri"), "print(1 + \"a\")\n").unwrap();
+    let report = check_all(&dir);
+    assert!(report.has_errors(), "{}", report.render(false));
+    // `run` does not load it at all, and it never runs under `test`.
+    std::fs::write(
+        dir.join("examples/demo.colibri"),
+        "print(\"demo script\")\n",
+    )
+    .unwrap();
+    let (mut vm, out) = vm();
+    vm.load_tests(&dir).unwrap();
+    assert_eq!(out.contents(), "");
+}
+
+#[test]
+fn an_imported_module_still_may_not_have_top_level_statements() {
+    let dir = tree(
+        "imported-stmt",
+        &[
+            ("colibri.toml", APP_MANIFEST),
+            (
+                "main.colibri",
+                "import util\nfn main() { print(\"{util.f()}\") }\n",
+            ),
+            (
+                "util.colibri",
+                "print(\"hi\")\npub fn f() -> int { return 1 }\n",
+            ),
+        ],
+    );
+    let report = check_all(&dir);
+    assert!(
+        report
+            .render(false)
+            .contains("top-level statements are only allowed in the entry file"),
+        "{}",
+        report.render(false)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_folder_walk_does_not_follow_links() {
+    use std::os::unix::fs::symlink;
+    let dir = tree(
+        "links",
+        &[
+            ("colibri.toml", APP_MANIFEST),
+            ("main.colibri", "fn main() { print(\"main\") }\n"),
+            (
+                "sub/m.colibri",
+                "pub fn f() -> int {\n    let spare = 1\n    return 2\n}\n",
+            ),
+        ],
+    );
+    symlink("../sub", dir.join("sub/again")).unwrap();
+    symlink("sub", dir.join("subl")).unwrap();
+    symlink("sub/m.colibri", dir.join("linked.colibri")).unwrap();
+    let report = check_all(&dir);
+    let text = report.render(false);
+    assert!(!report.has_errors(), "{text}");
+    assert_eq!(
+        text.matches("Warning: unused variable `spare`").count(),
+        1,
+        "{text}"
+    );
+    // A file reached through a link and by its own name is one module.
+    let (mut vm, _) = vm();
+    vm.load_tests(&dir).unwrap();
+    assert_eq!(
+        vm.render_warnings(false)
+            .matches("Warning: unused variable `spare`")
+            .count(),
+        1
+    );
+}

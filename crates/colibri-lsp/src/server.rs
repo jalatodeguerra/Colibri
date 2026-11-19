@@ -15,10 +15,11 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{Formatting, GotoDefinition, HoverRequest, Request as _};
 use lsp_types::{
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, GotoDefinitionResponse, Hover,
-    HoverContents, HoverProviderCapability, InitializeParams, Location, LogMessageParams,
-    MarkupContent, MarkupKind, MessageType, OneOf, PublishDiagnosticsParams, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag,
+    GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability, InitializeParams,
+    Location, LogMessageParams, MarkupContent, MarkupKind, MessageType, OneOf,
+    PublishDiagnosticsParams, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri,
 };
 use serde_json::Value;
 
@@ -316,6 +317,11 @@ impl<'c> Server<'c> {
                         Severity::Warning => DiagnosticSeverity::WARNING,
                     }),
                     source: Some("colibri".to_string()),
+                    // Unused code is shown faded.
+                    tags: (d.severity == Severity::Warning
+                        && (d.message.starts_with("unused variable")
+                            || d.message.starts_with("unused import")))
+                    .then(|| vec![DiagnosticTag::UNNECESSARY]),
                     message,
                     related_information: (!related.is_empty()).then_some(related),
                     ..Diagnostic::default()

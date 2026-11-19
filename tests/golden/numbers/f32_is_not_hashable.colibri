@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let s: Set[f32] = Set([]) // error: `f32` cannot be used as a `Set` element
     let m: Map[f32, int] = {:} // error: `f32` cannot be used as a `Map` key
