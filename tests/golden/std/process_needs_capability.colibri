@@ -1,0 +1,13 @@
+import process
+import datetime
+
+fn main() {
+    print(process.run("true", [])) // error: `process.run` needs the `os` capability, which this host did not grant
+    print(process.shell("true")) // error: `process.shell` needs the `os` capability
+    print(process.spawn("true", [])) // error: `process.spawn` needs the `os` capability
+    print(process.options()) // error: `process.options` needs the `os` capability
+    print(datetime.now()) // error: `datetime.now` needs the `os` capability
+    print(datetime.now_local()) // error: `datetime.now_local` needs the `os` capability
+    // Calendar arithmetic reads nothing from the machine.
+    print(datetime.to_iso(datetime.from_unix(86400.0)))
+}

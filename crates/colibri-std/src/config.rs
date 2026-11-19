@@ -122,6 +122,9 @@ pub struct StdConfig {
     pub seed: Option<u64>,
     /// What `io.read_line()` reads; the process's standard input if `None`.
     pub stdin: Option<Box<dyn BufRead>>,
+    /// The local time zone `datetime` uses, as seconds east of UTC (always this offset, no
+    /// daylight saving); the machine's time zone if `None`.
+    pub local_offset: Option<i32>,
 }
 
 impl Default for StdConfig {
@@ -133,6 +136,7 @@ impl Default for StdConfig {
             temp_dir: None,
             seed: None,
             stdin: None,
+            local_offset: None,
         }
     }
 }
@@ -147,6 +151,7 @@ pub(crate) struct State {
     pub env_overrides: BTreeMap<String, String>,
     pub temp_dir: Option<PathBuf>,
     pub stdin: Option<Box<dyn BufRead>>,
+    pub local_offset: Option<i32>,
     /// The generator behind the free functions of `rand`.
     pub rng: Rng,
     /// The code of `os.exit`, once called.
@@ -167,6 +172,7 @@ impl State {
             env_overrides: BTreeMap::new(),
             temp_dir: config.temp_dir,
             stdin: config.stdin,
+            local_offset: config.local_offset,
             rng: Rng::from_seed(seed),
             exit: None,
         }

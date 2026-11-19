@@ -1,0 +1,44 @@
+// caps: os
+// `spawn` starts a program and returns at once: poll it with `try_wait` and collect it with
+// `join`. (Inside a coroutine, poll with `wait(0.01)` between calls: see
+// process_polling_in_a_coroutine.)
+import process
+
+fn main() {
+    let child = process.spawn("sh", ["-c", "echo started; exit 5"]) or |e| { panic(e.message()) }
+    print(child.id() > 0)
+    var result = child.try_wait() or |e| { panic(e.message()) }
+    while result == none {
+        result = child.try_wait() or |e| { panic(e.message()) }
+    }
+    print(result)
+    // Asking again gives the same answer.
+    print(child.try_wait() or |e| { none })
+    print(child.join() or |e| { panic(e.message()) })
+
+    // A program that reads its input.
+    var o = process.options()
+    o.input = some("one\ntwo\n")
+    let counter = process.spawn_with("sh", ["-c", "wc -l"], o) or |e| { panic(e.message()) }
+    let counted = counter.join() or |e| { panic(e.message()) }
+    print(counted.stdout.trim())
+
+    // Killing a long-running program.
+    let slow = process.spawn("sh", ["-c", "sleep 30"]) or |e| { panic(e.message()) }
+    print(slow.try_wait() or |e| { none })
+    let killed = slow.kill() or |e| { panic(e.message()) }
+    print(killed.status != 0)
+    match process.spawn("colibri-no-such-program", []) {
+        ok(_)  => print("ran?")
+        err(e) => print(e.message())
+    }
+}
+
+// expect: true
+// expect: some(Output { status: 5, stdout: "started\n", stderr: "" })
+// expect: some(Output { status: 5, stdout: "started\n", stderr: "" })
+// expect: Output { status: 5, stdout: "started\n", stderr: "" }
+// expect: 2
+// expect: none
+// expect: true
+// expect: cannot run `colibri-no-such-program`: no such file or directory
