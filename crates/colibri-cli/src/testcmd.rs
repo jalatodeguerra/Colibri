@@ -7,6 +7,8 @@ use std::process::ExitCode;
 
 use colibri_runtime as colibri;
 
+use crate::leakcmd::{self, LeakMode};
+
 /// The instruction budget of one test when `--budget` is not given.
 pub const DEFAULT_BUDGET: u64 = 100_000_000;
 
@@ -20,6 +22,8 @@ pub struct Options {
     pub budget: u64,
     /// Let a test's `print` output through at once instead of keeping it for failures.
     pub nocapture: bool,
+    /// Report the cycles each test leaks (`--leaks`); `Error` fails the test.
+    pub leaks: Option<crate::leakcmd::LeakMode>,
 }
 
 /// Runs the tests and prints the report to stdout; the exit code is 1 if the program does not
@@ -27,7 +31,9 @@ pub struct Options {
 pub fn run(options: &Options) -> ExitCode {
     let stderr_color = io::stderr().is_terminal();
     let captured = colibri::SharedBuffer::new();
-    let mut builder = crate::vm_builder().allow_all();
+    let mut builder = crate::vm_builder()
+        .allow_all()
+        .track_leaks(options.leaks.is_some());
     if !options.nocapture {
         builder = builder.stdout(Box::new(captured.clone()));
     }
@@ -62,13 +68,31 @@ pub fn run(options: &Options) -> ExitCode {
         selected.len(),
         if selected.len() == 1 { "" } else { "s" }
     );
+    let mut seen = leakcmd::Seen::default();
     let mut passed = 0usize;
     let mut failures: Vec<(String, String, String)> = Vec::new();
     for test in selected {
         let name = full_name(test);
         let result = vm.run_test(test.id);
         let output = captured.take();
+        // A cycle a test leaks stays leaked, so only the ones it added are its own.
+        let leaked = options
+            .leaks
+            .map(|mode| (mode, seen.new_leaks(&vm)))
+            .filter(|(_, found)| !found.is_empty());
+        if let Some((LeakMode::Warn, found)) = &leaked {
+            eprint!("{}", leakcmd::render(found, LeakMode::Warn, stderr_color));
+        }
         match result {
+            Ok(()) if matches!(&leaked, Some((LeakMode::Error, _))) => {
+                let _ = writeln!(out, "test {name} ... {}", paint("FAILED", "31", color));
+                let found = leaked.map(|(_, f)| f).unwrap_or_default();
+                failures.push((
+                    name,
+                    output,
+                    leakcmd::render(&found, LeakMode::Error, false),
+                ));
+            }
             Ok(()) => {
                 passed += 1;
                 let _ = writeln!(out, "test {name} ... {}", paint("ok", "32", color));

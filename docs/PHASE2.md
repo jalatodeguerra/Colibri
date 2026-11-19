@@ -28,7 +28,9 @@ section ("as built") for the decisions it had to make.
 5. **Hot reload** (DESIGN §16.3) for long-running programs and embedded scripts:
    `vm.reload_changed()`, `colibri run --watch`. Built: ARCHITECTURE §17 (snapshot hooks pass
    text, `save_state() -> str`, until §7.5 exists).
-6. **The leak detector** (DESIGN §11.5, Q9), built as trial deletion.
+6. **The leak detector** (DESIGN §11.5, Q9), built as trial deletion: `colibri run --leaks`,
+   `colibri test --leaks`, `VmBuilder::track_leaks` and `Vm::find_leaks`, and the golden
+   directive `// leaks:`. Report only. Built: ARCHITECTURE §18.
 7. **`@repr(C)` structs and the C FFI** (DESIGN §15.2, §15.3).
 8. **Milestone:** real automation scripts written in Colibri (a file organiser, a JSON/HTTP
    report generator).

@@ -1,0 +1,16 @@
+// A closure that calls itself through a variable captures that variable's cell, and the
+// cell holds the closure: no class object is involved.
+fn main() {
+    var again: fn(int) = fn(n: int) {}
+    again = fn(n: int) {
+        if n > 0 {
+            print(n)
+            again(n - 1)
+        }
+    }
+    again(2)
+}
+
+// expect: 2
+// expect: 1
+// leaks: closure

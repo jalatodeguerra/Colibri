@@ -62,6 +62,7 @@ behind the same `Vm` API.
 | `// panic: text` | The run must end in a panic whose message contains `text` (stdout before it is still checked). Several lines must all be contained; notes of later panics (`defer`) are appended to the message as `note: ..`. |
 | `// main-err: text` | `main` returns `err(e)`: the run ends with `Error::MainReturnedErr` whose message (the whole error chain) contains `text`. The CLI prints `error: ..` to stderr and exits 1 (a panic exits 101). |
 | `// caps: fs, os` | Capabilities the host grants for this file (none by default). Names as in `.cbi`: `fs`, `os`, `net`, `ffi`. Std modules are installed with a hermetic config (ARCHITECTURE §13): fixed clock, args, environment, seed and stdin, and a per-test temp dir. |
+| `// leaks: Node, Node` | The objects the leak detector finds in unreachable reference cycles once the program has ended and its module-level values are released: class names (`closure` for a closure), `Name xN` for N of them, compared as a multiset. Every golden test runs the detector, so a test that leaks without this directive fails; `// leaks:` alone is the same as no directive. Read from `main.colibri` only in a folder test (ARCHITECTURE §18). |
 | `// drops: a, b, c` | The class objects destroyed, in order, up to and including the module-level values released after `main` (reverse initialisation order). An object is labelled by its `name: str` field if it has one, else its class name. Compared only when the directive is present; `// drops:` alone expects none. |
 
 ### Folders as tests
@@ -75,7 +76,7 @@ is not searched for further tests. Directives are read from every `.colibri` fil
   diagnostic must be reported in that same file (the harness compares file and line).
 - `// expect:` lines form the expected stdout: those of `main.colibri` first, then those of the
   other files in path order.
-- `// drops:`, `// panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only.
+- `// drops:`, `// leaks:`, `// panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only.
 
 Package tests live in `tests/golden/modules/`; the standard library's are in `tests/golden/std/`; `test` blocks and `assert` are in `tests/golden/tests/` (the harness never runs a test block, it checks that `run` does not; the runner is covered by `crates/colibri-cli/tests/test_cmd.rs`, ARCHITECTURE §15).
 

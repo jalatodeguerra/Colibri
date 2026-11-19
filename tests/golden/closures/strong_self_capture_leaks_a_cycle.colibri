@@ -29,3 +29,5 @@ fn main() {
 
 // expect: end of main
 // drops:
+
+// leaks: Button, Panel, closure

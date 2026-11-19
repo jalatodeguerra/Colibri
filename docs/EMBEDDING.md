@@ -308,3 +308,33 @@ loop {
   between ticks (what `colibri run --watch` uses).
 - Polling is `std::fs::metadata` per file, cheap enough to call every frame; a file is read
   and hashed only when its modification time or size moved.
+
+## 12. Finding leaks from a host
+
+Reference counting never frees a cycle of class objects or closures. The leak detector
+(ARCHITECTURE §18) finds them:
+
+```rust
+let mut vm = colibri::Vm::builder().track_leaks(true).build();   // before loading
+vm.load_file("game.colibri")?;
+vm.run_main()?;
+// ... later, at a level boundary, or after vm.shutdown() ...
+for leak in vm.find_leaks() {
+    eprintln!("{leak}");   // leak: a cycle of 2 objects: Node(name: "a") -> next -> ...
+}
+```
+
+- `VmBuilder::track_leaks(true)` records every class object and closure made from then on (weakly,
+  with the source line that made it). It is off by default and costs one `Option` test per object
+  when off, about 5% on allocation-heavy code when on. Objects made before it is on are not known.
+- `Vm::find_leaks() -> Vec<Leak>` works at any moment and changes nothing. Mid-run it reports the
+  cycles that nothing reaches: a cycle a global, a frame, a temporary, a suspended coroutine,
+  a host-held handle or a value the host holds still reaches is live and not reported. After
+  `Vm::shutdown` (module values released, coroutines cancelled) every cycle that is left is a
+  leak. A reference the detector cannot see counts as a root, so it can miss a leak but never
+  reports a live object.
+- `Leak { objects, path, sites, retained }` (all public, `Display` renders them): the classes in
+  the cycle, one path through it, where the objects were made, and how many more objects the
+  cycle alone keeps alive.
+- `weak` fields and weak captures are not edges. The detector reports and frees nothing.
+- The cost is linear in the live objects. Call it between frames or at level changes, not every tick.

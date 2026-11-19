@@ -1,0 +1,23 @@
+// A coroutine that finishes releases its frame: a cycle it built and kept to itself is
+// found as soon as it is over, not only at the end.
+class Node {
+    name: str
+    next: Node? = none
+}
+
+fn worker() {
+    let a = Node { name: "a" }
+    a.next = some(a)
+    wait(1.0)
+    print("worker done")
+}
+
+fn main() {
+    go worker()
+    task.tick(2.0)
+    print("main done")
+}
+
+// expect: worker done
+// expect: main done
+// leaks: Node

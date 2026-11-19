@@ -337,7 +337,16 @@ impl Interp {
             cloner.clone_value(v, &mut crate::hooks::Plain)
         };
         match result {
-            Ok(copy) => Ok(copy),
+            Ok(copy) => {
+                if self.leaks.is_some() {
+                    for made in cloner.into_copies() {
+                        if let Value::Obj(obj) = &made {
+                            self.track_object(obj, Some(span));
+                        }
+                    }
+                }
+                Ok(copy)
+            }
             Err(stop) => {
                 self.abandon_copies(cloner.into_copies());
                 Err(self.stop_to_ctl(fiber, stop, span, "clone"))

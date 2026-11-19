@@ -1,0 +1,14 @@
+// A closure that captures the object that stores it: object -> closure -> object.
+class Button {
+    label: str
+    on_click: fn()? = none
+}
+
+fn main() {
+    let b = Button { label: "ok" }
+    b.on_click = some(fn() { print(b.label) })
+    print("wired")
+}
+
+// expect: wired
+// leaks: Button, closure

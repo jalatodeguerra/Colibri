@@ -1,0 +1,18 @@
+// The cycle goes through a map value.
+class Registry {
+    name: str
+    items: Map[str, Item] = {:}
+}
+
+class Item {
+    owner: Registry
+}
+
+fn main() {
+    let r = Registry { name: "r" }
+    r.items["x"] = Item { owner: r }
+    print(r.items.len())
+}
+
+// expect: 1
+// leaks: Registry, Item

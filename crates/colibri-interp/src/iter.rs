@@ -193,6 +193,17 @@ impl IterObj {
         }
     }
 
+    /// The values the iterator keeps alive (fresh handles), for the leak detector.
+    pub fn children(&self) -> Vec<Value> {
+        match &*self.state.borrow() {
+            State::List { list, .. } => vec![Value::List(Rc::clone(list))],
+            State::Map { map, .. } => vec![Value::Map(Rc::clone(map))],
+            State::Set { set, .. } => vec![Value::Set(Rc::clone(set))],
+            State::Enumerate { inner, .. } => vec![inner.clone()],
+            _ => Vec::new(),
+        }
+    }
+
     /// Takes the values the iterator keeps alive (its collection, its inner iterator), for
     /// destruction. Only `release` calls this.
     pub fn take_inner(&self) -> Vec<Value> {

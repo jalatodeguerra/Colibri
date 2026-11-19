@@ -2129,3 +2129,111 @@ A generated program of 1,000 functions (about 12,000 lines), one body edited, se
 Reload from inside a call (safepoint in the evaluator); a list of coroutines still on old code;
 watching directories; reloading `load_sources`/`load_tests` programs; a `Snapshot` type
 (§7.5).
+
+## 18. Leak detector as built
+
+PHASE2 step 6 (DESIGN §11.5, Q9), in `colibri-interp/src/leaks.rs`. Colibri counts references, so
+a cycle of class objects, or of closures and the variables they capture, is never freed. The
+detector finds such cycles by trial deletion (Bacon and Rajan, run synchronously). It is a
+diagnostic: it reports and frees nothing.
+
+### Surfaces
+
+- `VmBuilder::track_leaks(true)` turns the registry on; `Vm::find_leaks() -> Vec<Leak>` can be
+  called at any time (mid-run, after `shutdown`, between ticks). Without `track_leaks` the
+  result is empty.
+- `colibri run --leaks[=warn|error]`: at the end of the program (after `main` and the event
+  loop, then `Vm::shutdown`: coroutines cancelled newest first, roots and module-level values
+  released) the detector runs and the report goes to stderr. `--leaks` alone is `warn`: the exit
+  code is unchanged. `--leaks=error` exits 1 when the program would otherwise have exited 0 (a
+  panic keeps 101, `os.exit(n)` keeps `n`).
+- `colibri test --leaks[=warn|error]`: after each test (which has already released its module
+  values and cancelled its coroutines) the detector runs, and only the cycles that are new since
+  the previous test are attributed to it. `warn` prints them to stderr; `error` fails that test
+  with the report.
+- Golden tests: every golden test runs with tracking on and must end with no leak, unless the
+  test says `// leaks: Node, Node` (class names, `closure` for a closure, `Name xN` for N of
+  them; compared as a multiset; read from `main.colibri` in a folder test). PHASE1 has the
+  directive table. One existing test leaks on purpose
+  (`closures/strong_self_capture_leaks_a_cycle`) and now says so.
+
+### The registry
+
+While tracking is on, every class object and closure is entered in a registry (a `Vec` of weak
+references with the span of the literal or `.clone()` that made it) when it is created: the `Object`
+expression, closures, and the copies a `clone()` makes. Cells, lists, maps and structs are not
+entered: a cycle always passes through a class object or a closure, and everything else is found
+by following edges. Host objects (`Value::Host`) and values the host holds are opaque, so they
+count as outside references. Objects made before tracking is on are unknown, which is why the
+switch is a `VmBuilder` option and not a runtime toggle.
+
+A `Weak` keeps the allocation of a dead object, so the registry drops dead entries whenever it
+doubles (amortised constant per object; the threshold follows the live count). `Rc::try_unwrap`
+replaced `Rc::get_mut` when releasing a closure, because a weak reference makes `get_mut` fail.
+
+With tracking off there is no registry: creating an object costs one `Option` test. Measured
+on a release build allocating 1.5 million objects and closures in a loop: baseline (before this
+change) 1.25-1.30 s, tracking off 1.22-1.28 s (no measurable difference), tracking on
+1.32-1.36 s (about 5%).
+
+### The algorithm
+
+1. Every live registry entry becomes a node (one handle kept per node). Exploring from them adds
+   every reference counted thing reachable: class objects, lists, maps, sets, closures, cells,
+   iterators, and the structs, tuples, enums and interface boxes that can hold them. Each node
+   records its outgoing strong edges (field, element, key, value, capture, payload, through).
+   `weak` fields and weak captures hold a `Weak`, not an `Rc`, so they are not edges.
+2. **Trial deletion.** For each node, `Rc::strong_count - 1` (the detector's own handle) minus
+   the edges that come from other nodes is the number of references from *outside the graph*:
+   frames, temporaries, globals, host handles and roots, suspended coroutines, Rust locals. A node
+   with a positive remainder is live, and so is everything it reaches (a worklist from those).
+3. What is not live is held only by other garbage. Tarjan's algorithm (iterative, so a long
+   ring cannot overflow the stack) finds its strongly connected components; each component that
+   has an edge cycle (two or more nodes, or one node with a self edge) is one `Leak`. The garbage
+   that hangs off a cycle without being on one is `retained`, counted once, for the first cycle
+   that reaches it.
+
+No root set is enumerated. Anything the detector cannot see is an outside reference, so the
+detector can *miss* a leak (for example while a Rust value holds a handle) but cannot report an
+object that is still reachable. This is also why suspended coroutines need no special case: their
+frames hold ordinary references, so a cycle a suspended coroutine uses is live, and it becomes
+a leak once the coroutine is gone. The cost is linear in the number of live objects and edges
+(a 10,000-object ring, whole program included, runs in about 60 ms in a release build; the golden tests `leaks/large_ring` and
+`leaks/many_small_cycles` have 10,000 each).
+
+### The report
+
+`Leak { objects, path, sites, retained }`: the class of each object in the cycle (sorted),
+one shortest cycle through the oldest object rendered as
+`Node(name: "a") -> next -> Node(name: "b") -> next -> Node(name: "a")`, where the objects were
+made (`file:line`, up to four), and how many more objects only this cycle keeps alive. Lists,
+maps, structs and cells on the way are folded into the label (`children[0]`, `items["x"]`,
+`captures button`); an object that has a `name: str` field is shown with it; an `Option` field
+reads as the field. A path over ten hops is abbreviated (`... (9991 more) ...`).
+
+### `weak`
+
+A `weak` reference is not an edge: it does not keep its target alive in the reference counts,
+so it neither forms nor joins a cycle, and it is never followed. A cycle broken with `weak` on
+one link is not reported (`leaks/weak_breaks_the_cycle`). A weak capture is the same.
+
+### Decisions the design documents did not fix
+
+- Report only: no `collect`. Freeing a cycle means running `Drop` hooks on garbage in an order
+  nobody chose, and closing the cycle by hand is a one-line fix once the report names it;
+  `mem.collect_cycles()` stays a later option on top of this graph.
+- Opt in. DESIGN §11.5 says the detector is on by default in `colibri run`; it is `--leaks`
+  instead, because the registry costs about 5% of allocation-heavy code and a program that
+  works should not start printing to stderr after an upgrade. Flipping the default is one
+  line in `main.rs`.
+- `--leaks` defaults to `warn`; `error` is opt in (exit 1 only when nothing else failed).
+- The golden harness fails any test that leaks without declaring it.
+- `mem.report_cycles()` (DESIGN §11.5) is not built; embedding hosts have `Vm::find_leaks`.
+- Allocation sites are the span of the literal; a leaked object made by the host, a `Coroutine`
+  or an `Error` has none. Only class objects and closures are named; a cycle made only of lists,
+  maps and cells is not possible without one of them.
+- Leaked cycles stay leaked until the process exits; their `Drop` hooks never run.
+
+### Not built
+
+`mem.report_cycles()`, `mem.collect_cycles()`, a leak report for cycles through host objects.
