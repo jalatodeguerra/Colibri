@@ -294,15 +294,19 @@ loop {
   drives `vm.tick` itself and does not want this keeps scripts from calling them.
 - **`Ctx::run_async(work) -> R`** is the host API for blocking work that must not stop the
   other coroutines. Inside a host function, `cx.run_async(move || do_blocking_thing(args))`
-  runs the closure (`Send + 'static`, no Colibri values, no `Vm`) on a background thread and
+  runs the closure (`Send + 'static`, no Colibri values, no `Vm`) on a background thread (one of a
+  small fixed pool of 8 to 16 per `Vm`; further operations queue) and
   suspends the calling coroutine until it finishes; the scheduler resumes it on a later tick,
   and the event loop sleeps until a timer or a completion instead of polling. On the main
   fiber the call runs the event loop meanwhile; inside a callback or a `Drop` hook it just
   blocks. Rules: do not hold a borrow of host objects across the call (other coroutines run);
   if the coroutine is cancelled while waiting, the host function is unwound by a Rust panic
-  that the trampoline turns into a clean cancellation (the thread's result is discarded); a
-  panic of the work is a Colibri panic of the caller. A host driving `vm.tick(dt)` itself gets
-  the completions at its ticks. `http` is built on it (ARCHITECTURE §22).
+  that the trampoline turns into a clean cancellation (the result is discarded, work still
+  queued never runs); a panic of the work is a Colibri panic of the caller. Work that can
+  stop early takes `cx.run_async_cancellable(|cancelled| ..)`, which hands it a flag that is
+  set on cancellation (`process.run` kills its program that way); work that blocks for a long
+  time holds its pool thread meanwhile. A host driving `vm.tick(dt)` itself gets
+  the completions at its ticks. `http` and `process` are built on it (ARCHITECTURE §22).
 - The `Clock` trait has a third method with a default, `sleep_interruptible(seconds, wake)`,
   which the event loop calls while operations are in flight; a custom clock for tests can keep
   the default.
