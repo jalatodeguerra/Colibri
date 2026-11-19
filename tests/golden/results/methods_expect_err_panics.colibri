@@ -4,4 +4,5 @@ fn load() -> Result[int, str] {
 print("before")
 let v = load().expect("config is required")
 print("not reached {v}")
+// expect: before
 // panic: config is required: disk on fire

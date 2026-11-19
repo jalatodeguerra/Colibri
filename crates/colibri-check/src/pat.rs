@@ -369,7 +369,7 @@ impl FnCtx<'_, '_> {
 
     fn const_pat(&mut self, g: GlobalId, expected: &Ty, span: Span) -> Pat {
         let ty = self.ck.global_ty(g);
-        self.add_dep(Dep::Global(g));
+        self.add_dep(Dep::Global(g), span);
         let shown = self.show(&ty);
         if self.infer.unify(&ty, expected).is_err() {
             self.report_pat_mismatch(expected, &ty, span);

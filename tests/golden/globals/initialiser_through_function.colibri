@@ -1,5 +1,9 @@
+// A program (it has `fn main`) initialises its values in dependency order, through the
+// functions their initialisers call (DESIGN §4.2).
 let total = sum_to(4)
 let base = 10
 fn sum_to(n: int) -> int => if n == 0 { base } else { n + sum_to(n - 1) }
-print(total)
+fn main() {
+    print(total)
+}
 // expect: 20

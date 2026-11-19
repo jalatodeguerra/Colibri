@@ -205,7 +205,8 @@ impl Zonker<'_> {
                     self.expr(v);
                 }
             }
-            StmtKind::Break(_) | StmtKind::Continue(_) => {}
+            // The initialiser is a body of its own, finished when it was checked.
+            StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::InitGlobal { .. } => {}
             StmtKind::Defer(inner) => {
                 // The deferred statement is shared by the cleanup list at runtime, but is
                 // still uniquely owned here.

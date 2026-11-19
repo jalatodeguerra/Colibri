@@ -18,8 +18,8 @@ print(b)
 print(early(false))
 print(early(true))
 // expect: hello ana
-// expect: hi bo
 // expect: ok(())
+// expect: hi bo
 // expect: ok(())
 // expect: went on
 // expect: ok(())

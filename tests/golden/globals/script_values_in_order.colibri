@@ -1,0 +1,15 @@
+// Each initialiser of a script runs when execution reaches its line.
+fn noisy(s: str) -> int {
+    print(s)
+    return 1
+}
+print("start")
+let a = noisy("a")
+print("middle")
+let b = noisy("b") + a
+print(b)
+// expect: start
+// expect: a
+// expect: middle
+// expect: b
+// expect: 2

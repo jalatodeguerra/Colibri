@@ -285,3 +285,14 @@ fn drop_hooks_of_module_values_run_after_each_test() {
     vm.run_test(0).unwrap();
     assert_eq!(out.take(), "body\ndrop module\n");
 }
+
+#[test]
+fn a_tests_script_values_are_initialised_in_source_order_without_the_statements() {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = vm_with(&out);
+    let src = "fn noisy(s: str) -> int {\n    print(s)\n    return 1\n}\nprint(\"statement\")\nlet a = noisy(\"a\")\nlet b = noisy(\"b\") + a\ntest \"sees both\" {\n    assert(b == 2)\n}\n";
+    vm.load_source("script.colibri", src).unwrap();
+    assert_eq!(out.take(), "statement\na\nb\n");
+    assert!(vm.run_test(0).is_ok());
+    assert_eq!(out.take(), "a\nb\n");
+}

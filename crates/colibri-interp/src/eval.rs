@@ -47,7 +47,10 @@ pub struct Interp {
     pub(crate) globals: Vec<Value>,
     /// The user-defined types, which `Show` and drop tracing need for names.
     pub(crate) types: Rc<[TypeDef]>,
+    /// Every global's initialiser, in initialisation order (`Program::init_order`).
     pub(crate) inits: Vec<(GlobalId, Rc<Body>)>,
+    /// Where the globals the script initialises itself start in `inits`.
+    pub(crate) script_from: usize,
     script: Option<Rc<Body>>,
     out: Box<dyn Write>,
     max_depth: usize,
@@ -98,6 +101,7 @@ impl Interp {
             globals: Vec::new(),
             types: Rc::from(Vec::new()),
             inits: Vec::new(),
+            script_from: 0,
             script: None,
             out,
             max_depth: max_call_depth,
@@ -146,6 +150,7 @@ impl Interp {
             .iter()
             .map(|&g| (g, Rc::clone(&program.globals[g.0 as usize].init)))
             .collect();
+        self.script_from = program.script_from;
         self.script = Some(Rc::clone(&program.script));
         self.cffi.load(program);
     }
@@ -171,6 +176,7 @@ impl Interp {
             .iter()
             .map(|&g| (g, Rc::clone(&program.globals[g.0 as usize].init)))
             .collect();
+        self.script_from = program.script_from;
         self.set_script(program);
         self.cffi.load(program);
         // The host's view of the host functions' (empty) bodies.
@@ -197,7 +203,8 @@ impl Interp {
         self.run_body(fiber, body)
     }
 
-    /// Runs the module-level initialisers in dependency order, then the top-level statements.
+    /// Runs the module-level initialisers in dependency order, then the top-level statements,
+    /// which initialise the script's own `let`/`var` on their lines (DESIGN §4.2).
     pub fn run_module(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
         // The initialisers and the top-level statements share one allotment.
         let outermost = self.begin_entry();
@@ -209,8 +216,9 @@ impl Interp {
         result
     }
 
-    /// Runs the module-level initialisers in dependency order and nothing else (no top-level
-    /// statements): the state a test starts from (ARCHITECTURE §15).
+    /// Runs every module-level initialiser and nothing else (no top-level statements): those
+    /// in dependency order, then the script's `let`/`var` in source order. The state a test
+    /// starts from (ARCHITECTURE §15).
     pub fn run_initialisers(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
         let outermost = self.begin_entry();
         if outermost {
@@ -235,7 +243,8 @@ impl Interp {
     }
 
     fn run_module_parts(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
-        let inits = self.inits.clone();
+        let mut inits = self.inits.clone();
+        inits.truncate(self.script_from);
         for (g, body) in inits {
             let value = self.run_body(fiber, &body)?;
             let old = std::mem::replace(&mut self.globals[g.0 as usize], value);
@@ -576,6 +585,12 @@ impl Interp {
             StmtKind::Continue(id) => Err(Ctl::Continue(*id)),
             StmtKind::Defer(deferred) => {
                 Self::push_defer(fiber, Rc::clone(deferred));
+                Ok(())
+            }
+            StmtKind::InitGlobal { global, init } => {
+                let value = self.call_body(fiber, Rc::clone(init), Vec::new())?;
+                let old = std::mem::replace(&mut self.globals[global.0 as usize], value);
+                self.release(old);
                 Ok(())
             }
         }
