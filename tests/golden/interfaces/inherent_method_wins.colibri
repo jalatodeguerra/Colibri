@@ -1,0 +1,27 @@
+interface Named {
+    fn name(self) -> str
+}
+
+struct Thing { n: str }
+
+impl Thing {
+    fn name(self) -> str => "inherent {self.n}"
+}
+
+impl Named for Thing {
+    fn name(self) -> str => "interface {self.n}"
+}
+
+fn through_bound[T: Named](t: T) -> str => t.name()
+
+fn main() {
+    let t = Thing { n: "t" }
+    print(t.name())
+    print(through_bound(t))
+    let n: Named = t
+    print(n.name())
+}
+
+// expect: inherent t
+// expect: interface t
+// expect: interface t

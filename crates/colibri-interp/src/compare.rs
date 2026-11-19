@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::rc::{Rc, Weak};
 
+use crate::hooks::{Overrides, Plain, Stop};
 use crate::value::Value;
 
 /// Values nested deeper than this are not compared (the answer would need a deeper Rust
@@ -16,24 +17,21 @@ pub struct TooDeep;
 /// Structural equality. Floats compare as IEEE numbers, so a value containing `nan` is not
 /// equal to itself, exactly as `nan == nan` is false.
 pub fn values_equal(a: &Value, b: &Value) -> Result<bool, TooDeep> {
-    equal(a, b, 0)
+    equal(a, b, 0, &mut Plain).map_err(|_| TooDeep)
 }
 
-fn equal(a: &Value, b: &Value, depth: u32) -> Result<bool, TooDeep> {
+/// Equality that consults `ov` first for every user-defined value (a user `impl Eq`).
+pub(crate) fn equal_with(a: &Value, b: &Value, ov: &mut dyn Overrides) -> Result<bool, Stop> {
+    equal(a, b, 0, ov)
+}
+
+fn equal(a: &Value, b: &Value, depth: u32, ov: &mut dyn Overrides) -> Result<bool, Stop> {
     if depth > MAX_DEPTH {
-        return Err(TooDeep);
+        return Err(Stop::TooDeep);
     }
-    let all = |xs: &[Value], ys: &[Value]| -> Result<bool, TooDeep> {
-        if xs.len() != ys.len() {
-            return Ok(false);
-        }
-        for (x, y) in xs.iter().zip(ys) {
-            if !equal(x, y, depth + 1)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    };
+    if let Some(answer) = override_eq(a, b, ov) {
+        return answer;
+    }
     Ok(match (a, b) {
         (Value::Unit, Value::Unit) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
@@ -41,12 +39,14 @@ fn equal(a: &Value, b: &Value, depth: u32) -> Result<bool, TooDeep> {
         (Value::Float(x), Value::Float(y)) => x == y,
         (Value::Char(x), Value::Char(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
-        (Value::Tuple(x), Value::Tuple(y)) => all(x, y)?,
-        (Value::Struct(x), Value::Struct(y)) => x.ty == y.ty && all(&x.fields, &y.fields)?,
-        (Value::Enum(x), Value::Enum(y)) => {
-            x.ty == y.ty && x.variant == y.variant && all(&x.payload, &y.payload)?
+        (Value::Tuple(x), Value::Tuple(y)) => equal_all(x, y, depth, ov)?,
+        (Value::Struct(x), Value::Struct(y)) => {
+            x.ty == y.ty && equal_all(&x.fields, &y.fields, depth, ov)?
         }
-        (Value::List(_) | Value::Map(_) | Value::Set(_), _) => equal_collections(a, b, depth)?,
+        (Value::Enum(x), Value::Enum(y)) => {
+            x.ty == y.ty && x.variant == y.variant && equal_all(&x.payload, &y.payload, depth, ov)?
+        }
+        (Value::List(_) | Value::Map(_) | Value::Set(_), _) => equal_collections(a, b, depth, ov)?,
         // A class is compared by identity (DESIGN §7.2).
         (Value::Obj(x), Value::Obj(y)) => Rc::ptr_eq(x, y),
         (Value::Weak(x), Value::Weak(y)) => Weak::ptr_eq(x, y),
@@ -54,17 +54,58 @@ fn equal(a: &Value, b: &Value, depth: u32) -> Result<bool, TooDeep> {
     })
 }
 
+/// The user-written `Eq` of a user-defined value, if it has one.
+#[inline(never)]
+fn override_eq(a: &Value, b: &Value, ov: &mut dyn Overrides) -> Option<Result<bool, Stop>> {
+    match a {
+        Value::Struct(_) | Value::Enum(_) | Value::Obj(_) => ov.eq(a, b),
+        _ => None,
+    }
+}
+
+/// The user-written `Ord` of a user-defined value, if it has one.
+#[inline(never)]
+fn override_cmp(
+    a: &Value,
+    b: &Value,
+    ov: &mut dyn Overrides,
+) -> Option<Result<Option<Ordering>, Stop>> {
+    match a {
+        Value::Struct(_) | Value::Enum(_) | Value::Obj(_) => ov.cmp(a, b),
+        _ => None,
+    }
+}
+
+/// Element-wise equality, kept out of [`equal`] so that its frame stays small.
+#[inline(never)]
+fn equal_all(xs: &[Value], ys: &[Value], depth: u32, ov: &mut dyn Overrides) -> Result<bool, Stop> {
+    if xs.len() != ys.len() {
+        return Ok(false);
+    }
+    for (x, y) in xs.iter().zip(ys) {
+        if !equal(x, y, depth + 1, ov)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Structural equality of two collections, kept out of [`equal`] so that its frame stays small
 /// (it recurses once per nesting level).
 #[inline(never)]
-fn equal_collections(a: &Value, b: &Value, depth: u32) -> Result<bool, TooDeep> {
+fn equal_collections(
+    a: &Value,
+    b: &Value,
+    depth: u32,
+    ov: &mut dyn Overrides,
+) -> Result<bool, Stop> {
     Ok(match (a, b) {
         (Value::List(x), Value::List(y)) => {
             if x.len() != y.len() {
                 return Ok(false);
             }
             for (p, q) in x.snapshot().iter().zip(y.snapshot().iter()) {
-                if !equal(p, q, depth + 1)? {
+                if !equal(p, q, depth + 1, ov)? {
                     return Ok(false);
                 }
             }
@@ -76,7 +117,7 @@ fn equal_collections(a: &Value, b: &Value, depth: u32) -> Result<bool, TooDeep> 
             }
             for (k, v) in x.snapshot() {
                 match y.get(&k) {
-                    Some(other) if equal(&v, &other, depth + 1)? => {}
+                    Some(other) if equal(&v, &other, depth + 1, ov)? => {}
                     _ => return Ok(false),
                 }
             }
@@ -103,22 +144,25 @@ pub fn values_identical(a: &Value, b: &Value) -> bool {
 /// Structural ordering: enums by variant (then payload), tuples and structs field by field.
 /// `None` when a float `nan` makes two values unordered.
 pub fn values_cmp(a: &Value, b: &Value) -> Result<Option<Ordering>, TooDeep> {
-    cmp(a, b, 0)
+    cmp(a, b, 0, &mut Plain).map_err(|_| TooDeep)
 }
 
-fn cmp(a: &Value, b: &Value, depth: u32) -> Result<Option<Ordering>, TooDeep> {
+/// Ordering that consults `ov` first for every user-defined value (a user `impl Ord`).
+pub(crate) fn cmp_with(
+    a: &Value,
+    b: &Value,
+    ov: &mut dyn Overrides,
+) -> Result<Option<Ordering>, Stop> {
+    cmp(a, b, 0, ov)
+}
+
+fn cmp(a: &Value, b: &Value, depth: u32, ov: &mut dyn Overrides) -> Result<Option<Ordering>, Stop> {
     if depth > MAX_DEPTH {
-        return Err(TooDeep);
+        return Err(Stop::TooDeep);
     }
-    let lexicographic = |xs: &[Value], ys: &[Value]| -> Result<Option<Ordering>, TooDeep> {
-        for (x, y) in xs.iter().zip(ys) {
-            match cmp(x, y, depth + 1)? {
-                Some(Ordering::Equal) => {}
-                other => return Ok(other),
-            }
-        }
-        Ok(xs.len().partial_cmp(&ys.len()))
-    };
+    if let Some(answer) = override_cmp(a, b, ov) {
+        return answer;
+    }
     Ok(match (a, b) {
         (Value::Unit, Value::Unit) => Some(Ordering::Equal),
         (Value::Bool(x), Value::Bool(y)) => x.partial_cmp(y),
@@ -126,14 +170,31 @@ fn cmp(a: &Value, b: &Value, depth: u32) -> Result<Option<Ordering>, TooDeep> {
         (Value::Float(x), Value::Float(y)) => x.partial_cmp(y),
         (Value::Char(x), Value::Char(y)) => x.partial_cmp(y),
         (Value::Str(x), Value::Str(y)) => x.partial_cmp(y),
-        (Value::Tuple(x), Value::Tuple(y)) => lexicographic(x, y)?,
-        (Value::Struct(x), Value::Struct(y)) => lexicographic(&x.fields, &y.fields)?,
+        (Value::Tuple(x), Value::Tuple(y)) => lexicographic(x, y, depth, ov)?,
+        (Value::Struct(x), Value::Struct(y)) => lexicographic(&x.fields, &y.fields, depth, ov)?,
         (Value::Enum(x), Value::Enum(y)) => match x.variant.cmp(&y.variant) {
-            Ordering::Equal => lexicographic(&x.payload, &y.payload)?,
+            Ordering::Equal => lexicographic(&x.payload, &y.payload, depth, ov)?,
             other => Some(other),
         },
         _ => None,
     })
+}
+
+/// Field-by-field ordering, kept out of [`cmp`] so that its frame stays small.
+#[inline(never)]
+fn lexicographic(
+    xs: &[Value],
+    ys: &[Value],
+    depth: u32,
+    ov: &mut dyn Overrides,
+) -> Result<Option<Ordering>, Stop> {
+    for (x, y) in xs.iter().zip(ys) {
+        match cmp(x, y, depth + 1, ov)? {
+            Some(Ordering::Equal) => {}
+            other => return Ok(other),
+        }
+    }
+    Ok(xs.len().partial_cmp(&ys.len()))
 }
 
 #[cfg(test)]

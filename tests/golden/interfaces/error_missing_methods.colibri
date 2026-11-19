@@ -1,0 +1,12 @@
+interface Animal {
+    fn name(self) -> str
+    fn sound(self) -> str
+    fn legs(self) -> int => 4
+}
+
+struct Dog { n: str }
+
+impl Animal for Dog { // error: `impl Animal for Dog` is missing the methods `name`, `sound`
+}
+
+fn main() {}

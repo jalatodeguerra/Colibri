@@ -1,0 +1,15 @@
+interface Shape {
+    fn area(self) -> float
+}
+
+struct Sq { s: float }
+
+impl Shape for Sq {
+    fn area(self) -> float => 1.0
+}
+
+impl Shape for Sq { // error: `Shape` is implemented for `Sq` more than once
+    fn area(self) -> float => 2.0
+}
+
+fn main() {}

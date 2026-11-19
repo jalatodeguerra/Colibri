@@ -1,0 +1,31 @@
+interface Shape {
+    fn area(self) -> float
+    fn name(self) -> str
+}
+
+struct Circle { r: float }
+struct Rect { w: float, h: float }
+class Blob { size: float }
+
+impl Shape for Circle {
+    fn area(self) -> float => 3.0 * self.r * self.r
+    fn name(self) -> str => "circle"
+}
+
+impl Shape for Rect {
+    fn area(self) -> float => self.w * self.h
+    fn name(self) -> str => "rect"
+}
+
+impl Shape for Blob {
+    fn area(self) -> float => self.size
+    fn name(self) -> str => "blob"
+}
+
+struct Rock { n: int }
+
+fn print_area(s: Shape) {}
+
+fn main() {
+    print_area(Rock { n: 1 }) // error: `Rock` does not implement `Shape`
+}

@@ -1,0 +1,28 @@
+fn show_max[T: Ord + Show](a: T, b: T) -> str {
+    let m = if a > b { a } else { b }
+    return "max is {m}"
+}
+
+fn dedupe[T: Hash + Eq](xs: List[T]) -> List[T] {
+    var seen: Set[T] = Set[T]()
+    var out: List[T] = []
+    for x in xs {
+        if !seen.contains(x) {
+            seen.add(x)
+            out.push(x)
+        }
+    }
+    return out
+}
+
+fn main() {
+    print(show_max(3, 4))
+    print(show_max("a", "b"))
+    print(dedupe([1, 2, 1, 3, 2]))
+    print(dedupe(["x", "x"]))
+}
+
+// expect: max is 4
+// expect: max is b
+// expect: [1, 2, 3]
+// expect: ["x"]

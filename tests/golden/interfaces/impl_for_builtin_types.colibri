@@ -1,0 +1,31 @@
+interface Describe {
+    fn describe(self) -> str
+}
+
+impl Describe for int {
+    fn describe(self) -> str => "the number {self}"
+}
+
+impl Describe for str {
+    fn describe(self) -> str => "the text '{self}'"
+}
+
+impl Describe for List[int] {
+    fn describe(self) -> str => "a list of {self.len()}"
+}
+
+impl Describe for (int, int) {
+    fn describe(self) -> str => "a pair"
+}
+
+fn main() {
+    print(5.describe())
+    print("hi".describe())
+    print([1, 2, 3].describe())
+    print((1, 2).describe())
+}
+
+// expect: the number 5
+// expect: the text 'hi'
+// expect: a list of 3
+// expect: a pair

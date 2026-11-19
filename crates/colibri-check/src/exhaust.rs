@@ -215,6 +215,7 @@ impl Cx<'_> {
                 TypeDefKind::Enum { variants } => {
                     Some((0..variants.len() as u32).map(Ctor::Variant).collect())
                 }
+                TypeDefKind::Interface { .. } => None,
             },
             _ => None,
         }
@@ -226,16 +227,23 @@ impl Cx<'_> {
             (Ctor::Single, Ty::Tuple(items)) => items.clone(),
             (Ctor::Variant(VARIANT_SOME), Ty::Option(t)) => vec![(**t).clone()],
             (Ctor::Variant(_), Ty::Option(_)) => Vec::new(),
-            (Ctor::Single, Ty::Adt(id, _)) => self
+            (Ctor::Single, Ty::Adt(id, args)) => self
                 .types
                 .get(id.0 as usize)
-                .map(|d| d.fields().iter().map(|f| f.ty.clone()).collect())
+                .map(|d| {
+                    let map: Vec<_> = d.params.iter().copied().zip(args.iter().cloned()).collect();
+                    d.fields().iter().map(|f| f.ty.subst(&map)).collect()
+                })
                 .unwrap_or_default(),
-            (Ctor::Variant(v), Ty::Adt(id, _)) => self
+            (Ctor::Variant(v), Ty::Adt(id, args)) => self
                 .types
                 .get(id.0 as usize)
-                .and_then(|d| d.variants().get(*v as usize))
-                .map(|v| v.fields.iter().map(|f| f.ty.clone()).collect())
+                .and_then(|d| {
+                    let map: Vec<_> = d.params.iter().copied().zip(args.iter().cloned()).collect();
+                    d.variants()
+                        .get(*v as usize)
+                        .map(|v| v.fields.iter().map(|f| f.ty.subst(&map)).collect())
+                })
                 .unwrap_or_default(),
             _ => Vec::new(),
         }
@@ -511,6 +519,7 @@ mod tests {
             TypeDef {
                 name: "Shape".into(),
                 span: SP,
+                params: Vec::new(),
                 kind: TypeDefKind::Enum {
                     variants: vec![
                         variant("Circle", vec![Ty::Float]),
@@ -522,6 +531,7 @@ mod tests {
             TypeDef {
                 name: "P".into(),
                 span: SP,
+                params: Vec::new(),
                 kind: TypeDefKind::Struct {
                     fields: vec![field("x", Ty::INT), field("ok", Ty::Bool)],
                 },
@@ -529,6 +539,7 @@ mod tests {
             TypeDef {
                 name: "Dir".into(),
                 span: SP,
+                params: Vec::new(),
                 kind: TypeDefKind::Enum {
                     variants: vec![variant("N", vec![]), variant("E", vec![])],
                 },
@@ -724,6 +735,7 @@ mod tests {
         ts.push(TypeDef {
             name: "Never".into(),
             span: SP,
+            params: Vec::new(),
             kind: TypeDefKind::Enum { variants: vec![] },
         });
         let ty = Ty::Adt(TypeId(3), vec![]);

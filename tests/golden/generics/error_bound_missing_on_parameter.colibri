@@ -1,0 +1,6 @@
+fn biggest[T](a: T, b: T) -> T {
+    if a > b { return a } // error: `>` cannot compare values of type `T`
+    return b
+}
+
+fn main() {}

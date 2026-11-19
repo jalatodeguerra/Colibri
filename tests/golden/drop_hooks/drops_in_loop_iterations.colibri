@@ -1,0 +1,20 @@
+class Tick { n: int }
+
+impl Drop for Tick {
+    fn drop(self) { print("tick {self.n} dropped") }
+}
+
+fn main() {
+    for i in [1, 2, 3] {
+        let t = Tick { n: i }
+        print("iteration {i}")
+    }
+}
+
+// expect: iteration 1
+// expect: tick 1 dropped
+// expect: iteration 2
+// expect: tick 2 dropped
+// expect: iteration 3
+// expect: tick 3 dropped
+// drops: Tick, Tick, Tick

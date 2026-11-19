@@ -1,0 +1,16 @@
+interface Comparable {
+    fn same_as(self, other: Self) -> bool
+}
+
+struct N { v: int }
+
+impl Comparable for N {
+    fn same_as(self, other: N) -> bool => self.v == other.v
+}
+
+fn main() {
+    let a = N { v: 1 }
+    print(a.same_as(N { v: 1 }))
+    let d: Comparable = a
+    print(d.same_as(d)) // error: `same_as` cannot be called on an interface value of `Comparable`
+}

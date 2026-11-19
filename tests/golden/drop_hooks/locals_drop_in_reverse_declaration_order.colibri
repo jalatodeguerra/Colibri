@@ -1,0 +1,18 @@
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) { print("drop {self.name}") }
+}
+
+fn main() {
+    let a = Res { name: "a" }
+    let b = Res { name: "b" }
+    let c = Res { name: "c" }
+    print("end of main")
+}
+
+// expect: end of main
+// expect: drop c
+// expect: drop b
+// expect: drop a
+// drops: c, b, a

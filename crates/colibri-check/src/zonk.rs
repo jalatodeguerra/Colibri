@@ -3,17 +3,15 @@
 
 use colibri_syntax::{Diagnostic, Span};
 
-use crate::derive::unhashable_key;
 use crate::hir::{
     Anchor, Arg, BinOp, Block, Expr, ExprKind, ForBinding, ForSource, Lit, LocalInfo, Num, Operand,
-    Pat, PatKind, Place, Stmt, StmtKind, TypeDef, UnOp,
+    Pat, PatKind, Place, Stmt, StmtKind, UnOp,
 };
 use crate::infer::InferCtx;
 use crate::types::{IntTy, Ty};
 
 pub(crate) fn zonk_body(
     infer: &mut InferCtx,
-    types: &[TypeDef],
     block: &mut Block,
     locals: &mut [LocalInfo],
     diags: &mut Vec<Diagnostic>,
@@ -21,9 +19,7 @@ pub(crate) fn zonk_body(
 ) {
     let mut z = Zonker {
         infer,
-        types,
         diags,
-        reported: Vec::new(),
         reported_unresolved: false,
         had_errors,
     };
@@ -35,10 +31,7 @@ pub(crate) fn zonk_body(
 
 struct Zonker<'a> {
     infer: &'a mut InferCtx,
-    types: &'a [TypeDef],
     diags: &'a mut Vec<Diagnostic>,
-    /// Unhashable key types already reported, so one mistake reports once.
-    reported: Vec<Ty>,
     /// Whether an unresolved type was already reported in this body: the others are the same
     /// mistake seen again (the binding, the literal, each use).
     reported_unresolved: bool,
@@ -64,9 +57,14 @@ fn operand_of(ty: &Ty) -> Operand {
         Ty::Char => Operand::Char,
         Ty::Str => Operand::Str,
         Ty::Unit => Operand::Unit,
-        Ty::Tuple(_) | Ty::Adt(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Option(_) => {
-            Operand::Structural
-        }
+        // A type parameter stands for any type, so it compares by what the values are.
+        Ty::Tuple(_)
+        | Ty::Adt(..)
+        | Ty::List(_)
+        | Ty::Map(..)
+        | Ty::Set(_)
+        | Ty::Option(_)
+        | Ty::Param(..) => Operand::Structural,
         _ => Operand::Int(IntTy::I64),
     }
 }
@@ -112,25 +110,6 @@ impl Zonker<'_> {
             };
             self.diags
                 .push(Diagnostic::error(message, span).with_hint(hint));
-        }
-        // A key type that only became known through inference is checked here; written
-        // types and literals were checked where they appear.
-        if !self.had_errors
-            && let Some((what, key)) = unhashable_key(self.types, &resolved)
-            && !self.reported.contains(&key)
-        {
-            let shown = key.render(self.types);
-            let role = if what == "Map" {
-                "a `Map` key"
-            } else {
-                "a `Set` element"
-            };
-            self.diags.push(
-                Diagnostic::error(format!("`{shown}` cannot be used as {role}"), span).with_hint(
-                    "floats and mutable collections are not hashable; use an integer, a string, a tuple or a struct instead",
-                ),
-            );
-            self.reported.push(key);
         }
         *ty = resolved;
     }
@@ -281,7 +260,9 @@ impl Zonker<'_> {
                     self.expr(v);
                 }
             }
-            ExprKind::ToWeak(inner) | ExprKind::FromWeak(inner) => self.expr(inner),
+            ExprKind::ToWeak(inner) | ExprKind::FromWeak(inner) | ExprKind::Coerce(inner, _) => {
+                self.expr(inner)
+            }
             ExprKind::Project(base, _) => self.expr(base),
             ExprKind::Match { scrutinee, arms } => {
                 self.expr(scrutinee);

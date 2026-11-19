@@ -6,8 +6,9 @@ use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::FnCtx;
 use crate::call::Bound;
-use crate::checker::ParamInfo;
+use crate::checker::{Checker, ParamInfo};
 use crate::hir::{self, Expr, FieldDef, FieldIdx, TypeDef, TypeDefKind, ValueProj};
+use crate::infer::VarKind;
 use crate::types::{Ty, TypeId};
 
 impl FnCtx<'_, '_> {
@@ -41,12 +42,13 @@ impl FnCtx<'_, '_> {
         let ty = self.infer.shallow(base);
         match &ty {
             Ty::Error => None,
-            Ty::Adt(id, _) => {
+            Ty::Adt(id, targs) => {
                 let def = &self.ck.types[id.0 as usize];
                 match &def.kind {
                     TypeDefKind::Struct { fields } | TypeDefKind::Class { fields } => {
                         if let Some(i) = fields.iter().position(|f| f.name == name.name) {
-                            return Some((FieldIdx(i as u32), fields[i].ty.clone()));
+                            let map = Checker::param_map_of(def, targs);
+                            return Some((FieldIdx(i as u32), fields[i].ty.subst(&map)));
                         }
                         let names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
                         let mut diag = Diagnostic::error(
@@ -59,17 +61,25 @@ impl FnCtx<'_, '_> {
                             name.span,
                         );
                         diag = diag.with_hint(
-                            crate::checker::Checker::did_you_mean(&name.name, &names)
-                                .unwrap_or_else(|| {
-                                    if names.is_empty() {
-                                        "it has no fields".to_string()
-                                    } else {
-                                        format!("its fields are: {}", names.join(", "))
-                                    }
-                                }),
+                            Checker::did_you_mean(&name.name, &names).unwrap_or_else(|| {
+                                if names.is_empty() {
+                                    "it has no fields".to_string()
+                                } else {
+                                    format!("its fields are: {}", names.join(", "))
+                                }
+                            }),
                         );
                         diag =
                             diag.with_label(def.span, format!("`{}` is declared here", def.name));
+                        self.ck.report(diag);
+                        None
+                    }
+                    TypeDefKind::Interface { .. } => {
+                        let diag = Diagnostic::error(
+                            format!("the interface `{}` has no fields", def.name),
+                            name.span,
+                        )
+                        .with_hint("call one of its methods instead");
                         self.ck.report(diag);
                         None
                     }
@@ -132,10 +142,8 @@ impl FnCtx<'_, '_> {
 
     /// `base.name` used as a value.
     pub fn check_field_expr(&mut self, base: &ast::Expr, name: &ast::Ident, span: Span) -> Expr {
-        if let ExprKind::Ident(id) = &base.kind
-            && let Some(ty) = self.type_path(id)
-        {
-            return self.check_type_member(ty, name, None, span);
+        if let Some((ty, owner_args)) = self.type_path_expr(base) {
+            return self.check_type_member(ty, owner_args, name, None, span);
         }
         let value = self.check_expr(base, None);
         let Some((idx, ty)) = self.field_of(&value.ty, name, base.span) else {
@@ -242,17 +250,54 @@ impl FnCtx<'_, '_> {
         }
     }
 
+    /// The type an expression names when it starts `Type.member`: `Tree` or `Pair[int, str]`.
+    /// The second part holds the type arguments written, if any.
+    pub fn type_path_expr(&mut self, e: &ast::Expr) -> Option<(TypeId, Option<Vec<Ty>>)> {
+        match &e.kind {
+            ExprKind::Ident(id) => self.type_path(id).map(|t| (t, None)),
+            ExprKind::Index { base, args } => {
+                let ExprKind::Ident(id) = &base.kind else {
+                    return None;
+                };
+                let ty = self.type_path(id)?;
+                let wanted = self.ck.types[ty.0 as usize].params.len();
+                let given = match self.explicit_type_args(args) {
+                    Some(g) if g.len() == wanted => g,
+                    Some(g) => {
+                        let name = id.name.clone();
+                        self.ck.report_type_arity(&name, wanted, g.len(), e.span);
+                        vec![Ty::Error; wanted]
+                    }
+                    None => vec![Ty::Error; wanted],
+                };
+                Some((ty, Some(given)))
+            }
+            _ => None,
+        }
+    }
+
+    /// The type arguments of a type named without any: one fresh variable per parameter.
+    pub(crate) fn fresh_args(&mut self, ty: TypeId) -> Vec<Ty> {
+        let n = self.ck.types[ty.0 as usize].params.len();
+        (0..n).map(|_| self.fresh_var(VarKind::General)).collect()
+    }
+
     /// `Type.name` or `Type.name(args)`: an enum variant or a static function.
     pub fn check_type_member(
         &mut self,
         ty: TypeId,
+        owner_args: Option<Vec<Ty>>,
         name: &ast::Ident,
         args: Option<&[ast::Arg]>,
         span: Span,
     ) -> Expr {
+        let owner_args = match owner_args {
+            Some(a) => a,
+            None => self.fresh_args(ty),
+        };
         let def = &self.ck.types[ty.0 as usize];
         if let Some(v) = def.variants().iter().position(|v| v.name == name.name) {
-            return self.construct_variant(ty, v as u32, args, span);
+            return self.construct_variant(ty, owner_args, v as u32, args, span);
         }
         if let Some(&f) = self.ck.methods.get(&(ty, name.name.clone())) {
             let info = &self.ck.fns[f.0 as usize];
@@ -271,7 +316,10 @@ impl FnCtx<'_, '_> {
                 return self.error_expr(span);
             }
             return match args {
-                Some(args) => self.check_fn_call(f, args, span),
+                Some(args) => {
+                    let owner = Ty::Adt(ty, owner_args);
+                    self.check_fn_call_with(f, None, Some(owner), args, span)
+                }
                 None => {
                     let shown = name.name.clone();
                     self.ck.report(
@@ -292,7 +340,7 @@ impl FnCtx<'_, '_> {
             format!("`{tname}` has no function or variant `{}`", name.name),
             name.span,
         );
-        if let Some(hint) = crate::checker::Checker::did_you_mean(&name.name, &candidates) {
+        if let Some(hint) = Checker::did_you_mean(&name.name, &candidates) {
             diag = diag.with_hint(hint);
         }
         self.ck.report(diag);
@@ -317,10 +365,10 @@ impl FnCtx<'_, '_> {
     ) -> Expr {
         let known = expected.map(|t| self.infer.shallow(t));
         match known {
-            Some(Ty::Adt(id, _)) if self.ck.types[id.0 as usize].is_enum() => {
+            Some(Ty::Adt(id, owner_args)) if self.ck.types[id.0 as usize].is_enum() => {
                 let def = &self.ck.types[id.0 as usize];
                 match def.variants().iter().position(|v| v.name == name.name) {
-                    Some(v) => self.construct_variant(id, v as u32, args, span),
+                    Some(v) => self.construct_variant(id, owner_args, v as u32, args, span),
                     None => {
                         let tname = def.name.clone();
                         let names: Vec<String> =
@@ -330,9 +378,7 @@ impl FnCtx<'_, '_> {
                             format!("the enum `{tname}` has no variant `{}`", name.name),
                             name.span,
                         );
-                        if let Some(hint) =
-                            crate::checker::Checker::did_you_mean(&name.name, &names)
-                        {
+                        if let Some(hint) = Checker::did_you_mean(&name.name, &names) {
                             diag = diag.with_hint(hint);
                         }
                         self.ck.report(diag);
@@ -394,14 +440,19 @@ impl FnCtx<'_, '_> {
     pub fn construct_variant(
         &mut self,
         ty: TypeId,
+        owner_args: Vec<Ty>,
         variant: u32,
         args: Option<&[ast::Arg]>,
         span: Span,
     ) -> Expr {
         let def = &self.ck.types[ty.0 as usize];
         let tname = def.name.clone();
-        let v = def.variants()[variant as usize].clone();
-        let result = Ty::Adt(ty, Vec::new());
+        let map = Checker::param_map_of(def, &owner_args);
+        let mut v = def.variants()[variant as usize].clone();
+        for f in &mut v.fields {
+            f.ty = f.ty.subst(&map);
+        }
+        let result = Ty::Adt(ty, owner_args);
         let full = format!("{tname}.{}", v.name);
         let make = |this: &Self, args: Vec<Expr>| {
             this.mk(
@@ -517,20 +568,27 @@ impl FnCtx<'_, '_> {
         &mut self,
         ty_expr: &ast::TypeExpr,
         fields: &[ast::FieldInit],
+        expected: Option<&Ty>,
         span: Span,
     ) -> Expr {
-        let ty = self.ck.resolve_type(ty_expr);
+        let ty = self.resolve_type_infer(ty_expr);
+        if let (Ty::Adt(id, _), Some(Ty::Adt(eid, _))) =
+            (&ty, expected.map(|t| self.infer.shallow(t)))
+            && *id == eid
+        {
+            let _ = self.infer.unify(&ty, expected.unwrap_or(&ty));
+        }
         let loose = |this: &mut Self| {
             for f in fields {
                 this.check_expr(&f.value, None);
             }
         };
-        let id = match &ty {
+        let (id, targs) = match &ty {
             Ty::Error => {
                 loose(self);
                 return self.error_expr(span);
             }
-            Ty::Adt(id, _) if !self.ck.types[id.0 as usize].is_enum() => *id,
+            Ty::Adt(id, targs) if !self.ck.types[id.0 as usize].is_enum() => (*id, targs.clone()),
             Ty::Adt(id, _) => {
                 loose(self);
                 let tname = self.ck.types[id.0 as usize].name.clone();
@@ -554,7 +612,15 @@ impl FnCtx<'_, '_> {
         let is_class = def.is_class();
         let word = kind_word(def);
         let tname = def.name.clone();
-        let decls: Vec<FieldDef> = def.fields().to_vec();
+        let map = Checker::param_map_of(def, &targs);
+        let decls: Vec<FieldDef> = def
+            .fields()
+            .iter()
+            .map(|f| FieldDef {
+                ty: f.ty.subst(&map),
+                ..f.clone()
+            })
+            .collect();
         let defaults = self.ck.type_extra[id.0 as usize].defaults.clone();
         let mut given: Vec<Option<Bound>> = decls.iter().map(|_| None).collect();
         let mut ok = true;
@@ -567,7 +633,7 @@ impl FnCtx<'_, '_> {
                     init.name.span,
                 );
                 diag = diag.with_hint(
-                    crate::checker::Checker::did_you_mean(&init.name.name, &names)
+                    Checker::did_you_mean(&init.name.name, &names)
                         .unwrap_or_else(|| format!("its fields are: {}", names.join(", "))),
                 );
                 self.ck.report(diag);
@@ -660,7 +726,7 @@ impl FnCtx<'_, '_> {
             self.ck.report(diag);
             ok = false;
         }
-        let result = Ty::Adt(id, Vec::new());
+        let result = Ty::Adt(id, targs);
         if !ok {
             return self.mk(hir::ExprKind::Error, result, span);
         }

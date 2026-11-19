@@ -1,0 +1,19 @@
+class Part { name: str }
+class Whole { name: str, first: Part, second: Part }
+
+impl Drop for Part {
+    fn drop(self) { print("part {self.name}") }
+}
+
+impl Drop for Whole {
+    fn drop(self) { print("whole {self.name}") }
+}
+
+fn main() {
+    let w = Whole { name: "w", first: Part { name: "p1" }, second: Part { name: "p2" } }
+}
+
+// expect: whole w
+// expect: part p1
+// expect: part p2
+// drops: w, p1, p2

@@ -182,6 +182,30 @@ fn token_soup_does_not_panic() {
         "enumerate",
         "chars",
         "push",
+        "interface",
+        "Self",
+        "self",
+        "T",
+        "U",
+        "Drop",
+        "Show",
+        "Eq",
+        "Ord",
+        "Hash",
+        "Clone",
+        "Shape",
+        "area",
+        "drop",
+        "[T]",
+        "[int]",
+        "[T: Ord]",
+        "impl[T]",
+        "for T",
+        "+",
+        "Box[T]",
+        "Pair[int, str]",
+        "type",
+        "Dyn",
     ];
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     for _ in 0..8000 {
@@ -247,6 +271,93 @@ fn programs_built_from_statements_do_not_panic() {
             "fn f(x: int, b: float = 1) -> int {{\n{}\n}}\nlet g = 1\nfn main() {{\n{}\n}}\n",
             body.join("\n"),
             body.iter().rev().cloned().collect::<Vec<_>>().join("\n")
+        );
+        check_str(&src);
+    }
+}
+
+#[test]
+fn generic_and_interface_programs_do_not_panic() {
+    // Declarations of generics, interfaces and impls, shuffled with uses of them.
+    const DECLS: &[&str] = &[
+        "fn id[T](x: T) -> T => x",
+        "fn max[T: Ord](a: T, b: T) -> T { if a > b { return a } return b }",
+        "fn bad[T: Nope](a: T) -> T => a",
+        "fn twice[T: Show + Clone](a: T) -> (T, T) => (a, a.clone())",
+        "fn dup[T, T](a: T) {}",
+        "struct Box[T] { v: T }",
+        "struct Pair[A, B] { a: A, b: B }",
+        "enum Tree[T] { Leaf, Node(Tree[T], T, Tree[T]) }",
+        "class Cell[T] { v: T }",
+        "type Grid[T] = List[List[T]]",
+        "type Loop[T] = Loop[T]",
+        "interface Shape { fn area(self) -> float\n fn name(self) -> str => \"s\" }",
+        "interface Gen[T] { fn get(self) -> T }",
+        "interface Mixed { fn make() -> int }",
+        "interface Dup { fn a(self) fn a(self) }",
+        "struct Sq { s: float }",
+        "class Res { n: int }",
+        "impl Shape for Sq { fn area(self) -> float => self.s }",
+        "impl Shape for Sq { }",
+        "impl Shape for int { fn area(self) -> float => 1.0 }",
+        "impl Show for int { fn show(self) -> str => \"i\" }",
+        "impl[T] Shape for Box[T] { fn area(self) -> float => 1.0 }",
+        "impl[T: Ord] Box[T] { fn big(self, o: T) -> bool => self.v > o }",
+        "impl[A, B] Pair[A, B] { fn swap(self) -> Pair[B, A] => Pair { a: self.b, b: self.a } }",
+        "impl Gen[int] for Sq { fn get(self) -> int => 1 }",
+        "impl Drop for Res { fn drop(self) { print(self.n) } }",
+        "impl Drop for Sq { fn drop(self) {} }",
+        "impl Eq for Sq { fn eq(self, o: Sq) -> bool => true }",
+        "impl Ord for Sq { fn cmp(self, o: Sq) -> int => 0 }",
+        "impl Clone for Sq { fn clone(self) -> Sq => self }",
+        "impl Hash for Sq { fn hash(self) -> int => 1 }",
+        "impl Nope for Sq {}",
+        "impl Box { }",
+    ];
+    const USES: &[&str] = &[
+        "let a = id(1)",
+        "let b = id[str](\"s\")",
+        "let c = id[int, int](1)",
+        "let d = max(1, 2)",
+        "let e = max(Sq { s: 1.0 }, Sq { s: 2.0 })",
+        "let f: Box[int] = Box { v: 1 }",
+        "let g = Box { v: [] }",
+        "let h = Pair { a: 1, b: \"x\" }.swap()",
+        "let i: Tree[int] = .Leaf",
+        "let j = Tree.Node(.Leaf, 1, .Leaf)",
+        "let k: Shape = Sq { s: 1.0 }",
+        "let l = Sq { s: 2.0 } as Shape",
+        "let m = [Sq { s: 1.0 }, Sq { s: 2.0 }]",
+        "let n: List[Shape] = [Sq { s: 1.0 }]",
+        "print(k.area())",
+        "print(k.name())",
+        "print(k.nope())",
+        "print(Sq { s: 1.0 }.area())",
+        "let o = Res { n: 1 }",
+        "let p = Cell { v: o }",
+        "print(Sq { s: 1.0 } == Sq { s: 2.0 })",
+        "print(Sq { s: 1.0 } < Sq { s: 2.0 })",
+        "var q: Map[Sq, int] = {:}",
+        "let r = Box { v: 1 }.big(2)",
+        "let s: Grid[int] = [[1]]",
+        "let t = Box.v",
+        "let u = Gen",
+        "print(Sq { s: 1.0 }.get())",
+        "print(5.area())",
+        "print(twice(Box { v: 1 }))",
+    ];
+    let mut rng = Rng(0xfeed_beef_1357_9bdf);
+    for _ in 0..4000 {
+        let decls: Vec<&str> = (0..1 + rng.next() % 8)
+            .map(|_| DECLS[(rng.next() % DECLS.len() as u64) as usize])
+            .collect();
+        let uses: Vec<&str> = (0..1 + rng.next() % 6)
+            .map(|_| USES[(rng.next() % USES.len() as u64) as usize])
+            .collect();
+        let src = format!(
+            "{}\nfn main() {{\n{}\n}}\n",
+            decls.join("\n"),
+            uses.join("\n")
         );
         check_str(&src);
     }

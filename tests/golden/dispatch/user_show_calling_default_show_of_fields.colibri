@@ -1,0 +1,15 @@
+struct Inner { a: int, b: str }
+struct Outer { name: str, inner: Inner }
+
+impl Show for Outer {
+    fn show(self) -> str => "<{self.name}: {self.inner}>"
+}
+
+fn main() {
+    let o = Outer { name: "o", inner: Inner { a: 1, b: "x" } }
+    print(o)
+    print([o])
+}
+
+// expect: <o: Inner { a: 1, b: "x" }>
+// expect: [<o: Inner { a: 1, b: "x" }>]

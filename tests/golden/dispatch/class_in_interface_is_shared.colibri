@@ -1,0 +1,26 @@
+interface Counter {
+    fn bump(var self)
+    fn value(self) -> int
+}
+
+class Clicks { n: int }
+
+impl Counter for Clicks {
+    fn bump(self) { self.n += 1 }
+    fn value(self) -> int => self.n
+}
+
+fn main() {
+    let c = Clicks { n: 0 }
+    var a: Counter = c
+    var b = a
+    a.bump()
+    b.bump()
+    print(c.n)
+    print(a.value())
+    print(b.value())
+}
+
+// expect: 2
+// expect: 2
+// expect: 2

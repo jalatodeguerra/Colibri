@@ -1,0 +1,23 @@
+class Account { id: int, owner: str }
+
+impl Eq for Account {
+    fn eq(self, other: Account) -> bool => self.id == other.id
+}
+
+class Plain { id: int }
+
+fn main() {
+    let a = Account { id: 1, owner: "ann" }
+    let b = Account { id: 1, owner: "bob" }
+    print(a == b)
+    print(a is b)
+    let p = Plain { id: 1 }
+    let q = Plain { id: 1 }
+    print(p == q)
+    print(p == p)
+}
+
+// expect: true
+// expect: false
+// expect: false
+// expect: true

@@ -1,0 +1,19 @@
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) {
+        print("hook {self.name}")
+        let boom = 1 / 0
+    }
+}
+
+fn main() {
+    let a = Res { name: "a" }
+    let b = Res { name: "b" }
+    let first = [1][5] // panic: out of bounds
+    // panic: a `Drop` hook also panicked: division by zero
+}
+
+// expect: hook b
+// expect: hook a
+// drops: b, a

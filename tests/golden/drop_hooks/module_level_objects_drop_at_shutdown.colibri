@@ -1,0 +1,17 @@
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) { print("shutdown {self.name}") }
+}
+
+let first = Res { name: "first" }
+let second = Res { name: "second" }
+
+fn main() {
+    print("main")
+}
+
+// expect: main
+// expect: shutdown second
+// expect: shutdown first
+// drops: second, first

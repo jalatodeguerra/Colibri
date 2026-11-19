@@ -1,0 +1,25 @@
+struct Pair[A, B] {
+    first: A
+    second: B
+}
+
+impl[A, B] Pair[A, B] {
+    fn swap(self) -> Pair[B, A] => Pair { first: self.second, second: self.first }
+    fn new(a: A, b: B) -> Pair[A, B] => Pair { first: a, second: b }
+}
+
+fn main() {
+    let p = Pair { first: 1, second: "one" }
+    let q = p.swap()
+    print(q.first)
+    print(q.second)
+    let r = Pair.new(2.5, true)
+    print(r)
+    let s = Pair[int, str].new(3, "three")
+    print(s.swap())
+}
+
+// expect: one
+// expect: 1
+// expect: Pair { first: 2.5, second: true }
+// expect: Pair { first: "three", second: 3 }

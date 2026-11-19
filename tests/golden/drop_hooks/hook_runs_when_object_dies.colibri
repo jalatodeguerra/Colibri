@@ -1,0 +1,16 @@
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) {
+        print("closing {self.name}")
+    }
+}
+
+fn main() {
+    let r = Res { name: "file" }
+    print("working")
+}
+
+// expect: working
+// expect: closing file
+// drops: file

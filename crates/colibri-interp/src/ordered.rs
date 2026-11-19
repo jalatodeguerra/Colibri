@@ -56,6 +56,7 @@ fn feed(v: &Value, h: &mut DefaultHasher, depth: u32) {
             e.payload.iter().for_each(|x| feed(x, h, depth + 1));
         }
         Value::Obj(rc) => (Rc::as_ptr(rc) as usize).hash(h),
+        Value::Dyn(d) => feed(&d.val, h, depth + 1),
         Value::List(l) => l.len().hash(h),
         Value::Map(m) => m.len().hash(h),
         Value::Set(s) => s.len().hash(h),

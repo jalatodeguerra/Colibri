@@ -1,0 +1,22 @@
+interface A {
+    fn a(self) -> int
+}
+
+interface B {
+    fn b(self) -> int
+}
+
+struct T { n: int }
+
+impl A for T {
+    fn a(self) -> int => 1
+}
+
+impl B for T {
+    fn b(self) -> int => 2
+}
+
+fn main() {
+    let x: A = T { n: 1 }
+    let y: B = x // error: expected `B`, found `A`
+}

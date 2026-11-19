@@ -1,0 +1,17 @@
+class Item { name: str }
+
+impl Drop for Item {
+    fn drop(self) { print("item {self.name}") }
+}
+
+fn main() {
+    var items: List[Item] = [Item { name: "x" }, Item { name: "y" }, Item { name: "z" }]
+    items.remove(1)
+    print("removed")
+}
+
+// expect: item y
+// expect: removed
+// expect: item x
+// expect: item z
+// drops: y, x, z

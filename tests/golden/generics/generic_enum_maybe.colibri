@@ -1,0 +1,27 @@
+enum Maybe[T] {
+    Nothing
+    Just(T)
+}
+
+fn or_else[T](m: Maybe[T], fallback: T) -> T {
+    match m {
+        .Nothing => return fallback
+        .Just(v) => return v
+    }
+}
+
+fn first[T](xs: List[T]) -> Maybe[T] {
+    if xs.is_empty() { return .Nothing }
+    return Maybe.Just(xs[0])
+}
+
+fn main() {
+    print(or_else(first([4, 5]), 0))
+    print(or_else(first([]), 7))
+    let m: Maybe[str] = .Just("x")
+    print(m)
+}
+
+// expect: 4
+// expect: 7
+// expect: Just("x")

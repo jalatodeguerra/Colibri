@@ -5,6 +5,7 @@
 //! produced today, so later slices add checking rules instead of reshaping the type.
 
 use std::fmt;
+use std::rc::Rc;
 
 use crate::hir::TypeDef;
 
@@ -17,12 +18,28 @@ pub struct TypeId(pub u32);
 /// variants are `none` (0) and `some` (1), so `Ty::Option(T)` values and patterns use the
 /// ordinary enum machinery.
 pub const OPTION_TYPE: TypeId = TypeId(0);
+
+/// The built-in interfaces follow `Option` in the type table, in the order of the prelude
+/// source (`crate::prelude`), so their ids are constants (DESIGN §9.2, §7.4).
+pub const EQ: TypeId = TypeId(1);
+pub const ORD: TypeId = TypeId(2);
+pub const HASH: TypeId = TypeId(3);
+pub const SHOW: TypeId = TypeId(4);
+pub const CLONE: TypeId = TypeId(5);
+pub const DROP: TypeId = TypeId(6);
+pub const ITER: TypeId = TypeId(7);
+pub const ITERABLE: TypeId = TypeId(8);
+pub const INTO_ERROR: TypeId = TypeId(9);
+/// The first id a user-defined type can have.
+pub const FIRST_USER_TYPE: u32 = 10;
 /// The index of `none` in the prelude `Option`.
 pub const VARIANT_NONE: u32 = 0;
 /// The index of `some` in the prelude `Option`.
 pub const VARIANT_SOME: u32 = 1;
 
-/// Identifies a generic type parameter within its declaration (not produced yet).
+/// Identifies a generic type parameter. Ids are unique across the whole program, so a type
+/// that mentions a parameter says which declaration it belongs to and substitution is a plain
+/// lookup (never a positional guess).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ParamId(pub u32);
 
@@ -81,7 +98,12 @@ pub enum Ty {
     Option(Box<Ty>),
     Result(Box<Ty>, Box<Ty>),
     Fn(Vec<Ty>, Box<Ty>),
-    Param(ParamId),
+    /// An interface used as a type: a dynamically dispatched value (DESIGN §9.2), with the
+    /// interface's type arguments.
+    Dyn(TypeId, Vec<Ty>),
+    /// A type parameter, opaque inside the generic declaration that owns it; the name is for
+    /// messages.
+    Param(ParamId, Rc<str>),
     /// An inference variable, resolved through the function's [`crate::infer::InferCtx`].
     Infer(TyVar),
     /// A type that already caused a diagnostic; it unifies with everything so one mistake
@@ -99,6 +121,42 @@ impl Ty {
 }
 
 impl Ty {
+    /// Replaces type parameters by the types `map` gives them.
+    pub fn subst(&self, map: &[(ParamId, Ty)]) -> Ty {
+        if map.is_empty() {
+            return self.clone();
+        }
+        let go = |t: &Ty| t.subst(map);
+        match self {
+            Ty::Param(p, _) => map
+                .iter()
+                .find(|(q, _)| q == p)
+                .map_or_else(|| self.clone(), |(_, t)| t.clone()),
+            Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(go).collect()),
+            Ty::Adt(id, ts) => Ty::Adt(*id, ts.iter().map(go).collect()),
+            Ty::Dyn(id, ts) => Ty::Dyn(*id, ts.iter().map(go).collect()),
+            Ty::List(t) => Ty::List(Box::new(go(t))),
+            Ty::Set(t) => Ty::Set(Box::new(go(t))),
+            Ty::Option(t) => Ty::Option(Box::new(go(t))),
+            Ty::Map(k, v) => Ty::Map(Box::new(go(k)), Box::new(go(v))),
+            Ty::Result(t, e) => Ty::Result(Box::new(go(t)), Box::new(go(e))),
+            Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(go).collect(), Box::new(go(r))),
+            _ => self.clone(),
+        }
+    }
+
+    /// Whether the type mentions a type parameter.
+    pub fn has_param(&self) -> bool {
+        match self {
+            Ty::Param(..) => true,
+            Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().any(Ty::has_param),
+            Ty::List(t) | Ty::Set(t) | Ty::Option(t) => t.has_param(),
+            Ty::Map(a, b) | Ty::Result(a, b) => a.has_param() || b.has_param(),
+            Ty::Fn(ps, r) => ps.iter().any(Ty::has_param) || r.has_param(),
+            _ => false,
+        }
+    }
+
     /// The type as written in source, with user-defined types shown by name. (`Display` has no
     /// access to the program's types and shows them as `type#N`.)
     pub fn render(&self, types: &[TypeDef]) -> String {
@@ -153,7 +211,7 @@ impl fmt::Display for Shown<'_> {
                 }
                 f.write_str(")")
             }
-            Ty::Adt(id, args) => {
+            Ty::Adt(id, args) | Ty::Dyn(id, args) => {
                 match types.get(id.0 as usize) {
                     Some(def) => f.write_str(&def.name)?,
                     None => write!(f, "type#{}", id.0)?,
@@ -180,7 +238,7 @@ impl fmt::Display for Shown<'_> {
                 }
                 Ok(())
             }
-            Ty::Param(p) => write!(f, "T{}", p.0),
+            Ty::Param(_, name) => f.write_str(name),
             Ty::Infer(_) => f.write_str("_"),
             Ty::Error => f.write_str("{error}"),
         }

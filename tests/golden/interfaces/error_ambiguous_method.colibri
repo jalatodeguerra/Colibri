@@ -1,0 +1,22 @@
+interface A {
+    fn run_it(self) -> int
+}
+
+interface B {
+    fn run_it(self) -> int
+}
+
+struct T { n: int }
+
+impl A for T {
+    fn run_it(self) -> int => 1
+}
+
+impl B for T {
+    fn run_it(self) -> int => 2
+}
+
+fn main() {
+    let t = T { n: 0 }
+    print(t.run_it()) // error: `run_it` is a method of several interfaces that `T` implements: `A`, `B`
+}

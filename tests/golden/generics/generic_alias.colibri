@@ -1,0 +1,15 @@
+type Grid[T] = List[List[T]]
+type Pair[A] = (A, A)
+
+fn cell[T](g: Grid[T], r: int, c: int) -> T => g[r][c]
+
+fn twin[T](x: T) -> Pair[T] => (x, x)
+
+fn main() {
+    let g: Grid[int] = [[1, 2], [3, 4]]
+    print(cell(g, 1, 0))
+    print(twin("a"))
+}
+
+// expect: 3
+// expect: ("a", "a")
