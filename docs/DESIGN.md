@@ -1,6 +1,10 @@
 # Colibri Language Design
 
-**Status:** Draft v0.4, for review. Nothing here is implemented yet.
+**Status:** Draft v0.5, for review. Phases 1 and 2 of §17.5 are implemented and on `main`: the
+language core on a tree-walking interpreter, the embedding API, formatter, language server,
+15 standard library modules, `colibri test`, packages with path dependencies, coroutines and the
+C FFI. The bytecode VM (phase 3) is next and not started. Sections that describe features that
+are not built yet carry the marker **[Not built yet]**.
 **Date:** 2026-11-19
 
 This document describes what Colibri is, the decisions already agreed, the concrete proposals
@@ -10,6 +14,37 @@ tagged with one of three markers:
 - **[Locked]**: agreed during the brainstorm. Changing it means re-opening the discussion.
 - **[Proposed]**: a recommendation filling in details the brainstorm didn't cover. Review and push back.
 - **[Open]**: a real choice that needs a decision. Listed again in [§18 Open questions](#18-open-questions).
+
+### Changes in v0.5
+
+v0.5 brings the document in line with the implementation and records the decisions santiago
+made on 2026-11-19 about the road to the VM:
+
+- **Status and markers.** The status line says what is built. Described-but-unbuilt features are
+  marked **[Not built yet]** where they appear (§3.6, §5.2, §6.1, §7.5, §10.2, §12, §13, §13.1,
+  §15.4). Game-first wording is gone from the goals and the sample (§1, §2).
+- **Vectors leave the language core** (§15.1, Q12): they will become a library of ordinary
+  structs built on new operator interfaces `Add`, `Sub`, `Mul` and `Neg`. Decided and planned,
+  not done.
+- **Staged VM speed target** (§17.4): phase 3 is finished when the VM beats CPython 3.13 on the
+  project's benchmark set; "within 1.5x of Lua 5.4" is a later stage.
+- **No SSA "Colibri IR" before bytecode** (§16.2, §17.1): HIR lowers straight to register
+  bytecode with explicit drop instructions. The IR is added when RC elision is scheduled.
+- **The tree-walker is retired** once the VM passes every golden test and supports hot reload,
+  the REPL and the leak detector (§16.2). It is not kept as a reference engine; the golden tests
+  are the reference.
+- **VM coroutines use heap frames**, not one native stack each, and built-ins that take
+  closures (`map`, `filter`, `sort_by`, ...) will be written in Colibri so they can pause
+  (§14.3).
+- **macOS and Windows testing** must be set up before the VM (§17.5). CI is down at the moment.
+- **`wait_frames(n)` is removed** (§14.2); `wait(seconds)` and `wait_until(cond)` remain.
+  Scheduler wording talks about advancing the scheduler, not game frames.
+- **Game kit moved out** (§15.6) to [notes/game-kit.md](notes/game-kit.md). The heading stays so
+  section numbers are stable.
+- **Roadmap, workspace layout and open questions** (§17.1, §17.5, §18) now match the code:
+  phases 1 and 2 are marked done, planned crates are marked planned, `colibri-ffi` is listed and
+  `colibri-game` is dropped, and §18 is a decisions table with a status for each row.
+- The PHASE1 and PHASE2 plans moved to [history/](history/).
 
 ### Changes in v0.4
 
@@ -114,15 +149,15 @@ v0.2 answers the advisor review on PR #1. The main changes:
 ### Goals [Locked, revised 2026-11-19]
 
 - **Genuinely usable**, not a toy. Someone should be able to write a real automation script, a
-  command-line tool or a small server, embed scripts in a Rust program, or ship a small game in
-  Colibri.
+  command-line tool or a small server, embed scripts in a Rust program, or ship a standalone
+  program in Colibri.
 - **Simple syntax**, in the spirit of Go and Python, with braces. Small keyword set, one
   obvious way to do common things.
 - **Static types with inference.** Errors are caught before the program runs, but day-to-day
   code rarely needs type annotations inside function bodies.
 - **A general-purpose language**, revised 2026-11-19 (second revision). Colibri is not aimed at
   one domain. Its use cases are tools and automation, servers, **embedding in Rust programs**,
-  and games, among others, and no one of them decides the design. Embedding stays a first-class
+  and interactive programs, among others, and no one of them decides the design. Embedding stays a first-class
   goal because it shapes the runtime, but it does not outrank the others. When a feature is
   useful only to one domain, it belongs in a std module or an optional package, not in the
   language core.
@@ -134,7 +169,7 @@ v0.2 answers the advisor review on PR #1. The main changes:
   structs, refcounted reference types and `weak` references for cycles. Compiler elision of
   refcount operations is a later optimization that may not change meaning; `own` and `borrow`
   are reserved words, and the ownership checker is not designed now.
-- **Embeddable** in Rust programs (applications, servers, game engines) as a first-class use from
+- **Embeddable** in Rust programs (applications, servers, engines) as a first-class use from
   phase 1, and **easy C interop**.
 
 ### Goals [Proposed]
@@ -155,7 +190,7 @@ v0.2 answers the advisor review on PR #1. The main changes:
   **arithmetic** operators in v1. (`==` and `<` are user-definable through `Eq` and `Ord`;
   arithmetic on structs through interfaces is planned after phase 1, Q12.)
 - Competing with Rust or C++ on peak performance. "Fast enough for scripts, tools and servers,
-  and for a 2D/3D indie game, and much faster than Python" is the bar (numbers in §17.4).
+  and for interactive programs, and much faster than Python" is the bar (numbers in §17.4).
 - A JIT, at any point; M:N task scheduling in v1.
 - Committing to native AOT or an ownership checker in v1. Both are stretch goals.
 - A package registry in v1.
@@ -178,49 +213,56 @@ v0.2 answers the advisor review on PR #1. The main changes:
 ## 2. Colibri at a glance
 
 ```colibri
-import math
 import fs
+import str
 
-struct Player {
-    name: str
-    pos: vec2
-    hp: int = 100
+struct Account {
+    owner: str
+    balance: int = 0
 }
 
 enum Command {
-    Move(vec2)
-    Heal(int)
-    Quit
+    Deposit(int)
+    Withdraw(int)
+    Close
 }
 
 fn greet(name: str) -> str => "Hello, {name}!"
 
-fn apply(p: Player, cmd: Command) -> Player {
-    var next = p                       // structs are values: this is a copy
+fn apply(a: Account, cmd: Command) -> Result[Account] {
+    var next = a // structs are values: this is a copy
     match cmd {
-        Move(dir) => next.pos += dir
-        Heal(n)   => next.hp = math.min(next.hp + n, 100)
-        Quit      => {}
+        Deposit(n) => next.balance += n
+        Withdraw(n) => {
+            if n > next.balance {
+                return err("insufficient funds")
+            }
+            next.balance -= n
+        }
+        Close => next.balance = 0
     }
-    return next
+    return ok(next)
 }
 
-fn load_level(path: str) -> Result[Level] {
-    let text = fs.read(path)?          // propagate the error
-    let level = parse_level(text)?
-    return ok(level)
+fn load_limit(path: str) -> Result[int] {
+    let text = fs.read(path)? // propagate the error
+    let limit = str.parse_int(text.trim())?
+    return ok(limit)
 }
 
 fn main() {
-    let people = ["Ana", "Leo"]
-    for p in people {
-        print(greet(p))
+    for name in ["Ana", "Leo"] {
+        print(greet(name))
     }
 
-    let level = load_level("level1.txt") or default_level()
-    var hero = Player { name: "Ana", pos: vec2(0, 0) }
-    hero = apply(hero, .Move(vec2(1, 0)))     // `.Move`: the expected type is Command
-    print("{hero.name} is at {hero.pos} with {hero.hp} hp")
+    let limit = load_limit("limit.txt") or 500 // the file may be missing
+    var acct = Account { owner: "Ana" }
+    acct = apply(acct, .Deposit(120)) or acct
+    print("{acct.owner} has {acct.balance} (limit {limit})")
+    match apply(acct, .Withdraw(200)) {
+        ok(a)  => print("now {a.balance}")
+        err(e) => print("error: {e}")
+    }
 }
 ```
 
@@ -336,6 +378,12 @@ extern "C" { fn MessageBoxA(...) -> i32 }
 
 `@when` conditions can test `os`, `arch`, `debug`, and feature flags from `colibri.toml`. User-defined
 attributes are not part of v1.
+
+**[Not built yet]** `@deprecated`, `@when` and `@inline` parse, but the checker rejects them today with
+"the attribute `@name` is not supported yet". `@repr(C)` and `@link` are built. **Proposal:** cut
+`@inline`. The VM and any later native backend will decide inlining themselves (§17.3), and an
+attribute that only the optimizer reads is the kind of opt-in performance knob principle 2
+(§1) warns against.
 
 ---
 
@@ -486,7 +534,7 @@ panics; float division follows IEEE 754.
 | `Result[T]`, `Result[T, E]` | §10 |
 | `(A, B)` | tuple, a value type; `let (a, b) = f()` destructures |
 | `Range[T]` | `a..b`, `a..=b`; iterable, usable in patterns and slicing |
-| `[T; N]` | fixed-size array, value type, used in C-layout structs |
+| `[T; N]` | fixed-size array, value type, used in C-layout structs. **[Not built yet]** |
 | `fn(A, B) -> R` | function / closure type |
 
 - **Multiple return values** are tuples: `fn bounds(xs: List[int]) -> (int, int)`, called as
@@ -562,7 +610,8 @@ log("disk full", level: "warn")              // named argument
   [Proposed, built 2026-11-19]
 - `pub` controls visibility (§13).
 - `defer` runs a statement when the enclosing block exits, including on panic and coroutine
-  cancellation (§10.4): `let f = fs.open(path)?` then `defer f.close()`.
+  cancellation (§10.4): `let f = fs.open(path)?` then `defer f.close()`. **[Not built yet]** (`fs.open` and file
+  handles do not exist; `fs` has whole-file functions such as `fs.read` and `fs.write`.)
 
 ### 6.2 Closures [Proposed]
 
@@ -705,10 +754,12 @@ variants, attributes). The same descriptors serve several features, so they're b
 
 - `json.encode(x)` and `json.decode[T](text) -> Result[T]`, with `@rename("x")`, `@skip` and
   default-on-missing field handling. Other formats (TOML, a binary format) use the same API.
+  `json.encode` and `json.decode[T]` are built; `@rename`, `@skip` and default-on-missing field
+  handling are **[Not built yet]**.
 - Deep copy for thread sends (§14.1), `Show`, `Clone`, the leak detector (§11.5), the debugger
   (§16.5) and hot reload layout checks (§16.3).
 - A small read-only reflection API (`reflect.fields[T]()`) for tools such as editors and
-  inspectors. Reflection cannot bypass visibility.
+  inspectors. Reflection cannot bypass visibility. **[Not built yet]** There is no `reflect` module.
 
 ---
 
@@ -892,7 +943,9 @@ let text = fs.read(path).context("loading level {path}")?   // wrap with context
 - `e.context(msg)` wraps an error with a message; `e.cause()` walks the chain; `{e}` prints the
   whole chain. Debug builds capture a backtrace.
 - The standard library returns real enums underneath (`fs.Error.NotFound`,
-  `http.Error.Timeout`), never just strings.
+  `http.Error.Timeout`), never just strings. **[Not built yet]** Today the std modules fail with
+  plain strings (with `.context` available on top), so the `fs.Error` match above does not
+  compile yet.
 
 ### 10.3 Handling forms [Locked, Proposed details]
 
@@ -1126,7 +1179,7 @@ reference-typed objects. See §14.1.
   `s.bytes()`, and slicing by byte range `s[0..4]` (panics on a non-boundary).
 - **Slices copy** in v1: `s[0..4]` is a new string, so a small slice never keeps a huge string
   alive. A non-copying view type can come later if profiles ask for it.
-- `StrBuilder` for efficient building; `+` concatenates strings.
+- `StrBuilder` for efficient building; `+` concatenates strings. **[Not built yet]** (`StrBuilder`; `+` is built.)
 
 ---
 
@@ -1172,7 +1225,9 @@ let p = player.spawn("Ana")
   `import std.math` or `as`.
 - **Dependencies are listed in `colibri.toml`** and the `colibri` tool fetches them (git URLs or local
   paths in v1, a registry later). Resolved versions are pinned in **`colibri.lock`**. Rust crate
-  bindings (§15.5) and capabilities (§15.3) are declared in the same file.
+  bindings (§15.5) and capabilities (§15.3) are declared in the same file. Only **path
+  dependencies** are built. Git and registry dependencies and `colibri.lock` are **[Not built yet]**;
+  `colibri.toml` with a `git` or `version` key is refused with "not supported yet".
 - **Scripts need no `colibri.toml`.** `colibri run script.colibri` treats the script's folder as an
   implicit package, so a script can `import helpers` from `helpers.colibri` next to it.
 - **Top-level statements are allowed only in the entry file of a script** (Q15). Imported modules
@@ -1184,7 +1239,9 @@ Built in two steps:
 
 - **Core (phase 1):** `io`, `fs`, `path`, `os` (env, process exit), `math`, `rand`, `time`,
   `json` (with `encode`/`decode[T]`, §7.5), `str` helpers, `collections`, `task` (§14), `mem`,
-  `reflect` and `test`.
+  `reflect` and `test`. **[Not built yet]** `collections`, `mem` and `reflect` do not exist (importing them
+  says so; `List`, `Map` and `Set` are built in, so `collections` may never be needed), and neither
+  does an importable `task` module (thread tasks come with the VM; `task.tick` works today).
 - **Scripting and numerics (phase 2):** `args` (CLI argument parsing), subprocesses with pipes,
   `datetime`, `regex`, `http` (a blocking HTTP client, behind the `net` capability), and `vec`
   (§15.1). These are what people reach for Python to do; with a Rust runtime they are thin
@@ -1198,7 +1255,7 @@ Built in two steps:
 [Proposed, approved for the doc 2026-11-18, refined in v0.2] Colibri has **no `async`/`await` and no
 function coloring**. Any function can pause, so libraries never split into sync and async
 versions. There are two tools: **thread tasks** for parallel work such as loading and heavy
-computation, and **coroutines** for logic that waits (on timers, I/O, events or the next frame) on the current
+computation, and **coroutines** for logic that waits (on timers, I/O or events) on the current
 thread.
 
 ### 14.1 Thread tasks are isolates
@@ -1219,7 +1276,7 @@ let reply = ch.recv()
 - `task.run(f)` runs the closure `f` on a worker thread and returns a `Task[T]`. The closure
   makes the thread boundary visible: everything it captures is sent across (rules below).
 - `t.join()` waits for the result; a panic inside the task surfaces as an `err` from `join()`.
-  `t.done()` and `t.try_join() -> T?` exist for polling from a frame loop.
+  `t.done()` and `t.try_join() -> T?` exist for polling from a program's own loop.
 - `Channel[T]` is a typed, optionally bounded queue (`Channel[Msg](capacity: 64)`) with `send`,
   `recv`, `try_recv` and `close`. A channel handle itself is thread-shared. `select` over several
   channels is a later addition.
@@ -1228,8 +1285,8 @@ let reply = ch.recv()
   need a job pool and background loading, not tens of thousands of connections. The syntax
   doesn't change if M:N is ever added.
 - **Blocking inside a coroutine:** `join()` and `recv()` called inside a coroutine (§14.2)
-  **suspend the coroutine** and let `tick` resume it when the value is ready, so the frame never
-  freezes. Outside a coroutine they block the thread.
+  **suspend the coroutine** and let `tick` resume it when the value is ready, so the scheduler
+  never blocks. Outside a coroutine they block the thread.
 
 **Isolation rules.** RC stays non-atomic because tasks are **isolates** (like Dart isolates and
 JS workers): each task owns its own object graph.
@@ -1284,14 +1341,14 @@ let page = go fetch_with_retry("https://example.org")   // a handle; page.join()
 ```
 
 A timeout is the same shape: start the work, `wait` on a deadline, and `cancel()` whichever
-loses. The same tools drive code that is tied to a frame loop:
+loses. The same tools drive code that is tied to a program's own loop:
 
 ```colibri
 fn door_open(door: Door) {
     door.play("creak")
     wait(0.5)
     door.rotate(90, over: 1.0)                 // itself waits 1 second while animating
-    wait_until(fn() => player.near(door))      // re-checked at each tick until true
+    wait_until(fn() => player.near(door))      // re-checked at each scheduler tick until true
     door.close()
 }
 door.co.go(door_open(door))                    // owned by the door: a CoGroup field
@@ -1302,14 +1359,14 @@ door.co.go(door_open(door))                    // owned by the door: a CoGroup f
   coroutine). A bare `go` is **detached**: the scheduler keeps it alive until it finishes or is
   cancelled, and dropping the handle does not stop it.
 - **Ownership.** A `CoGroup` owns the coroutines started through it and **cancels all of them
-  when the group is dropped**. An object (a connection, a job, a game entity) holds a group as a
+  when the group is dropped**. An object (a connection, a job, an entity) holds a group as a
   field, so destroying the object stops its coroutines, which removes the failure mode of a
   coroutine outliving the object it works for. Note that a suspended coroutine holds strong
   references to its locals: a coroutine owned by its own subject keeps it alive until it
   finishes, so the group's owner should be a longer-lived object (a registry, an entity list) or
   the subject should be `weak`. `CoGroup` is built (ARCHITECTURE §16.1), with `group.go(call)` and
   `join_all`.
-- **Waiting.** `wait(seconds)`, `wait_frames(n)` and `wait_until(cond)` pause the coroutine.
+- **Waiting.** `wait(seconds)` and `wait_until(cond)` pause the coroutine.
   `wait_until` takes a closure that the scheduler re-checks at every tick. For idle coroutines,
   **event waits** cost nothing per tick: `wait_for(signal)` on a `Signal` (`conn.closed.emit()`)
   and `ch.recv()` on a channel. `Signal`, `wait_for` and `CoGroup` are built (ARCHITECTURE §16.1).
@@ -1319,7 +1376,7 @@ door.co.go(door_open(door))                    // owned by the door: a CoGroup f
 - **Who drives the scheduler.** The runtime has a per-thread coroutine scheduler, and something
   has to tick it: `colibri run` runs an **event loop after `main` returns, until all coroutines
   have finished**, so a script that only starts coroutines needs no loop of its own; a program
-  with its own loop (a UI, a game, a server) calls `task.tick(dt)` once per iteration; and a
+  with its own loop (a UI, a server, an event loop) calls `task.tick(dt)` once per iteration; and a
   Rust host calls `vm.tick(dt)` (§15.4). Coroutines never run in parallel with each other, so
   they share `class` objects freely without locks.
 - Any function can be called from a coroutine and may itself call `wait`; there is no special
@@ -1332,8 +1389,13 @@ door.co.go(door_open(door))                    // owned by the door: a CoGroup f
 ### 14.3 Implementation notes
 
 - Uncolored functions require **stackful** coroutines.
-- **Interpreter and VM:** the Colibri stack is a heap object, so coroutine stacks are naturally
-  growable and cheap.
+- **Interpreter:** see "As built" below.
+- **VM (decided 2026-11-19):** coroutines use **heap frames**, not one native stack each: the
+  Colibri call stack is a heap object, so a coroutine's stack is growable and cheap and switching
+  is not a native context switch. Built-ins that take closures (`map`, `filter`, `sort_by`, ...)
+  will be **written in Colibri** so that a `wait` inside the closure can pause them; a Rust
+  built-in that calls back into Colibri cannot be suspended (§14.2, "No suspending across a host
+  frame").
 - **Native code (only if the AOT stretch goal is built):** coroutines get **fixed-size stacks with guard pages and lazily committed
   memory** (for example 256 KB of address space each, committed as touched). Compiled Colibri and
   C both run directly on the coroutine's stack, so C library calls don't need a stack switch (the
@@ -1345,7 +1407,7 @@ door.co.go(door_open(door))                    // owned by the door: a CoGroup f
   256 KB. The tree-walking evaluator uses several KiB of native stack per Colibri call, and
   256 KB gave a recursion depth of about 100 in a debug build (ARCHITECTURE §16). The bytecode VM
   removes that cost, and the 256 KB figure then applies to native code only.
-- **Phasing:** coroutines arrive with the general scripting slice on the interpreter (phase 2 in §17.5);
+- **Phasing:** coroutines were built with the general scripting slice on the interpreter (phase 2 in §17.5);
   thread tasks need the worker pool, thread-shared objects and deep copy, and come with the VM.
 
 ---
@@ -1374,10 +1436,15 @@ graphics, simulation and numeric code import what they need.
 - Arithmetic operators work component-wise (`a + b`, `a * 2`, `-a`); vector-by-scalar accepts a
   `float` scalar (§5.1). `dot`, `cross`, `len`, `normalize`, `lerp` and swizzles (`v.xy`,
   `v.zyx`) are provided by the module. The implementation uses glam internally.
-- These are the only arithmetic operators on non-primitive types in phase 1. `Add`, `Sub`,
-  `Mul` and `Neg` interfaces for user structs are planned after it (Q12), for `Color`,
-  fixed-point numbers and `f64` vectors for large worlds; the `vec` types will use the same
-  machinery.
+- These are the only arithmetic operators on non-primitive types today. `Add`, `Sub`,
+  `Mul` and `Neg` interfaces for user structs are planned (Q12), for `Color`,
+  fixed-point numbers and `f64` vectors for large worlds.
+
+**Decided 2026-11-19, planned, not done.** Vectors (`vec2`/`vec3`/`vec4`, `ivec2`..`ivec4`) will
+move **out of the language core** into a library of ordinary structs. They will get their
+operators from the new operator interfaces `Add`, `Sub`, `Mul` and `Neg` (Q12), like any
+user-defined type, so the compiler will have no special knowledge of them. Today the types, their
+operators and swizzles are still built in; the text above describes that current state.
 
 ### 15.2 C-layout structs [Locked, Proposed syntax]
 
@@ -1389,6 +1456,8 @@ struct Vertex {
     color: [u8; 4]
 }
 ```
+
+(`[u8; 4]` is **[Not built yet]**: see §5.2.)
 
 `@repr(C)` structs follow the platform C ABI, may only contain C-compatible fields (numbers,
 vectors, fixed arrays, other `@repr(C)` structs, raw pointers), and can be passed to C directly
@@ -1427,14 +1496,14 @@ extern "C" {
 let mut vm = colibri::Vm::builder()
     .allow(colibri::Cap::Fs)                // capabilities: nothing beyond pure Colibri unless granted
     .instruction_budget(1_000_000)      // optional sandbox limits
-    .memory_limit(64 << 20)
+    .memory_limit(64 << 20)             // **[Not built yet]**: only the instruction budget exists
     .build();
 vm.register_fn("spawn_enemy", |x: f32, y: f32| { /* engine code */ });
 vm.write_interface("scripts/engine.cbi")?;   // declarations for `colibri check` and the editor
 vm.load_file("scripts/ai.colibri")?;
 let f = vm.get_fn::<(f32,), ()>("update")?;
 f.call(&mut vm, (dt,))?;
-vm.tick(dt)?;                    // resume Colibri coroutines for this frame, §14.2
+vm.tick(dt)?;                    // advance the coroutine scheduler by dt, §14.2
 vm.reload_changed()?;            // hot reload, §16.3
 ```
 
@@ -1447,7 +1516,7 @@ vm.reload_changed()?;            // hot reload, §16.3
 - **Host handles are generational.** A script holding a handle to a destroyed engine object gets
   a clean error (or `none` from a checked accessor) instead of a dangling pointer.
 - **Capabilities and sandboxing:** no `fs`, `os`, `http` or FFI unless the host grants them;
-  optional instruction budget and memory cap. Together these are the sandbox for embedded
+  optional instruction budget and memory cap (`memory_limit` is **[Not built yet]**). Together these are the sandbox for embedded
   scripts and mods.
 - Panics in Colibri code become `Err` on the Rust side; they never unwind into the host.
 
@@ -1529,38 +1598,9 @@ renderer on `wgpu` for projects that outgrow the game kit.
 **One mechanism, two directions.** `#[colibri::export]` is the same API an engine uses to expose its
 own types when embedding Colibri (§15.4): build it once, get both.
 
-### 15.6 Optional game kit package [Proposed, deferred]
+### 15.6 Optional game kit package [Deferred]
 
-The game kit is **not in the stock binary** (revised 2026-11-19). A general-purpose language
-should not carry a window, a renderer and an audio stack in every install. It becomes an
-**optional package for later**, a separate `colibri-game` package (and crate), built after the
-general scripting slice (§17.5). Until then there is no `game` module, and games use the C FFI
-(§15.3) or the embedding API (§15.4).
-
-The idea is unchanged, the way LÖVE is a kit for Lua: a game needs no Rust toolchain, no C
-toolchain and no bindings beyond installing the package.
-
-```colibri
-import game
-import vec
-
-fn main() {
-    game.window(800, 600, "Arena")
-    var pos = vec.vec2(400, 300)
-    game.run(fn(dt) {                      // calls task.tick(dt) for coroutines, then this
-        if game.key_down(.Right) { pos.x += 200 * dt }
-        game.clear(game.BLACK)
-        game.circle(pos, 16, game.RED)
-    })
-}
-```
-
-- Scope for v1 of the package: window and input (keyboard, mouse, gamepad), 2D drawing (shapes,
-  sprites, text), audio playback, and asset loading. 3D is out of scope.
-- The backend (statically linked raylib, or Rust crates such as winit, wgpu and kira) is Q20,
-  **deferred** until the package is scheduled.
-- The kit is ordinary Colibri plus host functions, so it doubles as a reference example of the
-  embedding API.
+Moved to [notes/game-kit.md](notes/game-kit.md): a design sketch for a later, optional package.
 
 ---
 
@@ -1583,14 +1623,15 @@ colibri repl                # interactive prompt
 checked program, with the same results, panics and drop order (§1). If the AOT stretch goal is
 built, it becomes `colibri build --native`.
 
-### 16.2 Execution pipeline [Proposed]
+### 16.2 Execution pipeline [Proposed, revised v0.5]
 
 ```
 source → lexer → parser → AST → name resolution → type check → HIR (typed)
                                                                  │
                     ┌────────────────────────────────────────────┤
-          tree-walking interpreter                      Colibri IR (SSA, explicit RC ops)
-          (phases 1–2; then the reference)                       │
+          tree-walking interpreter                 register bytecode, explicit drop
+          (phases 1–2; retired when the            instructions (phase 3)
+           VM replaces it)                                       │
                                                ┌─────────────────┴────────────────┐
                                      bytecode VM: the product            Cranelift → native
                                      (run, build, embedding, hot         (stretch goal, only
@@ -1598,10 +1639,14 @@ source → lexer → parser → AST → name resolution → type check → HIR (
 ```
 
 - The **HIR** is the shared contract: fully typed, names resolved, sugar removed.
-- **Colibri IR** makes RC operations explicit (`inc`, `dec`), so future elision passes (§11.3)
-  have a place to live and would serve every backend.
-- The **tree-walker** is the first engine and then remains the reference implementation: golden
-  tests run on every engine and must agree.
+- **No SSA "Colibri IR" before bytecode** (decided 2026-11-19). The HIR lowers straight to
+  register bytecode, with **explicit drop instructions** so drop order follows §11.2. A separate
+  IR with explicit RC operations (`inc`, `dec`) is added when reference-count elision (§11.3) is
+  scheduled, because that is the first thing that needs one.
+- The **tree-walker is retired** (decided 2026-11-19) once the VM passes every golden test and
+  supports hot reload, the REPL and the leak detector. It is not kept as a second engine or as a
+  reference implementation. **The golden tests are the reference**: they pin results, panics and
+  drop order, and the VM must match them.
 - **The bytecode VM is the product.** It is what `colibri run`, `colibri build`, embedding, hot reload
   and the web use, so one engine is tuned, debugged and shipped.
 - **Native AOT is a stretch goal.** It is started only when a profile of a real program shows the
@@ -1674,7 +1719,9 @@ old code keeps compiling.
 
 ## 17. Implementation plan (Rust)
 
-### 17.1 Workspace layout [Proposed]
+### 17.1 Workspace layout [Proposed, revised v0.5]
+
+Crates marked *planned* do not exist yet.
 
 ```
 colibri/
@@ -1682,21 +1729,30 @@ colibri/
   crates/
     colibri-syntax/              # lexer, parser, AST, spans
     colibri-check/               # name resolution, type inference/checking, HIR, type descriptors
-    colibri-interp/              # tree-walking interpreter (the reference implementation)
-    colibri-ir/                  # Colibri IR, bytecode lowering (later: RC elision passes)
-    colibri-vm/                  # bytecode VM (native and wasm32)
-    colibri-codegen/             # Cranelift AOT backend: stretch goal, not created until needed
-    colibri-runtime/             # RC heap, strings, collections, coroutines, FFI, embedding API
+    colibri-interp/              # tree-walking interpreter; today it also holds the heap, strings,
+                                 # collections and coroutine scheduler
+    colibri-runtime/             # embedding API (`Vm`, host functions, handles, capabilities, reload)
+    colibri-std/                 # standard library natives (15 modules)
+    colibri-ffi/                 # C FFI: loading libraries, calls, C-layout structs
     colibri-bind/                # #[colibri::export] macros for embedding and Rust crate bindings
-    colibri-std/                 # standard library natives
-    colibri-game/                # the optional game kit package (§15.6), later
     colibri-lsp/                 # language server
-    colibri-cli/                 # the `colibri` binary
-  std/                       # .colibri sources of the standard library
+    colibri-cli/                 # the `colibri` binary (package `colibri-lang`)
+    colibri-ffi-testlib/         # C test library for the FFI tests
+    colibri-core/                # (planned) shared RC heap, strings, collections and coroutine
+                                 # scheduler, moved out of colibri-interp before the VM
+    colibri-vm/                  # (planned) bytecode compiler and VM (native and wasm32)
+    colibri-codegen/             # (planned, stretch) Cranelift AOT backend; not created until needed
+  std/                       # (planned) .colibri sources of the standard library; today the
+                             # std is Rust natives in colibri-std
+  examples/                  # host_game (embedding example), scripts (automation programs)
   editors/                   # syntax grammars, VS Code extension
   tests/                     # golden tests: .colibri files with expected output/errors/drop order
   docs/DESIGN.md
 ```
+
+There is no `colibri-ir` crate: HIR lowers straight to bytecode (§16.2), and an IR crate appears
+only when RC elision is scheduled. `colibri-game` is gone (§15.6). The name `colibri-core`
+is provisional.
 
 ### 17.2 Names [Proposed]
 
@@ -1708,7 +1764,7 @@ GitHub on 2026-11-19 found these constraints:
 |-------|------|-------|
 | CLI binary | `colibri` | |
 | CLI crate on crates.io | `colibri-lang` | The bare crate name `colibri` is taken by a Jitsi Meet library, so the CLI is published as `colibri-lang` with a binary named `colibri`. |
-| Workspace crates | `colibri-syntax`, `colibri-check`, `colibri-interp`, `colibri-ir`, `colibri-vm`, `colibri-codegen`, `colibri-runtime`, `colibri-bind`, `colibri-std`, `colibri-game`, `colibri-lsp`, `colibri-cli` | The ones checked (`colibri-lang`, `-cli`, `-runtime`, `-bind`, `-vm`, `-std`, `-syntax`, `-check`) were free on 2026-11-19; reserve all of them before publishing anything. |
+| Workspace crates | `colibri-syntax`, `colibri-check`, `colibri-interp`, `colibri-runtime`, `colibri-std`, `colibri-ffi`, `colibri-bind`, `colibri-lsp`, `colibri-cli` (built); `colibri-core`, `colibri-vm`, `colibri-codegen` (planned) | The ones checked (`colibri-lang`, `-cli`, `-runtime`, `-bind`, `-vm`, `-std`, `-syntax`, `-check`) were free on 2026-11-19; reserve all of them before publishing anything. |
 | Embedding crate | `colibri-runtime` | Hosts write `use colibri_runtime as colibri;`, so `colibri::Vm` and `#[colibri::export]` read as in §15.4–15.5. |
 | Source files | `.colibri` | `.col` is taken by ColecoVision ROMs and other formats; `.coli` reads as E. coli. |
 | Interface files | `.cbi` | Generated declarations for bindings and hosts (§15.4–15.5). |
@@ -1737,23 +1793,26 @@ kolibri, so docs should say "Colibri language" and the website should own the mi
 - **Unwinding:** the VM unwinds its heap stack; native code, if ever built, uses hidden error
   returns (§10.4).
 - **If the AOT stretch goal is started:** Cranelift has historically left inlining to the
-  frontend (to be re-checked against its current version at that point), so Colibri IR has its own inliner
+  frontend (to be re-checked against its current version at that point), so the native backend needs its own inliner
   before small generic and vector functions get fast.
 
 ### 17.4 Performance targets [Proposed]
 
-So each phase has a finish line:
+So each phase has a finish line. The VM target is staged (decided 2026-11-19): phase 3 is
+finished when stage 1 is met, and stage 2 is a later goal.
 
 | Measure | Target |
 |---------|--------|
 | `colibri run hello.colibri` startup, including type check | under 50 ms |
 | Type check | at least 100k lines per second |
 | Hot-reload patch, edit to new code running | under 200 ms for a 10k-line program |
-| Bytecode VM | within 1.5× of Lua 5.4 on standard benchmarks (binary-trees, n-body, fannkuch, spectral-norm) |
-| Shipped program (`colibri build`), game loop case | a 2D game loop at 60 fps with no per-frame allocation required; executable under 15 MB |
+| Bytecode VM, stage 1 (ends phase 3) | faster than CPython 3.13 on the project's benchmark set (to be assembled; binary-trees, n-body, fannkuch and spectral-norm are the starting candidates) |
+| Bytecode VM, stage 2 (later) | within 1.5× of Lua 5.4 on the same benchmarks |
+| Shipped program (`colibri build`), script case | a one-off script starts within the startup target above; executable under 15 MB |
+| Shipped program, long-running service | memory stays flat over a long run (no growth under the leak detector); a request-handling loop allocates only for the request's own data |
 | Embedding | calling a Colibri function from Rust in under 100 ns; `vm.tick` with 1,000 idle coroutines under 0.1 ms |
-| Native AOT (stretch) | started only if a profiled program misses its target (for example a game missing 60 fps) on the VM; then within 3× of C on n-body and vector math |
-| Interpreter | no target beyond "the phase 2 scripting milestone runs comfortably" |
+| Native AOT (stretch) | started only if a profiled program misses its target (for example a service missing its throughput goal) on the VM; then within 3× of C on n-body and vector math |
+| Interpreter | no target beyond "the scripts in `examples/scripts` run comfortably" |
 
 ### 17.5 Roadmap [Locked, revised 2026-11-19 (second revision)]
 
@@ -1770,7 +1829,7 @@ language rather than one aimed at game development, so phase 2 is no longer a ga
 is the general scripting slice, and the old phase 4 (general scripting) is absorbed into it.
 The game kit and the game milestone become an optional later item.
 
-**Phase 1: language core on the tree-walker, embeddable from day one.** Built as **vertical
+**Phase 1: language core on the tree-walker, embeddable from day one. Done.** Built as **vertical
 slices**: hello world end to end first (lexer → parser → checker → interpreter), then widen
 feature by feature. `colibri-runtime` is a library from the first slice, and the `colibri` CLI is
 just one host of it.
@@ -1786,10 +1845,10 @@ just one host of it.
    `.cbi` interface files, capabilities.
 8. Packages and `import`; `colibri check` and a minimal LSP; `colibri test`, `colibri fmt`; core std
    (§13.1).
-9. **Milestone:** a small Rust program with its own main loop that runs its logic from Colibri
-   scripts (for example a game loop calling script update functions each frame).
+9. **Milestone (done, `examples/host_game`):** a small Rust program with its own main loop that
+   runs its logic from Colibri scripts (a loop calling script update functions each iteration).
 
-**Phase 2: general scripting slice on the interpreter**
+**Phase 2: general scripting slice on the interpreter. Done.**
 
 1. Coroutines (`go`, `wait`, `wait_until`, `wait_for`, `CoGroup`, `Signal`), driven by the
    event loop after `main`, by `task.tick` and by `vm.tick` (§14.2).
@@ -1800,18 +1859,33 @@ just one host of it.
 5. The leak detector (opt-in).
 6. `@repr(C)` structs and the C FFI with structs by value.
 7. Vectors as the std module `vec` (§15.1).
-8. **Milestone:** real automation scripts written in Colibri (a file organiser, a JSON/HTTP
-   report generator).
+8. **Milestone (done, `examples/scripts`):** real automation scripts written in Colibri (a file
+   organiser, a JSON/HTTP report generator).
 
-**Phase 3: the bytecode VM, the product engine**
+Item 7 is revisited by a later decision: vectors move out of the language core into a library
+built on operator interfaces (§15.1, Q12). That work is planned and not scheduled.
 
-1. Colibri IR with explicit RC ops; plain RC.
-2. The bytecode VM replacing the tree-walker for `colibri run` and embedding; sandbox limits.
-3. `colibri build` (one executable: VM plus bytecode and assets) and `colibri build --web`.
-4. Thread tasks, channels, `Shared[T]` and deep copy.
-5. Debugger over DAP; profiler.
-6. **Milestone:** a demo program shipped with `colibri build` on all three desktop platforms and in
-   the browser, with the VM within the §17.4 targets.
+**Before phase 3 starts** (decided 2026-11-19):
+
+- macOS and Windows testing is set up. CI is currently down, so only Linux is exercised.
+- The heap, strings, collections and coroutine scheduler move from `colibri-interp` to a shared
+  core crate (§17.1), so the VM and the tree-walker do not each carry a copy.
+
+**Phase 3: the bytecode VM, the product engine** (not started)
+
+1. HIR lowers straight to register bytecode with explicit drop instructions; plain RC. There is
+   no SSA IR at this stage (§16.2).
+2. The bytecode VM replacing the tree-walker for `colibri run` and embedding; sandbox limits
+   (including `memory_limit`, §15.4). Coroutines use heap frames, and the built-ins that take
+   closures (`map`, `filter`, `sort_by`, ...) are rewritten in Colibri so they can pause (§14.3).
+3. The tree-walker is retired once the VM passes every golden test and supports hot reload, the
+   REPL and the leak detector.
+4. `colibri build` (one executable: VM plus bytecode and assets) and `colibri build --web`.
+5. Thread tasks, channels, `Shared[T]` and deep copy.
+6. Debugger over DAP; profiler.
+7. **Finish line:** the VM beats CPython 3.13 on the project's benchmark set (§17.4 stage 1), and a
+   demo program ships with `colibri build` on all three desktop platforms and in the browser.
+   "Within 1.5x of Lua 5.4" (stage 2) is a later goal.
 
 **Phase 4: Rust crate bindings**
 
@@ -1828,40 +1902,43 @@ just one host of it.
 
 - RC elision passes (§11.3).
 - `own`/`borrow` semantics and checker (§11.4).
-- Native AOT via Cranelift (§16.2), with the Colibri IR inliner and fixed-size native coroutine
+- Native AOT via Cranelift (§16.2), with its own inliner and fixed-size native coroutine
   stacks (§14.3).
 
 ---
 
 ## 18. Open questions
 
-None of these are decided. The **Recommendation** column reflects the advisor review on PR #1,
-and the body of the doc is written as if each recommendation were adopted (marked [Proposed]), so
-it reads consistently. Changing one means editing the sections it names.
+Most of these were decided by building the recommendation as written. The **Status** column
+(last column) records where each stands, checked against the implementation on 2026-11-19:
+**Built** means the recommendation is implemented as described, **Decided, planned** means it is
+agreed and not built, **Open** means no decision. The body of the doc is written as if each
+recommendation were adopted (marked [Proposed]). Changing one means editing the sections it names.
+Q15 is being revised separately and has no status yet.
 
-| # | Question | Recommendation | Sections |
-|---|----------|----------------|----------|
-| Q1 | Boolean operators: `&&` `\|\|` `!` or `and` `or` `not` | `&&` `\|\|` `!`; `or` is the Result fallback; `and`/`not` reserved for a targeted error | §3.3 |
-| Q2 | `T?` sugar for `Option[T]` | Yes; and a `weak T` field reads directly as `T?` | §5.2, §11.5 |
-| Q3 | Reference types and collection semantics | `struct` values + `class` references; collections by reference; shallow struct copies with deep `.clone()`; structural `==` on collections | §5.3, §7 |
-| Q4 | Implicit return | `{ }` bodies use `return`; `=> expr` bodies for functions and closures; `if`/`match` arm blocks yield their trailing expression | §6.1 |
-| Q4b | Short lambda syntax | `fn(x) => x * 2` | §6.2 |
-| Q5 | Deep immutability | Shallow `let` in v1 | §4.1 |
-| Q6 | Integer overflow | Trap in every mode; `wrapping_*`/`checked_*`/`saturating_*` methods | §5.1 |
-| Q7 | Interface conformance | Nominal `impl I for T` | §9.2 |
-| Q8 | `own`/`borrow` rules | **Decided 2026-11-19:** reserved words only; semantics and checker not designed now (constraints in §11.4) | §11.4 |
-| Q9 | Cycle collection | `weak` + leak detector built as trial deletion; maybe an explicit `mem.collect_cycles()` later | §11.5 |
-| Q10 | What crosses a thread boundary | Isolates; sends are explicit deep copies (`.clone()`), implicit only for plain values and `str`; `Shared[T]` freezes and sets a shared bit | §14.1 |
-| Q11 | Enum variant lookup | Bare in patterns, `.Variant` where the type is known, `Type.Variant` otherwise; capitalisation rule in patterns | §8.2 |
-| Q12 | Operator overloading | Built-in only in phase 1 (the `vec` module's types get component-wise operators); `Add`/`Sub`/`Mul`/`Neg` interfaces for structs after it | §15.1 |
-| Q13 | `unsafe` | `unsafe { }` for raw pointer operations; FFI as a per-package and per-VM capability | §15.3 |
-| Q14 | Hot reload semantics | Function-level patching, automatic restart (with optional save/restore hooks, `str` until §7.5 exists) on layout changes | §16.3 |
+| # | Question | Recommendation | Sections | Status |
+|---|----------|----------------|----------|--------|
+| Q1 | Boolean operators: `&&` `\|\|` `!` or `and` `or` `not` | `&&` `\|\|` `!`; `or` is the Result fallback; `and`/`not` reserved for a targeted error | §3.3 | Built |
+| Q2 | `T?` sugar for `Option[T]` | Yes; and a `weak T` field reads directly as `T?` | §5.2, §11.5 | Built |
+| Q3 | Reference types and collection semantics | `struct` values + `class` references; collections by reference; shallow struct copies with deep `.clone()`; structural `==` on collections | §5.3, §7 | Built |
+| Q4 | Implicit return | `{ }` bodies use `return`; `=> expr` bodies for functions and closures; `if`/`match` arm blocks yield their trailing expression | §6.1 | Built |
+| Q4b | Short lambda syntax | `fn(x) => x * 2` | §6.2 | Built |
+| Q5 | Deep immutability | Shallow `let` in v1 | §4.1 | Built |
+| Q6 | Integer overflow | Trap in every mode; `wrapping_*`/`checked_*`/`saturating_*` methods | §5.1 | Built |
+| Q7 | Interface conformance | Nominal `impl I for T` | §9.2 | Built |
+| Q8 | `own`/`borrow` rules | **Decided 2026-11-19:** reserved words only; semantics and checker not designed now (constraints in §11.4) | §11.4 | Built (reserved words only) |
+| Q9 | Cycle collection | `weak` + leak detector built as trial deletion; maybe an explicit `mem.collect_cycles()` later | §11.5 | Built (`weak` and the opt-in leak detector; `mem.collect_cycles()` does not exist) |
+| Q10 | What crosses a thread boundary | Isolates; sends are explicit deep copies (`.clone()`), implicit only for plain values and `str`; `Shared[T]` freezes and sets a shared bit | §14.1 | Decided, planned (phase 3) |
+| Q11 | Enum variant lookup | Bare in patterns, `.Variant` where the type is known, `Type.Variant` otherwise; capitalisation rule in patterns | §8.2 | Built |
+| Q12 | Operator overloading | Built-in only in phase 1 (the `vec` module's types get component-wise operators); `Add`/`Sub`/`Mul`/`Neg` interfaces for structs after it | §15.1 | Decided, planned: also moves vectors out of the core (§15.1) |
+| Q13 | `unsafe` | `unsafe { }` for raw pointer operations; FFI as a per-package and per-VM capability | §15.3 | Built |
+| Q14 | Hot reload semantics | Function-level patching, automatic restart (with optional save/restore hooks, `str` until §7.5 exists) on layout changes | §16.3 | Built |
 | Q15 | Script top-level code | Only in the entry file of a script; imported modules hold declarations only | §13 |
-| Q16 | Name | **Decided 2026-11-19: Colibri**, written `colibri` in anything typed. Renamed from the working name Leo (which collides with Aleo's Leo), briefly Noble. Naming details in §17.2 are [Proposed] | everywhere |
-| Q17 | Rust crate bindings | Static linking everywhere through project-specific runners; no dylib; no `glam` binding; `rapier` when a demo needs it | §15.5 |
-| Q18 | Coroutine and task syntax | `go f()` keyword for coroutines; `task.run(fn() => ...)` for thread tasks; with `=>` lambdas `wait_until` needs no sugar. Spelling of `go` (vs `co`) still open | §14 |
-| Q19 | Weak capture syntax | `fn() use(weak self) { ... }` capture list; inside, the name has type `T?` | §6.2 |
-| Q20 | Game kit backend | **Deferred 2026-11-19** with the game kit, which is an optional later package. Statically linked raylib (fastest to ship, C dependency) vs Rust crates (winit + wgpu + kira, pure Rust, more work) | §15.6 |
+| Q16 | Name | **Decided 2026-11-19: Colibri**, written `colibri` in anything typed. Renamed from the working name Leo (which collides with Aleo's Leo), briefly Noble. Naming details in §17.2 are [Proposed] | everywhere | Built |
+| Q17 | Rust crate bindings | Static linking everywhere through project-specific runners; no dylib; no `glam` binding; `rapier` when a demo needs it | §15.5 | Decided, planned (phase 4) |
+| Q18 | Coroutine and task syntax | `go f()` keyword for coroutines; `task.run(fn() => ...)` for thread tasks; with `=>` lambdas `wait_until` needs no sugar. Spelling of `go` (vs `co`) still open | §14 | Built for `go`; `task.run` is Decided, planned (phase 3) |
+| Q19 | Weak capture syntax | `fn() use(weak self) { ... }` capture list; inside, the name has type `T?` | §6.2 | Built |
+| Q20 | Game kit backend | **Deferred 2026-11-19** with the game kit, which is an optional later package. Statically linked raylib (fastest to ship, C dependency) vs Rust crates (winit + wgpu + kira, pure Rust, more work) | §15.6 | Open (deferred with the game kit) |
 
 ---
 
