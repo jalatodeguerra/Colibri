@@ -1,0 +1,14 @@
+fn main() {
+    var xs = [1, 2]
+    var it = xs.iter()
+    print(it.next())
+    print(it.next())
+    print(it.next())
+    xs.push(3)
+    print(xs)
+}
+
+// expect: some(1)
+// expect: some(2)
+// expect: none
+// expect: [1, 2, 3]

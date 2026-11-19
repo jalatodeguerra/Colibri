@@ -28,6 +28,9 @@ fn is_container(v: &Value) -> bool {
             | Value::Set(_)
             | Value::Obj(_)
             | Value::Dyn(_)
+            | Value::Closure(_)
+            | Value::Cell(_)
+            | Value::Iter(_)
     )
 }
 
@@ -99,6 +102,21 @@ impl Interp {
             }
             Value::Set(rc) if Rc::strong_count(&rc) == 1 => {
                 let mut items = rc.take_all();
+                push_children(work, &mut items);
+            }
+            Value::Closure(mut rc) => {
+                // Dropping a closure releases what it captured, in capture order.
+                if let Some(c) = Rc::get_mut(&mut rc) {
+                    let mut values = c.take_values();
+                    push_children(work, &mut values);
+                }
+            }
+            Value::Cell(rc) if Rc::strong_count(&rc) == 1 => {
+                let mut items = [rc.take()];
+                push_children(work, &mut items);
+            }
+            Value::Iter(rc) if Rc::strong_count(&rc) == 1 => {
+                let mut items = rc.take_inner();
                 push_children(work, &mut items);
             }
             Value::Dyn(mut rc) => {

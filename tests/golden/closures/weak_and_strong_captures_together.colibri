@@ -1,0 +1,23 @@
+class Owner {
+    name: str
+}
+
+fn main() {
+    let owner = Owner { name: "owner" }
+    var calls = 0
+    let f = fn() use(weak owner) {
+        calls += 1
+        if let some(o) = owner {
+            return o.name
+        }
+        return "?"
+    }
+    print(f())
+    print(f())
+    print(calls)
+}
+
+// expect: owner
+// expect: owner
+// expect: 2
+// drops: owner

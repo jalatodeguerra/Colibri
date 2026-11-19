@@ -1,0 +1,19 @@
+fn main() {
+    for (i, x) in ["a", "b"].enumerate() {
+        print("{i}: {x}")
+    }
+    for (i, c) in "xy".chars().enumerate() {
+        print("{i}: {c}")
+    }
+    for (i, n) in (10..13).enumerate() {
+        print("{i}: {n}")
+    }
+}
+
+// expect: 0: a
+// expect: 1: b
+// expect: 0: x
+// expect: 1: y
+// expect: 0: 10
+// expect: 1: 11
+// expect: 2: 12

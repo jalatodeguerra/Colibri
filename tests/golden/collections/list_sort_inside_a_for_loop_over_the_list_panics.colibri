@@ -1,0 +1,8 @@
+fn main() {
+    var xs = [2, 1]
+    for x in xs {
+        xs.sort()
+    }
+}
+
+// panic: list modified during iteration

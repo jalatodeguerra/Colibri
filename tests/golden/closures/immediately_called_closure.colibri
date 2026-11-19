@@ -1,0 +1,6 @@
+fn main() {
+    let r = (fn(a: int, b: int) => a * b)(6, 7)
+    print(r)
+}
+
+// expect: 42

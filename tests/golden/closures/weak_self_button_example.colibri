@@ -1,0 +1,43 @@
+class Button {
+    label: str
+    handlers: List[fn()]
+}
+
+impl Button {
+    fn on_click(self, f: fn()) {
+        self.handlers.push(f)
+    }
+
+    fn click(self) {
+        for h in self.handlers {
+            h()
+        }
+    }
+}
+
+class Panel {
+    name: str
+    button: Button
+    count: int
+}
+
+impl Panel {
+    fn wire(self) {
+        self.button.on_click(fn() use(weak self) {
+            if let some(me) = self {
+                me.count += 1
+            }
+        })
+    }
+}
+
+fn main() {
+    let panel = Panel { name: "panel", button: Button { label: "button", handlers: [] }, count: 0 }
+    panel.wire()
+    panel.button.click()
+    panel.button.click()
+    print(panel.count)
+}
+
+// expect: 2
+// drops: panel, Button

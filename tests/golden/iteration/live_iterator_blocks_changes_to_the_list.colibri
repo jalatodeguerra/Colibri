@@ -1,0 +1,10 @@
+fn main() {
+    var xs = [1, 2, 3]
+    var it = xs.iter()
+    print(it.next())
+    xs.push(4)
+    print("unreachable")
+}
+
+// expect: some(1)
+// panic: list modified during iteration

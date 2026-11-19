@@ -1,0 +1,4 @@
+fn main() {
+    var xs = [1, 2, 3]
+    xs[0..2] = [9, 9] // error: a slice is a copy, so it cannot be assigned to
+}

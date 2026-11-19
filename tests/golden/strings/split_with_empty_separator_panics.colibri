@@ -1,0 +1,5 @@
+fn main() {
+    print("abc".split(""))
+}
+
+// panic: `split` needs a separator that is not empty

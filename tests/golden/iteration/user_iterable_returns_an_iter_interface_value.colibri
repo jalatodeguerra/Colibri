@@ -1,0 +1,40 @@
+struct Span {
+    lo: int
+    hi: int
+}
+
+struct SpanIter {
+    at: int
+    hi: int
+}
+
+impl Iter[int] for SpanIter {
+    fn next(var self) -> int? {
+        if self.at >= self.hi {
+            return none
+        }
+        self.at += 1
+        return some(self.at - 1)
+    }
+}
+
+impl Iterable[int] for Span {
+    fn iter(self) -> Iter[int] => SpanIter { at: self.lo, hi: self.hi }
+}
+
+fn main() {
+    let s = Span { lo: 5, hi: 8 }
+    for x in s {
+        print(x)
+    }
+    for x in s {
+        print(x * 10)
+    }
+}
+
+// expect: 5
+// expect: 6
+// expect: 7
+// expect: 50
+// expect: 60
+// expect: 70

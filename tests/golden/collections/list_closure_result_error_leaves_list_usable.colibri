@@ -1,0 +1,9 @@
+fn main() {
+    var xs = [1, 2, 3]
+    print(xs.map(fn(x) => x + 1))
+    xs.push(4)
+    print(xs)
+}
+
+// expect: [2, 3, 4]
+// expect: [1, 2, 3, 4]

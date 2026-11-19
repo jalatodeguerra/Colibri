@@ -1,3 +1,0 @@
-fn main() {
-    let r = 0..5 // error: a range outside a `for` loop is not supported yet
-}

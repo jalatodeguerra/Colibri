@@ -1,0 +1,10 @@
+fn main() {
+    var xs = [3, 1, 2]
+    xs.sort_by(fn(a, b) => b - a)
+    print(xs)
+    xs.sort_by(fn(a, b) => a - b)
+    print(xs)
+}
+
+// expect: [3, 2, 1]
+// expect: [1, 2, 3]

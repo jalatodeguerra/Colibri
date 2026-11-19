@@ -9,7 +9,8 @@ use colibri_syntax::{Diagnostic, Span};
 use crate::checker::{Checker, Dep, ParamInfo, ValueRef};
 use crate::exhaust::{self, ArmInfo};
 use crate::hir::{
-    self, ArithOp, BinOp, Block, Body, Expr, FnId, LocalId, LocalInfo, LoopId, Num, Stmt, Storage,
+    self, ArithOp, BinOp, Block, Body, CaptureMode, Expr, FnId, LocalId, LocalInfo, LoopId, Num,
+    Stmt, Storage,
 };
 use crate::infer::{InferCtx, VarKind};
 use crate::obligations::Obligation;
@@ -37,6 +38,72 @@ pub(crate) enum LocalKind {
     Temp,
 }
 
+/// What the checker learned about a local, to decide how it is stored (ARCHITECTURE §1).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LocalFlags {
+    /// A closure captures it by reference to the variable.
+    pub captured: bool,
+    /// It is assigned (or changed by a `var self` call) somewhere after its initialisation,
+    /// in this body or in a closure that captures it.
+    pub assigned: bool,
+}
+
+/// One variable a closure captures, as recorded while its body is checked.
+#[derive(Clone, Copy)]
+pub(crate) struct CaptureRec {
+    pub outer: LocalId,
+    pub inner: LocalId,
+    pub mode: CaptureMode,
+}
+
+/// The state of one frame: a function body or a closure body being checked. The live frame's
+/// fields are stored directly in [`FnCtx`]; the enclosing frames of a closure wait in
+/// `FnCtx::parents` and are swapped in while a captured name is looked up.
+pub(crate) struct Frame {
+    pub locals: Vec<LocalInfo>,
+    pub kinds: Vec<LocalKind>,
+    pub flags: Vec<LocalFlags>,
+    scopes: Vec<Scope>,
+    scope_floor: usize,
+    pub loops: Vec<LoopFrame>,
+    pub next_loop: u32,
+    pub ret: Option<(Ty, Option<Span>)>,
+    defer_depth: u32,
+    pub captures: Vec<CaptureRec>,
+    pub id: usize,
+}
+
+impl Frame {
+    pub(crate) fn new(id: usize, ret: Option<(Ty, Option<Span>)>) -> Frame {
+        Frame {
+            locals: Vec::new(),
+            kinds: Vec::new(),
+            flags: Vec::new(),
+            scopes: Vec::new(),
+            scope_floor: 0,
+            loops: Vec::new(),
+            next_loop: 0,
+            ret,
+            defer_depth: 0,
+            captures: Vec::new(),
+            id,
+        }
+    }
+}
+
+/// A closure whose body is checked; its storage and types are settled when the outermost body
+/// finishes (see [`FnCtx::finish`]).
+pub(crate) struct DoneClosure {
+    pub f: FnId,
+    pub frame: Frame,
+    /// The frame it was created in.
+    pub parent: usize,
+    pub param_count: u32,
+    pub block: Block,
+    pub ret: Ty,
+    pub span: Span,
+}
+
 #[derive(Default)]
 struct Scope {
     names: HashMap<String, LocalId>,
@@ -53,9 +120,10 @@ pub(crate) struct LoopFrame {
 pub(crate) struct FnCtx<'c, 'a> {
     pub ck: &'c mut Checker<'a>,
     pub infer: InferCtx,
-    name: String,
+    pub(crate) name: String,
     pub locals: Vec<LocalInfo>,
     pub kinds: Vec<LocalKind>,
+    pub flags: Vec<LocalFlags>,
     scopes: Vec<Scope>,
     /// Scopes below this index are invisible (used for default arguments, which cannot see
     /// the caller's locals).
@@ -63,13 +131,24 @@ pub(crate) struct FnCtx<'c, 'a> {
     pub loops: Vec<LoopFrame>,
     pub next_loop: u32,
     /// The declared return type and its span; `None` where `return` is not allowed.
-    ret: Option<(Ty, Option<Span>)>,
+    pub(crate) ret: Option<(Ty, Option<Span>)>,
     deps: Vec<Dep>,
     depth: u32,
     /// The body is a `var self` method.
     self_mut: bool,
     /// How many `defer` statements are being checked (`return` is not allowed in them).
     defer_depth: u32,
+    /// The variables the live closure captures (empty in a function body).
+    pub captures: Vec<CaptureRec>,
+    /// The id of the live frame: 0 for the function body, one per closure.
+    pub frame_id: usize,
+    pub(crate) next_frame_id: usize,
+    /// The frames enclosing the live closure, outermost first.
+    pub parents: Vec<Frame>,
+    /// The inner frames swapped out while an enclosing frame is live (see `enter_parent`).
+    children: Vec<Frame>,
+    /// Closures whose bodies are checked, innermost first.
+    pub done: Vec<DoneClosure>,
     /// How many errors the checker had when this body started.
     errors_at_start: usize,
     /// Bounds to decide once the body's types are known.
@@ -98,6 +177,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             name,
             locals: Vec::new(),
             kinds: Vec::new(),
+            flags: Vec::new(),
             scopes: Vec::new(),
             scope_floor: 0,
             loops: Vec::new(),
@@ -107,6 +187,12 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             depth: 0,
             self_mut: false,
             defer_depth: 0,
+            captures: Vec::new(),
+            frame_id: 0,
+            next_frame_id: 1,
+            parents: Vec::new(),
+            children: Vec::new(),
+            done: Vec::new(),
             obligations: Vec::new(),
             generic_calls: Vec::new(),
         }
@@ -153,6 +239,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             span,
         });
         self.kinds.push(kind);
+        self.flags.push(LocalFlags::default());
         if let Some(scope) = self.scopes.last_mut() {
             let previous = if kind == LocalKind::Temp {
                 None
@@ -184,11 +271,77 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         self.declare("<temp>", span, ty, LocalKind::Temp)
     }
 
-    pub fn lookup_local(&self, name: &str) -> Option<LocalId> {
+    /// The local `name` of the live frame, if it has one (no capture).
+    fn lookup_own(&self, name: &str) -> Option<LocalId> {
         self.scopes[self.scope_floor.min(self.scopes.len())..]
             .iter()
             .rev()
             .find_map(|s| s.names.get(name).copied())
+    }
+
+    /// The local a name refers to. In a closure, a name found only in an enclosing frame is
+    /// captured: the closure gets a local of its own for it (ARCHITECTURE §1), and so does every
+    /// closure in between.
+    pub fn lookup_local(&mut self, name: &str) -> Option<LocalId> {
+        if let Some(id) = self.lookup_own(name) {
+            return Some(id);
+        }
+        if self.parents.is_empty() {
+            return None;
+        }
+        self.enter_parent();
+        let outer = self.lookup_local(name);
+        self.leave_parent();
+        outer.map(|o| self.capture_local(o))
+    }
+
+    /// Swaps the live frame with the innermost enclosing one, so the enclosing frame can be
+    /// searched or changed. [`FnCtx::leave_parent`] swaps back.
+    pub(crate) fn enter_parent(&mut self) {
+        if let Some(mut parent) = self.parents.pop() {
+            self.swap_frame(&mut parent);
+            self.children.push(parent);
+        }
+    }
+
+    pub(crate) fn leave_parent(&mut self) {
+        if let Some(mut child) = self.children.pop() {
+            self.swap_frame(&mut child);
+            self.parents.push(child);
+        }
+    }
+
+    /// Exchanges the live frame with `other`.
+    pub(crate) fn swap_frame(&mut self, other: &mut Frame) {
+        std::mem::swap(&mut self.locals, &mut other.locals);
+        std::mem::swap(&mut self.kinds, &mut other.kinds);
+        std::mem::swap(&mut self.flags, &mut other.flags);
+        std::mem::swap(&mut self.scopes, &mut other.scopes);
+        std::mem::swap(&mut self.scope_floor, &mut other.scope_floor);
+        std::mem::swap(&mut self.loops, &mut other.loops);
+        std::mem::swap(&mut self.next_loop, &mut other.next_loop);
+        std::mem::swap(&mut self.ret, &mut other.ret);
+        std::mem::swap(&mut self.defer_depth, &mut other.defer_depth);
+        std::mem::swap(&mut self.captures, &mut other.captures);
+        std::mem::swap(&mut self.frame_id, &mut other.id);
+    }
+
+    /// Makes `name` resolve to `id` in the live frame's outermost scope.
+    pub(crate) fn insert_name(&mut self, name: &str, id: LocalId) {
+        if let Some(scope) = self.scopes.first_mut() {
+            scope.names.insert(name.to_string(), id);
+        }
+    }
+
+    /// Whether the name resolves to a local in this frame or an enclosing one, without
+    /// capturing it.
+    pub fn is_local(&self, name: &str) -> bool {
+        self.lookup_own(name).is_some()
+            || self.parents.iter().rev().any(|p| {
+                p.scopes[p.scope_floor.min(p.scopes.len())..]
+                    .iter()
+                    .any(|s| s.names.contains_key(name))
+            })
     }
 
     pub fn local_ty(&self, id: LocalId) -> Ty {
@@ -291,11 +444,14 @@ impl<'c, 'a> FnCtx<'c, 'a> {
 
     // ---- entry points ----
 
-    /// Finishes a body: resolves every type and fixes literals and operators accordingly.
+    /// Finishes a body: resolves every type and fixes literals and operators accordingly. The
+    /// closures created in it are finished with it: they share its inference table, and
+    /// whether a variable needs a cell depends on every closure that captures it.
     fn finish(mut self, block: Block, ret: Ty, span: Span, param_count: u32) -> Body {
         let mut block = block;
         let mut diags = Vec::new();
         self.settle();
+        self.settle_storage();
         // Types left open by an earlier mistake in this body are not worth a second error.
         let had_errors = self.ck.error_count() > self.errors_at_start;
         zonk::zonk_body(
@@ -306,6 +462,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             had_errors,
         );
         let ret = self.infer.finalize(&ret).0;
+        self.finish_closures(&mut diags, had_errors);
         for d in diags {
             self.ck.report(d);
         }
@@ -824,6 +981,11 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 Some(e)
             }
             None => {
+                // A closure whose result is not known yet returns `()` here.
+                if matches!(self.infer.shallow(&ret), Ty::Infer(_)) {
+                    let _ = self.infer.unify(&ret, &Ty::Unit);
+                }
+                let ret = self.infer.shallow(&ret);
                 if ret != Ty::Unit && !ret.is_error() {
                     let shown = self.show(&ret);
                     let mut diag = Diagnostic::error(

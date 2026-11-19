@@ -1,0 +1,17 @@
+fn main() {
+    let xs = [2, 4, 6]
+    print(xs.any(fn(x) => x > 5))
+    print(xs.any(fn(x) => x > 6))
+    print(xs.all(fn(x) => x % 2 == 0))
+    print(xs.all(fn(x) => x > 2))
+    let none_at_all: List[int] = []
+    print(none_at_all.any(fn(x) => true))
+    print(none_at_all.all(fn(x) => false))
+}
+
+// expect: true
+// expect: false
+// expect: true
+// expect: false
+// expect: false
+// expect: true

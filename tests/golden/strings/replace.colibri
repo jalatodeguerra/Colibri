@@ -1,0 +1,11 @@
+fn main() {
+    print("a-b-c".replace("-", "+"))
+    print("aaa".replace("a", "bb"))
+    print("abc".replace("x", "y"))
+    print("abc".replace("b", ""))
+}
+
+// expect: a+b+c
+// expect: bbbbbb
+// expect: abc
+// expect: ac

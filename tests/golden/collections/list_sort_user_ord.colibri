@@ -1,0 +1,25 @@
+struct Version {
+    major: int
+    minor: int
+}
+
+impl Ord for Version {
+    fn cmp(self, other: Version) -> int {
+        if self.major != other.major {
+            return self.major - other.major
+        }
+        return self.minor - other.minor
+    }
+}
+
+fn main() {
+    var vs = [Version { major: 2, minor: 0 }, Version { major: 1, minor: 5 }, Version { major: 1, minor: 2 }]
+    vs.sort()
+    for v in vs {
+        print("{v.major}.{v.minor}")
+    }
+}
+
+// expect: 1.2
+// expect: 1.5
+// expect: 2.0

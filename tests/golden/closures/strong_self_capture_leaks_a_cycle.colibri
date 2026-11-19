@@ -1,0 +1,31 @@
+class Button {
+    label: str
+    handlers: List[fn()]
+}
+
+impl Button {
+    fn on_click(self, f: fn()) {
+        self.handlers.push(f)
+    }
+}
+
+class Panel {
+    name: str
+    button: Button
+    count: int
+}
+
+impl Panel {
+    fn wire(self) {
+        self.button.on_click(fn() { self.count += 1 })
+    }
+}
+
+fn main() {
+    let panel = Panel { name: "leaky", button: Button { label: "b", handlers: [] }, count: 0 }
+    panel.wire()
+    print("end of main")
+}
+
+// expect: end of main
+// drops:

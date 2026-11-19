@@ -1,0 +1,30 @@
+struct Evens {
+    n: int
+}
+
+impl Iter[int] for Evens {
+    fn next(var self) -> int? {
+        if self.n > 6 {
+            return none
+        }
+        let v = self.n
+        self.n += 2
+        return some(v)
+    }
+}
+
+fn collect[I: Iter[int]](it: I) -> List[int] {
+    var out: List[int] = []
+    for x in it {
+        out.push(x)
+    }
+    return out
+}
+
+fn main() {
+    print(collect(Evens { n: 0 }))
+    print(collect([1, 2].iter()))
+}
+
+// expect: [0, 2, 4, 6]
+// expect: [1, 2]

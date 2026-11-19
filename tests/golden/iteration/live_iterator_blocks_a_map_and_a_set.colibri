@@ -1,0 +1,9 @@
+fn main() {
+    var s = Set([1, 2])
+    var it = s.iter()
+    print(it.next())
+    s.add(3)
+}
+
+// expect: some(1)
+// panic: set modified during iteration

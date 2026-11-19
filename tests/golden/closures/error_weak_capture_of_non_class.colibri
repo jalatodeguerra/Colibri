@@ -1,0 +1,4 @@
+fn main() {
+    let n = 5
+    let f = fn() use(weak n) => 1 // error: and only a class can be captured weakly
+}

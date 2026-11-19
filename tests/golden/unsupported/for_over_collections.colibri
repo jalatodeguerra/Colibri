@@ -2,7 +2,7 @@ fn main() {
     for i in 0.. { // error: an open-ended range in a `for` loop is not supported yet
         print(i)
     }
-    for i in 3 { // error: `for` over a `{integer}` is not supported yet
+    for i in 3 { // error: cannot loop over a value of type `{integer}`
         print(i)
     }
 }

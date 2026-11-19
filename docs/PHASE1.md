@@ -68,7 +68,7 @@ behind the same `Vm` API.
 4. Structs, enums, `match` with exhaustiveness, `if`/`for`/`while`, ranges, tuples.
 5. Classes, `Option`, `weak`, `List`/`Map`/`Set`, places with the mutation guard, drop order and `defer` (slice 3, built).
 6. `Result`/`Option`, `?`, `or` with handler blocks, `Error` with context.
-7. Generics, interfaces, `Drop` hooks (slice 4a, built), then closures and iteration.
+7. Generics, interfaces, `Drop` hooks (slice 4a, built), then closures and iteration (slice 4b, built).
 8. Embedding API: `register_fn`, exported host types, generational handles, `.cbi`, capabilities.
 9. Packages and `import`; `colibri check`, minimal LSP, `colibri test`, `colibri fmt`; core std.
 10. Milestone: a small Rust program with its own game loop running gameplay logic from Colibri.

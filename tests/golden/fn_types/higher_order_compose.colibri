@@ -1,0 +1,12 @@
+fn compose[A, B, C](f: fn(A) -> B, g: fn(B) -> C) -> fn(A) -> C {
+    return fn(a: A) => g(f(a))
+}
+
+fn main() {
+    let h = compose(fn(n: int) => n + 1, fn(n: int) => "<{n}>")
+    print(h(1))
+    print(h(41))
+}
+
+// expect: <2>
+// expect: <42>

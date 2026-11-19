@@ -1,0 +1,32 @@
+struct Counter {
+    n: int
+}
+
+impl Iter[int] for Counter {
+    fn next(var self) -> int? {
+        if self.n >= 3 {
+            return none
+        }
+        self.n += 1
+        return some(self.n)
+    }
+}
+
+fn main() {
+    var c = Counter { n: 0 }
+    for x in c {
+        print(x)
+    }
+    print("c.n = {c.n}")
+    for x in c {
+        print(x)
+    }
+}
+
+// expect: 1
+// expect: 2
+// expect: 3
+// expect: c.n = 0
+// expect: 1
+// expect: 2
+// expect: 3

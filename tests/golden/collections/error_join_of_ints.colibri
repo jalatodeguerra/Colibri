@@ -1,0 +1,3 @@
+fn main() {
+    let s = [1, 2].join(",") // error: `join` needs a list of `str`, but this is a list of `{integer}`
+}

@@ -1,0 +1,18 @@
+fn main() {
+    for i in (1..4).rev() {
+        print(i)
+    }
+    for i in (0..=2).rev() {
+        print("inc {i}")
+    }
+    for i in (3..3).rev() {
+        print("never")
+    }
+}
+
+// expect: 3
+// expect: 2
+// expect: 1
+// expect: inc 2
+// expect: inc 1
+// expect: inc 0

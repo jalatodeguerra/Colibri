@@ -1,0 +1,9 @@
+struct P { x: int }
+
+impl P {
+    fn get(self) -> int => self.x
+}
+
+fn main() {
+    let f = P.get // error: `get` is a method of `P`, so it needs a value to act on
+}

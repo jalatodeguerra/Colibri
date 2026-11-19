@@ -120,6 +120,46 @@ impl Interp {
                 };
                 return self.list_op(fiber, op, &list, args, span);
             }
+            Builtin::ListMap
+            | Builtin::ListFilter
+            | Builtin::ListRetain
+            | Builtin::ListAny
+            | Builtin::ListAll
+            | Builtin::ListFind
+            | Builtin::ListFindIndex
+            | Builtin::ListFold
+            | Builtin::ListForEach
+            | Builtin::ListSort
+            | Builtin::ListSortBy
+            | Builtin::ListSortByKey
+            | Builtin::ListMin
+            | Builtin::ListMax
+            | Builtin::ListSum
+            | Builtin::ListJoin
+            | Builtin::ListSlice => {
+                let Some(list) = list_of(&recv) else {
+                    return Err(bad(self, fiber));
+                };
+                return self.list_fn_op(fiber, op, &list, args, span);
+            }
+            Builtin::StrChars
+            | Builtin::StrBytes
+            | Builtin::StrContains
+            | Builtin::StrStartsWith
+            | Builtin::StrEndsWith
+            | Builtin::StrSplit
+            | Builtin::StrTrim
+            | Builtin::StrToUpper
+            | Builtin::StrToLower
+            | Builtin::StrReplace
+            | Builtin::StrFind
+            | Builtin::StrSlice => return self.str_op(fiber, op, args, span),
+            Builtin::RangeContains
+            | Builtin::RangeLen
+            | Builtin::RangeIsEmpty
+            | Builtin::RangeRev
+            | Builtin::Iter
+            | Builtin::IterEnumerate => return self.range_op(fiber, op, args, span),
             Builtin::MapLen
             | Builtin::MapIsEmpty
             | Builtin::MapGet
@@ -164,7 +204,7 @@ impl Interp {
         self.release_all(pending);
     }
 
-    fn violation(&self, fiber: &mut Fiber, span: Span, v: Violation) -> Ctl {
+    pub(crate) fn violation(&self, fiber: &mut Fiber, span: Span, v: Violation) -> Ctl {
         self.panic(fiber, span, v.0)
     }
 

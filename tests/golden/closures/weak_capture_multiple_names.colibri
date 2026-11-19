@@ -1,0 +1,22 @@
+class Node {
+    name: str
+}
+
+fn main() {
+    let a = Node { name: "a" }
+    let b = Node { name: "b" }
+    let both = fn() use(weak a, weak b) {
+        var out = ""
+        if let some(x) = a {
+            out = out + x.name
+        }
+        if let some(y) = b {
+            out = out + y.name
+        }
+        return out
+    }
+    print(both())
+}
+
+// expect: ab
+// drops: b, a

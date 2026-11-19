@@ -1,5 +1,5 @@
 fn main() {
-    for x in 5 { // error: `for` over a `{integer}` is not supported yet
+    for x in 5 { // error: cannot loop over a value of type `{integer}`
         print(x)
     }
 }

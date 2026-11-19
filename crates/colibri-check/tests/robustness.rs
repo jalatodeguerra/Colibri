@@ -118,6 +118,12 @@ fn token_soup_does_not_panic() {
         ".",
         "=>",
         "->",
+        "use",
+        "weak",
+        "..",
+        "..=",
+        "fn(x)",
+        "fn() {",
         "=",
         "==",
         "+=",
@@ -260,6 +266,20 @@ fn programs_built_from_statements_do_not_panic() {
         "let s = Set([1, 2])",
         "let c = xs.clone()",
         "print(xs == c)",
+        "let f2 = fn(q: int) => q + a",
+        "let f3 = fn(q) => q",
+        "let f4 = fn() { a += 1 }",
+        "let f5: fn(int) -> int = fn(q) => q * 2",
+        "print(f5(a))",
+        "print(xs.map(fn(q) => q + a))",
+        "xs.retain(fn(q) => q > a)",
+        "xs.sort_by(fn(p, q) => p - q)",
+        "print(xs[1..])",
+        "print(xs.fold(0, fn(acc, q) => acc + q))",
+        "let r = 1..5",
+        "for i in r { print(i) }",
+        "let fs = [fn() => 1, fn() => 2]",
+        "print(\"abc\"[..2])",
     ];
     let mut rng = Rng(0x1234_5678_9abc_def1);
     for _ in 0..3000 {
@@ -273,6 +293,112 @@ fn programs_built_from_statements_do_not_panic() {
             body.iter().rev().cloned().collect::<Vec<_>>().join("\n")
         );
         check_str(&src);
+    }
+}
+
+#[test]
+fn closure_programs_do_not_panic() {
+    // Closures, function types, weak captures, iterators and slices, shuffled and mangled.
+    const FRAGMENTS: &[&str] = &[
+        "let a = 1",
+        "var n = 0",
+        "class K { v: int, cb: fn(int) -> int }",
+        "struct S { f: fn() }",
+        "let f = fn(x: int) -> int => x + n",
+        "let g = fn(x) => x",
+        "let h = fn() { n += 1 }",
+        "let k = fn() use(weak a) => 1",
+        "let k = fn() use(weak) {}",
+        "let k = fn() use(weak n, weak n) => 1",
+        "let k = fn() use(strong n) => 1",
+        "let m = fn(var q: int) { q += 1 }",
+        "let p = fn(a: int, a: int) => a",
+        "let q = fn(x: int) -> fn(int) -> int { return fn(y: int) => x + y }",
+        "let r = fn() { return }",
+        "let r = fn() -> int { }",
+        "let r = fn() -> int { return \"s\" }",
+        "fn make() -> fn() -> int { var c = 0\n return fn() { c += 1\n return c } }",
+        "fn apply[T, U](x: T, f: fn(T) -> U) -> U => f(x)",
+        "fn id[T](x: T) -> T => x",
+        "fn bad(f: fn(int) -> ) {}",
+        "fn bad(f: fn(int -> int) {}",
+        "print(apply(1, fn(z) => z))",
+        "print(apply(1, id))",
+        "let i: fn(int) -> int = id",
+        "let i = id[int]",
+        "let i = id[int, int]",
+        "print(f(1))",
+        "print(f(1, 2))",
+        "print(f(a: 1))",
+        "print(f == f)",
+        "print(f)",
+        "print(make()())",
+        "print((fn() => 1)())",
+        "print(n())",
+        "let xs = [3, 1, 2]",
+        "print(xs.map(fn(q) => q * 2))",
+        "print(xs.filter(fn(q) => q))",
+        "xs.sort_by(fn(p, q) => p < q)",
+        "xs.sort_by_key(fn(p) => 1.5)",
+        "xs.retain(fn(q) { xs.push(q)\n return true })",
+        "print(xs.fold(0, fn(acc, q) => acc + q))",
+        "print(xs.fold(\"\", fn(acc, q) => acc + q))",
+        "print(xs[1..2])",
+        "print(xs[..])",
+        "print(xs[2..1])",
+        "print(xs[1..] = 1)",
+        "xs[0..1] = [1]",
+        "let t = \"héllo\"",
+        "print(t[0..2])",
+        "print(t[..9])",
+        "print(t.split(\"\"))",
+        "print(t.replace(\"\", \"x\"))",
+        "for c in t.chars() { print(c) }",
+        "for (i, c) in t.chars().enumerate() { print(i) }",
+        "var it = xs.iter()",
+        "print(it.next())",
+        "xs.push(1)",
+        "let w = 1..",
+        "let w = ..5",
+        "let w = 1.0..2.0",
+        "let w = 1..=3",
+        "print(w.len())",
+        "print(w.rev())",
+        "for z in w.rev() { print(z) }",
+        "for z in w { print(z) }",
+        "for z in 5 { print(z) }",
+        "let kk = K { v: 1, cb: fn(z) => z }",
+        "print(kk.cb(1))",
+        "print(kk.v(1))",
+        "let ss = S { f: fn() {} }",
+        "ss.f()",
+        "impl Iter[int] for S { fn next(var self) -> int? => none }",
+        "impl Iterable[int] for K { fn iter(self) -> Iter[int] => S { f: fn() {} } }",
+        "for z in ss { print(z) }",
+        "for z in kk { print(z) }",
+        "print(ss.enumerate())",
+        "let c2 = fn() => c2()",
+        "let c3 = fn() => (fn() => c3)()",
+        "print(K.nope)",
+        "print(S.f)",
+        "let e: Iter[int] = xs.iter()",
+        "let e = xs.iter().enumerate().enumerate()",
+    ];
+    let mut rng = Rng(0x0dd5_1ced_cafe_f00d);
+    for _ in 0..4000 {
+        let n = 1 + rng.next() % 9;
+        let body: Vec<&str> = (0..n)
+            .map(|_| FRAGMENTS[(rng.next() % FRAGMENTS.len() as u64) as usize])
+            .collect();
+        let src = format!("fn main() {{\n{}\n}}\n", body.join("\n"));
+        check_str(&src);
+        // The same fragments at module level, where declarations are allowed.
+        check_str(&body.join("\n"));
+        // And cut off in the middle.
+        let cut = (rng.next() % (src.len() as u64 + 1)) as usize;
+        if src.is_char_boundary(cut) {
+            check_str(&src[..cut]);
+        }
     }
 }
 

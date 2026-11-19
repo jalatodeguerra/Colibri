@@ -1,0 +1,15 @@
+fn main() {
+    var xs = [1, 2]
+    xs.for_each(fn(x) { print(x) })
+    xs.push(3)
+    print(xs.len())
+    let ys = xs.filter(fn(x) {
+        xs.clear()
+        return true
+    })
+}
+
+// expect: 1
+// expect: 2
+// expect: 3
+// panic: list modified during iteration

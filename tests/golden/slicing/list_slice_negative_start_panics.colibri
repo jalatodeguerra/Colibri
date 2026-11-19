@@ -1,0 +1,7 @@
+fn main() {
+    let xs = [1, 2, 3]
+    let i = 0 - 1
+    print(xs[i..2])
+}
+
+// panic: slice -1..2 out of range for list of length 3

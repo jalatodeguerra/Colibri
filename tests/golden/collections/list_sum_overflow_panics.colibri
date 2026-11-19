@@ -1,0 +1,5 @@
+fn main() {
+    print([9223372036854775807, 1].sum())
+}
+
+// panic: integer overflow

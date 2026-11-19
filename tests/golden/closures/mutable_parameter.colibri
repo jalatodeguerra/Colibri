@@ -1,0 +1,19 @@
+fn main() {
+    let countdown = fn(var n: int) -> int {
+        var steps = 0
+        while n > 0 {
+            n -= 1
+            steps += 1
+        }
+        return steps
+    }
+    print(countdown(5))
+    let bump = fn(var x: int) {
+        x += 1
+        print(x)
+    }
+    bump(1)
+}
+
+// expect: 5
+// expect: 2

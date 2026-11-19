@@ -1,0 +1,15 @@
+fn main() {
+    var total = 0
+    let add = fn(n: int) { total += n }
+    let read = fn() => total
+    add(5)
+    print(read())
+    add(7)
+    print(read())
+    total = 0
+    print(read())
+}
+
+// expect: 5
+// expect: 12
+// expect: 0

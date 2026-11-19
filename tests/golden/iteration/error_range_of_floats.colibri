@@ -1,0 +1,3 @@
+fn main() {
+    let r = 1.0..2.0 // error: a range needs integer ends, found `float`
+}

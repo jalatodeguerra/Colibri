@@ -1,0 +1,11 @@
+fn main() {
+    print("Hello, World".to_upper())
+    print("Hello, World".to_lower())
+    print("straße".to_upper())
+    print("ÀÉ".to_lower())
+}
+
+// expect: HELLO, WORLD
+// expect: hello, world
+// expect: STRASSE
+// expect: àé

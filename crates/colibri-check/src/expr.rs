@@ -71,7 +71,11 @@ impl FnCtx<'_, '_> {
                 self.check_dot_variant(name, args.as_deref(), expected, span)
             }
             ExprKind::StructLit { ty, fields } => self.check_struct_lit(ty, fields, expected, span),
-            ExprKind::Range { .. } => self.unsupported("a range outside a `for` loop", span),
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } => self.check_range_value(start.as_deref(), end.as_deref(), *inclusive, span),
             ExprKind::Cast { expr, ty } => self.check_cast(expr, ty, span),
             ExprKind::Or { .. } => self.unsupported("`or` fallback", span),
             ExprKind::OrHandler { .. } => self.unsupported("`or` handler", span),
@@ -95,7 +99,7 @@ impl FnCtx<'_, '_> {
             ExprKind::Match { scrutinee, arms } => {
                 self.check_match(span, scrutinee, arms, BlockMode::Value(expected))
             }
-            ExprKind::Closure(_) => self.unsupported("closure", span),
+            ExprKind::Closure(c) => self.check_closure(c, expected, span),
             ExprKind::Unsafe(_) => self.unsupported("`unsafe` block", span),
             ExprKind::Error => self.error_expr(span),
         }
@@ -150,15 +154,7 @@ impl FnCtx<'_, '_> {
                 };
                 self.mk(hir::ExprKind::Read(Box::new(place)), ty, span)
             }
-            Some(ValueRef::Fn(_)) => {
-                self.ck.report(
-                    Diagnostic::error(format!("`{name}` is a function, not a value"), span)
-                        .with_hint(format!(
-                            "call it: `{name}(...)`; functions as values are not supported yet"
-                        )),
-                );
-                self.error_expr(span)
-            }
+            Some(ValueRef::Fn(f)) => self.fn_value(f, None, None, span),
             None => match name {
                 "print" => {
                     self.ck.report(
@@ -250,6 +246,8 @@ impl FnCtx<'_, '_> {
                     | Ty::Map(..)
                     | Ty::Set(_)
                     | Ty::Option(_)
+                    | Ty::Fn(..)
+                    | Ty::Range(_)
             ) {
                 self.ck.report(Diagnostic::error(
                     format!("a value of type `{shown}` cannot be shown in a string"),

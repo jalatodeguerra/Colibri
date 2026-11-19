@@ -1,0 +1,12 @@
+fn main() {
+    let xs = [5, 8, 11, 14]
+    print(xs.find(fn(x) => x > 8))
+    print(xs.find(fn(x) => x > 100))
+    print(xs.find_index(fn(x) => x % 2 == 0))
+    print(xs.find_index(fn(x) => x > 100))
+}
+
+// expect: some(11)
+// expect: none
+// expect: some(1)
+// expect: none

@@ -1,0 +1,19 @@
+fn main() {
+    let m = {"x": 1, "y": 2, "z": 3}
+    for (k, v) in m {
+        print("{k}={v}")
+    }
+    var it = m.iter()
+    print(it.next())
+    for (k, v) in m.iter() {
+        print(k + "!")
+    }
+}
+
+// expect: x=1
+// expect: y=2
+// expect: z=3
+// expect: some(("x", 1))
+// expect: x!
+// expect: y!
+// expect: z!

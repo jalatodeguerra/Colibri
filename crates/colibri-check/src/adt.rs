@@ -146,6 +146,17 @@ impl FnCtx<'_, '_> {
             return self.check_type_member(ty, owner_args, name, None, span);
         }
         let value = self.check_expr(base, None);
+        self.field_value(value, base, name, span)
+    }
+
+    /// `value.name` for a value that is already checked (`base` is its source, for messages).
+    pub fn field_value(
+        &mut self,
+        value: Expr,
+        base: &ast::Expr,
+        name: &ast::Ident,
+        span: Span,
+    ) -> Expr {
         let Some((idx, ty)) = self.field_of(&value.ty, name, base.span) else {
             return self.error_expr(span);
         };
@@ -321,15 +332,8 @@ impl FnCtx<'_, '_> {
                     self.check_fn_call_with(f, None, Some(owner), args, span)
                 }
                 None => {
-                    let shown = name.name.clone();
-                    self.ck.report(
-                        Diagnostic::error(
-                            format!("`{shown}` is a function, not a value"),
-                            name.span,
-                        )
-                        .with_hint(format!("call it: `{}.{shown}(...)`", def.name)),
-                    );
-                    self.error_expr(span)
+                    let owner = Ty::Adt(ty, owner_args);
+                    self.fn_value(f, None, Some(owner), span)
                 }
             };
         }

@@ -1,0 +1,1 @@
+fn f(r: Range[str]) {} // error: `Range[str]` is not supported: ranges are of `int`

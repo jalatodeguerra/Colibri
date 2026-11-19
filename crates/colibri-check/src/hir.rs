@@ -68,6 +68,7 @@ pub enum TypeKey {
     List,
     Map,
     Set,
+    Range,
     /// A struct, enum or class (`Option` is the enum at [`crate::types::OPTION_TYPE`]).
     Adt(TypeId),
 }
@@ -251,7 +252,9 @@ pub struct Body {
 pub enum Storage {
     /// The value lives in the frame slot.
     Slot,
-    /// The value lives in a shared cell (captured by a closure; not produced yet).
+    /// The value lives in a shared cell: the local is captured by a closure, is `var` and is
+    /// assigned after its initialisation (ARCHITECTURE §1). A fresh cell is made each time the
+    /// local is bound, so a loop iteration or a block entered twice gets its own.
     Cell,
 }
 
@@ -416,8 +419,52 @@ pub enum ExprKind {
     },
     /// An implicit or explicit (`as`) conversion.
     Coerce(Box<Expr>, Coercion),
+    /// A function used as a value (`let f = add`, `max[int]`, `Particle.new`). `type_args` are
+    /// the function's type arguments, as in [`Call::type_args`].
+    FnRef {
+        f: FnId,
+        type_args: Vec<Ty>,
+    },
+    /// A closure expression: builds a closure object that captures variables of the enclosing
+    /// body (ARCHITECTURE §1, DESIGN §6.2).
+    Closure(Box<ClosureExpr>),
+    /// `a..b` / `a..=b` as a value of type `Range[int]`.
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        inclusive: bool,
+    },
     /// Left behind after a diagnostic; never reaches an engine.
     Error,
+}
+
+/// A closure expression. The body is the lifted function `f`; each capture copies a local of
+/// the enclosing body into a local of the closure's body when the closure is created.
+#[derive(Debug)]
+pub struct ClosureExpr {
+    pub f: FnId,
+    pub captures: Vec<Capture>,
+}
+
+/// One captured variable (ARCHITECTURE §1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Capture {
+    /// The local of the enclosing body.
+    pub outer: LocalId,
+    /// The local of the closure's body that holds it while the closure runs.
+    pub inner: LocalId,
+    pub mode: CaptureMode,
+}
+
+/// How a closure holds a captured variable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureMode {
+    /// The value is copied into the closure (a reference is shared, a struct is copied).
+    ByValue,
+    /// The variable lives in a shared cell that the enclosing body and the closure both see.
+    Cell,
+    /// A weak reference to a class object: inside the closure the name is `T?`.
+    Weak,
 }
 
 /// A conversion the checker made explicit (ARCHITECTURE §1).
@@ -469,10 +516,9 @@ pub enum ForSource {
     /// `(key, value)` tuples in insertion order.
     Map(Expr),
     Set(Expr),
-    /// `(index, element)` tuples of `list.enumerate()`.
-    Enumerate(Expr),
-    /// The chars of a `str`.
-    Chars(Expr),
+    /// Anything else iterable: the expression is an iterator (`Iter[T]`, a built-in iterator
+    /// object or a boxed user implementation); each trip calls its `next`.
+    Iter(Expr),
 }
 
 /// A `match` arm. `body.locals` starts with the pattern's bindings, which are bound before the
@@ -559,6 +605,9 @@ pub enum Callee {
         method: u32,
     },
     Intrinsic(Intrinsic),
+    /// A call of a function value (`f(x)`, `self.on_hit(dmg)` on a field): `args[0]` is the
+    /// function or closure, the rest are its arguments.
+    Value,
 }
 
 impl Callee {
@@ -623,6 +672,50 @@ pub enum Builtin {
     SetNew,
     /// `Set(list)`
     SetFromList,
+    // ---- closure-taking and ordering list methods (DESIGN §6.3, §9.2) ----
+    ListMap,
+    ListFilter,
+    ListRetain,
+    ListAny,
+    ListAll,
+    ListFind,
+    ListFindIndex,
+    ListFold,
+    ListForEach,
+    ListSort,
+    ListSortBy,
+    ListSortByKey,
+    ListMin,
+    ListMax,
+    ListSum,
+    ListJoin,
+    /// `xs[lo..hi]`: `args` are the list, `lo` and `hi` as `int?` (`none` for an open end) and
+    /// whether `hi` is inclusive.
+    ListSlice,
+    // ---- strings ----
+    StrChars,
+    StrBytes,
+    StrContains,
+    StrStartsWith,
+    StrEndsWith,
+    StrSplit,
+    StrTrim,
+    StrToUpper,
+    StrToLower,
+    StrReplace,
+    StrFind,
+    /// `s[lo..hi]`, with the arguments of [`Builtin::ListSlice`].
+    StrSlice,
+    // ---- ranges and iterators ----
+    RangeContains,
+    RangeLen,
+    RangeIsEmpty,
+    /// `r.rev()`: an iterator that counts down.
+    RangeRev,
+    /// `x.iter()` on a `List`, `Set`, `Map` or `Range`: an iterator object (`Iter[T]`).
+    Iter,
+    /// `it.enumerate()` on an iterator: `Iter[(int, T)]`. The receiver is already an `Iter`.
+    IterEnumerate,
 }
 
 #[derive(Debug)]

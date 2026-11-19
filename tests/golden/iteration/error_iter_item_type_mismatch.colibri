@@ -1,0 +1,5 @@
+fn main() {
+    for x in [1, 2] {
+        let s: str = x // error: expected `str`, found `{integer}`
+    }
+}

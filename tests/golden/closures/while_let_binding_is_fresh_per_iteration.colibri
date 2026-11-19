@@ -1,0 +1,14 @@
+fn main() {
+    var stack = [1, 2, 3]
+    var fns: List[fn() -> int] = []
+    while let some(x) = stack.pop() {
+        fns.push(fn() => x)
+    }
+    for f in fns {
+        print(f())
+    }
+}
+
+// expect: 3
+// expect: 2
+// expect: 1

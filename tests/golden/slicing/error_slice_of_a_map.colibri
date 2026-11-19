@@ -1,0 +1,4 @@
+fn main() {
+    let m = {"a": 1}
+    let a = m[0..1] // error: cannot slice a value of type `Map[
+}

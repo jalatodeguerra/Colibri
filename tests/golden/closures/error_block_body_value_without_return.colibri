@@ -1,0 +1,5 @@
+fn main() {
+    let f = fn(n: int) -> int {
+        n + 1
+    } // error: this closure must return `int`, but its body can end without returning
+}

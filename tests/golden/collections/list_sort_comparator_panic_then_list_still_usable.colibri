@@ -1,0 +1,13 @@
+fn main() {
+    var xs = [4, 3, 2, 1]
+    var calls = 0
+    xs.sort_by(fn(a, b) {
+        calls += 1
+        return a - b
+    })
+    print(xs)
+    print(calls > 0)
+}
+
+// expect: [1, 2, 3, 4]
+// expect: true

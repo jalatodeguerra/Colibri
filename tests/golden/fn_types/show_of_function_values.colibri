@@ -1,0 +1,15 @@
+fn add(a: int, b: int) -> int => a + b
+
+fn main() {
+    print(add)
+    let f = fn(x: int) => x
+    print(f)
+    print("{add} and {f}")
+    let fs = [add, add]
+    print(fs)
+}
+
+// expect: <fn add>
+// expect: <closure>
+// expect: <fn add> and <closure>
+// expect: [<fn add>, <fn add>]

@@ -1,0 +1,20 @@
+fn run_twice(f: fn(int)) {
+    f(1)
+    f(2)
+}
+
+fn shout(n: int) {
+    print("n = {n}")
+}
+
+fn main() {
+    run_twice(shout)
+    run_twice(fn(n) { print(n * 100) })
+    let nothing: fn() = fn() {}
+    nothing()
+}
+
+// expect: n = 1
+// expect: n = 2
+// expect: 100
+// expect: 200
