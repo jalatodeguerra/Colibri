@@ -1603,7 +1603,9 @@ and use the hardware.
   (history/PHASE1.md).
 - A field with a default may be absent from the object: the checker gives every plain
   (non-generic) struct field default a hidden zero-argument function (`FieldDef::default`),
-  and `json.decode` calls it through `Ctx::call_field_default`.
+  and `json.decode` calls it through `Ctx::call_field_default`. Literals inline the same
+  expression, so hot reload counts a changed default expression as a change of the struct (a
+  restart, not a patch; `Fingerprint`), otherwise `json.decode` and `T {}` would disagree.
 - Not done: `@rename`/`@skip` in `json` (no attribute support in the
   checked types yet), JSON for data enums, typed error enums.
 

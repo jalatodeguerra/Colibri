@@ -290,6 +290,39 @@ fn what_forces_a_restart() {
     }
 }
 
+/// A field default is inlined at the struct literals that omit it and called by
+/// `json.decode`; patching one function body would leave the two disagreeing, so a changed
+/// default restarts.
+#[test]
+fn a_changed_field_default_restarts_instead_of_patching() {
+    let v1 = "struct P {\n    x: int = 1\n}\nfn literal() -> int => P {}.x\n";
+    let dir = tree("default-change", &[("a.colibri", v1)]);
+    let (mut vm, _) = vm();
+    vm.load_file(dir.join("a.colibri")).unwrap();
+    write(&dir, "a.colibri", &v1.replace("x: int = 1", "x: int = 2"));
+    match vm.reload_changed().unwrap() {
+        ReloadOutcome::Restarted { reason, .. } => assert!(reason.contains("struct"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    let now: i64 = vm
+        .get_fn::<(), i64>("literal")
+        .unwrap()
+        .call(&mut vm, ())
+        .unwrap();
+    assert_eq!(now, 2);
+    // A body that is not a default still patches.
+    write(
+        &dir,
+        "a.colibri",
+        &v1.replace("x: int = 1", "x: int = 2")
+            .replace("P {}.x", "P {}.x + 0"),
+    );
+    assert!(matches!(
+        vm.reload_changed().unwrap(),
+        ReloadOutcome::Patched { .. }
+    ));
+}
+
 #[test]
 fn code_that_does_not_check_leaves_the_old_program_running() {
     let dir = tree(
