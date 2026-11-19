@@ -324,12 +324,14 @@ impl Interp {
                     ));
                 };
                 let items = list.snapshot();
-                let pieces: Vec<&[Value]> = if op == Builtin::ListChunks {
-                    items.chunks(size).collect()
+                // The number of elements in all the pieces, worked out before building any.
+                let total = if op == Builtin::ListChunks {
+                    items.len()
                 } else {
-                    items.windows(size).collect()
+                    (items.len() + 1)
+                        .saturating_sub(size)
+                        .saturating_mul(size.min(items.len()))
                 };
-                let total: usize = pieces.iter().map(|p| p.len()).sum();
                 if total > MAX_PIECES {
                     self.release_all(items);
                     return Err(self.panic(
@@ -344,7 +346,17 @@ impl Interp {
                     self.release_all(items);
                     return Err(ctl);
                 }
-                let out = pieces.iter().map(|p| Value::list(p.to_vec())).collect();
+                let out = if op == Builtin::ListChunks {
+                    items
+                        .chunks(size)
+                        .map(|p| Value::list(p.to_vec()))
+                        .collect()
+                } else {
+                    items
+                        .windows(size)
+                        .map(|p| Value::list(p.to_vec()))
+                        .collect()
+                };
                 self.release_all(items);
                 Ok(Value::list(out))
             }

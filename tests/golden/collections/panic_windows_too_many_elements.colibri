@@ -1,0 +1,8 @@
+fn main() {
+    let xs = (0..40000).to_list()
+    print(xs.chunks(7).len())
+    print(xs.windows(20000).len())
+}
+
+// expect: 5715
+// panic: `windows` would make a list of 400020000 elements, which is too many
