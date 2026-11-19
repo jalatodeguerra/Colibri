@@ -1,0 +1,19 @@
+class Counter {
+    count: int
+}
+
+impl Counter {
+    fn bump_later(self) -> fn() {
+        return fn() { self.count += 1 }
+    }
+}
+
+fn main() {
+    let c = Counter { count: 0 }
+    let bump = c.bump_later()
+    bump()
+    bump()
+    print(c.count)
+}
+
+// expect: 2

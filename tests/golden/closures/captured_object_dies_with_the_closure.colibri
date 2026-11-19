@@ -1,0 +1,17 @@
+class Res {
+    name: str
+}
+
+fn main() {
+    let r = Res { name: "r" }
+    var f = fn() => r.name
+    print(f())
+    f = fn() => "other"
+    print("replaced")
+    print(f())
+}
+
+// expect: r
+// expect: replaced
+// expect: other
+// drops: r

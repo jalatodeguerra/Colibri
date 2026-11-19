@@ -24,7 +24,7 @@ use crate::ctl::Eval;
 use crate::eval::Interp;
 use crate::fiber::Fiber;
 use crate::heap::{ClassObj, GuardToken, ListObj, MapObj};
-use crate::value::Value;
+use crate::value::{CellObj, Value};
 
 /// The part of `v` a projection selects.
 pub(crate) fn project(v: &Value, proj: ValueProj) -> Option<&Value> {
@@ -60,6 +60,8 @@ fn read_at(root: &Value, path: &[ValueProj]) -> Option<Value> {
 /// An anchor whose operands have been evaluated.
 pub(crate) enum Resolved {
     Local(LocalId),
+    /// A local that lives in a shared cell (it is captured and assigned).
+    Cell(Rc<CellObj>),
     Global(GlobalId),
     Field(Rc<ClassObj>, usize),
     Elem(Rc<ListObj>, i64),
@@ -79,7 +81,17 @@ impl Interp {
         span: Span,
     ) -> Eval<Resolved> {
         match &place.anchor {
-            Anchor::Local(id) => Ok(Resolved::Local(*id)),
+            Anchor::Local(id) => {
+                let cell = fiber
+                    .frames
+                    .last()
+                    .and_then(|f| f.slots.get(id.0 as usize))
+                    .and_then(|slot| match slot {
+                        Value::Cell(c) => Some(Rc::clone(c)),
+                        _ => None,
+                    });
+                Ok(cell.map_or(Resolved::Local(*id), Resolved::Cell))
+            }
             Anchor::Global(id) => Ok(Resolved::Global(*id)),
             Anchor::ClassField(obj, idx) => {
                 let v = self.eval(fiber, obj)?;
@@ -129,6 +141,7 @@ impl Interp {
                 .last()
                 .and_then(|f| f.slots.get(id.0 as usize))
                 .and_then(|root| read_at(root, path)),
+            Resolved::Cell(cell) => cell.update(|root| read_at(root, path)),
             Resolved::Global(id) => self
                 .globals
                 .get(id.0 as usize)
@@ -192,6 +205,7 @@ impl Interp {
                 .last_mut()
                 .and_then(|f| f.slots.get_mut(id.0 as usize))
                 .and_then(|root| replace_at(root, path, new)),
+            Resolved::Cell(cell) => cell.update(|root| replace_at(root, path, new)),
             Resolved::Global(id) => self
                 .globals
                 .get_mut(id.0 as usize)
@@ -273,8 +287,9 @@ impl Interp {
 
     /// The value of a `var self` receiver of a local or module-level place, handed to the
     /// callee. A local is moved out (nothing else can see it meanwhile, and the callee then
-    /// owns it uniquely, so it changes in place); anything else is copied in, and the callee's
-    /// final value replaces the original at write-back (ARCHITECTURE §4).
+    /// owns it uniquely, so it changes in place); anything else, a captured variable in a cell
+    /// included, is copied in, and the callee's final value replaces the original at
+    /// write-back (ARCHITECTURE §4).
     pub(crate) fn take_receiver(
         &mut self,
         fiber: &mut Fiber,

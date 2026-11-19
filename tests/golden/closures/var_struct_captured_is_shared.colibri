@@ -1,0 +1,20 @@
+struct Point { x: int, y: int }
+
+fn main() {
+    var p = Point { x: 1, y: 2 }
+    let move_right = fn() { p.x += 10 }
+    move_right()
+    print(p)
+    p.y = 5
+    move_right()
+    print(p)
+    let copy = p
+    move_right()
+    print(copy)
+    print(p)
+}
+
+// expect: Point { x: 11, y: 2 }
+// expect: Point { x: 21, y: 5 }
+// expect: Point { x: 21, y: 5 }
+// expect: Point { x: 31, y: 5 }

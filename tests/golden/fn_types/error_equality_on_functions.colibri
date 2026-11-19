@@ -1,0 +1,6 @@
+fn a() -> int => 1
+fn b() -> int => 2
+
+fn main() {
+    print(a == b) // error: `==` cannot compare values of type `fn() -> int`
+}

@@ -1,0 +1,4 @@
+fn main() {
+    let f = fn(a: int, b: int) => a + b
+    print(f(1)) // error: this function takes 2 arguments, found 1
+}

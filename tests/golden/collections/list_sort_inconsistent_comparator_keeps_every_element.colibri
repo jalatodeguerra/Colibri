@@ -1,0 +1,22 @@
+fn main() {
+    var xs = [5, 3, 9, 1, 7, 2, 8, 4, 6, 0]
+    xs.sort_by(fn(a, b) => 1)
+    print(xs.len())
+    print(xs.fold(0, fn(acc, x) => acc + x))
+    var ys = [5, 3, 9, 1, 7, 2, 8, 4, 6, 0]
+    var flip = 0
+    ys.sort_by(fn(a, b) {
+        flip += 1
+        if flip % 2 == 0 {
+            return -1
+        }
+        return 1
+    })
+    print(ys.len())
+    print(ys.fold(0, fn(acc, x) => acc + x))
+}
+
+// expect: 10
+// expect: 45
+// expect: 10
+// expect: 45

@@ -3,6 +3,7 @@
 use std::io::Write;
 use std::rc::{Rc, Weak};
 
+use colibri_check::hir::Storage;
 use colibri_check::hir::{
     Arg, ArithOp, Arm, BinOp, Block, Body, Callee, CmpOp, Expr, ExprKind, FnId, GlobalId,
     Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, TypeDef, UnOp,
@@ -17,7 +18,24 @@ use crate::format::format_value;
 use crate::heap::ClassObj;
 use crate::ordered::OrderedMap;
 use crate::place::project;
-use crate::value::Value;
+use crate::value::{CellObj, Value};
+
+/// The value of a variable slot, looking through a cell.
+pub(crate) fn unwrap_cell_ref(v: &Value) -> Value {
+    match v {
+        Value::Cell(c) => c.get(),
+        other => other.clone(),
+    }
+}
+
+/// The value a cell holds, for a variable that is handed back to its owner.
+pub(crate) fn unwrap_cell(v: Value) -> Value {
+    match v {
+        Value::Cell(c) if Rc::strong_count(&c) == 1 => c.take(),
+        Value::Cell(c) => c.get(),
+        other => other,
+    }
+}
 
 /// The interpreter: the loaded code, the module-level state and the output writer. Everything
 /// about a running computation is in the [`Fiber`] passed to each method.
@@ -227,6 +245,19 @@ impl Interp {
         body: Rc<Body>,
         args: Vec<Value>,
     ) -> (Eval, Option<Value>) {
+        self.call_frame(fiber, body, args, Vec::new())
+    }
+
+    /// [`Interp::call_body_inout`] for a closure's body too: `captures` are the closure's
+    /// captured values, installed in the body's capture locals (which die with the frame like
+    /// parameters). A parameter that is captured and assigned lives in a fresh cell.
+    pub(crate) fn call_frame(
+        &mut self,
+        fiber: &mut Fiber,
+        body: Rc<Body>,
+        args: Vec<Value>,
+        captures: Vec<(colibri_check::hir::LocalId, Value)>,
+    ) -> (Eval, Option<Value>) {
         if fiber.frames.len() >= self.max_depth {
             let span = fiber.frames.last().map_or(body.span, |f| f.span);
             let message = format!("stack overflow: more than {} nested calls", self.max_depth);
@@ -238,10 +269,20 @@ impl Interp {
                 None
             };
             self.release_all(args);
+            self.release_all(captures.into_iter().map(|(_, v)| v).collect());
             return (Err(ctl), receiver);
         }
         let mut slots = args;
         slots.resize(body.locals.len(), Value::Unit);
+        for (i, slot) in slots.iter_mut().enumerate().take(body.param_count as usize) {
+            if body
+                .locals
+                .get(i)
+                .is_some_and(|l| l.storage == Storage::Cell)
+            {
+                *slot = Value::Cell(CellObj::new(std::mem::replace(slot, Value::Unit)));
+            }
+        }
         let mut frame = Frame {
             body: Rc::clone(&body),
             slots,
@@ -255,6 +296,12 @@ impl Interp {
                 .cleanups
                 .push(crate::fiber::Cleanup::Slot(colibri_check::hir::LocalId(i)));
         }
+        for (local, value) in captures {
+            if let Some(slot) = frame.slots.get_mut(local.0 as usize) {
+                *slot = value;
+                frame.cleanups.push(crate::fiber::Cleanup::Slot(local));
+            }
+        }
         fiber.frames.push(frame);
         let result = self.run_block(fiber, &body.block);
         let result = self.exit_scope(fiber, 0, result);
@@ -262,7 +309,8 @@ impl Interp {
             Some(frame) if body.mutates_self => frame
                 .slots
                 .first_mut()
-                .map(|s| std::mem::replace(s, Value::Unit)),
+                .map(|s| std::mem::replace(s, Value::Unit))
+                .map(unwrap_cell),
             _ => None,
         };
         fiber.frames.pop();
@@ -475,6 +523,23 @@ impl Interp {
                 }
             }
             ExprKind::Match { scrutinee, arms } => self.eval_match(fiber, scrutinee, arms, e.span),
+            ExprKind::FnRef { f, .. } => {
+                let name = self.fns.get(f.0 as usize).map_or("?", |b| b.name.as_str());
+                Ok(Value::Fn(*f, Rc::from(name)))
+            }
+            ExprKind::Closure(c) => self.make_closure(fiber, c, e.span),
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                let (Value::Int(start), Value::Int(end)) =
+                    (self.eval(fiber, start)?, self.eval(fiber, end)?)
+                else {
+                    return Err(self.internal(fiber, e.span, "a range of non-integers"));
+                };
+                Ok(Value::range(start, end, *inclusive))
+            }
             ExprKind::Error => Err(self.internal(fiber, e.span, "unchecked expression")),
         }
     }
@@ -711,6 +776,16 @@ impl Interp {
             }
             Callee::Bound { iface, method } | Callee::Dyn { iface, method } => {
                 self.call_interface(fiber, *iface, *method, values, receiver, span)
+            }
+            Callee::Value => {
+                if values.is_empty() {
+                    return Err(self.internal(fiber, span, "a call without a function"));
+                }
+                let f = values.remove(0);
+                if let Some(frame) = fiber.frames.last_mut() {
+                    frame.span = span;
+                }
+                self.call_function_value(fiber, &f, values, span)
             }
             Callee::Intrinsic(intrinsic) => {
                 if let Some(place) = receiver {

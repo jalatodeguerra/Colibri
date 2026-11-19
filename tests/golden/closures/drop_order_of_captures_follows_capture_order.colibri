@@ -1,0 +1,17 @@
+class Res {
+    name: str
+}
+
+fn main() {
+    {
+        let a = Res { name: "a" }
+        let b = Res { name: "b" }
+        let f = fn() => b.name + a.name
+        print(f())
+    }
+    print("end")
+}
+
+// expect: ba
+// expect: end
+// drops: b, a

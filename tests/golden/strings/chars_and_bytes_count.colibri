@@ -1,0 +1,18 @@
+fn main() {
+    let s = "añb"
+    var chars = 0
+    for c in s.chars() {
+        chars += 1
+    }
+    var bytes = 0
+    for b in s.bytes() {
+        bytes += 1
+    }
+    print(chars)
+    print(bytes)
+    print(s.len())
+}
+
+// expect: 3
+// expect: 4
+// expect: 4

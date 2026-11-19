@@ -1,0 +1,19 @@
+fn main() {
+    var calls = 0
+    let xs = [1, 2, 3, 4]
+    print(xs.any(fn(x) {
+        calls += 1
+        return x == 2
+    }))
+    print(calls)
+    print(xs.all(fn(x) {
+        calls += 1
+        return x < 3
+    }))
+    print(calls)
+}
+
+// expect: true
+// expect: 2
+// expect: false
+// expect: 5

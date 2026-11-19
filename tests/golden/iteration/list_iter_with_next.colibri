@@ -1,0 +1,15 @@
+fn main() {
+    let xs = [10, 20, 30]
+    var it = xs.iter()
+    print(it.next())
+    print(it.next())
+    print(it.next())
+    print(it.next())
+    print(it.next())
+}
+
+// expect: some(10)
+// expect: some(20)
+// expect: some(30)
+// expect: none
+// expect: none

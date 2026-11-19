@@ -1,0 +1,4 @@
+fn main() {
+    let f = fn(a: int) => a
+    print(f(a: 1)) // error: a function value takes positional arguments
+}

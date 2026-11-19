@@ -6,7 +6,7 @@ use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::FnCtx;
 use crate::body::GenericCall;
-use crate::checker::{Checker, Dep, ParamInfo};
+use crate::checker::{Checker, Dep, ParamInfo, ValueRef};
 use crate::hir::{self, Arg, Block, Callee, Expr, FnId, Intrinsic, LocalId, Place, Stmt, StmtKind};
 use crate::infer::VarKind;
 use crate::obligations::{Obligation, Origin};
@@ -47,27 +47,20 @@ impl FnCtx<'_, '_> {
             ExprKind::Index {
                 base,
                 args: type_args,
-            } => return self.check_instantiated_call(base, type_args, args, span),
-            _ => {
-                self.check_args_loosely(args);
-                return self.unsupported("calling anything but a named function", callee.span);
+            } if self.is_generic_fn_name(base) => {
+                return self.check_instantiated_call(base, type_args, args, span);
             }
+            _ => return self.check_value_call(callee, args, span),
         };
         let name = id.name.as_str();
-        if let Some(local) = self.lookup_local(name) {
-            let shown = self.show(&self.local_ty(local));
-            self.check_args_loosely(args);
-            self.ck.report(
-                Diagnostic::error(
-                    format!("`{name}` is a `{shown}`, not a function"),
-                    callee.span,
-                )
-                .with_hint("only declared functions can be called so far"),
-            );
-            return self.error_expr(span);
+        if self.lookup_local(name).is_some() {
+            return self.check_value_call(callee, args, span);
         }
         if let Some(f) = self.lookup_fn(name) {
             return self.check_fn_call(f, args, span);
+        }
+        if matches!(self.ck.values.get(name), Some(ValueRef::Global(_))) {
+            return self.check_value_call(callee, args, span);
         }
         match name {
             "print" if !self.ck.values.contains_key(name) => self.check_print(args, span),
@@ -88,6 +81,22 @@ impl FnCtx<'_, '_> {
                 }
                 self.error_expr(span)
             }
+        }
+    }
+
+    /// Whether `base` of `base[..](..)` names a function (so the brackets are type arguments)
+    /// or a method after a dot, rather than a variable being indexed.
+    fn is_generic_fn_name(&mut self, base: &ast::Expr) -> bool {
+        match &base.kind {
+            ExprKind::Ident(id) => {
+                !self.is_local(&id.name)
+                    && !matches!(self.ck.values.get(&id.name), Some(ValueRef::Global(_)))
+            }
+            // `x.map[int](..)` names a generic method; `self.handlers[0](..)` indexes a field.
+            ExprKind::Field { name, .. } => self.ck.methods.iter().any(|((_, n), f)| {
+                n == &name.name && !self.ck.fns[f.0 as usize].generics.is_empty()
+            }),
+            _ => false,
         }
     }
 
@@ -131,6 +140,8 @@ impl FnCtx<'_, '_> {
                 | Ty::Map(..)
                 | Ty::Set(_)
                 | Ty::Option(_)
+                | Ty::Fn(..)
+                | Ty::Range(_)
         ) {
             let shown = self.show(&ty);
             self.ck.report(Diagnostic::error(
@@ -384,6 +395,7 @@ impl FnCtx<'_, '_> {
         first_source: usize,
     ) -> Option<Vec<Bound>> {
         let mut slots: Vec<Option<Bound>> = params.iter().map(|_| None).collect();
+        let mut pending: Vec<(usize, usize)> = Vec::new();
         let mut ok = true;
         let mut next_positional = 0;
         let mut seen_named = false;
@@ -453,6 +465,15 @@ impl FnCtx<'_, '_> {
                 self.check_expr(&arg.value, None);
                 continue;
             };
+            pending.push((source, i));
+        }
+        // Arguments are checked left to right, except that closures wait for the others, so
+        // the types the other arguments fix (`xs` before `fn(x) => ..`) reach the closure's
+        // parameters whatever the order they are written in (DESIGN §5.4).
+        let is_closure = |source: usize| matches!(&args[source].value.kind, ExprKind::Closure(_));
+        pending.sort_by_key(|&(source, _)| (is_closure(source), source));
+        for (source, i) in pending {
+            let arg = &args[source];
             let param = &params[i];
             let expr = self.check_expr(&arg.value, Some(&param.ty));
             let reason = Some((

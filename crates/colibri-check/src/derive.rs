@@ -13,7 +13,7 @@ pub(crate) fn has_infer(ty: &Ty) -> bool {
     match ty {
         Ty::Infer(_) => true,
         Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().any(has_infer),
-        Ty::List(t) | Ty::Set(t) | Ty::Option(t) => has_infer(t),
+        Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) => has_infer(t),
         Ty::Map(a, b) | Ty::Result(a, b) => has_infer(a) || has_infer(b),
         Ty::Fn(ps, r) => ps.iter().any(has_infer) || has_infer(r),
         _ => false,
@@ -72,6 +72,10 @@ impl FnCtx<'_, '_> {
         }
         if equality {
             return match &ty {
+                Ty::Fn(..) => Some(
+                    "functions and closures have no `==`; compare something they work on, or keep an id next to the function"
+                        .to_string(),
+                ),
                 Ty::Adt(id, _) => Some(format!(
                     "`{0}` has a part that cannot be compared; implement `Eq` for it: `impl Eq for {0} {{ fn eq(self, other: {0}) -> bool {{ ... }} }}`",
                     self.ck.types[id.0 as usize].name
@@ -104,6 +108,7 @@ impl FnCtx<'_, '_> {
                     .to_string(),
             ),
             Ty::Unit => Some("`()` has only one value; there is nothing to order".to_string()),
+            Ty::Fn(..) => Some("functions and closures cannot be compared".to_string()),
             _ => None,
         }
     }

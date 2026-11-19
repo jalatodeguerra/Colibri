@@ -35,7 +35,9 @@ keyed by qualified name so they stay stable across hot reload (§16.3).
   with path `[x]`.
 - **Calls** are fully resolved; named and default arguments become positional (defaults are
   inserted at the call site). `Call { callee, type_args, args }` with
-  `Callee::{Fn(FnId), Bound{iface, method}, Dyn{iface, method}, Value(expr), Host(HostFnId), Intrinsic(..)}`
+  `Callee::{Fn(FnId), Bound{iface, method}, Dyn{iface, method}, Value, Host(HostFnId), Intrinsic(..)}`
+  (`Callee::Value` has no payload: the function value is `args[0]`, which keeps `Callee` `Clone`
+  and `PartialEq` and lets the receiver-first evaluation order apply unchanged, slice 4b)
   and `Arg::{Value(Expr), Place(Place)}` (`Place` for `var self` receivers). Field reads are
   `Read(Place)` or `Field(expr, idx)` on rvalues, never calls.
 - **Constructors:** `Struct { ty, fields }` in declaration order with defaults filled,
@@ -47,10 +49,21 @@ keyed by qualified name so they stay stable across hot reload (§16.3).
   through `impls[(runtime type, iface)]`.
 - **Implicit conversions are explicit `Coerce` nodes:** `ToDyn(ImplId)`, `F32ToFloat`,
   `IntoError(ImplId)`, `StrongToWeak`, `WeakToOption`.
-- **Closures:** `Closure { fn, captures: Vec<(LocalId, ByValue | Cell | Weak)>, type_args }`. In
-  phase 1 a local is a `Cell` iff it is captured, is `var`, and is assigned anywhere after its
+- **Closures:** `ExprKind::Closure(ClosureExpr { f, captures: Vec<Capture { outer, inner, mode }> })`
+  with `mode` one of `ByValue | Cell | Weak`; the body is the lifted function `f`, and `inner` is
+  the local of that body that holds the captured variable while the closure runs. In phase 1 a
+  local is a `Cell` iff it is captured, is `var`, and is assigned anywhere after its
   initialisation; otherwise it is captured by value. This is conservative and unobservable, so no
-  escape analysis is needed (§6.2).
+  escape analysis is needed (§6.2). *As built (slice 4b):* "assigned" includes `x = ..`, `x op= ..`,
+  assignments through a path (`p.x += 1`, `xs[0] = ..` where `xs` is a struct local) and `var
+  self` calls on the local, and it is decided over the whole root body, closures included (a
+  closure that assigns a captured variable marks the outer one, innermost first, so a chain of
+  nested closures agrees). A capture takes its storage from the variable it captures; a `Weak`
+  capture's inner local is always `Slot` (it holds a `T?` rebuilt on each call). `Body.locals[i].storage`
+  tells the engine which locals are cells.
+- **Function values:** `ExprKind::FnRef { f, type_args }` is a named function, static method or
+  instantiated generic function used as a value (`Ty::Fn(params, ret)`); `ExprKind::Range`
+  is a `Range[int]` value (`Ty::Range`).
 - **Integer operations carry their width** (`Add(IntTy::I32)`), so overflow traps are static.
   As built: `BinOp::Arith(ArithOp, Num::Int(IntTy) | Num::Float)`, `BinOp::Concat` and
   `BinOp::Cmp(CmpOp, Operand)`. While a literal is still untyped (`1 + x` before `x` is known)
@@ -121,8 +134,8 @@ iteration, write-back); `Defer`, `Go`, labelled `Break`/`Continue`.
   `T?`). An omitted weak field is `ToWeak(none)`. `Anchor::ListElem` and `MapEntry` carry the
   source text of the collection (the guard message needs it), `Anchor::ClassField` the object
   expression. `ForLoop { id, binding: ForBinding, source: ForSource, places, body }` replaces the
-  range-only form: `ForSource` is `Range`, `List { list, name }`, `Map`, `Set`, `Enumerate` or
-  `Chars`, and `ForBinding` is `None`, `Local` or `Pat` (a tuple pattern for `(k, v)`).
+  range-only form: `ForSource` is `Range`, `List { list, name }`, `Map`, `Set` or (slice 4b)
+  `Iter(expr)` (anything else iterable, as an iterator value), and `ForBinding` is `None`, `Local` or `Pat` (a tuple pattern for `(k, v)`).
   `StmtKind::Defer(Rc<Stmt>)` registers a statement on the cleanup list. Methods and
   constructors of `str`, `List`, `Map` and `Set`, `Set(..)` and `x.clone()` are
   `Callee::Intrinsic(Intrinsic::Builtin(Builtin::..))`: the checker types them through the real
@@ -227,9 +240,13 @@ enum Value {
     Enum(Rc<EnumVal>),          // { ty, variant, payload }; immutable, so sharing is unobservable
     List(Rc<ListObj>), Map(Rc<MapObj>), Set(Rc<SetObj>),
     Obj(Rc<ClassObj>), Weak(Weak<ClassObj>),
-    Closure(Rc<ClosureObj>),    // { fn, captures, type_args }
+    Closure(Rc<ClosureObj>),    // { f, captures: Vec<Captured { inner, mode, value }> }
     Dyn(Rc<DynVal>),            // { impl_id, val }
-    Fn(FnId), Host(HostHandle), // HostHandle: type, index, generation
+    Fn(FnId, Rc<str>),          // a function used as a value; the name is for Show
+    Cell(Rc<CellObj>),          // the slot content of a captured, reassigned local
+    Range(Rc<RangeVal>),        // { start, end, inclusive }; boxed to keep Value at 24 bytes
+    Iter(Rc<IterObj>),          // built-in iterator (collections, ranges, chars, bytes, enumerate)
+    Host(HostHandle),           // HostHandle: type, index, generation
 }
 struct ListObj  { items: RefCell<Vec<Value>>, guard: Rc<Guard> }
 struct ClassObj { ty: TypeId, fields: RefCell<Box<[Value]>>, released: Cell<bool>, hooked: Cell<bool> }
@@ -251,6 +268,21 @@ lookup, insert and remove are O(1) and `List` push and index are O(1).
   written back as a new `Dyn` (lazy copy-on-write); a class inside is shared as always. `Show`
   and `clone` look through the box; there is no `==` on interface values (`Eq` mentions `Self`,
   so it is not object safe). `release` releases the contents.
+- **Closures, cells and iterators (slice 4b).** A closure is `ClosureObj { f, captures }`; each
+  capture holds a copy (`ByValue`), a shared `Value::Cell` (`Cell`) or a `Value::Weak` (`Weak`).
+  A local whose `storage` is `Cell` keeps a `Value::Cell(Rc<CellObj>)` in its frame slot; `bind_local`
+  makes a *fresh* cell each time it binds, which is what gives every `for` iteration, `while let`
+  trip and block entry its own variable. Places resolve through the cell
+  (`Resolved::Cell`), so reads, writes, `+=` and `var self` calls need no other change; a
+  `var self` call on a cell copies the value in and writes it back (never moves it out, because a
+  closure may still read the cell). Calling a closure installs its captures in the capture locals
+  of the lifted body, which are cleaned up with the parameters (a weak capture becomes a fresh
+  `T?` from `Weak::upgrade` for the length of the call). `Interp::release` handles all three new
+  containers: a closure releases its captures in capture order when its last reference goes, a cell
+  its content, an iterator its collection and guard, so drop order is exact (a weak capture holds
+  nothing, which is the point). `Value::Iter` is the engine's own `Iter[T]`; user iterators are
+  `Value::Dyn` boxes as before, and `Interp::iter_next` advances either, which is the one thing
+  `for` over an `Iter` does.
 - **Deep values.** A recursive enum can nest as deep as the program builds it, and Rust's
   recursive `Drop`, `Show` and `==` would overflow the native stack. `StructVal` and `EnumVal`
   therefore have a custom `Drop`: past a nesting depth of 256 (counted in a thread-local) it
@@ -441,11 +473,25 @@ turns out to matter, it moves into DESIGN.md.
     analysis has a step budget (200 000); when it runs out the match is accepted without
     diagnostics rather than stalling the checker.
 22. **`for`.** Over `a..b` / `a..=b` (integers; each end evaluated once), a `List`, a `Map`
-    (`(key, value)` tuples, usually destructured: `for (k, v) in m`), a `Set`,
-    `list.enumerate()` (`(index, item)`) and `s.chars()`. The binding is immutable and fresh per
-    iteration; `for var x in list` makes it a place (§6.28). An open-ended range, a range outside
-    a `for`, a `str` iterated directly, and any other iterable report "not supported yet" or a
-    hint. Methods on generic user types report the same.
+    (`(key, value)` tuples, usually destructured: `for (k, v) in m`), a `Set`, a `Range` value,
+    and (slice 4b) anything iterable: a type that implements `Iter[T]` or `Iterable[T]`, a type
+    parameter bounded by one of them, or an iterator such as `xs.iter()`, `s.chars()`,
+    `s.bytes()` or `it.enumerate()`. The binding is immutable and fresh per iteration; `for var x
+    in list` makes it a place (§6.28). An open-ended range in a `for`, and a `str` iterated
+    directly (hint: `s.chars()`), are errors ("cannot loop over a value of type ..").
+    *Iteration protocol (slice 4b).* `Iterable.iter` returns the interface type `Iter[T]`, as
+    DESIGN writes it, so an `iter()` hands back a dynamic interface value (the engine's own
+    iterators are such values too, which lets them mix freely with user iterators). `for x in v`
+    calls `iter()` only when `v` is not already an `Iter`. If an `Iter` is a *struct*, `for` runs
+    over a private copy: the variable is unchanged afterwards and a second loop starts again
+    (value semantics, §6.20); a class iterator is shared and keeps its position. A built-in
+    iterator over a `List`, `Map` or `Set` holds that collection's iteration guard from creation
+    until its `next` first returns `none` or the iterator dies, so `xs.push(..)` while an
+    iterator over `xs` is live panics ("list modified during iteration"), exactly as inside a
+    `for`; a `for` over `xs.iter()` leaves the guard when the loop ends. `enumerate()` is
+    general: it works on any `Iter` or `Iterable` and yields `(int, T)`. `Range` is a value of
+    type `Range[int]` (`contains len is_empty iter rev enumerate`); only `int` ranges exist, and an
+    open-ended range (`1..`) is not a value.
 23. **`Option`.** `T?` is `Ty::Option(T)`, built in as the prelude enum of §1 (slice 3). `some(x)`
     is only valid applied; `some` alone is an error with a hint. `none` needs an expected type
     (from an annotation, a parameter, a return type, a field or the other branch); otherwise it
@@ -473,12 +519,32 @@ turns out to matter, it moves into DESIGN.md.
     List methods: `len is_empty push pop insert remove clear contains index_of first last
     reverse extend clone get`; Map: `len is_empty get contains_key insert remove keys values
     clear clone` and `m[k]`, `m[k] = v`; Set: `len is_empty add remove contains clear clone`;
-    `str` has `len` (bytes) and `is_empty`. `pop`, `get`, `first`, `last`, `index_of`, and
+    `str` has `len` (bytes), `is_empty`, `chars bytes contains starts_with ends_with split trim
+    to_upper to_lower replace find` (slice 4b). `pop`, `get`, `first`, `last`, `index_of`, and
     `Map.get`/`remove` return `Option`; `Set.remove` returns whether it was present;
-    `List.remove` panics out of bounds. `keys` and `values` return new lists. `enumerate()` and
-    `chars()` exist only directly as the iterable of a `for`. Methods that take a closure
-    (`map`, `filter`, ...) and slicing report "not supported yet". `contains` and `index_of`
-    need `==` on the element.
+    `List.remove` panics out of bounds. `keys` and `values` return new lists. `contains` and
+    `index_of` need `==` on the element. Slice 4b adds, on `List`: `iter map filter retain any all
+    find find_index fold for_each sort sort_by sort_by_key min max sum join enumerate`, and on
+    `Map`/`Set`: `iter enumerate`. `sort` is stable and needs `T: Ord`; `sort_by` takes
+    `fn(a, b) -> int` (negative, zero, positive); `sort_by_key` needs an `Ord` key; `min` and `max`
+    return the *first* extreme element as an `Option`; `sum` is for `int` or `float` (an empty
+    list sums to `0` / `0.0`); `join` is for `List[str]`. `map`, `filter`, `retain`, `any`, `all`,
+    `find`, `find_index`, `fold`, `for_each` and the sorts hold the list's *iteration guard* while
+    the closure runs, so a closure that changes the list panics ("list modified during
+    iteration"); nothing borrows the list's `RefCell` across user code (elements are read one at a
+    time). A sort orders a snapshot (a merge sort over positions, own code), and writes it back
+    only when finished: a comparator that panics leaves the list untouched, and an inconsistent
+    comparator (`fn(a, b) => 1`) just gives some order, never a corrupt list. `retain` decides
+    every element first and then removes, so the removed objects die together, in order, after
+    the last closure call. A `nan` in a `sort`, `min` or `max` panics ("these values are not
+    ordered").
+    *Slicing.* `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]` and the `..=` forms are a *copy* (a
+    new list sharing the element objects, as every list copy does) and not a place: `xs[0..2] = ..`
+    is an error. `s[a..b]` on a `str` is a *byte* range and panics when an end is out of range or
+    inside a multi-byte character ("byte 2 is not on a character boundary of the string").
+    Out-of-range slices say `slice 1..9 out of range for string of length 3`; a start after the
+    end says `slice 4..2 starts after it ends`. `split` and `replace` with an empty separator or
+    pattern panic.
     Iteration order is insertion order. `==` on collections is structural (a map ignores order);
     `is` is identity. `Show` is `[1, 2]`, `{"a": 1}`, `{:}`, `Set([1, 2])`; strings are quoted
     inside.
@@ -616,3 +682,44 @@ turns out to matter, it moves into DESIGN.md.
 43. **Recursive generic types** (`enum Tree[T] { Leaf, Node(Tree[T], T, Tree[T]) }`) need no
     boxing in the interpreter: every composite is already behind an `Rc`. The native-code engine
     will box the recursive position; nothing in the HIR depends on it.
+44. **Function types and values (slice 4b; DESIGN §5.2, §6.2).** `fn(A, B) -> R` and `fn(A)`
+    (result `()`) are types, `Ty::Fn(params, ret)`. A named function, a static method
+    (`Particle.new`) and a generic function (`max[int]`, or `max` where the expected type decides
+    `T`) are values; they show as `<fn name>`, a closure as `<closure>`, and a function value has
+    no `==` (error with a hint). A function value takes *all* its parameters: defaults are not
+    part of the type and are not filled in, and named arguments are an error. A method that
+    takes `self` is not a value (`P.get` is an error with the closure to write instead): the
+    receiver would need a binding rule DESIGN does not give. `callee(args)` where `callee` is not
+    a function name is a call of a value (`Callee::Value`, the function is `args[0]`).
+    `recv.name(args)` tries a *method* `name` first (inherent, then interface, §6.34) and only
+    when the receiver's type has no method of that name does it look for a *field* `name` of
+    function type, so `self.on_hit(dmg)` calls the field and a method can never be hidden by a
+    field. To call a field whose name is also a method, bind it first (`let f = t.run`).
+45. **Closures (slice 4b; DESIGN §6.2).** `fn(x: int) -> int => x * 2`; a `{ }` body is a
+    statement block and needs `return` for a value (§6.12); `fn(var x: int)` makes a mutable
+    parameter. Parameter and result types come from the *expected* function type (an annotation,
+    a parameter of the callee, a field, a return type), also through a generic callee: the
+    checker unifies a generic call's arguments left to right, but checks the *closure arguments
+    last* so every other argument has already fixed type parameters (`apply(21, fn(n) => n * 2)`,
+    `xs.fold(0, fn(acc, x) => ..)`, `compose(f, fn(b) => ..)`). With no expected type an
+    unannotated parameter is an error asking for a type. A written type wins over the expected
+    one and a mismatch is reported where the closure is used. A `=>` body must have exactly the
+    result type; a block body that can fall off the end with a non-`()` result is an error.
+    Closures capture by reference (§1): see the `Cell` rule. A `var` struct captured by a closure
+    that assigns it (or any part of it) lives in a cell, so the closure and the enclosing function
+    share it; a closure that only reads it gets a copy (nothing can observe the difference).
+    `for` and `while let` bind a fresh variable per iteration, `let`/`var` inside a loop body a
+    fresh one per trip, but a `var` declared *before* a `while` is one variable (the classic
+    `while` closure sees its final value; the test `captured_loop_counter_is_one_variable` pins
+    it). Closures can capture `self` (a class's or a struct method's) and each other; a closure
+    cannot refer to itself by name (there is no binding yet when its body is checked).
+46. **Weak captures (DESIGN §6.2).** `fn() use(weak self) { .. }` and `use(weak a, weak b)`: the
+    listed names must be locals (or `self`) of class type, are captured as `Weak` and have type
+    `T?` inside; every other capture stays implicit. Naming a non-class or an unknown name is an
+    error. The closure holds no strong reference, so a button that stores a closure over its own
+    panel does not keep the panel alive and the leak that DESIGN §6.2 describes does not
+    happen (test `weak_self_button_example`, against `strong_self_capture_leaks_a_cycle`).
+47. **Generic inference through bounds.** A type parameter that appears only in another
+    parameter's *bound* (`fn collect[T, I: Iter[T]](it: I)`) is not inferred from that bound:
+    write `[int, Evens]` or use `I: Iter[int]`. (Unchanged from §6.42; it surfaces more now that
+    `Iter[T]` is common.)

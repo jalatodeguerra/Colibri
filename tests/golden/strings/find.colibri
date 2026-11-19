@@ -1,0 +1,13 @@
+fn main() {
+    print("hello".find("l"))
+    print("hello".find("lo"))
+    print("hello".find("z"))
+    print("héllo".find("l"))
+    print("abc".find(""))
+}
+
+// expect: some(2)
+// expect: some(3)
+// expect: none
+// expect: some(3)
+// expect: some(0)

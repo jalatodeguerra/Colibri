@@ -98,6 +98,7 @@ impl InferCtx {
             Ty::List(t) => Ty::List(Box::new(go(t))),
             Ty::Set(t) => Ty::Set(Box::new(go(t))),
             Ty::Option(t) => Ty::Option(Box::new(go(t))),
+            Ty::Range(t) => Ty::Range(Box::new(go(t))),
             Ty::Map(k, v) => Ty::Map(Box::new(go(k)), Box::new(go(v))),
             Ty::Result(t, e) => Ty::Result(Box::new(go(t)), Box::new(go(e))),
             Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(&mut go).collect(), Box::new(go(r))),
@@ -142,7 +143,8 @@ impl InferCtx {
             }
             (Ty::List(x), Ty::List(y))
             | (Ty::Set(x), Ty::Set(y))
-            | (Ty::Option(x), Ty::Option(y)) => self.unify(x, y),
+            | (Ty::Option(x), Ty::Option(y))
+            | (Ty::Range(x), Ty::Range(y)) => self.unify(x, y),
             (Ty::Map(k1, v1), Ty::Map(k2, v2)) | (Ty::Result(k1, v1), Ty::Result(k2, v2)) => {
                 self.unify(k1, k2)?;
                 self.unify(v1, v2)
@@ -191,7 +193,7 @@ impl InferCtx {
         match self.shallow(ty) {
             Ty::Infer(w) => v == w,
             Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().any(|t| self.occurs(v, t)),
-            Ty::List(t) | Ty::Set(t) | Ty::Option(t) => self.occurs(v, &t),
+            Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) => self.occurs(v, &t),
             Ty::Map(a, b) | Ty::Result(a, b) => self.occurs(v, &a) || self.occurs(v, &b),
             Ty::Fn(ps, r) => ps.iter().any(|t| self.occurs(v, t)) || self.occurs(v, &r),
             _ => false,

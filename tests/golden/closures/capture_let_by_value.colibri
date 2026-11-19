@@ -1,0 +1,13 @@
+fn main() {
+    let base = 10
+    let add = fn(x: int) => x + base
+    print(add(1))
+    print(add(2))
+    let name = "ana"
+    let hello = fn() => "hello " + name
+    print(hello())
+}
+
+// expect: 11
+// expect: 12
+// expect: hello ana

@@ -1,0 +1,24 @@
+struct Card {
+    rank: int
+    suit: str
+}
+
+fn main() {
+    var cards = [
+        Card { rank: 2, suit: "a" },
+        Card { rank: 1, suit: "b" },
+        Card { rank: 2, suit: "c" },
+        Card { rank: 1, suit: "d" },
+        Card { rank: 2, suit: "e" },
+    ]
+    cards.sort_by(fn(x, y) => x.rank - y.rank)
+    for c in cards {
+        print("{c.rank}{c.suit}")
+    }
+}
+
+// expect: 1b
+// expect: 1d
+// expect: 2a
+// expect: 2c
+// expect: 2e

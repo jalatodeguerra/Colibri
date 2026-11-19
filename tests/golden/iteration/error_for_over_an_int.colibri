@@ -1,0 +1,6 @@
+fn main() {
+    let n = 3
+    for x in n { // error: cannot loop over a value of type `int`
+        print(x)
+    }
+}

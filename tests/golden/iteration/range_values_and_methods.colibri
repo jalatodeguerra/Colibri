@@ -1,0 +1,32 @@
+fn main() {
+    let r = 1..5
+    print(r)
+    print(r.len())
+    print(r.contains(1))
+    print(r.contains(5))
+    print(r.is_empty())
+    let inc = 1..=5
+    print(inc)
+    print(inc.len())
+    print(inc.contains(5))
+    let empty = 3..3
+    print(empty.is_empty())
+    print((5..1).len())
+    var total = 0
+    for i in r {
+        total += i
+    }
+    print(total)
+}
+
+// expect: 1..5
+// expect: 4
+// expect: true
+// expect: false
+// expect: false
+// expect: 1..=5
+// expect: 5
+// expect: true
+// expect: true
+// expect: 0
+// expect: 10

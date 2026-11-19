@@ -44,6 +44,16 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
             Cow::Owned(out)
         }
         Value::Dyn(d) => show(types, &d.val),
+        Value::Fn(_, name) => Cow::Owned(format!("<fn {name}>")),
+        Value::Closure(_) => Cow::Borrowed("<closure>"),
+        Value::Cell(_) => Cow::Borrowed("<cell>"),
+        Value::Iter(_) => Cow::Borrowed("<iterator>"),
+        Value::Range(r) => Cow::Owned(format!(
+            "{}..{}{}",
+            r.start,
+            if r.inclusive { "=" } else { "" },
+            r.end
+        )),
     }
 }
 

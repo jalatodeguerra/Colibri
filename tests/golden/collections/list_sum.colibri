@@ -1,0 +1,13 @@
+fn main() {
+    print([1, 2, 3, 4].sum())
+    print([1.5, 2.5].sum())
+    let none_int: List[int] = []
+    print(none_int.sum())
+    let none_float: List[float] = []
+    print(none_float.sum())
+}
+
+// expect: 10
+// expect: 4.0
+// expect: 0
+// expect: 0.0

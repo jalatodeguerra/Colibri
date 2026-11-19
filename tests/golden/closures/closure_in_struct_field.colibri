@@ -1,0 +1,19 @@
+struct Handler {
+    name: str
+    run: fn(int) -> int
+}
+
+fn main() {
+    let h = Handler { name: "double", run: fn(x) => x * 2 }
+    print(h.name)
+    print(h.run(21))
+    let hs = [Handler { name: "inc", run: fn(x) => x + 1 }, Handler { name: "neg", run: fn(x) => -x }]
+    for h in hs {
+        print("{h.name}: {h.run(5)}")
+    }
+}
+
+// expect: double
+// expect: 42
+// expect: inc: 6
+// expect: neg: -5

@@ -1,0 +1,9 @@
+fn main() {
+    var xs = [1, 2, 3]
+    xs.retain(fn(x) {
+        xs.remove(0)
+        return true
+    })
+}
+
+// panic: list modified during iteration

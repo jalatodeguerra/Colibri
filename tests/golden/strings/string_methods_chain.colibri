@@ -1,0 +1,11 @@
+fn main() {
+    let line = "  Name = Ana  "
+    let parts = line.trim().split("=")
+    print(parts[0].trim().to_lower())
+    print(parts[1].trim().to_upper())
+    print(line.trim().replace(" ", "").len())
+}
+
+// expect: name
+// expect: ANA
+// expect: 8

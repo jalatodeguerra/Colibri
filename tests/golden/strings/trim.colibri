@@ -1,0 +1,11 @@
+fn main() {
+    print("[" + "  hi  ".trim() + "]")
+    print("[" + "\n\ttab\n".trim() + "]")
+    print("[" + "".trim() + "]")
+    print("[" + "   ".trim() + "]")
+}
+
+// expect: [hi]
+// expect: [tab]
+// expect: []
+// expect: []

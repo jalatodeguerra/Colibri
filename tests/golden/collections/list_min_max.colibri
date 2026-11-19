@@ -1,0 +1,17 @@
+fn main() {
+    let xs = [4, 9, 2, 7]
+    print(xs.min())
+    print(xs.max())
+    let empty: List[int] = []
+    print(empty.min())
+    print(empty.max())
+    print(["b", "a", "c"].min())
+    print([2.5, 1.5].max())
+}
+
+// expect: some(2)
+// expect: some(9)
+// expect: none
+// expect: none
+// expect: some("a")
+// expect: some(2.5)

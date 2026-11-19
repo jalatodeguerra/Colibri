@@ -1,0 +1,15 @@
+fn adder(a: int) -> fn(int) -> fn(int) -> int {
+    return fn(b: int) -> fn(int) -> int {
+        return fn(c: int) => a + b + c
+    }
+}
+
+fn main() {
+    let add1 = adder(1)
+    let add1_2 = add1(2)
+    print(add1_2(3))
+    print(adder(10)(20)(30))
+}
+
+// expect: 6
+// expect: 60

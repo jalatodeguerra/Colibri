@@ -1,0 +1,22 @@
+struct Particle {
+    x: int
+    y: int
+}
+
+impl Particle {
+    fn new(x: int, y: int) -> Particle => Particle { x: x, y: y }
+    fn origin() -> Particle => Particle { x: 0, y: 0 }
+}
+
+fn main() {
+    let make = Particle.new
+    print(make(1, 2))
+    let o = Particle.origin
+    print(o())
+    let ps = [3, 4].map(fn(n) => Particle.new(n, n))
+    print(ps)
+}
+
+// expect: Particle { x: 1, y: 2 }
+// expect: Particle { x: 0, y: 0 }
+// expect: [Particle { x: 3, y: 3 }, Particle { x: 4, y: 4 }]

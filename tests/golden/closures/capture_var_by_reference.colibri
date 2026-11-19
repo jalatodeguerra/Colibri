@@ -1,0 +1,14 @@
+fn main() {
+    var count = 0
+    let inc = fn() { count += 1 }
+    inc()
+    inc()
+    inc()
+    print(count)
+    count = 100
+    inc()
+    print(count)
+}
+
+// expect: 3
+// expect: 101

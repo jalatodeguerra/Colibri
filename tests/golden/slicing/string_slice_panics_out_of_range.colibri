@@ -1,0 +1,6 @@
+fn main() {
+    let s = "abc"
+    print(s[1..9])
+}
+
+// panic: slice 1..9 out of range for string of length 3

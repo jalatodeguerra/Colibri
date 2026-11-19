@@ -1,0 +1,20 @@
+class Res {
+    name: str
+}
+
+fn make() -> fn() -> str {
+    let r = Res { name: "kept" }
+    return fn() => r.name
+}
+
+fn main() {
+    let f = make()
+    print("made")
+    print(f())
+    print("done")
+}
+
+// expect: made
+// expect: kept
+// expect: done
+// drops: kept

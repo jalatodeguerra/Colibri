@@ -4,8 +4,8 @@
 use colibri_syntax::{Diagnostic, Span};
 
 use crate::hir::{
-    Anchor, Arg, BinOp, Block, Expr, ExprKind, ForBinding, ForSource, Lit, LocalInfo, Num, Operand,
-    Pat, PatKind, Place, Stmt, StmtKind, UnOp,
+    Anchor, Arg, BinOp, Block, Builtin, Callee, CaptureMode, Expr, ExprKind, ForBinding, ForSource,
+    Intrinsic, Lit, LocalInfo, Num, Operand, Pat, PatKind, Place, Stmt, StmtKind, Storage, UnOp,
 };
 use crate::infer::InferCtx;
 use crate::types::{IntTy, Ty};
@@ -22,10 +22,12 @@ pub(crate) fn zonk_body(
         diags,
         reported_unresolved: false,
         had_errors,
+        storage: Vec::new(),
     };
-    for local in locals {
+    for local in locals.iter_mut() {
         z.ty(&mut local.ty, local.span);
     }
+    z.storage = locals.iter().map(|l| l.storage).collect();
     z.block(block);
 }
 
@@ -37,6 +39,8 @@ struct Zonker<'a> {
     reported_unresolved: bool,
     /// The body already has an error, which probably explains any open type or bad key.
     had_errors: bool,
+    /// How each local of the body is stored, to give captures of cell variables their mode.
+    storage: Vec<Storage>,
 }
 
 /// The arithmetic kind of a resolved operand type.
@@ -64,6 +68,7 @@ fn operand_of(ty: &Ty) -> Operand {
         | Ty::Map(..)
         | Ty::Set(_)
         | Ty::Option(_)
+        | Ty::Range(_)
         | Ty::Param(..) => Operand::Structural,
         _ => Operand::Int(IntTy::I64),
     }
@@ -221,6 +226,18 @@ impl Zonker<'_> {
                         Arg::Place(p) => self.place(p),
                     }
                 }
+                // The sum of an empty list of floats is `0.0`: the engine cannot tell from
+                // the (empty) list, so the checker hands it the zero.
+                if e.ty == Ty::Float
+                    && call.callee == Callee::Intrinsic(Intrinsic::Builtin(Builtin::ListSum))
+                {
+                    let zero = Expr {
+                        kind: ExprKind::Lit(Lit::Float(0.0)),
+                        ty: Ty::Float,
+                        span: e.span,
+                    };
+                    call.args.push(Arg::Value(zero));
+                }
             }
             ExprKind::StrConcat(parts) => parts.iter_mut().for_each(|p| self.expr(p)),
             ExprKind::If { cond, then, else_ } => {
@@ -241,8 +258,7 @@ impl Zonker<'_> {
                     ForSource::List { list: e, .. }
                     | ForSource::Map(e)
                     | ForSource::Set(e)
-                    | ForSource::Enumerate(e)
-                    | ForSource::Chars(e) => self.expr(e),
+                    | ForSource::Iter(e) => self.expr(e),
                 }
                 if let ForBinding::Pat(p) = &mut f.binding {
                     self.pat(p);
@@ -272,6 +288,24 @@ impl Zonker<'_> {
                         self.expr(g);
                     }
                     self.block(&mut arm.body);
+                }
+            }
+            ExprKind::FnRef { type_args, .. } => {
+                for t in type_args {
+                    self.ty(t, e.span);
+                }
+            }
+            ExprKind::Range { start, end, .. } => {
+                self.expr(start);
+                self.expr(end);
+            }
+            ExprKind::Closure(c) => {
+                // A captured variable that lives in a cell is shared, not copied.
+                for cap in &mut c.captures {
+                    let cell = self.storage.get(cap.outer.0 as usize) == Some(&Storage::Cell);
+                    if cap.mode == CaptureMode::ByValue && cell {
+                        cap.mode = CaptureMode::Cell;
+                    }
                 }
             }
             ExprKind::Error => {}

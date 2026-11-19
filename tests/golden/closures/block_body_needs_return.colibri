@@ -1,0 +1,18 @@
+fn main() {
+    let classify = fn(n: int) -> str {
+        if n < 0 {
+            return "negative"
+        }
+        if n == 0 {
+            return "zero"
+        }
+        return "positive"
+    }
+    print(classify(-3))
+    print(classify(0))
+    print(classify(9))
+}
+
+// expect: negative
+// expect: zero
+// expect: positive

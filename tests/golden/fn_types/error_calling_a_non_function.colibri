@@ -1,0 +1,4 @@
+fn main() {
+    let n = 5
+    print(n(1)) // error: `n` is a `int`, not a function
+}

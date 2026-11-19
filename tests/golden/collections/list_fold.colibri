@@ -1,0 +1,13 @@
+fn main() {
+    let xs = [1, 2, 3, 4]
+    print(xs.fold(0, fn(acc, x) => acc + x))
+    print(xs.fold(1, fn(acc, x) => acc * x))
+    print(xs.fold("", fn(acc, x) => acc + "{x}"))
+    let empty: List[int] = []
+    print(empty.fold(7, fn(acc, x) => acc + x))
+}
+
+// expect: 10
+// expect: 24
+// expect: 1234
+// expect: 7

@@ -1,0 +1,17 @@
+fn total[I: Iterable[int]](xs: I) -> int {
+    var sum = 0
+    for x in xs {
+        sum += x
+    }
+    return sum
+}
+
+fn main() {
+    print(total([1, 2, 3]))
+    print(total(1..5))
+    print(total(Set([4, 4, 5])))
+}
+
+// expect: 6
+// expect: 10
+// expect: 9

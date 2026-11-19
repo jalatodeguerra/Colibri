@@ -1,0 +1,19 @@
+fn main() {
+    let say = fn(s: str) {
+        print("say " + s)
+    }
+    say("a")
+    say("b")
+    let early = fn(n: int) {
+        if n > 1 {
+            return
+        }
+        print("small {n}")
+    }
+    early(1)
+    early(5)
+}
+
+// expect: say a
+// expect: say b
+// expect: small 1

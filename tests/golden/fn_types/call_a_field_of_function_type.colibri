@@ -1,0 +1,25 @@
+class Enemy {
+    name: str
+    hp: int
+    on_hit: fn(int) -> int
+}
+
+impl Enemy {
+    fn hit(self, dmg: int) {
+        self.hp -= self.on_hit(dmg)
+    }
+}
+
+fn main() {
+    let e = Enemy { name: "orc", hp: 20, on_hit: fn(d) => d * 2 }
+    e.hit(3)
+    print(e.hp)
+    print(e.on_hit(1))
+    e.on_hit = fn(d) => 0
+    e.hit(100)
+    print(e.hp)
+}
+
+// expect: 14
+// expect: 2
+// expect: 14

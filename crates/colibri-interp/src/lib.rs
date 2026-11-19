@@ -7,6 +7,7 @@
 
 mod builtin;
 mod clone;
+mod closure;
 mod compare;
 mod ctl;
 mod dispatch;
@@ -16,12 +17,15 @@ mod forloop;
 mod format;
 mod heap;
 mod hooks;
+mod iter;
+mod listfn;
 mod ordered;
 mod pattern;
 mod place;
 mod release;
 mod scope;
 mod show;
+mod strfn;
 mod value;
 
 pub use compare::{TooDeep, values_cmp, values_equal};
@@ -31,4 +35,4 @@ pub use fiber::Fiber;
 pub use format::format_value;
 pub use heap::{ClassObj, GuardToken, ListObj, MapObj, SetObj};
 pub use show::{show, show_float};
-pub use value::{DynVal, EnumVal, StructVal, Value};
+pub use value::{DynVal, EnumVal, RangeVal, StructVal, Value};

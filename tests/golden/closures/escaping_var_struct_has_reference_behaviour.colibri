@@ -1,0 +1,23 @@
+struct Stats { hits: int, misses: int }
+
+fn make() -> (fn(), fn() -> Stats) {
+    var s = Stats { hits: 0, misses: 0 }
+    let hit = fn() { s.hits += 1 }
+    let get = fn() => s
+    return (hit, get)
+}
+
+fn main() {
+    let (hit, get) = make()
+    hit()
+    hit()
+    print(get())
+    let snapshot = get()
+    hit()
+    print(snapshot)
+    print(get())
+}
+
+// expect: Stats { hits: 2, misses: 0 }
+// expect: Stats { hits: 2, misses: 0 }
+// expect: Stats { hits: 3, misses: 0 }

@@ -1,0 +1,6 @@
+fn main() {
+    let s = "héllo"
+    print(s[0..2])
+}
+
+// panic: byte 2 is not on a character boundary

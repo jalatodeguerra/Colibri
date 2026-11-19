@@ -1,0 +1,31 @@
+struct Letters {
+    at: int
+}
+
+impl Iter[str] for Letters {
+    fn next(var self) -> str? {
+        let all = ["p", "q", "r"]
+        if self.at >= all.len() {
+            return none
+        }
+        self.at += 1
+        return some(all[self.at - 1])
+    }
+}
+
+fn main() {
+    for (i, s) in (Letters { at: 0 }).enumerate() {
+        print("{i}{s}")
+    }
+    var e = (Letters { at: 1 }).enumerate()
+    print(e.next())
+    print(e.next())
+    print(e.next())
+}
+
+// expect: 0p
+// expect: 1q
+// expect: 2r
+// expect: some((0, "q"))
+// expect: some((1, "r"))
+// expect: none

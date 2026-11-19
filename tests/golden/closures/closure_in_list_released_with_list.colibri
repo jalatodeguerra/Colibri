@@ -1,0 +1,18 @@
+class Res {
+    name: str
+}
+
+fn main() {
+    var fs: List[fn() -> str] = []
+    let x = Res { name: "x" }
+    fs.push(fn() => x.name)
+    let y = Res { name: "y" }
+    fs.push(fn() => y.name)
+    print(fs.len())
+    fs.clear()
+    print("cleared")
+}
+
+// expect: 2
+// expect: cleared
+// drops: y, x

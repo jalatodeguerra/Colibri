@@ -1,0 +1,8 @@
+fn main() {
+    for (i, (j, x)) in [7, 8].enumerate().enumerate() {
+        print("{i} {j} {x}")
+    }
+}
+
+// expect: 0 0 7
+// expect: 1 1 8

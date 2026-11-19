@@ -10,9 +10,12 @@
 use std::cell::Cell;
 use std::rc::{Rc, Weak};
 
+use colibri_check::hir::FnId;
 use colibri_check::types::TypeId;
 
+pub use crate::closure::{CellObj, ClosureObj};
 pub use crate::heap::{ClassObj, ListObj, MapObj, SetObj};
+pub use crate::iter::IterObj;
 
 /// A Colibri value.
 #[derive(Clone, Debug)]
@@ -38,6 +41,42 @@ pub enum Value {
     /// An interface value: a value boxed with the implementation that dispatches its methods
     /// (DESIGN §9.2). A struct inside is copied lazily like any struct; a class is shared.
     Dyn(Rc<DynVal>),
+    /// A function used as a value; the name is for `Show` (`<fn add>`).
+    Fn(FnId, Rc<str>),
+    /// A closure (DESIGN §6.2).
+    Closure(Rc<ClosureObj>),
+    /// The storage of a captured variable (never visible to Colibri code): a local whose
+    /// storage is `Cell` holds one in its frame slot.
+    Cell(Rc<CellObj>),
+    /// `a..b` or `a..=b`.
+    Range(Rc<RangeVal>),
+    /// An iterator object of a built-in collection, string or range; it implements `Iter[T]`
+    /// for the program (reference semantics).
+    Iter(Rc<IterObj>),
+}
+
+/// The ends of a range value (`Range[int]`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RangeVal {
+    pub start: i64,
+    pub end: i64,
+    pub inclusive: bool,
+}
+
+impl RangeVal {
+    /// How many integers the range holds.
+    pub fn len(&self) -> u64 {
+        let span = i128::from(self.end) - i128::from(self.start) + i128::from(self.inclusive);
+        u64::try_from(span.max(0)).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn contains(&self, x: i64) -> bool {
+        x >= self.start && (x < self.end || (self.inclusive && x == self.end))
+    }
 }
 
 /// The contents of an interface value.
@@ -68,6 +107,11 @@ impl PartialEq for Value {
             (Value::Obj(a), Value::Obj(b)) => Rc::ptr_eq(a, b),
             (Value::Weak(a), Value::Weak(b)) => Weak::ptr_eq(a, b),
             (Value::Dyn(a), Value::Dyn(b)) => a == b,
+            (Value::Fn(a, _), Value::Fn(b, _)) => a == b,
+            (Value::Closure(a), Value::Closure(b)) => Rc::ptr_eq(a, b),
+            (Value::Cell(a), Value::Cell(b)) => Rc::ptr_eq(a, b),
+            (Value::Range(a), Value::Range(b)) => a == b,
+            (Value::Iter(a), Value::Iter(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -91,6 +135,14 @@ pub struct EnumVal {
 impl Value {
     pub fn str(s: &str) -> Value {
         Value::Str(Rc::from(s))
+    }
+
+    pub fn range(start: i64, end: i64, inclusive: bool) -> Value {
+        Value::Range(Rc::new(RangeVal {
+            start,
+            end,
+            inclusive,
+        }))
     }
 
     pub fn tuple(items: Vec<Value>) -> Value {

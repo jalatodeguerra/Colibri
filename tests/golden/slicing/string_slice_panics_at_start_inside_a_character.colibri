@@ -1,0 +1,6 @@
+fn main() {
+    let s = "日本"
+    print(s[1..])
+}
+
+// panic: byte 1 is not on a character boundary

@@ -1,0 +1,15 @@
+class Res {
+    name: str
+}
+
+fn main() {
+    var current = Res { name: "first" }
+    let swap = fn() { current = Res { name: "second" } }
+    swap()
+    print("swapped")
+    print(current.name)
+}
+
+// expect: swapped
+// expect: second
+// drops: first, second

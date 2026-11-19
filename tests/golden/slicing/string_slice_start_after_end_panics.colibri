@@ -1,0 +1,8 @@
+fn main() {
+    let s = "abcdef"
+    let a = 4
+    let b = 2
+    print(s[a..b])
+}
+
+// panic: slice 4..2 starts after it ends

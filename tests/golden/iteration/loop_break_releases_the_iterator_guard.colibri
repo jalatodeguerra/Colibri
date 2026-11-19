@@ -1,0 +1,12 @@
+fn main() {
+    var xs = [1, 2, 3]
+    for x in xs.iter() {
+        if x == 2 {
+            break
+        }
+    }
+    xs.push(4)
+    print(xs)
+}
+
+// expect: [1, 2, 3, 4]

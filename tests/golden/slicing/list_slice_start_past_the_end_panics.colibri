@@ -1,0 +1,6 @@
+fn main() {
+    let xs = [1, 2, 3]
+    print(xs[4..])
+}
+
+// panic: slice 4.. out of range for list of length 3

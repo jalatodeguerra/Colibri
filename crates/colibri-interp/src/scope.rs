@@ -9,12 +9,12 @@
 
 use std::rc::Rc;
 
-use colibri_check::hir::{LocalId, Stmt};
+use colibri_check::hir::{LocalId, Stmt, Storage};
 
 use crate::ctl::{Ctl, Eval, PanicInfo};
 use crate::eval::Interp;
 use crate::fiber::{Cleanup, Fiber};
-use crate::value::Value;
+use crate::value::{CellObj, Value};
 
 impl Interp {
     /// Where the current scope's cleanups start.
@@ -40,10 +40,24 @@ impl Interp {
     /// slot held.
     pub(crate) fn bind_local(&mut self, fiber: &mut Fiber, local: LocalId, value: Value) {
         let old = match fiber.frames.last_mut() {
-            Some(frame) => match frame.slots.get_mut(local.0 as usize) {
-                Some(slot) => std::mem::replace(slot, value),
-                None => value,
-            },
+            Some(frame) => {
+                // A captured, reassigned variable gets a fresh cell every time it is bound,
+                // so each loop iteration has its own.
+                let value = if frame
+                    .body
+                    .locals
+                    .get(local.0 as usize)
+                    .is_some_and(|l| l.storage == Storage::Cell)
+                {
+                    Value::Cell(CellObj::new(value))
+                } else {
+                    value
+                };
+                match frame.slots.get_mut(local.0 as usize) {
+                    Some(slot) => std::mem::replace(slot, value),
+                    None => value,
+                }
+            }
             None => value,
         };
         Self::push_slot(fiber, local);
