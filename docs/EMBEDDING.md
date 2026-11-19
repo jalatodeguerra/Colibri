@@ -248,7 +248,7 @@ loop {
 - `vm.run_event_loop()` is what `colibri run` does after `main`: tick with clock time until no
   coroutine is left (sleeping until the next timed wake, polling `wait_until` conditions every
   1 ms). Use it for programs with no loop of their own.
-- `VmBuilder::coroutine_stack_size(bytes)` (default 1 MiB, lazily committed; the evaluator
+- `VmBuilder::coroutine_stack_size(bytes)` (default 16 MiB, reserved and lazily committed; the evaluator
   panics with "stack overflow" at three quarters of it) and `VmBuilder::clock(impl Clock)`
   (the `Clock` trait: `now()` and `sleep()`; default the wall clock) for `wait_real`, the event
   loop and deterministic tests.

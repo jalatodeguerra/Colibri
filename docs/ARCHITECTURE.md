@@ -1807,12 +1807,16 @@ and reported by the next tick, or by the event loop / `Vm::run_event_loop` at it
 
 ### Native stacks
 
-`corosensei::DefaultStack` (guard page, lazily committed). Default **1 MiB** per coroutine
-(`VmBuilder::coroutine_stack_size`), chosen after measuring: the evaluator needs about 4 KiB per
-Colibri call in a debug build and 1 KiB in release, so 256 KiB (DESIGN's example) allowed only
-~50 nested calls in debug. 1,000 coroutines reserve 1 GiB of address space and commit only what
-they touch (a few pages each); the number of coroutines is bounded by the OS mapping limit
-(`vm.max_map_count`, about 30,000). Each resumption sets `Interp::native_stack_budget` to three
+`corosensei::DefaultStack` (guard page, lazily committed). Default **16 MiB** per coroutine
+(`VmBuilder::coroutine_stack_size`), chosen after measuring recursion depth inside a coroutine:
+the evaluator uses several KiB of native stack per Colibri call (roughly 4–8 KiB in a release
+build, more in debug), so 1 MiB allowed fewer than 300 nested calls in release and fewer than
+100 in debug, too shallow for a general-purpose language. 16 MiB gives about 1,000–2,000 in
+release (comparable to Python's default recursion limit); the main fiber under the CLI keeps its
+240 MB budget. The space is only reserved: 20,000 coroutines start in about 0.3 s in a release
+build and commit only the pages they touch. The number of live coroutines is bounded by the OS
+mapping limit (`vm.max_map_count`, about 30,000 on default Linux). The bytecode VM (phase 3)
+removes the per-call native stack cost. Each resumption sets `Interp::native_stack_budget` to three
 quarters of the stack (the rest is for built-ins and host functions, which are not measured) and
 restores the resumer's on return, so nested resumption (`go` inside a coroutine) works; the
 coroutine's own `Fiber` sets its `stack_base` when the body starts. Overflow is the usual clean
@@ -1878,7 +1882,7 @@ failure of that coroutine (queued as above). A cancelled coroutine's `join` pani
 `go` is an expression; `Coroutine[T]` with a value-returning `join`; `task` is an intrinsic
 namespace; `wait_until` checks at once and polls on the coroutine's stack; start-order ticks;
 panics reported by `tick` and joiners; synchronous cancellation; self-cancel immediate; no waiting
-while being cancelled; fresh budget per resumption; 1 MiB stacks; event loop after `main` in
+while being cancelled; fresh budget per resumption; 16 MiB stacks; event loop after `main` in
 `colibri run`; shutdown cancels newest first before module values die.
 
 ### Not built (next PR)

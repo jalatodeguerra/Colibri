@@ -27,7 +27,7 @@ use crate::heap::ClassObj;
 use crate::value::Value;
 
 /// The default size of the native stack of one coroutine.
-pub const DEFAULT_COROUTINE_STACK: usize = 1024 * 1024;
+pub const DEFAULT_COROUTINE_STACK: usize = 16 * 1024 * 1024;
 
 /// How much of a coroutine's stack the evaluator may use before it panics with "stack
 /// overflow": the rest is for host functions and built-ins, which are not measured.
@@ -219,7 +219,7 @@ pub enum TickError {
 impl Interp {
     // ---- configuration and inspection ----
 
-    /// The size of the native stack given to each coroutine (default 1 MiB).
+    /// The size of the native stack given to each coroutine (default 16 MiB).
     pub fn set_coroutine_stack_size(&mut self, bytes: usize) {
         self.sched.stack_size = bytes.max(16 * 1024);
     }
