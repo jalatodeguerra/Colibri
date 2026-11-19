@@ -93,6 +93,7 @@ Package tests live in `tests/golden/modules/`.
    part B (exported host types, generational handles, `colibri-bind`) is built (slice 7b).
 9. Packages and `import` (built, slice 8: ARCHITECTURE §11); `colibri check`, minimal LSP,
    `colibri test`, `colibri fmt` (built: ARCHITECTURE §12); core std.
-10. Milestone: a small Rust program with its own game loop running gameplay logic from Colibri.
+10. Milestone: a small Rust program with its own game loop running gameplay logic from Colibri
+    (built: `examples/host_game`, run as a test against a golden log).
 
 Large steps may split into several PRs.

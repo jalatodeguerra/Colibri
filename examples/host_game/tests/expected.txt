@@ -1,0 +1,48 @@
+[0000] script: init
+[0045] host: spawned #1 at (12.0, 0.0)
+[0090] host: spawned #2 at (0.0, 12.0)
+[0120] script: score 0, 2 enemies alive
+[0135] host: spawned #3 at (-12.0, 0.0)
+[0150] host: hit #1 for 25, hp 50
+[0180] host: spawned #4 at (0.0, -12.0)
+[0180] host: hit #1 for 25, hp 25
+[0210] host: hit #1 for 25, hp 0
+[0210] script: enemy #1 died, score 10
+[0210] host: despawned #1
+[0225] host: spawned #5 at (6.0, 6.0)
+[0240] script: score 10, 4 enemies alive
+[0240] host: hit #2 for 25, hp 75
+[0270] host: spawned #6 at (12.0, 0.0)
+[0270] host: hit #2 for 25, hp 50
+[0300] host: hit #2 for 25, hp 25
+[0315] host: spawned #7 at (0.0, 12.0)
+[0330] host: hit #2 for 25, hp 0
+[0330] script: enemy #2 died, score 20
+[0330] host: despawned #2
+[0360] script: score 20, 5 enemies alive
+[0360] host: spawned #8 at (-12.0, 0.0)
+[0360] host: hit #5 for 25, hp 75
+[0390] host: hit #5 for 25, hp 50
+[0405] host: spawned #9 at (0.0, -12.0)
+[0416] script: enemy #5 reached the player
+[0416] host: despawned #5
+[0420] host: hit #4 for 25, hp 50
+[0450] host: spawned #10 at (6.0, 6.0)
+[0450] host: hit #4 for 25, hp 25
+[0455] script: enemy #4 reached the player
+[0455] host: despawned #4
+[0480] script: score 10, 6 enemies alive
+[0480] host: hit #3 for 25, hp 25
+[0495] host: spawned #11 at (12.0, 0.0)
+[0510] host: hit #3 for 25, hp 0
+[0510] script: enemy #3 died, score 35
+[0510] host: despawned #3
+[0540] host: spawned #12 at (0.0, 12.0)
+[0540] host: hit #7 for 25, hp 50
+[0570] host: hit #7 for 25, hp 25
+[0585] host: spawned #13 at (-12.0, 0.0)
+[0590] script: enemy #7 reached the player
+[0590] host: despawned #7
+[0600] script: score 30, 7 enemies alive
+[0600] host: hit #8 for 25, hp 75
+summary: ticks=600 spawned=13 alive=7 hits=16 score=30 script_errors=0 max_steps=145
