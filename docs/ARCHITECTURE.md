@@ -223,11 +223,12 @@ rules from the start:
    checker has the same guard for deeply nested expressions. Both are safe code. The language
    limit is what defines behaviour; the budget only turns a would-be crash into the same panic.
 
-Phase 2 then adds: `go` creates a `Fiber` plus a coroutine running `call_fn`; `wait` yields to the
-scheduler; cancellation resumes the fiber with a cancel signal so `wait` returns `Err(Ctl::Cancel)`
-and the ordinary error path unwinds (never a forced unwind). Each fiber counts host frames;
-`wait` inside a host call or on the main fiber panics (§14.2), even though the tree-walker could
-physically suspend, so it agrees with the VM.
+*As built (§16):* `go` creates a `Fiber` plus a `corosensei` coroutine that runs the call; `wait`
+yields to the scheduler; cancellation resumes the fiber with a cancel signal so `wait` returns
+`Err(Ctl::Cancel)` and the ordinary error path unwinds (never a forced unwind). Each fiber counts
+host frames; `wait` inside a host call or on the main fiber panics (§14.2), even though the
+tree-walker could physically suspend, so it agrees with the VM. Each coroutine has its own
+`stack_base` and native stack budget.
 
 ## 3. Values
 
@@ -1723,3 +1724,165 @@ hint: an endless loop? raise the limit with `--budget <steps>` (0 is unlimited)
 - A `Drop` panic during a test's final clean-up is not reported.
 - Panics raised inside a host function that does not unwind through the interpreter are the
   host's; only Colibri panics are caught per test.
+
+## 16. Coroutines as built
+
+DESIGN §14.2 and §14.3, PHASE2 step 2. The language is general-purpose, so the text avoids game
+wording: a *frame* below means one scheduler tick. Everything is in `colibri-interp/src/coro.rs`
+unless said otherwise.
+
+### Surface
+
+- `go call(args)` is an **expression** of type `Coroutine[T]` (`T` is the call's type), so
+  `let c = go worker(3)` works and a bare `go worker(3)` is an expression statement (the AST has
+  `ExprKind::Go`; `StmtKind::Go` is gone; `fmt` and the AST dump print it the same). The operand
+  must be a call of a function, a function value or closure, an interface method or a host
+  function. A method that takes `var self` on a struct is a checker error ("`go` cannot start
+  this call"): its receiver would have to be written back into the caller's variable while the
+  coroutine runs. A class method (`go actor.act()`) is fine. HIR: `ExprKind::Go(Box<Expr>)`
+  around the checked call.
+- The arguments are evaluated on the caller's fiber (as `eval_twin` temporaries, like any call);
+  the coroutine owns its own references. It then runs until its first pause and `go` returns.
+  A bare `go` is detached: the scheduler keeps the coroutine, dropping the handle changes
+  nothing. `go` inside a coroutine is allowed (the child runs nested on the parent's stack
+  until its first pause; each coroutine has its own stack).
+- `Coroutine[T]` is a **prelude class** (`class Coroutine[T] {}`, `COROUTINE_TYPE`, the type
+  table's `FIRST_USER_TYPE` moved from 12 to 13), like `Error`: a reference type with built-in
+  methods, identity equality, usable in fields and collections, no `Coroutine { }` construction.
+  Its runtime value is a `ClassObj` with hidden fields `[id, status, result, name]`; the scheduler
+  keeps only a `Weak` pointer to it, so a handle dies like any object and `// drops:` traces skip
+  it. `Show` prints `<coroutine name>`.
+  - `done() -> bool`: finished, panicked or cancelled.
+  - `cancel()`: below.
+  - `join() -> T`: **returns the callee's return value** (hence `Coroutine[T]`). Inside a
+    coroutine it pauses until the target is finished, then returns the value (again and again:
+    the value is kept in the handle). Joining a coroutine that panicked panics in the joiner
+    ("the joined coroutine `f` panicked: ..", and the original failure is considered handled and
+    not reported a second time); joining a cancelled one panics ("was cancelled"); joining
+    itself panics. Outside a coroutine, `join` on an **unfinished** coroutine panics like `wait`
+    does; on a finished one it just returns the value.
+- Builtins (reserved names, `BUILTIN_FNS`, also reserved against host registration):
+  `wait(seconds: float)`, `wait_frames(n: int)`, `wait_until(cond: fn() -> bool)`,
+  `wait_real(seconds: float)`. They are HIR intrinsics (`Intrinsic::Wait` ..) of type `()`. Any
+  function may call them; the check is at run time.
+  - `wait(s)` counts **scheduler time**: the sum of the `dt` of the ticks (`vm.tick(dt)`,
+    `task.tick(dt)`), and under the event loop (below) the real time that passed. A negative `s`
+    is 0, NaN panics. The wake test has 1e-9 slack so five `wait(0.1)` equal a `wait(0.5)`.
+    `wait(0)` pauses until the next tick (even a `tick(0.0)`).
+  - `wait_frames(n)` waits `max(n, 1)` ticks, a frame being one scheduler tick (the counter
+    advances at the start of every tick).
+  - `wait_until(cond)`: the condition is evaluated **on the coroutine's own stack**: first at
+    once (if true no pause happens), then once per tick (the coroutine is resumed every tick,
+    runs `cond()` and pauses again if false). So a condition may do anything a closure can, and
+    its panic is the coroutine's. The cost is one resumption per tick per such coroutine.
+  - `wait_real(s)` uses the injectable `Clock` (default: wall clock). It is checked at ticks,
+    so it needs ticks to happen (the event loop provides them).
+- `task.tick(dt: float)` is **not** a named host module: `task` is a name the checker resolves
+  specially (`check_task_member`) when no local, module-level value or imported module is called
+  `task`, so DESIGN's examples work with no import and a host may still register a module
+  `task` (it wins). Only `tick` exists; `task.run` etc. (thread tasks, §14.1) will extend the
+  same place. A named module would have needed `import task` and a host-side `Vm` hook for
+  something that is part of the language, so it is an intrinsic instead.
+
+### Scheduler and ticks
+
+One `Scheduler` per `Interp`: a `Vec<Entry>` in start order (ids grow, lookup is a binary
+search), scheduler time, the tick counter, the clock. `tick` (Rust: `Vm::tick(dt)`, Colibri:
+`task.tick(dt)`; both call `tick_core`) adds `dt`, bumps the counter, then walks the entries that
+existed when it began, **in start order**, and resumes each due one exactly once. A coroutine
+started during the tick is appended after that snapshot, so it first resumes in the next tick.
+Finished entries are dropped at the end of the tick (and during `go` when many finished). A
+suspended entry keeps a `Wake`: `Ready` (every tick), `Time`, `Frame`, `Real` or `Join(Weak)`.
+Idle coroutines cost one comparison per tick and no context switch (1,000 idle coroutines tick in
+about 10 microseconds even in a debug build: `tests/coroutines.rs`; DESIGN §17.4 asks for under
+0.1 ms in release). `task.tick` from inside a coroutine, or from inside a tick, panics.
+
+**Order inside a tick** is start order, not wake-time order. **A panic** in a coroutine ends only
+that coroutine; the rest of the tick still runs; `tick` then returns the first failure (the others
+become notes, "another coroutine also panicked"). From Rust this is `Err(Error::Panic)` (or
+`BudgetExhausted`) and the `Vm` stays usable; from `task.tick` it is a panic of the caller. The
+trace is the coroutine's own stack, so it names the coroutine's function at the bottom. A failure
+while a coroutine is *starting* (before its first pause, inside `go`) or being cancelled is queued
+and reported by the next tick, or by the event loop / `Vm::run_event_loop` at its end.
+
+### Native stacks
+
+`corosensei::DefaultStack` (guard page, lazily committed). Default **1 MiB** per coroutine
+(`VmBuilder::coroutine_stack_size`), chosen after measuring: the evaluator needs about 4 KiB per
+Colibri call in a debug build and 1 KiB in release, so 256 KiB (DESIGN's example) allowed only
+~50 nested calls in debug. 1,000 coroutines reserve 1 GiB of address space and commit only what
+they touch (a few pages each); the number of coroutines is bounded by the OS mapping limit
+(`vm.max_map_count`, about 30,000). Each resumption sets `Interp::native_stack_budget` to three
+quarters of the stack (the rest is for built-ins and host functions, which are not measured) and
+restores the resumer's on return, so nested resumption (`go` inside a coroutine) works; the
+coroutine's own `Fiber` sets its `stack_base` when the body starts. Overflow is the usual clean
+"stack overflow" panic.
+
+### Soundness notes
+
+- The `Interp` is boxed in the `Vm` (`Box<Interp>`) because suspended stacks hold `&mut Interp`
+  into it; it never moves. Resume and suspend pass the pointer through the switch, which is
+  enough for the compiler not to cache across it. No Rust panic crosses a coroutine boundary on
+  purpose (host panics are caught in the trampoline as before); no coroutine is ever dropped
+  while suspended (that would force an unwind): shutdown cancels first and leaks the stack of
+  anything left (unreachable in practice).
+- `wait` panics: on the main fiber ("can only pause a coroutine"), with `host_depth > 0` ("a
+  host function's callback"), and inside a `Drop` hook. Suspending while a `for` loop holds a
+  collection keeps its mutation guard held, as for any long loop.
+
+### Instruction budget
+
+A start shares its starter's budget (the first run is part of the starter's work). Every
+resumption from a tick gets a **fresh allotment** (the budget is swapped in and out around the
+resume), so one coroutine's endless loop is caught on its own: `BudgetExhausted` from `tick`,
+with the usual grace for `defer`s. A cancellation at shutdown also gets one each.
+
+### Cancellation
+
+`c.cancel()` on a suspended coroutine **unwinds it at once, synchronously**: it is resumed with a
+cancel signal, its pause returns `Err(Ctl::Cancel)`, and `exit_scope` runs its `defer`s and drops
+in the usual order; when `cancel()` returns the coroutine is finished. Cancelling a finished
+coroutine is a no-op, twice is fine. A coroutine cancelling **itself** stops immediately (`Ctl::Cancel`
+from the `cancel()` call, defers run); cancelling a coroutine that is mid-run higher up the
+resume chain (a parent that started this one) only marks it, and it stops at its next pause.
+While being cancelled a coroutine cannot pause again: a `wait` in a `defer` returns `Cancel` at
+once (so the rest of that deferred statement is skipped, the remaining defers still run).
+`exit_scope` treats a `Cancel` coming out of a deferred statement as the cancellation continuing
+(it no longer turns into a "cancelled" panic). A panic in a `defer` during cancellation is a
+failure of that coroutine (queued as above). A cancelled coroutine's `join` panics.
+
+### The end of the program
+
+- **`colibri run` does not cancel coroutines when `main` returns.** It runs the **event loop**
+  (`Vm::run_event_loop`) until no coroutine is left: tick with the time elapsed on the clock,
+  then sleep until the next timed wake (`Time`/`Real`); coroutines that must be checked at every
+  tick (`wait_until`, `wait_frames`, `join`) are polled every 1 ms (`run_event_loop_polling`).
+  A coroutine panic ends the loop with that panic, so the program exits 101 like a panic in
+  `main`. `fn main` returning does not end a program that still has coroutines; `os.exit` does.
+  Scheduler time under the loop is real time, so `wait(1.0)` is one second there.
+- Embedding hosts drive `vm.tick(dt)` themselves; `run_main` does not cancel or loop.
+- **Shutdown** (`Vm::shutdown`, drop, a panic in `main`, a failed load, `release_globals`
+  between tests) first **cancels every live coroutine, newest first** (reverse start order, the
+  scope-exit convention), each unwinding with its defers and drops, **then** releases the roots,
+  then the module-level values in reverse initialisation order. A `go` executed during that
+  teardown starts nothing (its handle is already cancelled). `colibri test`'s per-test
+  `release_globals` does it too, so no coroutine leaks into the next test; coroutine panics
+  nobody collected are discarded there.
+- The golden harness runs the same loop after `main`, with an injected fake clock whose `sleep`
+  just moves it, so tests never sleep; `import testclock` gives `testclock.advance(seconds)`
+  (a named host module registered only by the harness) to move the clock for `wait_real` under
+  `task.tick`.
+
+### Decisions the design documents did not fix
+
+`go` is an expression; `Coroutine[T]` with a value-returning `join`; `task` is an intrinsic
+namespace; `wait_until` checks at once and polls on the coroutine's stack; start-order ticks;
+panics reported by `tick` and joiners; synchronous cancellation; self-cancel immediate; no waiting
+while being cancelled; fresh budget per resumption; 1 MiB stacks; event loop after `main` in
+`colibri run`; shutdown cancels newest first before module values die.
+
+### Not built (next PR)
+
+`CoGroup`, `Signal`, `wait_for`, channels' `recv` pausing. The design leaves room: a `Wake`
+variant per event kind, handle objects with a status field, and `cancel_all_coroutines` that a
+group can reuse for a subset.

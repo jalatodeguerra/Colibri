@@ -1,0 +1,12 @@
+fn boom() {
+    wait(1.0)
+    panic("late failure")
+}
+
+fn main() {
+    go boom()
+    print("main returns")
+}
+
+// expect: main returns
+// panic: late failure

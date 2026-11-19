@@ -41,6 +41,10 @@ pub struct Fiber {
     /// How many host functions are running, one inside another (they may call back into
     /// Colibri). A coroutine switch is not allowed across one (DESIGN §14.2).
     pub(crate) host_depth: u32,
+    /// Set on the fiber of a coroutine (ARCHITECTURE §16): which one, and how to suspend it.
+    pub(crate) coro: Option<crate::coro::CoroCtx>,
+    /// This coroutine is being cancelled: every further pause returns `Ctl::Cancel` at once.
+    pub(crate) cancelling: bool,
 }
 
 impl Fiber {

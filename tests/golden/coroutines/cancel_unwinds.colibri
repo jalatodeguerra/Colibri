@@ -1,0 +1,29 @@
+class Res { name: str }
+
+fn work(tag: str) {
+    let r = Res { name: "res-{tag}" }
+    defer print("defer {tag}")
+    print("working {tag}")
+    wait(10.0)
+    print("never")
+}
+
+fn main() {
+    let c = go work("a")
+    go work("b")
+    task.tick(1.0)
+    c.cancel()
+    print("cancelled a: {c.done()}")
+    c.cancel()
+    print("cancel twice is fine")
+}
+
+// After main returns the event loop lets `b` finish (the fake clock jumps ten seconds).
+// expect: working a
+// expect: working b
+// expect: defer a
+// expect: cancelled a: true
+// expect: cancel twice is fine
+// expect: never
+// expect: defer b
+// drops: res-a, res-b

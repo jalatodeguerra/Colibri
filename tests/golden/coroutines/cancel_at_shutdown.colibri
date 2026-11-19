@@ -1,0 +1,23 @@
+class Res { name: str }
+
+fn work(tag: str) {
+    let r = Res { name: "res-{tag}" }
+    defer print("defer {tag}")
+    wait(1000.0)
+}
+
+fn main() {
+    go work("a")
+    go work("b")
+    print("main")
+    task.tick(0.0)
+    panic("stop before the event loop")
+}
+
+// A panic in main ends the program: the live coroutines are cancelled newest first, before the
+// module-level values die.
+// panic: stop before the event loop
+// expect: main
+// expect: defer b
+// expect: defer a
+// drops: res-b, res-a

@@ -165,6 +165,25 @@ impl Drop for TempFolder {
     }
 }
 
+/// A clock that only moves when told to (by `sleep` or `testclock.advance`).
+#[derive(Clone, Default)]
+struct FakeClock(std::rc::Rc<std::cell::Cell<f64>>);
+
+impl FakeClock {
+    fn advance(&self, seconds: f64) {
+        self.0.set(self.0.get() + seconds);
+    }
+}
+
+impl colibri::Clock for FakeClock {
+    fn now(&mut self) -> f64 {
+        self.0.get()
+    }
+    fn sleep(&mut self, seconds: f64) {
+        self.advance(seconds);
+    }
+}
+
 fn run_with(
     load: impl FnOnce(&mut colibri::Vm) -> Result<(), colibri::Error>,
     prefix: &str,
@@ -182,10 +201,21 @@ fn run_with(
         }
     }
     let temp = TempFolder::new();
-    let mut vm = builder.build();
+    // A fake clock that never sleeps: the event loop jumps to the next due wake.
+    let clock = FakeClock::default();
+    let mut vm = builder.clock(clock.clone()).build();
     colibri_std::install_with(&mut vm, hermetic_std(&temp.0))
         .expect("the standard library registers into a new Vm");
-    let result = load(&mut vm).and_then(|()| vm.run_main());
+    // `import testclock` gives `testclock.advance(seconds)`: moves the fake wall clock, which
+    // `wait_real` and the event loop read.
+    let driver = clock.clone();
+    vm.module("testclock")
+        .register_fn("advance", move |seconds: f64| driver.advance(seconds))
+        .expect("the test clock registers into a new Vm");
+    // After `main`, the program's coroutines run until none is left (what `colibri run` does).
+    let result = load(&mut vm)
+        .and_then(|()| vm.run_main())
+        .and_then(|()| vm.run_event_loop());
     // Module-level values die after `main` returns (or after a panic), in reverse order.
     vm.shutdown();
     let drops = vm.take_drop_trace();

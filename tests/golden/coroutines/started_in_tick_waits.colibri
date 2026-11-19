@@ -1,0 +1,25 @@
+fn child() {
+    print("child")
+    wait_frames(1)
+    print("child again")
+}
+
+fn parent() {
+    wait(0.0)
+    go child()
+    print("parent")
+}
+
+fn main() {
+    go parent()
+    task.tick(0.0)
+    print("tick 1")
+    task.tick(0.0)
+    print("tick 2")
+}
+
+// expect: child
+// expect: parent
+// expect: tick 1
+// expect: child again
+// expect: tick 2

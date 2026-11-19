@@ -223,3 +223,39 @@ for t in vm.tests() {                      // TestInfo { id, name, module, root,
 runs the test and releases them again; failures are `Error::Panic` (including failed `assert`s),
 `Error::TestReturnedErr` (the test returned `err`) and `Error::BudgetExhausted`. Details and the
 reasoning are in ARCHITECTURE §15. Host state (handles, `insert_state`) is not reset.
+
+## 10. Coroutines from a host
+
+`go f(args)` in a script starts a coroutine (DESIGN §14.2). The host drives them:
+
+```rust
+vm.load_file("game.colibri")?;
+vm.run_main()?;                     // `main` may start coroutines with `go`; it does not wait
+loop {
+    vm.tick(dt)?;                   // advance scheduler time by dt, resume the due coroutines once
+    // ... draw, input, ...
+}
+```
+
+- `vm.tick(dt) -> Result<(), Error>` adds `dt` seconds to scheduler time (what `wait(s)` counts;
+  `tick(0.0)` pauses it), advances the tick counter (`wait_frames`), and resumes every due
+  coroutine once in the order the coroutines were started. A coroutine started during a tick is
+  resumed from the next one. A panic in a coroutine ends only that coroutine and is returned as
+  `Error::Panic` (further ones are notes); running out of the instruction budget is
+  `Error::BudgetExhausted`. The `Vm` stays usable. Every resumption has its own instruction budget.
+- `vm.coroutine_count()` is how many coroutines are alive; `vm.cancel_coroutines()` cancels them
+  all, newest first (also done by `shutdown` and `Drop`), running their `defer`s and drops.
+- `vm.run_event_loop()` is what `colibri run` does after `main`: tick with clock time until no
+  coroutine is left (sleeping until the next timed wake, polling `wait_until` conditions every
+  1 ms). Use it for programs with no loop of their own.
+- `VmBuilder::coroutine_stack_size(bytes)` (default 1 MiB, lazily committed; the evaluator
+  panics with "stack overflow" at three quarters of it) and `VmBuilder::clock(impl Clock)`
+  (the `Clock` trait: `now()` and `sleep()`; default the wall clock) for `wait_real`, the event
+  loop and deterministic tests.
+- A script `wait` (any of the four) called from a host function's callback into Colibri panics:
+  the host's Rust frame cannot be suspended. The callback sees it as `Err(Error::Panic)` from
+  `Fn::call`. A `wait` on the main program (not inside `go`) panics too.
+- The `Vm` is boxed internally; moving a `Vm` value while coroutines are suspended is fine.
+- Measured: `vm.tick` with 1,000 idle coroutines takes about 10 microseconds in a debug build
+  (`tests/coroutines.rs`); a `wait_until` coroutine costs a resumption per tick.
+

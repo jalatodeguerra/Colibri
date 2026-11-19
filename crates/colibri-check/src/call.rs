@@ -45,7 +45,16 @@ impl FnCtx<'_, '_> {
                     qualified = q;
                     &qualified
                 }
-                None => return self.check_member_call(base, name, None, args, span),
+                None => {
+                    if let ExprKind::Ident(m) = &base.kind
+                        && m.name == "task"
+                        && !self.is_local("task")
+                        && !self.ck.values.contains_key("task")
+                    {
+                        return self.check_task_member(name, args, span);
+                    }
+                    return self.check_member_call(base, name, None, args, span);
+                }
             },
             ExprKind::Paren(inner) if matches!(inner.kind, ExprKind::Ident(_)) => {
                 return self.check_call(inner, args, expected, span);
@@ -75,6 +84,11 @@ impl FnCtx<'_, '_> {
             "panic" if !self.ck.values.contains_key(name) => self.check_panic(args, span),
             "assert" if !self.ck.values.contains_key(name) => self.check_assert(args, span),
             "assert_eq" if !self.ck.values.contains_key(name) => self.check_assert_eq(args, span),
+            "wait" | "wait_frames" | "wait_until" | "wait_real"
+                if !self.ck.values.contains_key(name) =>
+            {
+                self.check_wait(name, args, span)
+            }
             _ => {
                 self.check_args_loosely(args);
                 if self.ck.values.contains_key(name) {
@@ -246,6 +260,118 @@ impl FnCtx<'_, '_> {
             Ty::Unit,
             span,
         )
+    }
+
+    /// `wait(seconds)`, `wait_frames(n)`, `wait_until(cond)` and `wait_real(seconds)`
+    /// (DESIGN §14.2). Type `()`. Whether a coroutine is running is a run-time question: any
+    /// function can wait.
+    fn check_wait(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Expr {
+        let (param_ty, intrinsic, what) = match name {
+            "wait" => (Ty::Float, Intrinsic::Wait, "a number of seconds"),
+            "wait_real" => (Ty::Float, Intrinsic::WaitReal, "a number of seconds"),
+            "wait_frames" => (Ty::INT, Intrinsic::WaitFrames, "a number of frames"),
+            _ => (
+                Ty::Fn(Vec::new(), Box::new(Ty::Bool)),
+                Intrinsic::WaitUntil,
+                "a condition `fn() -> bool`",
+            ),
+        };
+        if args.len() != 1 || args[0].name.is_some() {
+            self.check_args_loosely(args);
+            self.ck.report(Diagnostic::error(
+                format!("`{name}` takes exactly one argument: {what}"),
+                span,
+            ));
+            return self.error_expr(span);
+        }
+        let arg = self.check_expr(&args[0].value, Some(&param_ty));
+        if !self.expect(&arg, &param_ty, None) {
+            return self.error_expr(span);
+        }
+        self.mk(
+            hir::ExprKind::Call(Box::new(hir::Call {
+                callee: Callee::Intrinsic(intrinsic),
+                type_args: Vec::new(),
+                args: vec![Arg::Value(arg)],
+            })),
+            Ty::Unit,
+            span,
+        )
+    }
+
+    /// `task.tick(dt)`: the scheduler of the coroutines (DESIGN §14.2). `task` needs no import;
+    /// a local, a module-level value or an imported module called `task` takes precedence.
+    fn check_task_member(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
+        if name.name != "tick" {
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error(format!("`task` has no function `{}`", name.name), name.span)
+                    .with_hint("`task.tick(dt)` resumes the coroutines; it is the only one so far"),
+            );
+            return self.error_expr(span);
+        }
+        if args.len() != 1 || args[0].name.is_some() {
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error(
+                    "`task.tick` takes exactly one argument: `dt` in seconds",
+                    span,
+                )
+                .with_hint("write `task.tick(1.0 / 60.0)`"),
+            );
+            return self.error_expr(span);
+        }
+        let arg = self.check_expr(&args[0].value, Some(&Ty::Float));
+        if !self.expect(&arg, &Ty::Float, None) {
+            return self.error_expr(span);
+        }
+        self.mk(
+            hir::ExprKind::Call(Box::new(hir::Call {
+                callee: Callee::Intrinsic(Intrinsic::TaskTick),
+                type_args: Vec::new(),
+                args: vec![Arg::Value(arg)],
+            })),
+            Ty::Unit,
+            span,
+        )
+    }
+
+    /// `go call(args)`: starts a coroutine and gives its `Coroutine[T]` handle, `T` being what
+    /// the call returns. The call must go through a function, a function value, an interface
+    /// method or a host function, and cannot be a method that takes `var self` (the receiver
+    /// would have to be written back into the caller's variable while the coroutine runs).
+    pub(crate) fn check_go(&mut self, call: &ast::Expr, span: Span) -> Expr {
+        if !matches!(call.kind, ExprKind::Call { .. }) {
+            self.check_expr(call, None);
+            return self.error_expr(span);
+        }
+        let inner = self.check_expr(call, None);
+        let ok = match &inner.kind {
+            hir::ExprKind::Call(c) => {
+                matches!(
+                    c.callee,
+                    Callee::Fn(_)
+                        | Callee::Value
+                        | Callee::Bound { .. }
+                        | Callee::Dyn { .. }
+                        | Callee::Host(_)
+                ) && c.args.iter().all(|a| matches!(a, Arg::Value(_)))
+            }
+            hir::ExprKind::Error => return self.error_expr(span),
+            _ => false,
+        };
+        if !ok {
+            if inner.ty != Ty::Error {
+                self.ck.report(
+                    Diagnostic::error("`go` cannot start this call", call.span).with_hint(
+                        "`go` needs a call of a function, a closure or a method; a method that mutates a struct through `var self` cannot run on its own, so call it inside a closure",
+                    ),
+                );
+            }
+            return self.error_expr(span);
+        }
+        let ty = Ty::Adt(crate::types::COROUTINE_TYPE, vec![inner.ty.clone()]);
+        self.mk(hir::ExprKind::Go(Box::new(inner)), ty, span)
     }
 
     fn check_print(&mut self, args: &[ast::Arg], span: Span) -> Expr {

@@ -1,4 +1,0 @@
-fn work() {}
-fn main() {
-    go work() // error: `go` is not supported yet
-}

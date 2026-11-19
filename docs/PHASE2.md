@@ -19,7 +19,7 @@ section ("as built") for the decisions it had to make.
    (`cancel`, `done`, `join`), `wait`, `wait_frames`, `wait_until`, `wait_real`, a per-`Vm`
    scheduler driven by `task.tick(dt)` and `vm.tick(dt)`, and cancellation that unwinds through
    `defer`s and drops. Each coroutine is a heap `Fiber` running the recursive evaluator on its
-   own `corosensei` stack.
+   own `corosensei` stack. Built: ARCHITECTURE §16.
 3. **`CoGroup`, `Signal` and `wait_for`** (DESIGN §14.2).
 4. **The game kit** (DESIGN §15.6), crate `colibri-game`, named host module `game`: window,
    input, 2D drawing, text, sprites, audio and assets behind a `Backend` trait. A headless

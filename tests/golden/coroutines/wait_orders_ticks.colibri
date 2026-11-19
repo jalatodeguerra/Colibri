@@ -1,0 +1,34 @@
+// go starts a coroutine that runs until its first pause; task.tick(dt) resumes the due ones.
+fn worker(name: str, step: float) {
+    print("{name} start")
+    wait(step)
+    print("{name} one")
+    wait(step)
+    print("{name} two")
+}
+
+fn main() {
+    go worker("a", 1.0)
+    go worker("b", 0.5)
+    print("main")
+    task.tick(0.5)
+    print("tick 1")
+    task.tick(0.5)
+    print("tick 2")
+    task.tick(0.5)
+    print("tick 3")
+    task.tick(0.5)
+    print("tick 4")
+}
+
+// expect: a start
+// expect: b start
+// expect: main
+// expect: b one
+// expect: tick 1
+// expect: a one
+// expect: b two
+// expect: tick 2
+// expect: tick 3
+// expect: a two
+// expect: tick 4

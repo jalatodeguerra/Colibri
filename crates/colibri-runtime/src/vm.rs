@@ -12,7 +12,7 @@ use colibri_check::host::{DEFAULT_MODULE, float_literal, is_module_name, is_std_
 use colibri_check::package::{DiskFs, Entry, MemoryFs, SourceFs};
 use colibri_check::types::{RESULT_TYPE, Ty, VARIANT_ERR};
 use colibri_interp::{
-    DEFAULT_NATIVE_STACK_BUDGET, Fiber, HostFault, HostImpl, Interp, Value as InterpValue,
+    Clock, DEFAULT_NATIVE_STACK_BUDGET, Fiber, HostFault, HostImpl, Interp, Value as InterpValue,
 };
 use colibri_syntax::{Diagnostic, SourceMap};
 
@@ -57,7 +57,19 @@ pub struct TestInfo {
 }
 
 /// Names a host function cannot take: they are built into the language.
-const RESERVED_NAMES: &[&str] = &["print", "panic", "assert", "assert_eq", "some", "ok", "err"];
+const RESERVED_NAMES: &[&str] = &[
+    "print",
+    "panic",
+    "assert",
+    "assert_eq",
+    "some",
+    "ok",
+    "err",
+    "wait",
+    "wait_frames",
+    "wait_until",
+    "wait_real",
+];
 
 /// Configures a [`Vm`].
 pub struct VmBuilder {
@@ -67,9 +79,27 @@ pub struct VmBuilder {
     trace_drops: bool,
     caps: CapSet,
     instruction_budget: Option<u64>,
+    coroutine_stack_size: Option<usize>,
+    clock: Option<Box<dyn Clock>>,
 }
 
 impl VmBuilder {
+    /// The size of the native stack of each coroutine (`go`), in bytes. The default is 1 MiB
+    /// (DESIGN §14.3); the memory is reserved lazily and committed as the coroutine uses it.
+    /// The evaluator panics with "stack overflow" before a coroutine uses more than three
+    /// quarters of it, so deep recursion inside a coroutine needs a bigger size.
+    pub fn coroutine_stack_size(mut self, bytes: usize) -> Self {
+        self.coroutine_stack_size = Some(bytes);
+        self
+    }
+
+    /// The clock behind `wait_real` and the event loop ([`Vm::run_event_loop`]). The default
+    /// is the wall clock; tests inject a fake one to be deterministic.
+    pub fn clock(mut self, clock: impl Clock + 'static) -> Self {
+        self.clock = Some(Box::new(clock));
+        self
+    }
+
     /// Records the label of every class object as it is destroyed, for tests of drop order
     /// (see [`Vm::take_drop_trace`]). Off by default.
     #[doc(hidden)]
@@ -126,10 +156,17 @@ impl VmBuilder {
 
     pub fn build(self) -> Vm {
         let out = self.stdout.unwrap_or_else(|| Box::new(std::io::stdout()));
-        let mut interp = Interp::new(out, self.max_call_depth);
+        // Boxed because suspended coroutines point into it: it must never move.
+        let mut interp = Box::new(Interp::new(out, self.max_call_depth));
         interp.set_native_stack_budget(self.native_stack_budget);
         interp.set_trace_drops(self.trace_drops);
         interp.set_instruction_budget(self.instruction_budget);
+        if let Some(size) = self.coroutine_stack_size {
+            interp.set_coroutine_stack_size(size);
+        }
+        if let Some(clock) = self.clock {
+            interp.set_clock(clock);
+        }
         let id = NEXT_VM_ID.fetch_add(1, Ordering::Relaxed);
         interp.set_vm_id(id);
         Vm {
@@ -153,7 +190,7 @@ impl VmBuilder {
 /// A Colibri virtual machine: one loaded program, its module-level state and an output writer.
 pub struct Vm {
     sources: Rc<SourceMap>,
-    interp: Interp,
+    interp: Box<Interp>,
     fiber: Fiber,
     program: Option<Rc<Program>>,
     warnings: Vec<Diagnostic>,
@@ -195,6 +232,8 @@ impl Vm {
             trace_drops: false,
             caps: CapSet::none(),
             instruction_budget: None,
+            coroutine_stack_size: None,
+            clock: None,
         }
     }
 
@@ -877,6 +916,71 @@ impl Vm {
         }
         self.interp.release_in_entry(value);
         Ok(())
+    }
+
+    // ---- coroutines ----
+
+    /// Advances scheduler time by `dt` seconds and resumes every coroutine that is due, once,
+    /// in the order the coroutines were started (DESIGN §14.2, ARCHITECTURE §16). A coroutine
+    /// started during the tick waits for the next one. `tick(0.0)` pauses time: only coroutines
+    /// waiting on `wait_until`, `wait_frames` or `wait(0)` can move.
+    ///
+    /// A panic in a coroutine ends that coroutine only; the others still run in this tick, and
+    /// the first panic is returned as [`Error::Panic`] (the rest ride along as notes). The `Vm`
+    /// stays usable. Each resumption gets a fresh instruction budget.
+    pub fn tick(&mut self, dt: f64) -> Result<(), Error> {
+        let result = self.interp.tick(&mut self.fiber, dt);
+        self.interp.flush();
+        result.map_err(|info| panic_error(&self.interp, *info))
+    }
+
+    /// How many coroutines are alive: started and neither finished nor cancelled.
+    pub fn coroutine_count(&self) -> usize {
+        self.interp.coroutine_count()
+    }
+
+    /// Cancels every live coroutine, newest first, running their `defer`s and drops. Done
+    /// automatically by [`Vm::shutdown`] and when the `Vm` is dropped.
+    pub fn cancel_coroutines(&mut self) {
+        self.interp.cancel_all_coroutines();
+        self.interp.flush();
+    }
+
+    /// Runs the event loop until no coroutine is alive: what `colibri run` does after `main`.
+    /// It ticks the scheduler with the time elapsed on the [`VmBuilder::clock`], then sleeps on
+    /// that clock until the next timed wake (`wait`, `wait_real`); coroutines that poll at
+    /// every tick (`wait_until`, `wait_frames`, `join`) are checked every `poll` seconds,
+    /// 1 ms by default ([`Vm::run_event_loop_polling`]). A panic in a coroutine ends the loop
+    /// with that error; the remaining coroutines stay alive (and are cancelled at shutdown).
+    pub fn run_event_loop(&mut self) -> Result<(), Error> {
+        self.run_event_loop_polling(0.001)
+    }
+
+    /// [`Vm::run_event_loop`] with a chosen polling interval in seconds.
+    pub fn run_event_loop_polling(&mut self, poll: f64) -> Result<(), Error> {
+        let mut last = self.interp.clock_now();
+        loop {
+            if self.interp.coroutine_count() == 0 {
+                return self.collect_failure();
+            }
+            let now = self.interp.clock_now();
+            let dt = (now - last).max(0.0);
+            last = now;
+            self.tick(dt)?;
+            let Some(delay) = self.interp.next_wake(poll) else {
+                return self.collect_failure();
+            };
+            self.interp.clock_sleep(delay);
+        }
+    }
+
+    /// A panic of a coroutine that no tick reported (it failed while starting or while being
+    /// cancelled).
+    fn collect_failure(&mut self) -> Result<(), Error> {
+        match self.interp.take_coroutine_failure() {
+            Some(info) => Err(panic_error(&self.interp, *info)),
+            None => Ok(()),
+        }
     }
 
     // ---- tests ----

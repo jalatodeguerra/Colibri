@@ -361,8 +361,6 @@ pub enum StmtKind {
     },
     /// `defer stmt`: an assignment, an expression or a block.
     Defer(Box<Stmt>),
-    /// `go call(...)`
-    Go(Expr),
     For {
         label: Option<Label>,
         /// `for var e in xs`
@@ -556,6 +554,9 @@ pub enum ExprKind {
     },
     /// Postfix `?`.
     Try(Box<Expr>),
+    /// `go call(...)`: starts a coroutine and has type `Coroutine[T]`. The operand is always a
+    /// call (anything else is a syntax error).
+    Go(Box<Expr>),
     /// Function and method calls (a method call is a `Call` of a `Field`).
     Call {
         callee: Box<Expr>,

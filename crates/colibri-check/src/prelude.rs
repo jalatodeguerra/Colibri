@@ -48,6 +48,7 @@ interface IntoError {
     fn message(self) -> str => "{self}"
 }
 class Error {}
+class Coroutine[T] {}
 "#;
 
 /// The parsed prelude.

@@ -882,10 +882,6 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 self.check_defer(s.span, inner, out);
                 false
             }
-            StmtKind::Go(_) => {
-                self.ck.unsupported("`go`", s.span);
-                false
-            }
             StmtKind::Error => false,
         }
     }
