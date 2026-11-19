@@ -8,9 +8,9 @@ reference counting instead of a garbage collector. Use it for scripts and comman
 for automation, or as a scripting language embedded in a Rust program.
 
 > **Status: early and pre-release.** The language, standard library and tooling described below
-> work today on a tree-walking interpreter. The bytecode VM that will replace it is the next
-> phase and is not started. Expect breaking changes. Features that are planned but not built
-> are marked **(planned)**.
+> work today on a tree-walking interpreter. A bytecode VM will replace it; that work is not
+> started. Expect breaking changes. Features that are planned but not built are marked
+> **(planned)**.
 
 ```colibri
 import fs
@@ -45,6 +45,8 @@ fn main() {
 }
 ```
 
+Save it as `words.colibri` and run it:
+
 ```console
 $ echo "the cat and the dog and the bird" > notes.txt
 $ colibri run words.colibri
@@ -66,7 +68,7 @@ error: reading notes.txt: cannot read `notes.txt`: no such file or directory
 - **Values and references.** `struct`s are value types (assignment copies), `class`es are
   reference counted and shared, and `weak` references break cycles. Memory is freed as soon as
   the last reference goes away, in a predictable order.
-- **Generics and interfaces** from the start: `List[T]`, `fn largest[T: Ord](...)`, interfaces
+- **Generics and interfaces:** `List[T]`, `fn largest[T: Ord](...)`, interfaces
   with default methods, enums with data and exhaustive `match`.
 - **Coroutines without colored functions.** `go f()` starts a coroutine and `wait(secs)`,
   `join()`, groups and signals suspend it. There is no `async`/`await`, so any function can wait.
@@ -247,10 +249,10 @@ test main::greeting names who it greets ... ok
 `main` function and a test. A single file also works without a package: `colibri run
 script.colibri`.
 
-Each file is a module and each folder groups its modules. Items are private to their folder
-unless they are marked `pub`: with `pub fn slugify` in `text/slug.colibri`, `main.colibri` writes
-`import text.slug` and calls `slug.slugify(...)`. Other packages on disk are dependencies in
-`colibri.toml`:
+Each file is a module, and each folder is a package of modules. Items are private to their
+package unless they are marked `pub`. For example, if `text/slug.colibri` declares
+`pub fn slugify(s: str) -> str`, then `main.colibri` can `import text.slug` and call
+`slug.slugify(...)`. Other projects on disk are dependencies in `colibri.toml`:
 
 ```toml
 [package]
@@ -291,7 +293,7 @@ colibri> sq(7)
 | `colibri build --web` | **(planned)** the same for the browser, through WebAssembly |
 
 Arguments after the file go to the program (`os.args()`, or the `args` module for parsing);
-put them after `--` if they start with a dash.
+put them after `--` if they could be mistaken for the tool's own flags, such as `--watch`.
 
 ## Tooling
 
@@ -358,7 +360,8 @@ checks each test.
 
 ### Formatter
 
-`colibri fmt` has no options: there is one canonical layout. `colibri fmt --check` lists files
+`colibri fmt` has no style settings: there is one canonical layout. `colibri fmt -` formats
+standard input to standard output, for editors. `colibri fmt --check` lists files
 that would change and exits with 1, for CI.
 
 ## Embedding in Rust
@@ -382,13 +385,21 @@ fn main() -> Result<(), colibri::Error> {
 }
 ```
 
-The runtime also offers `#[colibri::export]` to expose Rust structs and methods as Colibri
-types, generational handles to host objects, callbacks, capabilities that decide what a script
-may touch (files, the network, processes and the environment, foreign functions), an instruction budget per call, hot reload of embedded
-scripts, and `.cbi` interface files so `colibri check` and the editor know about the host's
-functions. [`examples/host_game`](examples/host_game/README.md) is a complete example: a Rust
-program that runs its logic from Colibri scripts. Script panics come back to the host as errors
-and never crash it.
+`Vm` is the runtime handle; today it runs the tree-walking interpreter, and the bytecode VM will
+take its place behind the same API. The runtime also offers:
+
+- `#[colibri::export]` to expose Rust structs and methods as Colibri types
+- generational handles to host objects, and callbacks the host can keep and call later
+- capabilities that decide what a script may touch: files, the network, processes and the
+  environment, and foreign functions
+- an instruction budget per call, so a runaway script cannot hang the host
+- hot reload of embedded scripts
+- `.cbi` interface files, so `colibri check` and the editor know about the host's functions
+
+A script panic comes back to the host as an `Error` and leaves the `Vm` usable.
+[`examples/host_game`](examples/host_game/README.md) is a complete example: a Rust program that
+runs its logic from Colibri scripts. The API reference is in the crate's documentation:
+`cargo doc -p colibri-runtime --open`.
 
 ## Standard library
 
@@ -413,7 +424,7 @@ they have.
 
 ## Status and roadmap
 
-**Done** (on `main`):
+**Done:**
 
 - The language core: structs, classes, enums, `match`, generics, interfaces, closures,
   `Result`/`Option` error handling, modules and packages, `weak` references.
@@ -422,7 +433,7 @@ they have.
 - The embedding API, the C FFI, coroutines, the 15 std modules above.
 - Tooling: `run`, `check`, `test`, `fmt`, `new`, `repl`, `lsp`, hot reload and the leak detector.
 
-**Next:**
+**Next** (not started):
 
 - Arithmetic operator interfaces (`Add`, `Sub`, `Mul`, `Neg`), so that vector types can move out
   of the core into a library.
@@ -430,10 +441,13 @@ they have.
   embedding and hot reload. The interpreter is retired once the VM passes every test. The first
   speed goal is to beat CPython 3.13 on every program in [`benchmarks/`](benchmarks/README.md);
   the interpreter is about 4 to 10 times slower than CPython today.
-- **(planned)** `colibri build` for single-file executables and `colibri build --web` for the
-  browser.
-- **(planned)** Thread tasks with channels, a debugger (DAP) and a profiler.
-- **(planned)** Using Rust crates from Colibri through generated bindings.
+- `colibri build` for single-file executables and `colibri build --web` for the browser.
+
+**Later:**
+
+- Thread tasks with channels, a debugger (DAP) and a profiler.
+- LSP completion and rename.
+- Using Rust crates from Colibri through generated bindings.
 
 **Not planned:** a JIT, exceptions, inheritance, macros, `async`/`await` and a package registry
 in v1.
