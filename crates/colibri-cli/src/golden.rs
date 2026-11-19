@@ -27,6 +27,11 @@ pub struct Directives {
     /// (module-level values included). Compared only when the directive is present;
     /// `// drops:` with nothing after it expects that no object is destroyed.
     pub drops: Option<Vec<String>>,
+    /// `// leaks: Node, Node, closure x2`: the objects the leak detector finds in reference
+    /// cycles that nothing reaches once the program has ended, as class names (`closure` for a
+    /// closure), `name xN` standing for N of them. Compared as a multiset. Without the
+    /// directive a golden test must not leak at all.
+    pub leaks: Vec<String>,
     /// `// skip:` reason; the file is not run.
     pub skip: Option<String>,
     /// `// caps: fs, os`: the capabilities the test's `Vm` grants (the default is none). Read
@@ -60,6 +65,8 @@ pub fn parse_directives(source: &str) -> Directives {
                         .filter(|s| !s.is_empty())
                         .collect(),
                 );
+            } else if let Some(v) = comment.strip_prefix("leaks:") {
+                d.leaks.extend(parse_leaks(v));
             } else if let Some(v) = comment.strip_prefix("skip:") {
                 d.skip = Some(v.trim().to_string());
             } else if let Some(v) = comment.strip_prefix("caps:") {
@@ -76,6 +83,22 @@ pub fn parse_directives(source: &str) -> Directives {
         }
     }
     d
+}
+
+/// The objects a `// leaks:` directive names: `Node, Node` or `Node x2`.
+fn parse_leaks(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in text.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let counted = item.rsplit_once(" x").and_then(|(name, n)| {
+            let n = n.trim().parse::<usize>().ok()?;
+            Some((name.trim(), n))
+        });
+        match counted {
+            Some((name, n)) => out.extend(std::iter::repeat_n(name.to_string(), n)),
+            None => out.push(item.to_string()),
+        }
+    }
+    out
 }
 
 /// A position in a golden test: the file (relative to the test's folder; empty for a test that
@@ -96,6 +119,9 @@ pub enum Outcome {
         /// The labels of the class objects destroyed, in order, up to and including the
         /// release of the module-level values after `main` (DESIGN §11.2).
         drops: Vec<String>,
+        /// The reference cycles left once the program ended and its module-level values
+        /// were released (`Vm::find_leaks`).
+        leaks: Vec<colibri::Leak>,
     },
     /// Compilation failed with these error diagnostics.
     CompileErrors {
@@ -193,6 +219,7 @@ fn run_with(
     let out = colibri::SharedBuffer::new();
     let mut builder = crate::vm_builder()
         .trace_drops(true)
+        .track_leaks(true)
         .stdout(Box::new(out.clone()));
     for cap in caps {
         match colibri::Cap::ALL.into_iter().find(|c| c.name() == cap) {
@@ -219,6 +246,7 @@ fn run_with(
     // Module-level values die after `main` returns (or after a panic), in reverse order.
     vm.shutdown();
     let drops = vm.take_drop_trace();
+    let leaks = vm.find_leaks();
     let located = |sources: &colibri::SourceMap, diags: &[colibri::Diagnostic], errors: bool| {
         diags
             .iter()
@@ -257,6 +285,7 @@ fn run_with(
                 main_err,
                 warnings: located(vm.sources(), vm.warnings(), false),
                 drops,
+                leaks,
             }
         }
     }
@@ -290,6 +319,7 @@ impl PackageDirectives {
                 d.panic = files.panic.clone();
                 d.main_err = files.main_err.clone();
                 d.drops = files.drops.clone();
+                d.leaks = files.leaks.clone();
                 d.skip = files.skip.clone();
             }
         }
@@ -312,6 +342,7 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
         panic: d.panic.clone(),
         main_err: d.main_err.clone(),
         drops: d.drops.clone(),
+        leaks: d.leaks.clone(),
         skip: d.skip.clone(),
         caps: d.caps.clone(),
     };
@@ -379,6 +410,7 @@ pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), Str
             main_err,
             warnings,
             drops,
+            leaks,
         } => {
             let mut problems = Vec::new();
             for (file, line, text) in &errors_wanted {
@@ -405,6 +437,21 @@ pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), Str
                     "drop order mismatch\n--- expected\n{}\n--- actual\n{}",
                     want.join(", "),
                     drops.join(", ")
+                ));
+            }
+            let mut found: Vec<&str> = leaks
+                .iter()
+                .flat_map(|l| l.objects.iter().map(String::as_str))
+                .collect();
+            found.sort_unstable();
+            let mut wanted: Vec<&str> = d.leaks.iter().map(String::as_str).collect();
+            wanted.sort_unstable();
+            if found != wanted {
+                let reports: String = leaks.iter().map(|l| format!("\n{l}")).collect();
+                problems.push(format!(
+                    "leak mismatch: expected [{}], found [{}]{reports}",
+                    wanted.join(", "),
+                    found.join(", ")
                 ));
             }
             match (d.main_err.is_empty(), main_err) {
@@ -490,6 +537,7 @@ mod tests {
             main_err: None,
             warnings: Vec::new(),
             drops: Vec::new(),
+            leaks: Vec::new(),
         }
     }
 
@@ -500,6 +548,7 @@ mod tests {
             main_err: None,
             warnings: Vec::new(),
             drops: labels.iter().map(|s| s.to_string()).collect(),
+            leaks: Vec::new(),
         }
     }
 
@@ -513,6 +562,7 @@ mod tests {
                 .map(|&(l, m)| (String::new(), l, m.to_string()))
                 .collect(),
             drops: Vec::new(),
+            leaks: Vec::new(),
         }
     }
 
@@ -529,6 +579,13 @@ mod tests {
         assert_eq!(parse_directives("// drops:\n").drops, Some(Vec::new()));
         assert_eq!(parse_directives("print(1)\n").drops, None);
         assert_eq!(d.skip.as_deref(), Some("later"));
+    }
+
+    #[test]
+    fn leaks_directive_lists_classes_and_repeats() {
+        let d = parse_directives("// leaks: Node, closure x2, Pair\n// leaks: Node\n");
+        assert_eq!(d.leaks, ["Node", "closure", "closure", "Pair", "Node"]);
+        assert!(parse_directives("print(1)\n").leaks.is_empty());
     }
 
     #[test]

@@ -1,0 +1,17 @@
+// Ten thousand objects in five thousand two-object cycles, each its own leak.
+class Pair {
+    other: Pair? = none
+}
+
+fn main() {
+    for i in 0..5000 {
+        let a = Pair {}
+        let b = Pair {}
+        a.other = some(b)
+        b.other = some(a)
+    }
+    print("done")
+}
+
+// expect: done
+// leaks: Pair x10000
