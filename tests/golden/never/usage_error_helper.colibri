@@ -1,0 +1,44 @@
+// A `-> !` helper ends the program (here by panicking); callers need no dead `return` after it.
+enum Mode {
+    Fast
+    Slow
+}
+
+fn die(msg: str) -> ! {
+    panic("usage: {msg}")
+}
+
+fn parse(x: str) -> Mode {
+    return match x {
+        "fast" => Mode.Fast
+        "slow" => Mode.Slow
+        other => die("unknown mode {other}")
+    }
+}
+
+fn pick(n: int) -> int {
+    if n > 0 {
+        return n
+    }
+    die("n must be positive")
+    // no `return` needed: the call above never returns
+}
+
+fn main() {
+    print(parse("fast"))
+    print(pick(3))
+    let mode = match "slow" {
+        "fast" => Mode.Fast
+        "slow" => Mode.Slow
+        other => die("bad {other}")
+    }
+    print(mode)
+    let n = if mode == Mode.Slow { 7 } else { die("never") }
+    print(n)
+    print(pick(0))
+}
+// expect: Fast
+// expect: 3
+// expect: Slow
+// expect: 7
+// panic: usage: n must be positive

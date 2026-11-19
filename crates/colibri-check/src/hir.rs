@@ -811,6 +811,9 @@ pub enum Intrinsic {
     Assert,
     /// `assert_eq(a, b)`: panics when `a == b` is false, showing both values (ARCHITECTURE §15).
     AssertEq,
+    /// `compare(a, b) -> int`: `-1`, `0` or `1` by the `Ord` of the two values (same type); a
+    /// `nan` anywhere in the comparison panics, as in `sort`.
+    Compare,
     /// `e.is[T]()`: whether the value an `Error` keeps has this runtime type (DESIGN §10.2).
     ErrorIs(TypeKey),
     /// `e.as[T]() -> T?`: the value an `Error` keeps, if it has this runtime type.

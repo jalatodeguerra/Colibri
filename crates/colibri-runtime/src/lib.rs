@@ -165,7 +165,7 @@ pub use colibri_bind::export;
 pub use colibri_interp::Leak;
 pub use colibri_interp::{Clock, DEFAULT_NATIVE_STACK_BUDGET, SystemClock};
 pub use colibri_syntax::{Diagnostic, Severity, SourceMap, Span};
-pub use convert::{Args, FromColibri, IntoColibri, Value, ValueKind};
+pub use convert::{Args, FromColibri, IntoColibri, Never, Value, ValueKind};
 pub use ctx::{Caller, Ctx, Cx};
 pub use error::{Error, Location, Report, StackFrame};
 pub use func::Fn;

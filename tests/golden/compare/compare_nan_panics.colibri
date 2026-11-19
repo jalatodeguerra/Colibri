@@ -1,0 +1,8 @@
+// A `nan` has no place in an order: `compare` panics, as `sort`, `min` and `max` do.
+fn main() {
+    let nan = 0.0 / 0.0
+    print(compare(1.0, 2.0))
+    print(compare(nan, 1.0))
+}
+// expect: -1
+// panic: these values are not ordered

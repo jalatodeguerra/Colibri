@@ -386,3 +386,26 @@ fn a_registered_class_text_round_trips_through_the_checker_exactly() {
     vm.load_source("a.colibri", "fn main() {\n}\n").unwrap();
     vm.run_main().unwrap();
 }
+
+#[test]
+fn a_function_that_never_returns_is_declared_with_a_bang() {
+    let mut vm = colibri::Vm::builder().build();
+    vm.register_fn(
+        "quit",
+        |cx: &mut colibri::Ctx, code: i64| -> colibri::Never { cx.raise(format!("quit {code}")) },
+    )
+    .unwrap();
+    let text = vm.interface_text();
+    assert!(text.contains("fn quit(a: int) -> !"), "{text}");
+    let parsed = Interface::from_text("engine.cbi", &text).unwrap();
+    assert_eq!(parsed.canonical_text(), text);
+    // The script needs no value after the call.
+    let mut vm = colibri::Vm::builder().build();
+    vm.register_fn(
+        "quit",
+        |cx: &mut colibri::Ctx, code: i64| -> colibri::Never { cx.raise(format!("quit {code}")) },
+    )
+    .unwrap();
+    vm.load_source("t.colibri", "fn f() -> int { quit(1) }\nfn main() { f() }")
+        .expect("quit diverges");
+}

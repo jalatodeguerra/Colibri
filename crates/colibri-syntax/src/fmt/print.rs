@@ -1033,6 +1033,7 @@ impl<'a> Fmt<'a> {
                 }
                 concat(parts)
             }
+            TypeKind::Never => text("!"),
             TypeKind::Error => text(self.slice(t.span)),
         }
     }
