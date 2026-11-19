@@ -521,13 +521,13 @@ impl Vm {
         use colibri_check::package::ImportTarget;
         for meta in &loaded.metas {
             for target in meta.imports.values() {
-                if let ImportTarget::Host(name) = target {
-                    if let Some((_, message)) = self.failed.iter().find(|(n, _)| n == name) {
-                        return Err(Error::Registration {
-                            name: name.clone(),
-                            message: message.clone(),
-                        });
-                    }
+                if let ImportTarget::Host(name) = target
+                    && let Some((_, message)) = self.failed.iter().find(|(n, _)| n == name)
+                {
+                    return Err(Error::Registration {
+                        name: name.clone(),
+                        message: message.clone(),
+                    });
                 }
             }
         }
