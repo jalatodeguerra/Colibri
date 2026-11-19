@@ -404,10 +404,12 @@ turns out to matter, it moves into DESIGN.md.
    Module-level `let`/`var`/`const` are always declarations, not statements, so they initialise
    first wherever they are written. `Vm::load_*` runs the first two phases; `Vm::run_main` the
    third (the CLI does both).
-10. **Integers.** `int` is `i64`; `+ - *` and unary `-` trap on overflow ("integer overflow");
-    `/` and `%` by zero panic ("division by zero", "modulo by zero"); `i64::MIN / -1` and
-    `i64::MIN % -1` panic as overflow. Float arithmetic is IEEE. A negated integer literal is
-    folded, so `-9223372036854775808` is a valid literal.
+10. **Integers.** `int` is `i64` and `i64` is the same type (as `float` is `f64`). Every
+    integer operation traps on overflow of its own type ("integer overflow"): `+ - *`, unary
+    `-`, `/` and `%` (`MIN / -1` and `MIN % -1` trap too); `/` and `%` by zero panic ("division
+    by zero", "modulo by zero"). Float arithmetic is IEEE, `f32` arithmetic is done in `f32`.
+    A negated integer literal is folded, so `-9223372036854775808` is a valid literal; whether
+    a literal fits its final type is decided after inference (see §8).
 11. **Show and format specs.** Floats show as Rust's shortest round-trip `{:?}`: `1.5`, `2.0`,
     `-0.0`, `1e-9`, `1e16` (exponent form below `1e-4` and from `1e16`), plus `inf`, `-inf`,
     `nan`. A spec is `[[fill]align][0][width][.precision][type]` with `align` in `<>^`, `type` in
@@ -667,7 +669,7 @@ turns out to matter, it moves into DESIGN.md.
 41. **Implicit conversion sites.** A value is converted to an interface value wherever the
     expected type is an interface: arguments, `let x: I = ..`, assignment, `return`, struct and
     enum payload fields, list, map and set literal elements, `some(..)`. `value as I` is the
-    explicit form (any other `as` is "not supported yet"). An interface value never converts to
+    explicit form (any other `as` is an error; numbers convert with `u8(x)`, §8). An interface value never converts to
     another interface, and `==` on interface values is an error. Generic code may be
     instantiated with an interface type (`total_area[Shape]`): its `Bound` calls dispatch
     through the box.
@@ -754,3 +756,53 @@ turns out to matter, it moves into DESIGN.md.
   warning is skipped inside `defer`. (11) A bare `return` in a `Result[()]` function is still an
   error; falling off the end returns `ok(())`. (12) `main` may return `Result[()]` or
   `Result[(), E]`. (13) A top-level `let _ = ..` is parsed as a script statement.
+
+## 8. Slice 6a as built: the numeric tower
+
+- **Types.** `Ty::Int(IntTy)` for `i8 i16 i32 i64 u8 u16 u32 u64` (`int` and `i64` are one
+  type, `IntTy::I64`), `Ty::Float` (`float` = `f64`) and the new `Ty::F32`. The names are
+  resolved by `Ty::numeric_by_name`; a local or module value of the same name shadows the
+  conversion call and the constants.
+- **Literals.** `Lit::Int(i64)`, `Lit::U64(u64)` (only above `i64::MAX`, or a `u64` literal
+  after zonking), `Lit::Float(f64)` and `Lit::F32(f32)`. The type of an integer literal is an
+  `IntLit` inference variable that may become any number type, a float literal's a `FloatLit`
+  variable that may become `float` or `f32`. Zonking fixes the literal's final form and reports
+  "literal 256 does not fit in `u8`" (also for patterns and for the folded negative literals).
+  A float literal reaches an `f32` through `as f32` of the parsed `f64`, which can differ from
+  parsing the text as `f32` in the last bit for exotic spellings.
+- **Operators.** `BinOp::Arith(ArithOp, Num)` with `Num::{Int(IntTy), F32, Float}`,
+  `BinOp::Bit(BitOp, IntTy)` (the type is the left operand's; the count of a shift may be any
+  integer), `UnOp::Neg(Num)` (unsigned types are rejected by the checker), `UnOp::BitNot(IntTy)`
+  and `Operand::{Int(IntTy), F32, Float, ..}` for comparisons. The checker puts `int`
+  placeholders in while a literal is unresolved; `zonk` re-derives each operator from the
+  resolved operand type.
+- **`f32` to `float`.** The only implicit conversion is `Coercion::F32ToFloat`. It is inserted
+  where a `float` is expected (`coerce_to_expected`, which every checked expression with an
+  expected type goes through) and in a binary operator or comparison whose operands are an
+  `f32` and a `float` (`unify_operands`). An arithmetic expression is not given a `float` hint,
+  so `let x: float = a * b` with `f32` operands multiplies in `f32` and widens the product.
+- **Values.** `Value::Int(i64)` holds every integer type except `u64`, which is
+  `Value::U64(u64)`; `Value::F32(f32)` is single precision. The operator names the width, so
+  `colibri-interp/src/num.rs` widens both operands to `i128`, computes exactly and checks the
+  result against the type's range. A `u64` therefore needs no bit-pattern tricks, `Show`,
+  comparison, hashing and sorting of a `List[u64]` work on the value alone, and the cost is one
+  extra variant. The `int` (`I64`) fast path in `eval.rs` is kept. `TypeKey::Int(IntTy)` and
+  `TypeKey::F32` exist for interface dispatch; since a `Value::Int` carries no width, a runtime
+  lookup on one finds the `int` implementation, so `impl I for i8|i16|i32|u8|u16|u32` is
+  reported as not supported yet (an interface value built by a static `ToDyn` is unaffected, and
+  `u64`, `f32` and `int` work everywhere).
+- **Intrinsics.** `Intrinsic::Convert { from, to }` for `u8(x)` and friends (panics: "value 300
+  does not fit in `u8`", "cannot convert `nan` to `int`") and `Intrinsic::NumMethod(NumMethod,
+  Num)` for the methods. `T.MAX`, `T.MIN` and the float constants are literals folded by the
+  checker. `pow` takes an `int` exponent (a negative one panics); `round` is half away from
+  zero; float `min`/`max` ignore a `nan`; `abs` of a signed `MIN` traps; `checked_*` return
+  `T?`.
+- **Shifts.** `x << n` and `x >> n` panic unless `0 <= n < bits` ("shift by 64 is out of range
+  for `int`"); `<<` drops bits without trapping (two's complement, so `1 << 63` is `int.MIN`),
+  `>>` is arithmetic on signed and logical on unsigned types.
+- **Ranges.** A `for` loop accepts a range of any integer type except `u64` (the loop variable
+  has that type; the values are `Value::Int`); `Range[int]` values and slices stay `int`.
+  `sum` accepts `int` and `float` lists only. `Map`/`Set` keys of any integer type work;
+  floats (both) are not hashable.
+- **Embedding.** `IntoColibri`/`FromColibri` exist for `i8 i16 i32 i64 u8 u16 u32 u64 f32 f64`;
+  `get_fn` compares the Rust signature with the script's (`i64` is `int`, `f64` is `float`).

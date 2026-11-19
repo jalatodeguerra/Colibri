@@ -1,0 +1,7 @@
+fn main() {
+    let a: u32 = 2147483647
+    print(i32(a))
+    let b: u32 = 2147483648
+    print(i32(b)) // panic: value 2147483648 does not fit in `i32`
+}
+// expect: 2147483647

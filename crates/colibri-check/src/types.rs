@@ -58,8 +58,8 @@ pub struct ParamId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TyVar(pub u32);
 
-/// Integer widths. `int` is [`IntTy::I64`]; the others exist so integer operations can carry
-/// their width (DESIGN §5.1) and are not nameable in source yet.
+/// Integer widths. `int` and `i64` are the same type, [`IntTy::I64`] (like `float` and `f64`);
+/// integer operations carry their width so overflow traps are static (DESIGN §5.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IntTy {
     I8,
@@ -86,13 +86,80 @@ impl IntTy {
             IntTy::U64 => "u64",
         }
     }
+
+    /// Every integer type, narrowest signed first.
+    pub const ALL: [IntTy; 8] = [
+        IntTy::I8,
+        IntTy::I16,
+        IntTy::I32,
+        IntTy::I64,
+        IntTy::U8,
+        IntTy::U16,
+        IntTy::U32,
+        IntTy::U64,
+    ];
+
+    /// The integer type a name written in source stands for (`int` and `i64` are one type).
+    pub fn from_name(name: &str) -> Option<IntTy> {
+        Some(match name {
+            "i8" => IntTy::I8,
+            "i16" => IntTy::I16,
+            "i32" => IntTy::I32,
+            "int" | "i64" => IntTy::I64,
+            "u8" => IntTy::U8,
+            "u16" => IntTy::U16,
+            "u32" => IntTy::U32,
+            "u64" => IntTy::U64,
+            _ => return None,
+        })
+    }
+
+    /// The width in bits.
+    pub fn bits(self) -> u32 {
+        match self {
+            IntTy::I8 | IntTy::U8 => 8,
+            IntTy::I16 | IntTy::U16 => 16,
+            IntTy::I32 | IntTy::U32 => 32,
+            IntTy::I64 | IntTy::U64 => 64,
+        }
+    }
+
+    pub fn is_signed(self) -> bool {
+        matches!(self, IntTy::I8 | IntTy::I16 | IntTy::I32 | IntTy::I64)
+    }
+
+    /// The smallest value of the type.
+    pub fn min(self) -> i128 {
+        if self.is_signed() {
+            -(1i128 << (self.bits() - 1))
+        } else {
+            0
+        }
+    }
+
+    /// The largest value of the type.
+    pub fn max(self) -> i128 {
+        if self.is_signed() {
+            (1i128 << (self.bits() - 1)) - 1
+        } else {
+            (1i128 << self.bits()) - 1
+        }
+    }
+
+    /// Whether `v` is a value of the type.
+    pub fn fits(self, v: i128) -> bool {
+        (self.min()..=self.max()).contains(&v)
+    }
 }
 
 /// A Colibri type.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ty {
     Int(IntTy),
+    /// `float` (`f64`).
     Float,
+    /// `f32`; widens to `float` implicitly (DESIGN §5.1).
+    F32,
     Bool,
     Char,
     Str,
@@ -129,6 +196,20 @@ impl Ty {
 
     pub fn is_error(&self) -> bool {
         matches!(self, Ty::Error)
+    }
+
+    /// The numeric type a primitive type name stands for: `int`, `i8`..`u64`, `float`, `f32`.
+    pub fn numeric_by_name(name: &str) -> Option<Ty> {
+        match name {
+            "float" | "f64" => Some(Ty::Float),
+            "f32" => Some(Ty::F32),
+            _ => IntTy::from_name(name).map(Ty::Int),
+        }
+    }
+
+    /// Whether the type is an integer or a float type.
+    pub fn is_number(&self) -> bool {
+        matches!(self, Ty::Int(_) | Ty::Float | Ty::F32)
     }
 }
 
@@ -218,6 +299,7 @@ impl fmt::Display for Shown<'_> {
         match self.ty {
             Ty::Int(i) => f.write_str(i.name()),
             Ty::Float => f.write_str("float"),
+            Ty::F32 => f.write_str("f32"),
             Ty::Bool => f.write_str("bool"),
             Ty::Char => f.write_str("char"),
             Ty::Str => f.write_str("str"),

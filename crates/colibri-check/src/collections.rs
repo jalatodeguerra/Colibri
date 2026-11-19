@@ -145,6 +145,10 @@ impl FnCtx<'_, '_> {
                     return None;
                 }
                 match id.name.as_str() {
+                    name if Ty::numeric_by_name(name).is_some() => {
+                        let target = Ty::numeric_by_name(name)?;
+                        Some(self.check_conversion(target, args, span))
+                    }
                     "Set" => Some(self.check_set_from(args, expected, span)),
                     "List" | "Map" => {
                         self.check_args_loosely(args);

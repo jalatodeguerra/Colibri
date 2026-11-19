@@ -87,7 +87,7 @@ pub fn parse_spec(text: &str) -> Result<FormatSpec, String> {
 
 /// Whether `spec` makes sense for a value of type `ty`. `Err` is a message for the user.
 pub fn validate(spec: &FormatSpec, ty: &Ty) -> Result<(), String> {
-    let numeric = matches!(ty, Ty::Int(_) | Ty::Float);
+    let numeric = matches!(ty, Ty::Int(_) | Ty::Float | Ty::F32);
     let textual = matches!(ty, Ty::Str | Ty::Char | Ty::Bool);
     if !numeric && !textual {
         return Err(format!("`{ty}` values cannot take a format spec"));

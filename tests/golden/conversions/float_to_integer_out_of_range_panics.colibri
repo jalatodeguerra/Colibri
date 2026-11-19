@@ -1,0 +1,5 @@
+fn main() {
+    print(i32(2147483647.0))
+    print(i32(2147483648.0)) // panic: value 2147483648.0 does not fit in `i32`
+}
+// expect: 2147483647

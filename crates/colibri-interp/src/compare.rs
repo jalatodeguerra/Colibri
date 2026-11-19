@@ -25,6 +25,37 @@ pub(crate) fn equal_with(a: &Value, b: &Value, ov: &mut dyn Overrides) -> Result
     equal(a, b, 0, ov)
 }
 
+/// `==` on two scalars; `None` if they are not both of one scalar type. (Kept out of the
+/// recursive function so that its stack frame stays small.)
+#[inline(never)]
+fn scalar_eq(a: &Value, b: &Value) -> Option<bool> {
+    Some(match (a, b) {
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::U64(x), Value::U64(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::F32(x), Value::F32(y)) => x == y,
+        (Value::Char(x), Value::Char(y)) => x == y,
+        (Value::Str(x), Value::Str(y)) => x == y,
+        _ => return None,
+    })
+}
+
+/// The ordering of two scalars; the outer `None` if they are not both of one scalar type.
+#[inline(never)]
+fn scalar_cmp(a: &Value, b: &Value) -> Option<Option<Ordering>> {
+    Some(match (a, b) {
+        (Value::Bool(x), Value::Bool(y)) => x.partial_cmp(y),
+        (Value::Int(x), Value::Int(y)) => x.partial_cmp(y),
+        (Value::U64(x), Value::U64(y)) => x.partial_cmp(y),
+        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y),
+        (Value::F32(x), Value::F32(y)) => x.partial_cmp(y),
+        (Value::Char(x), Value::Char(y)) => x.partial_cmp(y),
+        (Value::Str(x), Value::Str(y)) => x.partial_cmp(y),
+        _ => return None,
+    })
+}
+
 fn equal(a: &Value, b: &Value, depth: u32, ov: &mut dyn Overrides) -> Result<bool, Stop> {
     if depth > MAX_DEPTH {
         return Err(Stop::TooDeep);
@@ -34,11 +65,7 @@ fn equal(a: &Value, b: &Value, depth: u32, ov: &mut dyn Overrides) -> Result<boo
     }
     Ok(match (a, b) {
         (Value::Unit, Value::Unit) => true,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::Float(x), Value::Float(y)) => x == y,
-        (Value::Char(x), Value::Char(y)) => x == y,
-        (Value::Str(x), Value::Str(y)) => x == y,
+        _ if let Some(answer) = scalar_eq(a, b) => answer,
         (Value::Tuple(x), Value::Tuple(y)) => equal_all(x, y, depth, ov)?,
         (Value::Struct(x), Value::Struct(y)) => {
             x.ty == y.ty && equal_all(&x.fields, &y.fields, depth, ov)?
@@ -171,11 +198,7 @@ fn cmp(a: &Value, b: &Value, depth: u32, ov: &mut dyn Overrides) -> Result<Optio
     }
     Ok(match (a, b) {
         (Value::Unit, Value::Unit) => Some(Ordering::Equal),
-        (Value::Bool(x), Value::Bool(y)) => x.partial_cmp(y),
-        (Value::Int(x), Value::Int(y)) => x.partial_cmp(y),
-        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y),
-        (Value::Char(x), Value::Char(y)) => x.partial_cmp(y),
-        (Value::Str(x), Value::Str(y)) => x.partial_cmp(y),
+        _ if let Some(answer) = scalar_cmp(a, b) => answer,
         (Value::Tuple(x), Value::Tuple(y)) => lexicographic(x, y, depth, ov)?,
         (Value::Struct(x), Value::Struct(y)) => lexicographic(&x.fields, &y.fields, depth, ov)?,
         (Value::Enum(x), Value::Enum(y)) => match x.variant.cmp(&y.variant) {

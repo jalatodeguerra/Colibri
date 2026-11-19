@@ -117,7 +117,7 @@ impl Checker<'_> {
                     format!("`{shown}` cannot be used as {role}, because it contains a `{blamed}`")
                 };
                 let hint = match blame {
-                    Ty::Float => "floats are not hashable (`nan` is not equal to itself); use an integer or a string instead".to_string(),
+                    Ty::Float | Ty::F32 => "floats are not hashable (`nan` is not equal to itself); use an integer or a string instead".to_string(),
                     Ty::List(_) | Ty::Map(..) | Ty::Set(_) => "mutable collections are not hashable; use a tuple, a struct or a frozen copy as the key".to_string(),
                     Ty::Param(_, name) => format!("add the bounds `{name}: Hash + Eq` to the type parameter"),
                     Ty::Adt(..) => format!("implement `Hash` and `Eq` for `{blamed}`, or key on one of its fields"),
@@ -163,7 +163,7 @@ impl Checker<'_> {
             Ty::Param(_, name) => {
                 format!("add the bound to the type parameter: `{name}: {iface}`")
             }
-            Ty::Float if ob.iface == HASH => {
+            Ty::Float | Ty::F32 if ob.iface == HASH => {
                 "floats are not hashable (`nan` is not equal to itself)".to_string()
             }
             Ty::List(_) | Ty::Map(..) | Ty::Set(_) if ob.iface == HASH => {

@@ -1,0 +1,21 @@
+fn main() {
+    let a: u64 = 0xFFFF_FFFF_FFFF_FFFF
+    let b: u64 = 0xF0F0_F0F0_F0F0_F0F0
+    print(a & b)
+    let c: u64 = 0x8000_0000_0000_0000
+    print(c | 0xFF)
+    let d: u64 = 0x8000_0000_0000_0001
+    print(d >> 60)
+    let e: u64 = 0xAAAA_AAAA_AAAA_AAAA
+    print(e ^ a)
+    print(c << 1)
+    print(~c)
+    print(a == ~u64(0))
+}
+// expect: 17361641481138401520
+// expect: 9223372036854776063
+// expect: 8
+// expect: 6148914691236517205
+// expect: 0
+// expect: 9223372036854775807
+// expect: true

@@ -1,0 +1,22 @@
+fn main() {
+    let a: f32 = 2.0
+    print(a.sqrt())
+    let b: f32 = 1.5
+    print(b.floor())
+    print(b.ceil())
+    print(b.round())
+    let c: f32 = -0.1
+    print(c.abs())
+    print(c.is_nan())
+    print(a.sqrt() * a.sqrt())
+    let d: float = a.sqrt()
+    print(d)
+}
+// expect: 1.4142135
+// expect: 1.0
+// expect: 2.0
+// expect: 2.0
+// expect: 0.1
+// expect: false
+// expect: 1.9999999
+// expect: 1.4142135381698608

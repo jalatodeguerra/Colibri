@@ -1,0 +1,28 @@
+fn main() {
+    let a: u8 = 171
+    print("{a:x} {a:X} {a:b} {a:o}")
+    print("{a:08b}|{a:>6}|{a:<6}|{a:^6}|{a:*^7}")
+    let b: i16 = -255
+    print("{b:x}|{b:06}|{b:>8}|{b:08b}")
+    let c: u64 = 18446744073709551615
+    print("{c:x}")
+    print("{c:X}")
+    print("{c:b}")
+    print("{c:>22}")
+    let d: i8 = -128
+    print("{d:x} {d:b} {d}")
+    let e: u32 = 3735928559
+    print("{e:x} {e:o} {e:012}")
+    let f: i32 = 0
+    print("{f:x} {f:08b}")
+}
+// expect: ab AB 10101011 253
+// expect: 10101011|   171|171   | 171  |**171**
+// expect: -ff|-00255|    -255|-11111111
+// expect: ffffffffffffffff
+// expect: FFFFFFFFFFFFFFFF
+// expect: 1111111111111111111111111111111111111111111111111111111111111111
+// expect:   18446744073709551615
+// expect: -80 -10000000 -128
+// expect: deadbeef 33653337357 003735928559
+// expect: 0 00000000

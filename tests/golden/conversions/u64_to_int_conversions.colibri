@@ -1,0 +1,7 @@
+fn main() {
+    let a: u64 = 9223372036854775807
+    print(int(a))
+    let b: u64 = 9223372036854775808
+    print(int(b)) // panic: value 9223372036854775808 does not fit in `int`
+}
+// expect: 9223372036854775807

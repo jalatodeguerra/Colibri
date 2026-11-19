@@ -1,0 +1,5 @@
+fn main() {
+    let a: u64 = 18446744073709551615
+    let b = 18446744073709551615 // error: literal 18446744073709551615 does not fit in `int`
+    let c: i64 = 9223372036854775808 // error: does not fit in `int`
+}

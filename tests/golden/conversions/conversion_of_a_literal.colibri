@@ -1,0 +1,14 @@
+fn main() {
+    print(u8(255))
+    print(i8(-128))
+    print(f32(1))
+    print(float(7))
+    print(int(0x10))
+    print(u64(18446744073709551615))
+}
+// expect: 255
+// expect: -128
+// expect: 1.0
+// expect: 7.0
+// expect: 16
+// expect: 18446744073709551615

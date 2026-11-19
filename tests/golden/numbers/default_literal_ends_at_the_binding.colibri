@@ -1,0 +1,6 @@
+fn main() {
+    let x = 1
+    let y: u8 = x // error: expected `u8`, found `int`
+    let z = 1.5
+    let w: f32 = z // error: expected `f32`, found `float`
+}

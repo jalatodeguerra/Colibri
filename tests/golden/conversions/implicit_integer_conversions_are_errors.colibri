@@ -1,0 +1,13 @@
+fn takes_int(x: int) -> int => x
+fn takes_u8(x: u8) -> u8 => x
+
+fn main() {
+    let a: u8 = 5
+    let b: i32 = 6
+    print(takes_int(a)) // error: expected `int`, found `u8`
+    print(takes_u8(b)) // error: expected `u8`, found `i32`
+    let c: int = a // error: expected `int`, found `u8`
+    let d: float = b // error: expected `float`, found `i32`
+    let e: f32 = a // error: expected `f32`, found `u8`
+    let f: u8 = 1.5 + 1.0 // error: expected `u8`, found `{float}`
+}

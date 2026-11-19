@@ -1,0 +1,37 @@
+fn main() {
+    let a: u8 = 250
+    print(a.saturating_add(10))
+    print(a.saturating_add(5))
+    let b: u8 = 5
+    print(b.saturating_sub(10))
+    let c: u8 = 20
+    print(c.saturating_mul(20))
+    let d: i8 = 100
+    print(d.saturating_add(100))
+    let e: i8 = -100
+    print(e.saturating_add(-100))
+    let f: i8 = -128
+    print(f.saturating_sub(1))
+    let g: i32 = -2147483648
+    print(g.saturating_mul(2))
+    print(g.saturating_mul(-1))
+    let h: u64 = 18446744073709551615
+    print(h.saturating_add(1))
+    print(h.saturating_mul(h))
+    print(h.saturating_sub(h))
+    let i: int = 5
+    print(i.saturating_sub(int.MAX).saturating_sub(10))
+}
+// expect: 255
+// expect: 255
+// expect: 0
+// expect: 255
+// expect: 127
+// expect: -128
+// expect: -128
+// expect: -2147483648
+// expect: 2147483647
+// expect: 18446744073709551615
+// expect: 18446744073709551615
+// expect: 0
+// expect: -9223372036854775808

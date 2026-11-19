@@ -1,0 +1,14 @@
+fn main() {
+    print(float(3))
+    print(float(9007199254740993))
+    print(float(-9007199254740993))
+    let big: u64 = 18446744073709551615
+    print(float(big))
+    let small: u8 = 200
+    print(float(small) / 3.0)
+}
+// expect: 3.0
+// expect: 9007199254740992.0
+// expect: -9007199254740992.0
+// expect: 1.8446744073709552e19
+// expect: 66.66666666666667

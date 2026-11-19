@@ -1,0 +1,40 @@
+fn main() {
+    let a: u8 = 250
+    print(a.checked_add(5))
+    print(a.checked_add(6))
+    let z: u8 = 0
+    print(z.checked_sub(1))
+    print(a.checked_sub(250))
+    let b: u8 = 16
+    print(b.checked_mul(15))
+    print(b.checked_mul(16))
+    print(b.checked_div(5))
+    print(b.checked_div(z))
+    let m: i32 = -2147483648
+    print(m.checked_div(-1))
+    print(m.checked_div(2))
+    let n: i32 = -7
+    print(n.checked_div(2))
+    let big: u64 = 18446744073709551615
+    print(big.checked_add(1))
+    print(big.checked_mul(1))
+    print(big.checked_mul(2))
+    print(a.checked_add(1) or 0)
+    print(a.checked_add(10) or 0)
+}
+// expect: some(255)
+// expect: none
+// expect: none
+// expect: some(0)
+// expect: some(240)
+// expect: none
+// expect: some(3)
+// expect: none
+// expect: none
+// expect: some(-1073741824)
+// expect: some(-3)
+// expect: none
+// expect: some(18446744073709551615)
+// expect: none
+// expect: 251
+// expect: 0

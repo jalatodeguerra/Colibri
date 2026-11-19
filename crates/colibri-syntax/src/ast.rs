@@ -334,6 +334,11 @@ pub enum AssignOp {
     Mul,
     Div,
     Rem,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -393,7 +398,7 @@ pub struct Expr {
 pub enum UnOp {
     Neg,
     Not,
-    /// TODO(design): bitwise operators are not in DESIGN.md.
+    /// `~x`, bitwise not (DESIGN §5.1).
     BitNot,
 }
 
@@ -416,7 +421,7 @@ pub enum BinOp {
     Or,
     /// Identity test `a is b` (DESIGN §5.3).
     Is,
-    /// TODO(design): bitwise operators are not in DESIGN.md.
+    /// `|`, `^`, `&`, `<<`, `>>`: bitwise operators on integers (DESIGN §5.1).
     BitOr,
     BitXor,
     BitAnd,

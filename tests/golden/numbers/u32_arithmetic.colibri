@@ -1,0 +1,14 @@
+fn main() {
+    let a: u32 = 4_000_000_000
+    let b: u32 = 294_967_295
+    print(a + b)
+    print(a - b)
+    print(a / 3)
+    print(a % 7)
+    let big: u32 = a + b
+    print(big + 1) // panic: integer overflow
+}
+// expect: 4294967295
+// expect: 3705032705
+// expect: 1333333333
+// expect: 3

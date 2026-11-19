@@ -349,7 +349,7 @@ var score = 0                         // mutable module state
 | Type | Meaning |
 |------|---------|
 | `int` | 64-bit signed integer (default integer) |
-| `i8 i16 i32 i64`, `u8 u16 u32 u64` | sized integers, mainly for FFI and data formats |
+| `i8 i16 i32 i64`, `u8 u16 u32 u64` | sized integers, mainly for FFI and data formats (`i64` is the same type as `int`) |
 | `float` | 64-bit float (default float) |
 | `f32`, `f64` | sized floats (`f64` is the same type as `float`) |
 | `bool` | `true` / `false` |
@@ -372,6 +372,32 @@ Everything else is explicit: between integer widths, from integer to float, and 
 a program can't compute something different once built. `wrapping_add`, `wrapping_mul`,
 `checked_add` (returns `Option`) and `saturating_add` exist for hashes, RNGs and fixed-point
 code (Q6).
+
+**Bitwise operators [Proposed].** On integer types, `&` (and), `|` (or), `^` (xor), `~x` (not),
+`x << n` and `x >> n` work for flags, masks, hashes and random number generators. `& | ^`
+need both operands of the same integer type; `~x` has the type of `x`. They bind tighter than
+the comparisons and looser than `+ -`, in the order `|` < `^` < `&` < shifts < `+ -`, so
+`x & 1 == 0` is `(x & 1) == 0` (unlike C) and `1 << n + 1` is `1 << (n + 1)`; the compound
+forms `&= |= ^= <<= >>=` exist as well. The count of a shift may have any integer type; a count
+that is negative or not below the bit width of `x` panics ("shift by 64 is out of range for
+`int`"). Shifts are bit operations, not arithmetic, so bits shifted out of `<<` are lost
+without a trap; `>>` is arithmetic (it keeps the sign) on signed types and logical on unsigned
+ones. `&`, `|`, `^` and `~` do not work on `bool` (an error that suggests `&&`, `||`, `!=` or
+`!`) or on floats.
+
+**Conversion calls and constants [Proposed].** A number type's name is also its conversion
+function: `u8(x)`, `int(x)`, `i32(x)`, `float(x)`, `f32(x)` take any number. Integer to integer
+panics when the value does not fit ("value 300 does not fit in `u8`"); float to integer
+truncates toward zero and panics on `nan` or a value out of range; integer to float rounds to
+nearest. A bare literal argument takes the target type (`u8(256)` is a compile error). In a
+binary operator or comparison, an `f32` meeting a `float` widens and the operation is a
+`float` one; two `f32` operands are computed in `f32` and the result widens afterwards where a
+`float` is wanted. `T.MAX` and `T.MIN` are the extreme values of an integer type (`u8.MAX`,
+`int.MIN`); floats also have `T.EPSILON`, `T.INFINITY` and `T.NAN`. Integer types have the
+methods `wrapping_add/sub/mul`, `checked_add/sub/mul/div` (returning `T?`),
+`saturating_add/sub/mul`, `abs` (signed only; traps on `MIN`), `min`, `max` and `pow` (traps
+on overflow); `float` and `f32` have `abs`, `sqrt`, `floor`, `ceil`, `round` (half away from
+zero), `min`, `max` and `is_nan`. The rest comes with `math`.
 
 **Integer division truncates toward zero**: `7 / 2` is `3`, not `3.5`. This will surprise
 Python users, so the docs say it loudly and `colibri check` hints when an integer division result

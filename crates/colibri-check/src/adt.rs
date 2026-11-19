@@ -145,6 +145,11 @@ impl FnCtx<'_, '_> {
         if let Some((ty, owner_args)) = self.type_path_expr(base) {
             return self.check_type_member(ty, owner_args, name, None, span);
         }
+        if let ExprKind::Ident(id) = &base.kind
+            && let Some(ty) = self.numeric_type_name(&id.name)
+        {
+            return self.check_num_const(ty, name, span);
+        }
         let value = self.check_expr(base, None);
         self.field_value(value, base, name, span)
     }

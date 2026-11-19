@@ -1,0 +1,26 @@
+fn main() {
+    let a: i8 = -128
+    let b: i16 = 32767
+    let c: i32 = -2147483648
+    let d: i64 = 9223372036854775807
+    let e: u8 = 255
+    let f: u16 = 0xFFFF
+    let g: u32 = 4_294_967_295
+    let h: u64 = 18446744073709551615
+    print(a)
+    print(b)
+    print(c)
+    print(d)
+    print(e)
+    print(f)
+    print(g)
+    print(h)
+}
+// expect: -128
+// expect: 32767
+// expect: -2147483648
+// expect: 9223372036854775807
+// expect: 255
+// expect: 65535
+// expect: 4294967295
+// expect: 18446744073709551615

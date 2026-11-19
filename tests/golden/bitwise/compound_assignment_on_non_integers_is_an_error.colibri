@@ -1,0 +1,8 @@
+fn main() {
+    var f = 1.5
+    f &= 1 // error: `&` cannot be applied to a value of type `float`
+    var b = true
+    b |= false // error: `|` cannot be applied to a value of type `bool`
+    var x: u8 = 1
+    x ^= 1.5 // error: expected `u8`, found `{float}`
+}

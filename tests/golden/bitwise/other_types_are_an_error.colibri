@@ -1,0 +1,5 @@
+fn main() {
+    print("a" & "b") // error: `&` cannot be applied to a value of type `str`
+    print('a' | 'b') // error: `|` cannot be applied to a value of type `char`
+    print(~"x") // error: `~` cannot be applied to a value of type `str`
+}

@@ -1,0 +1,19 @@
+fn main() {
+    let a: i32 = -5
+    print(a.abs())
+    let b: i8 = 127
+    print(b.abs())
+    let c: int = -9223372036854775807
+    print(c.abs())
+    let d: float = -2.5
+    print(d.abs())
+    let e: f32 = -0.5
+    print(e.abs())
+    print(e.abs() + 1)
+}
+// expect: 5
+// expect: 127
+// expect: 9223372036854775807
+// expect: 2.5
+// expect: 0.5
+// expect: 1.5

@@ -1,0 +1,17 @@
+fn main() {
+    let a: i8 = -7
+    let b: i8 = 2
+    print(a / b)
+    print(a / -b)
+    let c: i32 = 7
+    print(c / -2)
+    let d: i16 = -32768
+    print(d / 3)
+    let e: u8 = 7
+    print(e / 2)
+}
+// expect: -3
+// expect: 3
+// expect: -3
+// expect: -10922
+// expect: 3

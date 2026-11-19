@@ -1,0 +1,15 @@
+fn mask_low(x: u32) -> u32 => x & 0xFFFF
+
+fn flip(x: i16) -> i16 => ~x
+
+fn main() {
+    print(mask_low(0x12345678))
+    print(flip(0))
+    print(flip(-1))
+    let r = mask_low(1) | 0x10000
+    print(r)
+}
+// expect: 22136
+// expect: -1
+// expect: 0
+// expect: 65537

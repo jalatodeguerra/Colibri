@@ -1,0 +1,10 @@
+fn main() {
+    let f: float = 1.5
+    let g: f32 = 2.5
+    print(f & 1) // error: `&` cannot be applied to a value of type `float`
+    print(g | g) // error: `|` cannot be applied to a value of type `f32`
+    print(~f) // error: `~` cannot be applied to a value of type `float`
+    print(f << 1) // error: `<<` cannot be applied to a value of type `float`
+    print(1 << f) // error: `<<` cannot be applied to a value of type `float`
+    print(1.5 ^ 2.5) // error: `^` cannot be applied to a value of type `{float}`
+}

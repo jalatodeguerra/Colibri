@@ -1,0 +1,24 @@
+fn main() {
+    let zero: f32 = 0.0
+    let one: f32 = 1.0
+    let inf = one / zero
+    let nan = zero / zero
+    print(inf)
+    print(-inf)
+    print(nan)
+    print(nan == nan)
+    print(nan != nan)
+    print(nan < one)
+    print(inf > f32.MAX)
+    print(f32.INFINITY)
+    print(f32.NAN.is_nan())
+}
+// expect: inf
+// expect: -inf
+// expect: nan
+// expect: false
+// expect: true
+// expect: false
+// expect: true
+// expect: inf
+// expect: true

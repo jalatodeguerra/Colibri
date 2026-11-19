@@ -1,0 +1,19 @@
+fn fnv1a(s: str) -> u64 {
+    var h: u64 = 14695981039346656037
+    for b in s.bytes() {
+        h ^= u64(b)
+        h = h.wrapping_mul(1099511628211)
+    }
+    return h
+}
+
+fn main() {
+    print(fnv1a(""))
+    print(fnv1a("a"))
+    print(fnv1a("hello"))
+    print("{fnv1a("hello"):x}")
+}
+// expect: 14695981039346656037
+// expect: 12638187200555641996
+// expect: 11831194018420276491
+// expect: a430d84680aabd0b

@@ -1,0 +1,7 @@
+fn main() {
+    let a = int("12") // error: cannot convert a value of type `str` to `int`
+    let b = u8(true) // error: cannot convert a value of type `bool` to `u8`
+    let c = float('x') // error: cannot convert a value of type `char` to `float`
+    let xs = [1]
+    let d = i32(xs) // error: cannot convert a value of type `List[int]` to `i32`
+}

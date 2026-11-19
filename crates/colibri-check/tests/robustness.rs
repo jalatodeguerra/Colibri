@@ -212,6 +212,26 @@ fn token_soup_does_not_panic() {
         "Pair[int, str]",
         "type",
         "Dyn",
+        "u8",
+        "i32",
+        "u64",
+        "f32",
+        "<<",
+        ">>",
+        "&",
+        "|",
+        "^",
+        "~",
+        "<<=",
+        ">>=",
+        "&=",
+        "|=",
+        "^=",
+        ".MAX",
+        "u8(",
+        "wrapping_add",
+        "255",
+        "18446744073709551615",
     ];
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     for _ in 0..8000 {
@@ -429,6 +449,88 @@ fn closure_programs_do_not_panic() {
         // The same fragments at module level, where declarations are allowed.
         check_str(&body.join("\n"));
         // And cut off in the middle.
+        let cut = (rng.next() % (src.len() as u64 + 1)) as usize;
+        if src.is_char_boundary(cut) {
+            check_str(&src[..cut]);
+        }
+    }
+}
+
+#[test]
+fn numeric_programs_do_not_panic() {
+    // Sized integers, `f32`, conversions, constants and the bitwise operators, shuffled.
+    const FRAGMENTS: &[&str] = &[
+        "let a: u8 = 255",
+        "let b: u8 = 256",
+        "let c: i8 = -129",
+        "var d: u64 = 18446744073709551615",
+        "let e: u64 = 18446744073709551616",
+        "let f: f32 = 0.1",
+        "let g: float = f",
+        "let h: f32 = g",
+        "let i: int = a",
+        "let j = a + b",
+        "let k = a & b",
+        "let l = a << 3",
+        "let m = d >> 63",
+        "let n = d << d",
+        "let o = ~a",
+        "let p = ~f",
+        "let q = f & 1",
+        "let r = true | false",
+        "let s = -a",
+        "let t = -d",
+        "let u = u8(1000)",
+        "let v = u8(f)",
+        "let w = f32(a, b)",
+        "let x = int(\"1\")",
+        "let y = u8.MAX + 1",
+        "let z = i64.MIN.abs()",
+        "let a1 = f32.NAN.is_nan()",
+        "let a2 = a.wrapping_add(b)",
+        "let a3 = a.checked_mul(a) or 0",
+        "let a4 = a.pow(f)",
+        "let a5 = a.nothing()",
+        "let a6 = u8.NOPE",
+        "let a7 = u8",
+        "d <<= 64",
+        "d >>= a",
+        "a &= 1.5",
+        "a |= true",
+        "a ^= a",
+        "f += g",
+        "g += f",
+        "f <<= 1",
+        "for q in 0..a { print(q) }",
+        "for q in 0..d { print(q) }",
+        "let m1 = match a { 0 => 1, 256 => 2, 1..=300 => 3, _ => 4 }",
+        "let m2: Set[f32] = Set([])",
+        "let m3: List[u8] = [1, 2, 300]",
+        "print(m3.sum())",
+        "print(\"{a:x} {f:x} {d:b} {f:.2}\")",
+        "let m4 = a as u16",
+        "impl Show for u8 { fn show(self) -> str => \"x\" }",
+        "let m5 = 1 << 100",
+        "let m6 = 0xFFFF_FFFF_FFFF_FFFF_F",
+        "let m7 = -9223372036854775809",
+        "let m8 = - - 1",
+        "let m9 = ~~~a",
+        "let n1 = a == b",
+        "let n2 = f == g",
+        "let n3 = f < 1",
+        "let n4 = 1.5 < a",
+    ];
+    let mut rng = Rng(0x7a5e_11c0_ffee_d00d);
+    for _ in 0..4000 {
+        let n = 1 + rng.next() % 9;
+        let body: Vec<&str> = (0..n)
+            .map(|_| FRAGMENTS[(rng.next() % FRAGMENTS.len() as u64) as usize])
+            .collect();
+        let prefix =
+            "let a: u8 = 1\nlet b: u8 = 2\nlet f: f32 = 0.5\nlet g: float = 2.0\nvar d: u64 = 3\n";
+        let src = format!("fn main() {{\n{prefix}{}\n}}\n", body.join("\n"));
+        check_str(&src);
+        check_str(&body.join("\n"));
         let cut = (rng.next() % (src.len() as u64 + 1)) as usize;
         if src.is_char_boundary(cut) {
             check_str(&src[..cut]);

@@ -1,0 +1,10 @@
+fn rotl(x: u8, n: u8) -> u8 => (x << n) | (x >> (8 - n))
+
+fn main() {
+    print(rotl(0b1010_0101, 3))
+    print("{rotl(0b1000_0001, 1):08b}")
+    print(rotl(5, 0 + 1))
+}
+// expect: 45
+// expect: 00000011
+// expect: 10

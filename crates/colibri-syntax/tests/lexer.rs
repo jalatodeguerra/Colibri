@@ -427,6 +427,13 @@ fn punctuation() {
         ),
         "( ) [ ] { } , . .. ..= : Semi -> => = == != < <= > >= + - * / % += -= *= /= %= && || ! ? @ | & ^ ~ << >>"
     );
+    assert_eq!(
+        raw("&= |= ^= <<= >>= << >> <= >= & | ^ <"),
+        "&= |= ^= <<= >>= << >> <= >= & | ^ <"
+    );
+    assert_eq!(raw("a<<=1"), "Ident(a) <<= Int(1)");
+    assert_eq!(raw("a>>=b"), "Ident(a) >>= Ident(b)");
+    assert_eq!(raw("a&&=b"), "Ident(a) && = Ident(b)");
     assert_eq!(raw("a..b"), "Ident(a) .. Ident(b)");
     assert_eq!(raw("x==-1"), "Ident(x) == - Int(1)");
     assert_eq!(raw("|e|"), "| Ident(e) |");

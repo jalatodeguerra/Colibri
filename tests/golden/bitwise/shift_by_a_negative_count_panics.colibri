@@ -1,0 +1,5 @@
+fn main() {
+    let x: int = 1
+    let n = 0 - 1
+    print(x >> n) // panic: shift by -1 is out of range for `int`
+}

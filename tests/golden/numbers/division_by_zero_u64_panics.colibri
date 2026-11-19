@@ -1,0 +1,7 @@
+fn main() {
+    let a: u64 = 18446744073709551615
+    let z: u64 = 0
+    print(a / a)
+    print(a / z) // panic: division by zero
+}
+// expect: 1

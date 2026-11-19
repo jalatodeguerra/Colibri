@@ -1,0 +1,16 @@
+fn make_counter(step: u8) -> fn() -> u8 {
+    var n: u8 = 0
+    return fn() -> u8 {
+        n += step
+        return n
+    }
+}
+
+fn main() {
+    let next = make_counter(100)
+    print(next())
+    print(next())
+    print(next()) // panic: integer overflow
+}
+// expect: 100
+// expect: 200

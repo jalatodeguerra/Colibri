@@ -1,0 +1,9 @@
+fn half(x: float) -> float => x / 2.0
+
+fn main() {
+    let n = 7
+    print(half(n)) // error: expected `float`, found `int`
+    let m: int = 3
+    let f: float = m // error: expected `float`, found `int`
+    print(n + 0.5) // error: cannot apply `+` to `int` and `{float}`
+}

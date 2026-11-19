@@ -1,0 +1,7 @@
+fn main() {
+    let a: u8 = 5
+    let z: u8 = 0
+    print(a / 1)
+    print(a / z) // panic: division by zero
+}
+// expect: 5

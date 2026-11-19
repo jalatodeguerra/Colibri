@@ -1,0 +1,7 @@
+fn main() {
+    let a: u8 = 5
+    let b = -a // error: cannot negate a value of type `u8`
+    let c: u64 = 1
+    let d = -c // error: cannot negate a value of type `u64`
+    let e: u32 = -(5) // error: cannot negate a value of type `u32`
+}

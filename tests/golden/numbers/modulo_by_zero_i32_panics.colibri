@@ -1,0 +1,7 @@
+fn main() {
+    let a: i32 = 5
+    let z: i32 = 0
+    print(a % 5)
+    print(a % z) // panic: modulo by zero
+}
+// expect: 0

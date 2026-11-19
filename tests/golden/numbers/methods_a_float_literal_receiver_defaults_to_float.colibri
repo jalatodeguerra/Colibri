@@ -1,0 +1,9 @@
+fn main() {
+    let x = 9.0
+    print(x.sqrt())
+    print((2.5).floor())
+    print((7).max(9))
+}
+// expect: 3.0
+// expect: 2.0
+// expect: 9

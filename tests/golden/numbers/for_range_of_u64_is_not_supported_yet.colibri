@@ -1,0 +1,6 @@
+fn main() {
+    let n: u64 = 3
+    for i in 0..n { // error: a `for` range of `u64` is not supported yet
+        print(i)
+    }
+}

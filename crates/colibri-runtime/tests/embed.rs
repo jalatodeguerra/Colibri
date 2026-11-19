@@ -415,3 +415,71 @@ fn host_signatures_cannot_name_user_types() {
     // A struct is not a host type, so the signature never matches and nothing panics.
     assert!(vm.get_fn::<(), i64>("make").is_err());
 }
+
+const NUMERIC_SCRIPT: &str = r#"
+fn scale(v: f32, by: f32) -> f32 => v * by
+fn widen(v: f32) -> float => v
+fn add_bytes(a: u8, b: u8) -> u8 => a + b
+fn mix(a: i8, b: i16, c: i32, d: u16, e: u32) -> i64 => int(a) + int(b) + int(c) + int(d) + int(e)
+fn big(x: u64) -> u64 => x - 1
+fn tag(x: i32) {
+    print("tag {x}")
+}
+"#;
+
+fn numeric_vm() -> (colibri::Vm, colibri::SharedBuffer) {
+    let (mut vm, out) = vm_with_output();
+    vm.load_source("numeric.colibri", NUMERIC_SCRIPT)
+        .expect("script loads");
+    (vm, out)
+}
+
+#[test]
+fn f32_and_sized_integers_cross_the_boundary() {
+    let (mut vm, out) = numeric_vm();
+    let scale = vm.get_fn::<(f32, f32), f32>("scale").unwrap();
+    assert_eq!(scale.call(&mut vm, (0.1, 3.0)).unwrap(), 0.1f32 * 3.0);
+    let widen = vm.get_fn::<(f32,), f64>("widen").unwrap();
+    assert_eq!(widen.call(&mut vm, (0.1,)).unwrap(), f64::from(0.1f32));
+    let add = vm.get_fn::<(u8, u8), u8>("add_bytes").unwrap();
+    assert_eq!(add.call(&mut vm, (100, 155)).unwrap(), 255);
+    let mix = vm.get_fn::<(i8, i16, i32, u16, u32), i64>("mix").unwrap();
+    assert_eq!(
+        mix.call(&mut vm, (-128, -32768, i32::MIN, 65535, u32::MAX))
+            .unwrap(),
+        -128 - 32768 + i64::from(i32::MIN) + 65535 + i64::from(u32::MAX)
+    );
+    let big = vm.get_fn::<(u64,), u64>("big").unwrap();
+    assert_eq!(big.call(&mut vm, (u64::MAX,)).unwrap(), u64::MAX - 1);
+    vm.get_fn::<(i32,), ()>("tag")
+        .unwrap()
+        .call(&mut vm, (-7,))
+        .unwrap();
+    assert_eq!(out.contents(), "tag -7\n");
+}
+
+#[test]
+fn arithmetic_overflow_in_a_sized_function_is_a_panic_to_the_host() {
+    let (mut vm, _) = numeric_vm();
+    let add = vm.get_fn::<(u8, u8), u8>("add_bytes").unwrap();
+    match add.call(&mut vm, (200, 100)).unwrap_err() {
+        colibri::Error::Panic { message, .. } => assert_eq!(message, "integer overflow"),
+        other => panic!("unexpected error: {other:?}"),
+    }
+    // The VM is still usable.
+    assert_eq!(add.call(&mut vm, (1, 2)).unwrap(), 3);
+}
+
+#[test]
+fn sized_signatures_are_checked_against_the_script() {
+    let (vm, _) = numeric_vm();
+    // `f32` is not `f64`, `u8` is not `i64`, `u8` is not `i8`, `i64` is `int`.
+    assert!(vm.get_fn::<(f64, f64), f64>("scale").is_err());
+    assert!(vm.get_fn::<(i64, i64), i64>("add_bytes").is_err());
+    assert!(vm.get_fn::<(i8, i8), i8>("add_bytes").is_err());
+    assert!(vm.get_fn::<(u64,), i64>("big").is_err());
+    let err = vm.get_fn::<(f64,), f64>("widen").unwrap_err();
+    assert!(err.to_string().contains("`fn(f32) -> float`"), "{err}");
+    assert!(err.to_string().contains("`fn(float) -> float`"), "{err}");
+    assert!(vm.get_fn::<(f32,), f64>("widen").is_ok());
+}

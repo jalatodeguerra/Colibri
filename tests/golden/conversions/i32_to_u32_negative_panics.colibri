@@ -1,0 +1,7 @@
+fn main() {
+    let a: i32 = 7
+    print(u32(a))
+    let b: i32 = -7
+    print(u32(b)) // panic: value -7 does not fit in `u32`
+}
+// expect: 7

@@ -1,0 +1,20 @@
+struct Pixel {
+    r: u8
+    g: u8
+    b: u8
+    alpha: f32
+}
+
+fn brighten(p: Pixel) -> Pixel {
+    return Pixel { r: p.r.saturating_add(100), g: p.g.saturating_add(100), b: p.b.saturating_add(100), alpha: p.alpha }
+}
+
+fn main() {
+    let p = Pixel { r: 10, g: 200, b: 255, alpha: 0.5 }
+    print(p)
+    print(brighten(p))
+    print(p == p)
+}
+// expect: Pixel { r: 10, g: 200, b: 255, alpha: 0.5 }
+// expect: Pixel { r: 110, g: 255, b: 255, alpha: 0.5 }
+// expect: true

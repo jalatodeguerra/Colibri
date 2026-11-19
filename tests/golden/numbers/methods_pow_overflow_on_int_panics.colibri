@@ -1,0 +1,6 @@
+fn main() {
+    let a: int = 2
+    print(a.pow(62))
+    print(a.pow(63)) // panic: integer overflow
+}
+// expect: 4611686018427387904
