@@ -1,11 +1,11 @@
-# Leo
+# Noble
 
-Leo is a statically typed programming language for **scripting and game development**,
+Noble is a statically typed programming language for **scripting and game development**,
 implemented in Rust. It aims for syntax as simple as Go or Python (with braces), memory
 management by compiler-optimized reference counting, and two ways to run the same code: an
 interpreter with hot reload for fast iteration, and native builds via Cranelift.
 
-```leo
+```noble
 fn greet(name: str) -> str {
     return "Hello, {name}!"
 }
@@ -29,12 +29,12 @@ Design phase. Nothing is implemented yet. The language design is in
 - Errors as values: `Result[T]`, `?`, `or` fallback, no exceptions
 - Enums with exhaustive `match`, interfaces, no inheritance
 - Game-dev built-ins: `vec2`/`vec3`/`vec4`, C-layout structs, easy C FFI
-- Embeddable in Rust engines, and Rust crates usable from Leo via a binding layer
-- One `leo` binary: `run`, `build`, `test`, `fmt`
+- Embeddable in Rust engines, and Rust crates usable from Noble via a binding layer
+- One `noble` binary: `run`, `build`, `test`, `fmt`
 
 ## Roadmap
 
 1. Language core on a tree-walking interpreter (lexer, parser, type checker)
 2. Game slice on the interpreter: vector types, coroutines, a built-in game kit, hot reload, and a first small game
-3. Bytecode VM (fast `leo run`, embedding, web builds)
+3. Bytecode VM (fast `noble run`, embedding, web builds)
 4. Cranelift native builds and RC optimizations
