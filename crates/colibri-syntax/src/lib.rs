@@ -12,7 +12,7 @@ mod token;
 
 pub use diagnostic::{Diagnostic, Severity};
 pub use lexer::lex;
-pub use parser::parse_file;
+pub use parser::{parse_file, parse_interface_file};
 pub use source::{FileId, SourceMap, Span};
 pub use terminate::insert_terminators;
 pub use token::{StrLit, StrPart, Token, TokenKind};

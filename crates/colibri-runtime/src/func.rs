@@ -5,10 +5,11 @@ use std::marker::PhantomData;
 use colibri_check::hir::FnId;
 
 use crate::convert::{Args, FromColibri};
+use crate::ctx::Caller;
 use crate::error::Error;
-use crate::vm::Vm;
 
-/// A handle to a Colibri function with the Rust signature `A -> R`, from [`Vm::get_fn`].
+/// A handle to a Colibri function with the Rust signature `A -> R`, from
+/// [`crate::Vm::get_fn`].
 ///
 /// It is `Copy` and does not borrow the `Vm`; pass the `Vm` to [`Fn::call`]. The signature is
 /// checked once, when the handle is made.
@@ -52,8 +53,15 @@ impl<A, R> std::fmt::Debug for Fn<A, R> {
 impl<A: Args, R: FromColibri> Fn<A, R> {
     /// Calls the function. A panic in Colibri comes back as `Err(Error::Panic { .. })` and
     /// leaves the `Vm` usable.
-    pub fn call(&self, vm: &mut Vm, args: A) -> Result<R, Error> {
-        let value = vm.call_id(self.id, (self.vm, self.epoch), args.into_values())?;
-        R::from_colibri(value)
+    ///
+    /// `caller` is the [`crate::Vm`], or the [`crate::Ctx`] of a host function that calls back
+    /// into the script (the call then shares the instruction budget of the entry it is in).
+    pub fn call(&self, caller: &mut impl Caller, args: A) -> Result<R, Error> {
+        let mut cx = caller.ctx();
+        let args = args.into_values(&mut cx);
+        let value = cx.call_fn(self.id, (self.vm, self.epoch), args)?;
+        let result = R::from_colibri(&value, &mut cx);
+        cx.release(value);
+        result
     }
 }

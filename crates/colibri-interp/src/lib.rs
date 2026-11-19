@@ -5,6 +5,7 @@
 //! one `exit_scope`, and calls look functions up by id at call time. Hosts use it through
 //! `colibri-runtime`, not directly.
 
+mod budget;
 mod builtin;
 mod clone;
 mod closure;
@@ -17,6 +18,7 @@ mod forloop;
 mod format;
 mod heap;
 mod hooks;
+mod host;
 mod iter;
 mod listfn;
 mod num;
@@ -30,11 +32,13 @@ mod show;
 mod strfn;
 mod value;
 
+pub use budget::GRACE_STEPS;
 pub use compare::{TooDeep, values_cmp, values_equal};
 pub use ctl::{Ctl, Eval, PanicInfo, TraceEntry};
 pub use eval::{DEFAULT_NATIVE_STACK_BUDGET, Interp};
 pub use fiber::Fiber;
 pub use format::format_value;
 pub use heap::{ClassObj, GuardToken, ListObj, MapObj, SetObj};
+pub use host::{HostFault, HostImpl, RootDropQueue, RootHandle, map_value};
 pub use show::{show, show_float};
 pub use value::{DynVal, EnumVal, RangeVal, StructVal, Value};

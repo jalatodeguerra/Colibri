@@ -26,6 +26,18 @@ pub fn parse_file(file: FileId, src: &str) -> (File, Vec<Diagnostic>) {
     (ast, diags)
 }
 
+/// Parses an interface file (`.cbi`, DESIGN §15.4 and EMBEDDING §4): ordinary Colibri
+/// declarations in which functions and methods of `impl` blocks have no body.
+pub fn parse_interface_file(file: FileId, src: &str) -> (File, Vec<Diagnostic>) {
+    let (tokens, mut diags) = crate::tokenize(file, src);
+    let mut parser = Parser::new(file, src, tokens);
+    parser.interface_mode = true;
+    let ast = parser.parse_file();
+    diags.append(&mut parser.diags);
+    diags.sort_by_key(|d| d.span.start);
+    (ast, diags)
+}
+
 /// Marker for "an error was already reported".
 #[derive(Debug)]
 pub(crate) struct Failed;
@@ -56,6 +68,8 @@ pub(crate) struct Parser<'a> {
     last_error: Option<u32>,
     /// Current nesting of expressions, types, patterns and blocks.
     depth: u32,
+    /// Parsing an interface file: functions and `impl` methods may omit their body.
+    interface_mode: bool,
 }
 
 /// How deeply constructs may nest before the parser gives up, so that hostile
@@ -94,6 +108,7 @@ impl<'a> Parser<'a> {
             no_struct: false,
             last_error: None,
             depth: 0,
+            interface_mode: false,
         }
     }
 

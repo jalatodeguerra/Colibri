@@ -89,6 +89,10 @@ impl Interp {
                     }
                 }
                 Some(Cleanup::Defer(stmt)) => {
+                    // Past the grace of an exhausted budget, deferred statements are skipped.
+                    if self.budget_is_dead() {
+                        continue;
+                    }
                     if let Err(ctl) = self.exec_stmt(fiber, &stmt) {
                         result = self.fold_cleanup_failure(result, ctl);
                     }
@@ -106,6 +110,7 @@ impl Interp {
                 span: colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),
                 stack: Vec::new(),
                 notes: Vec::new(),
+                budget: false,
             }),
             // The checker does not allow these in a `defer`; they carry nothing to keep.
             Ctl::Break(_, v) | Ctl::Return(v) => {
@@ -114,12 +119,29 @@ impl Interp {
             }
             Ctl::Continue(_) => return result,
         };
+        self.merge_failure(result, failure, "a deferred statement also panicked")
+    }
+
+    /// `failure` happened while `result` was on its way out. The first panic is the one
+    /// reported and `failure` rides along as a note, except that running out of budget always
+    /// wins (the host must see it), and a second budget failure adds nothing.
+    fn merge_failure(&mut self, result: Eval, failure: Box<PanicInfo>, what: &str) -> Eval {
         match result {
+            Err(Ctl::Panic(mut first)) if first.budget => {
+                // The grace of an exhausted budget ran out too; nothing to add.
+                let _ = failure;
+                first.budget = true;
+                Err(Ctl::Panic(first))
+            }
+            Err(Ctl::Panic(first)) if failure.budget => {
+                let mut winner = failure;
+                winner
+                    .notes
+                    .push(format!("while unwinding the panic: {}", first.message));
+                Err(Ctl::Panic(winner))
+            }
             Err(Ctl::Panic(mut first)) => {
-                first.notes.push(format!(
-                    "a deferred statement also panicked: {}",
-                    failure.message
-                ));
+                first.notes.push(format!("{what}: {}", failure.message));
                 first.notes.extend(failure.notes);
                 Err(Ctl::Panic(first))
             }
@@ -139,19 +161,7 @@ impl Interp {
         let mut panics = std::mem::take(&mut self.hook_panics).into_iter();
         let mut result = result;
         for failure in &mut panics {
-            result = match result {
-                Err(Ctl::Panic(mut first)) => {
-                    first
-                        .notes
-                        .push(format!("a `Drop` hook also panicked: {}", failure.message));
-                    first.notes.extend(failure.notes);
-                    Err(Ctl::Panic(first))
-                }
-                other => {
-                    self.release_outcome(other);
-                    Err(Ctl::Panic(Box::new(failure)))
-                }
-            };
+            result = self.merge_failure(result, Box::new(failure), "a `Drop` hook also panicked");
         }
         result
     }

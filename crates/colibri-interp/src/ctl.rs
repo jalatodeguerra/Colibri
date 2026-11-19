@@ -38,6 +38,8 @@ pub struct PanicInfo {
     /// Further panics that happened while this one was unwinding (in `defer` statements); the
     /// first panic is the one reported and these ride along.
     pub notes: Vec<String>,
+    /// The instruction budget ran out (EMBEDDING §5): the panic is not the program's own.
+    pub budget: bool,
 }
 
 /// Evaluation outcomes the host can see: only panics and cancellation leave the interpreter.
@@ -49,12 +51,14 @@ pub(crate) fn into_panic(ctl: Ctl, fallback: Span) -> Box<PanicInfo> {
             span: fallback,
             stack: Vec::new(),
             notes: Vec::new(),
+            budget: false,
         }),
         Ctl::Break(..) | Ctl::Continue(_) | Ctl::Return(_) => Box::new(PanicInfo {
             message: "internal error: control flow escaped its function".to_string(),
             span: fallback,
             stack: Vec::new(),
             notes: Vec::new(),
+            budget: false,
         }),
     }
 }

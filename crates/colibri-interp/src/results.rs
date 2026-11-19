@@ -99,7 +99,7 @@ impl Interp {
     // ---- making errors ----
 
     /// A new root error that keeps `value`, converted through the implementation `impl_id`.
-    fn new_error(value: Value, impl_id: i64) -> Value {
+    pub(crate) fn new_error(value: Value, impl_id: i64) -> Value {
         Value::Obj(ClassObj::new(
             ERROR_TYPE,
             vec![value, Value::Int(impl_id), Value::Unit, Value::Unit],

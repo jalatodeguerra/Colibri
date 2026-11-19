@@ -806,3 +806,84 @@ turns out to matter, it moves into DESIGN.md.
   floats (both) are not hashable.
 - **Embedding.** `IntoColibri`/`FromColibri` exist for `i8 i16 i32 i64 u8 u16 u32 u64 f32 f64`;
   `get_fn` compares the Rust signature with the script's (`i64` is `int`, `f64` is `float`).
+  Superseded by section 9, which describes the context-taking traits and `TypeDesc`.
+
+## 9. Slice 7a as built: the embedding API, host functions
+
+Part A of PHASE1 item 8: everything except host classes (`#[colibri::export]`, `Handle<T>`,
+`Ref<T>`, the host heap), which is part B. `TypeDesc::Host(name)` and `.cbi` `@host class` /
+body-less `impl` methods already parse, so B only has to add the runtime half.
+
+**Host input to the checker is text.** `register_fn` derives a signature (`SigDesc`) from the Rust
+closure type; the `Vm` prints all signatures as canonical `.cbi` text and re-parses that text
+into a `colibri_check::HostEnv`. The checker never sees a Rust type. A `.cbi` file read by
+`colibri check --interface` takes the same path (`HostEnv::from_text`), so the CLI and a live
+`Vm` check identically. `register_fn` validates by that print-and-parse round trip and rolls
+the registration back on failure (name clash, unparsable type). The `HostEnv` items are declared
+after the prelude and before user items, so host `TypeId`s are `FIRST_USER_TYPE + index`.
+Host fns become `FnInfo`s without a body (`host: Some(HostFnInfo)`), calls lower to
+`Callee::Host(HostFnId)`, and `Program.fns` holds an empty stub `Body` per host fn so that
+traces, depth and fn ids need no special case. `Program.host_fns` lists `name`, an
+`f: HostFnId` slot and `requires`. A host fn used as a value is a checker error ("wrap it in a
+closure"); a script item with a host name is "`x` is a host function and cannot be redefined".
+Diagnostics whose span is in the host text (`HOST_FILE`) are moved to the start of the user file
+with the prefix "in the host interface:"; labels in prelude or host text are dropped.
+
+**Interface text.** `// Generated ...` comment, then `@interface(format = 1, module = "host",
+hash = "...", caps = [...])`, then one item per line. The hash is FNV-1a 64 over everything after
+the header line, so a hand edit is detected when reading (`Error::Interface`) and a stale file
+when verifying (`Vm::verify_interface` -> `Error::InterfaceMismatch`). `write_interface`
+writes only when the text changed and returns whether it did. Only the `host` module exists;
+several files merge into it. The header line is parsed by hand and blanked (same length, so
+spans stay right) before the body goes to `parse_interface_file`, which allows body-less `fn`
+and methods. Attributes: `@requires(cap)`, `@positional` and `@host`.
+
+**Runtime ABI.** `HostFn<Marker>` is implemented for closures of arity 0..=8, with or without a
+leading `&mut Ctx`, and erased to the non-generic `RawHostFn(&mut Ctx, &[Value]) -> Result<Value,
+HostFault>` indexed by `HostFnId`. The interpreter trampoline pushes a pseudo frame (the stub
+body) so traces name the host fn, bumps `fiber.host_depth`, converts `Vec<Value>` to the opaque
+`colibri::Value` borrowing the arguments, wraps the call in `catch_unwind(AssertUnwindSafe)` and
+releases the arguments afterwards. A Rust panic becomes a Colibri panic whose message is
+``host function `name` panicked: ..``. `Ctx` is `{interp, fiber}`; `Caller` is implemented for
+`Vm` and `Ctx`, so `Fn::call` and `Callback::call` work from inside a host fn and run the
+script on the same fiber. Host state is a `TypeId -> Box<dyn Any>` map in the interpreter.
+
+**Capabilities.** `Cap` is `#[non_exhaustive]`; `CapSet` a bit set. The host grants with
+`VmBuilder::allow`; `Registration::requires` tags a function. The checker reports an ungranted
+call at the use site ("`read_save` needs the `fs` capability, which this host did not grant")
+and `extern` blocks without `ffi` are an error. An ungranted function is never installed: its
+slot stays a trap, which cannot be reached because the checker refused every call.
+
+**Instruction budget.** Interp `budget.rs`. `steps_left: i64` is decremented with one branch per
+statement, call (script and host), loop iteration, and per element in built-ins that walk a
+collection or string (`work_of`). Each outermost entry from the host gets a fresh allotment
+(`begin_entry`/`end_entry`); a reentrant entry shares it. Exhaustion unwinds like a panic
+(`PanicInfo.budget`) and wins over an ordinary panic when both happen (`merge_failure`). It
+grants 10,000 grace steps so `defer` and `Drop` hooks can run; after the grace, defers and hooks
+are skipped, though plain releases still happen, so the heap stays consistent. The result is
+`Error::BudgetExhausted { location, stack }`; the `Vm` stays usable. A script that swallows the
+unwinding with `or` still ends in the error at the outermost entry. Release and shutdown entries
+do not record the budget outcome.
+
+**Callbacks.** The interpreter keeps a root slab (generation + epoch handles). `Vm::find_fn`
+returns a `Callback<A, R>` that roots the function value; dropping it pushes the handle on a
+drop queue (`Rc<Cell<Vec<..>>>`) that is drained at the start of every outermost entry, so no
+release happens at an arbitrary point. After `shutdown` or a reload the epoch moved, so a
+callback returns `Err(StaleHandle)`.
+
+Decisions the design documents did not fix:
+
+- `@positional` marks registered functions whose parameter names are placeholders (`a`, `b`,
+  `c`, ...), so a named-argument call is rejected ("`x` takes positional arguments only").
+- `register_fn` returns `Result<Registration, Error>`; conflicts are immediate errors. After
+  load it is `Error::AlreadyLoaded`.
+- Host fn parameters cannot be `&str` (no `unsafe` means no lifetime-erased borrow): use
+  `String`. `&[T]` is accepted for `get_fn`-style arguments only.
+- `HashMap` converts out only, sorted by key (`K: Ord`) so output is deterministic; `BTreeMap`
+  both ways. `usize`/`isize` are range-checked in and panic out above `i64::MAX`.
+- `Option[T]` prints as `Option[T]` in `.cbi` text.
+- `Vm::shutdown` unloads the program and bumps the epoch; the `Vm` can load again.
+- A panic raised inside a reentrant call shows the whole active stack including the host frame.
+- Host classes in `.cbi` produce a checker "not supported yet" error until part B.
+- `colibri_lang::vm_builder()` (used by goldens) grants nothing; the CLI `run` grants all and
+  `check` grants all.

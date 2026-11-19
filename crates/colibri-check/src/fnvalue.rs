@@ -39,6 +39,16 @@ impl FnCtx<'_, '_> {
         if poisoned {
             return self.error_expr(span);
         }
+        if self.ck.fns[f.0 as usize].host.is_some() {
+            self.ck.report(
+                Diagnostic::error(
+                    format!("the host function `{name}` cannot be used as a value"),
+                    span,
+                )
+                .with_hint(format!("wrap it in a closure: `fn(..) => {name}(..)`")),
+            );
+            return self.error_expr(span);
+        }
         if receiver.is_some() {
             let owner_name = name.rsplit_once('.').map_or(name.as_str(), |(o, _)| o);
             self.ck.report(

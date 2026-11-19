@@ -90,8 +90,32 @@ pub enum Error {
     /// The function handle belongs to another `Vm`, or to a program that has since been
     /// replaced.
     StaleHandle,
-    /// A value could not be converted (a bug in the embedding layer).
+    /// A value could not be converted: it has another Colibri type than the Rust side
+    /// expects, or does not fit the Rust type (a negative `int` for a `usize`).
+    Convert(String),
+    /// An internal inconsistency of the embedding layer.
     Internal(String),
+    /// A host function or type could not be registered (EMBEDDING §1): the name is taken, is not
+    /// a valid name, or a type was described in two ways.
+    Registration { name: String, message: String },
+    /// The instruction budget ran out (EMBEDDING §5). The `Vm` stays usable; the next entry gets
+    /// a fresh allotment.
+    BudgetExhausted {
+        /// Where the script was when the budget ran out; `None` if nothing was running.
+        location: Option<Location>,
+        /// The Colibri call stack, innermost first.
+        stack: Vec<StackFrame>,
+    },
+    /// An interface file (`.cbi`) does not match what the host registered.
+    InterfaceMismatch {
+        path: String,
+        /// The hash of the interface the host registered.
+        expected: String,
+        /// The hash the file says it has, if it could be read.
+        found: Option<String>,
+    },
+    /// An interface file could not be understood.
+    Interface { path: String, message: String },
 }
 
 /// How many frames of a long stack trace are shown at each end.
@@ -108,35 +132,48 @@ impl Error {
                 location,
                 stack,
                 notes,
-            } => {
-                let mut out = format!("panic: {message}\n");
-                if stack.is_empty()
-                    && let Some(at) = location
-                {
-                    out.push_str(&format!("  at {at}\n"));
-                }
-                let shown = |out: &mut String, frame: &StackFrame| {
-                    out.push_str(&format!("  at {} ({})\n", frame.function, frame.location));
-                };
-                if stack.len() > 2 * TRACE_EDGE {
-                    stack[..TRACE_EDGE].iter().for_each(|f| shown(&mut out, f));
-                    let hidden = stack.len() - 2 * TRACE_EDGE;
-                    out.push_str(&format!("  ... {hidden} more calls ...\n"));
-                    stack[stack.len() - TRACE_EDGE..]
-                        .iter()
-                        .for_each(|f| shown(&mut out, f));
-                } else {
-                    stack.iter().for_each(|f| shown(&mut out, f));
-                }
-                for note in notes {
-                    out.push_str(&format!("  note: {note}\n"));
-                }
-                out
-            }
+            } => render_trace(format!("panic: {message}\n"), location, stack, notes),
+            Error::BudgetExhausted { location, stack } => render_trace(
+                "error: the instruction budget is exhausted\n".to_string(),
+                location,
+                stack,
+                &[],
+            ),
             Error::MainReturnedErr { message } => format!("error: {message}\n"),
             other => format!("{other}\n"),
         }
     }
+}
+
+/// A headline, then the stack, then the notes.
+fn render_trace(
+    mut out: String,
+    location: &Option<Location>,
+    stack: &[StackFrame],
+    notes: &[String],
+) -> String {
+    if stack.is_empty()
+        && let Some(at) = location
+    {
+        out.push_str(&format!("  at {at}\n"));
+    }
+    let shown = |out: &mut String, frame: &StackFrame| {
+        out.push_str(&format!("  at {} ({})\n", frame.function, frame.location));
+    };
+    if stack.len() > 2 * TRACE_EDGE {
+        stack[..TRACE_EDGE].iter().for_each(|f| shown(&mut out, f));
+        let hidden = stack.len() - 2 * TRACE_EDGE;
+        out.push_str(&format!("  ... {hidden} more calls ...\n"));
+        stack[stack.len() - TRACE_EDGE..]
+            .iter()
+            .for_each(|f| shown(&mut out, f));
+    } else {
+        stack.iter().for_each(|f| shown(&mut out, f));
+    }
+    for note in notes {
+        out.push_str(&format!("  note: {note}\n"));
+    }
+    out
 }
 
 impl fmt::Display for Error {
@@ -179,7 +216,30 @@ impl fmt::Display for Error {
             Error::StaleHandle => {
                 f.write_str("this function handle belongs to another Vm or to a replaced program")
             }
+            Error::Convert(message) => write!(f, "cannot convert the value: {message}"),
             Error::Internal(message) => write!(f, "internal error: {message}"),
+            Error::Registration { name, message } => {
+                write!(f, "cannot register `{name}`: {message}")
+            }
+            Error::BudgetExhausted { location, .. } => match location {
+                Some(at) => write!(f, "the instruction budget is exhausted (at {at})"),
+                None => f.write_str("the instruction budget is exhausted"),
+            },
+            Error::InterfaceMismatch {
+                path,
+                expected,
+                found,
+            } => match found {
+                Some(found) => write!(
+                    f,
+                    "the interface file `{path}` has hash {found}, but the host's interface has hash {expected}"
+                ),
+                None => write!(
+                    f,
+                    "the interface file `{path}` does not match the host's interface (hash {expected})"
+                ),
+            },
+            Error::Interface { path, message } => write!(f, "{path}:{message}"),
         }
     }
 }

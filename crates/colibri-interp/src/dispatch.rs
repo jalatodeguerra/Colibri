@@ -585,7 +585,13 @@ impl Interp {
                 span: body.span,
                 stack: Vec::new(),
                 notes: Vec::new(),
+                budget: false,
             });
+            return false;
+        }
+        // Past the grace of an exhausted budget, hooks no longer run (the object is released
+        // plainly).
+        if self.budget_is_dead() {
             return false;
         }
         self.hook_depth += 1;

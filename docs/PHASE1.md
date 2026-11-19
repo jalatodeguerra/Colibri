@@ -72,6 +72,8 @@ behind the same `Vm` API.
 7. Generics, interfaces, `Drop` hooks (slice 4a, built), then closures and iteration (slice 4b, built).
    The numeric tower: sized integers, `f32`, conversions, bitwise operators (slice 6a, built).
 8. Embedding API: `register_fn`, exported host types, generational handles, `.cbi`, capabilities.
+   Part A (host functions, `.cbi`, capabilities, instruction budget, callbacks) is built (slice 7a);
+   exported host types are part B.
 9. Packages and `import`; `colibri check`, minimal LSP, `colibri test`, `colibri fmt`; core std.
 10. Milestone: a small Rust program with its own game loop running gameplay logic from Colibri.
 
