@@ -635,6 +635,25 @@ fn leading_continuations() {
 }
 
 #[test]
+fn leading_dot_variant_starts_a_new_line() {
+    // `.Circle(r) =>` is a match arm with a variant shorthand, not a method call.
+    assert_eq!(
+        toks(
+            "a
+.Circle"
+        ),
+        "Ident(a) Semi . Ident(Circle) Semi"
+    );
+    assert_eq!(
+        toks(
+            "a
+.circle"
+        ),
+        "Ident(a) . Ident(circle) Semi"
+    );
+}
+
+#[test]
 fn else_on_the_next_line() {
     let src = "if a {\n  f()\n}\nelse {\n  g()\n}\nh()";
     assert_eq!(

@@ -1,0 +1,6 @@
+struct Player { name: str }
+
+let p = Player { name: "x" }
+if p == Player { name: "x" } { // error: struct literals are not allowed here
+    print("same")
+}

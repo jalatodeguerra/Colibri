@@ -1,0 +1,3 @@
+// The body of an `if` must be a block.
+let x = 1
+if x > 0 print(x) // error: expected `{` after the `if` condition

@@ -15,6 +15,7 @@ pub fn lex(file: FileId, src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
         pos: 0,
         tokens: Vec::new(),
         diags: Vec::new(),
+        hole_depth: 0,
     };
     lexer.run();
     (lexer.tokens, lexer.diags)
@@ -48,7 +49,14 @@ struct Lexer<'a> {
     pos: usize,
     tokens: Vec<Token>,
     diags: Vec<Diagnostic>,
+    /// How many interpolation holes deep the scan is (strings inside holes
+    /// inside strings ...).
+    hole_depth: u32,
 }
+
+/// Holes nested deeper than this are reported as unterminated, so hostile
+/// input cannot overflow the stack.
+const MAX_HOLE_DEPTH: u32 = 64;
 
 impl<'a> Lexer<'a> {
     // ---- cursor helpers ----
@@ -588,6 +596,16 @@ impl<'a> Lexer<'a> {
     /// the expression and the format spec end, with `pos` after the closing
     /// `}`, or `None` if the hole never closes.
     fn scan_hole(&mut self, multi: bool) -> Option<HoleEnd> {
+        if self.hole_depth >= MAX_HOLE_DEPTH {
+            return None;
+        }
+        self.hole_depth += 1;
+        let end = self.scan_hole_inner(multi);
+        self.hole_depth -= 1;
+        end
+    }
+
+    fn scan_hole_inner(&mut self, multi: bool) -> Option<HoleEnd> {
         let mut depth = 0usize;
         loop {
             let here = self.pos;
