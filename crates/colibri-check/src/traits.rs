@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use colibri_syntax::Span;
 
 use crate::hir::{ImplId, TypeDef, TypeDefKind, TypeKey};
-use crate::types::{CLONE, EQ, HASH, OPTION_TYPE, ORD, ParamId, SHOW, Ty, TypeId};
+use crate::types::{CLONE, EQ, HASH, ITER, ITERABLE, OPTION_TYPE, ORD, ParamId, SHOW, Ty, TypeId};
 
 /// `T: Hash + Eq`, one bound: an interface and its type arguments.
 #[derive(Clone, Debug, PartialEq)]
@@ -79,6 +79,7 @@ pub(crate) fn key_of(ty: &Ty) -> Option<TypeKey> {
         Ty::List(_) => TypeKey::List,
         Ty::Map(..) => TypeKey::Map,
         Ty::Set(_) => TypeKey::Set,
+        Ty::Range(_) => TypeKey::Range,
         Ty::Option(_) => TypeKey::Adt(OPTION_TYPE),
         Ty::Adt(id, _) => TypeKey::Adt(*id),
         _ => return None,
@@ -129,6 +130,7 @@ pub(crate) fn match_ty(
         (Ty::Map(a, b), Ty::Map(c, d)) | (Ty::Result(a, b), Ty::Result(c, d)) => {
             match_ty(a, c, params, subst) && match_ty(b, d, params, subst)
         }
+        (Ty::Range(a), Ty::Range(b)) => match_ty(a, b, params, subst),
         (Ty::Fn(a, r), Ty::Fn(b, s)) => all(a, b, subst) && match_ty(r, s, params, subst),
         _ => pattern == ty,
     }
@@ -170,6 +172,7 @@ impl Env<'_> {
             EQ => self.derive_with(ty, iface, visiting, Self::eq_part),
             ORD => self.derive_with(ty, iface, visiting, Self::ord_part),
             HASH => self.derive_with(ty, iface, visiting, Self::hash_part),
+            ITERABLE => self.iterable_builtin(ty, args),
             _ => Err(ty.clone()),
         }
     }
@@ -200,6 +203,21 @@ impl Env<'_> {
     /// The explicit implementation of `iface` for the head of `ty`, if there is one.
     fn user_impl_for(&self, ty: &Ty, iface: TypeId) -> Option<ImplId> {
         self.by_key.get(&(key_of(ty)?, iface)).copied()
+    }
+
+    /// The built-in collections, ranges and iterators are `Iterable` of their items.
+    fn iterable_builtin(&self, ty: &Ty, args: &[Ty]) -> Result<Source, Ty> {
+        let item = match ty {
+            Ty::List(t) | Ty::Set(t) => (**t).clone(),
+            Ty::Map(k, v) => Ty::Tuple(vec![(**k).clone(), (**v).clone()]),
+            Ty::Range(_) => Ty::INT,
+            Ty::Dyn(id, a) if *id == ITER && a.len() == 1 => a[0].clone(),
+            _ => return Err(ty.clone()),
+        };
+        match args.first() {
+            Some(a) if !matches!(a, Ty::Infer(_) | Ty::Error) && *a != item => Err(ty.clone()),
+            _ => Ok(Source::Derived),
+        }
     }
 
     /// Checks an explicit implementation against a particular instantiation: the target
@@ -301,7 +319,9 @@ impl Env<'_> {
     /// compared by identity (DESIGN §7.2).
     fn eq_part(&self, ty: &Ty) -> Part {
         match ty {
-            Ty::Int(_) | Ty::Float | Ty::Bool | Ty::Char | Ty::Str | Ty::Unit => Part::Ok,
+            Ty::Int(_) | Ty::Float | Ty::Bool | Ty::Char | Ty::Str | Ty::Unit | Ty::Range(_) => {
+                Part::Ok
+            }
             Ty::Tuple(items) => Part::Inside(items.clone()),
             Ty::List(t) | Ty::Set(t) | Ty::Option(t) => Part::Inside(vec![(**t).clone()]),
             Ty::Map(k, v) => Part::Inside(vec![(**k).clone(), (**v).clone()]),

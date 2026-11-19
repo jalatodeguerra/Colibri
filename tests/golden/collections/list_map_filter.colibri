@@ -1,0 +1,15 @@
+fn main() {
+    let xs = [1, 2, 3, 4]
+    print(xs.map(fn(x) => x * 10))
+    print(xs.filter(fn(x) => x > 2))
+    print(xs)
+    print(xs.map(fn(x) => x > 2))
+    let empty: List[int] = []
+    print(empty.map(fn(x) => x + 1))
+}
+
+// expect: [10, 20, 30, 40]
+// expect: [3, 4]
+// expect: [1, 2, 3, 4]
+// expect: [false, false, true, true]
+// expect: []

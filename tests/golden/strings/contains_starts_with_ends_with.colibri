@@ -1,0 +1,18 @@
+fn main() {
+    let s = "colibri"
+    print(s.contains("lib"))
+    print(s.contains("xyz"))
+    print(s.starts_with("col"))
+    print(s.starts_with("ibri"))
+    print(s.ends_with("ibri"))
+    print(s.ends_with("col"))
+    print(s.contains(""))
+}
+
+// expect: true
+// expect: false
+// expect: true
+// expect: false
+// expect: true
+// expect: false
+// expect: true

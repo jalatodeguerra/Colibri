@@ -1,0 +1,17 @@
+fn main() {
+    var n = 0
+    let outer = fn() {
+        let inner = fn() { n += 1 }
+        inner()
+        inner()
+    }
+    outer()
+    outer()
+    print(n)
+    let base = 7
+    let f = fn(a: int) => (fn(b: int) => a + b + base)(1)
+    print(f(2))
+}
+
+// expect: 4
+// expect: 10

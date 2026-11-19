@@ -1,0 +1,4 @@
+fn main() {
+    let n = 5
+    let a = n[0..1] // error: cannot slice a value of type `int`
+}

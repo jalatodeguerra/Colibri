@@ -1,0 +1,14 @@
+fn main() {
+    var fns: List[fn() -> int] = []
+    for var i in 0..3 {
+        i += 100
+        fns.push(fn() => i)
+    }
+    for f in fns {
+        print(f())
+    }
+}
+
+// expect: 100
+// expect: 101
+// expect: 102

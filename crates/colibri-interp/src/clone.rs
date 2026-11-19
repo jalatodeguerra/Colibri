@@ -53,7 +53,12 @@ impl Cloner {
             | Value::Int(_)
             | Value::Float(_)
             | Value::Char(_)
-            | Value::Str(_) => v.clone(),
+            | Value::Str(_)
+            | Value::Fn(..)
+            | Value::Closure(_)
+            | Value::Cell(_)
+            | Value::Range(_)
+            | Value::Iter(_) => v.clone(),
             Value::Struct(s) => Value::strukt(s.ty, self.clone_all(&s.fields, ov)?),
             Value::Tuple(items) => Value::tuple(self.clone_all(items, ov)?),
             Value::Enum(e) => Value::variant(e.ty, e.variant, self.clone_all(&e.payload, ov)?),

@@ -1,0 +1,6 @@
+struct P { x: int }
+
+fn main() {
+    let n = P { x: 1 }
+    let e = n.enumerate() // error: has no method `enumerate`
+}

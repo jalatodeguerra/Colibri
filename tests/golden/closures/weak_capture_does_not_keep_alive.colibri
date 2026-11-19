@@ -1,0 +1,19 @@
+class Node {
+    name: str
+}
+
+fn main() {
+    let n = Node { name: "n" }
+    let peek = fn() use(weak n) {
+        if let some(x) = n {
+            return "alive " + x.name
+        }
+        return "gone"
+    }
+    print(peek())
+    print("before")
+}
+
+// expect: alive n
+// expect: before
+// drops: n

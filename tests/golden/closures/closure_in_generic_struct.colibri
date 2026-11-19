@@ -1,0 +1,26 @@
+struct Mapper[T] {
+    f: fn(T) -> T
+}
+
+impl[T] Mapper[T] {
+    fn run(self, x: T) -> T => self.f(x)
+}
+
+struct Box[T] {
+    value: T
+}
+
+impl[T] Box[T] {
+    fn map[U](self, f: fn(T) -> U) -> Box[U] => Box { value: f(self.value) }
+}
+
+fn main() {
+    let m = Mapper { f: fn(x: int) => x * 3 }
+    print(m.run(5))
+    let b = Box { value: 4 }
+    let c = b.map(fn(v) => "v={v}")
+    print(c.value)
+}
+
+// expect: 15
+// expect: v=4

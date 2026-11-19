@@ -1,0 +1,16 @@
+class Res {
+    name: str
+}
+
+fn main() {
+    {
+        let r = Res { name: "a" }
+        let f = fn() => r.name
+        print(f())
+    }
+    print("after block")
+}
+
+// expect: a
+// expect: after block
+// drops: a

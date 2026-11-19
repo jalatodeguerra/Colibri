@@ -116,8 +116,8 @@ impl FnCtx<'_, '_> {
         )
     }
 
-    /// A `for` over a collection (or `list.enumerate()`, `str.chars()`); anything else is not
-    /// supported yet, but its parts are still checked.
+    /// A `for` over a collection, or over anything else iterable (`Iter`, `Iterable`, a
+    /// stored range, `xs.enumerate()`, `s.chars()`).
     fn for_over_other(
         &mut self,
         span: Span,
@@ -127,61 +127,20 @@ impl FnCtx<'_, '_> {
         iter: &ast::Expr,
         body: &ast::Block,
     ) -> Expr {
-        let special = match &iter.kind {
-            ExprKind::Call { callee, args } if args.is_empty() => match &callee.kind {
-                ExprKind::Field { base, name }
-                    if matches!(name.name.as_str(), "enumerate" | "chars") =>
-                {
-                    Some((&**base, name.name.as_str()))
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        let value = match special {
-            Some((base, _)) => self.check_expr(base, None),
-            None => self.check_expr(iter, None),
-        };
+        let value = self.check_expr(iter, None);
         let ty = self.infer.shallow(&value.ty);
         let name = crate::place::expr_text(iter);
-        let (source, elem, plain_list) = match (special.map(|(_, m)| m), ty) {
-            (_, Ty::Error) => {
+        let (source, elem, plain_list) = match ty {
+            Ty::Error => {
                 return self.for_body_only(label, mutable, pat, &Ty::Error, body, span);
             }
-            (None, Ty::List(t)) => (ForSource::List { list: value, name }, *t, true),
-            (None, Ty::Map(k, v)) => (ForSource::Map(value), Ty::Tuple(vec![*k, *v]), false),
-            (None, Ty::Set(t)) => (ForSource::Set(value), *t, false),
-            (Some("enumerate"), Ty::List(t)) => (
-                ForSource::Enumerate(value),
-                Ty::Tuple(vec![Ty::INT, *t]),
-                false,
-            ),
-            (Some("chars"), Ty::Str) => (ForSource::Chars(value), Ty::Char, false),
-            (Some(method), other) => {
-                let shown = self.show(&other);
-                let wanted = if method == "chars" { "str" } else { "list" };
-                self.ck.report(
-                    Diagnostic::error(
-                        format!("`{method}()` needs a {wanted}, but this is a `{shown}`"),
-                        iter.span,
-                    )
-                    .with_hint("iterators and `Iter` are not supported yet"),
-                );
-                return self.for_body_only(label, mutable, pat, &Ty::Error, body, span);
-            }
-            (None, Ty::Str) => {
-                self.ck.report(
-                    Diagnostic::error("a `str` cannot be looped over directly", iter.span)
-                        .with_hint("loop over its characters: `for c in s.chars() { ... }`"),
-                );
-                return self.for_body_only(label, mutable, pat, &Ty::Error, body, span);
-            }
-            (None, other) => {
-                let shown = self.show(&other);
-                self.ck
-                    .unsupported(&format!("`for` over a `{shown}`"), iter.span);
-                return self.for_body_only(label, mutable, pat, &Ty::Error, body, span);
-            }
+            Ty::List(t) => (ForSource::List { list: value, name }, *t, true),
+            Ty::Map(k, v) => (ForSource::Map(value), Ty::Tuple(vec![*k, *v]), false),
+            Ty::Set(t) => (ForSource::Set(value), *t, false),
+            _ => match self.iterator_for(value, iter.span) {
+                Some((it, item)) => (ForSource::Iter(it), item, false),
+                None => return self.for_body_only(label, mutable, pat, &Ty::Error, body, span),
+            },
         };
         if mutable && !plain_list {
             self.ck

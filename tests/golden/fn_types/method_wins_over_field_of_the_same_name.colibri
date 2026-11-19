@@ -1,0 +1,14 @@
+struct Thing {
+    run: fn() -> str
+}
+
+impl Thing {
+    fn run(self) -> str => "method"
+}
+
+fn main() {
+    let t = Thing { run: fn() => "field" }
+    print(t.run())
+}
+
+// expect: method

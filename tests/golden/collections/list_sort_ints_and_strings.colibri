@@ -1,0 +1,19 @@
+fn main() {
+    var xs = [3, 1, 2, 5, 4, 1]
+    xs.sort()
+    print(xs)
+    var ws = ["pear", "apple", "fig"]
+    ws.sort()
+    print(ws)
+    var fs = [2.5, -1.0, 0.0]
+    fs.sort()
+    print(fs)
+    var empty: List[int] = []
+    empty.sort()
+    print(empty)
+}
+
+// expect: [1, 1, 2, 3, 4, 5]
+// expect: ["apple", "fig", "pear"]
+// expect: [-1.0, 0.0, 2.5]
+// expect: []

@@ -1,0 +1,14 @@
+fn main() {
+    let s = "héllo"
+    print(s.len())
+    print(s[0..1])
+    print(s[1..3])
+    print(s[3..])
+    print(s[..3])
+}
+
+// expect: 6
+// expect: h
+// expect: é
+// expect: llo
+// expect: hé

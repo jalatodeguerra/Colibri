@@ -1,0 +1,14 @@
+class Item {
+    name: str
+}
+
+fn main() {
+    var xs = [Item { name: "a" }, Item { name: "b" }, Item { name: "c" }]
+    xs.retain(fn(i) => i.name != "b")
+    print("retained")
+    print(xs.len())
+}
+
+// expect: retained
+// expect: 2
+// drops: b, a, c

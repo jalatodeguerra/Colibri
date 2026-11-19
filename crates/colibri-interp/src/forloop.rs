@@ -1,5 +1,4 @@
-//! `for` loops over ranges, lists, maps, sets, `list.enumerate()` and `str.chars()`
-//! (DESIGN §6.3, §11.6).
+//! `for` loops over ranges, lists, maps, sets and any iterator (DESIGN §6.3, §11.6).
 //!
 //! A loop over a collection holds the collection's mutation guard for its whole duration, and
 //! keeps the collection itself on the temporaries stack. `for var` holds the stronger place
@@ -96,21 +95,6 @@ impl Interp {
                 }
                 Ok(())
             }
-            ForSource::Enumerate(list) => {
-                let Value::List(rc) = self.loop_source(fiber, list)? else {
-                    return Err(self.internal(fiber, span, "`enumerate` of a non-list"));
-                };
-                let _hold = rc.iter_hold();
-                let mut i = 0;
-                while let Some(item) = rc.at(i) {
-                    let pair = Value::tuple(vec![Value::Int(i as i64), item]);
-                    if !self.run_iteration(fiber, f, pair, None, span)? {
-                        break;
-                    }
-                    i += 1;
-                }
-                Ok(())
-            }
             ForSource::Map(map) => {
                 let Value::Map(rc) = self.loop_source(fiber, map)? else {
                     return Err(self.internal(fiber, span, "a `for` over a non-map"));
@@ -139,18 +123,34 @@ impl Interp {
                 }
                 Ok(())
             }
-            ForSource::Chars(s) => {
-                let Value::Str(text) = self.loop_source(fiber, s)? else {
-                    return Err(self.internal(fiber, span, "`chars` of a non-string"));
-                };
-                for c in text.chars() {
-                    if !self.run_iteration(fiber, f, Value::Char(c), None, span)? {
-                        break;
-                    }
+            ForSource::Iter(e) => {
+                let mut it = self.eval(fiber, e)?;
+                // A built-in iterator is an object, kept alive on the temporaries; a boxed
+                // user iterator is advanced by value, so this loop owns it alone.
+                if matches!(it, Value::Iter(_)) {
+                    fiber.temps.push(it.clone());
                 }
-                Ok(())
+                let result = self.run_iter_loop(fiber, f, &mut it, span);
+                self.release(it);
+                result
             }
         }
+    }
+
+    /// The trips of a loop over an iterator value: `next` until it says `none`.
+    fn run_iter_loop(
+        &mut self,
+        fiber: &mut Fiber,
+        f: &ForLoop,
+        it: &mut Value,
+        span: Span,
+    ) -> Eval<()> {
+        while let Some(item) = self.iter_next(fiber, it, span)? {
+            if !self.run_iteration(fiber, f, item, None, span)? {
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// One trip round the loop: binds the item, runs the body, leaves the iteration's scope,
@@ -176,7 +176,7 @@ impl Interp {
                 .frames
                 .last_mut()
                 .and_then(|fr| fr.slots.get_mut(local.0 as usize))
-                .map(|slot| std::mem::replace(slot, Value::Unit)),
+                .map(|slot| crate::eval::unwrap_cell(std::mem::replace(slot, Value::Unit))),
             _ => None,
         };
         let result = self.exit_scope(fiber, mark, result);

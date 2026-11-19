@@ -98,6 +98,8 @@ pub enum Ty {
     Option(Box<Ty>),
     Result(Box<Ty>, Box<Ty>),
     Fn(Vec<Ty>, Box<Ty>),
+    /// `Range[T]`: a closed or half-open range of integers, `a..b` or `a..=b` (DESIGN §5.2).
+    Range(Box<Ty>),
     /// An interface used as a type: a dynamically dispatched value (DESIGN §9.2), with the
     /// interface's type arguments.
     Dyn(TypeId, Vec<Ty>),
@@ -138,6 +140,7 @@ impl Ty {
             Ty::List(t) => Ty::List(Box::new(go(t))),
             Ty::Set(t) => Ty::Set(Box::new(go(t))),
             Ty::Option(t) => Ty::Option(Box::new(go(t))),
+            Ty::Range(t) => Ty::Range(Box::new(go(t))),
             Ty::Map(k, v) => Ty::Map(Box::new(go(k)), Box::new(go(v))),
             Ty::Result(t, e) => Ty::Result(Box::new(go(t)), Box::new(go(e))),
             Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(go).collect(), Box::new(go(r))),
@@ -150,7 +153,7 @@ impl Ty {
         match self {
             Ty::Param(..) => true,
             Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().any(Ty::has_param),
-            Ty::List(t) | Ty::Set(t) | Ty::Option(t) => t.has_param(),
+            Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) => t.has_param(),
             Ty::Map(a, b) | Ty::Result(a, b) => a.has_param() || b.has_param(),
             Ty::Fn(ps, r) => ps.iter().any(Ty::has_param) || r.has_param(),
             _ => false,
@@ -227,6 +230,7 @@ impl fmt::Display for Shown<'_> {
             Ty::Map(k, v) => write!(f, "Map[{}, {}]", shown(k, types), shown(v, types)),
             Ty::Set(t) => write!(f, "Set[{}]", shown(t, types)),
             Ty::Option(t) => write!(f, "{}?", shown(t, types)),
+            Ty::Range(t) => write!(f, "Range[{}]", shown(t, types)),
             Ty::Result(t, e) if **e == Ty::Error => write!(f, "Result[{}]", shown(t, types)),
             Ty::Result(t, e) => write!(f, "Result[{}, {}]", shown(t, types), shown(e, types)),
             Ty::Fn(params, ret) => {

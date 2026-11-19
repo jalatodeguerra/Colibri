@@ -335,6 +335,12 @@ impl ListObj {
     pub fn take_all(&self) -> Vec<Value> {
         std::mem::take(&mut *self.items.borrow_mut())
     }
+
+    /// Replaces all elements and returns the old ones (to be released). Unguarded: the caller
+    /// has checked the guard, since it held the guard itself while it worked.
+    pub fn replace_all(&self, items: Vec<Value>) -> Vec<Value> {
+        std::mem::replace(&mut *self.items.borrow_mut(), items)
+    }
 }
 
 impl fmt::Debug for ListObj {

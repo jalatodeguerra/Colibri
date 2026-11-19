@@ -1,3 +1,0 @@
-let xs = [1, 2, 3]
-let a = xs[0..2] // error: slicing is not supported yet
-let b = xs.map(xs) // error: which takes a closure, is not supported yet

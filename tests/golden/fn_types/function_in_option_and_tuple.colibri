@@ -1,0 +1,13 @@
+fn main() {
+    let maybe: (fn(int) -> int)? = some(fn(x: int) => x + 1)
+    if let some(f) = maybe {
+        print(f(1))
+    }
+    let pair = (fn(x: int) => x * 2, "label")
+    print(pair.0(4))
+    print(pair.1)
+}
+
+// expect: 2
+// expect: 8
+// expect: label

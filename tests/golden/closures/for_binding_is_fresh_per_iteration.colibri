@@ -1,0 +1,13 @@
+fn main() {
+    var fns: List[fn() -> int] = []
+    for i in 0..3 {
+        fns.push(fn() => i * 10)
+    }
+    for f in fns {
+        print(f())
+    }
+}
+
+// expect: 0
+// expect: 10
+// expect: 20

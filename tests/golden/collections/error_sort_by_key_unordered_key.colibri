@@ -1,0 +1,6 @@
+struct Opaque { n: int }
+
+fn main() {
+    var xs = [1, 2]
+    xs.sort_by_key(fn(x) => Opaque { n: x }) // error: `sort_by_key` needs values that can be ordered with `<`, but `Opaque` cannot
+}

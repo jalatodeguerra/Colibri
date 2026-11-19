@@ -1,0 +1,11 @@
+fn main() {
+    let double = fn(x: int) -> int => x * 2
+    print(double(4))
+    print(double(double(5)))
+    let greet = fn(name: str) => "hi " + name
+    print(greet("ana"))
+}
+
+// expect: 8
+// expect: 20
+// expect: hi ana

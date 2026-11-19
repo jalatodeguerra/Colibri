@@ -465,9 +465,16 @@ impl<'a> Checker<'a> {
                 self.unsupported("fixed-size array type", t.span);
                 Ty::Error
             }
-            TypeKind::Fn { .. } => {
-                self.unsupported("function type", t.span);
-                Ty::Error
+            TypeKind::Fn { params, ret } => {
+                let params: Vec<Ty> = params.iter().map(|p| self.resolve_type(p)).collect();
+                let ret = match ret {
+                    Some(r) => self.resolve_type(r),
+                    None => Ty::Unit,
+                };
+                if params.iter().any(Ty::is_error) || ret.is_error() {
+                    return Ty::Error;
+                }
+                Ty::Fn(params, Box::new(ret))
             }
             TypeKind::Error => Ty::Error,
         }
@@ -502,6 +509,10 @@ impl<'a> Checker<'a> {
                 };
             }
             "List" | "Set" | "Option" | "Map" => {
+                return self.resolve_builtin_generic(name, args, span);
+            }
+            // `Range` is not reserved: a program's own `Range` type wins.
+            "Range" if !self.type_ids.contains_key(name) => {
                 return self.resolve_builtin_generic(name, args, span);
             }
             "Result" if !args.is_empty() => {
@@ -602,6 +613,7 @@ impl<'a> Checker<'a> {
             let example = match name {
                 "Map" => "Map[str, int]",
                 "List" => "List[int]",
+                "Range" => "Range[int]",
                 "Set" => "Set[int]",
                 _ => "Option[int]",
             };
@@ -630,6 +642,20 @@ impl<'a> Checker<'a> {
         match name {
             "List" => Ty::List(next()),
             "Option" => Ty::Option(next()),
+            "Range" => {
+                let elem = next();
+                if *elem != Ty::INT && !elem.is_error() {
+                    self.report(
+                        Diagnostic::error(
+                            format!("`Range[{elem}]` is not supported: ranges are of `int`"),
+                            args[0].span,
+                        )
+                        .with_hint("write `Range[int]`"),
+                    );
+                    return Ty::Error;
+                }
+                Ty::Range(elem)
+            }
             "Set" => {
                 let elem = next();
                 self.require_hashable(&elem, "Set", args[0].span);

@@ -238,9 +238,12 @@ impl FnCtx<'_, '_> {
             self.ck.unsupported("a generic instantiation", whole.span);
             return None;
         }
-        if matches!(index.kind, ExprKind::Range { .. }) {
+        if self.slice_range(args).is_some() {
             self.check_expr(base, None);
-            self.ck.unsupported("slicing", index.span);
+            self.ck.report(
+                Diagnostic::error("a slice is a copy, so it cannot be assigned to", index.span)
+                    .with_hint("assign to the elements instead: `xs[i] = value`"),
+            );
             return None;
         }
         let collection = self.check_expr(base, None);
@@ -314,6 +317,19 @@ impl FnCtx<'_, '_> {
         args: &[IndexArg],
         whole: &ast::Expr,
     ) -> Expr {
+        if let Some(range) = self.slice_range(args) {
+            return self.check_slice(base, range, whole.span);
+        }
+        if let ExprKind::Ident(id) = &base.kind
+            && !self.is_local(&id.name)
+            && let Some(f) = self.lookup_fn(&id.name)
+        {
+            // `max[int]`: a generic function instantiated, as a value.
+            return match self.explicit_type_args(args) {
+                Some(explicit) => self.fn_value(f, Some(explicit), None, whole.span),
+                None => self.error_expr(whole.span),
+            };
+        }
         match self.index_place(base, args, whole) {
             Some(place) => {
                 let ty = place.ty.clone();
@@ -409,7 +425,15 @@ impl FnCtx<'_, '_> {
             Action::Call(method) => format!("call `{method}` on `{}`", place.display),
         };
         let diag = match root {
-            Root::Mutable => return true,
+            Root::Mutable => {
+                // A later assignment decides whether a captured variable needs a cell.
+                if let Anchor::Local(id) = &place.anchor
+                    && let Some(f) = self.flags.get_mut(id.0 as usize)
+                {
+                    f.assigned = true;
+                }
+                return true;
+            }
             Root::Let | Root::Const => {
                 let is_let = matches!(root, Root::Let);
                 let word = if is_let { "variable" } else { "constant" };

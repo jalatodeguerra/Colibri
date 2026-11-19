@@ -1,0 +1,14 @@
+class Res {
+    name: str
+}
+
+fn main() {
+    let xs = [Res { name: "a" }, Res { name: "b" }]
+    for x in xs.iter() {
+        print(x.name)
+        let boom = [1][5] // panic: index 5 out of bounds
+    }
+}
+
+// expect: a
+// drops: a, b

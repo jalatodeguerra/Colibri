@@ -1,0 +1,12 @@
+class Node {
+    name: str
+}
+
+fn main() {
+    let a = Node { name: "a" }
+    let check = fn() use(weak a) => a == none
+    print(check())
+}
+
+// expect: false
+// drops: a

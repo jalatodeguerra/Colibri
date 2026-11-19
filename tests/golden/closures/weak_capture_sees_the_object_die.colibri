@@ -1,0 +1,24 @@
+class Node {
+    name: str
+}
+
+fn main() {
+    var keeper: fn() -> str = fn() => "unset"
+    {
+        let n = Node { name: "n" }
+        keeper = fn() use(weak n) {
+            if let some(x) = n {
+                return "alive " + x.name
+            }
+            return "gone"
+        }
+        print(keeper())
+    }
+    print("after scope")
+    print(keeper())
+}
+
+// expect: alive n
+// expect: after scope
+// expect: gone
+// drops: n

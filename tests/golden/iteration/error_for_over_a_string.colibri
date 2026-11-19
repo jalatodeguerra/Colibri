@@ -1,0 +1,5 @@
+fn main() {
+    for c in "abc" { // error: cannot loop over a value of type `str`
+        print(c)
+    }
+}

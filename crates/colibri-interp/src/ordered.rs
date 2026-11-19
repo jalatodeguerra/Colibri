@@ -39,7 +39,13 @@ fn feed(v: &Value, h: &mut DefaultHasher, depth: u32) {
     }
     std::mem::discriminant(v).hash(h);
     match v {
-        Value::Unit | Value::Weak(_) => {}
+        Value::Unit | Value::Weak(_) | Value::Closure(_) | Value::Cell(_) | Value::Iter(_) => {}
+        Value::Fn(f, _) => f.0.hash(h),
+        Value::Range(r) => {
+            r.start.hash(h);
+            r.end.hash(h);
+            r.inclusive.hash(h);
+        }
         Value::Bool(b) => b.hash(h),
         Value::Int(i) => i.hash(h),
         Value::Float(x) => x.to_bits().hash(h),

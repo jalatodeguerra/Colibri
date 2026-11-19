@@ -1,0 +1,5 @@
+fn takes_int(x: int) -> int => x
+
+fn main() {
+    let f: fn(str) -> int = takes_int // error: expected `fn(str) -> int`, found `fn(int) -> int`
+}

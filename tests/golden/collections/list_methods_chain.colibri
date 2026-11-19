@@ -1,0 +1,12 @@
+fn main() {
+    let result = [5, 3, 8, 1, 9, 2]
+        .filter(fn(x) => x > 2)
+        .map(fn(x) => x * 2)
+    print(result)
+    print(result.sum())
+    print(result.max())
+}
+
+// expect: [10, 6, 16, 18]
+// expect: 50
+// expect: some(18)

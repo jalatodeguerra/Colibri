@@ -1,0 +1,6 @@
+fn main() {
+    let n = 1
+    let f = fn() {
+        n = 2 // error: cannot assign to the variable `n`, which is not mutable
+    }
+}

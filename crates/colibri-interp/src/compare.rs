@@ -50,8 +50,14 @@ fn equal(a: &Value, b: &Value, depth: u32, ov: &mut dyn Overrides) -> Result<boo
         // A class is compared by identity (DESIGN §7.2).
         (Value::Obj(x), Value::Obj(y)) => Rc::ptr_eq(x, y),
         (Value::Weak(x), Value::Weak(y)) => Weak::ptr_eq(x, y),
-        _ => false,
+        _ => same_range(a, b),
     })
+}
+
+/// `a..b == c..d`: ranges are equal when their ends are.
+#[inline(never)]
+fn same_range(a: &Value, b: &Value) -> bool {
+    matches!((a, b), (Value::Range(x), Value::Range(y)) if x == y)
 }
 
 /// The user-written `Eq` of a user-defined value, if it has one.

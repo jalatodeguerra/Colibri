@@ -1,0 +1,11 @@
+fn main() {
+    let words = ["a", "b", "c"]
+    var it = words.iter()
+    while let some(w) = it.next() {
+        print(w)
+    }
+}
+
+// expect: a
+// expect: b
+// expect: c

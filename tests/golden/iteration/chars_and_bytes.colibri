@@ -1,0 +1,22 @@
+fn main() {
+    for c in "héy".chars() {
+        print(c)
+    }
+    for b in "hé".bytes() {
+        print(b)
+    }
+    var it = "ab".chars()
+    print(it.next())
+    print(it.next())
+    print(it.next())
+}
+
+// expect: h
+// expect: é
+// expect: y
+// expect: 104
+// expect: 195
+// expect: 169
+// expect: some('a')
+// expect: some('b')
+// expect: none

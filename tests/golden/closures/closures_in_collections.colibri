@@ -1,0 +1,17 @@
+fn main() {
+    var ops: Map[str, fn(int, int) -> int] = {:}
+    ops["add"] = fn(a, b) => a + b
+    ops["mul"] = fn(a, b) => a * b
+    print(ops["add"](3, 4))
+    print(ops["mul"](3, 4))
+    let fs = [fn(x: int) => x + 1, fn(x: int) => x * 3]
+    var v = 2
+    for f in fs {
+        v = f(v)
+    }
+    print(v)
+}
+
+// expect: 7
+// expect: 12
+// expect: 9

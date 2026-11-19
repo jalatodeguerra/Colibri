@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use colibri_check::hir::{CmpOp, Coercion, FnId, ImplDef, Place, Program, TypeKey};
-use colibri_check::types::{CLONE, DROP, EQ, HASH, ORD, SHOW, Ty, TypeId};
+use colibri_check::types::{CLONE, DROP, EQ, HASH, ITER, ITERABLE, ORD, SHOW, Ty, TypeId};
 use colibri_syntax::{FileId, Span};
 
 use crate::clone::Cloner;
@@ -87,7 +87,13 @@ fn runtime_key(v: &Value) -> Option<TypeKey> {
         Value::Map(_) => TypeKey::Map,
         Value::Set(_) => TypeKey::Set,
         Value::Obj(o) => TypeKey::Adt(o.ty()),
-        Value::Weak(_) | Value::Dyn(_) => return None,
+        Value::Range(_) => TypeKey::Range,
+        Value::Weak(_)
+        | Value::Dyn(_)
+        | Value::Fn(..)
+        | Value::Closure(_)
+        | Value::Cell(_)
+        | Value::Iter(_) => return None,
     })
 }
 
@@ -403,7 +409,7 @@ impl Interp {
     }
 
     /// The function an implementation runs for `method`, if it has one of its own.
-    fn target_of(&self, impl_id: Option<u32>, method: u32) -> Option<FnId> {
+    pub(crate) fn target_of(&self, impl_id: Option<u32>, method: u32) -> Option<FnId> {
         self.dispatch
             .impls
             .get(impl_id? as usize)?
@@ -437,6 +443,28 @@ impl Interp {
             }
             other => (self.impl_for(&other, iface), other, false),
         };
+        if iface == ITER
+            && method == 0
+            && let Value::Iter(obj) = &inner
+        {
+            // A built-in iterator is an object: advancing it changes nothing in its place.
+            let obj = Rc::clone(obj);
+            let stepped = self.native_next(fiber, &obj, span);
+            let restored = rewrap(inner, impl_id, was_dyn);
+            self.release_all(values);
+            return match self.write_resolved(fiber, &anchor, &place.path, restored, false, span) {
+                Ok(old) => {
+                    self.release(old);
+                    stepped.map(Value::option)
+                }
+                Err(ctl) => {
+                    if let Ok(v) = stepped {
+                        self.release(v.map_or(Value::Unit, |x| x));
+                    }
+                    Err(ctl)
+                }
+            };
+        }
         let Some(f) = self.target_of(impl_id, method) else {
             // Derived interfaces have no `var self` methods; put the value back.
             let restored = rewrap(inner, impl_id, was_dyn);
@@ -493,6 +521,10 @@ impl Interp {
                 .map(|s| Value::Str(Rc::from(s))),
             (CLONE, [a]) => self.clone_deep(fiber, a, span),
             (DROP, [_]) => Ok(Value::Unit),
+            (ITERABLE, [v]) => match self.iterator_of(v) {
+                Some(it) => Ok(it),
+                None => Err(self.internal(fiber, span, "`iter` of something not iterable")),
+            },
             _ => Err(self.internal(fiber, span, "a method without an implementation")),
         };
         self.release_all(values);

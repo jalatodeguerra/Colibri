@@ -1,0 +1,15 @@
+fn apply[T, U](x: T, f: fn(T) -> U) -> U => f(x)
+
+fn twice[T](x: T, f: fn(T) -> T) -> T => f(f(x))
+
+fn main() {
+    print(apply(21, fn(n) => n * 2))
+    print(apply("abc", fn(s) => s.len()))
+    print(twice(3, fn(n) => n + 10))
+    print(twice("x", fn(s) => s + "!"))
+}
+
+// expect: 42
+// expect: 3
+// expect: 23
+// expect: x!!

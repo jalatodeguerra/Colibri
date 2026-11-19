@@ -1,0 +1,13 @@
+struct Thing {
+    run: fn() -> str
+}
+
+fn main() {
+    let t = Thing { run: fn() => "field" }
+    print(t.run())
+    let r = t.run
+    print(r())
+}
+
+// expect: field
+// expect: field

@@ -1,0 +1,3 @@
+fn main() {
+    let s = ["a"].sum() // error: `sum` needs a list of `int` or `float`, but this is a list of `str`
+}

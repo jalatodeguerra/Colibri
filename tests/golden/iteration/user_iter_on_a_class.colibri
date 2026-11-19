@@ -1,0 +1,27 @@
+class Cursor {
+    pos: int
+    end: int
+}
+
+impl Iter[int] for Cursor {
+    fn next(self) -> int? {
+        if self.pos >= self.end {
+            return none
+        }
+        self.pos += 1
+        return some(self.pos)
+    }
+}
+
+fn main() {
+    let c = Cursor { pos: 0, end: 3 }
+    for x in c {
+        print(x)
+    }
+    print("pos {c.pos}")
+}
+
+// expect: 1
+// expect: 2
+// expect: 3
+// expect: pos 3

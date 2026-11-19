@@ -1,0 +1,16 @@
+class Item {
+    name: str
+}
+
+fn main() {
+    var xs = [Item { name: "a" }, Item { name: "b" }]
+    let ys = xs.map(fn(i) {
+        if i.name == "b" {
+            let boom = [1][3]
+        }
+        return Item { name: "copy " + i.name }
+    })
+}
+
+// panic: index 3 out of bounds
+// drops: copy a, a, b

@@ -1,7 +1,8 @@
 //! Robustness: golden programs with a line removed, swapped or cut short must never crash the
 //! host or hit an interpreter "internal error": they compile with diagnostics, run, or panic
 //! the Colibri way (DESIGN §10.4). Programs with a `while` or `loop` are skipped, since a
-//! mutation can make them endless.
+//! mutation can make them endless; so are programs that implement `Iter`, whose `next` a
+//! mutation can stop from ever ending.
 
 use colibri_runtime as colibri;
 
@@ -51,7 +52,11 @@ fn run(src: &str) -> Option<String> {
 fn mutated_golden_programs_never_hit_an_internal_error() {
     let mut checked = 0;
     for src in golden_sources() {
-        if src.contains("while") || src.contains("loop") || src.contains("0..100000") {
+        if src.contains("while")
+            || src.contains("loop")
+            || src.contains("0..100000")
+            || src.contains("impl Iter")
+        {
             continue;
         }
         let lines: Vec<&str> = src.lines().collect();

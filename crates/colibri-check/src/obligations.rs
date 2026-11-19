@@ -34,6 +34,8 @@ pub(crate) enum Origin {
     MapKey,
     /// A `Set` element.
     SetElem,
+    /// The key of `sort_by_key`: it must be orderable.
+    SortKey,
 }
 
 impl Checker<'_> {
@@ -88,7 +90,7 @@ impl Checker<'_> {
                     Ok(_) => return true,
                     Err(blame) => blame,
                 },
-                Origin::Bound { .. } => return true,
+                Origin::Bound { .. } | Origin::SortKey => return true,
             },
             Err(blame) => blame,
         };
@@ -123,6 +125,11 @@ impl Checker<'_> {
                 };
                 Diagnostic::error(message, ob.span).with_hint(hint)
             }
+            Origin::SortKey => Diagnostic::error(
+                format!("`{shown}` cannot be used as a sort key, because it cannot be ordered"),
+                ob.span,
+            )
+            .with_hint(self.bound_hint(ob, blame)),
             Origin::Bound {
                 param,
                 func,

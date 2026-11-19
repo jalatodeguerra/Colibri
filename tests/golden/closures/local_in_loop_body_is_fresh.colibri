@@ -1,0 +1,19 @@
+fn main() {
+    var fns: List[fn() -> int] = []
+    var i = 0
+    while i < 3 {
+        var local = i
+        local += 1
+        fns.push(fn() => local)
+        i += 1
+    }
+    for f in fns {
+        print(f())
+    }
+    print(i)
+}
+
+// expect: 1
+// expect: 2
+// expect: 3
+// expect: 3

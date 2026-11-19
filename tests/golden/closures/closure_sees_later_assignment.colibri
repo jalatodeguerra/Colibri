@@ -1,0 +1,13 @@
+fn main() {
+    var level = 1
+    let show_level = fn() => "level {level}"
+    print(show_level())
+    level = 2
+    print(show_level())
+    level += 40
+    print(show_level())
+}
+
+// expect: level 1
+// expect: level 2
+// expect: level 42

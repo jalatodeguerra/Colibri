@@ -20,7 +20,7 @@ use crate::traits::{Source, key_of, match_ty};
 use crate::types::{EQ, HASH, ORD, ParamId, Ty, TypeId};
 
 /// One way a method name can be resolved for a receiver.
-enum Via {
+pub(crate) enum Via {
     /// A function with a body: an inherent method, an impl's method, or an interface's default
     /// (then with the interface arguments the implementation has).
     Fn {
@@ -102,7 +102,10 @@ impl FnCtx<'_, '_> {
         // 3. a method of an interface
         let mut found = self.method_candidates(&recv_ty, &name.name);
         match found.len() {
-            0 => self.no_such_method(recv, &recv_ty, name, args, span),
+            0 => match self.field_call(recv, base, name, args, span) {
+                Ok(call) => call,
+                Err(recv) => self.no_such_method(recv, &recv_ty, name, args, span),
+            },
             1 => {
                 let (_, via) = found.remove(0);
                 self.call_via(via, recv, name, base.span, explicit, args, span)
@@ -161,7 +164,7 @@ impl FnCtx<'_, '_> {
     }
 
     /// The interfaces through which `ty` has a method called `name`.
-    fn method_candidates(&mut self, ty: &Ty, name: &str) -> Vec<(TypeId, Via)> {
+    pub(crate) fn method_candidates(&mut self, ty: &Ty, name: &str) -> Vec<(TypeId, Via)> {
         let mut out: Vec<(TypeId, Via)> = Vec::new();
         let mut ids: Vec<TypeId> = self.ck.ifaces.keys().copied().collect();
         ids.sort();
@@ -276,7 +279,7 @@ impl FnCtx<'_, '_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn call_via(
+    pub(crate) fn call_via(
         &mut self,
         via: Via,
         recv: Expr,
@@ -533,6 +536,9 @@ impl FnCtx<'_, '_> {
                     args: vec![hir::Arg::Value(recv)],
                 }));
                 return self.mk(call, Ty::Str, span);
+            }
+            "enumerate" if self.iter_item_ty(recv_ty).is_some() => {
+                return self.check_enumerate(recv, args, span);
             }
             _ => {}
         }

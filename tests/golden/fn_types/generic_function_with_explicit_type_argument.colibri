@@ -1,0 +1,16 @@
+fn bigger[T: Ord](a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+fn main() {
+    let m = bigger[int]
+    print(m(3, 9))
+    let s = bigger[str]
+    print(s("a", "b"))
+}
+
+// expect: 9
+// expect: b

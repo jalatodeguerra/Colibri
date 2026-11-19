@@ -1,0 +1,5 @@
+fn main() {
+    print("abc".replace("", "x"))
+}
+
+// panic: `replace` needs a pattern that is not empty
