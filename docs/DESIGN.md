@@ -37,7 +37,7 @@ made on 2026-11-19 about the road to the VM:
   closures (`map`, `filter`, `sort_by`, ...) will be written in Colibri so they can pause
   (§14.3).
 - **macOS and Windows testing** must be set up before the VM (§17.5). CI is down at the moment.
-- **`wait_frames(n)` is being removed** from the language; §14.2 no longer documents it, and
+- **`wait_frames(n)` is removed** from the language; §14.2 no longer documents it, and
   `wait(seconds)` and `wait_until(cond)` remain. Scheduler wording talks about advancing the
   scheduler, not game frames.
 - **Game kit moved out** (§15.6) to [notes/game-kit.md](notes/game-kit.md). The heading stays so
@@ -759,8 +759,8 @@ variants, attributes). The same descriptors serve several features, so they're b
 
 - `json.encode(x)` and `json.decode[T](text) -> Result[T]`, with `@rename("x")`, `@skip` and
   default-on-missing field handling. Other formats (TOML, a binary format) use the same API.
-  `json.encode` and `json.decode[T]` are built; `@rename`, `@skip` and default-on-missing field
-  handling are **[Not built yet]**.
+  `json.encode`, `json.decode[T]` and default-on-missing fields are built; `@rename` and `@skip`
+  are **[Not built yet]**.
 - Deep copy for thread sends (§14.1), `Show`, `Clone`, the leak detector (§11.5), the debugger
   (§16.5) and hot reload layout checks (§16.3).
 - A small read-only reflection API (`reflect.fields[T]()`) for tools such as editors and
