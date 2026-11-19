@@ -156,3 +156,11 @@ fn unknown_commands_and_quit() {
     assert_eq!(out, "= 1 : int\n");
     assert!(err.contains("unknown command"), "{err}");
 }
+
+#[test]
+fn an_entry_runs_top_to_bottom() {
+    // One entry (one line): the declaration after the statements sees what they did.
+    let (out, err) = repl("var a: List[int] = []; a.push(1); a.push(2); let n = a.len(); n\n");
+    assert_eq!(out, "= 2 : int\n");
+    assert_eq!(err, "");
+}

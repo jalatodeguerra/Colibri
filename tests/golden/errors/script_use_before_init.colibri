@@ -1,0 +1,2 @@
+print(later + 1) // error: `later` is used before it is initialised
+let later = 2

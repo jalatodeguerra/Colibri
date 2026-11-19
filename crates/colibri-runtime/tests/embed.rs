@@ -220,7 +220,8 @@ fn a_panic_while_loading_discards_the_program() {
         .load_source("boom.colibri", "print(\"first\")\nlet x = 1 / 0\n")
         .unwrap_err();
     assert!(matches!(err, colibri::Error::Panic { .. }));
-    assert_eq!(out.contents(), "");
+    // A script runs top to bottom, so the line before the panic ran.
+    assert_eq!(out.contents(), "first\n");
     assert!(matches!(
         vm.get_fn::<(), ()>("main"),
         Err(colibri::Error::NotLoaded)

@@ -44,8 +44,13 @@ pub struct FieldIdx(pub u32);
 pub struct Program {
     pub fns: Vec<FnDef>,
     pub globals: Vec<GlobalDef>,
-    /// Globals in the order their initialisers must run (dependencies first).
+    /// Every global, in the order its initialiser runs: the ones ordered by dependency first,
+    /// then (from [`Program::script_from`] on) the script's `let`/`var` in source order.
     pub init_order: Vec<GlobalId>,
+    /// Where the globals the script initialises start in `init_order` (DESIGN §4.2): the script
+    /// runs `StmtKind::InitGlobal` for each when it reaches its line. It is
+    /// `init_order.len()` for a program with `fn main` (every value is initialised first).
+    pub script_from: usize,
     /// The top-level statements of the file, in order.
     pub script: Rc<Body>,
     /// `fn main()` if the file defines it.
@@ -428,6 +433,12 @@ pub enum StmtKind {
     Return(Option<Expr>),
     Break(LoopId),
     Continue(LoopId),
+    /// The line of a script's module-level `let`/`var`: runs its initialiser and stores the
+    /// value in the global (DESIGN §4.2). Only in [`Program::script`].
+    InitGlobal {
+        global: GlobalId,
+        init: Rc<Body>,
+    },
     /// `defer stmt`: registers `stmt` on the enclosing block's cleanup list; it runs when the
     /// block exits, in last-in first-out order with the drops of the block's bindings
     /// (DESIGN §6.1, ARCHITECTURE §6).

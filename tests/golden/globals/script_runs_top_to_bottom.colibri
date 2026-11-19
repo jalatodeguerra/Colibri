@@ -1,0 +1,17 @@
+// A script (no `fn main`) runs its `let`, `var` and statements top to bottom (DESIGN §4.2).
+var items: List[int] = []
+items.push(1)
+items.push(2)
+let n = items.len()
+print(n)
+fn total() -> int => sum + n
+var sum = 0
+for x in items {
+    sum += x
+}
+print(total())
+print(LIMIT)
+const LIMIT = 10 // a `const` is initialised before the script's first line
+// expect: 2
+// expect: 5
+// expect: 10

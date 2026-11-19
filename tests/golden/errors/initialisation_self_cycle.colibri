@@ -1,1 +1,3 @@
+// A program (it has `fn main`) initialises its values in dependency order (DESIGN §4.2).
 let n = n + 1 // error: initialisation cycle: `n` -> `n`
+fn main() {}
