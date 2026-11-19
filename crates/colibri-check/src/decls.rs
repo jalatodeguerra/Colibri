@@ -18,7 +18,7 @@ use crate::types::{Ty, TypeId};
 /// Names that cannot be redefined as types.
 const BUILTIN_TYPES: &[&str] = &[
     "int", "float", "bool", "str", "char", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-    "f32", "f64", "vec2", "vec3", "vec4", "List", "Map", "Set", "Option", "Result",
+    "f32", "f64", "vec2", "vec3", "vec4", "List", "Map", "Set", "Option", "Result", "ptr", "cstr",
 ];
 
 /// What HIR does not keep about a user type.
@@ -69,6 +69,7 @@ impl<'a> Checker<'a> {
                         };
                         // Objects of the host's classes stay on the thread of their `Vm`.
                         self.types[id.0 as usize].sendable = !(host && s.kind == StructKind::Class);
+                        self.note_repr_attrs(id, item, s.kind == StructKind::Class);
                     }
                 }
                 ItemKind::Enum(e) => {

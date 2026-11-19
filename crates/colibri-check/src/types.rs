@@ -184,6 +184,9 @@ pub enum Ty {
     Set(Box<Ty>),
     Option(Box<Ty>),
     Fn(Vec<Ty>, Box<Ty>),
+    /// `ptr[T]`: a raw C pointer to a `T` (DESIGN §15.3). Safe code can pass, store and compare
+    /// it; reading, writing and arithmetic need `unsafe`.
+    Ptr(Box<Ty>),
     /// `Range[T]`: a closed or half-open range of integers, `a..b` or `a..=b` (DESIGN §5.2).
     Range(Box<Ty>),
     /// An interface used as a type: a dynamically dispatched value (DESIGN §9.2), with the
@@ -241,6 +244,7 @@ impl Ty {
             Ty::Set(t) => Ty::Set(Box::new(go(t))),
             Ty::Option(t) => Ty::Option(Box::new(go(t))),
             Ty::Range(t) => Ty::Range(Box::new(go(t))),
+            Ty::Ptr(t) => Ty::Ptr(Box::new(go(t))),
             Ty::Map(k, v) => Ty::Map(Box::new(go(k)), Box::new(go(v))),
             Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(go).collect(), Box::new(go(r))),
             _ => self.clone(),
@@ -252,7 +256,7 @@ impl Ty {
         match self {
             Ty::Param(..) => true,
             Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().any(Ty::has_param),
-            Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) => t.has_param(),
+            Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) | Ty::Ptr(t) => t.has_param(),
             Ty::Map(a, b) => a.has_param() || b.has_param(),
             Ty::Fn(ps, r) => ps.iter().any(Ty::has_param) || r.has_param(),
             _ => false,
@@ -344,6 +348,7 @@ impl fmt::Display for Shown<'_> {
             Ty::Set(t) => write!(f, "Set[{}]", shown(t, types)),
             Ty::Option(t) => write!(f, "{}?", shown(t, types)),
             Ty::Range(t) => write!(f, "Range[{}]", shown(t, types)),
+            Ty::Ptr(t) => write!(f, "ptr[{}]", shown(t, types)),
             Ty::Fn(params, ret) => {
                 f.write_str("fn(")?;
                 list(f, params)?;

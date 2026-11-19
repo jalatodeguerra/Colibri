@@ -1,0 +1,34 @@
+// caps: ffi
+// `div` returns a `div_t` and `lldiv` a `lldiv_t` by value: structs in registers, in both
+// layouts the C ABI has for them.
+
+@repr(C)
+struct DivT {
+    quot: i32
+    rem: i32
+}
+
+@repr(C)
+struct LDivT {
+    quot: int
+    rem: int
+}
+
+@link("c")
+extern "C" {
+    fn div(num: i32, den: i32) -> DivT
+    fn lldiv(num: int, den: int) -> LDivT
+}
+
+fn main() {
+    let d = div(17, 5)
+    print(d)
+    print(d.quot * 5 + d.rem)
+    let l = lldiv(-(1 << 40) - 3, 1000)
+    print(l)
+    print((size_of[DivT](), size_of[LDivT]()))
+}
+// expect: DivT { quot: 3, rem: 2 }
+// expect: 17
+// expect: LDivT { quot: -1099511627, rem: -779 }
+// expect: (8, 16)

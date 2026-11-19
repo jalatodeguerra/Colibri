@@ -28,6 +28,9 @@ pub enum Value {
     /// A `u64` (every value of that type, so `Show`, comparison and hashing need no static
     /// type; the other unsigned widths fit `Int`). ARCHITECTURE §6.
     U64(u64),
+    /// A raw C pointer (`ptr[T]`, DESIGN §15.3): an address. A `ptr[T]` is never NULL; a
+    /// nullable pointer is `ptr[T]?` and NULL is its `none`.
+    Ptr(usize),
     Float(f64),
     /// An `f32`, rounded to single precision after every operation.
     F32(f32),
@@ -105,6 +108,7 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::U64(a), Value::U64(b)) => a == b,
+            (Value::Ptr(a), Value::Ptr(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::F32(a), Value::F32(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,

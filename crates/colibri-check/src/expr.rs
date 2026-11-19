@@ -105,7 +105,7 @@ impl FnCtx<'_, '_> {
                 self.check_match(span, scrutinee, arms, BlockMode::Value(expected))
             }
             ExprKind::Closure(c) => self.check_closure(c, expected, span),
-            ExprKind::Unsafe(_) => self.unsupported("`unsafe` block", span),
+            ExprKind::Unsafe(b) => self.check_unsafe_block(b, expected, span),
             ExprKind::Error => self.error_expr(span),
         }
     }
@@ -265,6 +265,7 @@ impl FnCtx<'_, '_> {
                     | Ty::Option(_)
                     | Ty::Fn(..)
                     | Ty::Range(_)
+                    | Ty::Ptr(_)
             ) {
                 self.ck.report(Diagnostic::error(
                     format!("a value of type `{shown}` cannot be shown in a string"),

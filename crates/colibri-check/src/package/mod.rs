@@ -45,6 +45,9 @@ pub struct ModuleMeta {
     pub entry: bool,
     /// The module belongs to a dependency of the program, not to the program's own tree.
     pub dependency: bool,
+    /// The package may contain `extern` blocks (DESIGN §15.3): its `colibri.toml` says
+    /// `ffi = true`, or it is a script without a manifest (the host's `Cap::Ffi` still decides).
+    pub ffi: bool,
     /// Each `import` item of the file, by its node id.
     pub imports: HashMap<NodeId, ImportTarget>,
 }

@@ -16,4 +16,4 @@ serde = "1"
 serde_json = "1"
 
 [dev-dependencies]
-colibri-runtime = { path = "../colibri-runtime" }
+colibri-runtime = { path = "../colibri-runtime", default-features = false }

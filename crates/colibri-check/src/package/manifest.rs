@@ -21,6 +21,8 @@ pub struct Manifest {
     pub name: String,
     pub name_span: Span,
     pub dependencies: Vec<Dependency>,
+    /// `ffi = true` in `[package]`: the package may contain `extern` blocks (DESIGN §15.3).
+    pub ffi: bool,
 }
 
 /// Parses a manifest; every problem is a diagnostic in file `file`.
@@ -28,6 +30,7 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
     let tables = toml::parse(file, text).map_err(|d| vec![d])?;
     let mut errors = Vec::new();
     let mut name = None;
+    let mut ffi = false;
     let mut dependencies: Vec<Dependency> = Vec::new();
     for table in &tables {
         let path: Vec<&str> = table.path.iter().map(String::as_str).collect();
@@ -40,7 +43,7 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
                     ));
                 }
             }
-            ["package"] => package(table, &mut name, &mut errors),
+            ["package"] => package(table, &mut name, &mut ffi, &mut errors),
             ["dependencies"] => {
                 for entry in &table.entries {
                     dependency(
@@ -85,10 +88,16 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
         name,
         name_span,
         dependencies,
+        ffi,
     })
 }
 
-fn package(table: &Table, name: &mut Option<(String, Span)>, errors: &mut Vec<Diagnostic>) {
+fn package(
+    table: &Table,
+    name: &mut Option<(String, Span)>,
+    ffi: &mut bool,
+    errors: &mut Vec<Diagnostic>,
+) {
     for entry in &table.entries {
         match (entry.key.as_str(), &entry.value.kind) {
             ("name", ValueKind::Str(s)) => {
@@ -107,12 +116,17 @@ fn package(table: &Table, name: &mut Option<(String, Span)>, errors: &mut Vec<Di
                 "the package `name` must be a string",
                 entry.value.span,
             )),
+            ("ffi", ValueKind::Bool(b)) => *ffi = *b,
+            ("ffi", _) => errors.push(
+                Diagnostic::error("`ffi` must be `true` or `false`", entry.value.span)
+                    .with_hint("write `ffi = true` to let the package contain `extern` blocks"),
+            ),
             (other, _) => errors.push(
                 Diagnostic::error(
                     format!("unknown key `{other}` in `[package]`"),
                     entry.key_span,
                 )
-                .with_hint("the only key is `name`"),
+                .with_hint("the keys are `name` and `ffi`"),
             ),
         }
     }
@@ -147,7 +161,7 @@ fn dependency(
     }
     let entries: &[Entry] = match &value.kind {
         ValueKind::Table(entries) => entries,
-        ValueKind::Str(_) => {
+        ValueKind::Str(_) | ValueKind::Bool(_) => {
             errors.push(
                 Diagnostic::error(
                     format!("the dependency `{name}` must say where it is"),

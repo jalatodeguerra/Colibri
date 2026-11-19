@@ -121,6 +121,9 @@ pub enum Error {
     /// A host object could not be used: the host destroyed it, an enclosing call has it
     /// borrowed, or it belongs to the script. The message is the one a script would see.
     HostObject(String),
+    /// An `extern` function could not be bound to its C library at load time: the library or
+    /// the symbol is missing, or this build has no C FFI (the `ffi` feature is off).
+    Ffi(String),
 }
 
 /// How many frames of a long stack trace are shown at each end.
@@ -250,6 +253,7 @@ impl fmt::Display for Error {
             },
             Error::Interface { path, message } => write!(f, "{path}:{message}"),
             Error::HostObject(message) => f.write_str(message),
+            Error::Ffi(message) => write!(f, "cannot link C: {message}"),
         }
     }
 }

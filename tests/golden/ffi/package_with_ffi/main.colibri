@@ -1,0 +1,11 @@
+// caps: ffi
+// `ffi = true` in colibri.toml lets the package declare C functions.
+
+extern "C" {
+    fn abs(x: i32) -> i32
+}
+
+fn main() {
+    print(abs(-12))
+}
+// expect: 12

@@ -1,0 +1,21 @@
+// caps: ffi
+
+@link("c")
+extern "C" {
+    fn malloc(size: u64) -> ptr[u8]
+    fn free(p: ptr[u8])
+}
+
+fn main() {
+    let p = malloc(8)
+    print(p.addr() != 0) // reading the address is safe
+    let q = p.cast[i32]() // error: needs an `unsafe` block
+    p.write(1) // error: needs an `unsafe` block
+    print(p.read()) // error: needs an `unsafe` block
+    let r = p.offset(1) // error: needs an `unsafe` block
+    unsafe {
+        p.write(1)
+        let f = fn() => p.read() // error: needs an `unsafe` block
+    }
+    free(p)
+}
