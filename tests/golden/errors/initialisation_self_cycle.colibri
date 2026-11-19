@@ -1,0 +1,1 @@
+let n = n + 1 // error: initialisation cycle: `n` -> `n`

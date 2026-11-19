@@ -1,0 +1,4 @@
+fn forever(n: int) -> int => forever(n + 1) + 1
+print("start")
+print(forever(0)) // panic: stack overflow
+// expect: start

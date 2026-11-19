@@ -1,0 +1,25 @@
+fn main() {
+    let id = 255
+    print("{id:x} {id:X} {id:b} {id:o}")
+    print("{id:08b}")
+    print("{id:>8}|")
+    print("{id:<8}|")
+    print("{id:^8}|")
+    print("{id:*^9}")
+    print("{id:->6}")
+    print("{-id:x}")
+    print("{id:05}")
+    print("{-id:05}")
+    print("{123456:3}")
+}
+// expect: ff FF 11111111 377
+// expect: 11111111
+// expect:      255|
+// expect: 255     |
+// expect:   255   |
+// expect: ***255***
+// expect: ---255
+// expect: -ff
+// expect: 00255
+// expect: -0255
+// expect: 123456

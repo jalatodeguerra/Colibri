@@ -1,0 +1,9 @@
+fn double(x: int) -> int => x * 2
+fn is_even(x: int) -> bool => x % 2 == 0
+fn describe(x: int) -> str => if is_even(x) { "even" } else { "odd" }
+print(double(21))
+print(is_even(3))
+print(describe(4))
+// expect: 42
+// expect: false
+// expect: even

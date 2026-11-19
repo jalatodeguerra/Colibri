@@ -1,0 +1,9 @@
+fn main() {
+    let n = 3
+    if n { // error: expected `bool`, found `int`
+        print("yes")
+    }
+    while 1 { // error: expected `bool`, found `{integer}`
+        print("no")
+    }
+}

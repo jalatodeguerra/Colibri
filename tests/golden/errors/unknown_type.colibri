@@ -1,0 +1,2 @@
+fn f(x: integer) {} // error: unknown type `integer`
+let y: strng = "s" // error: unknown type `strng`

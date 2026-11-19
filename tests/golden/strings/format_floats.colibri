@@ -1,0 +1,25 @@
+fn main() {
+    let x = 3.14159
+    print("{x:.2}")
+    print("{x:.0}")
+    print("{x:.4}")
+    print("{2.0:.3}")
+    print("{x:8.2}|")
+    print("{x:<8.2}|")
+    print("{x:^9.2}|")
+    print("{-x:08.2}")
+    print("{1.5:.0}")
+    print("{2.5:.0}")
+    print("{1.0 / 0.0:.2}")
+}
+// expect: 3.14
+// expect: 3
+// expect: 3.1416
+// expect: 2.000
+// expect:     3.14|
+// expect: 3.14    |
+// expect:   3.14   |
+// expect: -0003.14
+// expect: 2
+// expect: 2
+// expect: inf

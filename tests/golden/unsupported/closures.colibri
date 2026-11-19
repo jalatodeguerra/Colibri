@@ -1,0 +1,1 @@
+let double = fn(x: int) => x * 2 // error: closure is not supported yet

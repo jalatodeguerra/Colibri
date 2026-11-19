@@ -1,0 +1,6 @@
+fn main() {
+    let a = 1 as float // error: `as` cast is not supported yet
+    let b = "s".len() // error: method call is not supported yet
+    let c = a.x // error: field access is not supported yet
+    let d = a[0] // error: indexing is not supported yet
+}

@@ -1,0 +1,3 @@
+fn main() -> int { // error: `main` must take no arguments and return nothing
+    return 0
+}

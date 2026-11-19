@@ -1,0 +1,2 @@
+fn main(args: int) { // error: `main` must take no arguments and return nothing
+}

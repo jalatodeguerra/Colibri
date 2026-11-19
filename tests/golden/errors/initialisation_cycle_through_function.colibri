@@ -1,0 +1,2 @@
+let a = f() // error: initialisation cycle: `a` -> `f()` -> `a`
+fn f() -> int => a + 1

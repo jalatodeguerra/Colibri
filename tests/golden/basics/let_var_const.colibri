@@ -1,0 +1,15 @@
+fn main() {
+    let a = 10
+    var b = 20
+    const C = 30
+    b = b + 1
+    print(a + b + C)
+    b += 4
+    b -= 1
+    b *= 2
+    b /= 5
+    b %= 7
+    print(b)
+}
+// expect: 61
+// expect: 2

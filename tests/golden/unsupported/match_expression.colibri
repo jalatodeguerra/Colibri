@@ -1,0 +1,6 @@
+fn f(x: int) -> str {
+    return match x { // error: `match` is not supported yet
+        0 => "zero"
+        _ => "other"
+    }
+}

@@ -1,0 +1,8 @@
+fn main() {
+    break // error: `break` outside of a loop
+    continue // error: `continue` outside of a loop
+    while true {
+        break 'nowhere // error: there is no enclosing loop labelled `'nowhere`
+    }
+    return 1 // error: expected `()`, found `{integer}`
+}

@@ -1,0 +1,4 @@
+fn main() {
+    let x = if true { 1 } else { "one" } // error: `if` and `else` give different types
+    let y: int = if true { 1 } // error: expected `int`, found `()`
+}

@@ -1,0 +1,8 @@
+let x = 1
+fn f() -> int => 1
+x() // error: is a value, not a function
+print(f) // error: `f` is a function, not a value
+fn main() {
+    let y = 2
+    y() // error: `y` is a `int`, not a function
+}

@@ -1,0 +1,5 @@
+fn add(a: int, b: int) -> int => a + b
+fn log(msg: str, level: str = "info") {}
+print(add(1)) // error: missing argument for `b` in the call to `add`
+print(add()) // error: missing arguments for `a`, `b` in the call to `add`
+log() // error: missing argument for `msg` in the call to `log`

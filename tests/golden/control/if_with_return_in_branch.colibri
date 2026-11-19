@@ -1,0 +1,8 @@
+fn clamp(x: int) -> int {
+    let r = if x > 10 { return 10 } else { x }
+    return r
+}
+print(clamp(5))
+print(clamp(50))
+// expect: 5
+// expect: 10

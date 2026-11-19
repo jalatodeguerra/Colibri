@@ -1,0 +1,16 @@
+fn noisy(label: str, value: int) -> int {
+    print("init {label}")
+    return value
+}
+print("statement 1")
+let second = noisy("second", 2)
+fn main() {
+    print("main {first} {second}")
+}
+let first = noisy("first", 1)
+print("statement 2")
+// expect: init second
+// expect: init first
+// expect: statement 1
+// expect: statement 2
+// expect: main 1 2

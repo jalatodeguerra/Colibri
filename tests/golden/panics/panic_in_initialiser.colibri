@@ -1,0 +1,2 @@
+let broken = 1 / 0 // panic: division by zero
+print("never printed")

@@ -1,0 +1,4 @@
+fn box(w: int, h: int) -> int => w * h
+print(box(w: 1, depth: 2)) // error: `box` has no parameter named `depth`
+print(box(1, w: 2)) // error: the parameter `w` is given more than once
+print(box(w: 1, 2)) // error: a positional argument cannot follow a named argument

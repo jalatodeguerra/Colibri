@@ -1,0 +1,11 @@
+var log = ""
+fn add(s: str) {
+    log += s
+}
+add("a")
+fn main() {
+    add("c")
+    print(log)
+}
+add("b")
+// expect: abc

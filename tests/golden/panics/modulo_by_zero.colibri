@@ -1,0 +1,4 @@
+fn rem(a: int, b: int) -> int => a % b
+print(rem(7, 4))
+print(rem(1, 0)) // panic: modulo by zero
+// expect: 3

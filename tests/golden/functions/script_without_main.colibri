@@ -1,0 +1,3 @@
+fn helper() -> str => "used"
+print(helper())
+// expect: used

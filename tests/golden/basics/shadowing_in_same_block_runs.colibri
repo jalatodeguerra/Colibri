@@ -1,0 +1,7 @@
+// A warning, not an error: the program still runs.
+fn main() {
+    let x = 1
+    let x = x + 1
+    print(x)
+}
+// expect: 2

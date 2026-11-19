@@ -3,7 +3,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use colibri_lang::golden::{Outcome, check, parse_directives, run_golden};
+use colibri_lang::golden::{check, parse_directives, run_golden};
+use colibri_lang::on_big_stack;
 use libtest_mimic::{Arguments, Failed, Trial};
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -37,12 +38,11 @@ fn main() {
             let source = fs::read_to_string(&path).expect("golden file is readable");
             let directives = parse_directives(&source);
             let skipped = directives.skip.is_some();
-            let outcome = run_golden(&path, &source);
-            let ignored = skipped || outcome == Outcome::NotImplemented;
             Trial::test(name, move || {
+                let outcome = on_big_stack(move || run_golden(&path, &source));
                 check(&directives, &outcome).map_err(Failed::from)
             })
-            .with_ignored_flag(ignored)
+            .with_ignored_flag(skipped)
         })
         .collect();
 

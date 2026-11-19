@@ -1,0 +1,14 @@
+fn shout(s: str) {
+    print(s + "!")
+}
+fn nothing() -> () {}
+fn main() {
+    shout("hey")
+    let u = nothing()
+    print(u)
+    print(shout("again"))
+}
+// expect: hey!
+// expect: ()
+// expect: again!
+// expect: ()

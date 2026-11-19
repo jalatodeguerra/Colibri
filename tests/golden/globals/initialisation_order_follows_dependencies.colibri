@@ -1,0 +1,5 @@
+let a = b + 1
+let b = c * 2
+let c = 5
+print("{a} {b} {c}")
+// expect: 11 10 5

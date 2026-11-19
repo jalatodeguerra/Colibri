@@ -1,0 +1,13 @@
+fn fib(n: int) -> int {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+fn fact(n: int) -> int => if n <= 1 { 1 } else { n * fact(n - 1) }
+print(fib(20))
+print(fact(10))
+print(fact(20))
+// expect: 6765
+// expect: 3628800
+// expect: 2432902008176640000

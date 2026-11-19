@@ -124,7 +124,6 @@ dependencies = [
  "ariadne",
  "clap",
  "colibri-runtime",
- "colibri-syntax",
  "libtest-mimic",
 ]
 
@@ -132,6 +131,7 @@ dependencies = [
 name = "colibri-runtime"
 version = "0.1.0"
 dependencies = [
+ "ariadne",
  "colibri-check",
  "colibri-interp",
  "colibri-syntax",

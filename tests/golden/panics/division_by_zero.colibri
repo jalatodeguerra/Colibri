@@ -1,0 +1,4 @@
+fn divide(a: int, b: int) -> int => a / b
+print(divide(6, 3))
+print(divide(1, 0)) // panic: division by zero
+// expect: 2
