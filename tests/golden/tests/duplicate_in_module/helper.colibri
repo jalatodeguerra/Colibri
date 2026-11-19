@@ -1,0 +1,9 @@
+pub fn one() -> int => 1
+
+test "t" {
+    assert(true)
+}
+
+test "t" { // error: the test "t" is defined more than once in this module
+    assert(true)
+}

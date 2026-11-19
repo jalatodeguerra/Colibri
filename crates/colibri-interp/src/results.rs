@@ -315,6 +315,49 @@ impl Interp {
         }
     }
 
+    /// `assert(cond, msg)` and `assert_eq(a, b)`: a panic at the call when the assertion fails
+    /// (ARCHITECTURE §15). Equality honours a user-written `impl Eq`, the shown values a
+    /// user-written `impl Show`.
+    pub(crate) fn assertion(
+        &mut self,
+        fiber: &mut Fiber,
+        intrinsic: &Intrinsic,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Eval {
+        let failure = match (intrinsic, args.as_slice()) {
+            (Intrinsic::Assert, [Value::Bool(true), _]) => Ok(None),
+            (Intrinsic::Assert, [Value::Bool(false), Value::Str(msg)]) => Ok(Some(msg.to_string())),
+            (Intrinsic::AssertEq, [a, b]) => match self.eq_deep(fiber, a, b, span) {
+                Ok(true) => Ok(None),
+                Ok(false) => self.show_both(fiber, a, b, span).map(Some),
+                Err(ctl) => Err(ctl),
+            },
+            _ => Err(self.internal(fiber, span, "ill-typed assertion")),
+        };
+        self.release_all(args);
+        match failure {
+            Ok(None) => Ok(Value::Unit),
+            Ok(Some(msg)) => Err(self.panic(fiber, span, msg)),
+            Err(ctl) => Err(ctl),
+        }
+    }
+
+    /// The message of a failed `assert_eq`: both values, strings quoted so that spaces show.
+    fn show_both(&mut self, fiber: &mut Fiber, a: &Value, b: &Value, span: Span) -> Eval<String> {
+        let mut shown = Vec::new();
+        for v in [a, b] {
+            shown.push(match v {
+                Value::Str(s) => format!("{:?}", s.as_ref()),
+                other => self.show_deep(fiber, other, span)?,
+            });
+        }
+        Ok(format!(
+            "assertion failed: `left == right`\n  left: {}\n right: {}",
+            shown[0], shown[1]
+        ))
+    }
+
     /// What `main` returning `err(e)` reports: the whole chain of `e`.
     pub fn error_report(&mut self, fiber: &mut Fiber, v: &Value) -> String {
         let span = Span::new(colibri_syntax::FileId(0), 0, 0);

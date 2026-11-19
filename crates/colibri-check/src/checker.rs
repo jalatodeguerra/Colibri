@@ -13,7 +13,7 @@ use crate::decls::{AliasInfo, TypeExtra};
 use crate::generics::SigCtx;
 use crate::hir::{
     Block, Body, FieldDef, FnDef, FnId, GlobalDef, GlobalId, HostFnDef, HostFnId, ImplDef, ImplId,
-    Program, TypeDef, TypeDefKind, TypeKey, VariantDef,
+    Program, TestDef, TypeDef, TypeDefKind, TypeKey, VariantDef,
 };
 use crate::host::{self, HOST_FILE, HostEnv};
 use crate::ifaces::IfaceInfo;
@@ -58,6 +58,14 @@ pub(crate) struct ParamInfo<'a> {
     /// A `var self` receiver: the local is assignable.
     pub mutable: bool,
     /// The module whose names the default is written in.
+    pub module: ModId,
+}
+
+/// A `test` block: its function, declaration and module.
+pub(crate) struct TestInfo<'a> {
+    pub f: FnId,
+    pub decl: &'a ast::TestDecl,
+    pub span: Span,
     pub module: ModId,
 }
 
@@ -200,6 +208,8 @@ pub(crate) struct Checker<'a> {
     pub derived_impls: HashMap<(TypeKey, TypeId), ImplId>,
     script: Vec<&'a ast::Stmt>,
     script_body: Option<Rc<Body>>,
+    /// The `test` blocks of the source modules, in collection order.
+    tests: Vec<TestInfo<'a>>,
     /// The native stack position where checking started, and how far below it checking may go.
     stack_base: usize,
     stack_budget: usize,
@@ -290,7 +300,7 @@ pub(crate) fn stack_position() -> usize {
 }
 
 /// Names that exist without a declaration.
-pub(crate) const BUILTIN_FNS: &[&str] = &["print", "panic"];
+pub(crate) const BUILTIN_FNS: &[&str] = &["print", "panic", "assert", "assert_eq"];
 
 impl<'a> Checker<'a> {
     pub fn new(
@@ -306,6 +316,7 @@ impl<'a> Checker<'a> {
             files: Vec::new(),
             package: None,
             entry: false,
+            root: false,
             imports: None,
             scope: Scope::default(),
             exports: Exports::default(),
@@ -318,6 +329,7 @@ impl<'a> Checker<'a> {
                 kind: ModKind::Host,
                 package: None,
                 entry: false,
+                root: false,
                 imports: None,
                 scope: Scope::default(),
                 exports: Exports::default(),
@@ -333,6 +345,7 @@ impl<'a> Checker<'a> {
                 files: vec![input.file],
                 package: Some(meta.package),
                 entry: meta.entry,
+                root: !meta.dependency,
                 imports: Some(&meta.imports),
                 scope: Scope::default(),
                 exports: Exports::default(),
@@ -378,6 +391,7 @@ impl<'a> Checker<'a> {
             derived_impls: HashMap::new(),
             script: Vec::new(),
             script_body: None,
+            tests: Vec::new(),
             stack_base: 0,
             stack_budget,
         }
@@ -407,6 +421,9 @@ impl<'a> Checker<'a> {
         self.check_defaults();
         for f in 0..self.fns.len() {
             self.check_fn(FnId(f as u32));
+        }
+        for t in 0..self.tests.len() {
+            self.check_test(t);
         }
         self.check_script();
         let init_order = self.init_order();
@@ -617,7 +634,7 @@ impl<'a> Checker<'a> {
                 self.report(diag);
             }
             ItemKind::Extern(_) => self.unsupported("`extern`", item.span),
-            ItemKind::Test(_) => self.unsupported("`test`", item.span),
+            ItemKind::Test(decl) => self.collect_test(item, decl),
             ItemKind::Error => {}
         }
     }
@@ -1180,6 +1197,77 @@ impl<'a> Checker<'a> {
         info.deps = deps;
     }
 
+    /// A `test "name" { .. }` block is a function `() -> Result[()]` that nothing calls: it is
+    /// checked like any other body, so `?` works and an `err` fails the test (ARCHITECTURE §15).
+    fn collect_test(&mut self, item: &'a ast::Item, decl: &'a ast::TestDecl) {
+        for attr in &item.attrs {
+            self.unsupported(&format!("the attribute `@{}`", attr.name.name), attr.span);
+        }
+        let module = self.cur_mod;
+        if let Some(prev) = self
+            .tests
+            .iter()
+            .find(|t| t.module == module && t.decl.name == decl.name)
+        {
+            let prev_span = prev.span;
+            self.report(
+                Diagnostic::error(
+                    format!(
+                        "the test \"{}\" is defined more than once in this module",
+                        decl.name
+                    ),
+                    item.span,
+                )
+                .with_label(prev_span, "first defined here")
+                .with_hint("test names are unique per module; they are what `colibri test --filter` and the report show"),
+            );
+        }
+        let prefix = match &self.mods[module.0 as usize] {
+            m if m.kind == ModKind::Source && !m.entry => format!("{}.", m.name),
+            _ => String::new(),
+        };
+        let f = FnId(self.fns.len() as u32);
+        self.fns.push(FnInfo {
+            name: format!("{prefix}test \"{}\"", decl.name),
+            name_span: item.span,
+            span: item.span,
+            params: Vec::new(),
+            receiver: None,
+            ret: crate::optres::result_ty(Ty::Unit, crate::optres::error_ty()),
+            ret_span: None,
+            decl: None,
+            body: None,
+            deps: Vec::new(),
+            generics: Vec::new(),
+            self_ty: None,
+            host: None,
+            module,
+            public: false,
+        });
+        self.tests.push(TestInfo {
+            f,
+            decl,
+            span: item.span,
+            module,
+        });
+    }
+
+    fn check_test(&mut self, t: usize) {
+        let (f, decl, span, module) = {
+            let t = &self.tests[t];
+            (t.f, t.decl, t.span, t.module)
+        };
+        let info = &self.fns[f.0 as usize];
+        let (name, ret) = (info.name.clone(), info.ret.clone());
+        let back = self.enter_module(module);
+        let (body, deps) = FnCtx::new(self, name, Some((ret.clone(), None)))
+            .check_test_body(&decl.body, &ret, span);
+        self.enter_module(back);
+        let info = &mut self.fns[f.0 as usize];
+        info.body = Some(Rc::new(body));
+        info.deps = deps;
+    }
+
     fn check_script(&mut self) {
         let stmts = std::mem::take(&mut self.script);
         let span = self.file.span;
@@ -1391,10 +1479,27 @@ impl<'a> Checker<'a> {
             init_order,
             script: self.script_body.clone()?,
             main,
+            tests: self.assemble_tests(),
             types: self.types.clone(),
             host_fns,
             host_types: self.host_type_count,
         })
+    }
+
+    fn assemble_tests(&self) -> Vec<TestDef> {
+        self.tests
+            .iter()
+            .map(|t| {
+                let m = &self.mods[t.module.0 as usize];
+                TestDef {
+                    name: t.decl.name.clone(),
+                    module: m.name.clone(),
+                    root: m.root,
+                    f: t.f,
+                    span: t.span,
+                }
+            })
+            .collect()
     }
 
     /// The module the program starts from.

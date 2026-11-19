@@ -1,0 +1,11 @@
+test "same" {
+    assert(true)
+}
+
+test "same" { // error: the test "same" is defined more than once in this module
+    assert(true)
+}
+
+test "other" {
+    assert(true)
+}

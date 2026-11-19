@@ -171,7 +171,7 @@ pub use host::{HostFault, HostFn, Plain, RawHostFn, Registration, WithCtx};
 pub use iface::Interface;
 pub use render::render_diagnostic;
 pub use types::{SigDesc, TypeDesc, TypeRegistry};
-pub use vm::{DEFAULT_MAX_CALL_DEPTH, HostModule, Vm, VmBuilder};
+pub use vm::{DEFAULT_MAX_CALL_DEPTH, HostModule, TestInfo, Vm, VmBuilder};
 
 /// The type descriptors of the loaded program, for host functions that work on any type
 /// (serializers, DESIGN §7.5): what [`Ctx::type_args`] and [`Ctx::type_defs`] return.

@@ -146,6 +146,31 @@ impl Interp {
         result
     }
 
+    /// Runs the module-level initialisers in dependency order and nothing else (no top-level
+    /// statements): the state a test starts from (ARCHITECTURE §15).
+    pub fn run_initialisers(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
+        let outermost = self.begin_entry();
+        if outermost {
+            self.drain_root_drops();
+        }
+        let inits = self.inits.clone();
+        let mut result = Ok(());
+        for (g, body) in inits {
+            match self.run_body(fiber, &body) {
+                Ok(value) => {
+                    let old = std::mem::replace(&mut self.globals[g.0 as usize], value);
+                    self.release(old);
+                }
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
+        }
+        self.end_entry(outermost, true);
+        result
+    }
+
     fn run_module_parts(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
         let inits = self.inits.clone();
         for (g, body) in inits {
@@ -926,6 +951,9 @@ impl Interp {
         if let Intrinsic::Builtin(op) = intrinsic {
             return self.builtin(fiber, *op, args, span);
         }
+        if matches!(intrinsic, Intrinsic::Assert | Intrinsic::AssertEq) {
+            return self.assertion(fiber, intrinsic, args, span);
+        }
         let numeric = match intrinsic {
             Intrinsic::Convert { from, to } => args.first().map(|v| num::convert(*from, *to, v)),
             Intrinsic::NumMethod(m, n) => Some(num::method(*m, *n, &args)),
@@ -971,9 +999,11 @@ impl Interp {
                 Value::Host(r) => Value::Bool(self.host_alive(r.index, r.generation)),
                 _ => Value::Bool(false),
             },
-            Intrinsic::Builtin(_) | Intrinsic::Convert { .. } | Intrinsic::NumMethod(..) => {
-                Value::Unit
-            }
+            Intrinsic::Builtin(_)
+            | Intrinsic::Assert
+            | Intrinsic::AssertEq
+            | Intrinsic::Convert { .. }
+            | Intrinsic::NumMethod(..) => Value::Unit,
         };
         self.release(arg);
         Ok(result)

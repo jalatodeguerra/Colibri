@@ -170,6 +170,22 @@ impl Interp {
         }
     }
 
+    /// Releases the module-level values in reverse initialisation order and leaves the slots
+    /// empty, like [`Interp::shutdown`] but keeping the host's roots (the program stays loaded).
+    /// Used between tests: a `Drop` hook that panics here has nobody to tell.
+    pub fn release_globals(&mut self) {
+        let outermost = self.begin_entry();
+        let order: Vec<usize> = self.inits.iter().map(|(g, _)| g.0 as usize).collect();
+        for g in order.into_iter().rev() {
+            if let Some(slot) = self.globals.get_mut(g) {
+                let v = std::mem::replace(slot, Value::Unit);
+                self.release(v);
+            }
+        }
+        self.hook_panics.clear();
+        self.end_entry(outermost, false);
+    }
+
     /// Ends the program's life: module-level values die in reverse initialisation order
     /// (DESIGN §11.2). Safe to call twice.
     pub fn shutdown(&mut self) {

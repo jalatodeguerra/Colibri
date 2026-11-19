@@ -1,0 +1,1 @@
+fn assert(x: bool) {} // error: `assert` is a built-in function

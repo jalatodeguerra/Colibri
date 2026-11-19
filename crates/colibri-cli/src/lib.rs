@@ -2,6 +2,7 @@
 
 pub mod fmt;
 pub mod golden;
+pub mod testcmd;
 
 use std::thread;
 

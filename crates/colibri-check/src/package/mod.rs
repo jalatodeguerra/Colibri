@@ -13,7 +13,7 @@ use colibri_syntax::Diagnostic;
 use colibri_syntax::ast::{self, NodeId};
 
 pub use fs::{DiskFs, MemoryFs, SourceFs, normalize};
-pub use loader::{Entry, LoadError, load};
+pub use loader::{Entry, LoadError, LoadOptions, load, load_with};
 pub use manifest::{Dependency, Manifest};
 
 /// The extension of source files.
@@ -43,6 +43,8 @@ pub struct ModuleMeta {
     /// The package (folder) the module belongs to: an index into [`Loaded::packages`].
     pub package: usize,
     pub entry: bool,
+    /// The module belongs to a dependency of the program, not to the program's own tree.
+    pub dependency: bool,
     /// Each `import` item of the file, by its node id.
     pub imports: HashMap<NodeId, ImportTarget>,
 }

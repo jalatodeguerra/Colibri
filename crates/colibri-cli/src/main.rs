@@ -44,6 +44,20 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Run the `test "name" { .. }` blocks of a script or package (the current folder by
+    /// default); a failing test does not stop the others
+    Test {
+        file: Option<PathBuf>,
+        /// Run only the tests whose `module::name` contains this text
+        #[arg(long, value_name = "TEXT")]
+        filter: Option<String>,
+        /// Steps one test may take before it fails (0 is unlimited)
+        #[arg(long, value_name = "STEPS", default_value_t = colibri_lang::testcmd::DEFAULT_BUDGET)]
+        budget: u64,
+        /// Show what the tests print at once, not only for failing tests
+        #[arg(long)]
+        nocapture: bool,
+    },
     /// Run the language server (LSP) on stdin and stdout
     Lsp,
 }
@@ -130,6 +144,17 @@ fn main() -> ExitCode {
             }
         }
         Command::Run { file, args } => run(&file.unwrap_or_else(|| PathBuf::from(".")), args),
+        Command::Test {
+            file,
+            filter,
+            budget,
+            nocapture,
+        } => colibri_lang::testcmd::run(&colibri_lang::testcmd::Options {
+            path: file.unwrap_or_else(|| PathBuf::from(".")),
+            filter,
+            budget,
+            nocapture,
+        }),
         Command::Fmt { paths, check } => colibri_lang::fmt::run(&paths, check),
         Command::Lsp => lsp(),
     })

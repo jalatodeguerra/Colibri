@@ -74,6 +74,7 @@ pub fn check_with_host(file: &colibri_syntax::ast::File, host: &HostEnv, budget:
         name: String::new(),
         package: 0,
         entry: true,
+        dependency: false,
         imports: std::collections::HashMap::new(),
     };
     let packages = [package::PackageNode {

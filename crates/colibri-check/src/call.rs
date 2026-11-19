@@ -73,6 +73,8 @@ impl FnCtx<'_, '_> {
             "some" => self.check_some(args, expected, span),
             "ok" | "err" => self.check_ok_err(name == "ok", args, expected, span),
             "panic" if !self.ck.values.contains_key(name) => self.check_panic(args, span),
+            "assert" if !self.ck.values.contains_key(name) => self.check_assert(args, span),
+            "assert_eq" if !self.ck.values.contains_key(name) => self.check_assert_eq(args, span),
             _ => {
                 self.check_args_loosely(args);
                 if self.ck.values.contains_key(name) {
@@ -149,6 +151,101 @@ impl FnCtx<'_, '_> {
             args: vec![Arg::Value(msg)],
         }));
         self.mk(call, Ty::Never, span)
+    }
+
+    /// `assert(cond)` or `assert(cond, "message")`: panics when `cond` is false. The message
+    /// may be named (`msg: ..`). Type `()` (ARCHITECTURE §15).
+    fn check_assert(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        let shape_ok = (1..=2).contains(&args.len())
+            && args[0].name.is_none()
+            && args
+                .get(1)
+                .is_none_or(|a| a.name.as_ref().is_none_or(|n| n.name == "msg"));
+        if !shape_ok {
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error(
+                    format!(
+                        "`assert` takes a condition and an optional message, found {} arguments",
+                        args.len()
+                    ),
+                    span,
+                )
+                .with_hint("write `assert(x > 0)` or `assert(x > 0, \"x must be positive\")`"),
+            );
+            return self.error_expr(span);
+        }
+        let cond = self.check_expr(&args[0].value, Some(&Ty::Bool));
+        let cond_ok = self.expect(&cond, &Ty::Bool, None);
+        let msg = match args.get(1) {
+            Some(a) => {
+                let m = self.check_expr(&a.value, Some(&Ty::Str));
+                let ok = self.expect(&m, &Ty::Str, None);
+                ok.then_some(m)
+            }
+            None => Some(self.mk(
+                hir::ExprKind::Lit(hir::Lit::Str(std::rc::Rc::from("assertion failed"))),
+                Ty::Str,
+                span,
+            )),
+        };
+        let (true, Some(msg)) = (cond_ok, msg) else {
+            return self.error_expr(span);
+        };
+        self.mk(
+            hir::ExprKind::Call(Box::new(hir::Call {
+                callee: Callee::Intrinsic(Intrinsic::Assert),
+                type_args: Vec::new(),
+                args: vec![Arg::Value(cond), Arg::Value(msg)],
+            })),
+            Ty::Unit,
+            span,
+        )
+    }
+
+    /// `assert_eq(a, b)`: panics unless `a == b`, showing both values. The two sides must have
+    /// the same type, which must support `==` (`Eq`); every type can be shown.
+    fn check_assert_eq(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        if args.len() != 2 || args.iter().any(|a| a.name.is_some()) {
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error(
+                    format!(
+                        "`assert_eq` takes exactly two values, found {} arguments",
+                        args.len()
+                    ),
+                    span,
+                )
+                .with_hint("write `assert_eq(actual, expected)`"),
+            );
+            return self.error_expr(span);
+        }
+        let mut l = self.check_expr(&args[0].value, None);
+        let mut r = self.check_expr(&args[1].value, Some(&l.ty));
+        if !self.unify_operands(ast::BinOp::Eq, &mut l, &mut r, span) {
+            return self.error_expr(span);
+        }
+        if !self.supports_eq(&l.ty) {
+            let shown = self.show(&l.ty);
+            let mut diag = Diagnostic::error(
+                format!("`assert_eq` cannot compare values of type `{shown}`"),
+                span,
+            );
+            if let Some(hint) = self.comparison_hint(&l.ty, true) {
+                diag = diag.with_hint(hint);
+            }
+            self.ck.report(diag);
+            return self.error_expr(span);
+        }
+        self.mk(
+            hir::ExprKind::Call(Box::new(hir::Call {
+                callee: Callee::Intrinsic(Intrinsic::AssertEq),
+                type_args: Vec::new(),
+                args: vec![Arg::Value(l), Arg::Value(r)],
+            })),
+            Ty::Unit,
+            span,
+        )
     }
 
     fn check_print(&mut self, args: &[ast::Arg], span: Span) -> Expr {

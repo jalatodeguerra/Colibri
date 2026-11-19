@@ -686,3 +686,21 @@ fn doc_comments_survive_with_the_ast() {
     assert_eq!(fmt(src), src);
     assert!(dump(src).contains("(doc \"Adds.\\nMore.\")"));
 }
+
+#[test]
+fn test_items_are_formatted_like_functions() {
+    check(
+        "test   \"adds up\"   {\nlet x   =  1+1\n   assert_eq( x,2 )\n}\n",
+        "test \"adds up\" {\n    let x = 1 + 1\n    assert_eq(x, 2)\n}\n",
+    );
+    // Comments stay, blank lines between items are kept at most one, the name is left alone.
+    check(
+        "// the first\ntest \"a  b\" { // trailing\n    assert(true) // inside\n}\n\n\n\ntest \"empty\" {}\n",
+        "// the first\ntest \"a  b\" { // trailing\n    assert(true) // inside\n}\n\ntest \"empty\" {}\n",
+    );
+    // A test between functions, with `?` in the body; no blank lines are invented.
+    check(
+        "fn f() -> int => 1\ntest \"q\" {\n    let n = g()?\n    assert_eq(n,1)\n}\nfn g() -> Result[int] => ok(1)\n",
+        "fn f() -> int => 1\ntest \"q\" {\n    let n = g()?\n    assert_eq(n, 1)\n}\nfn g() -> Result[int] => ok(1)\n",
+    );
+}

@@ -1,0 +1,10 @@
+fn parse(s: str) -> Result[int] {
+    return err("cannot parse {s}")
+}
+
+test "uses ?" {
+    let n = parse("1")?
+    assert_eq(n, 1)
+}
+print("checked")
+// expect: checked

@@ -117,6 +117,12 @@ pub(crate) struct LoopFrame {
     pub label: Option<String>,
 }
 
+/// Where a function body comes from: a `fn`'s block or `=>` expression, or a test's block.
+enum BodySrc<'x> {
+    Block(&'x ast::Block),
+    Expr(&'x ast::Expr),
+}
+
 /// The state of checking one body.
 pub(crate) struct FnCtx<'c, 'a> {
     pub ck: &'c mut Checker<'a>,
@@ -137,6 +143,8 @@ pub(crate) struct FnCtx<'c, 'a> {
     depth: u32,
     /// The body is a `var self` method.
     self_mut: bool,
+    /// The body is a `test` block, where a bare `return` means `return ok(())`.
+    test_body: bool,
     /// How many `defer` statements are being checked (`return` is not allowed in them).
     pub(crate) defer_depth: u32,
     /// The variables the live closure captures (empty in a function body).
@@ -216,6 +224,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             deps: Vec::new(),
             depth: 0,
             self_mut: false,
+            test_body: false,
             defer_depth: 0,
             captures: Vec::new(),
             frame_id: 0,
@@ -537,8 +546,31 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     }
 
     pub fn check_fn_body(
-        mut self,
+        self,
         decl: &ast::FnDecl,
+        params: &[ParamInfo<'a>],
+        ret: &Ty,
+        ret_span: Option<Span>,
+        span: Span,
+    ) -> (Body, Vec<Dep>) {
+        let src = match &decl.body {
+            Some(ast::FnBody::Block(b)) => Some(BodySrc::Block(b)),
+            Some(ast::FnBody::Expr(e)) => Some(BodySrc::Expr(e)),
+            None => None,
+        };
+        self.check_body_src(src, params, ret, ret_span, span)
+    }
+
+    /// The body of a `test "name" { .. }` block: a function without parameters that returns
+    /// `Result[()]` (ARCHITECTURE §15).
+    pub fn check_test_body(mut self, block: &ast::Block, ret: &Ty, span: Span) -> (Body, Vec<Dep>) {
+        self.test_body = true;
+        self.check_body_src(Some(BodySrc::Block(block)), &[], ret, None, span)
+    }
+
+    fn check_body_src(
+        mut self,
+        src: Option<BodySrc<'_>>,
         params: &[ParamInfo<'a>],
         ret: &Ty,
         ret_span: Option<Span>,
@@ -553,8 +585,8 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             };
             self.declare(&p.name, p.span, p.ty.clone(), kind);
         }
-        let block = match &decl.body {
-            Some(ast::FnBody::Block(b)) => {
+        let block = match src {
+            Some(BodySrc::Block(b)) => {
                 let (stmts, mut tail, mut ty) = self.block_in_scope(b, BlockMode::Stmts);
                 let locals = self.pop_scope();
                 let returns_value = *ret != Ty::Unit && !ret.is_error();
@@ -588,7 +620,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                     span: b.span,
                 }
             }
-            Some(ast::FnBody::Expr(e)) => {
+            Some(BodySrc::Expr(e)) => {
                 let value = self.check_expr(e, Some(ret));
                 let reason = ret_span.map(|s| (s, "the return type is declared here".to_string()));
                 self.expect(&value, ret, reason);
@@ -1027,6 +1059,8 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 self.expect(&e, &ret, reason);
                 Some(e)
             }
+            // In a test, `return` alone ends it successfully: `return ok(())`.
+            None if self.test_body && self.parents.is_empty() => Some(self.ok_unit(&ret, span)),
             None => {
                 // A closure whose result is not known yet returns `()` here.
                 if matches!(self.infer.shallow(&ret), Ty::Infer(_)) {

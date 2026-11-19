@@ -674,7 +674,13 @@ impl FnCtx<'_, '_> {
     /// Makes both operands one type, or reports why that cannot be. The one exception is an
     /// `f32` meeting a `float`: the `f32` operand widens and the operation is a `float` one
     /// (DESIGN §5.1).
-    fn unify_operands(&mut self, op: AstBin, l: &mut Expr, r: &mut Expr, span: Span) -> bool {
+    pub(crate) fn unify_operands(
+        &mut self,
+        op: AstBin,
+        l: &mut Expr,
+        r: &mut Expr,
+        span: Span,
+    ) -> bool {
         if self.infer.unify(&l.ty, &r.ty).is_ok() {
             return true;
         }
