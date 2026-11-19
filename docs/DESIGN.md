@@ -27,6 +27,9 @@ approved the matching plan. This revises the v0.3 priority order again (second r
 - **The game kit is no longer in the stock binary** (§15.6). It becomes an optional package for
   later, `colibri-game`; Q20 is deferred until then. §15 is renamed "Numeric, C interop and
   embedding features".
+- **Entry scripts run top to bottom** (§4.2), decided 2026-11-19: an entry file without
+  `fn main` initialises imported values and `const`s first, then runs its own `let`, `var` and
+  statements in source order, and reading a script value before its line is a compile error.
 - **Coroutines are general-purpose concurrency** (§14.2): timers, I/O waits, long-running work
   and event-driven code. They are driven by the event loop `colibri run` runs after `main`, by
   `task.tick(dt)` in a program with its own loop, or by `vm.tick(dt)` from a host.
@@ -362,14 +365,51 @@ let config = load_defaults()          // initialised once, immutable binding
 var score = 0                         // mutable module state
 ```
 
-- **Initialisation order:** module-level `let` and `var` initialisers run once, before `main`
-  (or before the script's first statement), in dependency order across the whole program. A
-  cycle between initialisers is a compile error naming the chain, as in Go.
+A script, and the error for reading a value before the script reaches it:
+
+```colibri
+var items: List[int] = []
+items.push(1)
+let n = items.len()
+print(n)                              // prints 1
+
+print(total)                          // error: `total` is used before it is initialised
+let total = 10                        // `total` is initialised here, further down
+```
+
+- **Initialisation order, scripts [Locked 2026-11-19]:** an entry file without `fn main` is a
+  script, and it reads top to bottom like Python. Its top-level `let` and `var` bindings and its
+  top-level statements run in one pass, in source order. They are still module-level values, so
+  functions can read them, but each gets its value when execution reaches its line. Before the
+  script's first line runs, every other module-level value is initialised in dependency order:
+  the values of every imported module, and every `const` (including the entry file's own
+  `const`s, which are hoisted).
+- **Initialisation order, programs:** an entry file with `fn main` (including a package's
+  `main.colibri`) runs every module-level value in dependency order across the whole program,
+  then its top-level statements if it has any, then `main`. A cycle between values initialised in
+  dependency order is a compile error naming the chain, as in Go. Among a script's own values a
+  cycle shows up as the use-before-initialisation error below instead.
+- **Use before initialisation (scripts only):** a top-level statement, or the initialiser of a
+  script `let` or `var`, that uses a script `let` or `var` declared further down (or itself) is a
+  compile error, `` `x` is used before it is initialised ``, pointing at the use, with a label at
+  the declaration (`` `x` is initialised here, further down ``). The use can be indirect, through
+  a function the code calls or refers to, and the error then shows the chain of functions
+  (`report() -> total`). The check is conservative: referring to a function counts even if it is
+  only called later, for example when it is passed as a value, started with `go` or used in a
+  `defer`. A call the checker cannot follow (through an interface value or a type-parameter
+  bound, or a `Show`, `Eq` or `Drop` implementation run by `print`, `==` or a drop) is caught
+  when it happens instead: reading a script value before its line panics with
+  `` `x` is used before it is initialised ``. The hint is
+  to move the declaration above its first use, or to move the code into a function called after
+  it. It is also an error when a value that is initialised before the script runs (an imported
+  module's value or a `const`) has an initialiser that reaches a script `let` or `var`:
+  `` `name` is initialised before the script runs, so it cannot use `x` ``.
 - **Threads:** non-constant module state belongs to the main isolate. Reading or writing it from a
   thread task (§14.1) is a compile error where the compiler can see it, and a panic otherwise.
   `const` values are shared freely.
 - **Hot reload:** module-level values survive a reload and their initialisers do not re-run
-  (§16.3).
+  (§16.3). Changing an initialiser or a top-level statement is a restart, and a restart reruns
+  the script top to bottom.
 
 ---
 
@@ -1121,7 +1161,8 @@ let p = player.spawn("Ana")
   - **Import cycles are allowed between files of the same package** and forbidden only between
     packages. Real programs are mutually referential (`Player` mentions `World`, `World` holds `Enemy`,
     `Enemy` targets `Player`), and declarations are order-independent anyway. The only extra rule
-    is initialisation order for module-level values (§4.2).
+    is initialisation order for module-level values, and that a script's own values run top to
+    bottom (§4.2).
   - **Default visibility is the package.** Anything without `pub` is visible to every file in
     the same package. `pub` means exported from the package. So a three-file program needs no `pub`
     at all, and a library marks only its API. A struct with any non-exported field can only be

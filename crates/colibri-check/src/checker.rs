@@ -42,6 +42,15 @@ pub(crate) struct HostFnInfo {
     pub positional: bool,
 }
 
+/// One piece of the entry file's top-level code, in source order.
+#[derive(Clone, Copy)]
+pub(crate) enum ScriptStep<'a> {
+    Stmt(&'a ast::Stmt),
+    /// A module-level `let` or `var` of the entry file: in a script it is initialised when
+    /// execution reaches it (DESIGN §4.2).
+    Global(GlobalId),
+}
+
 /// A reference from one body to a module-level item, used to order initialisers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Dep {
@@ -83,7 +92,7 @@ pub(crate) struct FnInfo<'a> {
     /// `None` when the declaration uses something unsupported: calls are then checked loosely.
     pub decl: Option<&'a ast::FnDecl>,
     pub body: Option<Rc<Body>>,
-    pub deps: Vec<Dep>,
+    pub deps: Vec<(Dep, Span)>,
     /// Every type parameter in scope: those of the enclosing `impl` or interface first, then
     /// the function's own. A call instantiates all of them.
     pub generics: Vec<GenericParamInfo>,
@@ -122,7 +131,7 @@ pub(crate) struct GlobalInfo<'a> {
     pub annotation_span: Option<Span>,
     state: GlobalState,
     pub body: Option<Rc<Body>>,
-    pub deps: Vec<Dep>,
+    pub deps: Vec<(Dep, Span)>,
     pub module: ModId,
 }
 
@@ -222,8 +231,15 @@ pub(crate) struct Checker<'a> {
     pub impl_by_key: HashMap<(TypeKey, TypeId), ImplId>,
     /// The derived implementations made so far (built-in interfaces only).
     pub derived_impls: HashMap<(TypeKey, TypeId), ImplId>,
-    script: Vec<&'a ast::Stmt>,
+    /// The entry file's top-level statements and `let`/`var` bindings, in source order.
+    script: Vec<ScriptStep<'a>>,
     script_body: Option<Rc<Body>>,
+    /// For each step of the script, the module-level items it refers to (see
+    /// [`FnCtx::check_script`]).
+    script_deps: Vec<Vec<(Dep, Span)>>,
+    /// Initialise the entry file's values in dependency order even when it has no `fn main`
+    /// (see [`crate::CheckOptions`]).
+    dependency_order: bool,
     /// The `test` blocks of the source modules, in collection order.
     tests: Vec<TestInfo<'a>>,
     /// The native stack position where checking started, and how far below it checking may go.
@@ -441,6 +457,8 @@ impl<'a> Checker<'a> {
             derived_impls: HashMap::new(),
             script: Vec::new(),
             script_body: None,
+            script_deps: Vec::new(),
+            dependency_order: false,
             tests: Vec::new(),
             stack_base: 0,
             stack_budget,
@@ -450,6 +468,12 @@ impl<'a> Checker<'a> {
     /// Whether checking has used up its share of the native stack.
     pub fn out_of_stack(&self) -> bool {
         stack_position().abs_diff(self.stack_base) > self.stack_budget
+    }
+
+    /// Initialises the entry file's values in dependency order even when it is a script.
+    pub fn dependency_order(mut self, yes: bool) -> Self {
+        self.dependency_order = yes;
+        self
     }
 
     /// Makes the checker record what every expression resolved to (see [`crate::insight`]).
@@ -475,15 +499,34 @@ impl<'a> Checker<'a> {
         for t in 0..self.tests.len() {
             self.check_test(t);
         }
+        // A script (an entry file without `fn main`) runs its `let`, `var` and statements top
+        // to bottom (DESIGN §4.2); otherwise every value is initialised first.
+        let script_mode = !self.dependency_order && self.entry_main().is_none();
+        if !script_mode {
+            self.script.retain(|s| matches!(s, ScriptStep::Stmt(_)));
+        }
         self.check_script();
-        let init_order = self.init_order();
+        let script_globals: Vec<GlobalId> = self
+            .script
+            .iter()
+            .filter_map(|s| match s {
+                ScriptStep::Global(g) => Some(*g),
+                ScriptStep::Stmt(_) => None,
+            })
+            .collect();
+        let mut init_order = self.init_order(&script_globals);
+        if script_mode {
+            self.check_script_order();
+        }
+        let script_from = init_order.len();
+        init_order.extend(script_globals);
         let main = self.check_main();
         self.diags.sort_by_key(|d| (d.span.file.0, d.span.start));
         let has_errors = self.diags.iter().any(Diagnostic::is_error);
         let program = if has_errors {
             None
         } else {
-            self.assemble(init_order, main)
+            self.assemble(init_order, script_from, main)
         };
         let insight = self.facts.take().map(|raw| self.build_insight(raw));
         let checked = Checked {
@@ -612,8 +655,22 @@ impl<'a> Checker<'a> {
                         let mut reported = false;
                         for top in &file.items {
                             match top {
-                                TopLevel::Item(item) => self.collect_item(item),
-                                TopLevel::Stmt(stmt) if entry => self.script.push(stmt),
+                                TopLevel::Item(item) => {
+                                    let before = self.globals.len();
+                                    self.collect_item(item);
+                                    let script_value = matches!(
+                                        &item.kind,
+                                        ItemKind::Binding(b) if b.kind != BindKind::Const
+                                    );
+                                    if entry && script_value {
+                                        let added = before as u32..self.globals.len() as u32;
+                                        self.script
+                                            .extend(added.map(|g| ScriptStep::Global(GlobalId(g))));
+                                    }
+                                }
+                                TopLevel::Stmt(stmt) if entry => {
+                                    self.script.push(ScriptStep::Stmt(stmt));
+                                }
                                 TopLevel::Stmt(stmt) => {
                                     if !reported {
                                         reported = true;
@@ -1389,26 +1446,33 @@ impl<'a> Checker<'a> {
     }
 
     fn check_script(&mut self) {
-        let stmts = std::mem::take(&mut self.script);
+        let steps = self.script.clone();
         let span = self.file.span;
         let back = self.enter_module(self.entry_mod());
-        // The script runs after every initialiser, so its dependencies need no ordering.
-        let body = FnCtx::new(self, "<script>".to_string(), None).check_script(&stmts, span);
+        let (body, deps) =
+            FnCtx::new(self, "<script>".to_string(), None).check_script(&steps, span);
         self.enter_module(back);
         self.script_body = Some(Rc::new(body));
+        self.script_deps = deps;
     }
 
-    /// `fn main` must be callable with no arguments and return nothing.
-    fn check_main(&mut self) -> Option<FnId> {
+    /// The entry file's `fn main`, if it has one.
+    fn entry_main(&self) -> Option<FnId> {
         let entry = self.entry_mod();
-        let ValueRef::Fn(id) = self.mods[entry.0 as usize]
+        match self.mods[entry.0 as usize]
             .exports
             .values
             .get("main")?
             .target
-        else {
-            return None;
-        };
+        {
+            ValueRef::Fn(id) => Some(id),
+            ValueRef::Global(_) => None,
+        }
+    }
+
+    /// `fn main` must be callable with no arguments and return nothing.
+    fn check_main(&mut self) -> Option<FnId> {
+        let id = self.entry_main()?;
         let info = &self.fns[id.0 as usize];
         // `main` may return `Result[()]`: an `err` is reported and the program exits with 1.
         let unit_result = matches!(
@@ -1430,8 +1494,9 @@ impl<'a> Checker<'a> {
 
     /// Orders the module-level initialisers so each runs after the values it uses, directly or
     /// through the functions it calls (DESIGN §4.2). A cycle through a value is an error naming
-    /// the chain; recursion between functions alone is fine.
-    fn init_order(&mut self) -> Vec<GlobalId> {
+    /// the chain; recursion between functions alone is fine. The values in `script` are left
+    /// out: the script initialises them in source order (see [`Checker::check_script_order`]).
+    fn init_order(&mut self, script: &[GlobalId]) -> Vec<GlobalId> {
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum State {
             White,
@@ -1444,6 +1509,10 @@ impl<'a> Checker<'a> {
             Dep::Global(g) => nf + g.0 as usize,
         };
         let mut state = vec![State::White; nf + self.globals.len()];
+        // Done already: they are not ordered here, and a use of one is checked elsewhere.
+        for g in script {
+            state[node_index(Dep::Global(*g))] = State::Done;
+        }
         let mut order = Vec::new();
         let mut reported: HashSet<GlobalId> = HashSet::new();
         for start in 0..self.globals.len() {
@@ -1459,7 +1528,7 @@ impl<'a> Checker<'a> {
                     Dep::Fn(f) => &self.fns[f.0 as usize].deps,
                     Dep::Global(g) => &self.globals[g.0 as usize].deps,
                 };
-                let Some(&dep) = deps.get(next) else {
+                let Some(&(dep, _)) = deps.get(next) else {
                     stack.pop();
                     state[node_index(node)] = State::Done;
                     if let Dep::Global(g) = node {
@@ -1522,9 +1591,161 @@ impl<'a> Checker<'a> {
         self.report(diag);
     }
 
+    /// In a script, every value is initialised when execution reaches its line, so a step must
+    /// not use (directly or through the functions it refers to) a script value declared at or
+    /// after it, and a value initialised before the script must not use any (DESIGN §4.2).
+    fn check_script_order(&mut self) {
+        let mut position: HashMap<GlobalId, usize> = HashMap::new();
+        for (i, step) in self.script.iter().enumerate() {
+            if let ScriptStep::Global(g) = step {
+                position.insert(*g, i);
+            }
+        }
+        if position.is_empty() {
+            return;
+        }
+        let mut reported: HashSet<GlobalId> = HashSet::new();
+        let script_deps = std::mem::take(&mut self.script_deps);
+        for (i, deps) in script_deps.iter().enumerate() {
+            for &(dep, span) in deps {
+                let later = |g: GlobalId| position.get(&g).is_some_and(|&j| j >= i);
+                let Some(path) = self.reach_global(dep, span, &later) else {
+                    continue;
+                };
+                let g = path.last().map(|&(d, _)| d);
+                let Some(Dep::Global(g)) = g else { continue };
+                if reported.insert(g) {
+                    let own = position.get(&g) == Some(&i);
+                    self.report_early_use(&path, None, own);
+                }
+            }
+        }
+        self.script_deps = script_deps;
+        for g in 0..self.globals.len() as u32 {
+            let g = GlobalId(g);
+            if position.contains_key(&g) {
+                continue;
+            }
+            let deps = self.globals[g.0 as usize].deps.clone();
+            for (dep, span) in deps {
+                let in_script = |g: GlobalId| position.contains_key(&g);
+                if let Some(path) = self.reach_global(dep, span, &in_script) {
+                    self.report_early_use(&path, Some(g), false);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// The shortest path from `start` (used at `span`) through functions to a value for which
+    /// `wanted` holds: each item with the span where the one before it uses it. Reading a value
+    /// does not run its initialiser, so the search does not go through values.
+    fn reach_global(
+        &self,
+        start: Dep,
+        span: Span,
+        wanted: &dyn Fn(GlobalId) -> bool,
+    ) -> Option<Vec<(Dep, Span)>> {
+        let mut parent: HashMap<Dep, Option<usize>> = HashMap::new();
+        let mut queue: Vec<(Dep, Span, Option<usize>)> = vec![(start, span, None)];
+        parent.insert(start, None);
+        let mut head = 0;
+        while head < queue.len() {
+            let (node, _, _) = queue[head];
+            match node {
+                Dep::Global(g) if wanted(g) => {
+                    let mut path = Vec::new();
+                    let mut at = Some(head);
+                    while let Some(k) = at {
+                        path.push((queue[k].0, queue[k].1));
+                        at = queue[k].2;
+                    }
+                    path.reverse();
+                    return Some(path);
+                }
+                Dep::Global(_) => {}
+                Dep::Fn(f) => {
+                    for &(next, use_span) in &self.fns[f.0 as usize].deps {
+                        if let std::collections::hash_map::Entry::Vacant(e) = parent.entry(next) {
+                            e.insert(Some(head));
+                            queue.push((next, use_span, Some(head)));
+                        }
+                    }
+                }
+            }
+            head += 1;
+        }
+        None
+    }
+
+    /// Reports a use of a script value before its line runs. `path` leads from what the step
+    /// (or the initialiser of `early`, a value initialised before the script) uses to the
+    /// value; `own` means the step is the value's own line.
+    fn report_early_use(&mut self, path: &[(Dep, Span)], early: Option<GlobalId>, own: bool) {
+        let Some(&(Dep::Global(g), _)) = path.last() else {
+            return;
+        };
+        let use_span = path[0].1;
+        let info = &self.globals[g.0 as usize];
+        let (name, decl) = (info.name.clone(), info.name_span);
+        let through: Vec<String> = path[..path.len() - 1]
+            .iter()
+            .map(|&(d, _)| match d {
+                Dep::Fn(f) => format!("`{}()`", self.fns[f.0 as usize].name),
+                Dep::Global(g) => format!("`{}`", self.globals[g.0 as usize].name),
+            })
+            .collect();
+        let via = if through.is_empty() {
+            String::new()
+        } else {
+            format!(" (through {})", through.join(" -> "))
+        };
+        let mut diag = match early {
+            None if own => Diagnostic::error(
+                format!("`{name}` is used in its own initialiser{via}"),
+                use_span,
+            )
+            .with_label(decl, format!("`{name}` is initialised here"))
+            .with_hint(format!(
+                "`{name}` has no value until its initialiser finishes; compute it without reading `{name}`"
+            )),
+            None => Diagnostic::error(
+                format!("`{name}` is used before it is initialised{via}"),
+                use_span,
+            )
+            .with_label(decl, format!("`{name}` is initialised here, further down"))
+            .with_hint(format!(
+                "a script runs top to bottom; move `{name}` above its first use, or move this code into a function that is called after it"
+            )),
+            Some(e) => {
+                let early_name = self.globals[e.0 as usize].name.clone();
+                Diagnostic::error(
+                    format!(
+                        "`{early_name}` is initialised before the script runs, so it cannot use `{name}`{via}"
+                    ),
+                    use_span,
+                )
+                .with_label(decl, format!("`{name}` is initialised by the script, here"))
+                .with_hint(
+                    "imported modules' values and `const`s are initialised before the script's first line; compute this inside a function instead",
+                )
+            }
+        };
+        if path.len() > 1 {
+            let &(_, last_use) = path.last().unwrap_or(&path[0]);
+            diag = diag.with_label(last_use, format!("`{name}` is used here"));
+        }
+        self.report(diag);
+    }
+
     // ---- output ----
 
-    fn assemble(&mut self, init_order: Vec<GlobalId>, main: Option<FnId>) -> Option<Program> {
+    fn assemble(
+        &mut self,
+        init_order: Vec<GlobalId>,
+        script_from: usize,
+        main: Option<FnId>,
+    ) -> Option<Program> {
         let mut fns = Vec::new();
         let mut host_fns: Vec<(HostFnId, HostFnDef)> = Vec::new();
         for (i, f) in self.fns.iter().enumerate() {
@@ -1598,6 +1819,7 @@ impl<'a> Checker<'a> {
             fns,
             globals,
             init_order,
+            script_from,
             script: self.script_body.clone()?,
             main,
             tests: self.assemble_tests(),

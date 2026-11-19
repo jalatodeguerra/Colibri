@@ -54,7 +54,7 @@ impl Vm {
     pub fn session_check(&self, source: &str) -> Result<SessionCheck, Error> {
         let mut fs = MemoryFs::new();
         fs.insert("<repl>", source);
-        let checked = self.check_entry(&fs, Entry::File(Path::new("<repl>")), LoadMode::Run)?;
+        let checked = self.check_entry(&fs, Entry::File(Path::new("<repl>")), LoadMode::Session)?;
         Ok(SessionCheck { checked })
     }
 

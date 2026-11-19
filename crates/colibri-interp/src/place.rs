@@ -104,7 +104,15 @@ impl Interp {
                     });
                 Ok(cell.map_or(Resolved::Local(*id), Resolved::Cell))
             }
-            Anchor::Global(id) => Ok(Resolved::Global(*id)),
+            Anchor::Global(id) => match self.uninit.get(id.0 as usize) {
+                Some(Some(name)) => {
+                    let message = format!(
+                        "`{name}` is used before it is initialised (the script has not reached its line)"
+                    );
+                    Err(self.panic(fiber, span, message))
+                }
+                _ => Ok(Resolved::Global(*id)),
+            },
             Anchor::ClassField(obj, idx) => {
                 let v = self.eval(fiber, obj)?;
                 fiber.temps.push(v.clone());

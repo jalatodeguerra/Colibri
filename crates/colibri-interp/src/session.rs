@@ -107,6 +107,9 @@ impl Interp {
         if outermost {
             self.drain_root_drops();
         }
+        // A session is checked with every value in dependency order (`CheckOptions`), so its
+        // script initialises none itself.
+        debug_assert_eq!(program.script_from, program.init_order.len());
         let inits: Vec<(GlobalId, Rc<Body>)> = program
             .init_order
             .iter()

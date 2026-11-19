@@ -41,6 +41,9 @@ enum LoadMode {
     Run,
     /// Check every module of a package and run nothing ([`Vm::load_tests`]).
     Tests,
+    /// Check a REPL session program, with every value in dependency order (it is not one file
+    /// read top to bottom); the session runs it ([`Vm::session_commit`]).
+    Session,
 }
 
 mod session;
@@ -927,11 +930,14 @@ impl Vm {
         let mut program = None;
         // A tree with syntax errors would only produce follow-on errors.
         if !loaded.has_errors() {
-            let checked = colibri_check::check_modules(
+            let checked = colibri_check::check_modules_with(
                 &loaded.inputs(),
                 &loaded.packages,
                 &env,
                 self.native_stack_budget,
+                colibri_check::CheckOptions {
+                    dependency_order: mode == LoadMode::Session,
+                },
             );
             diagnostics = checked.diagnostics;
             program = checked.program;
@@ -972,7 +978,7 @@ impl Vm {
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
         let outcome = match mode {
             LoadMode::Run => self.interp.run_module(&mut self.fiber),
-            LoadMode::Tests => Ok(()),
+            LoadMode::Tests | LoadMode::Session => Ok(()),
         };
         self.interp.flush();
         match outcome {

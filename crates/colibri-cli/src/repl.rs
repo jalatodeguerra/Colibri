@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use colibri_runtime as colibri;
-use colibri_syntax::ast::{ItemKind, PatKind, StmtKind, TopLevel};
+use colibri_syntax::ast::{BindKind, ItemKind, PatKind, StmtKind, TopLevel};
 use colibri_syntax::{FileId, parse_file};
 
 use crate::repl_input::is_complete;
@@ -215,17 +215,26 @@ impl Session {
         }
         match std::fs::read_to_string(Path::new(path)) {
             Ok(text) => {
-                self.eval(&text, true);
+                self.eval(&text, true, false);
                 let _ = io::stdout().flush();
             }
             Err(e) => eprintln!("error: cannot read {path}: {e}"),
         }
     }
 
-    /// One entry.
+    /// One entry. It runs top to bottom like a script (DESIGN §4.2): an entry where a `let`
+    /// or `var` follows a statement runs in pieces, one after the other, so that the binding
+    /// sees what the statement did. Only the last piece shows its value; a piece that fails
+    /// stops the rest.
     fn entry(&mut self, text: &str) {
         if !text.trim().is_empty() {
-            self.eval(text, false);
+            let pieces = pieces(text);
+            let last = pieces.len() - 1;
+            for (i, piece) in pieces.into_iter().enumerate() {
+                if !self.eval(piece, false, i == last) {
+                    break;
+                }
+            }
         }
         self.settle();
         let _ = io::stdout().flush();
@@ -250,8 +259,13 @@ impl Session {
         }
     }
 
-    fn eval(&mut self, text: &str, load: bool) {
+    /// Checks and runs `text`; whether it was taken. With `echo`, an entry that is one
+    /// expression prints its value.
+    fn eval(&mut self, text: &str, load: bool, echo: bool) -> bool {
         let mut parts = split(text);
+        if !echo {
+            parts.expr = None;
+        }
         if load {
             if parts.statements > 0 {
                 eprintln!(
@@ -273,7 +287,7 @@ impl Session {
                     eprintln!(
                         "error: `{name}` is already defined; types cannot be redefined (`:reset` starts over)"
                     );
-                    return;
+                    return false;
                 }
                 if key.starts_with("import:") {
                     continue;
@@ -298,13 +312,14 @@ impl Session {
             {
                 let mut reinit2 = reinit.clone();
                 reinit2.push(LAST.to_string());
-                if self.commit(check, &reinit2, &replaced, &built) {
-                    self.items = with;
-                    if let Some((value, ty)) = self.vm.session_display(LAST) {
-                        println!("= {value} : {ty}");
-                    }
+                if !self.commit(check, &reinit2, &replaced, &built) {
+                    return false;
                 }
-                return;
+                self.items = with;
+                if let Some((value, ty)) = self.vm.session_display(LAST) {
+                    println!("= {value} : {ty}");
+                }
+                return true;
             }
         }
         // Declarations and statements.
@@ -314,7 +329,7 @@ impl Session {
             Ok(c) => c,
             Err(e) => {
                 eprint!("{}", self.render_error(&e, &built));
-                return;
+                return false;
             }
         };
         let mut entry_fn = false;
@@ -333,17 +348,19 @@ impl Session {
                 Ok(c) => c,
                 Err(e) => {
                     eprint!("{}", self.render_error(&e, &built));
-                    return;
+                    return false;
                 }
             };
             entry_fn = true;
         }
-        if self.commit(check, &reinit, &replaced, &built) {
-            self.items = items;
-            if entry_fn {
-                self.entries += 1;
-            }
+        if !self.commit(check, &reinit, &replaced, &built) {
+            return false;
         }
+        self.items = items;
+        if entry_fn {
+            self.entries += 1;
+        }
+        true
     }
 
     /// Puts a checked entry to work; whether it was taken.
@@ -459,6 +476,40 @@ fn build(items: &[Item], script: &str) -> Built {
     }
 }
 
+/// An entry cut before every `let` or `var` that follows a statement, so that each binding
+/// runs after the statements above it. Other declarations (`fn`, types, `const`, ..) stay
+/// where they are and are visible to the whole of their piece. Text that does not parse is
+/// one piece (the checker reports it).
+fn pieces(text: &str) -> Vec<&str> {
+    let (file, diagnostics) = parse_file(FileId(0), text);
+    if diagnostics.iter().any(|d| d.is_error()) {
+        return vec![text];
+    }
+    let mut out = Vec::new();
+    let (mut start, mut prev_end, mut after_stmt) = (0usize, 0usize, false);
+    for top in &file.items {
+        let (end, binding, stmt) = match top {
+            TopLevel::Item(i) => {
+                let binding = matches!(&i.kind, ItemKind::Binding(b) if b.kind != BindKind::Const);
+                (i.span.end as usize, binding, false)
+            }
+            TopLevel::Stmt(s) => (s.span.end as usize, false, true),
+        };
+        if binding && after_stmt {
+            out.push(&text[start..prev_end]);
+            // The next piece starts after the separator (a newline or `;`).
+            start = prev_end + text[prev_end..].len()
+                - text[prev_end..]
+                    .trim_start_matches(|c: char| c == ';' || c.is_whitespace())
+                    .len();
+        }
+        after_stmt = (after_stmt && !binding) || stmt;
+        prev_end = end.min(text.len());
+    }
+    out.push(&text[start..]);
+    out
+}
+
 /// Splits an entry into declarations, statements and the expression it may be.
 fn split(text: &str) -> Parts {
     let (file, diagnostics) = parse_file(FileId(0), text);
@@ -485,7 +536,11 @@ fn split(text: &str) -> Parts {
             TopLevel::Stmt(s) => (s.span.end as usize, false),
         };
         let end = end.min(text.len());
-        let chunk = text[prev.min(end)..end].trim().to_string();
+        // A chunk starts after the separator of the one before (a newline or `;`).
+        let chunk = text[prev.min(end)..end]
+            .trim_start_matches(|c: char| c == ';' || c.is_whitespace())
+            .trim_end()
+            .to_string();
         prev = end;
         match top {
             TopLevel::Item(item) => {
@@ -540,6 +595,19 @@ mod tests {
         assert_eq!(p.items[1].key.as_deref(), Some("val:x"));
         assert_eq!(p.script, "print(x)");
         assert_eq!(p.expr.as_deref(), Some("print(x)"));
+    }
+
+    #[test]
+    fn an_entry_is_cut_where_a_declaration_follows_a_statement() {
+        let p = pieces("var a: List[int] = []\na.push(1)\nlet n = a.len()\nprint(n)\n");
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[0].trim(), "var a: List[int] = []\na.push(1)");
+        assert_eq!(p[1].trim(), "let n = a.len()\nprint(n)");
+        assert_eq!(pieces("let x = 1\nlet y = 2\nprint(x + y)\n").len(), 1);
+        // Functions and types are not cut off from the statements that use them.
+        assert_eq!(pieces("print(f())\nfn f() -> int => 1\n").len(), 1);
+        let p = pieces("print(1); fn f() -> int => 2; let w = f(); print(w)");
+        assert_eq!(p, ["print(1); fn f() -> int => 2", "let w = f(); print(w)"]);
     }
 
     #[test]

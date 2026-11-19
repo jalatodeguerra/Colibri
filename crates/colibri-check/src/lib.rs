@@ -106,6 +106,29 @@ pub fn check_modules(
     checker::Checker::new(inputs, packages, host, budget).run()
 }
 
+/// How [`check_modules_with`] checks a program.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CheckOptions {
+    /// Initialise the entry file's `let`/`var` in dependency order before its top-level
+    /// statements, even when it has no `fn main`. A script normally runs top to bottom
+    /// (DESIGN §4.2); `colibri repl` sets this because its session program is not one file
+    /// read in order (it runs each entry in order itself).
+    pub dependency_order: bool,
+}
+
+/// [`check_modules`] with [`CheckOptions`].
+pub fn check_modules_with(
+    inputs: &[ModuleInput<'_>],
+    packages: &[package::PackageNode],
+    host: &HostEnv,
+    budget: usize,
+    options: CheckOptions,
+) -> Checked {
+    checker::Checker::new(inputs, packages, host, budget)
+        .dependency_order(options.dependency_order)
+        .run()
+}
+
 /// Like [`check_modules`], and also records what every expression and name resolved to, for
 /// hover and go to definition (see [`insight`]). Only this entry point pays for it. The
 /// [`insight::Insight`] is built even when the program has errors.

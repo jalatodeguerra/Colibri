@@ -1,0 +1,3 @@
+fn f(x: int = later) -> int => x
+print(f()) // error: `later` is used before it is initialised
+let later = 5

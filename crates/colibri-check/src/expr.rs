@@ -147,7 +147,7 @@ impl FnCtx<'_, '_> {
         match self.ck.values.get(name).copied() {
             Some(ValueRef::Global(g)) => {
                 let ty = self.ck.global_ty(g);
-                self.add_dep(Dep::Global(g));
+                self.add_dep(Dep::Global(g), span);
                 let place = Place {
                     anchor: Anchor::Global(g),
                     path: Vec::new(),

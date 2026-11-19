@@ -1,0 +1,5 @@
+fn report() {
+    print(total)
+}
+report() // error: `total` is used before it is initialised (through `report()`)
+let total = 3

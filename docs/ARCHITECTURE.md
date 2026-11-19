@@ -74,7 +74,9 @@ keyed by qualified name so they stay stable across hot reload (§16.3).
   `param_count` locals are the parameters and head the function block's drop list. Module-level
   initialisers and the file's top-level statements are bodies too (`GlobalDef.init`,
   `Program.script`), so engines have exactly one way to run code. `Program` also carries
-  `init_order`, the globals in dependency order. Large variants are boxed (`Read(Box<Place>)`,
+  `init_order`, every global (dependency-ordered ones first, then a script's own in source
+  order), and `script_from`, the index in `init_order` where the script's own globals start
+  (item 16, §11.4). Large variants are boxed (`Read(Box<Place>)`,
   `Call(Box<Call>)`, `If`/`Block`/`Loop` blocks) so an `Expr` is 88 bytes; that matters because
   the recursive checker and evaluator pay for every `Expr` temporary on the Rust stack.
   `Callee` has `Fn` and `Intrinsic` (`Print`, `Show`, `Format(spec)`) so far; the other callees,
@@ -399,12 +401,15 @@ turns out to matter, it moves into DESIGN.md.
    overflow is a call-depth limit, identical in every engine.
 8. Host functions live in an implicit `host` prelude module; a script definition with the same
    name is an error. Module state survives a panic.
-9. **Entry points (Q15).** A file may mix declarations and top-level statements. Running it is:
-   module-level initialisers in dependency order, then the top-level statements in source order,
-   then `fn main()` if it exists (no parameters, returns `()`; `Result[()]` comes with `Result`).
-   Module-level `let`/`var`/`const` are always declarations, not statements, so they initialise
-   first wherever they are written. `Vm::load_*` runs the first two phases; `Vm::run_main` the
-   third (the CLI does both).
+9. **Entry points (Q15).** A file may mix declarations and top-level statements. An entry file
+   without `fn main` is a **script** and runs top to bottom (DESIGN §4.2, decided 2026-11-19):
+   first every module-level value that is not the script's own `let`/`var` (the values of every
+   imported module and every `const`, including the entry's own, which are hoisted) in
+   dependency order, then the script's `let`/`var` bindings and top-level statements in one pass
+   in source order. An entry file with `fn main()` (no parameters, returns `()`; `Result[()]`
+   comes with `Result`) keeps the older rule: every module-level value in dependency order, then
+   the top-level statements if any, then `main`. `Vm::load_*` runs the initialisation and the
+   statements; `Vm::run_main` the last phase (the CLI does both).
 10. **Integers.** `int` is `i64` and `i64` is the same type (as `float` is `f64`). Every
     integer operation traps on overflow of its own type ("integer overflow"): `+ - *`, unary
     `-`, `/` and `%` (`MIN / -1` and `MIN % -1` trap too); `/` and `%` by zero panic ("division
@@ -435,6 +440,8 @@ turns out to matter, it moves into DESIGN.md.
     its diagnostics reported once at the declaration.
 14. **`const`.** For now a module-level or local `const` is an immutable binding like `let`;
     "compile-time constant" is not enforced, and it initialises in dependency order like `let`.
+    In a script it is hoisted: it is initialised before the script's first line, wherever it is
+    written, and it may not reach a script `let`/`var` (item 16).
 15. **Names.** Functions and module-level values share one namespace; `print` is a built-in
     function and defining it is an error. Parameters live in an outer scope of the body, so a
     `let` that reuses a parameter's name is not a same-block shadowing warning. Unsupported
@@ -444,7 +451,22 @@ turns out to matter, it moves into DESIGN.md.
     called) and ordered by depth-first search from each initialiser, so a dependency through a
     function counts. A cycle that passes through a module-level value is an error naming the
     chain (`a -> f() -> b -> a`); recursion among functions alone is fine. An unannotated
-    module-level value is typed on demand when another body first uses it.
+    module-level value is typed on demand when another body first uses it. Each dependency is
+    recorded with the span of its first use, so errors can point at it. In script mode
+    (an entry without `fn main`) the script's own `let`/`var` leave the dependency walk and are
+    checked in source order instead: a top-level statement or a script `let`/`var` initialiser
+    that uses a script `let`/`var` declared further down (or itself), directly or through a
+    function it calls or refers to, is the error "`x` is used before it is initialised", at the
+    use, with a label at the declaration and, when indirect, the chain (`report() -> total`).
+    Referring to a function counts even if it is only called later. A value initialised before
+    the script (an imported module's value or a `const`) whose initialiser reaches a script
+    `let`/`var` is the error "`name` is initialised before the script runs, so it cannot use
+    `x`". A cycle among script values is reported as the use-before-initialisation error; cycles
+    among dependency-ordered values are reported as before. What a default argument uses is
+    recorded at the call. Dispatch through an interface or a bound and the implicit calls of
+    `Show`/`Eq`/`Drop` record no dependency, so the interpreter also keeps `Interp::uninit`, the
+    names of the script values whose line has not run, and reading one panics (a `Global`
+    anchor checks it when it is resolved; `InitGlobal` and `run_initialisers` clear it).
 17. **Show of composites (DESIGN §7.4).** `print(x)` and `"{x}"` work for every value. At the
     top level a `str` and a `char` print bare; inside a composite they are quoted and escaped
     (the quote, `\\`, `\n`, `\r`, `\t` and `\0` as backslash escapes, other control characters as
@@ -1134,6 +1156,16 @@ reads; otherwise an imported module's values run before its importer's, and a mo
 declaration order. The interpreter drops module values in reverse initialisation order
 (§11.2 of DESIGN), which therefore holds across modules without any new code.
 
+**Script mode.** The checker records the entry file's top-level items and statements in source
+order. When the entry has no `fn main`, the script body (`Program.script`, a HIR `Body`)
+contains a `StmtKind::InitGlobal { global, init }` statement at the position of each script
+`let`/`var`; the interpreter runs `init` and stores the value when it reaches it. `init_order`
+lists every global: the dependency-ordered ones first, then the script's in source order, and
+`Program.script_from` is the index where the script's own globals start (it equals
+`init_order.len()` for a program with `fn main`). `Interp::run_module` runs
+`init_order[..script_from]` and then the script; `Interp::run_initialisers` (tests) runs all of
+`init_order`. Drops stay in reverse `init_order`.
+
 ### 11.5 Diagnostics across files
 
 A `Diagnostic` points at one file through its span, and its labels may point at others (a cycle,
@@ -1779,12 +1811,16 @@ that nobody imports stays unchecked there, as before; `colibri test` checks it.
 
 `Vm::run_test(id)` does, for each test: (1) release the module-level values in reverse
 initialisation order (their `Drop` hooks run; `Interp::release_globals`), (2) run every module
-initialiser again (`Interp::run_initialisers`, not the top-level statements), (3) call the test
+initialiser again (`Interp::run_initialisers`, not the top-level statements: first the
+dependency-ordered values, then the script's `let`/`var` in source order), (3) call the test
 function, (4) release the values again. Module initialisation is cheap (§11.4), so a test never
 sees what another did, whatever its order or filter, and drop output belongs to the test that
 caused it. Host state outside the `Vm` (a `Handle` store, `insert_state`) is the host's to
 reset. Each of the four steps is its own entry from the host and gets its own instruction budget.
 A panic in a `Drop` hook during step 4 is discarded (nobody can be told, as at shutdown).
+Because the statements do not run in tests, a script value whose initialiser relied on an
+earlier statement's side effect (`items.push(1)` before `let n = items.len()`) sees a state
+without that effect there.
 A `Vm` that was loaded with `load_file` and has run its top-level code loses that state at the
 first `run_test` (it is released and re-initialised without the statements), so use a separate
 `Vm` for tests.
@@ -2193,8 +2229,8 @@ and the stored init bodies, and the `Vm` replaces its `Program`, sources and war
 epoch does not move, so `Fn` handles and callbacks stay valid. `functions` counts the bodies
 whose own fingerprint changed; a patch with none (only comments or spacing) is reported as
 `Unchanged`. Anything else, including a changed module-level initialiser or top-level
-statement (it would not re-run), is a **restart**, and `reason` names the first differing
-part.
+statement (it would not re-run), is a **restart** (which reruns the script top to bottom), and
+`reason` names the first differing part.
 
 Cost: one `Debug` pass per function body of the new program, hashed without building a big
 string; the running program's fingerprint is computed at the first reload and kept.
@@ -2219,8 +2255,9 @@ string; the running program's fingerprint is computed at the first reload and ke
 2. All coroutines are cancelled (newest first, running `defer`s and drops), the roots and
    module values are released, exactly as `shutdown` does, and the epoch moves (handles and
    callbacks from before are `StaleHandle`).
-3. The new program is installed: module initialisers and top-level statements run. A panic
-   there is `Err(Panic)`; the `Vm` has no program until the next edit, which loads again.
+3. The new program is installed: module initialisers and top-level statements run (a script
+   top to bottom, §11.4). A panic there is `Err(Panic)`; the `Vm` has no program until the
+   next edit, which loads again.
 4. If a state text was saved and the new program defines `fn restore_state(s: str)`, it is
    called; `state_carried` says so. Without a `save_state` in the old program, or a
    `restore_state` in the new one, the text is dropped (no error).
@@ -2718,6 +2755,15 @@ A session is one growing program checked as one unit (§11), but only the new co
 - `let`/`var`/`const` at the prompt are ordinary module-level values (§4.2). Their initialisers
   run once, when the entry is committed; the value stays in `Interp::globals` for all later
   entries. Nothing is replayed: earlier statements never run again.
+- The session program is not one file read top to bottom, so the REPL checks with
+  `CheckOptions { dependency_order: true }`: dependency order across the whole session, with no
+  use-before-initialisation errors. Each entry still *runs* in source order: an entry is split
+  into pieces before each `let`/`var` that follows a statement, and the pieces are committed one
+  after another (only the last one shows an expression's value). Other declarations (`fn`,
+  types, `impl`, `const`) stay in the piece where they are written, so one there cannot name a
+  `let`/`var` of a later piece of the same entry. So the one-line entry
+  `var items: List[int] = []; items.push(1); let n = items.len()` gives `n == 1`. If a later piece
+  fails to check or panics, the earlier pieces have already run and stay committed.
 - `Vm::session_commit` replaces the code tables of the running `Interp` (like a hot-reload
   patch, `Interp::swap_program`), grows `globals`, runs the initialisers of the new values and
   then the entry's top-level statements. Before it does that it checks that the new program

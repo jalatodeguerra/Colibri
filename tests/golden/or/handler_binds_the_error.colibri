@@ -20,7 +20,7 @@ let text = get("xp") or |problem| {
 }
 print(text)
 // expect: lookup failed: Missing(name: "mana")
-// expect: missing xp
 // expect: 100
 // expect: -1
+// expect: missing xp
 // expect: 0

@@ -126,9 +126,23 @@ fn the_native_stack_budget_is_a_backstop_behind_the_depth_limit() {
 }
 
 #[test]
-fn initialisers_then_script_run_in_order() {
+fn a_script_runs_its_values_and_statements_top_to_bottom() {
     let mut m = machine(
-        "fn noisy(s: str) -> int {\n    print(s)\n    return 1\n}\nprint(\"script\")\nlet a = noisy(\"a\") + b\nlet b = noisy(\"b\")\n",
+        "fn noisy(s: str) -> int {\n    print(s)\n    return 1\n}\nprint(\"script\")\nlet b = noisy(\"b\")\nlet a = noisy(\"a\") + b\n",
+        100,
+    );
+    m.interp.run_module(&mut m.fiber).unwrap();
+    assert_eq!(m.printed(), "script\nb\na\n");
+    assert_eq!(
+        m.interp.global(colibri_check::hir::GlobalId(1)),
+        Some(&Value::Int(2))
+    );
+}
+
+#[test]
+fn a_program_initialises_its_values_in_dependency_order_first() {
+    let mut m = machine(
+        "fn noisy(s: str) -> int {\n    print(s)\n    return 1\n}\nprint(\"script\")\nlet a = noisy(\"a\") + b\nlet b = noisy(\"b\")\nfn main() {}\n",
         100,
     );
     m.interp.run_module(&mut m.fiber).unwrap();

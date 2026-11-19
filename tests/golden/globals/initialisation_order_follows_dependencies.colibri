@@ -1,5 +1,8 @@
+// A program (it has `fn main`) initialises its values in dependency order (DESIGN §4.2).
 let a = b + 1
 let b = c * 2
 let c = 5
-print("{a} {b} {c}")
+fn main() {
+    print("{a} {b} {c}")
+}
 // expect: 11 10 5
