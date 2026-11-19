@@ -1,0 +1,39 @@
+import vec
+
+fn main() {
+    let a = vec.vec2(1, 2.5)
+    let b = vec.vec3(1, 2, 3)
+    let c = vec.vec4(0.5, 0, 0, 1)
+    print(a)
+    print(b)
+    print(c)
+    print("a = {a}, b = {b}")
+    print(vec.vec3(7))
+    print(vec.ivec2(3, -4))
+    print(vec.ivec4(1))
+    // a vector is a value: a copy does not follow the original
+    var m = a
+    m.x = 10
+    print(a)
+    print(m)
+    print(a == vec.vec2(1.0, 2.5))
+    print(a != m)
+    print(vec.ivec3(1, 2, 3) == vec.ivec3(1, 2, 3))
+    // `float` and `f32` values are accepted, an untyped literal adapts
+    let dt: float = 0.5
+    let h: f32 = 1.5
+    print(vec.vec2(dt, h))
+}
+// expect: vec2(1.0, 2.5)
+// expect: vec3(1.0, 2.0, 3.0)
+// expect: vec4(0.5, 0.0, 0.0, 1.0)
+// expect: a = vec2(1.0, 2.5), b = vec3(1.0, 2.0, 3.0)
+// expect: vec3(7.0, 7.0, 7.0)
+// expect: ivec2(3, -4)
+// expect: ivec4(1, 1, 1, 1)
+// expect: vec2(1.0, 2.5)
+// expect: vec2(10.0, 2.5)
+// expect: true
+// expect: true
+// expect: true
+// expect: vec2(0.5, 1.5)

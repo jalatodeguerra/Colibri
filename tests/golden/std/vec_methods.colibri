@@ -1,0 +1,64 @@
+import vec
+
+fn main() {
+    let a = vec.vec3(1, 0, 0)
+    let b = vec.vec3(0, 1, 0)
+    print(a.dot(b))
+    print(a.dot(a))
+    print(a.cross(b))
+    print(b.cross(a))
+    print(vec.vec2(3, 4).len())
+    print(vec.vec2(3, 4).len_sq())
+    print(vec.vec2(3, 4).normalize())
+    // the zero vector normalizes to itself
+    print(vec.vec3(0, 0, 0).normalize())
+    print(vec.vec2(0, 0).lerp(vec.vec2(10, 20), 0.25))
+    let t: float = 0.5
+    print(vec.vec2(0, 0).lerp(vec.vec2(10, 20), t))
+    print(vec.vec2(1, 1).distance(vec.vec2(4, 5)))
+    print(vec.vec3(-1, 2, -3).abs())
+    print(vec.vec2(1, 5).min(vec.vec2(3, 2)))
+    print(vec.vec2(1, 5).max(vec.vec2(3, 2)))
+    // integer vectors
+    let i = vec.ivec2(3, -4)
+    print(i.dot(vec.ivec2(2, 1)))
+    print(i.len_sq())
+    print(i.len())
+    print(i.abs())
+    print(i.min(vec.ivec2(0, 0)))
+    print(i.max(vec.ivec2(0, 0)))
+    print(i.distance(vec.ivec2(0, 0)))
+    print(vec.ivec3(1, 0, 0).cross(vec.ivec3(0, 1, 0)))
+    // conversions use the name of the target, like `f32(x)`
+    print(vec.ivec2(vec.vec2(2.9, -2.9)))
+    print(vec.vec3(vec.ivec3(1, 2, 3)))
+    print(vec.vec2(a.xy).x)
+    // named arguments
+    print(vec.vec2(0, 0).lerp(other: vec.vec2(2, 2), t: 0.5))
+}
+// expect: 0.0
+// expect: 1.0
+// expect: vec3(0.0, 0.0, 1.0)
+// expect: vec3(0.0, 0.0, -1.0)
+// expect: 5.0
+// expect: 25.0
+// expect: vec2(0.6, 0.8)
+// expect: vec3(0.0, 0.0, 0.0)
+// expect: vec2(2.5, 5.0)
+// expect: vec2(5.0, 10.0)
+// expect: 5.0
+// expect: vec3(1.0, 2.0, 3.0)
+// expect: vec2(1.0, 2.0)
+// expect: vec2(3.0, 5.0)
+// expect: 2
+// expect: 25
+// expect: 5.0
+// expect: ivec2(3, 4)
+// expect: ivec2(0, -4)
+// expect: ivec2(3, 0)
+// expect: 5.0
+// expect: ivec3(0, 0, 1)
+// expect: ivec2(2, -2)
+// expect: vec3(1.0, 2.0, 3.0)
+// expect: 1.0
+// expect: vec2(1.0, 1.0)

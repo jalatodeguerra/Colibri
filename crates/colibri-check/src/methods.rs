@@ -126,6 +126,11 @@ impl FnCtx<'_, '_> {
         if recv_ty.is_number() && crate::numeric::num_method_exists(&recv_ty, &name.name) {
             return self.check_num_method(recv, &recv_ty, name, args, span);
         }
+        if let Ty::Vec(v) = &recv_ty
+            && crate::vector::vec_method_exists(*v, &name.name)
+        {
+            return self.check_vec_method(recv, *v, name, args, span);
+        }
         if name.name != "clone" && builtin_method_exists(&recv_ty, &name.name) {
             return match self.check_builtin_method(recv, name, args, span) {
                 Ok(call) | Err(call) => call,
@@ -602,6 +607,9 @@ impl FnCtx<'_, '_> {
         if recv_ty.is_number() {
             // Reports the missing method together with what the type does have.
             return self.check_num_method(recv, recv_ty, name, args, span);
+        }
+        if let Ty::Vec(v) = recv_ty {
+            return self.check_vec_method(recv, *v, name, args, span);
         }
         let recv = match self.check_builtin_method(recv, name, args, span) {
             Ok(call) => return call,

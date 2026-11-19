@@ -76,6 +76,7 @@ mod iface;
 mod reload;
 mod render;
 mod types;
+mod vecmod;
 mod vm;
 
 pub use buffer::SharedBuffer;
@@ -168,12 +169,16 @@ pub use convert::{Args, FromColibri, IntoColibri, Value, ValueKind};
 pub use ctx::{Caller, Ctx, Cx};
 pub use error::{Error, Location, Report, StackFrame};
 pub use func::Fn;
+/// The `glam` the vector conversions are written against (`glam::Vec3` is `vec.vec3`), so a
+/// host uses the version this crate does.
+pub use glam;
 pub use handle::{Handle, Ref, RefMut};
 pub use host::{HostFault, HostFn, Plain, RawHostFn, Registration, WithCtx};
 pub use iface::Interface;
 pub use reload::{ReloadOptions, ReloadOutcome};
 pub use render::render_diagnostic;
 pub use types::{SigDesc, TypeDesc, TypeRegistry};
+pub use vecmod::install_vec;
 pub use vm::{DEFAULT_MAX_CALL_DEPTH, HostModule, TestInfo, Vm, VmBuilder};
 
 /// The type descriptors of the loaded program, for host functions that work on any type

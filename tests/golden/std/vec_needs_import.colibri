@@ -1,0 +1,4 @@
+fn main() {
+    let a = vec2(1, 2) // error: unknown name `vec2`
+    let f: vec2 = a // error: unknown type `vec2`
+}

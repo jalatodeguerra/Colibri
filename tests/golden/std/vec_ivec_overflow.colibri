@@ -1,0 +1,8 @@
+import vec
+
+fn main() {
+    let big = vec.ivec2(2147483647, 0)
+    print(big - vec.ivec2(1, 0))
+    print(big + vec.ivec2(1, 0)) // panic: integer overflow
+}
+// expect: ivec2(2147483646, 0)

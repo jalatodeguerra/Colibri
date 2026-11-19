@@ -34,6 +34,10 @@ pub enum Value {
     Float(f64),
     /// An `f32`, rounded to single precision after every operation.
     F32(f32),
+    /// A `vec2`, `vec3` or `vec4`: plain data, copied by value.
+    Vec(crate::vecmath::FVec),
+    /// An `ivec2`, `ivec3` or `ivec4`.
+    IVec(crate::vecmath::IVec),
     Char(char),
     Str(Rc<str>),
     Struct(Rc<StructVal>),
@@ -111,6 +115,8 @@ impl PartialEq for Value {
             (Value::Ptr(a), Value::Ptr(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::F32(a), Value::F32(b)) => a == b,
+            (Value::Vec(a), Value::Vec(b)) => a == b,
+            (Value::IVec(a), Value::IVec(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Struct(a), Value::Struct(b)) => a == b,

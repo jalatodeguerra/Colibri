@@ -185,6 +185,7 @@ fn spawn_enemy(a: f32, b: f32) -> Enemy
 | `#[export(value)]` struct/enum | struct / enum | |
 | `T`, `Ref<T>`, `Handle<T>` | host class | |
 | `Callback<A, R>` | `fn(A..) -> R` | |
+| `glam::Vec2/3/4` (also `IVec2/3/4`) | `vec.vec2/3/4` (`vec.ivec2/3/4`) | plain values, no conversion cost beyond copying 8 to 16 bytes; `colibri_runtime::glam` is the version to use. The module is registered by `colibri_std::install`, or by `colibri_runtime::install_vec(&mut vm)` in a host without the standard library. A `.cbi` writes them `vec.vec3` and needs no import for that |
 
 **Callbacks:** `Callback<A, R>` is `Clone`, `!Send`, and holds a root id into a Vm root slab that
 keeps the closure alive. Its Rust `Drop` pushes the id onto a shared queue that the Vm drains at

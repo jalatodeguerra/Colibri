@@ -23,7 +23,7 @@ use crate::package::{ModuleMeta, PackageNode};
 use crate::prelude;
 use crate::suggest;
 use crate::traits::{BoundRef, GenericParamInfo, ImplInfo};
-use crate::types::{ERROR_TYPE, FnSig, ParamId, RESULT_TYPE, Ty, TypeId};
+use crate::types::{ERROR_TYPE, FnSig, ParamId, RESULT_TYPE, Ty, TypeId, VecTy};
 
 /// What a module-level name refers to.
 #[derive(Clone, Copy, Debug)]
@@ -190,6 +190,9 @@ pub(crate) struct Checker<'a> {
     pub type_extra: Vec<TypeExtra<'a>>,
     pub type_ids: HashMap<String, TypeId>,
     pub aliases: HashMap<String, AliasId>,
+    /// The vector types in scope (`vec.vec2`, or `vec2` after `import vec.{vec2}`), which are
+    /// built in but only nameable after `import vec`.
+    pub vec_types: HashMap<String, VecTy>,
     /// Every type alias, indexed by [`AliasId`].
     pub alias_infos: Vec<AliasInfo<'a>>,
     /// How many types have been checked for infinite size.
@@ -347,6 +350,19 @@ impl<'a> Checker<'a> {
             ffi: false,
         }];
         for name in host.named_modules() {
+            let mut exports = Exports::default();
+            if name == "std.vec" {
+                // The vector types are built into the checker; this module is what names them.
+                for v in VecTy::ALL {
+                    exports.types.insert(
+                        v.name().to_string(),
+                        crate::modules::Export {
+                            target: crate::modules::TypeEntity::Vec(v),
+                            public: true,
+                        },
+                    );
+                }
+            }
             mods.push(ModInfo {
                 files: host.module_files(&name),
                 name,
@@ -356,7 +372,7 @@ impl<'a> Checker<'a> {
                 root: false,
                 imports: None,
                 scope: Scope::default(),
-                exports: Exports::default(),
+                exports,
                 alias_spans: HashMap::new(),
                 ffi: false,
             });
@@ -411,6 +427,7 @@ impl<'a> Checker<'a> {
             type_extra: vec![TypeExtra::default(), TypeExtra::default()],
             type_ids: HashMap::new(),
             aliases: HashMap::new(),
+            vec_types: HashMap::new(),
             methods: HashMap::new(),
             collected: false,
             pending: Vec::new(),
@@ -934,6 +951,23 @@ impl<'a> Checker<'a> {
         if let Some(&alias) = self.aliases.get(name) {
             return self.alias_instance(alias, args, span);
         }
+        // The text of a host interface may always say `vec.vec2` (it has no imports).
+        let vec = self.vec_types.get(name).copied().or_else(|| {
+            (span.file == HOST_FILE)
+                .then(|| name.strip_prefix("vec."))
+                .flatten()
+                .and_then(VecTy::from_name)
+        });
+        if let Some(v) = vec {
+            if !args.is_empty() {
+                self.report(Diagnostic::error(
+                    format!("`{name}` takes no type arguments"),
+                    span,
+                ));
+                return Ty::Error;
+            }
+            return Ty::Vec(v);
+        }
         if !args.is_empty() && !self.poisoned_types.contains(name) {
             let known = Ty::numeric_by_name(name).is_some()
                 || matches!(name, "int" | "bool" | "str" | "char");
@@ -951,10 +985,6 @@ impl<'a> Checker<'a> {
             "char" => Ty::Char,
             _ if Ty::numeric_by_name(name).is_some() => {
                 Ty::numeric_by_name(name).unwrap_or(Ty::Error)
-            }
-            "vec2" | "vec3" | "vec4" => {
-                self.unsupported(&format!("the type `{name}`"), span);
-                Ty::Error
             }
             _ if self.poisoned_types.contains(name) => Ty::Error,
             _ => {
@@ -1107,6 +1137,13 @@ impl<'a> Checker<'a> {
             return;
         }
         let mut diag = Diagnostic::error(format!("unknown type `{name}`"), span);
+        if VecTy::from_name(name).is_some() {
+            diag = diag.with_hint(format!(
+                "the vector types are in the `vec` module: write `import vec` and then `vec.{name}`, or `import vec.{{{name}}}`"
+            ));
+            self.report(diag);
+            return;
+        }
         let known = ["int", "float", "bool", "str", "char", "i64", "f64"];
         let declared = self
             .type_ids

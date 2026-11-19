@@ -2574,3 +2574,97 @@ Callbacks (a Colibri function as a C function pointer), function-pointer types, 
 functions, `colibri bindgen`, unions, bit fields, `@repr(packed)`/`align`, fixed-size arrays in
 structs (the language has none), `long double` and complex numbers, `@when(os == ..)` to guard a
 platform-specific block, and a bytecode-VM path (the VM will call the same `colibri-ffi`).
+
+## 20. Vector types as built
+
+PHASE2 step 1 (DESIGN §15.1, §5.1). `vec2`, `vec3`, `vec4` (`f32` components) and `ivec2`,
+`ivec3`, `ivec4` (`i32`) are plain values: constructors, component fields, swizzles,
+component-wise operators and a small set of methods. `mat3`, `mat4` and `quat` are not built.
+
+### Exposure: `import vec`
+
+The types are built into the checker and the interpreter (`Ty::Vec(VecTy)`, `Value::Vec` and
+`Value::IVec`), but their *names* live in the standard library module `vec`. Without `import vec`
+the names `vec2` and friends are unknown (the error says to import the module), and they are not
+reserved either: a program may declare its own `struct vec2`. `import vec` gives `vec.vec2`,
+`import vec.{vec2, ivec2}` the bare names, `import vec as v` gives `v.vec2`. The mechanism:
+
+- `std.vec` is an ordinary named host module (§11.7, §13), registered by `colibri_std::install`
+  or, for hosts without the standard library, `colibri_runtime::install_vec`. It has two
+  functions, `vec.from_angle(radians: f32) -> vec2` and `vec.angle(v: vec2) -> f32`; it exists
+  so that there is a module to import.
+- The checker adds the six types to the *type exports* of a host module called `std.vec`
+  (`TypeEntity::Vec`), a third kind of type entity next to structs and aliases, with its own
+  scope map `vec_types` (`"vec.vec2"`, or `"vec2"` after a names import). Imports, aliasing,
+  clashes with user names and `can_see` need no other change.
+- The text of a host interface has no imports, so while resolving a type in `HOST_FILE` the
+  checker accepts `vec.vec2` .. `vec.ivec4` anywhere. `.cbi` files and `write_interface` therefore
+  write `fn push(a: vec.vec3, b: vec.ivec2)`, and a script that never mentions `vec` can still call
+  such a host function and use the result (`v.x`, `v + v` need no import; only *naming* the type
+  does).
+- A constructor call is checked in `check_constructor` when the callee is `vec.vec2` or a bare
+  name bound in the scope's `vec_types` (and not shadowed by a local or a value).
+
+### Representation
+
+`Value::Vec(FVec { n, c: [f32; 4] })` and `Value::IVec(IVec { n, c: [i32; 4] })`, inline (the
+`Value` stays 24 bytes), no reference count, no release work: a copy is a copy. HIR additions:
+`Ty::Vec`, `TypeKey::Vec` (impls on vectors dispatch), `ValueProj::Comp(i)` (a component, always
+the last step of a place path: `player.pos.x += 1.0` is an ordinary place with path
+`[pos-field, Comp(0)]`, and `read_at`/`replace_at` of `place.rs` read and write inside the vector),
+`BinOp::Vec(ArithOp, VecTy, VecShape)`, `UnOp::VecNeg`, `Coercion::FloatToF32`, and the
+intrinsics `VecNew`, `VecSwizzle { from, lanes, len }` and `VecMethod`. `==` and `!=` are
+`Operand::Structural`; ivecs are `Hash + Eq` (a `Map[ivec2, Tile]` works), float vectors only `Eq`;
+none is ordered. All the arithmetic lives in `colibri-interp/src/vecmath.rs`.
+
+### Decisions the design documents did not fix
+
+- **Format.** `print(vec2(1, 2.5))` shows `vec2(1.0, 2.5)`: the type name and each component as
+  `f32` shows (shortest text that reads back, always with a `.0`), `nan` and `inf` as for floats.
+  `ivec2(3, -4)` shows integers. A format spec on a vector is an error (format the components).
+- **Literals and scalars.** A component, the scalar of `v * s`, `s * v`, `v / s`, and `lerp`'s `t`
+  take an untyped literal (it becomes `f32` or `i32`), an `f32` and, for float vectors, a `float`
+  (narrowed with the new `Coercion::FloatToF32`, rounding to nearest, DESIGN §5.1). An `int`
+  variable is not accepted for a `vec` (`vec2(n, 0)` needs `f32(n)`), and an `ivec` takes `i32`
+  only (not `int`: `i32(n)`), because integer to float and integer narrowing stay explicit.
+- **Constructors.** `vecN(x, y, ..)` with N components, `vecN(s)` (splat), and `vecN(w)` for `w`
+  of the other kind and length: `ivec2(v)` truncates toward zero like `i32(x)` and panics on `nan`
+  or a value out of range; `vec2(iv)` rounds to the nearest `f32`. The name of the target is the
+  conversion, as for the number types, so there are no `to_ivec`/`to_vec` methods.
+- **Operators.** `+ - * /` between two vectors of one type (component-wise, `*` is the Hadamard
+  product), vector by scalar (`*` and `/`) and scalar times vector (`*`), unary `-`, and the
+  compound forms. `%` is not defined, a scalar added to a vector is an error that suggests
+  `v + vec2(1)`, and different vectors never mix. A compound assignment is a `Place` operation
+  like any other.
+- **`f32` precision.** Every float operation is done in `f32`, per component, in the written
+  order, without fused multiply-add: `dot` is `((x*x' + y*y') + z*z')`, so a script gives the same
+  digits on every machine. `len` is `f32::sqrt` of `len_sq`. `lerp(b, t)` is `a + (b - a) * t`
+  (not `a * (1 - t) + b * t`; it hits `b` exactly only when the arithmetic allows).
+- **`normalize` of the zero vector is the zero vector** (not `nan`s), tested as a length of exactly
+  `0.0`. A vector of `nan` stays `nan`.
+- **Methods** (the whole set): `dot(o)`, `cross(o)` (3-component only; the error for 2D says to
+  write `a.x * b.y - a.y * b.x`), `len()`, `len_sq()`, `distance(o)`, `abs()`, `min(o)`, `max(o)`
+  (component-wise), and, for float vectors only, `normalize()` and `lerp(b, t)`. On an `ivec`,
+  `dot`, `len_sq`, `cross`, `abs` return `i32` vectors or scalars and trap on overflow (`abs` of
+  `i32.MIN` too); `len` and `distance` return `f32` (computed exactly in 64 bits, then rounded).
+- **Integer vectors** trap like `i32`: `+ - *`, `-v` and `/` on overflow ("integer overflow"),
+  division by zero ("division by zero"); `/` truncates toward zero.
+- **Fields and swizzles.** The component letters are `x y z w`; a vector has the first `n`. Reading
+  `v.xz`, `v.zyx`, `v.xxyy` gives a vector of that length (2 to 4 letters, repeats allowed, of
+  the same kind). A swizzle is an rvalue: assigning to one is an error that suggests assigning
+  the components. A component of a `let` binding, a parameter or a temporary cannot be assigned
+  (the ordinary place rules).
+- **Embedding.** `glam::{Vec2, Vec3, Vec4, IVec2, IVec3, IVec4}` are `IntoColibri` and
+  `FromColibri` (the checker and the VM do not depend on glam; only `colibri-runtime` does and
+  re-exports it as `colibri_runtime::glam`). `TypeDesc::Vec(VecTy)` prints as `vec.vec3`.
+- **C FFI.** `CTy::Vec(VecTy)`: `n` consecutive `f32` or `i32`, alignment 4, so `vec3` is 12
+  bytes and an `@repr(C)` struct may hold vectors; `ptr[vec3]`, `size_of[vec3]()` and by-value
+  passing work (libffi sees a struct of `n` scalars). Whether a platform ABI passes such a struct
+  in the same registers as a SIMD `float3` is not verified beyond the platforms the tests run on.
+- **No `vec` in `json`.** `json.encode` of a vector is an error like other unsupported types.
+
+### Not built
+
+`mat3`, `mat4`, `quat`, swizzle assignment, `f64` and `u32` vectors, `Add`/`Mul` interfaces for
+user types (Q12), `clamp`, `floor`, `reflect`, `angle_between` and similar methods (add them to
+`vec_sig` in `colibri-check/src/vector.rs` and `vecmath::method`), a splat on `+` (`v + 1`).

@@ -37,7 +37,7 @@ section ("as built") for the decisions it had to make.
    `colibri.toml`, `Cap::Ffi` and the `ffi` cargo feature. Built: ARCHITECTURE §19.
 8. **Vector types as the std module `vec`** (DESIGN §15.1): `import vec` gives `vec.vec2`,
    `vec.vec3`, `vec.vec4` and `vec.ivec2..4`, plain values with component-wise operators, fields
-   and swizzles. In progress.
+   and swizzles. Built: ARCHITECTURE §20.
 9. **Milestone:** real automation scripts written in Colibri (a file organiser, a JSON/HTTP
    report generator).
 
