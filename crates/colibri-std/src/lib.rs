@@ -1,14 +1,14 @@
 //! The Colibri standard library (DESIGN §13.1, ARCHITECTURE §13).
 //!
 //! Every module is a *named host module* implemented in Rust through the same machinery as
-//! `vm.module(..)`: [`install`] registers `io`, `fs`, `path`, `os`, `math`, `rand`, `time`, `str`
-//! and `json` into a [`Vm`], under the interface names `std.io`, `std.fs`, ... The checker sees
+//! `vm.module(..)`: [`install`] registers `io`, `fs`, `path`, `os`, `math`, `rand`, `time`, `str`,
+//! `json`, `regex` and `http` into a [`Vm`], under the interface names `std.io`, `std.fs`, ... The checker sees
 //! them exactly as it sees a game's own host modules: from interface (`.cbi`) text generated
 //! from the registrations ([`interfaces`] gives it to a checker that has no `Vm`). A script
 //! writes `import math` (or `import std.math`, which always means the standard library).
 //!
 //! Modules that reach outside the program are tagged with a capability (`fs` needs
-//! [`Cap::Fs`]; the environment, `exit`, `sleep`, reading stdin and the wall clock need
+//! [`Cap::Fs`]; `http` needs [`Cap::Net`]; the environment, `exit`, `sleep`, reading stdin and the wall clock need
 //! [`Cap::Os`]); a host that did not grant it gets a compile error at the use.
 //!
 //! Everything that depends on the world (the clock, the environment, the program's arguments,
@@ -30,12 +30,14 @@
 
 mod config;
 mod fs;
+mod http;
 mod io;
 mod json;
 mod math;
 mod os;
 mod path;
 mod rand;
+mod re;
 mod strs;
 mod time;
 
@@ -46,7 +48,7 @@ pub use rand::Rng;
 
 /// The modules of the standard library built so far, in the order they are registered.
 pub const MODULES: &[&str] = &[
-    "io", "fs", "path", "os", "math", "rand", "time", "str", "json",
+    "io", "fs", "path", "os", "math", "rand", "time", "str", "json", "regex", "http",
 ];
 
 /// Registers the standard library into `vm` with the default [`StdConfig`]. It must happen
@@ -68,6 +70,8 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
     time::register(vm)?;
     strs::register(vm)?;
     json::register(vm)?;
+    re::register(vm)?;
+    http::register(vm)?;
     Ok(())
 }
 

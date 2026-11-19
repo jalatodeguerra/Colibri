@@ -89,6 +89,24 @@ const GATED: &[(&str, &str, &str, colibri::Cap)] = &[
     ("time", "time.unix", "time.unix()", colibri::Cap::Os),
     ("io", "io.read_line", "io.read_line()", colibri::Cap::Os),
     ("io", "io.read_all", "io.read_all()", colibri::Cap::Os),
+    (
+        "http",
+        "http.get",
+        "http.get(\"http://x\")",
+        colibri::Cap::Net,
+    ),
+    (
+        "http",
+        "http.post",
+        "http.post(\"http://x\", \"b\")",
+        colibri::Cap::Net,
+    ),
+    (
+        "http",
+        "http.request",
+        "http.request(\"GET\", \"http://x\", {:}, \"\")",
+        colibri::Cap::Net,
+    ),
 ];
 
 #[test]
@@ -109,12 +127,12 @@ fn every_gated_function_is_refused_without_its_capability() {
 #[test]
 fn the_other_capability_does_not_help() {
     for (module, _, call, cap) in GATED {
-        let other = if *cap == colibri::Cap::Fs {
-            colibri::Cap::Os
-        } else {
-            colibri::Cap::Fs
-        };
-        let (mut vm, _) = vm(&[other, colibri::Cap::Net]);
+        // Everything but the one needed.
+        let others: Vec<colibri::Cap> = [colibri::Cap::Fs, colibri::Cap::Os, colibri::Cap::Net]
+            .into_iter()
+            .filter(|c| c != cap)
+            .collect();
+        let (mut vm, _) = vm(&others);
         let source = format!("import {module}\nfn main() {{\n    let _ = {call}\n}}\n");
         assert!(
             vm.load_source("app/main.colibri", &source).is_err(),
