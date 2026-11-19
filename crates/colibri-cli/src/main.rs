@@ -38,6 +38,8 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Run the language server (LSP) on stdin and stdout
+    Lsp,
 }
 
 /// Checks `file`, printing every diagnostic to stderr. `Err` is the exit code to stop with.
@@ -94,6 +96,20 @@ fn run(file: &Path) -> ExitCode {
     }
 }
 
+/// Serves the language server protocol on stdin and stdout.
+fn lsp() -> ExitCode {
+    let config = colibri_lsp::Config {
+        stack_budget: colibri_lang::NATIVE_STACK_BUDGET,
+    };
+    match colibri_lsp::run_stdio(config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     on_big_stack(move || match cli.command {
@@ -105,5 +121,6 @@ fn main() -> ExitCode {
         }
         Command::Run { file } => run(&file.unwrap_or_else(|| PathBuf::from("."))),
         Command::Fmt { paths, check } => colibri_lang::fmt::run(&paths, check),
+        Command::Lsp => lsp(),
     })
 }
