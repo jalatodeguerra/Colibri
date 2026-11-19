@@ -1,0 +1,34 @@
+import vec
+
+fn main() {
+    let a = vec.vec2(1, 2)
+    let b = vec.vec3(1, 2, 3)
+    let i = vec.ivec2(1, 2)
+    print(a + b) // error: cannot apply `+` to `vec2` and `vec3`
+    print(a + i) // error: cannot apply `+` to `vec2` and `ivec2`
+    print(a.cross(a)) // error: `vec2` has no method `cross`
+    print(a.foo()) // error: `vec2` has no method `foo`
+    print(a.z) // error: `vec2` has no component `z`
+    print(a.q) // error: `vec2` has no field `q`
+    print(b.w) // error: `vec3` has no component `w`
+    print(b.xq) // error: `vec3` has no field `xq`
+    print(a.xxxxx) // error: has no field `xxxxx`
+    print(a + 1) // error: cannot be applied to `vec2` and
+    print(a - 1.5) // error: cannot be applied to `vec2` and
+    print(1 / a) // error: cannot be applied to
+    print(a % a) // error: `%` cannot be applied to vectors
+    print(a < a) // error: cannot compare values of type `vec2`
+    print(i * 1.5) // error: expected `i32`, found
+    let n = 3
+    print(a * n) // error: expected `f32`, found `int`
+    print(vec.vec2(1, 2, 3)) // error: takes 2 components
+    print(vec.vec2(1, "x")) // error: expected `f32`, found `str`
+    print(vec.vec3(i)) // error: cannot convert `ivec2` to `vec3`
+    print(vec.ivec2(a).normalize()) // error: `ivec2` has no method `normalize`
+    var m = a
+    m.xy = a // error: cannot assign to the swizzle
+    let k = vec.vec2(0, 0)
+    k.x = 1 // error: cannot assign
+    let r: vec.vec3 = a // error: expected `vec3`, found `vec2`
+    let s: vec.vec2 = vec.vec2(0, 0).x // error: expected `vec2`, found `f32`
+}

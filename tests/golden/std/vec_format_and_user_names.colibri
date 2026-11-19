@@ -1,0 +1,12 @@
+import vec
+
+// the name `vec2` is not reserved: without `import vec.{vec2}` a program may declare its own
+struct vec2 { x: int }
+
+fn main() {
+    let mine = vec2 { x: 1 }
+    let theirs = vec.vec2(1, 2)
+    print(mine)
+    print(theirs)
+    print("{theirs:.2}") // error: cannot take a format spec
+}

@@ -25,6 +25,7 @@ use crate::eval::Interp;
 use crate::fiber::Fiber;
 use crate::heap::{ClassObj, GuardToken, ListObj, MapObj};
 use crate::value::{CellObj, Value};
+use crate::vecmath;
 
 /// The part of `v` a projection selects.
 pub(crate) fn project(v: &Value, proj: ValueProj) -> Option<&Value> {
@@ -47,6 +48,13 @@ fn project_mut(v: &mut Value, proj: ValueProj) -> Option<&mut Value> {
 /// Replaces the part of `root` at `path` with the value in `new` (leaving `None` behind) and
 /// returns what was there. `None` without touching `new` when the path does not exist.
 fn replace_at(root: &mut Value, path: &[ValueProj], new: &mut Option<Value>) -> Option<Value> {
+    // A vector component is always the last step; it is stored inside the vector value.
+    if let Some((ValueProj::Comp(i), rest)) = path.split_last() {
+        let parent = rest.iter().try_fold(root, |v, &p| project_mut(v, p))?;
+        let old = vecmath::set_component(parent, *i, new.as_ref()?)?;
+        *new = None;
+        return Some(old);
+    }
     let slot = path.iter().try_fold(root, |v, &p| project_mut(v, p))?;
     let value = new.take()?;
     Some(std::mem::replace(slot, value))
@@ -54,6 +62,10 @@ fn replace_at(root: &mut Value, path: &[ValueProj], new: &mut Option<Value>) -> 
 
 /// The part of `root` at `path`, cloned.
 fn read_at(root: &Value, path: &[ValueProj]) -> Option<Value> {
+    if let Some((ValueProj::Comp(i), rest)) = path.split_last() {
+        let parent = rest.iter().try_fold(root, |v, &p| project(v, p))?;
+        return vecmath::component(parent, *i);
+    }
     path.iter().try_fold(root, |v, &p| project(v, p)).cloned()
 }
 

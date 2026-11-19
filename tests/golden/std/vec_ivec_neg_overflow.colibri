@@ -1,0 +1,6 @@
+import vec
+
+fn main() {
+    let v = vec.ivec2(-2147483648, 0)
+    print(-v) // panic: integer overflow
+}

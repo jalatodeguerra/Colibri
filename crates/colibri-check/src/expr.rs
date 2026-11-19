@@ -266,6 +266,7 @@ impl FnCtx<'_, '_> {
                     | Ty::Fn(..)
                     | Ty::Range(_)
                     | Ty::Ptr(_)
+                    | Ty::Vec(_)
             ) {
                 self.ck.report(Diagnostic::error(
                     format!("a value of type `{shown}` cannot be shown in a string"),
@@ -348,6 +349,9 @@ impl FnCtx<'_, '_> {
                     return self.literal(Lit::Int(value), VarKind::IntLit, expected, span);
                 }
                 let value = self.check_expr(operand, expected);
+                if let Ty::Vec(v) = self.infer.shallow(&value.ty) {
+                    return self.check_vec_neg(v, value, span);
+                }
                 if !self.is_numeric(&value.ty) && !self.infer.shallow(&value.ty).is_error() {
                     let shown = self.show(&value.ty);
                     self.ck.report(Diagnostic::error(
@@ -637,6 +641,11 @@ impl FnCtx<'_, '_> {
         let hint = expected.filter(|t| matches!(t, Ty::Int(_) | Ty::F32 | Ty::Str));
         let mut l = self.check_expr(lhs, hint);
         let mut r = self.check_expr(rhs, Some(&l.ty));
+        if matches!(self.infer.shallow(&l.ty), Ty::Vec(_))
+            || matches!(self.infer.shallow(&r.ty), Ty::Vec(_))
+        {
+            return self.check_vec_arith(op, arith, l, r, span);
+        }
         if !self.unify_operands(op, &mut l, &mut r, span) {
             return self.error_expr(span);
         }
@@ -853,7 +862,7 @@ impl FnCtx<'_, '_> {
     }
 }
 
-fn op_symbol(op: AstBin) -> &'static str {
+pub(crate) fn op_symbol(op: AstBin) -> &'static str {
     match op {
         AstBin::Add => "+",
         AstBin::Sub => "-",
