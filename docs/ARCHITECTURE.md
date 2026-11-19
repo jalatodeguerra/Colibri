@@ -2668,3 +2668,96 @@ none is ordered. All the arithmetic lives in `colibri-interp/src/vecmath.rs`.
 `mat3`, `mat4`, `quat`, swizzle assignment, `f64` and `u32` vectors, `Add`/`Mul` interfaces for
 user types (Q12), `clamp`, `floor`, `reflect`, `angle_between` and similar methods (add them to
 `vec_sig` in `colibri-check/src/vector.rs` and `vecmath::method`), a splat on `+` (`v + 1`).
+
+## 21. REPL as built
+
+PHASE2 step 4 (DESIGN §16.1). Files: `colibri-cli/src/repl.rs` (session, entry handling,
+commands), `repl_input.rs` (is the input complete?), `colibri-runtime/src/vm/session.rs` (the
+`Vm` side: `session_start`, `session_check`, `session_commit`, `session_display`) and
+`colibri-interp/src/session.rs` (`Interp::session_extend`, `session_run`, `session_rollback`).
+The only new dependency is `rustyline` (no default features: line editing and in-memory
+history, no file history, no completion).
+
+### Session model
+
+A session is one growing program checked as one unit (§11), but only the new code runs.
+
+- `Session::items` is the source of every declaration and module-level binding entered so far.
+  An entry is split with the parser into declarations and top-level statements. The program
+  that is checked is `entry statements ++ items` (statements first, so the line numbers of
+  diagnostics and panics are the ones the user typed; declarations are order independent).
+- `let`/`var`/`const` at the prompt are ordinary module-level values (§4.2). Their initialisers
+  run once, when the entry is committed; the value stays in `Interp::globals` for all later
+  entries. Nothing is replayed: earlier statements never run again.
+- `Vm::session_commit` replaces the code tables of the running `Interp` (like a hot-reload
+  patch, `Interp::swap_program`), grows `globals`, runs the initialisers of the new values and
+  then the entry's top-level statements. Before it does that it checks that the new program
+  *extends* the old one: declared functions, types and globals keep their ids (new ones come
+  after), because values hold `FnId`/`TypeId`s. If not, the entry is refused with an error.
+- Closure bodies are lifted functions numbered after all declared functions, so a new function
+  shifts them. `ClosureObj` therefore carries a *generation*, and each extension records an
+  old-to-new `FnId` map; calling a closure made earlier resolves its id through the maps. The
+  mapping matches closures by the function they were made in (`<closure in f>`) and their
+  order there.
+- A statement entry whose statements make closures (`fs.push(fn(n: int) => n * 3)`) is kept
+  as `fn __entry_N() { .. }` (never called again) so that the closures' code stays in the
+  program; other statements are not kept.
+- An **expression** entry is checked as `let __last = (expr)`: the type comes from the check,
+  the value from running its initialiser once, and `Interp::session_show` prints it (honouring
+  a user `impl Show`; `str` and `char` are quoted). A type of `()` or `!` makes the entry a
+  statement instead. `__last` is replaced in place by every expression entry.
+- A **failed entry leaves the session as it was.** A check error is rendered against what was
+  typed (the entry is shown as `<repl>`, older code as `<session>`); only errors are shown,
+  warnings are not. A panic rolls back (`Interp::session_rollback`): the old tables return,
+  new globals are released, re-initialised ones get their old value back. What the entry did
+  to values that already existed before it panicked (`n += 1; boom()`) stays.
+
+### Redefinition
+
+- `fn f` again: replaced in place (same id). Callers see the new body; the signature may
+  change only if everything that calls it still checks. Closures made inside the old `f` stop
+  working (calling one is an internal "unknown closure body" panic).
+- `let`/`var x` again: the slot is re-initialised in place (its initialiser may not mention
+  `x` itself: that is an initialisation cycle; use `var` and assign). Values computed from
+  the old `x` are not recomputed. Closures made by the old initialiser stop working.
+- `struct`/`class`/`enum`/`interface`/`type` again: **refused** (`:reset` starts over). A type
+  restart would invalidate every value of it. `impl` blocks only accumulate. A repeated
+  `import` is ignored.
+
+### Input, commands, coroutines, capabilities
+
+- Completeness (`repl_input::is_complete`) lexes the text with the statement-termination pass:
+  incomplete when a bracket, a `"""` string or a block comment is open, or when the last
+  token is one after which a line break does not end a statement (an operator, `,`, `.`, `=`,
+  `->`, `fn`, ...). An empty line submits whatever is pending. An `else` on its own line
+  cannot continue an `if` (the line already ended the statement); write `} else {`.
+- With a terminal on stdin: `rustyline` with prompts `colibri> ` / `     ... `, history,
+  Ctrl-C drops the pending input, Ctrl-D leaves. Otherwise lines are read plainly with no
+  prompt and no banner (results go to stdout, errors to stderr), which is what the tests use.
+- `:help`, `:quit`, `:type <expr>` (checks, never runs), `:reset` (new program, values
+  released, coroutines cancelled), `:load file` (declarations and bindings of the file; its
+  top-level statements are ignored with a note; the file's own imports of local modules are
+  not resolved, only std/host modules), `:run` (the event loop until every coroutine ends).
+- After each entry the scheduler is ticked with the real time since the previous tick, again
+  while any coroutine ran (at most 100 times), without sleeping. A coroutine waiting for a
+  timer therefore moves when a later entry finds the time passed, and `:run` waits for it.
+- The REPL grants every capability, like `colibri run`. `go f()` starts running `f` at once
+  up to its first wait, as everywhere.
+
+### Startup time (DESIGN §17.4: `colibri run hello.colibri` under 50 ms)
+
+Measured on the development container, release build, mean of 20 runs of a one-line script:
+**58 ms** before, **19 ms** after (`colibri check` 10 ms). Profile: nearly all of it was
+registering the std modules, which ran twice per `run` (once for the interfaces of the check,
+once for the `Vm`): `Vm::register_inner` printed and re-parsed the interface text of *every*
+module after *every* registration, quadratic in the number of functions (12 ms in `math`
+alone). It now validates only the module that was touched (all of them when the touched one is
+the default `host` module, whose types the others may mention). Loading and checking the
+script itself is under 1 ms. Not done: registering std modules lazily and checking once
+instead of twice in `colibri run` (about 8 ms of the remaining 19).
+
+### Not built
+
+Tab completion and syntax highlighting; persistent history file; `:load` of local modules;
+redefining types; a `_` for the last value (it is `__last`, not meant to be typed);
+recomputing values that depend on a rebound `let`.
