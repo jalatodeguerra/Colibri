@@ -1,0 +1,23 @@
+class Node {
+    name: str
+}
+
+fn main() {
+    let x = Node { name: "x" }
+    let y = Node { name: "y" }
+    let z = Node { name: "z" }
+    let a = Set([x, y])
+    let b = Set([y, z])
+    {
+        let u = a.union(b)
+        print(u.len())
+        let d = a.symmetric_difference(b)
+        print(d.len())
+    }
+    print(a.intersection(b).len())
+}
+
+// expect: 3
+// expect: 2
+// expect: 1
+// drops: z, y, x

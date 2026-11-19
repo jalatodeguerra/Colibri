@@ -154,6 +154,13 @@ const SET_METHODS: &[&str] = &[
     "remove",
     "contains",
     "clear",
+    "union",
+    "intersection",
+    "difference",
+    "symmetric_difference",
+    "is_subset",
+    "is_superset",
+    "is_disjoint",
     "iter",
     "enumerate",
     "clone",
@@ -439,6 +446,8 @@ fn map_sig(key: &Ty, value: &Ty, name: &str) -> Option<Sig> {
 
 fn set_sig(elem: &Ty, name: &str) -> Option<Sig> {
     let t = elem.clone();
+    let set_ty = || Ty::Set(Box::new(elem.clone()));
+    let set = set_ty();
     Some(match name {
         "len" => sig(Builtin::SetLen, vec![], Ty::INT),
         "is_empty" => sig(Builtin::SetIsEmpty, vec![], Ty::Bool),
@@ -446,6 +455,17 @@ fn set_sig(elem: &Ty, name: &str) -> Option<Sig> {
         "remove" => sig(Builtin::SetRemove, vec![("item", t)], Ty::Bool),
         "contains" => sig(Builtin::SetContains, vec![("item", t)], Ty::Bool),
         "clear" => sig(Builtin::SetClear, vec![], Ty::Unit),
+        "union" => sig(Builtin::SetUnion, vec![("other", set)], set_ty()),
+        "intersection" => sig(Builtin::SetIntersection, vec![("other", set)], set_ty()),
+        "difference" => sig(Builtin::SetDifference, vec![("other", set)], set_ty()),
+        "symmetric_difference" => sig(
+            Builtin::SetSymmetricDifference,
+            vec![("other", set)],
+            set_ty(),
+        ),
+        "is_subset" => sig(Builtin::SetIsSubset, vec![("other", set)], Ty::Bool),
+        "is_superset" => sig(Builtin::SetIsSuperset, vec![("other", set)], Ty::Bool),
+        "is_disjoint" => sig(Builtin::SetIsDisjoint, vec![("other", set)], Ty::Bool),
         "iter" => sig(Builtin::Iter, vec![], iter_of(t)),
         _ => return None,
     })

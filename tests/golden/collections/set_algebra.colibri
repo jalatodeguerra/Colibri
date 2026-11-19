@@ -1,0 +1,53 @@
+fn main() {
+    let a = Set([1, 2, 3, 4])
+    let b = Set([3, 4, 5, 6])
+    print(a.union(b))
+    print(b.union(a))
+    print(a.intersection(b))
+    print(b.intersection(a))
+    print(a.difference(b))
+    print(b.difference(a))
+    print(a.symmetric_difference(b))
+    // the inputs are untouched and the results are new sets
+    let u = a.union(b)
+    u.add(100)
+    print(a.len())
+    print(b.len())
+    print(a.is_subset(b))
+    print(Set([3, 4]).is_subset(a))
+    print(a.is_superset(Set([1, 2])))
+    print(a.is_superset(b))
+    print(a.is_disjoint(b))
+    print(a.is_disjoint(Set([9, 10])))
+    // a set against itself
+    print(a.union(a))
+    print(a.intersection(a))
+    print(a.difference(a))
+    print(a.symmetric_difference(a))
+    print(a.is_subset(a))
+    print(a.is_superset(a))
+    print(a.is_disjoint(a))
+}
+
+// expect: Set([1, 2, 3, 4, 5, 6])
+// expect: Set([3, 4, 5, 6, 1, 2])
+// expect: Set([3, 4])
+// expect: Set([3, 4])
+// expect: Set([1, 2])
+// expect: Set([5, 6])
+// expect: Set([1, 2, 5, 6])
+// expect: 4
+// expect: 4
+// expect: false
+// expect: true
+// expect: true
+// expect: false
+// expect: false
+// expect: true
+// expect: Set([1, 2, 3, 4])
+// expect: Set([1, 2, 3, 4])
+// expect: Set([])
+// expect: Set([])
+// expect: true
+// expect: true
+// expect: false

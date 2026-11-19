@@ -951,6 +951,13 @@ pub enum Builtin {
     SetRemove,
     SetContains,
     SetClear,
+    SetUnion,
+    SetIntersection,
+    SetDifference,
+    SetSymmetricDifference,
+    SetIsSubset,
+    SetIsSuperset,
+    SetIsDisjoint,
     /// `Set[T]()`
     SetNew,
     /// `StrBuilder()`

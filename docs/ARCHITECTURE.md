@@ -573,6 +573,11 @@ turns out to matter, it moves into DESIGN.md.
     `chunks(n)` and `windows(n) -> List[List[T]]` (`n < 1` panics; the last chunk may be
     shorter; `windows` of a size above the length is empty). The closure-taking ones and `dedup`
     hold the iteration guard exactly like `map` and `retain`, so `wait` in a closure works.
+    *Set algebra.* `a.union(b)`, `intersection`, `difference`, `symmetric_difference` return new
+    sets holding the elements of the receiver first (in its order), then those of the argument
+    (for `symmetric_difference`: the receiver's elements not in `b`, then `b`'s not in `a`);
+    `is_subset`, `is_superset` and `is_disjoint` return `bool`. Nothing is mutated, so they work
+    inside a `for` over either set; a user `Eq` is honoured (a scan, like `contains`).
     *Slicing.* `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]` and the `..=` forms are a *copy* (a
     new list sharing the element objects, as every list copy does) and not a place: `xs[0..2] = ..`
     is an error. `s[a..b]` on a `str` is a *byte* range and panics when an end is out of range or

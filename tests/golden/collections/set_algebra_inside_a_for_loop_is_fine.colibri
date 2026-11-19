@@ -1,0 +1,13 @@
+fn main() {
+    let a = Set([1, 2])
+    let b = Set([2, 3])
+    var total = 0
+    for x in a {
+        // algebra only reads its inputs, and gives a new set
+        total += a.union(b).len()
+        total += x
+    }
+    print(total)
+}
+
+// expect: 9

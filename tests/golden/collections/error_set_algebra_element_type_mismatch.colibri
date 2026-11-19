@@ -1,0 +1,4 @@
+fn main() {
+    let a = Set([1, 2])
+    let b = a.union(Set(["x"])) // error: expected `{integer}`, found `str`
+}

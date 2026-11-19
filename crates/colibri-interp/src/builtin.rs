@@ -84,6 +84,13 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
             | B::ListSlice
             | B::SetFromList
             | B::RangeToList
+            | B::SetUnion
+            | B::SetIntersection
+            | B::SetDifference
+            | B::SetSymmetricDifference
+            | B::SetIsSubset
+            | B::SetIsSuperset
+            | B::SetIsDisjoint
             | B::MapKeys
             | B::MapValues
             | B::Iter
@@ -307,7 +314,14 @@ impl Interp {
             | Builtin::SetAdd
             | Builtin::SetRemove
             | Builtin::SetContains
-            | Builtin::SetClear => {
+            | Builtin::SetClear
+            | Builtin::SetUnion
+            | Builtin::SetIntersection
+            | Builtin::SetDifference
+            | Builtin::SetSymmetricDifference
+            | Builtin::SetIsSubset
+            | Builtin::SetIsSuperset
+            | Builtin::SetIsDisjoint => {
                 let Some(set) = set_of(&recv) else {
                     return Err(bad(self, fiber));
                 };
@@ -539,6 +553,18 @@ impl Interp {
         args: &mut [Value],
         span: Span,
     ) -> Eval {
+        if matches!(
+            op,
+            Builtin::SetUnion
+                | Builtin::SetIntersection
+                | Builtin::SetDifference
+                | Builtin::SetSymmetricDifference
+                | Builtin::SetIsSubset
+                | Builtin::SetIsSuperset
+                | Builtin::SetIsDisjoint
+        ) {
+            return self.set_algebra(fiber, op, set, args, span);
+        }
         if !matches!(
             op,
             Builtin::SetLen | Builtin::SetIsEmpty | Builtin::SetClear
@@ -588,6 +614,110 @@ impl Interp {
             },
             _ => return Err(self.internal(fiber, span, "ill-typed built-in call")),
         })
+    }
+
+    /// Whether `item` is in the set whose elements are `items`: by the user-written `Eq` of
+    /// the element type when there is one (a scan), else by structure.
+    fn set_has(
+        &mut self,
+        fiber: &mut Fiber,
+        set: &SetObj,
+        items: &[Value],
+        item: &Value,
+        span: Span,
+    ) -> Eval<bool> {
+        if !self.has_custom_eq() {
+            return Ok(set.contains(item));
+        }
+        for x in items {
+            if self.eq_deep(fiber, x, item, span)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// `union`, `intersection`, `difference`, `symmetric_difference` (new sets: the elements of
+    /// the receiver in its order, then those of `other`) and `is_subset`, `is_superset`,
+    /// `is_disjoint`. Both sets are held while a user `Eq` may run.
+    fn set_algebra(
+        &mut self,
+        fiber: &mut Fiber,
+        op: Builtin,
+        set: &Rc<SetObj>,
+        args: &mut [Value],
+        span: Span,
+    ) -> Eval {
+        let Some(other) = args.get(1).and_then(set_of) else {
+            return Err(self.internal(fiber, span, "ill-typed built-in call"));
+        };
+        self.charge(fiber, span, other.len())?;
+        let (left, right) = (set.snapshot(), other.snapshot());
+        let result = {
+            let _hold_left = set.iter_hold();
+            let _hold_right = other.iter_hold();
+            self.set_algebra_inner(fiber, op, (set, &left), (&other, &right), span)
+        };
+        self.release_all(left);
+        self.release_all(right);
+        result
+    }
+
+    fn set_algebra_inner(
+        &mut self,
+        fiber: &mut Fiber,
+        op: Builtin,
+        (lset, left): (&SetObj, &[Value]),
+        (rset, right): (&SetObj, &[Value]),
+        span: Span,
+    ) -> Eval {
+        // Which elements of `side` are (not) in `other`.
+        let pick = |this: &mut Self,
+                    fiber: &mut Fiber,
+                    side: &[Value],
+                    other: (&SetObj, &[Value]),
+                    wanted: bool|
+         -> Eval<Vec<Value>> {
+            let mut out = Vec::new();
+            for x in side {
+                if this.set_has(fiber, other.0, other.1, x, span)? == wanted {
+                    out.push(x.clone());
+                }
+            }
+            Ok(out)
+        };
+        let (l, r) = ((lset, left), (rset, right));
+        let items = match op {
+            Builtin::SetUnion => {
+                let mut items = left.to_vec();
+                items.extend(pick(self, fiber, right, l, false)?);
+                items
+            }
+            Builtin::SetIntersection => pick(self, fiber, left, r, true)?,
+            Builtin::SetDifference => pick(self, fiber, left, r, false)?,
+            Builtin::SetSymmetricDifference => {
+                let mut items = pick(self, fiber, left, r, false)?;
+                items.extend(pick(self, fiber, right, l, false)?);
+                items
+            }
+            Builtin::SetIsSubset => {
+                return Ok(Value::Bool(pick(self, fiber, left, r, false)?.is_empty()));
+            }
+            Builtin::SetIsSuperset => {
+                return Ok(Value::Bool(pick(self, fiber, right, l, false)?.is_empty()));
+            }
+            Builtin::SetIsDisjoint => {
+                return Ok(Value::Bool(pick(self, fiber, left, r, true)?.is_empty()));
+            }
+            _ => return Err(self.internal(fiber, span, "ill-typed built-in call")),
+        };
+        let out = SetObj::new(OrderedMap::new());
+        for item in items {
+            if let Ok((_, Some(spare))) = out.add(item) {
+                self.release(spare);
+            }
+        }
+        Ok(Value::Set(out))
     }
 
     /// The `Show` text of a value, for panic messages.
