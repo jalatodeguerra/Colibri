@@ -1,15 +1,42 @@
 # Leo Language Design
 
-**Status:** Draft v0.1, for review. Nothing here is implemented yet.
-**Date:** 2026-11-18
+**Status:** Draft v0.2, for review. Nothing here is implemented yet.
+**Date:** 2026-11-19
 
 This document describes what Leo is, the decisions already agreed, the concrete proposals
 that follow from them, and the open questions that still need a call. Every section is
 tagged with one of three markers:
 
-- **[Locked]** — agreed during the brainstorm. Changing it means re-opening the discussion.
-- **[Proposed]** — my recommendation, filling in details the brainstorm didn't cover. Review and push back.
-- **[Open]** — a real choice that needs a decision. Listed again in [§18 Open questions](#18-open-questions).
+- **[Locked]**: agreed during the brainstorm. Changing it means re-opening the discussion.
+- **[Proposed]**: a recommendation filling in details the brainstorm didn't cover. Review and push back.
+- **[Open]**: a real choice that needs a decision. Listed again in [§18 Open questions](#18-open-questions).
+
+### Changes in v0.2
+
+v0.2 answers the advisor review on PR #1. The main changes:
+
+- **Memory safety** is now an explicit goal (§1), and the semantics that decide it are pinned
+  down: a normative lifetime rule for drops (§11.2), places as copy-in/copy-out with a runtime
+  guard (§11.6), tasks as isolates (§14.1), and one unwinding strategy for panics and
+  cancellation (§10.4).
+- **Roadmap reordered** (§17.4): the first game runs on the interpreter, then the bytecode VM,
+  then Cranelift for shipping builds. The JIT is dropped. *(Pending santiago's decision.)*
+- **Grammar rules** written down before the parser exists: newlines inside brackets and
+  leading-dot chains (§3.2), brace ambiguities (§3.5), keywords (§3.3), and the capitalisation
+  rule in patterns (§8.2).
+- **One rule for function bodies**: `{ }` bodies use `return`, `=> expr` bodies return the
+  expression. This also gives the short lambda (§6).
+- **Numbers**: overflow traps in every mode; `f32` widens to `float` implicitly; vector-by-scalar
+  arithmetic accepts a `float` (§5.1).
+- **Modules**: a package is type-checked as one unit, import cycles are allowed inside a package,
+  and the default visibility is the package (§13).
+- **Coroutines** use the `go` keyword, thread tasks use `task.run(...)`, and `spawn`/`start` are
+  ordinary identifiers again (§14).
+- **`vec3` is 12 bytes** (§15.1). **No dylib for Rust bindings**; a built-in game kit instead
+  (§15.5, §15.6).
+- **New sections**: tuples, ranges and type aliases (§5.2), serialization and reflection (§7.5),
+  iteration (§6.3), module-level values (§4.2), attributes and conditional compilation (§3.6),
+  platform targets (§16.6), editions (§16.7), performance targets (§17.3).
 
 ---
 
@@ -17,10 +44,10 @@ tagged with one of three markers:
 
 1. [Goals and non-goals](#1-goals-and-non-goals)
 2. [Leo at a glance](#2-leo-at-a-glance)
-3. [Lexical structure](#3-lexical-structure)
-4. [Bindings and mutability](#4-bindings-and-mutability)
+3. [Lexical structure and grammar rules](#3-lexical-structure-and-grammar-rules)
+4. [Bindings, mutability and module-level values](#4-bindings-mutability-and-module-level-values)
 5. [Types](#5-types)
-6. [Functions and closures](#6-functions-and-closures)
+6. [Functions, closures and iteration](#6-functions-closures-and-iteration)
 7. [Structs, classes and methods](#7-structs-classes-and-methods)
 8. [Enums and pattern matching](#8-enums-and-pattern-matching)
 9. [Interfaces and generics](#9-interfaces-and-generics)
@@ -48,20 +75,31 @@ tagged with one of three markers:
 - **Static types with inference.** Errors are caught before the program runs, but day-to-day
   code rarely needs type annotations inside function bodies.
 - **Two target domains:** scripting, and game development.
-- **Two run modes from one language:** a fast-starting interpreter (later JIT) for scripts and
-  hot reload, and native builds via Cranelift.
+- **Two run modes from one language:** a fast-starting interpreter/VM for scripts and hot
+  reload, and native builds via Cranelift. *(v0.2 drops the planned JIT; see §17.4.)*
 - **Predictable memory without a tracing GC:** reference counting by default, with the compiler
   removing most of the counting overhead.
 - **Embeddable** in Rust game engines, and **easy C interop**.
+
+### Goals [Proposed]
+
+- **Memory safe outside `unsafe` and FFI.** A Leo program that uses no `unsafe` block and no
+  `extern` declaration cannot read freed memory, write out of bounds, or race on memory. Every
+  feature in this document (places, `borrow`, drop timing, thread sends, coroutines) is designed
+  against this rule; where static checking is impractical, a runtime check panics instead.
+- **The same program means the same thing in every mode.** `leo run`, the VM and `leo build`
+  agree on results, panics and drop order. Only speed differs.
 
 ### Non-goals
 
 - Audio-plugin / hard-real-time DSP as a first-class target (explicitly dropped).
 - `async`/`await` (Leo uses uncolored tasks and coroutines instead, §14).
-- Inheritance, exceptions, macros, operator overloading for arbitrary types (see §15 for the
-  narrow exception on math types), and compile-time metaprogramming in v1.
+- Inheritance, exceptions, macros, compile-time metaprogramming, and user-defined
+  **arithmetic** operators in v1. (`==` and `<` are user-definable through `Eq` and `Ord`;
+  arithmetic on structs through interfaces is planned after phase 1, Q12.)
 - Competing with Rust or C++ on peak performance. "Fast enough for a 2D/3D indie game and
-  much faster than Python" is the bar.
+  much faster than Python" is the bar (numbers in §17.3).
+- A JIT, and M:N task scheduling, in v1.
 - A package registry in v1.
 
 ### Design principles [Proposed]
@@ -69,9 +107,11 @@ tagged with one of three markers:
 1. **Readable by a Python or Go programmer on day one.** If a feature needs a paragraph to
    explain, it needs a strong reason to exist.
 2. **Performance is opt-in, never required.** Plain code is correct and reasonably fast;
-   `own`/`borrow`, C-layout structs and SIMD exist for the hot 5%.
-3. **The optimizer must not change meaning.** Refcount elision, moves and the JIT are
-   invisible to programs except through speed.
+   `own`/`borrow`, C-layout structs and SIMD exist for the hot 5%. An annotation in a library
+   never causes an error in a caller that didn't opt in.
+3. **The optimizer must not change meaning.** Refcount elision, moves and backend choice are
+   invisible to programs except through speed. Where an optimization *could* be observed (for
+   example by shortening a lifetime), the language rule says it may only happen when it can't be.
 4. **Great error messages are a feature**, budgeted for from the first parser.
 
 ---
@@ -94,9 +134,7 @@ enum Command {
     Quit
 }
 
-fn greet(name: str) -> str {
-    return "Hello, {name}!"
-}
+fn greet(name: str) -> str => "Hello, {name}!"
 
 fn apply(p: Player, cmd: Command) -> Player {
     var next = p                       // structs are values: this is a copy
@@ -122,30 +160,46 @@ fn main() {
 
     let level = load_level("level1.txt") or default_level()
     var hero = Player { name: "Ana", pos: vec2(0, 0) }
-    hero = apply(hero, Move(vec2(1, 0)))
+    hero = apply(hero, .Move(vec2(1, 0)))     // `.Move`: the expected type is Command
     print("{hero.name} is at {hero.pos} with {hero.hp} hp")
 }
 ```
 
 ---
 
-## 3. Lexical structure
+## 3. Lexical structure and grammar rules
 
 ### 3.1 Source files [Proposed]
 
-- UTF-8, extension `.leo`.
+- UTF-8, extension `.leo` (subject to the rename, Q16).
 - Comments: `// line` and `/* block */` (nestable). Doc comments: `///`.
 
 ### 3.2 Statement termination [Proposed]
 
-Braces delimit blocks; **newlines end statements** — no semicolons in normal code. Leo uses
-Go's rule: a newline ends a statement if the last token on the line could end one (an
-identifier, literal, `)`, `]`, `}`, `return`, `break`, `continue`). This means a line can
-continue after an operator or comma:
+Braces delimit blocks; **newlines end statements**, with no semicolons in normal code. The rule
+is Go's, plus two fixes for Go's most common "why doesn't this parse" moments:
+
+1. **Go's rule:** a newline ends a statement if the last token on the line could end one (an
+   identifier, literal, `)`, `]`, `}`, `return`, `break`, `continue`). So a line can continue
+   after an operator or comma.
+2. **Inside `( )` and `[ ]`, newlines never end a statement.** The innermost open bracket decides,
+   so a `{ }` closure body inside a call still gets normal statement endings. Trailing commas
+   in multi-line calls and literals are allowed but not required.
+3. **A line that starts with `.`, `or`, `&&`, `||` or `else` continues the previous
+   statement**, so leading-dot method chains work:
 
 ```leo
 let total = price * qty +
-            shipping            // OK: line ended with `+`
+            shipping                        // rule 1: line ended with `+`
+
+let names = players
+    .filter(fn(p) => p.alive())             // rule 3: leading `.`
+    .map(fn(p) => p.name)
+
+draw_text(
+    "score: {score}",                        // rule 2: inside ( )
+    x, y
+)
 ```
 
 Semicolons are allowed to put several statements on one line, and `leo fmt` removes them
@@ -154,16 +208,23 @@ otherwise.
 ### 3.3 Keywords [Proposed]
 
 ```
-fn let var const return if else for in while break continue match
-struct class enum interface impl import pub as
-own borrow weak extern defer test spawn start
+fn let var const type return if else for in while break continue match
+struct class enum interface impl import pub as is self
+own borrow weak extern unsafe defer test go
+some none ok err
+or and not
 true false
 ```
 
-`ok`, `err`, `some`, `none` are ordinary built-in functions/constructors, not keywords.
-`or` is an operator keyword (§10). Logical operators are `and`, `or`, `not`? **[Open]** —
-see Q1. Using `or` for both boolean OR and Result fallback is the one real collision; the
-proposed resolution is to use `&&`, `||`, `!` for booleans and reserve `or` for fallback.
+- `some`, `none`, `ok`, `err` are reserved because they appear in patterns (`ok(c) =>`,
+  `none =>`). If they were ordinary names, `none =>` in a `match` would be indistinguishable
+  from a binding that matches everything.
+- Booleans use `&&`, `||` and `!` (Q1). `or` is the Result/Option fallback operator (§10.3).
+  `and` and `not` are reserved only so that Python habits get a targeted error
+  ("use `&&` instead of `and`").
+- `is` is the identity test for reference types (`a is b`, §5.3).
+- `go` starts a coroutine (§14.2). Thread tasks are a library call (`task.run`), so common
+  identifiers like `spawn`, `start` and `run` stay free.
 
 ### 3.4 Literals [Proposed]
 
@@ -172,21 +233,54 @@ proposed resolution is to use `&&`, `||`, `!` for booleans and reserve `or` for 
 | Integer | `42`, `1_000_000`, `0xFF`, `0b1010` |
 | Float | `3.14`, `1e-9`, `2.0` |
 | String | `"hello {name}"`, raw: `r"C:\path\{not interpolated}"` |
-| Multi-line string | `"""..."""` (strips common indentation) |
+| Multi-line string | `"""..."""` (strips common indentation), raw: `r"""..."""` |
 | Char | `'a'`, `'\n'` |
 | List | `[1, 2, 3]` |
-| Map | `{"a": 1, "b": 2}` |
+| Map | `{"a": 1, "b": 2}`, empty map `{:}` |
+| Set | `Set([1, 2, 3])` (no dedicated literal) |
+| Tuple | `(1, "a")`, unit `()` |
+| Range | `0..10` (exclusive), `0..=10` (inclusive) |
 | Bool | `true`, `false` |
 
 Numeric literals are **untyped constants** (as in Go): `1` becomes `int`, `float`, `f32` or
 `u8` depending on what it's used as, and defaults to `int`/`float` when nothing constrains it.
-This is what makes `vec2(1, 0)` work without `vec2(1.0f, 0.0f)` noise.
+This is what makes `vec2(1, 0)` work without `vec2(1.0f, 0.0f)` noise. **Literal polymorphism
+ends at the binding:** after `let x = 1`, `x` is an `int`.
+
+### 3.5 Brace ambiguities [Proposed]
+
+Written down now so the parser has one rule for each:
+
+- **Block vs map literal.** `{` opens a **block** at the start of a statement and directly after
+  `=>`, `else`, an `if`/`while`/`for`/`match` head, or a function header. Everywhere else it opens
+  a **map literal**. `{}` is therefore an empty block in statement position; an empty map is
+  written `{:}` (or `Map[K, V]()`). A `match` arm that yields a map writes `=> ({"a": 1})`.
+- **Struct literal vs block in a condition.** No bare struct literal in the head of `if`,
+  `while`, `for` or `match` (Rust's rule): `if p == (Player { name: "x" }) { ... }`.
+- **Generic instantiation vs indexing.** `max[f32](a, b)` and `list[i](x)` parse to the same
+  ambiguous AST node and are resolved after name resolution, as Go's parser does, instead of
+  guessing in the parser.
+
+### 3.6 Attributes and conditional compilation [Proposed]
+
+`@name` or `@name(args)` before a declaration is the one general attribute syntax. Built-in
+attributes: `@repr(C)` (§15.2), `@link("lib")` (§15.3), `@deprecated("msg")`, `@inline`, and
+`@when(cond)` for conditional compilation:
+
+```leo
+@when(os == "windows")
+@link("user32")
+extern "C" { fn MessageBoxA(...) -> i32 }
+```
+
+`@when` conditions can test `os`, `arch`, `debug`, and feature flags from `leo.toml`. User-defined
+attributes are not part of v1.
 
 ---
 
-## 4. Bindings and mutability
+## 4. Bindings, mutability and module-level values
 
-[Proposed]
+### 4.1 Local bindings [Proposed]
 
 ```leo
 let x = 10        // immutable binding
@@ -198,76 +292,129 @@ const MAX_HP = 100   // compile-time constant, module level or local
 - `let` cannot be reassigned, and for value types (structs, vectors) its fields cannot be
   mutated either.
 - `let` on a reference type (a `class`, a `List`) prevents rebinding but not mutating the
-  object behind it — same as `final` in Java or `const` in JavaScript. Whether Leo should offer
-  deep immutability is deferred (Q5).
+  object behind it, the same as `final` in Java or `const` in JavaScript. Deep immutability is
+  not part of v1 (Q5).
 - Shadowing is allowed in nested blocks, and is a warning in the same block.
+
+### 4.2 Module-level values [Proposed]
+
+```leo
+const GRAVITY = 9.81                  // compile-time constant
+let config = load_defaults()          // initialised once, immutable binding
+var score = 0                         // mutable module state
+```
+
+- **Initialisation order:** module-level `let` and `var` initialisers run once, before `main`
+  (or before the script's first statement), in dependency order across the whole program. A
+  cycle between initialisers is a compile error naming the chain, as in Go.
+- **Threads:** non-constant module state belongs to the main isolate. Reading or writing it from a
+  thread task (§14.1) is a compile error where the compiler can see it, and a panic otherwise.
+  `const` values are shared freely.
+- **Hot reload:** module-level values survive a reload and their initialisers do not re-run
+  (§16.3).
 
 ---
 
 ## 5. Types
 
-### 5.1 Primitive types [Proposed]
+### 5.1 Primitive types and numeric rules [Proposed]
 
 | Type | Meaning |
 |------|---------|
 | `int` | 64-bit signed integer (default integer) |
 | `i8 i16 i32 i64`, `u8 u16 u32 u64` | sized integers, mainly for FFI and data formats |
 | `float` | 64-bit float (default float) |
-| `f32`, `f64` | sized floats |
+| `f32`, `f64` | sized floats (`f64` is the same type as `float`) |
 | `bool` | `true` / `false` |
 | `char` | a Unicode scalar value |
 | `str` | immutable UTF-8 string (§12) |
-| `vec2 vec3 vec4` | `f32` vectors, SIMD-backed (§15) |
+| `vec2 vec3 vec4` | `f32` vectors (§15.1) |
 | `()` | unit; functions without `-> T` return it |
 
-Integer overflow traps in debug builds and in `leo run`, wraps in `leo build --release`?
-**[Open]** — see Q6.
+**Conversions.** Only two conversions are implicit, both chosen for game code, where every `dt`,
+`math.sin(t)` and time value meets an `f32` vector:
 
-No implicit numeric conversions between named types: `let a: i32 = b` where `b: int` is an
-error; use `i32(b)`. (Untyped literals from §3.4 are the exception.)
+1. `f32` widens to `float` implicitly (lossless).
+2. Vector-by-scalar arithmetic (`vec * s`, `s * vec`, `vec / s`) accepts a `float` scalar and
+   narrows it to `f32`. So `self.pos += self.vel * dt` works with `dt: float`.
 
-### 5.2 Built-in generic types [Proposed]
+Everything else is explicit: between integer widths, from integer to float, and assigning a
+`float` to an `f32` (`f32(x)`). Untyped literals (§3.4) adapt without a conversion.
+
+**Overflow traps in every mode** (`leo run`, the VM and `leo build --release`), as in Swift, so
+a program can't compute something different once built. `wrapping_add`, `wrapping_mul`,
+`checked_add` (returns `Option`) and `saturating_add` exist for hashes, RNGs and fixed-point
+code (Q6).
+
+**Integer division truncates toward zero**: `7 / 2` is `3`, not `3.5`. This will surprise
+Python users, so the docs say it loudly and `leo check` hints when an integer division result
+flows into a `float`. `%` takes the sign of the dividend (`-7 % 3 == -1`), as in C, Go and
+Rust; `math.floor_div` and `math.floor_mod` give Python's behaviour. Integer division by zero
+panics; float division follows IEEE 754.
+
+### 5.2 Built-in compound types [Proposed]
 
 | Type | Semantics |
 |------|-----------|
 | `List[T]` | growable array, literal `[a, b]` |
 | `Map[K, V]` | hash map, insertion-ordered, literal `{k: v}` |
-| `Set[T]` | hash set |
-| `Option[T]` | `some(x)` or `none` — Leo has **no null** |
+| `Set[T]` | hash set, insertion-ordered |
+| `T?` / `Option[T]` | `some(x)` or `none`; Leo has **no null**. `T?` is sugar for `Option[T]` (Q2) |
 | `Result[T]`, `Result[T, E]` | §10 |
+| `(A, B)` | tuple, a value type; `let (a, b) = f()` destructures |
+| `Range[T]` | `a..b`, `a..=b`; iterable, usable in patterns and slicing |
 | `[T; N]` | fixed-size array, value type, used in C-layout structs |
 | `fn(A, B) -> R` | function / closure type |
 
-Whether `List`/`Map` have reference semantics or copy-on-write value semantics is a key open
-question (Q3). This draft assumes **reference semantics**, which is what Python and Go users
-expect.
+- **Multiple return values** are tuples: `fn bounds(xs: List[int]) -> (int, int)`, called as
+  `let (lo, hi) = bounds(xs)`.
+- **Type aliases:** `type Grid = Map[ivec2, Tile]`. An alias is the same type, not a new one.
 
-Whether `T?` should be sugar for `Option[T]` is open (Q2).
+### 5.3 Collection semantics [Proposed]
 
-### 5.3 Type inference [Proposed]
+Per Q3, `List`, `Map` and `Set` are **reference types**: assignment shares them, as in Python and
+Go. Consequences, written down:
+
+- **A struct copy is shallow.** If `Player` had `inventory: List[Item]`, then
+  `var next = p; next.inventory.push(x)` also changes `p.inventory`, since both structs point to
+  the same list. This is the Go-slice gotcha. Every type gets a deep `.clone()` from the prelude
+  (derived automatically), and the struct docs lead with this paragraph.
+- **`==` on collections is structural**, like Python: two lists are equal if their elements are.
+  `a is b` tests identity for any reference type.
+- **`Hash`:** structs and enums derive it from their fields; classes hash by identity unless
+  they implement `Hash`; mutable collections are not hashable (use a tuple, a struct or a frozen
+  copy as a key).
+- **Missing keys:** `m[k]` panics when `k` is missing; `m.get(k)` returns `V?`, so
+  `m.get(k) or 0` reads well.
+
+### 5.4 Type inference [Proposed]
 
 - **Function signatures are annotated; bodies are inferred.** Parameters and return types are
-  always written (except `-> ()`), local variables almost never are. This is the Rust/Go/Swift
-  balance: signatures are documentation and keep error messages local, and inference stays
-  fast and predictable.
+  always written (except `-> ()`), local variables almost never are. Signatures are
+  documentation and keep error messages local, and inference stays fast and predictable.
 - Inference is bidirectional and local to a function: the expected type flows into
-  expressions (`let v: List[f32] = []` works, `[]` alone with no later use is an error asking
+  expressions (`let v: List[f32] = []` works; `[]` alone with no later use is an error asking
   for an annotation).
 - Closures can omit parameter types when the expected type is known:
-  `items.map(fn(x) { x * 2 })`.
+  `items.map(fn(x) => x * 2)`.
 - Generic type arguments are inferred at call sites: `max(3, 4)`, with `max[f32](a, b)` as
   the explicit form.
 
 ---
 
-## 6. Functions and closures
+## 6. Functions, closures and iteration
 
 ### 6.1 Functions [Proposed]
+
+There is **one rule for bodies** (Q4, Q4b): a `{ }` body is a statement block and uses
+`return`; an expression body is written with `=>`, the token `match` arms already use.
 
 ```leo
 fn add(a: int, b: int) -> int {
     return a + b
 }
+
+fn area(self) -> float => math.PI * self.r * self.r
 
 fn log(msg: str, level: str = "info") {     // default argument
     print("[{level}] {msg}")
@@ -279,35 +426,67 @@ log("disk full", level: "warn")              // named argument
 
 - Default arguments and optional named arguments at call sites. No variadics in v1 except
   through `List[T]`.
-- `return` is required to return a value from a function. `if` and `match` can be used as
-  expressions (`let s = if x > 0 { "pos" } else { "neg" }`). Whether a block's last
-  expression is its implicit value everywhere (Rust-style) is open (Q4).
-- `pub fn` exports from the module (§13).
-- `defer` runs a statement when the enclosing block exits, Go-style, for cleanup:
-  `let f = fs.open(path)?` then `defer f.close()`.
+- `if` and `match` are expressions. A block used as an `if`/`match` arm yields its trailing
+  expression, which multi-statement arms need:
+  `let s = if x > 0 { "pos" } else { log("neg"); "neg" }`.
+- A function returning `Result[()]` (or `Result[(), E]`) that reaches the end of its body
+  returns `ok(())`, so fallible procedures don't end in `return ok(())`.
+- `pub` controls visibility (§13).
+- `defer` runs a statement when the enclosing block exits, including on panic and coroutine
+  cancellation (§10.4): `let f = fs.open(path)?` then `defer f.close()`.
 
 ### 6.2 Closures [Proposed]
 
 ```leo
-let double = fn(x: int) -> int { return x * 2 }
-let evens = nums.filter(fn(n) { n % 2 == 0 })   // single-expression body, types inferred
+let double = fn(x: int) -> int => x * 2
+let evens = nums.filter(fn(n) => n % 2 == 0)      // types inferred from `filter`
+button.on_click(fn() {                             // block body: uses `return` if needed
+    clicks += 1
+})
 ```
 
-Closures capture variables **by reference** to the enclosing variable (like Go, Python, JS),
-so captured `var`s can be updated. Captured variables are boxed into a refcounted cell only
-when a closure actually mutates them or escapes; otherwise they're captured directly.
+- Closures capture variables **by reference** to the enclosing variable (like Go, Python, JS),
+  so captured `var`s can be updated. A captured variable is moved into a refcounted cell only
+  when a closure mutates it or escapes; otherwise it's captured directly.
+- **A `var` struct captured by an escaping closure moves into a shared cell**, so through that
+  closure the struct now has reference behaviour: the closure and the enclosing function see the
+  same value. This is the expected behaviour; it's stated here so it isn't a surprise.
+- **`for` introduces a fresh binding per iteration**, so closures created in a loop capture that
+  iteration's value (the fix Go needed in 1.22).
+- **Weak captures.** Callbacks are the main source of RC cycles
+  (`button.on_click(fn() { self.count += 1 })` leaks when `self` owns `button`). A capture list
+  makes a capture weak; inside the closure the name has type `T?`:
 
-A shorter lambda syntax (e.g. `|n| n % 2 == 0` or `n => n % 2 == 0`) is open (Q4b).
+  ```leo
+  self.button.on_click(fn() use(weak self) {
+      if let some(me) = self { me.count += 1 }
+  })
+  ```
+
+  Exact spelling is Q19. The leak detector (§11.5) is on by default in `leo run` and points at
+  closures that close a cycle.
+
+### 6.3 Loops and iteration [Proposed]
+
+- `for x in xs` works on anything implementing `Iter[T]` (one method, `fn next(var self) -> T?`)
+  or `Iterable[T]` (`fn iter(self) -> Iter[T]`). Lists, maps (yielding `(k, v)`), sets, ranges
+  and strings (`s.chars()`, `s.bytes()`) are iterable.
+- `for (i, x) in xs.enumerate()`, `for i in 0..n`, `for var e in enemies` (§11.6).
+- **Mutating a collection while iterating it panics** ("list modified during iteration"), using
+  the same mutation guard as places (§11.6). To remove while iterating, use `xs.retain(fn(x) => ...)`
+  or iterate a copy.
+- `while cond { }`, `while let some(x) = it.next() { }`, `break`, `continue`, and labelled
+  `break 'outer` for nested loops.
 
 ---
 
 ## 7. Structs, classes and methods
 
 The brainstorm locked "structs are value types (copied)". Games and scripts also need shared,
-mutable objects with identity (a scene node, an entity referenced from several places). This
-draft therefore proposes two kinds of user-defined record type.
+mutable objects with identity (a scene node, an entity referenced from several places), so Leo
+has two kinds of user-defined record type (Q3 option (a)).
 
-### 7.1 `struct` — value types [Locked semantics, Proposed syntax]
+### 7.1 `struct`: value types [Locked semantics, Proposed syntax]
 
 ```leo
 struct Vec2i {
@@ -326,33 +505,30 @@ var b = a                      // copy
 b.x = 10                       // `a` is unchanged
 ```
 
-- Assignment, argument passing and returning copy the value (the compiler avoids actual
-  copies when it can prove no one observes the difference, §11.3).
+- Assignment, argument passing and returning copy the value (the compiler avoids physical
+  copies when no one can observe the difference, §11.3).
 - A struct can contain reference-typed fields (`str`, `List`, a `class`); copying the struct
-  copies the reference and bumps its count.
-- Structs have no identity: `==` is structural, auto-derived when all fields support it.
+  copies the reference, not the object (§5.3, shallow copies).
+- Structs have no identity: `==` is structural.
 
-### 7.2 `class` — reference types [Proposed]
+### 7.2 `class`: reference types [Proposed]
 
 ```leo
 class Node {
     name: str
     children: List[Node] = []
-    parent: weak Node?          // weak back-reference, see §11.5
+    parent: weak Node              // weak back-reference: reads as `Node?` (§11.5)
 }
 
 let root = Node { name: "root" }
 let child = Node { name: "child", parent: root }
-root.children.push(child)       // root and the list share `child`
+root.children.push(child)          // root and the list share `child`
 ```
 
 - Heap-allocated and reference-counted. Assignment shares; it does not copy.
-- `==` on classes is identity unless the class implements `Eq`.
+- `==` on classes is identity unless the class implements `Eq`. `is` is always identity.
 - **No inheritance.** Sharing behaviour across types is done with interfaces (§9) and
   composition.
-
-The keyword (`class` vs `ref struct` vs `box`) and whether to have two record kinds at all are
-open (Q3).
 
 ### 7.3 Methods [Proposed]
 
@@ -360,16 +536,12 @@ Methods are declared in `impl` blocks, separate from the data:
 
 ```leo
 impl Particle {
-    fn new(pos: vec2) -> Particle {          // no `self`: a static function
-        return Particle { pos: pos, vel: vec2(0, 0) }
-    }
+    fn new(pos: vec2) -> Particle => Particle { pos: pos, vel: vec2(0, 0) }   // static
 
-    fn alive(self) -> bool {                 // read-only receiver
-        return self.life > 0
-    }
+    fn alive(self) -> bool => self.life > 0             // read-only receiver
 
-    fn step(var self, dt: float) {           // mutating receiver (structs only)
-        self.pos += self.vel * dt
+    fn step(var self, dt: float) {                      // mutating receiver (structs only)
+        self.pos += self.vel * dt                       // vec2 * float: §5.1
         self.life -= dt
     }
 }
@@ -379,9 +551,32 @@ p.step(0.016)        // `p` must be `var`
 ```
 
 - `self` is read-only; `var self` may mutate a struct in place, and the call site needs a
-  mutable place. On a `class`, `self` can always mutate fields, since the object is shared.
-- Methods can be added to a type only in the module that defines it, except to implement an
+  mutable place (§11.6). On a `class`, `self` can always mutate fields, since the object is
+  shared.
+- Methods can be added to a type only in the package that defines it, except to implement an
   interface (§9).
+
+### 7.4 Auto-derived interfaces [Proposed]
+
+Structs, enums and tuples derive `Eq`, `Hash`, `Show`, `Clone` and the serialization support of
+§7.5 automatically, whenever all their fields support them. No declaration is needed, so
+`print("{hero.pos}")` and `if a == b` just work. A type can override any of them with an explicit
+`impl`. `Ord` is derived only for enums without payloads and for tuples; structs implement it
+explicitly. Classes derive `Show` (fields) and `Clone` (deep), but `Eq` and `Hash` stay identity
+unless implemented.
+
+### 7.5 Type descriptors, serialization and reflection [Proposed]
+
+Leo has no macros, but save games, configs and level data need `json.decode[Player](text)`.
+The compiler emits a **type descriptor** for every type (name, fields with types and defaults,
+variants, attributes). The same descriptors serve several features, so they're built once:
+
+- `json.encode(x)` and `json.decode[T](text) -> Result[T]`, with `@rename("x")`, `@skip` and
+  default-on-missing field handling. Other formats (TOML, a binary format) use the same API.
+- Deep copy for thread sends (§14.1), `Show`, `Clone`, the leak detector (§11.5), the debugger
+  (§16.5) and hot reload layout checks (§16.3).
+- A small read-only reflection API (`reflect.fields[T]()`) for tools such as editors and
+  inspectors. Reflection cannot bypass visibility.
 
 ---
 
@@ -423,11 +618,17 @@ match cmd {
 ```
 
 - `match` is **exhaustive**: missing a variant is a compile error.
-- Patterns: literals, ranges (`0..10`), variants, struct destructuring (`Vec2i { x, y }`),
-  tuples, `_`, bindings with `as` (`Move(d) as cmd`), guards with `if`.
-- Variant names are usable unqualified inside `match` on a value of that enum type; elsewhere
-  they're written `Shape.Circle(2)` unless imported. (Swift-style contextual lookup:
-  `let s: Shape = .Circle(2)` is a possible addition, Q11.)
+- Patterns: literals, ranges (`0..10`, `0..=9`), variants, struct destructuring
+  (`Vec2i { x, y }`), tuples (`(a, b)`), `_`, bindings with `as` (`Move(d) as cmd`), guards with
+  `if`.
+- **Capitalisation rule in patterns.** A capitalised identifier in a pattern (`Quit`, `MAX_HP`)
+  is a variant or constant and **must resolve**; a lower-case identifier is a new binding. So a
+  typo like `Quti =>` is an error instead of a silent catch-all. `some`, `none`, `ok` and `err`
+  are reserved words (§3.3) and work as variants.
+- **Variant lookup** (Q11): bare variant names inside patterns; `.Variant` wherever the expected
+  type is known (`apply(hero, .Move(d))`, `let s: Shape = .Circle(2)`); `Shape.Circle(2)`
+  otherwise. Variants are not placed in module scope, since that collides with types (a
+  `Shape.Circle` variant and a `struct Circle` can coexist).
 - `if let some(x) = maybe { ... }` and `while let` for single-pattern tests.
 
 ---
@@ -437,9 +638,7 @@ match cmd {
 ### 9.1 Generics [Locked syntax, Proposed details]
 
 ```leo
-fn max[T: Ord](a: T, b: T) -> T {
-    return if a > b { a } else { b }
-}
+fn max[T: Ord](a: T, b: T) -> T => if a > b { a } else { b }
 
 struct Pair[A, B] {
     first: A
@@ -452,28 +651,29 @@ enum Tree[T] {
 }
 ```
 
-- Square brackets, as locked. Indexing also uses `[]`; the parser disambiguates by position
-  (type position vs expression position) and by the explicit-instantiation form
-  `max[f32](a, b)`. This is the same situation as Go 1.18 and is known to be workable.
+- Square brackets, as locked. Indexing also uses `[]`; see §3.5 for how the parser handles
+  `max[f32](a, b)`.
 - **Bounds** use interfaces: `T: Ord`, `T: Hash + Eq`.
-- **Implementation strategy:** the interpreter runs generic code once with uniform value
-  representation; native builds **monomorphize** (one copy per concrete type), as Rust does.
-  Both strategies are invisible to the user.
+- **Implementation strategy:** the interpreter and VM run generic code with a uniform value
+  representation; native builds **monomorphize** (one copy per concrete type). Both are
+  invisible to the user.
 - Recursive enums like `Tree[T]` are boxed automatically (the compiler inserts an RC box for
   recursive fields), so users never write `Box`.
+- **No variance:** `List[Circle]` is not a `List[Shape]`. Convert with
+  `circles.map(fn(c) => c as Shape)`.
 
 ### 9.2 Interfaces [Proposed]
 
 ```leo
 interface Shape {
     fn area(self) -> float
-    fn name(self) -> str { return "shape" }   // default method
+    fn name(self) -> str => "shape"              // default method
 }
 
 struct Circle { r: float }
 
 impl Shape for Circle {
-    fn area(self) -> float { return math.PI * self.r * self.r }
+    fn area(self) -> float => math.PI * self.r * self.r
 }
 
 fn total_area(shapes: List[Shape]) -> float {   // dynamic dispatch
@@ -487,15 +687,24 @@ fn print_area[T: Shape](s: T) {                 // static dispatch
 }
 ```
 
-- **Nominal, explicit** implementation (`impl Shape for Circle`), not Go-style structural.
-  Explicit impls give better error messages and allow default methods. Structural typing
-  is open (Q7).
-- An interface name used as a type (`List[Shape]`) means a dynamically dispatched value
-  (an RC box with a vtable). Used as a bound (`T: Shape`), it is statically dispatched.
-- Built-in interfaces in the prelude: `Eq`, `Ord`, `Hash`, `Show` (used by string
-  interpolation and `print`), `Iter[T]`,
-  `Drop` (cleanup hook, runs when the last reference goes away).
-- Orphan rule: `impl I for T` must live in the module of `I` or of `T`.
+- **Nominal, explicit** implementation (`impl Shape for Circle`), not Go-style structural (Q7).
+  Explicit impls give better error messages and allow default methods.
+- An interface name used as a type (`List[Shape]`) means a dynamically dispatched value. Used as
+  a bound (`T: Shape`), it is statically dispatched.
+- **A struct in an interface value stays a value.** After `let a: Shape = circle; var b = a`,
+  `a` and `b` are independent: assigning an interface value that holds a struct copies it
+  (implemented as copy-on-write on the box, so the copy is lazy). A `var self` method called
+  through `b` changes only `b`. An interface value holding a class shares it, as classes always do.
+- **Object safety:** an interface method with its own type parameters (`fn map[U](self, ...)`)
+  can't be called through a dynamically dispatched value, because native builds monomorphize.
+  Such methods are only available through a bound (`T: I`). The compiler explains this when it
+  happens.
+- Built-in interfaces in the prelude: `Eq`, `Ord`, `Hash`, `Show` (used by interpolation and
+  `print`), `Clone`, `Iter[T]`, `Iterable[T]`, `IntoError` (§10), `Drop`.
+- **`Drop` is limited to `class` types and host handles.** A copyable value type with a
+  destructor would run it once per copy, which is the C++ copy-constructor problem Leo otherwise
+  avoids. Structs that own a resource hold it in a class field.
+- Orphan rule: `impl I for T` must live in the package of `I` or of `T`.
 
 ---
 
@@ -506,9 +715,8 @@ fn print_area[T: Shape](s: T) {                 // static dispatch
 ### 10.1 Types
 
 - `Result[T, E]` is an enum: `ok(T)` or `err(E)`.
-- `Result[T]` is shorthand for `Result[T, Error]`, where `Error` is a built-in type: a
-  message string, an optional cause (another `Error`), and a captured location/backtrace in
-  debug builds. Any type implementing the `IntoError` interface converts to it with `?`.
+- `Result[T]` is shorthand for `Result[T, Error]`, where `Error` is a built-in type. Any type
+  implementing `IntoError` converts to it with `?`.
 
 ```leo
 enum ParseError {
@@ -516,42 +724,100 @@ enum ParseError {
     BadToken(line: int, text: str)
 }
 
+impl IntoError for ParseError {}         // default message comes from `Show`
+
 fn parse(src: str) -> Result[Ast, ParseError] { ... }
 
-fn run(path: str) -> Result[()] {             // default error type
+fn run(path: str) -> Result[()] {         // default error type
     let src = fs.read(path)?
-    let ast = parse(src)?                     // ParseError converts to Error via IntoError
+    let ast = parse(src)?                 // ParseError converts to Error via IntoError
     eval(ast)?
-    return ok(())
-}
+}                                         // falls off the end: ok(()) (§6.1)
 ```
 
-### 10.2 Handling forms [Locked]
+### 10.2 `Error` is inspectable [Proposed]
+
+`Error` keeps the **original typed value**, so a caller can still tell errors apart after `?`:
+
+```leo
+match load_level(path) {
+    ok(level) => play(level)
+    err(e) if e.is[fs.Error]() => match e.as[fs.Error]().expect("checked") {
+        NotFound         => use_default_level()
+        PermissionDenied => fail("can't read {path}")
+        _                => fail("{e}")
+    }
+    err(e) => fail("{e}")
+}
+
+let text = fs.read(path).context("loading level {path}")?   // wrap with context
+```
+
+- `e.is[T]() -> bool` and `e.as[T]() -> T?` use the runtime type descriptors of §7.5.
+- `e.context(msg)` wraps an error with a message; `e.cause()` walks the chain; `{e}` prints the
+  whole chain. Debug builds capture a backtrace.
+- The standard library returns real enums underneath (`fs.Error.NotFound`,
+  `http.Error.Timeout`), never just strings.
+
+### 10.3 Handling forms [Locked, Proposed details]
 
 ```leo
 let cfg = load_config()?                              // propagate
 let cfg = load_config() or Config.default()           // fallback value
-let cfg = load_config().expect("config is required")  // crash with message
+let cfg = load_config().expect("config is required")  // panic with message
 match load_config() {
     ok(c)  => use(c)
     err(e) => log("bad config: {e}")
 }
 ```
 
-- `?` works in functions returning `Result` (converting the error) and in functions
-  returning `Option` (for `Option` values).
-- `or` evaluates its right-hand side only on `err`/`none`. A block form gives access to the
-  error: `load() or fn(e) { log(e); return default() }`. **[Open]** exact syntax, tied to Q4b.
+- `?` works in functions returning `Result` (converting the error through `IntoError`) and in
+  functions returning `Option` (for `Option` values).
+- **`or` with a handler block.** The handler is a block **of the enclosing function**, not a
+  closure, so `return`, `break` and `continue` inside it act on the enclosing function or loop.
+  The block must yield a value or diverge:
+
+  ```leo
+  let cfg = load_config() or |e| { log("bad config: {e}"); return }
+
+  for path in paths {
+      let text = fs.read(path) or { continue }
+      ...
+  }
+  ```
+
+  `|e|` binds the error (it is omitted for `Option`, or when the error isn't needed). This is
+  Zig's `catch |e| { ... }`.
+- **Precedence:** postfix `?` binds tightest (with calls and field access). `or` binds looser
+  than every other binary operator, including `||`, `&&` and comparisons, and tighter than
+  assignment. It chains left to right: `a or b or c`.
+- **Right-hand side types:** in `a or b` with `a: Result[T]` or `T?`, `b` may be a plain `T`
+  (result type `T`) or itself a `Result[T]`/`T?` (result type is `b`'s type), so fallbacks chain:
+  `cache.get(k) or disk.load(k) or fetch(k)?`.
 - **Unused `Result` is a warning** (`let _ = f()` silences it explicitly).
-- `main` may return `Result[()]`; an `err` prints the error and exits with code 1.
+- `main` may return `Result[()]`; an `err` prints the error chain and exits with code 1.
 
-### 10.3 Panics [Proposed]
+### 10.4 Panics and unwinding [Proposed]
 
-Some failures aren't recoverable values: out-of-bounds index, integer overflow (debug),
-`.expect()` on `err`, division by zero. These **panic**: print a message and stack trace, and
-abort the current program (or, when embedded, return an error to the host without crashing the
-host process). Panics cannot be caught in Leo code. Hot reload (§16.3) can resume after a
-panic in development builds.
+Some failures aren't recoverable values: out-of-bounds index, integer overflow, `.expect()` on
+`err`, integer division by zero, a failed mutation guard (§11.6). These **panic**: print a message
+and stack trace and abort the current program, or the current task (surfacing as an `err` from
+its join, §14.1), or, when embedded, return an `Err` to the host without crashing the host
+process. Panics cannot be caught in Leo code.
+
+**Unwinding.** A panic, a coroutine cancellation (§14.2) and a hot-reload restart all abandon a
+stack. All three must release every local on it and run every `defer`, or they leak and leave
+`Drop` resources open. The strategy, identical in every engine:
+
+- **Interpreter and VM:** walk the Leo stack, which is a heap object, running cleanups.
+- **Cranelift native code:** panics and cancellation are a **hidden error return**. Every call
+  that can panic returns a flag the caller checks; on the slow path the caller runs its cleanups
+  (drops and `defer`s) and returns the flag upward. No unwind tables or landing pads are needed,
+  it works the same on every platform Cranelift targets, and coroutine cancellation reuses the
+  same paths. The cost is one predictable branch after calls that can panic; calls proven not to
+  panic skip it.
+- Rust panics in host functions are caught at the boundary and turned into Leo panics; Leo panics
+  never unwind through Rust or C frames.
 
 ---
 
@@ -562,98 +828,150 @@ elide refcount operations; structs are value types; optional `own`/`borrow` for 
 `weak` references for cycles. Ship plain RC first; add optimizations later without changing
 user code.
 
+[Proposed] Everything in this section is designed against the memory-safety goal in §1: safe
+code cannot observe freed memory, whatever the optimizer does.
+
 ### 11.1 What is reference counted
 
 | Kind | Representation |
 |------|----------------|
 | `int`, `float`, `bool`, `char`, `vecN`, C-layout structs of those | plain values, no RC |
-| `struct` | plain value; its reference-typed fields are counted |
+| `struct`, tuple | plain value; its reference-typed fields are counted |
 | `enum` | value; payloads that are reference types are counted |
 | `str`, `List`, `Map`, `Set`, `class`, closures, interface values, recursive enum boxes | heap objects with a refcount header |
 
-Refcounts are **non-atomic** (cheap) by default. See §11.7 for threads.
+Refcounts are **non-atomic** (cheap). The header has one bit marking an object as
+**thread-shared**; only those objects take the atomic path (§14.1).
 
-### 11.2 Phase 1: plain RC
+### 11.2 The lifetime rule (normative) [Proposed]
 
-The first implementation increments on every copy of a reference and decrements on every drop.
-This is slow-ish but simple, deterministic, and correct. Objects are freed immediately when
-their count reaches zero; `Drop` hooks run at that point. Deterministic destruction is a
-feature for games (textures, sounds and file handles are released when the last owner goes).
+Moving a free from scope end to a variable's last use is observable: through `Drop` guards
+(`let batch = renderer.begin_batch()`), through `weak` references going `none` early, through
+raw pointers handed to C, and through locals held across a coroutine `wait`. So **the lexical
+rule is the language semantics**, in every engine and phase:
+
+- A binding owns its value **until the end of its scope**. Bindings are dropped in reverse
+  declaration order. Temporaries are dropped at the end of the statement that created them.
+- Ownership leaves a binding only by an explicit transfer: a `return`, a store into a field,
+  collection or captured cell, a send to another task, or passing to an `own` parameter
+  (§11.4).
+- `Drop` hooks therefore run at a predictable point, which is what makes deterministic
+  destruction useful for games (textures, sounds and file handles are released when the last
+  owner goes).
+
+The optimizer may remove increment/decrement pairs and reuse memory, but it may only shorten a
+lifetime when **nothing can observe it**: no `Drop` anywhere in the type, and the object provably
+has no weak references and no derived raw pointers.
+
+The phase 1 interpreter is built to exactly this rule, and drop-order cases are part of the
+golden tests (§17.2), so later engines and optimizations are checked against it.
 
 ### 11.3 Phase 2: compiler-inferred elision [Locked intent, Proposed approach]
 
-The compiler eliminates most counting without user annotations, using known techniques:
+The compiler eliminates most counting without user annotations, within the rule above:
 
-1. **Last-use moves** (Perceus, Lobster). If a variable's last use passes it somewhere, it's a
-   move: no increment at the call site and no decrement at scope end.
-2. **Borrowed parameters** (Lobster, Swift's `guaranteed` convention). By default a function
+1. **Borrowed parameters** (Lobster, Swift's `guaranteed` convention). By default a function
    *borrows* its reference parameters: the caller keeps the reference alive, the callee does
-   no RC unless it stores or returns the value.
-3. **Reuse analysis** (Perceus / Koka FBIP). When a uniquely owned object dies and an
-   object of the same size is allocated right after (e.g. `list.map` producing a new list),
-   the memory is reused in place.
-4. **Uniqueness-based in-place mutation.** If a `List` has refcount 1, mutations don't need
-   copy-on-write checks (only relevant if Q3 picks value semantics).
+   no RC unless it stores or returns the value. This shortens no lifetime.
+2. **Moves into storage and returns.** When a binding's last use stores or returns it, the
+   reference is transferred instead of incremented and decremented. This is an ownership
+   transfer under §11.2, so it shortens no lifetime either.
+3. **Reuse analysis** (Perceus / Koka FBIP). When a uniquely owned object dies and an object of
+   the same size is allocated right after (e.g. `list.map` producing a new list), the memory is
+   reused in place.
+4. **Early frees** (last-use drops) only for objects that satisfy the "nothing can observe it"
+   condition of §11.2.
 5. **Struct copy elision.** A struct passed to a read-only parameter is passed by pointer;
-   it is only physically copied when the callee or the caller would observe a difference.
-
-None of these change program behaviour; only timing of frees within a function can move
-earlier (to a variable's last use instead of scope end). `Drop` hooks with side effects are
-therefore documented as "runs no later than scope end".
+   it is only physically copied when the callee or the caller could observe a difference.
 
 ### 11.4 `own` and `borrow` [Locked keywords, Proposed semantics]
 
-Optional annotations for hot code that make the compiler's choice explicit and **checked**:
+Optional parameter annotations for hot code. Both keywords are reserved now; the checker that
+enforces them is built late (phase 4, §17.4), when profiles from the demo game show where they
+matter.
 
 ```leo
-fn consume(own buf: List[u8]) { ... }         // callee takes ownership; caller's variable is moved
+fn consume(own buf: List[u8]) { ... }         // callee takes ownership
 fn inspect(borrow mesh: Mesh) -> int { ... }  // guaranteed zero RC traffic; cannot store `mesh`
 
 let data = load()
-consume(data)          // `data` is moved; using it afterwards is a compile error
+consume(data)          // last use: ownership moves, no RC traffic
+print(data.len())      // also fine: the compiler keeps a reference for this use instead
 ```
 
-- `own` on a parameter: the caller must give up the value (last use, or an explicit
-  `move x`?). Using it afterwards is an error. **[Open]** whether an explicit `move` keyword is
-  needed at call sites (Q8).
-- `borrow` on a parameter: the callee may not store, return or capture the value in an escaping
-  closure. Violations are compile errors with a hint.
-- `borrow` on a local (`borrow let m = scene.mesh`) is a non-owning view valid while the source
-  is alive and unmodified; the checker is deliberately simple (lexical, Rust-2015-style) and
-  rejects anything it can't prove. Exact rules are open (Q8).
+- **`own` never causes an error in the caller.** If the caller uses the value again, the
+  compiler simply keeps a reference (one increment). A script author who never opted into
+  ownership never gets move errors because a library author wrote `own`. A lint
+  (`@warn(implicit_copy)`) reports these extra references for hot code. No `move` keyword is
+  needed (Q8).
+- **`borrow` on a parameter:** the callee may not store, return or capture the value in an
+  escaping closure. Violations are compile errors in the callee, with a hint.
+- **No local `borrow let` in v1.** "Valid while the source is alive and unmodified" can't be
+  checked lexically when classes and collections alias freely. Parameter-level `borrow` is
+  simple and sufficient.
 - Code without annotations is always valid; annotations only *add* guarantees.
 
 ### 11.5 Cycles and `weak` [Locked]
 
 RC can't free cycles. Leo's stance:
 
-- `weak T` holds a non-owning reference; reading it gives `Option[T]` (`none` if freed):
-  `if let some(p) = node.parent.get() { ... }`.
-- Common back-pointers (parent, owner, observer lists) should be `weak`.
-- **Debug-mode leak detector**: on exit (and on demand via `leo run --leaks`) the runtime
-  reports objects still alive that are only reachable through cycles, with allocation sites.
-- A backup cycle collector (Python-style trial deletion) is **not** planned for v1. Open
-  whether to add it later (Q9).
+- **`weak T` reads directly as `T?`**, with no `.get()` call, the way Swift's weak variables
+  do: `if let some(p) = node.parent { ... }`. Assigning a `T` to a `weak T` field stores a weak
+  reference.
+- Common back-pointers (parent, owner, observer lists) should be `weak`, and closures can
+  capture weakly (§6.2).
+- Known cycle sources the docs call out: parent/child links, callbacks capturing their owner,
+  and **suspended coroutines**, whose stacks hold strong references to their arguments and
+  locals (§14.2).
+- **Leak detector**, on by default in `leo run` and available as `leo run --leaks` elsewhere:
+  on exit, and on demand via `mem.report_cycles()`, it reports objects kept alive only by cycles,
+  with allocation sites. It is built as **trial deletion** (Python-style), which is a cycle
+  collector that reports instead of freeing.
+- No automatic cycle collector in v1 (Q9). Because the detector already is one, it can later be
+  exposed as an explicit `mem.collect_cycles()` at level-load boundaries, where games can afford
+  the pause.
 
-### 11.6 Mutation and aliasing of value types inside containers
+### 11.6 Places: mutating values inside containers [Proposed]
 
-Because structs are values, `list[i].hp -= 1` must mutate the element in place, not a copy.
-The rule: indexing, field access and `for var x in list` produce **places** (lvalues) when used
-on the left of an assignment or as a `var self` receiver:
+Because structs are values, `list[i].hp -= 1` must update the element, not a copy. Indexing,
+field access and `for var x in list` therefore produce **places** when used on the left of an
+assignment, with a compound assignment, or as a `var self` receiver:
 
 ```leo
-for var e in enemies {     // e is a place inside the list
+for var e in enemies {     // `e` is a place in the list
     e.hp -= 1
 }
 enemies[0].pos += vec2(1, 0)
+enemies[0].step(dt)        // `var self` method on a place
 ```
 
-`for e in enemies` (no `var`) yields copies (or, after optimization, read-only views).
+**Semantics: copy-in/copy-out** (Swift's `inout` model). The element is read, the body or
+method runs on that value, and the result is written back. The meaning never depends on a
+pointer into the buffer.
+
+**Guard:** while a place into a collection is live, the collection's header has a "being
+mutated in place" counter set. Anything that would resize, reorder or remove from that
+collection during that time **panics** with a clear message ("enemies modified while an element
+is being updated"):
+
+```leo
+for var e in enemies {
+    e.hp -= 1
+    if e.hp < 10 { enemies.push(minion_at(e.pos)) }   // panics: push while `e` is live
+}
+```
+
+The fix is to collect the new minions in a separate list and append after the loop; the panic
+message suggests it. With the guard in place, the compiler may implement a place as a direct
+pointer into the buffer as an optimization, which is safe because nothing can move the buffer
+while the guard is set. The same counter implements "modified during iteration" (§6.3).
+
+`for e in enemies` (no `var`) yields read-only copies (or, after optimization, read-only views).
 
 ### 11.7 Threads
 
-Refcounts stay non-atomic because threads don't share reference-typed objects; values move or
-are copied between tasks. See §14.1.
+Refcounts stay non-atomic because thread tasks are isolates: they don't share mutable
+reference-typed objects. See §14.1.
 
 ---
 
@@ -663,27 +981,32 @@ are copied between tasks. See §14.1.
 
 [Proposed]
 
-- `str` is immutable, UTF-8, reference-counted (small strings may be stored inline later).
-- Interpolation takes any expression: `"{a + b}"`, `"{p.pos}"`. The value must implement
-  `Show`. Format specs: `"{x:.2}"`, `"{n:>8}"`, `"{id:x}"` (Python-like, subset).
-- Literal braces are written `{{` and `}}`. Raw strings `r"..."` don't interpolate.
-- Indexing a `str` by integer is not allowed (it's not O(1) in UTF-8); use `s.chars()`,
-  `s.bytes()`, slicing by byte range `s[0..4]` (panics on a non-boundary).
+- `str` is immutable, UTF-8 and reference-counted, and stored with a hidden trailing NUL so it
+  converts to a C string for free (§15.3). Small strings may be stored inline later.
+- Interpolation takes any expression: `"{a + b}"`, `"{p.pos}"`, including expressions with
+  their own quotes: `"{m["key"]}"`. The value must implement `Show`. Format specs:
+  `"{x:.2}"`, `"{n:>8}"`, `"{id:x}"` (Python-like subset).
+- Literal braces are written `{{` and `}}`. Raw strings `r"..."` and raw multi-line strings
+  `r"""..."""` don't interpolate, which suits shaders and JSON, full of braces.
+- Indexing a `str` by integer is not allowed (it isn't O(1) in UTF-8); use `s.chars()`,
+  `s.bytes()`, and slicing by byte range `s[0..4]` (panics on a non-boundary).
+- **Slices copy** in v1: `s[0..4]` is a new string, so a small slice never keeps a huge string
+  alive. A non-copying view type can come later if profiles ask for it.
 - `StrBuilder` for efficient building; `+` concatenates strings.
 
 ---
 
 ## 13. Modules and packages
 
-[Proposed, approved for the doc 2026-11-18] **One file is one module, and one folder is one
-package**, like Go. The folder layout *is* the module tree: there are no header files and no
-`mod` declarations.
+[Proposed, approved for the doc 2026-11-18, refined in v0.2] **One file is one module, and one
+folder is one package**, like Go. The folder layout *is* the module tree: there are no header
+files and no `mod` declarations.
 
 ```leo
 // game/player.leo
 pub struct Player {
     pub name: str
-    hp: i32                  // private: only code in game/player.leo can touch it
+    hp: i32                  // package-visible, not exported
 }
 
 pub fn spawn(name: str) -> Player { ... }
@@ -698,65 +1021,102 @@ import rapier.{World, Body}        // bring names in directly
 let p = player.spawn("Ana")
 ```
 
-- **Private by default.** Functions, types, constants, struct fields and methods are visible
-  only inside their module unless marked `pub`. A struct with any private field can only be
-  constructed inside its module (use a `pub fn` constructor elsewhere).
-- **Module path = file path.** `game/player.leo` is `game.player`, relative to the package
-  root. A folder's modules form a package; nested folders are sub-packages.
-- **No cyclic imports** between modules. The compiler reports the cycle with the import chain.
-- **Packages and dependencies are listed in `leo.toml`**, and the `leo` tool fetches them
-  (git URLs or local paths in v1, a registry later). Rust crate bindings (§15.5) are declared
-  in the same file.
+- **Files are namespaces; packages are the unit of checking and visibility.** `game/player.leo`
+  is the module `game.player`, and its names are written `player.spawn`. But a package is
+  type-checked as one unit, as in Go:
+  - **Import cycles are allowed between files of the same package** and forbidden only between
+    packages. Game code is mutually referential (`Player` mentions `World`, `World` holds `Enemy`,
+    `Enemy` targets `Player`), and declarations are order-independent anyway. The only extra rule
+    is initialisation order for module-level values (§4.2).
+  - **Default visibility is the package.** Anything without `pub` is visible to every file in
+    the same package. `pub` means exported from the package. So a three-file game needs no `pub`
+    at all, and a library marks only its API. A struct with any non-exported field can only be
+    constructed inside its package (use a `pub fn` constructor elsewhere).
+- **Name resolution.** `import math` could match a local `math.leo`, the standard `math`, or a
+  dependency named `math`. Ambiguity is an error with the candidates listed; rename with
+  `import std.math` or `as`.
+- **Dependencies are listed in `leo.toml`** and the `leo` tool fetches them (git URLs or local
+  paths in v1, a registry later). Resolved versions are pinned in **`leo.lock`**. Rust crate
+  bindings (§15.5) and capabilities (§15.3) are declared in the same file.
 - **Scripts need no `leo.toml`.** `leo run script.leo` treats the script's folder as an
-  implicit package, so a script can `import helpers` from `helpers.leo` next to it. Top-level
-  statements in a script run in order, so `print("hi")` is a valid one-line program. In a
-  package, execution starts at `fn main()`.
-- Standard library v1: `io`, `fs`, `path`, `os` (args, env, process), `math`, `rand`,
-  `time`, `json`, `str` helpers, `collections`, `task` (§14), `test`. Networking is later.
+  implicit package, so a script can `import helpers` from `helpers.leo` next to it.
+- **Top-level statements are allowed only in the entry file of a script** (Q15). Imported modules
+  hold declarations only. In a package with `leo.toml`, execution starts at `fn main()`.
+
+### 13.1 Standard library v1 [Proposed]
+
+`io`, `fs`, `path`, `os` (env, process, **subprocesses with pipes**), `args` (CLI argument
+parsing), `math`, `rand`, `time` and `datetime`, `json` (with `encode`/`decode[T]`, §7.5),
+`regex`, `http` (a blocking HTTP client), `str` helpers, `collections`, `task` (§14), `mem`,
+`reflect`, `test`.
+
+`regex`, `http`, `datetime` and subprocesses are what people reach for Python to do, and with a
+Rust runtime they are thin wrappers over existing crates, so they are in the first std rather
+than "later". An HTTP server and sockets come later.
 
 ---
 
 ## 14. Concurrency: tasks and coroutines
 
-[Proposed, approved for the doc 2026-11-18] Leo has **no `async`/`await` and no function
-coloring**. Any function can pause, the way Go and Lua work, so libraries never split into
-sync and async versions. There are two tools: **tasks** for parallel work on other threads,
-and **coroutines** for game logic that runs over many frames on the current thread.
+[Proposed, approved for the doc 2026-11-18, refined in v0.2] Leo has **no `async`/`await` and no
+function coloring**. Any function can pause, so libraries never split into sync and async
+versions. There are two tools: **thread tasks** for parallel work such as loading and heavy
+computation, and **coroutines** for game logic that runs over many frames on the current thread.
 
-### 14.1 Tasks and channels
+### 14.1 Thread tasks are isolates
 
 ```leo
-// background work, like Go
-let t = spawn load_level("lvl2.json")     // runs on the runtime's thread pool
-// ... keep rendering the loading screen ...
+// background work
+let t = task.run(fn() => load_level("lvl2.json"))   // runs on the runtime's worker pool
+// ... keep rendering the loading screen with t.done() ...
 let level = t.join()?                     // Task[Result[Level]] -> Result[Level]
 
 // channels to talk between tasks
 let ch = Channel[Msg]()
-spawn worker(ch)
-ch.send(Msg.Job(42))
-let reply = ch.recv()                     // pauses this task until a message arrives
+task.run(fn() => worker(ch))
+ch.send(.Job(42))
+let reply = ch.recv()
 ```
 
-- `spawn f(args)` starts `f` on a worker thread and returns a `Task[T]`. `t.join()` waits for
-  the result; a panic inside the task surfaces as an `err` from `join()` rather than taking
-  down the program.
-- `Channel[T]` is a typed, optionally bounded queue (`Channel[Msg](capacity: 64)`), with
-  `send`, `recv`, `try_recv` and `close`. A `select` over several channels is a later addition.
-- Blocking calls (`join`, `recv`, file and network I/O, `sleep`) pause only the current task.
-  The runtime multiplexes tasks over a small thread pool (M:N scheduling, like Go).
+- `task.run(f)` runs the closure `f` on a worker thread and returns a `Task[T]`. The closure
+  makes the thread boundary visible: everything it captures is sent across (rules below).
+- `t.join()` waits for the result; a panic inside the task surfaces as an `err` from `join()`.
+  `t.done()` and `t.try_join() -> T?` exist for polling from a frame loop.
+- `Channel[T]` is a typed, optionally bounded queue (`Channel[Msg](capacity: 64)`) with `send`,
+  `recv`, `try_recv` and `close`. A channel handle itself is thread-shared. `select` over several
+  channels is a later addition.
+- **Scheduling (v1):** a task is a job on a fixed worker pool (one thread per core), and channels
+  are ordinary blocking queues. There is no M:N scheduler, preemption or network poller; games
+  need a job pool and background loading, not tens of thousands of connections. The syntax
+  doesn't change if M:N is ever added.
+- **Blocking inside a coroutine:** `join()` and `recv()` called inside a coroutine (§14.2)
+  **suspend the coroutine** and let `tick` resume it when the value is ready, so the frame never
+  freezes. Outside a coroutine they block the thread.
 
-**Memory model interaction.** RC stays non-atomic (§11.1) because **tasks don't share
-reference-typed objects**:
+**Isolation rules.** RC stays non-atomic because tasks are **isolates** (like Dart isolates and
+JS workers): each task owns its own object graph.
 
-- Arguments to `spawn`, values sent on a channel, and a task's result are **moved** if it is
-  their last use, and otherwise **deep-copied**, so each thread owns its own object graph.
-  Value types (structs, vectors, numbers) are just copied, as always.
-- Truly shared state between threads uses explicit, atomically counted types from `task`:
-  `Shared[T]` (read-only after creation) and `Mutex[T]`. Only types that are safe to share can
-  be put in them; the compiler checks this.
-- Exactly which types can cross a thread boundary, and when a deep copy happens implicitly vs
-  needs to be written out, is open (Q10).
+- **A send is a structured deep copy**: captures of the `task.run` closure, values sent on a
+  channel, and a task's result. To keep expensive copies visible, a send of a non-trivial
+  reference value must be written explicitly as `ch.send(level.clone())` (Q10), unless the
+  move optimization below applies.
+  Plain values (numbers, vectors, structs of plain values) and `str` cross implicitly.
+- **The move optimization** (sending without copying) applies only when the whole reachable graph
+  is provably unshared: plain values, `str`, and collections of those whose count is 1. A root
+  whose variable is dead is not enough, since other objects on the thread may still reference
+  its contents.
+- **Deep copy semantics:** cycles and shared substructure are preserved within the copied graph;
+  `weak` references to objects inside the graph are remapped, and those to objects outside it
+  become `none`; closures are copied with their captures; **opaque host handles refuse** (a
+  compile error where the type is known, a panic otherwise), unless the host marks them
+  thread-shareable.
+- **Shared immutable data** uses Koka's approach: `Shared[T]` deep-freezes a graph and sets the
+  thread-shared bit on every object in it, so those objects (and only those) use atomic counts.
+  Frozen data crosses threads without copying, which is how a big level or asset table is shared
+  with workers. Strings sent between threads can be frozen the same way instead of copied.
+- **`Mutex[T]`** holds mutable shared state; it is thread-shared itself, and its contents are
+  deep-copied in and out or accessed under a lock with a callback (`m.with(fn(var x) => ...)`).
+- **Module-level state** belongs to the main isolate (§4.2).
 
 ### 14.2 Coroutines for game logic
 
@@ -765,45 +1125,64 @@ fn door_open(door: Door) {
     door.play("creak")
     wait(0.5)                                  // resume half a second later
     door.rotate(90, over: 1.0)                 // itself waits 1 second while animating
-    wait_until(fn() { player.near(door) })     // resume on the first frame where this is true
+    wait_until(fn() => player.near(door))      // checked each frame until true
     door.close()
 }
 
-let co = start door_open(front_door)           // returns immediately; runs until its first wait
-// later:
-co.cancel()                                    // e.g. when the door is destroyed
+go door_open(front_door)                       // detached: runs until done or cancelled
+
+class Door {
+    co: CoGroup = CoGroup()                    // cancels its coroutines when the door is freed
+    ...
+}
+door.co.go(door_open(door))                    // owned by the door
 ```
 
 This is the big win for games: cutscenes, AI and animations read top to bottom instead of
 becoming hand-written state machines.
 
-- `start f(args)` creates a coroutine on the **current thread** and runs it until it first
-  pauses. It returns a `Coroutine` handle (`cancel()`, `done()`, `join()` from another
-  coroutine).
-- `wait(seconds)`, `wait_frames(n)` and `wait_until(cond)` pause it. Because a function's
-  argument is evaluated once, `wait_until` takes a closure (`fn() { ... }`) that the scheduler
-  re-checks every frame. A lighter syntax for this is open (Q18).
+- **Starting.** `go f(args)` creates a coroutine on the current thread, runs it until it first
+  pauses, and returns a `Coroutine` handle (`cancel()`, `done()`, and `join()` from another
+  coroutine). A bare `go` is **detached**: the scheduler keeps it alive until it finishes or is
+  cancelled, and dropping the handle does not stop it.
+- **Ownership.** A `CoGroup` owns the coroutines started through it and **cancels all of them
+  when the group is dropped**. An entity holds a group as a field, so destroying the entity stops
+  its coroutines, which removes the Unity/Godot failure mode of a coroutine outliving the object it
+  animates. Note that a suspended coroutine holds strong references to its locals: a coroutine
+  owned by its own subject keeps it alive until it finishes, so the group's owner should be the
+  game's entity list or the subject should be `weak`.
+- **Waiting.** `wait(seconds)`, `wait_frames(n)` and `wait_until(cond)` pause the coroutine.
+  `wait_until` takes a closure that the scheduler re-checks every frame. For idle coroutines,
+  **event waits** cost nothing per frame: `wait_for(signal)` on a `Signal` (`door.opened.emit()`)
+  and `ch.recv()` on a channel.
+- **Clock.** `wait(seconds)` counts the `dt` passed to `tick`, not wall time, so pausing the game
+  (`tick(0)`) and slow motion (`tick(dt * 0.5)`) apply to coroutines. `wait_real(seconds)` uses
+  wall time for menus.
 - **The game loop resumes coroutines each frame.** The runtime has a per-thread coroutine
-  scheduler, and the host drives it: a Leo game calls `task.tick(dt)` once per frame (the
-  raylib/SDL bindings do this for you), and an engine embedding Leo calls
-  `vm.tick(dt)` (§15.4). Coroutines therefore never run in parallel with each other, so they can
-  share `class` objects freely with no locking.
+  scheduler, and the host drives it: a Leo game calls `task.tick(dt)` once per frame (the built-in
+  game kit does it for you, §15.6), and an engine embedding Leo calls `vm.tick(dt)` (§15.4).
+  Coroutines never run in parallel with each other, so they share `class` objects freely without
+  locks.
 - Any function can be called from a coroutine and may itself call `wait`; there is no special
-  coroutine function type. Calling `wait` outside a coroutine, on a thread with no scheduler,
-  is a panic with a clear message.
-- **Cancellation** stops the coroutine at its current pause point and runs its `defer`s, so
-  cleanup code still runs.
+  coroutine function type. Calling `wait` outside a coroutine panics with a clear message.
+- **No suspending across a host frame.** If a host (Rust or C) function calls back into Leo and
+  that Leo code tries to `wait`, it panics: the host's stack frame can't be suspended.
+- **Cancellation** stops the coroutine at its current pause point and unwinds it (§10.4),
+  running its `defer`s and drops, so cleanup still runs.
 
 ### 14.3 Implementation notes
 
-- Uncolored functions require **stackful** coroutines: each task/coroutine has its own small,
-  growable stack. In the tree-walking interpreter and the bytecode VM this is natural (the VM
-  stack is a heap object). For Cranelift native code it means stack switching, as Go and Lua's
-  C API do; this is a known cost of the design and is scheduled for phase 2 alongside the
-  native backend.
-- Tasks need the runtime's thread pool and a thread-safe allocator; both are phase 2 work.
-  **Phase 1 ships coroutines only** (single-threaded), which is enough for the first game, and
-  `spawn` arrives with phase 2.
+- Uncolored functions require **stackful** coroutines.
+- **Interpreter and VM:** the Leo stack is a heap object, so coroutine stacks are naturally
+  growable and cheap.
+- **Native code:** coroutines get **fixed-size stacks with guard pages and lazily committed
+  memory** (for example 256 KB of address space each, committed as touched). Compiled Leo and
+  C both run directly on the coroutine's stack, so raylib calls don't need a stack switch (the
+  reason Go's cgo is slow). Games have hundreds or thousands of coroutines, not millions, so the
+  address space is fine. Context switching uses an existing crate such as `corosensei` on the
+  platforms Cranelift targets. A guard-page hit is a clean panic ("coroutine stack overflow").
+- **Phasing:** coroutines arrive with the game slice on the interpreter (phase 2 in §17.4);
+  thread tasks need the worker pool, thread-shared objects and deep copy, and come with the VM.
 
 ---
 
@@ -812,12 +1191,18 @@ becoming hand-written state machines.
 ### 15.1 Vector and matrix types [Locked: vec2/3/4, Proposed details]
 
 - `vec2`, `vec3`, `vec4` (`f32`), `ivec2/3/4` (`i32`), `mat3`, `mat4`, `quat` are built-in
-  value types, laid out for SIMD (vec3 is padded to 16 bytes in memory, packed in C-layout
-  structs only when asked).
-- Arithmetic operators work component-wise (`a + b`, `a * 2`, `-a`); `dot`, `cross`, `len`,
-  `normalize`, `lerp`, swizzles (`v.xy`, `v.zyx`) as built-ins.
-- This is the **only** operator overloading in v1: user types can't define `+`. Open whether
-  to allow it via an interface later (Q12).
+  value types.
+- **`vec3` is three `f32`s: 12 bytes, alignment 4, everywhere.** That matches glam's default
+  `Vec3`, Unity's `float3`, raylib's `Vector3`, GPU vertex formats and most file formats, so a
+  `List[vec3]` can go to C or the GPU without repacking. Code generation uses SIMD registers
+  opportunistically; there is no padded layout.
+- Arithmetic operators work component-wise (`a + b`, `a * 2`, `-a`); vector-by-scalar accepts a
+  `float` scalar (§5.1). `dot`, `cross`, `len`, `normalize`, `lerp` and swizzles (`v.xy`,
+  `v.zyx`) are built in. The implementation uses glam internally.
+- These are the only arithmetic operators on non-primitive types in phase 1. `Add`, `Sub`,
+  `Mul` and `Neg` interfaces for user structs are planned after it (Q12), for `Color`,
+  fixed-point numbers and `f64` vectors for large worlds; the built-in types will use the same
+  machinery.
 
 ### 15.2 C-layout structs [Locked, Proposed syntax]
 
@@ -831,8 +1216,8 @@ struct Vertex {
 ```
 
 `@repr(C)` structs follow the platform C ABI, may only contain C-compatible fields (numbers,
-vectors, fixed arrays, other `@repr(C)` structs, raw pointers), and can be passed to C
-directly or uploaded to the GPU as a byte buffer (`vertices.as_bytes()`).
+vectors, fixed arrays, other `@repr(C)` structs, raw pointers), and can be passed to C directly
+or uploaded to the GPU as a byte buffer (`vertices.as_bytes()`).
 
 ### 15.3 C FFI [Locked, Proposed syntax]
 
@@ -841,21 +1226,34 @@ directly or uploaded to the GPU as a byte buffer (`vertices.as_bytes()`).
 extern "C" {
     fn InitWindow(width: i32, height: i32, title: cstr)
     fn WindowShouldClose() -> bool
-    fn DrawCircleV(center: vec2, radius: f32, color: Color)
+    fn DrawCircleV(center: vec2, radius: f32, color: Color)    // structs by value
 }
 ```
 
-- `cstr` is a borrowed NUL-terminated string; passing a `str` literal converts automatically.
-- `ptr[T]` is a raw pointer type, only usable in `unsafe` blocks? **[Open]** whether Leo has an
-  `unsafe` marker or treats all of `extern` as "you're on your own" (Q13).
-- `leo bindgen header.h` generates `extern` declarations from C headers (phase 3).
-- The interpreter calls C via `libffi`; native builds call directly.
+- **FFI is a capability.** A package must declare `ffi = true` in `leo.toml` to contain `extern`
+  blocks, so a git dependency can't quietly link C. An embedding host can create a `Vm` with FFI,
+  `fs`, `os` and `http` switched off (§15.4), which is what makes Leo usable for mods. The risk in
+  FFI is the declaration (a wrong signature corrupts memory as surely as a bad pointer), so the
+  capability guards declarations, and calling a declared function needs no `unsafe`.
+- **`unsafe { }` is required for raw pointer operations** (`ptr[T]` dereference, arithmetic,
+  casts) (Q13). Safe code can pass and receive `ptr[T]` values but not use them.
+- `cstr` is a borrowed NUL-terminated string; any `str` converts for free because strings carry a
+  hidden NUL (§12).
+- **Structs by value** (`Color`, `Vector2`, `Texture2D`, everywhere in raylib) are supported from
+  day one, in the libffi path too.
+- `leo bindgen header.h` generates `extern` declarations from C headers.
+- The interpreter and VM call C via `libffi`; native builds call directly.
 
 ### 15.4 Embedding in Rust [Locked, Proposed API shape]
 
 ```rust
-let mut vm = leo::Vm::new();
+let mut vm = leo::Vm::builder()
+    .allow(leo::Cap::Fs)                // capabilities: nothing beyond pure Leo unless granted
+    .instruction_budget(1_000_000)      // optional sandbox limits
+    .memory_limit(64 << 20)
+    .build();
 vm.register_fn("spawn_enemy", |x: f32, y: f32| { /* engine code */ });
+vm.write_interface("scripts/engine.leoi")?;   // declarations for `leo check` and the editor
 vm.load_file("scripts/ai.leo")?;
 let f = vm.get_fn::<(f32,), ()>("update")?;
 f.call(&mut vm, (dt,))?;
@@ -863,22 +1261,28 @@ vm.tick(dt)?;                    // resume Leo coroutines for this frame, §14.2
 vm.reload_changed()?;            // hot reload, §16.3
 ```
 
-- `leo-runtime` is a regular Rust crate with no global state; several VMs can coexist.
-- Rust types are exposed to Leo via a derive macro (`#[derive(leo::Struct)]`) for value types
-  or as opaque handles (`leo::Handle<T>`) for engine-owned objects.
+- **Offline checking.** `leo check` and the editor need to know about host functions when the
+  script isn't running inside the engine. The host writes an interface file (`.leoi`, the same
+  format as Rust bindings in §15.5), and scripts are checked against it.
+- **A `Vm` is single-threaded.** Several VMs can coexist; `leo-runtime` has no global state.
+- Rust types are exposed via `#[leo::export]` (§15.5): `Copy` types as Leo structs, others as
+  opaque handles.
+- **Host handles are generational.** A script holding a handle to a destroyed engine object gets
+  a clean error (or `none` from a checked accessor) instead of a dangling pointer.
+- **Capabilities and sandboxing:** no `fs`, `os`, `http` or FFI unless the host grants them;
+  optional instruction budget and memory cap. Together these are the sandbox for embedded
+  scripts and mods.
 - Panics in Leo code become `Err` on the Rust side; they never unwind into the host.
-- Resource limits for embedding (instruction budget, memory cap) are optional VM settings.
 
 ### 15.5 Using Rust crates from Leo [Planned, Proposed design]
 
-Rust's game ecosystem (rapier for physics, glam for math, wgpu for graphics, kira for audio)
-would give Leo a lot on day one. Leo's runtime is already Rust, so the same binding layer
-that powers embedding (§15.4) can expose Rust crates to Leo code, the way PyO3 does for
-Python.
+Rust's game ecosystem (rapier for physics, wgpu for graphics, kira for audio) would give Leo a
+lot. Leo's runtime is already Rust, so the same binding layer that powers embedding (§15.4) can
+expose Rust crates to Leo code, the way PyO3 does for Python.
 
 **Why not arbitrary `import some_crate`:** Rust has no stable ABI, and traits, lifetimes,
-generic functions and borrowed references don't map one-to-one onto Leo's type system. A
-crate needs a thin, explicit Leo-facing surface.
+generic functions and borrowed references don't map one-to-one onto Leo's type system. A crate
+needs a thin, explicit Leo-facing surface.
 
 **Rust side.** A `leo-bind` crate provides attribute macros that generate the glue:
 
@@ -903,12 +1307,12 @@ fn physics(m: &mut leo::Module) {
 }
 ```
 
-- Type mapping: Rust numbers, `bool`, `String`/`&str`, `Vec<T>`, `Option<T>` and
-  `Result<T, E>` map to their Leo counterparts; `glam::Vec2/3/4` map to `vec2/3/4` with no
-  conversion cost (same layout); `#[leo::export]` structs that are `Copy` become Leo
-  `struct`s; everything else becomes an RC'd opaque `class` handle.
+- Type mapping: Rust numbers, `bool`, `String`/`&str`, `Vec<T>`, `Option<T>` and `Result<T, E>`
+  map to their Leo counterparts; `glam::Vec2/Vec3/Vec4` map to `vec2/3/4` with no conversion
+  (same 8/12/16-byte layouts, §15.1); `#[leo::export]` structs that are `Copy` become Leo
+  `struct`s; everything else becomes an RC'd opaque handle.
 - Rust `Result::Err` becomes a Leo `err(...)`; a Rust panic is caught at the boundary and
-  becomes a Leo panic, never unwinding into Leo frames.
+  becomes a Leo panic.
 - Generic Rust APIs are exported per concrete instantiation; trait-heavy APIs get a small
   hand-written wrapper.
 
@@ -929,75 +1333,144 @@ world.step(1.0 / 60.0)
 print(world.position(ball))
 ```
 
-**Build and run.**
+**Build and run: static linking everywhere, no dylib.**
 
-- `leo build` compiles the binding crates with `cargo` and statically links them into the
+- When a project has `[rust-dependencies]`, `leo run` builds (once, cached) a
+  **project-specific runner executable**: the VM plus those bindings, statically linked. Hot
+  reload still works, because only Leo code reloads. `leo build` links the same bindings into the
   native executable.
-- `leo run` loads them as a prebuilt dynamic library (built once, cached per crate version and
-  Leo runtime version), so scripts and hot reload keep working. The Leo-facing ABI is a
-  C-compatible function table generated by `leo-bind`, which sidesteps Rust's unstable ABI.
-- The type checker reads a generated `.leoi` interface file for each binding, so Leo code
-  using a crate is fully type-checked and gets editor completion.
+- There is no dynamic library and no second ABI to design and keep stable. Using a binding needs a
+  Rust toolchain (or a prebuilt runner per platform); the built-in game kit (§15.6) means most
+  users never need either.
+- The type checker reads a generated `.leoi` interface file for each binding, so code using a
+  crate is fully type-checked and gets editor completion.
 
-**Curated bindings.** The project ships and maintains ready-made bindings for the popular game
-crates (`leo-glam`, `leo-rapier`, `leo-kira`, and a higher-level renderer on `wgpu`) so most
-users never write Rust.
+**Curated bindings.** No `glam` binding is needed, since the vector types are built in. The first
+curated binding is `leo-rapier` when the demo game needs physics, then `leo-kira` and a renderer
+on `wgpu` for projects that outgrow the game kit.
 
-**One mechanism, two directions.** `#[leo::export]` is the same API an engine uses to expose
-its own types when embedding Leo (§15.4): build it once, get both.
+**One mechanism, two directions.** `#[leo::export]` is the same API an engine uses to expose its
+own types when embedding Leo (§15.4): build it once, get both.
 
-Open details are Q17 in §18.
+### 15.6 Built-in game kit [Proposed]
+
+The stock `leo` binary includes a small **game kit**, the way LÖVE does for Lua, so the first game
+needs no Rust toolchain, no C toolchain and no bindings:
+
+```leo
+import game
+
+fn main() {
+    game.window(800, 600, "Arena")
+    var pos = vec2(400, 300)
+    game.run(fn(dt) {                      // calls task.tick(dt) for coroutines, then this
+        if game.key_down(.Right) { pos.x += 200 * dt }
+        game.clear(game.BLACK)
+        game.circle(pos, 16, game.RED)
+    })
+}
+```
+
+- Scope for v1: window and input (keyboard, mouse, gamepad), 2D drawing (shapes, sprites, text),
+  audio playback, and asset loading. 3D is out of scope for the kit.
+- The backend (statically linked raylib, or Rust crates such as winit, wgpu and kira) is Q20.
+- The game kit is ordinary Leo plus host functions, so it doubles as the reference example of the
+  embedding API.
 
 ---
 
 ## 16. Tooling and execution modes
 
-### 16.1 One binary [Locked]
+### 16.1 One binary [Locked, Proposed details]
 
 ```
-leo run file.leo        # type-check, then interpret (later: JIT)
+leo run file.leo        # type-check, then run on the interpreter (later: the bytecode VM)
 leo build               # native executable via Cranelift
 leo test                # runs `test "name" { ... }` blocks
 leo fmt                 # canonical formatter, no options
-leo check               # type-check only (fast, for editors/CI)   [Proposed]
-leo repl                # interactive prompt                        [Proposed]
-leo lsp                 # language server                            [Proposed, phase 2+]
+leo check               # type-check only (fast, for editors/CI)
+leo lsp                 # language server
+leo repl                # interactive prompt
 ```
 
 `leo run` always type-checks first. There is no "dynamic mode"; the interpreter runs the same
-checked program a native build would.
+checked program a native build would, with the same results, panics and drop order (§1).
 
 ### 16.2 Execution pipeline [Proposed]
 
 ```
 source → lexer → parser → AST → name resolution → type check → HIR (typed)
-                                                                  │
-                     ┌────────────────────────────────────────────┼─────────────────┐
-           phase 1: tree-walking interpreter        phase 2: Leo IR (SSA-ish, explicit RC ops)
-                                                                  │
-                                                ┌─────────────────┴──────────┐
-                                          bytecode VM (+ JIT)        Cranelift → native
+                                                                 │
+                    ┌────────────────────────────────────────────┤
+          tree-walking interpreter                      Leo IR (SSA, explicit RC ops)
+          (phases 1–2: the reference)                            │
+                                               ┌─────────────────┴───────────┐
+                                         bytecode VM                  Cranelift → native
+                                     (leo run, embedding,             (leo build, phase 4)
+                                      hot reload, web; phase 3)
 ```
 
 - The **HIR** is the shared contract: fully typed, names resolved, sugar removed.
 - **Leo IR** makes RC operations explicit (`inc`, `dec`, `move`), so the RC optimizations of
   §11.3 are IR passes shared by the VM and the native backend.
-- The JIT, when it comes, is the same Cranelift backend driven at runtime per function.
+- The **tree-walker remains the reference implementation**: golden tests run on every engine and
+  must agree.
+- **No JIT.** It would be a fourth engine to keep in agreement with the other three, and iOS and
+  consoles forbid it. The VM covers fast startup, embedding and hot reload; Cranelift covers
+  shipping builds.
 
-### 16.3 Hot reload [Locked goal, Open semantics]
+### 16.3 Hot reload [Locked goal, Proposed semantics]
 
 Goal: edit a `.leo` file while the game runs and see the change without restarting.
 
-Proposed v1 semantics: **function-level reload**. When a file changes, it is re-checked; if it
-type-checks against the running program, new function bodies replace old ones at the next
-call. If a struct's layout changed, reload is refused with a message (or, opt-in, a
-`fn migrate(old) -> New` hook). Global state survives reloads. Exact rules are Q14.
+- **Hot reload is a VM (and interpreter) feature.** Native builds don't have it.
+- **Function-level patching** when only function bodies changed: the changed module plus every
+  module that depends on it is re-checked against the running program, and new bodies replace
+  old ones at the next call.
+- **Automatic restart as the fallback** when anything else changed (a struct gains a field, an
+  enum gains a variant, a signature changes). Since the VM starts fast, the program restarts
+  in place, with an optional pair of hooks to carry state across:
+  `fn save_state() -> Snapshot` and `fn restore_state(s: Snapshot)` (serialized through §7.5).
+- **Rules:** adding an enum variant re-checks `match`es elsewhere; module-level initialisers do
+  not re-run on a patch; a coroutine suspended inside an old function keeps running the old body
+  until it returns, so long-lived `while true` coroutines pick up changes only on restart. The
+  editor shows which coroutines are still on old code.
+- After a panic in a development run, the program can be patched and resumed from the game loop.
 
 ### 16.4 Diagnostics [Proposed]
 
-Errors show the source span, a short message, and a hint where possible (Rust/Elm style),
-using a crate like `ariadne` or `miette`. The type checker keeps going after the first error
-to report several at once.
+Errors show the source span, a short message, and a hint where possible (Rust/Elm style), using a
+crate like `ariadne` or `miette`. The type checker keeps going after the first error to report
+several at once.
+
+### 16.5 Editor support, debugging and profiling [Proposed]
+
+Editor support is most of what "usable" means today, so it moves early:
+
+- **Day one:** a syntax-highlighting grammar (TextMate/tree-sitter) for VS Code and others.
+- **Right after the type checker:** `leo check` and a minimal LSP (diagnostics, hover with types,
+  go-to-definition), then completion and rename.
+- **With the VM:** a debugger over DAP (breakpoints, stepping, locals using the type descriptors
+  of §7.5, coroutine list), and a sampling profiler (`leo run --profile`) that writes a
+  flamegraph and reports RC traffic hot spots.
+
+### 16.6 Platform targets [Proposed]
+
+| Platform | Development (`leo run`) | Shipping |
+|----------|------------------------|----------|
+| Windows, macOS, Linux | interpreter, then VM | Cranelift native (`leo build`) |
+| Web | — | the VM compiled to WebAssembly, plus the program's bytecode |
+| iOS, Android | — | later; Cranelift AOT (no JIT, so App Store rules are met) or the VM |
+| Consoles | — | out of scope for v1 |
+
+Cranelift has no WebAssembly output, so the web target uses the VM. Browser builds matter for
+indie games (game jams, itch.io), which is one more reason the VM comes before Cranelift.
+
+### 16.7 Language editions [Proposed]
+
+`leo.toml` has an `edition = "2027"` field (scripts default to the latest). Syntax changes after
+1.0 happen at edition boundaries, and `leo fmt --migrate` rewrites code to the new edition, so
+old code keeps compiling.
 
 ---
 
@@ -1010,95 +1483,137 @@ leo/
   Cargo.toml                 # workspace
   crates/
     leo-syntax/              # lexer, parser, AST, spans
-    leo-check/               # name resolution, type inference/checking, HIR
-    leo-interp/              # phase 1 tree-walking interpreter
-    leo-ir/                  # phase 2 IR + RC optimization passes
-    leo-vm/                  # phase 2 bytecode VM
-    leo-codegen/             # phase 2 Cranelift backend (AOT + JIT)
-    leo-runtime/             # RC heap, strings, collections, FFI, embedding API
-    leo-bind/                # #[leo::export] macros for embedding and Rust crate bindings (§15.5)
-    leo-std/                 # standard library (Leo + Rust natives)
+    leo-check/               # name resolution, type inference/checking, HIR, type descriptors
+    leo-interp/              # tree-walking interpreter (the reference implementation)
+    leo-ir/                  # Leo IR + RC optimization passes + inliner
+    leo-vm/                  # bytecode VM (native and wasm32)
+    leo-codegen/             # Cranelift AOT backend
+    leo-runtime/             # RC heap, strings, collections, coroutines, FFI, embedding API
+    leo-bind/                # #[leo::export] macros for embedding and Rust crate bindings
+    leo-std/                 # standard library natives
+    leo-game/                # the built-in game kit (§15.6)
+    leo-lsp/                 # language server
     leo-cli/                 # the `leo` binary
   std/                       # .leo sources of the standard library
-  tests/                     # golden tests: .leo files with expected output/errors
+  editors/                   # syntax grammars, VS Code extension
+  tests/                     # golden tests: .leo files with expected output/errors/drop order
   docs/DESIGN.md
 ```
 
 ### 17.2 Key technical choices [Proposed]
 
-- **Parser:** hand-written recursive descent with Pratt parsing for expressions. Better error
-  recovery and messages than a generator.
+- **Parser:** hand-written recursive descent with Pratt parsing for expressions, implementing
+  the rules of §3.2 and §3.5. Better error recovery and messages than a generator.
 - **Type checker:** bidirectional checking with local unification for generics and closures
-  (no global Hindley-Milner). Matches §5.3 and keeps errors local.
+  (no global Hindley-Milner). Matches §5.4 and keeps errors local. Packages are checked as a
+  unit (§13).
 - **Testing:** golden-file tests from day one (`tests/*.leo` with `// expect:` comments for
-  output and `// error:` for diagnostics). Every feature lands with tests.
-- **Runtime values (phase 1):** a Rust `enum Value` with `Rc<RefCell<...>>` for heap objects.
-  Simple, and good enough to validate the language. Phase 2 replaces it with a custom heap
-  and explicit RC.
+  output, `// error:` for diagnostics and `// drops:` for drop order, §11.2). Every feature
+  lands with tests, and every engine runs the same suite.
+- **Runtime values (interpreter):** a Rust `enum Value` with `Rc<...>` heap objects, built to
+  follow §11.2 and §11.6 exactly (explicit scope-end drops, copy-in/copy-out places with the
+  mutation guard). It must not rely on `RefCell` panics or accidental copies, which would hide
+  the semantics native code has to reproduce.
+- **Unwinding:** hidden error returns in compiled code (§10.4).
+- **Cranelift and inlining:** Cranelift has historically left inlining to the frontend (to be
+  re-checked against its current version when phase 4 starts), so Leo IR has its own inliner
+  before small generic and vector functions get fast.
 
-### 17.3 Roadmap [Locked phases, Proposed milestones]
+### 17.3 Performance targets [Proposed]
 
-**Phase 1 — the language works** (lexer, parser, type checker, tree-walking interpreter)
+So each phase has a finish line:
 
-1. Lexer + parser for the full grammar, with `leo fmt`-quality spans. Golden tests.
-2. Type checker: primitives, functions, structs, enums, `match` exhaustiveness.
-3. Interpreter: run checked programs; `print`, strings with interpolation, `List`, `Map`.
-4. Generics, interfaces, closures.
-5. `Result`/`Option`, `?`, `or`, unused-Result warning.
-6. Modules and `import`; minimal std (`fs`, `math`, `time`, `os`).
-7. Coroutines (`start`, `wait`, `wait_until`, `task.tick`), single-threaded.
-8. `leo test`, `leo fmt`. **Milestone:** write real scripts in Leo (e.g. a file-renaming
-   tool, a JSON report generator).
+| Measure | Target |
+|---------|--------|
+| `leo run hello.leo` startup, including type check | under 50 ms |
+| Type check | at least 100k lines per second |
+| Hot-reload patch, edit to new code running | under 200 ms for a 10k-line game |
+| Bytecode VM | within 1.5× of Lua 5.4 on standard benchmarks (binary-trees, n-body, fannkuch, spectral-norm) |
+| Native build | within 3× of equivalent C on n-body and vector math; no per-frame allocation needed for a 2D game loop |
+| Interpreter | no target beyond "the demo game runs at 60 fps" |
 
-**Phase 2 — fast** (IR, bytecode VM / Cranelift, RC optimizations)
+### 17.4 Roadmap [Proposed reorder of the locked phases]
 
-1. Leo IR with explicit RC ops, plain RC.
-2. Bytecode VM replacing the tree-walker for `leo run`.
-3. Cranelift AOT for `leo build`.
-4. RC optimizations: last-use moves, borrowed params, reuse, struct copy elision.
-5. `own` / `borrow` checking.
-6. Tasks and channels (`spawn`, `Channel[T]`) on a thread pool; stack switching for
-   coroutines in native code.
-7. Benchmarks vs Python, Lua and LuaJIT; regressions tracked in CI.
+The locked roadmap had three phases: (1) lexer, parser, type checker and tree-walking
+interpreter; (2) bytecode VM, Cranelift and RC optimizations; (3) game bindings and the first
+small game. **v0.2 proposes moving the game ahead of the fast engines** *(pending santiago's
+decision)*: the game is what will force changes to places, struct/class, coroutines and modules,
+and those changes are cheap with one engine and expensive with three.
 
-**Phase 3 — games** (bindings + first demo)
+**Phase 1: language core on the tree-walker**, built as **vertical slices**: hello world end to
+end first (lexer → parser → checker → interpreter), then widen feature by feature.
 
-1. C FFI + `@repr(C)` + vector types fully SIMD-backed.
-2. raylib bindings (simplest API to start), SDL later.
-3. Hot reload.
-4. Rust embedding API and `leo-bind` (`#[leo::export]`), shared by both directions.
-5. Rust crate bindings via `leo.toml`, with the first curated bindings (`leo-glam`,
-   `leo-rapier`, then `leo-kira`).
-6. **Milestone:** a small, complete game (e.g. a top-down arena shooter) written in Leo, run
-   both with hot reload and as a native build.
+1. Syntax highlighting grammar; golden-test harness.
+2. Slice 1: `print`, functions, `let`/`var`, ints, strings with interpolation.
+3. Structs, enums, `match` with exhaustiveness, `if`/`for`/`while`, ranges, tuples.
+4. Classes, `List`/`Map`/`Set`, places with the mutation guard, drop order per §11.2.
+5. `Result`/`Option`, `?`, `or` with handler blocks, `Error` with context.
+6. Generics, interfaces, closures, iteration.
+7. Packages and `import`; `leo check` and a minimal LSP.
+8. `leo test`, `leo fmt`; std v1 (`fs`, `os`, `args`, `json`, `regex`, `http`, `time`).
+   **Milestone:** real scripts written in Leo (a file-organising tool, a JSON/HTTP report
+   generator).
+
+**Phase 2: game slice on the interpreter**
+
+1. Vector types as plain values; `@repr(C)` structs and the C FFI with structs by value.
+2. Coroutines (`go`, `wait`, `wait_until`, `wait_for`, `CoGroup`, `task.tick`).
+3. The built-in game kit (§15.6).
+4. Hot reload (patching plus automatic restart), which is easiest in an interpreter.
+5. The leak detector.
+6. **Milestone:** a small, complete game (e.g. a top-down arena shooter), running slowly but
+   completely, with hot reload.
+
+**Phase 3: bytecode VM** on Leo IR
+
+1. Leo IR with explicit RC ops; plain RC.
+2. Bytecode VM replacing the tree-walker for `leo run`; embedding API and `leo-bind`;
+   capabilities and sandbox limits.
+3. Thread tasks, channels, `Shared[T]` and deep copy.
+4. Debugger over DAP; profiler.
+5. Web target: the VM compiled to WebAssembly.
+6. **Milestone:** the demo game at full speed on the VM, in the browser too; VM within the
+   §17.3 target versus Lua.
+
+**Phase 4: native builds and optimization**
+
+1. Cranelift AOT for `leo build`, with the Leo IR inliner and fixed-size native coroutine stacks.
+2. RC optimizations (§11.3), measured against the demo game and the benchmarks.
+3. `own`/`borrow` checking.
+4. Rust crate bindings through project-specific runners; `leo-rapier`.
+5. **Milestone:** the demo game shipped as a native executable on all three desktop platforms.
 
 ---
 
 ## 18. Open questions
 
-These need a decision before or during phase 1. Each has a recommendation; none are decided.
+None of these are decided. The **Recommendation** column reflects the advisor review on PR #1,
+and the body of the doc is written as if each recommendation were adopted (marked [Proposed]), so
+it reads consistently. Changing one means editing the sections it names.
 
-| # | Question | Options | Recommendation |
-|---|----------|---------|----------------|
-| Q1 | Boolean operators | `&&` `\|\|` `!` vs `and` `or` `not` | `&&` `\|\|` `!`, so `or` is free for Result fallback without ambiguity |
-| Q2 | Optional shorthand | `T?` sugar for `Option[T]`, or always `Option[T]` | Add `T?`; it's the most common type in real code and reads well (`parent: weak Node?`) |
-| Q3 | Reference types and collection semantics | (a) `struct` values + `class` references, collections by reference; (b) everything is a value with copy-on-write (Swift); (c) only structs, explicit `Rc[T]` for sharing | (a). Matches Python/Go intuition, keeps the RC story simple. (b) is cleaner but surprises scripters and needs uniqueness checks everywhere |
-| Q4 | Implicit return | Last expression of a block is its value (Rust) vs explicit `return` only (Go) | Explicit `return` in functions; `if`/`match` usable as expressions; single-expression closures return implicitly |
-| Q4b | Short lambda syntax | `fn(x) { x * 2 }` only, or also `\|x\| x * 2` / `x => x * 2` | Only `fn(x) { ... }` in v1; revisit after writing real code |
-| Q5 | Deep immutability | `let` is shallow vs `let` freezes reference types too | Shallow in v1 |
-| Q6 | Integer overflow | Trap always / trap in debug, wrap in release / wrap always | Trap in debug and `leo run`, wrap in release, explicit `wrapping_add` etc. available |
-| Q7 | Interface conformance | Nominal `impl I for T` vs structural (Go) | Nominal |
-| Q8 | `own`/`borrow` rules | Need explicit `move x` at call sites? How strict is local `borrow`? | Infer moves (no `move` keyword); keep `borrow` lexical and conservative; finalize in phase 2 when we have real profiles |
-| Q9 | Cycle collection | `weak` + leak detector only, or add a backup cycle collector | `weak` + leak detector for v1; revisit after the game demo |
-| Q10 | What crosses a thread boundary | Implicit deep copy of non-moved values sent to `spawn`/channels, or require an explicit `.clone()`; which types may go in `Shared[T]`/`Mutex[T]` | Move when it's the last use, otherwise require explicit `.clone()` so expensive copies are visible; a compiler-derived `Send`-like property decides what can be shared |
-| Q11 | Enum variant lookup | Always qualified, contextual `.Variant`, or unqualified in `match` only | Unqualified in `match`, plus contextual `.Variant` where the type is known |
-| Q12 | Operator overloading | Built-in math types only vs via interfaces (`Add`, `Mul`) | Built-in only in v1 |
-| Q13 | `unsafe` | Mark raw pointer use with `unsafe { }` or not | Yes, an `unsafe` block, only needed for `ptr[T]` operations; plain `extern` calls don't need it |
-| Q14 | Hot reload semantics | Function-level only, or also struct layout migration, or full state reset | Function-level, refuse layout changes in v1 |
-| Q15 | Script top-level code | Allow statements at top level in scripts, or always require `main` | Allow in scripts, require `main` in packages |
-| Q16 | Name | "Leo" is a working name; there are existing projects called Leo (e.g. the Aleo smart-contract language) | Decide before publishing anything; file extension `.leo` is also used by Aleo |
-| Q17 | Rust crate bindings details | Static link only vs also dynamic loading for `leo run`; who maintains curated bindings; how much of a crate's API to expose | Static for `leo build`, cached dynamic library for `leo run`; start with glam and rapier only, expanding as the demo game needs |
-| Q18 | Coroutine syntax | `start`/`spawn` as keywords vs library functions taking closures; sugar for `wait_until(fn() { cond })`, e.g. a `wait until cond` statement | Keep `start`/`spawn` keywords; add `wait until <expr>` sugar only if the closure form proves noisy in the demo game |
+| # | Question | Recommendation | Sections |
+|---|----------|----------------|----------|
+| Q1 | Boolean operators: `&&` `\|\|` `!` or `and` `or` `not` | `&&` `\|\|` `!`; `or` is the Result fallback; `and`/`not` reserved for a targeted error | §3.3 |
+| Q2 | `T?` sugar for `Option[T]` | Yes; and a `weak T` field reads directly as `T?` | §5.2, §11.5 |
+| Q3 | Reference types and collection semantics | `struct` values + `class` references; collections by reference; shallow struct copies with deep `.clone()`; structural `==` on collections | §5.3, §7 |
+| Q4 | Implicit return | `{ }` bodies use `return`; `=> expr` bodies for functions and closures; `if`/`match` arm blocks yield their trailing expression | §6.1 |
+| Q4b | Short lambda syntax | `fn(x) => x * 2` | §6.2 |
+| Q5 | Deep immutability | Shallow `let` in v1 | §4.1 |
+| Q6 | Integer overflow | Trap in every mode; `wrapping_*`/`checked_*`/`saturating_*` methods | §5.1 |
+| Q7 | Interface conformance | Nominal `impl I for T` | §9.2 |
+| Q8 | `own`/`borrow` rules | No `move` keyword; `own` never errors at the caller; no local `borrow` in v1; build the checker late | §11.4 |
+| Q9 | Cycle collection | `weak` + leak detector built as trial deletion; maybe an explicit `mem.collect_cycles()` later | §11.5 |
+| Q10 | What crosses a thread boundary | Isolates; sends are explicit deep copies (`.clone()`), implicit only for plain values and `str`; `Shared[T]` freezes and sets a shared bit | §14.1 |
+| Q11 | Enum variant lookup | Bare in patterns, `.Variant` where the type is known, `Type.Variant` otherwise; capitalisation rule in patterns | §8.2 |
+| Q12 | Operator overloading | Built-in only in phase 1; `Add`/`Sub`/`Mul`/`Neg` interfaces for structs after it | §15.1 |
+| Q13 | `unsafe` | `unsafe { }` for raw pointer operations; FFI as a per-package and per-VM capability | §15.3 |
+| Q14 | Hot reload semantics | Function-level patching, automatic restart (with optional save/restore hooks) on layout changes | §16.3 |
+| Q15 | Script top-level code | Only in the entry file of a script; imported modules hold declarations only | §13 |
+| Q16 | **Name** | **Rename before any code exists.** Aleo's Leo is also a Rust-implemented language using `.leo`, a `leo` binary and `leo-*` crates on crates.io. Keep "Leo" as the codename; pick a public name with a unique 2–4 letter extension, free on crates.io and GitHub, searchable as "&lt;name&gt; lang" | everywhere |
+| Q17 | Rust crate bindings | Static linking everywhere through project-specific runners; no dylib; no `glam` binding; `rapier` when the demo needs it | §15.5 |
+| Q18 | Coroutine and task syntax | `go f()` keyword for coroutines; `task.run(fn() => ...)` for thread tasks; with `=>` lambdas `wait_until` needs no sugar. Spelling of `go` (vs `co`) still open | §14 |
+| Q19 | Weak capture syntax | `fn() use(weak self) { ... }` capture list; inside, the name has type `T?` | §6.2 |
+| Q20 | Game kit backend | Statically linked raylib (fastest to ship, C dependency) vs Rust crates (winit + wgpu + kira, pure Rust, more work) | §15.6 |
 
 ---
 
@@ -1106,13 +1621,16 @@ These need a decision before or during phase 1. Each has a recommendation; none 
 
 | Language | What Leo takes from it |
 |----------|------------------------|
-| **Go** | Simple syntax, newline-terminated statements, untyped constants, `defer`, one formatter |
+| **Go** | Simple syntax, newline-terminated statements, untyped constants, `defer`, packages as folders, one formatter |
 | **Python** | Readability bar, scripting ergonomics, f-string style interpolation |
-| **Rust** | `Result`/`?`, enums + exhaustive `match`, `impl` blocks, Cargo-style tooling |
-| **Swift** | Value structs vs reference classes, ARC with optimization, `weak` |
+| **Rust** | `Result`/`?`, enums + exhaustive `match`, `impl` blocks, Cargo-style tooling, editions |
+| **Swift** | Value structs vs reference classes, ARC with optimization, `weak`, `inout` copy-in/copy-out, trapping overflow |
+| **C# / Unity** | The struct-vs-class split game developers already know; coroutine use cases (and pitfalls) |
 | **Lobster** | Compile-time RC elision for a game-focused language; closest relative |
-| **Koka / Perceus** | Precise RC with reuse analysis (FBIP) |
+| **Koka / Perceus** | Precise RC with reuse analysis (FBIP); a shared bit for thread-shared objects |
+| **Dart / JS workers** | Isolates with message passing |
+| **Zig** | `catch \|e\| { ... }` error handler blocks |
 | **Vale** | Ideas on generational references and region borrowing (for future work) |
 | **Odin / Jai** | Game-dev ergonomics: vector types, C layout, easy FFI |
-| **Lua** | The embedding experience Leo should match or beat |
+| **Lua / LÖVE** | The embedding experience to match or beat; a game kit in the stock binary |
 | **GDScript / Wren** | Scripting languages built for games and hot reload |
