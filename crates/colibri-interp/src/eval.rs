@@ -51,6 +51,10 @@ pub struct Interp {
     pub(crate) inits: Vec<(GlobalId, Rc<Body>)>,
     /// Where the globals the script initialises itself start in `inits`.
     pub(crate) script_from: usize,
+    /// By global id, the name of each script value whose line has not run yet (empty when
+    /// there is none). The checker rejects the uses it can see; this catches the rest (a
+    /// call through an interface, a `Show` impl), DESIGN §4.2.
+    pub(crate) uninit: Vec<Option<Rc<str>>>,
     script: Option<Rc<Body>>,
     out: Box<dyn Write>,
     max_depth: usize,
@@ -102,6 +106,7 @@ impl Interp {
             types: Rc::from(Vec::new()),
             inits: Vec::new(),
             script_from: 0,
+            uninit: Vec::new(),
             script: None,
             out,
             max_depth: max_call_depth,
@@ -151,6 +156,14 @@ impl Interp {
             .map(|&g| (g, Rc::clone(&program.globals[g.0 as usize].init)))
             .collect();
         self.script_from = program.script_from;
+        self.uninit = Vec::new();
+        if program.script_from < program.init_order.len() {
+            self.uninit = vec![None; program.globals.len()];
+            for g in &program.init_order[program.script_from..] {
+                self.uninit[g.0 as usize] =
+                    Some(program.globals[g.0 as usize].name.as_str().into());
+            }
+        }
         self.script = Some(Rc::clone(&program.script));
         self.cffi.load(program);
     }
@@ -231,6 +244,9 @@ impl Interp {
                 Ok(value) => {
                     let old = std::mem::replace(&mut self.globals[g.0 as usize], value);
                     self.release(old);
+                    if let Some(slot) = self.uninit.get_mut(g.0 as usize) {
+                        *slot = None;
+                    }
                 }
                 Err(e) => {
                     result = Err(e);
@@ -591,6 +607,9 @@ impl Interp {
                 let value = self.call_body(fiber, Rc::clone(init), Vec::new())?;
                 let old = std::mem::replace(&mut self.globals[global.0 as usize], value);
                 self.release(old);
+                if let Some(slot) = self.uninit.get_mut(global.0 as usize) {
+                    *slot = None;
+                }
                 Ok(())
             }
         }

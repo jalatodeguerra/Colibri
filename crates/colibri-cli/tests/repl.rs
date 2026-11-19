@@ -164,3 +164,10 @@ fn an_entry_runs_top_to_bottom() {
     assert_eq!(out, "= 2 : int\n");
     assert_eq!(err, "");
 }
+
+#[test]
+fn only_the_last_piece_of_an_entry_shows_its_value() {
+    let (out, err) = repl("let y = 1; y + 1; let z = y; print(f()); fn f() -> int => z\n");
+    assert_eq!(out, "1\n");
+    assert_eq!(err, "");
+}
