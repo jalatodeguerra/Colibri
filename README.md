@@ -217,7 +217,7 @@ Colibri is built from source. You need a recent stable [Rust toolchain](https://
 workspace uses edition 2024) and a C compiler, which builds the bundled `libffi`.
 
 ```sh
-git clone https://github.com/jalatodeguerra/leo colibri
+git clone https://github.com/jalatodeguerra/Colibri colibri
 cd colibri
 cargo install --path crates/colibri-cli
 colibri --version
