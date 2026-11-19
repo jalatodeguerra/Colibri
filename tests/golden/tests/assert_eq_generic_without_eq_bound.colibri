@@ -1,0 +1,3 @@
+fn same[T](a: T, b: T) {
+    assert_eq(a, b) // error: cannot compare values of type `T`
+}

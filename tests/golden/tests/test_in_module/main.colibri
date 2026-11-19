@@ -1,0 +1,6 @@
+import helper
+
+fn main() {
+    print(helper.double(21))
+}
+// expect: 42

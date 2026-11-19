@@ -63,6 +63,25 @@ pub struct Program {
     /// How many types after the prelude's come from the host interface: the user's own types
     /// start at `FIRST_USER_TYPE + host_types`.
     pub host_types: u32,
+    /// Every `test "name" { .. }` block of the program's own modules (not of the host or the
+    /// standard library), in source order: the entry module first, then the other modules in
+    /// load order (ARCHITECTURE §15). Their bodies are ordinary entries of [`Program::fns`].
+    pub tests: Vec<TestDef>,
+}
+
+/// A `test "name" { .. }` block, compiled as a function `() -> Result[()]`.
+#[derive(Clone, Debug)]
+pub struct TestDef {
+    /// The name written in the source.
+    pub name: String,
+    /// The module it is in: the file name without `.colibri` for the entry file, the module's
+    /// import name otherwise.
+    pub module: String,
+    /// Whether the module belongs to the program's own package (not a dependency).
+    pub root: bool,
+    /// The function that runs the test.
+    pub f: FnId,
+    pub span: Span,
 }
 
 /// A function provided by the host program.
@@ -701,6 +720,11 @@ pub enum Intrinsic {
     Builtin(Builtin),
     /// `panic(msg)`: stops the program with a message (it has type `!`).
     Panic,
+    /// `assert(cond, msg)`: panics with `msg` when `cond` is false (arguments: the condition,
+    /// the message as a `str`). Type `()`.
+    Assert,
+    /// `assert_eq(a, b)`: panics when `a == b` is false, showing both values (ARCHITECTURE §15).
+    AssertEq,
     /// `e.is[T]()`: whether the value an `Error` keeps has this runtime type (DESIGN §10.2).
     ErrorIs(TypeKey),
     /// `e.as[T]() -> T?`: the value an `Error` keeps, if it has this runtime type.

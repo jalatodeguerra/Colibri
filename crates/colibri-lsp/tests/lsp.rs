@@ -650,3 +650,38 @@ fn the_standard_library_is_checked_and_hovered_like_any_module() {
     );
     c.shutdown();
 }
+
+#[test]
+fn a_type_error_inside_a_test_block_is_a_diagnostic() {
+    let dir = temp_dir("test_block");
+    let file = dir.join("a.colibri");
+    let text = "fn double(n: int) -> int => n * 2\n\ntest \"doubles\" {\n    let x: str = double(2)\n    assert_eq(x, \"4\")\n}\n";
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&file, text);
+    let diags = c.diags(&file);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("expected `str`, found `int`"),
+        "{diags:?}"
+    );
+    let (line, col) = pos_of(text, "double(2)");
+    assert_eq!(range_of(&diags[0]).0, (line as u64, col as u64));
+
+    // Hover inside the test body sees the types, and the fix clears the diagnostic.
+    let hover = c.hover(&file, line, col);
+    assert!(hover.to_string().contains("int"), "{hover}");
+    c.change(
+        &file,
+        &text
+            .replace("let x: str", "let x: int")
+            .replace("\"4\"", "4"),
+    );
+    assert!(c.diags(&file).is_empty());
+    // An assertion misuse is reported in the test too.
+    c.change(&file, "test \"t\" {\n    assert_eq(1, \"one\")\n}\n");
+    assert_eq!(c.diags(&file).len(), 1);
+    c.shutdown();
+}

@@ -1,0 +1,3 @@
+fn f() -> Result[()] {
+    return // error: `return` needs a value of type
+}

@@ -1,0 +1,6 @@
+fn find() -> int? => none
+
+test "option question mark" {
+    let n = find()? // error: `?` on an `Option`
+    print(n)
+}

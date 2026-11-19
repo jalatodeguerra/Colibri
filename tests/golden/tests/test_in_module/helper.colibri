@@ -1,0 +1,6 @@
+pub fn double(n: int) -> int => n * 2
+
+test "double" {
+    assert_eq(double(4), 8)
+    assert_eq(1, "x") // error: cannot apply `==` to
+}

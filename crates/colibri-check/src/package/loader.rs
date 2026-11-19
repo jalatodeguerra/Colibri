@@ -97,6 +97,16 @@ struct Loader<'a> {
     diags: Vec<Diagnostic>,
 }
 
+/// What else `load` may do.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LoadOptions {
+    /// For a package: load every `.colibri` file under its root, not only the modules the
+    /// entry reaches by `import` (what `colibri test` needs to find every `test` block).
+    /// Folders that start with `.` and folders with a `colibri.toml` of their own are skipped.
+    /// Ignored for a script.
+    pub all_modules: bool,
+}
+
 /// Loads the program that starts at `entry`, reading through `fs` and adding every file it
 /// reads to `sources` (so spans name their files). `host_modules` are the named host modules
 /// `import` may resolve to.
@@ -105,6 +115,17 @@ pub fn load(
     sources: &mut SourceMap,
     entry: Entry<'_>,
     host_modules: &[String],
+) -> Result<Loaded, LoadError> {
+    load_with(fs, sources, entry, host_modules, LoadOptions::default())
+}
+
+/// [`load`] with options.
+pub fn load_with(
+    fs: &dyn SourceFs,
+    sources: &mut SourceMap,
+    entry: Entry<'_>,
+    host_modules: &[String],
+    options: LoadOptions,
 ) -> Result<Loaded, LoadError> {
     let mut loader = Loader {
         fs,
@@ -163,6 +184,12 @@ pub fn load(
     loader.pending.push_back(entry_id);
     while let Some(id) = loader.pending.pop_front() {
         loader.resolve_imports(id);
+    }
+    if options.all_modules && matches!(entry, Entry::Package(_)) {
+        loader.add_tree_modules(tree, &root, Path::new(""));
+        while let Some(id) = loader.pending.pop_front() {
+            loader.resolve_imports(id);
+        }
     }
     Ok(loader.finish(entry_id))
 }
@@ -262,6 +289,27 @@ impl Loader<'_> {
             }
         }
         Ok(tree)
+    }
+
+    /// Adds every source file under `dir` (`rel` is its path under the tree root) that is not a
+    /// module yet, depth first in name order.
+    fn add_tree_modules(&mut self, tree: usize, dir: &Path, rel: &Path) {
+        for name in self.fs.list(dir) {
+            let path = dir.join(&name);
+            let rel_path = rel.join(&name);
+            if self.fs.is_dir(&path) {
+                let own_tree = self.fs.is_file(&path.join(MANIFEST_FILE));
+                if !name.starts_with('.') && !own_tree {
+                    self.add_tree_modules(tree, &path, &rel_path);
+                }
+            } else if name.ends_with(&format!(".{SOURCE_EXT}"))
+                && !self.by_path.contains_key(&normalize(&path))
+                && let Ok(text) = self.fs.read(&path)
+            {
+                let id = self.add_module(&path, text, tree, &rel_path, false);
+                self.pending.push_back(id);
+            }
+        }
     }
 
     /// Registers and parses a file as a module of `tree`; `rel` is its path under the root.
@@ -583,21 +631,33 @@ impl Loader<'_> {
         let mut order: Vec<usize> = Vec::with_capacity(n);
         let mut seen = vec![false; n];
         seen[entry] = true;
-        let mut stack: Vec<(usize, usize)> = vec![(entry, 0)];
-        while let Some(&(node, next)) = stack.last() {
-            match edges[node].get(next) {
-                Some(&to) => {
-                    if let Some(top) = stack.last_mut() {
-                        top.1 += 1;
+        // Modules nobody imports (loaded on request, see `LoadOptions::all_modules`) come
+        // first, in discovery order; the entry is always last.
+        let roots: Vec<usize> = (0..n)
+            .filter(|&i| i != entry && self.discs[i].is_some())
+            .chain([entry])
+            .collect();
+        for root in roots {
+            if root != entry && seen[root] {
+                continue;
+            }
+            seen[root] = true;
+            let mut stack: Vec<(usize, usize)> = vec![(root, 0)];
+            while let Some(&(node, next)) = stack.last() {
+                match edges[node].get(next) {
+                    Some(&to) => {
+                        if let Some(top) = stack.last_mut() {
+                            top.1 += 1;
+                        }
+                        if !seen[to] {
+                            seen[to] = true;
+                            stack.push((to, 0));
+                        }
                     }
-                    if !seen[to] {
-                        seen[to] = true;
-                        stack.push((to, 0));
+                    None => {
+                        order.push(node);
+                        stack.pop();
                     }
-                }
-                None => {
-                    order.push(node);
-                    stack.pop();
                 }
             }
         }
@@ -627,6 +687,7 @@ impl Loader<'_> {
                 name: disc.name,
                 package: disc.package,
                 entry: disc.entry,
+                dependency: self.trees[disc.tree].is_dep,
                 imports,
             });
             files.push(disc.file);

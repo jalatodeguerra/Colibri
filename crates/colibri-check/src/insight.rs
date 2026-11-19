@@ -488,6 +488,7 @@ mod tests {
             name: String::new(),
             package: 0,
             entry: true,
+            dependency: false,
             imports: HashMap::new(),
         };
         let packages = [PackageNode {
