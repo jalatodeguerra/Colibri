@@ -162,8 +162,25 @@ impl<'a> Ctx<'a> {
     }
 
     /// Computes the default value of a struct field: `f` is [`FieldDef::default`]
-    /// (`reflect::FieldDef`). A panic in the default expression comes back as an error.
+    /// (`reflect::FieldDef`). A panic in the default expression comes back as an error, and
+    /// so does a `f` that is not a function of the loaded program or takes parameters (a
+    /// default never does).
     pub fn call_field_default(&mut self, f: FnId) -> Result<Value, Error> {
+        match self.interp.fn_param_count(f) {
+            Some(0) => {}
+            Some(n) => {
+                return Err(Error::Convert(format!(
+                    "function {} is not a field default: it takes {n} parameter(s)",
+                    f.0
+                )));
+            }
+            None => {
+                return Err(Error::Convert(format!(
+                    "function {} is not a function of the loaded program",
+                    f.0
+                )));
+            }
+        }
         let result = self.interp.call(self.fiber, f, Vec::new());
         self.interp.flush();
         match result {

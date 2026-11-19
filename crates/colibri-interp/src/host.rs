@@ -169,6 +169,12 @@ impl Interp {
         &self.types
     }
 
+    /// How many parameters function `f` takes; `None` if there is no such function in the
+    /// loaded program.
+    pub fn fn_param_count(&self, f: colibri_check::hir::FnId) -> Option<u32> {
+        self.fns.get(f.0 as usize).map(|body| body.param_count)
+    }
+
     /// The same descriptors, shared: a host function can keep them while it calls back into
     /// the program.
     pub fn type_defs_shared(&self) -> Rc<[colibri_check::hir::TypeDef]> {

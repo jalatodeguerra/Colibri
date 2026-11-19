@@ -464,3 +464,47 @@ mod lazy {
         ));
     }
 }
+
+#[test]
+fn a_field_default_call_refuses_a_function_that_takes_parameters() {
+    let (mut vm, out) = vm();
+    vm.std_module("demo")
+        .register_fn_named("probe", [], |cx: &mut Ctx| {
+            // The real default of `S.x`.
+            let defs = cx.type_defs_shared();
+            let default = defs
+                .iter()
+                .find(|t| t.name == "S")
+                .and_then(|t| match &t.kind {
+                    reflect::TypeDefKind::Struct { fields } => fields[0].default,
+                    _ => None,
+                })
+                .unwrap();
+            let value = cx.call_field_default(default).unwrap();
+            let mut refused = 0;
+            // Every function of the program, whatever it takes: none may be called with
+            // missing arguments.
+            for id in 0..64 {
+                if id != default.0
+                    && let Err(e) = cx.call_field_default(reflect::FnId(id))
+                    && e.to_string().contains("takes 1 parameter")
+                {
+                    refused += 1;
+                }
+            }
+            let ValueKind::Int(n) = value.kind() else {
+                panic!("not an int")
+            };
+            format!("{n} refused {refused}")
+        })
+        .unwrap();
+    vm.load_source(
+        "a.colibri",
+        "import demo\nstruct S { x: int = 5 }\nfn add_one(a: int) -> int => a + 1\nfn main() {\n    print(demo.probe())\n}\n",
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    let text = out.contents();
+    assert!(text.starts_with("5 refused "), "{text}");
+    assert!(!text.starts_with("5 refused 0"), "{text}");
+}
