@@ -1,0 +1,5 @@
+enum Never {}
+
+fn main() {
+    let n = Never.Nothing // error: `Never` has no function or variant `Nothing`
+}

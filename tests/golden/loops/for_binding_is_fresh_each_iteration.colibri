@@ -1,0 +1,11 @@
+fn main() {
+    var sum = 0
+    for i in 0..3 {
+        var local = i * 10
+        local += 1
+        sum += local
+    }
+    print(sum)
+}
+
+// expect: 33

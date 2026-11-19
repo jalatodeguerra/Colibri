@@ -1,0 +1,14 @@
+fn swap(p: (int, str)) -> (str, int) {
+    return (p.1, p.0)
+}
+
+fn main() {
+    let a: (int, str) = (1, "x")
+    let b: (str, int) = swap(a)
+    print(b)
+    let nested: ((int, int), bool) = ((1, 2), true)
+    print(nested)
+}
+
+// expect: ("x", 1)
+// expect: ((1, 2), true)

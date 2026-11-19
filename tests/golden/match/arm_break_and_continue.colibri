@@ -1,0 +1,16 @@
+fn main() {
+    var i = 0
+    var total = 0
+    while true {
+        i += 1
+        match i {
+            2 => continue
+            6 => break
+            _ => {}
+        }
+        total += i
+    }
+    print(total)
+}
+
+// expect: 13

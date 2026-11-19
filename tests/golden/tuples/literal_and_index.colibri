@@ -1,0 +1,12 @@
+fn main() {
+    let t = (1, "two", 3.5)
+    print(t.0)
+    print(t.1)
+    print(t.2)
+    print(t)
+}
+
+// expect: 1
+// expect: two
+// expect: 3.5
+// expect: (1, "two", 3.5)

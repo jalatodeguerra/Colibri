@@ -1,0 +1,13 @@
+struct Inner { tag: str, c: char }
+struct Outer { name: str, inner: Inner, pair: (int, float), flag: bool }
+
+fn main() {
+    let o = Outer { name: "o", inner: Inner { tag: "t", c: 'x' }, pair: (1, 2.0), flag: false }
+    print(o)
+    print("{o.inner}")
+    print(o.name)
+}
+
+// expect: Outer { name: "o", inner: Inner { tag: "t", c: 'x' }, pair: (1, 2.0), flag: false }
+// expect: Inner { tag: "t", c: 'x' }
+// expect: o

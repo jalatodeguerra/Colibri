@@ -1,0 +1,13 @@
+struct Player { name: str, hp: int }
+
+fn main() {
+    var a = Player { name: "Ana", hp: 100 }
+    var b = a
+    b.hp = 50
+    a.name = "Ann"
+    print(a)
+    print(b)
+}
+
+// expect: Player { name: "Ann", hp: 100 }
+// expect: Player { name: "Ana", hp: 50 }

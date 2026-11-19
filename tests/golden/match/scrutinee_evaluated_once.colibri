@@ -1,0 +1,16 @@
+fn noisy() -> int {
+    print("evaluated")
+    return 2
+}
+
+fn main() {
+    let r = match noisy() {
+        1 => "one"
+        2 => "two"
+        _ => "many"
+    }
+    print(r)
+}
+
+// expect: evaluated
+// expect: two

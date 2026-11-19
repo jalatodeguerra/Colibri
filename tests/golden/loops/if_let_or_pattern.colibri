@@ -1,0 +1,15 @@
+enum E { A(int), B(int), C }
+
+fn main() {
+    if let A(n) | B(n) = E.B(3) {
+        print(n)
+    }
+    if let A(n) | B(n) = E.C {
+        print("never {n}")
+    } else {
+        print("c")
+    }
+}
+
+// expect: 3
+// expect: c

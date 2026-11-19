@@ -1,0 +1,9 @@
+fn main() {
+    let ((a, b), (c, d)) = ((1, 2), (3, 4))
+    print(a + b + c + d)
+    let (x, (y, z)) = (1, ("two", 3.0))
+    print("{x} {y} {z}")
+}
+
+// expect: 10
+// expect: 1 two 3.0

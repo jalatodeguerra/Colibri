@@ -1,0 +1,12 @@
+fn main() {
+    let a = 3
+    let msg = "value is " + match a {
+        3 => "three"
+        _ => "other"
+    }
+    print(msg)
+    print(1 + match a { 3 => 10, _ => 20 })
+}
+
+// expect: value is three
+// expect: 11

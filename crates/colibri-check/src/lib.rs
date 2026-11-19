@@ -6,13 +6,21 @@
 //! inference scoped to that body. The checker keeps going after an error, using
 //! [`types::Ty::Error`] to avoid cascades, and never panics on any input.
 
+mod adt;
 mod body;
 mod call;
 mod checker;
+mod decls;
+mod derive;
+pub mod exhaust;
 mod expr;
 pub mod format;
 pub mod hir;
 pub mod infer;
+mod loops;
+mod matching;
+mod pat;
+mod place;
 mod suggest;
 pub mod types;
 mod zonk;

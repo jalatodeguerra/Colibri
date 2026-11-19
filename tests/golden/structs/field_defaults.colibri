@@ -1,0 +1,17 @@
+struct Player {
+    name: str
+    hp: int = 100
+    alive: bool = true
+}
+
+fn main() {
+    let a = Player { name: "Ana" }
+    let b = Player { name: "Bo", hp: 40 }
+    print(a)
+    print(b)
+    print(b.alive)
+}
+
+// expect: Player { name: "Ana", hp: 100, alive: true }
+// expect: Player { name: "Bo", hp: 40, alive: true }
+// expect: true

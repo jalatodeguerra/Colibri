@@ -1,0 +1,16 @@
+fn main() {
+    for i in 5..5 {
+        print("never {i}")
+    }
+    for i in 5..2 {
+        print("never {i}")
+    }
+    for i in 3..=2 {
+        print("never {i}")
+    }
+    for i in 2..=2 {
+        print("once {i}")
+    }
+}
+
+// expect: once 2

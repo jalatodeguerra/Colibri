@@ -1,0 +1,14 @@
+fn main() {
+    for i in 0..6 {
+        match i % 3 {
+            0 => print("{i} fizz")
+            1 => continue
+            _ => print("{i} other")
+        }
+    }
+}
+
+// expect: 0 fizz
+// expect: 2 other
+// expect: 3 fizz
+// expect: 5 other

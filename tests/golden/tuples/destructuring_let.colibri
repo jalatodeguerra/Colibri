@@ -1,0 +1,9 @@
+fn main() {
+    let (a, b) = (1, 2)
+    print(a + b)
+    let (name, age, fine) = ("Ana", 30, true)
+    print("{name} {age} {fine}")
+}
+
+// expect: 3
+// expect: Ana 30 true

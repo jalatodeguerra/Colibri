@@ -1,0 +1,15 @@
+struct Span { range: (int, int) }
+enum Tok { Pair(int, int), Tup((int, int)) }
+
+fn main() {
+    let s = Span { range: (1, 5) }
+    print(s)
+    print(s.range.1 - s.range.0)
+    print(Tok.Pair(1, 2))
+    print(Tok.Tup((1, 2)))
+}
+
+// expect: Span { range: (1, 5) }
+// expect: 4
+// expect: Pair(1, 2)
+// expect: Tup((1, 2))

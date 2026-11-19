@@ -1,0 +1,13 @@
+struct Num { v: int }
+
+impl Num {
+    fn plus(self, k: int) -> Num => Num { v: self.v + k }
+    fn times(self, k: int) -> Num => Num { v: self.v * k }
+}
+
+fn main() {
+    let n = Num { v: 1 }
+    print(n.plus(2).times(5).plus(1).v)
+}
+
+// expect: 16

@@ -1,0 +1,31 @@
+const LIMIT = 100
+const NAME = "root"
+
+fn check(n: int) -> str {
+    return match n {
+        LIMIT => "at the limit"
+        0 => "zero"
+        _ => "other"
+    }
+}
+
+fn who(s: str) -> bool {
+    return match s {
+        NAME => true
+        _ => false
+    }
+}
+
+fn main() {
+    print(check(100))
+    print(check(0))
+    print(check(1))
+    print(who("root"))
+    print(who("guest"))
+}
+
+// expect: at the limit
+// expect: zero
+// expect: other
+// expect: true
+// expect: false

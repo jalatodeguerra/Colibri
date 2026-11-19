@@ -343,3 +343,74 @@ fn check_source_reports_without_running() {
     assert!(bad.has_errors());
     assert!(bad.render(false).contains("expected `str`"));
 }
+
+#[test]
+fn a_function_can_use_structs_enums_and_match_internally() {
+    let (mut vm, out) = vm_with_output();
+    vm.load_source(
+        "shapes.colibri",
+        r#"
+enum Shape { Circle(float), Rect(float, float), Dot }
+struct Pair { lo: int, hi: int }
+
+fn area_of(kind: int, a: float, b: float) -> float {
+    let s = match kind {
+        0 => Shape.Circle(a)
+        1 => Shape.Rect(a, b)
+        _ => Shape.Dot
+    }
+    return match s {
+        Circle(r) => 3.0 * r * r
+        Rect(w, h) => w * h
+        Dot => 0.0
+    }
+}
+
+fn spread(a: int, b: int) -> int {
+    let p = if a < b { Pair { lo: a, hi: b } } else { Pair { lo: b, hi: a } }
+    return p.hi - p.lo
+}
+
+fn label(n: int) -> str {
+    return match n {
+        0 => "zero"
+        1..=9 => "small"
+        _ => "big"
+    }
+}
+
+fn show_it() {
+    print(Shape.Rect(1.0, 2.0))
+}
+"#,
+    )
+    .unwrap();
+    let area = vm
+        .get_fn::<(i64, f64, f64), f64>("area_of")
+        .expect("signature matches");
+    assert_eq!(area.call(&mut vm, (0, 2.0, 0.0)).unwrap(), 12.0);
+    assert_eq!(area.call(&mut vm, (1, 2.0, 4.5)).unwrap(), 9.0);
+    assert_eq!(area.call(&mut vm, (2, 0.0, 0.0)).unwrap(), 0.0);
+    let spread = vm.get_fn::<(i64, i64), i64>("spread").unwrap();
+    assert_eq!(spread.call(&mut vm, (9, 4)).unwrap(), 5);
+    let label = vm.get_fn::<(i64,), String>("label").unwrap();
+    assert_eq!(label.call(&mut vm, (5,)).unwrap(), "small");
+    assert_eq!(label.call(&mut vm, (50,)).unwrap(), "big");
+    vm.get_fn::<(), ()>("show_it")
+        .unwrap()
+        .call(&mut vm, ())
+        .unwrap();
+    assert_eq!(out.contents(), "Rect(1.0, 2.0)\n");
+}
+
+#[test]
+fn host_signatures_cannot_name_user_types() {
+    let (mut vm, _) = vm_with_output();
+    vm.load_source(
+        "p.colibri",
+        "struct P { x: int }\nfn make() -> P => P { x: 1 }\n",
+    )
+    .unwrap();
+    // A struct is not a host type, so the signature never matches and nothing panics.
+    assert!(vm.get_fn::<(), i64>("make").is_err());
+}

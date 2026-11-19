@@ -1,0 +1,18 @@
+enum Shape { Square(int), Cube(int), Dot }
+
+fn side(s: Shape) -> int {
+    return match s {
+        Square(n) | Cube(n) => n
+        Dot => 0
+    }
+}
+
+fn main() {
+    print(side(.Square(3)))
+    print(side(.Cube(4)))
+    print(side(.Dot))
+}
+
+// expect: 3
+// expect: 4
+// expect: 0

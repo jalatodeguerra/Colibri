@@ -1,0 +1,6 @@
+impl Ghost { // error: unknown type `Ghost`
+    fn boo(self) {}
+}
+
+fn main() {
+}

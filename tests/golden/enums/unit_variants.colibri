@@ -1,0 +1,20 @@
+enum Color { Red, Green, Blue }
+
+fn name(c: Color) -> str {
+    return match c {
+        Red => "red"
+        Green => "green"
+        Blue => "blue"
+    }
+}
+
+fn main() {
+    print(name(Color.Green))
+    print(Color.Blue)
+    let c = Color.Red
+    print(c)
+}
+
+// expect: green
+// expect: Blue
+// expect: Red

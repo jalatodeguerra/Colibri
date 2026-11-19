@@ -1,0 +1,25 @@
+enum Cmd { Move(int), Say(str), Quit }
+
+fn run(c: Cmd) -> str {
+    return match c {
+        Move(0) => "stay"
+        Move(n) => "move {n}"
+        Say("hi") => "greeting"
+        Say(s) => "say {s}"
+        Quit => "bye"
+    }
+}
+
+fn main() {
+    print(run(.Move(0)))
+    print(run(.Move(3)))
+    print(run(.Say("hi")))
+    print(run(.Say("yo")))
+    print(run(.Quit))
+}
+
+// expect: stay
+// expect: move 3
+// expect: greeting
+// expect: say yo
+// expect: bye

@@ -1,0 +1,13 @@
+struct C { n: int }
+
+impl C {
+    fn inc(var self) {
+        self.n += 1
+    }
+    fn twice(self) {
+        self.inc() // error: cannot call `inc` on `self`, because `self` is read-only in this method
+    }
+}
+
+fn main() {
+}

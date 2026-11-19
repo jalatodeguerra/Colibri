@@ -1,0 +1,7 @@
+enum Opt { Some(int), None }
+
+fn main() {
+    if let Som(n) = Opt.None { // error: the enum `Opt` has no variant `Som`
+        print(n)
+    }
+}

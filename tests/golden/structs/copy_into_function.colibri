@@ -1,0 +1,20 @@
+struct Counter { n: int }
+
+fn bump(c: Counter) -> Counter {
+    var d = c
+    d.n += 1
+    return d
+}
+
+fn main() {
+    let a = Counter { n: 1 }
+    let b = bump(a)
+    let c = bump(b)
+    print(a.n)
+    print(b.n)
+    print(c.n)
+}
+
+// expect: 1
+// expect: 2
+// expect: 3

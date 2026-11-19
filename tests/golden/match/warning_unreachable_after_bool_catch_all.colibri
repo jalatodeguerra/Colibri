@@ -1,0 +1,8 @@
+fn main() {
+    match true {
+        true => print("t")
+        false => print("f")
+        _ => print("never") // warning: this arm can never run
+    }
+}
+// expect: t

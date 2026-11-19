@@ -1,0 +1,22 @@
+enum Opt { Some(int), None }
+
+fn both(p: (Opt, Opt)) -> int {
+    return match p {
+        (Some(a), Some(b)) => a + b
+        (Some(a), None) => a
+        (None, Some(b)) => b
+        (None, None) => 0
+    }
+}
+
+fn main() {
+    print(both((.Some(1), .Some(2))))
+    print(both((.Some(5), .None)))
+    print(both((.None, .Some(7))))
+    print(both((.None, .None)))
+}
+
+// expect: 3
+// expect: 5
+// expect: 7
+// expect: 0

@@ -1,0 +1,8 @@
+enum Color { Red, Green, Blue, Black }
+
+fn main() {
+    let c = Color.Red
+    match c { // error: non-exhaustive `match`: missing cases: Green, Blue, Black
+        Red => print("r")
+    }
+}

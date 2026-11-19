@@ -1,0 +1,8 @@
+fn main() {
+    let n = 3
+    match n {
+        _ => print("any")
+        0 => print("zero") // warning: this arm can never run
+    }
+}
+// expect: any

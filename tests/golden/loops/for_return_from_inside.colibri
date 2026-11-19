@@ -1,0 +1,16 @@
+fn first_square_over(limit: int) -> int {
+    for i in 0..1000 {
+        if i * i > limit {
+            return i
+        }
+    }
+    return -1
+}
+
+fn main() {
+    print(first_square_over(50))
+    print(first_square_over(10000000))
+}
+
+// expect: 8
+// expect: -1

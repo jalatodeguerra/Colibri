@@ -1,0 +1,6 @@
+enum A { X }
+enum B { X }
+
+fn main() {
+    print(A.X == B.X) // error: cannot apply `==` to `A` and `B`
+}

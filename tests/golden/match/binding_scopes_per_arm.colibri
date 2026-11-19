@@ -1,0 +1,12 @@
+fn main() {
+    let x = 100
+    let r = match 5 {
+        x if x > 10 => x
+        x => x + 1
+    }
+    print(r)
+    print(x)
+}
+
+// expect: 6
+// expect: 100

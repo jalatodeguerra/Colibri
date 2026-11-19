@@ -1,0 +1,7 @@
+enum Opt { Some(int), None }
+
+fn main() {
+    if let Some(n) = 5 { // error: this is an enum variant pattern, but the value is a `int`
+        print(n)
+    }
+}

@@ -1,0 +1,19 @@
+struct Acc { total: int }
+
+impl Acc {
+    fn add(var self, k: int) {
+        self.total += k
+    }
+}
+
+fn main() {
+    var a = Acc { total: 0 }
+    var i = 0
+    while i < 5 {
+        a.add(i)
+        i += 1
+    }
+    print(a.total)
+}
+
+// expect: 10

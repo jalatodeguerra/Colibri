@@ -331,3 +331,95 @@ fn mismatches_point_at_the_annotation_too() {
         "int"
     );
 }
+
+#[test]
+fn struct_literals_hold_one_value_per_field_with_defaults_filled() {
+    let p =
+        program("struct P { a: int, b: int = 7, c: str }\nfn f() -> P => P { c: \"x\", a: 1 }\n");
+    let f = body_of(&p, "f");
+    let ExprKind::Struct { fields, .. } = &tail(&f).kind else {
+        panic!("expected a struct literal, got {:?}", tail(&f));
+    };
+    assert_eq!(fields.len(), 3);
+    assert!(matches!(&fields[1].kind, ExprKind::Lit(Lit::Int(7))));
+}
+
+#[test]
+fn match_stays_a_match_with_typed_patterns_and_bound_locals() {
+    let p = program(
+        "enum E { A(int), B }\nfn f(e: E) -> int => match e { A(n) if n > 0 => n, A(_) => 0, B => -1 }\n",
+    );
+    let f = body_of(&p, "f");
+    let ExprKind::Match { arms, .. } = &tail(&f).kind else {
+        panic!("expected a match, got {:?}", tail(&f));
+    };
+    assert_eq!(arms.len(), 3);
+    assert!(arms[0].guard.is_some() && arms[1].guard.is_none());
+    // The pattern's binding is the first local of the arm's block.
+    assert_eq!(arms[0].body.locals.len(), 1);
+    assert!(matches!(
+        &arms[0].pat.kind,
+        PatKind::Variant { variant: 0, args, .. } if matches!(args[0].kind, PatKind::Bind(..))
+    ));
+    assert!(matches!(
+        &arms[2].pat.kind,
+        PatKind::Variant { variant: 1, .. }
+    ));
+}
+
+#[test]
+fn for_over_a_range_is_its_own_node_with_a_fresh_binding() {
+    let p = program("fn f() {\n    for i in 0..=3 {\n        print(i)\n    }\n}\n");
+    let f = body_of(&p, "f");
+    let StmtKind::Expr(Expr {
+        kind: ExprKind::For(l),
+        ..
+    }) = &f.block.stmts[0].kind
+    else {
+        panic!("expected a for loop, got {:?}", f.block.stmts[0]);
+    };
+    assert!(l.inclusive);
+    let binding = l.binding.expect("the loop variable is bound");
+    assert!(l.body.locals.contains(&binding));
+}
+
+#[test]
+fn var_self_methods_are_marked_and_take_a_place_receiver() {
+    let p = program(
+        "struct C { n: int }\nimpl C {\n    fn inc(var self) {\n        self.n += 1\n    }\n    fn get(self) -> int => self.n\n}\nfn main() {\n    var c = C { n: 0 }\n    c.inc()\n}\n",
+    );
+    assert!(body_of(&p, "C.inc").mutates_self);
+    assert!(!body_of(&p, "C.get").mutates_self);
+}
+
+#[test]
+fn structural_comparison_is_its_own_operand() {
+    let p = program("struct P { x: int }\nfn f(a: P, b: P) -> bool => a == b\n");
+    let f = body_of(&p, "f");
+    let ExprKind::Binary(BinOp::Cmp(CmpOp::Eq, operand), _, _) = &tail(&f).kind else {
+        panic!("expected a comparison, got {:?}", tail(&f));
+    };
+    assert_eq!(*operand, Operand::Structural);
+}
+
+#[test]
+fn tuple_destructuring_is_a_pattern_statement() {
+    let p = program("fn f() -> int {\n    let (a, b) = (1, 2)\n    return a + b\n}\n");
+    let f = body_of(&p, "f");
+    assert!(matches!(
+        &f.block.stmts[0].kind,
+        StmtKind::LetPat { pat: Pat { kind: PatKind::Tuple(items), .. }, .. } if items.len() == 2
+    ));
+}
+
+#[test]
+fn non_exhaustive_matches_and_unreachable_arms_are_reported() {
+    let (program, messages) = check("enum E { A, B }\nfn f(e: E) -> int => match e { A => 1 }\n");
+    assert!(program.is_none());
+    assert!(
+        messages.iter().any(|m| m.contains("missing case: B")),
+        "{messages:?}"
+    );
+    let (program, _) = check("fn f(n: int) -> int => match n { _ => 1, 0 => 2 }\n");
+    assert!(program.is_some(), "an unreachable arm is only a warning");
+}

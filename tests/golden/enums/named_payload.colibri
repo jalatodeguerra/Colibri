@@ -1,0 +1,19 @@
+enum Shape {
+    Circle(radius: float)
+    Rect(w: float, h: float)
+    Dot
+}
+
+fn main() {
+    print(Shape.Circle(radius: 2.0))
+    print(Shape.Rect(w: 1.5, h: 2.0))
+    print(Shape.Rect(h: 2.0, w: 1.5))
+    print(Shape.Circle(0.5))
+    print(Shape.Dot)
+}
+
+// expect: Circle(radius: 2.0)
+// expect: Rect(w: 1.5, h: 2.0)
+// expect: Rect(w: 1.5, h: 2.0)
+// expect: Circle(radius: 0.5)
+// expect: Dot

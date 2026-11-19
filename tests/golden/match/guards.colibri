@@ -1,0 +1,20 @@
+fn sign(n: int) -> str {
+    return match n {
+        0 => "zero"
+        x if x < 0 => "negative"
+        x if x % 2 == 0 => "even"
+        _ => "odd"
+    }
+}
+
+fn main() {
+    print(sign(0))
+    print(sign(-3))
+    print(sign(8))
+    print(sign(7))
+}
+
+// expect: zero
+// expect: negative
+// expect: even
+// expect: odd

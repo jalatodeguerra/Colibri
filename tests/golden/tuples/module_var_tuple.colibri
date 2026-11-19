@@ -1,0 +1,14 @@
+var pos = (0, 0)
+
+fn step() {
+    pos.0 += 1
+    pos.1 -= 1
+}
+
+fn main() {
+    step()
+    step()
+    print(pos)
+}
+
+// expect: (2, -2)

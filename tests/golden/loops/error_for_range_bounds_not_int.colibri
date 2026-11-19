@@ -1,0 +1,8 @@
+fn main() {
+    for i in 0.0..3.0 { // error: a `for` range needs integer ends, found `float`
+        print(i)
+    }
+    for c in 'a'..'z' { // error: a `for` range needs integer ends, found `char`
+        print(c)
+    }
+}

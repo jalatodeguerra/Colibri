@@ -1,0 +1,9 @@
+struct P { x: int }
+
+fn reset(p: P) {
+    p.x = 0 // error: cannot assign to `p.x`, because the parameter `p` is immutable
+}
+
+fn main() {
+    reset(P { x: 1 })
+}

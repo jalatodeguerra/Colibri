@@ -1,0 +1,6 @@
+fn main() {
+    match 5 {
+        x if x => print("a") // error: expected `bool`, found `int`
+        _ => print("b")
+    }
+}

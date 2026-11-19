@@ -1,0 +1,6 @@
+enum Shape { Rect(w: float, h: float) }
+
+fn main() {
+    let a = Shape.Rect(w: 1.0, d: 2.0) // error: `Shape.Rect` has no parameter named `d`
+    let b = Shape.Rect(w: 1.0, w: 2.0) // error: the parameter `w` is given more than once
+}

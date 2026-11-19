@@ -1,0 +1,6 @@
+struct P { x: int }
+
+fn main() {
+    var p = P { x: 1 }
+    p.x = "two" // error: expected `int`, found `str`
+}

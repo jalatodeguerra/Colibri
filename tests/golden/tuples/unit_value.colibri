@@ -1,0 +1,14 @@
+fn nothing() -> () {
+    return ()
+}
+
+fn main() {
+    let u = ()
+    print(u)
+    print(nothing())
+    print(u == ())
+}
+
+// expect: ()
+// expect: ()
+// expect: true

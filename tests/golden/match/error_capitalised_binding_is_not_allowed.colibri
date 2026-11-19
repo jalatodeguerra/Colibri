@@ -1,0 +1,8 @@
+enum Color { Red, Green }
+
+fn main() {
+    match Color.Red {
+        Red => print("red")
+        Other => print("other") // error: the enum `Color` has no variant `Other`
+    }
+}

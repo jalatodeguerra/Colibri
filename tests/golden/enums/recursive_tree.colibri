@@ -1,0 +1,35 @@
+enum Tree { Leaf, Node(Tree, int, Tree) }
+
+fn insert(t: Tree, v: int) -> Tree {
+    return match t {
+        Leaf => Tree.Node(.Leaf, v, .Leaf)
+        Node(l, x, r) => if v < x {
+            Tree.Node(insert(l, v), x, r)
+        } else {
+            Tree.Node(l, x, insert(r, v))
+        }
+    }
+}
+
+fn depth(t: Tree) -> int {
+    return match t {
+        Leaf => 0
+        Node(l, _, r) => {
+            let a = depth(l)
+            let b = depth(r)
+            1 + if a > b { a } else { b }
+        }
+    }
+}
+
+fn main() {
+    var t = Tree.Leaf
+    t = insert(t, 5)
+    t = insert(t, 3)
+    t = insert(t, 8)
+    t = insert(t, 1)
+    t = insert(t, 4)
+    print(depth(t))
+}
+
+// expect: 3

@@ -1,0 +1,7 @@
+fn main() {
+    let p = (true, false)
+    match p { // error: non-exhaustive `match`: missing case: (true, false)
+        (true, true) => print("a")
+        (false, _) => print("b")
+    }
+}

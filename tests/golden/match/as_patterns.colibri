@@ -1,0 +1,17 @@
+enum Opt { Some(int), None }
+
+fn main() {
+    let o = Opt.Some(5)
+    match o {
+        Some(_) as whole => print("whole is {whole}")
+        None => print("none")
+    }
+    let n = 7
+    match n {
+        1..=9 as digit => print("digit {digit}")
+        _ => print("big")
+    }
+}
+
+// expect: whole is Some(5)
+// expect: digit 7

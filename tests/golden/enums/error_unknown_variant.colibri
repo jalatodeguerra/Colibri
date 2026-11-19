@@ -1,0 +1,6 @@
+enum Color { Red, Green }
+
+fn main() {
+    let c = Color.Reed // error: `Color` has no function or variant `Reed`
+    let d: Color = .Blue // error: the enum `Color` has no variant `Blue`
+}

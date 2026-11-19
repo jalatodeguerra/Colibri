@@ -1,0 +1,7 @@
+enum Shape { Circle(float), Rect(float, float), Dot }
+
+fn main() {
+    let a = Shape.Circle() // error: `Shape.Circle` takes 1 value, found 0
+    let b = Shape.Rect(1.0) // error: `Shape.Rect` takes 2 values, found 1
+    let c = Shape.Dot(1) // error: `Shape.Dot` carries no data
+}

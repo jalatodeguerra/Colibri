@@ -1,0 +1,15 @@
+enum Opt { Some(int), None }
+
+fn main() {
+    let a = Opt.Some(4)
+    if let Some(n) = a {
+        print("got {n}")
+    }
+    if let Some(n) = Opt.None {
+        print("never {n}")
+    }
+    print("end")
+}
+
+// expect: got 4
+// expect: end

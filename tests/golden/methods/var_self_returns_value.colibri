@@ -1,0 +1,18 @@
+struct Stack { top: int, size: int }
+
+impl Stack {
+    fn push(var self, v: int) -> int {
+        self.top = v
+        self.size += 1
+        return self.size
+    }
+}
+
+fn main() {
+    var s = Stack { top: 0, size: 0 }
+    let a = s.push(7)
+    let b = s.push(9)
+    print("{a} {b} {s}")
+}
+
+// expect: 1 2 Stack { top: 9, size: 2 }

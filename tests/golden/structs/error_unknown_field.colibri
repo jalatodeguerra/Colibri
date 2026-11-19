@@ -1,0 +1,6 @@
+struct P { x: int, y: int }
+
+fn main() {
+    let p = P { x: 1, y: 2, z: 3 } // error: the struct `P` has no field `z`
+    print(p.w) // error: the struct `P` has no field `w`
+}

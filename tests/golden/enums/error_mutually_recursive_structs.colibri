@@ -1,0 +1,6 @@
+enum Wrap { Leaf, Pair(Wrap, Wrap) }
+struct Cyc { c: Cyc2 } // error: the struct `Cyc` contains itself
+struct Cyc2 { c: Cyc } // error: the struct `Cyc2` contains itself
+
+fn main() {
+}

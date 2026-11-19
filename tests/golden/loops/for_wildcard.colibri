@@ -1,0 +1,9 @@
+fn main() {
+    var n = 1
+    for _ in 0..5 {
+        n *= 2
+    }
+    print(n)
+}
+
+// expect: 32

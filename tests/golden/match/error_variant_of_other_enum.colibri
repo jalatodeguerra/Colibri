@@ -1,0 +1,9 @@
+enum A { X, Y }
+enum B { P, Q }
+
+fn main() {
+    match A.X {
+        B.P => print("p") // error: this pattern is a `B`, but the value is a `A`
+        _ => print("other")
+    }
+}
