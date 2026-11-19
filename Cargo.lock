@@ -133,6 +133,7 @@ dependencies = [
  "ariadne",
  "clap",
  "colibri-runtime",
+ "colibri-syntax",
  "libtest-mimic",
 ]
 

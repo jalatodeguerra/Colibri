@@ -30,6 +30,14 @@ enum Command {
         #[arg(long = "interface", value_name = "FILE")]
         interfaces: Vec<PathBuf>,
     },
+    /// Format Colibri source files in place (`-` formats stdin to stdout)
+    Fmt {
+        /// Files or directories; defaults to the current directory
+        paths: Vec<PathBuf>,
+        /// Change nothing; exit with 1 and list the files that would be reformatted
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 /// Checks `file`, printing every diagnostic to stderr. `Err` is the exit code to stop with.
@@ -94,5 +102,6 @@ fn main() -> ExitCode {
             Err(code) => code,
         },
         Command::Run { file } => run(&file),
+        Command::Fmt { paths, check } => colibri_lang::fmt::run(&paths, check),
     })
 }

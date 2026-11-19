@@ -4,6 +4,7 @@
 pub mod ast;
 pub mod ast_dump;
 mod diagnostic;
+pub mod fmt;
 mod lexer;
 mod parser;
 mod source;
@@ -11,6 +12,7 @@ mod terminate;
 mod token;
 
 pub use diagnostic::{Diagnostic, Severity};
+pub use fmt::format_source;
 pub use lexer::lex;
 pub use parser::{parse_file, parse_interface_file};
 pub use source::{FileId, SourceMap, Span};
