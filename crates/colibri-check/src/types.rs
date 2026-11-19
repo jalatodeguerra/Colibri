@@ -49,6 +49,17 @@ pub const SIGNAL_TYPE: TypeId = TypeId(14);
 /// The built-in `StrBuilder` (DESIGN §12): a reference type that builds a string by appending.
 pub const STR_BUILDER_TYPE: TypeId = TypeId(15);
 /// The first id a user-defined type can have.
+/// The prelude classes that only built-in functions create: how to make one, if it can be made.
+pub fn prelude_class_maker(id: TypeId) -> Option<&'static str> {
+    match id {
+        COROUTINE_TYPE => Some("`go f(..)`"),
+        COGROUP_TYPE => Some("`CoGroup()`"),
+        SIGNAL_TYPE => Some("`Signal()`"),
+        STR_BUILDER_TYPE => Some("`StrBuilder()`"),
+        _ => None,
+    }
+}
+
 pub const FIRST_USER_TYPE: u32 = 16;
 /// The index of `ok` in the prelude `Result`.
 pub const VARIANT_OK: u32 = 0;

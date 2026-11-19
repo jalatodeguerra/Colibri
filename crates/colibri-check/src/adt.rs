@@ -644,6 +644,19 @@ impl FnCtx<'_, '_> {
                 );
                 return self.error_expr(span);
             }
+            Ty::Adt(id, _) if crate::types::prelude_class_maker(*id).is_some() => {
+                loose(self);
+                let tname = self.ck.types[id.0 as usize].name.clone();
+                let maker = crate::types::prelude_class_maker(*id).unwrap_or_default();
+                self.ck.report(
+                    Diagnostic::error(
+                        format!("`{tname}` cannot be built with `{{ ... }}`"),
+                        ty_expr.span,
+                    )
+                    .with_hint(format!("`{tname}` is built with {maker}")),
+                );
+                return self.error_expr(span);
+            }
             Ty::Adt(id, _) if self.ck.types[id.0 as usize].is_host_class() => {
                 loose(self);
                 let tname = self.ck.types[id.0 as usize].name.clone();

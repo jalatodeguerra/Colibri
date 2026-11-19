@@ -21,6 +21,9 @@ const BUILTIN_TYPES: &[&str] = &[
     "f32", "f64", "List", "Map", "Set", "Option", "Result", "ptr", "cstr",
 ];
 
+/// The classes the prelude declares: a program cannot declare its own.
+const PRELUDE_CLASSES: &[&str] = &["Error", "Coroutine", "CoGroup", "Signal", "StrBuilder"];
+
 /// What HIR does not keep about a user type.
 #[derive(Clone, Default)]
 pub(crate) struct TypeExtra<'a> {
@@ -137,7 +140,10 @@ impl<'a> Checker<'a> {
 
     /// Whether `name` can be declared as a type; reports a clash otherwise.
     fn name_is_free(&mut self, name: &ast::Ident, what: &str) -> bool {
-        if BUILTIN_TYPES.contains(&name.name.as_str()) {
+        if BUILTIN_TYPES.contains(&name.name.as_str())
+            || (!crate::prelude::in_prelude(name.span)
+                && PRELUDE_CLASSES.contains(&name.name.as_str()))
+        {
             self.report(Diagnostic::error(
                 format!("`{}` is a built-in type and cannot be redefined", name.name),
                 name.span,
