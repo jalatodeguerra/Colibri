@@ -4,23 +4,28 @@ use std::io::Write;
 use std::rc::Rc;
 
 use colibri_check::hir::{
-    Anchor, Arg, ArithOp, BinOp, Block, Body, Callee, CmpOp, Expr, ExprKind, FnId, GlobalId,
-    Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, UnOp,
+    Arg, ArithOp, Arm, BinOp, Block, Body, Callee, CmpOp, Expr, ExprKind, FnId, ForLoop, GlobalId,
+    Intrinsic, Lit, LocalId, LoopId, Num, Operand, Program, Stmt, StmtKind, TypeDef, UnOp,
 };
 use colibri_check::types::IntTy;
 use colibri_syntax::Span;
 
+use crate::compare::{values_cmp, values_equal};
 use crate::ctl::{Ctl, Eval, PanicInfo, TraceEntry, into_panic};
 use crate::fiber::{Fiber, Frame};
 use crate::format::format_value;
-use crate::value::{Value, show};
+use crate::place::project;
+use crate::show::show;
+use crate::value::Value;
 
 /// The interpreter: the loaded code, the module-level state and the output writer. Everything
 /// about a running computation is in the [`Fiber`] passed to each method.
 pub struct Interp {
     /// Looked up at call time, so a patched function takes effect at its next call.
     fns: Vec<Rc<Body>>,
-    globals: Vec<Value>,
+    pub(crate) globals: Vec<Value>,
+    /// The user-defined types, which `Show` needs for names.
+    types: Vec<TypeDef>,
     inits: Vec<(GlobalId, Rc<Body>)>,
     script: Option<Rc<Body>>,
     out: Box<dyn Write>,
@@ -49,6 +54,7 @@ impl Interp {
         Interp {
             fns: Vec::new(),
             globals: Vec::new(),
+            types: Vec::new(),
             inits: Vec::new(),
             script: None,
             out,
@@ -69,6 +75,7 @@ impl Interp {
     pub fn load(&mut self, program: &Program) {
         self.fns = program.fns.iter().map(|f| Rc::clone(&f.body)).collect();
         self.globals = vec![Value::Unit; program.globals.len()];
+        self.types = program.types.clone();
         self.inits = program
             .init_order
             .iter()
@@ -150,7 +157,7 @@ impl Interp {
     // ---- panics ----
 
     /// Creates a panic at `span`, capturing the Colibri stack as it is now.
-    fn panic(&self, fiber: &mut Fiber, span: Span, message: impl Into<String>) -> Ctl {
+    pub(crate) fn panic(&self, fiber: &mut Fiber, span: Span, message: impl Into<String>) -> Ctl {
         if let Some(top) = fiber.frames.last_mut() {
             top.span = span;
         }
@@ -170,17 +177,35 @@ impl Interp {
         }))
     }
 
-    fn internal(&self, fiber: &mut Fiber, span: Span, what: &str) -> Ctl {
+    pub(crate) fn internal(&self, fiber: &mut Fiber, span: Span, what: &str) -> Ctl {
         self.panic(fiber, span, format!("internal error: {what}"))
     }
 
     // ---- calls and scopes ----
 
     fn call_body(&mut self, fiber: &mut Fiber, body: Rc<Body>, args: Vec<Value>) -> Eval {
+        self.call_body_inout(fiber, body, args).0
+    }
+
+    /// Runs a call. For a `var self` method the second result is the final value of `self`,
+    /// taken out of the frame before its locals are released, for the caller to write back;
+    /// it is present on every path, including a panic.
+    fn call_body_inout(
+        &mut self,
+        fiber: &mut Fiber,
+        body: Rc<Body>,
+        args: Vec<Value>,
+    ) -> (Eval, Option<Value>) {
         if fiber.frames.len() >= self.max_depth {
             let span = fiber.frames.last().map_or(body.span, |f| f.span);
             let message = format!("stack overflow: more than {} nested calls", self.max_depth);
-            return Err(self.panic(fiber, span, message));
+            let ctl = self.panic(fiber, span, message);
+            let receiver = if body.mutates_self {
+                args.into_iter().next()
+            } else {
+                None
+            };
+            return (Err(ctl), receiver);
         }
         let mut slots = args;
         slots.resize(body.locals.len(), Value::Unit);
@@ -189,12 +214,21 @@ impl Interp {
             slots,
             span: body.span,
         });
-        let result = self.eval_block(fiber, &body.block);
+        let result = self.run_block(fiber, &body.block);
+        let receiver = match fiber.frames.last_mut() {
+            Some(frame) if body.mutates_self => frame
+                .slots
+                .first_mut()
+                .map(|s| std::mem::replace(s, Value::Unit)),
+            _ => None,
+        };
+        self.exit_scope(fiber, &body.block);
         fiber.frames.pop();
-        match result {
+        let result = match result {
             Err(Ctl::Return(v)) => Ok(v),
             other => other,
-        }
+        };
+        (result, receiver)
     }
 
     /// Evaluates a block and leaves its scope on every path (normal, `break`, `return`, panic).
@@ -273,6 +307,16 @@ impl Interp {
                 self.release(old);
                 Ok(())
             }
+            StmtKind::LetPat { pat, init } => {
+                let value = self.eval(fiber, init)?;
+                let mut binds = Vec::new();
+                if !self.match_pat(pat, &value, &mut binds) {
+                    return Err(self.internal(fiber, stmt.span, "an irrefutable pattern failed"));
+                }
+                self.release(value);
+                self.bind_all(fiber, binds);
+                Ok(())
+            }
             StmtKind::Expr(e) => {
                 let value = self.eval(fiber, e)?;
                 self.release(value);
@@ -303,37 +347,6 @@ impl Interp {
         }
     }
 
-    // ---- places ----
-
-    fn read_place(&mut self, fiber: &mut Fiber, place: &Place, span: Span) -> Eval {
-        if !place.path.is_empty() {
-            return Err(self.internal(fiber, span, "projections are not supported yet"));
-        }
-        match &place.anchor {
-            Anchor::Local(id) => match fiber.frames.last() {
-                Some(frame) => Ok(frame.slots[id.0 as usize].clone()),
-                None => Err(self.internal(fiber, span, "no frame")),
-            },
-            Anchor::Global(id) => Ok(self.globals[id.0 as usize].clone()),
-            _ => Err(self.internal(fiber, span, "this place is not supported yet")),
-        }
-    }
-
-    /// Stores `value` and returns the value it replaced.
-    fn write_place(&mut self, fiber: &mut Fiber, place: &Place, value: Value, span: Span) -> Eval {
-        if !place.path.is_empty() {
-            return Err(self.internal(fiber, span, "projections are not supported yet"));
-        }
-        match &place.anchor {
-            Anchor::Local(id) => match fiber.frames.last_mut() {
-                Some(frame) => Ok(std::mem::replace(&mut frame.slots[id.0 as usize], value)),
-                None => Err(self.internal(fiber, span, "no frame")),
-            },
-            Anchor::Global(id) => Ok(std::mem::replace(&mut self.globals[id.0 as usize], value)),
-            _ => Err(self.internal(fiber, span, "this place is not supported yet")),
-        }
-    }
-
     // ---- expressions ----
 
     /// The evaluator's hot recursion. Each arm hands off to a function of its own, which keeps
@@ -361,6 +374,27 @@ impl Interp {
             }
             ExprKind::Block(block) => self.eval_block(fiber, block),
             ExprKind::Loop { id, body } => self.eval_loop(fiber, *id, body),
+            ExprKind::For(f) => self.eval_for(fiber, f, e.span),
+            ExprKind::Struct { ty, fields } => {
+                let values = self.eval_values(fiber, fields)?;
+                Ok(Value::strukt(*ty, values))
+            }
+            ExprKind::Variant { ty, variant, args } => {
+                let values = self.eval_values(fiber, args)?;
+                Ok(Value::variant(*ty, *variant, values))
+            }
+            ExprKind::Tuple(items) => {
+                let values = self.eval_values(fiber, items)?;
+                Ok(Value::tuple(values))
+            }
+            ExprKind::Project(base, proj) => {
+                let value = self.eval(fiber, base)?;
+                match project(&value, *proj) {
+                    Some(part) => Ok(part.clone()),
+                    None => Err(self.internal(fiber, e.span, "ill-typed projection")),
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => self.eval_match(fiber, scrutinee, arms, e.span),
             ExprKind::Error => Err(self.internal(fiber, e.span, "unchecked expression")),
         }
     }
@@ -412,7 +446,7 @@ impl Interp {
         let values = fiber.temps.split_off(base);
         let mut out = String::new();
         for v in values {
-            out.push_str(&show(&v));
+            out.push_str(&show(&self.types, &v));
             self.release(v);
         }
         Ok(Value::Str(Rc::from(out)))
@@ -453,15 +487,128 @@ impl Interp {
         }
     }
 
+    /// `for i in a..b`: the bounds are evaluated once; each iteration gets a fresh `i`.
+    #[inline(never)]
+    fn eval_for(&mut self, fiber: &mut Fiber, f: &ForLoop, span: Span) -> Eval {
+        let (Value::Int(start), Value::Int(end)) =
+            (self.eval(fiber, &f.start)?, self.eval(fiber, &f.end)?)
+        else {
+            return Err(self.internal(fiber, span, "a `for` range is not an integer range"));
+        };
+        let mut i = start;
+        loop {
+            if (f.inclusive && i > end) || (!f.inclusive && i >= end) {
+                break;
+            }
+            if let Some(binding) = f.binding {
+                let old = match fiber.frames.last_mut() {
+                    Some(frame) => {
+                        std::mem::replace(&mut frame.slots[binding.0 as usize], Value::Int(i))
+                    }
+                    None => return Err(self.internal(fiber, span, "no frame")),
+                };
+                self.release(old);
+            }
+            match self.eval_block(fiber, &f.body) {
+                Ok(v) => self.release(v),
+                Err(Ctl::Continue(target)) if target == f.id => {}
+                Err(Ctl::Break(target, v)) if target == f.id => {
+                    self.release(v);
+                    break;
+                }
+                Err(other) => return Err(other),
+            }
+            // The last value of an inclusive range must not be stepped past (it may be i64::MAX).
+            if f.inclusive && i == end {
+                break;
+            }
+            i += 1;
+        }
+        Ok(Value::Unit)
+    }
+
+    /// Stores pattern bindings in their slots.
+    pub(crate) fn bind_all(&mut self, fiber: &mut Fiber, binds: Vec<(LocalId, Value)>) {
+        for (local, value) in binds {
+            let old = match fiber.frames.last_mut() {
+                Some(frame) => std::mem::replace(&mut frame.slots[local.0 as usize], value),
+                None => continue,
+            };
+            self.release(old);
+        }
+    }
+
+    /// `match`: the scrutinee stays on the temporaries stack for the whole construct, and the
+    /// first arm whose pattern matches and whose guard holds runs.
+    #[inline(never)]
+    fn eval_match(
+        &mut self,
+        fiber: &mut Fiber,
+        scrutinee: &Expr,
+        arms: &[Arm],
+        span: Span,
+    ) -> Eval {
+        let mark = fiber.temps.len();
+        self.eval_temp(fiber, scrutinee)?;
+        let result = self.run_arms(fiber, mark, arms, span);
+        self.release_temps(fiber, mark);
+        result
+    }
+
+    fn run_arms(&mut self, fiber: &mut Fiber, scrutinee: usize, arms: &[Arm], span: Span) -> Eval {
+        for arm in arms {
+            let value = fiber.temps[scrutinee].clone();
+            let mut binds = Vec::new();
+            if !self.match_pat(&arm.pat, &value, &mut binds) {
+                continue;
+            }
+            drop(value);
+            self.bind_all(fiber, binds);
+            if let Some(guard) = &arm.guard {
+                let held = match self.eval(fiber, guard) {
+                    Ok(Value::Bool(b)) => b,
+                    Ok(_) => false,
+                    Err(ctl) => {
+                        self.release_arm(fiber, &arm.body);
+                        return Err(ctl);
+                    }
+                };
+                if !held {
+                    self.release_arm(fiber, &arm.body);
+                    continue;
+                }
+            }
+            return self.eval_block(fiber, &arm.body);
+        }
+        Err(self.internal(fiber, span, "no `match` arm matched"))
+    }
+
+    /// Drops an arm's bindings when its guard fails.
+    fn release_arm(&mut self, fiber: &mut Fiber, body: &Block) {
+        self.exit_scope(fiber, body);
+    }
+
+    /// Evaluates expressions left to right into one vector of values.
+    fn eval_values(&mut self, fiber: &mut Fiber, exprs: &[Expr]) -> Eval<Vec<Value>> {
+        let base = fiber.temps.len();
+        for e in exprs {
+            self.eval_temp(fiber, e)?;
+        }
+        Ok(fiber.temps.split_off(base))
+    }
+
     fn eval_call(&mut self, fiber: &mut Fiber, callee: &Callee, args: &[Arg], span: Span) -> Eval {
         let base = fiber.temps.len();
+        // The receiver of a `var self` method is taken last, so the other arguments still see
+        // the variable it lives in.
+        let mut receiver = None;
         for arg in args {
             match arg {
                 Arg::Value(e) => self.eval_temp(fiber, e)?,
-                Arg::Place(_) => return Err(self.internal(fiber, span, "place arguments")),
+                Arg::Place(place) => receiver = Some(place),
             }
         }
-        let values = fiber.temps.split_off(base);
+        let mut values = fiber.temps.split_off(base);
         match callee {
             Callee::Fn(id) => {
                 let Some(body) = self.fns.get(id.0 as usize).cloned() else {
@@ -470,7 +617,17 @@ impl Interp {
                 if let Some(frame) = fiber.frames.last_mut() {
                     frame.span = span;
                 }
-                self.call_body(fiber, body, values)
+                let Some(place) = receiver else {
+                    return self.call_body(fiber, body, values);
+                };
+                let value = self.take_place(fiber, place, span)?;
+                values.insert(0, value);
+                let (result, out) = self.call_body_inout(fiber, body, values);
+                if let Some(updated) = out {
+                    let old = self.write_place(fiber, place, updated, span)?;
+                    self.release(old);
+                }
+                result
             }
             Callee::Intrinsic(intrinsic) => self.intrinsic(fiber, intrinsic, values, span),
         }
@@ -489,10 +646,10 @@ impl Interp {
         let result = match intrinsic {
             Intrinsic::Print => {
                 // A closed pipe is not a Colibri error; output is best effort.
-                let _ = writeln!(self.out, "{}", show(&arg));
+                let _ = writeln!(self.out, "{}", show(&self.types, &arg));
                 Value::Unit
             }
-            Intrinsic::Show => Value::Str(Rc::from(show(&arg).as_ref())),
+            Intrinsic::Show => Value::Str(Rc::from(show(&self.types, &arg).as_ref())),
             Intrinsic::Format(spec) => Value::Str(Rc::from(format_value(&arg, spec))),
         };
         self.release(arg);
@@ -538,6 +695,10 @@ impl Interp {
                 s.push_str(&b);
                 Ok(Value::Str(Rc::from(s)))
             }
+            (BinOp::Cmp(op, Operand::Structural), l, r) => match structural(op, &l, &r) {
+                Ok(b) => Ok(Value::Bool(b)),
+                Err(_) => Err(self.panic(fiber, span, "these values nest too deeply to compare")),
+            },
             (BinOp::Cmp(op, operand), l, r) => match compare(op, operand, &l, &r) {
                 Some(b) => Ok(Value::Bool(b)),
                 None => Err(self.internal(fiber, span, "ill-typed comparison")),
@@ -572,6 +733,19 @@ fn int_arith(op: ArithOp, a: i64, b: i64) -> Result<i64, Fault> {
     }
 }
 
+/// The derived comparison of two structs, enums or tuples.
+fn structural(op: CmpOp, l: &Value, r: &Value) -> Result<bool, crate::compare::TooDeep> {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    Ok(match op {
+        CmpOp::Eq => values_equal(l, r)?,
+        CmpOp::Ne => !values_equal(l, r)?,
+        CmpOp::Lt => values_cmp(l, r)? == Some(Less),
+        CmpOp::Le => matches!(values_cmp(l, r)?, Some(Less | Equal)),
+        CmpOp::Gt => values_cmp(l, r)? == Some(Greater),
+        CmpOp::Ge => matches!(values_cmp(l, r)?, Some(Greater | Equal)),
+    })
+}
+
 /// Compares two values of the same type; `None` if they are not what the operand kind says.
 fn compare(op: CmpOp, operand: Operand, l: &Value, r: &Value) -> Option<bool> {
     fn by_ord<T: PartialOrd + ?Sized>(op: CmpOp, a: &T, b: &T) -> bool {
@@ -591,6 +765,7 @@ fn compare(op: CmpOp, operand: Operand, l: &Value, r: &Value) -> Option<bool> {
         (Operand::Char, Value::Char(a), Value::Char(b)) => by_ord(op, a, b),
         (Operand::Str, Value::Str(a), Value::Str(b)) => by_ord::<str>(op, a, b),
         (Operand::Unit, Value::Unit, Value::Unit) => by_ord(op, &(), &()),
+        (Operand::Structural, ..) => return None,
         _ => return None,
     })
 }

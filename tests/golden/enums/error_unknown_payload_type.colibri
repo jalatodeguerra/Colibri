@@ -1,0 +1,4 @@
+enum E { A(Missing) } // error: unknown type `Missing`
+
+fn main() {
+}

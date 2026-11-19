@@ -1,0 +1,9 @@
+enum Opt { Some(int), None }
+
+fn main() {
+    var cur = Opt.None
+    while let Some(n) = cur {
+        print(m) // error: unknown name `m`
+        cur = .None
+    }
+}

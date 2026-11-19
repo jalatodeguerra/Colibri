@@ -1,0 +1,5 @@
+fn main() {
+    match (1, 2) {
+        (a, a) => print(a) // error: `a` is bound more than once in this pattern
+    }
+}

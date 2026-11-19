@@ -1,0 +1,13 @@
+enum Chain { Nil, Cons(int, Chain) }
+
+fn main() {
+    var l = Chain.Cons(1, .Cons(2, .Cons(3, .Nil)))
+    var sum = 0
+    while let Cons(h, t) = l {
+        sum += h
+        l = t
+    }
+    print(sum)
+}
+
+// expect: 6

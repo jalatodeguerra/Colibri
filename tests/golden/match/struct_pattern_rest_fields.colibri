@@ -1,0 +1,15 @@
+struct User { name: str, age: int, admin: bool }
+
+fn main() {
+    let u = User { name: "Ana", age: 30, admin: true }
+    match u {
+        User { name, .. } => print("hello {name}")
+    }
+    let age = match u {
+        User { age: a, .. } => a
+    }
+    print(age)
+}
+
+// expect: hello Ana
+// expect: 30

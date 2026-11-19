@@ -1,0 +1,3 @@
+fn main() {
+    let (a, b) = 5 // error: this is a tuple pattern, but the value is a `int`
+}

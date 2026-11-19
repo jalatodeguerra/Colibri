@@ -1,0 +1,22 @@
+fn count(n: int) -> int {
+    var c = 0
+    for _ in 0..n {
+        c += 1
+    }
+    return c
+}
+
+fn main() {
+    print(count(0))
+    print(count(7))
+    let lo = -2
+    for i in lo..=lo + 2 {
+        print(i)
+    }
+}
+
+// expect: 0
+// expect: 7
+// expect: -2
+// expect: -1
+// expect: 0

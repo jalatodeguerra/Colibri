@@ -1,0 +1,15 @@
+fn bound() -> int {
+    print("bound")
+    return 3
+}
+
+fn main() {
+    for i in 0..bound() {
+        print(i)
+    }
+}
+
+// expect: bound
+// expect: 0
+// expect: 1
+// expect: 2

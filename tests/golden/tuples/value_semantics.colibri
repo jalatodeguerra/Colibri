@@ -1,0 +1,11 @@
+fn main() {
+    var a = (1, 2)
+    var b = a
+    b.0 = 99
+    a.1 = 7
+    print(a)
+    print(b)
+}
+
+// expect: (1, 7)
+// expect: (99, 2)

@@ -1,0 +1,18 @@
+enum Dir { North, East, South, West }
+
+fn turn(d: Dir) -> Dir {
+    return match d {
+        North => .East
+        East => .South
+        South => .West
+        West => .North
+    }
+}
+
+fn main() {
+    print(turn(.North))
+    print(turn(turn(.East)))
+}
+
+// expect: East
+// expect: West

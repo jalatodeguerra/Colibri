@@ -1,0 +1,9 @@
+struct P { x: int, name: str }
+
+fn main() {
+    let p = P {
+        x: "one", // error: expected `int`, found `str`
+        name: true, // error: expected `str`, found `bool`
+    }
+    print(p)
+}

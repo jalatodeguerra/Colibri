@@ -1,5 +1,5 @@
 @inline // error: the attribute `@inline` is not supported yet
 fn f() {}
 fn main() {
-    let (a, b) = 1 // error: destructuring in `let` is not supported yet
+    let (a, b) = 1 // error: this is a tuple pattern, but the value is a `int`
 }

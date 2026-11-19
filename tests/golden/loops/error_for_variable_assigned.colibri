@@ -1,0 +1,5 @@
+fn main() {
+    for i in 0..3 {
+        i += 1 // error: cannot assign to the variable `i`, which is not mutable
+    }
+}

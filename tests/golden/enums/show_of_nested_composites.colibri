@@ -1,0 +1,23 @@
+struct P { x: int, y: int }
+enum Ev { Click(P), Key(char), Text(str), Pair((int, str)), Idle }
+struct Log { events: (Ev, Ev), label: str }
+
+fn main() {
+    print(Ev.Click(P { x: 1, y: 2 }))
+    print(Ev.Key('q'))
+    print(Ev.Text("hi \"there\""))
+    print(Ev.Pair((1, "a")))
+    print(Ev.Idle)
+    print(Log { events: (.Idle, .Key('z')), label: "l" })
+    print("x")
+    print('c')
+}
+
+// expect: Click(P { x: 1, y: 2 })
+// expect: Key('q')
+// expect: Text("hi \"there\"")
+// expect: Pair((1, "a"))
+// expect: Idle
+// expect: Log { events: (Idle, Key('z')), label: "l" }
+// expect: x
+// expect: c

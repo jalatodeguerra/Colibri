@@ -1,0 +1,15 @@
+struct P { x: int, y: int }
+
+impl P {
+    fn reset(var self) {
+        self = P { x: 0, y: 0 }
+    }
+}
+
+fn main() {
+    var p = P { x: 4, y: 5 }
+    p.reset()
+    print(p)
+}
+
+// expect: P { x: 0, y: 0 }

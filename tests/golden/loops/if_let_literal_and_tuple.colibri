@@ -1,0 +1,18 @@
+fn main() {
+    let t = (1, "a")
+    if let (1, s) = t {
+        print("one and {s}")
+    }
+    if let (2, _) = t {
+        print("never")
+    } else {
+        print("not two")
+    }
+    if let 5 = 5 {
+        print("five")
+    }
+}
+
+// expect: one and a
+// expect: not two
+// expect: five

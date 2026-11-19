@@ -1,0 +1,13 @@
+enum Cmd { Move(int), Say(str), Quit }
+
+fn main() {
+    let a = Cmd.Move(3)
+    let b = Cmd.Say("hi")
+    print(a)
+    print(b)
+    print(Cmd.Quit)
+}
+
+// expect: Move(3)
+// expect: Say("hi")
+// expect: Quit

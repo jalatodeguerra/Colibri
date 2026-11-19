@@ -1,0 +1,21 @@
+enum Opt { Some(int), None }
+
+fn f(a: Opt, b: Opt) -> int {
+    return match a {
+        Some(x) => match b {
+            Some(y) => x * y
+            None => x
+        }
+        None => 0
+    }
+}
+
+fn main() {
+    print(f(.Some(3), .Some(4)))
+    print(f(.Some(3), .None))
+    print(f(.None, .Some(1)))
+}
+
+// expect: 12
+// expect: 3
+// expect: 0

@@ -1,0 +1,8 @@
+enum Cmd { Move(int), Quit }
+
+fn main() {
+    match Cmd.Quit { // error: non-exhaustive `match`: missing case: Move(_)
+        Move(0) => print("stay")
+        Quit => print("quit")
+    }
+}

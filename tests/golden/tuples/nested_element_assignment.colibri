@@ -1,0 +1,13 @@
+struct P { x: int }
+
+fn main() {
+    var t = ((1, 2), P { x: 3 })
+    let copy = t
+    t.0.1 = 20
+    t.1.x = 30
+    print(t)
+    print(copy)
+}
+
+// expect: ((1, 20), P { x: 30 })
+// expect: ((1, 2), P { x: 3 })

@@ -1,0 +1,7 @@
+struct P { x: int }
+
+fn make() -> P => P { x: 1 }
+
+fn main() {
+    make().x = 2 // error: cannot assign to a part of a temporary value
+}

@@ -6,7 +6,10 @@
 
 use std::fmt;
 
-/// Identifies a user-defined struct, enum, class or interface (not produced yet).
+use crate::hir::TypeDef;
+
+/// Identifies a user-defined struct, enum, class or interface: an index into
+/// [`crate::hir::Program::types`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TypeId(pub u32);
 
@@ -86,18 +89,46 @@ impl Ty {
     }
 }
 
+impl Ty {
+    /// The type as written in source, with user-defined types shown by name. (`Display` has no
+    /// access to the program's types and shows them as `type#N`.)
+    pub fn render(&self, types: &[TypeDef]) -> String {
+        Shown { ty: self, types }.to_string()
+    }
+}
+
+/// A type together with the names of the user-defined types it may mention.
+struct Shown<'a> {
+    ty: &'a Ty,
+    types: &'a [TypeDef],
+}
+
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fn list(f: &mut fmt::Formatter<'_>, tys: &[Ty]) -> fmt::Result {
+        Shown {
+            ty: self,
+            types: &[],
+        }
+        .fmt(f)
+    }
+}
+
+impl fmt::Display for Shown<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let types = self.types;
+        fn shown<'a>(ty: &'a Ty, types: &'a [TypeDef]) -> Shown<'a> {
+            Shown { ty, types }
+        }
+        let list = |f: &mut fmt::Formatter<'_>, tys: &[Ty]| -> fmt::Result {
             for (i, ty) in tys.iter().enumerate() {
                 if i > 0 {
                     f.write_str(", ")?;
                 }
-                write!(f, "{ty}")?;
+                write!(f, "{}", shown(ty, types))?;
             }
             Ok(())
-        }
-        match self {
+        };
+        match self.ty {
             Ty::Int(i) => f.write_str(i.name()),
             Ty::Float => f.write_str("float"),
             Ty::Bool => f.write_str("bool"),
@@ -114,7 +145,10 @@ impl fmt::Display for Ty {
                 f.write_str(")")
             }
             Ty::Adt(id, args) => {
-                write!(f, "type#{}", id.0)?;
+                match types.get(id.0 as usize) {
+                    Some(def) => f.write_str(&def.name)?,
+                    None => write!(f, "type#{}", id.0)?,
+                }
                 if !args.is_empty() {
                     f.write_str("[")?;
                     list(f, args)?;
@@ -122,18 +156,18 @@ impl fmt::Display for Ty {
                 }
                 Ok(())
             }
-            Ty::List(t) => write!(f, "List[{t}]"),
-            Ty::Map(k, v) => write!(f, "Map[{k}, {v}]"),
-            Ty::Set(t) => write!(f, "Set[{t}]"),
-            Ty::Option(t) => write!(f, "{t}?"),
-            Ty::Result(t, e) if **e == Ty::Error => write!(f, "Result[{t}]"),
-            Ty::Result(t, e) => write!(f, "Result[{t}, {e}]"),
+            Ty::List(t) => write!(f, "List[{}]", shown(t, types)),
+            Ty::Map(k, v) => write!(f, "Map[{}, {}]", shown(k, types), shown(v, types)),
+            Ty::Set(t) => write!(f, "Set[{}]", shown(t, types)),
+            Ty::Option(t) => write!(f, "{}?", shown(t, types)),
+            Ty::Result(t, e) if **e == Ty::Error => write!(f, "Result[{}]", shown(t, types)),
+            Ty::Result(t, e) => write!(f, "Result[{}, {}]", shown(t, types), shown(e, types)),
             Ty::Fn(params, ret) => {
                 f.write_str("fn(")?;
                 list(f, params)?;
                 f.write_str(")")?;
                 if **ret != Ty::Unit {
-                    write!(f, " -> {ret}")?;
+                    write!(f, " -> {}", shown(ret, types))?;
                 }
                 Ok(())
             }
@@ -149,6 +183,13 @@ impl fmt::Display for Ty {
 pub struct FnSig {
     pub params: Vec<Ty>,
     pub ret: Ty,
+}
+
+impl FnSig {
+    /// The signature as written in source, with user-defined types shown by name.
+    pub fn render(&self, types: &[TypeDef]) -> String {
+        Ty::Fn(self.params.clone(), Box::new(self.ret.clone())).render(types)
+    }
 }
 
 impl fmt::Display for FnSig {

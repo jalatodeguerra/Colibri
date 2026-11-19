@@ -1,0 +1,26 @@
+enum Chain { Nil, Cons(int, Chain) }
+
+fn sum(l: Chain) -> int {
+    return match l {
+        Nil => 0
+        Cons(h, t) => h + sum(t)
+    }
+}
+
+fn len(l: Chain) -> int {
+    return match l {
+        Nil => 0
+        Cons(_, t) => 1 + len(t)
+    }
+}
+
+fn main() {
+    let l = Chain.Cons(1, .Cons(2, .Cons(3, .Nil)))
+    print(sum(l))
+    print(len(l))
+    print(l)
+}
+
+// expect: 6
+// expect: 3
+// expect: Cons(1, Cons(2, Cons(3, Nil)))

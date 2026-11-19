@@ -1,0 +1,5 @@
+enum Cmd { Move(int), Quit }
+
+fn main() {
+    let c = Cmd.Move // error: `Cmd.Move` carries data
+}

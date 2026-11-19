@@ -1,0 +1,6 @@
+impl int { // error: cannot add methods to the built-in type `int`
+    fn double(self) -> int => self * 2
+}
+
+fn main() {
+}

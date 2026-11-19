@@ -1,0 +1,20 @@
+struct Stats { kills: int, deaths: int }
+
+var stats = Stats { kills: 0, deaths: 0 }
+
+fn kill() {
+    stats.kills += 1
+}
+
+fn main() {
+    kill()
+    kill()
+    stats.deaths = 1
+    let snapshot = stats
+    kill()
+    print(stats)
+    print(snapshot)
+}
+
+// expect: Stats { kills: 3, deaths: 1 }
+// expect: Stats { kills: 2, deaths: 1 }

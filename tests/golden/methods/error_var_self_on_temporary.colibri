@@ -1,0 +1,13 @@
+struct C { n: int }
+
+impl C {
+    fn inc(var self) {
+        self.n += 1
+    }
+}
+
+fn make() -> C => C { n: 0 }
+
+fn main() {
+    make().inc() // error: `inc` changes its receiver, so it needs a variable, not a temporary value
+}

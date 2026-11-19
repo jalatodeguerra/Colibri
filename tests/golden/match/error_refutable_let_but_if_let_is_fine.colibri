@@ -1,0 +1,8 @@
+enum E { A(int), B }
+
+fn main() {
+    if let A(n) = E.A(1) {
+        print(n)
+    }
+    let A(n) = E.A(2) // error: this `let` pattern does not match every value; missing case: B
+}

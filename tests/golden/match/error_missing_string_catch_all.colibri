@@ -1,0 +1,6 @@
+fn main() {
+    match "x" { // error: non-exhaustive `match`: missing case: _
+        "x" => print("x")
+        "y" => print("y")
+    }
+}

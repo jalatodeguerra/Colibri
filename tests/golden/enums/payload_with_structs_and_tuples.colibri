@@ -1,0 +1,12 @@
+struct P { x: int, y: int }
+enum Ev { Click(P), Drag(P, P), Pair((int, str)) }
+
+fn main() {
+    print(Ev.Click(P { x: 1, y: 2 }))
+    print(Ev.Drag(P { x: 0, y: 0 }, P { x: 5, y: 5 }))
+    print(Ev.Pair((1, "a")))
+}
+
+// expect: Click(P { x: 1, y: 2 })
+// expect: Drag(P { x: 0, y: 0 }, P { x: 5, y: 5 })
+// expect: Pair((1, "a"))

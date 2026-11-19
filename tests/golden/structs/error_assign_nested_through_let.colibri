@@ -1,0 +1,7 @@
+struct In { v: int }
+struct Out { inner: In }
+
+fn main() {
+    let o = Out { inner: In { v: 1 } }
+    o.inner.v = 2 // error: cannot assign to `o.inner.v`, because `o` is not mutable
+}

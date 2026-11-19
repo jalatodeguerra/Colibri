@@ -1,0 +1,20 @@
+fn sign(n: int) -> str {
+    return match n {
+        -100..=-1 => "neg"
+        0 => "zero"
+        1..=100 => "pos"
+        _ => "far"
+    }
+}
+
+fn main() {
+    print(sign(-5))
+    print(sign(0))
+    print(sign(7))
+    print(sign(1000))
+}
+
+// expect: neg
+// expect: zero
+// expect: pos
+// expect: far

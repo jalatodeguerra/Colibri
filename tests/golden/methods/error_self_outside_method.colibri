@@ -1,0 +1,6 @@
+fn helper() -> int {
+    return self.x // error: `self` can only be used inside a method
+}
+
+fn main() {
+}

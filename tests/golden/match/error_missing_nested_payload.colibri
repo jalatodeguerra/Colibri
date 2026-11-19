@@ -1,0 +1,9 @@
+enum Opt { Some(int), None }
+
+fn main() {
+    let p = (Opt.Some(1), Opt.None)
+    match p { // error: non-exhaustive `match`: missing case: (Some(_), None)
+        (Some(_), Some(_)) => print("both")
+        (None, _) => print("first none")
+    }
+}

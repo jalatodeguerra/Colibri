@@ -1,0 +1,16 @@
+struct P { a: int, b: int, c: int }
+
+fn tick(label: str, v: int) -> int {
+    print(label)
+    return v
+}
+
+fn main() {
+    let p = P { c: tick("c", 3), a: tick("a", 1), b: tick("b", 2) }
+    print(p)
+}
+
+// expect: c
+// expect: a
+// expect: b
+// expect: P { a: 1, b: 2, c: 3 }

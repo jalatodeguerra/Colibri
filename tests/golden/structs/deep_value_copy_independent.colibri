@@ -1,0 +1,18 @@
+struct Leaf { v: int }
+struct Mid { leaf: Leaf }
+struct Top { mid: Mid }
+
+fn main() {
+    var a = Top { mid: Mid { leaf: Leaf { v: 1 } } }
+    var b = a
+    var c = b
+    c.mid.leaf.v = 3
+    b.mid.leaf.v = 2
+    print(a.mid.leaf.v)
+    print(b.mid.leaf.v)
+    print(c.mid.leaf.v)
+}
+
+// expect: 1
+// expect: 2
+// expect: 3

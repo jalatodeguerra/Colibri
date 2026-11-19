@@ -1,0 +1,17 @@
+struct Rect { w: int, h: int }
+
+impl Rect {
+    fn area(self) -> int => self.w * self.h
+    fn describe(self) -> str => "{self.w}x{self.h}"
+}
+
+fn main() {
+    let r = Rect { w: 3, h: 4 }
+    print(r.area())
+    print(r.describe())
+    print(Rect { w: 2, h: 2 }.area())
+}
+
+// expect: 12
+// expect: 3x4
+// expect: 4

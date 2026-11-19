@@ -1,0 +1,42 @@
+fn grade(score: int) -> char {
+    return match score {
+        90..=100 => 'A'
+        80..90 => 'B'
+        70..80 => 'C'
+        0..70 => 'F'
+        _ => '?'
+    }
+}
+
+fn kind(c: char) -> str {
+    return match c {
+        'a'..='z' => "lower"
+        'A'..='Z' => "upper"
+        '0'..='9' => "digit"
+        _ => "other"
+    }
+}
+
+fn main() {
+    print(grade(95))
+    print(grade(90))
+    print(grade(89))
+    print(grade(75))
+    print(grade(10))
+    print(grade(101))
+    print(kind('q'))
+    print(kind('Q'))
+    print(kind('5'))
+    print(kind('-'))
+}
+
+// expect: A
+// expect: A
+// expect: B
+// expect: C
+// expect: F
+// expect: ?
+// expect: lower
+// expect: upper
+// expect: digit
+// expect: other

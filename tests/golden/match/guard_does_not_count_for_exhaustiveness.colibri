@@ -1,0 +1,14 @@
+fn f(n: int) -> int {
+    return match n {
+        x if x > 0 => 1
+        _ => 0
+    }
+}
+
+fn main() {
+    print(f(5))
+    print(f(-5))
+}
+
+// expect: 1
+// expect: 0

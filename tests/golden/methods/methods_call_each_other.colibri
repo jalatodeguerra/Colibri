@@ -1,0 +1,19 @@
+struct V { x: int, y: int }
+
+impl V {
+    fn dot(self, o: V) -> int => self.x * o.x + self.y * o.y
+    fn len2(self) -> int => self.dot(self)
+    fn scaled(self, k: int) -> V => V { x: self.x * k, y: self.y * k }
+    fn origin() -> V => V { x: 0, y: 0 }
+}
+
+fn main() {
+    let v = V { x: 3, y: 4 }
+    print(v.len2())
+    print(v.scaled(2).len2())
+    print(V.origin().len2())
+}
+
+// expect: 25
+// expect: 100
+// expect: 0

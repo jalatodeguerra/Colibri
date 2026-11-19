@@ -1,0 +1,27 @@
+enum Chain { Nil, Cons(int, Chain) }
+
+fn build(n: int) -> Chain {
+    var l = Chain.Nil
+    var i = 0
+    while i < n {
+        l = .Cons(i, l)
+        i += 1
+    }
+    return l
+}
+
+fn main() {
+    let l = build(20000)
+    print(match l {
+        Cons(h, _) => h
+        Nil => -1
+    })
+    let again = build(30000)
+    print(match again {
+        Cons(h, _) => h
+        Nil => -1
+    })
+}
+
+// expect: 19999
+// expect: 29999

@@ -1,0 +1,8 @@
+enum Cmd { Move(int), Quit }
+
+fn main() {
+    match Cmd.Quit {
+        Move(_) => print("move")
+        Quti => print("quit") // error: the enum `Cmd` has no variant `Quti`
+    }
+}

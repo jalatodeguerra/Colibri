@@ -1,0 +1,16 @@
+enum Shape { Rect(w: float, h: float), Circle(radius: float) }
+
+fn describe(s: Shape) -> str {
+    return match s {
+        Rect(w, h) => "rect {w}x{h}"
+        Circle(r) => "circle {r}"
+    }
+}
+
+fn main() {
+    print(describe(.Rect(w: 2.0, h: 3.0)))
+    print(describe(.Circle(radius: 1.5)))
+}
+
+// expect: rect 2.0x3.0
+// expect: circle 1.5

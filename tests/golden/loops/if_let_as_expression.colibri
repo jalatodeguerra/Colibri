@@ -1,0 +1,12 @@
+enum Opt { Some(int), None }
+
+fn main() {
+    let a = Opt.Some(5)
+    let n = if let Some(x) = a { x * 2 } else { 0 }
+    print(n)
+    let m = if let Some(x) = Opt.None { x } else { -1 }
+    print(m)
+}
+
+// expect: 10
+// expect: -1

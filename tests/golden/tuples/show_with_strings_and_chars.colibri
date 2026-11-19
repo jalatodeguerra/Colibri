@@ -1,0 +1,8 @@
+fn main() {
+    let t = ("hi", 'c', 1.0, false, ())
+    print(t)
+    print("{t.0} {t.1}")
+}
+
+// expect: ("hi", 'c', 1.0, false, ())
+// expect: hi c

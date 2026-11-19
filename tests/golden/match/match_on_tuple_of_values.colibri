@@ -1,0 +1,32 @@
+fn fizz(n: int) -> str {
+    return match (n % 3, n % 5) {
+        (0, 0) => "FizzBuzz"
+        (0, _) => "Fizz"
+        (_, 0) => "Buzz"
+        _ => "{n}"
+    }
+}
+
+fn main() {
+    var i = 1
+    while i <= 15 {
+        print(fizz(i))
+        i += 1
+    }
+}
+
+// expect: 1
+// expect: 2
+// expect: Fizz
+// expect: 4
+// expect: Buzz
+// expect: Fizz
+// expect: 7
+// expect: 8
+// expect: Fizz
+// expect: Buzz
+// expect: 11
+// expect: Fizz
+// expect: 13
+// expect: 14
+// expect: FizzBuzz

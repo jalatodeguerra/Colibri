@@ -44,6 +44,7 @@ impl FnCtx<'_, '_> {
             ExprKind::Tuple(items) if items.is_empty() => {
                 self.mk(hir::ExprKind::Lit(Lit::Unit), Ty::Unit, span)
             }
+            ExprKind::Tuple(items) => self.check_tuple(items, expected, span),
             ExprKind::Paren(inner) => self.check_expr(inner, expected),
             ExprKind::Ident(id) => self.check_ident(id, span),
             ExprKind::Unary { op, expr } => self.check_unary(*op, expr, span, expected),
@@ -64,20 +65,35 @@ impl FnCtx<'_, '_> {
             ExprKind::None => self.unsupported("`none`", span),
             ExprKind::List(_) => self.unsupported("list literal", span),
             ExprKind::Map(_) => self.unsupported("map literal", span),
-            ExprKind::Tuple(_) => self.unsupported("tuple", span),
-            ExprKind::SelfValue => self.unsupported("`self`", span),
-            ExprKind::DotVariant { .. } => self.unsupported("`.Variant` shorthand", span),
-            ExprKind::StructLit { .. } => self.unsupported("struct literal", span),
-            ExprKind::Range { .. } => self.unsupported("range", span),
+            ExprKind::SelfValue => self.check_self(span),
+            ExprKind::DotVariant { name, args } => {
+                self.check_dot_variant(name, args.as_deref(), expected, span)
+            }
+            ExprKind::StructLit { ty, fields } => self.check_struct_lit(ty, fields, span),
+            ExprKind::Range { .. } => self.unsupported("a range outside a `for` loop", span),
             ExprKind::Cast { .. } => self.unsupported("`as` cast", span),
             ExprKind::Or { .. } => self.unsupported("`or` fallback", span),
             ExprKind::OrHandler { .. } => self.unsupported("`or` handler", span),
             ExprKind::Try(_) => self.unsupported("the `?` operator", span),
-            ExprKind::Field { .. } => self.unsupported("field access", span),
-            ExprKind::TupleIndex { .. } => self.unsupported("tuple indexing", span),
+            ExprKind::Field { base, name } => self.check_field_expr(base, name, span),
+            ExprKind::TupleIndex { base, index } => self.check_tuple_index_expr(base, *index, span),
             ExprKind::Index { .. } => self.unsupported("indexing", span),
-            ExprKind::IfLet { .. } => self.unsupported("`if let`", span),
-            ExprKind::Match { .. } => self.unsupported("`match`", span),
+            ExprKind::IfLet {
+                pat,
+                scrutinee,
+                then,
+                else_,
+            } => self.check_if_let(
+                span,
+                pat,
+                scrutinee,
+                then,
+                else_.as_deref(),
+                BlockMode::Value(expected),
+            ),
+            ExprKind::Match { scrutinee, arms } => {
+                self.check_match(span, scrutinee, arms, BlockMode::Value(expected))
+            }
             ExprKind::Closure(_) => self.unsupported("closure", span),
             ExprKind::Unsafe(_) => self.unsupported("`unsafe` block", span),
             ExprKind::Error => self.error_expr(span),
@@ -151,6 +167,15 @@ impl FnCtx<'_, '_> {
                     self.error_expr(span)
                 }
                 "some" | "ok" | "err" => self.unsupported(&format!("`{name}`"), span),
+                _ if self.ck.type_by_name(name).is_some() => {
+                    self.ck.report(
+                        Diagnostic::error(format!("`{name}` is a type, not a value"), span)
+                            .with_hint(format!(
+                                "build one with `{name} {{ ... }}` (a struct) or `{name}.Variant` (an enum)"
+                            )),
+                    );
+                    self.error_expr(span)
+                }
                 _ => {
                     self.report_unknown_name(name, span);
                     self.error_expr(span)
@@ -201,18 +226,30 @@ impl FnCtx<'_, '_> {
         if ty.is_error() {
             return value;
         }
+        let spec = spec.filter(|s| !s.is_empty());
         if !matches!(
             ty,
             Ty::Int(_) | Ty::Float | Ty::Bool | Ty::Char | Ty::Str | Ty::Unit
         ) {
             let shown = self.show(&ty);
-            self.ck.report(Diagnostic::error(
-                format!("a value of type `{shown}` cannot be shown in a string"),
-                span,
-            ));
-            return self.error_expr(span);
+            if !matches!(ty, Ty::Tuple(_) | Ty::Adt(..)) {
+                self.ck.report(Diagnostic::error(
+                    format!("a value of type `{shown}` cannot be shown in a string"),
+                    span,
+                ));
+                return self.error_expr(span);
+            }
+            if spec.is_some() {
+                self.ck.report(
+                    Diagnostic::error(
+                        format!("a value of type `{shown}` cannot take a format spec"),
+                        span,
+                    )
+                    .with_hint("a spec applies to numbers, strings, chars and bools; format the fields one by one"),
+                );
+                return self.error_expr(span);
+            }
         }
-        let spec = spec.filter(|s| !s.is_empty());
         let intrinsic = match spec {
             None if ty == Ty::Str => return value,
             None => Intrinsic::Show,
@@ -354,21 +391,24 @@ impl FnCtx<'_, '_> {
             return self.error_expr(span);
         }
         let equality = matches!(cmp, CmpOp::Eq | CmpOp::Ne);
-        let ok = match self.infer.shallow(&l.ty) {
-            Ty::Error => true,
-            Ty::Unit => equality,
-            Ty::Bool | Ty::Char | Ty::Str => true,
-            t => self.is_numeric(&t),
+        let ok = if equality {
+            self.supports_eq(&l.ty)
+        } else {
+            self.supports_ord(&l.ty)
         };
         if !ok {
             let shown = self.show(&l.ty);
-            self.ck.report(Diagnostic::error(
+            let mut diag = Diagnostic::error(
                 format!(
                     "`{}` cannot compare values of type `{shown}`",
                     op_symbol(op)
                 ),
                 span,
-            ));
+            );
+            if let Some(hint) = self.comparison_hint(&l.ty, equality) {
+                diag = diag.with_hint(hint);
+            }
+            self.ck.report(diag);
             return self.error_expr(span);
         }
         self.mk(
@@ -486,14 +526,42 @@ impl FnCtx<'_, '_> {
                 span,
             );
         };
-        let else_block = match &else_expr.kind {
+        let Some(else_block) = self.check_else(else_expr, mode) else {
+            return self.error_expr(span);
+        };
+        let ty = self.join_branches(mode, &then_block, &else_block);
+        self.mk(
+            hir::ExprKind::If {
+                cond: Box::new(cond),
+                then: Box::new(then_block),
+                else_: Some(Box::new(else_block)),
+            },
+            ty,
+            span,
+        )
+    }
+
+    /// The block of an `else` (a plain block, or another `if` / `if let`).
+    pub fn check_else(&mut self, else_expr: &ast::Expr, mode: BlockMode<'_>) -> Option<Block> {
+        match &else_expr.kind {
             ExprKind::Block(b) => Some(self.check_block(b, mode)),
-            ExprKind::If { cond, then, else_ } => {
+            ExprKind::If { .. } | ExprKind::IfLet { .. } => {
                 self.push_scope();
-                let inner = self.check_if(else_expr.span, cond, then, else_.as_deref(), mode);
+                let espan = else_expr.span;
+                let inner = match &else_expr.kind {
+                    ExprKind::If { cond, then, else_ } => {
+                        self.check_if(espan, cond, then, else_.as_deref(), mode)
+                    }
+                    ExprKind::IfLet {
+                        pat,
+                        scrutinee,
+                        then,
+                        else_,
+                    } => self.check_if_let(espan, pat, scrutinee, then, else_.as_deref(), mode),
+                    _ => return None,
+                };
                 let locals = self.pop_scope();
                 let ty = inner.ty.clone();
-                let espan = else_expr.span;
                 Some(match mode {
                     BlockMode::Value(_) => Block {
                         locals,
@@ -514,20 +582,22 @@ impl FnCtx<'_, '_> {
                     },
                 })
             }
-            ExprKind::IfLet { .. } => {
-                self.ck.unsupported("`if let`", else_expr.span);
-                None
-            }
             _ => None,
-        };
-        let Some(else_block) = else_block else {
-            return self.error_expr(span);
-        };
+        }
+    }
+
+    /// The type of an `if` / `else` pair: both branches must agree when it is a value.
+    pub fn join_branches(
+        &mut self,
+        mode: BlockMode<'_>,
+        then_block: &Block,
+        else_block: &Block,
+    ) -> Ty {
         let (then_ty, else_ty) = (
             self.infer.shallow(&then_block.ty),
             self.infer.shallow(&else_block.ty),
         );
-        let ty = match mode {
+        match mode {
             BlockMode::Stmts => {
                 if then_ty == Ty::Never && else_ty == Ty::Never {
                     Ty::Never
@@ -557,16 +627,7 @@ impl FnCtx<'_, '_> {
                     Ty::Error
                 }
             }
-        };
-        self.mk(
-            hir::ExprKind::If {
-                cond: Box::new(cond),
-                then: Box::new(then_block),
-                else_: Some(Box::new(else_block)),
-            },
-            ty,
-            span,
-        )
+        }
     }
 }
 

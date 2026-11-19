@@ -1,0 +1,14 @@
+struct Acc { sum: int, evens: int }
+
+fn main() {
+    var a = Acc { sum: 0, evens: 0 }
+    for i in 1..=6 {
+        a.sum += i
+        if i % 2 == 0 {
+            a.evens += 1
+        }
+    }
+    print(a)
+}
+
+// expect: Acc { sum: 21, evens: 3 }

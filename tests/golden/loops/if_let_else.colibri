@@ -1,0 +1,17 @@
+enum Shape { Circle(float), Rect(float, float) }
+
+fn describe(s: Shape) -> str {
+    if let Circle(r) = s {
+        return "circle {r}"
+    } else {
+        return "not a circle"
+    }
+}
+
+fn main() {
+    print(describe(.Circle(1.0)))
+    print(describe(.Rect(1.0, 2.0)))
+}
+
+// expect: circle 1.0
+// expect: not a circle

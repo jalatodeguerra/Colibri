@@ -1,0 +1,5 @@
+fn main() {
+    for i in 0.. { // error: an open-ended range in a `for` loop is not supported yet
+        break
+    }
+}

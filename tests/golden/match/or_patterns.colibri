@@ -1,0 +1,30 @@
+fn kind(n: int) -> str {
+    return match n {
+        1 | 2 | 3 => "low"
+        4 | 5 => "mid"
+        _ => "high"
+    }
+}
+
+enum Light { Red, Yellow, Green }
+
+fn proceed(l: Light) -> bool {
+    return match l {
+        Green => true
+        Red | Yellow => false
+    }
+}
+
+fn main() {
+    print(kind(2))
+    print(kind(5))
+    print(kind(9))
+    print(proceed(.Green))
+    print(proceed(.Yellow))
+}
+
+// expect: low
+// expect: mid
+// expect: high
+// expect: true
+// expect: false

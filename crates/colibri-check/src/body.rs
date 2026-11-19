@@ -7,11 +7,12 @@ use colibri_syntax::ast::{self, AssignOp, BindKind, ExprKind, PatKind, StmtKind}
 use colibri_syntax::{Diagnostic, Span};
 
 use crate::checker::{Checker, Dep, ParamInfo, ValueRef};
+use crate::exhaust::{self, ArmInfo};
 use crate::hir::{
-    self, Anchor, ArithOp, BinOp, Block, Body, Expr, FnId, LocalId, LocalInfo, LoopId, Num, Place,
-    Stmt, Storage,
+    self, ArithOp, BinOp, Block, Body, Expr, FnId, LocalId, LocalInfo, LoopId, Num, Stmt, Storage,
 };
 use crate::infer::{InferCtx, VarKind};
+use crate::pat::PatCx;
 use crate::suggest;
 use crate::types::{IntTy, Ty};
 use crate::zonk;
@@ -27,7 +28,7 @@ pub(crate) enum BlockMode<'t> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum LocalKind {
+pub(crate) enum LocalKind {
     Param,
     Let,
     Var,
@@ -42,9 +43,9 @@ struct Scope {
     locals: Vec<LocalId>,
 }
 
-struct LoopFrame {
-    id: LoopId,
-    label: Option<String>,
+pub(crate) struct LoopFrame {
+    pub id: LoopId,
+    pub label: Option<String>,
 }
 
 /// The state of checking one body.
@@ -52,18 +53,20 @@ pub(crate) struct FnCtx<'c, 'a> {
     pub ck: &'c mut Checker<'a>,
     pub infer: InferCtx,
     name: String,
-    locals: Vec<LocalInfo>,
-    kinds: Vec<LocalKind>,
+    pub locals: Vec<LocalInfo>,
+    pub kinds: Vec<LocalKind>,
     scopes: Vec<Scope>,
     /// Scopes below this index are invisible (used for default arguments, which cannot see
     /// the caller's locals).
     scope_floor: usize,
-    loops: Vec<LoopFrame>,
-    next_loop: u32,
+    pub loops: Vec<LoopFrame>,
+    pub next_loop: u32,
     /// The declared return type and its span; `None` where `return` is not allowed.
     ret: Option<(Ty, Option<Span>)>,
     deps: Vec<Dep>,
     depth: u32,
+    /// The body is a `var self` method.
+    self_mut: bool,
 }
 
 /// How deeply expressions may nest before the checker gives up, whatever the stack budget.
@@ -84,7 +87,14 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             ret,
             deps: Vec::new(),
             depth: 0,
+            self_mut: false,
         }
+    }
+
+    /// Marks the body as a `var self` method.
+    pub fn mutating_self(mut self, yes: bool) -> Self {
+        self.self_mut = yes;
+        self
     }
 
     /// The module-level items this body refers to, without duplicates.
@@ -112,7 +122,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     }
 
     /// Declares a binding in the innermost scope and returns its slot.
-    fn declare(&mut self, name: &str, span: Span, ty: Ty, kind: LocalKind) -> LocalId {
+    pub fn declare(&mut self, name: &str, span: Span, ty: Ty, kind: LocalKind) -> LocalId {
         let id = LocalId(self.locals.len() as u32);
         self.locals.push(LocalInfo {
             name: name.to_string(),
@@ -189,13 +199,18 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         self.error_expr(span)
     }
 
-    /// A type as shown in a message: unresolved literals read `{integer}` and `{float}`.
+    /// A type as shown in a message: unresolved literals read `{integer}` and `{float}`, also
+    /// inside tuples.
     pub fn show(&self, ty: &Ty) -> String {
         let ty = self.infer.resolve(ty);
         match (&ty, self.infer.unbound_kind(&ty)) {
             (Ty::Infer(_), Some(VarKind::IntLit)) => "{integer}".to_string(),
             (Ty::Infer(_), Some(VarKind::FloatLit)) => "{float}".to_string(),
-            _ => ty.to_string(),
+            (Ty::Tuple(items), _) => {
+                let parts: Vec<String> = items.iter().map(|t| self.show(t)).collect();
+                format!("({})", parts.join(", "))
+            }
+            _ => ty.render(&self.ck.types),
         }
     }
 
@@ -236,6 +251,11 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     /// Ends literal polymorphism at a binding (DESIGN §3.4): an untyped literal type becomes
     /// `int` or `float`.
     pub fn default_ty(&mut self, ty: &Ty) -> Ty {
+        if let Ty::Tuple(items) = self.infer.shallow(ty) {
+            for item in &items {
+                self.default_ty(item);
+            }
+        }
         match self.infer.unbound_kind(ty) {
             Some(VarKind::IntLit) => {
                 let _ = self.infer.unify(ty, &Ty::INT);
@@ -266,6 +286,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             locals: self.locals,
             block,
             ret,
+            mutates_self: self.self_mut,
         }
     }
 
@@ -279,7 +300,12 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     ) -> (Body, Vec<Dep>) {
         self.push_scope();
         for p in params {
-            self.declare(&p.name, p.span, p.ty.clone(), LocalKind::Param);
+            let kind = if p.mutable {
+                LocalKind::Var
+            } else {
+                LocalKind::Param
+            };
+            self.declare(&p.name, p.span, p.ty.clone(), kind);
         }
         let block = match &decl.body {
             Some(ast::FnBody::Block(b)) => {
@@ -291,7 +317,8 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                     let mut diag = Diagnostic::error(
                         format!(
                             "`{}` must return `{}`, but its body can end without returning",
-                            self.name, ret
+                            self.name,
+                            self.show(ret)
                         ),
                         close,
                     )
@@ -440,7 +467,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     }
 
     /// The statements and value of a block, in the already-open innermost scope.
-    fn block_in_scope(
+    pub(crate) fn block_in_scope(
         &mut self,
         b: &ast::Block,
         mode: BlockMode<'_>,
@@ -476,7 +503,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     // ---- statements ----
 
     /// Checks a statement into `out`; returns whether control cannot continue past it.
-    fn check_stmt(&mut self, s: &ast::Stmt, out: &mut Vec<Stmt>) -> bool {
+    pub(crate) fn check_stmt(&mut self, s: &ast::Stmt, out: &mut Vec<Stmt>) -> bool {
         match &s.kind {
             StmtKind::Let(l) => {
                 self.check_let(s, l, out);
@@ -532,12 +559,31 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 });
                 false
             }
-            StmtKind::WhileLet { .. } => {
-                self.ck.unsupported("`while let`", s.span);
+            StmtKind::WhileLet {
+                label,
+                pat,
+                scrutinee,
+                body,
+            } => {
+                let value = self.check_while_let(s.span, label.as_ref(), pat, scrutinee, body);
+                out.push(Stmt {
+                    span: s.span,
+                    kind: hir::StmtKind::Expr(value),
+                });
                 false
             }
-            StmtKind::For { .. } => {
-                self.ck.unsupported("`for` loop", s.span);
+            StmtKind::For {
+                label,
+                mutable,
+                pat,
+                iter,
+                body,
+            } => {
+                let value = self.check_for(s.span, label.as_ref(), *mutable, pat, iter, body);
+                out.push(Stmt {
+                    span: s.span,
+                    kind: hir::StmtKind::Expr(value),
+                });
                 false
             }
             StmtKind::Defer(_) => {
@@ -554,10 +600,26 @@ impl<'c, 'a> FnCtx<'c, 'a> {
 
     /// An expression in statement position: its value is dropped, so an `if` there need not
     /// have matching branch types.
-    fn expr_stmt(&mut self, e: &ast::Expr) -> (Stmt, bool) {
+    pub(crate) fn expr_stmt(&mut self, e: &ast::Expr) -> (Stmt, bool) {
         let value = match &e.kind {
             ExprKind::If { cond, then, else_ } => {
                 self.check_if(e.span, cond, then, else_.as_deref(), BlockMode::Stmts)
+            }
+            ExprKind::IfLet {
+                pat,
+                scrutinee,
+                then,
+                else_,
+            } => self.check_if_let(
+                e.span,
+                pat,
+                scrutinee,
+                then,
+                else_.as_deref(),
+                BlockMode::Stmts,
+            ),
+            ExprKind::Match { scrutinee, arms } => {
+                self.check_match(e.span, scrutinee, arms, BlockMode::Stmts)
             }
             ExprKind::Block(b) => {
                 let block = self.check_block(b, BlockMode::Stmts);
@@ -609,8 +671,39 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             }),
             PatKind::Error => {}
             _ => {
-                self.ck.unsupported("destructuring in `let`", l.pat.span);
+                let mut cx = PatCx::new(kind);
+                let pat = self.check_pat(&l.pat, &ty, &mut cx);
+                self.require_irrefutable(&pat, &ty, l.pat.span);
+                out.push(Stmt {
+                    span: s.span,
+                    kind: hir::StmtKind::LetPat { pat, init: value },
+                });
             }
+        }
+    }
+
+    /// A `let` pattern must match every value of its type.
+    fn require_irrefutable(&mut self, pat: &hir::Pat, ty: &Ty, span: Span) {
+        if ty.is_error() {
+            return;
+        }
+        let ty = self.infer.resolve(ty);
+        let arms = [ArmInfo {
+            pat,
+            guarded: false,
+        }];
+        let analysis = exhaust::analyze(&self.ck.types, &ty, &arms);
+        if analysis.gave_up {
+            self.report_gave_up(span, "`let` pattern");
+        } else if !analysis.missing.is_empty() {
+            let shown = analysis.missing.join(", ");
+            self.ck.report(
+                Diagnostic::error(
+                    format!("this `let` pattern does not match every value; missing case: {shown}"),
+                    span,
+                )
+                .with_hint("use `if let` or `match` to handle the other cases"),
+            );
         }
     }
 
@@ -631,8 +724,11 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             }
             None => {
                 if ret != Ty::Unit && !ret.is_error() {
-                    let mut diag =
-                        Diagnostic::error(format!("`return` needs a value of type `{ret}`"), span);
+                    let shown = self.show(&ret);
+                    let mut diag = Diagnostic::error(
+                        format!("`return` needs a value of type `{shown}`"),
+                        span,
+                    );
                     if let Some((s, text)) = reason {
                         diag = diag.with_label(s, text);
                     }
@@ -804,119 +900,20 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         })
     }
 
-    /// Resolves an assignment target, checking that it may be assigned to.
-    fn check_place(&mut self, target: &ast::Expr) -> Option<Place> {
-        match &target.kind {
-            ExprKind::Paren(inner) => self.check_place(inner),
-            ExprKind::Ident(id) => {
-                let name = id.name.as_str();
-                if let Some(local) = self.lookup_local(name) {
-                    let info = &self.locals[local.0 as usize];
-                    let (ty, decl_span) = (info.ty.clone(), info.span);
-                    match self.kinds[local.0 as usize] {
-                        LocalKind::Var | LocalKind::Temp => {}
-                        LocalKind::Param => {
-                            self.ck.report(
-                                Diagnostic::error(
-                                    format!("cannot assign to the parameter `{name}`"),
-                                    target.span,
-                                )
-                                .with_label(decl_span, "parameters are immutable")
-                                .with_hint(format!("copy it first: `var {name}2 = {name}`")),
-                            );
-                        }
-                        kind => {
-                            let word = if kind == LocalKind::Const {
-                                "constant"
-                            } else {
-                                "variable"
-                            };
-                            self.report_immutable(
-                                name,
-                                word,
-                                target.span,
-                                decl_span,
-                                kind == LocalKind::Let,
-                            );
-                        }
-                    }
-                    return Some(Place {
-                        anchor: Anchor::Local(local),
-                        path: Vec::new(),
-                        ty,
-                        display: name.to_string(),
-                    });
-                }
-                match self.ck.values.get(name).copied() {
-                    Some(ValueRef::Global(g)) => {
-                        let ty = self.ck.global_ty(g);
-                        self.add_dep(Dep::Global(g));
-                        let info = &self.ck.globals[g.0 as usize];
-                        if !info.mutable {
-                            let (decl_span, is_let) = (info.name_span, info.kind == BindKind::Let);
-                            let word = if info.kind == BindKind::Const {
-                                "constant"
-                            } else {
-                                "variable"
-                            };
-                            self.report_immutable(name, word, target.span, decl_span, is_let);
-                        }
-                        Some(Place {
-                            anchor: Anchor::Global(g),
-                            path: Vec::new(),
-                            ty,
-                            display: name.to_string(),
-                        })
-                    }
-                    Some(ValueRef::Fn(_)) => {
-                        self.ck.report(Diagnostic::error(
-                            format!("cannot assign to the function `{name}`"),
-                            target.span,
-                        ));
-                        None
-                    }
-                    None => {
-                        self.report_unknown_name(name, target.span);
-                        None
-                    }
-                }
-            }
-            ExprKind::Field { .. } | ExprKind::TupleIndex { .. } => {
-                self.ck.unsupported("assignment to a field", target.span);
-                None
-            }
-            ExprKind::Index { .. } => {
-                self.ck.unsupported("assignment to an element", target.span);
-                None
-            }
-            ExprKind::Error => None,
-            _ => {
-                self.ck.report(Diagnostic::error(
-                    "this expression cannot be assigned to",
-                    target.span,
-                ));
-                None
-            }
-        }
-    }
-
-    fn report_immutable(&mut self, name: &str, word: &str, span: Span, decl: Span, is_let: bool) {
-        let mut diag = Diagnostic::error(
-            format!("cannot assign to the {word} `{name}`, which is not mutable"),
-            span,
-        )
-        .with_label(decl, format!("`{name}` is declared here without `var`"));
-        diag = diag.with_hint(if is_let {
-            format!("declare it with `var {name} = ...` to allow assignment")
-        } else {
-            "constants never change; use `var` for a value that does".to_string()
-        });
-        self.ck.report(diag);
-    }
-
     pub fn report_unknown_name(&mut self, name: &str, span: Span) {
         let mut diag = Diagnostic::error(format!("unknown name `{name}`"), span);
-        if let Some(s) = self.suggestion(name) {
+        let owners: Vec<&str> = self
+            .ck
+            .types
+            .iter()
+            .filter(|t| t.variants().iter().any(|v| v.name == name))
+            .map(|t| t.name.as_str())
+            .collect();
+        if let [owner] = owners.as_slice() {
+            diag = diag.with_hint(format!(
+                "`{name}` is a variant of `{owner}`; write `{owner}.{name}`, or `.{name}` where the type is known"
+            ));
+        } else if let Some(s) = self.suggestion(name) {
             diag = diag.with_hint(format!("did you mean `{s}`?"));
         }
         self.ck.report(diag);

@@ -1,0 +1,26 @@
+enum Cmd { Move(int), Heal(int), Regen(int), Quit }
+
+struct Hero { pos: int, hp: int }
+
+fn main() {
+    var hero = Hero { pos: 0, hp: 10 }
+    let cmds = (Cmd.Move(50), Cmd.Move(3), Cmd.Regen(4), Cmd.Quit)
+    for i in 0..4 {
+        let cmd = match i {
+            0 => cmds.0
+            1 => cmds.1
+            2 => cmds.2
+            _ => cmds.3
+        }
+        match cmd {
+            Move(d) if d > 10 => print("big move")
+            Move(d)           => hero.pos += d
+            Heal(n) | Regen(n) => hero.hp += n
+            _                 => {}
+        }
+    }
+    print(hero)
+}
+
+// expect: big move
+// expect: Hero { pos: 3, hp: 14 }

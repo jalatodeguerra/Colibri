@@ -1,0 +1,12 @@
+struct Point { x: int, y: int }
+
+fn main() {
+    let p = Point { x: 3, y: 4 }
+    print(p.x)
+    print(p.y)
+    print(p.x * p.x + p.y * p.y)
+}
+
+// expect: 3
+// expect: 4
+// expect: 25

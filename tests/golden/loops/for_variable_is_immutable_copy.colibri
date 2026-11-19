@@ -1,0 +1,12 @@
+fn main() {
+    var i = 100
+    for i in 0..3 {
+        print(i)
+    }
+    print(i)
+}
+
+// expect: 0
+// expect: 1
+// expect: 2
+// expect: 100

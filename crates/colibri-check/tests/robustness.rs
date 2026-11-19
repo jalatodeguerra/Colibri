@@ -252,3 +252,62 @@ fn deeply_nested_input_is_an_error_not_a_crash() {
     );
     check_str(&blocks);
 }
+
+/// Every `.colibri` file under `tests/golden`, as source text.
+fn golden_sources() -> Vec<String> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "colibri")
+                && let Ok(text) = std::fs::read_to_string(&path)
+            {
+                out.push(text);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden"),
+        &mut out,
+    );
+    out
+}
+
+#[test]
+fn truncated_and_scrambled_golden_programs_do_not_panic() {
+    let sources = golden_sources();
+    assert!(sources.len() > 200, "found only {} files", sources.len());
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    for src in &sources {
+        for end in (0..=src.len()).step_by(7) {
+            if src.is_char_boundary(end) {
+                check_str(&src[..end]);
+            }
+        }
+        let chars: Vec<char> = src.chars().collect();
+        if chars.is_empty() {
+            continue;
+        }
+        for _ in 0..6 {
+            let mut copy = chars.clone();
+            for _ in 0..3 {
+                let i = (rng.next() % copy.len() as u64) as usize;
+                let j = (rng.next() % copy.len() as u64) as usize;
+                if rng.next().is_multiple_of(2) {
+                    copy.remove(i);
+                    if copy.is_empty() {
+                        break;
+                    }
+                } else {
+                    copy.swap(i, j);
+                }
+            }
+            check_str(&copy.into_iter().collect::<String>());
+        }
+    }
+}

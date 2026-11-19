@@ -1,0 +1,32 @@
+enum Light { Red, Green, Yellow }
+
+impl Light {
+    fn next(self) -> Light {
+        return match self {
+            Red => .Green
+            Green => .Yellow
+            Yellow => .Red
+        }
+    }
+    fn wait(self) -> int {
+        return match self {
+            Red => 30
+            Green => 25
+            Yellow => 5
+        }
+    }
+}
+
+fn main() {
+    var l = Light.Red
+    var total = 0
+    for _ in 0..6 {
+        total += l.wait()
+        l = l.next()
+    }
+    print(total)
+    print(l)
+}
+
+// expect: 120
+// expect: Red

@@ -1,0 +1,15 @@
+enum Rank { Low, Mid, High }
+
+fn main() {
+    print(Rank.Low < Rank.High)
+    print(Rank.High <= Rank.Mid)
+    print(Rank.Mid > Rank.Low)
+    print(Rank.Mid >= Rank.Mid)
+    print(Rank.Mid == Rank.Mid)
+}
+
+// expect: true
+// expect: false
+// expect: true
+// expect: true
+// expect: true

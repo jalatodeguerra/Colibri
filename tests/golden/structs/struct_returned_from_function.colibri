@@ -1,0 +1,15 @@
+struct Pair { lo: int, hi: int }
+
+fn order(a: int, b: int) -> Pair {
+    if a < b {
+        return Pair { lo: a, hi: b }
+    }
+    return Pair { lo: b, hi: a }
+}
+
+fn main() {
+    let p = order(9, 4)
+    print("{p.lo} {p.hi}")
+}
+
+// expect: 4 9

@@ -1,0 +1,16 @@
+enum Cmd { Go(int), Stop }
+
+fn main() {
+    let cmds = Cmd.Go(3)
+    match cmds {
+        Go(n) => print("go {n}")
+        Stop => print("stop")
+    }
+    match Cmd.Stop {
+        Go(_) => print("go")
+        Stop => print("stop")
+    }
+}
+
+// expect: go 3
+// expect: stop

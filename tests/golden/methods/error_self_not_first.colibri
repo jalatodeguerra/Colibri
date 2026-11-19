@@ -1,0 +1,8 @@
+struct P { x: int }
+
+impl P {
+    fn bad(k: int, self) -> int => k // error: expected a parameter name, found keyword `self`
+}
+
+fn main() {
+}

@@ -70,6 +70,30 @@ keyed by qualified name so they stay stable across hot reload (§16.3).
   `Continue(LoopId)` name their target, so labels are resolved by the checker and `Ctl::Break`
   carries a `LoopId` rather than a label. `while c { body }` is
   `Loop { If { c, body, else: break } }`.
+- **Slice 2 as built (structs, methods, enums, tuples, `match`, `for`).** `Program.types` is the
+  type table (`TypeDef { name, kind: Struct { fields } | Enum { variants } }`, with field
+  names and types); `Ty::Adt(TypeId, args)` refers into it, so `Ty`'s `Display` prints `type#N`
+  and messages use `Ty::render(&types)` instead. New expression nodes: `Struct { ty, fields }`
+  (declaration order, defaults filled), `Variant { ty, variant, args }`, `Tuple`, `For`,
+  `Match { scrutinee, arms }`, and `Project(expr, ValueProj)` for a field or element of a value
+  that is not a place (`make().x`; it replaces the planned `Field(expr, idx)`). Anywhere an
+  argument list is not in source order (named arguments, struct fields written out of order),
+  the hoisting of §6.13 applies, so a struct literal's `fields` are always in declaration order
+  and still evaluate in source order.
+  Patterns are `Pat { kind, ty, span }` with `Wild`, `Bind(local, Option<sub>)`, `Lit`,
+  `Range`, `Const(global)`, `Variant`, `Struct`, `Tuple` and `Or`. An `Arm` is
+  `{ pat, guard, body: Block }`; the pattern's bindings are the first locals of `body`, bound
+  before the guard runs and released when the arm ends or the guard fails. The checker proves
+  exhaustiveness (Maranget usefulness, `exhaust.rs`) and warns on unreachable arms at check
+  time, so evaluation can assume some arm matches. `StmtKind::LetPat { pat, init }` is
+  `let (a, b) = ...`; the pattern must be irrefutable. `For(ForLoop { id, binding, start, end,
+  inclusive, body })` is only the integer range form so far; `binding` is a fresh local listed in
+  `body.locals`, so each iteration releases and rebinds it. `Body.mutates_self` marks `var self`
+  methods: the evaluator moves (a local) or copies (a global) the receiver in, and writes the
+  final `self` back on every exit, including a panic. `Operand::Structural` is the derived
+  `Eq` (structs, enums, tuples) and the derived `Ord` (tuples, payload-free enums).
+  Methods are ordinary functions named `Type.method` with `self` as parameter 0; the call is a
+  `Callee::Fn`, with an `Arg::Place` receiver for `var self`.
 
 Desugared by the checker:
 
@@ -77,7 +101,7 @@ Desugared by the checker:
 |---|---|
 | `?` | `Match` + `Return` + `Coerce(IntoError)` |
 | `or`, handler blocks | `Match`, the handler as an ordinary arm block |
-| `if let`, `while let`, `while` | `Match` / `Loop` + `Break` |
+| `if let`, `while let`, `while` | `Match` / `Loop` + `Break` (`while let p = e { b }` is `Loop { Match e { p => b, _ => break } }`) |
 | string interpolation | `StrConcat(Vec<Expr>)`, each part a resolved `Show` call |
 | end of a `Result[()]` body | explicit `ok(())` |
 | `.Variant`, `T?`, method syntax | resolved forms |
@@ -147,7 +171,13 @@ struct ClassObj { ty: TypeId, fields: RefCell<Box<[Value]>> }
 ```
 
 Slice 1's `Value` has `Unit`, `Bool`, `Int`, `Float`, `Char` and `Str(Rc<str>)`; the other
-variants join as their features land.
+variants join as their features land. Slice 2 adds `Struct`, `Tuple` and `Enum`.
+
+- **Deep values.** A recursive enum can nest as deep as the program builds it, and Rust's
+  recursive `Drop`, `Show` and `==` would overflow the native stack. `StructVal` and `EnumVal`
+  therefore have a custom `Drop`: past a nesting depth of 256 (counted in a thread-local) it
+  switches to an iterative worklist. `Show` stops at depth 1000 and prints `...`; `==` and `<`
+  stop at depth 2000 and panic with "these values nest too deeply to compare".
 
 - **Structs and tuples:** a copy is an `Rc` bump and a write uses `Rc::make_mut`, in place when
   unique. That is exact value semantics, not an accidental copy. An interface value holding a
@@ -282,3 +312,40 @@ turns out to matter, it moves into DESIGN.md.
     function counts. A cycle that passes through a module-level value is an error naming the
     chain (`a -> f() -> b -> a`); recursion among functions alone is fine. An unannotated
     module-level value is typed on demand when another body first uses it.
+17. **Show of composites (DESIGN §7.4).** `print(x)` and `"{x}"` work for every value. At the
+    top level a `str` and a `char` print bare; inside a composite they are quoted and escaped
+    (the quote, `\\`, `\n`, `\r`, `\t` and `\0` as backslash escapes, other control characters as
+    `\u{..}`).
+    A struct is `Player { name: "Ana", hp: 100 }`, an enum variant is `Move(3)`, `Circle(radius:
+    2.0)` for named payloads and `Quit` without one; a tuple is `(1, "a")`, the unit value `()`.
+    A format spec on a composite is a compile error.
+18. **Derived interfaces.** `==` and `!=` work on structs, enums and tuples whose parts all
+    support them (structurally, recursively); `<`, `<=`, `>`, `>=` only on tuples of orderable
+    parts and on enums whose variants carry no data (declaration order). Structs and enums with
+    data are an error with a hint. Floats compare by IEEE, so a struct holding `nan` is not equal
+    to itself.
+19. **Struct literals and variants.** Fields may be written in any order; they evaluate in
+    source order and are stored in declaration order. A missing field without a default, an
+    unknown field and a duplicate are separate errors. `Type.Variant(args)` accepts named
+    payload arguments for variants declared with names (`Rect(w: 1.0, h: 2.0)`); a variant
+    without parentheses is a value only when it carries no data. `.Variant` needs an expected
+    type; without one the error suggests `Type.Variant`.
+20. **`var self` receivers.** The receiver must be a place rooted in a `var` local, a module
+    `var` or a field/element path from one (`g.score.inc()`); a `let`, a parameter, read-only
+    `self` or a temporary is an error. A local is moved into the callee and moved back, a module
+    value is copied in (the callee cannot see it change halfway, and it is written back on every
+    exit, so a panic still keeps the changes made before it).
+21. **Patterns.** A capitalised identifier must be a variant of the scrutinee's enum or a
+    module-level `const` (a local `const` is not usable in a pattern yet); a lower-case one binds.
+    Float literals are an error. Ranges are compared by identity during exhaustiveness
+    (`0..5` and `0..=4` do not subsume each other), so an integer or char `match` always needs a
+    catch-all arm. Or-patterns must bind the same names with the same types. A variant that
+    carries data needs its parentheses in a pattern (`Move(_)`), a bare name is an error.
+    Struct patterns on named-payload variants are not supported yet. Exhaustiveness is skipped
+    after a pattern error, so one mistake does not produce a second, misleading one. The
+    analysis has a step budget (200 000); when it runs out the match is accepted without
+    diagnostics rather than stalling the checker.
+22. **`for`.** Only `for x in a..b` and `a..=b` over integers; each end is evaluated once, the
+    binding is immutable and fresh per iteration, and a range anywhere else (or an open-ended
+    one) reports "not supported yet". Methods on built-in types and generic types report the
+    same.

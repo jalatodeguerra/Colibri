@@ -1,0 +1,20 @@
+fn classify(p: (int, int)) -> str {
+    return match p {
+        (0, 0) => "origin"
+        (0, _) => "y axis"
+        (_, 0) => "x axis"
+        (x, y) => "point {x},{y}"
+    }
+}
+
+fn main() {
+    print(classify((0, 0)))
+    print(classify((0, 5)))
+    print(classify((3, 0)))
+    print(classify((1, 2)))
+}
+
+// expect: origin
+// expect: y axis
+// expect: x axis
+// expect: point 1,2

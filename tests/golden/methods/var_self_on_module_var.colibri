@@ -1,0 +1,22 @@
+struct Counter { n: int }
+
+impl Counter {
+    fn inc(var self) {
+        self.n += 1
+    }
+}
+
+var hits = Counter { n: 0 }
+
+fn hit() {
+    hits.inc()
+}
+
+fn main() {
+    hit()
+    hit()
+    hits.inc()
+    print(hits.n)
+}
+
+// expect: 3

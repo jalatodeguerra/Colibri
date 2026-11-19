@@ -4,8 +4,8 @@
 use colibri_syntax::{Diagnostic, Span};
 
 use crate::hir::{
-    Anchor, Arg, BinOp, Block, Expr, ExprKind, Lit, LocalInfo, Num, Operand, Place, Stmt, StmtKind,
-    UnOp,
+    Anchor, Arg, BinOp, Block, Expr, ExprKind, Lit, LocalInfo, Num, Operand, Pat, PatKind, Place,
+    Stmt, StmtKind, UnOp,
 };
 use crate::infer::InferCtx;
 use crate::types::{IntTy, Ty};
@@ -46,6 +46,7 @@ fn operand_of(ty: &Ty) -> Operand {
         Ty::Char => Operand::Char,
         Ty::Str => Operand::Str,
         Ty::Unit => Operand::Unit,
+        Ty::Tuple(_) | Ty::Adt(..) => Operand::Structural,
         _ => Operand::Int(IntTy::I64),
     }
 }
@@ -87,6 +88,10 @@ impl Zonker<'_> {
         match &mut s.kind {
             StmtKind::Let { init, .. } => self.expr(init),
             StmtKind::Expr(e) => self.expr(e),
+            StmtKind::LetPat { pat, init } => {
+                self.pat(pat);
+                self.expr(init);
+            }
             StmtKind::Assign { place, op, rhs } => {
                 self.place(place);
                 self.expr(rhs);
@@ -100,6 +105,22 @@ impl Zonker<'_> {
                 }
             }
             StmtKind::Break(_) | StmtKind::Continue(_) => {}
+        }
+    }
+
+    fn pat(&mut self, p: &mut Pat) {
+        self.ty(&mut p.ty, p.span);
+        match &mut p.kind {
+            PatKind::Bind(_, Some(inner)) => self.pat(inner),
+            PatKind::Variant { args: items, .. }
+            | PatKind::Struct { fields: items, .. }
+            | PatKind::Tuple(items)
+            | PatKind::Or(items) => items.iter_mut().for_each(|item| self.pat(item)),
+            PatKind::Bind(_, None)
+            | PatKind::Wild
+            | PatKind::Lit(_)
+            | PatKind::Range { .. }
+            | PatKind::Const(_) => {}
         }
     }
 
@@ -164,6 +185,25 @@ impl Zonker<'_> {
             }
             ExprKind::Block(b) => self.block(b),
             ExprKind::Loop { body, .. } => self.block(body),
+            ExprKind::For(f) => {
+                self.expr(&mut f.start);
+                self.expr(&mut f.end);
+                self.block(&mut f.body);
+            }
+            ExprKind::Struct { fields: items, .. }
+            | ExprKind::Variant { args: items, .. }
+            | ExprKind::Tuple(items) => items.iter_mut().for_each(|item| self.expr(item)),
+            ExprKind::Project(base, _) => self.expr(base),
+            ExprKind::Match { scrutinee, arms } => {
+                self.expr(scrutinee);
+                for arm in arms {
+                    self.pat(&mut arm.pat);
+                    if let Some(g) = &mut arm.guard {
+                        self.expr(g);
+                    }
+                    self.block(&mut arm.body);
+                }
+            }
             ExprKind::Error => {}
         }
     }

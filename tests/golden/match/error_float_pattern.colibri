@@ -1,0 +1,7 @@
+fn main() {
+    let f = 1.5
+    match f {
+        1.5 => print("x") // error: a float cannot be used as a pattern
+        _ => print("y")
+    }
+}

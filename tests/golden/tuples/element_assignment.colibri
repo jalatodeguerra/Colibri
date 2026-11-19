@@ -1,0 +1,9 @@
+fn main() {
+    var t = (1, "a", true)
+    t.0 = 5
+    t.1 += "b"
+    t.2 = false
+    print(t)
+}
+
+// expect: (5, "ab", false)

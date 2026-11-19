@@ -1,0 +1,4 @@
+fn main() {
+    let t = (1, 2)
+    print(t.2) // error: this tuple has 2 elements, so there is no `.2`
+}

@@ -1,0 +1,30 @@
+enum Dir { North, South }
+
+fn a(d: Dir) -> int {
+    return match d {
+        North => 1
+        South => 2
+    }
+}
+
+fn b(d: Dir) -> int {
+    return match d {
+        .North => 1
+        .South => 2
+    }
+}
+
+fn c(d: Dir) -> int {
+    return match d {
+        Dir.North => 1
+        Dir.South => 2
+    }
+}
+
+fn main() {
+    print(a(.South) + b(.South) + c(.South))
+    print(a(.North) + b(.North) + c(.North))
+}
+
+// expect: 6
+// expect: 3

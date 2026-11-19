@@ -1,0 +1,4 @@
+fn main() {
+    var t = (1, "a")
+    t.0 = "x" // error: expected `int`, found `str`
+}

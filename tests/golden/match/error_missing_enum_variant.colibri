@@ -1,0 +1,11 @@
+enum Shape { Circle(float), Rect(float, float), Dot }
+
+fn area(s: Shape) -> float {
+    return match s { // error: non-exhaustive `match`: missing case: Rect(_, _)
+        Circle(r) => r
+        Dot => 0.0
+    }
+}
+
+fn main() {
+}
