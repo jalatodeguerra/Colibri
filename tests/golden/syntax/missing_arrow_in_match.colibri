@@ -1,0 +1,5 @@
+let x = 1
+match x {
+    1 -> print("one") // error: expected `=>` after the match pattern
+    _ => print("other")
+}

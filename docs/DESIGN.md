@@ -211,7 +211,9 @@ is Go's, plus two fixes for Go's most common "why doesn't this parse" moments:
    so a `{ }` closure body inside a call still gets normal statement endings. Trailing commas
    in multi-line calls and literals are allowed but not required.
 3. **A line that starts with `.`, `or`, `&&`, `||` or `else` continues the previous
-   statement**, so leading-dot method chains work:
+   statement**, so leading-dot method chains work. The one exception is a `.` followed by a
+   capitalised name, which starts a new line: `.Circle(r) =>` is a `match` arm using the variant
+   shorthand of §8.2, and method names are lower-case.
 
 ```colibri
 let total = price * qty +

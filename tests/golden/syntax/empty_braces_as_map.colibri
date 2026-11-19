@@ -1,0 +1,2 @@
+// `{}` is an empty block; an empty map is `{:}`.
+let scores = {} // error: `{}` is not an empty map
