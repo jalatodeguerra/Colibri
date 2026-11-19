@@ -1,7 +1,7 @@
 # host_game
 
-A headless Rust game loop that runs its gameplay from Colibri scripts: the phase 1 milestone
-(DESIGN §17.5, EMBEDDING §7).
+A headless Rust game loop that runs its gameplay from Colibri scripts, as an example of
+embedding Colibri in a Rust program.
 
 The host (`src/lib.rs`) owns the world and the clock: a fixed 60 ticks per second of simulated
 time, no wall clock, no randomness, so the output is identical on every run. The script
