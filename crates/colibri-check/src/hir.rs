@@ -14,6 +14,11 @@ use crate::types::{FnSig, IntTy, ParamId, Ty, TypeId};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FnId(pub u32);
 
+/// A host function: an index into [`Program::host_fns`], which is the order of the
+/// declarations in the host interface (EMBEDDING §1, §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HostFnId(pub u32);
+
 /// A module-level value in [`Program::globals`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GlobalId(pub u32);
@@ -53,6 +58,22 @@ pub struct Program {
     /// implementations that were used (DESIGN §7.4). The engine dispatches `Callee::Bound`
     /// and `Callee::Dyn` calls through them.
     pub impls: Vec<ImplDef>,
+    /// The host functions the program may call, indexed by [`HostFnId`].
+    pub host_fns: Vec<HostFnDef>,
+    /// How many types after the prelude's come from the host interface: the user's own types
+    /// start at `FIRST_USER_TYPE + host_types`.
+    pub host_types: u32,
+}
+
+/// A function provided by the host program.
+#[derive(Clone, Debug)]
+pub struct HostFnDef {
+    pub name: String,
+    /// The function's entry in [`Program::fns`], which has an empty body and carries the
+    /// signature and the name shown in stack traces.
+    pub f: FnId,
+    /// The capability the function needs (`fs`, `os`, `net`, `ffi`), if any.
+    pub requires: Option<String>,
 }
 
 /// What a runtime value's type looks like to interface dispatch: the head of a type, without
@@ -98,7 +119,7 @@ impl Program {
     pub fn fn_by_name(&self, name: &str) -> Option<FnId> {
         self.fns
             .iter()
-            .position(|f| f.name == name)
+            .position(|f| f.name == name && f.host.is_none())
             .map(|i| FnId(i as u32))
     }
 }
@@ -215,6 +236,8 @@ pub struct FnDef {
     /// How many type parameters the function has in scope (its own plus those of its `impl`
     /// or interface). Calls record one type argument for each in [`Call::type_args`].
     pub type_params: u32,
+    /// For a host function, its id; the body is empty and never runs.
+    pub host: Option<HostFnId>,
 }
 
 /// A module-level `const`, `let` or `var`.
@@ -631,6 +654,8 @@ pub enum Callee {
         method: u32,
     },
     Intrinsic(Intrinsic),
+    /// A function provided by the host program (EMBEDDING §1).
+    Host(HostFnId),
     /// A call of a function value (`f(x)`, `self.on_hit(dmg)` on a field): `args[0]` is the
     /// function or closure, the rest are its arguments.
     Value,

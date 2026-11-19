@@ -199,3 +199,97 @@ fn main_returning_ok_exits_zero() {
     let out = colibri(&["run", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
 }
+
+/// Builds an interface file with the host-side library and returns its path.
+fn interface_file(name: &str, with_sub: bool) -> PathBuf {
+    let mut vm = colibri_runtime::Vm::builder().build();
+    vm.register_fn("engine_add", |a: i64, b: i64| a + b)
+        .unwrap();
+    if with_sub {
+        vm.register_fn("engine_sub", |a: i64, b: i64| a - b)
+            .unwrap();
+    }
+    temp_file(name, &vm.interface_text())
+}
+
+#[test]
+fn check_reads_interface_files() {
+    let cbi = interface_file("engine.cbi", false);
+    let ok = temp_file(
+        "uses_engine.colibri",
+        "fn main() {\n    print(engine_add(1, 2))\n}\n",
+    );
+    let out = colibri(&[
+        "check",
+        "--interface",
+        cbi.to_str().unwrap(),
+        ok.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let bad = temp_file(
+        "misuses_engine.colibri",
+        "fn main() {\n    print(engine_add(1))\n}\n",
+    );
+    let out = colibri(&[
+        "check",
+        "--interface",
+        cbi.to_str().unwrap(),
+        bad.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("engine_add"));
+
+    // Without the interface the host function is unknown.
+    let out = colibri(&["check", ok.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn check_takes_several_interface_files() {
+    let a = interface_file("a.cbi", false);
+    let mut vm = colibri_runtime::Vm::builder().build();
+    vm.register_fn("other_fn", || 1i64).unwrap();
+    let b = temp_file("b.cbi", &vm.interface_text());
+    let src = temp_file(
+        "uses_both.colibri",
+        "fn main() {\n    print(engine_add(1, 2))\n    print(other_fn())\n}\n",
+    );
+    let out = colibri(&[
+        "check",
+        "--interface",
+        a.to_str().unwrap(),
+        "--interface",
+        b.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn check_refuses_an_edited_interface_file() {
+    let cbi = interface_file("edited.cbi", false);
+    let text = std::fs::read_to_string(&cbi)
+        .unwrap()
+        .replace("engine_add", "engine_plus");
+    std::fs::write(&cbi, text).unwrap();
+    let src = temp_file("uses_edited.colibri", "fn main() {}\n");
+    let out = colibri(&[
+        "check",
+        "--interface",
+        cbi.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("edited.cbi"));
+}

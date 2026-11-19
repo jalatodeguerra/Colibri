@@ -59,6 +59,10 @@ pub struct Interp {
     pub(crate) hook_panics: Vec<PanicInfo>,
     /// How many `Drop` hooks are running, one inside another.
     pub(crate) hook_depth: u32,
+    /// The instruction budget (EMBEDDING §5).
+    pub(crate) budget: crate::budget::Budget,
+    /// What the embedding program attached: host functions, state and roots.
+    pub(crate) host: crate::host::HostSide,
 }
 
 /// The default for [`Interp::set_native_stack_budget`]: small enough for a default test thread.
@@ -92,7 +96,13 @@ impl Interp {
             dispatch: crate::dispatch::Tables::default(),
             hook_panics: Vec::new(),
             hook_depth: 0,
+            budget: crate::budget::Budget::new(),
+            host: crate::host::HostSide::default(),
         }
+    }
+
+    pub(crate) fn max_depth(&self) -> usize {
+        self.max_depth
     }
 
     /// How many bytes of the Rust stack evaluation may use below the point the host called in.
@@ -111,6 +121,7 @@ impl Interp {
     /// old module-level values die first).
     pub fn load(&mut self, program: &Program) {
         self.shutdown();
+        self.load_host(program);
         self.fns = program.fns.iter().map(|f| Rc::clone(&f.body)).collect();
         self.globals = vec![Value::Unit; program.globals.len()];
         self.types = Rc::from(program.types.clone());
@@ -125,6 +136,17 @@ impl Interp {
 
     /// Runs the module-level initialisers in dependency order, then the top-level statements.
     pub fn run_module(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
+        // The initialisers and the top-level statements share one allotment.
+        let outermost = self.begin_entry();
+        if outermost {
+            self.drain_root_drops();
+        }
+        let result = self.run_module_parts(fiber);
+        self.end_entry(outermost, true);
+        result
+    }
+
+    fn run_module_parts(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
         let inits = self.inits.clone();
         for (g, body) in inits {
             let value = self.run_body(fiber, &body)?;
@@ -148,7 +170,7 @@ impl Interp {
         let Some(body) = self.fns.get(f.0 as usize).cloned() else {
             return Err(self.bare_panic("internal error: unknown function"));
         };
-        self.enter_from_host(fiber, |this, fiber| this.call_body(fiber, body, args))
+        self.enter_from_host(fiber, true, |this, fiber| this.call_body(fiber, body, args))
     }
 
     /// Writes buffered output through to the writer.
@@ -163,23 +185,50 @@ impl Interp {
 
     fn run_body(&mut self, fiber: &mut Fiber, body: &Rc<Body>) -> Result<Value, Box<PanicInfo>> {
         let body = Rc::clone(body);
-        self.enter_from_host(fiber, |this, fiber| this.call_body(fiber, body, Vec::new()))
+        self.enter_from_host(fiber, false, |this, fiber| {
+            this.call_body(fiber, body, Vec::new())
+        })
     }
 
     /// Runs `f` as a call from outside the interpreter; on any failure the fiber is cleaned up
     /// to what it was, so it stays usable.
-    fn enter_from_host(
+    ///
+    /// The outermost entry gets a fresh instruction budget; entries from a host function that
+    /// the script called share it. `record` keeps the entry's step count for `steps_used`.
+    pub(crate) fn enter_from_host(
         &mut self,
         fiber: &mut Fiber,
+        record: bool,
         f: impl FnOnce(&mut Self, &mut Fiber) -> Eval,
     ) -> Result<Value, Box<PanicInfo>> {
         let (frames, temps) = (fiber.frames.len(), fiber.temps.len());
         if frames == 0 {
             fiber.stack_base = stack_position();
         }
+        let outermost = self.begin_entry();
+        if outermost {
+            self.drain_root_drops();
+        }
         let result = f(self, fiber);
         fiber.frames.truncate(frames);
         self.release_temps(fiber, temps);
+        // A script that swallowed the exhaustion (through a host function that returned
+        // normally) still ran out of budget.
+        let swallowed = outermost && self.budget_was_exhausted();
+        self.end_entry(outermost, record);
+        let result = match result {
+            Ok(v) | Err(Ctl::Return(v)) if swallowed => {
+                self.release(v);
+                Err(Ctl::Panic(Box::new(PanicInfo {
+                    message: "the instruction budget is exhausted".to_string(),
+                    span: Span::new(colibri_syntax::FileId(0), 0, 0),
+                    stack: Vec::new(),
+                    notes: Vec::new(),
+                    budget: true,
+                })))
+            }
+            other => other,
+        };
         match result {
             Ok(v) => Ok(v),
             Err(Ctl::Return(v)) => Ok(v),
@@ -193,6 +242,7 @@ impl Interp {
             span: Span::new(colibri_syntax::FileId(0), 0, 0),
             stack: Vec::new(),
             notes: Vec::new(),
+            budget: false,
         })
     }
 
@@ -217,6 +267,7 @@ impl Interp {
             span,
             stack,
             notes: Vec::new(),
+            budget: false,
         }))
     }
 
@@ -259,10 +310,16 @@ impl Interp {
         args: Vec<Value>,
         captures: Vec<(colibri_check::hir::LocalId, Value)>,
     ) -> (Eval, Option<Value>) {
-        if fiber.frames.len() >= self.max_depth {
+        let overflow = fiber.frames.len() >= self.max_depth;
+        self.budget.left -= 1;
+        if overflow || self.budget.left < 0 {
             let span = fiber.frames.last().map_or(body.span, |f| f.span);
-            let message = format!("stack overflow: more than {} nested calls", self.max_depth);
-            let ctl = self.panic(fiber, span, message);
+            let ctl = if overflow {
+                let message = format!("stack overflow: more than {} nested calls", self.max_depth);
+                self.panic(fiber, span, message)
+            } else {
+                self.step_failure(fiber, span)
+            };
             let mut args = args;
             let receiver = if body.mutates_self && !args.is_empty() {
                 Some(args.remove(0))
@@ -377,7 +434,10 @@ impl Interp {
     /// end, even when it ends early.
     pub(crate) fn exec_stmt(&mut self, fiber: &mut Fiber, stmt: &Stmt) -> Eval<()> {
         let mark = fiber.temps.len();
-        let result = self.exec_stmt_inner(fiber, stmt);
+        let result = match self.step(fiber, stmt.span) {
+            Ok(()) => self.exec_stmt_inner(fiber, stmt),
+            Err(ctl) => Err(ctl),
+        };
         self.release_temps(fiber, mark);
         if self.hook_panics.is_empty() {
             return result;
@@ -626,6 +686,7 @@ impl Interp {
     #[inline(never)]
     fn eval_loop(&mut self, fiber: &mut Fiber, id: LoopId, body: &Block) -> Eval {
         loop {
+            self.step(fiber, body.span)?;
             match self.eval_block(fiber, body) {
                 Ok(v) => self.release(v),
                 Err(Ctl::Continue(target)) if target == id => {}
@@ -775,6 +836,7 @@ impl Interp {
                 };
                 self.call_with_receiver(fiber, body, values, place, span)
             }
+            Callee::Host(id) => self.call_host(fiber, *id, values, span),
             Callee::Bound { iface, method } | Callee::Dyn { iface, method } => {
                 self.call_interface(fiber, *iface, *method, values, receiver, span)
             }

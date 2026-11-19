@@ -38,6 +38,9 @@ pub struct Fiber {
     pub(crate) temps: Vec<Value>,
     /// The address of a local at the point the host called in, to measure native stack use.
     pub(crate) stack_base: usize,
+    /// How many host functions are running, one inside another (they may call back into
+    /// Colibri). A coroutine switch is not allowed across one (DESIGN §14.2).
+    pub(crate) host_depth: u32,
 }
 
 impl Fiber {
@@ -48,6 +51,11 @@ impl Fiber {
     /// How many calls are active.
     pub fn depth(&self) -> usize {
         self.frames.len()
+    }
+
+    /// How many host functions are active on this fiber.
+    pub fn host_depth(&self) -> u32 {
+        self.host_depth
     }
 
     /// How many temporaries are alive; zero whenever no code is running.

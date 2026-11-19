@@ -171,6 +171,9 @@ impl Interp {
     /// Ends the program's life: module-level values die in reverse initialisation order
     /// (DESIGN §11.2). Safe to call twice.
     pub fn shutdown(&mut self) {
+        let outermost = self.begin_entry();
+        // Roots die first, then the module's values (EMBEDDING §3).
+        self.clear_roots();
         let order: Vec<usize> = self.inits.iter().map(|(g, _)| g.0 as usize).collect();
         for g in order.into_iter().rev() {
             if let Some(slot) = self.globals.get_mut(g) {
@@ -180,6 +183,7 @@ impl Interp {
         }
         // A `Drop` hook that panics while the program is shutting down has nobody to tell.
         self.hook_panics.clear();
+        self.end_entry(outermost, false);
     }
 }
 

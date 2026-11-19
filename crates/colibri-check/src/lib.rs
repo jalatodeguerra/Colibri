@@ -22,6 +22,7 @@ mod fnvalue;
 pub mod format;
 mod generics;
 pub mod hir;
+pub mod host;
 mod ifaces;
 pub mod infer;
 mod iter;
@@ -44,12 +45,13 @@ mod zonk;
 
 pub use checker::Checked;
 pub use hir::Program;
+pub use host::HostEnv;
 pub use types::{FnSig, Ty};
 
 /// How much native stack checking may use by default (see [`check_with_stack_budget`]).
 pub const DEFAULT_STACK_BUDGET: usize = 1 << 20;
 
-/// Checks a parsed file.
+/// Checks a parsed file against no host: it provides nothing and grants nothing.
 pub fn check(file: &colibri_syntax::ast::File) -> Checked {
     check_with_stack_budget(file, DEFAULT_STACK_BUDGET)
 }
@@ -58,5 +60,11 @@ pub fn check(file: &colibri_syntax::ast::File) -> Checked {
 /// when expressions nest so deeply that checking them would use more than `budget` bytes of
 /// stack. Raise it when running on a thread with a large stack.
 pub fn check_with_stack_budget(file: &colibri_syntax::ast::File, budget: usize) -> Checked {
-    checker::Checker::new(file, budget).run()
+    check_with_host(file, &HostEnv::new(), budget)
+}
+
+/// Checks a parsed file against what the host provides (EMBEDDING §4): its functions and value
+/// types are in scope, and the capabilities it granted decide what the file may use.
+pub fn check_with_host(file: &colibri_syntax::ast::File, host: &HostEnv, budget: usize) -> Checked {
+    checker::Checker::new(file, host, budget).run()
 }

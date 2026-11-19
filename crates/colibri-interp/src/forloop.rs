@@ -163,6 +163,10 @@ impl Interp {
         write_back: Option<(&Rc<ListObj>, usize)>,
         span: Span,
     ) -> Eval<bool> {
+        if let Err(ctl) = self.step(fiber, span) {
+            self.release(item);
+            return Err(ctl);
+        }
         let original = write_back.map(|_| item.clone());
         let mark = Self::scope_mark(fiber);
         if let Err(ctl) = self.bind_item(fiber, &f.binding, item, span) {

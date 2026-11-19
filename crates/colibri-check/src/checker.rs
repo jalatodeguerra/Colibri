@@ -11,9 +11,10 @@ use crate::body::FnCtx;
 use crate::decls::{AliasInfo, TypeExtra};
 use crate::generics::SigCtx;
 use crate::hir::{
-    Body, FieldDef, FnDef, FnId, GlobalDef, GlobalId, ImplDef, ImplId, Program, TypeDef,
-    TypeDefKind, TypeKey, VariantDef,
+    Block, Body, FieldDef, FnDef, FnId, GlobalDef, GlobalId, HostFnDef, HostFnId, ImplDef, ImplId,
+    Program, TypeDef, TypeDefKind, TypeKey, VariantDef,
 };
+use crate::host::{self, HOST_FILE, HostEnv};
 use crate::ifaces::IfaceInfo;
 use crate::obligations::Obligation;
 use crate::prelude;
@@ -26,6 +27,16 @@ use crate::types::{ERROR_TYPE, FnSig, ParamId, RESULT_TYPE, Ty, TypeId};
 pub(crate) enum ValueRef {
     Fn(FnId),
     Global(GlobalId),
+}
+
+/// What the checker knows about a function the host provides.
+#[derive(Clone, Debug)]
+pub(crate) struct HostFnInfo {
+    pub id: HostFnId,
+    /// The capability the function needs.
+    pub requires: Option<String>,
+    /// Its parameter names are placeholders (`a`, `b`, ..): named arguments are rejected.
+    pub positional: bool,
 }
 
 /// A reference from one body to a module-level item, used to order initialisers.
@@ -65,6 +76,8 @@ pub(crate) struct FnInfo<'a> {
     pub generics: Vec<GenericParamInfo>,
     /// What `Self` means in the body (the implementing type, or the interface's `Self`).
     pub self_ty: Option<Ty>,
+    /// Set for a function the host provides; it has no body.
+    pub host: Option<HostFnInfo>,
 }
 
 impl FnInfo<'_> {
@@ -106,6 +119,14 @@ pub struct Checked {
 
 pub(crate) struct Checker<'a> {
     pub file: &'a ast::File,
+    /// What the host provides and which capabilities it granted.
+    pub host: &'a HostEnv,
+    /// Set while the items of the host interface are collected.
+    collecting_host: bool,
+    /// How many host functions are declared so far.
+    host_fn_count: u32,
+    /// The type ids of host declarations are `FIRST_USER_TYPE ..` this far.
+    host_type_count: u32,
     pub diags: Vec<Diagnostic>,
     /// While positive, diagnostics are dropped (re-checking a default argument at a call).
     muted: u32,
@@ -208,6 +229,27 @@ fn prelude_result(span: Span) -> TypeDef {
     }
 }
 
+/// The body of a host function in [`Program::fns`]: empty, since the host runs it. It names the
+/// function in stack traces.
+fn host_stub_body(f: &FnInfo<'_>) -> Body {
+    Body {
+        name: f.name.clone(),
+        span: f.span,
+        param_count: f.params.len() as u32,
+        locals: Vec::new(),
+        block: Block {
+            locals: Vec::new(),
+            stmts: Vec::new(),
+            tail: None,
+            ty: Ty::Unit,
+            span: f.span,
+        },
+        ret: f.ret.clone(),
+        mutates_self: false,
+        needs_type_args: false,
+    }
+}
+
 /// A position on the native stack, comparable with another one.
 pub(crate) fn stack_position() -> usize {
     let marker = 0u8;
@@ -218,9 +260,13 @@ pub(crate) fn stack_position() -> usize {
 pub(crate) const BUILTIN_FNS: &[&str] = &["print", "panic"];
 
 impl<'a> Checker<'a> {
-    pub fn new(file: &'a ast::File, stack_budget: usize) -> Self {
+    pub fn new(file: &'a ast::File, host: &'a HostEnv, stack_budget: usize) -> Self {
         Checker {
             file,
+            host,
+            collecting_host: false,
+            host_fn_count: 0,
+            host_type_count: 0,
             diags: Vec::new(),
             muted: 0,
             values: HashMap::new(),
@@ -285,6 +331,12 @@ impl<'a> Checker<'a> {
     pub fn report(&mut self, mut diag: Diagnostic) {
         // The prelude has no source to show, so a label inside it cannot be rendered.
         diag.labels.retain(|(span, _)| !prelude::in_prelude(*span));
+        // Neither has a host interface (its text is not among the program's sources): a
+        // problem found in one is shown at the start of the program.
+        if diag.span.file == HOST_FILE {
+            diag.span = Span::new(self.file.span.file, 0, 0);
+            diag.message = format!("in the host interface: {}", diag.message);
+        }
         if self.muted == 0 {
             self.diags.push(diag);
         }
@@ -331,13 +383,29 @@ impl<'a> Checker<'a> {
                 TopLevel::Stmt(_) => None,
             })
             .collect();
-        let all: Vec<&'a ast::Item> = prelude_items.iter().chain(&items).copied().collect();
+        let host_items: Vec<&'a ast::Item> = self.host.items().collect();
+        let all: Vec<&'a ast::Item> = prelude_items
+            .iter()
+            .chain(&host_items)
+            .chain(&items)
+            .copied()
+            .collect();
         // Types first, so every signature can name them whatever the order of the file.
-        self.declare_types(&all);
+        // Host types come right after the prelude's, so their ids are the same in every
+        // program that uses the same interface.
+        let before_user = prelude_items.len() + host_items.len();
+        self.declare_types(&all[..before_user]);
+        self.host_type_count = self.types.len() as u32 - crate::types::FIRST_USER_TYPE;
+        self.declare_types(&all[before_user..]);
         self.define_types(&all);
         for item in &prelude_items {
             self.collect_item(item);
         }
+        self.collecting_host = true;
+        for item in &host_items {
+            self.collect_host_item(item);
+        }
+        self.collecting_host = false;
         for top in &file.items {
             match top {
                 TopLevel::Item(item) => self.collect_item(item),
@@ -346,6 +414,31 @@ impl<'a> Checker<'a> {
         }
         self.collected = true;
         self.flush_pending();
+    }
+
+    /// A declaration of the host interface. Types were declared with everything else; a
+    /// function becomes a [`FnInfo`] without a body, remembering its id and capability.
+    fn collect_host_item(&mut self, item: &'a ast::Item) {
+        match &item.kind {
+            ItemKind::Fn(decl) => {
+                let id = self.add_fn(item, decl, &SigCtx::default());
+                let host_id = HostFnId(self.host_fn_count);
+                self.host_fn_count += 1;
+                self.fns[id.0 as usize].host = Some(HostFnInfo {
+                    id: host_id,
+                    requires: host::requires_of(item),
+                    positional: item.attrs.iter().any(|a| a.name.name == "positional"),
+                });
+                self.declare_value(&decl.name.name, decl.name.span, ValueRef::Fn(id));
+            }
+            ItemKind::Struct(s) if s.kind == ast::StructKind::Class => {
+                self.unsupported("a host class", item.span);
+            }
+            ItemKind::Impl(_) => {
+                self.unsupported("the methods of a host class", item.span);
+            }
+            _ => {}
+        }
     }
 
     fn collect_item(&mut self, item: &'a ast::Item) {
@@ -362,6 +455,14 @@ impl<'a> Checker<'a> {
             | ItemKind::Interface(_) => {}
             ItemKind::Impl(decl) => self.collect_impl(decl, item),
             ItemKind::Import(_) => self.unsupported("`import`", item.span),
+            ItemKind::Extern(_) if !self.host.is_granted("ffi") => {
+                let diag = Diagnostic::error(
+                    "`extern` blocks need the `ffi` capability, which this host did not grant",
+                    item.span,
+                )
+                .with_hint("the host grants it with `VmBuilder::allow(Cap::Ffi)`");
+                self.report(diag);
+            }
             ItemKind::Extern(_) => self.unsupported("`extern`", item.span),
             ItemKind::Test(_) => self.unsupported("`test`", item.span),
             ItemKind::Error => {}
@@ -375,6 +476,18 @@ impl<'a> Checker<'a> {
                 format!("`{name}` is a built-in function and cannot be redefined"),
                 span,
             ));
+            return false;
+        }
+        if let Some(ValueRef::Fn(f)) = self.values.get(name).copied()
+            && self.fns[f.0 as usize].host.is_some()
+        {
+            self.report(
+                Diagnostic::error(
+                    format!("`{name}` is a host function and cannot be redefined"),
+                    span,
+                )
+                .with_hint("the host program already provides this name; pick another one"),
+            );
             return false;
         }
         if let Some(prev) = self.values.get(name).copied() {
@@ -408,7 +521,8 @@ impl<'a> Checker<'a> {
         let saved = std::mem::replace(&mut self.self_ty, ctx.self_ty.clone());
         let sig = self.resolve_sig(decl, ctx);
         self.self_ty = saved;
-        let poisoned = sig.poisoned || decl.body.is_none();
+        let host = self.collecting_host;
+        let poisoned = sig.poisoned || (decl.body.is_none() && !host);
         let name = match &ctx.owner {
             Some(owner) => format!("{owner}.{}", decl.name.name),
             None => decl.name.name.clone(),
@@ -427,6 +541,7 @@ impl<'a> Checker<'a> {
             deps: Vec::new(),
             generics: sig.generics,
             self_ty: ctx.self_ty.clone(),
+            host: None,
         });
         id
     }
@@ -836,6 +951,9 @@ impl<'a> Checker<'a> {
         let Some(decl) = self.fns[f.0 as usize].decl else {
             return;
         };
+        if self.fns[f.0 as usize].host.is_some() {
+            return;
+        }
         let info = &self.fns[f.0 as usize];
         let (name, span, params, ret, ret_span) = (
             info.name.clone(),
@@ -988,7 +1106,22 @@ impl<'a> Checker<'a> {
 
     fn assemble(&mut self, init_order: Vec<GlobalId>, main: Option<FnId>) -> Option<Program> {
         let mut fns = Vec::new();
-        for f in &self.fns {
+        let mut host_fns: Vec<(HostFnId, HostFnDef)> = Vec::new();
+        for (i, f) in self.fns.iter().enumerate() {
+            let body = match &f.host {
+                Some(h) => {
+                    host_fns.push((
+                        h.id,
+                        HostFnDef {
+                            name: f.name.clone(),
+                            f: FnId(i as u32),
+                            requires: h.requires.clone(),
+                        },
+                    ));
+                    Rc::new(host_stub_body(f))
+                }
+                None => f.body.clone()?,
+            };
             fns.push(FnDef {
                 name: f.name.clone(),
                 sig: FnSig {
@@ -996,10 +1129,13 @@ impl<'a> Checker<'a> {
                     ret: f.ret.clone(),
                 },
                 span: f.span,
-                body: f.body.clone()?,
+                body,
                 type_params: f.generics.len() as u32,
+                host: f.host.as_ref().map(|h| h.id),
             });
         }
+        host_fns.sort_by_key(|(id, _)| id.0);
+        let host_fns = host_fns.into_iter().map(|(_, d)| d).collect();
         let mut globals = Vec::new();
         for g in &self.globals {
             globals.push(GlobalDef {
@@ -1043,6 +1179,8 @@ impl<'a> Checker<'a> {
             script: self.script_body.clone()?,
             main,
             types: self.types.clone(),
+            host_fns,
+            host_types: self.host_type_count,
         })
     }
 
