@@ -16,6 +16,7 @@ use crate::ctl::{Ctl, Eval, PanicInfo, TraceEntry, into_panic};
 use crate::fiber::{Fiber, Frame};
 use crate::format::format_value;
 use crate::heap::ClassObj;
+use crate::num;
 use crate::ordered::OrderedMap;
 use crate::place::project;
 use crate::value::{CellObj, Value};
@@ -849,6 +850,14 @@ impl Interp {
         if let Intrinsic::Builtin(op) = intrinsic {
             return self.builtin(fiber, *op, args, span);
         }
+        let numeric = match intrinsic {
+            Intrinsic::Convert { from, to } => args.first().map(|v| num::convert(*from, *to, v)),
+            Intrinsic::NumMethod(m, n) => Some(num::method(*m, *n, &args)),
+            _ => None,
+        };
+        if let Some(result) = numeric {
+            return result.map_err(|msg| self.panic(fiber, span, msg));
+        }
         let Some(arg) = args.pop() else {
             return Err(self.internal(fiber, span, "intrinsic without an argument"));
         };
@@ -882,7 +891,9 @@ impl Interp {
                     }
                 }
             }
-            Intrinsic::Builtin(_) => Value::Unit,
+            Intrinsic::Builtin(_) | Intrinsic::Convert { .. } | Intrinsic::NumMethod(..) => {
+                Value::Unit
+            }
         };
         self.release(arg);
         Ok(result)
@@ -896,7 +907,17 @@ impl Interp {
                 Some(n) => Ok(Value::Int(n)),
                 None => Err(self.panic(fiber, span, "integer overflow")),
             },
+            (UnOp::Neg(Num::Int(ty)), v) => match num::int_of(&v).map(|a| num::int_neg(ty, a)) {
+                Some(Ok(n)) => Ok(num::make_int(ty, n)),
+                Some(Err(msg)) => Err(self.panic(fiber, span, msg)),
+                None => Err(self.internal(fiber, span, "ill-typed negation")),
+            },
             (UnOp::Neg(Num::Float), Value::Float(x)) => Ok(Value::Float(-x)),
+            (UnOp::Neg(Num::F32), Value::F32(x)) => Ok(Value::F32(-x)),
+            (UnOp::BitNot(ty), v) => match num::int_of(&v) {
+                Some(a) => Ok(num::make_int(ty, num::int_not(ty, a))),
+                None => Err(self.internal(fiber, span, "ill-typed bitwise not")),
+            },
             (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
             _ => Err(self.internal(fiber, span, "ill-typed unary operation")),
         }
@@ -927,16 +948,26 @@ impl Interp {
                     Err(Fault::ModByZero) => Err(self.panic(fiber, span, "modulo by zero")),
                 }
             }
+            (BinOp::Arith(op, Num::Int(ty)), l, r) => match (num::int_of(l), num::int_of(r)) {
+                (Some(a), Some(b)) => match num::int_arith(op, ty, a, b) {
+                    Ok(n) => Ok(num::make_int(ty, n)),
+                    Err(msg) => Err(self.panic(fiber, span, msg)),
+                },
+                _ => Err(self.internal(fiber, span, "ill-typed integer operation")),
+            },
             (BinOp::Arith(op, Num::Float), Value::Float(a), Value::Float(b)) => {
-                let (a, b) = (*a, *b);
-                Ok(Value::Float(match op {
-                    ArithOp::Add => a + b,
-                    ArithOp::Sub => a - b,
-                    ArithOp::Mul => a * b,
-                    ArithOp::Div => a / b,
-                    ArithOp::Rem => a % b,
-                }))
+                Ok(Value::Float(num::float_arith(op, *a, *b)))
             }
+            (BinOp::Arith(op, Num::F32), Value::F32(a), Value::F32(b)) => {
+                Ok(Value::F32(num::f32_arith(op, *a, *b)))
+            }
+            (BinOp::Bit(op, ty), l, r) => match (num::int_of(l), num::int_of(r)) {
+                (Some(a), Some(b)) => match num::int_bit(op, ty, a, b) {
+                    Ok(n) => Ok(num::make_int(ty, n)),
+                    Err(msg) => Err(self.panic(fiber, span, msg)),
+                },
+                _ => Err(self.internal(fiber, span, "ill-typed bitwise operation")),
+            },
             (BinOp::Concat, Value::Str(a), Value::Str(b)) => {
                 let mut s = String::with_capacity(a.len() + b.len());
                 s.push_str(a);
@@ -961,7 +992,9 @@ fn literal(lit: &Lit) -> Value {
         Lit::Unit => Value::Unit,
         Lit::Bool(b) => Value::Bool(*b),
         Lit::Int(i) => Value::Int(*i),
+        Lit::U64(u) => Value::U64(*u),
         Lit::Float(x) => Value::Float(*x),
+        Lit::F32(x) => Value::F32(*x),
         Lit::Char(c) => Value::Char(*c),
         Lit::Str(s) => Value::Str(Rc::clone(s)),
     }
@@ -995,7 +1028,9 @@ fn compare(op: CmpOp, operand: Operand, l: &Value, r: &Value) -> Option<bool> {
     }
     Some(match (operand, l, r) {
         (Operand::Int(_), Value::Int(a), Value::Int(b)) => by_ord(op, a, b),
+        (Operand::Int(_), Value::U64(a), Value::U64(b)) => by_ord(op, a, b),
         (Operand::Float, Value::Float(a), Value::Float(b)) => by_ord(op, a, b),
+        (Operand::F32, Value::F32(a), Value::F32(b)) => by_ord(op, a, b),
         (Operand::Bool, Value::Bool(a), Value::Bool(b)) => by_ord(op, a, b),
         (Operand::Char, Value::Char(a), Value::Char(b)) => by_ord(op, a, b),
         (Operand::Str, Value::Str(a), Value::Str(b)) => by_ord::<str>(op, a, b),

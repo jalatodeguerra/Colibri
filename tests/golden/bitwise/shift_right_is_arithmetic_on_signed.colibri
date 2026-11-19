@@ -1,0 +1,19 @@
+fn main() {
+    let a: int = -16
+    print(a >> 2)
+    print(a >> 63)
+    let b: i8 = -128
+    print(b >> 7)
+    let c: i32 = -7
+    print(c >> 1)
+    let d: i16 = 100
+    print(d >> 3)
+    let e: int = -1
+    print(e >> 1)
+}
+// expect: -4
+// expect: -1
+// expect: -1
+// expect: -4
+// expect: 12
+// expect: -1

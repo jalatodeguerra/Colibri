@@ -1,0 +1,17 @@
+fn takes_int(x: int) -> int => x + 1
+fn takes_float(x: float) -> float => x * 2.0
+
+fn main() {
+    let a: i64 = 41
+    let b: int = a
+    print(takes_int(a))
+    print(b)
+    let c: f64 = 1.5
+    let d: float = c
+    print(takes_float(c))
+    print(d)
+}
+// expect: 42
+// expect: 41
+// expect: 3.0
+// expect: 1.5

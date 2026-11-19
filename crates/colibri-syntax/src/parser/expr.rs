@@ -15,8 +15,8 @@ const BP_OROR: u8 = 4;
 const BP_ANDAND: u8 = 6;
 const BP_CMP: u8 = 8;
 const BP_IS: u8 = 10;
-// TODO(design): the bitwise operators `| ^ & << >> ~` are not in DESIGN.md.
-// They sit between `is` and ranges, in C's relative order.
+// The bitwise operators (DESIGN §5.1) bind tighter than comparisons, so `x & 1 == 0` is
+// `(x & 1) == 0`; they sit between `is` and ranges, in Rust's relative order.
 const BP_BITOR: u8 = 12;
 const BP_BITXOR: u8 = 14;
 const BP_BITAND: u8 = 16;

@@ -1,0 +1,6 @@
+fn main() {
+    let a: int = 5
+    print(u64(a))
+    print(u64(a - 6)) // panic: value -1 does not fit in `u64`
+}
+// expect: 5

@@ -1,0 +1,6 @@
+fn main() {
+    let a: u64 = 4294967296
+    print(a * 4294967295)
+    print(a * 4294967296) // panic: integer overflow
+}
+// expect: 18446744069414584320

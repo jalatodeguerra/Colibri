@@ -1,0 +1,6 @@
+fn main() {
+    let a: int = 127
+    print(i8(a))
+    print(i8(a + 1)) // panic: value 128 does not fit in `i8`
+}
+// expect: 127

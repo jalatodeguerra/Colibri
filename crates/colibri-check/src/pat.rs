@@ -373,7 +373,7 @@ impl FnCtx<'_, '_> {
         let shown = self.show(&ty);
         if self.infer.unify(&ty, expected).is_err() {
             self.report_pat_mismatch(expected, &ty, span);
-        } else if matches!(self.infer.shallow(&ty), Ty::Float) {
+        } else if matches!(self.infer.shallow(&ty), Ty::Float | Ty::F32) {
             let name = self.ck.globals[g.0 as usize].name.clone();
             self.ck.report(
                 Diagnostic::error(
@@ -404,7 +404,9 @@ impl FnCtx<'_, '_> {
         };
         if self.infer.unify(expected, &ty).is_err() {
             self.report_pat_mismatch(expected, &ty, span);
-        } else if matches!(value, Lit::Int(_)) && self.infer.shallow(expected) == Ty::Float {
+        } else if matches!(value, Lit::Int(_))
+            && matches!(self.infer.shallow(expected), Ty::Float | Ty::F32)
+        {
             self.ck.report(float_pattern(span));
         }
         self.pat(PatKind::Lit(value), expected, span)
@@ -487,7 +489,9 @@ impl FnCtx<'_, '_> {
         }
         if self.infer.unify(expected, &range_ty).is_err() {
             self.report_pat_mismatch(expected, &range_ty, span);
-        } else if matches!(first.0, Lit::Int(_)) && self.infer.shallow(expected) == Ty::Float {
+        } else if matches!(first.0, Lit::Int(_))
+            && matches!(self.infer.shallow(expected), Ty::Float | Ty::F32)
+        {
             self.ck.report(float_pattern(span));
         }
         if let (Some((Lit::Int(a), _)), Some((Lit::Int(b), _))) = (&lo_v, &hi_v)

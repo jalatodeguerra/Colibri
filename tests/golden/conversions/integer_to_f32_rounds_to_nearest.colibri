@@ -1,0 +1,12 @@
+fn main() {
+    print(f32(16777217))
+    print(f32(16777219))
+    let a: i32 = -2147483647
+    print(f32(a))
+    let b: u8 = 255
+    print(f32(b) / 2.0)
+}
+// expect: 16777216.0
+// expect: 16777220.0
+// expect: -2147483600.0
+// expect: 127.5

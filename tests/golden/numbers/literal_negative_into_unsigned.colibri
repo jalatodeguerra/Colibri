@@ -1,0 +1,5 @@
+fn main() {
+    let a: u8 = -1 // error: literal -1 does not fit in `u8`
+    let b: u32 = -5 // error: literal -5 does not fit in `u32`
+    let c: u64 = -1 // error: literal -1 does not fit in `u64`
+}

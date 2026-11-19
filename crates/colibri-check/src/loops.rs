@@ -8,7 +8,7 @@ use crate::hir::{
     self, Arm, Block, Expr, ForBinding, ForLoop, ForSource, LoopId, Pat, PatKind, Stmt,
 };
 use crate::pat::PatCx;
-use crate::types::Ty;
+use crate::types::{IntTy, Ty};
 
 impl FnCtx<'_, '_> {
     fn new_loop(&mut self, label: Option<&Label>) -> LoopId {
@@ -65,6 +65,9 @@ impl FnCtx<'_, '_> {
         } else {
             let ty = self.default_ty(&lo.ty);
             match ty {
+                Ty::Int(IntTy::U64) => {
+                    self.ck.unsupported("a `for` range of `u64`", head.span);
+                }
                 Ty::Int(_) => elem = ty,
                 Ty::Error => {}
                 other => {

@@ -1,0 +1,38 @@
+fn main() {
+    print(i8.MIN)
+    print(i8.MAX)
+    print(i16.MIN)
+    print(i16.MAX)
+    print(i32.MIN)
+    print(i32.MAX)
+    print(i64.MIN)
+    print(i64.MAX)
+    print(int.MIN)
+    print(int.MAX)
+    print(u8.MIN)
+    print(u8.MAX)
+    print(u16.MIN)
+    print(u16.MAX)
+    print(u32.MIN)
+    print(u32.MAX)
+    print(u64.MIN)
+    print(u64.MAX)
+}
+// expect: -128
+// expect: 127
+// expect: -32768
+// expect: 32767
+// expect: -2147483648
+// expect: 2147483647
+// expect: -9223372036854775808
+// expect: 9223372036854775807
+// expect: -9223372036854775808
+// expect: 9223372036854775807
+// expect: 0
+// expect: 255
+// expect: 0
+// expect: 65535
+// expect: 0
+// expect: 4294967295
+// expect: 0
+// expect: 18446744073709551615

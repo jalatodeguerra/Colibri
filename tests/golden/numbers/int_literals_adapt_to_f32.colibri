@@ -1,0 +1,14 @@
+fn half(x: f32) -> f32 => x / 2
+
+fn main() {
+    let a: f32 = 3
+    let b = a + 1
+    print(a)
+    print(b)
+    print(half(5))
+    print(half(2.5))
+}
+// expect: 3.0
+// expect: 4.0
+// expect: 2.5
+// expect: 1.25

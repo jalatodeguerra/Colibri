@@ -1,0 +1,18 @@
+fn main() {
+    let a: i8 = 64
+    print(a << 1)
+    let b: i8 = 1
+    print(b << 7)
+    let c: i8 = 3
+    print(c << 6)
+    print(1 << 62)
+    print(1 << 63)
+    let d: i32 = 1
+    print(d << 31)
+}
+// expect: -128
+// expect: -128
+// expect: -64
+// expect: 4611686018427387904
+// expect: -9223372036854775808
+// expect: -2147483648

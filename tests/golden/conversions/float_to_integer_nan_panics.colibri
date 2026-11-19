@@ -1,0 +1,6 @@
+fn main() {
+    let zero = 0.0
+    print(int(1.5))
+    print(int(zero / zero)) // panic: cannot convert `nan` to `int`
+}
+// expect: 1

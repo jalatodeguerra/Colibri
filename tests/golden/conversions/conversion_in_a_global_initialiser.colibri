@@ -1,0 +1,12 @@
+const MASK: u8 = u8(0xF0)
+let SCALE = f32(2)
+var counter: u16 = u16(65535)
+
+fn main() {
+    print(MASK)
+    print(SCALE * 1.25)
+    print(counter)
+}
+// expect: 240
+// expect: 2.5
+// expect: 65535

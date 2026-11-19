@@ -1,0 +1,36 @@
+struct Particle {
+    mass: float
+}
+
+fn scale(x: float) -> float => x * 2.0
+fn narrow() -> float {
+    let x: f32 = 0.5
+    return x
+}
+fn arrow(x: f32) -> float => x
+
+fn main() {
+    let a: f32 = 0.1
+    let b: float = a
+    print(b)
+    print(scale(a))
+    print(narrow())
+    print(arrow(0.25))
+    let p = Particle { mass: a }
+    print(p.mass)
+    var c: float = 1.0
+    c = a
+    print(c)
+    let d: float = if a > 0.0 { a } else { 0.0 }
+    print(d)
+    let xs: List[float] = [a, 1.0]
+    print(xs)
+}
+// expect: 0.10000000149011612
+// expect: 0.20000000298023224
+// expect: 0.5
+// expect: 0.25
+// expect: 0.10000000149011612
+// expect: 0.10000000149011612
+// expect: 0.10000000149011612
+// expect: [0.10000000149011612, 1.0]

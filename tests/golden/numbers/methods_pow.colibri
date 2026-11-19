@@ -1,0 +1,34 @@
+fn main() {
+    let a: int = 2
+    print(a.pow(10))
+    print(a.pow(0))
+    print(a.pow(62))
+    let b: int = -2
+    print(b.pow(3))
+    print(b.pow(62))
+    let c: u8 = 2
+    print(c.pow(7))
+    let d: u64 = 2
+    print(d.pow(63))
+    let e: u64 = 10
+    print(e.pow(19))
+    let f: i32 = 0
+    print(f.pow(0))
+    print(f.pow(5))
+    let g: i8 = -1
+    print(g.pow(1001))
+    let h: u32 = 1
+    print(h.pow(1000000))
+}
+// expect: 1024
+// expect: 1
+// expect: 4611686018427387904
+// expect: -8
+// expect: 4611686018427387904
+// expect: 128
+// expect: 9223372036854775808
+// expect: 10000000000000000000
+// expect: 1
+// expect: 0
+// expect: -1
+// expect: 1

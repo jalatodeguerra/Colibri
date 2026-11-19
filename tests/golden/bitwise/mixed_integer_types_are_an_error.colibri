@@ -1,0 +1,9 @@
+fn main() {
+    let a: u8 = 1
+    let b: u16 = 2
+    let c: i32 = 3
+    print(a & b) // error: cannot apply `&` to `u8` and `u16`
+    print(b | c) // error: cannot apply `|` to `u16` and `i32`
+    print(c ^ 1)
+    print(a ^ c) // error: cannot apply `^` to `u8` and `i32`
+}

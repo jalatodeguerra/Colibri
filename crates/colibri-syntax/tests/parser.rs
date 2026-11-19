@@ -645,6 +645,11 @@ fn statements() {
         ("var y: int = 2", "(var y : int (int 2))"),
         ("const MAX = 100", "(const MAX (int 100))"),
         ("p.x += 1", "(assign += (field p x) (int 1))"),
+        ("flags &= ~mask", "(assign &= flags (unary ~ mask))"),
+        ("flags |= 1 << n", "(assign |= flags (binary << (int 1) n))"),
+        ("h ^= h >> 7", "(assign ^= h (binary >> h (int 7)))"),
+        ("x <<= 3", "(assign <<= x (int 3))"),
+        ("x >>= n", "(assign >>= x n)"),
         ("a[i] -= 2", "(assign -= (index a i) (int 2))"),
         (
             "a *= 2\nb /= 2\nc %= 2",

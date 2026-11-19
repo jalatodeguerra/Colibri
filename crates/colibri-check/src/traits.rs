@@ -72,8 +72,9 @@ pub(crate) enum Source {
 /// The head of a type, which interface dispatch works on.
 pub(crate) fn key_of(ty: &Ty) -> Option<TypeKey> {
     Some(match ty {
-        Ty::Int(_) => TypeKey::Int,
+        Ty::Int(t) => TypeKey::Int(*t),
         Ty::Float => TypeKey::Float,
+        Ty::F32 => TypeKey::F32,
         Ty::Bool => TypeKey::Bool,
         Ty::Char => TypeKey::Char,
         Ty::Str => TypeKey::Str,
@@ -328,9 +329,14 @@ impl Env<'_> {
     /// compared by identity (DESIGN §7.2).
     fn eq_part(&self, ty: &Ty) -> Part {
         match ty {
-            Ty::Int(_) | Ty::Float | Ty::Bool | Ty::Char | Ty::Str | Ty::Unit | Ty::Range(_) => {
-                Part::Ok
-            }
+            Ty::Int(_)
+            | Ty::Float
+            | Ty::F32
+            | Ty::Bool
+            | Ty::Char
+            | Ty::Str
+            | Ty::Unit
+            | Ty::Range(_) => Part::Ok,
             Ty::Tuple(items) => Part::Inside(items.clone()),
             Ty::List(t) | Ty::Set(t) | Ty::Option(t) => Part::Inside(vec![(**t).clone()]),
             Ty::Map(k, v) => Part::Inside(vec![(**k).clone(), (**v).clone()]),
@@ -343,7 +349,7 @@ impl Env<'_> {
     /// `<` is derived for scalars, tuples of ordered parts and enums without payloads.
     fn ord_part(&self, ty: &Ty) -> Part {
         match ty {
-            Ty::Int(_) | Ty::Float | Ty::Bool | Ty::Char | Ty::Str => Part::Ok,
+            Ty::Int(_) | Ty::Float | Ty::F32 | Ty::Bool | Ty::Char | Ty::Str => Part::Ok,
             Ty::Tuple(items) => Part::Inside(items.clone()),
             Ty::Adt(id, _) => match self.types.get(id.0 as usize).map(|d| &d.kind) {
                 Some(TypeDefKind::Enum { variants })
@@ -357,7 +363,7 @@ impl Env<'_> {
         }
     }
 
-    /// Hashing is derived structurally. A `float` is not hashable (`nan != nan`), nor is a
+    /// Hashing is derived structurally. A `float` or `f32` is not hashable (`nan != nan`), nor is a
     /// mutable collection; a class hashes by identity (DESIGN §5.3).
     fn hash_part(&self, ty: &Ty) -> Part {
         match ty {

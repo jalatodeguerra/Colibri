@@ -1,0 +1,26 @@
+fn find(xs: List[u8], target: u8) -> u8? {
+    for x in xs {
+        if x == target {
+            return some(x)
+        }
+    }
+    return none
+}
+
+fn half(x: u8) -> Result[u8] {
+    if x % 2 != 0 {
+        return err("odd")
+    }
+    return ok(x / 2)
+}
+
+fn main() {
+    print(find([1, 2, 3], 2))
+    print(find([1, 2, 3], 9))
+    print(half(10))
+    print(half(7).is_err())
+}
+// expect: some(2)
+// expect: none
+// expect: ok(5)
+// expect: true

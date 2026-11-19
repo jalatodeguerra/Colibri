@@ -1,0 +1,4 @@
+fn main() {
+    let a: int = -1
+    print(u8(a)) // panic: value -1 does not fit in `u8`
+}

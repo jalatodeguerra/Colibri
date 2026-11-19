@@ -1,0 +1,16 @@
+fn main() {
+    let a: i16 = 30000
+    let b: i16 = 2767
+    print(a + b)
+    print(a - b)
+    print(-a)
+    print(a / 7)
+    print(a % 7)
+    print(b * 11)
+}
+// expect: 32767
+// expect: 27233
+// expect: -30000
+// expect: 4285
+// expect: 5
+// expect: 30437

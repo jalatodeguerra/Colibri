@@ -12,6 +12,11 @@ fn assign_op(kind: &TokenKind) -> Option<AssignOp> {
         TokenKind::StarEq => AssignOp::Mul,
         TokenKind::SlashEq => AssignOp::Div,
         TokenKind::PercentEq => AssignOp::Rem,
+        TokenKind::AmpEq => AssignOp::BitAnd,
+        TokenKind::PipeEq => AssignOp::BitOr,
+        TokenKind::CaretEq => AssignOp::BitXor,
+        TokenKind::ShlEq => AssignOp::Shl,
+        TokenKind::ShrEq => AssignOp::Shr,
         _ => return None,
     })
 }

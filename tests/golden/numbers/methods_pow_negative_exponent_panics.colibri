@@ -1,0 +1,5 @@
+fn main() {
+    let a: int = 3
+    let n = 0 - 2
+    print(a.pow(n)) // panic: negative exponent -2 in `pow`
+}

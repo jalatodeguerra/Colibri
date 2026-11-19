@@ -22,7 +22,11 @@ impl FnCtx<'_, '_> {
         let Some(expected) = expected else {
             return value;
         };
-        let Ty::Dyn(iface, args) = self.infer.shallow(expected) else {
+        let expected = self.infer.shallow(expected);
+        if expected == Ty::Float && self.infer.shallow(&value.ty) == Ty::F32 {
+            return self.widen_f32(value);
+        }
+        let Ty::Dyn(iface, args) = expected else {
             return value;
         };
         match self.infer.shallow(&value.ty) {
@@ -37,6 +41,16 @@ impl FnCtx<'_, '_> {
             _ => {}
         }
         self.make_dyn(value, iface, args)
+    }
+
+    /// `f32` to `float`, the one implicit numeric conversion besides literals (DESIGN §5.1).
+    pub fn widen_f32(&mut self, value: Expr) -> Expr {
+        let span = value.span;
+        self.mk(
+            hir::ExprKind::Coerce(Box::new(value), Coercion::F32ToFloat),
+            Ty::Float,
+            span,
+        )
     }
 
     /// Boxes `value` as the interface value `iface[args]`, reporting a type that does not
@@ -96,10 +110,16 @@ impl FnCtx<'_, '_> {
             }
             other => {
                 let shown = self.show(other);
-                self.ck.report(
-                    Diagnostic::error(format!("cannot convert to `{shown}` with `as` yet"), span)
-                        .with_hint("`as` converts a value to an interface type (`circle as Shape`); numeric conversions are not supported yet"),
-                );
+                let mut diag =
+                    Diagnostic::error(format!("cannot convert to `{shown}` with `as`"), span);
+                diag = if other.is_number() {
+                    diag.with_hint(format!(
+                        "`as` converts a value to an interface type (`circle as Shape`); convert numbers with a call: `{shown}(x)`"
+                    ))
+                } else {
+                    diag.with_hint("`as` converts a value to an interface type (`circle as Shape`)")
+                };
+                self.ck.report(diag);
                 self.error_expr(span)
             }
         }

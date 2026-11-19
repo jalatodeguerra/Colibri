@@ -1,0 +1,15 @@
+interface Describe {
+    fn describe(self) -> str
+}
+
+impl Describe for u8 { // error: `impl` for `u8` is not supported yet
+    fn describe(self) -> str => "a byte"
+}
+
+impl Describe for int {
+    fn describe(self) -> str => "an int"
+}
+
+fn main() {
+    print(5.describe())
+}

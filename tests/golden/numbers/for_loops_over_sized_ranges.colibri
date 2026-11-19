@@ -1,0 +1,24 @@
+fn main() {
+    var total = 0
+    let lo: u8 = 250
+    for i in lo..=255 {
+        total += int(i)
+    }
+    print(total)
+    let n: u8 = 4
+    for i in 0..n {
+        print(i)
+    }
+    for i in 0..=2 {
+        let small = i8(i)
+        print(small - 1)
+    }
+}
+// expect: 1515
+// expect: 0
+// expect: 1
+// expect: 2
+// expect: 3
+// expect: -1
+// expect: 0
+// expect: 1

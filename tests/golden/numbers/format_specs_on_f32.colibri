@@ -1,0 +1,25 @@
+fn main() {
+    let a: f32 = 3.14159
+    print("{a}")
+    print("{a:.2}")
+    print("{a:.0}")
+    print("{a:8.3}|{a:<8.1}|{a:08.2}")
+    let b: f32 = -0.1
+    print("{b} {b:.3} {b:>7}")
+    let c: f32 = 1.0
+    let d: f32 = 3.0
+    print("{c / d}")
+    print("{c / d:.4}")
+    let e: f32 = 100000000.0
+    print("{e}")
+    print("{e:.1}")
+}
+// expect: 3.14159
+// expect: 3.14
+// expect: 3
+// expect:    3.142|3.1     |00003.14
+// expect: -0.1 -0.100    -0.1
+// expect: 0.33333334
+// expect: 0.3333
+// expect: 100000000.0
+// expect: 100000000.0

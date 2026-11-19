@@ -1,0 +1,18 @@
+fn main() {
+    let c: u64 = 4
+    print(1 << c)
+    let x: u8 = 1
+    print(x << c)
+    let n: u8 = 3
+    print(100 >> n)
+    let m: i32 = 2
+    print(x << m)
+    let k: i8 = 5
+    let wide: u64 = 1
+    print(wide << k)
+}
+// expect: 16
+// expect: 16
+// expect: 12
+// expect: 4
+// expect: 32

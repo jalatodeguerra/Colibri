@@ -1,0 +1,6 @@
+fn main() {
+    let big: f32 = 3.0e9
+    print(u32(big))
+    print(i32(big)) // panic: value 3000000000.0 does not fit in `i32`
+}
+// expect: 3000000000

@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use colibri_check::hir::{CmpOp, Coercion, FnId, ImplDef, Place, Program, TypeKey};
 use colibri_check::types::{
-    CLONE, DROP, EQ, HASH, INTO_ERROR, ITER, ITERABLE, ORD, SHOW, Ty, TypeId,
+    CLONE, DROP, EQ, HASH, INTO_ERROR, ITER, ITERABLE, IntTy, ORD, SHOW, Ty, TypeId,
 };
 use colibri_syntax::{FileId, Span};
 
@@ -86,8 +86,11 @@ pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
     Some(match v {
         Value::Unit => TypeKey::Unit,
         Value::Bool(_) => TypeKey::Bool,
-        Value::Int(_) => TypeKey::Int,
+        // Narrow integers carry no width; `impl` for them is not accepted (check/ifaces.rs).
+        Value::Int(_) => TypeKey::Int(IntTy::I64),
+        Value::U64(_) => TypeKey::Int(IntTy::U64),
         Value::Float(_) => TypeKey::Float,
+        Value::F32(_) => TypeKey::F32,
         Value::Char(_) => TypeKey::Char,
         Value::Str(_) => TypeKey::Str,
         Value::Struct(s) => TypeKey::Adt(s.ty),
@@ -372,6 +375,12 @@ impl Interp {
         let impl_id = match how {
             Coercion::IntoError(conv) => return self.convert_to_error(value, *conv),
             Coercion::ResultIntoError(conv) => return self.result_into_error(value, *conv),
+            Coercion::F32ToFloat => {
+                return match value {
+                    Value::F32(x) => Value::Float(f64::from(x)),
+                    other => other,
+                };
+            }
             Coercion::ToDyn(id) => id.0,
             Coercion::ToDynBound(iface) => {
                 if let Value::Dyn(d) = &value

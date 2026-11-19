@@ -1,0 +1,13 @@
+fn main() {
+    var d: float = 1.0
+    let a: f32 = 0.5
+    d += a
+    d *= a
+    print(d)
+    var f: f32 = 1.0
+    f += 0.25
+    f -= 0.5
+    print(f)
+}
+// expect: 0.75
+// expect: 0.75

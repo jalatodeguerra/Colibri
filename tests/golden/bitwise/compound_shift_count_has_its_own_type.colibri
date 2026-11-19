@@ -1,0 +1,14 @@
+fn main() {
+    var x: u32 = 1
+    let n: u8 = 5
+    x <<= n
+    print(x)
+    let m: u64 = 2
+    x >>= m
+    print(x)
+    x <<= 31
+    print(x)
+}
+// expect: 32
+// expect: 8
+// expect: 0

@@ -1,0 +1,6 @@
+fn main() {
+    let a: u8 = 5
+    print(a.abs()) // error: `u8` has no method `abs`
+    let b: u64 = 5
+    print(b.abs()) // error: `u64` has no method `abs`
+}

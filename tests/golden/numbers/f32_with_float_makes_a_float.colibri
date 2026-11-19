@@ -1,0 +1,20 @@
+fn main() {
+    let a: f32 = 0.1
+    let d: float = 2.0
+    print(a * d)
+    print(d * a)
+    print(a + d)
+    print(a < d)
+    print(d >= a)
+    print(a == 0.1)
+    let e = a * d
+    let f: float = e
+    print(f)
+}
+// expect: 0.20000000298023224
+// expect: 0.20000000298023224
+// expect: 2.100000001490116
+// expect: true
+// expect: true
+// expect: true
+// expect: 0.20000000298023224

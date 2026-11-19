@@ -14,7 +14,7 @@ use crate::generics::SigCtx;
 use crate::hir::{FnId, IfaceMethod, ImplId, TypeDefKind};
 use crate::prelude;
 use crate::traits::{BoundRef, GenericParamInfo, ImplInfo, key_of};
-use crate::types::{DROP, FIRST_USER_TYPE, ParamId, Ty, TypeId};
+use crate::types::{DROP, FIRST_USER_TYPE, IntTy, ParamId, Ty, TypeId};
 
 /// An interface as the checker keeps it.
 pub(crate) struct IfaceInfo<'a> {
@@ -229,6 +229,14 @@ impl<'a> Checker<'a> {
         }
         let iface_name = self.types[iface.0 as usize].name.clone();
         let target_shown = self.render(&target);
+        // Dispatch on a generic receiver reads the type from the value, and a `Value::Int` of
+        // the narrow widths carries none (ARCHITECTURE §6).
+        if let Ty::Int(t) = &target
+            && !matches!(t, IntTy::I64 | IntTy::U64)
+        {
+            self.unsupported(&format!("`impl` for `{target_shown}`"), decl.target.span);
+            return;
+        }
         let Some(key) = key_of(&target) else {
             self.report(
                 Diagnostic::error(

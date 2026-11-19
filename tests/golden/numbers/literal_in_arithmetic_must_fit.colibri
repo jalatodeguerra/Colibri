@@ -1,0 +1,5 @@
+fn main() {
+    let a: u8 = 10
+    let b = a + 300 // error: literal 300 does not fit in `u8`
+    let c = a * 256 // error: literal 256 does not fit in `u8`
+}

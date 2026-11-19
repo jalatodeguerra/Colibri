@@ -1,0 +1,18 @@
+fn main() {
+    print(float.MAX)
+    print(float.MIN)
+    print(float.EPSILON)
+    print(float.INFINITY)
+    print(float.NAN.is_nan())
+    print(f64.MAX == float.MAX)
+    print(f32.EPSILON)
+    print(f32.INFINITY)
+}
+// expect: 1.7976931348623157e308
+// expect: -1.7976931348623157e308
+// expect: 2.220446049250313e-16
+// expect: inf
+// expect: true
+// expect: true
+// expect: 1.1920929e-7
+// expect: inf

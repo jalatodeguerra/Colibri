@@ -1,0 +1,20 @@
+fn next(state: u64) -> u64 {
+    var x = state
+    x ^= x << 13
+    x ^= x >> 7
+    x ^= x << 17
+    return x
+}
+
+fn main() {
+    var s: u64 = 88172645463325252
+    for _ in 0..3 {
+        s = next(s)
+        print(s)
+    }
+    print(s % 100)
+}
+// expect: 8748534153485358512
+// expect: 3040900993826735515
+// expect: 3453997556048239312
+// expect: 12

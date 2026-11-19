@@ -1,0 +1,6 @@
+fn main() {
+    let a: List[int] = [1, 2, 3]
+    print(a.sum())
+    let b: List[u8] = [1, 2, 3]
+    print(b.sum()) // error: `sum` needs a list of `int` or `float`, but this is a list of `u8`
+}

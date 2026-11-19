@@ -1,0 +1,4 @@
+fn main() {
+    let inf = 1.0 / 0.0
+    print(int(inf)) // panic: value inf does not fit in `int`
+}

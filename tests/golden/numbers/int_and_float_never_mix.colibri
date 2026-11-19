@@ -1,0 +1,7 @@
+fn main() {
+    let a: i32 = 1
+    let f: float = 2.0
+    let g: f32 = 2.0
+    print(a + f) // error: cannot apply `+` to `i32` and `float`
+    print(a * g) // error: cannot apply `*` to `i32` and `f32`
+}

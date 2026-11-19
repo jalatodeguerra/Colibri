@@ -1,0 +1,26 @@
+fn largest[T: Ord](a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+fn same[T: Eq](a: T, b: T) -> bool => a == b
+
+fn main() {
+    let a: u8 = 200
+    let b: u8 = 100
+    print(largest(a, b))
+    let c: u64 = 18446744073709551615
+    let d: u64 = 1
+    print(largest(c, d))
+    print(same(a, a))
+    print(same(c, d))
+    let e: f32 = 0.5
+    print(largest(e, 0.25))
+}
+// expect: 200
+// expect: 18446744073709551615
+// expect: true
+// expect: false
+// expect: 0.5

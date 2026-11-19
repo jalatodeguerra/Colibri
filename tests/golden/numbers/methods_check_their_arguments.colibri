@@ -1,0 +1,12 @@
+fn main() {
+    let a: u8 = 5
+    let b: u16 = 5
+    print(a.wrapping_add(b)) // error: expected `u8`, found `u16`
+    print(a.wrapping_add(1.5)) // error: expected `u8`, found `{float}`
+    print(a.wrapping_add()) // error: missing argument for `other`
+    print(a.min(1, 2)) // error: too many arguments: `u8.min` takes 1 argument, found 2
+    print(a.pow(1.5)) // error: expected `int`, found `{float}`
+    print(a.pow(b)) // error: expected `int`, found `u16`
+    let f: float = 1.0
+    print(f.min(a)) // error: expected `float`, found `u8`
+}

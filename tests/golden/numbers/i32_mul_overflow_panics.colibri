@@ -1,0 +1,6 @@
+fn main() {
+    let a: i32 = 65536
+    print(a * 32767)
+    print(a * 32768) // panic: integer overflow
+}
+// expect: 2147418112

@@ -1,0 +1,11 @@
+fn main() {
+    let a: u8 = 5
+    print(a.wrapping_inc(1)) // error: `u8` has no method `wrapping_inc`
+    print(a.sqrt()) // error: `u8` has no method `sqrt`
+    let f: float = 1.0
+    print(f.wrapping_add(1.0)) // error: `float` has no method `wrapping_add`
+    let g: f32 = 1.0
+    print(g.checked_add(g)) // error: `f32` has no method `checked_add`
+    let i: int = 3
+    print(i.is_nan()) // error: `int` has no method `is_nan`
+}
