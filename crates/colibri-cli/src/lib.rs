@@ -3,6 +3,7 @@
 pub mod fmt;
 pub mod golden;
 pub mod testcmd;
+pub mod watch;
 
 use std::thread;
 
