@@ -1,0 +1,6 @@
+fn main() {
+    let n = 3
+    let x = 2.5
+    print(n.to_float()) // error: `int` has no method `to_float`
+    print(x.to_int()) // error: `float` has no method `to_int`
+}

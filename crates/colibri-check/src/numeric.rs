@@ -234,9 +234,19 @@ impl FnCtx<'_, '_> {
             } else {
                 FLOAT_METHODS
             };
-            let hint = suggest::closest(&name.name, candidates.iter().copied())
-                .map(|s| format!("did you mean `{s}`?"))
-                .unwrap_or_else(|| format!("its methods are: {}", candidates.join(", ")));
+            // Conversions are calls named after the target type, not methods.
+            let conversion = matches!(
+                name.name.as_str(),
+                "to_float" | "to_f64" | "as_float" | "as_f64" | "to_int" | "to_i64" | "as_int"
+            );
+            let hint = if conversion {
+                "numbers convert with a call named after the target type: `float(x)`, `int(x)`"
+                    .to_string()
+            } else {
+                suggest::closest(&name.name, candidates.iter().copied())
+                    .map(|s| format!("did you mean `{s}`?"))
+                    .unwrap_or_else(|| format!("its methods are: {}", candidates.join(", ")))
+            };
             self.ck.report(
                 Diagnostic::error(
                     format!("`{shown}` has no method `{}`", name.name),

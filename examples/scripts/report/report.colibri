@@ -1,0 +1,329 @@
+// report: fetch a JSON index and the documents it lists, and write a Markdown report.
+//
+//   colibri run report.colibri -- <url-or-file> [--out report.md] [--concurrency N]
+//                                 [--top N] [--now <iso time>] [--git]
+//
+// The index is `{"title": "...", "items": ["a.json", "https://host/b.json", ...]}`; relative
+// items are resolved against the index (a URL or a folder). Each item is a batch of orders
+// `{"region": "...", "orders": [{"id": 1, "customer": "...", "category": "...", "total": 9.5}]}`.
+// URLs go through `http`, everything else through `fs`. Without `--out` the report is printed.
+//
+// `--concurrency N` runs N worker coroutines over the list of items. `http` blocks the whole
+// Vm, so the workers take turns rather than overlap (see README); the structure is what a
+// non-blocking `http` would need. `--now` fixes the time stamp (for reproducible output);
+// `--git` adds the current commit when the working folder is a git repository.
+//
+// Exit codes: 0 done, 1 the index could not be read or some item failed (the report is still
+// written, with the failures listed), 2 bad command line.
+import args
+import datetime
+import fs
+import http
+import io
+import json
+import os
+import process
+import str
+
+let USAGE = "usage: colibri run report.colibri -- <url-or-file> [--out report.md] [--concurrency N] [--top N] [--now <iso>] [--git]"
+
+struct Index {
+    title: str
+    items: List[str]
+}
+
+struct Order {
+    id: int
+    customer: str
+    category: str
+    total: float
+}
+
+struct Batch {
+    region: str
+    orders: List[Order]
+}
+
+// One item to fetch. Workers fill it in; a class, so the list and the workers share the objects.
+class Job {
+    source: str
+    batch: Batch?
+    error: str
+}
+
+class Queue {
+    next: int
+}
+
+fn is_url(location: str) -> bool {
+    return location.starts_with("http://") || location.starts_with("https://")
+}
+
+fn read_location(location: str) -> Result[str] {
+    if is_url(location) {
+        let response = http.get(location)?
+        if response.status != 200 {
+            return err(Error.from("{location}: HTTP status {response.status}"))
+        }
+        return ok(response.body)
+    }
+    return fs.read(location)
+}
+
+// Where an item of the index lives.
+fn resolve(index: str, item: str) -> str {
+    if is_url(item) {
+        return item
+    }
+    var parts = index.split("/")
+    parts.pop()
+    if is_url(index) {
+        return parts.join("/") + "/" + item
+    }
+    if item.starts_with("/") || parts.is_empty() {
+        return item
+    }
+    return parts.join("/") + "/" + item
+}
+
+fn fetch_batch(source: str) -> Result[Batch] {
+    let text = read_location(source)?
+    return ok(json.decode[Batch](text).context("decoding {source}")?)
+}
+
+fn worker(jobs: List[Job], queue: Queue) {
+    while queue.next < jobs.len() {
+        let job = jobs[queue.next]
+        queue.next += 1
+        match fetch_batch(job.source) {
+            ok(b) => job.batch = some(b)
+            err(e) => job.error = e.message()
+        }
+        wait(0.0)
+    }
+}
+
+fn fetch_all(jobs: List[Job], workers: int) {
+    let group = CoGroup()
+    let queue = Queue { next: 0 }
+    for _ in 0..workers {
+        group.go(worker(jobs, queue))
+    }
+    while group.count() > 0 {
+        task.tick(0.0)
+    }
+}
+
+fn bump_int(m: Map[str, int], key: str, by: int) {
+    m.insert(key, (m.get(key) or 0) + by)
+}
+
+fn bump_sum(m: Map[str, float], key: str, by: float) {
+    m.insert(key, (m.get(key) or 0.0) + by)
+}
+
+fn money(x: float) -> str {
+    return "{x:.2}"
+}
+
+// The `n` keys with the largest sums, biggest first (ties by name).
+fn top(sums: Map[str, float], n: int) -> List[str] {
+    var keys = sums.keys()
+    keys.sort_by(fn(a, b) {
+        let x = sums[a]
+        let y = sums[b]
+        if x > y { return -1 }
+        if x < y { return 1 }
+        if a < b { return -1 }
+        return 1
+    })
+    var out: List[str] = []
+    for k in keys {
+        if out.len() < n {
+            out.push(k)
+        }
+    }
+    return out
+}
+
+fn table(headers: List[str], rows: List[List[str]]) -> str {
+    var lines = ["| " + headers.join(" | ") + " |"]
+    lines.push("|" + headers.map(fn(h) => "---").join("|") + "|")
+    for row in rows {
+        lines.push("| " + row.join(" | ") + " |")
+    }
+    return lines.join("\n")
+}
+
+fn commit() -> Option[str] {
+    let out = process.output("git", ["rev-parse", "--short", "HEAD"]) or { return none }
+    return some(out.trim())
+}
+
+fn build_report(title: str, stamp: str, jobs: List[Job], top_n: int, git: Option[str]) -> str {
+    var orders = 0
+    var revenue = 0.0
+    var by_region_n: Map[str, int] = {:}
+    var by_region: Map[str, float] = {:}
+    var by_category_n: Map[str, int] = {:}
+    var by_category: Map[str, float] = {:}
+    var by_customer_n: Map[str, int] = {:}
+    var by_customer: Map[str, float] = {:}
+    var biggest: Option[Order] = none
+    var biggest_region = ""
+    var failed: List[Job] = []
+    var fetched = 0
+
+    for job in jobs {
+        if let some(batch) = job.batch {
+            fetched += 1
+            for o in batch.orders {
+                orders += 1
+                revenue += o.total
+                bump_int(by_region_n, batch.region, 1)
+                bump_sum(by_region, batch.region, o.total)
+                bump_int(by_category_n, o.category, 1)
+                bump_sum(by_category, o.category, o.total)
+                bump_int(by_customer_n, o.customer, 1)
+                bump_sum(by_customer, o.customer, o.total)
+                var better = true
+                if let some(b) = biggest {
+                    better = o.total > b.total
+                }
+                if better {
+                    biggest = some(o)
+                    biggest_region = batch.region
+                }
+            }
+        } else {
+            failed.push(job)
+        }
+    }
+
+    var lines = ["# {title}", ""]
+    var meta = "Generated {stamp}"
+    if let some(sha) = git {
+        meta += ", commit `{sha}`"
+    }
+    lines.push(meta)
+    lines.push("")
+    lines.push("Sources: {fetched} read, {failed.len()} failed.")
+    lines.push("")
+
+    lines.push("## Summary")
+    lines.push("")
+    var summary = [["Orders", "{orders}"], ["Revenue", money(revenue)]]
+    if orders > 0 {
+        summary.push(["Average order", money(revenue / float(orders))])
+    }
+    if let some(b) = biggest {
+        summary.push(["Largest order", "#{b.id} {b.customer} ({biggest_region}) {money(b.total)}"])
+    }
+    lines.push(table(["Metric", "Value"], summary))
+    lines.push("")
+
+    lines.push("## By region")
+    lines.push("")
+    var rows: List[List[str]] = []
+    for r in top(by_region, by_region.len()) {
+        let n = by_region_n[r]
+        rows.push([r, "{n}", money(by_region[r]), money(by_region[r] / float(n))])
+    }
+    lines.push(table(["Region", "Orders", "Revenue", "Average"], rows))
+    lines.push("")
+
+    lines.push("## By category")
+    lines.push("")
+    rows = []
+    for c in top(by_category, by_category.len()) {
+        let share = by_category[c] / revenue * 100.0
+        rows.push([c, "{by_category_n[c]}", money(by_category[c]), "{share:.1}%"])
+    }
+    lines.push(table(["Category", "Orders", "Revenue", "Share"], rows))
+    lines.push("")
+
+    lines.push("## Top {top_n} customers")
+    lines.push("")
+    rows = []
+    var rank = 1
+    for c in top(by_customer, top_n) {
+        rows.push(["{rank}", c, "{by_customer_n[c]}", money(by_customer[c])])
+        rank += 1
+    }
+    lines.push(table(["#", "Customer", "Orders", "Revenue"], rows))
+    lines.push("")
+
+    if !failed.is_empty() {
+        lines.push("## Failed sources")
+        lines.push("")
+        for job in failed {
+            lines.push("- `{job.source}`: {job.error}")
+        }
+        lines.push("")
+    }
+    return lines.join("\n")
+}
+
+fn usage_error(message: str) {
+    io.eprintln("report: {message}")
+    io.eprintln(USAGE)
+    os.exit(2)
+}
+
+fn int_option(name: str, fallback: int) -> int {
+    let text = args.value(name) or { return fallback }
+    return str.parse_int(text) or |e| {
+        usage_error("--{name}: {e.message()}")
+        return fallback
+    }
+}
+
+fn main() -> Result[()] {
+    let inputs = args.positional_with(["out", "concurrency", "top", "now"])
+    if inputs.len() != 1 {
+        usage_error("expected one URL or file")
+        return ok(())
+    }
+    let index_location = inputs[0]
+    let workers = int_option("concurrency", 2)
+    let top_n = int_option("top", 3)
+    if workers < 1 || top_n < 1 {
+        usage_error("--concurrency and --top must be at least 1")
+        return ok(())
+    }
+    var now = datetime.now()
+    if let some(text) = args.value("now") {
+        match datetime.parse_iso(text) {
+            ok(d) => now = d
+            err(e) => {
+                usage_error("--now: {e.message()}")
+                return ok(())
+            }
+        }
+    }
+    var git: Option[str] = none
+    if args.flag("git") {
+        git = commit()
+    }
+
+    let index_text = read_location(index_location).context("reading the index")?
+    let index = json.decode[Index](index_text).context("decoding the index {index_location}")?
+    var jobs: List[Job] = []
+    for item in index.items {
+        jobs.push(Job { source: resolve(index_location, item), batch: none, error: "" })
+    }
+    fetch_all(jobs, workers)
+
+    let text = build_report(index.title, datetime.to_iso(now), jobs, top_n, git)
+    if let some(out) = args.value("out") {
+        fs.write(out, text).context("writing the report")?
+        print("wrote {out} ({jobs.len()} sources)")
+    } else {
+        print(text)
+    }
+    let failures = jobs.filter(fn(j) => j.batch == none).len()
+    if failures > 0 {
+        return err(Error.from("{failures} of {jobs.len()} sources failed"))
+    }
+    return ok(())
+}
