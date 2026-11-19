@@ -658,3 +658,112 @@ fn an_unfinished_child_is_killed_when_it_is_dropped() {
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert!(!marker.exists(), "the child outlived its handle");
 }
+
+// ---- process in coroutines ----
+
+/// `process.run` waits on a background thread: a coroutine that is not waiting for the
+/// program keeps running meanwhile (real clock; `sh` is on every platform the tests run on).
+#[cfg(unix)]
+#[test]
+fn coroutines_make_progress_while_a_child_process_runs() {
+    let (mut vm, out) = vm(&[colibri::Cap::Os]);
+    run(
+        &mut vm,
+        r#"import process
+
+var ticks = 0
+var finished_at = 0
+
+fn ticker() {
+    while true {
+        ticks += 1
+        wait(0.01)
+    }
+}
+
+fn runner() -> int {
+    let r = process.run("sh", ["-c", "sleep 0.4; echo done"]) or |e| { panic(e.message()) }
+    finished_at = ticks
+    return r.status
+}
+
+fn main() {
+    let t = go ticker()
+    let r = go runner()
+    print(r.join())
+    t.cancel()
+    // About forty ticks happened while the child slept; with a blocked `Vm` there would be one.
+    print(finished_at > 10)
+}
+"#,
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "0\ntrue\n");
+}
+
+/// Two children started by two coroutines run at the same time.
+#[cfg(unix)]
+#[test]
+fn child_processes_of_different_coroutines_overlap() {
+    let (mut vm, out) = vm(&[colibri::Cap::Os]);
+    let start = std::time::Instant::now();
+    run(
+        &mut vm,
+        r#"import process
+
+fn one(n: int) -> str {
+    let r = process.shell("sleep 0.4; echo {n}") or |e| { panic(e.message()) }
+    return r.stdout.trim()
+}
+
+fn main() {
+    let a = go one(1)
+    let b = go one(2)
+    print(a.join() + b.join())
+}
+"#,
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "12\n");
+    let took = start.elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(750),
+        "two 0.4 s programs should overlap, took {took:?}"
+    );
+}
+
+/// Cancelling the coroutine that waits for a program stops the program.
+#[cfg(unix)]
+#[test]
+fn cancelling_a_coroutine_stops_its_child_process() {
+    let scratch = Scratch::new("cancel-child");
+    let marker = scratch
+        .0
+        .join("marker")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let (mut vm, out) = vm(&[colibri::Cap::Os, colibri::Cap::Fs]);
+    run(
+        &mut vm,
+        &format!(
+            r#"import process
+import fs
+
+fn job() {{
+    let _ = process.run("sh", ["-c", "sleep 0.5; touch {marker}"])
+    print("never")
+}}
+
+fn main() {{
+    let c = go job()
+    wait(0.1)
+    c.cancel()
+    wait(0.8)
+    print(fs.exists("{marker}"))
+}}
+"#
+        ),
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "false\n");
+}

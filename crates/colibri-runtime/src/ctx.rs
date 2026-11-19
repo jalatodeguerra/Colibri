@@ -123,6 +123,22 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// [`Ctx::run_async`] for work that can stop early: `work` is given a flag that is set
+    /// when the waiting coroutine is cancelled. A long operation (a child process) polls it and
+    /// gives up, so that it does not go on holding a pool thread for a result nobody wants.
+    pub fn run_async_cancellable<R: Send + 'static>(
+        &mut self,
+        work: impl FnOnce(&std::sync::atomic::AtomicBool) -> R + Send + 'static,
+    ) -> R {
+        match self.interp.await_external_with(self.fiber, work) {
+            Ok(r) => r,
+            Err(colibri_interp::ExternalError::Cancelled) => {
+                std::panic::resume_unwind(Box::new(RaisedCancel))
+            }
+            Err(colibri_interp::ExternalError::Failed(message)) => self.raise(message),
+        }
+    }
+
     /// The type arguments of the call this host function is running for, in the order of the
     /// function's type parameters (`fn decode[T](..)` gets one). Empty for a function that is
     /// not generic. Only a function registered with [`crate::Registration::typed`] can count

@@ -1676,8 +1676,14 @@ set, then `options.env`; `os.env` under a `Fixed` source does not restrict child
 input is closed unless `options.input` gives text, so a child never reads the script's stdin.
 Output is drained on threads, so a program writing a lot cannot deadlock.
 
-Blocking: host functions cannot suspend (waits panic inside host calls, §16), so `run`, `shell`,
-`status` and `Child.join` block the whole `Vm`, every coroutine included. For concurrency,
+Blocking: `run`, `run_with`, `shell` and `status` wait on a background thread through
+`Ctx::run_async_cancellable` (§22): inside a coroutine only that coroutine waits and the others
+keep running, and on the main fiber the wait runs the event loop. The thread polls
+`try_wait` with short naps (0.1 ms growing to 5 ms) so that it can see the cancel flag:
+cancelling the waiting coroutine kills the program (and does not hold a pool thread for it). A
+grandchild that the program started keeps running, as with any kill. `Child.join` and
+`Child.kill` still block the whole `Vm`: a host object stays borrowed while a method runs, so a
+method cannot suspend. For concurrency with a `Child`,
 `spawn` returns at once with a host class `Child` (`id()`, `try_wait() -> Result[Option[Output]]`,
 `join() -> Result[Output]`, `kill() -> Result[Output]`); a coroutine polls `try_wait` with
 `wait(0.01)` between calls (golden `process_polling_in_a_coroutine`). `try_wait` repeats its
@@ -3009,7 +3015,7 @@ threads. The cost: an operation that waits long (a slow request, a child process
 and once the pool is full later operations queue behind it; the host function stays
 on the coroutine's stack while waiting (so it must hold no borrows; documented); main-fiber `http`
 drives the loop; `HostFault::Cancel` is a new public variant, and `Clock` gained a defaulted
-method. Suspending inside a host function is exactly what §3 said the tree-walker could do but should not (to agree with the bytecode VM): it is allowed only for `run_async`, at host depth 1, and the VM will need the same facility as a re-entrant host call (a pending token that the VM resumes), which is why the API is a closure that returns a value and not a stack trick. `process` (`status`, `Child.join`) still blocks; it could use `run_async` the same way.
+method. Suspending inside a host function is exactly what §3 said the tree-walker could do but should not (to agree with the bytecode VM): it is allowed only for `run_async`, at host depth 1, and the VM will need the same facility as a re-entrant host call (a pending token that the VM resumes), which is why the API is a closure that returns a value and not a stack trick. `process.run`, `run_with`, `shell` and `status` now use it (`run_async_cancellable`, which also tells the work when its coroutine was cancelled); `Child.join` still blocks.
 
 ### Not built
 

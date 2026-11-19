@@ -1219,6 +1219,17 @@ impl Interp {
         fiber: &mut Fiber,
         work: impl FnOnce() -> R + Send + 'static,
     ) -> Result<R, ExternalError> {
+        self.await_external_with(fiber, move |_| work())
+    }
+
+    /// [`Interp::await_external`] for work that can stop early: `work` is given a flag that is
+    /// set when the waiting coroutine is cancelled, which a long operation (a child process)
+    /// polls so that it does not go on holding a pool thread for nothing.
+    pub fn await_external_with<R: Send + 'static>(
+        &mut self,
+        fiber: &mut Fiber,
+        work: impl FnOnce(&AtomicBool) -> R + Send + 'static,
+    ) -> Result<R, ExternalError> {
         let op = self.sched.next_id;
         self.sched.next_id += 1;
         let (result_tx, result_rx) = mpsc::channel::<R>();
@@ -1232,7 +1243,7 @@ impl Interp {
             if skip.load(Ordering::SeqCst) {
                 return;
             }
-            let _ = result_tx.send(work());
+            let _ = result_tx.send(work(&skip));
         }));
         if let Err(message) = queued {
             self.sched.ext.pending.remove(&op);
