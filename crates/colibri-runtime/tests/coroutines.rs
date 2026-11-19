@@ -227,3 +227,81 @@ fn a_thousand_idle_coroutines_tick_quickly() {
     let limit = if cfg!(debug_assertions) { 20 } else { 1 };
     assert!(best.as_millis() < limit, "{best:?}");
 }
+
+#[test]
+fn signal_waiters_cost_nothing_per_tick() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "waiters.colibri",
+        r#"
+let ready = Signal()
+var woken = 0
+
+fn listener() {
+    wait_for(ready)
+    woken += 1
+}
+
+fn fire() {
+    ready.emit()
+}
+
+fn main() {
+    for i in 0..1000 { go listener() }
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(vm.coroutine_count(), 1000);
+    let after_start = vm.coroutine_resumptions();
+    for _ in 0..100 {
+        vm.tick(0.01).unwrap();
+    }
+    // Not one of the 1,000 waiters was resumed by 100 ticks: they are not polled.
+    assert_eq!(vm.coroutine_resumptions(), after_start);
+    // The time of an idle tick does not depend on them being resumed.
+    let mut best = std::time::Duration::MAX;
+    for _ in 0..20 {
+        let start = std::time::Instant::now();
+        vm.tick(0.01).unwrap();
+        best = best.min(start.elapsed());
+    }
+    eprintln!("tick with 1000 signal waiters: {best:?}");
+    let limit = if cfg!(debug_assertions) { 20 } else { 1 };
+    assert!(best.as_millis() < limit, "{best:?}");
+    // One emit wakes all of them, at the next tick and not before.
+    let fire = vm.get_fn::<(), ()>("fire").unwrap();
+    fire.call(&mut vm, ()).unwrap();
+    assert_eq!(vm.coroutine_resumptions(), after_start);
+    assert_eq!(vm.coroutine_count(), 1000);
+    vm.tick(0.0).unwrap();
+    assert_eq!(vm.coroutine_resumptions(), after_start + 1000);
+    assert_eq!(vm.coroutine_count(), 0);
+    let _ = out;
+}
+
+#[test]
+fn the_event_loop_ends_when_only_signal_waiters_remain() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "waiters.colibri",
+        r#"
+fn listener(s: Signal) {
+    defer print("cancelled")
+    wait_for(s)
+    print("never")
+}
+fn main() {
+    go listener(Signal())
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    // Nothing can emit that signal: the loop returns instead of sleeping forever.
+    vm.run_event_loop().unwrap();
+    assert_eq!(vm.coroutine_count(), 1);
+    vm.cancel_coroutines();
+    assert_eq!(out.contents(), "cancelled\n");
+}

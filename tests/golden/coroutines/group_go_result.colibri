@@ -1,0 +1,23 @@
+fn square(n: int) -> int {
+    wait(0.5)
+    return n * n
+}
+
+fn waiter(g: CoGroup) {
+    g.join_all()
+    print("all finished")
+}
+
+fn main() {
+    let g = CoGroup()
+    let c = g.go(square(7))
+    go waiter(g)
+    let r: Coroutine[int] = c
+    task.tick(0.5)
+    print("{r.join()}")
+    print("{c}")
+}
+
+// expect: all finished
+// expect: 49
+// expect: <coroutine square>

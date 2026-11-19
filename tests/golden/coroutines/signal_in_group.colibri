@@ -1,0 +1,25 @@
+class Res { name: str }
+
+fn listener(s: Signal, tag: str) {
+    let r = Res { name: "res-{tag}" }
+    wait_for(s)
+    print("{tag} woke")
+}
+
+fn main() {
+    let s = Signal()
+    {
+        let g = CoGroup()
+        g.go(listener(s, "a"))
+        g.go(listener(s, "b"))
+        print("waiting {g.count()}")
+    }
+    s.emit()
+    task.tick(0.0)
+    print("nobody woke")
+}
+
+// A group that dies removes its coroutines from the signal's list too.
+// expect: waiting 2
+// expect: nobody woke
+// drops: res-b, res-a

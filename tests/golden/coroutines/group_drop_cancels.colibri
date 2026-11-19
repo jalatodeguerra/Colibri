@@ -1,0 +1,35 @@
+class Res { name: str }
+
+fn work(tag: str) {
+    let r = Res { name: "res-{tag}" }
+    defer print("defer {tag}")
+    print("start {tag}")
+    wait(100.0)
+    print("never {tag}")
+}
+
+fn main() {
+    {
+        let g = CoGroup()
+        g.go(work("a"))
+        g.go(work("b"))
+        g.go(work("c"))
+        print("count {g.count()}")
+        print("leaving the scope")
+    }
+    print("scope left")
+    task.tick(1.0)
+}
+
+// Dropping the group (its last reference dies at the end of the block) cancels its coroutines
+// newest first; their defers and drops run before the next statement.
+// expect: start a
+// expect: start b
+// expect: start c
+// expect: count 3
+// expect: leaving the scope
+// expect: defer c
+// expect: defer b
+// expect: defer a
+// expect: scope left
+// drops: res-c, res-b, res-a

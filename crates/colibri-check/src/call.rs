@@ -84,7 +84,7 @@ impl FnCtx<'_, '_> {
             "panic" if !self.ck.values.contains_key(name) => self.check_panic(args, span),
             "assert" if !self.ck.values.contains_key(name) => self.check_assert(args, span),
             "assert_eq" if !self.ck.values.contains_key(name) => self.check_assert_eq(args, span),
-            "wait" | "wait_frames" | "wait_until" | "wait_real"
+            "wait" | "wait_frames" | "wait_until" | "wait_real" | "wait_for"
                 if !self.ck.values.contains_key(name) =>
             {
                 self.check_wait(name, args, span)
@@ -270,6 +270,11 @@ impl FnCtx<'_, '_> {
             "wait" => (Ty::Float, Intrinsic::Wait, "a number of seconds"),
             "wait_real" => (Ty::Float, Intrinsic::WaitReal, "a number of seconds"),
             "wait_frames" => (Ty::INT, Intrinsic::WaitFrames, "a number of frames"),
+            "wait_for" => (
+                Ty::Adt(crate::types::SIGNAL_TYPE, Vec::new()),
+                Intrinsic::WaitFor,
+                "a `Signal`",
+            ),
             _ => (
                 Ty::Fn(Vec::new(), Box::new(Ty::Bool)),
                 Intrinsic::WaitUntil,
@@ -341,9 +346,56 @@ impl FnCtx<'_, '_> {
     /// method or a host function, and cannot be a method that takes `var self` (the receiver
     /// would have to be written back into the caller's variable while the coroutine runs).
     pub(crate) fn check_go(&mut self, call: &ast::Expr, span: Span) -> Expr {
+        match self.check_go_call(call, span) {
+            Some(inner) => {
+                let ty = Ty::Adt(crate::types::COROUTINE_TYPE, vec![inner.ty.clone()]);
+                self.mk(hir::ExprKind::Go(Box::new(inner)), ty, span)
+            }
+            None => self.error_expr(span),
+        }
+    }
+
+    /// `group.go(call(args))` on a `CoGroup`: like `go call(args)`, and the coroutine belongs to
+    /// the group. The single argument must be a call expression.
+    pub(crate) fn check_group_go(&mut self, group: Expr, args: &[ast::Arg], span: Span) -> Expr {
+        let call = match args {
+            [a] if a.name.is_none() && matches!(a.value.kind, ExprKind::Call { .. }) => &a.value,
+            _ => {
+                self.check_args_loosely(args);
+                let (what, at) = match args {
+                    [a] if a.name.is_none() => ("a value that is not a call", a.value.span),
+                    _ => ("the wrong number of arguments", span),
+                };
+                self.ck.report(
+                    Diagnostic::error(
+                        format!("`go` on a `CoGroup` needs a call to start, but got {what}"),
+                        at,
+                    )
+                    .with_hint(
+                        "pass the call itself, not its result: `group.go(worker(1))`; to run a block of code, wrap it in a closure and call it: `group.go((fn() { .. })())`",
+                    ),
+                );
+                return self.error_expr(span);
+            }
+        };
+        match self.check_go_call(call, span) {
+            Some(inner) => {
+                let ty = Ty::Adt(crate::types::COROUTINE_TYPE, vec![inner.ty.clone()]);
+                self.mk(
+                    hir::ExprKind::GoIn(Box::new(group), Box::new(inner)),
+                    ty,
+                    span,
+                )
+            }
+            None => self.error_expr(span),
+        }
+    }
+
+    /// The checked call of a `go` (or `group.go(..)`), or `None` after reporting why not.
+    fn check_go_call(&mut self, call: &ast::Expr, span: Span) -> Option<Expr> {
         if !matches!(call.kind, ExprKind::Call { .. }) {
             self.check_expr(call, None);
-            return self.error_expr(span);
+            return None;
         }
         let inner = self.check_expr(call, None);
         let ok = match &inner.kind {
@@ -357,7 +409,7 @@ impl FnCtx<'_, '_> {
                         | Callee::Host(_)
                 ) && c.args.iter().all(|a| matches!(a, Arg::Value(_)))
             }
-            hir::ExprKind::Error => return self.error_expr(span),
+            hir::ExprKind::Error => return None,
             _ => false,
         };
         if !ok {
@@ -368,10 +420,10 @@ impl FnCtx<'_, '_> {
                     ),
                 );
             }
-            return self.error_expr(span);
+            return None;
         }
-        let ty = Ty::Adt(crate::types::COROUTINE_TYPE, vec![inner.ty.clone()]);
-        self.mk(hir::ExprKind::Go(Box::new(inner)), ty, span)
+        let _ = span;
+        Some(inner)
     }
 
     fn check_print(&mut self, args: &[ast::Arg], span: Span) -> Expr {

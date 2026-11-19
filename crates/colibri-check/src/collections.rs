@@ -162,6 +162,9 @@ impl FnCtx<'_, '_> {
                         Some(self.check_conversion(target, args, span))
                     }
                     "Set" => Some(self.check_set_from(args, expected, span)),
+                    "CoGroup" | "Signal" => {
+                        Some(self.check_group_or_signal_new(&id.name, args, span))
+                    }
                     "List" | "Map" => {
                         self.check_args_loosely(args);
                         let example = if id.name == "List" {
@@ -188,6 +191,32 @@ impl FnCtx<'_, '_> {
             }
             _ => None,
         }
+    }
+
+    /// `CoGroup()` and `Signal()` (DESIGN §14.2).
+    fn check_group_or_signal_new(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Expr {
+        if !args.is_empty() {
+            self.check_args_loosely(args);
+            self.ck.report(Diagnostic::error(
+                format!("`{name}()` takes no arguments"),
+                span,
+            ));
+            return self.error_expr(span);
+        }
+        let (ty_id, intrinsic) = if name == "CoGroup" {
+            (crate::types::COGROUP_TYPE, hir::Intrinsic::NewCoGroup)
+        } else {
+            (crate::types::SIGNAL_TYPE, hir::Intrinsic::NewSignal)
+        };
+        self.mk(
+            hir::ExprKind::Call(Box::new(hir::Call {
+                callee: hir::Callee::Intrinsic(intrinsic),
+                type_args: Vec::new(),
+                args: Vec::new(),
+            })),
+            Ty::Adt(ty_id, Vec::new()),
+            span,
+        )
     }
 
     /// `List[int]()`, `Map[str, int]()`, `Set[int]()`: an empty collection.

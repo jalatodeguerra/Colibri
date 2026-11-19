@@ -1,0 +1,8 @@
+fn main() {
+    let s = Signal()
+    print("before")
+    wait_for(s)
+}
+
+// expect: before
+// panic: can only pause a coroutine

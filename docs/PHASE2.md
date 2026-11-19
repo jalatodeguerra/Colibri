@@ -19,7 +19,9 @@ section ("as built") for the decisions it had to make.
    (`cancel`, `done`, `join`), `wait`, `wait_frames`, `wait_until`, `wait_real`, a per-`Vm`
    scheduler driven by `vm.tick(dt)`, `task.tick(dt)` or the event loop `colibri run` runs after
    `main`, and cancellation that unwinds through `defer`s and drops. Built: ARCHITECTURE §16.
-2. **`CoGroup`, `Signal` and `wait_for`** (DESIGN §14.2).
+2. **`CoGroup`, `Signal` and `wait_for`** (DESIGN §14.2): groups that cancel their coroutines
+   when they die, `group.go(call)`, `join_all`, and signals with no per-tick cost. Built:
+   ARCHITECTURE §16.1.
 3. **Scripting std**, moved up from phase 4: `args`, subprocesses, `datetime`, `regex`, and an
    `http` client behind the `net` capability.
 4. **`colibri repl`** and startup time tuned for one-off scripts.

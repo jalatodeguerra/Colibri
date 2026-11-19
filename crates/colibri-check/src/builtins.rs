@@ -13,11 +13,11 @@ use crate::checker::ParamInfo;
 use crate::hir::{self, Builtin, Callee, Expr};
 use crate::modules::BASE;
 use crate::optres::{
-    COROUTINE_METHODS, ERROR_METHODS, OPTION_METHODS, RESULT_METHODS, coroutine_sig, error_sig,
-    option_sig, result_sig,
+    COGROUP_METHODS, COROUTINE_METHODS, ERROR_METHODS, OPTION_METHODS, RESULT_METHODS,
+    SIGNAL_METHODS, cogroup_sig, coroutine_sig, error_sig, option_sig, result_sig, signal_sig,
 };
 use crate::suggest;
-use crate::types::{COROUTINE_TYPE, ERROR_TYPE, ITER, RESULT_TYPE, Ty};
+use crate::types::{COGROUP_TYPE, COROUTINE_TYPE, ERROR_TYPE, ITER, RESULT_TYPE, SIGNAL_TYPE, Ty};
 
 /// What a method needs of the element type beyond its signature.
 #[derive(Clone)]
@@ -367,6 +367,8 @@ pub(crate) fn builtin_method_exists(ty: &Ty, name: &str) -> bool {
         }
         Ty::Adt(ERROR_TYPE, _) => error_sig(name).is_some(),
         Ty::Adt(COROUTINE_TYPE, a) if a.len() == 1 => coroutine_sig(&a[0], name).is_some(),
+        Ty::Adt(COGROUP_TYPE, _) => name == "go" || cogroup_sig(name).is_some(),
+        Ty::Adt(SIGNAL_TYPE, _) => signal_sig(name).is_some(),
         _ => false,
     }
 }
@@ -401,6 +403,8 @@ impl FnCtx<'_, '_> {
             Ty::Adt(COROUTINE_TYPE, a) if a.len() == 1 => {
                 (coroutine_sig(&a[0], &name.name), COROUTINE_METHODS)
             }
+            Ty::Adt(COGROUP_TYPE, _) => (cogroup_sig(&name.name), COGROUP_METHODS),
+            Ty::Adt(SIGNAL_TYPE, _) => (signal_sig(&name.name), SIGNAL_METHODS),
             _ => return Err(recv),
         };
         let Some(sig) = sig else {
