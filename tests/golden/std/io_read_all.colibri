@@ -1,0 +1,14 @@
+// caps: os
+import io
+
+fn main() -> Result[()] {
+    let first = io.read_line()?
+    print(first)
+    let rest = io.read_all()?
+    print(rest.len())
+    print(rest.trim())
+}
+
+// expect: some("first line")
+// expect: 12
+// expect: second line

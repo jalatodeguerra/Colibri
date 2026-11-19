@@ -1,0 +1,9 @@
+import task // error: the standard library module `task` is not available until phase 2
+import std.game // error: the standard library module `game` is not available until phase 2
+import mem // error: the standard library module `mem` is not available until phase 3
+import reflect // error: the standard library module `reflect` is not available until phase 2
+import collections // error: the standard library module `collections` does not exist: `List`, `Map` and `Set` are built in
+import std.nothing // error: the standard library has no module `nothing`
+import nothing // error: no module `nothing`
+
+fn main() {}

@@ -394,6 +394,7 @@ impl FnCtx<'_, '_> {
                 &mut d.frame.locals,
                 diags,
                 had_errors,
+                &self.ck.host_typed,
                 self.ck.facts.as_mut(),
             );
             let ret = self.infer.finalize(&d.ret).0;

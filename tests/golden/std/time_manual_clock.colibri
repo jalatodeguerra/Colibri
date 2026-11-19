@@ -1,0 +1,26 @@
+// caps: os
+// The golden harness runs on a clock that moves only when the program sleeps.
+import time
+
+fn main() {
+    let start = time.now()
+    print(start)
+    time.sleep(0.25)
+    time.sleep(1.5)
+    print(time.now() - start)
+    print(time.monotonic())
+    print(time.unix())
+    var frames = 0
+    let t0 = time.now()
+    while time.now() - t0 < 1.0 {
+        time.sleep(0.25)
+        frames += 1
+    }
+    print(frames)
+}
+
+// expect: 0.0
+// expect: 1.75
+// expect: 1750000000
+// expect: 1700000001.75
+// expect: 4

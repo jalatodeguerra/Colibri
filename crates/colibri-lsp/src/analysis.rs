@@ -97,6 +97,17 @@ pub struct Hosts {
     pub problems: Vec<(PathBuf, String)>,
 }
 
+/// The canonical text of the standard library's interfaces, built once.
+fn std_interface_texts() -> &'static [String] {
+    static TEXTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    TEXTS.get_or_init(|| {
+        colibri_std::interfaces()
+            .iter()
+            .map(|i| i.canonical_text())
+            .collect()
+    })
+}
+
 /// The `*.cbi` files at the top of `dir`, if `dir` is a package (has a `colibri.toml`).
 fn package_interfaces(fs: &dyn SourceFs, dir: &Path) -> Vec<PathBuf> {
     if !fs.is_file(&dir.join(MANIFEST)) {
@@ -128,6 +139,13 @@ pub fn host_env(settings: &Settings, fs: &dyn SourceFs, package_dir: Option<&Pat
     }
     let mut env = HostEnv::new();
     let mut problems = Vec::new();
+    // The standard library is always there, as for `colibri check`.
+    for text in std_interface_texts() {
+        match HostEnv::from_text(text) {
+            Ok(one) => env.merge(one),
+            Err(message) => problems.push((PathBuf::from("<std>"), message)),
+        }
+    }
     for path in paths {
         match fs.read(&path).and_then(|text| HostEnv::from_text(&text)) {
             Ok(one) => env.merge(one),

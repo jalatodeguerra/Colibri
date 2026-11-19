@@ -22,6 +22,19 @@ pub fn vm_builder() -> colibri_runtime::VmBuilder {
         .native_stack_budget(NATIVE_STACK_BUDGET)
 }
 
+/// Builds the `Vm` with the standard library installed (`import math`, `import fs`, ...).
+/// `args` is what the script's `os.args()` returns.
+pub fn build_vm(builder: colibri_runtime::VmBuilder, args: Vec<String>) -> colibri_runtime::Vm {
+    let mut vm = builder.build();
+    let config = colibri_std::StdConfig {
+        args,
+        ..colibri_std::StdConfig::default()
+    };
+    colibri_std::install_with(&mut vm, config)
+        .expect("the standard library registers into a new Vm");
+    vm
+}
+
 /// Runs `f` on a thread with a [`STACK_SIZE`] stack and returns its result.
 pub fn on_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     let handle = thread::Builder::new()

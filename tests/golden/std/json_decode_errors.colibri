@@ -1,0 +1,93 @@
+import json
+
+enum Color {
+    Red
+    Green
+}
+
+struct Point { x: int, y: int }
+
+struct Shape {
+    name: str
+    at: Point
+    color: Color
+    sides: u8
+    corners: List[Point]
+}
+
+fn show[T: Show](r: Result[T]) {
+    match r {
+        ok(v)  => print("ok {v}")
+        err(e) => print(e.message())
+    }
+}
+
+fn main() {
+    // A missing field.
+    show(json.decode[Point](r"""{"x": 1}"""))
+    // The wrong type, with the path to it.
+    show(json.decode[Point](r"""{"x": 1, "y": "two"}"""))
+    show(
+        json.decode[Shape](
+            r"""{"name": "s", "at": {"x": 1, "y": 2}, "color": "Red", "sides": 3, "corners": [{"x": 0, "y": 0}, {"x": 1, "y": true}]}""",
+        ),
+    )
+    show(
+        json.decode[Shape](
+            r"""{"name": "s", "at": [1, 2], "color": "Red", "sides": 3, "corners": []}""",
+        ),
+    )
+    // An unknown enum variant lists the real ones.
+    show(
+        json.decode[Shape](
+            r"""{"name": "s", "at": {"x": 1, "y": 2}, "color": "Blue", "sides": 3, "corners": []}""",
+        ),
+    )
+    show(json.decode[Color]("\"Purple\""))
+    show(json.decode[Color]("3"))
+    // Numbers must fit.
+    show(
+        json.decode[Shape](
+            r"""{"name": "s", "at": {"x": 1, "y": 2}, "color": "Red", "sides": 300, "corners": []}""",
+        ),
+    )
+    show(json.decode[u8]("-1"))
+    show(json.decode[int]("1.5"))
+    show(json.decode[int]("1e3"))
+    show(json.decode[int]("99999999999999999999"))
+    show(json.decode[float]("1e999"))
+    show(json.decode[i32]("2147483648"))
+    // null is only for options.
+    show(json.decode[int]("null"))
+    show(json.decode[int?]("null"))
+    show(json.decode[List[int]](r"""[1, null]"""))
+    // Other shapes.
+    show(json.decode[(int, str)](r"""[1]"""))
+    show(json.decode[char]("\"ab\""))
+    show(json.decode[Map[str, int]](r"""{"a": 1, "b": "x"}"""))
+    show(json.decode[Map[int, int]](r"""{"1": 1}"""))
+    show(json.decode[Point]("[]"))
+}
+
+// expect: json: at `$`: the object has no field `y` (a `Point` needs it)
+// expect: json: at `$.y`: expected an int, found the string "two"
+// expect: json: at `$.corners[1].y`: expected an int, found the boolean true
+// expect: json: at `$.at`: expected an object for `Point`, found an array
+// expect: json: at `$.color`: `Blue` is not a variant of `Color` (expected one of: Red, Green)
+// expect: json: at `$`: `Purple` is not a variant of `Color` (expected one of: Red, Green)
+// expect: json: at `$`: expected a string naming a `Color` variant, found the number 3
+// expect: json: at `$.sides`: 300 does not fit in `u8`
+// expect: json: at `$`: -1 does not fit in `u8`
+// expect: json: at `$`: expected an int (a whole number), found the number 1.5
+// expect: json: at `$`: expected an int (a whole number), found the number 1e3
+// expect: json: at `$`: 99999999999999999999 does not fit in `int`
+// expect: json: at `$`: the number 1e999 is out of range
+// expect: json: at `$`: 2147483648 does not fit in `i32`
+// expect: json: at `$`: expected an int, found null
+// expect: ok none
+// expect: json: at `$[1]`: expected an int, found null
+// expect: json: at `$`: expected an array of 2 items, found 1
+// expect: json: at `$`: expected a string of one character, found the string "ab"
+// expect: json: at `$.b`: expected an int, found the string "x"
+// expect: json: at `$`: an object decodes to a Map with `str` keys, not `int`
+// expect: json: at `$`: expected an object for `Point`, found an array

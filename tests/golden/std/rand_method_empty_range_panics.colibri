@@ -1,0 +1,8 @@
+import rand
+
+fn main() {
+    let r = rand.Rng.new(1)
+    print(r.int(3, 1))
+}
+
+// panic: rand.int: the range 3..1 is empty

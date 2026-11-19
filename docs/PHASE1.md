@@ -8,7 +8,7 @@ file is fixed.
 ## Crates (phase 1)
 
 Only the crates phase 1 needs exist. The others in DESIGN §17.1 (`colibri-ir`, `colibri-vm`,
-`colibri-std`, `colibri-game`) are created when their phase starts.
+`colibri-game`) are created when their phase starts.
 
 | Crate | Directory | Role |
 |-------|-----------|------|
@@ -17,10 +17,11 @@ Only the crates phase 1 needs exist. The others in DESIGN §17.1 (`colibri-ir`, 
 | `colibri-interp` | `crates/colibri-interp` | Tree-walking interpreter over the HIR (the reference engine) |
 | `colibri-runtime` | `crates/colibri-runtime` | Embedding API: `Vm`, `VmBuilder`, `get_fn`, `call`, `register_fn`, host classes and handles, capabilities |
 | `colibri-bind` | `crates/colibri-bind` | Proc macros behind `colibri::export` (struct, enum, `impl` and function exports) |
+| `colibri-std` | `crates/colibri-std` | Core standard library as named host modules: `io`, `fs`, `path`, `os`, `math`, `rand`, `time`, `str`, `json` (ARCHITECTURE §13) |
 | `colibri-lsp` | `crates/colibri-lsp` | The minimal language server behind `colibri lsp` (ARCHITECTURE §14): diagnostics, formatting, hover, go to definition |
 | `colibri-lang` | `crates/colibri-cli` | The `colibri` binary (DESIGN §17.2: published as `colibri-lang`, binary `colibri`) |
 
-Dependency direction: `syntax → check → interp → runtime → cli`; `lsp` sits on `syntax` and `check` and is used by `cli`; `bind` has no dependencies
+Dependency direction: `syntax → check → interp → runtime → std → cli`; `lsp` sits on `syntax` and `check` and is used by `cli`; `bind` has no dependencies
 but `syn`/`quote` and is re-exported by `runtime`. The runtime is the facade
 hosts use (`use colibri_runtime as colibri;`). When the bytecode VM lands in phase 3 it slots in
 behind the same `Vm` API.
@@ -60,6 +61,7 @@ behind the same `Vm` API.
 | `// warning: text` | At the end of a source line: a compile warning on that line whose message contains `text`. Warnings are compared strictly: an unlisted warning fails the file, as does a listed one that does not appear. |
 | `// panic: text` | The run must end in a panic whose message contains `text` (stdout before it is still checked). Several lines must all be contained; notes of later panics (`defer`) are appended to the message as `note: ..`. |
 | `// main-err: text` | `main` returns `err(e)`: the run ends with `Error::MainReturnedErr` whose message (the whole error chain) contains `text`. The CLI prints `error: ..` to stderr and exits 1 (a panic exits 101). |
+| `// caps: fs, os` | Capabilities the host grants for this file (none by default). Names as in `.cbi`: `fs`, `os`, `net`, `ffi`. Std modules are installed with a hermetic config (ARCHITECTURE §13): fixed clock, args, environment, seed and stdin, and a per-test temp dir. |
 | `// drops: a, b, c` | The class objects destroyed, in order, up to and including the module-level values released after `main` (reverse initialisation order). An object is labelled by its `name: str` field if it has one, else its class name. Compared only when the directive is present; `// drops:` alone expects none. |
 
 ### Folders as tests
@@ -75,7 +77,7 @@ is not searched for further tests. Directives are read from every `.colibri` fil
   other files in path order.
 - `// drops:`, `// panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only.
 
-Package tests live in `tests/golden/modules/`.
+Package tests live in `tests/golden/modules/`; the standard library's are in `tests/golden/std/`.
 
 ## PR sequence
 
@@ -93,7 +95,7 @@ Package tests live in `tests/golden/modules/`.
    Part A (host functions, `.cbi`, capabilities, instruction budget, callbacks) is built (slice 7a);
    part B (exported host types, generational handles, `colibri-bind`) is built (slice 7b).
 9. Packages and `import` (built, slice 8: ARCHITECTURE §11); `colibri check`, minimal LSP
-   (built: ARCHITECTURE §14), `colibri test`, `colibri fmt` (built: ARCHITECTURE §12); core std.
+   (built: ARCHITECTURE §14), `colibri test`, `colibri fmt` (built: ARCHITECTURE §12); core std (built: ARCHITECTURE §13).
 10. Milestone: a small Rust program with its own game loop running gameplay logic from Colibri
     (built: `examples/host_game`, run as a test against a golden log).
 

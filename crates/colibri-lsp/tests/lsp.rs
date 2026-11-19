@@ -617,3 +617,36 @@ fn unknown_requests_get_an_error_and_the_server_survives() {
     assert_eq!(r, Value::Null);
     c.shutdown();
 }
+
+#[test]
+fn the_standard_library_is_checked_and_hovered_like_any_module() {
+    let dir = temp_dir("std");
+    let file = dir.join("a.colibri");
+    let good = "import math\nimport std.json\n\nfn main() {\n    print(math.sqrt(4.0))\n    print(json.encode(1).expect(\"ok\"))\n}\n";
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&file, good);
+    assert!(c.diags(&file).is_empty(), "{:?}", c.diags(&file));
+    // A wrong argument type is a diagnostic about the std signature.
+    let bad = good.replace("math.sqrt(4.0)", "math.sqrt(\"4\")");
+    c.change(&file, &bad);
+    let diags = c.diags(&file);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("expected `float`, found `str`"),
+        "{diags:?}"
+    );
+    // A module the library does not have is reported as such.
+    c.change(&file, "import std.nothing\n\nfn main() {}\n");
+    let diags = c.diags(&file);
+    assert!(
+        diags[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("the standard library has no module"),
+        "{diags:?}"
+    );
+    c.shutdown();
+}

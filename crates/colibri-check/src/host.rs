@@ -19,7 +19,7 @@
 
 use std::collections::BTreeSet;
 
-use colibri_syntax::ast::{self, ExprKind, ItemKind, TopLevel};
+use colibri_syntax::ast::{self, ExprKind, ItemKind, PatKind, TopLevel};
 use colibri_syntax::{FileId, SourceMap};
 
 /// The source file id of every host interface; like the prelude's, its spans never point into
@@ -250,6 +250,16 @@ fn print_item(item: &ast::Item, out: &mut String) {
                 variants.join(", ")
             ));
         }
+        ItemKind::Binding(b) => {
+            if let (PatKind::Ident(name), Some(ty)) = (&b.pat.kind, &b.ty) {
+                out.push_str(&format!(
+                    "const {}: {} = {}\n",
+                    name.name,
+                    print_type(ty),
+                    print_const(&b.init)
+                ));
+            }
+        }
         ItemKind::Impl(decl) => {
             out.push_str(&format!("impl {} {{\n", print_type(&decl.target)));
             for member in &decl.items {
@@ -266,6 +276,15 @@ fn print_item(item: &ast::Item, out: &mut String) {
     }
 }
 
+/// The text of a constant's value: a number written as a literal.
+fn print_const(init: &ast::Expr) -> String {
+    match &init.kind {
+        ExprKind::Int(v) => v.to_string(),
+        ExprKind::Float(v) => float_literal(*v).unwrap_or_else(|| "0.0".to_string()),
+        _ => "0".to_string(),
+    }
+}
+
 fn print_fn(decl: &ast::FnDecl, out: &mut String) {
     let mut params: Vec<String> = Vec::new();
     if let Some(r) = decl.receiver {
@@ -275,7 +294,17 @@ fn print_fn(decl: &ast::FnDecl, out: &mut String) {
         let ty = p.ty.as_ref().map_or("?".to_string(), print_type);
         params.push(format!("{}: {ty}", p.name.name));
     }
-    out.push_str(&format!("fn {}({})", decl.name.name, params.join(", ")));
+    let generics = if decl.generics.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<&str> = decl.generics.iter().map(|g| g.name.name.as_str()).collect();
+        format!("[{}]", names.join(", "))
+    };
+    out.push_str(&format!(
+        "fn {}{generics}({})",
+        decl.name.name,
+        params.join(", ")
+    ));
     if let Some(ret) = &decl.ret {
         out.push_str(&format!(" -> {}", print_type(ret)));
     }
@@ -353,7 +382,7 @@ fn parse_module(text: &str) -> Result<HostModule, String> {
             ),
         ));
     }
-    if !is_module_name(&header.module) {
+    if !is_module_name(&header.module) && !is_std_module_name(&header.module) {
         return Err(at(
             start,
             &format!(
@@ -398,6 +427,24 @@ pub fn is_module_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
         && chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// The prefix of a standard library module's name in an interface: `std.math` is the module
+/// `import math` and `import std.math` mean (ARCHITECTURE §13).
+pub const STD_PREFIX: &str = "std.";
+
+/// Whether `name` is the interface name of a standard library module (`std.math`).
+pub fn is_std_module_name(name: &str) -> bool {
+    name.strip_prefix(STD_PREFIX).is_some_and(is_module_name)
+}
+
+/// How a float constant is written in an interface: the shortest text that reads back to the
+/// same value, always with a `.` and without an exponent. `None` for a value that has no such
+/// literal (`nan`, infinities, negative, very large or small numbers).
+pub fn float_literal(value: f64) -> Option<String> {
+    let text = format!("{value:?}");
+    (value.is_finite() && value >= 0.0 && text.contains('.') && !text.contains(['e', 'E']))
+        .then_some(text)
 }
 
 /// Reads `format = 1, module = "host", hash = "..", caps = ["fs"]`.
@@ -480,9 +527,21 @@ fn validate(file: &ast::File) -> Result<(), (u32, String)> {
         };
         match &item.kind {
             ItemKind::Fn(decl) => {
-                check_attrs(item, &["requires", "positional"])?;
+                check_attrs(item, &["requires", "positional", "typed"])?;
                 if decl.body.is_some() {
                     return Err((item.span.start, "an interface function has no body".into()));
+                }
+                if decl.generics.iter().any(|g| !g.bounds.is_empty()) {
+                    return Err((
+                        item.span.start,
+                        "an interface function's type parameters take no bounds".into(),
+                    ));
+                }
+                if item.attrs.iter().any(|a| a.name.name == "typed") && decl.generics.is_empty() {
+                    return Err((
+                        item.span.start,
+                        "`@typed` marks a generic function: it receives its type arguments".into(),
+                    ));
                 }
                 if decl.receiver.is_some() {
                     return Err((item.span.start, "only methods have a receiver".into()));
@@ -507,6 +566,23 @@ fn validate(file: &ast::File) -> Result<(), (u32, String)> {
                 }
             },
             ItemKind::Enum(_) => check_attrs(item, &[])?,
+            ItemKind::Binding(b) => {
+                check_attrs(item, &[])?;
+                let simple = b.kind == ast::BindKind::Const
+                    && matches!(b.pat.kind, PatKind::Ident(_))
+                    && b.ty.is_some()
+                    && match &b.init.kind {
+                        ExprKind::Int(_) => true,
+                        ExprKind::Float(v) => float_literal(*v).is_some(),
+                        _ => false,
+                    };
+                if !simple {
+                    return Err((
+                        item.span.start,
+                        "a constant in an interface is `const NAME: type = number`".into(),
+                    ));
+                }
+            }
             ItemKind::Impl(decl) => {
                 check_attrs(item, &[])?;
                 if decl.interface.is_some() || !decl.generics.is_empty() {
@@ -556,7 +632,7 @@ fn validate(file: &ast::File) -> Result<(), (u32, String)> {
             _ => {
                 return Err((
                     item.span.start,
-                    "an interface file holds functions, structs, enums and host classes only"
+                    "an interface file holds functions, constants, structs, enums and host classes only"
                         .to_string(),
                 ));
             }
@@ -683,5 +759,63 @@ mod tests {
         assert!(err.contains("3:1"), "{err}");
         assert!(HostEnv::from_text(&text("@requires(sudo) fn f()\n")).is_err());
         assert!(HostEnv::from_text(&text("fn f() { }\n")).is_err());
+    }
+
+    fn std_text(body: &str) -> String {
+        format!(
+            "// Generated by colibri-runtime; do not edit.\n{}\n{body}",
+            header_line("std.demo", &body_hash(body), &[])
+        )
+    }
+
+    #[test]
+    fn a_standard_library_module_has_the_name_std_dot_something() {
+        let env = HostEnv::from_text(&std_text("fn f()\n")).expect("parses");
+        assert_eq!(env.named_modules(), ["std.demo"]);
+        assert!(is_std_module_name("std.math"));
+        assert!(!is_std_module_name("std"));
+        assert!(!is_std_module_name("std."));
+        assert!(!is_std_module_name("math"));
+        assert!(!is_std_module_name("std.a.b"));
+        // The bare name stays reserved.
+        let bare = format!(
+            "{GENERATED}\n{}\nfn f()\n",
+            header_line("std", &body_hash("fn f()\n"), &[])
+        );
+        assert!(HostEnv::from_text(&bare).unwrap_err().contains("reserved"));
+    }
+
+    #[test]
+    fn constants_generics_and_typed_round_trip_through_the_canonical_text() {
+        let body = "const PI: float = 3.141592653589793\nconst N: int = 7\n@typed fn decode[T](text: str) -> Result[T]\nfn pair[A, B](a: A, b: B) -> (B, A)\n";
+        let text = std_text(body);
+        let env = HostEnv::from_text(&text).expect("parses");
+        assert_eq!(env.canonical_texts(), [text]);
+    }
+
+    #[test]
+    fn what_an_interface_may_not_hold_is_refused_with_a_reason() {
+        let bad = |body: &str, wanted: &str| {
+            let err = HostEnv::from_text(&std_text(body)).unwrap_err();
+            assert!(err.contains(wanted), "{body:?}: {err}");
+        };
+        bad("let x: int = 1\n", "const NAME: type = number");
+        bad("const X: int = 1 + 2\n", "const NAME: type = number");
+        bad("const X: str = \"a\"\n", "const NAME: type = number");
+        bad("const X = 1\n", "const NAME: type = number");
+        bad("const X: float = 1e99\n", "const NAME: type = number");
+        bad("@typed fn f()\n", "marks a generic function");
+        bad("fn f[T: Eq](a: T)\n", "take no bounds");
+        bad("@rename fn f()\n", "unknown attribute");
+    }
+
+    #[test]
+    fn float_constants_are_plain_decimal_literals() {
+        assert_eq!(float_literal(3.5).as_deref(), Some("3.5"));
+        assert_eq!(float_literal(0.0).as_deref(), Some("0.0"));
+        assert_eq!(float_literal(1.0).as_deref(), Some("1.0"));
+        for bad in [f64::NAN, f64::INFINITY, -1.0, 1e300, 1e-10] {
+            assert_eq!(float_literal(bad), None, "{bad}");
+        }
     }
 }

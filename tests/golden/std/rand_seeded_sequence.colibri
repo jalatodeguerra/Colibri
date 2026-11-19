@@ -1,0 +1,25 @@
+// A seed fixes the sequence on every platform: SplitMix64 expands it, xoshiro256** draws.
+import rand
+
+fn main() {
+    rand.seed(1)
+    var drawn: List[int] = []
+    for _ in 0..8 {
+        drawn.push(rand.int(0, 100))
+    }
+    print(drawn)
+    rand.seed(1)
+    print(rand.float())
+    print(rand.float())
+    rand.seed(1)
+    var bits: List[bool] = []
+    for _ in 0..8 {
+        bits.push(rand.bool())
+    }
+    print(bits)
+}
+
+// expect: [70, 52, 57, 39, 69, 14, 7, 38]
+// expect: 0.7029218331588505
+// expect: 0.5204366199388569
+// expect: [true, true, true, false, true, false, false, false]

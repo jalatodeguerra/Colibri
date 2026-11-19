@@ -29,6 +29,9 @@ pub struct Directives {
     pub drops: Option<Vec<String>>,
     /// `// skip:` reason; the file is not run.
     pub skip: Option<String>,
+    /// `// caps: fs, os`: the capabilities the test's `Vm` grants (the default is none). Read
+    /// from the file that starts the program.
+    pub caps: Vec<String>,
 }
 
 /// Parses the directives of a golden file.
@@ -59,6 +62,12 @@ pub fn parse_directives(source: &str) -> Directives {
                 );
             } else if let Some(v) = comment.strip_prefix("skip:") {
                 d.skip = Some(v.trim().to_string());
+            } else if let Some(v) = comment.strip_prefix("caps:") {
+                d.caps.extend(
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                );
             } else {
                 rest = &rest[pos + 2..];
                 continue;
@@ -100,7 +109,8 @@ pub enum Outcome {
 /// [`crate::on_big_stack`]) so deep recursion reaches the call-depth limit.
 pub fn run_golden(path: &Path, source: &str) -> Outcome {
     let name = path.display().to_string();
-    run_with(|vm| vm.load_source(&name, source), "", &name)
+    let caps = parse_directives(source).caps;
+    run_with(|vm| vm.load_source(&name, source), "", &name, &caps)
 }
 
 /// Runs a golden test that is a folder: the files in it are one program, started from
@@ -108,19 +118,73 @@ pub fn run_golden(path: &Path, source: &str) -> Outcome {
 pub fn run_golden_package(dir: &Path) -> Outcome {
     let main = dir.join("main.colibri");
     let prefix = format!("{}/", dir.display());
-    run_with(|vm| vm.load_file(&main), &prefix, "")
+    let caps = std::fs::read_to_string(&main)
+        .map(|text| parse_directives(&text).caps)
+        .unwrap_or_default();
+    run_with(|vm| vm.load_file(&main), &prefix, "", &caps)
+}
+
+/// The standard library's view of the world in a golden test: a clock that only moves when the
+/// program sleeps, a fixed environment, fixed arguments and input, a seeded generator and a
+/// temporary folder of the test's own (made before it runs, removed after).
+fn hermetic_std(temp: &Path) -> colibri_std::StdConfig {
+    use std::collections::BTreeMap;
+    colibri_std::StdConfig {
+        clock: Box::new(colibri_std::ManualClock::new(1_700_000_000.0)),
+        args: vec!["alpha".to_string(), "beta".to_string()],
+        env: colibri_std::EnvSource::Fixed(BTreeMap::from([(
+            "COLIBRI_GOLDEN".to_string(),
+            "yes".to_string(),
+        )])),
+        temp_dir: Some(temp.to_path_buf()),
+        seed: Some(1),
+        stdin: Some(Box::new(std::io::Cursor::new("first line\nsecond line\n"))),
+    }
+}
+
+/// A new empty folder under the system's temporary folder, removed on drop.
+struct TempFolder(std::path::PathBuf);
+
+impl TempFolder {
+    fn new() -> TempFolder {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "colibri-golden-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        TempFolder(dir)
+    }
+}
+
+impl Drop for TempFolder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn run_with(
     load: impl FnOnce(&mut colibri::Vm) -> Result<(), colibri::Error>,
     prefix: &str,
     blank: &str,
+    caps: &[String],
 ) -> Outcome {
     let out = colibri::SharedBuffer::new();
-    let mut vm = crate::vm_builder()
+    let mut builder = crate::vm_builder()
         .trace_drops(true)
-        .stdout(Box::new(out.clone()))
-        .build();
+        .stdout(Box::new(out.clone()));
+    for cap in caps {
+        match colibri::Cap::ALL.into_iter().find(|c| c.name() == cap) {
+            Some(cap) => builder = builder.allow(cap),
+            None => panic!("`// caps:` names an unknown capability `{cap}`"),
+        }
+    }
+    let temp = TempFolder::new();
+    let mut vm = builder.build();
+    colibri_std::install_with(&mut vm, hermetic_std(&temp.0))
+        .expect("the standard library registers into a new Vm");
     let result = load(&mut vm).and_then(|()| vm.run_main());
     // Module-level values die after `main` returns (or after a panic), in reverse order.
     vm.shutdown();
@@ -219,6 +283,7 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
         main_err: d.main_err.clone(),
         drops: d.drops.clone(),
         skip: d.skip.clone(),
+        caps: d.caps.clone(),
     };
     check_package(
         &PackageDirectives {

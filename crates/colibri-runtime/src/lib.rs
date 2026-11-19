@@ -162,7 +162,7 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 pub use colibri_bind::export;
 pub use colibri_interp::DEFAULT_NATIVE_STACK_BUDGET;
 pub use colibri_syntax::{Diagnostic, Severity, SourceMap, Span};
-pub use convert::{Args, FromColibri, IntoColibri, Value};
+pub use convert::{Args, FromColibri, IntoColibri, Value, ValueKind};
 pub use ctx::{Caller, Ctx, Cx};
 pub use error::{Error, Location, Report, StackFrame};
 pub use func::Fn;
@@ -172,6 +172,15 @@ pub use iface::Interface;
 pub use render::render_diagnostic;
 pub use types::{SigDesc, TypeDesc, TypeRegistry};
 pub use vm::{DEFAULT_MAX_CALL_DEPTH, HostModule, Vm, VmBuilder};
+
+/// The type descriptors of the loaded program, for host functions that work on any type
+/// (serializers, DESIGN §7.5): what [`Ctx::type_args`] and [`Ctx::type_defs`] return.
+pub mod reflect {
+    pub use colibri_check::hir::{FieldDef, TypeDef, TypeDefKind, VariantDef};
+    pub use colibri_check::types::{
+        ERROR_TYPE, IntTy, OPTION_TYPE, RESULT_TYPE, Ty, TypeId, VARIANT_NONE, VARIANT_SOME,
+    };
+}
 
 use std::path::Path;
 

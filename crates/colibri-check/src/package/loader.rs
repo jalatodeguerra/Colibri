@@ -10,7 +10,8 @@ use colibri_syntax::{Diagnostic, FileId, SourceMap, Span, parse_file};
 use super::fs::{SourceFs, normalize};
 use super::manifest::{self, Manifest};
 use super::{
-    ImportTarget, LIB_FILE, Loaded, MAIN_FILE, ModuleMeta, PackageNode, SOURCE_EXT, std_module,
+    ImportTarget, LATER_STD_MODULES, LIB_FILE, Loaded, MAIN_FILE, ModuleMeta, PackageNode,
+    SOURCE_EXT, std_module,
 };
 
 /// The manifest's file name.
@@ -360,6 +361,14 @@ impl Loader<'_> {
     fn candidates(&self, tree: usize, path: &[&str]) -> Vec<Candidate> {
         let mut out = Vec::new();
         let t = &self.trees[tree];
+        // `std` is reserved for the standard library: `import std.math` is never a file, a
+        // dependency or a host module (ARCHITECTURE §13).
+        if path[0] == "std" {
+            if let Some(name) = std_module(path, self.host_modules) {
+                out.push(Candidate::Std(name));
+            }
+            return out;
+        }
         // 1. A file of this tree.
         let mut rel: PathBuf = path.iter().collect();
         rel.set_extension(SOURCE_EXT);
@@ -391,7 +400,7 @@ impl Loader<'_> {
             out.push(Candidate::Host(path[0].to_string()));
         }
         // 4. The standard library.
-        if let Some(name) = std_module(path) {
+        if let Some(name) = std_module(path, self.host_modules) {
             out.push(Candidate::Std(name));
         }
         out
@@ -411,8 +420,8 @@ impl Loader<'_> {
                 ImportTarget::Failed
             }
             1 => match candidates.remove(0) {
-                Candidate::Host(name) => ImportTarget::Host(name),
-                Candidate::Std(_) => ImportTarget::Failed,
+                // The standard library is a host module (ARCHITECTURE §13).
+                Candidate::Host(name) | Candidate::Std(name) => ImportTarget::Host(name),
                 Candidate::Local { file, tree, rel }
                 | Candidate::Dependency {
                     file, tree, rel, ..
@@ -472,9 +481,37 @@ impl Loader<'_> {
             self.diags.push(diag);
             return;
         }
-        if names[0] == "std" {
-            diag = diag.with_hint("the standard library has no modules yet");
+        let std_name = match names {
+            ["std", name] => Some(*name),
+            ["std"] => Some(""),
+            [name] => Some(*name),
+            _ => None,
+        };
+        if let Some(name) = std_name
+            && let Some((_, why)) = LATER_STD_MODULES.iter().find(|(n, _)| *n == name)
+        {
+            let diag =
+                Diagnostic::error(format!("the standard library module `{name}` {why}"), span);
             self.diags.push(diag);
+            return;
+        }
+        if names[0] == "std" {
+            let available: Vec<&str> = self
+                .host_modules
+                .iter()
+                .filter_map(|m| m.strip_prefix(crate::host::STD_PREFIX))
+                .collect();
+            let hint = if available.is_empty() {
+                "this program was checked without the standard library".to_string()
+            } else {
+                format!("the standard library modules are {}", available.join(", "))
+            };
+            let message = match names {
+                ["std", name] => format!("the standard library has no module `{name}`"),
+                _ => format!("no module `{dotted_path}`"),
+            };
+            self.diags
+                .push(Diagnostic::error(message, span).with_hint(hint));
             return;
         }
         // `import a.b.X`: a module followed by a name.

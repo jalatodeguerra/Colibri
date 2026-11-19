@@ -1,0 +1,8 @@
+import os
+
+fn main() {
+    print(os.env("HOME")) // error: `os.env` needs the `os` capability, which this host did not grant
+    os.exit(1) // error: `os.exit` needs the `os` capability
+    print(os.temp_dir()) // error: `os.temp_dir` needs the `os` capability
+    print(os.args())
+}

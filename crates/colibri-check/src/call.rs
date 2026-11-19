@@ -237,7 +237,15 @@ impl FnCtx<'_, '_> {
             return self.error_expr(span);
         }
         if let Some(host) = &host {
-            self.check_host_capability(&name, host, span);
+            let module = &self.ck.mods[self.ck.fns[f.0 as usize].module.0 as usize];
+            // A function of a named module reads as it is written: `fs.read`.
+            let shown = if module.kind == crate::modules::ModKind::Host {
+                let short = module.name.rsplit('.').next().unwrap_or(&module.name);
+                format!("{short}.{name}")
+            } else {
+                name.clone()
+            };
+            self.check_host_capability(&shown, host, span);
             if host.positional
                 && let Some(named) = args.iter().find(|a| a.name.is_some())
             {

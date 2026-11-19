@@ -84,9 +84,64 @@ impl Loaded {
     }
 }
 
-/// The standard library's modules. None exist yet; the import resolver already asks, so an
-/// `import std.math` that matches one will be a candidate next to a local file or a dependency
-/// of the same name (ARCHITECTURE §11.2).
-pub fn std_module(_path: &[&str]) -> Option<String> {
-    None
+/// Standard library modules that do not exist yet, with the end of the sentence "the standard
+/// library module `x` ..." that says why (DESIGN §13.1, §17.5). Importing one says so instead of
+/// a bare "no module". (`import test` cannot be written at all: `test` is a keyword.)
+pub const LATER_STD_MODULES: &[(&str, &str)] = &[
+    ("task", "is not available until phase 2"),
+    ("game", "is not available until phase 2"),
+    ("reflect", "is not available until phase 2"),
+    ("mem", "is not available until phase 3"),
+    (
+        "collections",
+        "does not exist: `List`, `Map` and `Set` are built in, and phase 1 needs nothing more",
+    ),
+];
+
+/// The standard library module an import path names: `import math` and `import std.math` both
+/// mean the module `std.math`, if the host provides it (`provided` are the interface names of
+/// its modules; the `colibri-std` crate registers the standard ones). `None` when the path is
+/// not one (ARCHITECTURE §13).
+pub fn std_module(path: &[&str], provided: &[String]) -> Option<String> {
+    let name = match path {
+        ["std", name] => *name,
+        [name] => *name,
+        _ => return None,
+    };
+    let full = format!("{}{name}", crate::host::STD_PREFIX);
+    provided.contains(&full).then_some(full)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn std_modules_are_found_by_short_name_or_with_the_prefix() {
+        let provided = vec!["std.math".to_string(), "std.fs".to_string()];
+        assert_eq!(
+            std_module(&["math"], &provided).as_deref(),
+            Some("std.math")
+        );
+        assert_eq!(
+            std_module(&["std", "fs"], &provided).as_deref(),
+            Some("std.fs")
+        );
+        assert_eq!(std_module(&["json"], &provided), None);
+        assert_eq!(std_module(&["std", "json"], &provided), None);
+        assert_eq!(std_module(&["std"], &provided), None);
+        assert_eq!(std_module(&["a", "math"], &provided), None);
+        assert_eq!(std_module(&["math"], &[]), None);
+    }
+
+    #[test]
+    fn later_modules_are_not_also_provided_ones() {
+        let provided = ["std.io", "std.fs", "std.path", "std.os", "std.math"];
+        for (name, _) in LATER_STD_MODULES {
+            assert!(
+                !provided.contains(&format!("std.{name}").as_str()),
+                "{name}"
+            );
+        }
+    }
 }

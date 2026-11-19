@@ -1,0 +1,7 @@
+import math
+
+fn main() {
+    print(math.floor_div(1, 0))
+}
+
+// panic: division by zero

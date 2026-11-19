@@ -1,0 +1,58 @@
+// Paths are text: no capability, and the same on every platform (`/` is the separator).
+import path
+
+fn main() {
+    print(path.join("a", "b.txt"))
+    print(path.join("a/", "b"))
+    print(path.join("a", "/abs"))
+    print(path.join("", "b"))
+    print(path.file_name("dir/sub/file.tar.gz"))
+    print(path.file_name("dir/sub/"))
+    print(path.file_name("/"))
+    print(path.stem("dir/file.tar.gz"))
+    print(path.stem(".gitignore"))
+    print(path.ext("dir/file.tar.gz"))
+    print(path.ext("dir/file"))
+    print(path.ext(".gitignore"))
+    print(path.with_ext("dir/file.txt", "md"))
+    print(path.with_ext("dir/file", ".md"))
+    print(path.with_ext("dir/file.txt", ""))
+    print(path.parent("a/b/c.txt"))
+    print(path.parent("c.txt"))
+    print(path.parent("/c.txt"))
+    print(path.parent("/"))
+    print(path.is_absolute("/a"))
+    print(path.is_absolute("a"))
+    print(path.normalize("a/./b/../c//d"))
+    print(path.normalize("../a"))
+    print(path.normalize("/../a"))
+    print(path.normalize("a/.."))
+    print(path.split("/usr/local//bin/"))
+}
+
+// expect: a/b.txt
+// expect: a/b
+// expect: /abs
+// expect: b
+// expect: some("file.tar.gz")
+// expect: some("sub")
+// expect: none
+// expect: some("file.tar")
+// expect: some(".gitignore")
+// expect: some("gz")
+// expect: none
+// expect: none
+// expect: dir/file.md
+// expect: dir/file.md
+// expect: dir/file
+// expect: some("a/b")
+// expect: some("")
+// expect: some("/")
+// expect: none
+// expect: true
+// expect: false
+// expect: a/c/d
+// expect: ../a
+// expect: /a
+// expect: .
+// expect: ["usr", "local", "bin"]

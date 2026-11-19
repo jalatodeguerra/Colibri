@@ -45,6 +45,9 @@ pub enum TypeDesc {
     Value(String),
     /// A class of the host: objects the host owns and scripts only hold (EMBEDDING §3).
     Host(String),
+    /// A type parameter of the function (`T` in `fn decode[T](text: str) -> Result[T]`): what
+    /// a [`crate::Value`] stands for in a signature.
+    Param(String),
 }
 
 impl fmt::Display for TypeDesc {
@@ -84,12 +87,32 @@ impl fmt::Display for TypeDesc {
                 }
                 Ok(())
             }
-            TypeDesc::Value(name) | TypeDesc::Host(name) => f.write_str(name),
+            TypeDesc::Value(name) | TypeDesc::Host(name) | TypeDesc::Param(name) => {
+                f.write_str(name)
+            }
         }
     }
 }
 
 impl TypeDesc {
+    /// The names of the type parameters this type mentions, each once.
+    pub(crate) fn params(&self, out: &mut Vec<String>) {
+        match self {
+            TypeDesc::List(t) | TypeDesc::Option(t) | TypeDesc::Result(t) => t.params(out),
+            TypeDesc::Tuple(items) => items.iter().for_each(|t| t.params(out)),
+            TypeDesc::Map(k, v) => {
+                k.params(out);
+                v.params(out);
+            }
+            TypeDesc::Fn(params, ret) => {
+                params.iter().for_each(|t| t.params(out));
+                ret.params(out);
+            }
+            TypeDesc::Param(name) if !out.contains(name) => out.push(name.clone()),
+            _ => {}
+        }
+    }
+
     /// The names of the structs, enums and host classes this type mentions.
     pub(crate) fn mentions<'a>(&'a self, out: &mut Vec<&'a str>) {
         match self {

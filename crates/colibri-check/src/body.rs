@@ -478,6 +478,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             &mut self.locals,
             &mut diags,
             had_errors,
+            &self.ck.host_typed,
             self.ck.facts.as_mut(),
         );
         let ret = self.infer.finalize(&ret).0;

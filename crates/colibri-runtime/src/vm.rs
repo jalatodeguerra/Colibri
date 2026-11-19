@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use colibri_check::HostEnv;
 use colibri_check::hir::{HostFnId, Program};
-use colibri_check::host::{DEFAULT_MODULE, is_module_name};
+use colibri_check::host::{DEFAULT_MODULE, float_literal, is_module_name, is_std_module_name};
 use colibri_check::package::{DiskFs, Entry, MemoryFs, SourceFs};
 use colibri_check::types::{RESULT_TYPE, Ty, VARIANT_ERR};
 use colibri_interp::{
@@ -22,7 +22,7 @@ use crate::ctx::{Caller, Ctx, panic_error};
 use crate::error::{Error, Report};
 use crate::func::Fn;
 use crate::host::{HostFn, Registration, payload_message};
-use crate::iface::{self, HostFnEntry, Rendered};
+use crate::iface::{self, ConstEntry, ConstValue, HostFnEntry, Rendered};
 use crate::types::{TypeDesc, TypeRegistry};
 
 /// The default limit on nested Colibri calls (DESIGN §10.4 leaves the number open).
@@ -118,6 +118,7 @@ impl VmBuilder {
             caps: self.caps,
             registry: TypeRegistry::new(),
             host_fns: Vec::new(),
+            host_consts: Vec::new(),
             modules: Vec::new(),
         }
     }
@@ -140,6 +141,8 @@ pub struct Vm {
     registry: TypeRegistry,
     /// The registered host functions, in the order of their `HostFnId`s.
     host_fns: Vec<HostFnEntry>,
+    /// The constants of named modules (`math.PI`).
+    host_consts: Vec<ConstEntry>,
     /// The named host modules (`vm.module("physics")`) that have something registered, in the
     /// order they got it. The default `host` module always exists and is not listed.
     modules: Vec<String>,
@@ -248,6 +251,20 @@ impl Vm {
         HostModule {
             vm: self,
             name: name.to_string(),
+            std: false,
+        }
+    }
+
+    /// The module `name` of the standard library: what `import name` and `import std.name`
+    /// mean when no file or dependency of that name exists (ARCHITECTURE §13). It is a host
+    /// module like any other whose interface name is `std.name`; this is how the `colibri-std`
+    /// crate registers its modules, and it is the only way to get one: [`Vm::module`] refuses
+    /// the reserved name `std`.
+    pub fn std_module(&mut self, name: &str) -> HostModule<'_> {
+        HostModule {
+            vm: self,
+            name: format!("{}{name}", colibri_check::host::STD_PREFIX),
+            std: true,
         }
     }
 
@@ -281,9 +298,13 @@ impl Vm {
             .host_fns
             .iter()
             .any(|e| e.module == module && e.name == name)
+            || self
+                .host_consts
+                .iter()
+                .any(|e| e.module == module && e.name == name)
         {
             return Err(fail(format!(
-                "a host function with this name is registered in the module `{module}`"
+                "the module `{module}` already has an item with this name"
             )));
         }
         // Describe into a copy, so a failed registration leaves nothing behind.
@@ -311,6 +332,7 @@ impl Vm {
             requires: None,
             positional: names.is_none(),
             names,
+            typed: false,
         });
         let before = std::mem::replace(&mut self.registry, registry);
         let added = self.note_module(module);
@@ -362,6 +384,9 @@ impl Vm {
 
     fn check_module_name(module: &str) -> Result<(), String> {
         if module == DEFAULT_MODULE {
+            return Ok(());
+        }
+        if is_std_module_name(module) {
             return Ok(());
         }
         if !is_module_name(module) || module == "std" {
@@ -465,6 +490,78 @@ impl Vm {
         Some((method.raw.clone(), None))
     }
 
+    pub(crate) fn set_typed(&mut self, index: usize) -> Result<(), Error> {
+        let Some(entry) = self.host_fns.get_mut(index) else {
+            return Ok(());
+        };
+        let mut generics = Vec::new();
+        for t in entry.sig.params.iter().chain([&entry.sig.ret]) {
+            t.params(&mut generics);
+        }
+        if generics.is_empty() {
+            return Err(Error::Registration {
+                name: entry.name.clone(),
+                message: "`typed` is for a generic function: a parameter or the result must be a `Value`, which stands for the type `T`".to_string(),
+            });
+        }
+        entry.typed = true;
+        Ok(())
+    }
+
+    /// Registers the constant `name` in `module`.
+    fn register_const_in(
+        &mut self,
+        module: &str,
+        name: &str,
+        value: ConstValue,
+    ) -> Result<(), Error> {
+        let fail = |message: String| Error::Registration {
+            name: name.to_string(),
+            message,
+        };
+        if self.program.is_some() {
+            return Err(Error::AlreadyLoaded);
+        }
+        Self::check_module_name(module).map_err(fail)?;
+        if module == DEFAULT_MODULE {
+            return Err(fail(
+                "constants belong to a named module (`vm.module(..)`)".to_string(),
+            ));
+        }
+        if let ConstValue::Float(v) = value
+            && float_literal(v).is_none()
+        {
+            return Err(fail(format!(
+                "{v:?} cannot be written as a constant: use a finite number that is not negative, between 1e-4 and 1e15"
+            )));
+        }
+        let taken = self
+            .host_fns
+            .iter()
+            .any(|e| e.module == module && e.name == name)
+            || self
+                .host_consts
+                .iter()
+                .any(|e| e.module == module && e.name == name);
+        if taken {
+            return Err(fail(format!(
+                "the module `{module}` already has an item with this name"
+            )));
+        }
+        self.host_consts.push(ConstEntry {
+            module: module.to_string(),
+            name: name.to_string(),
+            value,
+        });
+        let added = self.note_module(module);
+        if let Err(message) = self.validate_interfaces() {
+            self.host_consts.pop();
+            self.forget_module(module, added);
+            return Err(fail(message));
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_requires(&mut self, index: usize, cap: Cap) {
         if let Some(entry) = self.host_fns.get_mut(index) {
             entry.requires = Some(cap);
@@ -494,7 +591,7 @@ impl Vm {
     }
 
     fn rendered_module(&self, module: &str) -> Rendered {
-        iface::render(&self.registry, &self.host_fns, module)
+        iface::render(&self.registry, &self.host_fns, &self.host_consts, module)
     }
 
     /// The canonical interface (`.cbi`) text of what the host registered: the text the checker
@@ -832,10 +929,13 @@ fn trampoline(name: &str, raw: crate::host::RawHostFn) -> HostImpl {
                     // Worded by the host layer, shown as is.
                     HostFault::Message(message) => HostFault::Message(message),
                 }),
-                Err(payload) => Err(HostFault::Panic(format!(
-                    "host function `{name}` panicked: {}",
-                    payload_message(payload.as_ref())
-                ))),
+                Err(payload) => Err(match payload.downcast::<crate::ctx::RaisedPanic>() {
+                    Ok(raised) => HostFault::Message(raised.0),
+                    Err(payload) => HostFault::Panic(format!(
+                        "host function `{name}` panicked: {}",
+                        payload_message(payload.as_ref())
+                    )),
+                }),
             }
         },
     )
@@ -846,12 +946,52 @@ fn trampoline(name: &str, raw: crate::host::RawHostFn) -> HostImpl {
 pub struct HostModule<'vm> {
     vm: &'vm mut Vm,
     name: String,
+    /// Made by [`Vm::std_module`].
+    std: bool,
+}
+
+/// The error for registering into the reserved module name `std` (or `std.x`) through
+/// [`Vm::module`]: only [`Vm::std_module`] makes those.
+fn reserved(name: &str) -> Option<Error> {
+    (name == "std" || name.starts_with("std.")).then(|| Error::Registration {
+        name: name.to_string(),
+        message: "the module name `std` is reserved for the standard library".to_string(),
+    })
 }
 
 impl HostModule<'_> {
-    /// The module's name, as `import` writes it.
+    /// The module's name, as `import` writes it (`std.math` for a standard library module,
+    /// which `import math` also reaches).
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    fn guard(&self) -> Result<(), Error> {
+        match reserved(&self.name) {
+            Some(e) if !self.std => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    /// Registers the constant `NAME: float = value` in this module (`math.PI`). The value must
+    /// be finite, not negative and writable as a plain decimal literal.
+    pub fn register_const_float(&mut self, name: &str, value: f64) -> Result<(), Error> {
+        self.guard()?;
+        self.vm
+            .register_const_in(&self.name, name, ConstValue::Float(value))
+    }
+
+    /// Registers the constant `NAME: int = value` in this module.
+    pub fn register_const_int(&mut self, name: &str, value: i64) -> Result<(), Error> {
+        self.guard()?;
+        let Ok(value) = u64::try_from(value) else {
+            return Err(Error::Registration {
+                name: name.to_string(),
+                message: "a constant cannot be negative".to_string(),
+            });
+        };
+        self.vm
+            .register_const_in(&self.name, name, ConstValue::Int(value))
     }
 
     /// Like [`Vm::register_fn`], into this module.
@@ -860,6 +1000,7 @@ impl HostModule<'_> {
         name: &str,
         f: F,
     ) -> Result<Registration<'_>, Error> {
+        self.guard()?;
         self.vm.register_inner(&self.name, name, None, f)
     }
 
@@ -870,6 +1011,7 @@ impl HostModule<'_> {
         params: [&str; N],
         f: F,
     ) -> Result<Registration<'_>, Error> {
+        self.guard()?;
         let names = params.iter().map(ToString::to_string).collect();
         self.vm.register_inner(&self.name, name, Some(names), f)
     }
@@ -878,6 +1020,7 @@ impl HostModule<'_> {
     /// describes it, and a module's signatures may mention only its own types and those of the
     /// default `host` module (anything else is [`Error::Registration`]).
     pub fn register_type<T: crate::IntoColibri>(&mut self) -> Result<(), Error> {
+        self.guard()?;
         self.vm.register_type_in::<T>(&self.name)
     }
 
