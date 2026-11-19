@@ -1,0 +1,16 @@
+enum Boom {
+    Loud
+}
+impl IntoError for Boom {}
+fn fail_with[E: IntoError](e: E) -> Result[int] {
+    return err(e)
+}
+print(fail_with(Boom.Loud))
+print(fail_with("text error"))
+match fail_with(Boom.Loud) {
+    err(e) => print(e.is[Boom]())
+    ok(_) => {}
+}
+// expect: err(Loud)
+// expect: err(text error)
+// expect: true

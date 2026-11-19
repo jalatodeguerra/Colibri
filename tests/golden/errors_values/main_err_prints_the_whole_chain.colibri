@@ -1,0 +1,17 @@
+enum LoadError {
+    Missing(path: str)
+}
+impl IntoError for LoadError {}
+fn load(path: str) -> Result[str, LoadError] {
+    return err(LoadError.Missing(path))
+}
+fn boot() -> Result[()] {
+    let _ = load("game.cfg").context("reading config")?
+}
+fn main() -> Result[()] {
+    print("booting")
+    boot().context("starting the game")?
+    print("never printed")
+}
+// expect: booting
+// main-err: starting the game: reading config: Missing(path: "game.cfg")

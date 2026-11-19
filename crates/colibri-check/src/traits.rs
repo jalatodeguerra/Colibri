@@ -12,7 +12,10 @@ use std::collections::HashMap;
 use colibri_syntax::Span;
 
 use crate::hir::{ImplId, TypeDef, TypeDefKind, TypeKey};
-use crate::types::{CLONE, EQ, HASH, ITER, ITERABLE, OPTION_TYPE, ORD, ParamId, SHOW, Ty, TypeId};
+use crate::types::{
+    CLONE, EQ, ERROR_TYPE, HASH, INTO_ERROR, ITER, ITERABLE, OPTION_TYPE, ORD, ParamId, SHOW, Ty,
+    TypeId,
+};
 
 /// `T: Hash + Eq`, one bound: an interface and its type arguments.
 #[derive(Clone, Debug, PartialEq)]
@@ -127,7 +130,7 @@ pub(crate) fn match_ty(
         (Ty::List(a), Ty::List(b)) | (Ty::Set(a), Ty::Set(b)) | (Ty::Option(a), Ty::Option(b)) => {
             match_ty(a, b, params, subst)
         }
-        (Ty::Map(a, b), Ty::Map(c, d)) | (Ty::Result(a, b), Ty::Result(c, d)) => {
+        (Ty::Map(a, b), Ty::Map(c, d)) => {
             match_ty(a, c, params, subst) && match_ty(b, d, params, subst)
         }
         (Ty::Range(a), Ty::Range(b)) => match_ty(a, b, params, subst),
@@ -173,6 +176,12 @@ impl Env<'_> {
             ORD => self.derive_with(ty, iface, visiting, Self::ord_part),
             HASH => self.derive_with(ty, iface, visiting, Self::hash_part),
             ITERABLE => self.iterable_builtin(ty, args),
+            // `str` and `Error` convert to `Error` on their own (DESIGN §10.1).
+            INTO_ERROR
+                if matches!(ty, Ty::Str) || matches!(ty, Ty::Adt(id, _) if *id == ERROR_TYPE) =>
+            {
+                Ok(Source::Derived)
+            }
             _ => Err(ty.clone()),
         }
     }

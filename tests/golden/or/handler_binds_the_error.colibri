@@ -1,0 +1,26 @@
+enum Problem {
+    Missing(name: str)
+}
+fn get(name: str) -> Result[int, Problem] {
+    if name == "hp" { return ok(100) }
+    return err(Problem.Missing(name))
+}
+let hp = get("hp") or |e| { 0 }
+let mana = get("mana") or |e| {
+    print("lookup failed: {e}")
+    -1
+}
+print(hp)
+print(mana)
+let text = get("xp") or |problem| {
+    match problem {
+        Problem.Missing(n) => print("missing {n}")
+    }
+    0
+}
+print(text)
+// expect: lookup failed: Missing(name: "mana")
+// expect: missing xp
+// expect: 100
+// expect: -1
+// expect: 0

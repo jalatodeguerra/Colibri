@@ -1,0 +1,26 @@
+enum ParseError {
+    UnexpectedEof
+    BadToken(line: int, text: str)
+}
+impl IntoError for ParseError {}
+
+fn parse(src: str) -> Result[int, ParseError] {
+    if src == "" { return err(ParseError.UnexpectedEof) }
+    if src == "?" { return err(ParseError.BadToken(3, "?")) }
+    return ok(src.len())
+}
+fn run(src: str) -> Result[int] {
+    let n = parse(src)?
+    return ok(n + 100)
+}
+print(run("abc"))
+print(run(""))
+print(run("?"))
+match run("") {
+    ok(_) => print("unexpected")
+    err(e) => print("failed: {e}")
+}
+// expect: ok(103)
+// expect: err(UnexpectedEof)
+// expect: err(BadToken(line: 3, text: "?"))
+// expect: failed: UnexpectedEof

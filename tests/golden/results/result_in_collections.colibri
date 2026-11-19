@@ -1,0 +1,24 @@
+fn parse(s: str) -> Result[int, str] {
+    if s == "1" { return ok(1) }
+    if s == "2" { return ok(2) }
+    return err("bad {s}")
+}
+var results: List[Result[int, str]] = []
+for s in ["1", "x", "2"] {
+    results.push(parse(s))
+}
+print(results)
+var total = 0
+var failures = 0
+for r in results {
+    match r {
+        ok(n) => total += n
+        err(_) => failures += 1
+    }
+}
+print("{total} {failures}")
+let m: Map[str, Result[int, str]] = {"a": ok(1), "b": err("no")}
+print(m)
+// expect: [ok(1), err("bad x"), ok(2)]
+// expect: 3 1
+// expect: {"a": ok(1), "b": err("no")}

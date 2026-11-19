@@ -4,8 +4,11 @@
 //! type ids are the constants of [`crate::types`] (`EQ`, `ORD`, ...). Their implementations
 //! for built-in types are derived by the checker (§7.4), not written here.
 //!
-//! `Ord.cmp` returns an `int`: negative, zero or positive (ARCHITECTURE §6). `Iter`,
-//! `Iterable` and `IntoError` are declared for the slices that use them.
+//! `Ord.cmp` returns an `int`: negative, zero or positive (ARCHITECTURE §6). `IntoError` is
+//! the interface of types that convert to `Error` (DESIGN §10.1); its default `message` is the
+//! type's `Show`. `Error` itself is declared as an empty class so that the checker treats it
+//! as the reference type it is; it has no fields to build and its methods are built in
+//! (`crate::optres`).
 
 use std::sync::OnceLock;
 
@@ -44,6 +47,7 @@ interface Iterable[T] {
 interface IntoError {
     fn message(self) -> str => "{self}"
 }
+class Error {}
 "#;
 
 /// The parsed prelude.

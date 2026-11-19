@@ -1,0 +1,11 @@
+fn f(r: Result[int, str]) -> int {
+    return match r { // error: non-exhaustive `match`: missing case: err(_)
+        ok(n) => n
+    }
+}
+fn g(r: Result[int]) -> int {
+    return match r { // error: non-exhaustive `match`: missing case: err(_)
+        ok(n) => n
+        err(_) if false => 0
+    }
+}

@@ -46,7 +46,8 @@ pub struct Program {
     /// `fn main()` if the file defines it.
     pub main: Option<FnId>,
     /// Every struct, enum and class, indexed by [`TypeId`]. Index 0 is the prelude `Option`
-    /// enum ([`crate::types::OPTION_TYPE`]); user types follow.
+    /// enum ([`crate::types::OPTION_TYPE`]), index 1 the prelude `Result`, then the built-in
+    /// interfaces and `Error`; user types follow.
     pub types: Vec<TypeDef>,
     /// Every interface implementation: explicit `impl I for T` blocks and the derived
     /// implementations that were used (DESIGN §7.4). The engine dispatches `Callee::Bound`
@@ -475,6 +476,23 @@ pub enum Coercion {
     /// The same, for a value whose type is a type parameter with this interface as a bound:
     /// the implementation is found from the value at runtime.
     ToDynBound(TypeId),
+    /// A value of a type that implements `IntoError` becomes an `Error` that keeps the value
+    /// (DESIGN §10.1); an `Error` stays as it is.
+    IntoError(ErrorConv),
+    /// `Result[T, E]` becomes `Result[T, Error]`: the payload of `err` is converted as by
+    /// [`Coercion::IntoError`].
+    ResultIntoError(ErrorConv),
+}
+
+/// How a value is turned into an `Error`: the engine records the implementation with the error
+/// so that its message can be asked for later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorConv {
+    /// The `IntoError` implementation of the value's type, known statically.
+    Impl(ImplId),
+    /// The type is a parameter bounded by `IntoError`: the implementation is found from the
+    /// value at runtime.
+    Bound,
 }
 
 /// A `for` loop. The binding is fresh per iteration: its locals are listed in `body.locals`,
@@ -628,6 +646,12 @@ pub enum Intrinsic {
     Format(Box<FormatSpec>),
     /// A method or constructor of a built-in type; the receiver is the first argument.
     Builtin(Builtin),
+    /// `panic(msg)`: stops the program with a message (it has type `!`).
+    Panic,
+    /// `e.is[T]()`: whether the value an `Error` keeps has this runtime type (DESIGN §10.2).
+    ErrorIs(TypeKey),
+    /// `e.as[T]() -> T?`: the value an `Error` keeps, if it has this runtime type.
+    ErrorAs(TypeKey),
 }
 
 /// Methods and constructors of `str`, `List`, `Map` and `Set` (DESIGN §5.2, §5.3), plus the
@@ -716,6 +740,34 @@ pub enum Builtin {
     Iter,
     /// `it.enumerate()` on an iterator: `Iter[(int, T)]`. The receiver is already an `Iter`.
     IterEnumerate,
+    // ---- Option (DESIGN §5.2) ----
+    OptionIsSome,
+    OptionIsNone,
+    /// `opt.expect(msg)`: the value, or a panic with `msg`.
+    OptionExpect,
+    OptionMap,
+    OptionAndThen,
+    // ---- Result (DESIGN §10) ----
+    ResultIsOk,
+    ResultIsErr,
+    /// `r.expect(msg)`: the value, or a panic with `msg` and the error.
+    ResultExpect,
+    ResultMap,
+    ResultAndThen,
+    /// `r.ok() -> T?`
+    ResultOk,
+    /// `r.err() -> E?`
+    ResultErr,
+    /// `r.context(msg)`: the receiver is already a `Result[T, Error]` (the checker converts
+    /// it with [`Coercion::ResultIntoError`]).
+    ResultContext,
+    // ---- Error (DESIGN §10.2) ----
+    /// `e.message() -> str`: the outermost message, without the chain.
+    ErrorMessage,
+    /// `e.context(msg) -> Error`
+    ErrorContext,
+    /// `e.cause() -> Error?`
+    ErrorCause,
 }
 
 #[derive(Debug)]

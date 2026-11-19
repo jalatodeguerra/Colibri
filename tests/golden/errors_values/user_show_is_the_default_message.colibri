@@ -1,0 +1,15 @@
+struct NotFound {
+    path: str
+}
+impl Show for NotFound {
+    fn show(self) -> str => "file not found: {self.path}"
+}
+impl IntoError for NotFound {}
+let e = Error.from(NotFound { path: "level1.map" })
+print(e)
+print(e.message())
+let wrapped = [e]
+print(wrapped.len())
+// expect: file not found: level1.map
+// expect: file not found: level1.map
+// expect: 1

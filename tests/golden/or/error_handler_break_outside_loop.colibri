@@ -1,0 +1,5 @@
+fn get() -> Result[int, str] => err("no")
+fn main() {
+    let v = get() or { break } // error: `break` outside of a loop
+    print(v)
+}

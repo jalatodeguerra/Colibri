@@ -1,0 +1,15 @@
+let a = Error.from("same")
+let b = a
+let c = Error.from("same")
+print(a == b)
+print(a == c)
+print(a is b)
+print(a is c)
+let r1: Result[int] = err(a)
+let r2: Result[int] = err(a)
+print(r1 == r2)
+// expect: true
+// expect: false
+// expect: true
+// expect: false
+// expect: true

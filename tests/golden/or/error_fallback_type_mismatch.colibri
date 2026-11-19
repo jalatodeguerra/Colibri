@@ -1,0 +1,7 @@
+fn get() -> Result[int, str] => ok(1)
+fn main() {
+    let a = get() or "none" // error: the right side of `or` is a `str`, but the left side gives `int`
+    let b = get() or 1.5 // error: the right side of `or` is a `{float}`, but the left side gives `int`
+    let c: int? = none
+    let d = c or "x" // error: the right side of `or` is a `str`, but the left side gives `int`
+}

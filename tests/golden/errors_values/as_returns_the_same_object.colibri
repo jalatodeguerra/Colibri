@@ -1,0 +1,27 @@
+class Failure {
+    name: str
+    code: int
+}
+impl IntoError for Failure {}
+impl Show for Failure {
+    fn show(self) -> str => "failure {self.name}"
+}
+let original = Failure { name: "disk", code: 5 }
+let e = Error.from(original)
+let back = e.as[Failure]().expect("it is a Failure")
+print(back is original)
+print(back.code)
+original.code = 6
+print(back.code)
+print(e)
+// Survives context layers too.
+let wrapped = e.context("outer")
+print(wrapped.as[Failure]().expect("still there") is original)
+print(wrapped)
+// expect: true
+// expect: 5
+// expect: 6
+// expect: failure disk
+// expect: true
+// expect: outer: failure disk
+// drops: disk

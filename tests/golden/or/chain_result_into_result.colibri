@@ -1,0 +1,16 @@
+fn first(n: int) -> Result[int, str] {
+    if n == 1 { return ok(1) }
+    return err("first failed")
+}
+fn second(n: int) -> Result[int, str] {
+    if n == 2 { return ok(2) }
+    return err("second failed")
+}
+print(first(1) or second(1))
+print(first(2) or second(2))
+print(first(3) or second(3))
+print(first(3) or second(3) or 0)
+// expect: ok(1)
+// expect: ok(2)
+// expect: err("second failed")
+// expect: 0

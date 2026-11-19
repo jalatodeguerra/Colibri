@@ -1,0 +1,16 @@
+fn read(path: str) -> Result[str, str] {
+    if path == "a.txt" { return ok("contents of a") }
+    return err("cannot read {path}")
+}
+fn load(path: str) -> str {
+    let text = read(path) or |e| {
+        print("log: {e}")
+        return "default"
+    }
+    return "loaded: {text}"
+}
+print(load("a.txt"))
+print(load("b.txt"))
+// expect: loaded: contents of a
+// expect: log: cannot read b.txt
+// expect: default

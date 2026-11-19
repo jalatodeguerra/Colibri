@@ -1,0 +1,9 @@
+struct Plain {
+    n: int
+}
+fn main() {
+    let a = Error.from(Plain { n: 1 }) // error: `Plain` cannot be converted to `Error`: it does not implement
+    let b = Error.from(3) // error: `int` cannot be converted to `Error`: it does not implement
+    let c = Error.from() // error: `Error.from` is called with exactly one value
+    let d: Result[int] = err(Plain { n: 2 }) // error: `Plain` cannot be converted to `Error`: it does not implement
+}

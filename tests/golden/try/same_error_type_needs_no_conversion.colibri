@@ -1,0 +1,20 @@
+enum Problem {
+    Missing
+    Broken(code: int)
+}
+fn a(n: int) -> Result[int, Problem] {
+    if n == 0 { return err(Problem.Missing) }
+    if n < 0 { return err(Problem.Broken(n)) }
+    return ok(n)
+}
+// Problem does not implement IntoError: `?` keeps the same error type.
+fn b(n: int) -> Result[int, Problem] {
+    let v = a(n)?
+    return ok(v * 2)
+}
+print(b(2))
+print(b(0))
+print(b(-7))
+// expect: ok(4)
+// expect: err(Missing)
+// expect: err(Broken(code: -7))

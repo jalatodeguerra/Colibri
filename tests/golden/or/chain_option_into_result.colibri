@@ -1,0 +1,14 @@
+fn cached(k: int) -> int? => if k == 1 { some(5) } else { none }
+fn compute(k: int) -> Result[int, str] {
+    if k == 2 { return ok(6) }
+    return err("cannot compute {k}")
+}
+let r1 = cached(1) or compute(1)
+let r2 = cached(2) or compute(2)
+let r3 = cached(3) or compute(3)
+print(r1)
+print(r2)
+print(r3)
+// expect: ok(5)
+// expect: ok(6)
+// expect: err("cannot compute 3")

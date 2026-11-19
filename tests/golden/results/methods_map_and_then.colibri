@@ -1,0 +1,25 @@
+fn halve(n: int) -> Result[int, str] {
+    if n % 2 != 0 {
+        return err("{n} is odd")
+    }
+    return ok(n / 2)
+}
+let a: Result[int, str] = ok(8)
+let b: Result[int, str] = err("early")
+print(a.map(fn(x) => x + 1))
+print(b.map(fn(x) => x + 1))
+print(a.map(fn(x) => "n={x}"))
+print(a.and_then(halve))
+print(a.and_then(halve).and_then(halve))
+print(a.and_then(halve).and_then(halve).and_then(halve).and_then(halve))
+print(b.and_then(halve))
+print(ok_seven().and_then(halve))
+fn ok_seven() -> Result[int, str] => ok(7)
+// expect: ok(9)
+// expect: err("early")
+// expect: ok("n=8")
+// expect: ok(4)
+// expect: ok(2)
+// expect: err("1 is odd")
+// expect: err("early")
+// expect: err("7 is odd")

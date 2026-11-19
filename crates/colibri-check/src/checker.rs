@@ -19,7 +19,7 @@ use crate::obligations::Obligation;
 use crate::prelude;
 use crate::suggest;
 use crate::traits::{BoundRef, GenericParamInfo, ImplInfo};
-use crate::types::{FnSig, ParamId, Ty, TypeId};
+use crate::types::{ERROR_TYPE, FnSig, ParamId, RESULT_TYPE, Ty, TypeId};
 
 /// What a module-level name refers to.
 #[derive(Clone, Copy, Debug)]
@@ -129,7 +129,7 @@ pub(crate) struct Checker<'a> {
     /// Bounds written in declarations before the types and impls were all known, checked once
     /// they are (`Map` keys and `Set` elements in field types and signatures, for example).
     pub pending: Vec<Obligation>,
-    /// The next unused [`ParamId`] (0 is the prelude `Option`'s `T`).
+    /// The next unused [`ParamId`] (0 is the prelude `Option`'s `T`, 1 and 2 are `Result`'s `T` and `E`).
     pub next_param: u32,
     /// The bounds of every type parameter declared so far.
     pub param_bounds: HashMap<ParamId, Vec<BoundRef>>,
@@ -184,6 +184,30 @@ fn prelude_option(span: Span) -> TypeDef {
     }
 }
 
+/// The prelude `Result` enum (index 1 of the type table): `ok(T)` and `err(E)`, whose payloads
+/// are the type parameters `ParamId(1)` and `ParamId(2)`.
+fn prelude_result(span: Span) -> TypeDef {
+    let variant = |name: &str, param: u32, pname: &str| VariantDef {
+        name: name.to_string(),
+        span,
+        fields: vec![FieldDef {
+            name: "0".to_string(),
+            ty: Ty::Param(ParamId(param), pname.into()),
+            span,
+            weak: false,
+        }],
+        named: false,
+    };
+    TypeDef {
+        name: "Result".to_string(),
+        span,
+        params: vec![ParamId(1), ParamId(2)],
+        kind: TypeDefKind::Enum {
+            variants: vec![variant("ok", 1, "T"), variant("err", 2, "E")],
+        },
+    }
+}
+
 /// A position on the native stack, comparable with another one.
 pub(crate) fn stack_position() -> usize {
     let marker = 0u8;
@@ -191,7 +215,7 @@ pub(crate) fn stack_position() -> usize {
 }
 
 /// Names that exist without a declaration.
-pub(crate) const BUILTIN_FNS: &[&str] = &["print"];
+pub(crate) const BUILTIN_FNS: &[&str] = &["print", "panic"];
 
 impl<'a> Checker<'a> {
     pub fn new(file: &'a ast::File, stack_budget: usize) -> Self {
@@ -203,14 +227,14 @@ impl<'a> Checker<'a> {
             poisoned_types: HashSet::new(),
             fns: Vec::new(),
             globals: Vec::new(),
-            types: vec![prelude_option(file.span)],
-            type_extra: vec![TypeExtra::default()],
+            types: vec![prelude_option(file.span), prelude_result(file.span)],
+            type_extra: vec![TypeExtra::default(), TypeExtra::default()],
             type_ids: HashMap::new(),
             aliases: HashMap::new(),
             methods: HashMap::new(),
             collected: false,
             pending: Vec::new(),
-            next_param: 1,
+            next_param: 3,
             param_bounds: HashMap::new(),
             type_scope: Vec::new(),
             self_ty: None,
@@ -515,10 +539,7 @@ impl<'a> Checker<'a> {
             "Range" if !self.type_ids.contains_key(name) => {
                 return self.resolve_builtin_generic(name, args, span);
             }
-            "Result" if !args.is_empty() => {
-                self.unsupported("the generic type `Result[..]`", span);
-                return Ty::Error;
-            }
+            "Result" => return self.resolve_result(args, span),
             _ => {}
         }
         if let Some(&id) = self.type_ids.get(name) {
@@ -547,7 +568,7 @@ impl<'a> Checker<'a> {
             "str" => Ty::Str,
             "char" => Ty::Char,
             "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64" | "f32" | "vec2" | "vec3"
-            | "vec4" | "Result" => {
+            | "vec4" => {
                 self.unsupported(&format!("the type `{name}`"), span);
                 Ty::Error
             }
@@ -557,6 +578,31 @@ impl<'a> Checker<'a> {
                 Ty::Error
             }
         }
+    }
+
+    /// `Result[T]` (shorthand for `Result[T, Error]`) and `Result[T, E]` (DESIGN §10.1).
+    fn resolve_result(&mut self, args: &[ast::TypeExpr], span: Span) -> Ty {
+        if !(1..=2).contains(&args.len()) {
+            self.report(
+                Diagnostic::error(
+                    format!("`Result` takes 1 or 2 type arguments, found {}", args.len()),
+                    span,
+                )
+                .with_hint("write `Result[T]` (the error is `Error`) or `Result[T, E]`"),
+            );
+            for a in args {
+                self.resolve_type(a);
+            }
+            return Ty::Error;
+        }
+        let mut tys: Vec<Ty> = args.iter().map(|a| self.resolve_type(a)).collect();
+        if tys.iter().any(Ty::is_error) {
+            return Ty::Error;
+        }
+        if tys.len() == 1 {
+            tys.push(Ty::Adt(ERROR_TYPE, Vec::new()));
+        }
+        Ty::Adt(RESULT_TYPE, tys)
     }
 
     /// `Name[args]` for a user-defined struct, enum, class or interface.
@@ -828,12 +874,17 @@ impl<'a> Checker<'a> {
             return None;
         };
         let info = &self.fns[id.0 as usize];
-        if !info.params.is_empty() || info.ret != Ty::Unit && !info.ret.is_error() {
+        // `main` may return `Result[()]`: an `err` is reported and the program exits with 1.
+        let unit_result = matches!(
+            &info.ret,
+            Ty::Adt(RESULT_TYPE, args) if args.first() == Some(&Ty::Unit)
+        );
+        if !info.params.is_empty() || info.ret != Ty::Unit && !info.ret.is_error() && !unit_result {
             let diag = Diagnostic::error(
-                "`main` must take no arguments and return nothing",
+                "`main` must take no arguments and return nothing or `Result[()]`",
                 info.name_span,
             )
-            .with_hint("write `fn main() { ... }`");
+            .with_hint("write `fn main() { ... }` or `fn main() -> Result[()] { ... }`");
             self.report(diag);
         }
         Some(id)

@@ -1,0 +1,15 @@
+fn get(ok_flag: bool) -> Result[bool, str] {
+    if ok_flag { return ok(true) }
+    return err("no")
+}
+if get(false) or false {
+    print("yes")
+} else {
+    print("no")
+}
+while get(false) or false {
+    print("loop")
+}
+print("done")
+// expect: no
+// expect: done

@@ -1,0 +1,3 @@
+fn f() -> Result[int] {
+    print("no value")
+} // error: `f` must return `Result[int]`, but its body can end without returning

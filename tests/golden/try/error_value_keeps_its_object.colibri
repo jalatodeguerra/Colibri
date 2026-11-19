@@ -1,0 +1,20 @@
+class Failure {
+    code: int
+}
+impl IntoError for Failure {}
+impl Show for Failure {
+    fn show(self) -> str => "failure code {self.code}"
+}
+fn fails() -> Result[int, Failure] {
+    return err(Failure { code: 7 })
+}
+fn caller() -> Result[int] {
+    let v = fails()?
+    return ok(v)
+}
+match caller() {
+    err(e) => print(e)
+    ok(_) => {}
+}
+// expect: failure code 7
+// drops: Failure

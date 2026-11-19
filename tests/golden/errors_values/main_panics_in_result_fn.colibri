@@ -1,0 +1,5 @@
+fn main() -> Result[()] {
+    let xs: List[int] = []
+    print(xs[3])
+}
+// panic: index 3 out of bounds for list of length 0

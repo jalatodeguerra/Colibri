@@ -1,0 +1,18 @@
+fn fallback() -> int {
+    print("fallback evaluated")
+    return 99
+}
+fn present() -> Result[int, str] => ok(1)
+fn missing() -> Result[int, str] => err("gone")
+print(present() or fallback())
+print(missing() or fallback())
+let some_value: int? = some(5)
+let no_value: int? = none
+print(some_value or fallback())
+print(no_value or fallback())
+// expect: 1
+// expect: fallback evaluated
+// expect: 99
+// expect: 5
+// expect: fallback evaluated
+// expect: 99

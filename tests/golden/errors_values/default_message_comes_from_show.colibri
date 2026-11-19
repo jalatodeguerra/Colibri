@@ -1,0 +1,16 @@
+enum ParseError {
+    UnexpectedEof
+    BadToken(line: int, text: str)
+}
+impl IntoError for ParseError {}
+
+let a = Error.from(ParseError.UnexpectedEof)
+let b = Error.from(ParseError.BadToken(4, "@"))
+print(a)
+print(b)
+print("{a} | {b}")
+print(a.message())
+// expect: UnexpectedEof
+// expect: BadToken(line: 4, text: "@")
+// expect: UnexpectedEof | BadToken(line: 4, text: "@")
+// expect: UnexpectedEof

@@ -137,7 +137,7 @@ pub(crate) struct FnCtx<'c, 'a> {
     /// The body is a `var self` method.
     self_mut: bool,
     /// How many `defer` statements are being checked (`return` is not allowed in them).
-    defer_depth: u32,
+    pub(crate) defer_depth: u32,
     /// The variables the live closure captures (empty in a function body).
     pub captures: Vec<CaptureRec>,
     /// The id of the live frame: 0 for the function body, one per closure.
@@ -163,6 +163,11 @@ pub(crate) struct GenericCall {
     pub names: Vec<String>,
     pub func: String,
     pub span: Span,
+}
+
+/// Whether `ty` is `Result[(), E]`, the type of a procedure that can fail (DESIGN §6.1).
+fn is_unit_result(ty: &Ty) -> bool {
+    matches!(ty, Ty::Adt(crate::types::RESULT_TYPE, args) if args.first() == Some(&Ty::Unit))
 }
 
 /// How deeply expressions may nest before the checker gives up, whatever the stack budget.
@@ -376,16 +381,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     /// A type as shown in a message: unresolved literals read `{integer}` and `{float}`, also
     /// inside tuples.
     pub fn show(&self, ty: &Ty) -> String {
-        let ty = self.infer.resolve(ty);
-        match (&ty, self.infer.unbound_kind(&ty)) {
-            (Ty::Infer(_), Some(VarKind::IntLit)) => "{integer}".to_string(),
-            (Ty::Infer(_), Some(VarKind::FloatLit)) => "{float}".to_string(),
-            (Ty::Tuple(items), _) => {
-                let parts: Vec<String> = items.iter().map(|t| self.show(t)).collect();
-                format!("({})", parts.join(", "))
-            }
-            _ => ty.render(&self.ck.types),
-        }
+        self.infer.display_ty(ty).render(&self.ck.types)
     }
 
     pub fn report_mismatch(
@@ -535,10 +531,16 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         }
         let block = match &decl.body {
             Some(ast::FnBody::Block(b)) => {
-                let (stmts, tail, ty) = self.block_in_scope(b, BlockMode::Stmts);
+                let (stmts, mut tail, mut ty) = self.block_in_scope(b, BlockMode::Stmts);
                 let locals = self.pop_scope();
                 let returns_value = *ret != Ty::Unit && !ret.is_error();
-                if returns_value && self.infer.shallow(&ty) != Ty::Never {
+                let falls_off = returns_value && self.infer.shallow(&ty) != Ty::Never;
+                if falls_off && is_unit_result(ret) {
+                    // DESIGN §6.1: a `Result[()]` body that reaches its end returns `ok(())`.
+                    let close = Span::new(b.span.file, b.span.end.saturating_sub(1), b.span.end);
+                    tail = Some(Box::new(self.ok_unit(ret, close)));
+                    ty = ret.clone();
+                } else if falls_off {
                     let close = Span::new(b.span.file, b.span.end.saturating_sub(1), b.span.end);
                     let mut diag = Diagnostic::error(
                         format!(
@@ -880,6 +882,19 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             _ => self.check_expr(e, None),
         };
         let never = self.infer.shallow(&value.ty) == Ty::Never;
+        // A deferred call (`defer file.close()`) has nowhere to propagate a failure to, so it
+        // is allowed to ignore the `Result`.
+        if self.defer_depth == 0
+            && matches!(
+                self.infer.shallow(&value.ty),
+                Ty::Adt(crate::types::RESULT_TYPE, _)
+            )
+        {
+            self.ck.report(
+                Diagnostic::warning("unused `Result`; handle it with `?`, `or`, `match`, or `let _ = ...`", e.span)
+                    .with_hint("an ignored `Result` hides a failure: propagate it with `?`, give a fallback with `or`, or write `let _ = ...` to ignore it on purpose"),
+            );
+        }
         (
             Stmt {
                 span: e.span,

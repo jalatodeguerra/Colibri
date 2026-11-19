@@ -1,0 +1,15 @@
+struct Position {
+    x: int
+    y: int
+}
+impl IntoError for Position {}
+let e = Error.from(Position { x: 3, y: 4 })
+print(e.as[Position]() == some(Position { x: 3, y: 4 }))
+match e.as[Position]() {
+    some(p) => print("at {p.x},{p.y}")
+    none => print("missing")
+}
+print(e.is[Position]())
+// expect: true
+// expect: at 3,4
+// expect: true

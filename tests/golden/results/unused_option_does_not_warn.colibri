@@ -1,0 +1,6 @@
+fn find() -> int? => none
+fn main() {
+    find()
+    print("fine")
+}
+// expect: fine

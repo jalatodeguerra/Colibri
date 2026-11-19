@@ -1,0 +1,19 @@
+class Res {
+    name: str
+}
+impl Drop for Res {
+    fn drop(self) {
+        print("drop {self.name}")
+    }
+}
+let global = Res { name: "global" }
+fn main() -> Result[()] {
+    let local = Res { name: "local" }
+    defer print("deferred")
+    return err("exit with failure")
+}
+// expect: deferred
+// expect: drop local
+// expect: drop global
+// main-err: exit with failure
+// drops: local, global

@@ -1,0 +1,15 @@
+let root = Error.from("file not found")
+let one = root.context("reading level 3")
+let two = one.context("loading save game")
+print(root)
+print(one)
+print(two)
+print(two.message())
+print(one.message())
+print(root.message())
+// expect: file not found
+// expect: reading level 3: file not found
+// expect: loading save game: reading level 3: file not found
+// expect: loading save game
+// expect: reading level 3
+// expect: file not found

@@ -1,0 +1,21 @@
+fn parse(s: str) -> Result[int, str] {
+    if s == "1" { return ok(1) }
+    if s == "2" { return ok(2) }
+    return err("cannot parse {s}")
+}
+fn sum(a: str, b: str) -> Result[int, str] {
+    let x = parse(a)?
+    print("first ok: {x}")
+    let y = parse(b)?
+    print("second ok: {y}")
+    return ok(x + y)
+}
+print(sum("1", "2"))
+print(sum("1", "q"))
+print(sum("z", "2"))
+// expect: first ok: 1
+// expect: second ok: 2
+// expect: ok(3)
+// expect: first ok: 1
+// expect: err("cannot parse q")
+// expect: err("cannot parse z")

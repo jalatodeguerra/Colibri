@@ -1,0 +1,22 @@
+let a: int? = some(3)
+let b: int? = none
+print(a.is_some())
+print(a.is_none())
+print(b.is_some())
+print(b.is_none())
+print(a.map(fn(x) => x * 10))
+print(b.map(fn(x) => x * 10))
+print(a.and_then(fn(x) => if x > 2 { some("big") } else { none }))
+print(a.and_then(fn(x) => if x > 5 { some("big") } else { none }))
+print(b.and_then(fn(x) => some(x)))
+print(a.expect("a is set"))
+// expect: true
+// expect: false
+// expect: false
+// expect: true
+// expect: some(30)
+// expect: none
+// expect: some("big")
+// expect: none
+// expect: none
+// expect: 3

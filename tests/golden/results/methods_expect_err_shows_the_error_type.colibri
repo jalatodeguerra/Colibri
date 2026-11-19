@@ -1,0 +1,7 @@
+enum Problem {
+    Missing(name: str)
+}
+fn find() -> Result[int, Problem] => err(Problem.Missing("hp"))
+let v = find().expect("lookup failed")
+print(v)
+// panic: lookup failed: Missing(name: "hp")

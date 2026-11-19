@@ -1,0 +1,31 @@
+class Guard {
+    name: str
+}
+impl Drop for Guard {
+    fn drop(self) {
+        print("drop {self.name}")
+    }
+}
+fn fails() -> Result[int, str] {
+    print("failing")
+    return err("failed")
+}
+fn work() -> Result[int, str] {
+    let a = Guard { name: "a" }
+    defer print("deferred 1")
+    let b = Guard { name: "b" }
+    defer print("deferred 2")
+    let v = fails()?
+    print("not reached")
+    return ok(v)
+}
+print(work())
+print("after")
+// expect: failing
+// expect: deferred 2
+// expect: drop b
+// expect: deferred 1
+// expect: drop a
+// expect: err("failed")
+// expect: after
+// drops: b, a

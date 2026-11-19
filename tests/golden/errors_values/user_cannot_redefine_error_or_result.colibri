@@ -1,0 +1,6 @@
+struct Error { // error: the type `Error` is defined more than once
+    code: int
+}
+enum Result { // error: `Result` is a built-in type and cannot be redefined
+    Good
+}

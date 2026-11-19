@@ -1,0 +1,16 @@
+fn parse(s: str) -> Result[int, str] {
+    if s == "7" { return ok(7) }
+    return err("bad")
+}
+let a = parse("7") or 0
+let b = parse("x") or -1
+print(a)
+print(b)
+let name: str? = none
+print(name or "anonymous")
+let some_name: str? = some("ana")
+print(some_name or "anonymous")
+// expect: 7
+// expect: -1
+// expect: anonymous
+// expect: ana

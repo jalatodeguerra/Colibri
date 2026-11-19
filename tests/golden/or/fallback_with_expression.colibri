@@ -1,0 +1,17 @@
+fn get(ok_flag: bool) -> Result[int, str] {
+    if ok_flag { return ok(10) }
+    return err("no")
+}
+let n = 5
+print(get(false) or n * 2 + 1)
+print(get(false) or if n > 3 { 100 } else { 200 })
+print(get(true) or n * 2 + 1)
+var x = 0
+x = get(false) or 33
+print(x)
+print("value: {get(false) or 9}")
+// expect: 11
+// expect: 100
+// expect: 10
+// expect: 33
+// expect: value: 9

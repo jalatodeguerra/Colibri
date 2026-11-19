@@ -1,0 +1,3 @@
+let a: Result[int, str] = ok(41)
+print(a.expect("must be there") + 1)
+// expect: 42

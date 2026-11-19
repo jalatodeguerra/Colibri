@@ -1,0 +1,5 @@
+let b: int? = none
+print("before")
+print(b.expect("the player must exist"))
+// expect: before
+// panic: the player must exist
