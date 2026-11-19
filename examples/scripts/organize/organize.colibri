@@ -74,22 +74,19 @@ fn date_bucket(full: str) -> Result[str] {
     return ok(datetime.format(datetime.from_unix(when), "%Y/%m"))
 }
 
-// Every file under `root/rel`, as paths relative to `root`, in name order. Hidden files
-// (a leading dot) are left alone.
-fn walk(root: str, rel: str, found: List[str]) -> Result[()] {
-    let here = if rel == "" { root } else { path.join(root, rel) }
-    for name in fs.list(here)? {
-        if name.starts_with(".") {
+// Every file under `root`, as paths relative to it, in name order. Anything inside a hidden
+// name (a leading dot) is left alone.
+fn walk(root: str) -> Result[List[str]] {
+    var found: List[str] = []
+    for rel in fs.walk(root)? {
+        if rel.split("/").any(fn(part) => part.starts_with(".")) {
             continue
         }
-        let inner = if rel == "" { name } else { path.join(rel, name) }
-        if fs.is_dir(path.join(root, inner)) {
-            walk(root, inner, found)?
-        } else {
-            found.push(inner)
+        if fs.stat(path.join(root, rel))?.kind != "dir" {
+            found.push(rel)
         }
     }
-    return ok(())
+    return ok(found)
 }
 
 // `dir/name.ext`, or `dir/name (1).ext` when that is taken (on disk or earlier in the plan).
@@ -106,8 +103,7 @@ fn free_name(root: str, folder: str, file: str, taken: Set[str]) -> str {
 }
 
 fn plan(root: str, mode: Mode, table: Map[str, str], only: Option[regex.Regex]) -> Result[List[Move]] {
-    var files: List[str] = []
-    walk(root, "", files)?
+    let files = walk(root)?
     var moves: List[Move] = []
     var taken: Set[str] = Set[str]()
     // Files that stay where they are keep their names reserved.
@@ -137,7 +133,7 @@ fn plan(root: str, mode: Mode, table: Map[str, str], only: Option[regex.Regex]) 
         }
         let dest = free_name(root, bucket, name, taken)
         taken.add(dest)
-        let size = fs.size(path.join(root, rel))?
+        let size = fs.stat(path.join(root, rel))?.size
         moves.push(Move { src: rel, dest: dest, bucket: bucket, size: size })
     }
     return ok(moves)
@@ -151,7 +147,33 @@ fn apply(root: str, moves: List[Move]) -> Result[()] {
         }
         fs.rename(path.join(root, m.src), target).context("moving `{m.src}`")?
     }
+    prune(root, moves)
     return ok(())
+}
+
+// Removes the folders the moves emptied, deepest first and up to (never including) `root`.
+// `remove_empty_dir` refuses a folder that still holds anything, so nothing else is lost;
+// a refusal just means the folder stays.
+fn prune(root: str, moves: List[Move]) {
+    var dirs: List[str] = []
+    for m in moves {
+        var dir = path.parent(m.src)
+        while dir != none {
+            let d = dir or ""
+            if d == "" {
+                break
+            }
+            if !dirs.contains(d) {
+                dirs.push(d)
+            }
+            dir = path.parent(d)
+        }
+    }
+    // A folder is longer than the one it sits in, so longest first is deepest first.
+    dirs.sort_by(fn(a, b) => b.len() - a.len())
+    for d in dirs {
+        let _ = fs.remove_empty_dir(path.join(root, d))
+    }
 }
 
 fn summarize(moves: List[Move]) {

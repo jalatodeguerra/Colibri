@@ -5,9 +5,7 @@ program, medium forces a workaround, low is rough edges. "Fixed" ones have a gol
 
 1. **`fs.modified` did not exist** (medium, fixed). The date mode needs a modification time and
    `fs` only had `size`. Added `fs.modified(path) -> Result[float]`, unix seconds, with the
-   golden `std/fs_modified`. Still missing for scripts: `fs.stat` (kind, size and time in one
-   call; the organiser does `is_dir`, `size` and `modified` separately), and setting a time
-   (the tests do it from Rust).
+   golden `std/fs_modified`. `fs.stat` and `fs.set_modified` were added later (fixed).
 2. **No way to write a diverging function** (medium). `fn die(msg: str) -> !` is a syntax error
    (`expected a type, found !`), and `os.exit(2)` in a helper leaves its caller's flow
    unchanged, so every call site needs a dead `return ok(())` after `usage_error(..)`, and
@@ -23,13 +21,13 @@ program, medium forces a workaround, low is rough edges. "Fixed" ones have a gol
    ARCHITECTURE §13). The worker pool is structural only; documented in the README. A
    non-blocking `http.get` that a coroutine can suspend on (or a `http.spawn` returning a
    handle that `try_wait`s, like `process`) would make `--concurrency` real.
-5. **No safe "remove an empty folder"** (medium). `fs.remove_dir` is recursive
+5. **No safe "remove an empty folder"** (medium, fixed: `fs.remove_empty_dir`, `fs.walk`). `fs.remove_dir` is recursive
    (`remove_dir_all`), so the organiser cannot prune the folders it emptied without risking
    data. Suggest `fs.remove_empty_dir` (or a non-recursive `remove_dir` plus
    `remove_dir_all`), and `fs.walk(path)` returning relative paths (the script recurses by hand).
 6. **`n.to_float()` is a natural guess and the error did not say what to write** (low, fixed).
    It listed the methods of `int`; now it says to write `float(x)` / `int(x)`.
-7. **`str.pad_right(s, width, fill)` has no default and wants a `char`** (low). Host
+7. **`str.pad_right(s, width, fill)` has no default and wants a `char`** (low, fixed: `s.pad_right(w)`, `rfind`, `split_once`, `rsplit_once`). Host
    functions have no default arguments, so padding needs `' '` every time; the format spec
    (`{name:<14}`) is what the scripts use instead. A `str` method (`s.pad_right(14)`) would be
    the idiom. Likewise `str` lacks `rfind`/`rsplit`/`last index`: the report resolves item URLs

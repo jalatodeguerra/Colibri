@@ -9,6 +9,50 @@ use std::path::Path;
 use colibri_runtime::{Cap, Error, Vm};
 
 use crate::needs;
+use crate::values::value_struct;
+
+/// What `fs.stat` reports: one look at a path, without following a final symlink.
+/// `kind` is `"file"`, `"dir"`, `"symlink"` or `"other"`; times are seconds since the Unix
+/// epoch; `created` is `none` where the platform or filesystem does not record it.
+#[derive(Clone, Debug)]
+pub(crate) struct Stat {
+    pub kind: String,
+    pub size: i64,
+    pub modified: f64,
+    pub created: Option<f64>,
+    pub readonly: bool,
+}
+
+value_struct!(Stat {
+    kind: String,
+    size: i64,
+    modified: f64,
+    created: Option<f64>,
+    readonly: bool,
+});
+
+fn unix_seconds(time: std::time::SystemTime) -> f64 {
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs_f64(),
+        Err(e) => -e.duration().as_secs_f64(),
+    }
+}
+
+/// Every entry below `dir`, as paths relative to `root` with `/` separators. Symlinks are
+/// listed but never entered, so a link cycle cannot loop.
+fn walk_into(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        let parts: Vec<_> = rel.iter().map(|p| p.to_string_lossy()).collect();
+        out.push(parts.join("/"));
+        if entry.file_type()?.is_dir() {
+            walk_into(root, &path, out)?;
+        }
+    }
+    Ok(())
+}
 
 /// Why an operation failed, worded the same on every platform for the common cases.
 pub(crate) fn reason(e: &std::io::Error) -> String {
@@ -91,10 +135,66 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     fs_fn!("remove", ["path"], |path: String| {
         std::fs::remove_file(&path).map_err(|e| fail("remove", &path, &e))
     });
-    // A folder and everything in it.
+    // RECURSIVE: a folder and everything in it (kept for compatibility). Use
+    // `remove_empty_dir` to remove only an empty folder.
     fs_fn!("remove_dir", ["path"], |path: String| {
         std::fs::remove_dir_all(&path).map_err(|e| fail("remove the folder", &path, &e))
     });
+    // Only an empty folder; fails with "directory not empty" otherwise.
+    fs_fn!("remove_empty_dir", ["path"], |path: String| {
+        std::fs::remove_dir(&path).map_err(|e| fail("remove the empty folder", &path, &e))
+    });
+    // Everything below `path`, files and folders, relative to it, sorted. Symlinks are listed
+    // and not followed.
+    fs_fn!("walk", ["path"], |path: String| {
+        let mut out = Vec::new();
+        walk_into(Path::new(&path), Path::new(&path), &mut out)
+            .map_err(|e| fail("walk", &path, &e))?;
+        out.sort();
+        Ok::<_, String>(out)
+    });
+    fs_fn!("stat", ["path"], |path: String| {
+        let meta = std::fs::symlink_metadata(&path).map_err(|e| fail("look at", &path, &e))?;
+        let kind = if meta.file_type().is_symlink() {
+            "symlink"
+        } else if meta.is_dir() {
+            "dir"
+        } else if meta.is_file() {
+            "file"
+        } else {
+            "other"
+        };
+        let size = i64::try_from(meta.len()).map_err(|_| format!("`{path}` is too big"))?;
+        let modified = meta.modified().map_err(|e| fail("look at", &path, &e))?;
+        Ok::<_, String>(Stat {
+            kind: kind.to_string(),
+            size,
+            modified: unix_seconds(modified),
+            created: meta.created().ok().map(unix_seconds),
+            readonly: meta.permissions().readonly(),
+        })
+    });
+    // Sets the modification time, in seconds since the Unix epoch.
+    fs_fn!(
+        "set_modified",
+        ["path", "unix_seconds"],
+        |path: String, seconds: f64| {
+            let fail_set = |e: &std::io::Error| fail("set the time of", &path, e);
+            if !seconds.is_finite() || seconds.abs() > 1e11 {
+                return Err(format!(
+                    "cannot set the time of `{path}`: {seconds} is not a usable time"
+                ));
+            }
+            let magnitude = std::time::Duration::from_secs_f64(seconds.abs());
+            let time = if seconds >= 0.0 {
+                std::time::UNIX_EPOCH + magnitude
+            } else {
+                std::time::UNIX_EPOCH - magnitude
+            };
+            let file = std::fs::File::open(&path).map_err(|e| fail_set(&e))?;
+            file.set_modified(time).map_err(|e| fail_set(&e))
+        }
+    );
     fs_fn!("copy", ["from", "to"], |from: String, to: String| {
         std::fs::copy(&from, &to)
             .map(|_| ())

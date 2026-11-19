@@ -1,0 +1,31 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let root = path.join(os.temp_dir(), "stat")
+    fs.create_dir(path.join(root, "sub"))?
+    fs.write(path.join(root, "f.txt"), "hello")?
+    let f = fs.stat(path.join(root, "f.txt"))?
+    print(f.kind)
+    print(f.size)
+    print(f.readonly)
+    print(f.modified > 1577836800.0)
+    print(f.modified == fs.modified(path.join(root, "f.txt"))?)
+    print(fs.stat(path.join(root, "sub"))?.kind)
+    match fs.stat(path.join(root, "nope")) {
+        ok(_) => print("unexpected")
+        err(e) => print(e.message().replace(os.temp_dir(), "<dir>"))
+    }
+    fs.remove_dir(root)?
+    return ok(())
+}
+
+// expect: file
+// expect: 5
+// expect: false
+// expect: true
+// expect: true
+// expect: dir
+// expect: cannot look at `<dir>/stat/nope`: no such file or directory

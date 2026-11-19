@@ -1586,6 +1586,32 @@ free functions rather than methods (value structs cannot have host methods yet);
 struct to fill in; reusing `Cap::Os`; `join` instead of `wait`; kill-on-drop; the lossy decode of
 output; weekday numbering; floats for instants and spans.
 
+### Added in the phase 2 findings fixes
+
+`fs` and `str` (examples/scripts/FINDINGS.md 1, 5, 7). Decisions the owner may overrule:
+
+- `fs.stat(path) -> Result[Stat]`, `Stat { kind: str, size: int, modified: float,
+  created: float?, readonly: bool }`. `kind` is a `str` (`"file"`, `"dir"`, `"symlink"`,
+  `"other"`) rather than an enum: std has no enum registration helper yet and the values
+  compare and `match` fine as text. `stat` does not follow a final symlink (it uses
+  `symlink_metadata`), unlike `fs.size`/`fs.modified`/`is_dir`. `created` is `none` where the
+  platform does not record it. Times are Unix seconds, as for `fs.modified`.
+- `fs.walk(path) -> Result[List[str]]`: every file and folder below `path`, relative to it,
+  `/`-separated, sorted lexically as a whole (so a folder precedes its contents). Symlinks are
+  listed but never followed, so a link cycle cannot loop. There is no `walk_files`; filter with
+  `fs.stat(..).kind`.
+- `fs.remove_empty_dir(path)` is non-recursive and fails with "directory not empty".
+  `fs.remove_dir` stays recursive (`remove_dir_all`) for compatibility; its doc comment says so.
+- `fs.set_modified(path, unix_seconds) -> Result[()]` uses `File::set_modified` on a read-only
+  handle (works for files and, on Unix, folders); non-finite or absurd times are an `err`.
+- `str` methods (byte offsets, like `find`): `rfind(sub) -> int?`, `split_once(sep)` and
+  `rsplit_once(sep)` -> `(str, str)?` (an empty separator panics, like `split`),
+  `pad_left(width)`/`pad_right(width)` padding with a space, and `pad_left_with(width, fill)`/
+  `pad_right_with(width, fill)` where `fill` is a `char`, as in the module functions. Widths
+  count characters; a negative width panics. The `str` module's `pad_left`/`pad_right` are kept.
+  The methods are checker built-ins (`Builtin::StrRFind`, `StrSplitOnce`, `StrRSplitOnce`,
+  `StrPadLeft`, `StrPadRight`), not std registrations. No `last_index_of`: `rfind` covers it.
+
 ## 14. Language server (`colibri lsp`)
 
 `colibri-lsp` is a library (the CLI's `lsp` subcommand calls `colibri_lsp::run_stdio`) speaking
