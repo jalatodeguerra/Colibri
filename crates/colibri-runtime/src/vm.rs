@@ -499,7 +499,39 @@ impl Vm {
                 first.get_or_insert(e);
             }
         }
+        // A module that failed on an earlier call is not tried again, but it is still failed.
+        if first.is_none() {
+            first = self
+                .failed
+                .first()
+                .map(|(name, message)| Error::Registration {
+                    name: name.clone(),
+                    message: message.clone(),
+                });
+        }
         first.map_or(Ok(()), Err)
+    }
+
+    /// The error of a module the program imports whose registration failed earlier, the same
+    /// one a load reports. Registers nothing.
+    fn check_imports_not_failed(
+        &self,
+        loaded: &colibri_check::package::Loaded,
+    ) -> Result<(), Error> {
+        use colibri_check::package::ImportTarget;
+        for meta in &loaded.metas {
+            for target in meta.imports.values() {
+                if let ImportTarget::Host(name) = target {
+                    if let Some((_, message)) = self.failed.iter().find(|(n, _)| n == name) {
+                        return Err(Error::Registration {
+                            name: name.clone(),
+                            message: message.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Registers the lazy modules that the program imports.

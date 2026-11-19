@@ -61,6 +61,7 @@ impl Vm {
         // between reading the program and checking it.
         let (sources, loaded) =
             self.read_program(&fs, Entry::File(Path::new("<repl>")), LoadMode::Session)?;
+        self.check_imports_not_failed(&loaded)?;
         let checked = self.check_loaded(sources, loaded, LoadMode::Session)?;
         Ok(SessionCheck { checked })
     }
