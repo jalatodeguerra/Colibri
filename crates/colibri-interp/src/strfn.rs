@@ -45,6 +45,52 @@ impl Interp {
                 text.find(&*need(self, fiber)?)
                     .map(|i| Value::Int(i as i64)),
             ),
+            Builtin::StrRFind => Value::option(
+                text.rfind(&*need(self, fiber)?)
+                    .map(|i| Value::Int(i as i64)),
+            ),
+            Builtin::StrSplitOnce | Builtin::StrRSplitOnce => {
+                let sep = need(self, fiber)?;
+                if sep.is_empty() {
+                    return Err(self.panic(
+                        fiber,
+                        span,
+                        "`split_once` needs a separator that is not empty",
+                    ));
+                }
+                let found = if op == Builtin::StrSplitOnce {
+                    text.split_once(&*sep)
+                } else {
+                    text.rsplit_once(&*sep)
+                };
+                Value::option(found.map(|(a, b)| Value::tuple(vec![Value::str(a), Value::str(b)])))
+            }
+            Builtin::StrPadLeft | Builtin::StrPadRight => {
+                let Some(Value::Int(width)) = args.get(1) else {
+                    return Err(self.internal(fiber, span, "ill-typed `pad_left`"));
+                };
+                let fill = match args.get(2) {
+                    Some(Value::Char(c)) => *c,
+                    _ => ' ',
+                };
+                let Ok(width) = usize::try_from(*width) else {
+                    return Err(self.panic(
+                        fiber,
+                        span,
+                        format!("the width {width} is not allowed"),
+                    ));
+                };
+                let len = text.chars().count();
+                if width > (1 << 30) {
+                    return Err(self.panic(fiber, span, "the width is more than a gigabyte"));
+                }
+                let pad: String = std::iter::repeat_n(fill, width.saturating_sub(len)).collect();
+                Value::str(&if op == Builtin::StrPadLeft {
+                    format!("{pad}{text}")
+                } else {
+                    format!("{text}{pad}")
+                })
+            }
             Builtin::StrSplit => {
                 let sep = need(self, fiber)?;
                 if sep.is_empty() {
