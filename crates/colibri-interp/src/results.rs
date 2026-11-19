@@ -343,6 +343,19 @@ impl Interp {
         }
     }
 
+    /// `compare(a, b)`: -1, 0 or 1, honouring a user-written `impl Ord`. A `nan` panics.
+    pub(crate) fn compare_values(&mut self, fiber: &mut Fiber, args: Vec<Value>, span: Span) -> Eval {
+        let result = match args.as_slice() {
+            [a, b] => self.cmp_deep(fiber, a, b, span).and_then(|o| match o {
+                Some(o) => Ok(Value::Int(o as i64)),
+                None => Err(self.not_ordered(fiber, span)),
+            }),
+            _ => Err(self.internal(fiber, span, "ill-typed `compare`")),
+        };
+        self.release_all(args);
+        result
+    }
+
     /// The message of a failed `assert_eq`: both values, strings quoted so that spaces show.
     fn show_both(&mut self, fiber: &mut Fiber, a: &Value, b: &Value, span: Span) -> Eval<String> {
         let mut shown = Vec::new();

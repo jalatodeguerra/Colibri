@@ -1,0 +1,20 @@
+struct Version {
+    major: int
+    minor: int
+}
+
+impl Ord for Version {
+    fn cmp(self, other: Version) -> int {
+        return compare((self.major, self.minor), (other.major, other.minor))
+    }
+}
+
+fn main() {
+    print(compare(Version { major: 1, minor: 2 }, Version { major: 1, minor: 10 }))
+    print(compare([Version { major: 2, minor: 0 }].len(), 1))
+    // Ordered values inside a tuple use the same impl.
+    print(compare((Version { major: 3, minor: 0 }, 1), (Version { major: 2, minor: 9 }, 5)))
+}
+// expect: -1
+// expect: 0
+// expect: 1
