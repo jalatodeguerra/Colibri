@@ -44,7 +44,7 @@ fn host_calls_lower_to_host_callees_in_interface_order() {
     assert_eq!(p.host_fns[0].name, "spawn");
     assert_eq!(p.host_fns[2].requires.as_deref(), Some("fs"));
     assert_eq!(p.host_types, 1);
-    assert_eq!(p.types[13].name, "Vec3");
+    assert_eq!(p.types[15].name, "Vec3");
     // `fn_by_name` finds scripts' functions, not host stubs.
     assert!(p.fn_by_name("spawn").is_none());
     let f = p.fn_by_name("f").unwrap();
@@ -56,7 +56,7 @@ fn host_calls_lower_to_host_callees_in_interface_order() {
         panic!("a call");
     };
     assert_eq!(call.callee, Callee::Host(HostFnId(0)));
-    assert!(matches!(&init.ty, Ty::Adt(id, _) if id.0 == 13));
+    assert!(matches!(&init.ty, Ty::Adt(id, _) if id.0 == 15));
 }
 
 #[test]
@@ -156,13 +156,13 @@ fn host_classes_are_declared_before_user_types_with_stable_ids_and_are_not_senda
     let p = program.expect("checks");
     // Vec3, World, Body come from the host, then the script's own.
     assert_eq!(p.host_types, 3);
-    let names: Vec<&str> = p.types[13..].iter().map(|t| t.name.as_str()).collect();
+    let names: Vec<&str> = p.types[15..].iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, ["Vec3", "World", "Body", "Mine", "Plain"]);
-    assert!(matches!(p.types[14].kind, TypeDefKind::HostClass));
-    assert!(matches!(p.types[15].kind, TypeDefKind::HostClass));
-    assert!(matches!(p.types[16].kind, TypeDefKind::Class { .. }));
+    assert!(matches!(p.types[16].kind, TypeDefKind::HostClass));
+    assert!(matches!(p.types[17].kind, TypeDefKind::HostClass));
+    assert!(matches!(p.types[18].kind, TypeDefKind::Class { .. }));
     // Only the host's classes record that they stay on their thread.
-    let sendable: Vec<bool> = p.types[13..].iter().map(|t| t.sendable).collect();
+    let sendable: Vec<bool> = p.types[15..].iter().map(|t| t.sendable).collect();
     assert_eq!(sendable, [true, false, false, true, true]);
 }
 

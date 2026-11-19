@@ -1,0 +1,25 @@
+// A group as a field: the owner's death cancels its coroutines. The coroutine must not hold the
+// owner strongly (it would keep it alive), so it takes a name, not the object.
+class Door {
+    name: str
+    co: CoGroup = CoGroup()
+}
+
+fn creak(name: str) {
+    defer print("{name}: creak stopped")
+    print("{name}: creak")
+    wait(10.0)
+}
+
+fn main() {
+    var door = Door { name: "door" }
+    door.co.go(creak(door.name))
+    print("running {door.co.count()}")
+    door = Door { name: "other" }
+    print("replaced")
+}
+
+// expect: door: creak
+// expect: running 1
+// expect: door: creak stopped
+// expect: replaced

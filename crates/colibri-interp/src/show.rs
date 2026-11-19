@@ -279,6 +279,12 @@ impl Writer<'_> {
                 };
                 self.out.push_str(&format!("<coroutine {name}>"));
             }
+            Value::Obj(obj) if obj.ty() == colibri_check::types::COGROUP_TYPE => {
+                self.out.push_str("<CoGroup>");
+            }
+            Value::Obj(obj) if obj.ty() == colibri_check::types::SIGNAL_TYPE => {
+                self.out.push_str("<Signal>");
+            }
             Value::Obj(obj) => self.object(obj, depth),
             Value::Weak(w) => match w.upgrade() {
                 Some(obj) => {

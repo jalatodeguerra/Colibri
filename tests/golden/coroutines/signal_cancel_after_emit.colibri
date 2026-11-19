@@ -1,0 +1,19 @@
+fn listener(s: Signal, tag: str) {
+    defer print("defer {tag}")
+    wait_for(s)
+    print("{tag} woke")
+}
+
+fn main() {
+    let s = Signal()
+    let a = go listener(s, "a")
+    go listener(s, "b")
+    s.emit()
+    // `a` was woken but has not run yet: cancelling it still wins.
+    a.cancel()
+    task.tick(0.0)
+}
+
+// expect: defer a
+// expect: b woke
+// expect: defer b

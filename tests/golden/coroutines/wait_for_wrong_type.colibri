@@ -1,0 +1,4 @@
+fn main() {
+    wait_for(5) // error: expected
+    wait_for() // error: takes exactly one argument
+}

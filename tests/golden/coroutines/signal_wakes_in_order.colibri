@@ -1,0 +1,34 @@
+fn listener(s: Signal, tag: str) {
+    wait_for(s)
+    print("{tag} woke")
+    wait_for(s)
+    print("{tag} woke again")
+}
+
+fn main() {
+    let s = Signal()
+    go listener(s, "a")
+    go listener(s, "b")
+    go listener(s, "c")
+    print("emit 1")
+    s.emit()
+    print("emitted")
+    task.tick(0.0)
+    print("tick 1 done")
+    s.emit()
+    task.tick(0.0)
+    print("tick 2 done")
+}
+
+// `emit` wakes the waiters at the next tick, in the order they began to wait, and a coroutine
+// that waits again must wait for the next emit.
+// expect: emit 1
+// expect: emitted
+// expect: a woke
+// expect: b woke
+// expect: c woke
+// expect: tick 1 done
+// expect: a woke again
+// expect: b woke again
+// expect: c woke again
+// expect: tick 2 done

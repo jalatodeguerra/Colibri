@@ -1,0 +1,38 @@
+fn work(tag: str, seconds: float) {
+    defer print("defer {tag}")
+    wait(seconds)
+    print("done {tag}")
+}
+
+fn main() {
+    let g = CoGroup()
+    let a = g.go(work("a", 1.0))
+    g.go(work("b", 5.0))
+    let c = g.go(work("c", 5.0))
+    print("count {g.count()}")
+    task.tick(1.0)
+    // `a` finished normally and left the group.
+    print("a done {a.done()}, count {g.count()}")
+    g.cancel()
+    print("after cancel: count {g.count()}, c done {c.done()}")
+    g.cancel()
+    // The group is still usable.
+    let d = g.go(work("d", 1.0))
+    print("count {g.count()}")
+    task.tick(1.0)
+    print("d done {d.done()}, count {g.count()}")
+    print("{g}")
+}
+
+// expect: count 3
+// expect: done a
+// expect: defer a
+// expect: a done true, count 2
+// expect: defer c
+// expect: defer b
+// expect: after cancel: count 0, c done true
+// expect: count 1
+// expect: done d
+// expect: defer d
+// expect: d done true, count 0
+// expect: <CoGroup>

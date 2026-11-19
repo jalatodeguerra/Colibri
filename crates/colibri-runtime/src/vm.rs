@@ -69,6 +69,7 @@ const RESERVED_NAMES: &[&str] = &[
     "wait_frames",
     "wait_until",
     "wait_real",
+    "wait_for",
 ];
 
 /// Configures a [`Vm`].
@@ -937,6 +938,12 @@ impl Vm {
     /// How many coroutines are alive: started and neither finished nor cancelled.
     pub fn coroutine_count(&self) -> usize {
         self.interp.coroutine_count()
+    }
+
+    /// How many times a coroutine has been resumed so far (starts, ticks and cancellations).
+    /// A coroutine waiting for a `Signal` is not resumed until the signal is emitted.
+    pub fn coroutine_resumptions(&self) -> u64 {
+        self.interp.coroutine_resumptions()
     }
 
     /// Cancels every live coroutine, newest first, running their `defer`s and drops. Done

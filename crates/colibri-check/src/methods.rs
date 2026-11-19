@@ -93,6 +93,12 @@ impl FnCtx<'_, '_> {
         {
             return self.check_error_downcast(recv, name, explicit, args, span);
         }
+        // `group.go(call(..))` on a `CoGroup` (DESIGN §14.2)
+        if matches!(&recv_ty, Ty::Adt(id, _) if *id == crate::types::COGROUP_TYPE)
+            && name.name == "go"
+        {
+            return self.check_group_go(recv, args, span);
+        }
         // 1. an inherent method of a user-defined type
         if let Ty::Adt(id, _) = &recv_ty
             && let Some(&f) = self.ck.methods.get(&(*id, name.name.clone()))
