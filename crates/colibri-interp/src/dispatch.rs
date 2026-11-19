@@ -17,7 +17,7 @@ use colibri_check::types::{
 use colibri_syntax::{FileId, Span};
 
 use crate::clone::Cloner;
-use crate::compare::{cmp_with, equal_with};
+use crate::compare::{Guard, cmp_with, equal_with};
 use crate::ctl::{Ctl, Eval};
 use crate::fiber::Fiber;
 use crate::hooks::{Answer, Overrides, Stop};
@@ -270,17 +270,19 @@ impl Interp {
         b: &Value,
         span: Span,
     ) -> Eval<bool> {
+        let guard = Guard::new(fiber.stack_base, self.native_stack_budget());
         let result = if self.has_overrides() {
             equal_with(
                 a,
                 b,
+                &guard,
                 &mut Hooks {
                     interp: self,
                     fiber,
                 },
             )
         } else {
-            equal_with(a, b, &mut crate::hooks::Plain)
+            equal_with(a, b, &guard, &mut crate::hooks::Plain)
         };
         result.map_err(|stop| self.stop_to_ctl(fiber, stop, span, "compare"))
     }
@@ -293,17 +295,19 @@ impl Interp {
         b: &Value,
         span: Span,
     ) -> Eval<Option<Ordering>> {
+        let guard = Guard::new(fiber.stack_base, self.native_stack_budget());
         let result = if self.has_overrides() {
             cmp_with(
                 a,
                 b,
+                &guard,
                 &mut Hooks {
                     interp: self,
                     fiber,
                 },
             )
         } else {
-            cmp_with(a, b, &mut crate::hooks::Plain)
+            cmp_with(a, b, &guard, &mut crate::hooks::Plain)
         };
         result.map_err(|stop| self.stop_to_ctl(fiber, stop, span, "compare"))
     }
@@ -512,7 +516,7 @@ impl Interp {
                 }
                 Err(ctl) => {
                     if let Ok(v) = stepped {
-                        self.release(v.map_or(Value::Unit, |x| x));
+                        self.release(v.unwrap_or(Value::Unit));
                     }
                     Err(ctl)
                 }

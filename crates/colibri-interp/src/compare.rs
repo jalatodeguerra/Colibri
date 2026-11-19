@@ -10,6 +10,37 @@ use crate::value::Value;
 /// recursion than is safe); the caller turns it into a panic.
 const MAX_DEPTH: u32 = 2_000;
 
+/// How much of the native stack one comparison may use when its caller names no budget
+/// ([`values_equal`], [`values_cmp`]). An optimised build reaches [`MAX_DEPTH`] long before
+/// this; an unoptimised one has frames several times larger and would otherwise overflow a
+/// thread with a 2 MiB stack.
+const STACK_BUDGET: usize = 1 << 20;
+
+/// Where a comparison has to give up to stay on the native stack: once the recursion is
+/// `budget` bytes away from `base`.
+pub(crate) struct Guard {
+    base: usize,
+    budget: usize,
+}
+
+impl Guard {
+    /// A guard measuring from `base` (a [`crate::eval::stack_position`]).
+    pub(crate) fn new(base: usize, budget: usize) -> Self {
+        Guard { base, budget }
+    }
+
+    /// A guard measuring from here, with the default budget.
+    fn here() -> Self {
+        Guard::new(crate::eval::stack_position(), STACK_BUDGET)
+    }
+
+    /// Whether a recursion `depth` levels in has to stop.
+    #[inline]
+    fn spent(&self, depth: u32) -> bool {
+        depth > MAX_DEPTH || crate::eval::stack_position().abs_diff(self.base) > self.budget
+    }
+}
+
 /// A comparison gave up because the values nest too deeply.
 #[derive(Debug, PartialEq, Eq)]
 pub struct TooDeep;
@@ -17,12 +48,17 @@ pub struct TooDeep;
 /// Structural equality. Floats compare as IEEE numbers, so a value containing `nan` is not
 /// equal to itself, exactly as `nan == nan` is false.
 pub fn values_equal(a: &Value, b: &Value) -> Result<bool, TooDeep> {
-    equal(a, b, 0, &mut Plain).map_err(|_| TooDeep)
+    equal(a, b, 0, &Guard::here(), &mut Plain).map_err(|_| TooDeep)
 }
 
 /// Equality that consults `ov` first for every user-defined value (a user `impl Eq`).
-pub(crate) fn equal_with(a: &Value, b: &Value, ov: &mut dyn Overrides) -> Result<bool, Stop> {
-    equal(a, b, 0, ov)
+pub(crate) fn equal_with(
+    a: &Value,
+    b: &Value,
+    guard: &Guard,
+    ov: &mut dyn Overrides,
+) -> Result<bool, Stop> {
+    equal(a, b, 0, guard, ov)
 }
 
 /// `==` on two scalars; `None` if they are not both of one scalar type. (Kept out of the
@@ -59,8 +95,14 @@ fn scalar_cmp(a: &Value, b: &Value) -> Option<Option<Ordering>> {
     })
 }
 
-fn equal(a: &Value, b: &Value, depth: u32, ov: &mut dyn Overrides) -> Result<bool, Stop> {
-    if depth > MAX_DEPTH {
+fn equal(
+    a: &Value,
+    b: &Value,
+    depth: u32,
+    guard: &Guard,
+    ov: &mut dyn Overrides,
+) -> Result<bool, Stop> {
+    if guard.spent(depth) {
         return Err(Stop::TooDeep);
     }
     if let Some(answer) = override_eq(a, b, ov) {
@@ -69,14 +111,18 @@ fn equal(a: &Value, b: &Value, depth: u32, ov: &mut dyn Overrides) -> Result<boo
     Ok(match (a, b) {
         (Value::Unit, Value::Unit) => true,
         _ if let Some(answer) = scalar_eq(a, b) => answer,
-        (Value::Tuple(x), Value::Tuple(y)) => equal_all(x, y, depth, ov)?,
+        (Value::Tuple(x), Value::Tuple(y)) => equal_all(x, y, depth, guard, ov)?,
         (Value::Struct(x), Value::Struct(y)) => {
-            x.ty == y.ty && equal_all(&x.fields, &y.fields, depth, ov)?
+            x.ty == y.ty && equal_all(&x.fields, &y.fields, depth, guard, ov)?
         }
         (Value::Enum(x), Value::Enum(y)) => {
-            x.ty == y.ty && x.variant == y.variant && equal_all(&x.payload, &y.payload, depth, ov)?
+            x.ty == y.ty
+                && x.variant == y.variant
+                && equal_all(&x.payload, &y.payload, depth, guard, ov)?
         }
-        (Value::List(_) | Value::Map(_) | Value::Set(_), _) => equal_collections(a, b, depth, ov)?,
+        (Value::List(_) | Value::Map(_) | Value::Set(_), _) => {
+            equal_collections(a, b, depth, guard, ov)?
+        }
         // A class is compared by identity (DESIGN §7.2).
         (Value::Obj(x), Value::Obj(y)) => Rc::ptr_eq(x, y),
         (Value::Host(x), Value::Host(y)) => x.index == y.index && x.generation == y.generation,
@@ -115,12 +161,18 @@ fn override_cmp(
 
 /// Element-wise equality, kept out of [`equal`] so that its frame stays small.
 #[inline(never)]
-fn equal_all(xs: &[Value], ys: &[Value], depth: u32, ov: &mut dyn Overrides) -> Result<bool, Stop> {
+fn equal_all(
+    xs: &[Value],
+    ys: &[Value],
+    depth: u32,
+    guard: &Guard,
+    ov: &mut dyn Overrides,
+) -> Result<bool, Stop> {
     if xs.len() != ys.len() {
         return Ok(false);
     }
     for (x, y) in xs.iter().zip(ys) {
-        if !equal(x, y, depth + 1, ov)? {
+        if !equal(x, y, depth + 1, guard, ov)? {
             return Ok(false);
         }
     }
@@ -134,6 +186,7 @@ fn equal_collections(
     a: &Value,
     b: &Value,
     depth: u32,
+    guard: &Guard,
     ov: &mut dyn Overrides,
 ) -> Result<bool, Stop> {
     Ok(match (a, b) {
@@ -142,7 +195,7 @@ fn equal_collections(
                 return Ok(false);
             }
             for (p, q) in x.snapshot().iter().zip(y.snapshot().iter()) {
-                if !equal(p, q, depth + 1, ov)? {
+                if !equal(p, q, depth + 1, guard, ov)? {
                     return Ok(false);
                 }
             }
@@ -154,7 +207,7 @@ fn equal_collections(
             }
             for (k, v) in x.snapshot() {
                 match y.get(&k) {
-                    Some(other) if equal(&v, &other, depth + 1, ov)? => {}
+                    Some(other) if equal(&v, &other, depth + 1, guard, ov)? => {}
                     _ => return Ok(false),
                 }
             }
@@ -182,20 +235,27 @@ pub fn values_identical(a: &Value, b: &Value) -> bool {
 /// Structural ordering: enums by variant (then payload), tuples and structs field by field.
 /// `None` when a float `nan` makes two values unordered.
 pub fn values_cmp(a: &Value, b: &Value) -> Result<Option<Ordering>, TooDeep> {
-    cmp(a, b, 0, &mut Plain).map_err(|_| TooDeep)
+    cmp(a, b, 0, &Guard::here(), &mut Plain).map_err(|_| TooDeep)
 }
 
 /// Ordering that consults `ov` first for every user-defined value (a user `impl Ord`).
 pub(crate) fn cmp_with(
     a: &Value,
     b: &Value,
+    guard: &Guard,
     ov: &mut dyn Overrides,
 ) -> Result<Option<Ordering>, Stop> {
-    cmp(a, b, 0, ov)
+    cmp(a, b, 0, guard, ov)
 }
 
-fn cmp(a: &Value, b: &Value, depth: u32, ov: &mut dyn Overrides) -> Result<Option<Ordering>, Stop> {
-    if depth > MAX_DEPTH {
+fn cmp(
+    a: &Value,
+    b: &Value,
+    depth: u32,
+    guard: &Guard,
+    ov: &mut dyn Overrides,
+) -> Result<Option<Ordering>, Stop> {
+    if guard.spent(depth) {
         return Err(Stop::TooDeep);
     }
     if let Some(answer) = override_cmp(a, b, ov) {
@@ -204,10 +264,12 @@ fn cmp(a: &Value, b: &Value, depth: u32, ov: &mut dyn Overrides) -> Result<Optio
     Ok(match (a, b) {
         (Value::Unit, Value::Unit) => Some(Ordering::Equal),
         _ if let Some(answer) = scalar_cmp(a, b) => answer,
-        (Value::Tuple(x), Value::Tuple(y)) => lexicographic(x, y, depth, ov)?,
-        (Value::Struct(x), Value::Struct(y)) => lexicographic(&x.fields, &y.fields, depth, ov)?,
+        (Value::Tuple(x), Value::Tuple(y)) => lexicographic(x, y, depth, guard, ov)?,
+        (Value::Struct(x), Value::Struct(y)) => {
+            lexicographic(&x.fields, &y.fields, depth, guard, ov)?
+        }
         (Value::Enum(x), Value::Enum(y)) => match x.variant.cmp(&y.variant) {
-            Ordering::Equal => lexicographic(&x.payload, &y.payload, depth, ov)?,
+            Ordering::Equal => lexicographic(&x.payload, &y.payload, depth, guard, ov)?,
             other => Some(other),
         },
         _ => None,
@@ -220,10 +282,11 @@ fn lexicographic(
     xs: &[Value],
     ys: &[Value],
     depth: u32,
+    guard: &Guard,
     ov: &mut dyn Overrides,
 ) -> Result<Option<Ordering>, Stop> {
     for (x, y) in xs.iter().zip(ys) {
-        match cmp(x, y, depth + 1, ov)? {
+        match cmp(x, y, depth + 1, guard, ov)? {
             Some(Ordering::Equal) => {}
             other => return Ok(other),
         }
@@ -287,5 +350,44 @@ mod tests {
             b = Value::variant(TypeId(0), 0, vec![b]);
         }
         assert_eq!(values_equal(&a, &b), Err(TooDeep));
+        assert_eq!(values_cmp(&a, &b), Err(TooDeep));
+    }
+
+    /// The limit is far away for anything a program builds by hand.
+    #[test]
+    fn a_few_hundred_levels_compare() {
+        let mut a = int(1);
+        let mut b = int(1);
+        let mut c = int(2);
+        for _ in 0..300 {
+            a = Value::variant(TypeId(0), 0, vec![a]);
+            b = Value::variant(TypeId(0), 0, vec![b]);
+            c = Value::variant(TypeId(0), 0, vec![c]);
+        }
+        assert_eq!(values_equal(&a, &b), Ok(true));
+        assert_eq!(values_equal(&a, &c), Ok(false));
+        assert_eq!(values_cmp(&a, &c), Ok(Some(Ordering::Less)));
+    }
+
+    /// A caller deep in its own recursion gets less: the guard measures from the base it names.
+    #[test]
+    fn the_guard_measures_from_the_base_it_is_given() {
+        let mut a = Value::Unit;
+        let mut b = Value::Unit;
+        for _ in 0..50 {
+            a = Value::tuple(vec![a]);
+            b = Value::tuple(vec![b]);
+        }
+        let roomy = Guard::new(crate::eval::stack_position(), STACK_BUDGET);
+        assert!(matches!(equal_with(&a, &b, &roomy, &mut Plain), Ok(true)));
+        let used_up = Guard::new(crate::eval::stack_position(), 64);
+        assert!(matches!(
+            equal_with(&a, &b, &used_up, &mut Plain),
+            Err(Stop::TooDeep)
+        ));
+        assert!(matches!(
+            cmp_with(&a, &b, &used_up, &mut Plain),
+            Err(Stop::TooDeep)
+        ));
     }
 }
