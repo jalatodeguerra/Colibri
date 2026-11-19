@@ -1,0 +1,7 @@
+// A program's own `error` wins over the prelude's.
+fn error(code: int) -> str => "code {code}"
+
+fn main() {
+    print(error(4))
+}
+// expect: code 4

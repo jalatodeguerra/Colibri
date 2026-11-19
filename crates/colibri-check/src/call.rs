@@ -81,6 +81,7 @@ impl FnCtx<'_, '_> {
             "print" if !self.ck.values.contains_key(name) => self.check_print(args, span),
             "some" => self.check_some(args, expected, span),
             "ok" | "err" => self.check_ok_err(name == "ok", args, expected, span),
+            "error" if !self.ck.values.contains_key(name) => self.check_error_fn(args, span),
             "panic" if !self.ck.values.contains_key(name) => self.check_panic(args, span),
             "assert" if !self.ck.values.contains_key(name) => self.check_assert(args, span),
             "assert_eq" if !self.ck.values.contains_key(name) => self.check_assert_eq(args, span),
