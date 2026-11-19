@@ -74,6 +74,12 @@ const GATED: &[(&str, &str, &str, colibri::Cap)] = &[
         "fs.remove_dir(\"x\")",
         colibri::Cap::Fs,
     ),
+    (
+        "fs",
+        "fs.remove_tree",
+        "fs.remove_tree(\"x\")",
+        colibri::Cap::Fs,
+    ),
     ("os", "os.env", "os.env(\"A\")", colibri::Cap::Os),
     ("os", "os.vars", "os.vars()", colibri::Cap::Os),
     (
@@ -506,7 +512,7 @@ fn files_are_written_and_read_in_a_scratch_folder() {
     run(
         &mut vm,
         &format!(
-            "import fs\nimport path\nfn main() -> Result[()] {{\n    let file = path.join(\"{dir}\", \"a.txt\")\n    fs.write(file, \"héllo\")?\n    print(fs.read(file)?)\n    print(fs.size(file)?)\n    print(fs.read(path.join(\"{dir}\", \"nope\")).is_err())\n    return ok(())\n}}\n"
+            "import fs\nimport path\nfn main() -> Result[()] {{\n    let file = path.join(\"{dir}\", \"a.txt\")\n    fs.write(file, \"héllo\")?\n    print(fs.read(file)?)\n    print(fs.stat(file)?.size)\n    print(fs.read(path.join(\"{dir}\", \"nope\")).is_err())\n    return ok(())\n}}\n"
         ),
     )
     .unwrap();

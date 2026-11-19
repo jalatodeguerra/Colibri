@@ -679,14 +679,16 @@ impl Decoder<'_, '_> {
                     match entries.iter().find(|(k, _)| *k == field.name) {
                         Some((_, v)) => values.push(self.decode(v, &field.ty, &here)?),
                         // A field with a default may be left out (DESIGN §7.5).
-                        None if let Some(f) = field.default => match self.cx.call_field_default(f) {
-                            Ok(v) => values.push(v),
-                            Err(e) => {
-                                return Err(format!(
-                                    "json: at `{here}`: the default value failed: {e}"
-                                ));
+                        None if let Some(f) = field.default => {
+                            match self.cx.call_field_default(f) {
+                                Ok(v) => values.push(v),
+                                Err(e) => {
+                                    return Err(format!(
+                                        "json: at `{here}`: the default value failed: {e}"
+                                    ));
+                                }
                             }
-                        },
+                        }
                         None if matches!(field.ty, Ty::Option(_)) => {
                             values.push(Value::option(None));
                         }

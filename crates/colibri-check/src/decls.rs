@@ -339,7 +339,7 @@ impl<'a> Checker<'a> {
                             ty: self.resolve_type(t),
                             span: t.span,
                             weak: false,
- default: None,
+                            default: None,
                         })
                         .collect();
                     (fields, false)
@@ -360,7 +360,7 @@ impl<'a> Checker<'a> {
                             ty,
                             span: f.name.span,
                             weak: false,
- default: None,
+                            default: None,
                         });
                     }
                     (fields, true)

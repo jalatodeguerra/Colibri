@@ -368,7 +368,11 @@ mod lazy {
         std::fs::write(&file, "import later\nfn n() -> int => later.twice(21)\n").unwrap();
         vm.reload_changed().unwrap();
         assert_eq!(AFTER_RELOAD.load(Ordering::SeqCst), 1);
-        let n: i64 = vm.get_fn::<(), i64>("n").unwrap().call(&mut vm, ()).unwrap();
+        let n: i64 = vm
+            .get_fn::<(), i64>("n")
+            .unwrap()
+            .call(&mut vm, ())
+            .unwrap();
         assert_eq!(n, 42);
         let _ = std::fs::remove_dir_all(&dir);
     }

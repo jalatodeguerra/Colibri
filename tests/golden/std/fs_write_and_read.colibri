@@ -15,9 +15,9 @@ fn main() -> Result[()] {
     print(fs.read(file)?)
     fs.append(file, "again\n")?
     print(str.lines(fs.read(file)?).len())
-    print(fs.size(file)?)
+    print(fs.stat(file)?.size)
     fs.write(file, "")?
-    print(fs.size(file)?)
+    print(fs.stat(file)?.size)
     fs.remove(file)?
     print(fs.exists(file))
     return ok(())

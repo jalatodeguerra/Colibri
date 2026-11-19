@@ -1524,8 +1524,8 @@ time and sleeping".
 - `io`: `write(text)` (no newline), `eprint`, `eprintln` (stderr), `read_line() -> Result[Option[str]]`
   (`none` at end of input), `read_all() -> Result[str]`. `print` stays a builtin.
 - `fs`: `read`, `read_bytes`, `write`, `write_bytes`, `append`, `exists`, `is_file`, `is_dir`,
-  `list` (sorted names), `create_dir` (like `mkdir -p`), `remove`, `remove_dir` (recursive), `copy`,
-  `rename`, `size`, `modified` (seconds since the Unix epoch, a float). Failures are `err` with the message of the OS error and the path.
+  `list` (sorted names), `create_dir` (like `mkdir -p`), `remove`, `remove_dir` (an empty folder), `remove_tree` (a folder and everything in it), `copy`,
+  `rename`, `stat` (size, modified time as seconds since the Unix epoch, and more), `walk`, `set_modified`. Failures are `err` with the message of the OS error and the path.
 - `path`: pure string functions with `/` separators only: `join`, `file_name`, `stem`, `ext`,
   `with_ext`, `parent`, `is_absolute`, `normalize`, `split`.
 - `os`: see the table; `args() -> List[str]`, `platform() -> str`, `env(name) -> Option[str]`,
@@ -1537,7 +1537,8 @@ time and sleeping".
   cosh tanh exp exp2 ln log2 log10 log(x, base) cbrt sqrt floor ceil round trunc fract radians
   degrees signf atan2 pow hypot lerp is_nan is_finite clampf`; integer functions `min max clamp
   abs sign floor_div floor_mod gcd`. Integer division by zero and an empty clamp range panic.
-- `rand`: module functions on a global generator (`seed`, `int(lo, hi)` half-open, `float`,
+- `rand`: module functions on one default `Rng` that belongs to the `Vm` (`rand.seed(n)` replaces
+  it with `Rng.new(n)`, so both give the same sequence for a seed) (`seed`, `int(lo, hi)` half-open, `float`,
   `bool`, `chance(p)`, `choice`, `shuffled`) and the host class `rand.Rng` (`Rng.new(seed)`,
   `int`, `float`, `bool`, `chance`). Seeding is SplitMix64 into xoshiro256**; `below` uses
   Lemire's unbiased method; floats use the top 53 bits. Same seed, same sequence on every
@@ -1548,7 +1549,7 @@ time and sleeping".
   `monotonic() -> int` (nanoseconds), `unix() -> float`, `sleep(seconds)` (rejects negative and
   non-finite durations).
 - `str`: only what is not already a method: `parse_int`, `parse_float`, `parse_bool` (all
-  `Result`), `lines`, `repeat`, `pad_left`, `pad_right`, `trim_start`, `trim_end`, `strip_prefix`,
+  `Result`), `lines`, `repeat`, `trim_start`, `trim_end`, `strip_prefix`,
   `strip_suffix`.
 - `json`: `encode[T](value) -> Result[str]`, `pretty[T]`, `@typed decode[T](text) -> Result[T]`.
   Mapping: `int`/sized ints, `float`, `bool`, `str`, `char` (one-character string), `List`,
@@ -1577,8 +1578,8 @@ and use the hardware.
 - The `time` and `io` capability split in the table above; `os.args` and `os.platform` are open.
 - Integer-only `min max clamp abs sign` (`clampf`, `signf` for floats); `rand.int` is half-open and
   panics on an empty range.
-- Paths use `/` only; `fs.list` is sorted; `fs.create_dir` creates parents; `fs.remove_dir` is
-  recursive; `os.vars` is sorted.
+- Paths use `/` only; `fs.list` is sorted; `fs.create_dir` creates parents; `fs.remove_dir` removes
+  an empty folder and `fs.remove_tree` a whole tree; `os.vars` is sorted.
 - Goldens get a fixed `StdConfig`, and `// caps: fs, os` grants capabilities per file
   (history/PHASE1.md).
 - A field with a default may be absent from the object: the checker gives every plain
@@ -1717,21 +1718,22 @@ output; weekday numbering; floats for instants and spans.
   created: float?, readonly: bool }`. `kind` is a `str` (`"file"`, `"dir"`, `"symlink"`,
   `"other"`) rather than an enum: std has no enum registration helper yet and the values
   compare and `match` fine as text. `stat` does not follow a final symlink (it uses
-  `symlink_metadata`), unlike `fs.size`/`fs.modified`/`is_dir`. `created` is `none` where the
-  platform does not record it. Times are Unix seconds, as for `fs.modified`.
+  `symlink_metadata`), unlike `is_dir` (the former `fs.size`/`fs.modified` followed it; they are gone, `stat` has both fields). `created` is `none` where the
+  platform does not record it. Times are Unix seconds.
 - `fs.walk(path) -> Result[List[str]]`: every file and folder below `path`, relative to it,
   `/`-separated, sorted lexically as a whole (so a folder precedes its contents). Symlinks are
   listed but never followed, so a link cycle cannot loop. There is no `walk_files`; filter with
   `fs.stat(..).kind`.
-- `fs.remove_empty_dir(path)` is non-recursive and fails with "directory not empty".
-  `fs.remove_dir` stays recursive (`remove_dir_all`) for compatibility; its doc comment says so.
+- `fs.remove_dir(path)` is non-recursive and fails with "directory not empty"; `fs.remove_tree(path)`
+  is the recursive one (`remove_dir_all`). The plain name is the safe one.
 - `fs.set_modified(path, unix_seconds) -> Result[()]` uses `File::set_modified` on a read-only
   handle (works for files and, on Unix, folders); non-finite or absurd times are an `err`.
 - `str` methods (byte offsets, like `find`): `rfind(sub) -> int?`, `split_once(sep)` and
   `rsplit_once(sep)` -> `(str, str)?` (an empty separator panics, like `split`),
   `pad_left(width)`/`pad_right(width)` padding with a space, and `pad_left_with(width, fill)`/
-  `pad_right_with(width, fill)` where `fill` is a `char`, as in the module functions. Widths
-  count characters; a negative width panics. The `str` module's `pad_left`/`pad_right` are kept.
+  `pad_right_with(width, fill)` where `fill` is a `char`, Widths
+  count characters; a negative width panics. The `str` module has no padding functions: the methods
+  are the only spelling.
   The methods are checker built-ins (`Builtin::StrRFind`, `StrSplitOnce`, `StrRSplitOnce`,
   `StrPadLeft`, `StrPadRight`), not std registrations. No `last_index_of`: `rfind` covers it.
 

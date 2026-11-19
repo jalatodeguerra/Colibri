@@ -75,7 +75,7 @@ fn bucket_of(file: str, table: Map[str, str]) -> str {
 }
 
 fn date_bucket(full: str) -> Result[str] {
-    let when = fs.modified(full)?
+    let when = fs.stat(full)?.modified
     return ok(datetime.format(datetime.from_unix(when), "%Y/%m"))
 }
 
@@ -162,7 +162,7 @@ fn apply(root: str, moves: List[Move]) -> Result[()] {
 }
 
 // Removes the folders the moves emptied, deepest first and up to (never including) `root`.
-// `remove_empty_dir` refuses a folder that still holds anything, so nothing else is lost;
+// `remove_dir` refuses a folder that still holds anything, so nothing else is lost;
 // a refusal just means the folder stays.
 fn prune(root: str, moves: List[Move]) {
     var dirs: List[str] = []
@@ -182,7 +182,7 @@ fn prune(root: str, moves: List[Move]) {
     // A folder is longer than the one it sits in, so longest first is deepest first.
     dirs.sort_by(fn(a, b) => b.len() - a.len())
     for d in dirs {
-        let _ = fs.remove_empty_dir(path.join(root, d))
+        let _ = fs.remove_dir(path.join(root, d))
     }
 }
 

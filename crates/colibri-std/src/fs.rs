@@ -135,14 +135,14 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     fs_fn!("remove", ["path"], |path: String| {
         std::fs::remove_file(&path).map_err(|e| fail("remove", &path, &e))
     });
-    // RECURSIVE: a folder and everything in it (kept for compatibility). Use
-    // `remove_empty_dir` to remove only an empty folder.
+    // Only an empty folder; fails with "directory not empty" otherwise. `remove_tree` is the
+    // one that removes a folder with everything in it.
     fs_fn!("remove_dir", ["path"], |path: String| {
-        std::fs::remove_dir_all(&path).map_err(|e| fail("remove the folder", &path, &e))
-    });
-    // Only an empty folder; fails with "directory not empty" otherwise.
-    fs_fn!("remove_empty_dir", ["path"], |path: String| {
         std::fs::remove_dir(&path).map_err(|e| fail("remove the empty folder", &path, &e))
+    });
+    // RECURSIVE: a folder and everything in it.
+    fs_fn!("remove_tree", ["path"], |path: String| {
+        std::fs::remove_dir_all(&path).map_err(|e| fail("remove the folder", &path, &e))
     });
     // Everything below `path`, files and folders, relative to it, sorted. Symlinks are listed
     // and not followed.
@@ -202,20 +202,6 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     });
     fs_fn!("rename", ["from", "to"], |from: String, to: String| {
         std::fs::rename(&from, &to).map_err(|e| fail("rename", &from, &e))
-    });
-    fs_fn!("size", ["path"], |path: String| {
-        std::fs::metadata(&path)
-            .map_err(|e| fail("look at", &path, &e))
-            .and_then(|meta| i64::try_from(meta.len()).map_err(|_| format!("`{path}` is too big")))
-    });
-    // Last modification, in seconds since the Unix epoch (like `time.unix()`).
-    fs_fn!("modified", ["path"], |path: String| {
-        let meta = std::fs::metadata(&path).map_err(|e| fail("look at", &path, &e))?;
-        let time = meta.modified().map_err(|e| fail("look at", &path, &e))?;
-        Ok::<_, String>(match time.duration_since(std::time::UNIX_EPOCH) {
-            Ok(d) => d.as_secs_f64(),
-            Err(e) => -e.duration().as_secs_f64(),
-        })
     });
     Ok(())
 }

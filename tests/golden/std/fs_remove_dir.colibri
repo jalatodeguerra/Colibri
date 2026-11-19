@@ -8,20 +8,20 @@ fn main() -> Result[()] {
     fs.create_dir(path.join(root, "empty"))?
     fs.create_dir(path.join(root, "full"))?
     fs.write(path.join(root, "full/x.txt"), "x")?
-    fs.remove_empty_dir(path.join(root, "empty"))?
+    fs.remove_dir(path.join(root, "empty"))?
     print(fs.exists(path.join(root, "empty")))
-    match fs.remove_empty_dir(path.join(root, "full")) {
+    match fs.remove_dir(path.join(root, "full")) {
         ok(_) => print("unexpected")
         err(e) => print(e.message().replace(os.temp_dir(), "<dir>"))
     }
     // The failed call removed nothing.
     print(fs.exists(path.join(root, "full/x.txt")))
-    match fs.remove_empty_dir(path.join(root, "nope")) {
+    match fs.remove_dir(path.join(root, "nope")) {
         ok(_) => print("unexpected")
         err(e) => print(e.message().replace(os.temp_dir(), "<dir>"))
     }
-    // `remove_dir` stays recursive.
-    fs.remove_dir(root)?
+    // `remove_tree` removes a folder with everything in it.
+    fs.remove_tree(root)?
     print(fs.exists(root))
     return ok(())
 }

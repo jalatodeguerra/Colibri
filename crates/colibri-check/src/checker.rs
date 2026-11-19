@@ -271,7 +271,7 @@ fn prelude_option(span: Span) -> TypeDef {
                         ty: Ty::Param(ParamId(0), "T".into()),
                         span,
                         weak: false,
- default: None,
+                        default: None,
                     }],
                     named: false,
                 },
@@ -291,7 +291,7 @@ fn prelude_result(span: Span) -> TypeDef {
             ty: Ty::Param(ParamId(param), pname.into()),
             span,
             weak: false,
- default: None,
+            default: None,
         }],
         named: false,
     };

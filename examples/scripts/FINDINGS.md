@@ -3,7 +3,7 @@
 What got in the way while writing `organize` and `report`. Severity: high blocks a natural
 program, medium forces a workaround, low is rough edges. "Fixed" ones have a golden test.
 
-1. **`fs.modified` did not exist** (medium, fixed). The date mode needs a modification time and
+1. **`fs.modified` did not exist** (later folded into `fs.stat(path).modified`; `fs.size` likewise) (medium, fixed). The date mode needs a modification time and
    `fs` only had `size`. Added `fs.modified(path) -> Result[float]`, unix seconds, with the
    golden `std/fs_modified`. `fs.stat` and `fs.set_modified` were added later (fixed).
 2. **No way to write a diverging function** (medium, fixed). `fn die(msg: str) -> !` is a syntax error
@@ -23,7 +23,7 @@ program, medium forces a workaround, low is rough edges. "Fixed" ones have a gol
    ARCHITECTURE §13). The worker pool is structural only; documented in the README. A
    non-blocking `http.get` that a coroutine can suspend on (or a `http.spawn` returning a
    handle that `try_wait`s, like `process`) would make `--concurrency` real.
-5. **No safe "remove an empty folder"** (medium, fixed: `fs.remove_empty_dir`, `fs.walk`). `fs.remove_dir` is recursive
+5. **No safe "remove an empty folder"** (medium, fixed: `fs.remove_empty_dir`, `fs.walk`; later the names were swapped: `fs.remove_dir` is the empty-folder one and `fs.remove_tree` the recursive one). `fs.remove_dir` is recursive
    (`remove_dir_all`), so the organiser cannot prune the folders it emptied without risking
    data. Suggest `fs.remove_empty_dir` (or a non-recursive `remove_dir` plus
    `remove_dir_all`), and `fs.walk(path)` returning relative paths (the script recurses by hand).
