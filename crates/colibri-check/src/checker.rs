@@ -565,10 +565,9 @@ impl<'a> Checker<'a> {
         self.muted -= 1;
     }
 
-    /// Reports a construct the current slice does not implement.
+    /// Reports a construct the checker does not support.
     pub fn unsupported(&mut self, what: &str, span: Span) {
-        let diag = Diagnostic::error(format!("{what} is not supported yet"), span)
-            .with_hint("Colibri is being built in slices; see docs/PHASE1.md for what comes next");
+        let diag = Diagnostic::error(format!("{what} is not supported yet"), span);
         self.report(diag);
     }
 

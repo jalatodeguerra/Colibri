@@ -170,6 +170,10 @@ fn spawn_enemy(a: f32, b: f32) -> Enemy
   (defers and drops run) with a grace of 10,000 steps for cleanups, after which remaining defers and
   Drop hooks are skipped and plain releases still happen. Surfaces as
   `Err(Error::BudgetExhausted { location, stack })`; the Vm stays usable.
+
+  Step counts (`steps_used` and the budget) are defined by the current engine, the tree-walking
+  interpreter, and will change when the bytecode VM replaces it. Hosts should not hard-code
+  numbers tuned to exact counts: treat the budget as a coarse safety limit and leave headroom.
 - **Memory limit: phase 3.** Byte counts in an `Rc`/`Vec` tree-walker would be meaningless, and an
   accepted-but-unenforced sandbox knob is worse than none.
 

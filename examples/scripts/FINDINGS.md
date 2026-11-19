@@ -58,3 +58,10 @@ program, medium forces a workaround, low is rough edges. "Fixed" ones have a gol
     normal strings need `{{`, so JSON in a test was `"[{{\"name\": \"pen\"}}]"`. Added
     `r#"..."#` (any number of `#`): `r#"[{"name": "pen"}]"#`, verbatim, no interpolation
     (goldens `strings/raw_hashed_*`, `tests/raw_json_in_a_test_block`).
+14. **The formatter's output on long lines** (medium, fixed). `colibri fmt` broke long
+    signatures inside the return type (`-> Result[\n List[Move],\n]`), put every item of a long
+    list of numbers or strings on its own line, and expanded only one block of a long
+    `if let .. else`. The scripts were left unformatted for that reason. Now: parameters break
+    first, lists of simple items are filled, `if`/`else` blocks break together (ARCHITECTURE
+    section 12), the scripts are formatted and the test `example_scripts_are_formatted` keeps
+    them so.

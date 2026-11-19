@@ -96,7 +96,7 @@ fn worker(jobs: List[Job], queue: Queue) {
         let job = jobs[queue.next]
         queue.next += 1
         match fetch_batch(job.source) {
-            ok(b) => job.batch = some(b)
+            ok(b)  => job.batch = some(b)
             err(e) => job.error = e.message()
         }
         wait(0.0)

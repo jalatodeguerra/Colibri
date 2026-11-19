@@ -1,8 +1,7 @@
 //! Runtime values (ARCHITECTURE §3).
 //!
-//! The variants the language needs so far exist; closures and host handles join this enum
-//! as those features land. Strings, structs, tuples and enums are reference counted, so
-//! copying a value is a pointer bump; a write goes through `Rc::make_mut`, which copies only
+//! Closures and host handles are variants of this enum too. Strings, structs, tuples and enums
+//! are reference counted, so copying a value is a pointer bump; a write goes through `Rc::make_mut`, which copies only
 //! when the value is shared. That is exact value semantics (DESIGN §7.1), not an accidental
 //! copy. Lists, maps, sets and class objects are reference types (DESIGN §5.3, §7.2): copying
 //! the value shares the object, and equality of the `Rc` is identity.

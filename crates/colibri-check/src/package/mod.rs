@@ -90,16 +90,15 @@ impl Loaded {
 }
 
 /// Standard library modules that do not exist yet, with the end of the sentence "the standard
-/// library module `x` ..." that says why (DESIGN §13.1, §17.5). Importing one says so instead of
+/// library module `x` ..." that says why (DESIGN §13.1). Importing one says so instead of
 /// a bare "no module". (`import test` cannot be written at all: `test` is a keyword.)
 pub const LATER_STD_MODULES: &[(&str, &str)] = &[
-    ("task", "is not available until phase 2"),
-    ("game", "is not available until phase 2"),
-    ("reflect", "is not available until phase 2"),
-    ("mem", "is not available until phase 3"),
+    ("task", "does not exist yet"),
+    ("reflect", "does not exist yet"),
+    ("mem", "does not exist yet"),
     (
         "collections",
-        "does not exist: `List`, `Map` and `Set` are built in, and phase 1 needs nothing more",
+        "does not exist: `List`, `Map` and `Set` are built in",
     ),
 ];
 

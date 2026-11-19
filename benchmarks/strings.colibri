@@ -1,0 +1,14 @@
+// Strings: format, join, split, prefix test.
+fn main() {
+    var parts: List[str] = []
+    for i in 0..200000 {
+        parts.push("item {i}")
+    }
+    let joined = parts.join(",")
+    let back = joined.split(",")
+    var n = 0
+    for s in back {
+        if s.starts_with("item 1") { n += 1 }
+    }
+    print(n)
+}

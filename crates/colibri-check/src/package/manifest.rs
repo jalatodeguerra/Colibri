@@ -76,7 +76,7 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
         if errors.is_empty() {
             errors.push(
                 Diagnostic::error("`colibri.toml` has no package name", Span::new(file, 0, 0))
-                    .with_hint("add a `[package]` table with `name = \"mygame\"`"),
+                    .with_hint("add a `[package]` table with `name = \"myapp\"`"),
             );
         }
         return Err(errors);

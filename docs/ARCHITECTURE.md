@@ -1219,7 +1219,7 @@ there (`Vm::load_package`), not a test per file. Directives are read from every 
 the directory tree: an `// error:`, `// warning:` or `// panic:` line refers to the line of the
 file it is in (the harness compares file and line); the expected stdout is the `// expect:`
 lines of `main.colibri` followed by those of the other files in path order; `// drops:`, `//
-panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only. See PHASE1.md.
+panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only. See history/PHASE1.md.
 
 ### 11.9 Decisions the design documents did not fix
 
@@ -1291,6 +1291,29 @@ crate of its own: it needs exactly what `colibri-syntax` has (tokens with spans,
   trailing comma followed by a line break stays one element per line. A list with a trailing
   comma on the same line, or with the elements on separate lines but no trailing comma, is
   collapsed if it fits. A one-element tuple always keeps its comma.
+- **Function signatures.** When a signature does not fit, the parameter list breaks first (one
+  parameter per line, trailing comma) and the return type stays whole on the line of the closing
+  `)` (`) -> Result[List[Move]] {`). The return type is measured flat for that decision
+  (`Doc::Unit`); it is broken only if it still does not fit after the parameters broke. With no
+  parameters there is nothing to break first.
+- **Filled lists.** A list literal `[..]` whose items are all *simple* is not printed one item
+  per line when it does not fit on one line: as many items as fit go on each line, then a
+  trailing comma and the `]` on its own line (`Doc::FillSep` measures the next item and its
+  comma). Only short items are filled: every item must print at most 12 columns wide (so
+  numbers, names, `"jpg"` and `"epsilon"` fill; a date string or a long name does not, because
+  a packed list of long items is harder to read than one per line). Simple items are: integer, float, char and `true`/`false`/`none` literals, a string
+  written on one line, a plain name, and `-` followed by an integer or float literal. Anything
+  else (a call, a field access, an operator, a nested list, map, tuple or struct literal, a
+  multi-line string), or an item wider than 12 columns, makes the whole list one item per line
+  as above, and so does a `//` comment inside the list (an inline `/* .. */` comment before an
+  item stays with it and counts toward its width). The magic trailing comma still wins for simple lists written one item per
+  line; a list with a trailing comma where some line holds several items is the filled form
+  itself and is filled again, which keeps the output stable.
+- **`if`/`else` chains** whose blocks can all stay on one line (`if c { a } else { b }`,
+  `else if` included) are printed on one line if the whole chain fits and with every block
+  expanded otherwise; one block is never expanded while another stays on one line. A chain
+  with a block written on several lines, a comment before an `else` or no `else` follows the
+  rules of blocks below.
 - **Blocks.** `{}` when empty. A block with exactly one statement or tail expression that was
   written on one line stays on one line if it fits (`if x { 1 } else { 2 }`, `fn f() { g() }`);
   anything else is expanded, including a block whose single statement is itself a block
@@ -1495,7 +1518,7 @@ and use the hardware.
 - Paths use `/` only; `fs.list` is sorted; `fs.create_dir` creates parents; `fs.remove_dir` is
   recursive; `os.vars` is sorted.
 - Goldens get a fixed `StdConfig`, and `// caps: fs, os` grants capabilities per file
-  (PHASE1.md).
+  (history/PHASE1.md).
 - Not done: `@rename`/`@skip` and field defaults in `json` (no attribute support in the
   checked types yet), JSON for data enums, typed error enums.
 
@@ -2643,7 +2666,7 @@ platform-specific block, and a bytecode-VM path (the VM will call the same `coli
 
 ## 20. Vector types as built
 
-PHASE2 step 1 (DESIGN §15.1, §5.1). `vec2`, `vec3`, `vec4` (`f32` components) and `ivec2`,
+PHASE2 step 8 (DESIGN §15.1, §5.1). `vec2`, `vec3`, `vec4` (`f32` components) and `ivec2`,
 `ivec3`, `ivec4` (`i32`) are plain values: constructors, component fields, swizzles,
 component-wise operators and a small set of methods. `mat3`, `mat4` and `quat` are not built.
 

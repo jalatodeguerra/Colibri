@@ -1,4 +1,4 @@
-//! The phase 2 milestone: the automation scripts in `examples/scripts`, run through the real
+//! The automation scripts in `examples/scripts`, run through the real
 //! `colibri` binary. The organiser works on a temporary tree; the report generator talks to a
 //! hand-written HTTP server on 127.0.0.1 that serves the fixtures (nothing leaves the machine).
 
@@ -618,4 +618,18 @@ fn report_requests_overlap_with_concurrency() {
     assert!(overlapped < Duration::from_millis(1000), "{overlapped:?}");
     assert!(serial >= Duration::from_millis(1500), "{serial:?}");
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// The example scripts are formatted: `colibri fmt --check` lists nothing. If this fails, run
+/// `colibri fmt examples/scripts` (and read the diff).
+#[test]
+fn example_scripts_are_formatted() {
+    let dir = scripts();
+    let out = colibri(&["fmt", "--check", dir.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "run `colibri fmt examples/scripts`:\n{}{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
 }

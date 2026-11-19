@@ -39,6 +39,13 @@ pub(crate) enum Doc {
     /// A document that appears in more than one alternative: cloning it is cheap. `.1` is
     /// whether it is forced.
     Shared(Rc<Doc>, bool),
+    /// A document that the enclosing groups measure as if it were flat, whatever mode they
+    /// are in (a function's return type: the parameters break before it does). Printed like a
+    /// group: flat if it fits, broken otherwise.
+    Unit(Box<Doc>),
+    /// The separator of a filled list: a space if the next item (`.0` columns wide, with the
+    /// comma that follows it) still fits on the line, a line break otherwise. Flat: a space.
+    FillSep(usize),
 }
 
 pub(crate) fn text(s: impl Into<String>) -> Doc {
@@ -69,6 +76,11 @@ pub(crate) fn broken_group(doc: Doc) -> Doc {
     Doc::Group(Box::new(doc), true)
 }
 
+/// A document the enclosing groups measure flat (see [`Doc::Unit`]).
+pub(crate) fn unit(doc: Doc) -> Doc {
+    Doc::Unit(Box::new(doc))
+}
+
 pub(crate) fn if_break(broken: Doc, flat: Doc) -> Doc {
     Doc::IfBreak(Box::new(broken), Box::new(flat))
 }
@@ -95,13 +107,15 @@ impl Doc {
             Doc::Indent(d) => d.forced(),
             Doc::Group(_, broken) => *broken,
             Doc::Shared(_, forced) => *forced,
-            Doc::Either(_, fallback) => fallback.forced(),
+            Doc::Unit(d) => d.forced(),
+            Doc::Either(first, fallback) => first.forced() && fallback.forced(),
             Doc::Nil
             | Doc::Text(_)
             | Doc::Line
             | Doc::SoftLine
             | Doc::IfBreak(..)
             | Doc::LineSuffix(_)
+            | Doc::FillSep(_)
             | Doc::Pad(..) => false,
         }
     }
@@ -160,7 +174,17 @@ fn fits(first: Cmd<'_>, rest: &[Cmd<'_>], mut remaining: isize) -> bool {
             }
             Doc::Concat(parts) => stack.extend(parts.iter().rev().map(|d| (mode, d))),
             Doc::Shared(d, _) => stack.push((mode, d)),
+            Doc::Unit(d) => stack.push((Mode::Flat, d)),
             Doc::Indent(d) => stack.push((mode, d)),
+            Doc::FillSep(_) => {
+                if mode == Mode::Break {
+                    return true;
+                }
+                remaining -= 1;
+                if remaining < 0 {
+                    return false;
+                }
+            }
             Doc::Line => {
                 if mode == Mode::Break {
                     return true;
@@ -225,6 +249,39 @@ pub(crate) fn render(doc: &Doc, width: usize) -> String {
                 mode,
                 doc: d,
             }),
+            Doc::Unit(d) => {
+                let flat = Cmd {
+                    indent,
+                    mode: Mode::Flat,
+                    doc: d,
+                };
+                if mode == Mode::Flat
+                    || (!d.forced() && fits(flat, &cmds, width as isize - column as isize))
+                {
+                    cmds.push(flat);
+                } else {
+                    cmds.push(Cmd {
+                        indent,
+                        mode: Mode::Break,
+                        doc: d,
+                    });
+                }
+            }
+            Doc::FillSep(next) => {
+                if mode == Mode::Flat || column + 1 + next <= width {
+                    out.push(' ');
+                    column += 1;
+                } else {
+                    out.push_str(&suffix);
+                    suffix.clear();
+                    suffix_has_line_comment = false;
+                    let kept = out.trim_end_matches(' ').len();
+                    out.truncate(kept);
+                    out.push('\n');
+                    out.extend(std::iter::repeat_n(' ', indent));
+                    column = indent;
+                }
+            }
             Doc::Indent(d) => cmds.push(Cmd {
                 indent: indent + INDENT,
                 mode,
