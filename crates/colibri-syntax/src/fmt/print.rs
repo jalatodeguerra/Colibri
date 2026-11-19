@@ -15,6 +15,9 @@ use std::rc::Rc;
 
 use crate::{Span, TokenKind};
 
+/// The widest item (in columns) a list may have to be filled instead of one item per line.
+const FILL_ITEM_WIDTH: usize = 12;
+
 /// The line width.
 pub(crate) const WIDTH: usize = 100;
 
@@ -188,6 +191,16 @@ fn plain_width(doc: &Doc) -> Option<usize> {
             Some(total)
         }
         _ => None,
+    }
+}
+
+/// `dangling` (comments before a `}` with nothing else in the block) with its line suffixes as
+/// plain text, so they are printed at the indentation of their own line.
+fn alone_in_braces(dangling: Doc) -> Doc {
+    match dangling {
+        Doc::LineSuffix(s) => concat(vec![text(s.trim_start().to_string()), Doc::BreakParent]),
+        Doc::Concat(parts) => concat(parts.into_iter().map(alone_in_braces).collect()),
+        other => other,
     }
 }
 
@@ -590,7 +603,12 @@ impl<'a> Fmt<'a> {
 
     /// `seq_braces`, and for a block that may stay on one line its one-line and expanded forms.
     fn seq_braces_pair(&mut self, seq: Seq, close: u32, many: bool) -> (Doc, Option<(Doc, Doc)>) {
-        let dangling = self.dangling(close, seq.last_end);
+        let mut dangling = self.dangling(close, seq.last_end);
+        if seq.elems.is_empty() && is_nil(&seq.open_comments) {
+            // Comments alone in the braces go on their own line: a line suffix would be
+            // flushed after the indentation and sit one space too far right.
+            dangling = alone_in_braces(dangling);
+        }
         let quiet = is_nil(&dangling) && is_nil(&seq.open_comments);
         if seq.elems.is_empty() && quiet {
             return (text("{}"), None);
@@ -1615,7 +1633,8 @@ impl<'a> Fmt<'a> {
                     docs.iter().map(plain_width).collect()
                 } else {
                     None
-                };
+                }
+                .filter(|w: &Vec<usize>| w.iter().all(|&n| n <= FILL_ITEM_WIDTH));
                 match widths {
                     Some(widths) if is_nil(&open_c) && !(self.magic(close) && one_per_line) => {
                         self.filled_list(close, docs, &widths)

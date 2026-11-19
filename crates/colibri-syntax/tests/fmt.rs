@@ -821,3 +821,57 @@ fn if_else_blocks_break_together() {
     assert!(out.contains("// why"), "{out}");
     check(&out, &out);
 }
+
+#[test]
+fn if_else_inside_an_expression_does_not_force_the_enclosing_group_to_break() {
+    for src in [
+        "print(if x > 0 { 1 } else { -1 })",
+        "print(get(false) or if n > 3 { 100 } else { 200 })",
+        "print(a.and_then(fn(x) => if x > 2 { some(\"big\") } else { none }))",
+        "print(f(if c { 1 } else { 2 }, 3))",
+        "let v = [if c { 1 } else { 2 }, 3]",
+        "let t = (if r > 0 { 1 } else { 2 }) * 3",
+        "let w = if a { 1 } else if b { 2 } else { 3 }",
+    ] {
+        check_stable(src, &format!("{src}\n"));
+    }
+}
+
+#[test]
+fn match_arms_with_an_if_body_keep_their_alignment() {
+    check_stable(
+        "match x {\n    A => 1\n    LongName => if c { 1 } else { 2 }\n    B => 3\n}",
+        "match x {\n    A        => 1\n    LongName => if c { 1 } else { 2 }\n    B        => 3\n}\n",
+    );
+}
+
+#[test]
+fn only_short_simple_items_are_filled() {
+    // Items wider than 12 columns: one per line, as for any list.
+    let long = [
+        "\"2026-11-19 10:00\"",
+        "\"2026-11-20 11:00\"",
+        "\"2026-11-21 12:00\"",
+        "\"2026-11-22 13:00\"",
+        "\"2026-11-23 14:00\"",
+        "\"2026-11-24 15:00\"",
+    ];
+    let out = fmt(&format!("let xs = [{}]", long.join(", ")));
+    assert_eq!(out.lines().count(), 8, "{out}");
+    check(&out, &out);
+    // Exactly 12 columns still fills.
+    let twelve = format!("\"{}\"", "a".repeat(10));
+    let items = vec![twelve; 10];
+    let out = fmt(&format!("let xs = [{}]", items.join(", ")));
+    assert_eq!(out.lines().count(), 4, "{out}");
+}
+
+#[test]
+fn a_block_holding_only_a_block_comment_is_stable() {
+    check_stable(
+        "fn f() {\n    if c { print(\"one\") } else { /* nothing */ }\n}",
+        "fn f() {\n    if c { print(\"one\") } else {\n        /* nothing */\n    }\n}\n",
+    );
+    let out = fmt("fn f() { /* x */ }");
+    check(&out, &out);
+}

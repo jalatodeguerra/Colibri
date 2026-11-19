@@ -108,7 +108,7 @@ impl Doc {
             Doc::Group(_, broken) => *broken,
             Doc::Shared(_, forced) => *forced,
             Doc::Unit(d) => d.forced(),
-            Doc::Either(_, fallback) => fallback.forced(),
+            Doc::Either(first, fallback) => first.forced() && fallback.forced(),
             Doc::Nil
             | Doc::Text(_)
             | Doc::Line

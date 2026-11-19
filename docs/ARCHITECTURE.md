@@ -1299,11 +1299,14 @@ crate of its own: it needs exactly what `colibri-syntax` has (tokens with spans,
 - **Filled lists.** A list literal `[..]` whose items are all *simple* is not printed one item
   per line when it does not fit on one line: as many items as fit go on each line, then a
   trailing comma and the `]` on its own line (`Doc::FillSep` measures the next item and its
-  comma). Simple items are: integer, float, char and `true`/`false`/`none` literals, a string
+  comma). Only short items are filled: every item must print at most 12 columns wide (so
+  numbers, names, `"jpg"` and `"epsilon"` fill; a date string or a long name does not, because
+  a packed list of long items is harder to read than one per line). Simple items are: integer, float, char and `true`/`false`/`none` literals, a string
   written on one line, a plain name, and `-` followed by an integer or float literal. Anything
   else (a call, a field access, an operator, a nested list, map, tuple or struct literal, a
-  multi-line string) makes the whole list one item per line as above, and so does a comment
-  inside the list. The magic trailing comma still wins for simple lists written one item per
+  multi-line string), or an item wider than 12 columns, makes the whole list one item per line
+  as above, and so does a `//` comment inside the list (an inline `/* .. */` comment before an
+  item stays with it and counts toward its width). The magic trailing comma still wins for simple lists written one item per
   line; a list with a trailing comma where some line holds several items is the filled form
   itself and is filled again, which keeps the output stable.
 - **`if`/`else` chains** whose blocks can all stay on one line (`if c { a } else { b }`,
