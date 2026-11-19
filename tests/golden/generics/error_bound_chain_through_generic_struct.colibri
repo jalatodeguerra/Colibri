@@ -1,0 +1,8 @@
+struct Pair[A, B] { first: A, second: B }
+
+fn index[K: Hash + Eq](k: K) -> int => k.hash()
+
+fn main() {
+    let p = Pair { first: 1, second: [1, 2] }
+    print(index(p)) // error: `Pair[int, List[int]]` is not `Hash` because `List[int]` is not hashable
+}

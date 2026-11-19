@@ -115,7 +115,7 @@ iteration, write-back); `Defer`, `Go`, labelled `Break`/`Continue`.
   `TypeDefKind` gains `Class { fields }`, and `FieldDef.weak` marks a `weak T` field (its `ty` is
   `T`; reads give `T?`). `Program.types[0]` is the prelude `Option` enum (`OPTION_TYPE`; variants
   `none` = 0, `some` = 1, payload `Ty::Param(0)`), so `Ty::Option(T)` values, patterns, `Show`,
-  `==` and exhaustiveness all use the ordinary enum machinery; user types start at index 1.
+  `==` and exhaustiveness all use the ordinary enum machinery; user types start at index 1 (index 10 since slice 4a, which reserves 1..9 for the built-in interfaces).
   New expression nodes: `Object { ty, fields }` (a class literal), `ListLit`, `MapLit`,
   `ToWeak` (a `T` or `T?` stored in a weak field or literal) and `FromWeak` (a weak field read as
   `T?`). An omitted weak field is `ToWeak(none)`. `Anchor::ListElem` and `MapEntry` carry the
@@ -129,6 +129,41 @@ iteration, write-back); `Defer`, `Go`, labelled `Break`/`Continue`.
   unifier (a method signature is a table entry over the receiver's type arguments, so
   `xs.push(1)` on a `List[?T]` fixes `?T`), and the engine sees only the tag. `BinOp::Is` is
   identity; `Operand::Structural` now covers `Option` and the collections.
+
+- **Slice 4a as built (generics, interfaces, interface values, `Drop`).**
+  *Types.* `Ty::Param(ParamId, name)` is a type parameter (program-wide ids; the prelude
+  `Option` uses `ParamId(0)`) and `Ty::Dyn(TypeId, args)` is an interface value of
+  `iface[args]`. `TypeDef.params` lists the parameters of a generic struct, enum, class or
+  interface, and `TypeDefKind::Interface { methods }` holds the method names, receivers and
+  defaults. `Ty::subst` instantiates a signature or a field type. The built-in interfaces are
+  declared by a prelude written in Colibri (`prelude.rs`) so their `TypeId`s are constants
+  (`EQ`, `ORD`, `HASH`, `SHOW`, `CLONE`, `DROP`, `ITER`, `ITERABLE`, `INTO_ERROR` = 1..9, user
+  types from `FIRST_USER_TYPE` = 10; `OPTION_TYPE` stays 0).
+  *Calls.* `Call.type_args` holds one resolved type per type parameter in scope of the callee
+  (the `impl`'s or interface's first, then the function's own), also for method calls;
+  `FnDef.type_params` says how many. They may mention the caller's own parameters. The
+  interpreter does not need them (generic code runs with one uniform representation and `Bound`
+  calls dispatch on the receiver's runtime type), so `Body.needs_type_args` is `false` for every
+  function; it is the hook for `json.decode[T]` and friends. `Callee::Bound { iface, method }` is
+  a method called through a bound or a derived implementation, `Callee::Dyn { iface, method }` a
+  method called on an interface value; `method` is the index in the interface's declaration
+  order. A call of a method that an `impl` provides (or an interface default) on a concrete
+  receiver is an ordinary `Callee::Fn`.
+  *Implementations.* `Program.impls: Vec<ImplDef>` has every `impl I for T` and every derived
+  implementation that something used (as a `ToDyn` target). `ImplDef.methods` has one entry per
+  interface method: the impl's function, the interface's default, or `None` for a derived
+  built-in (the engine supplies it). `TypeKey` is the head of a type without arguments; the
+  engine finds `impls[(TypeKey of the runtime value, iface)]` for `Bound` calls.
+  *Conversions.* `ExprKind::Coerce(expr, Coercion::ToDyn(ImplId))` boxes a value of a concrete
+  type as an interface value; `ToDynBound(iface)` does it for a value of a type parameter whose
+  implementation is only known at run time. Both implicit coercions (arguments, `let` with an
+  annotation, returns, fields, list and map literals) and `value as Interface` produce them.
+  *Generic checking.* A generic body is checked once with its parameters opaque; `T`'s bounds
+  are everything known about it (`param_bounds`). A call instantiates every parameter with a
+  fresh inference variable (explicit `f[int](..)` unifies the variables first), and each bound
+  becomes an `Obligation` decided when the body is finished, when all variables are resolved
+  (`obligations.rs`). `Map` keys and `Set` elements are obligations too (`Hash + Eq`), so the
+  hashability check and the bound check are one mechanism.
 
 ## 2. Evaluator and future coroutines
 
@@ -197,7 +232,7 @@ enum Value {
     Fn(FnId), Host(HostHandle), // HostHandle: type, index, generation
 }
 struct ListObj  { items: RefCell<Vec<Value>>, guard: Rc<Guard> }
-struct ClassObj { ty: TypeId, fields: RefCell<Box<[Value]>>, released: Cell<bool> }
+struct ClassObj { ty: TypeId, fields: RefCell<Box<[Value]>>, released: Cell<bool>, hooked: Cell<bool> }
 struct Guard    { iterations: Cell<u32>, places: Cell<u32>, place_name: RefCell<Rc<str>>, what: &'static str }
 ```
 
@@ -210,6 +245,12 @@ variants join as their features land. Slice 2 adds `Struct`, `Tuple` and `Enum`.
 by key hash, structural key equality, compaction when tombstones outnumber live entries), so
 lookup, insert and remove are O(1) and `List` push and index are O(1).
 
+- **Interface values (slice 4a).** `Value::Dyn(Rc<DynVal { impl_id, val }>)` boxes any value with
+  the implementation that dispatches it. A struct inside stays an `Rc<StructVal>`, so copying the
+  `Dyn` is a pointer bump and a `var self` method through it changes a private copy that is
+  written back as a new `Dyn` (lazy copy-on-write); a class inside is shared as always. `Show`
+  and `clone` look through the box; there is no `==` on interface values (`Eq` mentions `Self`,
+  so it is not object safe). `release` releases the contents.
 - **Deep values.** A recursive enum can nest as deep as the program builds it, and Rust's
   recursive `Drop`, `Show` and `==` would overflow the native stack. `StructVal` and `EnumVal`
   therefore have a custom `Drop`: past a nesting depth of 256 (counted in a thread-local) it
@@ -234,7 +275,7 @@ lookup, insert and remove are O(1) and `List` push and index are O(1).
 - **Drops are explicit.** `interp.release(v)` is called wherever an owned value dies: scope exit,
   temp end, overwritten store, container removal. It maps one-to-one onto the future IR's `dec`.
   When `v` is the last reference (`Rc::strong_count == 1`) to a class object: run its `Drop` hook
-  (none exist yet: no interfaces), record the trace event, then take the fields out and release
+  (slice 4a; §6.33), record the trace event, then take the fields out and release
   them in declaration order. A collection releases its elements in index (or insertion) order,
   a struct, tuple or enum its parts in order, so a death is a depth-first pre-order walk. It is
   done with an explicit worklist, so a million-node chain cannot overflow the native stack. A
@@ -486,3 +527,92 @@ turns out to matter, it moves into DESIGN.md.
     expects no destruction); several `// panic:` lines must all be contained in the message,
     and notes are appended to it as `note: ..` lines. The harness shuts the `Vm` down after
     `main` and includes the module-value drops in the trace.
+33. **`Drop` hooks (DESIGN §11.2; slice 4a).** Only a `class` can implement `Drop` (a struct or
+    enum is copied freely, so a destructor would run once per copy). When the last reference to
+    an object goes away, `release` runs its `drop(self)` first, then the trace event, then the
+    fields in declaration order (item 4). The hook runs on a fresh `Fiber`, so it never sees (or
+    unwinds) the frames of whatever released the object; nesting is limited to 64 hooks inside
+    hooks (then "Drop hooks are nested too deeply" is a panic). *Resurrection:* if the hook
+    stores `self` somewhere, the object stays alive and is not traced; its hook never runs again
+    (`ClassObj.hooked`), so when it dies for real only the trace event and the field releases
+    happen. *Panics:* a hook cannot return an error to `release`, so a panic is parked in
+    `Interp.hook_panics` and folded into the result of the enclosing statement or scope exit: if
+    that result was fine, the hook's panic is the result; if it already was a panic (unwinding),
+    the hook's becomes a note, `a `Drop` hook also panicked: ..` (item 5). A hook that panics
+    while the program shuts down (module-level values) is discarded. Hooks run for objects that
+    die inside collections, fields and interface values like any other; a strong cycle never
+    dies, so its hooks never run.
+34. **Method lookup (DESIGN §9.2).** `recv.name(args)` is resolved in this order: (1) an inherent
+    method of the receiver's own `struct`/`enum`/`class` (an `impl Type { .. }`); (2) a method of
+    a built-in type (`str`, `List`, `Map`, `Set`); (3) the methods of interfaces the receiver
+    implements: for a type parameter the interfaces in its bounds, for an interface value its own
+    interface, for any other type its explicit `impl`s and the derived `Eq`/`Ord`/`Hash`. So an
+    inherent method *wins* over an interface method of the same name (`inherent_method_wins`
+    golden); the interface one stays reachable through a bound or an interface value. Two
+    different interfaces offering the same name is an error that asks for `(value as I).name()`.
+    `x.clone()` and `x.show()` exist on every type (the universal `Clone` and `Show`) unless an
+    explicit impl or an inherent method takes the name.
+35. **Built-in interfaces and their method signatures** (declared in `prelude.rs`):
+    `Eq { fn eq(self, other: Self) -> bool }`, `Ord { fn cmp(self, other: Self) -> int }`
+    (negative, zero or positive; there is no `Ordering` enum yet), `Hash { fn hash(self) -> int }`,
+    `Show { fn show(self) -> str }`, `Clone { fn clone(self) -> Self }`, `Drop { fn drop(self) }`,
+    `Iter[T] { fn next(var self) -> T? }`, `Iterable[T] { fn iter(self) -> Iter[T] }` and
+    `IntoError { fn message(self) -> str => "{self}" }`. `Iter`, `Iterable` and `IntoError` are
+    declared but nothing uses them yet (`for` over a user iterator and `?` come later). `Ord`
+    implies `Eq` for bounds (`T: Ord` may use `==`). An `impl` writes the interface's methods
+    with the type substituted for `Self` (`fn eq(self, other: P) -> bool`); a signature that
+    differs is reported as expected versus found.
+36. **Derived implementations (DESIGN §7.4) are real.** The bound checker asks the same question
+    as `==`, `<` and the `Map`/`Set` key check: `Env::implements(type, interface, args)`, which
+    answers "an explicit impl", "derived" or names the part of the type that fails
+    (`Pair[int, List[int]]` is not `Hash` because `List[int]` is not hashable). `Eq` is derived
+    for every type made of derivable parts (a class by identity); `Ord` for scalars, tuples and
+    enums without data; `Hash` for everything but `float`, `List`, `Map` and `Set`; `Show` and
+    `Clone` for every type. An explicit `impl` *replaces* the derived one for that type
+    everywhere: `==`/`!=`, `<` and friends (also inside tuples, lists and other structs),
+    `contains`/`index_of`, `Map` and `Set` lookups, `print` and interpolation (also nested) and
+    `.clone()`. The engine consults the user's method through the `Overrides` hook of the
+    structural functions (`hooks.rs`), and takes the plain fast path when the program has no
+    such impl. *Map keys with a user `Eq`:* a lookup scans the stored keys with the user's `eq`
+    (O(n)) and then uses the matching stored key; a user `Hash` is accepted and type-checked but
+    not consulted, since a hash is not observable (iteration is insertion order). The checker
+    requires `Hash + Eq` of every key regardless.
+37. **Implementations are unique per head type.** One type has at most one `impl` of an
+    interface, whatever the type arguments: `impl Container[int] for Bag` and
+    `impl Container[str] for Bag` conflict, and so do `impl Describe for List[int]` and
+    `... for List[str]`. This is what lets the engine dispatch on the runtime type alone (values
+    carry no type arguments). The same holds for inherent methods: they are keyed by the type's
+    name, so `impl Tree[int] { fn f }` and `impl Tree[str] { fn f }` conflict.
+38. **Orphan rule.** `impl BuiltinInterface for BuiltinType` (`impl Show for int`) is an error;
+    every other combination is allowed, because all user code is one package for now (the package
+    boundary comes with imports). `impl Drop` also requires a class.
+39. **Object safety (DESIGN §9.2).** A method cannot be called on an interface value if it has
+    type parameters of its own or mentions `Self` outside its receiver (`other: Self`, `-> Self`).
+    The interface itself is still legal and usable as a bound; the error is reported at the call
+    on the interface value, with the reason, not at the interface declaration. Methods of
+    built-in `Eq`/`Ord`/`Clone` are therefore only reachable through bounds and concrete types.
+    Interface methods need a `self` receiver (no static functions in interfaces yet), and a
+    type parameter has no static functions either (`T.default()` is "a type parameter, not a
+    value").
+40. **Receivers.** An interface method declared `var self` may be implemented with plain `self`
+    by a class (a class's `self` can always change its object); a struct must match exactly. A
+    `var self` method called through an interface value changes a private copy of the boxed
+    struct and writes a new box back (item "interface values" in §3).
+41. **Implicit conversion sites.** A value is converted to an interface value wherever the
+    expected type is an interface: arguments, `let x: I = ..`, assignment, `return`, struct and
+    enum payload fields, list, map and set literal elements, `some(..)`. `value as I` is the
+    explicit form (any other `as` is "not supported yet"). An interface value never converts to
+    another interface, and `==` on interface values is an error. Generic code may be
+    instantiated with an interface type (`total_area[Shape]`): its `Bound` calls dispatch
+    through the box.
+42. **Inference of type arguments (DESIGN §5.4).** Unification is local to one body and has no
+    defaults except the integer/float literal rule: `max(1, 2.5)` is a mismatch, `id(1)` is
+    `id[int]`. A type argument that is still unknown at the end of the body is "cannot infer
+    `T`; write `f[int](...)`" at the call (or the literal `Box { }`, `Tree.Leaf`) that created
+    it. `f[int](x)` and `Type[int].f(x)` give arguments explicitly; `x[i]` versus `f[T]` is
+    decided by the base: a generic function (or method name after a dot) means instantiation,
+    anything else is an index (DESIGN §3.5). Bounds on a *type's* own parameters
+    (`struct Box[T: Ord]`) are not supported yet: write them on the `impl` blocks and functions.
+43. **Recursive generic types** (`enum Tree[T] { Leaf, Node(Tree[T], T, Tree[T]) }`) need no
+    boxing in the interpreter: every composite is already behind an `Rc`. The native-code engine
+    will box the recursive position; nothing in the HIR depends on it.

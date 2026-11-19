@@ -1,0 +1,68 @@
+enum Tree[T] {
+    Leaf
+    Node(left: Tree[T], value: T, right: Tree[T])
+}
+
+impl[T: Ord] Tree[T] {
+    fn insert(self, x: T) -> Tree[T] {
+        match self {
+            .Leaf => return Tree.Node(left: .Leaf, value: x, right: .Leaf)
+            .Node(l, v, r) => {
+                if x < v {
+                    return Tree.Node(left: l.insert(x), value: v, right: r)
+                }
+                return Tree.Node(left: l, value: v, right: r.insert(x))
+            }
+        }
+    }
+
+    fn contains(self, x: T) -> bool {
+        match self {
+            .Leaf => return false
+            .Node(l, v, r) => {
+                if x == v { return true }
+                if x < v { return l.contains(x) }
+                return r.contains(x)
+            }
+        }
+    }
+
+    fn to_list(self) -> List[T] {
+        match self {
+            .Leaf => return []
+            .Node(l, v, r) => {
+                var out = l.to_list()
+                out.push(v)
+                out.extend(r.to_list())
+                return out
+            }
+        }
+    }
+}
+
+fn sum(t: Tree[int]) -> int {
+    match t {
+        .Leaf => return 0
+        .Node(l, v, r) => return sum(l) + v + sum(r)
+    }
+}
+
+fn main() {
+    var t: Tree[int] = .Leaf
+    for x in [5, 2, 8, 1, 9, 3] {
+        t = t.insert(x)
+    }
+    print(t.to_list())
+    print(sum(t))
+    print(t.contains(8))
+    print(t.contains(4))
+    var words: Tree[str] = .Leaf
+    words = words.insert("pear").insert("apple").insert("fig")
+    print(words.to_list())
+}
+
+// expect: [1, 2, 3, 5, 8, 9]
+// expect: 28
+// expect: true
+// expect: false
+// expect: ["apple", "fig", "pear"]

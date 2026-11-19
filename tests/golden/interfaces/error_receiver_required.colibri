@@ -1,0 +1,5 @@
+interface Maker {
+    fn make() -> int // error: the interface method `make` needs a `self` receiver
+}
+
+fn main() {}

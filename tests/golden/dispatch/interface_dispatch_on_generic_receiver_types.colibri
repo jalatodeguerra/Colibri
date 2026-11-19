@@ -1,0 +1,32 @@
+interface Size {
+    fn size(self) -> int
+}
+
+impl Size for str {
+    fn size(self) -> int => self.len()
+}
+
+impl Size for List[int] {
+    fn size(self) -> int => self.len()
+}
+
+struct Pair[A, B] { a: A, b: B }
+
+impl[A: Size, B: Size] Size for Pair[A, B] {
+    fn size(self) -> int => self.a.size() + self.b.size()
+}
+
+fn total[T: Size](x: T) -> int => x.size()
+
+fn main() {
+    print(total("abc"))
+    print(total([1, 2]))
+    print(total(Pair { a: "xy", b: [1, 2, 3] }))
+    let d: Size = Pair { a: "q", b: "rs" }
+    print(d.size())
+}
+
+// expect: 3
+// expect: 2
+// expect: 5
+// expect: 3

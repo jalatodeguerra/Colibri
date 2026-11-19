@@ -1,0 +1,23 @@
+class Res { name: str }
+
+var saved: List[Res] = []
+
+impl Drop for Res {
+    fn drop(self) {
+        print("hook {self.name}")
+        saved.push(self)
+    }
+}
+
+fn main() {
+    {
+        let r = Res { name: "phoenix" }
+    }
+    print("after scope: {saved.len()} saved")
+    print(saved[0].name)
+}
+
+// expect: hook phoenix
+// expect: after scope: 1 saved
+// expect: phoenix
+// drops: phoenix

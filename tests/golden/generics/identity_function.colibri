@@ -1,0 +1,13 @@
+fn identity[T](x: T) -> T => x
+
+fn main() {
+    print(identity(41) + 1)
+    print(identity("hi"))
+    print(identity([1, 2]))
+    print(identity((1, "a")))
+}
+
+// expect: 42
+// expect: hi
+// expect: [1, 2]
+// expect: (1, "a")

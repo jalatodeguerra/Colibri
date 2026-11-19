@@ -1,0 +1,8 @@
+fn max[T: Ord](a: T, b: T) -> T => if a > b { a } else { b }
+
+struct P { x: int }
+
+fn main() {
+    let p = max(P { x: 1 }, P { x: 2 }) // error: `P` does not implement `Ord`
+    print(p.x)
+}

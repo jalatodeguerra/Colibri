@@ -27,6 +27,7 @@ fn is_container(v: &Value) -> bool {
             | Value::Map(_)
             | Value::Set(_)
             | Value::Obj(_)
+            | Value::Dyn(_)
     )
 }
 
@@ -75,6 +76,11 @@ impl Interp {
     fn dismantle(&mut self, value: Value, work: &mut Vec<Value>) {
         match value {
             Value::Obj(rc) if Rc::strong_count(&rc) == 1 => {
+                // The `Drop` hook runs first; if it stores the object somewhere, the object
+                // lives on and dies (without a second hook) when that reference does.
+                if self.run_drop_hook(&rc) {
+                    return;
+                }
                 self.trace_destroy(&rc);
                 let mut fields = rc.take_fields();
                 push_children(work, &mut fields);
@@ -94,6 +100,13 @@ impl Interp {
             Value::Set(rc) if Rc::strong_count(&rc) == 1 => {
                 let mut items = rc.take_all();
                 push_children(work, &mut items);
+            }
+            Value::Dyn(mut rc) => {
+                if let Some(d) = Rc::get_mut(&mut rc)
+                    && is_container(&d.val)
+                {
+                    work.push(std::mem::replace(&mut d.val, Value::Unit));
+                }
             }
             Value::Struct(mut rc) => {
                 if let Some(s) = Rc::get_mut(&mut rc) {
@@ -146,6 +159,8 @@ impl Interp {
                 self.release(v);
             }
         }
+        // A `Drop` hook that panics while the program is shutting down has nobody to tell.
+        self.hook_panics.clear();
     }
 }
 

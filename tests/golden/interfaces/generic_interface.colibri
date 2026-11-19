@@ -1,0 +1,39 @@
+interface Container[T] {
+    fn get(self, i: int) -> T
+    fn size(self) -> int
+    fn last(self) -> T => self.get(self.size() - 1)
+}
+
+struct Bag { items: List[int] }
+struct Letters { text: str }
+
+impl Container[int] for Bag {
+    fn get(self, i: int) -> int => self.items[i]
+    fn size(self) -> int => self.items.len()
+}
+
+impl Container[str] for Letters {
+    fn get(self, i: int) -> str => "{self.text}{i}"
+    fn size(self) -> int => 3
+}
+
+fn sum_ints[C: Container[int]](c: C) -> int {
+    var t = 0
+    var i = 0
+    while i < c.size() {
+        t += c.get(i)
+        i += 1
+    }
+    return t
+}
+
+fn main() {
+    let b = Bag { items: [4, 5, 6] }
+    print(b.last())
+    print(sum_ints(b))
+    print(Letters { text: "x" }.last())
+}
+
+// expect: 6
+// expect: 15
+// expect: x2

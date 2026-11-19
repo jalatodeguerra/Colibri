@@ -1,0 +1,16 @@
+struct Wrapper { n: int }
+
+impl Wrapper {
+    fn describe[T: Show](self, extra: T) -> str => "{self.n}/{extra}"
+}
+
+fn main() {
+    let w = Wrapper { n: 1 }
+    print(w.describe("x"))
+    print(w.describe(2.5))
+    print(w.describe[bool](true))
+}
+
+// expect: 1/x
+// expect: 1/2.5
+// expect: 1/true

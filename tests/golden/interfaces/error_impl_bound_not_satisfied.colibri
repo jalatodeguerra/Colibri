@@ -1,0 +1,15 @@
+interface Describe {
+    fn describe(self) -> str
+}
+
+struct Box[T] { value: T }
+struct Plain { n: int }
+
+impl[T: Ord] Describe for Box[T] {
+    fn describe(self) -> str => "box"
+}
+
+fn main() {
+    let b = Box { value: Plain { n: 1 } }
+    print(b.describe()) // error: `Plain` does not implement `Ord`
+}

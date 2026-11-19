@@ -12,6 +12,7 @@ use crate::hir::{
     self, ArithOp, BinOp, Block, Body, Expr, FnId, LocalId, LocalInfo, LoopId, Num, Stmt, Storage,
 };
 use crate::infer::{InferCtx, VarKind};
+use crate::obligations::Obligation;
 use crate::pat::PatCx;
 use crate::suggest;
 use crate::types::{IntTy, Ty};
@@ -71,6 +72,18 @@ pub(crate) struct FnCtx<'c, 'a> {
     defer_depth: u32,
     /// How many errors the checker had when this body started.
     errors_at_start: usize,
+    /// Bounds to decide once the body's types are known.
+    pub obligations: Vec<Obligation>,
+    /// Calls of generic functions, whose type arguments must all be known by the end.
+    pub generic_calls: Vec<GenericCall>,
+}
+
+/// A call with type arguments that are inferred, kept so one that is never fixed is reported.
+pub(crate) struct GenericCall {
+    pub args: Vec<Ty>,
+    pub names: Vec<String>,
+    pub func: String,
+    pub span: Span,
 }
 
 /// How deeply expressions may nest before the checker gives up, whatever the stack budget.
@@ -94,6 +107,8 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             depth: 0,
             self_mut: false,
             defer_depth: 0,
+            obligations: Vec::new(),
+            generic_calls: Vec::new(),
         }
     }
 
@@ -280,11 +295,11 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     fn finish(mut self, block: Block, ret: Ty, span: Span, param_count: u32) -> Body {
         let mut block = block;
         let mut diags = Vec::new();
+        self.settle();
         // Types left open by an earlier mistake in this body are not worth a second error.
         let had_errors = self.ck.error_count() > self.errors_at_start;
         zonk::zonk_body(
             &mut self.infer,
-            &self.ck.types,
             &mut block,
             &mut self.locals,
             &mut diags,
@@ -302,6 +317,45 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             block,
             ret,
             mutates_self: self.self_mut,
+            needs_type_args: false,
+        }
+    }
+
+    /// Decides what had to wait for the body's types: type arguments that were never fixed,
+    /// then the bounds the body relies on.
+    fn settle(&mut self) {
+        let calls = std::mem::take(&mut self.generic_calls);
+        for call in calls {
+            for (arg, name) in call.args.iter().zip(&call.names) {
+                let (_, unresolved) = self.infer.finalize(arg);
+                if unresolved && self.ck.error_count() == self.errors_at_start {
+                    let others: Vec<&str> = call.names.iter().map(String::as_str).collect();
+                    let example = vec!["int"; others.len()].join(", ");
+                    self.ck.report(
+                        Diagnostic::error(
+                            format!("cannot infer `{name}` in the call to `{}`", call.func),
+                            call.span,
+                        )
+                        .with_hint(format!(
+                            "write the type explicitly, like `{}[{example}](...)`, or annotate the result",
+                            call.func
+                        )),
+                    );
+                    break;
+                }
+            }
+        }
+        let obligations = std::mem::take(&mut self.obligations);
+        let mut seen: Vec<(Ty, crate::types::TypeId, Span)> = Vec::new();
+        for ob in obligations {
+            let ty = self.infer.finalize(&ob.ty).0;
+            let args: Vec<Ty> = ob.args.iter().map(|a| self.infer.finalize(a).0).collect();
+            let key = (ty.clone(), ob.iface, ob.span);
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            self.ck.check_obligation(&Obligation { ty, args, ..ob });
         }
     }
 
@@ -953,6 +1007,13 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     }
 
     pub fn report_unknown_name(&mut self, name: &str, span: Span) {
+        if self.ck.scoped_param(name).is_some() {
+            self.ck.report(
+                Diagnostic::error(format!("`{name}` is a type parameter, not a value"), span)
+                    .with_hint("a type parameter has no static functions yet; pass a value of the type instead"),
+            );
+            return;
+        }
         let mut diag = Diagnostic::error(format!("unknown name `{name}`"), span);
         let owners: Vec<&str> = self
             .ck

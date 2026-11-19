@@ -1,0 +1,5 @@
+fn pick[T](a: T, b: T) -> T => a
+
+fn main() {
+    print(pick(1, "two")) // error: found `str`
+}

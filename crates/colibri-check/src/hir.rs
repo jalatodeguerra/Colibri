@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use colibri_syntax::Span;
 
-use crate::types::{FnSig, IntTy, Ty, TypeId};
+use crate::types::{FnSig, IntTy, ParamId, Ty, TypeId};
 
 /// A function in [`Program::fns`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -17,6 +17,10 @@ pub struct FnId(pub u32);
 /// A module-level value in [`Program::globals`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GlobalId(pub u32);
+
+/// An interface implementation in [`Program::impls`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ImplId(pub u32);
 
 /// A frame slot of one body: one per binding, never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -44,6 +48,46 @@ pub struct Program {
     /// Every struct, enum and class, indexed by [`TypeId`]. Index 0 is the prelude `Option`
     /// enum ([`crate::types::OPTION_TYPE`]); user types follow.
     pub types: Vec<TypeDef>,
+    /// Every interface implementation: explicit `impl I for T` blocks and the derived
+    /// implementations that were used (DESIGN §7.4). The engine dispatches `Callee::Bound`
+    /// and `Callee::Dyn` calls through them.
+    pub impls: Vec<ImplDef>,
+}
+
+/// What a runtime value's type looks like to interface dispatch: the head of a type, without
+/// type arguments, since the engine runs generic code with one uniform representation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TypeKey {
+    Int,
+    Float,
+    Bool,
+    Char,
+    Str,
+    Unit,
+    Tuple,
+    List,
+    Map,
+    Set,
+    /// A struct, enum or class (`Option` is the enum at [`crate::types::OPTION_TYPE`]).
+    Adt(TypeId),
+}
+
+/// `impl I for T`, or the derived implementation of a built-in interface.
+#[derive(Clone, Debug)]
+pub struct ImplDef {
+    pub iface: TypeId,
+    pub iface_args: Vec<Ty>,
+    /// The implementing type; it may mention the impl's own type parameters.
+    pub target: Ty,
+    /// The head of `target`, which the engine dispatches on.
+    pub key: TypeKey,
+    /// One entry per interface method, in the interface's declaration order: the function
+    /// that runs (the impl's own, or the interface's default). `None` for the methods of a
+    /// derived built-in implementation, which the engine provides itself.
+    pub methods: Vec<Option<FnId>>,
+    /// Whether this is a derived implementation of a built-in interface.
+    pub derived: bool,
+    pub span: Span,
 }
 
 impl Program {
@@ -61,6 +105,8 @@ impl Program {
 pub struct TypeDef {
     pub name: String,
     pub span: Span,
+    /// The type parameters, in order; `Ty::Adt(id, args)` gives one argument for each.
+    pub params: Vec<ParamId>,
     pub kind: TypeDefKind,
 }
 
@@ -77,6 +123,21 @@ pub enum TypeDefKind {
     Enum {
         variants: Vec<VariantDef>,
     },
+    /// An interface (DESIGN §9.2); as a type it means a dynamically dispatched value.
+    Interface {
+        methods: Vec<IfaceMethod>,
+    },
+}
+
+/// A method of an interface. `Callee::Bound` and `Callee::Dyn` name it by its index.
+#[derive(Clone, Debug)]
+pub struct IfaceMethod {
+    pub name: String,
+    pub span: Span,
+    /// `Some(mutable)` (`var self` is `Some(true)`); every interface method has a receiver.
+    pub receiver: Option<bool>,
+    /// The default implementation, if the interface provides one.
+    pub default: Option<FnId>,
 }
 
 #[derive(Clone, Debug)]
@@ -106,7 +167,9 @@ impl TypeDef {
     pub fn variants(&self) -> &[VariantDef] {
         match &self.kind {
             TypeDefKind::Enum { variants } => variants,
-            TypeDefKind::Struct { .. } | TypeDefKind::Class { .. } => &[],
+            TypeDefKind::Struct { .. }
+            | TypeDefKind::Class { .. }
+            | TypeDefKind::Interface { .. } => &[],
         }
     }
 
@@ -114,8 +177,20 @@ impl TypeDef {
     pub fn fields(&self) -> &[FieldDef] {
         match &self.kind {
             TypeDefKind::Struct { fields } | TypeDefKind::Class { fields } => fields,
-            TypeDefKind::Enum { .. } => &[],
+            TypeDefKind::Enum { .. } | TypeDefKind::Interface { .. } => &[],
         }
+    }
+
+    /// The methods of an interface (empty for anything else).
+    pub fn iface_methods(&self) -> &[IfaceMethod] {
+        match &self.kind {
+            TypeDefKind::Interface { methods } => methods,
+            _ => &[],
+        }
+    }
+
+    pub fn is_interface(&self) -> bool {
+        matches!(self.kind, TypeDefKind::Interface { .. })
     }
 
     pub fn is_enum(&self) -> bool {
@@ -134,6 +209,9 @@ pub struct FnDef {
     pub sig: FnSig,
     pub span: Span,
     pub body: Rc<Body>,
+    /// How many type parameters the function has in scope (its own plus those of its `impl`
+    /// or interface). Calls record one type argument for each in [`Call::type_args`].
+    pub type_params: u32,
 }
 
 /// A module-level `const`, `let` or `var`.
@@ -163,6 +241,9 @@ pub struct Body {
     /// the engine takes the final value of local 0 back out and the caller writes it to the
     /// receiver place (ARCHITECTURE §4).
     pub mutates_self: bool,
+    /// The body reads its hidden type-argument vector at runtime (ARCHITECTURE §1). Nothing
+    /// does yet (no `json.decode[T]`, no `e.is[T]()`), so the engines may drop `type_args`.
+    pub needs_type_args: bool,
 }
 
 /// How a local's slot is stored.
@@ -333,8 +414,20 @@ pub enum ExprKind {
         scrutinee: Box<Expr>,
         arms: Vec<Arm>,
     },
+    /// An implicit or explicit (`as`) conversion.
+    Coerce(Box<Expr>, Coercion),
     /// Left behind after a diagnostic; never reaches an engine.
     Error,
+}
+
+/// A conversion the checker made explicit (ARCHITECTURE §1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Coercion {
+    /// A value of a type with a known implementation becomes an interface value (DESIGN §9.2).
+    ToDyn(ImplId),
+    /// The same, for a value whose type is a type parameter with this interface as a bound:
+    /// the implementation is found from the value at runtime.
+    ToDynBound(TypeId),
 }
 
 /// A `for` loop. The binding is fresh per iteration: its locals are listed in `body.locals`,
@@ -452,6 +545,19 @@ pub enum Lit {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Callee {
     Fn(FnId),
+    /// A method of an interface called on a value of a type parameter or a derived
+    /// implementation: the engine finds the implementation from the runtime type of the
+    /// receiver (`args[0]`), through `impls[(runtime type, iface)]`.
+    Bound {
+        iface: TypeId,
+        method: u32,
+    },
+    /// A method called on an interface value: dispatched through the implementation stored
+    /// in the value (DESIGN §9.2).
+    Dyn {
+        iface: TypeId,
+        method: u32,
+    },
     Intrinsic(Intrinsic),
 }
 

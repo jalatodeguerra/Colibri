@@ -1,0 +1,9 @@
+fn swap[A, B](p: (A, B)) -> (B, A) => (p.1, p.0)
+
+fn main() {
+    print(swap((1, "a")))
+    print(swap(swap((true, 2.5))))
+}
+
+// expect: ("a", 1)
+// expect: (true, 2.5)

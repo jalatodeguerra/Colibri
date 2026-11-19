@@ -1,0 +1,16 @@
+fn max[T: Ord](a: T, b: T) -> T {
+    if a > b { return a }
+    return b
+}
+
+fn main() {
+    print(max(3, 9))
+    print(max("pear", "apple"))
+    print(max(2.5, 1.5))
+    print(max('a', 'z'))
+}
+
+// expect: 9
+// expect: pear
+// expect: 2.5
+// expect: z

@@ -1,0 +1,19 @@
+interface Describe {
+    fn describe(self) -> str
+}
+
+struct Box[T] { value: T }
+
+impl[T: Show] Describe for Box[T] {
+    fn describe(self) -> str => "box of {self.value}"
+}
+
+fn show_it[D: Describe](d: D) -> str => d.describe()
+
+fn main() {
+    print(Box { value: 1 }.describe())
+    print(show_it(Box { value: "s" }))
+}
+
+// expect: box of 1
+// expect: box of s

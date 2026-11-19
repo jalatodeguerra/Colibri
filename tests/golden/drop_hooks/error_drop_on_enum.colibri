@@ -1,0 +1,7 @@
+enum Mode { A, B }
+
+impl Drop for Mode { // error: `Drop` can only be implemented for a `class`, not for `Mode`
+    fn drop(self) {}
+}
+
+fn main() {}

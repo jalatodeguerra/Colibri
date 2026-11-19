@@ -1,0 +1,5 @@
+fn id[T](x: T) -> T => x
+
+fn main() {
+    print(id[int, str](1)) // error: `id` takes 1 type argument, found 2
+}

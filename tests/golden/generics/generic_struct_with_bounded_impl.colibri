@@ -1,0 +1,16 @@
+struct Range[T] { lo: T, hi: T }
+
+impl[T: Ord] Range[T] {
+    fn contains(self, x: T) -> bool => x >= self.lo && x <= self.hi
+}
+
+fn main() {
+    let r = Range { lo: 1, hi: 10 }
+    print(r.contains(5))
+    print(r.contains(11))
+    print(Range { lo: "a", hi: "m" }.contains("k"))
+}
+
+// expect: true
+// expect: false
+// expect: true

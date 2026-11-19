@@ -1,0 +1,6 @@
+struct Box[T] { value: T }
+
+fn main() {
+    let b: Box[int] = Box { value: "text" } // error: expected `int`, found `str`
+    print(b.value)
+}

@@ -1,0 +1,9 @@
+fn max[T: Ord](a: T, b: T) -> T => if a > b { a } else { b }
+
+fn main() {
+    print(max[float](1.0, 2.5))
+    print(max[int](4, 2))
+}
+
+// expect: 2.5
+// expect: 4

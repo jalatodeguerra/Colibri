@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use crate::compare::TooDeep;
 use crate::heap::{ClassObj, ListObj, MapObj, SetObj};
+use crate::hooks::{Overrides, Stop};
 use crate::ordered::OrderedMap;
 use crate::value::Value;
 
@@ -38,9 +38,14 @@ impl Cloner {
         self.memo.into_values().collect()
     }
 
-    pub(crate) fn clone_value(&mut self, v: &Value) -> Result<Value, TooDeep> {
+    pub(crate) fn clone_value(&mut self, v: &Value, ov: &mut dyn Overrides) -> Result<Value, Stop> {
         if crate::eval::stack_position().abs_diff(self.stack_base) > self.budget {
-            return Err(TooDeep);
+            return Err(Stop::TooDeep);
+        }
+        if matches!(v, Value::Struct(_) | Value::Enum(_) | Value::Obj(_))
+            && let Some(answer) = ov.clone_value(v)
+        {
+            return answer;
         }
         Ok(match v {
             Value::Unit
@@ -49,10 +54,14 @@ impl Cloner {
             | Value::Float(_)
             | Value::Char(_)
             | Value::Str(_) => v.clone(),
-            Value::Struct(s) => Value::strukt(s.ty, self.clone_all(&s.fields)?),
-            Value::Tuple(items) => Value::tuple(self.clone_all(items)?),
-            Value::Enum(e) => Value::variant(e.ty, e.variant, self.clone_all(&e.payload)?),
+            Value::Struct(s) => Value::strukt(s.ty, self.clone_all(&s.fields, ov)?),
+            Value::Tuple(items) => Value::tuple(self.clone_all(items, ov)?),
+            Value::Enum(e) => Value::variant(e.ty, e.variant, self.clone_all(&e.payload, ov)?),
             Value::Weak(w) => self.clone_weak(w),
+            Value::Dyn(d) => Value::Dyn(Rc::new(crate::value::DynVal {
+                impl_id: d.impl_id,
+                val: self.clone_value(&d.val, ov)?,
+            })),
             Value::Obj(src) => {
                 let key = Rc::as_ptr(src) as usize;
                 if let Some(done) = self.memo.get(&key) {
@@ -62,7 +71,7 @@ impl Cloner {
                 let copy = ClassObj::new(src.ty(), vec![Value::Unit; fields.len()]);
                 self.memo.insert(key, Value::Obj(Rc::clone(&copy)));
                 for (i, field) in fields.iter().enumerate() {
-                    let new = self.clone_value(field)?;
+                    let new = self.clone_value(field, ov)?;
                     let _ = copy.set_field(i, new);
                 }
                 Value::Obj(copy)
@@ -75,7 +84,7 @@ impl Cloner {
                 let copy = ListObj::new(Vec::new());
                 self.memo.insert(key, Value::List(Rc::clone(&copy)));
                 for item in src.snapshot() {
-                    let new = self.clone_value(&item)?;
+                    let new = self.clone_value(&item, ov)?;
                     let _ = copy.push(new);
                 }
                 Value::List(copy)
@@ -88,7 +97,7 @@ impl Cloner {
                 let copy = MapObj::new(OrderedMap::new());
                 self.memo.insert(key, Value::Map(Rc::clone(&copy)));
                 for (k, v) in src.snapshot() {
-                    let (k, v) = (self.clone_value(&k)?, self.clone_value(&v)?);
+                    let (k, v) = (self.clone_value(&k, ov)?, self.clone_value(&v, ov)?);
                     let _ = copy.insert(k, v);
                 }
                 Value::Map(copy)
@@ -101,7 +110,7 @@ impl Cloner {
                 let copy = SetObj::new(OrderedMap::new());
                 self.memo.insert(key, Value::Set(Rc::clone(&copy)));
                 for item in src.snapshot() {
-                    let new = self.clone_value(&item)?;
+                    let new = self.clone_value(&item, ov)?;
                     let _ = copy.add(new);
                 }
                 Value::Set(copy)
@@ -109,8 +118,8 @@ impl Cloner {
         })
     }
 
-    fn clone_all(&mut self, items: &[Value]) -> Result<Vec<Value>, TooDeep> {
-        items.iter().map(|v| self.clone_value(v)).collect()
+    fn clone_all(&mut self, items: &[Value], ov: &mut dyn Overrides) -> Result<Vec<Value>, Stop> {
+        items.iter().map(|v| self.clone_value(v, ov)).collect()
     }
 
     /// A weak reference follows its target into the copy when the target was copied.

@@ -1,0 +1,26 @@
+interface Named {
+    fn name(self) -> str
+}
+
+class Res { label: str }
+
+impl Named for Res {
+    fn name(self) -> str => self.label
+}
+
+impl Drop for Res {
+    fn drop(self) { print("drop {self.label}") }
+}
+
+fn main() {
+    var items: List[Named] = [Res { label: "a" }, Res { label: "b" }]
+    print(items[0].name())
+    items.clear()
+    print("cleared")
+}
+
+// expect: a
+// expect: drop a
+// expect: drop b
+// expect: cleared
+// drops: Res, Res

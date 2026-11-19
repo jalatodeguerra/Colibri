@@ -1,0 +1,7 @@
+class Res { n: int }
+
+impl Drop for Res {
+    fn drop(self) -> int => 1 // error: expected `fn drop(self)`, found `fn drop(self) -> int`
+}
+
+fn main() {}

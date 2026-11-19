@@ -1,0 +1,12 @@
+struct Range[T] { lo: T, hi: T }
+
+impl[T: Ord] Range[T] {
+    fn contains(self, x: T) -> bool => x >= self.lo
+}
+
+struct Opaque { v: int }
+
+fn main() {
+    let r = Range { lo: Opaque { v: 1 }, hi: Opaque { v: 2 } }
+    print(r.contains(Opaque { v: 1 })) // error: `Opaque` does not implement `Ord`
+}

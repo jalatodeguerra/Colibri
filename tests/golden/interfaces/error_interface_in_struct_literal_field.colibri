@@ -1,0 +1,10 @@
+interface Shape {
+    fn area(self) -> float
+}
+
+struct Holder { s: Shape }
+struct Blob { n: int }
+
+fn main() {
+    let h = Holder { s: Blob { n: 1 } } // error: `Blob` does not implement `Shape`
+}

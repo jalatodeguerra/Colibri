@@ -1,0 +1,7 @@
+struct Plain { n: int }
+
+impl Drop for Plain { // error: `Drop` can only be implemented for a `class`, not for `Plain`
+    fn drop(self) {}
+}
+
+fn main() {}

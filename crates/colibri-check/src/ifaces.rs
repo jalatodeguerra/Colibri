@@ -1,0 +1,541 @@
+//! Interfaces (DESIGN §9.2): declarations, `impl Interface for Type` blocks and their
+//! validation, and the derived implementations of the built-in interfaces.
+//!
+//! An interface method is checked once, abstractly, against `Self` (a type parameter bounded
+//! by the interface). An `impl` must provide every method that has no default, with exactly
+//! the signature the interface asks for once `Self` and the interface's own type parameters
+//! are replaced by the implementing type and the `impl`'s arguments.
+
+use colibri_syntax::ast::{self, ItemKind};
+use colibri_syntax::{Diagnostic, Span};
+
+use crate::checker::{Checker, ParamInfo};
+use crate::generics::SigCtx;
+use crate::hir::{FnId, IfaceMethod, ImplId, TypeDefKind};
+use crate::prelude;
+use crate::traits::{BoundRef, GenericParamInfo, ImplInfo, key_of};
+use crate::types::{DROP, FIRST_USER_TYPE, ParamId, Ty, TypeId};
+
+/// An interface as the checker keeps it.
+pub(crate) struct IfaceInfo<'a> {
+    pub name: String,
+    /// The interface's own type parameters (`T` in `Iter[T]`).
+    pub generics: Vec<GenericParamInfo>,
+    /// `Self`: a type parameter bounded by the interface itself.
+    pub self_param: GenericParamInfo,
+    pub methods: Vec<IfaceMethodInfo<'a>>,
+}
+
+/// One method of an interface, as a signature over `Self` and the interface's parameters.
+#[derive(Clone)]
+pub(crate) struct IfaceMethodInfo<'a> {
+    pub name: String,
+    pub name_span: Span,
+    /// `Self`, the interface's parameters and the method's own, in that order.
+    pub generics: Vec<GenericParamInfo>,
+    /// Including the receiver, whose type is `Self`.
+    pub params: Vec<ParamInfo<'a>>,
+    pub receiver: Option<bool>,
+    pub ret: Ty,
+    /// The function that runs when an implementation does not provide the method.
+    pub default: Option<FnId>,
+}
+
+impl IfaceMethodInfo<'_> {
+    /// How many type parameters the method has of its own.
+    pub fn own_generics(&self, iface_params: usize) -> usize {
+        self.generics.len().saturating_sub(1 + iface_params)
+    }
+}
+
+/// Whether `ty` mentions the type parameter `p`.
+fn mentions(ty: &Ty, p: ParamId) -> bool {
+    match ty {
+        Ty::Param(q, _) => *q == p,
+        Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().any(|t| mentions(t, p)),
+        Ty::List(t) | Ty::Set(t) | Ty::Option(t) => mentions(t, p),
+        Ty::Map(a, b) | Ty::Result(a, b) => mentions(a, p) || mentions(b, p),
+        Ty::Fn(ps, r) => ps.iter().any(|t| mentions(t, p)) || mentions(r, p),
+        _ => false,
+    }
+}
+
+impl<'a> Checker<'a> {
+    /// Declares the interface `id`: its `Self` parameter and an empty method list.
+    pub(crate) fn declare_interface(&mut self, id: TypeId, decl: &'a ast::InterfaceDecl) {
+        let generics = self.type_extra[id.0 as usize].generics.clone();
+        let self_param = GenericParamInfo {
+            id: self.new_param(),
+            name: "Self".to_string(),
+            span: decl.name.span,
+            bounds: vec![BoundRef {
+                iface: id,
+                args: generics.iter().map(GenericParamInfo::ty).collect(),
+                span: decl.name.span,
+            }],
+        };
+        self.param_bounds
+            .insert(self_param.id, self_param.bounds.clone());
+        self.ifaces.insert(
+            id,
+            IfaceInfo {
+                name: decl.name.name.clone(),
+                generics,
+                self_param,
+                methods: Vec::new(),
+            },
+        );
+    }
+
+    /// Resolves the signatures of an interface's methods, and creates the functions of its
+    /// default methods.
+    pub(crate) fn define_interface(&mut self, id: TypeId, decl: &'a ast::InterfaceDecl) {
+        let Some(info) = self.ifaces.get(&id) else {
+            return;
+        };
+        let (generics, self_param) = (info.generics.clone(), info.self_param.clone());
+        let mut outer = vec![self_param.clone()];
+        outer.extend(generics);
+        let mark = self.enter_generics(&outer);
+        let ctx = SigCtx {
+            self_ty: Some(self_param.ty()),
+            outer,
+            owner: Some(decl.name.name.clone()),
+            class: false,
+        };
+        let mut methods: Vec<IfaceMethodInfo<'a>> = Vec::new();
+        for member in &decl.items {
+            let ItemKind::Fn(f) = &member.kind else {
+                self.report(Diagnostic::error(
+                    "an interface can only declare methods",
+                    member.span,
+                ));
+                continue;
+            };
+            if let Some(prev) = methods.iter().find(|m| m.name == f.name.name) {
+                let prev_span = prev.name_span;
+                self.report(
+                    Diagnostic::error(
+                        format!("the method `{}` is declared more than once", f.name.name),
+                        f.name.span,
+                    )
+                    .with_label(prev_span, "first declared here"),
+                );
+                continue;
+            }
+            if f.receiver.is_none() {
+                self.report(
+                    Diagnostic::error(
+                        format!("the interface method `{}` needs a `self` receiver", f.name.name),
+                        f.name.span,
+                    )
+                    .with_hint("an interface describes what a value can do, so every method acts on `self`; static functions are not supported in interfaces yet"),
+                );
+                continue;
+            }
+            let method = if f.body.is_some() {
+                let fid = self.add_fn(member, f, &ctx);
+                let info = &self.fns[fid.0 as usize];
+                IfaceMethodInfo {
+                    name: f.name.name.clone(),
+                    name_span: f.name.span,
+                    generics: info.generics.clone(),
+                    params: info.params.clone(),
+                    receiver: info.receiver,
+                    ret: info.ret.clone(),
+                    default: Some(fid),
+                }
+            } else {
+                let saved = std::mem::replace(&mut self.self_ty, ctx.self_ty.clone());
+                let sig = self.resolve_sig(f, &ctx);
+                self.self_ty = saved;
+                IfaceMethodInfo {
+                    name: f.name.name.clone(),
+                    name_span: f.name.span,
+                    generics: sig.generics,
+                    params: sig.params,
+                    receiver: sig.receiver,
+                    ret: sig.ret,
+                    default: None,
+                }
+            };
+            methods.push(method);
+        }
+        self.leave_generics(mark);
+        let hir_methods: Vec<IfaceMethod> = methods
+            .iter()
+            .map(|m| IfaceMethod {
+                name: m.name.clone(),
+                span: m.name_span,
+                receiver: m.receiver,
+                default: m.default,
+            })
+            .collect();
+        self.types[id.0 as usize].kind = TypeDefKind::Interface {
+            methods: hir_methods,
+        };
+        if let Some(info) = self.ifaces.get_mut(&id) {
+            info.methods = methods;
+        }
+    }
+
+    /// Why a method cannot be called through an interface value (an object-safety problem,
+    /// DESIGN §9.2), or `None` when it can.
+    pub(crate) fn object_unsafety(&self, iface: TypeId, method: usize) -> Option<String> {
+        let info = self.ifaces.get(&iface)?;
+        let m = info.methods.get(method)?;
+        let own = m.own_generics(info.generics.len());
+        if own > 0 {
+            return Some(format!(
+                "`{}` has type parameters of its own, and an interface value does not know which types to run it with (native builds generate one copy of the method per type)",
+                m.name
+            ));
+        }
+        let self_id = info.self_param.id;
+        let uses_self =
+            m.params.iter().skip(1).any(|p| mentions(&p.ty, self_id)) || mentions(&m.ret, self_id);
+        uses_self.then(|| {
+            format!(
+                "`{}` mentions `Self` outside its receiver, and the concrete type behind an interface value is not known statically",
+                m.name
+            )
+        })
+    }
+
+    // ---- impl Interface for Type ----
+
+    pub(crate) fn collect_iface_impl(
+        &mut self,
+        decl: &'a ast::ImplDecl,
+        item: &'a ast::Item,
+        iface_expr: &ast::TypeExpr,
+        target: Ty,
+        generics: &[GenericParamInfo],
+    ) {
+        let (iface, iface_args) = match self.resolve_type(iface_expr) {
+            Ty::Dyn(id, args) => (id, args),
+            Ty::Error => return,
+            other => {
+                let shown = self.render(&other);
+                self.report(
+                    Diagnostic::error(format!("`{shown}` is not an interface"), iface_expr.span)
+                        .with_hint("`impl Interface for Type` needs an interface before `for`"),
+                );
+                return;
+            }
+        };
+        if target.is_error() {
+            return;
+        }
+        let iface_name = self.types[iface.0 as usize].name.clone();
+        let target_shown = self.render(&target);
+        let Some(key) = key_of(&target) else {
+            self.report(
+                Diagnostic::error(
+                    format!("`{iface_name}` cannot be implemented for `{target_shown}`"),
+                    decl.target.span,
+                )
+                .with_hint("only concrete types can implement an interface: structs, enums, classes, tuples, collections and the primitive types"),
+            );
+            return;
+        };
+        // The orphan rule (DESIGN §9.2): the interface or the type must be ours. Everything
+        // user-written is one package for now, so only built-in against built-in is refused.
+        let target_builtin = !matches!(&target, Ty::Adt(id, _) if id.0 >= FIRST_USER_TYPE);
+        if iface.0 < FIRST_USER_TYPE && target_builtin {
+            self.report(
+                Diagnostic::error(
+                    format!("cannot implement the built-in `{iface_name}` for the built-in type `{target_shown}`"),
+                    iface_expr.span,
+                )
+                .with_hint("the orphan rule: `impl I for T` must be written in the package that defines `I` or `T`; wrap the type in your own struct, or declare your own interface"),
+            );
+            return;
+        }
+        if iface == DROP
+            && !matches!(&target, Ty::Adt(id, _) if self.types[id.0 as usize].is_class())
+        {
+            self.report(
+                Diagnostic::error(
+                    format!("`Drop` can only be implemented for a `class`, not for `{target_shown}`"),
+                    iface_expr.span,
+                )
+                .with_hint("a struct or enum is copied freely, so a destructor would run once per copy; hold the resource in a class field instead"),
+            );
+            return;
+        }
+        if let Some(&prev) = self.impl_by_key.get(&(key, iface)) {
+            let prev_span = self.impls[prev.0 as usize].span;
+            self.report(
+                Diagnostic::error(
+                    format!("`{iface_name}` is implemented for `{target_shown}` more than once"),
+                    iface_expr.span,
+                )
+                .with_label(prev_span, "the first implementation")
+                .with_hint("one type has at most one implementation of an interface, whatever its type arguments"),
+            );
+            return;
+        }
+        let method_infos: Vec<IfaceMethodInfo<'a>> = self
+            .ifaces
+            .get(&iface)
+            .map(|i| i.methods.clone())
+            .unwrap_or_default();
+        let id = ImplId(self.impls.len() as u32);
+        self.impls.push(ImplInfo {
+            iface,
+            iface_args: iface_args.clone(),
+            target: target.clone(),
+            key,
+            generics: generics.to_vec(),
+            methods: vec![None; method_infos.len()],
+            span: item.span,
+            derived: false,
+        });
+        self.impl_by_key.insert((key, iface), id);
+
+        let owner = match &target {
+            Ty::Adt(t, _) => self.types[t.0 as usize].name.clone(),
+            other => self.render(other),
+        };
+        let class = matches!(&target, Ty::Adt(t, _) if self.types[t.0 as usize].is_class());
+        let ctx = SigCtx {
+            self_ty: Some(target.clone()),
+            outer: generics.to_vec(),
+            owner: Some(owner),
+            class,
+        };
+        let mut provided: Vec<Option<FnId>> = vec![None; method_infos.len()];
+        for member in &decl.items {
+            let ItemKind::Fn(f) = &member.kind else {
+                continue;
+            };
+            let Some(index) = method_infos.iter().position(|m| m.name == f.name.name) else {
+                self.report_extra_method(f, &iface_name, &method_infos, &target_shown);
+                // Still resolve it, so mistakes inside it are reported once.
+                self.add_fn(member, f, &ctx);
+                continue;
+            };
+            let fid = self.add_fn(member, f, &ctx);
+            if provided[index].is_some() {
+                self.report(Diagnostic::error(
+                    format!(
+                        "the method `{}` is defined more than once in this impl",
+                        f.name.name
+                    ),
+                    f.name.span,
+                ));
+                continue;
+            }
+            self.check_method_signature(
+                fid,
+                &method_infos[index],
+                &iface_name,
+                &iface_args,
+                &target,
+                generics,
+            );
+            provided[index] = Some(fid);
+        }
+        let missing: Vec<&IfaceMethodInfo<'a>> = method_infos
+            .iter()
+            .zip(&provided)
+            .filter(|(m, p)| m.default.is_none() && p.is_none())
+            .map(|(m, _)| m)
+            .collect();
+        if !missing.is_empty() {
+            let names: Vec<String> = missing.iter().map(|m| format!("`{}`", m.name)).collect();
+            let plural = if missing.len() == 1 { "" } else { "s" };
+            let mut diag = Diagnostic::error(
+                format!(
+                    "`impl {iface_name} for {target_shown}` is missing the method{plural} {}",
+                    names.join(", ")
+                ),
+                iface_expr.span,
+            );
+            for m in &missing {
+                diag = diag.with_label(
+                    m.name_span,
+                    format!("`{}` is declared here without a default", m.name),
+                );
+            }
+            self.report(diag.with_hint(format!(
+                "add {} to the impl, or give the interface a default body",
+                if missing.len() == 1 { "it" } else { "them" }
+            )));
+        }
+        self.impls[id.0 as usize].methods = provided;
+    }
+
+    fn report_extra_method(
+        &mut self,
+        f: &ast::FnDecl,
+        iface: &str,
+        methods: &[IfaceMethodInfo<'a>],
+        target: &str,
+    ) {
+        let names: Vec<&str> = methods.iter().map(|m| m.name.as_str()).collect();
+        let mut diag = Diagnostic::error(
+            format!("`{}` is not a method of `{iface}`", f.name.name),
+            f.name.span,
+        );
+        let hint = match crate::suggest::closest(&f.name.name, names.iter().copied()) {
+            Some(s) => format!("did you mean `{s}`?"),
+            None => format!(
+                "an impl of `{iface}` defines only its methods ({}); put other methods in `impl {target} {{ ... }}`",
+                names.join(", ")
+            ),
+        };
+        diag = diag.with_hint(hint);
+        self.report(diag);
+    }
+
+    /// Compares the signature of an impl's method with what the interface asks for.
+    fn check_method_signature(
+        &mut self,
+        fid: FnId,
+        wanted: &IfaceMethodInfo<'a>,
+        iface_name: &str,
+        iface_args: &[Ty],
+        target: &Ty,
+        impl_generics: &[GenericParamInfo],
+    ) {
+        let info = &self.fns[fid.0 as usize];
+        let (got_params, got_ret, got_recv, name_span) = (
+            info.params.clone(),
+            info.ret.clone(),
+            info.receiver,
+            info.name_span,
+        );
+        let own_got: Vec<GenericParamInfo> =
+            info.generics[impl_generics.len().min(info.generics.len())..].to_vec();
+        let iface_param_count = iface_args.len();
+        // Self, the interface's parameters and the method's own parameters, in the impl's terms.
+        let self_id = wanted.generics.first().map(|g| g.id);
+        let mut map: Vec<(ParamId, Ty)> = Vec::new();
+        if let Some(id) = self_id {
+            map.push((id, target.clone()));
+        }
+        for (g, a) in wanted.generics.iter().skip(1).zip(iface_args) {
+            map.push((g.id, a.clone()));
+        }
+        let own_wanted = &wanted.generics[(1 + iface_param_count).min(wanted.generics.len())..];
+        for (w, g) in own_wanted.iter().zip(&own_got) {
+            map.push((w.id, g.ty()));
+        }
+        let exp_params: Vec<Ty> = wanted
+            .params
+            .iter()
+            .skip(1)
+            .map(|p| p.ty.subst(&map))
+            .collect();
+        let exp_ret = wanted.ret.subst(&map);
+        let got_tys: Vec<Ty> = got_params.iter().skip(1).map(|p| p.ty.clone()).collect();
+        // A class's `self` can always change its object, so it may implement a `var self` method.
+        let class = matches!(target, Ty::Adt(id, _) if self.types[id.0 as usize].is_class());
+        let receiver_ok = wanted.receiver == got_recv
+            || (class && wanted.receiver == Some(true) && got_recv == Some(false));
+        let same = own_wanted.len() == own_got.len()
+            && receiver_ok
+            && exp_params == got_tys
+            && (exp_ret == got_ret || exp_ret.is_error() || got_ret.is_error())
+            && !got_tys.iter().any(Ty::is_error);
+        if same {
+            return;
+        }
+        let expected = self.render_signature(
+            &wanted.name,
+            wanted.receiver,
+            own_wanted.iter().map(|g| g.name.as_str()).collect(),
+            &wanted
+                .params
+                .iter()
+                .skip(1)
+                .zip(&exp_params)
+                .map(|(p, t)| (p.name.clone(), t.clone()))
+                .collect::<Vec<_>>(),
+            &exp_ret,
+        );
+        let found = self.render_signature(
+            &wanted.name,
+            got_recv,
+            own_got.iter().map(|g| g.name.as_str()).collect(),
+            &got_params
+                .iter()
+                .skip(1)
+                .map(|p| (p.name.clone(), p.ty.clone()))
+                .collect::<Vec<_>>(),
+            &got_ret,
+        );
+        let diag = Diagnostic::error(
+            format!(
+                "the method `{}` does not match the signature in `{iface_name}`: expected `{expected}`, found `{found}`",
+                wanted.name
+            ),
+            name_span,
+        )
+        .with_label(wanted.name_span, format!("`{iface_name}` declares it here"));
+        self.report(diag);
+    }
+
+    /// `fn area[T](self, scale: float) -> float`, for messages.
+    pub(crate) fn render_signature(
+        &self,
+        name: &str,
+        receiver: Option<bool>,
+        generics: Vec<&str>,
+        params: &[(String, Ty)],
+        ret: &Ty,
+    ) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        match receiver {
+            Some(true) => parts.push("var self".to_string()),
+            Some(false) => parts.push("self".to_string()),
+            None => {}
+        }
+        parts.extend(
+            params
+                .iter()
+                .map(|(n, t)| format!("{n}: {}", self.render(t))),
+        );
+        let gens = if generics.is_empty() {
+            String::new()
+        } else {
+            format!("[{}]", generics.join(", "))
+        };
+        let ret = if *ret == Ty::Unit {
+            String::new()
+        } else {
+            format!(" -> {}", self.render(ret))
+        };
+        format!("fn {name}{gens}({}){ret}", parts.join(", "))
+    }
+
+    // ---- derived implementations ----
+
+    /// The implementation of the built-in interface `iface` that `ty` has, as an id the engine
+    /// can dispatch through: its explicit `impl`, or a derived one made on first use.
+    pub(crate) fn impl_of(&mut self, ty: &Ty, iface: TypeId) -> Option<ImplId> {
+        let key = key_of(ty)?;
+        if let Some(&id) = self.impl_by_key.get(&(key, iface)) {
+            return Some(id);
+        }
+        if let Some(&id) = self.derived_impls.get(&(key, iface)) {
+            return Some(id);
+        }
+        let methods = self.types[iface.0 as usize].iface_methods().len();
+        let id = ImplId(self.impls.len() as u32);
+        self.impls.push(ImplInfo {
+            iface,
+            iface_args: Vec::new(),
+            target: ty.clone(),
+            key,
+            generics: Vec::new(),
+            methods: vec![None; methods],
+            span: Span::new(prelude::PRELUDE_FILE, 0, 0),
+            derived: true,
+        });
+        self.derived_impls.insert((key, iface), id);
+        Some(id)
+    }
+}

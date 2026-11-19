@@ -1,0 +1,17 @@
+struct Doc { text: str, rev: int }
+
+impl Clone for Doc {
+    fn clone(self) -> Doc => Doc { text: self.text, rev: self.rev + 1 }
+}
+
+fn main() {
+    let d = Doc { text: "x", rev: 1 }
+    print(d.clone().rev)
+    print([d, d].clone()[1].rev)
+    let nested = (d, "k").clone()
+    print(nested.0.rev)
+}
+
+// expect: 2
+// expect: 2
+// expect: 2

@@ -1,0 +1,5 @@
+impl Show for int { // error: cannot implement the built-in `Show` for the built-in type `int`
+    fn show(self) -> str => "int"
+}
+
+fn main() {}

@@ -1,0 +1,27 @@
+struct Key { id: int, note: str }
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool => self.id == other.id
+}
+
+impl Hash for Key {
+    fn hash(self) -> int => self.id
+}
+
+fn main() {
+    var m: Map[Key, str] = Map[Key, str]()
+    m.insert(Key { id: 1, note: "a" }, "first")
+    m.insert(Key { id: 1, note: "b" }, "second")
+    m.insert(Key { id: 2, note: "c" }, "third")
+    print(m.len())
+    print(m.get(Key { id: 1, note: "zzz" }))
+    var s: Set[Key] = Set[Key]()
+    s.add(Key { id: 7, note: "x" })
+    print(s.contains(Key { id: 7, note: "y" }))
+    print(s.contains(Key { id: 8, note: "y" }))
+}
+
+// expect: 2
+// expect: some("second")
+// expect: true
+// expect: false

@@ -1,0 +1,32 @@
+interface Counter {
+    fn bump(var self)
+    fn value(self) -> int
+}
+
+struct Clicks { n: int }
+
+impl Counter for Clicks {
+    fn bump(var self) { self.n += 1 }
+    fn value(self) -> int => self.n
+}
+
+fn main() {
+    var original = Clicks { n: 10 }
+    var boxed: Counter = original
+    boxed.bump()
+    boxed.bump()
+    print(original.n)
+    print(boxed.value())
+    var other = boxed
+    other.bump()
+    print(boxed.value())
+    print(other.value())
+    original.bump()
+    print(boxed.value())
+}
+
+// expect: 10
+// expect: 12
+// expect: 12
+// expect: 13
+// expect: 12

@@ -1,0 +1,5 @@
+struct Pair[A, B] { first: A, second: B }
+
+fn f(p: Pair[int]) {} // error: `Pair` takes 2 type arguments, found 1
+
+fn main() {}

@@ -61,7 +61,7 @@ impl Interp {
                 _ => None,
             };
             match entry {
-                None => return result,
+                None => return self.fold_hook_panics(result),
                 Some(Cleanup::Slot(local)) => {
                     let old = match fiber.frames.last_mut() {
                         Some(frame) => frame
@@ -114,6 +114,32 @@ impl Interp {
                 Err(Ctl::Panic(failure))
             }
         }
+    }
+
+    /// Folds the panics of `Drop` hooks that ran meanwhile into `result`: the first panic is
+    /// the one reported, later ones ride along as notes (ARCHITECTURE §6).
+    pub(crate) fn fold_hook_panics(&mut self, result: Eval) -> Eval {
+        if self.hook_panics.is_empty() {
+            return result;
+        }
+        let mut panics = std::mem::take(&mut self.hook_panics).into_iter();
+        let mut result = result;
+        for failure in &mut panics {
+            result = match result {
+                Err(Ctl::Panic(mut first)) => {
+                    first
+                        .notes
+                        .push(format!("a `Drop` hook also panicked: {}", failure.message));
+                    first.notes.extend(failure.notes);
+                    Err(Ctl::Panic(first))
+                }
+                other => {
+                    self.release_outcome(other);
+                    Err(Ctl::Panic(Box::new(failure)))
+                }
+            };
+        }
+        result
     }
 
     /// Releases the value an evaluation produced, when it produced one.

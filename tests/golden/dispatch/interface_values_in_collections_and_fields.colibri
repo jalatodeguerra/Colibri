@@ -1,0 +1,59 @@
+interface Shape {
+    fn area(self) -> float
+    fn name(self) -> str
+}
+
+struct Circle { r: float }
+struct Rect { w: float, h: float }
+class Blob { size: float }
+
+impl Shape for Circle {
+    fn area(self) -> float => 3.0 * self.r * self.r
+    fn name(self) -> str => "circle"
+}
+
+impl Shape for Rect {
+    fn area(self) -> float => self.w * self.h
+    fn name(self) -> str => "rect"
+}
+
+impl Shape for Blob {
+    fn area(self) -> float => self.size
+    fn name(self) -> str => "blob"
+}
+
+struct Scene {
+    main: Shape
+    extras: List[Shape] = []
+}
+
+fn biggest(by_name: Map[str, Shape]) -> float {
+    var best = 0.0
+    for name in by_name.keys() {
+        let a = by_name[name].area()
+        if a > best { best = a }
+    }
+    return best
+}
+
+fn pick(flag: bool) -> Shape {
+    if flag { return Circle { r: 1.0 } }
+    return Rect { w: 4.0, h: 4.0 }
+}
+
+fn main() {
+    var scene = Scene { main: Circle { r: 2.0 } }
+    scene.extras.push(Blob { size: 2.0 })
+    print(scene.main.area())
+    print(scene.extras[0].name())
+    let m: Map[str, Shape] = {"c": Circle { r: 1.0 }, "r": Rect { w: 5.0, h: 1.0 }}
+    print(biggest(m))
+    print(pick(true).name())
+    print(pick(false).area())
+}
+
+// expect: 12.0
+// expect: blob
+// expect: 5.0
+// expect: circle
+// expect: 16.0

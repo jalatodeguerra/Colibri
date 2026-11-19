@@ -1,0 +1,22 @@
+interface Mapper {
+    fn apply[T: Show](self, x: T) -> str
+    fn tag(self) -> str
+}
+
+struct Plain { n: int }
+
+impl Mapper for Plain {
+    fn apply[T: Show](self, x: T) -> str => "<{x}>"
+    fn tag(self) -> str => "plain"
+}
+
+fn use_it[M: Mapper](m: M) -> str => m.apply(2.5)
+
+fn main() {
+    print(use_it(Plain { n: 0 }))
+    let d: Mapper = Plain { n: 0 }
+    print(d.tag())
+}
+
+// expect: <2.5>
+// expect: plain

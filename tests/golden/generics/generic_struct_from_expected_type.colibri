@@ -1,0 +1,15 @@
+struct Box[T] { value: T }
+
+fn unwrap_or_zero(b: Box[int]) -> int => b.value
+
+fn main() {
+    let a: Box[float] = Box { value: 1.5 }
+    print(a.value)
+    print(unwrap_or_zero(Box { value: 7 }))
+    let b: Box[List[int]] = Box { value: [] }
+    print(b.value.len())
+}
+
+// expect: 1.5
+// expect: 7
+// expect: 0

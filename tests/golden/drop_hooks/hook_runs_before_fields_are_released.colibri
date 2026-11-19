@@ -1,0 +1,18 @@
+class Inner { name: str }
+class Outer { name: str, inner: Inner }
+
+impl Drop for Inner {
+    fn drop(self) { print("hook {self.name}") }
+}
+
+impl Drop for Outer {
+    fn drop(self) { print("hook {self.name}, inner is {self.inner.name}") }
+}
+
+fn main() {
+    let o = Outer { name: "outer", inner: Inner { name: "inner" } }
+}
+
+// expect: hook outer, inner is inner
+// expect: hook inner
+// drops: outer, inner
