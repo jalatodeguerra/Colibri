@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let xs = [1, 2]
     let ys = xs.map(fn(a, b) => a) // error: this closure takes 2 parameters, but 1 is expected here

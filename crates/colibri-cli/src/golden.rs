@@ -37,12 +37,22 @@ pub struct Directives {
     /// `// caps: fs, os`: the capabilities the test's `Vm` grants (the default is none). Read
     /// from the file that starts the program.
     pub caps: Vec<String>,
+    /// `// allow: unused` in the comment lines at the top of the file: unused-variable and
+    /// unused-import warnings in this file need not be listed. Every other file must list them
+    /// as `// warning:` or have none.
+    pub allow_unused: bool,
 }
 
 /// Parses the directives of a golden file.
 pub fn parse_directives(source: &str) -> Directives {
     let mut d = Directives::default();
+    // Still in the leading run of blank and comment lines (where `// allow:` is read).
+    let mut header = true;
     for (i, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if header && !trimmed.is_empty() && !trimmed.starts_with("//") {
+            header = false;
+        }
         // The first `//` followed by a known keyword wins, which lets a directive trail code.
         let mut rest = line;
         while let Some(pos) = rest.find("//") {
@@ -67,6 +77,10 @@ pub fn parse_directives(source: &str) -> Directives {
                 );
             } else if let Some(v) = comment.strip_prefix("leaks:") {
                 d.leaks.extend(parse_leaks(v));
+            } else if let Some(v) = comment.strip_prefix("allow:") {
+                if header && v.trim() == "unused" {
+                    d.allow_unused = true;
+                }
             } else if let Some(v) = comment.strip_prefix("skip:") {
                 d.skip = Some(v.trim().to_string());
             } else if let Some(v) = comment.strip_prefix("caps:") {
@@ -347,6 +361,7 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
         leaks: d.leaks.clone(),
         skip: d.skip.clone(),
         caps: d.caps.clone(),
+        allow_unused: d.allow_unused,
     };
     check_package(
         &PackageDirectives {
@@ -381,6 +396,12 @@ pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), Str
             format!("{file}:{line}")
         }
     };
+    let allow_unused: Vec<&str> = p
+        .files
+        .iter()
+        .filter(|(_, f)| f.allow_unused)
+        .map(|(path, _)| path.as_str())
+        .collect();
     match outcome {
         Outcome::CompileErrors { errors, warnings } => {
             let mut problems = Vec::new();
@@ -403,7 +424,7 @@ pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), Str
                     problems.push(format!("unexpected error on {}: {msg}", at(file, *line)));
                 }
             }
-            problems.extend(compare_warnings(&warnings_wanted, warnings));
+            problems.extend(compare_warnings(&warnings_wanted, &allow_unused, warnings));
             finish(problems)
         }
         Outcome::Compiled {
@@ -421,7 +442,7 @@ pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), Str
                     at(file, *line)
                 ));
             }
-            problems.extend(compare_warnings(&warnings_wanted, warnings));
+            problems.extend(compare_warnings(&warnings_wanted, &allow_unused, warnings));
             let expected = d
                 .expect
                 .iter()
@@ -488,16 +509,18 @@ pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), Str
     }
 }
 
-/// Every expected warning must appear, and every warning must be expected.
-/// The unused-code warnings (`unused variable`, `unused import`) are tolerated when a golden
-/// file does not list them: most golden programs are small demonstrations that leave values
-/// unused. A `// warning: unused variable` directive still has to be matched (it is checked
-/// above), so a test can pin one.
+/// Every expected warning must appear, and every warning must be expected. The unused-code
+/// warnings (`unused variable`, `unused import`) of a file with `// allow: unused` are
+/// tolerated when unlisted; a `// warning: unused variable` directive there must still match.
 fn is_unused_code_lint(message: &str) -> bool {
     message.starts_with("unused variable") || message.starts_with("unused import")
 }
 
-fn compare_warnings(expected: &[Located], actual: &[Located]) -> Vec<String> {
+fn compare_warnings(
+    expected: &[Located],
+    allow_unused: &[&str],
+    actual: &[Located],
+) -> Vec<String> {
     let at = |file: &str, line: usize| {
         if file.is_empty() {
             format!("line {line}")
@@ -518,7 +541,7 @@ fn compare_warnings(expected: &[Located], actual: &[Located]) -> Vec<String> {
         }
     }
     for (file, line, msg) in actual {
-        if is_unused_code_lint(msg) {
+        if is_unused_code_lint(msg) && allow_unused.contains(&file.as_str()) {
             continue;
         }
         if !expected
@@ -673,6 +696,22 @@ mod tests {
         assert!(check(&d, &extra).is_err());
         // A file with no warning directive must not warn.
         assert!(check(&parse_directives(""), &compiled_with(&[(1, "w")])).is_err());
+    }
+
+    #[test]
+    fn unlisted_unused_warnings_need_the_allow_directive() {
+        let outcome = compiled_with(&[(2, "unused variable `a`")]);
+        let plain = parse_directives("fn main() {\n    let a = 1\n}\n");
+        assert!(check(&plain, &outcome).is_err());
+        let allowed = parse_directives("// allow: unused\nfn main() {\n    let a = 1\n}\n");
+        assert!(allowed.allow_unused);
+        assert!(check(&allowed, &compiled_with(&[(3, "unused variable `a`")])).is_ok());
+        // Only in the comment lines at the top.
+        let late = parse_directives("fn main() {}\n// allow: unused\n");
+        assert!(!late.allow_unused);
+        // Other warnings are never tolerated.
+        let shadow = compiled_with(&[(2, "shadowed")]);
+        assert!(check(&allowed, &shadow).is_err());
     }
 
     #[test]

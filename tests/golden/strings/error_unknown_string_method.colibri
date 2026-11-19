@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let s = "abc".reverse() // error: `str` has no method `reverse`
 }

@@ -1240,7 +1240,9 @@ there (`Vm::load_package`), not a test per file. Directives are read from every 
 the directory tree: an `// error:`, `// warning:` or `// panic:` line refers to the line of the
 file it is in (the harness compares file and line); the expected stdout is the `// expect:`
 lines of `main.colibri` followed by those of the other files in path order; `// drops:`, `//
-panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only. See history/PHASE1.md.
+panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only. A file whose leading
+comment lines contain `// allow: unused` may leave its unused-variable and unused-import
+warnings unlisted; every other file must list them with `// warning:` or have none. See history/PHASE1.md.
 
 ### 11.8a Warnings (`Severity::Warning`)
 
@@ -1261,8 +1263,8 @@ shadowing, unreachable arms and an ignored `Result`, the checker reports unused 
 
 Warnings in the prelude or a host interface are dropped (`Checker::report_lint`). The golden
 harness compares warnings exactly, except that unlisted `unused variable` and `unused import`
-warnings are tolerated (most golden files are small demonstrations); a `// warning:` directive
-for one must still match.
+warnings are tolerated in a file that starts with the directive `// allow: unused` (small
+demonstrations); a `// warning:` directive for one must still match.
 
 ### 11.8b `colibri new <name>`
 

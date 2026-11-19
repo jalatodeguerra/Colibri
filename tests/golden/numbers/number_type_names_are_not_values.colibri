@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let a = u8 // error: `u8` is a type, not a value
     let b = float // error: `float` is a type, not a value

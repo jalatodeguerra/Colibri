@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let f = fn() use(weak nope) => 1 // error: unknown name `nope`
 }

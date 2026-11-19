@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let a: u8 = u8.MAX
     let b: i32 = i32.MIN

@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let n = 3
     let s = match n { // error: non-exhaustive `match`: missing case: _

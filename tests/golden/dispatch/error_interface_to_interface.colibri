@@ -1,3 +1,4 @@
+// allow: unused
 interface A {
     fn a(self) -> int
 }

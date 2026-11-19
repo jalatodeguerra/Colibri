@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     var xs = [1, 2, 3]
     let ys = xs.flat_map(fn(x) {

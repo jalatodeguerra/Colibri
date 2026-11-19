@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let s = [1, 2].fold(0, fn(acc, x) => "s") // error: expected `{integer}`, found `str`
 }

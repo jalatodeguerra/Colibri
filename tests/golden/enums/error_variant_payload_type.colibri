@@ -1,3 +1,4 @@
+// allow: unused
 enum Cmd { Move(int) }
 
 fn main() {

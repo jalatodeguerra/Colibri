@@ -1,3 +1,4 @@
+// allow: unused
 // A golden file need not list the unused-code warnings it triggers.
 fn main() {
     let never_read = 1

@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let a: int = 5
     let b = a as u8 // error: cannot convert to `u8` with `as`

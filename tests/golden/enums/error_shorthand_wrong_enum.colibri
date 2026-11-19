@@ -1,3 +1,4 @@
+// allow: unused
 enum A { X, Y }
 enum B { P, Q }
 

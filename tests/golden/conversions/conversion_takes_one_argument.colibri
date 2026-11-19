@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let a = u8() // error: `u8(..)` takes exactly one argument, found 0
     let b = int(1, 2) // error: `int(..)` takes exactly one argument, found 2

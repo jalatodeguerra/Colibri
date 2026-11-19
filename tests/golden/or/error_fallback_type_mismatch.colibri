@@ -1,3 +1,4 @@
+// allow: unused
 fn get() -> Result[int, str] => ok(1)
 fn main() {
     let a = get() or "none" // error: the right side of `or` is a `str`, but the left side gives `int`

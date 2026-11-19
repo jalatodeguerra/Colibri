@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     let a = int("12") // error: cannot convert a value of type `str` to `int`
     let b = u8(true) // error: cannot convert a value of type `bool` to `u8`
