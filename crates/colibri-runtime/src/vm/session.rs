@@ -49,7 +49,7 @@ impl Vm {
         self.teardown();
         // Later entries may import anything: have every module registered, so the host types
         // keep their places as the session grows.
-        self.materialize_all();
+        self.materialize_all()?;
         self.load_source("<repl>", "")
     }
 

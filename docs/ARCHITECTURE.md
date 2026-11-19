@@ -1456,6 +1456,14 @@ a program that imports it (`check_entry` reads the files, registers the lazy mod
 later, so it has every module and the host types keep their ids). An unregistered module is
 printed as an empty interface, so the checker sees its name and no items. A module is registered
 in one go: the per-registration interface check (print and parse back) runs once at its end.
+A registration that fails (an embedder's host type named like one of the module's, say) is
+an `Error::Registration` of the load that imports the module, not a panic; the failure is
+remembered (`Vm::failed`), so the same load fails the same way again and the module is not
+registered a second time on top of what it had registered. `bulk` is restored by a drop guard,
+also when a registration panics. `lazy_std_module` and `materialize_all` are `#[doc(hidden)]`:
+they are for `colibri-std`, and the rule that a module registers into its own name only is not
+enforced. A clash is found when the module is needed, not when the embedder registers its type
+(that would need each lazy module to declare its type names).
 `colibri_std::interfaces()` asks for every module by name, so the language server and `colibri
 check` see all of them.
 

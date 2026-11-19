@@ -376,4 +376,91 @@ mod lazy {
         assert_eq!(n, 42);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ---- a host type that clashes with the module's, and a module that panics ----
+
+    struct Mine;
+    impl colibri::HostType for Mine {
+        const NAME: &'static str = "Child";
+        fn describe(d: &mut colibri::TypeBuilder<'_, Self>) {
+            d.method("id", [], |_: &Mine| 1i64);
+        }
+    }
+
+    struct Std;
+    impl colibri::HostType for Std {
+        const NAME: &'static str = "Child";
+        fn describe(d: &mut colibri::TypeBuilder<'_, Self>) {
+            d.method("id", [], |_: &Std| 2i64);
+        }
+    }
+
+    fn register_clashing(vm: &mut colibri::Vm) -> Result<(), colibri::Error> {
+        vm.std_module("clash").register_type::<Std>()
+    }
+
+    fn check_clash_is_an_error(vm: &mut colibri::Vm) {
+        let err = vm
+            .load_source("a.colibri", "import clash\nfn main() {}\n")
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(matches!(err, colibri::Error::Registration { .. }), "{text}");
+        assert!(text.contains("std.clash"), "{text}");
+        assert!(text.contains("two different Rust types"), "{text}");
+        // The same failure again, not a panic and not a second registration.
+        let again = vm
+            .load_source("a.colibri", "import clash\nfn main() {}\n")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(again, text);
+        // A program that does not import it still loads, and then the guard against
+        // registering after a load is on.
+        vm.load_source("b.colibri", "fn main() {}\n").unwrap();
+        assert!(matches!(
+            vm.register_fn("late", || 1i64),
+            Err(colibri::Error::AlreadyLoaded)
+        ));
+    }
+
+    #[test]
+    fn a_host_type_clash_before_the_module_is_declared_is_a_load_error() {
+        let (mut vm, _) = vm();
+        vm.register_type::<Mine>().unwrap();
+        vm.lazy_std_module("clash", register_clashing);
+        check_clash_is_an_error(&mut vm);
+    }
+
+    #[test]
+    fn a_host_type_clash_after_the_module_is_declared_is_a_load_error() {
+        let (mut vm, _) = vm();
+        vm.lazy_std_module("clash", register_clashing);
+        vm.register_type::<Mine>().unwrap();
+        check_clash_is_an_error(&mut vm);
+    }
+
+    fn register_panicking(_: &mut colibri::Vm) -> Result<(), colibri::Error> {
+        panic!("a bug in the module")
+    }
+
+    #[test]
+    fn a_panicking_registration_leaves_the_vm_consistent() {
+        let (mut vm, _) = vm();
+        vm.lazy_std_module("boom", register_panicking);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = vm.load_source("a.colibri", "import boom\nfn main() {}\n");
+        }));
+        assert!(outcome.is_err());
+        // The module counts as failed: importing it again is an error, not a retry.
+        let err = vm
+            .load_source("a.colibri", "import boom\nfn main() {}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("std.boom"), "{err}");
+        // And `bulk` was restored: after a load, registering is refused.
+        vm.load_source("b.colibri", "fn main() {}\n").unwrap();
+        assert!(matches!(
+            vm.register_fn("late", || 1i64),
+            Err(colibri::Error::AlreadyLoaded)
+        ));
+    }
 }
