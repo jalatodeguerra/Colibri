@@ -35,7 +35,7 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
         /// Run the leak detector when the program ends and report the reference cycles that
-        /// were never freed to stderr; `--leaks=error` also exits with 1 (ARCHITECTURE §18)
+        /// were never freed to stderr; `--leaks=error` also exits with 1
         #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
     },

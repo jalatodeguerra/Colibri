@@ -3,7 +3,6 @@
 Two real programs written in Colibri, run with `colibri run`.
 They use the scripting std (`args`, `fs`, `path`, `json`, `regex`, `datetime`, `http`, `process`,
 `io`, `os`), coroutines, `Result`/`?`/`.context`, typed JSON decoding and exit codes.
-What got in the way while writing them is in [FINDINGS.md](FINDINGS.md).
 
 | Script | Lines | What it does |
 |--------|-------|--------------|
@@ -28,8 +27,7 @@ colibri run organize/organize.colibri -- <dir> [--dry-run] [--by ext|date]
   ([`rules.example.json`](organize/rules.example.json)); unlisted extensions go to `other`.
 - `--by date`: `<dir>/<year>/<month>/` from the modification time (`fs.stat(path).modified`, UTC).
 - The folder is walked recursively; hidden files are skipped; files already in their target
-  folder stay (so a second run prints `nothing to do`). Emptied folders are left behind
-  (FINDINGS 5).
+  folder stay (so a second run prints `nothing to do`). Emptied folders are left behind.
 - A taken name becomes `name (1).ext`, `name (2).ext`; nothing is overwritten. The plan is made
   before anything moves, so collisions are decided in name order.
 - `--match <regex>` only touches files whose name matches (`regex`).

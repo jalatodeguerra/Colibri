@@ -1,5 +1,5 @@
 //! Tests of `colibri fmt`: one test per formatting rule, comment preservation, and the corpus
-//! (every golden file and every DESIGN.md example) for idempotence and AST equality.
+//! (every golden file and every example of the corpus) for idempotence and AST equality.
 
 use std::path::{Path, PathBuf};
 
@@ -166,12 +166,15 @@ fn indentation_of_the_input_does_not_matter() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-// ---- the DESIGN.md corpus ----
+// ---- the examples corpus ----
 
-/// The text of every ```colibri block in DESIGN.md.
+/// The text of every ```colibri block in tests/corpus/design_examples.md.
 fn design_blocks() -> Vec<String> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/DESIGN.md");
-    let text = std::fs::read_to_string(path).expect("DESIGN.md is readable");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/corpus/design_examples.md"
+    );
+    let text = std::fs::read_to_string(path).expect("the examples corpus is readable");
     let mut blocks = Vec::new();
     let mut current: Option<String> = None;
     for line in text.lines() {
@@ -188,7 +191,7 @@ fn design_blocks() -> Vec<String> {
     blocks
 }
 
-/// Makes the `...` placeholders of the doc parseable (as the parser tests do).
+/// Makes the `...` placeholders of the corpus parseable (as the parser tests do).
 fn fill_placeholders(src: &str) -> String {
     let kept: Vec<&str> = src.lines().filter(|l| l.trim() != "...").collect();
     kept.join("\n")
