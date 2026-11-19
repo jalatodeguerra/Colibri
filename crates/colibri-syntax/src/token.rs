@@ -366,4 +366,33 @@ mod tests {
             assert_eq!(TokenKind::keyword(word), None, "{word}");
         }
     }
+
+    /// The other direction: every word the `match` in `keyword` accepts is in `KEYWORDS`
+    /// (so `fixed_text` and `Display` know it). Read from the source of `keyword` itself.
+    #[test]
+    fn every_keyword_in_the_match_is_in_the_table() {
+        let source = include_str!("token.rs");
+        let start = source
+            .find("Some(match word {")
+            .expect("the match is there");
+        let body = &source[start..];
+        let end = body.find("_ => return None").expect("the match ends");
+        let mut seen = 0;
+        for line in body[..end].lines().skip(1) {
+            let Some((word, kind)) = line.trim().split_once(" => TokenKind::") else {
+                continue;
+            };
+            let word = word.trim_matches('"');
+            let kind = kind.trim_end_matches(',');
+            let entry = KEYWORDS.iter().find(|(text, _)| *text == word);
+            assert!(
+                entry.is_some(),
+                "`{word}` is in `keyword` but not in KEYWORDS"
+            );
+            let rendered = format!("{:?}", entry.map(|(_, k)| k).unwrap());
+            assert_eq!(rendered, kind, "`{word}` maps to different kinds");
+            seen += 1;
+        }
+        assert_eq!(seen, KEYWORDS.len(), "the two lists have different lengths");
+    }
 }
