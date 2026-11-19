@@ -4,7 +4,7 @@
   "description": "Syntax highlighting and language server support for the Colibri programming language",
   "version": "0.1.0",
   "publisher": "colibri-lang",
-  "license": "MIT OR Apache-2.0",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/jalatodeguerra/leo"
