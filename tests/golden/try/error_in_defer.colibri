@@ -1,0 +1,5 @@
+fn cleanup() -> Result[(), str] => ok(())
+fn f() -> Result[(), str] {
+    defer cleanup()? // error: `?` cannot be used inside `defer`
+    print("body")
+}

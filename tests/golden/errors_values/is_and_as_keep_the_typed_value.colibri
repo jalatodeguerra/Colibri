@@ -1,0 +1,48 @@
+enum ParseError {
+    UnexpectedEof
+    BadToken(line: int, text: str)
+}
+impl IntoError for ParseError {}
+struct Limit {
+    max: int
+}
+impl IntoError for Limit {}
+
+fn parse(n: int) -> Result[int] {
+    if n == 0 { return err(ParseError.UnexpectedEof) }
+    if n == 1 { return err(ParseError.BadToken(9, "x")) }
+    if n == 2 { return err(Limit { max: 10 }) }
+    return ok(n)
+}
+fn classify(n: int) {
+    match parse(n) {
+        ok(v) => print("ok {v}")
+        err(e) => {
+            print("is ParseError: {e.is[ParseError]()}")
+            print("is Limit: {e.is[Limit]()}")
+            print("is str: {e.is[str]()}")
+            print("as ParseError: {e.as[ParseError]()}")
+            print("as Limit: {e.as[Limit]()}")
+        }
+    }
+}
+classify(0)
+classify(1)
+classify(2)
+classify(3)
+// expect: is ParseError: true
+// expect: is Limit: false
+// expect: is str: false
+// expect: as ParseError: some(UnexpectedEof)
+// expect: as Limit: none
+// expect: is ParseError: true
+// expect: is Limit: false
+// expect: is str: false
+// expect: as ParseError: some(BadToken(line: 9, text: "x"))
+// expect: as Limit: none
+// expect: is ParseError: false
+// expect: is Limit: true
+// expect: is str: false
+// expect: as ParseError: none
+// expect: as Limit: some(Limit { max: 10 })
+// expect: ok 3

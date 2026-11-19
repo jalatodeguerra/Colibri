@@ -1,0 +1,9 @@
+enum Fatal {
+    Bad(code: int)
+}
+fn main() -> Result[(), Fatal] {
+    print("about to fail")
+    return err(Fatal.Bad(3))
+}
+// expect: about to fail
+// main-err: Bad(code: 3)

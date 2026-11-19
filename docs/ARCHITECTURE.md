@@ -723,3 +723,34 @@ turns out to matter, it moves into DESIGN.md.
     parameter's *bound* (`fn collect[T, I: Iter[T]](it: I)`) is not inferred from that bound:
     write `[int, Evens]` or use `I: Iter[int]`. (Unchanged from §6.42; it surfaces more now that
     `Iter[T]` is common.)
+
+## 7. Slice 5 as built: `Result`, `Error`, `?` and `or`
+
+- **Type table.** `Option`=0, `Result`=1 (generic enum, `Ty::Adt(RESULT_TYPE, [T, E])`; the old
+  `Ty::Result` is gone), interfaces `Eq`..`Iterable`=2..9, `IntoError`=10, `Error`=11 (prelude
+  `class Error {}`), first user type 12. `ok`=variant 0, `err`=1. `Result[T]` is `Result[T, Error]`
+  and prints that way.
+- **Error value.** A `ClassObj` of `Error` with fields `[value, impl_id, context, cause]`. A root
+  keeps the original typed value (so `as[T]` returns it intact); `context` makes a wrapper
+  (`value=()`, `cause`=inner). `is`/`as` look at the root. `{e}` is `outer: inner: root`;
+  `message()` is the outermost layer only; `cause()` the wrapped error or `none`. The root message is
+  the user `IntoError.message`, else the `Show` of the value. `str` and `Error` implement
+  `IntoError` by derivation. Error objects are not in the drop trace; the kept payload is.
+- **HIR.** `Coercion::IntoError(ErrorConv)` / `ResultIntoError(ErrorConv)` (`Impl(id)` when the
+  type is known, `Bound` when it is a type parameter resolved at run time);
+  `Intrinsic::{Panic, ErrorIs(TypeKey), ErrorAs(TypeKey)}`; `Builtin` variants for the Option,
+  Result and Error methods. `e?` and `a or b` lower to `Match` + `Return`; handler blocks are
+  checked inline in the enclosing function so `return`/`break`/`continue` act on it.
+- **Runtime.** `Vm::run_main` returns `Error::MainReturnedErr { message }` when `main` returns
+  `err`; the CLI prints `error: ..` and exits 1. Harness directive `// main-err:`.
+- **Decisions beyond DESIGN.** (1) Explicit conversion is `Error.from(x)`; there is no
+  `.into_error()`. (2) `err(x)` where `Error` is expected converts `x`, so `err("msg")` works.
+  (3) `?` converts errors only to `Error`. (4) `or` first tries a plain `T` fallback, then a
+  `Result`/`Option` of `T`. (5) `is[T]`/`as[T]` compare a static type key, so generic arguments are
+  not distinguished and a type-parameter `T` is rejected. (6) Backtraces on errors are not
+  recorded (skipped). (7) `unwrap`, `unwrap_or`, `map_err`, `ok_or` are not provided. (8)
+  `panic(msg) -> Never` is a built-in added here (not in DESIGN); the name is reserved. (9) User
+  types named `Error`/`Result` are rejected; `Error {}` cannot be built. (10) The unused-`Result`
+  warning is skipped inside `defer`. (11) A bare `return` in a `Result[()]` function is still an
+  error; falling off the end returns `ok(())`. (12) `main` may return `Result[()]` or
+  `Result[(), E]`. (13) A top-level `let _ = ..` is parsed as a script statement.

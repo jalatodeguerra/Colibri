@@ -77,9 +77,13 @@ impl FnCtx<'_, '_> {
                 inclusive,
             } => self.check_range_value(start.as_deref(), end.as_deref(), *inclusive, span),
             ExprKind::Cast { expr, ty } => self.check_cast(expr, ty, span),
-            ExprKind::Or { .. } => self.unsupported("`or` fallback", span),
-            ExprKind::OrHandler { .. } => self.unsupported("`or` handler", span),
-            ExprKind::Try(_) => self.unsupported("the `?` operator", span),
+            ExprKind::Or { lhs, rhs } => self.check_or(lhs, rhs, span),
+            ExprKind::OrHandler {
+                lhs,
+                binding,
+                handler,
+            } => self.check_or_handler(lhs, binding.as_ref(), handler, span, expected),
+            ExprKind::Try(inner) => self.check_try(inner, span),
             ExprKind::Field { base, name } => self.check_field_expr(base, name, span),
             ExprKind::TupleIndex { base, index } => self.check_tuple_index_expr(base, *index, span),
             ExprKind::Index { base, args } => self.check_index_expr(base, args, e),
@@ -170,7 +174,13 @@ impl FnCtx<'_, '_> {
                     );
                     self.error_expr(span)
                 }
-                "ok" | "err" => self.unsupported(&format!("`{name}`"), span),
+                "ok" | "err" => {
+                    self.ck.report(
+                        Diagnostic::error(format!("`{name}` is a constructor, not a value"), span)
+                            .with_hint(format!("call it: `{name}(x)`")),
+                    );
+                    self.error_expr(span)
+                }
                 _ if self.ck.type_by_name(name).is_some() => {
                     self.ck.report(
                         Diagnostic::error(format!("`{name}` is a type, not a value"), span)

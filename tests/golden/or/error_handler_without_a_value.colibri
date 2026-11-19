@@ -1,0 +1,7 @@
+fn get() -> Result[int, str] => err("no")
+fn main() {
+    let v = get() or { // error: this `or` block ends without a value: it must produce a `int` or
+        print("failed")
+    }
+    print(v)
+}

@@ -1,0 +1,6 @@
+fn parse(s: str) -> Result[int, str] => ok(1)
+let v = parse("1")? // error: `?` can only be used inside a function
+print(v)
+fn main() {
+    print("fine")
+}

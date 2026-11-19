@@ -1,0 +1,5 @@
+fn find() -> int? => none
+fn f() -> Result[int, str] {
+    let v = find()? // error: `?` on an `Option` needs a function that returns an `Option`, but
+    return ok(v)
+}

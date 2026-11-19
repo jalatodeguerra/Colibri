@@ -1,0 +1,6 @@
+fn a() -> Result { // error: `Result` takes 1 or 2 type arguments, found 0
+    return ok(1)
+}
+fn b() -> Result[int, str, bool] { // error: `Result` takes 1 or 2 type arguments, found 3
+    return ok(1)
+}

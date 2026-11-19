@@ -1,0 +1,12 @@
+fn get(n: int) -> Result[int, str] {
+    if n > 0 { return ok(n) }
+    return err("not positive")
+}
+let f = fn(n: int) -> int {
+    let v = get(n) or { return -100 }
+    return v * 2
+}
+print(f(4))
+print(f(-4))
+// expect: 8
+// expect: -100

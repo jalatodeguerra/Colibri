@@ -1,0 +1,16 @@
+let root = Error.from("disk full")
+let top = root.context("saving").context("quitting")
+var cur: Error? = some(top)
+var depth = 0
+while let some(e) = cur {
+    print("{depth}: {e.message()}")
+    cur = e.cause()
+    depth += 1
+}
+print(root.cause().is_none())
+print(top.cause().is_some())
+// expect: 0: quitting
+// expect: 1: saving
+// expect: 2: disk full
+// expect: true
+// expect: true

@@ -1,0 +1,17 @@
+fn fail(code: int) -> Result[int] {
+    if code == 0 {
+        return err("code was zero")
+    }
+    return ok(code)
+}
+print(fail(0))
+print(fail(5))
+let e = Error.from("ad hoc")
+print(e)
+print(e.is[str]())
+print(e.as[str]())
+// expect: err(code was zero)
+// expect: ok(5)
+// expect: ad hoc
+// expect: true
+// expect: some("ad hoc")

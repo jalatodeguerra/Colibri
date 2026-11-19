@@ -1,0 +1,20 @@
+// The expected type fills in the side that the constructor does not mention.
+fn good(n: int) -> Result[int, str] {
+    return ok(n)
+}
+fn bad() -> Result[int, str] {
+    return err("nope")
+}
+fn short() -> Result[int, str] => ok(7)
+print(good(1))
+print(bad())
+print(short())
+let r: Result[float, int] = ok(1.5)
+print(r)
+let list: List[Result[int, str]] = [ok(1), err("x"), ok(3)]
+print(list)
+// expect: ok(1)
+// expect: err("nope")
+// expect: ok(7)
+// expect: ok(1.5)
+// expect: [ok(1), err("x"), ok(3)]

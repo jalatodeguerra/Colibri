@@ -1,0 +1,14 @@
+fn inner() -> Result[int] {
+    return err("deep")
+}
+fn outer() -> Result[int] {
+    let v = inner()?
+    return ok(v)
+}
+let a = outer()
+let b = inner()
+match (a, b) {
+    (err(x), err(y)) => print("{x} {y}")
+    _ => print("?")
+}
+// expect: deep deep

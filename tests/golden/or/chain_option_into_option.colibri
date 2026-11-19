@@ -1,0 +1,13 @@
+fn a(n: int) -> int? => if n == 1 { some(10) } else { none }
+fn b(n: int) -> int? => if n == 2 { some(20) } else { none }
+print(a(1) or b(1))
+print(a(2) or b(2))
+print(a(3) or b(3))
+print(a(3) or b(3) or 30)
+let both: int? = a(2) or b(2)
+print(both)
+// expect: some(10)
+// expect: some(20)
+// expect: none
+// expect: 30
+// expect: some(20)

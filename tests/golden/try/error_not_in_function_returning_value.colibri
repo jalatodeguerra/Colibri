@@ -1,0 +1,9 @@
+fn parse(s: str) -> Result[int, str] => ok(1)
+fn f() -> int {
+    let v = parse("1")? // error: `?` on a `Result` needs a function that returns `Result`, but this
+    return v
+}
+fn g() {
+    let v = parse("1")? // error: `?` on a `Result` needs a function that returns `Result`, but this
+    print(v)
+}

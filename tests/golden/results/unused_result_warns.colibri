@@ -1,0 +1,14 @@
+fn risky() -> Result[()] {
+    return ok(())
+}
+fn typed() -> Result[int, str] => ok(1)
+fn main() {
+    risky() // warning: unused `Result`; handle it with `?`, `or`, `match`, or `let _ = ...`
+    typed() // warning: unused `Result`; handle it with `?`, `or`, `match`, or `let _ = ...`
+    risky().is_ok()
+    let _ = risky()
+    let _ = typed()
+    let kept = risky()
+    print(kept.is_ok())
+}
+// expect: true

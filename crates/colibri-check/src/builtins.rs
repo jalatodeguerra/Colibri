@@ -11,8 +11,11 @@ use crate::body::FnCtx;
 use crate::call::Receiver;
 use crate::checker::ParamInfo;
 use crate::hir::{self, Builtin, Callee, Expr};
+use crate::optres::{
+    ERROR_METHODS, OPTION_METHODS, RESULT_METHODS, error_sig, option_sig, result_sig,
+};
 use crate::suggest;
-use crate::types::{ITER, Ty};
+use crate::types::{ERROR_TYPE, ITER, RESULT_TYPE, Ty};
 
 /// What a method needs of the element type beyond its signature.
 #[derive(Clone)]
@@ -29,14 +32,14 @@ enum Need {
 }
 
 /// A method of a built-in type with its types filled in for one receiver.
-struct Sig {
-    op: Builtin,
-    params: Vec<(&'static str, Ty)>,
-    ret: Ty,
+pub(crate) struct Sig {
+    pub op: Builtin,
+    pub params: Vec<(&'static str, Ty)>,
+    pub ret: Ty,
     need: Need,
 }
 
-fn sig(op: Builtin, params: Vec<(&'static str, Ty)>, ret: Ty) -> Sig {
+pub(crate) fn sig(op: Builtin, params: Vec<(&'static str, Ty)>, ret: Ty) -> Sig {
     Sig {
         op,
         params,
@@ -45,11 +48,11 @@ fn sig(op: Builtin, params: Vec<(&'static str, Ty)>, ret: Ty) -> Sig {
     }
 }
 
-fn optional(t: Ty) -> Ty {
+pub(crate) fn optional(t: Ty) -> Ty {
     Ty::Option(Box::new(t))
 }
 
-fn func(params: Vec<Ty>, ret: Ty) -> Ty {
+pub(crate) fn func(params: Vec<Ty>, ret: Ty) -> Ty {
     Ty::Fn(params, Box::new(ret))
 }
 
@@ -59,7 +62,7 @@ pub(crate) fn iter_of(t: Ty) -> Ty {
 }
 
 /// Makes a fresh type for a method's own type parameter (`map[U]`).
-type Fresh<'a> = &'a mut dyn FnMut() -> Ty;
+pub(crate) type Fresh<'a> = &'a mut dyn FnMut() -> Ty;
 
 const STR_METHODS: &[&str] = &[
     "len",
@@ -356,6 +359,11 @@ pub(crate) fn builtin_method_exists(ty: &Ty, name: &str) -> bool {
         Ty::Map(k, v) => map_sig(k, v, name).is_some(),
         Ty::Set(t) => set_sig(t, name).is_some(),
         Ty::Range(_) => range_sig(name).is_some(),
+        Ty::Option(t) => option_sig(t, name, &mut fresh).is_some(),
+        Ty::Adt(RESULT_TYPE, a) if a.len() == 2 => {
+            result_sig(&a[0], &a[1], name, &mut fresh).is_some()
+        }
+        Ty::Adt(ERROR_TYPE, _) => error_sig(name).is_some(),
         _ => false,
     }
 }
@@ -370,7 +378,7 @@ impl FnCtx<'_, '_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Result<Expr, Expr> {
-        let recv_ty = self.infer.shallow(&recv.ty);
+        let (recv, recv_ty) = self.prepare_receiver(recv, &name.name);
         if name.name == "clone" {
             return Ok(self.check_clone(recv, args, span));
         }
@@ -381,6 +389,12 @@ impl FnCtx<'_, '_> {
             Ty::Map(k, v) => (map_sig(k, v, &name.name), MAP_METHODS),
             Ty::Set(t) => (set_sig(t, &name.name), SET_METHODS),
             Ty::Range(_) => (range_sig(&name.name), RANGE_METHODS),
+            Ty::Option(t) => (option_sig(t, &name.name, &mut fresh), OPTION_METHODS),
+            Ty::Adt(RESULT_TYPE, a) if a.len() == 2 => (
+                result_sig(&a[0], &a[1], &name.name, &mut fresh),
+                RESULT_METHODS,
+            ),
+            Ty::Adt(ERROR_TYPE, _) => (error_sig(&name.name), ERROR_METHODS),
             _ => return Err(recv),
         };
         let Some(sig) = sig else {

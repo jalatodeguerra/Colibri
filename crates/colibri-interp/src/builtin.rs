@@ -88,6 +88,22 @@ impl Interp {
                 Value::Str(s) => Value::Bool(s.is_empty()),
                 _ => return Err(bad(self, fiber)),
             },
+            Builtin::OptionIsSome
+            | Builtin::OptionIsNone
+            | Builtin::OptionExpect
+            | Builtin::OptionMap
+            | Builtin::OptionAndThen
+            | Builtin::ResultIsOk
+            | Builtin::ResultIsErr
+            | Builtin::ResultExpect
+            | Builtin::ResultMap
+            | Builtin::ResultAndThen
+            | Builtin::ResultOk
+            | Builtin::ResultErr
+            | Builtin::ResultContext
+            | Builtin::ErrorMessage
+            | Builtin::ErrorContext
+            | Builtin::ErrorCause => return self.optres_op(fiber, op, args, span),
             Builtin::SetNew => Value::Set(SetObj::new(OrderedMap::new())),
             Builtin::SetFromList => {
                 let Some(list) = list_of(&recv) else {

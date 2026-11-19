@@ -1,0 +1,25 @@
+class Handle {
+    name: str
+}
+impl IntoError for Handle {}
+impl Drop for Handle {
+    fn drop(self) {
+        print("closing {self.name}")
+    }
+}
+fn main() {
+    var kept: Handle? = none
+    if true {
+        let e = Error.from(Handle { name: "file" })
+        kept = e.as[Handle]()
+        print("inner scope ends")
+    }
+    print("kept alive: {kept.is_some()}")
+    kept = none
+    print("released")
+}
+// expect: inner scope ends
+// expect: kept alive: true
+// expect: closing file
+// expect: released
+// drops: file

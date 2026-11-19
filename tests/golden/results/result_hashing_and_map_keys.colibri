@@ -1,0 +1,10 @@
+let k: Result[int, str] = ok(1)
+var m: Map[Result[int, str], str] = {:}
+m.insert(k, "first")
+m.insert(err("e"), "second")
+print(m.get(ok(1)))
+print(m.get(err("e")))
+print(m.get(err("other")))
+// expect: some("first")
+// expect: some("second")
+// expect: none

@@ -1,0 +1,18 @@
+struct Report {
+    name: str
+    problem: Error?
+}
+let reports = [
+    Report { name: "a", problem: none },
+    Report { name: "b", problem: some(Error.from("broken")) },
+]
+for r in reports {
+    print("{r.name}: {r.problem}")
+}
+let errors: List[Error] = [Error.from("one"), Error.from("two").context("ctx")]
+print(errors)
+print(errors.len())
+// expect: a: none
+// expect: b: some(broken)
+// expect: [one, ctx: two]
+// expect: 2

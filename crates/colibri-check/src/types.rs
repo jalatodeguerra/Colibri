@@ -19,19 +19,30 @@ pub struct TypeId(pub u32);
 /// ordinary enum machinery.
 pub const OPTION_TYPE: TypeId = TypeId(0);
 
-/// The built-in interfaces follow `Option` in the type table, in the order of the prelude
+/// The prelude `Result[T, E]` enum follows `Option` (DESIGN §10.1); it is an ordinary generic
+/// enum, so `Ty::Adt(RESULT_TYPE, [T, E])` values, patterns, equality, `Show` and
+/// exhaustiveness use the enum machinery. `Result[T]` is `Result[T, Error]`.
+pub const RESULT_TYPE: TypeId = TypeId(1);
+/// The built-in interfaces follow `Result` in the type table, in the order of the prelude
 /// source (`crate::prelude`), so their ids are constants (DESIGN §9.2, §7.4).
-pub const EQ: TypeId = TypeId(1);
-pub const ORD: TypeId = TypeId(2);
-pub const HASH: TypeId = TypeId(3);
-pub const SHOW: TypeId = TypeId(4);
-pub const CLONE: TypeId = TypeId(5);
-pub const DROP: TypeId = TypeId(6);
-pub const ITER: TypeId = TypeId(7);
-pub const ITERABLE: TypeId = TypeId(8);
-pub const INTO_ERROR: TypeId = TypeId(9);
+pub const EQ: TypeId = TypeId(2);
+pub const ORD: TypeId = TypeId(3);
+pub const HASH: TypeId = TypeId(4);
+pub const SHOW: TypeId = TypeId(5);
+pub const CLONE: TypeId = TypeId(6);
+pub const DROP: TypeId = TypeId(7);
+pub const ITER: TypeId = TypeId(8);
+pub const ITERABLE: TypeId = TypeId(9);
+pub const INTO_ERROR: TypeId = TypeId(10);
+/// The built-in `Error` (DESIGN §10.1): a reference type, declared in the prelude as an
+/// empty `class` so the checker treats it as one (identity equality, no fields to build).
+pub const ERROR_TYPE: TypeId = TypeId(11);
 /// The first id a user-defined type can have.
-pub const FIRST_USER_TYPE: u32 = 10;
+pub const FIRST_USER_TYPE: u32 = 12;
+/// The index of `ok` in the prelude `Result`.
+pub const VARIANT_OK: u32 = 0;
+/// The index of `err` in the prelude `Result`.
+pub const VARIANT_ERR: u32 = 1;
 /// The index of `none` in the prelude `Option`.
 pub const VARIANT_NONE: u32 = 0;
 /// The index of `some` in the prelude `Option`.
@@ -96,7 +107,6 @@ pub enum Ty {
     Map(Box<Ty>, Box<Ty>),
     Set(Box<Ty>),
     Option(Box<Ty>),
-    Result(Box<Ty>, Box<Ty>),
     Fn(Vec<Ty>, Box<Ty>),
     /// `Range[T]`: a closed or half-open range of integers, `a..b` or `a..=b` (DESIGN §5.2).
     Range(Box<Ty>),
@@ -142,7 +152,6 @@ impl Ty {
             Ty::Option(t) => Ty::Option(Box::new(go(t))),
             Ty::Range(t) => Ty::Range(Box::new(go(t))),
             Ty::Map(k, v) => Ty::Map(Box::new(go(k)), Box::new(go(v))),
-            Ty::Result(t, e) => Ty::Result(Box::new(go(t)), Box::new(go(e))),
             Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(go).collect(), Box::new(go(r))),
             _ => self.clone(),
         }
@@ -154,7 +163,7 @@ impl Ty {
             Ty::Param(..) => true,
             Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().any(Ty::has_param),
             Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) => t.has_param(),
-            Ty::Map(a, b) | Ty::Result(a, b) => a.has_param() || b.has_param(),
+            Ty::Map(a, b) => a.has_param() || b.has_param(),
             Ty::Fn(ps, r) => ps.iter().any(Ty::has_param) || r.has_param(),
             _ => false,
         }
@@ -164,6 +173,14 @@ impl Ty {
     /// access to the program's types and shows them as `type#N`.)
     pub fn render(&self, types: &[TypeDef]) -> String {
         Shown { ty: self, types }.to_string()
+    }
+}
+
+/// The `T` of `Result[T, Error]`'s arguments, when the error type is the built-in `Error`.
+fn default_error(args: &[Ty]) -> Option<&Ty> {
+    match args {
+        [ok, Ty::Adt(e, a)] if *e == ERROR_TYPE && a.is_empty() => Some(ok),
+        _ => None,
     }
 }
 
@@ -214,6 +231,11 @@ impl fmt::Display for Shown<'_> {
                 }
                 f.write_str(")")
             }
+            // `Result[T, Error]` is written `Result[T]`.
+            Ty::Adt(id, args) if *id == RESULT_TYPE && default_error(args).is_some() => {
+                let ok = default_error(args).unwrap_or(&Ty::Error);
+                write!(f, "Result[{}]", shown(ok, types))
+            }
             Ty::Adt(id, args) | Ty::Dyn(id, args) => {
                 match types.get(id.0 as usize) {
                     Some(def) => f.write_str(&def.name)?,
@@ -231,8 +253,6 @@ impl fmt::Display for Shown<'_> {
             Ty::Set(t) => write!(f, "Set[{}]", shown(t, types)),
             Ty::Option(t) => write!(f, "{}?", shown(t, types)),
             Ty::Range(t) => write!(f, "Range[{}]", shown(t, types)),
-            Ty::Result(t, e) if **e == Ty::Error => write!(f, "Result[{}]", shown(t, types)),
-            Ty::Result(t, e) => write!(f, "Result[{}, {}]", shown(t, types), shown(e, types)),
             Ty::Fn(params, ret) => {
                 f.write_str("fn(")?;
                 list(f, params)?;

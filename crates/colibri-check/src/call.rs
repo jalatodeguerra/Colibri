@@ -65,10 +65,8 @@ impl FnCtx<'_, '_> {
         match name {
             "print" if !self.ck.values.contains_key(name) => self.check_print(args, span),
             "some" => self.check_some(args, expected, span),
-            "ok" | "err" => {
-                self.check_args_loosely(args);
-                self.unsupported(&format!("`{name}`"), callee.span)
-            }
+            "ok" | "err" => self.check_ok_err(name == "ok", args, expected, span),
+            "panic" if !self.ck.values.contains_key(name) => self.check_panic(args, span),
             _ => {
                 self.check_args_loosely(args);
                 if self.ck.values.contains_key(name) {
@@ -93,9 +91,14 @@ impl FnCtx<'_, '_> {
                     && !matches!(self.ck.values.get(&id.name), Some(ValueRef::Global(_)))
             }
             // `x.map[int](..)` names a generic method; `self.handlers[0](..)` indexes a field.
-            ExprKind::Field { name, .. } => self.ck.methods.iter().any(|((_, n), f)| {
-                n == &name.name && !self.ck.fns[f.0 as usize].generics.is_empty()
-            }),
+            // (`is` and `as` are keywords, so no field has those names: `e.is[T]()` is the
+            // downcast of an `Error`.)
+            ExprKind::Field { name, .. } => {
+                matches!(name.name.as_str(), "is" | "as")
+                    || self.ck.methods.iter().any(|((_, n), f)| {
+                        n == &name.name && !self.ck.fns[f.0 as usize].generics.is_empty()
+                    })
+            }
             _ => false,
         }
     }
@@ -105,6 +108,38 @@ impl FnCtx<'_, '_> {
         for a in args {
             self.check_expr(&a.value, None);
         }
+    }
+
+    /// `panic(msg)`: stops the program with a message. It has type `!`, so it can end a
+    /// handler block or a branch.
+    fn check_panic(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        let [arg] = args else {
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error(
+                    format!("`panic` takes exactly one message, found {}", args.len()),
+                    span,
+                )
+                .with_hint("write `panic(\"what went wrong\")`"),
+            );
+            return self.error_expr(span);
+        };
+        if let Some(name) = &arg.name {
+            self.check_expr(&arg.value, None);
+            self.ck.report(Diagnostic::error(
+                "`panic` does not take a named argument",
+                name.span,
+            ));
+            return self.error_expr(span);
+        }
+        let msg = self.check_expr(&arg.value, Some(&Ty::Str));
+        self.expect(&msg, &Ty::Str, None);
+        let call = hir::ExprKind::Call(Box::new(hir::Call {
+            callee: Callee::Intrinsic(Intrinsic::Panic),
+            type_args: Vec::new(),
+            args: vec![Arg::Value(msg)],
+        }));
+        self.mk(call, Ty::Never, span)
     }
 
     fn check_print(&mut self, args: &[ast::Arg], span: Span) -> Expr {

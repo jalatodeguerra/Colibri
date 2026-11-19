@@ -1,0 +1,13 @@
+fn a() -> Result[int, str] => err("a failed")
+fn b() -> Result[int, str] => err("b failed")
+let v = a() or |ea| {
+    print("recovering from {ea}")
+    b() or |eb| {
+        print("recovering from {eb}")
+        7
+    }
+}
+print(v)
+// expect: recovering from a failed
+// expect: recovering from b failed
+// expect: 7

@@ -1,0 +1,6 @@
+fn main() {
+    let x = 5
+    let y = x or 3 // error: `or` needs a `Result` or an `Option`, found `int`
+    let z = x or { 3 } // error: `or` needs a `Result` or an `Option`, found `int`
+    print("{y} {z}")
+}

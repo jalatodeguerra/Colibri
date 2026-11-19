@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use colibri_check::hir::{CmpOp, Coercion, FnId, ImplDef, Place, Program, TypeKey};
-use colibri_check::types::{CLONE, DROP, EQ, HASH, ITER, ITERABLE, ORD, SHOW, Ty, TypeId};
+use colibri_check::types::{
+    CLONE, DROP, EQ, HASH, INTO_ERROR, ITER, ITERABLE, ORD, SHOW, Ty, TypeId,
+};
 use colibri_syntax::{FileId, Span};
 
 use crate::clone::Cloner;
@@ -37,6 +39,8 @@ pub(crate) struct Tables {
     show: HashMap<TypeId, FnId>,
     clone: HashMap<TypeId, FnId>,
     drop: HashMap<TypeId, FnId>,
+    /// Some `IntoError` implementation has a `message` method that must run to show an error.
+    error_messages: bool,
 }
 
 impl Tables {
@@ -47,6 +51,12 @@ impl Tables {
         };
         for (i, imp) in program.impls.iter().enumerate() {
             t.index.insert((imp.key, imp.iface), i as u32);
+            if imp.iface == INTO_ERROR
+                && !imp.derived
+                && matches!(imp.methods.first(), Some(Some(_)))
+            {
+                t.error_messages = true;
+            }
             let (TypeKey::Adt(ty), Some(Some(f)), false) =
                 (imp.key, imp.methods.first(), imp.derived)
             else {
@@ -72,7 +82,7 @@ impl Tables {
 }
 
 /// The head of a value's type, which interface dispatch works on.
-fn runtime_key(v: &Value) -> Option<TypeKey> {
+pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
     Some(match v {
         Value::Unit => TypeKey::Unit,
         Value::Bool(_) => TypeKey::Bool,
@@ -156,13 +166,25 @@ impl Overrides for Hooks<'_> {
         let f = *self.interp.dispatch.clone.get(&adt_of(v)?)?;
         Some(self.run(f, vec![v.clone()]))
     }
+
+    fn error_message(&mut self, value: &Value, impl_id: i64) -> Answer<String> {
+        let f = self.interp.error_message_fn(impl_id)?;
+        Some(self.run(f, vec![value.clone()]).map(|s| match s {
+            Value::Str(s) => s.to_string(),
+            _ => String::new(),
+        }))
+    }
 }
 
 impl Interp {
     /// Whether any user-written method replaces a derived one (else the plain functions run).
     fn has_overrides(&self) -> bool {
         let t = &self.dispatch;
-        !(t.eq.is_empty() && t.ord.is_empty() && t.show.is_empty() && t.clone.is_empty())
+        !(t.eq.is_empty()
+            && t.ord.is_empty()
+            && t.show.is_empty()
+            && t.clone.is_empty()
+            && !t.error_messages)
     }
 
     /// Whether any type has a user-written `Eq`.
@@ -322,7 +344,7 @@ impl Interp {
 
     /// The implementation of `iface` for the runtime type of `v`, made up (as a derived one)
     /// when the program has none.
-    fn impl_for(&mut self, v: &Value, iface: TypeId) -> Option<u32> {
+    pub(crate) fn impl_for(&mut self, v: &Value, iface: TypeId) -> Option<u32> {
         let key = runtime_key(v)?;
         if let Some(&i) = self.dispatch.index.get(&(key, iface)) {
             return Some(i);
@@ -348,6 +370,8 @@ impl Interp {
     /// A value converted to an interface value.
     pub(crate) fn coerce(&mut self, value: Value, how: &Coercion) -> Value {
         let impl_id = match how {
+            Coercion::IntoError(conv) => return self.convert_to_error(value, *conv),
+            Coercion::ResultIntoError(conv) => return self.result_into_error(value, *conv),
             Coercion::ToDyn(id) => id.0,
             Coercion::ToDynBound(iface) => {
                 if let Value::Dyn(d) = &value

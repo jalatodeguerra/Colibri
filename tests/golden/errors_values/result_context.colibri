@@ -1,0 +1,21 @@
+enum FsError {
+    NotFound
+    Denied
+}
+impl IntoError for FsError {}
+
+fn read(path: str) -> Result[str, FsError] {
+    if path == "secret" { return err(FsError.Denied) }
+    if path != "level.map" { return err(FsError.NotFound) }
+    return ok("tiles")
+}
+fn load_level(path: str) -> Result[str] {
+    let text = read(path).context("loading level {path}")?
+    return ok(text)
+}
+print(load_level("level.map"))
+print(load_level("level.bak"))
+print(load_level("secret"))
+// expect: ok("tiles")
+// expect: err(loading level level.bak: NotFound)
+// expect: err(loading level secret: Denied)

@@ -54,7 +54,7 @@ fn mentions(ty: &Ty, p: ParamId) -> bool {
         Ty::Param(q, _) => *q == p,
         Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().any(|t| mentions(t, p)),
         Ty::List(t) | Ty::Set(t) | Ty::Option(t) => mentions(t, p),
-        Ty::Map(a, b) | Ty::Result(a, b) => mentions(a, p) || mentions(b, p),
+        Ty::Map(a, b) => mentions(a, p) || mentions(b, p),
         Ty::Fn(ps, r) => ps.iter().any(|t| mentions(t, p)) || mentions(r, p),
         _ => false,
     }

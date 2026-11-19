@@ -112,7 +112,25 @@ impl Parser<'_> {
             let doc = self.docs_before(first);
             let item = self.parse_item_rest(start, attrs, doc, public)?;
             self.finish_stmt(false)?;
-            return Ok(TopLevel::Item(item));
+            // `let _ = expr` binds nothing: it is a statement of the script, so it runs in
+            // order with the other top-level statements instead of as a module-level value.
+            return Ok(match item {
+                Item {
+                    id,
+                    span,
+                    kind: ItemKind::Binding(binding),
+                    public: false,
+                    ref attrs,
+                    ..
+                } if attrs.is_empty() && matches!(binding.pat.kind, PatKind::Wild) => {
+                    TopLevel::Stmt(Stmt {
+                        id,
+                        span,
+                        kind: StmtKind::Let(binding),
+                    })
+                }
+                item => TopLevel::Item(item),
+            });
         }
         if has_prefix {
             return self.unexpected("an item after the attributes or `pub`");

@@ -23,6 +23,7 @@ mod ordered;
 mod pattern;
 mod place;
 mod release;
+mod results;
 mod scope;
 mod show;
 mod strfn;

@@ -1,0 +1,6 @@
+fn f() -> Result[int, str] {
+    return ok("text") // error: expected `Result[int, str]`, found `Result[str, str]`
+}
+fn g() -> Result[int, str] {
+    return err(5) // error: expected `Result[int, str]`, found `Result[int, {integer}]`
+}

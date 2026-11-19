@@ -1,0 +1,15 @@
+fn show(r: Result[int, str]) {
+    if let ok(v) = r {
+        print("value {v}")
+    } else {
+        print("no value")
+    }
+    if let err(e) = r {
+        print("error {e}")
+    }
+}
+show(ok(5))
+show(err("x"))
+// expect: value 5
+// expect: no value
+// expect: error x

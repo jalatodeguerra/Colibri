@@ -1,0 +1,4 @@
+fn main() {
+    let r = ok(1) // error: cannot infer the type of this expression
+    print("{r.is_ok()}")
+}

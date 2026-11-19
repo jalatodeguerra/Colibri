@@ -1,0 +1,8 @@
+enum Problem {
+    Missing
+}
+fn a() -> Result[int, Problem] => err(Problem.Missing)
+fn f() -> Result[int] {
+    let v = a()? // error: `?` cannot convert `Problem` to `Error`: it does not implement
+    return ok(v)
+}

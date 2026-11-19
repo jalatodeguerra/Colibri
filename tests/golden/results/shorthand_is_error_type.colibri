@@ -1,0 +1,13 @@
+// `Result[T]` is `Result[T, Error]`.
+fn f() -> Result[int] {
+    return ok(1)
+}
+fn g() -> Result[int, Error] {
+    return f()
+}
+let r: Result[int] = g()
+print(r)
+let e: Result[int] = err("shorthand")
+print(e)
+// expect: ok(1)
+// expect: err(shorthand)

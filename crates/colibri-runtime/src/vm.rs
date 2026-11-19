@@ -6,7 +6,8 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use colibri_check::hir::{FnId, Program};
-use colibri_interp::{DEFAULT_NATIVE_STACK_BUDGET, Fiber, Interp, PanicInfo};
+use colibri_check::types::{RESULT_TYPE, Ty, VARIANT_ERR};
+use colibri_interp::{DEFAULT_NATIVE_STACK_BUDGET, Fiber, Interp, PanicInfo, Value as InterpValue};
 use colibri_syntax::{Diagnostic, SourceMap, parse_file};
 
 use crate::convert::{Args, FromColibri, Type, Value};
@@ -166,15 +167,31 @@ impl Vm {
         }
     }
 
-    /// Calls `fn main()` if the program defines it.
+    /// Calls `fn main()` if the program defines it. A `main` that returns `Result[()]` and
+    /// ends in `err(e)` is [`Error::MainReturnedErr`] (DESIGN §10.3).
     pub fn run_main(&mut self) -> Result<(), Error> {
         let program = self.program.clone().ok_or(Error::NotLoaded)?;
-        match program.main {
-            Some(main) => self
-                .call_id(main, (self.id, self.epoch), Vec::new())
-                .map(|_| ()),
-            None => Ok(()),
+        let Some(main) = program.main else {
+            return Ok(());
+        };
+        let returns_result = matches!(
+            &program.fns[main.0 as usize].sig.ret,
+            Ty::Adt(RESULT_TYPE, _)
+        );
+        let result = self.interp.call(&mut self.fiber, main, Vec::new());
+        self.interp.flush();
+        let value = result.map_err(|info| self.panic_error(*info))?;
+        if returns_result
+            && let InterpValue::Enum(e) = &value
+            && e.variant == VARIANT_ERR
+            && let Some(payload) = e.payload.first()
+        {
+            let message = self.interp.error_report(&mut self.fiber, payload);
+            self.interp.release(value);
+            return Err(Error::MainReturnedErr { message });
         }
+        self.interp.release(value);
+        Ok(())
     }
 
     /// A handle to the function `name`, if its Colibri signature matches `A -> R`.

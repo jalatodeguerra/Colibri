@@ -1,0 +1,9 @@
+fn check[T](e: Error) -> bool {
+    return e.is[T]() // error: `is[T]` cannot look for this type
+}
+fn main() {
+    let e = Error.from("x")
+    print(e.is()) // error: `is` takes one type and no arguments
+    print(e.as[int, str]()) // error: `as` takes one type and no arguments
+    print(e.is[fn(int) -> int]()) // error: `is[fn(int) -> int]` cannot look for this type
+}

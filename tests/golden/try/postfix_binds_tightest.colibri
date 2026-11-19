@@ -1,0 +1,26 @@
+struct Config {
+    port: int
+    names: List[str]
+}
+fn load(ok_flag: bool) -> Result[Config, str] {
+    if !ok_flag { return err("no config") }
+    return ok(Config { port: 80, names: ["a", "b"] })
+}
+fn port(flag: bool) -> Result[int, str] {
+    return ok(load(flag)?.port + 1)
+}
+fn first(flag: bool) -> Result[str, str] {
+    let name = load(flag)?.names[0]
+    return ok(name)
+}
+fn count(flag: bool) -> Result[int, str] => ok(load(flag)?.names.len())
+print(port(true))
+print(port(false))
+print(first(true))
+print(count(true))
+print(count(false))
+// expect: ok(81)
+// expect: err("no config")
+// expect: ok("a")
+// expect: ok(2)
+// expect: err("no config")

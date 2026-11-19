@@ -20,6 +20,9 @@ pub struct Directives {
     /// `// panic:` message fragments; the program must panic and the message (with the notes
     /// of later panics, see `colibri_runtime::Error::Panic`) must contain every one.
     pub panic: Vec<String>,
+    /// `// main-err:` message fragments; `main` must return `err(e)` and the printed error
+    /// chain (`error: ...` on stderr, exit code 1 in the CLI) must contain every one.
+    pub main_err: Vec<String>,
     /// `// drops:` the labels of the class objects destroyed, in order, until the program ends
     /// (module-level values included). Compared only when the directive is present;
     /// `// drops:` with nothing after it expects that no object is destroyed.
@@ -45,6 +48,8 @@ pub fn parse_directives(source: &str) -> Directives {
                 d.warnings.push((i + 1, v.trim().to_string()));
             } else if let Some(v) = comment.strip_prefix("panic:") {
                 d.panic.push(v.trim().to_string());
+            } else if let Some(v) = comment.strip_prefix("main-err:") {
+                d.main_err.push(v.trim().to_string());
             } else if let Some(v) = comment.strip_prefix("drops:") {
                 d.drops = Some(
                     v.split(',')
@@ -71,6 +76,8 @@ pub enum Outcome {
     Compiled {
         stdout: String,
         panic: Option<String>,
+        /// The error chain if `main` returned `err(e)` (`Error::MainReturnedErr`).
+        main_err: Option<String>,
         /// The compile warnings: (1-based line, message).
         warnings: Vec<(usize, String)>,
         /// The labels of the class objects destroyed, in order, up to and including the
@@ -114,8 +121,13 @@ pub fn run_golden(path: &Path, source: &str) -> Outcome {
             warnings: located(&report.sources, &report.diagnostics, false),
         },
         other => {
+            let mut main_err = None;
             let panic = match other {
                 Ok(()) => None,
+                Err(colibri::Error::MainReturnedErr { message }) => {
+                    main_err = Some(message);
+                    None
+                }
                 Err(colibri::Error::Panic { message, notes, .. }) => {
                     // Notes ride along with the message so a golden file can match them.
                     Some(notes.iter().fold(message, |m, n| format!("{m}\nnote: {n}")))
@@ -125,6 +137,7 @@ pub fn run_golden(path: &Path, source: &str) -> Outcome {
             Outcome::Compiled {
                 stdout: out.contents(),
                 panic,
+                main_err,
                 warnings: located(vm.sources(), vm.warnings(), false),
                 drops,
             }
@@ -160,6 +173,7 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
         Outcome::Compiled {
             stdout,
             panic,
+            main_err,
             warnings,
             drops,
         } => {
@@ -188,6 +202,21 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
                     want.join(", "),
                     drops.join(", ")
                 ));
+            }
+            match (d.main_err.is_empty(), main_err) {
+                (false, Some(got)) => {
+                    for want in d.main_err.iter().filter(|w| !got.contains(w.as_str())) {
+                        problems.push(format!("main error {got:?} does not contain {want:?}"));
+                    }
+                }
+                (false, None) => problems.push(format!(
+                    "expected `main` to return an error containing {:?}",
+                    d.main_err
+                )),
+                (true, Some(got)) => {
+                    problems.push(format!("`main` returned an unexpected error: {got}"))
+                }
+                (true, None) => {}
             }
             match (d.panic.is_empty(), panic) {
                 (false, Some(got)) => {
@@ -246,6 +275,7 @@ mod tests {
         Outcome::Compiled {
             stdout: stdout.into(),
             panic: panic.map(Into::into),
+            main_err: None,
             warnings: Vec::new(),
             drops: Vec::new(),
         }
@@ -255,6 +285,7 @@ mod tests {
         Outcome::Compiled {
             stdout: String::new(),
             panic: None,
+            main_err: None,
             warnings: Vec::new(),
             drops: labels.iter().map(|s| s.to_string()).collect(),
         }
@@ -264,6 +295,7 @@ mod tests {
         Outcome::Compiled {
             stdout: String::new(),
             panic: None,
+            main_err: None,
             warnings: warnings.iter().map(|&(l, m)| (l, m.to_string())).collect(),
             drops: Vec::new(),
         }
@@ -271,12 +303,13 @@ mod tests {
 
     #[test]
     fn parses_directives() {
-        let src = "print(1) // expect: 1\n// expect:\n// expect: a b \nlet x = y // error: unknown name\nlet x = 2 // warning: shadows\n// panic: boom\n// drops: a, b ,c\n// skip: later\n// plain comment\n";
+        let src = "print(1) // expect: 1\n// expect:\n// expect: a b \nlet x = y // error: unknown name\nlet x = 2 // warning: shadows\n// panic: boom\n// main-err: bad\n// drops: a, b ,c\n// skip: later\n// plain comment\n";
         let d = parse_directives(src);
         assert_eq!(d.expect, ["1", "", "a b"]);
         assert_eq!(d.errors, [(4, "unknown name".to_string())]);
         assert_eq!(d.warnings, [(5, "shadows".to_string())]);
         assert_eq!(d.panic, ["boom"]);
+        assert_eq!(d.main_err, ["bad"]);
         assert_eq!(d.drops, Some(vec!["a".into(), "b".into(), "c".into()]));
         assert_eq!(parse_directives("// drops:\n").drops, Some(Vec::new()));
         assert_eq!(parse_directives("print(1)\n").drops, None);

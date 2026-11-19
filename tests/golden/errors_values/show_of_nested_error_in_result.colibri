@@ -1,0 +1,8 @@
+let r: Result[int] = err(Error.from("inner").context("outer"))
+print(r)
+print("{r}")
+let o: Error? = some(Error.from("x"))
+print(o)
+// expect: err(outer: inner)
+// expect: err(outer: inner)
+// expect: some(x)

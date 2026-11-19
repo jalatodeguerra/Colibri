@@ -1,0 +1,16 @@
+fn next(n: int) -> int? {
+    if n < 4 { return some(n * n) }
+    return none
+}
+var i = 0
+while true {
+    let v = next(i) or { break }
+    print("value {v}")
+    i += 1
+}
+print("stopped at {i}")
+// expect: value 0
+// expect: value 1
+// expect: value 4
+// expect: value 9
+// expect: stopped at 4

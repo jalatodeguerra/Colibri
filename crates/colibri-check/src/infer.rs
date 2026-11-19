@@ -6,7 +6,7 @@
 //! numeric literals adapt to what they are used as (DESIGN §3.4). Whatever is left unbound at
 //! the end of the function defaults to `int` / `float`.
 
-use crate::types::{Ty, TyVar};
+use crate::types::{ParamId, Ty, TyVar};
 
 /// What a variable is allowed to become.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +70,19 @@ impl InferCtx {
         self.map(ty, &mut |v| Ty::Infer(v))
     }
 
+    /// `ty` for a message: unbound variables are named by what is known of them, so an
+    /// untyped literal reads `{integer}` or `{float}` and anything else `_`, at any depth.
+    pub fn display_ty(&self, ty: &Ty) -> Ty {
+        self.map(ty, &mut |v| {
+            let name = match self.vars[v.0 as usize].kind {
+                VarKind::IntLit => "{integer}",
+                VarKind::FloatLit => "{float}",
+                VarKind::General => "_",
+            };
+            Ty::Param(ParamId(u32::MAX), name.into())
+        })
+    }
+
     /// Like [`InferCtx::resolve`], but unbound literal variables become their default (`int`,
     /// `float`) and unbound general variables become [`Ty::Error`]. Returns whether a general
     /// variable was left unresolved.
@@ -100,7 +113,6 @@ impl InferCtx {
             Ty::Option(t) => Ty::Option(Box::new(go(t))),
             Ty::Range(t) => Ty::Range(Box::new(go(t))),
             Ty::Map(k, v) => Ty::Map(Box::new(go(k)), Box::new(go(v))),
-            Ty::Result(t, e) => Ty::Result(Box::new(go(t)), Box::new(go(e))),
             Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(&mut go).collect(), Box::new(go(r))),
             _ => ty,
         }
@@ -145,7 +157,7 @@ impl InferCtx {
             | (Ty::Set(x), Ty::Set(y))
             | (Ty::Option(x), Ty::Option(y))
             | (Ty::Range(x), Ty::Range(y)) => self.unify(x, y),
-            (Ty::Map(k1, v1), Ty::Map(k2, v2)) | (Ty::Result(k1, v1), Ty::Result(k2, v2)) => {
+            (Ty::Map(k1, v1), Ty::Map(k2, v2)) => {
                 self.unify(k1, k2)?;
                 self.unify(v1, v2)
             }
@@ -194,7 +206,7 @@ impl InferCtx {
             Ty::Infer(w) => v == w,
             Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().any(|t| self.occurs(v, t)),
             Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) => self.occurs(v, &t),
-            Ty::Map(a, b) | Ty::Result(a, b) => self.occurs(v, &a) || self.occurs(v, &b),
+            Ty::Map(a, b) => self.occurs(v, &a) || self.occurs(v, &b),
             Ty::Fn(ps, r) => ps.iter().any(|t| self.occurs(v, t)) || self.occurs(v, &r),
             _ => false,
         }

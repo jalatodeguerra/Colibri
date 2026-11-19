@@ -87,6 +87,12 @@ impl FnCtx<'_, '_> {
             },
             _ => {}
         }
+        // `e.is[T]()` and `e.as[T]()` on an `Error` (DESIGN §10.2)
+        if matches!(&recv_ty, Ty::Adt(id, _) if *id == crate::types::ERROR_TYPE)
+            && matches!(name.name.as_str(), "is" | "as")
+        {
+            return self.check_error_downcast(recv, name, explicit, args, span);
+        }
         // 1. an inherent method of a user-defined type
         if let Ty::Adt(id, _) = &recv_ty
             && let Some(&f) = self.ck.methods.get(&(*id, name.name.clone()))

@@ -1,0 +1,16 @@
+fn risky(n: int) -> Result[int, str] {
+    print("risky {n}")
+    return err("fails")
+}
+let _ = risky(1)
+let _ = risky(2)
+fn main() {
+    let _ = risky(3)
+    let _: Result[int, str] = risky(4)
+    print("done")
+}
+// expect: risky 1
+// expect: risky 2
+// expect: risky 3
+// expect: risky 4
+// expect: done

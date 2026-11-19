@@ -1,0 +1,35 @@
+class Res {
+    name: str
+}
+impl Drop for Res {
+    fn drop(self) {
+        print("release {self.name}")
+    }
+}
+fn step(fail: bool) -> Result[int, str] {
+    if fail { return err("step failed") }
+    return ok(1)
+}
+fn run(fail: bool) -> Result[int, str] {
+    let outer = Res { name: "outer" }
+    if true {
+        let inner = Res { name: "inner" }
+        let v = step(fail)?
+        print("inner done {v}")
+    }
+    print("outer done")
+    return ok(0)
+}
+print(run(false))
+print("--")
+print(run(true))
+// expect: inner done 1
+// expect: release inner
+// expect: outer done
+// expect: release outer
+// expect: ok(0)
+// expect: --
+// expect: release inner
+// expect: release outer
+// expect: err("step failed")
+// drops: inner, outer, inner, outer

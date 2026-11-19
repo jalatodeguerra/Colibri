@@ -1,0 +1,44 @@
+// DESIGN §10.2, with a local enum standing in for `fs.Error`.
+enum FsError {
+    NotFound
+    PermissionDenied
+    Other
+}
+impl IntoError for FsError {}
+struct Level {
+    name: str
+}
+
+fn read(path: str) -> Result[str, FsError] {
+    if path == "missing" { return err(FsError.NotFound) }
+    if path == "locked" { return err(FsError.PermissionDenied) }
+    if path == "broken" { return err(FsError.Other) }
+    return ok(path)
+}
+fn load_level(path: str) -> Result[Level] {
+    let text = read(path).context("loading level {path}")?
+    return ok(Level { name: text })
+}
+fn use_default_level() { print("using the default level") }
+fn play(level: Level) { print("playing {level.name}") }
+fn fail(msg: str) { print("fatal: {msg}") }
+
+fn run(path: str) {
+    match load_level(path) {
+        ok(level) => play(level)
+        err(e) if e.is[FsError]() => match e.as[FsError]().expect("checked") {
+            FsError.NotFound         => use_default_level()
+            FsError.PermissionDenied => fail("can't read {path}")
+            _                        => fail("{e}")
+        }
+        err(e) => fail("{e}")
+    }
+}
+run("forest")
+run("missing")
+run("locked")
+run("broken")
+// expect: playing forest
+// expect: using the default level
+// expect: fatal: can't read locked
+// expect: fatal: loading level broken: Other

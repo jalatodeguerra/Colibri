@@ -1,0 +1,7 @@
+struct Plain {
+    n: int
+}
+fn f() -> Result[int, Plain] => err(Plain { n: 1 })
+fn main() {
+    let r = f().context("while f") // error: `Plain` cannot be converted to `Error`: it does not implement
+}

@@ -1,0 +1,5 @@
+fn a() -> Result[int, str] => ok(1)
+fn f() -> Result[int, int] {
+    let v = a()? // error: `?` cannot turn a `str` error into `int`
+    return ok(v)
+}

@@ -1,0 +1,5 @@
+fn f() -> Result[int, str] {
+    let x = 5
+    let y = x? // error: `?` needs a `Result` or an `Option`, found `int`
+    return ok(y)
+}

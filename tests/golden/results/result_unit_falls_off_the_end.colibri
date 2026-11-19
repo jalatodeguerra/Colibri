@@ -1,0 +1,26 @@
+// DESIGN §6.1: a `Result[()]` body that reaches its end returns `ok(())`.
+fn greet(name: str) -> Result[()] {
+    print("hello {name}")
+}
+fn greet_typed(name: str) -> Result[(), str] {
+    print("hi {name}")
+}
+fn early(flag: bool) -> Result[(), str] {
+    if flag {
+        return err("stopped")
+    }
+    print("went on")
+}
+let a = greet("ana")
+print(a)
+let b = greet_typed("bo")
+print(b)
+print(early(false))
+print(early(true))
+// expect: hello ana
+// expect: hi bo
+// expect: ok(())
+// expect: ok(())
+// expect: went on
+// expect: ok(())
+// expect: err("stopped")

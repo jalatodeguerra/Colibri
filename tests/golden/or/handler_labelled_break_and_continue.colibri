@@ -1,0 +1,26 @@
+fn get(i: int, j: int) -> Result[int, str] {
+    if j == 2 { return err("column 2") }
+    if i == 2 { return err("row 2") }
+    return ok(i * 10 + j)
+}
+'rows: for i in 0..4 {
+    for j in 0..4 {
+        let v = get(i, j) or |e| {
+            print("skip {i},{j}: {e}")
+            if i == 2 { break 'rows }
+            continue
+        }
+        print("v {v}")
+    }
+}
+print("end")
+// expect: v 0
+// expect: v 1
+// expect: skip 0,2: column 2
+// expect: v 3
+// expect: v 10
+// expect: v 11
+// expect: skip 1,2: column 2
+// expect: v 13
+// expect: skip 2,0: row 2
+// expect: end
