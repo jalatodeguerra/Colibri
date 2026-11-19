@@ -1,13 +1,12 @@
 # Optional game kit package (moved from DESIGN §15.6)
 
-This note was DESIGN.md §15.6 until v0.5. The game kit is deferred: it is not in the stock
-binary and not scheduled. It is kept here as a design sketch.
+This note was DESIGN.md §15.6 until v0.5. It is a **shelved idea outside the language
+project**: the game kit is not part of Colibri, not scheduled and not a planned crate. It is kept
+here only as a sketch, in case someone builds such a package on top of Colibri later.
 
-The game kit is **not in the stock binary** (revised 2026-11-19). A general-purpose language
-should not carry a window, a renderer and an audio stack in every install. It becomes an
-**optional package for later**, a separate `colibri-game` package (and crate), built after the
-general scripting slice (§17.5). Until then there is no `game` module, and games use the C FFI
-(§15.3) or the embedding API (§15.4).
+A general-purpose language should not carry a window, a renderer and an audio stack in every
+install, so the stock binary has no `game` module. Games use the C FFI (DESIGN §15.3) or the
+embedding API (DESIGN §15.4) today, and the roadmap (DESIGN §17.5) has no game item.
 
 The idea is unchanged, the way LÖVE is a kit for Lua: a game needs no Rust toolchain, no C
 toolchain and no bindings beyond installing the package.

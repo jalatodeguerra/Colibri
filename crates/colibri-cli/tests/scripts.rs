@@ -1,4 +1,4 @@
-//! The phase 2 milestone: the automation scripts in `examples/scripts`, run through the real
+//! The automation scripts in `examples/scripts`, run through the real
 //! `colibri` binary. The organiser works on a temporary tree; the report generator talks to a
 //! hand-written HTTP server on 127.0.0.1 that serves the fixtures (nothing leaves the machine).
 

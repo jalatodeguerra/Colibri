@@ -2666,7 +2666,7 @@ platform-specific block, and a bytecode-VM path (the VM will call the same `coli
 
 ## 20. Vector types as built
 
-PHASE2 step 1 (DESIGN §15.1, §5.1). `vec2`, `vec3`, `vec4` (`f32` components) and `ivec2`,
+PHASE2 step 8 (DESIGN §15.1, §5.1). `vec2`, `vec3`, `vec4` (`f32` components) and `ivec2`,
 `ivec3`, `ivec4` (`i32`) are plain values: constructors, component fields, swizzles,
 component-wise operators and a small set of methods. `mat3`, `mat4` and `quat` are not built.
 

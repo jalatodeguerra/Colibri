@@ -22,7 +22,7 @@ made on 2026-11-19 about the road to the VM:
 
 - **Status and markers.** The status line says what is built. Described-but-unbuilt features are
   marked **[Not built yet]** where they appear (§3.6, §5.2, §6.1, §7.5, §10.2, §12, §13, §13.1,
-  §15.4). Game-first wording is gone from the goals and the sample (§1, §2).
+  §14.1, §15.2, §15.4, §16.1, §16.5, §16.7). Game-first wording is gone from the goals and the sample (§1, §2).
 - **Vectors leave the language core** (§15.1, Q12): they will become a library of ordinary
   structs built on new operator interfaces `Add`, `Sub`, `Mul` and `Neg`. Decided and planned,
   not done.
@@ -37,8 +37,9 @@ made on 2026-11-19 about the road to the VM:
   closures (`map`, `filter`, `sort_by`, ...) will be written in Colibri so they can pause
   (§14.3).
 - **macOS and Windows testing** must be set up before the VM (§17.5). CI is down at the moment.
-- **`wait_frames(n)` is removed** (§14.2); `wait(seconds)` and `wait_until(cond)` remain.
-  Scheduler wording talks about advancing the scheduler, not game frames.
+- **`wait_frames(n)` is being removed** from the language; §14.2 no longer documents it, and
+  `wait(seconds)` and `wait_until(cond)` remain. Scheduler wording talks about advancing the
+  scheduler, not game frames.
 - **Game kit moved out** (§15.6) to [notes/game-kit.md](notes/game-kit.md). The heading stays so
   section numbers are stable.
 - **Roadmap, workspace layout and open questions** (§17.1, §17.5, §18) now match the code:
@@ -178,17 +179,21 @@ v0.2 answers the advisor review on PR #1. The main changes:
   `extern` declaration cannot read freed memory, write out of bounds, or race on memory. Every
   feature in this document (places, `borrow`, drop timing, thread sends, coroutines) is designed
   against this rule; where static checking is impractical, a runtime check panics instead.
-- **The same program means the same thing in every mode.** The interpreter, the VM (standalone,
-  embedded or on the web) and native code, if it is ever built, agree on results, panics and drop
-  order. Only speed differs.
+- **The same program means the same thing in every mode.** While both engines exist, the
+  interpreter and the VM (standalone, embedded or on the web) agree on results, panics and drop
+  order, and so would native code if it is ever built. Only speed differs. Once the tree-walker
+  is retired (§16.2), the golden tests are the reference.
+
 
 ### Non-goals
 
 - Audio-plugin / hard-real-time DSP as a first-class target (explicitly dropped).
 - `async`/`await` (Colibri uses uncolored tasks and coroutines instead, §14).
-- Inheritance, exceptions, macros, compile-time metaprogramming, and user-defined
-  **arithmetic** operators in v1. (`==` and `<` are user-definable through `Eq` and `Ord`;
-  arithmetic on structs through interfaces is planned after phase 1, Q12.)
+- Inheritance, exceptions, macros, compile-time metaprogramming, and general operator
+  overloading. (`==` and `<` are user-definable through `Eq` and `Ord`. The one exception is a
+  fixed set of arithmetic interfaces, `Add`, `Sub`, `Mul` and `Neg` (plus `Div` if the vector
+  library needs it), planned before the VM as the base for the `vec` library (Q12, §15.1).
+  Overloading beyond those interfaces stays a non-goal.)
 - Competing with Rust or C++ on peak performance. "Fast enough for scripts, tools and servers,
   and for interactive programs, and much faster than Python" is the bar (numbers in §17.4).
 - A JIT, at any point; M:N task scheduling in v1.
@@ -295,9 +300,9 @@ is Go's, plus two fixes for Go's most common "why doesn't this parse" moments:
 let total = price * qty +
             shipping                        // rule 1: line ended with `+`
 
-let names = players
-    .filter(fn(p) => p.alive())             // rule 3: leading `.`
-    .map(fn(p) => p.name)
+let names = users
+    .filter(fn(u) => u.active)              // rule 3: leading `.`
+    .map(fn(u) => u.name)
 
 draw_text(
     "score: {score}",                        // rule 2: inside ( )
@@ -738,7 +743,7 @@ p.step(0.016)        // `p` must be `var`
 
 Structs, enums and tuples derive `Eq`, `Hash`, `Show`, `Clone` and the serialization support of
 §7.5 automatically, whenever all their fields support them. No declaration is needed, so
-`print("{hero.pos}")` and `if a == b` just work. A type can override any of them with an explicit
+`print("{user.name}")` and `if a == b` just work. A type can override any of them with an explicit
 `impl`. `Ord` is derived only for enums without payloads and for tuples; structs implement it
 explicitly. `compare(a, b) -> int` (-1, 0 or 1) orders two values of any `Ord` type, and since
 tuples are ordered, tie-breaks and mixed directions are tuples:
@@ -748,7 +753,7 @@ unless implemented.
 
 ### 7.5 Type descriptors, serialization and reflection [Proposed]
 
-Colibri has no macros, but save games, configs and level data need `json.decode[Player](text)`.
+Colibri has no macros, but configs, saved state and API payloads need `json.decode[Config](text)`.
 The compiler emits a **type descriptor** for every type (name, fields with types and defaults,
 variants, attributes). The same descriptors serve several features, so they're built once:
 
@@ -793,10 +798,10 @@ fn area(s: Shape) -> float {
 }
 
 match cmd {
-    Move(d) if d.len() > 10 => print("big move")       // guard
-    Move(d)                 => hero.pos += d
-    Heal(n) | Regen(n)      => hero.hp += n             // or-patterns
-    _                       => {}
+    Deposit(n) if n > 1000 => print("large deposit")    // guard
+    Deposit(n)             => acct.balance += n
+    Withdraw(n) | Fee(n)   => acct.balance -= n         // or-patterns
+    _                      => {}
 }
 ```
 
@@ -809,7 +814,7 @@ match cmd {
   typo like `Quti =>` is an error instead of a silent catch-all. `some`, `none`, `ok` and `err`
   are reserved words (§3.3) and work as variants.
 - **Variant lookup** (Q11): bare variant names inside patterns; `.Variant` wherever the expected
-  type is known (`apply(hero, .Move(d))`, `let s: Shape = .Circle(2)`); `Shape.Circle(2)`
+  type is known (`apply(acct, .Deposit(d))`, `let s: Shape = .Circle(2)`); `Shape.Circle(2)`
   otherwise. Variants are not placed in module scope, since that collides with types (a
   `Shape.Circle` variant and a `struct Circle` can coexist).
 - `if let some(x) = maybe { ... }` and `while let` for single-pattern tests.
@@ -923,17 +928,17 @@ fn run(path: str) -> Result[()] {         // default error type
 `Error` keeps the **original typed value**, so a caller can still tell errors apart after `?`:
 
 ```colibri
-match load_level(path) {
-    ok(level) => play(level)
+match load_config(path) {
+    ok(cfg) => run(cfg)
     err(e) if e.is[fs.Error]() => match e.as[fs.Error]().expect("checked") {
-        NotFound         => use_default_level()
+        NotFound         => run(default_config())
         PermissionDenied => fail("can't read {path}")
         _                => fail("{e}")
     }
     err(e) => fail("{e}")
 }
 
-let text = fs.read(path).context("loading level {path}")?   // wrap with context
+let text = fs.read(path).context("loading config {path}")?   // wrap with context
 ```
 
 - `error(msg: str) -> Error` builds an `Error` from a message (the same as `Error.from(msg)`
@@ -1107,7 +1112,7 @@ RC can't free cycles. Colibri's stance:
   printing to stderr after an upgrade. Flipping the default is one line. `--leaks` alone warns;
   `--leaks=error` exits 1 when the program would otherwise succeed.
 - No automatic cycle collector in v1 (Q9). Because the detector already is one, it can later be
-  exposed as an explicit `mem.collect_cycles()` at phase boundaries (a level load, between
+  exposed as an explicit `mem.collect_cycles()` at phase boundaries (a batch boundary, between
   requests), where a program can afford the pause.
 
 ### 11.6 Places: mutating values inside containers [Proposed]
@@ -1190,30 +1195,30 @@ folder is one package**, like Go. The folder layout *is* the module tree: there 
 files and no `mod` declarations.
 
 ```colibri
-// game/player.colibri
-pub struct Player {
-    pub name: str
-    hp: i32                  // package-visible, not exported
+// shop/cart.colibri
+pub struct Cart {
+    pub owner: str
+    items: int               // package-visible, not exported
 }
 
-pub fn spawn(name: str) -> Player { ... }
+pub fn new_cart(owner: str) -> Cart { ... }
 ```
 
 ```colibri
 // main.colibri
-import game.player                 // use as `player.spawn(...)`
-import game.enemy as foe           // rename
-import rapier.{World, Body}        // bring names in directly
+import shop.cart                   // use as `cart.new_cart(...)`
+import shop.order as ord           // rename
+import json.{encode, decode}       // bring names in directly
 
-let p = player.spawn("Ana")
+let c = cart.new_cart("Ana")
 ```
 
-- **Files are namespaces; packages are the unit of checking and visibility.** `game/player.colibri`
-  is the module `game.player`, and its names are written `player.spawn`. But a package is
+- **Files are namespaces; packages are the unit of checking and visibility.** `shop/cart.colibri`
+  is the module `shop.cart`, and its names are written `cart.new_cart`. But a package is
   type-checked as one unit, as in Go:
   - **Import cycles are allowed between files of the same package** and forbidden only between
-    packages. Real programs are mutually referential (`Player` mentions `World`, `World` holds `Enemy`,
-    `Enemy` targets `Player`), and declarations are order-independent anyway. The only extra rule
+    packages. Real programs are mutually referential (`Cart` mentions `Order`, `Order` holds `Item`,
+    `Item` refers to `Cart`), and declarations are order-independent anyway. The only extra rule
     is initialisation order for module-level values, and that a script's own values run top to
     bottom (§4.2).
   - **Default visibility is the package.** Anything without `pub` is visible to every file in
@@ -1246,7 +1251,7 @@ Built in two steps:
   `datetime`, `regex`, `http` (a blocking HTTP client, behind the `net` capability), and `vec`
   (§15.1). These are what people reach for Python to do; with a Rust runtime they are thin
   wrappers over existing crates. An HTTP server and sockets come later still.
-- **Optional packages (later):** the game kit (§15.6) is not part of std.
+- The game kit (§15.6) is shelved and is not part of std.
 
 ---
 
@@ -1260,11 +1265,15 @@ thread.
 
 ### 14.1 Thread tasks are isolates
 
+**[Not built yet]** Thread tasks, channels, `Shared[T]` and `Mutex[T]` do not exist: `task.run` gives "`task` has no
+function `run`" and `Channel[int]()` cannot be called. They come with the VM (§17.5 phase 3). Only
+`task.tick(dt)` from this section works today (§14.2).
+
 ```colibri
 // background work
-let t = task.run(fn() => load_level("lvl2.json"))   // runs on the runtime's worker pool
-// ... keep rendering the loading screen with t.done() ...
-let level = t.join()?                     // Task[Result[Level]] -> Result[Level]
+let t = task.run(fn() => parse_report("big.json"))   // runs on the runtime's worker pool
+// ... keep the program responsive, polling t.done() ...
+let level = t.join()?                     // Task[Result[Report]] -> Result[Report]
 
 // channels to talk between tasks
 let ch = Channel[Msg]()
@@ -1293,7 +1302,7 @@ JS workers): each task owns its own object graph.
 
 - **A send is a structured deep copy**: captures of the `task.run` closure, values sent on a
   channel, and a task's result. To keep expensive copies visible, a send of a non-trivial
-  reference value must be written explicitly as `ch.send(level.clone())` (Q10), unless the
+  reference value must be written explicitly as `ch.send(report.clone())` (Q10), unless the
   move optimization below applies.
   Plain values (numbers, vectors, structs of plain values) and `str` cross implicitly.
 - **The move optimization** (sending without copying) applies only when the whole reachable graph
@@ -1307,7 +1316,7 @@ JS workers): each task owns its own object graph.
   thread-shareable.
 - **Shared immutable data** uses Koka's approach: `Shared[T]` deep-freezes a graph and sets the
   thread-shared bit on every object in it, so those objects (and only those) use atomic counts.
-  Frozen data crosses threads without copying, which is how a big level or asset table is shared
+  Frozen data crosses threads without copying, which is how a big lookup table is shared
   with workers. Strings sent between threads can be frozen the same way instead of copied.
 - **`Mutex[T]`** holds mutable shared state; it is thread-shared itself, and its contents are
   deep-copied in and out or accessed under a lock with a callback (`m.with(fn(var x) => ...)`).
@@ -1344,14 +1353,14 @@ A timeout is the same shape: start the work, `wait` on a deadline, and `cancel()
 loses. The same tools drive code that is tied to a program's own loop:
 
 ```colibri
-fn door_open(door: Door) {
-    door.play("creak")
+fn upload(job: Job) {
+    job.log("starting")
     wait(0.5)
-    door.rotate(90, over: 1.0)                 // itself waits 1 second while animating
-    wait_until(fn() => player.near(door))      // re-checked at each scheduler tick until true
-    door.close()
+    job.send_chunks(over: 1.0)                 // itself waits 1 second while sending
+    wait_until(fn() => queue.is_empty())       // re-checked at each scheduler tick until true
+    job.finish()
 }
-door.co.go(door_open(door))                    // owned by the door: a CoGroup field
+job.co.go(upload(job))                         // owned by the job: a CoGroup field
 ```
 
 - **Starting.** `go f(args)` creates a coroutine on the current thread, runs it until it first
@@ -1414,7 +1423,7 @@ door.co.go(door_open(door))                    // owned by the door: a CoGroup f
 
 ## 15. Numeric, C interop and embedding features
 
-### 15.1 Vector and matrix types [Locked 2026-11-19: std module; Proposed details]
+### 15.1 Vector and matrix types [Locked 2026-11-19: std module `vec`; Proposed details]
 
 Vectors started as built-in types. On 2026-11-19, after the redirect to a general-purpose
 language, santiago chose a **std module** instead: the core stays free of domain types, and
@@ -1441,7 +1450,9 @@ graphics, simulation and numeric code import what they need.
   fixed-point numbers and `f64` vectors for large worlds.
 
 **Decided 2026-11-19, planned, not done.** Vectors (`vec2`/`vec3`/`vec4`, `ivec2`..`ivec4`) will
-move **out of the language core** into a library of ordinary structs. They will get their
+move **out of the language core** into a library of ordinary structs. The library stays the std
+module `vec` (`import vec` keeps working), reimplemented as ordinary structs on the operator
+interfaces. They will get their
 operators from the new operator interfaces `Add`, `Sub`, `Mul` and `Neg` (Q12), like any
 user-defined type, so the compiler will have no special knowledge of them. Today the types, their
 operators and swizzles are still built in; the text above describes that current state.
@@ -1496,11 +1507,11 @@ extern "C" {
 let mut vm = colibri::Vm::builder()
     .allow(colibri::Cap::Fs)                // capabilities: nothing beyond pure Colibri unless granted
     .instruction_budget(1_000_000)      // optional sandbox limits
-    .memory_limit(64 << 20)             // **[Not built yet]**: only the instruction budget exists
+    .memory_limit(64 << 20)             // [Not built yet]: only the instruction budget exists
     .build();
-vm.register_fn("spawn_enemy", |x: f32, y: f32| { /* engine code */ });
-vm.write_interface("scripts/engine.cbi")?;   // declarations for `colibri check` and the editor
-vm.load_file("scripts/ai.colibri")?;
+vm.register_fn("log_event", |name: String, value: f64| { /* host code */ });
+vm.write_interface("scripts/host.cbi")?;   // declarations for `colibri check` and the editor
+vm.load_file("scripts/rules.colibri")?;
 let f = vm.get_fn::<(f32,), ()>("update")?;
 f.call(&mut vm, (dt,))?;
 vm.tick(dt)?;                    // advance the coroutine scheduler by dt, §14.2
@@ -1600,13 +1611,16 @@ own types when embedding Colibri (§15.4): build it once, get both.
 
 ### 15.6 Optional game kit package [Deferred]
 
-Moved to [notes/game-kit.md](notes/game-kit.md): a design sketch for a later, optional package.
+Moved to [notes/game-kit.md](notes/game-kit.md): a shelved idea outside the language project, with no roadmap item and no planned crate.
 
 ---
 
 ## 16. Tooling and execution modes
 
 ### 16.1 One binary [Locked, Proposed details]
+
+`run`, `check`, `fmt`, `test`, `repl` and `lsp` are built. `colibri build` and `colibri build --web`
+are **[Not built yet]** (phase 3).
 
 ```
 colibri run file.colibri      # type-check, then run (on the tree-walker until the VM lands in phase 3)
@@ -1668,9 +1682,10 @@ Goal: edit a `.colibri` file while the program runs and see the change without r
   enum gains a variant, a signature changes). Since the VM starts fast, the program restarts
   in place, with an optional pair of hooks to carry state across:
   `fn save_state() -> Snapshot` and `fn restore_state(s: Snapshot)` (serialized through §7.5).
-  *As built:* serialization (§7.5) does not exist yet, so the hooks pass `str`:
-  `fn save_state() -> str` and `fn restore_state(s: str)`, and programs encode with `json` or any
-  format they like. A `Snapshot` type can replace `str` once §7.5 is built (ARCHITECTURE §17).
+  *As built:* the hooks pass `str`: `fn save_state() -> str` and `fn restore_state(s: str)`.
+  `json.encode` and `json.decode[T]` exist (§7.5), but the type descriptors and the `Snapshot`
+  type do not, so a program encodes its state to text itself, with `json` or any format it
+  likes. A `Snapshot` type can replace `str` once those exist (ARCHITECTURE §17).
 - **Rules:** adding an enum variant re-checks `match`es elsewhere; module-level initialisers do
   not re-run on a patch; a coroutine suspended inside an old function keeps running the old body
   until it returns, so long-lived `while true` coroutines pick up changes only on restart. The
@@ -1690,10 +1705,11 @@ Editor support is most of what "usable" means today, so it moves early:
 
 - **Day one:** a syntax-highlighting grammar (TextMate/tree-sitter) for VS Code and others.
 - **Right after the type checker:** `colibri check` and a minimal LSP (diagnostics, hover with types,
-  go-to-definition), then completion and rename.
+  go-to-definition, formatting) is built; completion and rename are **[Not built yet]**.
 - **With the VM:** a debugger over DAP (breakpoints, stepping, locals using the type descriptors
   of §7.5, coroutine list), and a sampling profiler (`colibri run --profile`) that writes a
-  flamegraph and reports RC traffic hot spots.
+  flamegraph and reports RC traffic hot spots. **[Not built yet]** Neither exists, and `colibri run` has no
+  `--profile` option.
 
 ### 16.6 Platform targets [Proposed]
 
@@ -1710,6 +1726,9 @@ inside a host engine. Cranelift has no WebAssembly output, which is one more rea
 product.
 
 ### 16.7 Language editions [Proposed]
+
+**[Not built yet]** `colibri.toml` rejects an `edition` key ("unknown key `edition`") and `colibri fmt --migrate`
+does not exist.
 
 `colibri.toml` has an `edition = "2027"` field (scripts default to the latest). Syntax changes after
 1.0 happen at edition boundaries, and `colibri fmt --migrate` rewrites code to the new edition, so
@@ -1751,7 +1770,7 @@ colibri/
 ```
 
 There is no `colibri-ir` crate: HIR lowers straight to bytecode (§16.2), and an IR crate appears
-only when RC elision is scheduled. `colibri-game` is gone (§15.6). The name `colibri-core`
+only when RC elision is scheduled. The game kit is shelved (§15.6), so there is no `colibri-game`. The name `colibri-core`
 is provisional.
 
 ### 17.2 Names [Proposed]
@@ -1827,7 +1846,7 @@ checker become stretch goals.
 **Second revision, 2026-11-19.** santiago then redirected Colibri to be a general-purpose
 language rather than one aimed at game development, so phase 2 is no longer a game slice: it
 is the general scripting slice, and the old phase 4 (general scripting) is absorbed into it.
-The game kit and the game milestone become an optional later item.
+The game kit and the game milestone were taken off the roadmap (shelved, v0.5).
 
 **Phase 1: language core on the tree-walker, embeddable from day one. Done.** Built as **vertical
 slices**: hello world end to end first (lexer → parser → checker → interpreter), then widen
@@ -1867,6 +1886,8 @@ built on operator interfaces (§15.1, Q12). That work is planned and not schedul
 
 **Before phase 3 starts** (decided 2026-11-19):
 
+- The operator interfaces `Add`, `Sub`, `Mul` and `Neg` (Q12) exist, as the base for moving the
+  `vec` types out of the language core (§15.1).
 - macOS and Windows testing is set up. CI is currently down, so only Linux is exercised.
 - The heap, strings, collections and coroutine scheduler move from `colibri-interp` to a shared
   core crate (§17.1), so the VM and the tree-walker do not each carry a copy.
@@ -1891,12 +1912,6 @@ built on operator interfaces (§15.1, Q12). That work is planned and not schedul
 
 1. Rust crate bindings through project-specific runners (§15.5); `colibri-rapier` once a demo
    needs it.
-
-**Later, optional: game kit package and a demo game**
-
-1. The `colibri-game` package (§15.6) and the Q20 backend choice.
-2. **Milestone:** a small, complete game (for example a top-down arena shooter) with hot reload,
-   standalone on the kit and with its scripts embedded in a Rust host.
 
 **Stretch goals**, each started only when a profile of a real program asks for it:
 
@@ -1929,15 +1944,15 @@ recommendation were adopted (marked [Proposed]). Changing one means editing the 
 | Q9 | Cycle collection | `weak` + leak detector built as trial deletion; maybe an explicit `mem.collect_cycles()` later | §11.5 | Built (`weak` and the opt-in leak detector; `mem.collect_cycles()` does not exist) |
 | Q10 | What crosses a thread boundary | Isolates; sends are explicit deep copies (`.clone()`), implicit only for plain values and `str`; `Shared[T]` freezes and sets a shared bit | §14.1 | Decided, planned (phase 3) |
 | Q11 | Enum variant lookup | Bare in patterns, `.Variant` where the type is known, `Type.Variant` otherwise; capitalisation rule in patterns | §8.2 | Built |
-| Q12 | Operator overloading | Built-in only in phase 1 (the `vec` module's types get component-wise operators); `Add`/`Sub`/`Mul`/`Neg` interfaces for structs after it | §15.1 | Decided, planned: also moves vectors out of the core (§15.1) |
+| Q12 | Operator overloading | Built-in operators on the `vec` module's types today; `Add`/`Sub`/`Mul`/`Neg` interfaces (plus `Div` if needed) planned before the VM, and the vectors move onto them | §15.1 | Decided, planned: also moves vectors out of the core (§15.1) |
 | Q13 | `unsafe` | `unsafe { }` for raw pointer operations; FFI as a per-package and per-VM capability | §15.3 | Built |
-| Q14 | Hot reload semantics | Function-level patching, automatic restart (with optional save/restore hooks, `str` until §7.5 exists) on layout changes | §16.3 | Built |
+| Q14 | Hot reload semantics | Function-level patching, automatic restart (with optional save/restore hooks that pass `str`) on layout changes | §16.3 | Built |
 | Q15 | Script top-level code | Only in the entry file of a script; imported modules hold declarations only. An entry file without `fn main` runs its `let`, `var` and statements top to bottom (decided 2026-11-19) | §4.2, §13 | Built |
-| Q16 | Name | **Decided 2026-11-19: Colibri**, written `colibri` in anything typed. Renamed from the working name Leo (which collides with Aleo's Leo), briefly Noble. Naming details in §17.2 are [Proposed] | everywhere | Built |
+| Q16 | Name | **Decided 2026-11-19: Colibri**, written `colibri` in anything typed. Renamed from the working name Leo (which collides with Aleo's Leo), briefly Noble. Naming details in §17.2 are [Proposed] | everywhere | Decided |
 | Q17 | Rust crate bindings | Static linking everywhere through project-specific runners; no dylib; no `glam` binding; `rapier` when a demo needs it | §15.5 | Decided, planned (phase 4) |
 | Q18 | Coroutine and task syntax | `go f()` keyword for coroutines; `task.run(fn() => ...)` for thread tasks; with `=>` lambdas `wait_until` needs no sugar. Spelling of `go` (vs `co`) still open | §14 | Built for `go`; `task.run` is Decided, planned (phase 3) |
 | Q19 | Weak capture syntax | `fn() use(weak self) { ... }` capture list; inside, the name has type `T?` | §6.2 | Built |
-| Q20 | Game kit backend | **Deferred 2026-11-19** with the game kit, which is an optional later package. Statically linked raylib (fastest to ship, C dependency) vs Rust crates (winit + wgpu + kira, pure Rust, more work) | §15.6 | Open (deferred with the game kit) |
+| Q20 | Game kit backend | **Shelved 2026-11-19** with the game kit, which is outside the language project. Statically linked raylib (fastest to ship, C dependency) vs Rust crates (winit + wgpu + kira, pure Rust, more work) | §15.6 | Open (shelved with the game kit) |
 
 ---
 

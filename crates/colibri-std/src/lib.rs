@@ -2,7 +2,8 @@
 //!
 //! Every module is a *named host module* implemented in Rust through the same machinery as
 //! `vm.module(..)`: [`install`] registers `io`, `fs`, `path`, `os`, `math`, `rand`, `time`, `str`,
-//! `json`, `regex`, `http`, `args`, `process` and `datetime` into a [`Vm`], under the interface names `std.io`, `std.fs`, ... The checker sees
+//! `json`, `regex`, `http`, `args`, `process`, `datetime` and `vec` into a [`Vm`], under the
+//! interface names `std.io`, `std.fs`, ... The checker sees
 //! them exactly as it sees an embedder's own host modules: from interface (`.cbi`) text generated
 //! from the registrations ([`interfaces`] gives it to a checker that has no `Vm`). A script
 //! writes `import math` (or `import std.math`, which always means the standard library).
