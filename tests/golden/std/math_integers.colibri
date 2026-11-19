@@ -1,0 +1,44 @@
+import math
+
+fn main() {
+    print(math.min(3, 4))
+    print(math.max(3, 4))
+    print(math.clamp(15, 0, 10))
+    print(math.clamp(-5, 0, 10))
+    print(math.abs(-7))
+    print(math.sign(-7))
+    print(math.sign(0))
+    // `/` and `%` truncate toward zero; floor_div and floor_mod round toward minus infinity.
+    print(-7 / 2)
+    print(math.floor_div(-7, 2))
+    print(-7 % 3)
+    print(math.floor_mod(-7, 3))
+    print(math.floor_div(7, -2))
+    print(math.floor_mod(7, -3))
+    print(math.floor_div(8, 2))
+    print(math.floor_mod(8, 4))
+    print(math.gcd(12, 18))
+    print(math.gcd(-12, 18))
+    print(math.gcd(0, 5))
+    print(math.min(a: 1, b: 2))
+}
+
+// expect: 3
+// expect: 4
+// expect: 10
+// expect: 0
+// expect: 7
+// expect: -1
+// expect: 0
+// expect: -3
+// expect: -4
+// expect: -1
+// expect: 2
+// expect: -4
+// expect: -2
+// expect: 4
+// expect: 0
+// expect: 6
+// expect: 6
+// expect: 5
+// expect: 1

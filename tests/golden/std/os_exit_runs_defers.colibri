@@ -1,0 +1,14 @@
+// caps: os
+// `os.exit` ends the program like a panic does: `defer`s run. The host reads the code.
+import os
+
+fn main() {
+    defer print("cleanup")
+    print("before")
+    os.exit(3)
+    print("after")
+}
+
+// expect: before
+// expect: cleanup
+// panic: the program exited with code 3

@@ -18,6 +18,7 @@ pub(crate) fn zonk_body(
     locals: &mut [LocalInfo],
     diags: &mut Vec<Diagnostic>,
     had_errors: bool,
+    host_typed: &[bool],
     facts: Option<&mut Vec<RawFact>>,
 ) {
     let mut z = Zonker {
@@ -25,6 +26,7 @@ pub(crate) fn zonk_body(
         diags,
         reported_unresolved: false,
         had_errors,
+        host_typed,
         storage: Vec::new(),
         facts,
         locals: Vec::new(),
@@ -65,12 +67,27 @@ struct Zonker<'a> {
     reported_unresolved: bool,
     /// The body already has an error, which probably explains any open type or bad key.
     had_errors: bool,
+    /// Whether each host function reads its type arguments (`@typed`).
+    host_typed: &'a [bool],
     /// How each local of the body is stored, to give captures of cell variables their mode.
     storage: Vec<Storage>,
     /// Where to record what each expression is (see [`crate::insight`]), when asked to.
     facts: Option<&'a mut Vec<RawFact>>,
     /// Name, mutability, declaration and type of each local, kept only when recording.
     locals: Vec<(String, bool, Span, Ty)>,
+}
+
+/// Whether a type mentions a type parameter.
+fn has_param(ty: &Ty) -> bool {
+    match ty {
+        Ty::Param(..) => true,
+        Ty::Tuple(items) => items.iter().any(has_param),
+        Ty::Adt(_, args) | Ty::Dyn(_, args) => args.iter().any(has_param),
+        Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) => has_param(t),
+        Ty::Map(k, v) => has_param(k) || has_param(v),
+        Ty::Fn(params, ret) => params.iter().any(has_param) || has_param(ret),
+        _ => false,
+    }
 }
 
 /// The arithmetic kind of a resolved operand type.
@@ -348,6 +365,19 @@ impl Zonker<'_> {
             ExprKind::Call(call) => {
                 for t in &mut call.type_args {
                     self.ty(t, e.span);
+                }
+                if let Callee::Host(id) = &call.callee
+                    && self.host_typed.get(id.0 as usize).copied().unwrap_or(false)
+                    && !self.had_errors
+                    && call.type_args.iter().any(has_param)
+                {
+                    self.diags.push(
+                        Diagnostic::error(
+                            "this function needs to know its type at the call, but here the type is a type parameter",
+                            e.span,
+                        )
+                        .with_hint("types are not passed to generic code at runtime yet: call it where the type is concrete, and pass the result up"),
+                    );
                 }
                 for a in &mut call.args {
                     match a {

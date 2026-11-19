@@ -1,0 +1,16 @@
+// caps: os, fs
+// The temporary folder of a golden test is made for it and removed after it.
+import os
+import fs
+import path
+
+fn main() {
+    let dir = os.temp_dir()
+    print(fs.is_dir(dir))
+    print(fs.list(dir) or [])
+    print((path.file_name(dir) or "").starts_with("colibri-golden-"))
+}
+
+// expect: true
+// expect: []
+// expect: true

@@ -8,7 +8,7 @@ use colibri_check::hir::{
     Arg, ArithOp, Arm, BinOp, Block, Body, Callee, CmpOp, Expr, ExprKind, FnId, GlobalId,
     Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, TypeDef, UnOp,
 };
-use colibri_check::types::IntTy;
+use colibri_check::types::{IntTy, Ty};
 use colibri_syntax::Span;
 
 use crate::compare::values_identical;
@@ -171,6 +171,11 @@ impl Interp {
             return Err(self.bare_panic("internal error: unknown function"));
         };
         self.enter_from_host(fiber, true, |this, fiber| this.call_body(fiber, body, args))
+    }
+
+    /// Writes text to the program's standard output, where `print` writes (without a newline).
+    pub fn write_stdout(&mut self, text: &str) {
+        let _ = self.out.write_all(text.as_bytes());
     }
 
     /// Writes buffered output through to the writer.
@@ -538,7 +543,9 @@ impl Interp {
             ExprKind::Binary(op, lhs, rhs) => self.eval_binary(fiber, *op, lhs, rhs, e.span),
             ExprKind::And(lhs, rhs) => self.eval_and(fiber, lhs, rhs),
             ExprKind::Or(lhs, rhs) => self.eval_or(fiber, lhs, rhs),
-            ExprKind::Call(call) => self.eval_call(fiber, &call.callee, &call.args, e.span),
+            ExprKind::Call(call) => {
+                self.eval_call(fiber, &call.callee, &call.type_args, &call.args, e.span)
+            }
             ExprKind::Coerce(inner, how) => {
                 let value = self.eval(fiber, inner)?;
                 Ok(self.coerce(value, how))
@@ -810,7 +817,14 @@ impl Interp {
         exprs.iter().map(|e| self.eval_twin(fiber, e)).collect()
     }
 
-    fn eval_call(&mut self, fiber: &mut Fiber, callee: &Callee, args: &[Arg], span: Span) -> Eval {
+    fn eval_call(
+        &mut self,
+        fiber: &mut Fiber,
+        callee: &Callee,
+        type_args: &[Ty],
+        args: &[Arg],
+        span: Span,
+    ) -> Eval {
         // The receiver of a `var self` method is taken last, so the other arguments still see
         // the variable it lives in. The arguments stay on the caller's temporaries, so they die
         // at the end of the caller's statement (ARCHITECTURE §6); the callee gets its own
@@ -836,7 +850,7 @@ impl Interp {
                 };
                 self.call_with_receiver(fiber, body, values, place, span)
             }
-            Callee::Host(id) => self.call_host(fiber, *id, values, span),
+            Callee::Host(id) => self.call_host(fiber, *id, type_args, values, span),
             Callee::Bound { iface, method } | Callee::Dyn { iface, method } => {
                 self.call_interface(fiber, *iface, *method, values, receiver, span)
             }

@@ -1,0 +1,28 @@
+import rand
+
+fn main() {
+    let a = rand.Rng.new(7)
+    let b = rand.Rng.new(7)
+    var dice: List[int] = []
+    for _ in 0..10 {
+        dice.push(a.int(1, 7))
+    }
+    print(dice)
+    // Another generator with the same seed repeats it, and the module's own is not touched.
+    rand.seed(99)
+    var again: List[int] = []
+    for _ in 0..10 {
+        again.push(b.int(1, 7))
+    }
+    print(again == dice)
+    let c = rand.Rng.new(0)
+    print(c.chance(1.0))
+    print(c.chance(0.0))
+    print(c.float() < 1.0)
+}
+
+// expect: [5, 2, 6, 6, 6, 6, 1, 1, 3, 1]
+// expect: true
+// expect: true
+// expect: false
+// expect: true

@@ -1,0 +1,19 @@
+import math
+
+fn main() {
+    print(math.PI)
+    print(math.TAU)
+    print(math.E)
+    print(math.SQRT2)
+    print(math.LN2)
+    print(math.LN10)
+    print(math.PI * 2.0 == math.TAU)
+}
+
+// expect: 3.141592653589793
+// expect: 6.283185307179586
+// expect: 2.718281828459045
+// expect: 1.4142135623730951
+// expect: 0.6931471805599453
+// expect: 2.302585092994046
+// expect: true

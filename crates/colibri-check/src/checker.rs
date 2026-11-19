@@ -148,6 +148,8 @@ pub(crate) struct Checker<'a> {
     collecting_host: bool,
     /// How many host functions are declared so far.
     host_fn_count: u32,
+    /// Whether each host function (by [`HostFnId`]) reads its call's type arguments.
+    pub(crate) host_typed: Vec<bool>,
     /// The type ids of host declarations are `FIRST_USER_TYPE ..` this far.
     host_type_count: u32,
     pub diags: Vec<Diagnostic>,
@@ -350,6 +352,7 @@ impl<'a> Checker<'a> {
             host,
             collecting_host: false,
             host_fn_count: 0,
+            host_typed: Vec::new(),
             host_type_count: 0,
             diags: Vec::new(),
             facts: None,
@@ -584,6 +587,8 @@ impl<'a> Checker<'a> {
                 self.declare_value(&decl.name.name, decl.name.span, ValueRef::Fn(id), true);
             }
             ItemKind::Impl(decl) => self.collect_impl(decl, item),
+            // A constant of a host module (`math.PI`): an ordinary module-level constant.
+            ItemKind::Binding(binding) => self.collect_global(item, binding),
             _ => {}
         }
     }
@@ -678,6 +683,8 @@ impl<'a> Checker<'a> {
         let host = self.collecting_host.then(|| {
             let id = HostFnId(self.host_fn_count);
             self.host_fn_count += 1;
+            let typed = item.attrs.iter().any(|a| a.name.name == "typed");
+            self.host_typed.push(typed);
             HostFnInfo {
                 id,
                 requires: host::requires_of(item),
@@ -739,7 +746,12 @@ impl<'a> Checker<'a> {
             deps: Vec::new(),
             module: self.cur_mod,
         });
-        self.declare_value(&name.name, name.span, ValueRef::Global(id), item.public);
+        self.declare_value(
+            &name.name,
+            name.span,
+            ValueRef::Global(id),
+            item.public || self.collecting_host,
+        );
     }
 
     // ---- types ----

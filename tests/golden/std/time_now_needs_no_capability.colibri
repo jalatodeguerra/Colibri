@@ -1,0 +1,10 @@
+// `now` and `monotonic` read a clock that starts with the program; `sleep` and `unix` touch the
+// machine and need `os`.
+import time
+
+fn main() {
+    print(time.now())
+    print(time.monotonic())
+    time.sleep(1.0) // error: `time.sleep` needs the `os` capability, which this host did not grant
+    print(time.unix()) // error: `time.unix` needs the `os` capability
+}

@@ -1,0 +1,5 @@
+// A local `math.colibri` and the standard `math` both fit `import math`: an error that lists
+// both, and says how to choose.
+import math // error: `import math` is ambiguous
+
+fn main() {}

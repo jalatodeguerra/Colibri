@@ -1,0 +1,7 @@
+import fs
+
+fn main() {
+    let _text = fs.read("x.txt") // error: `fs.read` needs the `fs` capability, which this host did not grant
+    let _ = fs.write("x.txt", "y") // error: `fs.write` needs the `fs` capability
+    print(fs.exists("x.txt")) // error: `fs.exists` needs the `fs` capability
+}

@@ -1,0 +1,7 @@
+import rand
+
+fn main() {
+    print(rand.int(5, 5))
+}
+
+// panic: rand.int: the range 5..5 is empty

@@ -1,0 +1,22 @@
+// caps: os
+import os
+
+fn main() {
+    // The harness gives the program a fixed environment, whatever the machine has.
+    print(os.env("COLIBRI_GOLDEN"))
+    print(os.env("COLIBRI_NO_SUCH_VARIABLE"))
+    print(os.env("COLIBRI_NO_SUCH_VARIABLE") or "default")
+    print(os.vars())
+    // `set_env` changes what this program sees, never the process.
+    os.set_env("MODE", "test")
+    os.set_env("COLIBRI_GOLDEN", "no")
+    print(os.env("MODE"))
+    print(os.vars())
+}
+
+// expect: some("yes")
+// expect: none
+// expect: default
+// expect: {"COLIBRI_GOLDEN": "yes"}
+// expect: some("test")
+// expect: {"COLIBRI_GOLDEN": "no", "MODE": "test"}

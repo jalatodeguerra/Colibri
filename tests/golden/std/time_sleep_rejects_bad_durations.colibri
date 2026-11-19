@@ -1,0 +1,8 @@
+// caps: os
+import time
+
+fn main() {
+    time.sleep(-1.0)
+}
+
+// panic: time.sleep: -1 is not a number of seconds to wait

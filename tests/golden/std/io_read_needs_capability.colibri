@@ -1,0 +1,7 @@
+import io
+
+fn main() {
+    io.write("writing is like print: no capability\n")
+    print(io.read_line()) // error: `io.read_line` needs the `os` capability
+    print(io.read_all()) // error: `io.read_all` needs the `os` capability
+}

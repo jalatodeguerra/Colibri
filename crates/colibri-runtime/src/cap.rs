@@ -10,7 +10,7 @@ use std::fmt;
 pub enum Cap {
     /// The file system.
     Fs,
-    /// The operating system: processes, environment, clocks.
+    /// The operating system: processes, the environment, wall-clock time and sleeping.
     Os,
     /// The network.
     Net,

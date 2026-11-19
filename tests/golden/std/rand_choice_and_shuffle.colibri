@@ -1,0 +1,26 @@
+import rand
+
+fn main() {
+    rand.seed(3)
+    let items = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    let mixed = rand.shuffled(items)
+    print(mixed)
+    // The list that was passed is not changed, and nothing is lost.
+    print(items)
+    var sorted = mixed.clone()
+    sorted.sort()
+    print(sorted == items)
+
+    let names: List[str] = []
+    print(rand.choice(names))
+    let picked = rand.choice(["only"])
+    print(picked)
+    print(rand.choice(["a", "b", "c"]).is_some())
+}
+
+// expect: [9, 4, 8, 0, 7, 2, 3, 1, 5, 6]
+// expect: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+// expect: true
+// expect: none
+// expect: some("only")
+// expect: true

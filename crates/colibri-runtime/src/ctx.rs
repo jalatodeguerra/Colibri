@@ -1,8 +1,8 @@
 //! The context host code runs in: [`Ctx`] for host functions and conversions, and [`Caller`],
 //! what `Fn::call` and `Callback::call` need to run Colibri code (EMBEDDING §0 A, §1).
 
-use colibri_check::hir::FnId;
-use colibri_check::types::TypeId;
+use colibri_check::hir::{FnId, TypeDef};
+use colibri_check::types::{Ty, TypeId};
 use colibri_interp::{Fiber, Interp, PanicInfo};
 use colibri_syntax::Span;
 
@@ -17,6 +17,10 @@ pub struct Ctx<'a> {
     pub(crate) interp: &'a mut Interp,
     pub(crate) fiber: &'a mut Fiber,
 }
+
+/// The payload of the Rust panic [`Ctx::raise`] starts: the trampoline turns it into a Colibri
+/// panic with exactly this message.
+pub(crate) struct RaisedPanic(pub String);
 
 /// The context of a conversion between Rust and Colibri values.
 pub type Cx<'a> = Ctx<'a>;
@@ -71,6 +75,33 @@ impl<'a> Ctx<'a> {
     /// [`crate::Vm::set_instruction_budget`]).
     pub fn steps_used(&self) -> u64 {
         self.interp.steps_used()
+    }
+
+    /// Writes text to the `Vm`'s standard output, where `print` writes. It adds no newline.
+    pub fn write_stdout(&mut self, text: &str) {
+        self.interp.write_stdout(text);
+    }
+
+    /// Ends the running program with a Colibri panic whose message is exactly `message`, from
+    /// anywhere in a host function: the script's `defer`s and `Drop` hooks run as for any panic
+    /// and the host sees [`Error::Panic`]. The Rust stack unwinds to the `Vm` (no panic message
+    /// is printed), so state the host function needs afterwards must be set first.
+    pub fn raise(&mut self, message: impl Into<String>) -> ! {
+        std::panic::resume_unwind(Box::new(RaisedPanic(message.into())))
+    }
+
+    /// The type arguments of the call this host function is running for, in the order of the
+    /// function's type parameters (`fn decode[T](..)` gets one). Empty for a function that is
+    /// not generic. Only a function registered with [`crate::Registration::typed`] can count
+    /// on them being concrete types.
+    pub fn type_args(&self) -> &[Ty] {
+        self.interp.host_type_args()
+    }
+
+    /// Every struct, enum and class of the loaded program, indexed by [`TypeId`]: the type
+    /// descriptors a serializer reads (DESIGN §7.5).
+    pub fn type_defs(&self) -> &[TypeDef] {
+        self.interp.type_defs()
     }
 
     /// The type id of a struct, enum or class the host declared.

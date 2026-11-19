@@ -1,0 +1,76 @@
+import json
+
+enum Color {
+    Red
+    Green
+}
+
+struct Point { x: int, y: int }
+
+struct Player {
+    name: str
+    pos: Point
+    hp: i32
+    speed: float
+    tags: List[str]
+    scores: Map[str, int]
+    nick: str?
+    color: Color
+    alive: bool
+    pair: (int, str)
+}
+
+// `encode` reads the value, not its static type, so it works inside generic code.
+fn enc[T](value: T) -> str => json.encode(value).expect("the value encodes")
+
+fn main() {
+    print(enc(42))
+    print(enc(-7))
+    print(enc(1.5))
+    print(enc(2.0))
+    print(enc(true))
+    print(enc("hi \"there\"\n"))
+    print(enc('c'))
+    print(enc(()))
+    print(enc([1, 2, 3]))
+    print(enc(["a", "b"]))
+    print(enc({"one": 1, "two": 2}))
+    print(enc(some(5)))
+    let nothing: int? = none
+    print(enc(nothing))
+    print(enc(Color.Green))
+    print(enc((1, "x")))
+    let big: u64 = 18446744073709551615
+    print(enc(big))
+    let p = Player {
+        name: "Ana",
+        pos: Point { x: 1, y: -2 },
+        hp: 90,
+        speed: 0.5,
+        tags: ["a", "b"],
+        scores: {"lvl1": 10},
+        nick: none,
+        color: .Red,
+        alive: true,
+        pair: (3, "z"),
+    }
+    print(enc(p))
+}
+
+// expect: 42
+// expect: -7
+// expect: 1.5
+// expect: 2.0
+// expect: true
+// expect: "hi \"there\"\n"
+// expect: "c"
+// expect: null
+// expect: [1,2,3]
+// expect: ["a","b"]
+// expect: {"one":1,"two":2}
+// expect: 5
+// expect: null
+// expect: "Green"
+// expect: [1,"x"]
+// expect: 18446744073709551615
+// expect: {"name":"Ana","pos":{"x":1,"y":-2},"hp":90,"speed":0.5,"tags":["a","b"],"scores":{"lvl1":10},"nick":null,"color":"Red","alive":true,"pair":[3,"z"]}

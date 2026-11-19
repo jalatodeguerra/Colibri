@@ -1,0 +1,67 @@
+import json
+
+enum Kind {
+    Wall
+    Door
+    Lava
+}
+
+struct Tile { kind: Kind, solid: bool }
+
+struct Level {
+    name: str
+    size: (int, int)
+    tiles: List[Tile]
+    spawn: Map[str, float]
+    boss: str?
+    seed: u64
+    small: u8
+    ratio: f32
+    letter: char
+}
+
+fn main() {
+    let level = Level {
+        name: "Caves \"I\"\tà 😀",
+        size: (4, 2),
+        tiles: [Tile { kind: .Wall, solid: true }, Tile { kind: .Door, solid: false }],
+        spawn: {"x": 1.5, "y": -2.0},
+        boss: some("Ogre"),
+        seed: 18446744073709551615,
+        small: 255,
+        ratio: 0.1,
+        letter: 'q',
+    }
+    let text = json.encode(level).expect("encodes")
+    print(text)
+    let back = json.decode[Level](text).expect("decodes")
+    print(back == level)
+    print(back.name)
+    print(back.tiles[1].kind)
+    print(back.seed)
+    // The text of the decoded value is the text it came from.
+    print(json.encode(back).expect("encodes") == text)
+
+    let numbers = json.decode[List[int]]("[1, 2, 3]").expect("decodes")
+    print(numbers)
+    let nested = json.decode[Map[str, List[Tile]]](
+        r"""{"a": [{"kind": "Lava", "solid": true}], "b": []}""",
+    )
+    print(nested)
+    let maybe = json.decode[int?]("null").expect("decodes")
+    print(maybe)
+    print(json.decode[bool]("true"))
+    print(json.decode[str]("\"\\u00e9\\n\"").expect("decodes").len())
+}
+
+// expect: {"name":"Caves \"I\"\tà 😀","size":[4,2],"tiles":[{"kind":"Wall","solid":true},{"kind":"Door","solid":false}],"spawn":{"x":1.5,"y":-2.0},"boss":"Ogre","seed":18446744073709551615,"small":255,"ratio":0.1,"letter":"q"}
+// expect: true
+// expect: Caves "I"	à 😀
+// expect: Door
+// expect: 18446744073709551615
+// expect: true
+// expect: [1, 2, 3]
+// expect: ok({"a": [Tile { kind: Lava, solid: true }], "b": []})
+// expect: none
+// expect: ok(true)
+// expect: 3

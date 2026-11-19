@@ -1,0 +1,36 @@
+// caps: fs, os
+import fs
+import os
+import path
+import str
+
+fn main() -> Result[()] {
+    let dir = os.temp_dir()
+    let file = path.join(dir, "notes.txt")
+    print(fs.exists(file))
+    fs.write(file, "hello\nworld\n")?
+    print(fs.exists(file))
+    print(fs.is_file(file))
+    print(fs.is_dir(file))
+    print(fs.read(file)?)
+    fs.append(file, "again\n")?
+    print(str.lines(fs.read(file)?).len())
+    print(fs.size(file)?)
+    fs.write(file, "")?
+    print(fs.size(file)?)
+    fs.remove(file)?
+    print(fs.exists(file))
+    return ok(())
+}
+
+// expect: false
+// expect: true
+// expect: true
+// expect: false
+// expect: hello
+// expect: world
+// expect:
+// expect: 3
+// expect: 18
+// expect: 0
+// expect: false

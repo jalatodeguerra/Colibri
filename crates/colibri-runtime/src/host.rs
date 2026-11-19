@@ -133,6 +133,15 @@ impl Registration<'_> {
         self.vm.set_requires(self.index, cap);
         self
     }
+
+    /// The function reads the type arguments of each call ([`Ctx::type_args`]), so a call has
+    /// to name a concrete type: `fn decode[T](..)` is checked not to be called with a type
+    /// parameter of the caller, whose type is not known at runtime. It must be generic (take
+    /// or return a [`Value`]), or this is an [`Error::Registration`].
+    pub fn typed(self) -> Result<Self, Error> {
+        self.vm.set_typed(self.index)?;
+        Ok(self)
+    }
 }
 
 /// The text of a panic payload.

@@ -1,0 +1,36 @@
+import json
+
+struct Item { id: int, name: str, tags: List[str], extra: Map[str, int] }
+
+fn main() {
+    let item = Item { id: 7, name: "lamp", tags: ["a", "b"], extra: {"k": 1} }
+    print(json.pretty(item).expect("encodes"))
+    let empty = Item { id: 0, name: "", tags: [], extra: {:} }
+    print(json.pretty(empty).expect("encodes"))
+    print(json.pretty([[1, 2], []]).expect("encodes"))
+}
+
+// expect: {
+// expect:   "id": 7,
+// expect:   "name": "lamp",
+// expect:   "tags": [
+// expect:     "a",
+// expect:     "b"
+// expect:   ],
+// expect:   "extra": {
+// expect:     "k": 1
+// expect:   }
+// expect: }
+// expect: {
+// expect:   "id": 0,
+// expect:   "name": "",
+// expect:   "tags": [],
+// expect:   "extra": {}
+// expect: }
+// expect: [
+// expect:   [
+// expect:     1,
+// expect:     2
+// expect:   ],
+// expect:   []
+// expect: ]

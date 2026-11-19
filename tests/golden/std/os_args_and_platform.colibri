@@ -1,0 +1,12 @@
+// The arguments are what the host handed over, so `args` needs no capability.
+import os
+
+fn main() {
+    print(os.args())
+    print(os.args().len())
+    print(os.platform().len() > 0)
+}
+
+// expect: ["alpha", "beta"]
+// expect: 2
+// expect: true

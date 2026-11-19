@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use std::hash::Hash;
 
-use colibri_check::types::{VARIANT_NONE, VARIANT_OK, VARIANT_SOME};
+use colibri_check::types::{TypeId, VARIANT_NONE, VARIANT_OK, VARIANT_SOME};
 use colibri_interp::{Interp, Value as Inner};
 
 use crate::ctx::Cx;
@@ -39,6 +39,175 @@ impl Value {
             Inner::Enum(e) => Some(e.variant),
             _ => None,
         }
+    }
+}
+
+/// What a [`Value`] holds, one level deep: the shape a host function that works on any type
+/// (a serializer, `json.encode`) looks at. Collections and fields come out as values again.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum ValueKind {
+    Unit,
+    Bool(bool),
+    /// Every integer type but `u64`.
+    Int(i64),
+    U64(u64),
+    Float(f64),
+    F32(f32),
+    Char(char),
+    Str(String),
+    /// A `struct` value: its type and its fields in declaration order.
+    Struct {
+        ty: TypeId,
+        fields: Vec<Value>,
+    },
+    Tuple(Vec<Value>),
+    /// An enum value (`Option` and `Result` included): its type, the index of the variant and
+    /// its payload.
+    Enum {
+        ty: TypeId,
+        variant: u32,
+        payload: Vec<Value>,
+    },
+    List(Vec<Value>),
+    /// The entries in insertion order.
+    Map(Vec<(Value, Value)>),
+    Set(Vec<Value>),
+    /// A class object, a function, a host object or anything else that has no plain data.
+    Other,
+}
+
+impl Value {
+    pub fn unit() -> Value {
+        Value(Inner::Unit)
+    }
+
+    pub fn bool(v: bool) -> Value {
+        Value(Inner::Bool(v))
+    }
+
+    /// An `int`, or a value of any integer type other than `u64` that fits an `i64`.
+    pub fn int(v: i64) -> Value {
+        Value(Inner::Int(v))
+    }
+
+    pub fn u64(v: u64) -> Value {
+        Value(Inner::U64(v))
+    }
+
+    pub fn float(v: f64) -> Value {
+        Value(Inner::Float(v))
+    }
+
+    pub fn f32(v: f32) -> Value {
+        Value(Inner::F32(v))
+    }
+
+    pub fn char(v: char) -> Value {
+        Value(Inner::Char(v))
+    }
+
+    pub fn str(v: &str) -> Value {
+        Value(Inner::str(v))
+    }
+
+    pub fn list(items: Vec<Value>) -> Value {
+        Value(Inner::list(items.into_iter().map(|v| v.0).collect()))
+    }
+
+    /// A `Map` with these entries in order (a repeated key keeps the last value).
+    pub fn map(entries: Vec<(Value, Value)>) -> Value {
+        Value(colibri_interp::map_value(
+            entries.into_iter().map(|(k, v)| (k.0, v.0)).collect(),
+        ))
+    }
+
+    pub fn tuple(items: Vec<Value>) -> Value {
+        Value(Inner::tuple(items.into_iter().map(|v| v.0).collect()))
+    }
+
+    /// `some(v)` or `none`.
+    pub fn option(inner: Option<Value>) -> Value {
+        Value(Inner::option(inner.map(|v| v.0)))
+    }
+
+    /// A struct of type `ty` with its fields in declaration order (see [`Ctx::type_defs`]).
+    pub fn new_struct(ty: TypeId, fields: Vec<Value>) -> Value {
+        Value(Inner::strukt(ty, fields.into_iter().map(|v| v.0).collect()))
+    }
+
+    /// A value of the enum `ty`: its `variant`th variant with a payload.
+    pub fn new_enum(ty: TypeId, variant: u32, payload: Vec<Value>) -> Value {
+        Value(Inner::variant(
+            ty,
+            variant,
+            payload.into_iter().map(|v| v.0).collect(),
+        ))
+    }
+
+    /// `ok(v)` of `Result[T]`.
+    pub fn ok(v: Value) -> Value {
+        Value(Interp::ok_variant(v.0))
+    }
+
+    /// `err(e)` of `Result[T]`, with an `Error` made from the message.
+    pub fn err(message: &str) -> Value {
+        Value(Interp::err_variant(Interp::error_value(message)))
+    }
+
+    /// What the value holds. Collections are copied out (the elements are shared).
+    pub fn kind(&self) -> ValueKind {
+        let wrap = |items: Vec<Inner>| items.into_iter().map(Value).collect::<Vec<_>>();
+        match &self.0 {
+            Inner::Unit => ValueKind::Unit,
+            Inner::Bool(v) => ValueKind::Bool(*v),
+            Inner::Int(v) => ValueKind::Int(*v),
+            Inner::U64(v) => ValueKind::U64(*v),
+            Inner::Float(v) => ValueKind::Float(*v),
+            Inner::F32(v) => ValueKind::F32(*v),
+            Inner::Char(v) => ValueKind::Char(*v),
+            Inner::Str(s) => ValueKind::Str(s.to_string()),
+            Inner::Struct(s) => ValueKind::Struct {
+                ty: s.ty,
+                fields: wrap(s.fields.to_vec()),
+            },
+            Inner::Tuple(items) => ValueKind::Tuple(wrap(items.to_vec())),
+            Inner::Enum(e) => ValueKind::Enum {
+                ty: e.ty,
+                variant: e.variant,
+                payload: wrap(e.payload.to_vec()),
+            },
+            Inner::List(list) => ValueKind::List(wrap(list.snapshot())),
+            Inner::Map(map) => ValueKind::Map(
+                map.snapshot()
+                    .into_iter()
+                    .map(|(k, v)| (Value(k), Value(v)))
+                    .collect(),
+            ),
+            Inner::Set(set) => ValueKind::Set(wrap(set.snapshot())),
+            _ => ValueKind::Other,
+        }
+    }
+}
+
+/// Any value, for a function that works whatever the type is: its signature has a type
+/// parameter `T` (`fn encode[T](a: T) -> Result[str]`), which scripts fill in. Use it with
+/// [`Ctx::type_args`] to read the type arguments of the call.
+impl IntoColibri for Value {
+    fn ty(_: &mut TypeRegistry) -> TypeDesc {
+        TypeDesc::Param("T".to_string())
+    }
+    fn into_colibri(self, _: &mut Cx<'_>) -> Value {
+        self
+    }
+}
+
+impl FromColibri for Value {
+    fn ty(_: &mut TypeRegistry) -> TypeDesc {
+        TypeDesc::Param("T".to_string())
+    }
+    fn from_colibri(value: &Value, _: &mut Cx<'_>) -> Result<Self, Error> {
+        Ok(value.clone())
     }
 }
 

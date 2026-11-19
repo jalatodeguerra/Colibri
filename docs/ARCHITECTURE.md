@@ -1308,6 +1308,159 @@ crate of its own: it needs exactly what `colibri-syntax` has (tokens with spans,
   columns where there is no place to break.
 - `.cbi` interface files are not formatted by the CLI (only `*.colibri`).
 
+## 13. Standard library (phase 1 core std)
+
+The standard library is the crate `colibri-std`. Every module in it is a *named host module*:
+it is registered through the same `Vm` machinery a game uses for `vm.module("physics")`, its
+`.cbi` interface text is generated from the registrations, and the checker sees it only through
+that text. There is no special case in the checker for "std functions"; the few extensions the
+std needed (constants, generic functions, `@typed`) are general `.cbi` features any host can use.
+
+### Dependency direction
+
+`syntax → check → interp → runtime → std → cli`. `colibri-std` depends on `colibri-runtime`
+(and `libm`), never the other way round, so a host that wants no standard library links none and
+the runtime stays free of file, clock and JSON code. The CLI depends on `colibri-std`; so does
+any embedding that wants it (and the language server, which should call
+`colibri_std::interfaces()` to check programs and `colibri_std::install(&mut vm)` to run them).
+`colibri_std::install_with(&mut vm, StdConfig)` is the configurable form; `install` uses the
+real process (system clock, process environment, real stdin). `interfaces()` gives the same
+interfaces without a `Vm`, for `colibri check`.
+
+### Names and resolution
+
+A std module's interface name is `std.<name>` (`std.math`). `Vm::std_module(name)` is the only way
+to create one; `Vm::module("std.x")` is refused as reserved, so a host cannot shadow or fake the
+library. The loader (`package::loader`, `package::std_module`) maps the import paths `["math"]`
+and `["std", "math"]` to `std.math` when the host provides it.
+
+- `import std.math` always means the standard library: a path whose first segment is `std`
+  skips local files, dependencies and host modules (`import std` alone is "no module `std`").
+- `import math` follows DESIGN §13: when exactly one candidate fits (a local file, a
+  dependency, a host module, or the standard library) it is that one; when more than one fits,
+  the import is an error that lists them all and says to rename the file or dependency or to write
+  `import std.math`. So a local `math.colibri` next to the std `math` is ambiguous, not
+  shadowing. `tests/golden/modules/std_*` cover the cases.
+- A missing std module says so: `the standard library has no module `x``, with the list of the
+  ones provided. `task`, `game` and `reflect` (phase 2), `mem` (phase 3) give "the standard
+  library module `x` is not available until phase N", and `collections` says `List`, `Map` and
+  `Set` are built in (`LATER_STD_MODULES`). `import test` cannot be written: `test` is a keyword
+  (a syntax error). There is no `test` module.
+
+### `.cbi` extensions
+
+- `const NAME: float = 3.14` / `const NAME: int = 7` in an interface: public module constants
+  (`Registration`: `register_const_float`, `register_const_int`). Floats print as the shortest
+  decimal that round-trips, always with a `.` and no exponent.
+- `fn f[T](..)`: generic host functions without bounds; `Value` (the opaque host value) is
+  `IntoColibri`/`FromColibri` with `TypeDesc::Param("T")`.
+- `@typed fn decode[T](..)`: the host function needs the concrete type arguments. The checker
+  rejects a call where an argument is still a type parameter (`needs to know its type at the
+  call`), and the interpreter passes the call's type arguments to the host:
+  `Ctx::type_args()`. `Ctx::type_defs()` gives every struct/enum/class (`colibri_runtime::reflect`),
+  which is what a serializer reads (DESIGN §7.5). Registering `typed()` on a non-generic function
+  is an error.
+- A capability error names the module: "`fs.read` needs the `fs` capability, which this host did
+  not grant".
+
+### Runtime API added for std (usable by any host)
+
+`Value::kind() -> ValueKind` (Unit, Bool, Int, U64, Float, F32, Char, Str, Struct, Tuple, Enum,
+List, Map, Set, Other) and constructors (`Value::int`, `str`, `list`, `map`, `tuple`, `option`,
+`new_struct`, `new_enum`, `ok`, `err`, ...); `Ctx::type_args`, `type_defs`, `write_stdout`
+(the `Vm`'s stdout, where `print` writes), and `Ctx::raise(message) -> !`, which ends the
+program with a Colibri panic of exactly that message from anywhere in a host function (the Rust
+stack unwinds to the trampoline with a private payload; no panic message is printed; `defer`s and
+`Drop` hooks run as for any panic).
+
+### Configuration and hermetic runs
+
+`StdConfig` holds what a module reads from the world: `clock` (`SystemClock`, or `ManualClock` a
+test advances), `args`, `env` (`EnvSource::Process` or `Fixed`), `temp_dir`, `seed`, `stdin`. The
+golden harness installs a fixed one (clock 1_700_000_000.0, args `alpha beta`, env
+`COLIBRI_GOLDEN=yes`, seed 1, stdin `first line\nsecond line\n`, and a temp dir created per test
+and removed after it). `os.set_env` writes an overlay in the `Vm`, never the process
+environment (`set_var` is unsafe in edition 2024, and a library must not do that behind a
+program's back).
+
+### Capabilities
+
+| Module | Needs `fs` | Needs `os` | Ungated |
+|--------|-----------|------------|---------|
+| `fs` | everything | | |
+| `os` | | `env`, `vars`, `set_env`, `temp_dir`, `cwd`, `exit` | `args`, `platform` |
+| `io` | | `read_line`, `read_all` | `write`, `eprint`, `eprintln` |
+| `time` | | `unix`, `sleep` | `now`, `monotonic` |
+| `path`, `math`, `rand`, `str`, `json` | | | everything |
+
+The CLI grants all capabilities. `Cap::Os` now reads "processes, the environment, wall-clock
+time and sleeping".
+
+### Modules
+
+- `io`: `write(text)` (no newline), `eprint`, `eprintln` (stderr), `read_line() -> Result[Option[str]]`
+  (`none` at end of input), `read_all() -> Result[str]`. `print` stays a builtin.
+- `fs`: `read`, `read_bytes`, `write`, `write_bytes`, `append`, `exists`, `is_file`, `is_dir`,
+  `list` (sorted names), `create_dir` (like `mkdir -p`), `remove`, `remove_dir` (recursive), `copy`,
+  `rename`, `size`. Failures are `err` with the message of the OS error and the path.
+- `path`: pure string functions with `/` separators only: `join`, `file_name`, `stem`, `ext`,
+  `with_ext`, `parent`, `is_absolute`, `normalize`, `split`.
+- `os`: see the table; `args() -> List[str]`, `platform() -> str`, `env(name) -> Option[str]`,
+  `vars() -> Map[str, str]` (sorted), `exit(code)`.
+  `exit` ends the program through `Ctx::raise` ("the program exited with code N"), so `defer`s
+  run; `colibri_std::exit_code(&mut vm)` returns the code, and the CLI uses it as the process
+  exit status.
+- `math`: constants `PI TAU E SQRT2 LN2 LN10`; float functions `sin cos tan asin acos atan sinh
+  cosh tanh exp exp2 ln log2 log10 log(x, base) cbrt sqrt floor ceil round trunc fract radians
+  degrees signf atan2 pow hypot lerp is_nan is_finite clampf`; integer functions `min max clamp
+  abs sign floor_div floor_mod gcd`. Integer division by zero and an empty clamp range panic.
+- `rand`: module functions on a global generator (`seed`, `int(lo, hi)` half-open, `float`,
+  `bool`, `chance(p)`, `choice`, `shuffled`) and the host class `rand.Rng` (`Rng.new(seed)`,
+  `int`, `float`, `bool`, `chance`). Seeding is SplitMix64 into xoshiro256**; `below` uses
+  Lemire's unbiased method; floats use the top 53 bits. Same seed, same sequence on every
+  platform (unit tests pin reference values checked against an independent implementation). The
+  unseeded generator starts from the clock, so it is not deterministic until `rand.seed`.
+  `choice` and `shuffled` are generic and do not mutate their argument.
+- `time`: `now() -> float` (seconds since the program started, ungated, meant for frame timing),
+  `monotonic() -> int` (nanoseconds), `unix() -> float`, `sleep(seconds)` (rejects negative and
+  non-finite durations).
+- `str`: only what is not already a method: `parse_int`, `parse_float`, `parse_bool` (all
+  `Result`), `lines`, `repeat`, `pad_left`, `pad_right`, `trim_start`, `trim_end`, `strip_prefix`,
+  `strip_suffix`.
+- `json`: `encode[T](value) -> Result[str]`, `pretty[T]`, `@typed decode[T](text) -> Result[T]`.
+  Mapping: `int`/sized ints, `float`, `bool`, `str`, `char` (one-character string), `List`,
+  tuples (arrays), `Map[str, V]` (objects), `Option` (`null`; a missing field decodes to `none`),
+  structs (objects by field name), payload-free enums (the variant name as a string). The
+  parser is strict (no comments, trailing commas, duplicate keys; depth limit 128) and reports
+  line and column. Decode errors say where (`$.items[2].hp`) and what was expected: missing
+  field, wrong type, number out of range for the target, unknown enum variant. Unknown fields in
+  the input are ignored. Not supported, with an error that says so: enums with payloads, classes,
+  generic structs, maps with non-`str` keys, functions, non-finite floats.
+- `collections`: intentionally absent (see above).
+
+### `libm`
+
+`f64::sin` and friends call the platform's C library, so digits differ between machines. The
+std uses the `libm` crate (pure Rust port of musl, one new dependency, no transitive ones) for
+`sin cos tan asin acos atan sinh cosh tanh exp exp2 ln log2 log10 pow cbrt hypot atan2`, so
+output is identical everywhere and goldens can pin it. The results are within an ulp of the
+true value, not always the nearest double: `math.exp(1.0)` is `2.7182818284590455`, one ulp
+from `math.E`. `sqrt`, `floor`, `ceil`, `round`, `trunc` and arithmetic are exact IEEE operations
+and use the hardware.
+
+### Decisions the design documents did not fix
+
+- Errors from `fs`, `io`, `json`, `str.parse_*` are message-only `Error`s, not typed enums.
+- The `time` and `io` capability split in the table above; `os.args` and `os.platform` are open.
+- Integer-only `min max clamp abs sign` (`clampf`, `signf` for floats); `rand.int` is half-open and
+  panics on an empty range.
+- Paths use `/` only; `fs.list` is sorted; `fs.create_dir` creates parents; `fs.remove_dir` is
+  recursive; `os.vars` is sorted.
+- Goldens get a fixed `StdConfig`, and `// caps: fs, os` grants capabilities per file
+  (PHASE1.md).
+- Not done: `@rename`/`@skip` and field defaults in `json` (no attribute support in the
+  checked types yet), JSON for data enums, typed error enums.
+
 ## 14. Language server (`colibri lsp`)
 
 `colibri-lsp` is a library (the CLI's `lsp` subcommand calls `colibri_lsp::run_stdio`) speaking
@@ -1387,3 +1540,7 @@ local `p` gets its own fact over its name, the whole read is the field.
   expression's type.
 - Default argument values are re-checked at each call, so a hover inside one may show the type
   recorded at a call site.
+
+The language server (§14) always checks against `colibri_std::interfaces()`, as `colibri check`
+does, so `lsp` depends on `colibri-std`. `colibri run file -- a b` passes `a b` to `os.args()`
+(`colibri_lang::build_vm(builder, args)`).

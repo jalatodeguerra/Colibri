@@ -1,0 +1,12 @@
+// `import std.math` always means the standard library; the local file is reached by its own
+// name under another path or a rename of the file.
+import std.math
+import helpers
+
+fn main() {
+    print(math.floor(2.5))
+    print(helpers.double(4))
+}
+
+// expect: 2.0
+// expect: 8
