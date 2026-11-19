@@ -25,7 +25,8 @@ section ("as built") for the decisions it had to make.
 3. **Scripting std**, moved up from phase 4: `args`, subprocesses, `datetime`, `regex`, and an
    `http` client behind the `net` capability. Built: part A (`args`, `process`, `datetime`,
    ARCHITECTURE §13.1) and part B (`regex`, `http`, ARCHITECTURE §13).
-4. **`colibri repl`** and startup time tuned for one-off scripts.
+4. **`colibri repl`** and startup time tuned for one-off scripts. Built: ARCHITECTURE §21
+   (`colibri run hello.colibri` went from 58 ms to 19 ms by making host registration linear).
 5. **Hot reload** (DESIGN §16.3) for long-running programs and embedded scripts:
    `vm.reload_changed()`, `colibri run --watch`. Built: ARCHITECTURE §17 (snapshot hooks pass
    text, `save_state() -> str`, until §7.5 exists).

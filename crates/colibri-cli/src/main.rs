@@ -72,6 +72,10 @@ enum Command {
         #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
     },
+    /// Start an interactive session: type statements, expressions and declarations; values
+    /// and declarations persist (`:help` lists the commands; input piped to stdin is read
+    /// line by line without a prompt)
+    Repl,
     /// Run the language server (LSP) on stdin and stdout
     Lsp,
 }
@@ -209,6 +213,7 @@ fn main() -> ExitCode {
             leaks,
         }),
         Command::Fmt { paths, check } => colibri_lang::fmt::run(&paths, check),
+        Command::Repl => colibri_lang::repl::run(),
         Command::Lsp => lsp(),
     })
 }

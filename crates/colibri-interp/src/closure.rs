@@ -71,6 +71,9 @@ pub struct Captured {
 #[derive(Debug)]
 pub struct ClosureObj {
     pub f: FnId,
+    /// How many times the program was extended (`Interp::session_extend`) when the closure
+    /// was made: `f` is an id of that generation of the function table.
+    pub generation: u32,
     pub captures: Vec<Captured>,
 }
 
@@ -132,7 +135,11 @@ impl Interp {
                 }
             }
         }
-        let closure = Rc::new(ClosureObj { f: c.f, captures });
+        let closure = Rc::new(ClosureObj {
+            f: c.f,
+            generation: self.generation(),
+            captures,
+        });
         self.track_closure(&closure, Some(span));
         Ok(Value::Closure(closure))
     }
@@ -155,7 +162,7 @@ impl Interp {
                 self.call_body(fiber, body, args)
             }
             Value::Closure(c) => {
-                let Some(body) = self.fns.get(c.f.0 as usize).cloned() else {
+                let Some(body) = self.closure_body(c) else {
                     self.release_all(args);
                     return Err(self.internal(fiber, span, "unknown closure body"));
                 };

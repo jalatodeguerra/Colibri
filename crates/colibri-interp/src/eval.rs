@@ -70,6 +70,9 @@ pub struct Interp {
     pub(crate) leaks: Option<Box<crate::leaks::LeakTracker>>,
     /// The C layout of every `@repr(C)` struct of the loaded program, and the open libraries.
     pub(crate) cffi: crate::cffi::CffiState,
+    /// For each extension of the program (`session_extend`), how the function ids of the
+    /// generation before map to the one after (`u32::MAX`: the function is gone).
+    pub(crate) closure_maps: Vec<Vec<u32>>,
 }
 
 /// The default for [`Interp::set_native_stack_budget`]: small enough for a default test thread.
@@ -108,6 +111,7 @@ impl Interp {
             sched: crate::coro::Scheduler::new(),
             leaks: None,
             cffi: crate::cffi::CffiState::default(),
+            closure_maps: Vec::new(),
         }
     }
 
@@ -131,6 +135,7 @@ impl Interp {
     /// old module-level values die first).
     pub fn load(&mut self, program: &Program) {
         self.shutdown();
+        self.closure_maps.clear();
         self.load_host(program);
         self.fns = program.fns.iter().map(|f| Rc::clone(&f.body)).collect();
         self.globals = vec![Value::Unit; program.globals.len()];
@@ -153,6 +158,11 @@ impl Interp {
     /// declarations are identical.
     pub fn patch(&mut self, program: &Program) {
         debug_assert_eq!(self.fns.len(), program.fns.len());
+        self.swap_program(program);
+    }
+
+    /// Replaces every table that comes from the checked program (not the module-level values).
+    pub(crate) fn swap_program(&mut self, program: &Program) {
         self.fns = program.fns.iter().map(|f| Rc::clone(&f.body)).collect();
         self.types = Rc::from(program.types.clone());
         self.dispatch = crate::dispatch::Tables::new(program);
@@ -161,7 +171,7 @@ impl Interp {
             .iter()
             .map(|&g| (g, Rc::clone(&program.globals[g.0 as usize].init)))
             .collect();
-        self.script = Some(Rc::clone(&program.script));
+        self.set_script(program);
         self.cffi.load(program);
         // The host's view of the host functions' (empty) bodies.
         self.host.bodies = program
@@ -169,6 +179,22 @@ impl Interp {
             .iter()
             .map(|h| Rc::clone(&program.fns[h.f.0 as usize].body))
             .collect();
+    }
+
+    pub(crate) fn set_script(&mut self, program: &Program) {
+        self.script = Some(Rc::clone(&program.script));
+    }
+
+    pub(crate) fn script_body(&self) -> Option<Rc<Body>> {
+        self.script.clone()
+    }
+
+    pub(crate) fn run_session_body(
+        &mut self,
+        fiber: &mut Fiber,
+        body: &Rc<Body>,
+    ) -> Result<Value, Box<PanicInfo>> {
+        self.run_body(fiber, body)
     }
 
     /// Runs the module-level initialisers in dependency order, then the top-level statements.
