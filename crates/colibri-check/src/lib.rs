@@ -45,6 +45,7 @@ mod suggest;
 pub mod traits;
 mod tryop;
 pub mod types;
+mod vector;
 mod zonk;
 
 pub use checker::Checked;

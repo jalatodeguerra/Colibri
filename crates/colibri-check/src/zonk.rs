@@ -122,6 +122,7 @@ fn operand_of(ty: &Ty) -> Operand {
         | Ty::Option(_)
         | Ty::Range(_)
         | Ty::Ptr(_)
+        | Ty::Vec(_)
         | Ty::Param(..) => Operand::Structural,
         _ => Operand::Int(IntTy::I64),
     }
@@ -137,6 +138,7 @@ fn resolve_binop(op: BinOp, operand: &Ty) -> BinOp {
         BinOp::Concat => BinOp::Concat,
         BinOp::Cmp(c, _) => BinOp::Cmp(c, operand_of(operand)),
         BinOp::Is => BinOp::Is,
+        BinOp::Vec(..) => op,
     }
 }
 
@@ -340,7 +342,7 @@ impl Zonker<'_> {
                         self.require_integer("~", &x.ty, e.span);
                         *op = UnOp::BitNot(int_of(&x.ty));
                     }
-                    UnOp::Not => {}
+                    UnOp::Not | UnOp::VecNeg(_) => {}
                 }
             }
             ExprKind::Binary(op, l, r) => {

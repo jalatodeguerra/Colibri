@@ -1,1 +1,0 @@
-fn f(a: vec2) {} // error: the type `vec2` is not supported yet

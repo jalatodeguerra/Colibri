@@ -1,0 +1,8 @@
+import vec
+
+fn main() {
+    print(vec.ivec2(vec.vec2(1.9, -2.1)))
+    let nan = vec.vec2(0, 0) / vec.vec2(0, 1)
+    print(vec.ivec2(nan)) // panic: cannot convert `nan` to `i32`
+}
+// expect: ivec2(1, -2)

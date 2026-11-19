@@ -1,0 +1,8 @@
+import vec
+
+fn main() {
+    let v = vec.ivec3(1, 100000, 3)
+    print(v * 2)
+    print(v * 100000) // panic: integer overflow
+}
+// expect: ivec3(2, 200000, 6)
