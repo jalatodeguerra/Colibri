@@ -1,0 +1,54 @@
+import str
+
+fn main() {
+    print(str.parse_int("42"))
+    print(str.parse_int("-7"))
+    print(str.parse_int("+5"))
+    print(str.parse_int(""))
+    print(str.parse_int("12x"))
+    print(str.parse_int("99999999999999999999"))
+    print(str.parse_float("2.5"))
+    print(str.parse_float("1e3"))
+    print(str.parse_float("abc"))
+    print(str.parse_bool("true"))
+    print(str.parse_bool("yes"))
+    print(str.lines("a\nb\r\n\nc\n"))
+    print(str.repeat("ab", 3))
+    print(str.repeat("x", 0))
+    print(str.pad_left("7", 3, '0'))
+    print(str.pad_right("ab", 5, '.'))
+    print(str.pad_left("long", 2, ' '))
+    print(str.pad_left("é", 3, '-'))
+    print(str.trim_start("  hi  ") + "|")
+    print(str.trim_end("  hi  ") + "|")
+    print(str.strip_prefix("prefix.rest", "prefix."))
+    print(str.strip_prefix("other", "prefix."))
+    print(str.strip_suffix("file.txt", ".txt"))
+    let n = str.parse_int("10") or 0
+    print(n + 1)
+}
+
+// expect: ok(42)
+// expect: ok(-7)
+// expect: ok(5)
+// expect: err(cannot read `` as an int: the text is empty)
+// expect: err(cannot read `12x` as an int: it has a character that is not a digit)
+// expect: err(cannot read `99999999999999999999` as an int: the number does not fit in an int)
+// expect: ok(2.5)
+// expect: ok(1000.0)
+// expect: err(cannot read `abc` as a float)
+// expect: ok(true)
+// expect: err(cannot read `yes` as a bool (`true` or `false`))
+// expect: ["a", "b", "", "c"]
+// expect: ababab
+// expect:
+// expect: 007
+// expect: ab...
+// expect: long
+// expect: --é
+// expect: hi  |
+// expect:   hi|
+// expect: some("rest")
+// expect: none
+// expect: some("file")
+// expect: 11

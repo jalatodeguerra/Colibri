@@ -1,0 +1,7 @@
+import math
+
+fn main() {
+    print(math.sqrt("four")) // error: expected `float`, found `str`
+    print(math.min(1.5, 2.5)) // error: expected `int`
+    print(math.nothing(1.0)) // error: nothing
+}

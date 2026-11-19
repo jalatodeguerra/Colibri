@@ -1,0 +1,4 @@
+import std // error: no module `std`
+import std.math.sin // error: no module `std.math.sin`
+
+fn main() {}

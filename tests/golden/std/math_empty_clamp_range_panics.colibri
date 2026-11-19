@@ -1,0 +1,7 @@
+import math
+
+fn main() {
+    print(math.clamp(1, 5, 2))
+}
+
+// panic: clamp: the range 5..2 is empty

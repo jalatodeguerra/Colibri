@@ -1,0 +1,40 @@
+import json
+
+fn show(text: str) {
+    match json.decode[List[int]](text) {
+        ok(v)  => print("ok {v}")
+        err(e) => print(e.message())
+    }
+}
+
+fn main() {
+    show("[1, 2, 3]")
+    show("")
+    show("   ")
+    show("[1, 2,]")
+    show("[1 2]")
+    show("[1, 2")
+    show("[01]")
+    show("[1.]")
+    show("[+1]")
+    show("[1] [2]")
+    show("[nul]")
+    show("[\"a\\q\"]")
+    show("[1,\n  2,\n  x]")
+    show(r"""{"a": 1}""")
+}
+
+// expect: ok [1, 2, 3]
+// expect: json: invalid syntax at line 1, column 1: the text is empty
+// expect: json: invalid syntax at line 1, column 4: the text is empty
+// expect: json: invalid syntax at line 1, column 7: `]` cannot start a value
+// expect: json: invalid syntax at line 1, column 4: expected `,` or `]`
+// expect: json: invalid syntax at line 1, column 6: expected `,` or `]`
+// expect: json: invalid syntax at line 1, column 3: a number cannot start with a zero
+// expect: json: invalid syntax at line 1, column 4: a digit must follow the `.`
+// expect: json: invalid syntax at line 1, column 2: `+` cannot start a value
+// expect: json: invalid syntax at line 1, column 5: unexpected text after the value
+// expect: json: invalid syntax at line 1, column 2: expected `null`
+// expect: json: invalid syntax at line 1, column 6: `\q` is not an escape
+// expect: json: invalid syntax at line 3, column 3: `x` cannot start a value
+// expect: json: at `$`: expected an array, found an object

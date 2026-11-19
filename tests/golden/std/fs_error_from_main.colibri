@@ -1,0 +1,14 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let missing = path.join(os.temp_dir(), "level1.txt")
+    let text = fs.read(missing).context("loading level")?
+    print(text)
+    return ok(())
+}
+
+// main-err: loading level
+// main-err: no such file or directory

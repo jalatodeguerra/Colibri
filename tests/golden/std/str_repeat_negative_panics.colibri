@@ -1,0 +1,7 @@
+import str
+
+fn main() {
+    print(str.repeat("a", -1))
+}
+
+// panic: str.repeat: -1 is not a count

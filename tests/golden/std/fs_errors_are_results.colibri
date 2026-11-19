@@ -1,0 +1,49 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let dir = os.temp_dir()
+    let missing = path.join(dir, "missing.txt")
+    match fs.read(missing) {
+        ok(text) => print("read {text}")
+        err(e)   => print(e.message() == "cannot read `{missing}`: no such file or directory")
+    }
+    // The message says what was attempted and why it failed.
+    let text = fs.read(missing) or |e| { "failed: " + e.message().replace(dir, "<dir>") }
+    print(text)
+    print(fs.read_bytes(missing).is_err())
+    print(fs.list(missing).is_err())
+    print(fs.remove(missing).is_err())
+    print(fs.copy(missing, path.join(dir, "copy.txt")).is_err())
+    print(fs.rename(missing, path.join(dir, "other.txt")).is_err())
+    print(fs.size(missing).is_err())
+    // A folder is not a file, and a file is not a folder.
+    let folder = path.join(dir, "folder")
+    fs.create_dir(folder)?
+    print(fs.read(folder).is_err())
+    fs.write(path.join(folder, "a.txt"), "a")?
+    print(fs.create_dir(path.join(folder, "a.txt")).is_err())
+    print(fs.remove(folder).is_err())
+    // Invalid UTF-8 is an error for `read`, and fine for `read_bytes`.
+    let binary = path.join(dir, "binary")
+    fs.write_bytes(binary, [255, 254, 0])?
+    print(fs.read(binary).is_err())
+    print(fs.read_bytes(binary)?)
+    return ok(())
+}
+
+// expect: true
+// expect: failed: cannot read `<dir>/missing.txt`: no such file or directory
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: [255, 254, 0]

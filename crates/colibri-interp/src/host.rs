@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use colibri_check::hir::{HostFnId, Program};
+use colibri_check::types::Ty;
 use colibri_syntax::{SourceMap, Span};
 
 use crate::ctl::{Eval, PanicInfo};
@@ -69,6 +70,8 @@ pub(crate) struct HostSide {
     /// Which `Vm` this interpreter belongs to.
     pub vm_id: u64,
     pub drop_queue: RootDropQueue,
+    /// The type arguments of the host function call that is running.
+    pub type_args: Vec<Ty>,
     /// The objects scripts hold for the host (EMBEDDING §3).
     pub heap: crate::hostheap::HostHeap,
 }
@@ -150,6 +153,17 @@ impl Interp {
 
     pub fn sources(&self) -> &Rc<SourceMap> {
         &self.host.sources
+    }
+
+    /// The type arguments written (or inferred) at the host function call that is running, in
+    /// the order of the function's type parameters. Empty outside a host function.
+    pub fn host_type_args(&self) -> &[Ty] {
+        &self.host.type_args
+    }
+
+    /// Every struct, enum and class of the loaded program, indexed by type id.
+    pub fn type_defs(&self) -> &[colibri_check::hir::TypeDef] {
+        &self.types
     }
 
     // ---- host state ----
@@ -304,6 +318,7 @@ impl Interp {
         &mut self,
         fiber: &mut Fiber,
         id: HostFnId,
+        type_args: &[Ty],
         args: Vec<Value>,
         span: Span,
     ) -> Eval {
@@ -342,7 +357,10 @@ impl Interp {
             cleanups: Vec::new(),
         });
         fiber.host_depth += 1;
+        // The type arguments of the call, for a function that reads them (`json.decode[T]`).
+        let outer_type_args = std::mem::replace(&mut self.host.type_args, type_args.to_vec());
         let result = imp(self, fiber, args);
+        self.host.type_args = outer_type_args;
         fiber.host_depth -= 1;
         let outcome = match result {
             Ok(v) => Ok(v),

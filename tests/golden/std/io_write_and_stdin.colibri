@@ -1,0 +1,17 @@
+// caps: os
+// The harness feeds "first line\nsecond line\n" to standard input.
+import io
+
+fn main() {
+    io.write("a")
+    io.write("b\n")
+    print(io.read_line())
+    print(io.read_line())
+    print(io.read_line())
+    io.eprint("")
+}
+
+// expect: ab
+// expect: ok(some("first line"))
+// expect: ok(some("second line"))
+// expect: ok(none)

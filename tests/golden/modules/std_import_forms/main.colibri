@@ -1,0 +1,20 @@
+import math
+import std.path
+import std.json as j
+import rand.{int as random_int, seed}
+import std.str.{parse_int}
+
+fn main() {
+    print(math.min(1, 2))
+    print(path.join("a", "b"))
+    print(j.encode([1]))
+    seed(1)
+    print(random_int(0, 100))
+    print(parse_int("5"))
+}
+
+// expect: 1
+// expect: a/b
+// expect: ok("[1]")
+// expect: 70
+// expect: ok(5)

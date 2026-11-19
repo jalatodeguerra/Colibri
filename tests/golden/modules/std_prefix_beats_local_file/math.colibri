@@ -1,0 +1,1 @@
+pub fn floor(x: float) -> float => -1.0

@@ -1,0 +1,38 @@
+import json
+
+enum Mode {
+    Easy
+    Hard
+}
+
+struct Config {
+    title: str
+    volume: float
+    lives: i32
+    mode: Mode
+    seed: int?
+    keys: List[str]
+}
+
+fn main() {
+    // A missing `Option` field is `none`, unknown fields are ignored, and an integer is a fine
+    // float.
+    let text = r"""{
+        "title": "Demo", "volume": 3, "lives": 5, "mode": "Hard",
+        "keys": ["w", "a"], "debug": true
+    }"""
+    let c = json.decode[Config](text).expect("decodes")
+    print(c)
+    // The type can come from an annotation.
+    let d: Config = json.decode(text).expect("decodes")
+    print(d == c)
+    // Field order in the text does not matter.
+    let e = json.decode[Config](
+        r"""{"keys": [], "mode": "Easy", "lives": 1, "volume": 0.5, "title": "x", "seed": 9}""",
+    )
+    print(e)
+}
+
+// expect: Config { title: "Demo", volume: 3.0, lives: 5, mode: Hard, seed: none, keys: ["w", "a"] }
+// expect: true
+// expect: ok(Config { title: "x", volume: 0.5, lives: 1, mode: Easy, seed: some(9), keys: [] })

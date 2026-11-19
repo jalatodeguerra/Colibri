@@ -1,0 +1,30 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let root = path.join(os.temp_dir(), "tree")
+    // create_dir makes the parents and is fine when the folder exists.
+    fs.create_dir(path.join(root, "a/b/c"))?
+    fs.create_dir(path.join(root, "a/b/c"))?
+    fs.write(path.join(root, "z.txt"), "z")?
+    fs.write(path.join(root, "m.txt"), "m")?
+    fs.write(path.join(root, "a/inner.txt"), "i")?
+    // Names, sorted, so the order never depends on the platform.
+    print(fs.list(root)?)
+    print(fs.list(path.join(root, "a"))?)
+    fs.copy(path.join(root, "z.txt"), path.join(root, "copy.txt"))?
+    fs.rename(path.join(root, "m.txt"), path.join(root, "moved.txt"))?
+    print(fs.list(root)?)
+    print(fs.read(path.join(root, "copy.txt"))?)
+    fs.remove_dir(root)?
+    print(fs.exists(root))
+    return ok(())
+}
+
+// expect: ["a", "m.txt", "z.txt"]
+// expect: ["b", "inner.txt"]
+// expect: ["a", "copy.txt", "moved.txt", "z.txt"]
+// expect: z
+// expect: false

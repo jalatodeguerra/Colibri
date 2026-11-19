@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use colibri_check::HostEnv;
-use colibri_check::host::{DEFAULT_MODULE, body_hash, header_line};
+use colibri_check::host::{DEFAULT_MODULE, body_hash, float_literal, header_line};
 
 use crate::cap::Cap;
 use crate::error::Error;
@@ -27,6 +27,22 @@ pub(crate) struct HostFnEntry {
     pub positional: bool,
     /// The real parameter names, when the host gave them (then `positional` is false).
     pub names: Option<Vec<String>>,
+    /// The function reads the type arguments of its calls (`@typed`).
+    pub typed: bool,
+}
+
+/// A registered constant of a module (`math.PI`).
+#[derive(Clone, Debug)]
+pub(crate) struct ConstEntry {
+    pub module: String,
+    pub name: String,
+    pub value: ConstValue,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ConstValue {
+    Int(u64),
+    Float(f64),
 }
 
 /// The canonical text of an interface.
@@ -46,8 +62,23 @@ fn param_name(i: usize) -> char {
 /// Prints the canonical interface of the types and functions of one module: the types in the
 /// order they were described (which is their type id order), then the functions in
 /// registration order (which is their `HostFnId` order).
-pub(crate) fn render(reg: &TypeRegistry, fns: &[HostFnEntry], module: &str) -> Rendered {
+pub(crate) fn render(
+    reg: &TypeRegistry,
+    fns: &[HostFnEntry],
+    consts: &[ConstEntry],
+    module: &str,
+) -> Rendered {
     let mut body = String::new();
+    for c in consts.iter().filter(|c| c.module == module) {
+        match c.value {
+            ConstValue::Int(v) => body.push_str(&format!("const {}: int = {v}\n", c.name)),
+            ConstValue::Float(v) => {
+                // Checked when the constant was registered.
+                let text = float_literal(v).unwrap_or_else(|| "0.0".to_string());
+                body.push_str(&format!("const {}: float = {text}\n", c.name));
+            }
+        }
+    }
     for (i, decl) in reg.decls.iter().enumerate() {
         if reg.decl_modules[i].as_deref().unwrap_or(DEFAULT_MODULE) != module {
             continue;
@@ -109,6 +140,13 @@ pub(crate) fn render(reg: &TypeRegistry, fns: &[HostFnEntry], module: &str) -> R
         if f.positional {
             line.push_str("@positional ");
         }
+        let mut generics = Vec::new();
+        for p in f.sig.params.iter().chain([&f.sig.ret]) {
+            p.params(&mut generics);
+        }
+        if f.typed {
+            line.push_str("@typed ");
+        }
         let params: Vec<String> = f
             .sig
             .params
@@ -119,7 +157,12 @@ pub(crate) fn render(reg: &TypeRegistry, fns: &[HostFnEntry], module: &str) -> R
                 None => format!("{}: {t}", param_name(i)),
             })
             .collect();
-        line.push_str(&format!("fn {}({})", f.name, params.join(", ")));
+        let generics = if generics.is_empty() {
+            String::new()
+        } else {
+            format!("[{}]", generics.join(", "))
+        };
+        line.push_str(&format!("fn {}{generics}({})", f.name, params.join(", ")));
         if f.sig.ret != crate::types::TypeDesc::Unit {
             line.push_str(&format!(" -> {}", f.sig.ret));
         }
@@ -227,6 +270,7 @@ mod tests {
             requires: cap,
             positional: true,
             names: None,
+            typed: false,
         }
     }
 
@@ -250,7 +294,7 @@ mod tests {
                 Some(Cap::Fs),
             ),
         ];
-        let out = render(&reg, &fns, DEFAULT_MODULE);
+        let out = render(&reg, &fns, &[], DEFAULT_MODULE);
         let lines: Vec<&str> = out.text.lines().collect();
         assert_eq!(lines[0], GENERATED);
         assert!(

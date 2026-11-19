@@ -1,0 +1,16 @@
+import json
+
+struct Point { x: int, y: int }
+
+fn load[T](text: str) -> Result[T] {
+    return json.decode[T](text) // error: needs to know its type
+}
+
+fn load_point(text: str) -> Result[Point] {
+    return json.decode[Point](text)
+}
+
+fn main() {
+    let p = json.decode("1") // error: cannot infer
+    let q = load_point("[]")
+}
