@@ -1,0 +1,24 @@
+import regex
+
+fn main() {
+    match regex.compile("(unclosed") {
+        ok(_) => print("compiled")
+        err(e) => print(e.message())
+    }
+    match regex.compile(r"a{2,1}") {
+        ok(_) => print("compiled")
+        err(_) => print("repeat range rejected")
+    }
+    // No look-around: the engine is linear time.
+    match regex.compile("a(?=b)") {
+        ok(_) => print("compiled")
+        err(_) => print("look-around rejected")
+    }
+}
+
+// expect: regex parse error:
+// expect:     (unclosed
+// expect:     ^
+// expect: error: unclosed group
+// expect: repeat range rejected
+// expect: look-around rejected

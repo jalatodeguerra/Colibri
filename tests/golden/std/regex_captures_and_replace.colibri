@@ -1,0 +1,69 @@
+import regex
+
+fn must(pattern: str) -> regex.Regex {
+    match regex.compile(pattern) {
+        ok(re) => return re
+        err(e) => panic("bad pattern: {e.message()}")
+    }
+}
+
+fn main() {
+    let re = must(r"(?P<key>\w+)=(?P<val>\d+)?")
+
+    match re.captures("size=42;") {
+        some(c) => {
+            print(c.len())
+            print(c.get(0))
+            print(c.get(1))
+            print(c.get(2))
+            print(c.named("key"))
+            print(c.named("val"))
+            print(c.named("nope"))
+            print(c.get(3))
+            print(c.get(-1))
+            match c.span(2) {
+                some(m) => print("{m.text} {m.start} {m.end}")
+                none => print("no span")
+            }
+        }
+        none => print("no captures")
+    }
+
+    // A group that did not take part is none.
+    match re.captures("size=") {
+        some(c) => {
+            print(c.get(2))
+            print(c.named_span("val") == none)
+        }
+        none => print("no captures")
+    }
+    print(re.captures("???") == none)
+
+    let swap = must(r"(\w+) (\w+)")
+    print(swap.replace("hello world, big world", "$2 $1"))
+    print(swap.replace_all("hello world, big world", "$2 $1"))
+
+    let named = must(r"(?P<y>\d{4})-(?P<m>\d{2})")
+    print(named.replace_all("2024-05 and 2025-11", r"${m}/${y}"))
+    print(named.replace_all("2024-05", r"$$${m}"))
+    print(must("a").replace_all("banana", ""))
+}
+
+// expect: 3
+// expect: some("size=42")
+// expect: some("size")
+// expect: some("42")
+// expect: some("size")
+// expect: some("42")
+// expect: none
+// expect: none
+// expect: none
+// expect: 42 5 7
+// expect: none
+// expect: true
+// expect: true
+// expect: world hello, big world
+// expect: world hello, world big
+// expect: 05/2024 and 11/2025
+// expect: $05
+// expect: bnn
