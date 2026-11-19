@@ -179,7 +179,9 @@ pub use reload::{ReloadOptions, ReloadOutcome};
 pub use render::render_diagnostic;
 pub use types::{SigDesc, TypeDesc, TypeRegistry};
 pub use vecmod::install_vec;
-pub use vm::{DEFAULT_MAX_CALL_DEPTH, HostModule, TestInfo, Vm, VmBuilder};
+pub use vm::{
+    DEFAULT_MAX_CALL_DEPTH, HostModule, SessionCheck, SessionError, TestInfo, Vm, VmBuilder,
+};
 
 /// The type descriptors of the loaded program, for host functions that work on any type
 /// (serializers, DESIGN §7.5): what [`Ctx::type_args`] and [`Ctx::type_defs`] return.

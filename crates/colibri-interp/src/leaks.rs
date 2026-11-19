@@ -583,7 +583,7 @@ impl Namer<'_> {
                     None => class,
                 }
             }
-            Value::Closure(c) => match self.interp.fns.get(c.f.0 as usize) {
+            Value::Closure(c) => match self.interp.closure_body_ref(c) {
                 Some(body) if body.name.contains("closure") => body.name.clone(),
                 Some(body) => format!("closure {}", body.name),
                 None => "closure".to_string(),
@@ -622,7 +622,7 @@ impl Namer<'_> {
             (Value::Set(_), Edge::Item(i)) => format!("{{#{i}}}"),
             (Value::Closure(c), Edge::Capture(i)) => {
                 let name = c.captures.get(i as usize).and_then(|cap| {
-                    let body = self.interp.fns.get(c.f.0 as usize)?;
+                    let body = self.interp.closure_body_ref(c)?;
                     body.locals
                         .get(cap.inner.0 as usize)
                         .map(|l| l.name.clone())

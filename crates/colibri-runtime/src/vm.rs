@@ -43,6 +43,9 @@ enum LoadMode {
     Tests,
 }
 
+mod session;
+pub use session::{SessionCheck, SessionError};
+
 /// A program that was read and checked, not yet loaded.
 struct Checked {
     sources: SourceMap,
@@ -430,7 +433,7 @@ impl Vm {
         let before = std::mem::replace(&mut self.registry, registry);
         let added = self.note_module(module);
         // Whatever the names or types, what is printed must read back.
-        if let Err(message) = self.validate_interfaces() {
+        if let Err(message) = self.validate_interfaces(module) {
             self.host_fns.pop();
             self.registry = before;
             self.forget_module(module, added);
@@ -467,7 +470,7 @@ impl Vm {
         let before = std::mem::replace(&mut self.registry, registry);
         let added = self.note_module(module);
         // Whatever the names, what is printed must read back.
-        if let Err(message) = self.validate_interfaces() {
+        if let Err(message) = self.validate_interfaces(module) {
             self.registry = before;
             self.forget_module(module, added);
             return Err(fail(message));
@@ -507,9 +510,18 @@ impl Vm {
 
     /// Prints every module's interface and reads it back, and checks that no module mentions
     /// the types of another named module (its interface text could not express that).
-    fn validate_interfaces(&self) -> Result<(), String> {
-        for module in self.module_names() {
-            HostEnv::from_text(&self.rendered_module(&module).text)?;
+    ///
+    /// `touched` is the module that just got a registration: another module's text does not
+    /// change with it, so only that one is printed and read back (all of them when it is the
+    /// default module, whose types the others may mention). This keeps registering a library
+    /// of many functions linear and not quadratic, which dominates the start of a script.
+    fn validate_interfaces(&self, touched: &str) -> Result<(), String> {
+        if touched == DEFAULT_MODULE {
+            for module in self.module_names() {
+                HostEnv::from_text(&self.rendered_module(&module).text)?;
+            }
+        } else {
+            HostEnv::from_text(&self.rendered_module(touched).text)?;
         }
         let reg = &self.registry;
         let check = |module: &str, sig: &crate::types::SigDesc, what: &str| -> Result<(), String> {
@@ -647,7 +659,7 @@ impl Vm {
             value,
         });
         let added = self.note_module(module);
-        if let Err(message) = self.validate_interfaces() {
+        if let Err(message) = self.validate_interfaces(module) {
             self.host_consts.pop();
             self.forget_module(module, added);
             return Err(fail(message));
