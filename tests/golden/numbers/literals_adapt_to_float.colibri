@@ -1,0 +1,27 @@
+fn half(x: float) -> float => x / 2
+fn main() {
+    let a: float = 1
+    let b = 2.0 * 3
+    let c = 1 + 2.5
+    let d = 10 / 4
+    let e: float = 10 / 4
+    print(a)
+    print(b)
+    print(c)
+    print(d)
+    print(e)
+    print(half(5))
+    var f = 1.5
+    f = 2
+    f += 1
+    print(f)
+    print(1 < 1.5)
+}
+// expect: 1.0
+// expect: 6.0
+// expect: 3.5
+// expect: 2
+// expect: 2.5
+// expect: 2.5
+// expect: 3.0
+// expect: true

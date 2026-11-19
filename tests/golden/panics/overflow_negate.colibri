@@ -1,0 +1,4 @@
+let min = -9223372036854775807 - 1
+print(min)
+print(-min) // panic: integer overflow
+// expect: -9223372036854775808

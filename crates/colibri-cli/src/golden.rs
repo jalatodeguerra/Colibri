@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use colibri_syntax::{SourceMap, parse_file};
+use colibri_runtime as colibri;
 
 /// Directives parsed from one golden file.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -58,8 +58,6 @@ pub fn parse_directives(source: &str) -> Directives {
 /// What running a golden file produced.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// The engine does not exist yet; the test is ignored.
-    NotImplemented,
     /// The program compiled and ran; `panic` is the panic message if it ended in one.
     Compiled {
         stdout: String,
@@ -69,33 +67,43 @@ pub enum Outcome {
     CompileErrors(Vec<(usize, String)>),
 }
 
-/// Runs a golden file through the engine. Only the parser exists so far: a
-/// file with syntax errors is a compile failure, anything else is not run.
+/// Runs a golden file through the runtime in-process, with its standard output captured:
+/// load the file, then call `main` if it has one. Run it on a thread with a big stack (see
+/// [`crate::on_big_stack`]) so deep recursion reaches the call-depth limit.
 pub fn run_golden(path: &Path, source: &str) -> Outcome {
-    let mut map = SourceMap::new();
-    let file = map.add_file(path.display().to_string(), source);
-    let (_, diagnostics) = parse_file(file, source);
-    let errors: Vec<(usize, String)> = diagnostics
-        .iter()
-        .filter(|d| d.is_error())
-        .map(|d| {
-            (
-                map.line_col(file, d.span.start).0 as usize,
-                d.message.clone(),
-            )
-        })
-        .collect();
-    if errors.is_empty() {
-        Outcome::NotImplemented
-    } else {
-        Outcome::CompileErrors(errors)
+    let out = colibri::SharedBuffer::new();
+    let mut vm = crate::vm_builder().stdout(Box::new(out.clone())).build();
+    let name = path.display().to_string();
+    match vm.load_source(&name, source).and_then(|()| vm.run_main()) {
+        Ok(()) => Outcome::Compiled {
+            stdout: out.contents(),
+            panic: None,
+        },
+        Err(colibri::Error::Compile(report)) => Outcome::CompileErrors(
+            report
+                .diagnostics
+                .iter()
+                .filter(|d| d.is_error())
+                .map(|d| {
+                    let line = report.sources.line_col(d.span.file, d.span.start).0;
+                    (line as usize, d.message.clone())
+                })
+                .collect(),
+        ),
+        Err(colibri::Error::Panic { message, .. }) => Outcome::Compiled {
+            stdout: out.contents(),
+            panic: Some(message),
+        },
+        Err(other) => Outcome::Compiled {
+            stdout: out.contents(),
+            panic: Some(format!("host error: {other}")),
+        },
     }
 }
 
 /// Compares an outcome with the directives; `Err` describes every mismatch.
 pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
     match outcome {
-        Outcome::NotImplemented => Ok(()),
         Outcome::CompileErrors(actual) => {
             let mut problems = Vec::new();
             for (line, text) in &d.errors {

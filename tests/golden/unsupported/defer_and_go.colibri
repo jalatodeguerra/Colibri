@@ -1,0 +1,5 @@
+fn work() {}
+fn main() {
+    defer work() // error: `defer` is not supported yet
+    go work() // error: `go` is not supported yet
+}

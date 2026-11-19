@@ -1,0 +1,6 @@
+fn identity[T](x: T) -> T { // error: generic function is not supported yet
+    return x
+}
+print(identity(1))
+impl Foo { // error: `impl` is not supported yet
+}

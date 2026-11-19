@@ -1,0 +1,23 @@
+fn main() {
+    var i = 0
+    'outer: while i < 4 {
+        i += 1
+        var j = 0
+        while j < 4 {
+            j += 1
+            if j == 3 {
+                continue 'outer
+            }
+            if i == 3 {
+                break 'outer
+            }
+            print("{i},{j}")
+        }
+    }
+    print("end {i}")
+}
+// expect: 1,1
+// expect: 1,2
+// expect: 2,1
+// expect: 2,2
+// expect: end 3

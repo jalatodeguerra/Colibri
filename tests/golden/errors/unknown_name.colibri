@@ -1,0 +1,5 @@
+fn main() {
+    let score = 10
+    print(scroe) // error: unknown name `scroe`
+    print(nothing_like_it) // error: unknown name `nothing_like_it`
+}

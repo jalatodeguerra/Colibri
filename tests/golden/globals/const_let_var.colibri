@@ -1,0 +1,13 @@
+const MAX = 100
+let name = "Colibri"
+var counter = 0
+fn bump() {
+    counter += 1
+}
+fn main() {
+    bump()
+    bump()
+    counter += 10
+    print("{name} {MAX} {counter}")
+}
+// expect: Colibri 100 12

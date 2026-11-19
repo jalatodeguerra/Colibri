@@ -1,0 +1,7 @@
+fn main() {
+    let i = 2
+    let f = 1.5
+    print(i + f) // error: cannot apply `+` to `int` and `float`
+    print(i * 1.5) // error: cannot apply `*` to `int` and `{float}`
+    let g: float = i // error: expected `float`, found `int`
+}

@@ -1,0 +1,4 @@
+fn f(x: int) -> int {
+    x = 5 // error: cannot assign to the parameter `x`
+    return x
+}

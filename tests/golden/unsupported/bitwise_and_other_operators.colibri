@@ -1,0 +1,7 @@
+fn main() {
+    print(1 | 2) // error: bitwise operator is not supported yet
+    print(~1) // error: the `~` operator is not supported yet
+    let r = 0..3 // error: range is not supported yet
+    if let some(x) = r { // error: `if let` is not supported yet
+    }
+}

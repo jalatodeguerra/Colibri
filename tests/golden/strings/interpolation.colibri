@@ -1,0 +1,19 @@
+fn main() {
+    let name = "Ana"
+    let n = 3
+    let ratio = 2.5
+    print("Hello, {name}!")
+    print("{n} + {n} = {n + n}")
+    print("{ratio} {n > 2} {'x'} {()}")
+    print("{name + "!"}")
+    print("{n * 2 + 1}{n}")
+    print("no holes")
+    print("{n}")
+}
+// expect: Hello, Ana!
+// expect: 3 + 3 = 6
+// expect: 2.5 true x ()
+// expect: Ana!
+// expect: 73
+// expect: no holes
+// expect: 3

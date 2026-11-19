@@ -1,0 +1,10 @@
+let x = "global"
+fn main() {
+    print(x)
+    let x = "local"
+    print(x)
+}
+print(x)
+// expect: global
+// expect: global
+// expect: local

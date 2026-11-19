@@ -1,0 +1,10 @@
+fn main() {
+    print("a" - "b") // error: `-` cannot be applied to values of type `str`
+    print(true + false) // error: `+` cannot be applied to values of type `bool`
+    print(1 + "a") // error: cannot apply `+` to `{integer}` and `str`
+    print(-"a") // error: cannot negate a value of type `str`
+    print(!1) // error: expected `bool`, found `{integer}`
+    print(1 && true) // error: expected `bool`, found `{integer}`
+    print(() < ()) // error: cannot compare values of type `()`
+    print(1 == "a") // error: cannot apply `==` to `{integer}` and `str`
+}

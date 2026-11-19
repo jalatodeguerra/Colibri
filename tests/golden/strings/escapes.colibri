@@ -1,0 +1,13 @@
+print("tab:\there")
+print("quote: \"q\"")
+print("back\\slash")
+print("two\nlines")
+print("\u{1F600}")
+print("é日本")
+// expect: tab:	here
+// expect: quote: "q"
+// expect: back\slash
+// expect: two
+// expect: lines
+// expect: 😀
+// expect: é日本

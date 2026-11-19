@@ -1,0 +1,4 @@
+let pair = (1, "a") // error: tuple is not supported yet
+fn f() -> (int, int) { // error: tuple type is not supported yet
+    return (1, 2) // error: tuple is not supported yet
+}

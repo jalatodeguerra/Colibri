@@ -1,0 +1,23 @@
+fn trace(label: str, value: int) -> int {
+    print(label)
+    return value
+}
+fn sub(a: int, b: int) -> int => a - b
+fn with_default(a: int, b: int = trace("default b", 100)) -> int => a + b
+fn main() {
+    print(sub(trace("first", 10), trace("second", 3)))
+    print(sub(b: trace("b", 3), a: trace("a", 10)))
+    print(with_default(trace("explicit a", 1)))
+    print(with_default(b: trace("explicit b", 2), a: 5))
+}
+// expect: first
+// expect: second
+// expect: 7
+// expect: b
+// expect: a
+// expect: 7
+// expect: explicit a
+// expect: default b
+// expect: 101
+// expect: explicit b
+// expect: 7

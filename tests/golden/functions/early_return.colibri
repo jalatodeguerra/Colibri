@@ -1,0 +1,27 @@
+fn sign(x: int) -> str {
+    if x < 0 {
+        return "negative"
+    }
+    if x == 0 {
+        return "zero"
+    }
+    return "positive"
+}
+fn first_multiple(n: int, of: int) -> int {
+    var i = 1
+    while true {
+        if i % of == 0 && i >= n {
+            return i
+        }
+        i += 1
+    }
+    return 0
+}
+print(sign(-5))
+print(sign(0))
+print(sign(9))
+print(first_multiple(10, 7))
+// expect: negative
+// expect: zero
+// expect: positive
+// expect: 14

@@ -1,0 +1,3 @@
+fn square(n: int) -> int => n * n
+print(square("four")) // error: expected `int`, found `str`
+print(square(2.5)) // error: expected `int`, found `{float}`

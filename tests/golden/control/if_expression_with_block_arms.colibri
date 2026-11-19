@@ -1,0 +1,17 @@
+fn log(s: str) {
+    print("log {s}")
+}
+fn main() {
+    let x = 4
+    let label = if x > 3 {
+        log("big branch")
+        let doubled = x * 2
+        "doubled is {doubled}"
+    } else {
+        log("small branch")
+        "small"
+    }
+    print(label)
+}
+// expect: log big branch
+// expect: doubled is 8

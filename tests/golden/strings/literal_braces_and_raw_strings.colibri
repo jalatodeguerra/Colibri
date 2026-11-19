@@ -1,0 +1,9 @@
+let n = 5
+print("{{n}} is {n}")
+print("a {{ b }} c")
+print(r"{n} stays")
+print(r"C:\path\{x}")
+// expect: {n} is 5
+// expect: a { b } c
+// expect: {n} stays
+// expect: C:\path\{x}

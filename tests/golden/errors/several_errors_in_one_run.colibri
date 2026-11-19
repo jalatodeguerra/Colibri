@@ -1,0 +1,9 @@
+fn f(x: int) -> str {
+    return x // error: expected `str`, found `int`
+}
+fn g() {
+    let a: int = "s" // error: expected `int`, found `str`
+    undefined_name // error: unknown name `undefined_name`
+    f(1, 2) // error: too many arguments
+}
+let z: bool = 3 // error: expected `bool`, found `{integer}`

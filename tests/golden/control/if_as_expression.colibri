@@ -1,0 +1,14 @@
+fn main() {
+    let x = 7
+    let size = if x > 5 { "big" } else { "small" }
+    let n = if x % 2 == 0 { x / 2 } else { 3 * x + 1 }
+    let tier = if x > 10 { "high" } else if x > 5 { "mid" } else { "low" }
+    print(size)
+    print(n)
+    print(tier)
+    print(if x > 0 { 1 } else { -1 })
+}
+// expect: big
+// expect: 22
+// expect: mid
+// expect: 1
