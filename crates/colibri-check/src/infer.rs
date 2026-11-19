@@ -94,6 +94,7 @@ impl InferCtx {
             Ty::Infer(v) => unbound(*v),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(&mut go).collect()),
             Ty::Adt(id, ts) => Ty::Adt(*id, ts.iter().map(&mut go).collect()),
+            Ty::Dyn(id, ts) => Ty::Dyn(*id, ts.iter().map(&mut go).collect()),
             Ty::List(t) => Ty::List(Box::new(go(t))),
             Ty::Set(t) => Ty::Set(Box::new(go(t))),
             Ty::Option(t) => Ty::Option(Box::new(go(t))),
@@ -127,10 +128,12 @@ impl InferCtx {
                 Ok(())
             }
             (Ty::Infer(v), other) | (other, Ty::Infer(v)) => self.bind_to(*v, other),
-            (Ty::Tuple(xs), Ty::Tuple(ys)) | (Ty::Adt(_, xs), Ty::Adt(_, ys))
+            (Ty::Tuple(xs), Ty::Tuple(ys))
+            | (Ty::Adt(_, xs), Ty::Adt(_, ys))
+            | (Ty::Dyn(_, xs), Ty::Dyn(_, ys))
                 if xs.len() == ys.len() =>
             {
-                if let (Ty::Adt(i, _), Ty::Adt(j, _)) = (&a, &b)
+                if let (Ty::Adt(i, _), Ty::Adt(j, _)) | (Ty::Dyn(i, _), Ty::Dyn(j, _)) = (&a, &b)
                     && i != j
                 {
                     return Err(Mismatch);
@@ -187,7 +190,7 @@ impl InferCtx {
     fn occurs(&self, v: TyVar, ty: &Ty) -> bool {
         match self.shallow(ty) {
             Ty::Infer(w) => v == w,
-            Ty::Tuple(ts) | Ty::Adt(_, ts) => ts.iter().any(|t| self.occurs(v, t)),
+            Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().any(|t| self.occurs(v, t)),
             Ty::List(t) | Ty::Set(t) | Ty::Option(t) => self.occurs(v, &t),
             Ty::Map(a, b) | Ty::Result(a, b) => self.occurs(v, &a) || self.occurs(v, &b),
             Ty::Fn(ps, r) => ps.iter().any(|t| self.occurs(v, t)) || self.occurs(v, &r),

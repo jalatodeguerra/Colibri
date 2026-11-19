@@ -1,0 +1,33 @@
+interface Node {
+    fn label(self) -> str
+    fn next(self) -> Node?
+}
+
+struct Leaf { name: str }
+struct Link { name: str, to: Node }
+
+impl Node for Leaf {
+    fn label(self) -> str => self.name
+    fn next(self) -> Node? => none
+}
+
+impl Node for Link {
+    fn label(self) -> str => self.name
+    fn next(self) -> Node? => some(self.to)
+}
+
+fn walk(n: Node) {
+    print(n.label())
+    match n.next() {
+        some(rest) => walk(rest)
+        none => {}
+    }
+}
+
+fn main() {
+    walk(Link { name: "a", to: Link { name: "b", to: Leaf { name: "c" } } })
+}
+
+// expect: a
+// expect: b
+// expect: c

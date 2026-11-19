@@ -1,0 +1,25 @@
+struct Point { x: int, y: int }
+enum Color { Red, Green, Blue }
+
+fn same[T: Eq](a: T, b: T) -> bool => a == b
+fn smaller[T: Ord](a: T, b: T) -> bool => a < b
+fn text[T: Show](a: T) -> str => "<{a}>"
+fn twin[T: Clone](a: T) -> (T, T) => (a, a.clone())
+
+fn main() {
+    print(same(Point { x: 1, y: 2 }, Point { x: 1, y: 2 }))
+    print(same([1, 2], [1, 3]))
+    print(smaller(Color.Red, Color.Blue))
+    print(smaller((1, "b"), (1, "a")))
+    print(text(Point { x: 3, y: 4 }))
+    print(text(Color.Green))
+    print(twin([1, 2]))
+}
+
+// expect: true
+// expect: false
+// expect: true
+// expect: false
+// expect: <Point { x: 3, y: 4 }>
+// expect: <Green>
+// expect: ([1, 2], [1, 2])

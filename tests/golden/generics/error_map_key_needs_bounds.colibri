@@ -1,0 +1,3 @@
+fn count[K, V](m: Map[K, V]) -> int => m.len() // error: `K` cannot be used as a `Map` key
+
+fn main() {}

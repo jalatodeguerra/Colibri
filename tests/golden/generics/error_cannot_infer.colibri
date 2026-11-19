@@ -1,0 +1,6 @@
+fn make[T]() -> List[T] => []
+
+fn main() {
+    let xs = make() // error: cannot infer `T`
+    print(xs.len())
+}

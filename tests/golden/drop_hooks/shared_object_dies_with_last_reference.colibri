@@ -1,0 +1,19 @@
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) { print("drop {self.name}") }
+}
+
+fn main() {
+    let a = Res { name: "shared" }
+    {
+        let b = a
+        print("inner scope ends")
+    }
+    print("outer continues")
+}
+
+// expect: inner scope ends
+// expect: outer continues
+// expect: drop shared
+// drops: shared

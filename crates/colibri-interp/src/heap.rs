@@ -582,6 +582,8 @@ pub struct ClassObj {
     ty: TypeId,
     fields: RefCell<Box<[Value]>>,
     released: Cell<bool>,
+    /// The object's `Drop` hook has run (or is running); it runs at most once.
+    hooked: Cell<bool>,
 }
 
 impl ClassObj {
@@ -590,7 +592,13 @@ impl ClassObj {
             ty,
             fields: RefCell::new(fields.into_boxed_slice()),
             released: Cell::new(false),
+            hooked: Cell::new(false),
         })
+    }
+
+    /// Marks the `Drop` hook as run; `true` if it had run before.
+    pub(crate) fn mark_hooked(&self) -> bool {
+        self.hooked.replace(true)
     }
 
     pub fn ty(&self) -> TypeId {

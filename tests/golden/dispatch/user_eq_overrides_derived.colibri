@@ -1,0 +1,25 @@
+struct Money { cents: int, note: str }
+
+impl Eq for Money {
+    fn eq(self, other: Money) -> bool => self.cents == other.cents
+}
+
+struct Wallet { first: Money, tag: str }
+
+fn main() {
+    let a = Money { cents: 5, note: "a" }
+    let b = Money { cents: 5, note: "b" }
+    print(a == b)
+    print(a != b)
+    print([a].contains(b))
+    print([a].index_of(b))
+    print(Wallet { first: a, tag: "w" } == Wallet { first: b, tag: "w" })
+    print((a, 1) == (b, 1))
+}
+
+// expect: true
+// expect: false
+// expect: true
+// expect: some(0)
+// expect: true
+// expect: true

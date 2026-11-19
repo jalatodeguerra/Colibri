@@ -1,0 +1,14 @@
+struct Point { x: int, y: int }
+
+fn main() {
+    let p = Point { x: 1, y: 2 }
+    print(p.eq(Point { x: 1, y: 2 }))
+    print(5.cmp(3))
+    print(p.show())
+    print("a".hash() == "a".hash())
+}
+
+// expect: true
+// expect: 1
+// expect: Point { x: 1, y: 2 }
+// expect: true

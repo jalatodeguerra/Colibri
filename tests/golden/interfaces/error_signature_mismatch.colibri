@@ -1,0 +1,13 @@
+interface Shape {
+    fn area(self) -> float
+    fn scale(self, k: float) -> Self
+}
+
+struct Sq { s: float }
+
+impl Shape for Sq {
+    fn area(self) -> int => 1 // error: expected `fn area(self) -> float`, found `fn area(self) -> int`
+    fn scale(self, k: int) -> Sq => self // error: expected `fn scale(self, k: float) -> Sq`, found `fn scale(self, k: int) -> Sq`
+}
+
+fn main() {}

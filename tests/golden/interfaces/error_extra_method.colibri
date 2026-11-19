@@ -1,0 +1,12 @@
+interface Animal {
+    fn name(self) -> str
+}
+
+struct Dog { n: str }
+
+impl Animal for Dog {
+    fn name(self) -> str => self.n
+    fn bark(self) -> str => "woof" // error: `bark` is not a method of `Animal`
+}
+
+fn main() {}

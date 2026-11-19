@@ -1,0 +1,9 @@
+interface Named {
+    fn name(self) -> str
+}
+
+fn greet[T](x: T) -> str {
+    return x.name() // error: `T` has no method `name`
+}
+
+fn main() {}

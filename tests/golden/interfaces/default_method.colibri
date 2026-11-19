@@ -1,0 +1,24 @@
+interface Greeter {
+    fn name(self) -> str
+    fn greet(self) -> str => "Hello, {self.name()}!"
+}
+
+struct English { who: str }
+struct Pirate { who: str }
+
+impl Greeter for English {
+    fn name(self) -> str => self.who
+}
+
+impl Greeter for Pirate {
+    fn name(self) -> str => self.who
+    fn greet(self) -> str => "Ahoy, {self.who}!"
+}
+
+fn main() {
+    print(English { who: "Ana" }.greet())
+    print(Pirate { who: "Bo" }.greet())
+}
+
+// expect: Hello, Ana!
+// expect: Ahoy, Bo!

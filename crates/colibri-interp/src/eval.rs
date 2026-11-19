@@ -10,24 +10,23 @@ use colibri_check::hir::{
 use colibri_check::types::IntTy;
 use colibri_syntax::Span;
 
-use crate::compare::{values_cmp, values_equal, values_identical};
+use crate::compare::values_identical;
 use crate::ctl::{Ctl, Eval, PanicInfo, TraceEntry, into_panic};
 use crate::fiber::{Fiber, Frame};
 use crate::format::format_value;
 use crate::heap::ClassObj;
 use crate::ordered::OrderedMap;
 use crate::place::project;
-use crate::show::show;
 use crate::value::Value;
 
 /// The interpreter: the loaded code, the module-level state and the output writer. Everything
 /// about a running computation is in the [`Fiber`] passed to each method.
 pub struct Interp {
     /// Looked up at call time, so a patched function takes effect at its next call.
-    fns: Vec<Rc<Body>>,
+    pub(crate) fns: Vec<Rc<Body>>,
     pub(crate) globals: Vec<Value>,
     /// The user-defined types, which `Show` and drop tracing need for names.
-    pub(crate) types: Vec<TypeDef>,
+    pub(crate) types: Rc<[TypeDef]>,
     pub(crate) inits: Vec<(GlobalId, Rc<Body>)>,
     script: Option<Rc<Body>>,
     out: Box<dyn Write>,
@@ -35,6 +34,12 @@ pub struct Interp {
     native_stack_budget: usize,
     /// The labels of destroyed class objects, when tracing is on (`set_trace_drops`).
     pub(crate) trace: Option<Vec<String>>,
+    /// Interface implementations and the user-written methods that replace derived behaviour.
+    pub(crate) dispatch: crate::dispatch::Tables,
+    /// Panics in `Drop` hooks that no running statement has picked up yet.
+    pub(crate) hook_panics: Vec<PanicInfo>,
+    /// How many `Drop` hooks are running, one inside another.
+    pub(crate) hook_depth: u32,
 }
 
 /// The default for [`Interp::set_native_stack_budget`]: small enough for a default test thread.
@@ -58,13 +63,16 @@ impl Interp {
         Interp {
             fns: Vec::new(),
             globals: Vec::new(),
-            types: Vec::new(),
+            types: Rc::from(Vec::new()),
             inits: Vec::new(),
             script: None,
             out,
             max_depth: max_call_depth,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
             trace: None,
+            dispatch: crate::dispatch::Tables::default(),
+            hook_panics: Vec::new(),
+            hook_depth: 0,
         }
     }
 
@@ -86,7 +94,8 @@ impl Interp {
         self.shutdown();
         self.fns = program.fns.iter().map(|f| Rc::clone(&f.body)).collect();
         self.globals = vec![Value::Unit; program.globals.len()];
-        self.types = program.types.clone();
+        self.types = Rc::from(program.types.clone());
+        self.dispatch = crate::dispatch::Tables::new(program);
         self.inits = program
             .init_order
             .iter()
@@ -198,7 +207,12 @@ impl Interp {
 
     // ---- calls and scopes ----
 
-    fn call_body(&mut self, fiber: &mut Fiber, body: Rc<Body>, args: Vec<Value>) -> Eval {
+    pub(crate) fn call_body(
+        &mut self,
+        fiber: &mut Fiber,
+        body: Rc<Body>,
+        args: Vec<Value>,
+    ) -> Eval {
         self.call_body_inout(fiber, body, args).0
     }
 
@@ -207,7 +221,7 @@ impl Interp {
     /// the second result is the final value of `self`, taken out of the frame after every
     /// other cleanup ran, for the caller to write back; it is present on every path, including
     /// a panic.
-    fn call_body_inout(
+    pub(crate) fn call_body_inout(
         &mut self,
         fiber: &mut Fiber,
         body: Rc<Body>,
@@ -316,7 +330,11 @@ impl Interp {
         let mark = fiber.temps.len();
         let result = self.exec_stmt_inner(fiber, stmt);
         self.release_temps(fiber, mark);
-        result
+        if self.hook_panics.is_empty() {
+            return result;
+        }
+        self.fold_hook_panics(result.map(|()| Value::Unit))
+            .map(|_| ())
     }
 
     fn exec_stmt_inner(&mut self, fiber: &mut Fiber, stmt: &Stmt) -> Eval<()> {
@@ -412,7 +430,11 @@ impl Interp {
             ExprKind::And(lhs, rhs) => self.eval_and(fiber, lhs, rhs),
             ExprKind::Or(lhs, rhs) => self.eval_or(fiber, lhs, rhs),
             ExprKind::Call(call) => self.eval_call(fiber, &call.callee, &call.args, e.span),
-            ExprKind::StrConcat(parts) => self.eval_concat(fiber, parts),
+            ExprKind::Coerce(inner, how) => {
+                let value = self.eval(fiber, inner)?;
+                Ok(self.coerce(value, how))
+            }
+            ExprKind::StrConcat(parts) => self.eval_concat(fiber, parts, e.span),
             ExprKind::If { cond, then, else_ } => {
                 self.eval_if(fiber, cond, then, else_.as_deref(), e.span)
             }
@@ -494,11 +516,17 @@ impl Interp {
     }
 
     #[inline(never)]
-    fn eval_concat(&mut self, fiber: &mut Fiber, parts: &[Expr]) -> Eval {
+    fn eval_concat(&mut self, fiber: &mut Fiber, parts: &[Expr], span: Span) -> Eval {
         let values = self.eval_values(fiber, parts)?;
         let mut out = String::new();
         for v in &values {
-            out.push_str(&show(&self.types, v));
+            match self.show_deep(fiber, v, span) {
+                Ok(text) => out.push_str(&text),
+                Err(ctl) => {
+                    self.release_all(values);
+                    return Err(ctl);
+                }
+            }
         }
         self.release_all(values);
         Ok(Value::Str(Rc::from(out)))
@@ -681,6 +709,9 @@ impl Interp {
                 };
                 self.call_with_receiver(fiber, body, values, place, span)
             }
+            Callee::Bound { iface, method } | Callee::Dyn { iface, method } => {
+                self.call_interface(fiber, *iface, *method, values, receiver, span)
+            }
             Callee::Intrinsic(intrinsic) => {
                 if let Some(place) = receiver {
                     let r = self.resolve_anchor(fiber, place, span)?;
@@ -748,11 +779,24 @@ impl Interp {
         };
         let result = match intrinsic {
             Intrinsic::Print => {
+                let text = match self.show_deep(fiber, &arg, span) {
+                    Ok(text) => text,
+                    Err(ctl) => {
+                        self.release(arg);
+                        return Err(ctl);
+                    }
+                };
                 // A closed pipe is not a Colibri error; output is best effort.
-                let _ = writeln!(self.out, "{}", show(&self.types, &arg));
+                let _ = writeln!(self.out, "{text}");
                 Value::Unit
             }
-            Intrinsic::Show => Value::Str(Rc::from(show(&self.types, &arg).as_ref())),
+            Intrinsic::Show => match self.show_deep(fiber, &arg, span) {
+                Ok(text) => Value::Str(Rc::from(text)),
+                Err(ctl) => {
+                    self.release(arg);
+                    return Err(ctl);
+                }
+            },
             Intrinsic::Format(spec) => Value::Str(Rc::from(format_value(&arg, spec))),
             Intrinsic::Builtin(_) => Value::Unit,
         };
@@ -816,10 +860,9 @@ impl Interp {
                 Ok(Value::Str(Rc::from(s)))
             }
             (BinOp::Is, l, r) => Ok(Value::Bool(values_identical(l, r))),
-            (BinOp::Cmp(op, Operand::Structural), l, r) => match structural(op, l, r) {
-                Ok(b) => Ok(Value::Bool(b)),
-                Err(_) => Err(self.panic(fiber, span, "these values nest too deeply to compare")),
-            },
+            (BinOp::Cmp(op, Operand::Structural), l, r) => {
+                Ok(Value::Bool(self.structural_cmp(fiber, op, l, r, span)?))
+            }
             (BinOp::Cmp(op, operand), l, r) => match compare(op, operand, l, r) {
                 Some(b) => Ok(Value::Bool(b)),
                 None => Err(self.internal(fiber, span, "ill-typed comparison")),
@@ -852,19 +895,6 @@ fn int_arith(op: ArithOp, a: i64, b: i64) -> Result<i64, Fault> {
         ArithOp::Rem if b == 0 => Err(Fault::ModByZero),
         ArithOp::Rem => a.checked_rem(b).ok_or(Fault::Overflow),
     }
-}
-
-/// The derived comparison of two structs, enums or tuples.
-fn structural(op: CmpOp, l: &Value, r: &Value) -> Result<bool, crate::compare::TooDeep> {
-    use std::cmp::Ordering::{Equal, Greater, Less};
-    Ok(match op {
-        CmpOp::Eq => values_equal(l, r)?,
-        CmpOp::Ne => !values_equal(l, r)?,
-        CmpOp::Lt => values_cmp(l, r)? == Some(Less),
-        CmpOp::Le => matches!(values_cmp(l, r)?, Some(Less | Equal)),
-        CmpOp::Gt => values_cmp(l, r)? == Some(Greater),
-        CmpOp::Ge => matches!(values_cmp(l, r)?, Some(Greater | Equal)),
-    })
 }
 
 /// Compares two values of the same type; `None` if they are not what the operand kind says.

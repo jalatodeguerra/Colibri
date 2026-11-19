@@ -11,7 +11,7 @@ use crate::types::Ty;
 
 /// Reads an expression such as `Map[str, List[int]]` back as a type (the parser cannot tell
 /// `List[int]()` from an index until it sees what follows).
-fn expr_as_type(e: &ast::Expr) -> Option<ast::TypeExpr> {
+pub(crate) fn expr_as_type(e: &ast::Expr) -> Option<ast::TypeExpr> {
     let kind = match &e.kind {
         ExprKind::Ident(id) => TypeKind::Named {
             path: vec![id.clone()],

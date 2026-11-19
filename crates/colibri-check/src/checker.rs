@@ -9,10 +9,16 @@ use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::FnCtx;
 use crate::decls::{AliasInfo, TypeExtra};
+use crate::generics::SigCtx;
 use crate::hir::{
-    Body, FieldDef, FnDef, FnId, GlobalDef, GlobalId, Program, TypeDef, TypeDefKind, VariantDef,
+    Body, FieldDef, FnDef, FnId, GlobalDef, GlobalId, ImplDef, ImplId, Program, TypeDef,
+    TypeDefKind, TypeKey, VariantDef,
 };
+use crate::ifaces::IfaceInfo;
+use crate::obligations::Obligation;
+use crate::prelude;
 use crate::suggest;
+use crate::traits::{BoundRef, GenericParamInfo, ImplInfo};
 use crate::types::{FnSig, ParamId, Ty, TypeId};
 
 /// What a module-level name refers to.
@@ -54,6 +60,11 @@ pub(crate) struct FnInfo<'a> {
     pub decl: Option<&'a ast::FnDecl>,
     pub body: Option<Rc<Body>>,
     pub deps: Vec<Dep>,
+    /// Every type parameter in scope: those of the enclosing `impl` or interface first, then
+    /// the function's own. A call instantiates all of them.
+    pub generics: Vec<GenericParamInfo>,
+    /// What `Self` means in the body (the implementing type, or the interface's `Self`).
+    pub self_ty: Option<Ty>,
 }
 
 impl FnInfo<'_> {
@@ -104,18 +115,37 @@ pub(crate) struct Checker<'a> {
     pub poisoned_types: HashSet<String>,
     pub fns: Vec<FnInfo<'a>>,
     pub globals: Vec<GlobalInfo<'a>>,
-    /// Every user-defined struct and enum, indexed by [`TypeId`].
+    /// Every user-defined struct, enum, class and interface, indexed by [`TypeId`].
     pub types: Vec<TypeDef>,
     /// What HIR does not keep about each type, parallel to `types`.
     pub type_extra: Vec<TypeExtra<'a>>,
     pub type_ids: HashMap<String, TypeId>,
     pub aliases: HashMap<String, AliasInfo<'a>>,
-    /// Methods and static functions by owner and name.
+    /// Methods and static functions by owner and name (inherent `impl` blocks).
     pub methods: HashMap<(TypeId, String), FnId>,
-    /// Whether struct and enum fields are resolved, so hashability can be decided.
-    pub types_defined: bool,
-    /// `Map` keys and `Set` elements written before the types were defined, checked after.
-    pub pending_hash: Vec<(Ty, &'static str, Span)>,
+    /// Whether every declaration is collected, so bounds can be decided at once instead of
+    /// being postponed.
+    pub collected: bool,
+    /// Bounds written in declarations before the types and impls were all known, checked once
+    /// they are (`Map` keys and `Set` elements in field types and signatures, for example).
+    pub pending: Vec<Obligation>,
+    /// The next unused [`ParamId`] (0 is the prelude `Option`'s `T`).
+    pub next_param: u32,
+    /// The bounds of every type parameter declared so far.
+    pub param_bounds: HashMap<ParamId, Vec<BoundRef>>,
+    /// The type parameters visible to the type being resolved, innermost last.
+    pub type_scope: Vec<(String, Ty)>,
+    /// What `Self` means where the type being resolved is written.
+    pub self_ty: Option<Ty>,
+    /// The interfaces, by type id.
+    pub ifaces: HashMap<TypeId, IfaceInfo<'a>>,
+    /// Explicit `impl Interface for Type` blocks and the derived implementations that were
+    /// used, indexed by [`ImplId`].
+    pub impls: Vec<ImplInfo>,
+    /// The explicit implementations, by implementing type head and interface.
+    pub impl_by_key: HashMap<(TypeKey, TypeId), ImplId>,
+    /// The derived implementations made so far (built-in interfaces only).
+    pub derived_impls: HashMap<(TypeKey, TypeId), ImplId>,
     script: Vec<&'a ast::Stmt>,
     script_body: Option<Rc<Body>>,
     /// The native stack position where checking started, and how far below it checking may go.
@@ -129,6 +159,7 @@ fn prelude_option(span: Span) -> TypeDef {
     TypeDef {
         name: "Option".to_string(),
         span,
+        params: vec![ParamId(0)],
         kind: TypeDefKind::Enum {
             variants: vec![
                 VariantDef {
@@ -142,7 +173,7 @@ fn prelude_option(span: Span) -> TypeDef {
                     span,
                     fields: vec![FieldDef {
                         name: "0".to_string(),
-                        ty: Ty::Param(ParamId(0)),
+                        ty: Ty::Param(ParamId(0), "T".into()),
                         span,
                         weak: false,
                     }],
@@ -177,8 +208,16 @@ impl<'a> Checker<'a> {
             type_ids: HashMap::new(),
             aliases: HashMap::new(),
             methods: HashMap::new(),
-            types_defined: false,
-            pending_hash: Vec::new(),
+            collected: false,
+            pending: Vec::new(),
+            next_param: 1,
+            param_bounds: HashMap::new(),
+            type_scope: Vec::new(),
+            self_ty: None,
+            ifaces: HashMap::new(),
+            impls: Vec::new(),
+            impl_by_key: HashMap::new(),
+            derived_impls: HashMap::new(),
             script: Vec::new(),
             script_body: None,
             stack_base: 0,
@@ -219,7 +258,9 @@ impl<'a> Checker<'a> {
 
     // ---- diagnostics ----
 
-    pub fn report(&mut self, diag: Diagnostic) {
+    pub fn report(&mut self, mut diag: Diagnostic) {
+        // The prelude has no source to show, so a label inside it cannot be rendered.
+        diag.labels.retain(|(span, _)| !prelude::in_prelude(*span));
         if self.muted == 0 {
             self.diags.push(diag);
         }
@@ -249,6 +290,15 @@ impl<'a> Checker<'a> {
 
     fn collect(&mut self) {
         let file = self.file;
+        let prelude_file: &'static ast::File = prelude::prelude();
+        let prelude_items: Vec<&'a ast::Item> = prelude_file
+            .items
+            .iter()
+            .filter_map(|top| match top {
+                TopLevel::Item(item) => Some(item),
+                TopLevel::Stmt(_) => None,
+            })
+            .collect();
         let items: Vec<&'a ast::Item> = file
             .items
             .iter()
@@ -257,15 +307,21 @@ impl<'a> Checker<'a> {
                 TopLevel::Stmt(_) => None,
             })
             .collect();
+        let all: Vec<&'a ast::Item> = prelude_items.iter().chain(&items).copied().collect();
         // Types first, so every signature can name them whatever the order of the file.
-        self.declare_types(&items);
-        self.define_types(&items);
+        self.declare_types(&all);
+        self.define_types(&all);
+        for item in &prelude_items {
+            self.collect_item(item);
+        }
         for top in &file.items {
             match top {
                 TopLevel::Item(item) => self.collect_item(item),
                 TopLevel::Stmt(stmt) => self.script.push(stmt),
             }
         }
+        self.collected = true;
+        self.flush_pending();
     }
 
     fn collect_item(&mut self, item: &'a ast::Item) {
@@ -276,11 +332,10 @@ impl<'a> Checker<'a> {
             ItemKind::Fn(decl) => self.collect_fn(item, decl),
             ItemKind::Binding(binding) => self.collect_global(item, binding),
             // Declared and defined before the other items.
-            ItemKind::Struct(_) | ItemKind::Enum(_) | ItemKind::TypeAlias(_) => {}
-            ItemKind::Interface(i) => {
-                self.poisoned_types.insert(i.name.name.clone());
-                self.unsupported("`interface`", i.name.span);
-            }
+            ItemKind::Struct(_)
+            | ItemKind::Enum(_)
+            | ItemKind::TypeAlias(_)
+            | ItemKind::Interface(_) => {}
             ItemKind::Impl(decl) => self.collect_impl(decl, item),
             ItemKind::Import(_) => self.unsupported("`import`", item.span),
             ItemKind::Extern(_) => self.unsupported("`extern`", item.span),
@@ -314,7 +369,7 @@ impl<'a> Checker<'a> {
     }
 
     fn collect_fn(&mut self, item: &'a ast::Item, decl: &'a ast::FnDecl) {
-        let id = self.add_fn(item, decl, None);
+        let id = self.add_fn(item, decl, &SigCtx::default());
         // A clash keeps the later declaration out of the name table but still checks its body.
         self.declare_value(&decl.name.name, decl.name.span, ValueRef::Fn(id));
     }
@@ -324,95 +379,14 @@ impl<'a> Checker<'a> {
         &mut self,
         item: &'a ast::Item,
         decl: &'a ast::FnDecl,
-        owner: Option<TypeId>,
+        ctx: &SigCtx,
     ) -> FnId {
-        let mut poisoned = false;
-        let mut params: Vec<ParamInfo<'a>> = Vec::new();
-        let mut receiver = None;
-        if let Some(r) = &decl.receiver {
-            match owner {
-                Some(ty) => {
-                    let mut mutable = r.mutable;
-                    if mutable && self.types[ty.0 as usize].is_class() {
-                        self.report(
-                            Diagnostic::error("a class method cannot take `var self`", r.span)
-                                .with_hint("`self` can always change the fields of a class, because the object is shared; write `self`"),
-                        );
-                        mutable = false;
-                    }
-                    receiver = Some(mutable);
-                    params.push(ParamInfo {
-                        name: "self".to_string(),
-                        ty: Ty::Adt(ty, Vec::new()),
-                        span: r.span,
-                        default: None,
-                        mutable,
-                    });
-                }
-                None => {
-                    self.report(
-                        Diagnostic::error("only a method can take `self`", r.span)
-                            .with_hint("declare the function inside an `impl` block"),
-                    );
-                    poisoned = true;
-                }
-            }
-        }
-        if !decl.generics.is_empty() {
-            self.unsupported("generic function", decl.generics[0].name.span);
-            poisoned = true;
-        }
-        // Type parameters are unusable for now; naming them keeps uses from cascading.
-        let generic_names: Vec<String> = decl
-            .generics
-            .iter()
-            .map(|g| g.name.name.clone())
-            .filter(|n| self.poisoned_types.insert(n.clone()))
-            .collect();
-        for p in &decl.params {
-            if params.iter().any(|q| q.name == p.name.name) {
-                self.report(Diagnostic::error(
-                    format!("the parameter `{}` is declared more than once", p.name.name),
-                    p.name.span,
-                ));
-            }
-            let ty = match &p.ty {
-                Some(t) => self.resolve_type(t),
-                None => {
-                    self.report(
-                        Diagnostic::error(
-                            format!("the parameter `{}` needs a type", p.name.name),
-                            p.name.span,
-                        )
-                        .with_hint(format!("write `{}: int`, for example", p.name.name)),
-                    );
-                    Ty::Error
-                }
-            };
-            if p.mutable {
-                self.unsupported("`var` parameter", p.span);
-            }
-            params.push(ParamInfo {
-                name: p.name.name.clone(),
-                ty,
-                span: p.name.span,
-                default: p.default.as_ref(),
-                mutable: false,
-            });
-        }
-        let ret = match &decl.ret {
-            Some(t) => self.resolve_type(t),
-            None => Ty::Unit,
-        };
-        let ret_span = decl.ret.as_ref().map(|t| t.span);
-        for name in &generic_names {
-            self.poisoned_types.remove(name);
-        }
-        if decl.body.is_none() {
-            poisoned = true;
-        }
-        let name = match owner {
-            Some(ty) => format!("{}.{}", self.types[ty.0 as usize].name, decl.name.name),
+        let saved = std::mem::replace(&mut self.self_ty, ctx.self_ty.clone());
+        let sig = self.resolve_sig(decl, ctx);
+        self.self_ty = saved;
+        let poisoned = sig.poisoned || decl.body.is_none();
+        let name = match &ctx.owner {
+            Some(owner) => format!("{owner}.{}", decl.name.name),
             None => decl.name.name.clone(),
         };
         let id = FnId(self.fns.len() as u32);
@@ -420,13 +394,15 @@ impl<'a> Checker<'a> {
             name,
             name_span: decl.name.span,
             span: item.span,
-            params,
-            receiver,
-            ret,
-            ret_span,
+            params: sig.params,
+            receiver: sig.receiver,
+            ret: sig.ret,
+            ret_span: sig.ret_span,
             decl: if poisoned { None } else { Some(decl) },
             body: None,
             deps: Vec::new(),
+            generics: sig.generics,
+            self_ty: ctx.self_ty.clone(),
         });
         id
     }
@@ -467,37 +443,7 @@ impl<'a> Checker<'a> {
                     self.unsupported("qualified type name", t.span);
                     return Ty::Error;
                 }
-                let name = path[0].name.as_str();
-                match name {
-                    "List" | "Set" | "Option" | "Map" => {
-                        return self.resolve_builtin_generic(name, args, t.span);
-                    }
-                    _ => {}
-                }
-                if !args.is_empty() {
-                    self.unsupported(&format!("the generic type `{name}[..]`"), t.span);
-                    return Ty::Error;
-                }
-                match name {
-                    "int" | "i64" => Ty::INT,
-                    "float" | "f64" => Ty::Float,
-                    "bool" => Ty::Bool,
-                    "str" => Ty::Str,
-                    "char" => Ty::Char,
-                    "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64" | "f32" | "vec2"
-                    | "vec3" | "vec4" | "Result" => {
-                        self.unsupported(&format!("the type `{name}`"), t.span);
-                        Ty::Error
-                    }
-                    _ => match self.type_by_name(name) {
-                        Some(ty) => ty,
-                        None if self.poisoned_types.contains(name) => Ty::Error,
-                        None => {
-                            self.report_unknown_type(name, t.span);
-                            Ty::Error
-                        }
-                    },
-                }
+                self.resolve_named(path[0].name.as_str(), args, t.span)
             }
             TypeKind::Tuple(items) if items.is_empty() => Ty::Unit,
             TypeKind::Tuple(items) => {
@@ -525,6 +471,128 @@ impl<'a> Checker<'a> {
             }
             TypeKind::Error => Ty::Error,
         }
+    }
+
+    /// A type written as a name with optional type arguments.
+    fn resolve_named(&mut self, name: &str, args: &[ast::TypeExpr], span: Span) -> Ty {
+        if let Some(param) = self.scoped_param(name) {
+            if !args.is_empty() {
+                self.report(Diagnostic::error(
+                    format!("the type parameter `{name}` takes no type arguments"),
+                    span,
+                ));
+                return Ty::Error;
+            }
+            return param;
+        }
+        match name {
+            "Self" => {
+                return match self.self_ty.clone() {
+                    Some(t) => t,
+                    None => {
+                        self.report(
+                            Diagnostic::error(
+                                "`Self` is only available inside an `impl` or an `interface`",
+                                span,
+                            )
+                            .with_hint("write the type's name instead"),
+                        );
+                        Ty::Error
+                    }
+                };
+            }
+            "List" | "Set" | "Option" | "Map" => {
+                return self.resolve_builtin_generic(name, args, span);
+            }
+            "Result" if !args.is_empty() => {
+                self.unsupported("the generic type `Result[..]`", span);
+                return Ty::Error;
+            }
+            _ => {}
+        }
+        if let Some(&id) = self.type_ids.get(name) {
+            return self.instantiate_type(id, args, span);
+        }
+        if self.aliases.contains_key(name) {
+            return self.alias_instance(name, args, span);
+        }
+        if !args.is_empty() && !self.poisoned_types.contains(name) {
+            let known = matches!(
+                name,
+                "int" | "i64" | "float" | "f64" | "bool" | "str" | "char"
+            );
+            if known {
+                self.report(Diagnostic::error(
+                    format!("`{name}` takes no type arguments"),
+                    span,
+                ));
+                return Ty::Error;
+            }
+        }
+        match name {
+            "int" | "i64" => Ty::INT,
+            "float" | "f64" => Ty::Float,
+            "bool" => Ty::Bool,
+            "str" => Ty::Str,
+            "char" => Ty::Char,
+            "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64" | "f32" | "vec2" | "vec3"
+            | "vec4" | "Result" => {
+                self.unsupported(&format!("the type `{name}`"), span);
+                Ty::Error
+            }
+            _ if self.poisoned_types.contains(name) => Ty::Error,
+            _ => {
+                self.report_unknown_type(name, span);
+                Ty::Error
+            }
+        }
+    }
+
+    /// `Name[args]` for a user-defined struct, enum, class or interface.
+    fn instantiate_type(&mut self, id: TypeId, args: &[ast::TypeExpr], span: Span) -> Ty {
+        let def = &self.types[id.0 as usize];
+        let (name, wanted, is_iface) = (def.name.clone(), def.params.len(), def.is_interface());
+        if args.len() != wanted {
+            self.report_type_arity(&name, wanted, args.len(), span);
+            for a in args {
+                self.resolve_type(a);
+            }
+            return Ty::Error;
+        }
+        let tys: Vec<Ty> = args.iter().map(|a| self.resolve_type(a)).collect();
+        if tys.iter().any(Ty::is_error) {
+            return Ty::Error;
+        }
+        if is_iface {
+            Ty::Dyn(id, tys)
+        } else {
+            Ty::Adt(id, tys)
+        }
+    }
+
+    pub(crate) fn report_type_arity(
+        &mut self,
+        name: &str,
+        wanted: usize,
+        found: usize,
+        span: Span,
+    ) {
+        let plural = if wanted == 1 { "" } else { "s" };
+        let mut diag = Diagnostic::error(
+            format!("`{name}` takes {wanted} type argument{plural}, found {found}"),
+            span,
+        );
+        if wanted > 0 {
+            let example: Vec<&str> = ["int", "str", "float", "bool"]
+                .into_iter()
+                .cycle()
+                .take(wanted)
+                .collect();
+            diag = diag.with_hint(format!("write it like `{name}[{}]`", example.join(", ")));
+        } else {
+            diag = diag.with_hint(format!("`{name}` is not generic"));
+        }
+        self.report(diag);
     }
 
     /// `List[T]`, `Set[T]`, `Option[T]` and `Map[K, V]`.
@@ -590,12 +658,25 @@ impl<'a> Checker<'a> {
         self.report(diag);
     }
 
-    /// The user-defined type or alias called `name`, if there is one.
+    /// The user-defined type or alias called `name` (without type arguments: a generic type
+    /// is returned with none), if there is one.
     pub fn type_by_name(&mut self, name: &str) -> Option<Ty> {
         if let Some(&id) = self.type_ids.get(name) {
-            return Some(Ty::Adt(id, Vec::new()));
+            return Some(if self.types[id.0 as usize].is_interface() {
+                Ty::Dyn(id, Vec::new())
+            } else {
+                Ty::Adt(id, Vec::new())
+            });
         }
-        self.alias_ty(name)
+        if let Some(alias) = self.aliases.get(name) {
+            // A generic alias cannot stand alone; it is usable only with its arguments.
+            if !alias.generics.is_empty() {
+                return Some(Ty::Error);
+            }
+            let span = alias.name_span;
+            return Some(self.alias_instance(name, &[], span));
+        }
+        None
     }
 
     /// `ty` as shown in a message, with user-defined types by name.
@@ -657,18 +738,27 @@ impl<'a> Checker<'a> {
                     } else {
                         field.ty.clone()
                     };
+                    let generics = self.type_extra[t].generics.clone();
+                    let mark = self.enter_generics(&generics);
                     FnCtx::new(self, name, None).check_default(default, &ty);
+                    self.leave_generics(mark);
                 }
             }
         }
         for f in 0..self.fns.len() {
             let params = self.fns[f].params.clone();
+            let generics = self.fns[f].generics.clone();
+            let self_ty = self.fns[f].self_ty.clone();
+            let mark = self.enter_generics(&generics);
+            let saved = std::mem::replace(&mut self.self_ty, self_ty);
             for p in params {
                 if let Some(default) = p.default {
                     let name = format!("<default {}>", p.name);
                     FnCtx::new(self, name, None).check_default(default, &p.ty);
                 }
             }
+            self.self_ty = saved;
+            self.leave_generics(mark);
         }
     }
 
@@ -685,9 +775,14 @@ impl<'a> Checker<'a> {
             info.ret_span,
         );
         let mutates_self = info.receiver == Some(true);
+        let (generics, self_ty) = (info.generics.clone(), info.self_ty.clone());
+        let mark = self.enter_generics(&generics);
+        let saved = std::mem::replace(&mut self.self_ty, self_ty);
         let (body, deps) = FnCtx::new(self, name, Some((ret.clone(), ret_span)))
             .mutating_self(mutates_self)
             .check_fn_body(decl, &params, &ret, ret_span, span);
+        self.self_ty = saved;
+        self.leave_generics(mark);
         let info = &mut self.fns[f.0 as usize];
         info.body = Some(Rc::new(body));
         info.deps = deps;
@@ -827,6 +922,7 @@ impl<'a> Checker<'a> {
                 },
                 span: f.span,
                 body: f.body.clone()?,
+                type_params: f.generics.len() as u32,
             });
         }
         let mut globals = Vec::new();
@@ -839,7 +935,33 @@ impl<'a> Checker<'a> {
                 init: g.body.clone()?,
             });
         }
+        let impls = self
+            .impls
+            .iter()
+            .map(|i| ImplDef {
+                iface: i.iface,
+                iface_args: i.iface_args.clone(),
+                target: i.target.clone(),
+                key: i.key,
+                methods: i
+                    .methods
+                    .iter()
+                    .enumerate()
+                    .map(|(m, own)| {
+                        own.or_else(|| {
+                            self.ifaces
+                                .get(&i.iface)
+                                .and_then(|info| info.methods.get(m))
+                                .and_then(|m| m.default)
+                        })
+                    })
+                    .collect(),
+                derived: i.derived,
+                span: i.span,
+            })
+            .collect();
         Some(Program {
+            impls,
             fns,
             globals,
             init_order,

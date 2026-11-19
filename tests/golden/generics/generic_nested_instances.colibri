@@ -1,0 +1,15 @@
+struct Box[T] { value: T }
+
+impl[T] Box[T] {
+    fn get(self) -> T => self.value
+}
+
+fn main() {
+    let b = Box { value: Box { value: 5 } }
+    print(b.get().get())
+    let c: Box[Box[Box[str]]] = Box { value: Box { value: Box { value: "deep" } } }
+    print(c.value.value.value)
+}
+
+// expect: 5
+// expect: deep

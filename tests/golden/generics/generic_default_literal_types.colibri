@@ -1,0 +1,13 @@
+fn add_all[T: Ord](xs: List[T], extra: T) -> List[T] {
+    var out = xs.clone()
+    out.push(extra)
+    return out
+}
+
+fn main() {
+    print(add_all([1, 2], 3))
+    print(add_all([1.5], 2.5))
+}
+
+// expect: [1, 2, 3]
+// expect: [1.5, 2.5]

@@ -1,0 +1,22 @@
+interface Counter {
+    fn count(self) -> int
+    fn is_empty(self) -> bool => self.count() == 0
+    fn describe(self) -> str {
+        if self.is_empty() { return "empty" }
+        return "has {self.count()}"
+    }
+}
+
+struct Bag { n: int }
+
+impl Counter for Bag {
+    fn count(self) -> int => self.n
+}
+
+fn main() {
+    print(Bag { n: 0 }.describe())
+    print(Bag { n: 3 }.describe())
+}
+
+// expect: empty
+// expect: has 3

@@ -431,3 +431,86 @@ fn non_exhaustive_matches_and_unreachable_arms_are_reported() {
     let (program, _) = check("fn f(n: int) -> int => match n { _ => 1, 0 => 2 }\n");
     assert!(program.is_some(), "an unreachable arm is only a warning");
 }
+
+/// The first call expression of a function's body (searching the tail and statements).
+fn first_call(body: &Body) -> Option<&Call> {
+    fn in_expr(e: &Expr) -> Option<&Call> {
+        match &e.kind {
+            ExprKind::Call(c) => Some(c),
+            ExprKind::Coerce(inner, _) => in_expr(inner),
+            _ => None,
+        }
+    }
+    body.block.tail.as_deref().and_then(in_expr).or_else(|| {
+        body.block.stmts.iter().find_map(|s| match &s.kind {
+            StmtKind::Let { init, .. } | StmtKind::Expr(init) => in_expr(init),
+            _ => None,
+        })
+    })
+}
+
+#[test]
+fn generic_calls_record_their_type_arguments() {
+    let p = program(
+        "fn id[T](x: T) -> T => x\nfn pair[A, B](a: A, b: B) -> (A, B) => (a, b)\nfn f() -> int => id(1)\nfn g() -> (int, str) => pair(1, \"s\")\n",
+    );
+    let f = body_of(&p, "f");
+    assert_eq!(first_call(&f).expect("a call").type_args, [Ty::INT]);
+    let g = body_of(&p, "g");
+    assert_eq!(
+        first_call(&g).expect("a call").type_args,
+        [Ty::INT, Ty::Str]
+    );
+    assert_eq!(
+        p.fns[p.fn_by_name("pair").unwrap().0 as usize].type_params,
+        2
+    );
+}
+
+#[test]
+fn an_interface_value_is_a_coerce_node_naming_the_implementation() {
+    let p = program(
+        "interface Shape { fn area(self) -> float }\nstruct Sq { s: float }\nimpl Shape for Sq { fn area(self) -> float => self.s }\nfn f() -> Shape => Sq { s: 1.0 }\n",
+    );
+    let body = body_of(&p, "f");
+    let ExprKind::Coerce(_, Coercion::ToDyn(id)) = &tail(&body).kind else {
+        panic!("expected a coercion, got {:?}", tail(&body).kind);
+    };
+    let imp = &p.impls[id.0 as usize];
+    assert!(!imp.derived);
+    assert_eq!(imp.methods.len(), 1);
+    assert!(imp.methods[0].is_some());
+}
+
+#[test]
+fn calls_through_bounds_and_interface_values_are_dispatched_by_index() {
+    let p = program(
+        "interface Shape { fn area(self) -> float }\nstruct Sq { s: float }\nimpl Shape for Sq { fn area(self) -> float => self.s }\nfn bound[T: Shape](x: T) -> float => x.area()\nfn dynamic(x: Shape) -> float => x.area()\n",
+    );
+    let bound = body_of(&p, "bound");
+    let call = first_call(&bound).expect("a call");
+    assert!(matches!(call.callee, Callee::Bound { method: 0, .. }));
+    let dynamic = body_of(&p, "dynamic");
+    let call = first_call(&dynamic).expect("a call");
+    assert!(matches!(call.callee, Callee::Dyn { method: 0, .. }));
+}
+
+#[test]
+fn default_methods_fill_the_implementation_table() {
+    let p = program(
+        "interface Greeter { fn name(self) -> str\n fn greet(self) -> str => \"hi\" }\nstruct A { n: int }\nimpl Greeter for A { fn name(self) -> str => \"a\" }\n",
+    );
+    let imp = p.impls.iter().find(|i| !i.derived).expect("an impl");
+    assert!(imp.methods.iter().all(Option::is_some));
+}
+
+#[test]
+fn generic_errors_are_diagnosed_not_panicked() {
+    let (p, messages) =
+        check("fn id[T](x: T) -> T => x\nfn main() {\n    let a = id[int, int](1)\n}\n");
+    assert!(p.is_none());
+    assert!(
+        messages.iter().any(|m| m.contains("takes 1 type argument")),
+        "{messages:?}"
+    );
+}

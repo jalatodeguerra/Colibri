@@ -1,0 +1,20 @@
+fn repeat[T](x: T, n: int) -> List[T] {
+    if n == 0 { return [] }
+    var rest = repeat(x, n - 1)
+    rest.push(x)
+    return rest
+}
+
+fn depth[T](xs: List[List[T]]) -> int {
+    var n = 0
+    for row in xs { n += row.len() }
+    return n
+}
+
+fn main() {
+    print(repeat("ab", 3))
+    print(depth([[1, 2], [3]]))
+}
+
+// expect: ["ab", "ab", "ab"]
+// expect: 3

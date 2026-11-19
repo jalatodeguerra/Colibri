@@ -1,0 +1,19 @@
+interface Shape {
+    fn area(self) -> float
+}
+
+struct Sq { s: float }
+
+impl Shape for Sq {
+    fn area(self) -> float => self.s * self.s
+}
+
+fn main() {
+    let s = Sq { s: 3.0 } as Shape
+    print(s.area())
+    let shapes = [Sq { s: 1.0 } as Shape, Sq { s: 2.0 } as Shape]
+    print(shapes.len())
+}
+
+// expect: 9.0
+// expect: 2

@@ -28,6 +28,7 @@ impl FnCtx<'_, '_> {
             return self.error_expr(e.span);
         }
         let out = self.check_expr_inner(e, expected);
+        let out = self.coerce_to_expected(out, expected);
         self.leave();
         out
     }
@@ -69,9 +70,9 @@ impl FnCtx<'_, '_> {
             ExprKind::DotVariant { name, args } => {
                 self.check_dot_variant(name, args.as_deref(), expected, span)
             }
-            ExprKind::StructLit { ty, fields } => self.check_struct_lit(ty, fields, span),
+            ExprKind::StructLit { ty, fields } => self.check_struct_lit(ty, fields, expected, span),
             ExprKind::Range { .. } => self.unsupported("a range outside a `for` loop", span),
-            ExprKind::Cast { .. } => self.unsupported("`as` cast", span),
+            ExprKind::Cast { expr, ty } => self.check_cast(expr, ty, span),
             ExprKind::Or { .. } => self.unsupported("`or` fallback", span),
             ExprKind::OrHandler { .. } => self.unsupported("`or` handler", span),
             ExprKind::Try(_) => self.unsupported("the `?` operator", span),
@@ -241,7 +242,14 @@ impl FnCtx<'_, '_> {
             let shown = self.show(&ty);
             if !matches!(
                 ty,
-                Ty::Tuple(_) | Ty::Adt(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Option(_)
+                Ty::Tuple(_)
+                    | Ty::Adt(..)
+                    | Ty::Dyn(..)
+                    | Ty::Param(..)
+                    | Ty::List(_)
+                    | Ty::Map(..)
+                    | Ty::Set(_)
+                    | Ty::Option(_)
             ) {
                 self.ck.report(Diagnostic::error(
                     format!("a value of type `{shown}` cannot be shown in a string"),

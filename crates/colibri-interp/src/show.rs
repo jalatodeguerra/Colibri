@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use colibri_check::hir::{FieldDef, TypeDef, TypeDefKind};
 
+use crate::hooks::{Overrides, Plain, Stop};
 use crate::value::{ClassObj, Value};
 
 /// How deep a value is shown before the rest is elided as `...`, so showing a huge nested
@@ -39,9 +40,47 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
         | Value::Obj(_)
         | Value::Weak(_) => {
             let mut out = String::new();
-            write_nested(&mut out, types, v, 0);
+            write_nested(&mut out, types, v, 0, &mut Plain);
             Cow::Owned(out)
         }
+        Value::Dyn(d) => show(types, &d.val),
+    }
+}
+
+/// The `Show` form of a value, where a user-written `Show` (found through `ov`) replaces the
+/// structural form of the values it covers, also nested inside others.
+pub(crate) fn show_with(
+    types: &[TypeDef],
+    v: &Value,
+    ov: &mut dyn Overrides,
+) -> Result<String, Stop> {
+    if let Value::Dyn(d) = v {
+        return show_with(types, &d.val, ov);
+    }
+    if !matches!(
+        v,
+        Value::Struct(_)
+            | Value::Tuple(_)
+            | Value::Enum(_)
+            | Value::List(_)
+            | Value::Map(_)
+            | Value::Set(_)
+            | Value::Obj(_)
+            | Value::Weak(_)
+    ) {
+        return Ok(show(types, v).into_owned());
+    }
+    let mut w = Writer {
+        types,
+        out: String::new(),
+        visiting: Vec::new(),
+        ov,
+        stop: None,
+    };
+    w.value(v, 0);
+    match w.stop {
+        Some(stop) => Err(stop),
+        None => Ok(w.out),
     }
 }
 
@@ -66,14 +105,25 @@ struct Writer<'t> {
     types: &'t [TypeDef],
     out: String,
     visiting: Vec<usize>,
+    ov: &'t mut dyn Overrides,
+    /// A user-written `show` that failed; the rest of the text is not written.
+    stop: Option<Stop>,
 }
 
 /// Writes a value as it appears inside another value: strings and chars quoted.
-fn write_nested(out: &mut String, types: &[TypeDef], v: &Value, depth: u32) {
+fn write_nested(
+    out: &mut String,
+    types: &[TypeDef],
+    v: &Value,
+    depth: u32,
+    ov: &mut dyn Overrides,
+) {
     let mut w = Writer {
         types,
         out: std::mem::take(out),
         visiting: Vec::new(),
+        ov,
+        stop: None,
     };
     w.value(v, depth);
     *out = w.out;
@@ -90,12 +140,22 @@ impl Writer<'_> {
     }
 
     fn value(&mut self, v: &Value, depth: u32) {
-        if depth > MAX_SHOW_DEPTH {
+        if depth > MAX_SHOW_DEPTH || self.stop.is_some() {
             self.out.push_str("...");
+            return;
+        }
+        if matches!(v, Value::Struct(_) | Value::Enum(_) | Value::Obj(_))
+            && let Some(answer) = self.ov.show(v)
+        {
+            match answer {
+                Ok(text) => self.out.push_str(&text),
+                Err(stop) => self.stop = Some(stop),
+            }
             return;
         }
         let types = self.types;
         match v {
+            Value::Dyn(d) => self.value(&d.val, depth),
             Value::Str(s) => {
                 self.out.push('"');
                 s.chars().for_each(|c| escape(&mut self.out, c, '"'));
@@ -280,6 +340,7 @@ mod tests {
             TypeDef {
                 name: "Player".into(),
                 span: SP,
+                params: Vec::new(),
                 kind: TypeDefKind::Struct {
                     fields: vec![field("name"), field("hp")],
                 },
@@ -287,6 +348,7 @@ mod tests {
             TypeDef {
                 name: "Shape".into(),
                 span: SP,
+                params: Vec::new(),
                 kind: TypeDefKind::Enum {
                     variants: vec![
                         variant("Circle", vec![field("radius")], true),

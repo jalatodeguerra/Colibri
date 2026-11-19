@@ -1,0 +1,24 @@
+class Res { name: str }
+
+var saved: List[Res] = []
+
+impl Drop for Res {
+    fn drop(self) {
+        print("hook {self.name}")
+        saved.push(self)
+    }
+}
+
+fn main() {
+    {
+        let r = Res { name: "once" }
+    }
+    print("resurrected")
+    saved.clear()
+    print("cleared")
+}
+
+// expect: hook once
+// expect: resurrected
+// expect: cleared
+// drops: once

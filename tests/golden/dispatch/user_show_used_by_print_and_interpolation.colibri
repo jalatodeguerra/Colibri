@@ -1,0 +1,22 @@
+struct Celsius { deg: float }
+
+impl Show for Celsius {
+    fn show(self) -> str => "{self.deg}C"
+}
+
+struct Reading { place: str, temp: Celsius }
+
+fn main() {
+    let t = Celsius { deg: 21.5 }
+    print(t)
+    print("it is {t} outside")
+    print([t, Celsius { deg: 3.0 }])
+    print(Reading { place: "home", temp: t })
+    print(t.show())
+}
+
+// expect: 21.5C
+// expect: it is 21.5C outside
+// expect: [21.5C, 3.0C]
+// expect: Reading { place: "home", temp: 21.5C }
+// expect: 21.5C

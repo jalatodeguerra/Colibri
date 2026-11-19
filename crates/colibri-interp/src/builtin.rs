@@ -9,8 +9,6 @@ use std::rc::Rc;
 use colibri_check::hir::Builtin;
 use colibri_syntax::Span;
 
-use crate::clone::Cloner;
-use crate::compare::values_equal;
 use crate::ctl::{Ctl, Eval};
 use crate::eval::Interp;
 use crate::fiber::Fiber;
@@ -81,7 +79,7 @@ impl Interp {
             |this: &Self, fiber: &mut Fiber| this.internal(fiber, span, "ill-typed built-in call");
         let recv = args.first().cloned().unwrap_or(Value::Unit);
         Ok(match op {
-            Builtin::Clone => return self.deep_clone(fiber, &recv, span),
+            Builtin::Clone => return self.clone_deep(fiber, &recv, span),
             Builtin::StrLen => match &recv {
                 Value::Str(s) => Value::Int(s.len() as i64),
                 _ => return Err(bad(self, fiber)),
@@ -150,20 +148,8 @@ impl Interp {
         })
     }
 
-    /// `x.clone()`: a deep copy that keeps shared substructure shared and cycles cyclic.
-    fn deep_clone(&mut self, fiber: &mut Fiber, v: &Value, span: Span) -> Eval {
-        let mut cloner = Cloner::new(fiber.stack_base, self.native_stack_budget());
-        match cloner.clone_value(v) {
-            Ok(copy) => Ok(copy),
-            Err(_) => {
-                self.abandon_copies(cloner.into_copies());
-                Err(self.panic(fiber, span, "this value nests too deeply to clone"))
-            }
-        }
-    }
-
     /// Takes a half-made copy apart without tracing its objects as destroyed.
-    fn abandon_copies(&mut self, copies: Vec<Value>) {
+    pub(crate) fn abandon_copies(&mut self, copies: Vec<Value>) {
         let mut pending = Vec::new();
         for copy in &copies {
             match copy {
@@ -255,17 +241,25 @@ impl Interp {
             },
             Builtin::ListContains => {
                 let item = take(args, 1);
-                let found =
-                    list.with(|xs| xs.iter().any(|x| values_equal(x, &item).unwrap_or(false)));
+                let mut found = false;
+                for x in list.snapshot() {
+                    if self.eq_deep(fiber, &x, &item, span)? {
+                        found = true;
+                        break;
+                    }
+                }
                 self.release(item);
                 Value::Bool(found)
             }
             Builtin::ListIndexOf => {
                 let item = take(args, 1);
-                let at = list.with(|xs| {
-                    xs.iter()
-                        .position(|x| values_equal(x, &item).unwrap_or(false))
-                });
+                let mut at = None;
+                for (i, x) in list.snapshot().iter().enumerate() {
+                    if self.eq_deep(fiber, x, &item, span)? {
+                        at = Some(i);
+                        break;
+                    }
+                }
                 self.release(item);
                 Value::option(at.map(|i| Value::Int(i as i64)))
             }
@@ -301,6 +295,21 @@ impl Interp {
         args: &mut [Value],
         span: Span,
     ) -> Eval {
+        if !matches!(
+            op,
+            Builtin::MapLen
+                | Builtin::MapIsEmpty
+                | Builtin::MapKeys
+                | Builtin::MapValues
+                | Builtin::MapClear
+        ) {
+            let keys = if self.has_custom_eq() {
+                map.keys()
+            } else {
+                Vec::new()
+            };
+            self.canonicalise_key(fiber, &keys, args, span)?;
+        }
         Ok(match op {
             Builtin::MapLen => Value::Int(map.len() as i64),
             Builtin::MapIsEmpty => Value::Bool(map.is_empty()),
@@ -362,6 +371,17 @@ impl Interp {
         args: &mut [Value],
         span: Span,
     ) -> Eval {
+        if !matches!(
+            op,
+            Builtin::SetLen | Builtin::SetIsEmpty | Builtin::SetClear
+        ) {
+            let keys = if self.has_custom_eq() {
+                set.snapshot()
+            } else {
+                Vec::new()
+            };
+            self.canonicalise_key(fiber, &keys, args, span)?;
+        }
         Ok(match op {
             Builtin::SetLen => Value::Int(set.len() as i64),
             Builtin::SetIsEmpty => Value::Bool(set.is_empty()),

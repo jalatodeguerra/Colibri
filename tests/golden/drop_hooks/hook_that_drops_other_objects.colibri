@@ -1,0 +1,23 @@
+class Child { name: str }
+class Parent { name: str }
+
+impl Drop for Child {
+    fn drop(self) { print("child {self.name}") }
+}
+
+impl Drop for Parent {
+    fn drop(self) {
+        print("parent {self.name} starts")
+        let temp = Child { name: "temp" }
+        print("parent {self.name} ends")
+    }
+}
+
+fn main() {
+    let p = Parent { name: "p" }
+}
+
+// expect: parent p starts
+// expect: parent p ends
+// expect: child temp
+// drops: temp, p

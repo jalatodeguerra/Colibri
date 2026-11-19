@@ -1,0 +1,17 @@
+fn index_by[K: Hash + Eq, V](keys: List[K], values: List[V]) -> Map[K, V] {
+    var m: Map[K, V] = Map[K, V]()
+    var i = 0
+    for k in keys {
+        m.insert(k, values[i])
+        i += 1
+    }
+    return m
+}
+
+fn main() {
+    print(index_by(["a", "b"], [1, 2]))
+    print(index_by([(1, 2)], ["pair"]))
+}
+
+// expect: {"a": 1, "b": 2}
+// expect: {(1, 2): "pair"}

@@ -1,0 +1,22 @@
+interface Shape {
+    fn area(self) -> float
+}
+
+struct Circle { r: float }
+struct Square { side: float }
+
+impl Shape for Circle {
+    fn area(self) -> float => 3.0 * self.r * self.r
+}
+
+impl Shape for Square {
+    fn area(self) -> float => self.side * self.side
+}
+
+fn main() {
+    print(Circle { r: 2.0 }.area())
+    print(Square { side: 3.0 }.area())
+}
+
+// expect: 12.0
+// expect: 9.0

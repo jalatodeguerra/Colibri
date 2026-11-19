@@ -145,6 +145,17 @@ fn set_sig(elem: &Ty, name: &str) -> Option<Sig> {
     })
 }
 
+/// Whether a built-in type has the method `name` (other than `clone`, which every type has).
+pub(crate) fn builtin_method_exists(ty: &Ty, name: &str) -> bool {
+    match ty {
+        Ty::Str => str_sig(name).is_some(),
+        Ty::List(t) => list_sig(t, name).is_some(),
+        Ty::Map(k, v) => map_sig(k, v, name).is_some(),
+        Ty::Set(t) => set_sig(t, name).is_some(),
+        _ => false,
+    }
+}
+
 impl FnCtx<'_, '_> {
     /// `recv.name(args)` where `recv` is not a user-defined type. `Err` gives the receiver back
     /// when its type has no built-in methods at all (the caller reports that).
@@ -233,6 +244,7 @@ impl FnCtx<'_, '_> {
             Some(Receiver::Value(recv)),
             bound,
             sig.ret,
+            Vec::new(),
             span,
         ))
     }

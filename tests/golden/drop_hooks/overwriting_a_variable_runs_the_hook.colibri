@@ -1,0 +1,16 @@
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) { print("drop {self.name}") }
+}
+
+fn main() {
+    var r = Res { name: "first" }
+    r = Res { name: "second" }
+    print("assigned")
+}
+
+// expect: drop first
+// expect: assigned
+// expect: drop second
+// drops: first, second

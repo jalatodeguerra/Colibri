@@ -1,0 +1,14 @@
+interface Shape {
+    fn area(self) -> float
+}
+
+struct Sq { s: float }
+
+impl Shape for Sq {
+    fn area(self) -> float => self.s
+}
+
+fn main() {
+    let s: Shape = Sq { s: 1.0 }
+    print(s.perimeter()) // error: the interface `Shape` has no method `perimeter`
+}

@@ -35,6 +35,17 @@ pub enum Value {
     Obj(Rc<ClassObj>),
     /// The content of a `weak` class field; an empty `Weak` stands for a cleared reference.
     Weak(Weak<ClassObj>),
+    /// An interface value: a value boxed with the implementation that dispatches its methods
+    /// (DESIGN §9.2). A struct inside is copied lazily like any struct; a class is shared.
+    Dyn(Rc<DynVal>),
+}
+
+/// The contents of an interface value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DynVal {
+    /// The implementation (an index into the program's `impls`).
+    pub impl_id: u32,
+    pub val: Value,
 }
 
 impl PartialEq for Value {
@@ -56,6 +67,7 @@ impl PartialEq for Value {
             (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
             (Value::Obj(a), Value::Obj(b)) => Rc::ptr_eq(a, b),
             (Value::Weak(a), Value::Weak(b)) => Weak::ptr_eq(a, b),
+            (Value::Dyn(a), Value::Dyn(b)) => a == b,
             _ => false,
         }
     }
@@ -115,7 +127,10 @@ impl Value {
 
     /// Whether the value owns other values.
     fn is_composite(&self) -> bool {
-        matches!(self, Value::Struct(_) | Value::Tuple(_) | Value::Enum(_))
+        matches!(
+            self,
+            Value::Struct(_) | Value::Tuple(_) | Value::Enum(_) | Value::Dyn(_)
+        )
     }
 }
 
@@ -175,6 +190,13 @@ fn dismantle(mut value: Value, work: &mut Vec<Value>) {
         Value::Tuple(rc) => {
             if let Some(items) = Rc::get_mut(rc) {
                 take(items);
+            }
+        }
+        Value::Dyn(rc) => {
+            if let Some(d) = Rc::get_mut(rc)
+                && d.val.is_composite()
+            {
+                work.push(std::mem::replace(&mut d.val, Value::Unit));
             }
         }
         _ => {}

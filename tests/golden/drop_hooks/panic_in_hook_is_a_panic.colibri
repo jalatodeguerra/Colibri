@@ -1,0 +1,15 @@
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) {
+        let boom = 1 / 0
+    }
+}
+
+fn main() {
+    let r = Res { name: "bad" }
+    print("body done") // panic: division by zero
+}
+
+// expect: body done
+// drops: bad

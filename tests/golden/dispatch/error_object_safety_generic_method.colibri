@@ -1,0 +1,16 @@
+interface Mapper {
+    fn apply[T: Show](self, x: T) -> str
+}
+
+struct Plain { n: int }
+
+impl Mapper for Plain {
+    fn apply[T: Show](self, x: T) -> str => "{x}"
+}
+
+fn main() {
+    let p = Plain { n: 1 }
+    print(p.apply(5))
+    let m: Mapper = p
+    print(m.apply(5)) // error: `apply` cannot be called on an interface value of `Mapper`
+}

@@ -1,0 +1,29 @@
+enum Coin {
+    Penny
+    Dime
+}
+
+interface Value {
+    fn cents(self) -> int
+}
+
+impl Value for Coin {
+    fn cents(self) -> int {
+        match self {
+            .Penny => return 1
+            .Dime => return 10
+        }
+    }
+}
+
+fn total[V: Value](xs: List[V]) -> int {
+    var t = 0
+    for x in xs { t += x.cents() }
+    return t
+}
+
+fn main() {
+    print(total([Coin.Penny, Coin.Dime, Coin.Dime]))
+}
+
+// expect: 21

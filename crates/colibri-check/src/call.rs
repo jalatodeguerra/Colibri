@@ -5,10 +5,14 @@ use colibri_syntax::ast::{self, ExprKind};
 use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::FnCtx;
-use crate::checker::{Dep, ParamInfo};
+use crate::body::GenericCall;
+use crate::checker::{Checker, Dep, ParamInfo};
 use crate::hir::{self, Arg, Block, Callee, Expr, FnId, Intrinsic, LocalId, Place, Stmt, StmtKind};
+use crate::infer::VarKind;
+use crate::obligations::{Obligation, Origin};
 use crate::place::Action;
-use crate::types::Ty;
+use crate::traits::GenericParamInfo;
+use crate::types::{ParamId, Ty};
 
 /// An argument matched to a parameter.
 pub(crate) struct Bound {
@@ -16,6 +20,9 @@ pub(crate) struct Bound {
     /// The position in the source for an explicit argument; `None` for a default.
     pub source: Option<usize>,
 }
+
+/// The fresh type arguments of a call and the substitution that maps parameters to them.
+pub(crate) type Instance = (Vec<Ty>, Vec<(ParamId, Ty)>);
 
 impl FnCtx<'_, '_> {
     #[inline(never)]
@@ -32,11 +39,15 @@ impl FnCtx<'_, '_> {
         let id = match &callee.kind {
             ExprKind::Ident(id) => id,
             ExprKind::Field { base, name } => {
-                return self.check_member_call(base, name, args, span);
+                return self.check_member_call(base, name, None, args, span);
             }
             ExprKind::Paren(inner) if matches!(inner.kind, ExprKind::Ident(_)) => {
                 return self.check_call(inner, args, expected, span);
             }
+            ExprKind::Index {
+                base,
+                args: type_args,
+            } => return self.check_instantiated_call(base, type_args, args, span),
             _ => {
                 self.check_args_loosely(args);
                 return self.unsupported("calling anything but a named function", callee.span);
@@ -114,6 +125,8 @@ impl FnCtx<'_, '_> {
                 | Ty::Error
                 | Ty::Tuple(_)
                 | Ty::Adt(..)
+                | Ty::Dyn(..)
+                | Ty::Param(..)
                 | Ty::List(_)
                 | Ty::Map(..)
                 | Ty::Set(_)
@@ -138,142 +151,207 @@ impl FnCtx<'_, '_> {
     }
 
     pub(crate) fn check_fn_call(&mut self, f: FnId, args: &[ast::Arg], span: Span) -> Expr {
-        self.add_dep(Dep::Fn(f));
-        let info = &self.ck.fns[f.0 as usize];
-        let (name, params, ret, poisoned) = (
-            info.name.clone(),
-            info.params.clone(),
-            info.ret.clone(),
-            info.is_poisoned(),
-        );
-        if poisoned {
-            self.check_args_loosely(args);
-            return self.error_expr(span);
-        }
-        let Some(bound) = self.bind_args(&name, &params, args, span, 0) else {
-            return self.error_expr_typed(span, ret);
-        };
-        self.finish_call(Callee::Fn(f), None, bound, ret, span)
+        self.check_fn_call_with(f, None, None, args, span)
     }
 
-    /// `base.name(args)`: a call through a type (`Shape.Circle(1)`, `Particle.new()`) or a
-    /// method call on a value.
-    #[inline(never)]
-    fn check_member_call(
+    /// A call of a function. `explicit` gives the type arguments written at the call
+    /// (`max[f32](a, b)`), `owner` the type written before a static function
+    /// (`Pair[int, str].new(..)`); anything not given is inferred (DESIGN §5.4).
+    pub(crate) fn check_fn_call_with(
         &mut self,
-        base: &ast::Expr,
-        name: &ast::Ident,
+        f: FnId,
+        explicit: Option<Vec<Ty>>,
+        owner: Option<Ty>,
         args: &[ast::Arg],
         span: Span,
     ) -> Expr {
-        if let ExprKind::Ident(id) = &base.kind
-            && let Some(ty) = self.type_path(id)
-        {
-            return self.check_type_member(ty, name, Some(args), span);
-        }
-        let recv = self.check_expr(base, None);
-        let recv_ty = self.infer.shallow(&recv.ty);
-        let owner = match &recv_ty {
-            Ty::Error => {
-                self.check_args_loosely(args);
-                return self.error_expr(span);
-            }
-            Ty::Adt(id, _) => *id,
-            other => match self.check_builtin_method(recv, name, args, span) {
-                Ok(call) => return call,
-                Err(_) => {
-                    self.check_args_loosely(args);
-                    let shown = self.show(other);
-                    self.ck.report(
-                        Diagnostic::error(
-                            format!("methods on the built-in type `{shown}` are not supported yet"),
-                            name.span,
-                        )
-                        .with_hint(
-                            "Colibri is being built in slices; see docs/PHASE1.md for what comes next",
-                        ),
-                    );
-                    return self.error_expr(span);
-                }
-            },
-        };
-        let Some(&f) = self.ck.methods.get(&(owner, name.name.clone())) else {
-            if name.name == "clone" {
-                return self.check_clone(recv, args, span);
-            }
-            self.check_args_loosely(args);
-            let tname = self.ck.types[owner.0 as usize].name.clone();
-            let methods: Vec<String> = self
-                .ck
-                .methods
-                .keys()
-                .filter(|(t, _)| *t == owner)
-                .map(|(_, n)| n.clone())
-                .collect();
-            let mut diag = Diagnostic::error(
-                format!("`{tname}` has no method `{}`", name.name),
-                name.span,
-            );
-            if let Some(hint) = crate::checker::Checker::did_you_mean(&name.name, &methods) {
-                diag = diag.with_hint(hint);
-            } else if self.ck.types[owner.0 as usize]
-                .fields()
-                .iter()
-                .any(|f| f.name == name.name)
-            {
-                diag = diag.with_hint(format!("`{}` is a field, not a method", name.name));
-            }
-            self.ck.report(diag);
-            return self.error_expr(span);
-        };
         self.add_dep(Dep::Fn(f));
         let info = &self.ck.fns[f.0 as usize];
-        let (fname, params, ret, receiver, poisoned) = (
+        let (name, params, ret, poisoned, generics, self_ty) = (
             info.name.clone(),
             info.params.clone(),
             info.ret.clone(),
-            info.receiver,
             info.is_poisoned(),
+            info.generics.clone(),
+            info.self_ty.clone(),
         );
-        let Some(mutable) = receiver else {
-            self.check_args_loosely(args);
-            let tname = self.ck.types[owner.0 as usize].name.clone();
-            self.ck.report(
-                Diagnostic::error(
-                    format!("`{}` is a function of `{tname}`, not a method", name.name),
-                    name.span,
-                )
-                .with_hint(format!(
-                    "call it through the type: `{tname}.{}(...)`",
-                    name.name
-                )),
-            );
-            return self.error_expr(span);
-        };
         if poisoned {
             self.check_args_loosely(args);
             return self.error_expr(span);
         }
-        let receiver = if mutable {
-            match self.receiver_place(recv, &name.name, base.span) {
-                Some(place) => Receiver::Place(place),
-                None => {
-                    self.check_args_loosely(args);
-                    return self.error_expr_typed(span, ret);
-                }
-            }
-        } else {
-            Receiver::Value(recv)
+        let outer = generics.len() - self.own_generic_count(f);
+        let Some((type_args, map)) = self.instantiate(&generics, outer, explicit, &name, span)
+        else {
+            self.check_args_loosely(args);
+            return self.error_expr(span);
         };
-        let Some(bound) = self.bind_args(&fname, &params[1..], args, span, 1) else {
+        if let (Some(owner), Some(self_ty)) = (&owner, &self_ty) {
+            let _ = self.infer.unify(&self_ty.subst(&map), owner);
+        }
+        let params: Vec<ParamInfo<'_>> = params.into_iter().map(|p| subst_param(p, &map)).collect();
+        let ret = ret.subst(&map);
+        let Some(bound) = self.bind_args(&name, &params, args, span, 0) else {
             return self.error_expr_typed(span, ret);
         };
-        self.finish_call(Callee::Fn(f), Some(receiver), bound, ret, span)
+        self.finish_call(Callee::Fn(f), None, bound, ret, type_args, span)
+    }
+
+    /// How many type parameters function `f` declares itself (not counting its `impl`'s).
+    pub(crate) fn own_generic_count(&self, f: FnId) -> usize {
+        let info = &self.ck.fns[f.0 as usize];
+        match info.decl {
+            Some(d) => d.generics.len().min(info.generics.len()),
+            None => 0,
+        }
+    }
+
+    /// Fresh inference variables for `generics`, the substitution that maps each parameter to
+    /// its variable, and the requirements the parameters' bounds make. The first `skip`
+    /// parameters belong to the enclosing `impl` and are never given explicitly. `None` after
+    /// reporting a wrong number of explicit type arguments.
+    pub(crate) fn instantiate(
+        &mut self,
+        generics: &[GenericParamInfo],
+        skip: usize,
+        explicit: Option<Vec<Ty>>,
+        func: &str,
+        span: Span,
+    ) -> Option<Instance> {
+        let skip = skip.min(generics.len());
+        let vars: Vec<Ty> = generics
+            .iter()
+            .map(|_| self.fresh_var(VarKind::General))
+            .collect();
+        if let Some(given) = explicit {
+            let own = generics.len() - skip;
+            if given.len() != own {
+                let plural = if own == 1 { "" } else { "s" };
+                self.ck.report(
+                    Diagnostic::error(
+                        format!(
+                            "`{func}` takes {own} type argument{plural}, found {}",
+                            given.len()
+                        ),
+                        span,
+                    )
+                    .with_hint(if own == 0 {
+                        format!("`{func}` is not generic")
+                    } else {
+                        let names: Vec<&str> =
+                            generics[skip..].iter().map(|g| g.name.as_str()).collect();
+                        format!("its type parameters are: {}", names.join(", "))
+                    }),
+                );
+                return None;
+            }
+            for (var, ty) in vars[skip..].iter().zip(&given) {
+                let _ = self.infer.unify(var, ty);
+            }
+        }
+        let map = Checker::param_map(generics, &vars);
+        for g in generics {
+            for b in &g.bounds {
+                self.obligations.push(Obligation {
+                    ty: g.ty().subst(&map),
+                    iface: b.iface,
+                    args: b.args.iter().map(|a| a.subst(&map)).collect(),
+                    span,
+                    origin: Origin::Bound {
+                        param: g.name.clone(),
+                        func: func.to_string(),
+                        bound_span: b.span,
+                    },
+                });
+            }
+        }
+        if !generics.is_empty() {
+            self.generic_calls.push(GenericCall {
+                args: vars.clone(),
+                names: generics.iter().map(|g| g.name.clone()).collect(),
+                func: func.to_string(),
+                span,
+            });
+        }
+        Some((vars, map))
+    }
+
+    /// The type arguments written in `f[int, str]`.
+    pub(crate) fn explicit_type_args(&mut self, args: &[ast::IndexArg]) -> Option<Vec<Ty>> {
+        let mut out = Vec::new();
+        let mut ok = true;
+        for a in args {
+            let texpr = match a {
+                ast::IndexArg::Type(t) => Some(t.clone()),
+                ast::IndexArg::Expr(e) => crate::collections::expr_as_type(e),
+            };
+            match texpr {
+                Some(t) => {
+                    let ty = self.resolve_type_infer(&t);
+                    ok &= !ty.is_error();
+                    out.push(ty);
+                }
+                None => {
+                    if let ast::IndexArg::Expr(e) = a {
+                        self.ck
+                            .report(Diagnostic::error("expected a type here", e.span));
+                    }
+                    ok = false;
+                }
+            }
+        }
+        ok.then_some(out)
+    }
+
+    /// `max[f32](a, b)` and `x.map[int](..)`: a call with explicit type arguments. The `[..]`
+    /// parses like an index; it is instantiation when `base` names a generic function or
+    /// method (DESIGN §3.5).
+    fn check_instantiated_call(
+        &mut self,
+        base: &ast::Expr,
+        type_args: &[ast::IndexArg],
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Expr {
+        match &base.kind {
+            ExprKind::Ident(id) if self.lookup_local(&id.name).is_none() => {
+                if let Some(f) = self.lookup_fn(&id.name) {
+                    let Some(explicit) = self.explicit_type_args(type_args) else {
+                        self.check_args_loosely(args);
+                        return self.error_expr(span);
+                    };
+                    return self.check_fn_call_with(f, Some(explicit), None, args, span);
+                }
+                self.check_args_loosely(args);
+                let hint = if self.ck.values.contains_key(&id.name)
+                    || self.ck.type_by_name(&id.name).is_some()
+                {
+                    format!("`{}` is not a generic function", id.name)
+                } else {
+                    format!("unknown function `{}`", id.name)
+                };
+                self.ck.report(
+                    Diagnostic::error(format!("`{}[..]` cannot be called", id.name), base.span)
+                        .with_hint(hint),
+                );
+                self.error_expr(span)
+            }
+            ExprKind::Field { base: recv, name } => {
+                let Some(explicit) = self.explicit_type_args(type_args) else {
+                    self.check_args_loosely(args);
+                    return self.error_expr(span);
+                };
+                self.check_member_call(recv, name, Some(explicit), args, span)
+            }
+            _ => {
+                self.check_args_loosely(args);
+                self.unsupported("calling anything but a named function", base.span)
+            }
+        }
     }
 
     /// The place a `var self` method changes: `recv` must be a variable or a part of one, and
     /// that variable must be mutable.
-    fn receiver_place(&mut self, recv: Expr, method: &str, span: Span) -> Option<Place> {
+    pub(crate) fn receiver_place(&mut self, recv: Expr, method: &str, span: Span) -> Option<Place> {
         match recv.kind {
             hir::ExprKind::Error => None,
             hir::ExprKind::Read(place) => self
@@ -379,7 +457,11 @@ impl FnCtx<'_, '_> {
             let expr = self.check_expr(&arg.value, Some(&param.ty));
             let reason = Some((
                 param.span,
-                format!("parameter `{}` is declared `{}` here", param.name, param.ty),
+                format!(
+                    "parameter `{}` is declared `{}` here",
+                    param.name,
+                    self.show(&param.ty)
+                ),
             ));
             self.expect(&expr, &param.ty, reason);
             if slots[i].is_some() {
@@ -433,6 +515,7 @@ impl FnCtx<'_, '_> {
         receiver: Option<Receiver>,
         mut bound: Vec<Bound>,
         ret: Ty,
+        type_args: Vec<Ty>,
         span: Span,
     ) -> Expr {
         let mut place = None;
@@ -452,7 +535,7 @@ impl FnCtx<'_, '_> {
         args.extend(values.into_iter().map(Arg::Value));
         let call = hir::ExprKind::Call(Box::new(hir::Call {
             callee,
-            type_args: Vec::new(),
+            type_args,
             args,
         }));
         let call = self.mk(call, ret, span);
@@ -540,6 +623,12 @@ impl FnCtx<'_, '_> {
         };
         self.mk(hir::ExprKind::Block(Box::new(block)), ty, span)
     }
+}
+
+/// A parameter with its type's type parameters replaced.
+pub(crate) fn subst_param<'a>(mut p: ParamInfo<'a>, map: &[(ParamId, Ty)]) -> ParamInfo<'a> {
+    p.ty = p.ty.subst(map);
+    p
 }
 
 /// The receiver of a method call.

@@ -7,8 +7,10 @@ use colibri_syntax::ast::{self, ItemKind, StructKind, VariantPayload};
 use colibri_syntax::{Diagnostic, Span};
 
 use crate::checker::Checker;
+use crate::generics::SigCtx;
 use crate::hir::{FieldDef, TypeDef, TypeDefKind, VariantDef};
 use crate::suggest;
+use crate::traits::GenericParamInfo;
 use crate::types::{Ty, TypeId};
 
 /// Names that cannot be redefined as types.
@@ -22,21 +24,25 @@ const BUILTIN_TYPES: &[&str] = &[
 pub(crate) struct TypeExtra<'a> {
     /// The default of each struct field, parallel to its fields.
     pub defaults: Vec<Option<&'a ast::Expr>>,
+    /// The type parameters, in order (without bounds: a type's own parameters take none yet).
+    pub generics: Vec<GenericParamInfo>,
 }
 
 pub(crate) enum AliasState<'a> {
     Pending(&'a ast::TypeExpr),
     Resolving,
+    /// The target type, written with the alias's own type parameters.
     Done(Ty),
 }
 
 pub(crate) struct AliasInfo<'a> {
     pub name_span: Span,
+    pub generics: Vec<GenericParamInfo>,
     pub state: AliasState<'a>,
 }
 
 impl<'a> Checker<'a> {
-    /// Pass one: registers the name of every struct, enum and alias.
+    /// Pass one: registers the name of every struct, enum, interface and alias.
     pub(crate) fn declare_types(&mut self, items: &[&'a ast::Item]) {
         for item in items {
             match &item.kind {
@@ -45,10 +51,7 @@ impl<'a> Checker<'a> {
                         StructKind::Struct => "struct",
                         StructKind::Class => "class",
                     };
-                    if !s.generics.is_empty() {
-                        let what = format!("a generic `{what}`");
-                        self.poison_type(&s.name, &what);
-                    } else if let Some(id) = self.declare_type(&s.name, what) {
+                    if let Some(id) = self.declare_type(&s.name, what, &s.generics) {
                         let fields = Vec::new();
                         self.types[id.0 as usize].kind = match s.kind {
                             StructKind::Struct => TypeDefKind::Struct { fields },
@@ -57,36 +60,62 @@ impl<'a> Checker<'a> {
                     }
                 }
                 ItemKind::Enum(e) => {
-                    if !e.generics.is_empty() {
-                        self.poison_type(&e.name, "a generic `enum`");
-                    } else if let Some(id) = self.declare_type(&e.name, "enum") {
+                    if let Some(id) = self.declare_type(&e.name, "enum", &e.generics) {
                         self.types[id.0 as usize].kind = TypeDefKind::Enum {
                             variants: Vec::new(),
                         };
                     }
                 }
-                ItemKind::TypeAlias(t) => {
-                    if !t.generics.is_empty() {
-                        self.poison_type(&t.name, "a generic `type` alias");
-                    } else if self.name_is_free(&t.name, "type alias") {
-                        self.aliases.insert(
-                            t.name.name.clone(),
-                            AliasInfo {
-                                name_span: t.name.span,
-                                state: AliasState::Pending(&t.ty),
-                            },
-                        );
+                ItemKind::Interface(i) => {
+                    if let Some(id) = self.declare_type(&i.name, "interface", &i.generics) {
+                        self.types[id.0 as usize].kind = TypeDefKind::Interface {
+                            methods: Vec::new(),
+                        };
+                        self.declare_interface(id, i);
                     }
+                }
+                ItemKind::TypeAlias(t) if self.name_is_free(&t.name, "type alias") => {
+                    let generics = self.type_params(&t.generics);
+                    self.aliases.insert(
+                        t.name.name.clone(),
+                        AliasInfo {
+                            name_span: t.name.span,
+                            generics,
+                            state: AliasState::Pending(&t.ty),
+                        },
+                    );
                 }
                 _ => {}
             }
         }
     }
 
-    /// Remembers the name of a type that cannot be used yet, and says why.
-    fn poison_type(&mut self, name: &ast::Ident, what: &str) {
-        self.poisoned_types.insert(name.name.clone());
-        self.unsupported(what, name.span);
+    /// Allocates the type parameters of a type or alias. Bounds on them are not supported
+    /// yet: write them on the `impl` blocks and functions that need them.
+    pub(crate) fn type_params(&mut self, decls: &[ast::GenericParam]) -> Vec<GenericParamInfo> {
+        let mut out: Vec<GenericParamInfo> = Vec::new();
+        for d in decls {
+            if out.iter().any(|g| g.name == d.name.name) {
+                self.report(Diagnostic::error(
+                    format!(
+                        "the type parameter `{}` is declared more than once",
+                        d.name.name
+                    ),
+                    d.name.span,
+                ));
+                continue;
+            }
+            if let Some(b) = d.bounds.first() {
+                self.unsupported("a bound on the type parameter of a type", b.span);
+            }
+            out.push(GenericParamInfo {
+                id: self.new_param(),
+                name: d.name.name.clone(),
+                span: d.name.span,
+                bounds: Vec::new(),
+            });
+        }
+        out
     }
 
     /// Whether `name` can be declared as a type; reports a clash otherwise.
@@ -117,51 +146,80 @@ impl<'a> Checker<'a> {
         true
     }
 
-    fn declare_type(&mut self, name: &ast::Ident, what: &str) -> Option<TypeId> {
+    fn declare_type(
+        &mut self,
+        name: &ast::Ident,
+        what: &str,
+        generics: &[ast::GenericParam],
+    ) -> Option<TypeId> {
         if !self.name_is_free(name, what) {
             return None;
         }
+        let generics = self.type_params(generics);
         let id = TypeId(self.types.len() as u32);
         self.types.push(TypeDef {
             name: name.name.clone(),
             span: name.span,
+            params: generics.iter().map(|g| g.id).collect(),
             kind: TypeDefKind::Struct { fields: Vec::new() },
         });
-        self.type_extra.push(TypeExtra::default());
+        self.type_extra.push(TypeExtra {
+            defaults: Vec::new(),
+            generics,
+        });
         self.type_ids.insert(name.name.clone(), id);
         Some(id)
     }
 
-    /// Pass two: resolves fields, payloads and aliases.
+    /// Pass two: resolves fields, payloads, interface signatures and aliases.
     pub(crate) fn define_types(&mut self, items: &[&'a ast::Item]) {
         for item in items {
             match &item.kind {
-                ItemKind::Struct(s) if s.generics.is_empty() => {
-                    if let Some(&id) = self.type_ids.get(&s.name.name)
-                        && self.types[id.0 as usize].span == s.name.span
-                    {
+                ItemKind::Struct(s) => {
+                    if let Some(id) = self.own_type(&s.name) {
+                        let mark = self.enter_type_params(id);
                         self.define_struct(id, s);
+                        self.leave_generics(mark);
                     }
                 }
-                ItemKind::Enum(e) if e.generics.is_empty() => {
-                    if let Some(&id) = self.type_ids.get(&e.name.name)
-                        && self.types[id.0 as usize].span == e.name.span
-                    {
+                ItemKind::Enum(e) => {
+                    if let Some(id) = self.own_type(&e.name) {
+                        let mark = self.enter_type_params(id);
                         self.define_enum(id, e);
+                        self.leave_generics(mark);
                     }
                 }
                 _ => {}
             }
         }
+        // Interfaces last: their signatures may name any type.
+        for item in items {
+            if let ItemKind::Interface(i) = &item.kind
+                && let Some(id) = self.own_type(&i.name)
+            {
+                self.define_interface(id, i);
+            }
+        }
         // Report errors in aliases nobody uses, too.
         let names: Vec<String> = self.aliases.keys().cloned().collect();
         for name in names {
-            self.alias_ty(&name);
+            self.alias_body(&name);
         }
         for t in 0..self.types.len() {
             self.check_infinite_size(TypeId(t as u32));
         }
-        self.flush_pending_hash();
+    }
+
+    /// The type declared by exactly this name (not an earlier one it clashed with).
+    fn own_type(&self, name: &ast::Ident) -> Option<TypeId> {
+        let &id = self.type_ids.get(&name.name)?;
+        (self.types[id.0 as usize].span == name.span).then_some(id)
+    }
+
+    /// Puts the type parameters of type `id` in scope.
+    pub(crate) fn enter_type_params(&mut self, id: TypeId) -> usize {
+        let generics = self.type_extra[id.0 as usize].generics.clone();
+        self.enter_generics(&generics)
     }
 
     fn define_struct(&mut self, id: TypeId, s: &'a ast::StructDecl) {
@@ -286,8 +344,9 @@ impl<'a> Checker<'a> {
         (ty, true)
     }
 
-    /// The type an alias stands for, resolving it on first use. `None` if `name` is no alias.
-    pub(crate) fn alias_ty(&mut self, name: &str) -> Option<Ty> {
+    /// The type an alias stands for, written with the alias's own type parameters, resolving
+    /// it on first use. `None` if `name` is no alias.
+    pub(crate) fn alias_body(&mut self, name: &str) -> Option<Ty> {
         let info = self.aliases.get_mut(name)?;
         match std::mem::replace(&mut info.state, AliasState::Resolving) {
             AliasState::Done(ty) => {
@@ -306,13 +365,38 @@ impl<'a> Checker<'a> {
                 Some(Ty::Error)
             }
             AliasState::Pending(target) => {
+                let generics = info.generics.clone();
+                let mark = self.enter_generics(&generics);
+                let saved = self.self_ty.take();
                 let ty = self.resolve_type(target);
+                self.self_ty = saved;
+                self.leave_generics(mark);
                 if let Some(info) = self.aliases.get_mut(name) {
                     info.state = AliasState::Done(ty.clone());
                 }
                 Some(ty)
             }
         }
+    }
+
+    /// `Alias[args]`: the aliased type with the arguments substituted.
+    pub(crate) fn alias_instance(&mut self, name: &str, args: &[ast::TypeExpr], span: Span) -> Ty {
+        let Some(generics) = self.aliases.get(name).map(|a| a.generics.clone()) else {
+            return Ty::Error;
+        };
+        if args.len() != generics.len() {
+            self.report_type_arity(name, generics.len(), args.len(), span);
+            for a in args {
+                self.resolve_type(a);
+            }
+            return Ty::Error;
+        }
+        let tys: Vec<Ty> = args.iter().map(|a| self.resolve_type(a)).collect();
+        let body = self.alias_body(name).unwrap_or(Ty::Error);
+        if tys.iter().any(Ty::is_error) {
+            return Ty::Error;
+        }
+        body.subst(&Self::param_map(&generics, &tys))
     }
 
     /// A struct that contains itself by value could never be built.
@@ -361,39 +445,61 @@ impl<'a> Checker<'a> {
     // ---- impl blocks ----
 
     pub(crate) fn collect_impl(&mut self, decl: &'a ast::ImplDecl, item: &'a ast::Item) {
-        if decl.interface.is_some() {
-            self.unsupported("`impl` of an interface", item.span);
-            return;
-        }
-        if !decl.generics.is_empty() {
-            self.unsupported("a generic `impl`", decl.generics[0].name.span);
-            return;
-        }
+        let (generics, mark) = self.declare_generics(&decl.generics);
+        // `Self` is not available in the header: it is what the header says.
+        let saved = self.self_ty.take();
         let target = self.resolve_type(&decl.target);
-        let owner = match target {
-            Ty::Adt(id, _) => id,
+        match &decl.interface {
+            Some(iface) => self.collect_iface_impl(decl, item, iface, target, &generics),
+            None => self.collect_inherent_impl(decl, target, &generics),
+        }
+        self.self_ty = saved;
+        self.leave_generics(mark);
+    }
+
+    fn collect_inherent_impl(
+        &mut self,
+        decl: &'a ast::ImplDecl,
+        target: Ty,
+        generics: &[GenericParamInfo],
+    ) {
+        let owner = match &target {
+            Ty::Adt(id, _) => *id,
             Ty::Error => return,
             other => {
-                let shown = self.render(&other);
+                let shown = self.render(other);
                 self.report(
                     Diagnostic::error(
                         format!("cannot add methods to the built-in type `{shown}`"),
                         decl.target.span,
                     )
-                    .with_hint("methods can only be added to your own structs, enums and classes"),
+                    .with_hint("methods can only be added to your own structs, enums and classes; to add behaviour to another type, declare an interface and implement it"),
                 );
                 return;
             }
         };
+        let class = self.types[owner.0 as usize].is_class();
+        let ctx = SigCtx {
+            self_ty: Some(target.clone()),
+            outer: generics.to_vec(),
+            owner: Some(self.types[owner.0 as usize].name.clone()),
+            class,
+        };
         for member in &decl.items {
             if let ItemKind::Fn(f) = &member.kind {
-                self.collect_method(owner, member, f);
+                self.collect_method(owner, member, f, &ctx);
             }
         }
     }
 
-    fn collect_method(&mut self, owner: TypeId, item: &'a ast::Item, decl: &'a ast::FnDecl) {
-        let id = self.add_fn(item, decl, Some(owner));
+    fn collect_method(
+        &mut self,
+        owner: TypeId,
+        item: &'a ast::Item,
+        decl: &'a ast::FnDecl,
+        ctx: &SigCtx,
+    ) {
+        let id = self.add_fn(item, decl, ctx);
         let name = &decl.name;
         let def = &self.types[owner.0 as usize];
         let type_name = def.name.clone();
