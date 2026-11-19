@@ -729,5 +729,11 @@ fn new_creates_a_package_that_checks_runs_and_passes_its_tests() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("not a valid package name"));
     assert!(!bad.exists());
+    // A keyword cannot be imported, so it is no package name either.
+    let kw = root.join("fn");
+    let out = colibri(&["new", kw.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not a valid package name"));
+    assert!(!kw.exists());
     let _ = std::fs::remove_dir_all(&root);
 }

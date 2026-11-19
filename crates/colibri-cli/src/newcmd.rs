@@ -28,7 +28,7 @@ pub fn create(dir: &Path) -> Result<(), String> {
     })?;
     if !colibri_runtime::is_package_name(name) {
         return Err(format!(
-            "`{name}` is not a valid package name: use letters, digits and `_`, not starting with a digit (it is what `import` says)"
+            "`{name}` is not a valid package name: use letters, digits and `_`, not starting with a digit and not a keyword (it is what `import` says)"
         ));
     }
     if dir.exists() {
