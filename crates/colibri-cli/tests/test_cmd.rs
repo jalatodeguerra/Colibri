@@ -378,7 +378,7 @@ fn coroutines_do_not_leak_into_the_next_test() {
     assert!(stdout(&out).contains("2 passed"), "{}", stdout(&out));
 }
 
-const LEAKY_TESTS: &str = "class Node {\n    next: Node? = none\n}\ntest \"clean\" {\n    let a = Node {}\n}\ntest \"leaky\" {\n    let a = Node {}\n    a.next = some(a)\n}\ntest \"also clean\" {\n    let a = Node {}\n}\n";
+const LEAKY_TESTS: &str = "class Node {\n    next: Node? = none\n}\ntest \"clean\" {\n    let _a = Node {}\n}\ntest \"leaky\" {\n    let a = Node {}\n    a.next = some(a)\n}\ntest \"also clean\" {\n    let _a = Node {}\n}\n";
 
 #[test]
 fn leaks_flag_reports_the_test_that_leaked() {
