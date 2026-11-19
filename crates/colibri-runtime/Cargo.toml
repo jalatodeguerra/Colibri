@@ -1,0 +1,12 @@
+[package]
+name = "colibri-runtime"
+description = "Colibri embedding API"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+colibri-syntax = { path = "../colibri-syntax" }
+colibri-check = { path = "../colibri-check" }
+colibri-interp = { path = "../colibri-interp" }

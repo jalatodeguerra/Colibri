@@ -1,0 +1,24 @@
+[package]
+name = "colibri-lang"
+description = "The Colibri programming language command line tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+colibri-syntax = { path = "../colibri-syntax" }
+colibri-runtime = { path = "../colibri-runtime" }
+clap = { version = "4.6.8", features = ["derive"] }
+ariadne = "0.6.0"
+
+[[bin]]
+name = "colibri"
+path = "src/main.rs"
+
+[[test]]
+name = "golden"
+harness = false
+
+[dev-dependencies]
+libtest-mimic = "0.8.2"

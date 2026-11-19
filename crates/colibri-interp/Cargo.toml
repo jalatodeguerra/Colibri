@@ -1,0 +1,11 @@
+[package]
+name = "colibri-interp"
+description = "Colibri tree-walking interpreter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+colibri-syntax = { path = "../colibri-syntax" }
+colibri-check = { path = "../colibri-check" }
