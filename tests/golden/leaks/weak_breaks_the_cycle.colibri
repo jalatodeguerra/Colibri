@@ -1,0 +1,21 @@
+// A `weak` field is not a reference the detector counts: a parent that owns its children
+// and children that point back weakly leave nothing behind.
+class Parent {
+    name: str
+    children: List[Child] = []
+}
+
+class Child {
+    name: str
+    parent: weak Parent
+}
+
+fn main() {
+    let p = Parent { name: "p" }
+    p.children.push(Child { name: "c1", parent: p })
+    p.children.push(Child { name: "c2", parent: p })
+    print(p.children[0].parent == some(p))
+}
+
+// expect: true
+// drops: p, c1, c2

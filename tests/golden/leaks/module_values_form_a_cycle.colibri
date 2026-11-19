@@ -1,0 +1,18 @@
+// Module-level values are released when the program ends, so a cycle among them is a leak
+// like any other: being reachable from a global is not enough once the globals are gone.
+class Node {
+    name: str
+    next: Node? = none
+}
+
+let first = Node { name: "first" }
+let second = Node { name: "second" }
+
+fn main() {
+    first.next = some(second)
+    second.next = some(first)
+    print("linked")
+}
+
+// expect: linked
+// leaks: Node, Node

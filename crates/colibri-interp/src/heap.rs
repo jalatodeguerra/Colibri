@@ -615,6 +615,11 @@ impl ClassObj {
         self.fields.borrow().get(idx).cloned()
     }
 
+    /// Reads the fields in place, without touching their reference counts.
+    pub fn with_fields<R>(&self, f: impl FnOnce(&[Value]) -> R) -> R {
+        f(&self.fields.borrow())
+    }
+
     /// A copy of every field (each a reference bump).
     pub fn snapshot(&self) -> Vec<Value> {
         self.fields.borrow().to_vec()

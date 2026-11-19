@@ -377,3 +377,31 @@ fn coroutines_do_not_leak_into_the_next_test() {
     assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
     assert!(stdout(&out).contains("2 passed"), "{}", stdout(&out));
 }
+
+const LEAKY_TESTS: &str = "class Node {\n    next: Node? = none\n}\ntest \"clean\" {\n    let a = Node {}\n}\ntest \"leaky\" {\n    let a = Node {}\n    a.next = some(a)\n}\ntest \"also clean\" {\n    let a = Node {}\n}\n";
+
+#[test]
+fn leaks_flag_reports_the_test_that_leaked() {
+    let out = test_script("leaks_warn", LEAKY_TESTS, &["--leaks"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(stdout(&out).contains("3 passed, 0 failed"));
+    let err = stderr(&out);
+    assert_eq!(err.matches("leaked reference cycle").count(), 1, "{err}");
+}
+
+#[test]
+fn leaks_error_fails_the_leaking_test_only() {
+    let out = test_script("leaks_error", LEAKY_TESTS, &["--leaks=error"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = stdout(&out);
+    assert!(text.contains("leaky ... FAILED"), "{text}");
+    assert!(text.contains("clean ... ok"), "{text}");
+    assert!(text.contains("2 passed, 1 failed"), "{text}");
+}
+
+#[test]
+fn without_the_flag_leaks_are_not_looked_for() {
+    let out = test_script("leaks_off", LEAKY_TESTS, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(stderr(&out).is_empty());
+}

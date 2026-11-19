@@ -30,6 +30,11 @@ impl CellObj {
         self.value.borrow().clone()
     }
 
+    /// Reads the value in place.
+    pub fn with<R>(&self, f: impl FnOnce(&Value) -> R) -> R {
+        f(&self.value.borrow())
+    }
+
     /// Stores a value and returns the old one, to be released by the caller.
     pub fn set(&self, v: Value) -> Value {
         std::mem::replace(&mut *self.value.borrow_mut(), v)
@@ -127,7 +132,9 @@ impl Interp {
                 }
             }
         }
-        Ok(Value::Closure(Rc::new(ClosureObj { f: c.f, captures })))
+        let closure = Rc::new(ClosureObj { f: c.f, captures });
+        self.track_closure(&closure, Some(span));
+        Ok(Value::Closure(closure))
     }
 
     /// Calls a function value (`Fn` or `Closure`) with `args`, which the callee owns. The

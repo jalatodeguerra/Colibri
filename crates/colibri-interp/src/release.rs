@@ -110,9 +110,10 @@ impl Interp {
                 let mut items = rc.take_all();
                 push_children(work, &mut items);
             }
-            Value::Closure(mut rc) => {
-                // Dropping a closure releases what it captured, in capture order.
-                if let Some(c) = Rc::get_mut(&mut rc) {
+            Value::Closure(rc) => {
+                // Dropping a closure releases what it captured, in capture order. (Not
+                // `get_mut`: the leak detector's registry holds a weak reference.)
+                if let Ok(mut c) = Rc::try_unwrap(rc) {
                     let mut values = c.take_values();
                     push_children(work, &mut values);
                 }

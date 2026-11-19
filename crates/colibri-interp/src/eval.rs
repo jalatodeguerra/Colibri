@@ -65,6 +65,8 @@ pub struct Interp {
     pub(crate) host: crate::host::HostSide,
     /// The coroutine scheduler (ARCHITECTURE §16).
     pub(crate) sched: crate::coro::Scheduler,
+    /// The registry of the leak detector, when it is on (ARCHITECTURE §18).
+    pub(crate) leaks: Option<Box<crate::leaks::LeakTracker>>,
 }
 
 /// The default for [`Interp::set_native_stack_budget`]: small enough for a default test thread.
@@ -101,6 +103,7 @@ impl Interp {
             budget: crate::budget::Budget::new(),
             host: crate::host::HostSide::default(),
             sched: crate::coro::Scheduler::new(),
+            leaks: None,
         }
     }
 
@@ -618,7 +621,9 @@ impl Interp {
             }
             ExprKind::Object { ty, fields } => {
                 let values = self.eval_values(fiber, fields)?;
-                Ok(Value::Obj(ClassObj::new(*ty, values)))
+                let obj = ClassObj::new(*ty, values);
+                self.track_object(&obj, Some(e.span));
+                Ok(Value::Obj(obj))
             }
             ExprKind::Variant { ty, variant, args } => {
                 let values = self.eval_values(fiber, args)?;

@@ -1,0 +1,20 @@
+// A parent that lists its children, and children that point back: the cycle goes through
+// the list. Only the objects are named; the list is just a step on the path.
+class Parent {
+    name: str
+    children: List[Child] = []
+}
+
+class Child {
+    parent: Parent
+}
+
+fn main() {
+    let p = Parent { name: "p" }
+    p.children.push(Child { parent: p })
+    p.children.push(Child { parent: p })
+    print(p.children.len())
+}
+
+// expect: 2
+// leaks: Parent, Child, Child
