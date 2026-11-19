@@ -1,0 +1,25 @@
+// The golden harness hands every script the arguments `alpha beta`, and `args` needs no
+// capability. Flags, values and the `--` terminator are covered by Rust tests with other
+// arguments (crates/colibri-std/tests/std.rs).
+import args
+import os
+
+fn main() {
+    print(args.list())
+    print(args.list() == os.args())
+    print(args.positional())
+    print(args.positional_with(["alpha"]))
+    print(args.flag("alpha"))
+    print(args.flag("verbose"))
+    print(args.value("alpha"))
+    print(args.value("verbose") == none)
+}
+
+// expect: ["alpha", "beta"]
+// expect: true
+// expect: ["alpha", "beta"]
+// expect: ["alpha", "beta"]
+// expect: false
+// expect: false
+// expect: none
+// expect: true

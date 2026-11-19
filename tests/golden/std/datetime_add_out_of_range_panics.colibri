@@ -1,0 +1,8 @@
+import datetime
+
+fn main() {
+    let t = datetime.from_unix(0.0)
+    print(datetime.add(t, 3.0e11))
+}
+
+// panic: datetime.add: the result is outside the years 0 to 9999

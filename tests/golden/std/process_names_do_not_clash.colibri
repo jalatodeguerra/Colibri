@@ -1,0 +1,22 @@
+// caps: os
+// A program's own `Output` and `DateTime` are not the library's.
+import process
+import datetime
+
+struct Output { text: str }
+struct DateTime { label: str }
+
+fn main() {
+    let mine = Output { text: "mine" }
+    let theirs = process.run("sh", ["-c", "printf lib"]) or |e| { panic(e.message()) }
+    print(mine.text)
+    print(theirs.stdout)
+    let d = DateTime { label: "d" }
+    print(d.label)
+    print(datetime.from_unix(0.0).year)
+}
+
+// expect: mine
+// expect: lib
+// expect: d
+// expect: 1970

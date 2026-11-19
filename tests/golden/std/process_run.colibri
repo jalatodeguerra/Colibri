@@ -1,0 +1,69 @@
+// caps: os
+// Subprocesses through `sh`, so this golden runs on Linux and macOS.
+import process
+import os
+
+fn main() {
+    let r = process.run("sh", ["-c", "echo hello; echo oops >&2; exit 3"]) or |e| { panic(e.message()) }
+    print(r.status)
+    print(r.stdout)
+    print(r.stderr)
+    print(r)
+
+    // A program that fails to run is an error, one that exits non-zero is not.
+    match process.run("colibri-no-such-program", []) {
+        ok(_)  => print("ran?")
+        err(e) => print(e.message())
+    }
+    print(process.status("sh", ["-c", "exit 7"]) or |e| { -1 })
+    print(process.output("sh", ["-c", "printf abc"]) or |e| { "failed" })
+    match process.output("sh", ["-c", "echo bad >&2; exit 2"]) {
+        ok(text) => print(text)
+        err(e)   => print(e.message())
+    }
+    print(process.shell("echo $((6 * 7)) | tr 4 X") or |e| { panic(e.message()) })
+
+    // Arguments are passed as they are, with no shell in between.
+    let a = process.run("printf", ["%s|", "a b", "$HOME", ""]) or |e| { panic(e.message()) }
+    print(a.stdout)
+
+    // Options: folder, environment, standard input.
+    var o = process.options()
+    o.cwd = some("/")
+    o.env = { "GREETING": "hi" }
+    o.input = some("typed\n")
+    let b = process.run_with("sh", ["-c", "pwd; echo $GREETING; cat"], o) or |e| { panic(e.message()) }
+    print(b.stdout)
+
+    // `os.set_env` is seen by the programs that follow.
+    os.set_env("COLIBRI_CHILD", "yes")
+    let c = process.shell("echo $COLIBRI_CHILD") or |e| { panic(e.message()) }
+    print(c.stdout)
+
+    var missing = process.options()
+    missing.cwd = some("/colibri/no/such/folder")
+    match process.run_with("sh", ["-c", "true"], missing) {
+        ok(_)  => print("ran?")
+        err(e) => print(e.message())
+    }
+}
+
+// expect: 3
+// expect: hello
+// expect:
+// expect: oops
+// expect:
+// expect: Output { status: 3, stdout: "hello\n", stderr: "oops\n" }
+// expect: cannot run `colibri-no-such-program`: no such file or directory
+// expect: 7
+// expect: abc
+// expect: `sh` failed with status 2: bad
+// expect: Output { status: 0, stdout: "X2\n", stderr: "" }
+// expect: a b|$HOME||
+// expect: /
+// expect: hi
+// expect: typed
+// expect:
+// expect: yes
+// expect:
+// expect: cannot run `sh`: the folder `/colibri/no/such/folder` does not exist

@@ -1,6 +1,6 @@
 [package]
 name = "colibri-std"
-description = "The Colibri standard library: io, fs, path, os, math, rand, time, json, regex and http as host modules"
+description = "The Colibri standard library: io, fs, path, os, math, rand, time, json, regex, http, args, process and datetime as host modules"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,3 +16,6 @@ regex = { version = "1.12", default-features = false, features = ["std", "unicod
 # A small blocking HTTP client for `http`: rustls with the bundled webpki roots, so a build
 # needs no system TLS library.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+# The machine's time zone for `datetime.now_local` (`localtime_r`), on Unix only.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

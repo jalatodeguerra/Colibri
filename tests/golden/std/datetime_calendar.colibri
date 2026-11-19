@@ -1,0 +1,53 @@
+// caps: os
+// Dates are plain structs of integers; the golden clock reads 1700000000 (2023-11-14 22:13:20
+// UTC) and the golden local time zone is +05:30.
+import datetime
+
+fn main() {
+    let now = datetime.now()
+    print(datetime.to_iso(now))
+    print("{now.year}-{now.month}-{now.day} {now.hour}:{now.minute}:{now.second} {now.nanosecond} {now.offset}")
+    print(datetime.weekday(now))
+    print(datetime.day_of_year(now))
+    print(datetime.to_unix(now))
+
+    let local = datetime.now_local()
+    print(datetime.to_iso(local))
+    print(local == now)
+    print(datetime.diff(local, now))
+    print(datetime.to_utc(local) == now)
+    print(datetime.to_iso(datetime.to_local(now)))
+    print(datetime.to_iso(datetime.with_offset(now, -18000)))
+
+    let epoch = datetime.from_unix(0.0)
+    print(datetime.to_iso(epoch))
+    print(datetime.weekday(epoch))
+    print(datetime.to_iso(datetime.from_unix(-1.5)))
+    print(datetime.to_iso(datetime.from_unix(1700000000.25)))
+    print(datetime.is_leap_year(2024))
+    print(datetime.is_leap_year(1900))
+    print(datetime.days_in_month(2024, 2))
+    print(datetime.days_in_month(2023, 2))
+    print(datetime.DAY)
+}
+
+// expect: 2023-11-14T22:13:20Z
+// expect: 2023-11-14 22:13:20 0 0
+// expect: 2
+// expect: 318
+// expect: 1700000000.0
+// expect: 2023-11-15T03:43:20+05:30
+// expect: false
+// expect: 0.0
+// expect: true
+// expect: 2023-11-15T03:43:20+05:30
+// expect: 2023-11-14T17:13:20-05:00
+// expect: 1970-01-01T00:00:00Z
+// expect: 4
+// expect: 1969-12-31T23:59:58.5Z
+// expect: 2023-11-14T22:13:20.25Z
+// expect: true
+// expect: false
+// expect: 29
+// expect: 28
+// expect: 86400.0

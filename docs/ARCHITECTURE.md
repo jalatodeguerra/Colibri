@@ -1377,9 +1377,9 @@ stack unwinds to the trampoline with a private payload; no panic message is prin
 ### Configuration and hermetic runs
 
 `StdConfig` holds what a module reads from the world: `clock` (`SystemClock`, or `ManualClock` a
-test advances), `args`, `env` (`EnvSource::Process` or `Fixed`), `temp_dir`, `seed`, `stdin`. The
+test advances), `args`, `env` (`EnvSource::Process` or `Fixed`), `temp_dir`, `seed`, `stdin`, `local_offset`. The
 golden harness installs a fixed one (clock 1_700_000_000.0, args `alpha beta`, env
-`COLIBRI_GOLDEN=yes`, seed 1, stdin `first line\nsecond line\n`, and a temp dir created per test
+`COLIBRI_GOLDEN=yes`, seed 1, local time zone +05:30, stdin `first line\nsecond line\n`, and a temp dir created per test
 and removed after it). `os.set_env` writes an overlay in the `Vm`, never the process
 environment (`set_var` is unsafe in edition 2024, and a library must not do that behind a
 program's back).
@@ -1392,7 +1392,9 @@ program's back).
 | `os` | | `env`, `vars`, `set_env`, `temp_dir`, `cwd`, `exit` | `args`, `platform` |
 | `io` | | `read_line`, `read_all` | `write`, `eprint`, `eprintln` |
 | `time` | | `unix`, `sleep` | `now`, `monotonic` |
-| `path`, `math`, `rand`, `str`, `json` | | | everything |
+| `path`, `math`, `rand`, `str`, `json`, `args` | | | everything |
+| `process` | | everything | |
+| `datetime` | | `now`, `now_local` | the rest |
 
 The CLI grants all capabilities. `Cap::Os` now reads "processes, the environment, wall-clock
 time and sleeping".
@@ -1509,6 +1511,80 @@ in a golden; the CLI grants everything).
   `127.0.0.1:0` in the test process (nothing leaves the machine); the golden
   `std/http_needs_capability` covers the refusal without `net`. There is no golden with a live
   server because the harness has no hook for a URL.
+### 13.1 Scripting std, part A: `args`, `process`, `datetime`
+
+Three more host modules in `colibri-std`, written like the others. `MODULES` and `install_with`
+list them; their `.cbi` text, and so the language server's hover, comes from the registrations.
+
+**Value structs from Rust.** `#[colibri::export(value)]` asserts `Copy`, and `process.Output`
+holds strings, so `values.rs` has a small `value_struct!` macro that writes `IntoColibri` and
+`FromColibri` for a plain Rust struct as the Colibri struct of the same name, field by field in
+the order written. A host function that takes or returns one registers the type in its module.
+A program may declare its own `Output` or `DateTime` (golden `process_names_do_not_clash`).
+
+**`args`.** `os.args()` already holds what `colibri run file -- a b` passes (the CLI hands
+everything after `--` to `StdConfig::args`), so `args` is a parser over it and needs no
+capability. `list()` is `os.args()`. The grammar: `--` ends the options; `--name`, `-n`, and
+groups `-vq` are flags; `--name=value`, `--name value`, `-n value` and `-n=value` give a value;
+`-` and negative numbers are positional; the last occurrence wins. `flag(name) -> bool`,
+`value(name) -> Option[str]`, `positional() -> List[str]`, `positional_with(value_options) ->
+List[str]`. A word after an option is a value or a positional only if the parser is told which
+options take one: `value("out")` knows, so it takes `--out file`; `positional()` does not, so it
+treats `--out file` as an option followed by a positional. `positional_with(["out"])` names them.
+There are no declarations, help text or subcommands; a script that needs more writes it.
+
+**`process`.** Needs `Cap::Os` (no new capability: starting programs is machine state like the
+environment). `run(program, args) -> Result[Output]` waits and captures; `Output { status: int,
+stdout: str, stderr: str }` (text is decoded lossily). A program that cannot start (missing,
+not executable, bad `cwd`) is `err`; one that exits non-zero is an `Output` with that `status`;
+one killed by a signal has `-N` on Unix and `-1` when the system says nothing. The language has
+no default arguments for host functions, so options are a struct: `process.options()` returns an
+empty `Options { cwd: Option[str], env: Map[str, str], input: Option[str] }`, a script sets what
+it needs, and `run_with(program, args, options)` / `spawn_with` take it. `output(program, args)
+-> Result[str]` is the standard output of a program that succeeded (an `err` with its status and
+standard error otherwise); `status(program, args) -> Result[int]` runs with the script's own
+standard output and error (which the `Vm`'s buffer never sees); `shell(line)` is `run` through
+`sh -c` (`cmd /C` on Windows). The child's environment is the process's, then what `os.set_env`
+set, then `options.env`; `os.env` under a `Fixed` source does not restrict children. Its standard
+input is closed unless `options.input` gives text, so a child never reads the script's stdin.
+Output is drained on threads, so a program writing a lot cannot deadlock.
+
+Blocking: host functions cannot suspend (waits panic inside host calls, §16), so `run`, `shell`,
+`status` and `Child.join` block the whole `Vm`, every coroutine included. For concurrency,
+`spawn` returns at once with a host class `Child` (`id()`, `try_wait() -> Result[Option[Output]]`,
+`join() -> Result[Output]`, `kill() -> Result[Output]`); a coroutine polls `try_wait` with
+`wait(0.01)` between calls (golden `process_polling_in_a_coroutine`). `try_wait` repeats its
+answer once the child ended. The method is `join`, not `wait`, to keep `wait` for the builtin.
+Dropping a `Child` that has not ended kills it, so a script cannot leak a process by forgetting
+a handle (a script that wants a detached program starts it through `shell("... &")`).
+
+**`datetime`.** No dependency for calendar math (proleptic Gregorian, days-from-civil, no leap
+seconds, years 0 to 9999), so results are the same on every platform. `DateTime { year, month,
+day, hour, minute, second, nanosecond, offset }` is a struct of ints; `offset` is the seconds
+east of UTC the fields are written in. Equality is structural, so the same instant at two offsets
+is not `==`; `diff(a, b) == 0.0` is the test for the instant. Functions: `now()` (UTC),
+`now_local()` (both `Cap::Os`, from the clock of `StdConfig`), `new(y, mo, d, h, mi, s) ->
+Result[DateTime]` (UTC, validated), `from_unix(seconds: float)`, `to_unix(dt) -> float`,
+`to_utc`, `to_local`, `with_offset(dt, seconds)`, `add(dt, seconds: float)` (keeps the offset),
+`diff(a, b) -> float` seconds, `weekday` (ISO: 1 Monday to 7 Sunday), `day_of_year`,
+`is_leap_year`, `days_in_month`, `format`, `parse -> Result`, `to_iso`, `parse_iso -> Result`,
+constants `MINUTE HOUR DAY WEEK`. Instants are floats like `time.unix()`; a float has no
+nanosecond precision at today's date, so `from_unix` splits whole seconds from the fraction.
+`format` patterns (strftime subset): `%Y %y %m %d %e %j %H %I %M %S %f` (nine digits) `%L`
+(milliseconds) `%p %B %b %A %a %u %z %:z %Z %s %F %T %%`; an unknown one in `format` is a panic
+(a bug in the program), in `parse` an `err` that says where the text stopped matching. `parse`
+fields it does not read default to 1970-01-01 00:00:00 UTC; `%y` follows POSIX (69 to 99 are
+1900s); `%I` needs `%p`. `parse_iso` takes `YYYY-MM-DD` with an optional `T` or space, `hh:mm`
+`[:ss[.fraction]]`, and `Z` or `+hh[:mm]`; `to_iso` prints the fraction with trailing zeros cut.
+No months/years arithmetic and no named zones (no tz database): offsets only.
+Local time: `StdConfig::local_offset` (`Some(seconds)` fixed, golden harness +05:30) or the
+machine's zone through `localtime_r` on Unix (the `libc` crate, one `unsafe` call; already in
+the lockfile through libffi) and UTC on Windows.
+
+Decisions the language owner may want to overrule: `process`/`datetime` as module names and
+free functions rather than methods (value structs cannot have host methods yet); `Options` as a
+struct to fill in; reusing `Cap::Os`; `join` instead of `wait`; kill-on-drop; the lossy decode of
+output; weekday numbering; floats for instants and spans.
 
 ## 14. Language server (`colibri lsp`)
 
