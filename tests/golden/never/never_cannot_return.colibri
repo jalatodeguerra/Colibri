@@ -1,0 +1,20 @@
+fn falls_off(msg: str) -> ! {
+    print(msg)
+} // error: `falls_off` is declared `-> !`
+
+fn returns(msg: str) -> ! {
+    if msg == "" {
+        panic("empty")
+    }
+    return // error: `return` in a function that never returns
+}
+
+fn returns_value() -> ! {
+    return 1 // error: `return` in a function that never returns
+}
+
+fn wrong_value() -> ! => 5 // error: expected `!`
+
+fn main() {
+    falls_off("x")
+}

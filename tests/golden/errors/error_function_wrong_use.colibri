@@ -1,0 +1,5 @@
+fn main() {
+    let a = error() // error: `error` takes exactly one message
+    let b = error(5) // error: expected `str`
+    let c = error(msg: "x") // error: `error` does not take a named argument
+}

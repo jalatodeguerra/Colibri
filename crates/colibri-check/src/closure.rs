@@ -166,7 +166,7 @@ impl FnCtx<'_, '_> {
     fn closure_ret_type(&mut self, c: &ast::Closure, expect: Option<&Expectation>) -> Ty {
         match (&c.ret, expect) {
             (Some(t), expect) => {
-                let ty = self.ck.resolve_type(t);
+                let ty = self.ck.resolve_ret_type(t);
                 if let Some(e) = expect {
                     let _ = self.infer.unify(&ty, &e.ret);
                 }

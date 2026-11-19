@@ -307,6 +307,21 @@ fn raw_strings() {
 }
 
 #[test]
+fn hashed_raw_strings() {
+    assert_eq!(
+        parts(r###"r#"say "hi" {x} \n"#"###),
+        [r#"L(say "hi" {x} \n)"#]
+    );
+    assert_eq!(parts(r####"r##"a "# b"##"####), [r##"L(a "# b)"##]);
+    assert_eq!(parts("r#\"a\n  b\"#"), ["L(a\n  b)"]);
+    assert_eq!(raw(r###"r#"a"# r#"b"#"###), r#"Str("a") Str("b")"#);
+    assert_eq!(
+        errors(r###"r#"open"###),
+        ["unterminated raw string literal"]
+    );
+}
+
+#[test]
 fn string_errors() {
     assert_eq!(errors(r#""abc"#), ["unterminated string literal"]);
     assert_eq!(errors("\"abc\nlet x = 1"), ["unterminated string literal"]);

@@ -63,7 +63,7 @@ fn read_location(location: str) -> Result[str] {
     if is_url(location) {
         let response = http.get(location)?
         if response.status != 200 {
-            return err(Error.from("{location}: HTTP status {response.status}"))
+            return err(error("{location}: HTTP status {response.status}"))
         }
         return ok(response.body)
     }
@@ -262,7 +262,7 @@ fn build_report(title: str, stamp: str, jobs: List[Job], top_n: int, git: Option
     return lines.join("\n")
 }
 
-fn usage_error(message: str) {
+fn usage_error(message: str) -> ! {
     io.eprintln("report: {message}")
     io.eprintln(USAGE)
     os.exit(2)
@@ -280,14 +280,12 @@ fn main() -> Result[()] {
     let inputs = args.positional_with(["out", "concurrency", "top", "now"])
     if inputs.len() != 1 {
         usage_error("expected one URL or file")
-        return ok(())
     }
     let index_location = inputs[0]
     let workers = int_option("concurrency", 2)
     let top_n = int_option("top", 3)
     if workers < 1 || top_n < 1 {
         usage_error("--concurrency and --top must be at least 1")
-        return ok(())
     }
     var now = datetime.now()
     if let some(text) = args.value("now") {
@@ -295,7 +293,6 @@ fn main() -> Result[()] {
             ok(d) => now = d
             err(e) => {
                 usage_error("--now: {e.message()}")
-                return ok(())
             }
         }
     }
@@ -321,7 +318,7 @@ fn main() -> Result[()] {
     }
     let failures = jobs.filter(fn(j) => j.batch == none).len()
     if failures > 0 {
-        return err(Error.from("{failures} of {jobs.len()} sources failed"))
+        return err(error("{failures} of {jobs.len()} sources failed"))
     }
     return ok(())
 }

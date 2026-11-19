@@ -1074,6 +1074,9 @@ impl Interp {
         if matches!(intrinsic, Intrinsic::Assert | Intrinsic::AssertEq) {
             return self.assertion(fiber, intrinsic, args, span);
         }
+        if matches!(intrinsic, Intrinsic::Compare) {
+            return self.compare_values(fiber, args, span);
+        }
         let numeric = match intrinsic {
             Intrinsic::Convert { from, to } => args.first().map(|v| num::convert(*from, *to, v)),
             Intrinsic::NumMethod(m, n) => Some(num::method(*m, *n, &args)),
@@ -1129,6 +1132,7 @@ impl Interp {
             | Intrinsic::Ptr(_)
             | Intrinsic::Assert
             | Intrinsic::AssertEq
+            | Intrinsic::Compare
             | Intrinsic::Convert { .. }
             | Intrinsic::NumMethod(..)
             | Intrinsic::VecNew(_)

@@ -81,6 +81,11 @@
     "strings": {
       "patterns": [
         {
+          "name": "string.quoted.hashed.raw.colibri",
+          "begin": "r(#+)\"",
+          "end": "\"\\1"
+        },
+        {
           "name": "string.quoted.triple.raw.colibri",
           "begin": "r\"\"\"",
           "end": "\"\"\""

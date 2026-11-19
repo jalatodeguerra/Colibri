@@ -348,6 +348,37 @@ impl FnCtx<'_, '_> {
         out
     }
 
+    /// `error(msg)`: an `Error` carrying the message, so a script writes
+    /// `return err(error("bad input"))`. The same value as `Error.from(msg)` for a `str`.
+    pub(crate) fn check_error_fn(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        let [arg] = args else {
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error(
+                    format!("`error` takes exactly one message, found {}", args.len()),
+                    span,
+                )
+                .with_hint("write `error(\"what went wrong\")`"),
+            );
+            return self.error_expr(span);
+        };
+        if let Some(name) = &arg.name {
+            self.check_expr(&arg.value, None);
+            self.ck.report(Diagnostic::error(
+                "`error` does not take a named argument",
+                name.span,
+            ));
+            return self.error_expr(span);
+        }
+        let msg = self.check_expr(&arg.value, Some(&Ty::Str));
+        if !self.expect(&msg, &Ty::Str, None) {
+            return self.error_expr_typed(span, error_ty());
+        }
+        let mut out = self.convert_error(msg);
+        out.span = span;
+        out
+    }
+
     // ---- e.is[T]() and e.as[T]() ----
 
     /// `e.is[T]() -> bool` and `e.as[T]() -> T?` on an `Error`: they look at the runtime type

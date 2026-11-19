@@ -137,6 +137,9 @@ pub(crate) struct FnCtx<'c, 'a> {
     scope_floor: usize,
     pub loops: Vec<LoopFrame>,
     pub next_loop: u32,
+    /// Ids of loops some `break` leaves (a `while true` without one never ends). Ids are per
+    /// frame, so a closure's loop can mark an outer id: that only makes the answer cautious.
+    broken_loops: Vec<u32>,
     /// The declared return type and its span; `None` where `return` is not allowed.
     pub(crate) ret: Option<(Ty, Option<Span>)>,
     deps: Vec<Dep>,
@@ -222,6 +225,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             scope_floor: 0,
             loops: Vec::new(),
             next_loop: 0,
+            broken_loops: Vec::new(),
             ret,
             deps: Vec::new(),
             depth: 0,
@@ -601,15 +605,24 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                     ty = ret.clone();
                 } else if falls_off {
                     let close = Span::new(b.span.file, b.span.end.saturating_sub(1), b.span.end);
+                    let never = *ret == Ty::Never;
                     let mut diag = Diagnostic::error(
-                        format!(
-                            "`{}` must return `{}`, but its body can end without returning",
-                            self.name,
-                            self.show(ret)
-                        ),
+                        if never {
+                            format!("`{}` is declared `-> !`, but its body can end", self.name)
+                        } else {
+                            format!(
+                                "`{}` must return `{}`, but its body can end without returning",
+                                self.name,
+                                self.show(ret)
+                            )
+                        },
                         close,
                     )
-                    .with_hint("end every path with `return value`");
+                    .with_hint(if never {
+                        "end every path with `panic(..)`, `os.exit(..)`, another `-> !` call or an endless loop"
+                    } else {
+                        "end every path with `return value`"
+                    });
                     if let Some(rs) = ret_span {
                         diag = diag.with_label(rs, "the return type is declared here");
                     }
@@ -830,6 +843,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                     );
                 }
                 if let Some(id) = self.find_loop(label.as_ref(), "break", s.span) {
+                    self.broken_loops.push(id.0);
                     out.push(Stmt {
                         span: s.span,
                         kind: hir::StmtKind::Break(id),
@@ -847,12 +861,14 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 true
             }
             StmtKind::While { label, cond, body } => {
+                let id = self.next_loop;
                 let value = self.check_while(s.span, label.as_ref(), cond, body);
                 out.push(Stmt {
                     span: s.span,
                     kind: hir::StmtKind::Expr(value),
                 });
-                false
+                // `while true` that nothing `break`s out of never ends.
+                matches!(cond.kind, ast::ExprKind::Bool(true)) && !self.broken_loops.contains(&id)
             }
             StmtKind::WhileLet {
                 label,
@@ -1052,6 +1068,18 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             return;
         };
         let reason = ret_span.map(|s| (s, "the return type is declared here".to_string()));
+        if self.infer.shallow(&ret) == Ty::Never {
+            if let Some(v) = value {
+                self.check_expr(v, None);
+            }
+            let mut diag = Diagnostic::error("`return` in a function that never returns", span)
+                .with_hint("a `-> !` function ends in `panic`, `os.exit`, another `-> !` call or an endless loop");
+            if let Some((s, text)) = reason {
+                diag = diag.with_label(s, text);
+            }
+            self.ck.report(diag);
+            return;
+        }
         let value = match value {
             Some(v) => {
                 let e = self.check_expr(v, Some(&ret));

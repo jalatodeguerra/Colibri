@@ -1,0 +1,18 @@
+import json
+
+struct Item {
+    name: str
+    qty: int
+}
+
+// JSON in a test reads as JSON with a raw string.
+test "decodes a list of items" {
+    let items = json.decode[List[Item]](r#"[{"name": "pen", "qty": 3}, {"name": "ink", "qty": 1}]"#)?
+    assert_eq(items.len(), 2)
+    assert_eq(items[0].name, "pen")
+}
+
+fn main() {
+    print("main ran")
+}
+// expect: main ran

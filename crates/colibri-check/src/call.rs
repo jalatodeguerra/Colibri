@@ -81,9 +81,11 @@ impl FnCtx<'_, '_> {
             "print" if !self.ck.values.contains_key(name) => self.check_print(args, span),
             "some" => self.check_some(args, expected, span),
             "ok" | "err" => self.check_ok_err(name == "ok", args, expected, span),
+            "error" if !self.ck.values.contains_key(name) => self.check_error_fn(args, span),
             "panic" if !self.ck.values.contains_key(name) => self.check_panic(args, span),
             "assert" if !self.ck.values.contains_key(name) => self.check_assert(args, span),
             "assert_eq" if !self.ck.values.contains_key(name) => self.check_assert_eq(args, span),
+            "compare" if !self.ck.values.contains_key(name) => self.check_compare(args, span),
             "wait" | "wait_frames" | "wait_until" | "wait_real" | "wait_for"
                 if !self.ck.values.contains_key(name) =>
             {
@@ -265,6 +267,53 @@ impl FnCtx<'_, '_> {
                 args: vec![Arg::Value(l), Arg::Value(r)],
             })),
             Ty::Unit,
+            span,
+        )
+    }
+
+    /// `compare(a, b) -> int`: -1, 0 or 1 for two values of one ordered type (`<` works on it:
+    /// numbers, `str`, `char`, `bool`, enums without payloads, tuples of those, and types with a
+    /// user `impl Ord`). Tuples compare lexicographically, which gives tie-breaks:
+    /// `compare((b.total, a.name), (a.total, b.name))`.
+    fn check_compare(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        if args.len() != 2 || args.iter().any(|a| a.name.is_some()) {
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error(
+                    format!(
+                        "`compare` takes exactly two values, found {} arguments",
+                        args.len()
+                    ),
+                    span,
+                )
+                .with_hint("write `compare(a, b)`; it returns -1, 0 or 1"),
+            );
+            return self.error_expr(span);
+        }
+        let mut l = self.check_expr(&args[0].value, None);
+        let mut r = self.check_expr(&args[1].value, Some(&l.ty));
+        if !self.unify_operands(ast::BinOp::Lt, &mut l, &mut r, span) {
+            return self.error_expr(span);
+        }
+        if !self.supports_ord(&l.ty) {
+            let shown = self.show(&l.ty);
+            let mut diag = Diagnostic::error(
+                format!("`compare` cannot order values of type `{shown}`"),
+                span,
+            );
+            if let Some(hint) = self.comparison_hint(&l.ty, false) {
+                diag = diag.with_hint(hint);
+            }
+            self.ck.report(diag);
+            return self.error_expr(span);
+        }
+        self.mk(
+            hir::ExprKind::Call(Box::new(hir::Call {
+                callee: Callee::Intrinsic(Intrinsic::Compare),
+                type_args: Vec::new(),
+                args: vec![Arg::Value(l), Arg::Value(r)],
+            })),
+            Ty::INT,
             span,
         )
     }

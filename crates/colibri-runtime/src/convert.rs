@@ -401,6 +401,22 @@ impl IntoColibri for () {
     }
 }
 
+/// The return type of a host function that never returns (it ends the program or raises a
+/// panic): declared `-> !` in Colibri. It has no values, so the function body can only end in
+/// something of type `!` such as [`crate::Ctx::raise`]. Callers of the Colibri function need no
+/// value after the call, and the call fits any type.
+#[derive(Clone, Copy, Debug)]
+pub enum Never {}
+
+impl IntoColibri for Never {
+    fn ty(_: &mut TypeRegistry) -> TypeDesc {
+        TypeDesc::Never
+    }
+    fn into_colibri(self, _: &mut Cx<'_>) -> Value {
+        match self {}
+    }
+}
+
 impl FromColibri for () {
     fn ty(_: &mut TypeRegistry) -> TypeDesc {
         TypeDesc::Unit

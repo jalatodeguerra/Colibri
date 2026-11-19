@@ -1,0 +1,33 @@
+// `error(msg)` builds an `Error` from a message: `err(error("..."))`.
+fn parse(s: str) -> Result[int] {
+    if s == "" {
+        return err(error("empty input"))
+    }
+    return ok(s.len())
+}
+
+// `err("text")` also works where the expected type is `Result[T]`; `error` is for the other
+// places (a `let`, an argument, a `match` arm without an expected type).
+fn also(s: str) -> Result[int] {
+    return err("also: {s}")
+}
+
+fn main() {
+    let e = error("plain")
+    print(e)
+    print(e.message())
+    print(parse(""))
+    print(parse("abc"))
+    print(also("x"))
+    let r: Result[int] = err(error("typed {1 + 1}"))
+    print(r)
+    let wrapped = parse("").context("while reading")
+    print(wrapped)
+}
+// expect: plain
+// expect: plain
+// expect: err(empty input)
+// expect: ok(3)
+// expect: err(also: x)
+// expect: err(typed 2)
+// expect: err(while reading: empty input)
