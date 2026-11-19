@@ -1,0 +1,7 @@
+// A program's own `compare` wins over the built-in.
+fn compare(a: str, b: str) -> bool => a == b
+
+fn main() {
+    print(compare("a", "a"))
+}
+// expect: true

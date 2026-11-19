@@ -1,0 +1,10 @@
+struct P {
+    x: int
+}
+
+fn main() {
+    print(compare(1)) // error: `compare` takes exactly two values
+    print(compare(1, "a")) // error: cannot apply `<` to
+    print(compare(P { x: 1 }, P { x: 2 })) // error: `compare` cannot order values of type `P`
+    print(compare([1], [2])) // error: `compare` cannot order values
+}

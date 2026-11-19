@@ -1,0 +1,54 @@
+// `compare(a, b)` is -1, 0 or 1 for any ordered type; tuples compare field by field, which is
+// how `sort_by` gets tie-breaks and mixed directions.
+struct Row {
+    name: str
+    total: float
+    count: int
+}
+
+enum Level {
+    Low
+    High
+}
+
+fn main() {
+    print(compare(1, 2))
+    print(compare(2, 2))
+    print(compare(3, 2))
+    print(compare(1.5, 0.5))
+    print(compare("apple", "pear"))
+    print(compare('b', 'a'))
+    print(compare(false, true))
+    print(compare(Level.Low, Level.High))
+    print(compare((1, "b"), (1, "a")))
+    print(compare(-0.0, 0.0))
+
+    var rows = [
+        Row { name: "b", total: 2.5, count: 1 },
+        Row { name: "a", total: 2.5, count: 4 },
+        Row { name: "c", total: 9.0, count: 2 },
+        Row { name: "d", total: 1.0, count: 2 },
+    ]
+    // Highest total first, then name A to Z.
+    rows.sort_by(fn(a, b) => compare((b.total, a.name), (a.total, b.name)))
+    print(rows.map(fn(r) => r.name).join(","))
+    // Name descending, count ascending.
+    rows.sort_by(fn(a, b) => compare((b.name, a.count), (a.name, b.count)))
+    print(rows.map(fn(r) => r.name).join(","))
+    // Compare an `int` field next to a computed one.
+    let x: i32 = 5
+    print(compare(x, 7))
+}
+// expect: -1
+// expect: 0
+// expect: 1
+// expect: 1
+// expect: -1
+// expect: 1
+// expect: -1
+// expect: -1
+// expect: 1
+// expect: 0
+// expect: c,a,b,d
+// expect: d,c,b,a
+// expect: -1
