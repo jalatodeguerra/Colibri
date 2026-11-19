@@ -228,22 +228,7 @@ impl FnCtx<'_, '_> {
             return self.error_expr(span);
         }
         if let Some(host) = &host {
-            if let Some(cap) = &host.requires
-                && !self.ck.host.is_granted(cap)
-            {
-                self.ck.report(
-                    Diagnostic::error(
-                        format!(
-                            "`{name}` needs the `{cap}` capability, which this host did not grant"
-                        ),
-                        span,
-                    )
-                    .with_hint(format!(
-                        "the host grants it with `VmBuilder::allow(Cap::{})`",
-                        capitalised(cap)
-                    )),
-                );
-            }
+            self.check_host_capability(&name, host, span);
             if host.positional
                 && let Some(named) = args.iter().find(|a| a.name.is_some())
             {
@@ -277,6 +262,29 @@ impl FnCtx<'_, '_> {
             None => Callee::Fn(f),
         };
         self.finish_call(callee, None, bound, ret, type_args, span)
+    }
+
+    /// Reports a use of a host item whose capability the host did not grant.
+    pub(crate) fn check_host_capability(
+        &mut self,
+        name: &str,
+        host: &crate::checker::HostFnInfo,
+        span: Span,
+    ) {
+        if let Some(cap) = &host.requires
+            && !self.ck.host.is_granted(cap)
+        {
+            self.ck.report(
+                Diagnostic::error(
+                    format!("`{name}` needs the `{cap}` capability, which this host did not grant"),
+                    span,
+                )
+                .with_hint(format!(
+                    "the host grants it with `VmBuilder::allow(Cap::{})`",
+                    capitalised(cap)
+                )),
+            );
+        }
     }
 
     /// How many type parameters function `f` declares itself (not counting its `impl`'s).

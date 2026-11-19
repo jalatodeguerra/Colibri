@@ -9,6 +9,7 @@ use colibri_syntax::{Diagnostic, Span};
 use crate::checker::Checker;
 use crate::generics::SigCtx;
 use crate::hir::{FieldDef, TypeDef, TypeDefKind, VariantDef};
+use crate::host::HOST_FILE;
 use crate::suggest;
 use crate::traits::GenericParamInfo;
 use crate::types::{Ty, TypeId};
@@ -53,10 +54,14 @@ impl<'a> Checker<'a> {
                     };
                     if let Some(id) = self.declare_type(&s.name, what, &s.generics) {
                         let fields = Vec::new();
+                        let host = item.span.file == HOST_FILE;
                         self.types[id.0 as usize].kind = match s.kind {
                             StructKind::Struct => TypeDefKind::Struct { fields },
+                            StructKind::Class if host => TypeDefKind::HostClass,
                             StructKind::Class => TypeDefKind::Class { fields },
                         };
+                        // Objects of the host's classes stay on the thread of their `Vm`.
+                        self.types[id.0 as usize].sendable = !(host && s.kind == StructKind::Class);
                     }
                 }
                 ItemKind::Enum(e) => {
@@ -161,6 +166,7 @@ impl<'a> Checker<'a> {
             name: name.name.clone(),
             span: name.span,
             params: generics.iter().map(|g| g.id).collect(),
+            sendable: true,
             kind: TypeDefKind::Struct { fields: Vec::new() },
         });
         self.type_extra.push(TypeExtra {
@@ -224,6 +230,10 @@ impl<'a> Checker<'a> {
 
     fn define_struct(&mut self, id: TypeId, s: &'a ast::StructDecl) {
         let is_class = s.kind == StructKind::Class;
+        if self.types[id.0 as usize].is_host_class() {
+            // Declared in the host interface, which has no fields to resolve.
+            return;
+        }
         let mut fields: Vec<FieldDef> = Vec::new();
         let mut defaults = Vec::new();
         for f in &s.fields {
@@ -329,6 +339,21 @@ impl<'a> Checker<'a> {
             self.report(
                 Diagnostic::error("only a class can have a `weak` field", t.span)
                     .with_hint("a struct is copied, so a weak reference in it would be too; hold the weak reference in a class"),
+            );
+            return (Ty::Error, false);
+        }
+        if let Ty::Adt(id, _) = &ty
+            && self.types[id.0 as usize].is_host_class()
+        {
+            let shown = self.render(&ty);
+            self.report(
+                Diagnostic::error(
+                    format!("`weak` cannot refer to the host class `{shown}`"),
+                    t.span,
+                )
+                .with_hint(
+                    "the host decides how long its objects live; ask it with `alive()` instead",
+                ),
             );
             return (Ty::Error, false);
         }

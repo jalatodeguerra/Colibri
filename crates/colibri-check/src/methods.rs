@@ -99,6 +99,13 @@ impl FnCtx<'_, '_> {
         {
             return self.call_fn_method(f, None, recv, name, base.span, explicit, args, span);
         }
+        // 1b. `alive()` of a class of the host
+        if name.name == "alive"
+            && let Ty::Adt(id, _) = &recv_ty
+            && self.ck.types[id.0 as usize].is_host_class()
+        {
+            return self.check_host_alive(recv, args, span);
+        }
         // 2. a method of a number type, or of another built-in type
         if recv_ty.is_number() && crate::numeric::num_method_exists(&recv_ty, &name.name) {
             return self.check_num_method(recv, &recv_ty, name, args, span);
@@ -366,18 +373,26 @@ impl FnCtx<'_, '_> {
     ) -> Expr {
         self.add_dep(Dep::Fn(f));
         let info = &self.ck.fns[f.0 as usize];
-        let (fname, params, ret, receiver, poisoned, generics) = (
+        let (fname, params, ret, receiver, poisoned, generics, host) = (
             info.name.clone(),
             info.params.clone(),
             info.ret.clone(),
             info.receiver,
             info.is_poisoned(),
             info.generics.clone(),
+            info.host.clone(),
         );
         if poisoned {
             self.check_args_loosely(args);
             return self.error_expr(span);
         }
+        if let Some(host) = &host {
+            self.check_host_capability(&fname, host, span);
+        }
+        let callee = match host {
+            Some(host) => Callee::Host(host.id),
+            None => Callee::Fn(f),
+        };
         let outer = generics.len() - self.own_generic_count(f);
         let Some((vars, map)) = self.instantiate(&generics, outer, explicit, &fname, span) else {
             self.check_args_loosely(args);
@@ -409,17 +424,7 @@ impl FnCtx<'_, '_> {
             return self.error_expr(span);
         }
         self.finish_method(
-            Callee::Fn(f),
-            &fname,
-            receiver,
-            params,
-            ret,
-            vars,
-            recv,
-            name,
-            base_span,
-            args,
-            span,
+            callee, &fname, receiver, params, ret, vars, recv, name, base_span, args, span,
         )
     }
 
@@ -526,6 +531,24 @@ impl FnCtx<'_, '_> {
         self.finish_call(callee, Some(receiver), bound, ret, type_args, span)
     }
 
+    /// `object.alive()`: whether the host still has the object.
+    fn check_host_alive(&mut self, recv: Expr, args: &[ast::Arg], span: Span) -> Expr {
+        if !args.is_empty() {
+            self.check_args_loosely(args);
+            self.ck.report(Diagnostic::error(
+                format!("`alive` takes no arguments, found {}", args.len()),
+                span,
+            ));
+            return self.error_expr(span);
+        }
+        let call = hir::ExprKind::Call(Box::new(hir::Call {
+            callee: Callee::Intrinsic(Intrinsic::HostAlive),
+            type_args: Vec::new(),
+            args: vec![hir::Arg::Value(recv)],
+        }));
+        self.mk(call, Ty::Bool, span)
+    }
+
     /// No method of that name was found: `clone` and `show` every type has, anything else is
     /// an error.
     fn no_such_method(
@@ -537,6 +560,15 @@ impl FnCtx<'_, '_> {
         span: Span,
     ) -> Expr {
         match name.name.as_str() {
+            "clone" if self.is_host_class_ty(recv_ty) => {
+                self.check_args_loosely(args);
+                let shown = self.show(recv_ty);
+                self.ck.report(
+                    Diagnostic::error(format!("`{shown}` is a host class and cannot be cloned"), name.span)
+                        .with_hint("the object lives in the host program and there is only one of it; keep the reference, or ask the host for another object"),
+                );
+                return self.error_expr(span);
+            }
             "clone" => return self.check_clone(recv, args, span),
             "show" if args.is_empty() => {
                 let call = hir::ExprKind::Call(Box::new(hir::Call {

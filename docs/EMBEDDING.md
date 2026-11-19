@@ -74,7 +74,7 @@ A proc macro can't see whether a type is `Copy`, so it's explicit:
 impl colibri::HostType for World {
     const NAME: &'static str = "World";
     fn describe(d: &mut colibri::TypeBuilder<Self>) {
-        d.static_fn("new", ["gravity"], |g: Vec3| World::new(g));
+        d.static_fn("new", ["gravity"], |g: Vec3| World::new(g));  // also: a leading `cx: &mut Ctx`
         d.method_mut("step", ["dt"], |this: &mut World, dt: f32| this.step(dt));
         d.method("position", ["body"], |this: &World, b: colibri::Ref<RigidBody>| this.position(&b));
     }
@@ -97,8 +97,9 @@ impl colibri::HostType for World {
 
 ## 3. Generational handles
 
-- One `HostHeap` slab per Vm: `Slot { gen: u32, borrow, obj: Option<Box<dyn Any>>, owner: Script | Host }`.
-- Host side: `Handle<T> { index: u32, gen: u32, vm: u32 }`, `Copy`, `!Send`. Script side:
+- One `HostHeap` slab per Vm: `Slot { generation: u32, borrow, obj: Option<Rc<dyn Any>>, owner: Script | Host }`
+  (`Rc` so that nested shared borrows work; see ARCHITECTURE §10).
+- Host side: `Handle<T> { index: u32, generation: u32, vm }`, `Copy`, `!Send`. Script side:
   `Value::Host(Rc<HostRef { ty, index, gen }>)`.
 - **Two ownership modes:** returning `T` by value moves it into the slab as script-owned; it is
   freed (Rust `Drop` runs) when the last Colibri reference is released, where a class `Drop` hook

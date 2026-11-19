@@ -10,4 +10,5 @@ repository.workspace = true
 colibri-syntax = { path = "../colibri-syntax" }
 colibri-check = { path = "../colibri-check" }
 colibri-interp = { path = "../colibri-interp" }
+colibri-bind = { path = "../colibri-bind" }
 ariadne = "0.6.0"

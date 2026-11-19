@@ -58,13 +58,19 @@
 //! Each active Colibri call uses Rust stack, so run a `Vm` with a high
 //! [`VmBuilder::max_call_depth`] on a thread with a large stack (the `colibri` tool does).
 
+// The code `#[colibri::export]` writes names the crate `colibri_runtime`; this makes that name
+// work inside the crate too (its own tests and docs).
+extern crate self as colibri_runtime;
+
 mod buffer;
 mod callback;
 mod cap;
+mod class;
 mod convert;
 mod ctx;
 mod error;
 mod func;
+mod handle;
 mod host;
 mod iface;
 mod render;
@@ -74,12 +80,93 @@ mod vm;
 pub use buffer::SharedBuffer;
 pub use callback::Callback;
 pub use cap::{Cap, CapSet};
+pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
+/// Exports a Rust struct, enum, `impl` block or function to Colibri (EMBEDDING §2).
+///
+/// * `#[colibri::export(value)]` on a `Copy` struct with `pub` fields, or on an enum without
+///   payloads: a Colibri `struct` or `enum`, converted by value.
+/// * `#[colibri::export]` on a struct: an opaque host class ([`HostType`]).
+/// * `#[colibri::export] impl Name { .. }`: its `pub fn`s become the class's methods (`&self`,
+///   `&mut self`) and static functions, under their Rust names and parameter names.
+/// * `#[colibri::export] fn name(..)`: register it with `name::register(&mut vm)`.
+///
+/// ```
+/// use colibri_runtime as colibri;
+///
+/// #[colibri::export(value)]
+/// #[derive(Clone, Copy, Debug, PartialEq)]
+/// pub struct Vec2 {
+///     pub x: f32,
+///     pub y: f32,
+/// }
+///
+/// #[colibri::export]
+/// pub struct Ship {
+///     pos: Vec2,
+/// }
+///
+/// #[colibri::export]
+/// impl Ship {
+///     pub fn new(pos: Vec2) -> Ship {
+///         Ship { pos }
+///     }
+///     pub fn push(&mut self, dx: f32, dy: f32) {
+///         self.pos = Vec2 { x: self.pos.x + dx, y: self.pos.y + dy };
+///     }
+///     pub fn pos(&self) -> Vec2 {
+///         self.pos
+///     }
+/// }
+///
+/// #[colibri::export]
+/// pub fn double(n: i64) -> i64 {
+///     n * 2
+/// }
+///
+/// # fn main() -> Result<(), colibri::Error> {
+/// let out = colibri::SharedBuffer::new();
+/// let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+/// vm.register_type::<Ship>()?;
+/// double::register(&mut vm)?;
+/// vm.load_source(
+///     "a.colibri",
+///     "fn main() {\n    let s = Ship.new(Vec2 { x: 1.0, y: 2.0 })\n    s.push(dx: 0.5, dy: 0.5)\n    print(s.pos())\n    print(double(21))\n}\n",
+/// )?;
+/// vm.run_main()?;
+/// assert_eq!(out.contents(), "Vec2 { x: 1.5, y: 2.5 }\n42\n");
+/// # Ok(())
+/// # }
+/// ```
+///
+/// A `value` struct must be `Copy` (the macro asserts it) and every field `pub`:
+///
+/// ```compile_fail
+/// use colibri_runtime as colibri;
+///
+/// #[colibri::export(value)]
+/// pub struct NotCopy {
+///     pub name: String,
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use colibri_runtime as colibri;
+///
+/// #[colibri::export(value)]
+/// #[derive(Clone, Copy)]
+/// pub struct Hidden {
+///     pub x: f32,
+///     y: f32,
+/// }
+/// ```
+pub use colibri_bind::export;
 pub use colibri_interp::DEFAULT_NATIVE_STACK_BUDGET;
 pub use colibri_syntax::{Diagnostic, Severity, SourceMap, Span};
 pub use convert::{Args, FromColibri, IntoColibri, Value};
 pub use ctx::{Caller, Ctx, Cx};
 pub use error::{Error, Location, Report, StackFrame};
 pub use func::Fn;
+pub use handle::{Handle, Ref, RefMut};
 pub use host::{HostFault, HostFn, Plain, RawHostFn, Registration, WithCtx};
 pub use iface::Interface;
 pub use render::render_diagnostic;
@@ -87,6 +174,38 @@ pub use types::{SigDesc, TypeDesc, TypeRegistry};
 pub use vm::{DEFAULT_MAX_CALL_DEPTH, Vm, VmBuilder};
 
 use std::path::Path;
+
+/// What `#[colibri::export]` expands to. Not part of the API: the names may change with the
+/// VM, which is why the macro only goes through this module (EMBEDDING §0 C).
+#[doc(hidden)]
+pub mod __private {
+    pub use crate::class::{ExportedMethods, HostType, TypeBuilder};
+    pub use crate::convert::{FromColibri, IntoColibri, Value};
+    pub use crate::ctx::Cx;
+    pub use crate::error::Error;
+    pub use crate::types::{TypeDesc, TypeRegistry};
+
+    use crate::{HostFn, Registration, Vm};
+
+    /// The `i`th field of a struct value, or the error that says what was wrong.
+    pub fn field(value: &Value, i: usize, type_name: &str) -> Result<Value, Error> {
+        value.field(i).ok_or_else(|| {
+            Error::Convert(format!(
+                "expected a `{type_name}` struct with a field at position {i}"
+            ))
+        })
+    }
+
+    /// Registers an exported function with its parameter names.
+    pub fn register_exported<'a, M, F: HostFn<M>, const N: usize>(
+        vm: &'a mut Vm,
+        name: &str,
+        params: [&str; N],
+        f: F,
+    ) -> Result<Registration<'a>, Error> {
+        vm.register_fn_named(name, params, f)
+    }
+}
 
 /// What checking a source needs besides the source: the host interfaces it may use and the
 /// capabilities the host grants (the defaults are no interface and no capability, which is

@@ -181,6 +181,7 @@ fn prelude_option(span: Span) -> TypeDef {
         name: "Option".to_string(),
         span,
         params: vec![ParamId(0)],
+        sendable: true,
         kind: TypeDefKind::Enum {
             variants: vec![
                 VariantDef {
@@ -223,6 +224,7 @@ fn prelude_result(span: Span) -> TypeDef {
         name: "Result".to_string(),
         span,
         params: vec![ParamId(1), ParamId(2)],
+        sendable: true,
         kind: TypeDefKind::Enum {
             variants: vec![variant("ok", 1, "T"), variant("err", 2, "E")],
         },
@@ -417,26 +419,15 @@ impl<'a> Checker<'a> {
     }
 
     /// A declaration of the host interface. Types were declared with everything else; a
-    /// function becomes a [`FnInfo`] without a body, remembering its id and capability.
+    /// function or method becomes a [`FnInfo`] without a body (`add_fn` remembers its id and
+    /// capability), and the methods of a host class are inherent methods like any other.
     fn collect_host_item(&mut self, item: &'a ast::Item) {
         match &item.kind {
             ItemKind::Fn(decl) => {
                 let id = self.add_fn(item, decl, &SigCtx::default());
-                let host_id = HostFnId(self.host_fn_count);
-                self.host_fn_count += 1;
-                self.fns[id.0 as usize].host = Some(HostFnInfo {
-                    id: host_id,
-                    requires: host::requires_of(item),
-                    positional: item.attrs.iter().any(|a| a.name.name == "positional"),
-                });
                 self.declare_value(&decl.name.name, decl.name.span, ValueRef::Fn(id));
             }
-            ItemKind::Struct(s) if s.kind == ast::StructKind::Class => {
-                self.unsupported("a host class", item.span);
-            }
-            ItemKind::Impl(_) => {
-                self.unsupported("the methods of a host class", item.span);
-            }
+            ItemKind::Impl(decl) => self.collect_impl(decl, item),
             _ => {}
         }
     }
@@ -521,8 +512,16 @@ impl<'a> Checker<'a> {
         let saved = std::mem::replace(&mut self.self_ty, ctx.self_ty.clone());
         let sig = self.resolve_sig(decl, ctx);
         self.self_ty = saved;
-        let host = self.collecting_host;
-        let poisoned = sig.poisoned || (decl.body.is_none() && !host);
+        let host = self.collecting_host.then(|| {
+            let id = HostFnId(self.host_fn_count);
+            self.host_fn_count += 1;
+            HostFnInfo {
+                id,
+                requires: host::requires_of(item),
+                positional: item.attrs.iter().any(|a| a.name.name == "positional"),
+            }
+        });
+        let poisoned = sig.poisoned || (decl.body.is_none() && host.is_none());
         let name = match &ctx.owner {
             Some(owner) => format!("{owner}.{}", decl.name.name),
             None => decl.name.name.clone(),
@@ -541,7 +540,7 @@ impl<'a> Checker<'a> {
             deps: Vec::new(),
             generics: sig.generics,
             self_ty: ctx.self_ty.clone(),
-            host: None,
+            host,
         });
         id
     }
