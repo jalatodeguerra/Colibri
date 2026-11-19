@@ -40,8 +40,8 @@ section ("as built") for the decisions it had to make.
    `vec.vec3`, `vec.vec4` and `vec.ivec2..4`, plain values with component-wise operators, fields
    and swizzles. Built: ARCHITECTURE §20.
 9. **Milestone:** real automation scripts written in Colibri (a file organiser, a JSON/HTTP
-   report generator). Built: [examples/scripts](../examples/scripts/README.md), with the
-   language findings in [FINDINGS.md](../examples/scripts/FINDINGS.md); also added
+   report generator). Built: [examples/scripts](../../examples/scripts/README.md), with the
+   language findings in [FINDINGS.md](../../examples/scripts/FINDINGS.md); also added
    `fs.modified`.
 
 

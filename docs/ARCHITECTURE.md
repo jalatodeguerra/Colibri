@@ -1219,7 +1219,7 @@ there (`Vm::load_package`), not a test per file. Directives are read from every 
 the directory tree: an `// error:`, `// warning:` or `// panic:` line refers to the line of the
 file it is in (the harness compares file and line); the expected stdout is the `// expect:`
 lines of `main.colibri` followed by those of the other files in path order; `// drops:`, `//
-panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only. See PHASE1.md.
+panic:`, `// main-err:` and `// skip:` are read from `main.colibri` only. See history/PHASE1.md.
 
 ### 11.9 Decisions the design documents did not fix
 
@@ -1495,7 +1495,7 @@ and use the hardware.
 - Paths use `/` only; `fs.list` is sorted; `fs.create_dir` creates parents; `fs.remove_dir` is
   recursive; `os.vars` is sorted.
 - Goldens get a fixed `StdConfig`, and `// caps: fs, os` grants capabilities per file
-  (PHASE1.md).
+  (history/PHASE1.md).
 - Not done: `@rename`/`@skip` and field defaults in `json` (no attribute support in the
   checked types yet), JSON for data enums, typed error enums.
 

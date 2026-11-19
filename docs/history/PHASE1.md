@@ -1,6 +1,6 @@
 # Phase 1 implementation plan
 
-This file tracks how phase 1 of [DESIGN.md §17.5](DESIGN.md#175-roadmap-locked-revised-2026-11-19)
+This file tracks how phase 1 of [DESIGN.md §17.5](../DESIGN.md#175-roadmap-locked-revised-2026-11-19)
 is being built. DESIGN.md is the source of truth for the language; this file records the
 implementation architecture and the PR sequence. When the two disagree, DESIGN.md wins and this
 file is fixed.
