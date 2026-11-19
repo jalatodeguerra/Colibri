@@ -132,6 +132,23 @@ impl<'a> Ctx<'a> {
         self.interp.type_defs()
     }
 
+    /// [`Ctx::type_defs`], shared, so a serializer can read them while it calls
+    /// [`Ctx::call_field_default`].
+    pub fn type_defs_shared(&self) -> std::rc::Rc<[TypeDef]> {
+        self.interp.type_defs_shared()
+    }
+
+    /// Computes the default value of a struct field: `f` is [`FieldDef::default`]
+    /// (`reflect::FieldDef`). A panic in the default expression comes back as an error.
+    pub fn call_field_default(&mut self, f: FnId) -> Result<Value, Error> {
+        let result = self.interp.call(self.fiber, f, Vec::new());
+        self.interp.flush();
+        match result {
+            Ok(v) => Ok(Value(v)),
+            Err(info) => Err(panic_error(self.interp, *info)),
+        }
+    }
+
     /// The type id of a struct, enum or class the host declared.
     pub(crate) fn host_type(&self, name: &str) -> TypeId {
         match self.interp.host_type(name) {

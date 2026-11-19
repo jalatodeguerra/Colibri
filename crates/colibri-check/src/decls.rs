@@ -300,6 +300,7 @@ impl<'a> Checker<'a> {
                 ty,
                 span: f.name.span,
                 weak,
+                default: None,
             });
             defaults.push(f.default.as_ref());
             field_public.push(f.public || host);
@@ -338,6 +339,7 @@ impl<'a> Checker<'a> {
                             ty: self.resolve_type(t),
                             span: t.span,
                             weak: false,
+ default: None,
                         })
                         .collect();
                     (fields, false)
@@ -358,6 +360,7 @@ impl<'a> Checker<'a> {
                             ty,
                             span: f.name.span,
                             weak: false,
+ default: None,
                         });
                     }
                     (fields, true)

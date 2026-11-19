@@ -496,6 +496,7 @@ mod tests {
             ty,
             span: SP,
             weak: false,
+ default: None,
         }
     }
 

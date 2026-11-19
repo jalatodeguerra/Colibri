@@ -1569,7 +1569,10 @@ and use the hardware.
   recursive; `os.vars` is sorted.
 - Goldens get a fixed `StdConfig`, and `// caps: fs, os` grants capabilities per file
   (history/PHASE1.md).
-- Not done: `@rename`/`@skip` and field defaults in `json` (no attribute support in the
+- A field with a default may be absent from the object: the checker gives every plain
+  (non-generic) struct field default a hidden zero-argument function (`FieldDef::default`),
+  and `json.decode` calls it through `Ctx::call_field_default`.
+- Not done: `@rename`/`@skip` in `json` (no attribute support in the
   checked types yet), JSON for data enums, typed error enums.
 
 ### `regex` (phase 2, part B)

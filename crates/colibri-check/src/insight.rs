@@ -298,6 +298,7 @@ impl Checker<'_> {
                 ty: items.get(i as usize)?.clone(),
                 span: Span::new(FileId(0), 0, 0),
                 weak: false,
+ default: None,
             }),
             _ => None,
         }

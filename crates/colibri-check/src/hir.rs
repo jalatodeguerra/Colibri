@@ -259,6 +259,10 @@ pub struct FieldDef {
     /// A `weak` class field (DESIGN §11.5): it stores a weak reference, and reading it gives
     /// `ty?`.
     pub weak: bool,
+    /// For a field of a struct that has a default value, a zero-argument function that
+    /// computes it. Literals inline the default expression; this is for code that builds a
+    /// struct without a literal (`json.decode`), where an absent field takes its default.
+    pub default: Option<FnId>,
 }
 
 #[derive(Clone, Debug)]

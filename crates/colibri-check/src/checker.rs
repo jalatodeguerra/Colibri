@@ -271,6 +271,7 @@ fn prelude_option(span: Span) -> TypeDef {
                         ty: Ty::Param(ParamId(0), "T".into()),
                         span,
                         weak: false,
+ default: None,
                     }],
                     named: false,
                 },
@@ -290,6 +291,7 @@ fn prelude_result(span: Span) -> TypeDef {
             ty: Ty::Param(ParamId(param), pname.into()),
             span,
             weak: false,
+ default: None,
         }],
         named: false,
     };
@@ -1331,9 +1333,39 @@ impl<'a> Checker<'a> {
                     let generics = self.type_extra[t].generics.clone();
                     let back = self.enter_module(self.type_extra[t].module.unwrap_or(BASE));
                     let mark = self.enter_generics(&generics);
-                    FnCtx::new(self, name, None).check_default(default, &ty);
+                    let body = FnCtx::new(self, name.clone(), None).check_default(default, &ty);
                     self.leave_generics(mark);
                     self.enter_module(back);
+                    let module = self.type_extra[t].module.unwrap_or(BASE);
+                    // A plain struct's default also gets a function of its own, for code
+                    // that builds the struct without a literal (`json.decode`).
+                    let plain = generics.is_empty()
+                        && !self.types[t].fields()[i].weak
+                        && matches!(self.types[t].kind, TypeDefKind::Struct { .. });
+                    if plain {
+                        let (tname, tspan) = (self.types[t].name.clone(), self.types[t].span);
+                        let f = FnId(self.fns.len() as u32);
+                        self.fns.push(FnInfo {
+                            name: format!("{tname}.{name}"),
+                            name_span: tspan,
+                            span: body.span,
+                            params: Vec::new(),
+                            receiver: None,
+                            ret: ty.clone(),
+                            ret_span: None,
+                            decl: None,
+                            body: Some(Rc::new(body)),
+                            deps: Vec::new(),
+                            generics: Vec::new(),
+                            self_ty: None,
+                            host: None,
+                            module,
+                            public: false,
+                        });
+                        if let TypeDefKind::Struct { fields } = &mut self.types[t].kind {
+                            fields[i].default = Some(f);
+                        }
+                    }
                 }
             }
         }

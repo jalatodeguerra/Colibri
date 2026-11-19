@@ -407,6 +407,7 @@ mod tests {
             ty: Ty::INT,
             span: SP,
             weak: false,
+ default: None,
         }
     }
 

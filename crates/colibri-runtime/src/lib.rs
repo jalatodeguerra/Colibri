@@ -187,7 +187,7 @@ pub use vm::{
 /// The type descriptors of the loaded program, for host functions that work on any type
 /// (serializers, DESIGN §7.5): what [`Ctx::type_args`] and [`Ctx::type_defs`] return.
 pub mod reflect {
-    pub use colibri_check::hir::{FieldDef, TypeDef, TypeDefKind, VariantDef};
+    pub use colibri_check::hir::{FieldDef, FnId, TypeDef, TypeDefKind, VariantDef};
     pub use colibri_check::types::{
         ERROR_TYPE, IntTy, OPTION_TYPE, RESULT_TYPE, Ty, TypeId, VARIANT_NONE, VARIANT_SOME,
     };

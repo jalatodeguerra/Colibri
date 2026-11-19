@@ -169,6 +169,12 @@ impl Interp {
         &self.types
     }
 
+    /// The same descriptors, shared: a host function can keep them while it calls back into
+    /// the program.
+    pub fn type_defs_shared(&self) -> Rc<[colibri_check::hir::TypeDef]> {
+        Rc::clone(&self.types)
+    }
+
     // ---- host state ----
 
     /// Stores a value of type `T` for the host functions (replacing any earlier one).

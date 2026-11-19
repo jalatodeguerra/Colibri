@@ -779,7 +779,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     }
 
     /// Checks a default argument against its parameter type (once, to report its errors).
-    pub fn check_default(mut self, default: &ast::Expr, ty: &Ty) {
+    pub fn check_default(mut self, default: &ast::Expr, ty: &Ty) -> Body {
         self.push_scope();
         let value = self.check_expr(default, Some(ty));
         self.expect(
@@ -796,7 +796,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             span,
             tail: Some(Box::new(value)),
         };
-        self.finish(block, ty.clone(), span, 0);
+        self.finish(block, ty.clone(), span, 0)
     }
 
     /// Re-checks a default argument at a call site, in the callee's module-level scope, with
