@@ -1,0 +1,5 @@
+fn main() {
+    print("a".pad_left(-1))
+}
+
+// panic: the width -1 is not allowed

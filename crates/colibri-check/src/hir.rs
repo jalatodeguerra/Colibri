@@ -973,6 +973,16 @@ pub enum Builtin {
     StrToLower,
     StrReplace,
     StrFind,
+    /// `s.rfind(sub)`: the byte offset of the last match, as `int?`.
+    StrRFind,
+    /// `s.split_once(sep)`: `(before, after)` at the first `sep`, as `(str, str)?`.
+    StrSplitOnce,
+    /// `s.rsplit_once(sep)`: the same at the last `sep`.
+    StrRSplitOnce,
+    /// `s.pad_left(width)`, or with a fill `char`: pad on the left up to `width` characters.
+    StrPadLeft,
+    /// `s.pad_right(width)`, or with a fill `char`.
+    StrPadRight,
     /// `s[lo..hi]`, with the arguments of [`Builtin::ListSlice`].
     StrSlice,
     // ---- ranges and iterators ----

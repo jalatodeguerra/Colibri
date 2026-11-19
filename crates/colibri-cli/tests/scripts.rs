@@ -159,7 +159,6 @@ fn organize_moves_files_into_categories_and_resolves_collisions() {
             "images/photo (1).jpg",
             "images/photo (2).jpg",
             "images/photo.jpg",
-            "old/",
             "other/",
             "other/README",
             "other/weird.xyz",
@@ -168,6 +167,7 @@ fn organize_moves_files_into_categories_and_resolves_collisions() {
     // The collisions kept every file's content.
     let read = |rel: &str| fs::read_to_string(root.join(rel)).unwrap();
     // The plan walks in name order, so `old/` is placed before the top-level `photo.jpg`.
+    // `old/` was emptied by the moves, so it is pruned.
     assert_eq!(read("images/photo (1).jpg"), "oldest");
     assert_eq!(read("images/photo.jpg"), "older");
     assert_eq!(read("images/photo (2).jpg"), "jpeg");
@@ -175,6 +175,29 @@ fn organize_moves_files_into_categories_and_resolves_collisions() {
     let again = run_script(&organize(), &[root.to_str().unwrap()]);
     assert_eq!(again.status.code(), Some(0));
     assert_eq!(text(&again.stdout), "nothing to do\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn organize_prunes_only_the_folders_it_emptied() {
+    let root = temp_dir("prune");
+    touch(&root, "deep/er/a.txt", "a");
+    touch(&root, "kept/b.txt", "b");
+    touch(&root, "kept/.hidden", "stays");
+    fs::create_dir_all(root.join("untouched")).unwrap();
+    let out = run_script(&organize(), &[root.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        tree(&root),
+        [
+            "documents/",
+            "documents/a.txt",
+            "documents/b.txt",
+            "kept/",
+            "kept/.hidden",
+            "untouched/",
+        ]
+    );
     let _ = fs::remove_dir_all(&root);
 }
 

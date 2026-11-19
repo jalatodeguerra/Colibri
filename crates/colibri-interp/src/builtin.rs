@@ -87,6 +87,11 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
             | B::StrToLower
             | B::StrReplace
             | B::StrFind
+            | B::StrRFind
+            | B::StrSplitOnce
+            | B::StrRSplitOnce
+            | B::StrPadLeft
+            | B::StrPadRight
             | B::StrSlice
     );
     if !walks {
@@ -238,6 +243,11 @@ impl Interp {
             | Builtin::StrToLower
             | Builtin::StrReplace
             | Builtin::StrFind
+            | Builtin::StrRFind
+            | Builtin::StrSplitOnce
+            | Builtin::StrRSplitOnce
+            | Builtin::StrPadLeft
+            | Builtin::StrPadRight
             | Builtin::StrSlice => return self.str_op(fiber, op, args, span),
             Builtin::RangeContains
             | Builtin::RangeLen

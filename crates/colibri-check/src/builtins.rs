@@ -80,6 +80,13 @@ const STR_METHODS: &[&str] = &[
     "to_lower",
     "replace",
     "find",
+    "rfind",
+    "split_once",
+    "rsplit_once",
+    "pad_left",
+    "pad_right",
+    "pad_left_with",
+    "pad_right_with",
     "clone",
 ];
 const LIST_METHODS: &[&str] = &[
@@ -176,6 +183,29 @@ fn str_sig(name: &str) -> Option<Sig> {
             Ty::Str,
         ),
         "find" => sig(Builtin::StrFind, vec![("sub", text)], optional(Ty::INT)),
+        "rfind" => sig(Builtin::StrRFind, vec![("sub", text)], optional(Ty::INT)),
+        "split_once" => sig(
+            Builtin::StrSplitOnce,
+            vec![("sep", text)],
+            optional(Ty::Tuple(vec![Ty::Str, Ty::Str])),
+        ),
+        "rsplit_once" => sig(
+            Builtin::StrRSplitOnce,
+            vec![("sep", text)],
+            optional(Ty::Tuple(vec![Ty::Str, Ty::Str])),
+        ),
+        "pad_left" => sig(Builtin::StrPadLeft, vec![("width", Ty::INT)], Ty::Str),
+        "pad_right" => sig(Builtin::StrPadRight, vec![("width", Ty::INT)], Ty::Str),
+        "pad_left_with" => sig(
+            Builtin::StrPadLeft,
+            vec![("width", Ty::INT), ("fill", Ty::Char)],
+            Ty::Str,
+        ),
+        "pad_right_with" => sig(
+            Builtin::StrPadRight,
+            vec![("width", Ty::INT), ("fill", Ty::Char)],
+            Ty::Str,
+        ),
         _ => return None,
     })
 }

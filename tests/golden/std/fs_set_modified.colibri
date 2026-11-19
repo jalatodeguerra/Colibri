@@ -1,0 +1,32 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let root = path.join(os.temp_dir(), "setm")
+    fs.create_dir(root)?
+    let file = path.join(root, "f.txt")
+    fs.write(file, "x")?
+    fs.set_modified(file, 1700000000.0)?
+    print(fs.modified(file)?)
+    print(fs.stat(file)?.modified)
+    fs.set_modified(root, 1000.5)?
+    print(fs.modified(root)?)
+    match fs.set_modified(path.join(root, "nope"), 1.0) {
+        ok(_) => print("unexpected")
+        err(e) => print(e.message().replace(os.temp_dir(), "<dir>"))
+    }
+    match fs.set_modified(file, 1.0 / 0.0) {
+        ok(_) => print("unexpected")
+        err(e) => print(e.message().replace(os.temp_dir(), "<dir>"))
+    }
+    fs.remove_dir(root)?
+    return ok(())
+}
+
+// expect: 1700000000.0
+// expect: 1700000000.0
+// expect: 1000.5
+// expect: cannot set the time of `<dir>/setm/nope`: no such file or directory
+// expect: cannot set the time of `<dir>/setm/f.txt`: inf is not a usable time
