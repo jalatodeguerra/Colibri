@@ -1,0 +1,14 @@
+fn main() {
+    let words = ["b", "a"]
+    var joined = ""
+    for w in words {
+        joined = joined + w
+    }
+    print(joined)
+    print(words.contains("a"))
+    print(words.index_of("a"))
+}
+
+// expect: ba
+// expect: true
+// expect: some(1)

@@ -1,0 +1,16 @@
+fn main() {
+    let xs = [1, 2]
+    for a in xs {
+        for b in xs {
+            print(a * 10 + b)
+        }
+    }
+    xs.push(3)
+    print(xs)
+}
+
+// expect: 11
+// expect: 12
+// expect: 21
+// expect: 22
+// expect: [1, 2, 3]

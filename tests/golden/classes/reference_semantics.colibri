@@ -1,0 +1,21 @@
+class Box { v: int }
+
+fn main() {
+    let a = Box { v: 1 }
+    let b = a
+    b.v = 2
+    print(a.v)
+    let c = Box { v: 2 }
+    print(a == b)
+    print(a == c)
+    print(a is b)
+    print(a is c)
+    print(a != c)
+}
+
+// expect: 2
+// expect: true
+// expect: false
+// expect: true
+// expect: false
+// expect: true

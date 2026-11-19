@@ -1,0 +1,17 @@
+fn main() {
+    var xs = [1, 2]
+    xs.push(3)
+    print(xs.pop())
+    print(xs.pop())
+    print(xs.pop())
+    print(xs.pop())
+    print(xs.is_empty())
+    print(xs.len())
+}
+
+// expect: some(3)
+// expect: some(2)
+// expect: some(1)
+// expect: none
+// expect: true
+// expect: 0

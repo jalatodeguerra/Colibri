@@ -1,0 +1,13 @@
+fn main() {
+    var m: Map[int, str] = {:}
+    m[3] = "c"
+    m[1] = "a"
+    m[2] = "b"
+    m.remove(1)
+    m[1] = "again"
+    print(m)
+    print(m.keys())
+}
+
+// expect: {3: "c", 2: "b", 1: "again"}
+// expect: [3, 2, 1]

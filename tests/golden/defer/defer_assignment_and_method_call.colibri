@@ -1,0 +1,23 @@
+class Log { lines: List[str] = [] }
+
+impl Log {
+    fn add(self, s: str) {
+        self.lines.push(s)
+    }
+}
+
+fn main() {
+    let log = Log { }
+    var n = 0
+    {
+        defer log.add("closing")
+        defer n = 99
+        log.add("opened")
+        n = 1
+    }
+    print(log.lines)
+    print(n)
+}
+
+// expect: ["opened", "closing"]
+// expect: 99

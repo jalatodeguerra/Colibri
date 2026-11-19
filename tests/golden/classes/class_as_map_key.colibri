@@ -1,0 +1,15 @@
+class K { v: int }
+
+fn main() {
+    let a = K { v: 1 }
+    let b = K { v: 1 }
+    var m = {a: "first"}
+    m[b] = "second"
+    print(m.len())
+    print(m[a])
+    print(m[b])
+}
+
+// expect: 2
+// expect: first
+// expect: second

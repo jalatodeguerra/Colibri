@@ -150,6 +150,7 @@ fn a_panic_is_an_error_and_the_vm_stays_usable() {
             message,
             location,
             stack,
+            ..
         } => {
             assert_eq!(message, "division by zero");
             let at = location.as_ref().expect("a location");

@@ -1,0 +1,10 @@
+class T { name: str }
+
+fn main() {
+    let o: T? = some(T { name: "in-option" })
+    let t = (T { name: "in-tuple" }, 1)
+    print(t.1)
+}
+
+// expect: 1
+// drops: in-tuple, in-option

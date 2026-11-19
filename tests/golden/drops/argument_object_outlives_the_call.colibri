@@ -1,0 +1,17 @@
+class T { name: str }
+
+fn use_it(t: T) {
+    print("using " + t.name)
+}
+
+fn main() {
+    let a = T { name: "a" }
+    use_it(a)
+    use_it(a)
+    print("done")
+}
+
+// expect: using a
+// expect: using a
+// expect: done
+// drops: a

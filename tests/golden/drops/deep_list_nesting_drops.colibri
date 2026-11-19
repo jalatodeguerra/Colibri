@@ -1,0 +1,11 @@
+class N { kids: List[N] }
+
+fn main() {
+    var cur = N { kids: [] }
+    for i in 0..20000 {
+        cur = N { kids: [cur] }
+    }
+    print(cur.kids.len())
+}
+
+// expect: 1

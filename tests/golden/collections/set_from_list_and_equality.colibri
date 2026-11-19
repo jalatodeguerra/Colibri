@@ -1,0 +1,16 @@
+fn main() {
+    let s = Set([1, 2, 3, 2, 1])
+    print(s)
+    print(s == Set([3, 2, 1]))
+    print(s == Set([1, 2]))
+    let e: Set[str] = Set([])
+    print(e)
+    let words = Set(["a", "b"])
+    print(words.contains("a"))
+}
+
+// expect: Set([1, 2, 3])
+// expect: true
+// expect: false
+// expect: Set([])
+// expect: true

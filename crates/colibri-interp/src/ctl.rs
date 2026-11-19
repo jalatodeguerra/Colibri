@@ -35,6 +35,9 @@ pub struct PanicInfo {
     pub message: String,
     pub span: Span,
     pub stack: Vec<TraceEntry>,
+    /// Further panics that happened while this one was unwinding (in `defer` statements); the
+    /// first panic is the one reported and these ride along.
+    pub notes: Vec<String>,
 }
 
 /// Evaluation outcomes the host can see: only panics and cancellation leave the interpreter.
@@ -45,11 +48,13 @@ pub(crate) fn into_panic(ctl: Ctl, fallback: Span) -> Box<PanicInfo> {
             message: "cancelled".to_string(),
             span: fallback,
             stack: Vec::new(),
+            notes: Vec::new(),
         }),
         Ctl::Break(..) | Ctl::Continue(_) | Ctl::Return(_) => Box::new(PanicInfo {
             message: "internal error: control flow escaped its function".to_string(),
             span: fallback,
             stack: Vec::new(),
+            notes: Vec::new(),
         }),
     }
 }

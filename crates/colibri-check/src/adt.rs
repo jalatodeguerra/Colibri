@@ -7,7 +7,7 @@ use colibri_syntax::{Diagnostic, Span};
 use crate::body::FnCtx;
 use crate::call::Bound;
 use crate::checker::ParamInfo;
-use crate::hir::{self, Expr, FieldDef, FieldIdx, TypeDefKind, ValueProj};
+use crate::hir::{self, Expr, FieldDef, FieldIdx, TypeDef, TypeDefKind, ValueProj};
 use crate::types::{Ty, TypeId};
 
 impl FnCtx<'_, '_> {
@@ -44,13 +44,18 @@ impl FnCtx<'_, '_> {
             Ty::Adt(id, _) => {
                 let def = &self.ck.types[id.0 as usize];
                 match &def.kind {
-                    TypeDefKind::Struct { fields } => {
+                    TypeDefKind::Struct { fields } | TypeDefKind::Class { fields } => {
                         if let Some(i) = fields.iter().position(|f| f.name == name.name) {
                             return Some((FieldIdx(i as u32), fields[i].ty.clone()));
                         }
                         let names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
                         let mut diag = Diagnostic::error(
-                            format!("the struct `{}` has no field `{}`", def.name, name.name),
+                            format!(
+                                "the {} `{}` has no field `{}`",
+                                kind_word(def),
+                                def.name,
+                                name.name
+                            ),
                             name.span,
                         );
                         diag = diag.with_hint(
@@ -136,7 +141,40 @@ impl FnCtx<'_, '_> {
         let Some((idx, ty)) = self.field_of(&value.ty, name, base.span) else {
             return self.error_expr(span);
         };
+        if let Ty::Adt(id, _) = self.infer.shallow(&value.ty)
+            && self.ck.types[id.0 as usize].is_class()
+        {
+            return self.class_field_read(value, id, idx, ty, base, name, span);
+        }
         self.project(value, ValueProj::Field(idx), ty, &name.name, span)
+    }
+
+    /// `object.field` on a class: a place anchored at the field. A weak field reads as an
+    /// `Option` of its class.
+    #[allow(clippy::too_many_arguments)]
+    fn class_field_read(
+        &mut self,
+        object: Expr,
+        class: TypeId,
+        idx: FieldIdx,
+        ty: Ty,
+        base: &ast::Expr,
+        name: &ast::Ident,
+        span: Span,
+    ) -> Expr {
+        let weak = self.ck.types[class.0 as usize].fields()[idx.0 as usize].weak;
+        let place = hir::Place {
+            anchor: hir::Anchor::ClassField(Box::new(object), idx),
+            path: Vec::new(),
+            ty: ty.clone(),
+            display: format!("{}.{}", crate::place::expr_text(base), name.name),
+        };
+        let read = self.mk(hir::ExprKind::Read(Box::new(place)), ty.clone(), span);
+        if weak {
+            let opt = Ty::Option(Box::new(ty));
+            return self.mk(hir::ExprKind::FromWeak(Box::new(read)), opt, span);
+        }
+        read
     }
 
     /// `base.0` used as a value.
@@ -513,6 +551,8 @@ impl FnCtx<'_, '_> {
             }
         };
         let def = &self.ck.types[id.0 as usize];
+        let is_class = def.is_class();
+        let word = kind_word(def);
         let tname = def.name.clone();
         let decls: Vec<FieldDef> = def.fields().to_vec();
         let defaults = self.ck.type_extra[id.0 as usize].defaults.clone();
@@ -523,7 +563,7 @@ impl FnCtx<'_, '_> {
                 self.check_expr(&init.value, None);
                 let names: Vec<String> = decls.iter().map(|f| f.name.clone()).collect();
                 let mut diag = Diagnostic::error(
-                    format!("the struct `{tname}` has no field `{}`", init.name.name),
+                    format!("the {word} `{tname}` has no field `{}`", init.name.name),
                     init.name.span,
                 );
                 diag = diag.with_hint(
@@ -535,7 +575,7 @@ impl FnCtx<'_, '_> {
                 continue;
             };
             let field = &decls[i];
-            let value = self.check_expr(&init.value, Some(&field.ty));
+            let mut value = self.check_expr(&init.value, Some(&field.ty));
             let reason = Some((
                 field.span,
                 format!(
@@ -544,7 +584,17 @@ impl FnCtx<'_, '_> {
                     self.show(&field.ty)
                 ),
             ));
-            ok &= self.expect(&value, &field.ty, reason);
+            if field.weak {
+                match self.coerce_to_weak(value, &field.ty, reason) {
+                    Some(weak) => value = weak,
+                    None => {
+                        ok = false;
+                        continue;
+                    }
+                }
+            } else {
+                ok &= self.expect(&value, &field.ty, reason);
+            }
             if given[i].is_some() {
                 self.ck.report(Diagnostic::error(
                     format!("the field `{}` is given more than once", field.name),
@@ -563,8 +613,29 @@ impl FnCtx<'_, '_> {
         for (i, slot) in given.into_iter().enumerate() {
             match (slot, defaults.get(i).copied().flatten()) {
                 (Some(b), _) => bound.push(b),
+                (None, Some(default)) if decls[i].weak => {
+                    let wanted = Ty::Option(Box::new(decls[i].ty.clone()));
+                    let value = self.check_default_at_call(default, &wanted, span);
+                    let expr = self.mk(
+                        hir::ExprKind::ToWeak(Box::new(value)),
+                        decls[i].ty.clone(),
+                        span,
+                    );
+                    bound.push(Bound { expr, source: None });
+                }
                 (None, Some(default)) => {
                     let expr = self.check_default_at_call(default, &decls[i].ty, span);
+                    bound.push(Bound { expr, source: None });
+                }
+                // A weak field that is not mentioned starts out empty (DESIGN §7.2: the
+                // `Node { name: "root" }` example has no parent).
+                (None, None) if decls[i].weak => {
+                    let none = self.none_of(&decls[i].ty, span);
+                    let expr = self.mk(
+                        hir::ExprKind::ToWeak(Box::new(none)),
+                        decls[i].ty.clone(),
+                        span,
+                    );
                     bound.push(Bound { expr, source: None });
                 }
                 (None, None) => missing.push(&decls[i]),
@@ -594,14 +665,23 @@ impl FnCtx<'_, '_> {
             return self.mk(hir::ExprKind::Error, result, span);
         }
         let (values, lets, temps) = self.order_args(bound);
-        let literal = self.mk(
+        let kind = if is_class {
+            hir::ExprKind::Object {
+                ty: id,
+                fields: values,
+            }
+        } else {
             hir::ExprKind::Struct {
                 ty: id,
                 fields: values,
-            },
-            result,
-            span,
-        );
+            }
+        };
+        let literal = self.mk(kind, result, span);
         self.wrap_hoisted(literal, lets, temps, span)
     }
+}
+
+/// `struct` or `class`, for messages.
+pub(crate) fn kind_word(def: &TypeDef) -> &'static str {
+    if def.is_class() { "class" } else { "struct" }
 }

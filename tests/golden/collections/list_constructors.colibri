@@ -1,0 +1,15 @@
+fn main() {
+    let a = List[int]()
+    let b: List[str] = []
+    var c = List[float]()
+    c.push(1.5)
+    print(a)
+    print(b)
+    print(c)
+    print(a.len() + b.len() + c.len())
+}
+
+// expect: []
+// expect: []
+// expect: [1.5]
+// expect: 1

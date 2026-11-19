@@ -1,0 +1,7 @@
+fn main() {
+    var state = "start"
+    defer print("state at exit: {state}")
+    state = "changed"
+}
+
+// expect: state at exit: changed

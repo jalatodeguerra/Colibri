@@ -1,0 +1,12 @@
+fn main() {
+    let xs = ["a", "b"]
+    print(xs.get(0))
+    print(xs.get(1))
+    print(xs.get(2))
+    print(xs.get(-1))
+}
+
+// expect: some("a")
+// expect: some("b")
+// expect: none
+// expect: none

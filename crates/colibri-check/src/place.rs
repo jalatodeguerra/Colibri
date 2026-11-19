@@ -4,12 +4,50 @@
 //! projections. Structs and tuples are values, so writing through a path is only allowed when
 //! the anchor itself is mutable.
 
-use colibri_syntax::ast::{self, BindKind, ExprKind};
+use colibri_syntax::ast::{self, BindKind, ExprKind, IndexArg};
 use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::{FnCtx, LocalKind};
 use crate::checker::{Dep, ValueRef};
-use crate::hir::{Anchor, LocalId, Place, ValueProj};
+use crate::hir::{self, Anchor, Expr, LocalId, Place, ValueProj};
+use crate::types::Ty;
+
+/// What a field or element access starts from: a place, or a computed value.
+enum Base {
+    Place(Place),
+    Value(Expr),
+}
+
+impl Base {
+    fn ty(&self) -> Ty {
+        match self {
+            Base::Place(p) => p.ty.clone(),
+            Base::Value(e) => e.ty.clone(),
+        }
+    }
+}
+
+/// A short source-like text of an expression, for messages (`enemies`, `world.enemies`,
+/// `xs[i]`). Anything complicated shows as `..`.
+pub(crate) fn expr_text(e: &ast::Expr) -> String {
+    match &e.kind {
+        ExprKind::Ident(id) => id.name.clone(),
+        ExprKind::SelfValue => "self".to_string(),
+        ExprKind::Paren(inner) => expr_text(inner),
+        ExprKind::Field { base, name } => format!("{}.{}", expr_text(base), name.name),
+        ExprKind::TupleIndex { base, index } => format!("{}.{index}", expr_text(base)),
+        ExprKind::Int(n) => n.to_string(),
+        ExprKind::Index { base, args } => {
+            let inner = match args.as_slice() {
+                [IndexArg::Expr(i)] => expr_text(i),
+                _ => "..".to_string(),
+            };
+            format!("{}[{inner}]", expr_text(base))
+        }
+        ExprKind::Call { callee, .. } => format!("{}(..)", expr_text(callee)),
+        _ => "..".to_string(),
+    }
+}
 
 /// Why a place is being used mutably, for the wording of errors.
 #[derive(Clone, Copy)]
@@ -38,7 +76,11 @@ impl FnCtx<'_, '_> {
         Some(place)
     }
 
-    /// The place an expression names: a variable, or a field or tuple element of one.
+    /// The place an expression names: a variable, a field or tuple element of one, a list
+    /// element or map entry, or a field of a class object. Collections and classes are
+    /// references, so the place is *anchored* at the innermost one and everything before it is an
+    /// ordinary read (ARCHITECTURE §1): `a.b[i].c[j].x` anchors on the element `[j]` with path
+    /// `[x]`.
     pub fn resolve_place(&mut self, target: &ast::Expr) -> Option<Place> {
         match &target.kind {
             ExprKind::Paren(inner) => self.resolve_place(inner),
@@ -51,25 +93,34 @@ impl FnCtx<'_, '_> {
                 }
             },
             ExprKind::Field { base, name } => {
-                let mut place = self.place_base(base)?;
-                let (idx, ty) = self.field_of(&place.ty, name, base.span)?;
+                let base_place = self.place_base(base)?;
+                let base_ty = base_place.ty();
+                let (idx, ty) = self.field_of(&base_ty, name, base.span)?;
+                if self.is_class_ty(&base_ty) {
+                    let object = self.base_object(base_place, base)?;
+                    return Some(Place {
+                        anchor: Anchor::ClassField(Box::new(object), idx),
+                        path: Vec::new(),
+                        ty,
+                        display: expr_text(target),
+                    });
+                }
+                let mut place = self.value_part(base_place, base)?;
                 place.path.push(ValueProj::Field(idx));
                 place.ty = ty;
                 place.display = format!("{}.{}", place.display, name.name);
                 Some(place)
             }
             ExprKind::TupleIndex { base, index } => {
-                let mut place = self.place_base(base)?;
-                let ty = self.tuple_elem_of(&place.ty, *index, target.span)?;
+                let base_place = self.place_base(base)?;
+                let ty = self.tuple_elem_of(&base_place.ty(), *index, target.span)?;
+                let mut place = self.value_part(base_place, base)?;
                 place.path.push(ValueProj::TupleIdx(*index));
                 place.ty = ty;
                 place.display = format!("{}.{}", place.display, index);
                 Some(place)
             }
-            ExprKind::Index { .. } => {
-                self.ck.unsupported("assignment to an element", target.span);
-                None
-            }
+            ExprKind::Index { base, args } => self.index_place(base, args, target),
             ExprKind::Error => None,
             _ => {
                 self.ck.report(Diagnostic::error(
@@ -81,30 +132,194 @@ impl FnCtx<'_, '_> {
         }
     }
 
-    /// The place a field or tuple access starts from.
-    fn place_base(&mut self, base: &ast::Expr) -> Option<Place> {
+    /// What a field or element access starts from.
+    fn place_base(&mut self, base: &ast::Expr) -> Option<Base> {
         match &base.kind {
             ExprKind::Paren(_)
             | ExprKind::Ident(_)
             | ExprKind::SelfValue
             | ExprKind::Field { .. }
             | ExprKind::TupleIndex { .. }
-            | ExprKind::Index { .. } => self.resolve_place(base),
+            | ExprKind::Index { .. } => self.resolve_place(base).map(Base::Place),
             ExprKind::Error => None,
             _ => {
-                // Check it for its own errors; the value is a temporary either way.
                 let value = self.check_expr(base, None);
-                if !value.ty.is_error() {
-                    self.ck.report(
-                        Diagnostic::error(
-                            "cannot assign to a part of a temporary value",
-                            base.span,
-                        )
-                        .with_hint("the change would be lost; store the value in a `var` first"),
-                    );
+                if value.ty.is_error() {
+                    None
+                } else {
+                    Some(Base::Value(value))
                 }
+            }
+        }
+    }
+
+    /// The part of a value-typed base that a field or tuple step walks into: only a place can
+    /// be changed, so a temporary is an error.
+    fn value_part(&mut self, base: Base, span_of: &ast::Expr) -> Option<Place> {
+        match base {
+            Base::Place(place) => Some(place),
+            Base::Value(_) => {
+                self.ck.report(
+                    Diagnostic::error("cannot assign to a part of a temporary value", span_of.span)
+                        .with_hint("the change would be lost; store the value in a `var` first"),
+                );
                 None
             }
+        }
+    }
+
+    /// The class object a base evaluates to, as an expression. A weak field reads as an
+    /// `Option`, so it cannot be the base of a field access.
+    fn base_object(&mut self, base: Base, base_ast: &ast::Expr) -> Option<Expr> {
+        match base {
+            Base::Value(e) => Some(e),
+            Base::Place(place) => {
+                if self.is_weak_place(&place) {
+                    self.report_weak_use(&place.display, base_ast.span);
+                    return None;
+                }
+                let ty = place.ty.clone();
+                Some(self.mk(hir::ExprKind::Read(Box::new(place)), ty, base_ast.span))
+            }
+        }
+    }
+
+    /// Whether a place is a `weak` class field (its stored type is the class, its reads give
+    /// an `Option`).
+    pub fn is_weak_place(&self, place: &Place) -> bool {
+        let Anchor::ClassField(object, idx) = &place.anchor else {
+            return false;
+        };
+        if !place.path.is_empty() {
+            return false;
+        }
+        let Ty::Adt(id, _) = self.infer.shallow(&object.ty) else {
+            return false;
+        };
+        self.ck.types[id.0 as usize]
+            .fields()
+            .get(idx.0 as usize)
+            .is_some_and(|f| f.weak)
+    }
+
+    pub fn report_weak_use(&mut self, name: &str, span: Span) {
+        self.ck.report(
+            Diagnostic::error(
+                format!("`{name}` is a weak reference, so it reads as an optional value"),
+                span,
+            )
+            .with_hint(format!(
+                "unwrap it first: `if let some(x) = {name} {{ ... }}`"
+            )),
+        );
+    }
+
+    /// Whether `ty` is a class type.
+    pub fn is_class_ty(&self, ty: &Ty) -> bool {
+        matches!(self.infer.shallow(ty), Ty::Adt(id, _) if self.ck.types[id.0 as usize].is_class())
+    }
+
+    /// `base[index]` as a place: a list element or a map entry.
+    pub fn index_place(
+        &mut self,
+        base: &ast::Expr,
+        args: &[IndexArg],
+        whole: &ast::Expr,
+    ) -> Option<Place> {
+        let [IndexArg::Expr(index)] = args else {
+            self.check_index_args_loosely(base, args);
+            self.ck.unsupported("a generic instantiation", whole.span);
+            return None;
+        };
+        if let ExprKind::Ident(id) = &base.kind
+            && self.lookup_local(&id.name).is_none()
+            && !matches!(self.ck.values.get(&id.name), Some(ValueRef::Global(_)))
+        {
+            self.ck.unsupported("a generic instantiation", whole.span);
+            return None;
+        }
+        if matches!(index.kind, ExprKind::Range { .. }) {
+            self.check_expr(base, None);
+            self.ck.unsupported("slicing", index.span);
+            return None;
+        }
+        let collection = self.check_expr(base, None);
+        let name = expr_text(base);
+        match self.infer.shallow(&collection.ty) {
+            Ty::Error => {
+                self.check_expr(index, None);
+                None
+            }
+            Ty::List(elem) => {
+                let idx = self.check_expr(index, Some(&Ty::INT));
+                let reason = Some((index.span, "a list is indexed by an `int`".to_string()));
+                if !self.expect(&idx, &Ty::INT, reason) {
+                    return None;
+                }
+                Some(Place {
+                    anchor: Anchor::ListElem(Box::new(collection), Box::new(idx), name),
+                    path: Vec::new(),
+                    ty: *elem,
+                    display: expr_text(whole),
+                })
+            }
+            Ty::Map(key, value) => {
+                let k = self.check_expr(index, Some(&key));
+                let reason = Some((
+                    base.span,
+                    format!("this map's keys are `{}`", self.show(&key)),
+                ));
+                if !self.expect(&k, &key, reason) {
+                    return None;
+                }
+                Some(Place {
+                    anchor: Anchor::MapEntry(Box::new(collection), Box::new(k), name),
+                    path: Vec::new(),
+                    ty: *value,
+                    display: expr_text(whole),
+                })
+            }
+            other => {
+                self.check_expr(index, None);
+                let shown = self.show(&other);
+                let mut diag = Diagnostic::error(
+                    format!("cannot index into a value of type `{shown}`"),
+                    whole.span,
+                );
+                diag = match other {
+                    Ty::Str => diag.with_hint(
+                        "strings cannot be indexed by position; use `s.chars()` to go through the characters",
+                    ),
+                    _ => diag.with_hint("only lists and maps can be indexed"),
+                };
+                self.ck.report(diag);
+                None
+            }
+        }
+    }
+
+    fn check_index_args_loosely(&mut self, base: &ast::Expr, args: &[IndexArg]) {
+        self.check_expr(base, None);
+        for a in args {
+            if let IndexArg::Expr(e) = a {
+                self.check_expr(e, None);
+            }
+        }
+    }
+
+    /// `base[index]` used as a value.
+    pub fn check_index_expr(
+        &mut self,
+        base: &ast::Expr,
+        args: &[IndexArg],
+        whole: &ast::Expr,
+    ) -> Expr {
+        match self.index_place(base, args, whole) {
+            Some(place) => {
+                let ty = place.ty.clone();
+                self.mk(hir::ExprKind::Read(Box::new(place)), ty, whole.span)
+            }
+            None => self.error_expr(whole.span),
         }
     }
 

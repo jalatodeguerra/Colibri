@@ -1,6 +1,7 @@
 //! The structural `Eq` and `Ord` every struct, enum and tuple derives (DESIGN §7.4).
 
 use std::cmp::Ordering;
+use std::rc::{Rc, Weak};
 
 use crate::value::Value;
 
@@ -45,8 +46,58 @@ fn equal(a: &Value, b: &Value, depth: u32) -> Result<bool, TooDeep> {
         (Value::Enum(x), Value::Enum(y)) => {
             x.ty == y.ty && x.variant == y.variant && all(&x.payload, &y.payload)?
         }
+        (Value::List(_) | Value::Map(_) | Value::Set(_), _) => equal_collections(a, b, depth)?,
+        // A class is compared by identity (DESIGN §7.2).
+        (Value::Obj(x), Value::Obj(y)) => Rc::ptr_eq(x, y),
+        (Value::Weak(x), Value::Weak(y)) => Weak::ptr_eq(x, y),
         _ => false,
     })
+}
+
+/// Structural equality of two collections, kept out of [`equal`] so that its frame stays small
+/// (it recurses once per nesting level).
+#[inline(never)]
+fn equal_collections(a: &Value, b: &Value, depth: u32) -> Result<bool, TooDeep> {
+    Ok(match (a, b) {
+        (Value::List(x), Value::List(y)) => {
+            if x.len() != y.len() {
+                return Ok(false);
+            }
+            for (p, q) in x.snapshot().iter().zip(y.snapshot().iter()) {
+                if !equal(p, q, depth + 1)? {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+        (Value::Map(x), Value::Map(y)) => {
+            if x.len() != y.len() {
+                return Ok(false);
+            }
+            for (k, v) in x.snapshot() {
+                match y.get(&k) {
+                    Some(other) if equal(&v, &other, depth + 1)? => {}
+                    _ => return Ok(false),
+                }
+            }
+            true
+        }
+        (Value::Set(x), Value::Set(y)) => {
+            x.len() == y.len() && x.snapshot().iter().all(|item| y.contains(item))
+        }
+        _ => false,
+    })
+}
+
+/// `a is b`: whether two reference values are the same object.
+pub fn values_identical(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::List(x), Value::List(y)) => Rc::ptr_eq(x, y),
+        (Value::Map(x), Value::Map(y)) => Rc::ptr_eq(x, y),
+        (Value::Set(x), Value::Set(y)) => Rc::ptr_eq(x, y),
+        (Value::Obj(x), Value::Obj(y)) => Rc::ptr_eq(x, y),
+        _ => false,
+    }
 }
 
 /// Structural ordering: enums by variant (then payload), tuples and structs field by field.

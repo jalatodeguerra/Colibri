@@ -7,7 +7,7 @@ use colibri_syntax::{Diagnostic, Span};
 use crate::body::{FnCtx, LocalKind};
 use crate::checker::{Checker, Dep, ValueRef};
 use crate::hir::{GlobalId, Lit, LocalId, Pat, PatKind};
-use crate::types::{Ty, TypeId};
+use crate::types::{OPTION_TYPE, Ty, TypeId, VARIANT_NONE, VARIANT_SOME};
 
 /// The names a pattern binds, and how.
 pub(crate) struct PatCx {
@@ -79,11 +79,61 @@ impl FnCtx<'_, '_> {
                 let local = self.bind_name(name, expected, cx);
                 self.pat(PatKind::Bind(local, Some(Box::new(inner))), expected, span)
             }
-            AstPat::Some(_) | AstPat::None | AstPat::Ok(_) | AstPat::Err(_) => {
-                self.ck.unsupported("an `Option` or `Result` pattern", span);
+            AstPat::Some(inner) => self.option_pat(Some(inner), expected, cx, span),
+            AstPat::None => self.option_pat(None, expected, cx, span),
+            AstPat::Ok(_) | AstPat::Err(_) => {
+                self.ck.unsupported("a `Result` pattern", span);
                 self.pat(PatKind::Wild, expected, span)
             }
         }
+    }
+
+    /// `some(p)` and `none`: patterns of the prelude `Option` enum.
+    fn option_pat(
+        &mut self,
+        inner: Option<&ast::Pat>,
+        expected: &Ty,
+        cx: &mut PatCx,
+        span: Span,
+    ) -> Pat {
+        let known = self.infer.shallow(expected);
+        let elem = match &known {
+            Ty::Option(t) => (**t).clone(),
+            Ty::Infer(_) => {
+                let t = self.fresh_var(crate::infer::VarKind::General);
+                let _ = self.infer.unify(&known, &Ty::Option(Box::new(t.clone())));
+                t
+            }
+            Ty::Error => Ty::Error,
+            other => {
+                let shown = self.show(other);
+                let word = if inner.is_some() { "some(..)" } else { "none" };
+                self.ck.report(
+                    Diagnostic::error(
+                        format!("`{word}` is an `Option` pattern, but the value is a `{shown}`"),
+                        span,
+                    )
+                    .with_hint("only optional values (`T?`) can be matched with `some` and `none`"),
+                );
+                Ty::Error
+            }
+        };
+        let (variant, args) = match inner {
+            Some(p) => (VARIANT_SOME, vec![self.check_pat(p, &elem, cx)]),
+            None => (VARIANT_NONE, Vec::new()),
+        };
+        if elem.is_error() && !matches!(known, Ty::Option(_) | Ty::Infer(_)) {
+            return self.pat(PatKind::Wild, expected, span);
+        }
+        self.pat(
+            PatKind::Variant {
+                ty: OPTION_TYPE,
+                variant,
+                args,
+            },
+            expected,
+            span,
+        )
     }
 
     // ---- bindings ----

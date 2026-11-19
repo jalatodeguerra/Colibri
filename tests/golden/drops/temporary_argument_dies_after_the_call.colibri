@@ -1,0 +1,14 @@
+class T { name: str, peer: weak T }
+
+fn use_it(t: T) {
+    print("using " + t.name)
+}
+
+fn main() {
+    use_it(T { name: "tmp" })
+    print("next")
+}
+
+// expect: using tmp
+// expect: next
+// drops: tmp

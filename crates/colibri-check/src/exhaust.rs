@@ -14,7 +14,7 @@
 use std::cell::Cell;
 
 use crate::hir::{GlobalId, Lit, Pat, PatKind, TypeDef, TypeDefKind};
-use crate::types::Ty;
+use crate::types::{Ty, VARIANT_NONE, VARIANT_SOME};
 
 /// How many recursive steps one analysis may take.
 const STEP_BUDGET: u32 = 200_000;
@@ -206,8 +206,12 @@ impl Cx<'_> {
         match ty {
             Ty::Bool => Some(vec![Ctor::Bool(false), Ctor::Bool(true)]),
             Ty::Unit | Ty::Tuple(_) => Some(vec![Ctor::Single]),
+            Ty::Option(_) => Some(vec![
+                Ctor::Variant(VARIANT_NONE),
+                Ctor::Variant(VARIANT_SOME),
+            ]),
             Ty::Adt(id, _) => match &self.types.get(id.0 as usize)?.kind {
-                TypeDefKind::Struct { .. } => Some(vec![Ctor::Single]),
+                TypeDefKind::Struct { .. } | TypeDefKind::Class { .. } => Some(vec![Ctor::Single]),
                 TypeDefKind::Enum { variants } => {
                     Some((0..variants.len() as u32).map(Ctor::Variant).collect())
                 }
@@ -220,6 +224,8 @@ impl Cx<'_> {
     fn sub_tys(&self, c: &Ctor, ty: &Ty) -> Vec<Ty> {
         match (c, ty) {
             (Ctor::Single, Ty::Tuple(items)) => items.clone(),
+            (Ctor::Variant(VARIANT_SOME), Ty::Option(t)) => vec![(**t).clone()],
+            (Ctor::Variant(_), Ty::Option(_)) => Vec::new(),
             (Ctor::Single, Ty::Adt(id, _)) => self
                 .types
                 .get(id.0 as usize)
@@ -238,6 +244,9 @@ impl Cx<'_> {
     fn head_of(&self, c: &Ctor, ty: &Ty) -> Head {
         match (c, ty) {
             (Ctor::Bool(b), _) => Head::Bool(*b),
+            (Ctor::Variant(v), Ty::Option(_)) => {
+                Head::Variant(if *v == VARIANT_SOME { "some" } else { "none" }.to_string())
+            }
             (Ctor::Variant(v), Ty::Adt(id, _)) => {
                 let name = self
                     .types
@@ -270,8 +279,14 @@ impl Cx<'_> {
                         matches!(ty, Ty::Unit | Ty::Tuple(_))
                             || matches!(ty, Ty::Adt(id, _) if self.types.get(id.0 as usize).is_some_and(|d| !d.is_enum()))
                     }
-                    Ctor::Variant(v) => matches!(ty, Ty::Adt(id, _)
-                        if self.types.get(id.0 as usize).is_some_and(|d| (*v as usize) < d.variants().len())),
+                    Ctor::Variant(v) => match ty {
+                        Ty::Option(_) => *v <= VARIANT_SOME,
+                        Ty::Adt(id, _) => self
+                            .types
+                            .get(id.0 as usize)
+                            .is_some_and(|d| (*v as usize) < d.variants().len()),
+                        _ => false,
+                    },
                 };
                 let subs = self.sub_tys(c, ty);
                 fits && subs.len() == args.len()
@@ -472,6 +487,7 @@ mod tests {
             name: name.into(),
             ty,
             span: SP,
+            weak: false,
         }
     }
 

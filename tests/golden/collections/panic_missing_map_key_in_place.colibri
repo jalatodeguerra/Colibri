@@ -1,0 +1,8 @@
+struct C { n: int }
+
+fn main() {
+    var m = {"a": C { n: 1 }}
+    m["b"].n += 1
+}
+
+// panic: key "b" not found in map

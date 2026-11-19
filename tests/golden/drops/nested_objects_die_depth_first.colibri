@@ -1,0 +1,15 @@
+class T { name: str }
+class Mid { name: str, inner: T }
+class Outer { name: str, mid: Mid, extra: T }
+
+fn main() {
+    let o = Outer {
+        name: "outer",
+        mid: Mid { name: "mid", inner: T { name: "inner" } },
+        extra: T { name: "extra" },
+    }
+    print(o.mid.inner.name)
+}
+
+// expect: inner
+// drops: outer, mid, inner, extra

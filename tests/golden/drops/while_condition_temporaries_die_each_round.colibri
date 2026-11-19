@@ -1,0 +1,13 @@
+class T { name: str }
+
+fn make(n: str) -> T => T { name: n }
+
+fn main() {
+    var i = 0
+    while make("c{i}").name != "c2" {
+        let b = T { name: "b{i}" }
+        i += 1
+    }
+}
+
+// drops: c0, b0, c1, b1, c2

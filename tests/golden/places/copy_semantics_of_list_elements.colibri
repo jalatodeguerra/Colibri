@@ -1,0 +1,16 @@
+struct P { x: int }
+
+fn main() {
+    var xs = [P { x: 1 }]
+    let before = xs[0]
+    xs[0].x = 2
+    print(before)
+    print(xs[0])
+    var copy = xs[0]
+    copy.x = 99
+    print(xs[0])
+}
+
+// expect: P { x: 1 }
+// expect: P { x: 2 }
+// expect: P { x: 2 }

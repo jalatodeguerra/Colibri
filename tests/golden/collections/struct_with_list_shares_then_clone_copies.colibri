@@ -1,0 +1,25 @@
+struct Team {
+    name: str
+    members: List[str]
+}
+
+fn main() {
+    let a = Team { name: "a", members: ["x"] }
+    let b = a
+    b.members.push("y")
+    print(a.members)
+    let c = a.clone()
+    c.members.push("z")
+    print(a.members)
+    print(c.members)
+    print(a == c)
+    print(a.members is b.members)
+    print(a.members is c.members)
+}
+
+// expect: ["x", "y"]
+// expect: ["x", "y"]
+// expect: ["x", "y", "z"]
+// expect: false
+// expect: true
+// expect: false

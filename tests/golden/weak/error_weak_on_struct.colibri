@@ -1,0 +1,4 @@
+struct S { x: int }
+class C {
+    s: weak S // error: `weak` needs a class
+}

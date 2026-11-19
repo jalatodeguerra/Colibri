@@ -1,0 +1,22 @@
+fn add_one(xs: List[int]) {
+    xs.push(1)
+}
+
+fn main() {
+    let a = [0]
+    let b = a
+    b.push(5)
+    add_one(a)
+    print(a)
+    print(a is b)
+    print(a == b)
+    let c = [0, 5, 1]
+    print(a is c)
+    print(a == c)
+}
+
+// expect: [0, 5, 1]
+// expect: true
+// expect: true
+// expect: false
+// expect: true

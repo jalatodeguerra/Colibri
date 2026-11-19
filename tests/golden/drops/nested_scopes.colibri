@@ -1,0 +1,19 @@
+class T { name: str }
+
+fn main() {
+    let a = T { name: "a" }
+    {
+        let b = T { name: "b" }
+        {
+            let c = T { name: "c" }
+            print("innermost")
+        }
+        print("middle")
+    }
+    print("outer")
+}
+
+// expect: innermost
+// expect: middle
+// expect: outer
+// drops: c, b, a

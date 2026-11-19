@@ -49,7 +49,7 @@ impl FnCtx<'_, '_> {
             ExprKind::Ident(id) => self.check_ident(id, span),
             ExprKind::Unary { op, expr } => self.check_unary(*op, expr, span, expected),
             ExprKind::Binary { op, lhs, rhs } => self.check_binary(*op, lhs, rhs, span, expected),
-            ExprKind::Call { callee, args } => self.check_call(callee, args, span),
+            ExprKind::Call { callee, args } => self.check_call(callee, args, expected, span),
             ExprKind::If { cond, then, else_ } => self.check_if(
                 span,
                 cond,
@@ -62,9 +62,9 @@ impl FnCtx<'_, '_> {
                 let ty = block.ty.clone();
                 self.mk(hir::ExprKind::Block(Box::new(block)), ty, span)
             }
-            ExprKind::None => self.unsupported("`none`", span),
-            ExprKind::List(_) => self.unsupported("list literal", span),
-            ExprKind::Map(_) => self.unsupported("map literal", span),
+            ExprKind::None => self.check_none(expected, span),
+            ExprKind::List(items) => self.check_list_lit(items, expected, span),
+            ExprKind::Map(entries) => self.check_map_lit(entries, expected, span),
             ExprKind::SelfValue => self.check_self(span),
             ExprKind::DotVariant { name, args } => {
                 self.check_dot_variant(name, args.as_deref(), expected, span)
@@ -77,7 +77,7 @@ impl FnCtx<'_, '_> {
             ExprKind::Try(_) => self.unsupported("the `?` operator", span),
             ExprKind::Field { base, name } => self.check_field_expr(base, name, span),
             ExprKind::TupleIndex { base, index } => self.check_tuple_index_expr(base, *index, span),
-            ExprKind::Index { .. } => self.unsupported("indexing", span),
+            ExprKind::Index { base, args } => self.check_index_expr(base, args, e),
             ExprKind::IfLet {
                 pat,
                 scrutinee,
@@ -166,7 +166,14 @@ impl FnCtx<'_, '_> {
                     );
                     self.error_expr(span)
                 }
-                "some" | "ok" | "err" => self.unsupported(&format!("`{name}`"), span),
+                "some" => {
+                    self.ck.report(
+                        Diagnostic::error("`some` is a constructor, not a value", span)
+                            .with_hint("call it: `some(x)`"),
+                    );
+                    self.error_expr(span)
+                }
+                "ok" | "err" => self.unsupported(&format!("`{name}`"), span),
                 _ if self.ck.type_by_name(name).is_some() => {
                     self.ck.report(
                         Diagnostic::error(format!("`{name}` is a type, not a value"), span)
@@ -232,7 +239,10 @@ impl FnCtx<'_, '_> {
             Ty::Int(_) | Ty::Float | Ty::Bool | Ty::Char | Ty::Str | Ty::Unit
         ) {
             let shown = self.show(&ty);
-            if !matches!(ty, Ty::Tuple(_) | Ty::Adt(..)) {
+            if !matches!(
+                ty,
+                Ty::Tuple(_) | Ty::Adt(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Option(_)
+            ) {
                 self.ck.report(Diagnostic::error(
                     format!("a value of type `{shown}` cannot be shown in a string"),
                     span,
@@ -379,7 +389,7 @@ impl FnCtx<'_, '_> {
                 };
                 return self.mk(kind, Ty::Bool, span);
             }
-            AstBin::Is => return self.unsupported("the `is` operator", span),
+            AstBin::Is => return self.check_is(lhs, rhs, span),
             AstBin::BitOr | AstBin::BitXor | AstBin::BitAnd | AstBin::Shl | AstBin::Shr => {
                 return self.unsupported("bitwise operator", span);
             }
@@ -417,6 +427,42 @@ impl FnCtx<'_, '_> {
                 Box::new(l),
                 Box::new(r),
             ),
+            Ty::Bool,
+            span,
+        )
+    }
+
+    /// `a is b`: whether two references are the same object (DESIGN §5.3).
+    #[inline(never)]
+    fn check_is(&mut self, lhs: &ast::Expr, rhs: &ast::Expr, span: Span) -> Expr {
+        let l = self.check_expr(lhs, None);
+        let r = self.check_expr(rhs, Some(&l.ty));
+        if !self.unify_operands(AstBin::Is, &l, &r, span) {
+            return self.error_expr(span);
+        }
+        let ty = self.infer.shallow(&l.ty);
+        let reference = match &ty {
+            Ty::List(_) | Ty::Map(..) | Ty::Set(_) => true,
+            Ty::Adt(id, _) => self.ck.types[id.0 as usize].is_class(),
+            Ty::Error => return self.error_expr(span),
+            _ => false,
+        };
+        if !reference {
+            let shown = self.show(&ty);
+            let hint = if ty == Ty::Str {
+                "strings are compared by content: use `==`".to_string()
+            } else {
+                "`is` tests whether two references are the same object (classes and collections); values are compared with `==`".to_string()
+            };
+            self.ck.report(
+                Diagnostic::error(format!("`is` cannot be used on `{shown}`"), span)
+                    .with_label(l.span, format!("this is `{shown}`"))
+                    .with_hint(hint),
+            );
+            return self.error_expr(span);
+        }
+        self.mk(
+            hir::ExprKind::Binary(BinOp::Is, Box::new(l), Box::new(r)),
             Ty::Bool,
             span,
         )
@@ -644,6 +690,7 @@ fn op_symbol(op: AstBin) -> &'static str {
         AstBin::Le => "<=",
         AstBin::Gt => ">",
         AstBin::Ge => ">=",
+        AstBin::Is => "is",
         _ => "?",
     }
 }

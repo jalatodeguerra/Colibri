@@ -1,0 +1,4 @@
+fn main() {
+    let x = none // error: cannot infer the type of this optional value
+    print(x)
+}

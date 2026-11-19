@@ -1,0 +1,23 @@
+struct Enemy { hp: int, y: int }
+
+impl Enemy {
+    fn step(var self, dt: int) {
+        self.y += dt
+        self.hp -= 1
+    }
+    fn alive(self) -> bool => self.hp > 0
+}
+
+fn main() {
+    var enemies = [Enemy { hp: 2, y: 0 }, Enemy { hp: 1, y: 0 }]
+    enemies[0].step(5)
+    enemies[0].step(5)
+    enemies[1].step(1)
+    print(enemies)
+    print(enemies[0].alive())
+    print(enemies[1].alive())
+}
+
+// expect: [Enemy { hp: 0, y: 10 }, Enemy { hp: 0, y: 1 }]
+// expect: false
+// expect: false

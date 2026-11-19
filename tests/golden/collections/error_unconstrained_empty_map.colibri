@@ -1,0 +1,4 @@
+fn main() {
+    let m = {:} // error: cannot infer the key and value types of this map
+    print(m.len())
+}

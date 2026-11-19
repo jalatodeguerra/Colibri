@@ -1,0 +1,11 @@
+class C { n: int }
+
+fn main() {
+    let xs = [C { n: 1 }]
+    xs[0].n = 2
+    xs.push(C { n: 3 })
+    print(xs)
+}
+
+// expect: [C { n: 2 }, C { n: 3 }]
+// drops: C, C

@@ -1,0 +1,17 @@
+struct E { hp: int }
+var es = [E { hp: 1 }]
+
+impl E {
+    fn hit(var self) {
+        self.hp -= 1
+    }
+}
+
+fn main() {
+    es[0].hit()
+    es.push(E { hp: 5 })
+    es[1].hit()
+    print(es)
+}
+
+// expect: [E { hp: 0 }, E { hp: 4 }]

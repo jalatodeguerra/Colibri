@@ -1,0 +1,16 @@
+struct Cfg {
+    name: str
+    limit: int? = none
+}
+
+fn main() {
+    let a = Cfg { name: "a" }
+    let b = Cfg { name: "b", limit: some(3) }
+    print(a)
+    print(b)
+    print(a == b)
+}
+
+// expect: Cfg { name: "a", limit: none }
+// expect: Cfg { name: "b", limit: some(3) }
+// expect: false

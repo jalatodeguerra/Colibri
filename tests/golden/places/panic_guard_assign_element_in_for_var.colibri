@@ -1,0 +1,8 @@
+fn main() {
+    var xs = [1, 2, 3]
+    for var x in xs {
+        xs[0] = 5
+    }
+}
+
+// panic: `xs` modified while an element is being updated

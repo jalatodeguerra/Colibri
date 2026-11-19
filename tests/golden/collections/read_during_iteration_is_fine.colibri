@@ -1,0 +1,10 @@
+fn main() {
+    let xs = [1, 2, 3]
+    for i in xs {
+        print(xs.len() + xs[0] + i)
+    }
+}
+
+// expect: 5
+// expect: 6
+// expect: 7

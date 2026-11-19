@@ -1,0 +1,11 @@
+class T { name: str }
+
+let g = T { name: "g" }
+
+fn main() {
+    let l = T { name: "l" }
+    let x = 1 / 0
+}
+
+// panic: division by zero
+// drops: l, g

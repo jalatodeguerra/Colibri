@@ -1,0 +1,21 @@
+fn main() {
+    for (i, x) in ["a", "b", "c"].enumerate() {
+        print("{i}:{x}")
+    }
+    for c in "héy".chars() {
+        print(c)
+    }
+    var n = 0
+    for _ in "abcd".chars() {
+        n += 1
+    }
+    print(n)
+}
+
+// expect: 0:a
+// expect: 1:b
+// expect: 2:c
+// expect: h
+// expect: é
+// expect: y
+// expect: 4

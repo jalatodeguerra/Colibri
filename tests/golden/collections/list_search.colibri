@@ -1,0 +1,21 @@
+fn main() {
+    let xs = [4, 5, 6, 5]
+    print(xs.contains(5))
+    print(xs.contains(9))
+    print(xs.index_of(5))
+    print(xs.index_of(9))
+    print(xs.first())
+    print(xs.last())
+    let none_list: List[int] = []
+    print(none_list.first())
+    print(none_list.last())
+}
+
+// expect: true
+// expect: false
+// expect: some(1)
+// expect: none
+// expect: some(4)
+// expect: some(5)
+// expect: none
+// expect: none

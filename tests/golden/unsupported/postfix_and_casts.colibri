@@ -1,7 +1,7 @@
 fn main() {
     let a = 1 as float // error: `as` cast is not supported yet
-    let b = "s".len() // error: methods on the built-in type `str` are not supported yet
+    let b = "s".trim() // error: `str` has no method `trim`
     let n = 1
     let c = n.x // error: has no field `x`
-    let d = n[0] // error: indexing is not supported yet
+    let d = n[0] // error: cannot index into a value of type `int`
 }

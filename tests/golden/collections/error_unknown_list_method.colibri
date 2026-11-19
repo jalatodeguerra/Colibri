@@ -1,0 +1,4 @@
+fn main() {
+    let xs = [1]
+    xs.append(2) // error: has no method `append`
+}

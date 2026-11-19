@@ -1,0 +1,7 @@
+fn main() {
+    defer print("deferred")
+    print("body")
+}
+
+// expect: body
+// expect: deferred

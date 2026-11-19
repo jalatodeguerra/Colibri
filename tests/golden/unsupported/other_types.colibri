@@ -1,3 +1,2 @@
 fn f(a: i32) {} // error: the type `i32` is not supported yet
-fn g(a: List[int]) {} // error: the generic type `List[..]` is not supported yet
 fn h(a: fn(int) -> int) {} // error: function type is not supported yet

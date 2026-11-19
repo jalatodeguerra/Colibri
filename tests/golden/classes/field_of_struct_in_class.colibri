@@ -1,0 +1,20 @@
+struct Vec2 { x: int, y: int }
+class Body {
+    pos: Vec2
+    mass: int = 1
+}
+
+fn main() {
+    let b = Body { pos: Vec2 { x: 1, y: 2 } }
+    b.pos.x += 10
+    b.pos = Vec2 { x: b.pos.x, y: 7 }
+    print(b.pos)
+    let saved = b.pos
+    b.pos.y = 0
+    print(saved)
+    print(b.pos)
+}
+
+// expect: Vec2 { x: 11, y: 7 }
+// expect: Vec2 { x: 11, y: 7 }
+// expect: Vec2 { x: 11, y: 0 }

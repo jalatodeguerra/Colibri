@@ -17,10 +17,13 @@ pub struct Directives {
     /// `// warning:` at the end of a source line: a compile warning on that line whose message
     /// contains the text. Warnings are compared exactly: one that is not listed fails the file.
     pub warnings: Vec<(usize, String)>,
-    /// `// panic:` message fragment.
-    pub panic: Option<String>,
-    /// `// drops:` expected drop order (not checked yet).
-    pub drops: Vec<String>,
+    /// `// panic:` message fragments; the program must panic and the message (with the notes
+    /// of later panics, see `colibri_runtime::Error::Panic`) must contain every one.
+    pub panic: Vec<String>,
+    /// `// drops:` the labels of the class objects destroyed, in order, until the program ends
+    /// (module-level values included). Compared only when the directive is present;
+    /// `// drops:` with nothing after it expects that no object is destroyed.
+    pub drops: Option<Vec<String>>,
     /// `// skip:` reason; the file is not run.
     pub skip: Option<String>,
 }
@@ -41,13 +44,14 @@ pub fn parse_directives(source: &str) -> Directives {
             } else if let Some(v) = comment.strip_prefix("warning:") {
                 d.warnings.push((i + 1, v.trim().to_string()));
             } else if let Some(v) = comment.strip_prefix("panic:") {
-                d.panic = Some(v.trim().to_string());
+                d.panic.push(v.trim().to_string());
             } else if let Some(v) = comment.strip_prefix("drops:") {
-                d.drops = v
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                d.drops = Some(
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                );
             } else if let Some(v) = comment.strip_prefix("skip:") {
                 d.skip = Some(v.trim().to_string());
             } else {
@@ -69,6 +73,9 @@ pub enum Outcome {
         panic: Option<String>,
         /// The compile warnings: (1-based line, message).
         warnings: Vec<(usize, String)>,
+        /// The labels of the class objects destroyed, in order, up to and including the
+        /// release of the module-level values after `main` (DESIGN §11.2).
+        drops: Vec<String>,
     },
     /// Compilation failed with these error diagnostics: (1-based line, message).
     CompileErrors {
@@ -82,9 +89,15 @@ pub enum Outcome {
 /// [`crate::on_big_stack`]) so deep recursion reaches the call-depth limit.
 pub fn run_golden(path: &Path, source: &str) -> Outcome {
     let out = colibri::SharedBuffer::new();
-    let mut vm = crate::vm_builder().stdout(Box::new(out.clone())).build();
+    let mut vm = crate::vm_builder()
+        .trace_drops(true)
+        .stdout(Box::new(out.clone()))
+        .build();
     let name = path.display().to_string();
     let result = vm.load_source(&name, source).and_then(|()| vm.run_main());
+    // Module-level values die after `main` returns (or after a panic), in reverse order.
+    vm.shutdown();
+    let drops = vm.take_drop_trace();
     let located = |sources: &colibri::SourceMap, diags: &[colibri::Diagnostic], errors: bool| {
         diags
             .iter()
@@ -103,13 +116,17 @@ pub fn run_golden(path: &Path, source: &str) -> Outcome {
         other => {
             let panic = match other {
                 Ok(()) => None,
-                Err(colibri::Error::Panic { message, .. }) => Some(message),
+                Err(colibri::Error::Panic { message, notes, .. }) => {
+                    // Notes ride along with the message so a golden file can match them.
+                    Some(notes.iter().fold(message, |m, n| format!("{m}\nnote: {n}")))
+                }
                 Err(err) => Some(format!("host error: {err}")),
             };
             Outcome::Compiled {
                 stdout: out.contents(),
                 panic,
                 warnings: located(vm.sources(), vm.warnings(), false),
+                drops,
             }
         }
     }
@@ -144,6 +161,7 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
             stdout,
             panic,
             warnings,
+            drops,
         } => {
             let mut problems = Vec::new();
             for (line, text) in &d.errors {
@@ -162,16 +180,26 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
                     "stdout mismatch\n--- expected\n{expected}--- actual\n{stdout}"
                 ));
             }
-            match (&d.panic, panic) {
-                (Some(want), Some(got)) if got.contains(want.as_str()) => {}
-                (Some(want), Some(got)) => {
-                    problems.push(format!("panic {got:?} does not contain {want:?}"))
+            if let Some(want) = &d.drops
+                && want != drops
+            {
+                problems.push(format!(
+                    "drop order mismatch\n--- expected\n{}\n--- actual\n{}",
+                    want.join(", "),
+                    drops.join(", ")
+                ));
+            }
+            match (d.panic.is_empty(), panic) {
+                (false, Some(got)) => {
+                    for want in d.panic.iter().filter(|w| !got.contains(w.as_str())) {
+                        problems.push(format!("panic {got:?} does not contain {want:?}"));
+                    }
                 }
-                (Some(want), None) => {
-                    problems.push(format!("expected a panic containing {want:?}"))
+                (false, None) => {
+                    problems.push(format!("expected a panic containing {:?}", d.panic))
                 }
-                (None, Some(got)) => problems.push(format!("unexpected panic: {got}")),
-                (None, None) => {}
+                (true, Some(got)) => problems.push(format!("unexpected panic: {got}")),
+                (true, None) => {}
             }
             finish(problems)
         }
@@ -219,6 +247,16 @@ mod tests {
             stdout: stdout.into(),
             panic: panic.map(Into::into),
             warnings: Vec::new(),
+            drops: Vec::new(),
+        }
+    }
+
+    fn dropped(labels: &[&str]) -> Outcome {
+        Outcome::Compiled {
+            stdout: String::new(),
+            panic: None,
+            warnings: Vec::new(),
+            drops: labels.iter().map(|s| s.to_string()).collect(),
         }
     }
 
@@ -227,6 +265,7 @@ mod tests {
             stdout: String::new(),
             panic: None,
             warnings: warnings.iter().map(|&(l, m)| (l, m.to_string())).collect(),
+            drops: Vec::new(),
         }
     }
 
@@ -237,9 +276,34 @@ mod tests {
         assert_eq!(d.expect, ["1", "", "a b"]);
         assert_eq!(d.errors, [(4, "unknown name".to_string())]);
         assert_eq!(d.warnings, [(5, "shadows".to_string())]);
-        assert_eq!(d.panic.as_deref(), Some("boom"));
-        assert_eq!(d.drops, ["a", "b", "c"]);
+        assert_eq!(d.panic, ["boom"]);
+        assert_eq!(d.drops, Some(vec!["a".into(), "b".into(), "c".into()]));
+        assert_eq!(parse_directives("// drops:\n").drops, Some(Vec::new()));
+        assert_eq!(parse_directives("print(1)\n").drops, None);
         assert_eq!(d.skip.as_deref(), Some("later"));
+    }
+
+    #[test]
+    fn drops_are_compared_only_when_the_directive_is_present() {
+        let d = parse_directives("// drops: a, b\n");
+        assert!(check(&d, &dropped(&["a", "b"])).is_ok());
+        assert!(check(&d, &dropped(&["b", "a"])).is_err());
+        assert!(check(&d, &dropped(&["a"])).is_err());
+        assert!(check(&d, &dropped(&[])).is_err());
+        // Without the directive nothing is compared.
+        assert!(check(&parse_directives(""), &dropped(&["a", "b"])).is_ok());
+        // An empty directive expects that nothing is destroyed.
+        let none = parse_directives("// drops:\n");
+        assert!(check(&none, &dropped(&[])).is_ok());
+        assert!(check(&none, &dropped(&["a"])).is_err());
+    }
+
+    #[test]
+    fn every_panic_fragment_must_be_in_the_message() {
+        let d = parse_directives("// panic: first\n// panic: note: second\n");
+        assert_eq!(d.panic, ["first", "note: second"]);
+        assert!(check(&d, &compiled("", Some("first\nnote: second"))).is_ok());
+        assert!(check(&d, &compiled("", Some("first"))).is_err());
     }
 
     #[test]

@@ -1,0 +1,20 @@
+fn boom1() {
+    let z = 0
+    print(1 % z)
+}
+
+fn boom2() {
+    let a: List[int] = []
+    print(a[0])
+}
+
+fn main() {
+    defer boom2()
+    defer boom1()
+    let z = 0
+    print(1 / z)
+}
+
+// panic: division by zero
+// panic: note: a deferred statement also panicked: modulo by zero
+// panic: note: a deferred statement also panicked: index 0 out of bounds for list of length 0

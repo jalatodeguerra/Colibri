@@ -1,0 +1,5 @@
+fn f(o: int?) {
+    match o { // error: non-exhaustive
+        some(n) => print(n)
+    }
+}

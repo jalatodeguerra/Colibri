@@ -1,0 +1,17 @@
+class T {
+    name: str
+    peer: weak T
+}
+
+fn main() {
+    let probe = T { name: "probe" }
+    var x = T { name: "old" }
+    probe.peer = x
+    print(probe.peer == some(x))
+    x = T { name: "new" }
+    print(probe.peer)
+}
+
+// expect: true
+// expect: none
+// drops: old, new, probe

@@ -1,0 +1,4 @@
+class N { x: int }
+struct S {
+    n: weak N // error: only a class can have a `weak` field
+}

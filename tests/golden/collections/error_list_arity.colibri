@@ -1,0 +1,3 @@
+fn main() {
+    let xs: List[int, int] = [] // error: `List` takes 1 type argument
+}

@@ -1,0 +1,3 @@
+fn main() {
+    var m = {[1]: "a"} // error: cannot be used
+}

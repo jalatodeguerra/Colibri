@@ -1,0 +1,19 @@
+class T { name: str }
+
+impl T {
+    fn hello(self) {
+        print("hello from " + self.name)
+    }
+}
+
+fn main() {
+    let a = T { name: "a" }
+    a.hello()
+    T { name: "temp" }.hello()
+    a.hello()
+}
+
+// expect: hello from a
+// expect: hello from temp
+// expect: hello from a
+// drops: temp, a

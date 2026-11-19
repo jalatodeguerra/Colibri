@@ -1,0 +1,23 @@
+class Node {
+    name: str
+    friend: weak Node
+}
+
+class Pair {
+    a: Node
+    b: Node
+}
+
+fn main() {
+    let p = Pair { a: Node { name: "a" }, b: Node { name: "b" } }
+    p.b.friend = p.a
+    let q = p.clone()
+    print(q.b.friend == some(q.a))
+    print(q.b.friend == some(p.a))
+    print(p.b.friend == some(p.a))
+}
+
+// expect: true
+// expect: false
+// expect: true
+// drops: Pair, a, b, Pair, a, b

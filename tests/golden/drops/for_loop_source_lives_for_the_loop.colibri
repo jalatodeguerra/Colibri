@@ -1,0 +1,15 @@
+class T { name: str }
+
+fn make() -> List[T] => [T { name: "a" }, T { name: "b" }]
+
+fn main() {
+    for t in make() {
+        print(t.name)
+    }
+    print("after loop")
+}
+
+// expect: a
+// expect: b
+// expect: after loop
+// drops: a, b

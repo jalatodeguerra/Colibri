@@ -1,0 +1,12 @@
+class T { name: str }
+
+let g1 = T { name: "g1" }
+let g2 = T { name: "g2" }
+
+fn main() {
+    let local = T { name: "local" }
+    print("main")
+}
+
+// expect: main
+// drops: local, g2, g1

@@ -1,0 +1,15 @@
+class Thing { name: str }
+
+fn make(n: str) -> Thing {
+    let t = Thing { name: n }
+    return t
+}
+
+fn main() {
+    let a = make("a")
+    let b = make("b")
+    print(a.name + b.name)
+}
+
+// expect: ab
+// drops: b, a

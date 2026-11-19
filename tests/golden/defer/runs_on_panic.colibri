@@ -1,0 +1,13 @@
+fn work(z: int) -> int {
+    defer print("work cleaned up")
+    return 1 / z
+}
+
+fn main() {
+    defer print("main cleaned up")
+    print(work(0))
+}
+
+// expect: work cleaned up
+// expect: main cleaned up
+// panic: division by zero

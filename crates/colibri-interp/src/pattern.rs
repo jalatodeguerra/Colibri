@@ -63,6 +63,14 @@ impl Interp {
                         .zip(s.fields.iter())
                         .all(|(p, v)| self.match_pat(p, v, binds))
             }
+            (PatKind::Struct { fields, .. }, Value::Obj(o)) => {
+                let values = o.snapshot();
+                fields.len() == values.len()
+                    && fields
+                        .iter()
+                        .zip(values.iter())
+                        .all(|(p, v)| self.match_pat(p, v, binds))
+            }
             (PatKind::Tuple(items), Value::Tuple(values)) => {
                 items.len() == values.len()
                     && items

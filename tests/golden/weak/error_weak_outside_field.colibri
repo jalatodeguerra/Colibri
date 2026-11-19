@@ -1,0 +1,1 @@
+fn f(n: weak int) {} // error: `weak` is only allowed on the fields of a class

@@ -1,0 +1,15 @@
+class T { name: str }
+
+fn make(n: str) -> T {
+    let tmp = T { name: "scratch" }
+    let keep = T { name: n }
+    return keep
+}
+
+fn main() {
+    let a = make("kept")
+    print("got " + a.name)
+}
+
+// expect: got kept
+// drops: scratch, kept

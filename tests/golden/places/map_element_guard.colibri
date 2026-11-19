@@ -1,0 +1,13 @@
+struct C { n: int }
+impl C {
+    fn run(var self, m: Map[str, C]) {
+        m["z"] = C { n: 0 }
+    }
+}
+
+fn main() {
+    var m = {"a": C { n: 1 }}
+    m["a"].run(m)
+}
+
+// panic: `m` modified while an element is being updated; collect the changes in a separate map and apply them afterwards
