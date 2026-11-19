@@ -1,4 +1,4 @@
-//! The checker never panics, whatever it is given: every DESIGN.md example, mangled
+//! The checker never panics, whatever it is given: every example of the corpus, mangled
 //! variants of them, and random token soup.
 
 use colibri_syntax::{FileId, parse_file};
@@ -11,10 +11,10 @@ fn check_str(src: &str) -> usize {
     colibri_check::check(&ast).diagnostics.len()
 }
 
-/// The text of every ```colibri block in DESIGN.md with its start line.
+/// The text of every ```colibri block in tests/corpus/design_examples.md with its start line.
 fn corpus() -> Vec<(usize, String)> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/DESIGN.md");
-    let text = std::fs::read_to_string(path).expect("DESIGN.md is readable");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/corpus/design_examples.md");
+    let text = std::fs::read_to_string(path).expect("the examples corpus is readable");
     let mut blocks = Vec::new();
     let mut current: Option<(usize, String)> = None;
     for (i, line) in text.lines().enumerate() {

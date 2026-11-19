@@ -1,5 +1,5 @@
 //! Parser tests: S-expression dumps, error messages, recovery and the
-//! DESIGN.md corpus.
+//! examples corpus (tests/corpus/design_examples.md).
 
 use colibri_syntax::ast::{ExprKind, ItemKind, StmtKind, TopLevel};
 use colibri_syntax::ast_dump::dump_file;
@@ -1266,16 +1266,16 @@ fn never_panics_on_token_soup() {
     }
 }
 
-// ---- the DESIGN.md corpus ----
+// ---- the examples corpus ----
 
-/// Blocks of DESIGN.md that are fragments rather than files: a substring of
+/// Blocks of the corpus that are fragments rather than files: a substring of
 /// the block and the reason. None are needed today.
 const SKIP: &[(&str, &str)] = &[];
 
-/// The text of every ```colibri block in DESIGN.md with its start line.
+/// The text of every ```colibri block in tests/corpus/design_examples.md with its start line.
 fn corpus() -> Vec<(usize, String)> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/DESIGN.md");
-    let text = std::fs::read_to_string(path).expect("DESIGN.md is readable");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/corpus/design_examples.md");
+    let text = std::fs::read_to_string(path).expect("the examples corpus is readable");
     let mut blocks = Vec::new();
     let mut current: Option<(usize, String)> = None;
     for (i, line) in text.lines().enumerate() {
@@ -1329,7 +1329,7 @@ fn every_design_block_parses_without_diagnostics() {
                     format!("  block line {line_in_block}: {}", d.message)
                 })
                 .collect();
-            failures.push(format!("DESIGN.md line {line}:\n{}", msgs.join("\n")));
+            failures.push(format!("design_examples.md line {line}:\n{}", msgs.join("\n")));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
