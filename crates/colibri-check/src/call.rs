@@ -86,7 +86,7 @@ impl FnCtx<'_, '_> {
             "assert" if !self.ck.values.contains_key(name) => self.check_assert(args, span),
             "assert_eq" if !self.ck.values.contains_key(name) => self.check_assert_eq(args, span),
             "compare" if !self.ck.values.contains_key(name) => self.check_compare(args, span),
-            "wait" | "wait_frames" | "wait_until" | "wait_real" | "wait_for"
+            "wait" | "wait_until" | "wait_real" | "wait_for"
                 if !self.ck.values.contains_key(name) =>
             {
                 self.check_wait(name, args, span)
@@ -326,14 +326,13 @@ impl FnCtx<'_, '_> {
         )
     }
 
-    /// `wait(seconds)`, `wait_frames(n)`, `wait_until(cond)` and `wait_real(seconds)`
+    /// `wait(seconds)`, `wait_until(cond)` and `wait_real(seconds)`
     /// (DESIGN §14.2). Type `()`. Whether a coroutine is running is a run-time question: any
     /// function can wait.
     fn check_wait(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Expr {
         let (param_ty, intrinsic, what) = match name {
             "wait" => (Ty::Float, Intrinsic::Wait, "a number of seconds"),
             "wait_real" => (Ty::Float, Intrinsic::WaitReal, "a number of seconds"),
-            "wait_frames" => (Ty::INT, Intrinsic::WaitFrames, "a number of frames"),
             "wait_for" => (
                 Ty::Adt(crate::types::SIGNAL_TYPE, Vec::new()),
                 Intrinsic::WaitFor,

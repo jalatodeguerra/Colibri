@@ -256,7 +256,7 @@ loop {
 ```
 
 - `vm.tick(dt) -> Result<(), Error>` adds `dt` seconds to scheduler time (what `wait(s)` counts;
-  `tick(0.0)` pauses it), advances the tick counter (`wait_frames`), and resumes every due
+  `tick(0.0)` pauses it), advances the tick counter, and resumes every due
   coroutine once in the order the coroutines were started. A coroutine started during a tick is
   resumed from the next one. A panic in a coroutine ends only that coroutine and is returned as
   `Error::Panic` (further ones are notes); running out of the instruction budget is

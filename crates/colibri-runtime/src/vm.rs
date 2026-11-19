@@ -83,7 +83,6 @@ const RESERVED_NAMES: &[&str] = &[
     "ok",
     "err",
     "wait",
-    "wait_frames",
     "wait_until",
     "wait_real",
     "wait_for",
@@ -1176,7 +1175,7 @@ impl Vm {
     /// Advances scheduler time by `dt` seconds and resumes every coroutine that is due, once,
     /// in the order the coroutines were started (DESIGN §14.2, ARCHITECTURE §16). A coroutine
     /// started during the tick waits for the next one. `tick(0.0)` pauses time: only coroutines
-    /// waiting on `wait_until`, `wait_frames` or `wait(0)` can move.
+    /// waiting on `wait_until` or `wait(0)` can move.
     ///
     /// A panic in a coroutine ends that coroutine only; the others still run in this tick, and
     /// the first panic is returned as [`Error::Panic`] (the rest ride along as notes). The `Vm`
@@ -1208,7 +1207,7 @@ impl Vm {
     /// Runs the event loop until no coroutine is alive: what `colibri run` does after `main`.
     /// It ticks the scheduler with the time elapsed on the [`VmBuilder::clock`], then sleeps on
     /// that clock until the next timed wake (`wait`, `wait_real`); coroutines that poll at
-    /// every tick (`wait_until`, `wait_frames`, `join`) are checked every `poll` seconds,
+    /// every tick (`wait_until`, `join`) are checked every `poll` seconds,
     /// 1 ms by default ([`Vm::run_event_loop_polling`]). A panic in a coroutine ends the loop
     /// with that error; the remaining coroutines stay alive (and are cancelled at shutdown).
     pub fn run_event_loop(&mut self) -> Result<(), Error> {

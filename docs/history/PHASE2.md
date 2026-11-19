@@ -16,7 +16,7 @@ Each step is one or more small PRs. Every PR lands with golden tests and an ARCH
 section ("as built") for the decisions it had to make.
 
 1. **Coroutines** (DESIGN §14.2, ARCHITECTURE §2): `go f(args)` and the `Coroutine[T]` handle
-   (`cancel`, `done`, `join`), `wait`, `wait_frames`, `wait_until`, `wait_real`, a per-`Vm`
+   (`cancel`, `done`, `join`), `wait`, `wait_until`, `wait_real`, a per-`Vm`
    scheduler driven by `vm.tick(dt)`, `task.tick(dt)` or the event loop `colibri run` runs after
    `main`, and cancellation that unwinds through `defer`s and drops. Built: ARCHITECTURE §16.
 2. **`CoGroup`, `Signal` and `wait_for`** (DESIGN §14.2): groups that cancel their coroutines

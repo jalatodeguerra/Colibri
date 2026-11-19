@@ -193,8 +193,6 @@ enum Wake {
     Ready,
     /// When scheduler time reaches this.
     Time(f64),
-    /// When the tick counter reaches this.
-    Frame(u64),
     /// When the real clock reaches this.
     Real(f64),
     /// When this coroutine handle is finished.
@@ -409,7 +407,7 @@ impl Interp {
 
     /// How long until the next coroutine needs a tick, for an event loop: `None` when nothing
     /// is alive or every live coroutine waits for a signal (nothing but an emit can wake it), `Some(0.0)`-ish small polling interval when something is checked at every tick
-    /// (`wait_until`, `wait_frames`, `join`), else the time to the earliest timed wake.
+    /// (`wait_until`, `join`), else the time to the earliest timed wake.
     pub fn next_wake(&mut self, poll: f64) -> Option<f64> {
         let mut best: Option<f64> = None;
         let mut real_now: Option<f64> = None;
@@ -434,9 +432,7 @@ impl Interp {
                 }
                 // Only a completion (which ends the sleep) can wake it.
                 Wake::External(_) => f64::INFINITY,
-                Wake::Ready | Wake::Frame(_) | Wake::Join(_) | Wake::Group(_) | Wake::Signal(_) => {
-                    poll
-                }
+                Wake::Ready | Wake::Join(_) | Wake::Group(_) | Wake::Signal(_) => poll
             };
             best = Some(best.map_or(delay, |b| b.min(delay)));
         }
@@ -517,7 +513,6 @@ impl Interp {
                 Wake::Group(g) => s.groups.get(g).is_none_or(|m| m.iter().all(|c| *c == e.id)),
                 Wake::Ready => true,
                 Wake::Time(d) => s.time + TIME_EPSILON >= *d,
-                Wake::Frame(f) => s.frame >= *f,
                 Wake::Real(d) => *real_now.get_or_insert_with(|| s.clock.now()) >= *d,
                 Wake::Join(w) => w.upgrade().is_none_or(|h| handle_status(&h) != RUNNING),
                 Wake::External(op) => s.ext.completed.contains(op),
@@ -914,7 +909,7 @@ impl Interp {
         Ok(())
     }
 
-    /// `wait`, `wait_frames`, `wait_until`, `wait_real` and `task.tick`.
+    /// `wait`, `wait_until`, `wait_real` and `task.tick`.
     pub(crate) fn coro_intrinsic(
         &mut self,
         fiber: &mut Fiber,
@@ -924,7 +919,6 @@ impl Interp {
     ) -> Eval {
         let name = match intrinsic {
             Intrinsic::Wait => "wait",
-            Intrinsic::WaitFrames => "wait_frames",
             Intrinsic::WaitUntil => "wait_until",
             Intrinsic::WaitReal => "wait_real",
             Intrinsic::WaitFor => "wait_for",
@@ -988,12 +982,6 @@ impl Interp {
                 } else {
                     Wake::Real(self.sched.clock.now() + s)
                 };
-                self.suspend(fiber, id, wake)?;
-                Ok(Value::Unit)
-            }
-            (Intrinsic::WaitFrames, Value::Int(n)) => {
-                let n = n.max(1) as u64;
-                let wake = Wake::Frame(self.sched.frame.saturating_add(n));
                 self.suspend(fiber, id, wake)?;
                 Ok(Value::Unit)
             }

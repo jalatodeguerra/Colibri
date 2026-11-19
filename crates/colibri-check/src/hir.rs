@@ -839,8 +839,6 @@ pub enum Intrinsic {
     NumMethod(NumMethod, Num),
     /// `wait(seconds: float)`: pauses the running coroutine for scheduler time.
     Wait,
-    /// `wait_frames(n: int)`: pauses for `n` ticks.
-    WaitFrames,
     /// `wait_until(cond: fn() -> bool)`: pauses until `cond()` is true, checked at every tick.
     WaitUntil,
     /// `wait_real(seconds: float)`: pauses for wall-clock time.

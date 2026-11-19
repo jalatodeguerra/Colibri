@@ -1414,6 +1414,13 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             self.ck.report(diag);
             return;
         }
+        if name == "wait_frames" {
+            diag = diag.with_hint(
+                "there is no `wait_frames`; use `wait(seconds)`, or `wait_until(cond)` to wait for a condition",
+            );
+            self.ck.report(diag);
+            return;
+        }
         let owners: Vec<&str> = self
             .ck
             .types
