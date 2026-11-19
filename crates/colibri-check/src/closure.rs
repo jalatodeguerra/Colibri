@@ -18,6 +18,7 @@ use crate::hir::{
     self, Block, Body, Capture, CaptureMode, ClosureExpr, Expr, FnId, LocalId, LocalInfo, Storage,
 };
 use crate::infer::VarKind;
+use crate::modules::BASE;
 use crate::types::Ty;
 use crate::zonk;
 
@@ -191,6 +192,8 @@ impl FnCtx<'_, '_> {
             generics: Vec::new(),
             self_ty: None,
             host: None,
+            module: self.ck.cur_mod,
+            public: false,
         });
         id
     }
@@ -404,6 +407,7 @@ impl FnCtx<'_, '_> {
                     span: l.span,
                     default: None,
                     mutable: l.mutable,
+                    module: BASE,
                 })
                 .collect();
             let info = &mut self.ck.fns[d.f.0 as usize];

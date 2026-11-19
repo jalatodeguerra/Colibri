@@ -9,6 +9,7 @@ use crate::call::Bound;
 use crate::checker::{Checker, ParamInfo};
 use crate::hir::{self, Expr, FieldDef, FieldIdx, TypeDef, TypeDefKind, ValueProj};
 use crate::infer::VarKind;
+use crate::modules::BASE;
 use crate::types::{Ty, TypeId};
 
 impl FnCtx<'_, '_> {
@@ -48,7 +49,12 @@ impl FnCtx<'_, '_> {
                     TypeDefKind::Struct { fields } | TypeDefKind::Class { fields } => {
                         if let Some(i) = fields.iter().position(|f| f.name == name.name) {
                             let map = Checker::param_map_of(def, targs);
-                            return Some((FieldIdx(i as u32), fields[i].ty.subst(&map)));
+                            let found = (FieldIdx(i as u32), fields[i].ty.subst(&map));
+                            if !self.ck.field_visible(*id, i) {
+                                self.ck.report_private("field", &name.name, *id, name.span);
+                                return None;
+                            }
+                            return Some(found);
                         }
                         let names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
                         let mut diag = Diagnostic::error(
@@ -153,6 +159,9 @@ impl FnCtx<'_, '_> {
 
     /// `base.name` used as a value.
     pub fn check_field_expr(&mut self, base: &ast::Expr, name: &ast::Ident, span: Span) -> Expr {
+        if let Some(q) = self.qualified_parts(base, name) {
+            return self.check_ident(&q, span);
+        }
         if let Some((ty, owner_args)) = self.type_path_expr(base) {
             return self.check_type_member(ty, owner_args, name, None, span);
         }
@@ -282,11 +291,17 @@ impl FnCtx<'_, '_> {
     pub fn type_path_expr(&mut self, e: &ast::Expr) -> Option<(TypeId, Option<Vec<Ty>>)> {
         match &e.kind {
             ExprKind::Ident(id) => self.type_path(id).map(|t| (t, None)),
+            // `shapes.Shape`: a type of an imported module.
+            ExprKind::Field { .. } => {
+                let q = self.qualified(e)?;
+                self.type_path(&q).map(|t| (t, None))
+            }
             ExprKind::Index { base, args } => {
-                let ExprKind::Ident(id) = &base.kind else {
-                    return None;
+                let id = match &base.kind {
+                    ExprKind::Ident(id) => id.clone(),
+                    _ => self.qualified(base)?,
                 };
-                let ty = self.type_path(id)?;
+                let ty = self.type_path(&id)?;
                 let wanted = self.ck.types[ty.0 as usize].params.len();
                 let given = match self.explicit_type_args(args) {
                     Some(g) if g.len() == wanted => g,
@@ -330,6 +345,12 @@ impl FnCtx<'_, '_> {
             return self.construct_variant(ty, owner_args, v as u32, args, span);
         }
         if let Some(&f) = self.ck.methods.get(&(ty, name.name.clone())) {
+            if !self.ck.fn_visible(f) {
+                self.check_args_loosely_opt(args);
+                self.ck
+                    .report_private("function", &name.name, ty, name.span);
+                return self.error_expr(span);
+            }
             let info = &self.ck.fns[f.0 as usize];
             if info.receiver.is_some() {
                 let (shown, tname) = (name.name.clone(), def.name.clone());
@@ -515,6 +536,7 @@ impl FnCtx<'_, '_> {
                     span: f.span,
                     default: None,
                     mutable: false,
+                    module: BASE,
                 })
                 .collect();
             let Some(bound) = self.bind_args(&full, &params, args, span, 0) else {
@@ -651,6 +673,32 @@ impl FnCtx<'_, '_> {
                 return self.error_expr(span);
             }
         };
+        let hidden: Vec<String> = (0..self.ck.types[id.0 as usize].fields().len())
+            .filter(|&i| !self.ck.field_visible(id, i))
+            .map(|i| format!("`{}`", self.ck.types[id.0 as usize].fields()[i].name))
+            .collect();
+        if !hidden.is_empty() {
+            loose(self);
+            let tname = self.ck.types[id.0 as usize].name.clone();
+            let package = self.ck.type_package(id);
+            let plural = if hidden.len() == 1 { "" } else { "s" };
+            let mut diag = Diagnostic::error(
+                format!(
+                    "`{tname}` cannot be built with `{{ ... }}` here: the field{plural} {} {} not exported from the package `{package}`",
+                    hidden.join(", "),
+                    if hidden.len() == 1 { "is" } else { "are" },
+                ),
+                ty_expr.span,
+            );
+            let ctors = self.ck.constructors_of(id);
+            diag = diag.with_hint(if ctors.is_empty() {
+                format!("`{tname}` exports no function that builds one; add a `pub fn` constructor next to it")
+            } else {
+                format!("use a constructor: {}", ctors.join(", "))
+            });
+            self.ck.report(diag);
+            return self.error_expr(span);
+        }
         let def = &self.ck.types[id.0 as usize];
         let is_class = def.is_class();
         let word = kind_word(def);
@@ -665,6 +713,7 @@ impl FnCtx<'_, '_> {
             })
             .collect();
         let defaults = self.ck.type_extra[id.0 as usize].defaults.clone();
+        let owner_mod = self.ck.type_extra[id.0 as usize].module.unwrap_or(BASE);
         let mut given: Vec<Option<Bound>> = decls.iter().map(|_| None).collect();
         let mut ok = true;
         for (source, init) in fields.iter().enumerate() {
@@ -724,7 +773,7 @@ impl FnCtx<'_, '_> {
                 (Some(b), _) => bound.push(b),
                 (None, Some(default)) if decls[i].weak => {
                     let wanted = Ty::Option(Box::new(decls[i].ty.clone()));
-                    let value = self.check_default_at_call(default, &wanted, span);
+                    let value = self.check_default_at_call(default, &wanted, span, owner_mod);
                     let expr = self.mk(
                         hir::ExprKind::ToWeak(Box::new(value)),
                         decls[i].ty.clone(),
@@ -733,7 +782,7 @@ impl FnCtx<'_, '_> {
                     bound.push(Bound { expr, source: None });
                 }
                 (None, Some(default)) => {
-                    let expr = self.check_default_at_call(default, &decls[i].ty, span);
+                    let expr = self.check_default_at_call(default, &decls[i].ty, span, owner_mod);
                     bound.push(Bound { expr, source: None });
                 }
                 // A weak field that is not mentioned starts out empty (DESIGN §7.2: the

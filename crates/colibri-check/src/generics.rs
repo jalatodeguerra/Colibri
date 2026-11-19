@@ -160,6 +160,7 @@ impl Checker<'_> {
                         span: r.span,
                         default: None,
                         mutable,
+                        module: self.cur_mod,
                     });
                 }
                 None => {
@@ -200,6 +201,7 @@ impl Checker<'_> {
                 span: p.name.span,
                 default: p.default.as_ref(),
                 mutable: false,
+                module: self.cur_mod,
             });
         }
         let ret = match &decl.ret {

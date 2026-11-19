@@ -11,6 +11,7 @@ use crate::body::FnCtx;
 use crate::call::Receiver;
 use crate::checker::ParamInfo;
 use crate::hir::{self, Builtin, Callee, Expr};
+use crate::modules::BASE;
 use crate::optres::{
     ERROR_METHODS, OPTION_METHODS, RESULT_METHODS, error_sig, option_sig, result_sig,
 };
@@ -454,6 +455,7 @@ impl FnCtx<'_, '_> {
                 span: name.span,
                 default: None,
                 mutable: false,
+                module: BASE,
             })
             .collect();
         let full = format!("{}.{}", self.show(&recv_ty), name.name);

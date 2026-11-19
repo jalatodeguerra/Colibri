@@ -1,0 +1,4 @@
+import one.{item}
+import two.{item} // error: ambiguous
+
+fn main() {}

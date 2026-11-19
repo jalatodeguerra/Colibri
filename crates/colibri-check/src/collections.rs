@@ -17,9 +17,24 @@ pub(crate) fn expr_as_type(e: &ast::Expr) -> Option<ast::TypeExpr> {
             path: vec![id.clone()],
             args: Vec::new(),
         },
-        ExprKind::Index { base, args } => {
-            let ExprKind::Ident(id) = &base.kind else {
+        // `shapes.Shape`: a type of an imported module (the checker decides if `shapes` is one).
+        ExprKind::Field { base, name } => {
+            let ExprKind::Ident(module) = &base.kind else {
                 return None;
+            };
+            TypeKind::Named {
+                path: vec![module.clone(), name.clone()],
+                args: Vec::new(),
+            }
+        }
+        ExprKind::Index { base, args } => {
+            let path = match &base.kind {
+                ExprKind::Ident(id) => vec![id.clone()],
+                ExprKind::Field { base, name } => match &base.kind {
+                    ExprKind::Ident(module) => vec![module.clone(), name.clone()],
+                    _ => return None,
+                },
+                _ => return None,
             };
             let args = args
                 .iter()
@@ -28,10 +43,7 @@ pub(crate) fn expr_as_type(e: &ast::Expr) -> Option<ast::TypeExpr> {
                     IndexArg::Expr(x) => expr_as_type(x),
                 })
                 .collect::<Option<Vec<_>>>()?;
-            TypeKind::Named {
-                path: vec![id.clone()],
-                args,
-            }
+            TypeKind::Named { path, args }
         }
         ExprKind::Tuple(items) => {
             TypeKind::Tuple(items.iter().map(expr_as_type).collect::<Option<Vec<_>>>()?)

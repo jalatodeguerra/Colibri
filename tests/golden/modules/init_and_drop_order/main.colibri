@@ -1,0 +1,19 @@
+import a
+import b
+
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) { print("drop {self.name}") }
+}
+
+let m = Res { name: "main" }
+
+fn main() { print("main {a.touch()} {b.touch()}") }
+// expect: init a
+// expect: init b
+// expect: main 1 2
+// expect: drop main
+// expect: drop b
+// expect: drop a
+// drops: main, b, a

@@ -29,10 +29,12 @@ mod iter;
 mod loops;
 mod matching;
 mod methods;
+mod modules;
 mod numeric;
 mod obligations;
 mod option;
 mod optres;
+pub mod package;
 mod pat;
 mod place;
 mod prelude;
@@ -64,7 +66,37 @@ pub fn check_with_stack_budget(file: &colibri_syntax::ast::File, budget: usize) 
 }
 
 /// Checks a parsed file against what the host provides (EMBEDDING §4): its functions and value
-/// types are in scope, and the capabilities it granted decide what the file may use.
+/// types are in scope, and the capabilities it granted decide what the file may use. The file
+/// is the whole program: it has no siblings to `import` (a named host module still can be).
 pub fn check_with_host(file: &colibri_syntax::ast::File, host: &HostEnv, budget: usize) -> Checked {
-    checker::Checker::new(file, host, budget).run()
+    let meta = package::ModuleMeta {
+        name: String::new(),
+        package: 0,
+        entry: true,
+        imports: std::collections::HashMap::new(),
+    };
+    let packages = [package::PackageNode {
+        name: String::new(),
+    }];
+    let inputs = [ModuleInput { file, meta: &meta }];
+    check_modules(&inputs, &packages, host, budget)
+}
+
+/// One module of a program: its syntax tree and what the loader found out about it.
+#[derive(Clone, Copy, Debug)]
+pub struct ModuleInput<'a> {
+    pub file: &'a colibri_syntax::ast::File,
+    pub meta: &'a package::ModuleMeta,
+}
+
+/// Checks a whole program as one unit (ARCHITECTURE §11.3). `inputs` are in initialisation
+/// order (an imported module before its importer) with the entry last, as
+/// [`package::Loaded::inputs`] gives them; `packages` is what their metas index into.
+pub fn check_modules(
+    inputs: &[ModuleInput<'_>],
+    packages: &[package::PackageNode],
+    host: &HostEnv,
+    budget: usize,
+) -> Checked {
+    checker::Checker::new(inputs, packages, host, budget).run()
 }

@@ -8,11 +8,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use colibri_check::HostEnv;
 use colibri_check::hir::{HostFnId, Program};
+use colibri_check::host::{DEFAULT_MODULE, is_module_name};
+use colibri_check::package::{DiskFs, Entry, MemoryFs, SourceFs};
 use colibri_check::types::{RESULT_TYPE, Ty, VARIANT_ERR};
 use colibri_interp::{
     DEFAULT_NATIVE_STACK_BUDGET, Fiber, HostFault, HostImpl, Interp, Value as InterpValue,
 };
-use colibri_syntax::{Diagnostic, SourceMap, parse_file};
+use colibri_syntax::{Diagnostic, SourceMap};
 
 use crate::cap::{Cap, CapSet};
 use crate::convert::{Args, FromColibri, Value};
@@ -116,6 +118,7 @@ impl VmBuilder {
             caps: self.caps,
             registry: TypeRegistry::new(),
             host_fns: Vec::new(),
+            modules: Vec::new(),
         }
     }
 }
@@ -137,6 +140,9 @@ pub struct Vm {
     registry: TypeRegistry,
     /// The registered host functions, in the order of their `HostFnId`s.
     host_fns: Vec<HostFnEntry>,
+    /// The named host modules (`vm.module("physics")`) that have something registered, in the
+    /// order they got it. The default `host` module always exists and is not listed.
+    modules: Vec<String>,
 }
 
 impl Default for Vm {
@@ -194,7 +200,7 @@ impl Vm {
         name: &str,
         f: F,
     ) -> Result<Registration<'_>, Error> {
-        self.register_inner(name, None, f)
+        self.register_inner(DEFAULT_MODULE, name, None, f)
     }
 
     /// Like [`Vm::register_fn`], with real parameter names, so a script may pass arguments by
@@ -218,11 +224,44 @@ impl Vm {
         f: F,
     ) -> Result<Registration<'_>, Error> {
         let names = params.iter().map(ToString::to_string).collect();
-        self.register_inner(name, Some(names), f)
+        self.register_inner(DEFAULT_MODULE, name, Some(names), f)
+    }
+
+    /// The host module `name`, to register functions and types into. A script uses them after
+    /// `import name` (`physics.step()`, or `import physics.{step}`), while what goes into the
+    /// default module ([`Vm::register_fn`]) is in scope everywhere without an import. The module
+    /// exists once something is registered into it.
+    ///
+    /// ```
+    /// use colibri_runtime as colibri;
+    ///
+    /// # fn main() -> Result<(), colibri::Error> {
+    /// let out = colibri::SharedBuffer::new();
+    /// let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    /// vm.module("physics").register_fn("gravity", || 9.81_f64)?;
+    /// vm.load_source("a.colibri", "import physics\nprint(physics.gravity())\n")?;
+    /// assert_eq!(out.contents(), "9.81\n");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn module(&mut self, name: &str) -> HostModule<'_> {
+        HostModule {
+            vm: self,
+            name: name.to_string(),
+        }
+    }
+
+    /// The names of the host modules that have an interface: `host` first, then the named
+    /// ones in the order they were first registered into.
+    pub fn module_names(&self) -> Vec<String> {
+        let mut names = vec![DEFAULT_MODULE.to_string()];
+        names.extend(self.modules.iter().cloned());
+        names
     }
 
     fn register_inner<Marker, F: HostFn<Marker>>(
         &mut self,
+        module: &str,
         name: &str,
         names: Option<Vec<String>>,
         f: F,
@@ -234,17 +273,24 @@ impl Vm {
         if self.program.is_some() {
             return Err(Error::AlreadyLoaded);
         }
+        Self::check_module_name(module).map_err(fail)?;
         if RESERVED_NAMES.contains(&name) {
             return Err(fail("this name is built into the language".to_string()));
         }
-        if self.host_fns.iter().any(|e| e.name == name) {
-            return Err(fail(
-                "a host function with this name is registered".to_string(),
-            ));
+        if self
+            .host_fns
+            .iter()
+            .any(|e| e.module == module && e.name == name)
+        {
+            return Err(fail(format!(
+                "a host function with this name is registered in the module `{module}`"
+            )));
         }
         // Describe into a copy, so a failed registration leaves nothing behind.
         let mut registry = self.registry.clone();
+        registry.current_module = (module != DEFAULT_MODULE).then(|| module.to_string());
         let sig = F::sig(&mut registry);
+        registry.current_module = None;
         if let Some(conflict) = registry.conflicts.first() {
             return Err(fail(conflict.clone()));
         }
@@ -258,6 +304,7 @@ impl Vm {
             )));
         }
         self.host_fns.push(HostFnEntry {
+            module: module.to_string(),
             name: name.to_string(),
             sig,
             raw: f.into_raw(),
@@ -266,10 +313,12 @@ impl Vm {
             names,
         });
         let before = std::mem::replace(&mut self.registry, registry);
+        let added = self.note_module(module);
         // Whatever the names or types, what is printed must read back.
-        if let Err(message) = HostEnv::from_text(&self.rendered().text) {
+        if let Err(message) = self.validate_interfaces() {
             self.host_fns.pop();
             self.registry = before;
+            self.forget_module(module, added);
             return Err(fail(message));
         }
         let index = self.host_fns.len() - 1;
@@ -280,25 +329,111 @@ impl Vm {
     /// mentions it, so scripts can use it as a type. A [`crate::HostType`] brings its methods
     /// along; one that a registered signature mentions is registered automatically.
     pub fn register_type<T: crate::IntoColibri>(&mut self) -> Result<(), Error> {
+        self.register_type_in::<T>(DEFAULT_MODULE)
+    }
+
+    fn register_type_in<T: crate::IntoColibri>(&mut self, module: &str) -> Result<(), Error> {
+        let type_name = std::any::type_name::<T>();
+        let fail = |message: String| Error::Registration {
+            name: type_name.to_string(),
+            message,
+        };
         if self.program.is_some() {
             return Err(Error::AlreadyLoaded);
         }
+        Self::check_module_name(module).map_err(fail)?;
         let mut registry = self.registry.clone();
+        registry.current_module = (module != DEFAULT_MODULE).then(|| module.to_string());
         let _ = T::ty(&mut registry);
+        registry.current_module = None;
         if let Some(conflict) = registry.conflicts.first() {
-            return Err(Error::Registration {
-                name: std::any::type_name::<T>().to_string(),
-                message: conflict.clone(),
-            });
+            return Err(fail(conflict.clone()));
         }
         let before = std::mem::replace(&mut self.registry, registry);
+        let added = self.note_module(module);
         // Whatever the names, what is printed must read back.
-        if let Err(message) = HostEnv::from_text(&self.rendered().text) {
+        if let Err(message) = self.validate_interfaces() {
             self.registry = before;
-            return Err(Error::Registration {
-                name: std::any::type_name::<T>().to_string(),
-                message,
-            });
+            self.forget_module(module, added);
+            return Err(fail(message));
+        }
+        Ok(())
+    }
+
+    fn check_module_name(module: &str) -> Result<(), String> {
+        if module == DEFAULT_MODULE {
+            return Ok(());
+        }
+        if !is_module_name(module) || module == "std" {
+            return Err(format!(
+                "`{module}` is not a usable module name: use letters, digits and `_` (and not `std`, which is the standard library)"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Remembers that `module` has something registered; whether it was new.
+    fn note_module(&mut self, module: &str) -> bool {
+        if module == DEFAULT_MODULE || self.modules.iter().any(|m| m == module) {
+            return false;
+        }
+        self.modules.push(module.to_string());
+        true
+    }
+
+    fn forget_module(&mut self, module: &str, added: bool) {
+        if added {
+            self.modules.retain(|m| m != module);
+        }
+    }
+
+    /// Prints every module's interface and reads it back, and checks that no module mentions
+    /// the types of another named module (its interface text could not express that).
+    fn validate_interfaces(&self) -> Result<(), String> {
+        for module in self.module_names() {
+            HostEnv::from_text(&self.rendered_module(&module).text)?;
+        }
+        let reg = &self.registry;
+        let check = |module: &str, sig: &crate::types::SigDesc, what: &str| -> Result<(), String> {
+            let mut names = Vec::new();
+            for p in &sig.params {
+                p.mentions(&mut names);
+            }
+            sig.ret.mentions(&mut names);
+            for n in names {
+                let owner = reg.module_of(n);
+                if owner != module && owner != DEFAULT_MODULE {
+                    return Err(format!(
+                        "{what} is in the module `{module}` but mentions the type `{n}` of the module `{owner}`; a module can only mention its own types and those of the default `host` module"
+                    ));
+                }
+            }
+            Ok(())
+        };
+        for f in &self.host_fns {
+            check(&f.module, &f.sig, &format!("the function `{}`", f.name))?;
+        }
+        for c in &reg.classes {
+            let module = c.module.as_deref().unwrap_or(DEFAULT_MODULE);
+            for m in &c.methods {
+                check(
+                    module,
+                    &m.sig,
+                    &format!("the method `{}.{}`", c.name, m.name),
+                )?;
+            }
+        }
+        for (i, d) in reg.decls.iter().enumerate() {
+            if let crate::types::TypeDecl::Struct { name, fields } = d {
+                let module = reg.decl_modules[i].as_deref().unwrap_or(DEFAULT_MODULE);
+                for (field, ty) in fields {
+                    let sig = crate::types::SigDesc {
+                        params: vec![ty.clone()],
+                        ret: crate::types::TypeDesc::Unit,
+                    };
+                    check(module, &sig, &format!("the field `{name}.{field}`"))?;
+                }
+            }
         }
         Ok(())
     }
@@ -313,12 +448,19 @@ impl Vm {
 
     /// The raw function that implements the host function or method `name` (`World.step`),
     /// and the capability it needs.
-    fn find_raw(&self, name: &str) -> Option<(crate::host::RawHostFn, Option<Cap>)> {
-        if let Some(entry) = self.host_fns.iter().find(|e| e.name == name) {
+    fn find_raw(&self, module: &str, name: &str) -> Option<(crate::host::RawHostFn, Option<Cap>)> {
+        if let Some(entry) = self
+            .host_fns
+            .iter()
+            .find(|e| e.module == module && e.name == name)
+        {
             return Some((entry.raw.clone(), entry.requires));
         }
         let (class, method) = name.split_once('.')?;
-        let class = self.registry.classes.iter().find(|c| c.name == class)?;
+        let class =
+            self.registry.classes.iter().find(|c| {
+                c.name == class && c.module.as_deref().unwrap_or(DEFAULT_MODULE) == module
+            })?;
         let method = class.methods.iter().find(|m| m.name == method)?;
         Some((method.raw.clone(), None))
     }
@@ -348,7 +490,11 @@ impl Vm {
     // ---- interface files ----
 
     fn rendered(&self) -> Rendered {
-        iface::render(&self.registry, &self.host_fns)
+        self.rendered_module(DEFAULT_MODULE)
+    }
+
+    fn rendered_module(&self, module: &str) -> Rendered {
+        iface::render(&self.registry, &self.host_fns, module)
     }
 
     /// The canonical interface (`.cbi`) text of what the host registered: the text the checker
@@ -372,25 +518,32 @@ impl Vm {
     /// Checks that the file at `path` is the interface of what the host registered, for a CI
     /// check that a committed `.cbi` is current: [`Error::InterfaceMismatch`] when it is not.
     pub fn verify_interface(&self, path: impl AsRef<Path>) -> Result<(), Error> {
-        let path = path.as_ref();
+        self.verify_text(path.as_ref(), &self.rendered())
+    }
+
+    fn verify_text(&self, path: &Path, rendered: &Rendered) -> Result<(), Error> {
         let found = std::fs::read_to_string(path).map_err(|e| Error::Io {
             path: path.display().to_string(),
             message: e.to_string(),
         })?;
-        let rendered = self.rendered();
         if found == rendered.text {
             return Ok(());
         }
         Err(Error::InterfaceMismatch {
             path: path.display().to_string(),
-            expected: rendered.hash,
+            expected: rendered.hash.clone(),
             found: iface::declared_hash(&found),
         })
     }
 
     /// The interface as the checker reads it, with the host's grants.
     fn host_env(&self) -> Result<HostEnv, Error> {
-        let mut env = HostEnv::from_text(&self.rendered().text).map_err(Error::Internal)?;
+        let mut env = HostEnv::new();
+        for module in self.module_names() {
+            let one =
+                HostEnv::from_text(&self.rendered_module(&module).text).map_err(Error::Internal)?;
+            env.merge(one);
+        }
         for cap in self.caps.iter() {
             env.grant(cap.name());
         }
@@ -401,7 +554,7 @@ impl Vm {
     /// stays a trap: the checker already refused every call of it.
     fn install_host_fns(&mut self, program: &Program) {
         for (i, def) in program.host_fns.iter().enumerate() {
-            let Some((raw, requires)) = self.find_raw(&def.name) else {
+            let Some((raw, requires)) = self.find_raw(&def.module, &def.name) else {
                 continue;
             };
             if requires.is_some_and(|cap| !self.caps.contains(cap)) {
@@ -432,31 +585,83 @@ impl Vm {
 
     /// Reads, checks and runs a script file: module-level values are initialised, then its
     /// top-level statements run. `fn main` is not called; use [`Vm::run_main`].
+    ///
+    /// The file's folder is its implicit package (DESIGN §13): `import helpers` finds
+    /// `helpers.colibri` next to it, `import util.strings` finds `util/strings.colibri`, and
+    /// every file reached that way is checked together with it. A `colibri.toml` in the folder
+    /// supplies the dependencies `import` may name.
     pub fn load_file(&mut self, path: impl AsRef<Path>) -> Result<(), Error> {
+        self.load_entry(&DiskFs, Entry::File(path.as_ref()))
+    }
+
+    /// Reads, checks and runs the package in folder `dir`: its `colibri.toml` names it and lists
+    /// its dependencies, its `main.colibri` is the entry (module values are initialised in
+    /// dependency order, then the top-level statements of `main.colibri` run). `fn main` is not
+    /// called; use [`Vm::run_main`].
+    pub fn load_package(&mut self, dir: impl AsRef<Path>) -> Result<(), Error> {
+        self.load_entry(&DiskFs, Entry::Package(dir.as_ref()))
+    }
+
+    /// [`Vm::load_package`] for a folder, [`Vm::load_file`] for anything else: what
+    /// `colibri run <path>` does.
+    pub fn load_path(&mut self, path: impl AsRef<Path>) -> Result<(), Error> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path).map_err(|e| Error::Io {
-            path: path.display().to_string(),
-            message: e.to_string(),
-        })?;
-        self.load_source(&path.display().to_string(), &text)
+        if path.is_dir() {
+            self.load_package(path)
+        } else {
+            self.load_file(path)
+        }
     }
 
     /// Like [`Vm::load_file`] for source text; `name` is what diagnostics call the file.
     ///
     /// On a compile error nothing is loaded. If the top-level code panics, the program is
-    /// discarded (its module state is half-built) and the `Vm` can load another.
+    /// discarded (its module state is half-built) and the `Vm` can load another. The source has
+    /// no siblings, so `import` can only name a host module.
     pub fn load_source(&mut self, name: &str, source: &str) -> Result<(), Error> {
+        self.load_sources(&[(name, source)])
+    }
+
+    /// Loads a program given as text: `(path, text)` pairs, as if the files were on disk. The
+    /// first is the entry, and the folder it is in is the root that `import` paths start from,
+    /// so `[("app/main.colibri", ..), ("app/game/player.colibri", ..)]` lets `main.colibri`
+    /// `import game.player`. Paths are what diagnostics and stack traces call the files. For
+    /// tests and hosts that keep their scripts in memory.
+    pub fn load_sources(&mut self, files: &[(&str, &str)]) -> Result<(), Error> {
+        let Some((entry, _)) = files.first() else {
+            return Err(Error::Io {
+                path: String::new(),
+                message: "no source files were given".to_string(),
+            });
+        };
+        let mut fs = MemoryFs::new();
+        for (path, text) in files {
+            fs.insert(path, *text);
+        }
+        self.load_entry(&fs, Entry::File(Path::new(entry)))
+    }
+
+    fn load_entry(&mut self, fs: &dyn SourceFs, entry: Entry<'_>) -> Result<(), Error> {
         if self.program.is_some() {
             return Err(Error::AlreadyLoaded);
         }
         let env = self.host_env()?;
         let mut sources = SourceMap::new();
-        let file = sources.add_file(name, source);
-        let (ast, mut diagnostics) = parse_file(file, source);
+        let loaded = colibri_check::package::load(fs, &mut sources, entry, &env.named_modules())
+            .map_err(|e| Error::Io {
+                path: e.path,
+                message: e.message,
+            })?;
+        let mut diagnostics = loaded.diagnostics.clone();
         let mut program = None;
         // A tree with syntax errors would only produce follow-on errors.
-        if !diagnostics.iter().any(Diagnostic::is_error) {
-            let checked = colibri_check::check_with_host(&ast, &env, self.native_stack_budget);
+        if !loaded.has_errors() {
+            let checked = colibri_check::check_modules(
+                &loaded.inputs(),
+                &loaded.packages,
+                &env,
+                self.native_stack_budget,
+            );
             diagnostics = checked.diagnostics;
             program = checked.program;
         }
@@ -634,4 +839,67 @@ fn trampoline(name: &str, raw: crate::host::RawHostFn) -> HostImpl {
             }
         },
     )
+}
+
+/// A host module: a namespace of functions and types that scripts reach with `import`
+/// ([`Vm::module`]).
+pub struct HostModule<'vm> {
+    vm: &'vm mut Vm,
+    name: String,
+}
+
+impl HostModule<'_> {
+    /// The module's name, as `import` writes it.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Like [`Vm::register_fn`], into this module.
+    pub fn register_fn<Marker, F: HostFn<Marker>>(
+        &mut self,
+        name: &str,
+        f: F,
+    ) -> Result<Registration<'_>, Error> {
+        self.vm.register_inner(&self.name, name, None, f)
+    }
+
+    /// Like [`Vm::register_fn_named`], into this module.
+    pub fn register_fn_named<Marker, F: HostFn<Marker>, const N: usize>(
+        &mut self,
+        name: &str,
+        params: [&str; N],
+        f: F,
+    ) -> Result<Registration<'_>, Error> {
+        let names = params.iter().map(ToString::to_string).collect();
+        self.vm.register_inner(&self.name, name, Some(names), f)
+    }
+
+    /// Like [`Vm::register_type`], into this module. A type belongs to the module that first
+    /// describes it, and a module's signatures may mention only its own types and those of the
+    /// default `host` module (anything else is [`Error::Registration`]).
+    pub fn register_type<T: crate::IntoColibri>(&mut self) -> Result<(), Error> {
+        self.vm.register_type_in::<T>(&self.name)
+    }
+
+    /// The canonical interface (`.cbi`) text of this module (see [`Vm::interface_text`]).
+    pub fn interface_text(&self) -> String {
+        self.vm.rendered_module(&self.name).text
+    }
+
+    /// The hash of this module's interface (see [`Vm::interface_hash`]).
+    pub fn interface_hash(&self) -> String {
+        self.vm.rendered_module(&self.name).hash
+    }
+
+    /// Writes this module's interface to `path` unless it already holds exactly that.
+    pub fn write_interface(&self, path: impl AsRef<Path>) -> Result<bool, Error> {
+        iface::write_if_changed(path.as_ref(), &self.interface_text())
+    }
+
+    /// Checks that the file at `path` is this module's interface (see
+    /// [`Vm::verify_interface`]).
+    pub fn verify_interface(&self, path: impl AsRef<Path>) -> Result<(), Error> {
+        self.vm
+            .verify_text(path.as_ref(), &self.vm.rendered_module(&self.name))
+    }
 }

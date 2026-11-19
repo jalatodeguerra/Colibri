@@ -69,6 +69,10 @@ pub fn parse_directives(source: &str) -> Directives {
     d
 }
 
+/// A position in a golden test: the file (relative to the test's folder; empty for a test that
+/// is one file), the 1-based line and the message.
+pub type Located = (String, usize, String);
+
 /// What running a golden file produced.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -78,16 +82,16 @@ pub enum Outcome {
         panic: Option<String>,
         /// The error chain if `main` returned `err(e)` (`Error::MainReturnedErr`).
         main_err: Option<String>,
-        /// The compile warnings: (1-based line, message).
-        warnings: Vec<(usize, String)>,
+        /// The compile warnings.
+        warnings: Vec<Located>,
         /// The labels of the class objects destroyed, in order, up to and including the
         /// release of the module-level values after `main` (DESIGN §11.2).
         drops: Vec<String>,
     },
-    /// Compilation failed with these error diagnostics: (1-based line, message).
+    /// Compilation failed with these error diagnostics.
     CompileErrors {
-        errors: Vec<(usize, String)>,
-        warnings: Vec<(usize, String)>,
+        errors: Vec<Located>,
+        warnings: Vec<Located>,
     },
 }
 
@@ -95,13 +99,29 @@ pub enum Outcome {
 /// load the file, then call `main` if it has one. Run it on a thread with a big stack (see
 /// [`crate::on_big_stack`]) so deep recursion reaches the call-depth limit.
 pub fn run_golden(path: &Path, source: &str) -> Outcome {
+    let name = path.display().to_string();
+    run_with(|vm| vm.load_source(&name, source), "", &name)
+}
+
+/// Runs a golden test that is a folder: the files in it are one program, started from
+/// `main.colibri` (see `Vm::load_file`, which makes the folder its implicit package).
+pub fn run_golden_package(dir: &Path) -> Outcome {
+    let main = dir.join("main.colibri");
+    let prefix = format!("{}/", dir.display());
+    run_with(|vm| vm.load_file(&main), &prefix, "")
+}
+
+fn run_with(
+    load: impl FnOnce(&mut colibri::Vm) -> Result<(), colibri::Error>,
+    prefix: &str,
+    blank: &str,
+) -> Outcome {
     let out = colibri::SharedBuffer::new();
     let mut vm = crate::vm_builder()
         .trace_drops(true)
         .stdout(Box::new(out.clone()))
         .build();
-    let name = path.display().to_string();
-    let result = vm.load_source(&name, source).and_then(|()| vm.run_main());
+    let result = load(&mut vm).and_then(|()| vm.run_main());
     // Module-level values die after `main` returns (or after a panic), in reverse order.
     vm.shutdown();
     let drops = vm.take_drop_trace();
@@ -111,7 +131,10 @@ pub fn run_golden(path: &Path, source: &str) -> Outcome {
             .filter(|d| d.is_error() == errors)
             .map(|d| {
                 let line = sources.line_col(d.span.file, d.span.start).0;
-                (line as usize, d.message.clone())
+                let file = sources.name(d.span.file);
+                let file = file.strip_prefix(prefix).unwrap_or(file);
+                let file = if file == blank { "" } else { file };
+                (file.to_string(), line as usize, d.message.clone())
             })
             .collect::<Vec<_>>()
     };
@@ -145,29 +168,114 @@ pub fn run_golden(path: &Path, source: &str) -> Outcome {
     }
 }
 
-/// Compares an outcome with the directives; `Err` describes every mismatch.
+/// The directives of every file of a golden test that is a folder, `main.colibri` first and the
+/// others in path order (the paths are relative to the folder, with `/`).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PackageDirectives {
+    pub files: Vec<(String, Directives)>,
+}
+
+impl PackageDirectives {
+    /// Parses `(relative path, source)` pairs.
+    pub fn parse(files: &[(String, String)]) -> PackageDirectives {
+        let mut parsed: Vec<(String, Directives)> = files
+            .iter()
+            .map(|(path, source)| (path.clone(), parse_directives(source)))
+            .collect();
+        parsed.sort_by(|a, b| (a.0 != "main.colibri", &a.0).cmp(&(b.0 != "main.colibri", &b.0)));
+        PackageDirectives { files: parsed }
+    }
+
+    /// The directives that apply to the run as a whole. `expect` lines of every file in order;
+    /// `drops`, `panic`, `main-err` and `skip` come from `main.colibri` alone.
+    fn whole(&self) -> Directives {
+        let mut d = Directives::default();
+        for (path, files) in &self.files {
+            d.expect.extend(files.expect.iter().cloned());
+            if path == "main.colibri" || path.is_empty() {
+                d.panic = files.panic.clone();
+                d.main_err = files.main_err.clone();
+                d.drops = files.drops.clone();
+                d.skip = files.skip.clone();
+            }
+        }
+        d
+    }
+
+    /// Whether `main.colibri` says to skip the test.
+    pub fn skip(&self) -> Option<String> {
+        self.whole().skip
+    }
+}
+
+/// Compares an outcome with the directives of a test that is one file; `Err` describes every
+/// mismatch.
 pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
+    let single = Directives {
+        expect: d.expect.clone(),
+        errors: d.errors.clone(),
+        warnings: d.warnings.clone(),
+        panic: d.panic.clone(),
+        main_err: d.main_err.clone(),
+        drops: d.drops.clone(),
+        skip: d.skip.clone(),
+    };
+    check_package(
+        &PackageDirectives {
+            files: vec![(String::new(), single)],
+        },
+        outcome,
+    )
+}
+
+/// Compares an outcome with the directives of every file of a test; `Err` describes every
+/// mismatch.
+pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), String> {
+    let d = p.whole();
+    let errors_wanted: Vec<Located> = p
+        .files
+        .iter()
+        .flat_map(|(path, f)| f.errors.iter().map(|(l, t)| (path.clone(), *l, t.clone())))
+        .collect();
+    let warnings_wanted: Vec<Located> = p
+        .files
+        .iter()
+        .flat_map(|(path, f)| {
+            f.warnings
+                .iter()
+                .map(|(l, t)| (path.clone(), *l, t.clone()))
+        })
+        .collect();
+    let at = |file: &str, line: usize| {
+        if file.is_empty() {
+            format!("line {line}")
+        } else {
+            format!("{file}:{line}")
+        }
+    };
     match outcome {
         Outcome::CompileErrors { errors, warnings } => {
             let mut problems = Vec::new();
-            for (line, text) in &d.errors {
+            for (file, line, text) in &errors_wanted {
                 if !errors
                     .iter()
-                    .any(|(l, m)| l == line && m.contains(text.as_str()))
+                    .any(|(f, l, m)| f == file && l == line && m.contains(text.as_str()))
                 {
-                    problems.push(format!("expected error on line {line} containing {text:?}"));
+                    problems.push(format!(
+                        "expected error on {} containing {text:?}",
+                        at(file, *line)
+                    ));
                 }
             }
-            for (line, msg) in errors {
-                if !d
-                    .errors
+            for (file, line, msg) in errors {
+                if !errors_wanted
                     .iter()
-                    .any(|(l, t)| l == line && msg.contains(t.as_str()))
+                    .any(|(f, l, t)| f == file && l == line && msg.contains(t.as_str()))
                 {
-                    problems.push(format!("unexpected error on line {line}: {msg}"));
+                    problems.push(format!("unexpected error on {}: {msg}", at(file, *line)));
                 }
             }
-            problems.extend(compare_warnings(&d.warnings, warnings));
+            problems.extend(compare_warnings(&warnings_wanted, warnings));
             finish(problems)
         }
         Outcome::Compiled {
@@ -178,12 +286,13 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
             drops,
         } => {
             let mut problems = Vec::new();
-            for (line, text) in &d.errors {
+            for (file, line, text) in &errors_wanted {
                 problems.push(format!(
-                    "expected error on line {line} containing {text:?}, but it compiled"
+                    "expected error on {} containing {text:?}, but it compiled",
+                    at(file, *line)
                 ));
             }
-            problems.extend(compare_warnings(&d.warnings, warnings));
+            problems.extend(compare_warnings(&warnings_wanted, warnings));
             let expected = d
                 .expect
                 .iter()
@@ -236,24 +345,32 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
 }
 
 /// Every expected warning must appear, and every warning must be expected.
-fn compare_warnings(expected: &[(usize, String)], actual: &[(usize, String)]) -> Vec<String> {
+fn compare_warnings(expected: &[Located], actual: &[Located]) -> Vec<String> {
+    let at = |file: &str, line: usize| {
+        if file.is_empty() {
+            format!("line {line}")
+        } else {
+            format!("{file}:{line}")
+        }
+    };
     let mut problems = Vec::new();
-    for (line, text) in expected {
+    for (file, line, text) in expected {
         if !actual
             .iter()
-            .any(|(l, m)| l == line && m.contains(text.as_str()))
+            .any(|(f, l, m)| f == file && l == line && m.contains(text.as_str()))
         {
             problems.push(format!(
-                "expected warning on line {line} containing {text:?}"
+                "expected warning on {} containing {text:?}",
+                at(file, *line)
             ));
         }
     }
-    for (line, msg) in actual {
+    for (file, line, msg) in actual {
         if !expected
             .iter()
-            .any(|(l, t)| l == line && msg.contains(t.as_str()))
+            .any(|(f, l, t)| f == file && l == line && msg.contains(t.as_str()))
         {
-            problems.push(format!("unexpected warning on line {line}: {msg}"));
+            problems.push(format!("unexpected warning on {}: {msg}", at(file, *line)));
         }
     }
     problems
@@ -296,7 +413,10 @@ mod tests {
             stdout: String::new(),
             panic: None,
             main_err: None,
-            warnings: warnings.iter().map(|&(l, m)| (l, m.to_string())).collect(),
+            warnings: warnings
+                .iter()
+                .map(|&(l, m)| (String::new(), l, m.to_string()))
+                .collect(),
             drops: Vec::new(),
         }
     }
@@ -357,7 +477,10 @@ mod tests {
 
     fn errors(errors: &[(usize, &str)]) -> Outcome {
         Outcome::CompileErrors {
-            errors: errors.iter().map(|&(l, m)| (l, m.to_string())).collect(),
+            errors: errors
+                .iter()
+                .map(|&(l, m)| (String::new(), l, m.to_string()))
+                .collect(),
             warnings: Vec::new(),
         }
     }
@@ -391,8 +514,8 @@ mod tests {
     fn warnings_are_also_compared_when_compilation_fails() {
         let d = parse_directives("a // error: bad\nb // warning: odd\n");
         let both = Outcome::CompileErrors {
-            errors: vec![(1, "bad thing".into())],
-            warnings: vec![(2, "odd thing".into())],
+            errors: vec![(String::new(), 1, "bad thing".into())],
+            warnings: vec![(String::new(), 2, "odd thing".into())],
         };
         assert!(check(&d, &both).is_ok());
         let no_warning = errors(&[(1, "bad thing")]);

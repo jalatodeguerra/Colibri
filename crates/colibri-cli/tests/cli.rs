@@ -294,6 +294,139 @@ fn check_refuses_an_edited_interface_file() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("edited.cbi"));
 }
 
+/// A fresh folder holding `files` (`(relative path, text)`).
+fn folder(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("colibri-cli-dir-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (path, text) in files {
+        let full = dir.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    }
+    dir
+}
+
+const SCRIPT: &str = "import helper\nfn main() {\n    print(helper.greet(\"you\"))\n}\n";
+const HELPER: &str = "pub fn greet(who: str) -> str {\n    return \"hello {who}\"\n}\n";
+
+#[test]
+fn run_a_script_loads_its_folder_as_an_implicit_package() {
+    let dir = folder(
+        "script",
+        &[("script.colibri", SCRIPT), ("helper.colibri", HELPER)],
+    );
+    let out = colibri(&["run", dir.join("script.colibri").to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello you\n");
+}
+
+#[test]
+fn run_a_folder_runs_the_package_in_it() {
+    let dir = folder(
+        "pkg",
+        &[
+            ("colibri.toml", "[package]\nname = \"demo\"\n"),
+            ("main.colibri", SCRIPT),
+            ("helper.colibri", HELPER),
+        ],
+    );
+    let out = colibri(&["run", dir.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello you\n");
+}
+
+#[test]
+fn run_and_check_without_a_file_use_the_current_folder() {
+    let dir = folder(
+        "cwd",
+        &[
+            ("colibri.toml", "[package]\nname = \"demo\"\n"),
+            ("main.colibri", SCRIPT),
+            ("helper.colibri", HELPER),
+        ],
+    );
+    let run = |arg: &str| {
+        Command::new(env!("CARGO_BIN_EXE_colibri"))
+            .arg(arg)
+            .current_dir(&dir)
+            .output()
+            .expect("the colibri binary runs")
+    };
+    let out = run("run");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello you\n");
+    let out = run("check");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn an_error_in_an_imported_file_names_that_file() {
+    let dir = folder(
+        "err",
+        &[
+            ("colibri.toml", "[package]\nname = \"demo\"\n"),
+            ("main.colibri", SCRIPT),
+            (
+                "helper.colibri",
+                "pub fn greet(who: str) -> str {\n    return 1\n}\n",
+            ),
+        ],
+    );
+    let out = colibri(&["check", dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("helper.colibri"));
+}
+
+#[test]
+fn check_interface_accepts_a_named_module() {
+    let mut vm = colibri_runtime::Vm::builder().build();
+    vm.module("physics")
+        .register_fn("gravity", || 10i64)
+        .unwrap();
+    let cbi = temp_file("physics.cbi", &vm.module("physics").interface_text());
+    let src = temp_file(
+        "uses_physics.colibri",
+        "import physics\nfn main() {\n    print(physics.gravity())\n}\n",
+    );
+    let out = colibri(&[
+        "check",
+        "--interface",
+        cbi.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Without it `import physics` finds nothing.
+    let out = colibri(&["check", src.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("physics"));
+}
+
 // ---- colibri fmt ----
 
 use std::io::Write;

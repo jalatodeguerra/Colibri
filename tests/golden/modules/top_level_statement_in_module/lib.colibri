@@ -1,0 +1,2 @@
+pub fn f() {}
+print("hi") // error: top-level
