@@ -156,14 +156,27 @@ impl FnCtx<'_, '_> {
                 // Untyped literals inside (`[1]`) read as the types they default to.
                 let defaulted = self.infer.finalize(&from_ty).0;
                 let shown = self.show(&defaulted);
+                let hint = if shown == "str" {
+                    // Text is parsed, not converted: the parse functions say what went wrong.
+                    let (parse, then) = if matches!(Num::of(&target), Some(Num::F32 | Num::Float)) {
+                        ("parse_float", String::new())
+                    } else if name == "int" {
+                        ("parse_int", String::new())
+                    } else {
+                        ("parse_int", format!(", then `{name}(..)` if you need that type"))
+                    };
+                    format!(
+                        "`{name}(x)` converts between number types, not text; to read a number from a `str`, `import str` and call `str.{parse}(text)`, which gives a `Result`{then}"
+                    )
+                } else {
+                    format!("`{name}(x)` converts between number types; this is a `{shown}`")
+                };
                 self.ck.report(
                     Diagnostic::error(
                         format!("cannot convert a value of type `{shown}` to `{name}`"),
                         value.span,
                     )
-                    .with_hint(format!(
-                        "`{name}(x)` converts between number types; this is a `{shown}`"
-                    )),
+                    .with_hint(hint),
                 );
             }
             return self.error_expr(span);

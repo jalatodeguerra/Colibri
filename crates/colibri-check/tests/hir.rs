@@ -545,3 +545,21 @@ fn unused_variable_in_a_closure_body_warns_once() {
     let w = warnings_of("fn f() {\n    let g = fn() {\n        let z = 1\n    }\n    g()\n}\n");
     assert_eq!(w, ["unused variable `z`"]);
 }
+
+#[test]
+fn converting_text_to_a_number_points_at_the_parse_functions() {
+    let hint = |src: &str| {
+        let (ast, _) = parse_file(FileId(0), src);
+        let checked = colibri_check::check(&ast);
+        checked.diagnostics[0].hint.clone().unwrap_or_default()
+    };
+    let h = hint("let a = int(\"42\")\n");
+    assert!(h.contains("str.parse_int(text)"), "{h}");
+    let h = hint("let a = float(\"1.5\")\n");
+    assert!(h.contains("str.parse_float(text)"), "{h}");
+    let h = hint("let a = u8(\"1\")\n");
+    assert!(h.contains("parse_int") && h.contains("`u8(..)`"), "{h}");
+    // Other types keep the general hint.
+    let h = hint("let a = int(true)\n");
+    assert!(h.contains("converts between number types; this is a `bool`"), "{h}");
+}
