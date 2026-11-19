@@ -6,9 +6,9 @@ is fixed.
 
 **Status (2026-11-19):** santiago redirected Colibri to be a general-purpose language rather than
 one aimed at game development. Phase 2 was planned as the game slice of DESIGN §17.5; the plan
-below is the proposed general-purpose replacement, pending his approval of the matching DESIGN
-changes (§1 goals, §14.2 wording, §15.1 vectors, §15.6 game kit as an optional package, §17.5
-roadmap). The game kit and the game milestone are paused.
+below replaces it, and santiago approved it on 2026-11-19 together with the matching DESIGN
+changes (v0.4: §1 goals, §14.2 wording, §15.1 vectors as a std module, §15.6 game kit as an
+optional package, §17.5 roadmap). The game kit and the game milestone are paused.
 
 ## PR sequence
 
@@ -34,10 +34,12 @@ section ("as built") for the decisions it had to make.
 7. **`@repr(C)` structs and the C FFI** (DESIGN §15.2, §15.3): `extern "C"` blocks with
    `@link`, structs by value through libffi, `ptr[T]` and `unsafe`, `ffi = true` in
    `colibri.toml`, `Cap::Ffi` and the `ffi` cargo feature. Built: ARCHITECTURE §19.
-8. **Milestone:** real automation scripts written in Colibri (a file organiser, a JSON/HTTP
+8. **Vector types as the std module `vec`** (DESIGN §15.1): `import vec` gives `vec.vec2`,
+   `vec.vec3`, `vec.vec4` and `vec.ivec2..4`, plain values with component-wise operators, fields
+   and swizzles. In progress.
+9. **Milestone:** real automation scripts written in Colibri (a file organiser, a JSON/HTTP
    report generator).
 
-Vector types (DESIGN §15.1) wait for santiago's choice: a std module, built-in types, or later.
 
 ## Notes
 
