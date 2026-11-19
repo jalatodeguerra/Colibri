@@ -131,7 +131,7 @@ impl FnCtx<'_, '_> {
     }
 
     #[inline(never)]
-    fn check_ident(&mut self, id: &ast::Ident, span: Span) -> Expr {
+    pub(crate) fn check_ident(&mut self, id: &ast::Ident, span: Span) -> Expr {
         let name = id.name.as_str();
         if let Some(local) = self.lookup_local(name) {
             let ty = self.local_ty(local);

@@ -1,31 +1,46 @@
 //! Rendering of diagnostics for the terminal.
 
-use ariadne::{Label, Report, ReportKind, Source};
+use ariadne::{Label, Report, ReportKind};
 use colibri_syntax::{Diagnostic, Severity, SourceMap, Span};
 
-/// Renders `diag` with source snippets, as plain text when `color` is false.
+/// Renders `diag` with source snippets, as plain text when `color` is false. Labels may point
+/// into other files than the primary span (a cycle, "first defined here"); each file named is
+/// shown with its own snippet.
 pub fn render_diagnostic(diag: &Diagnostic, map: &SourceMap, color: bool) -> String {
     let file = map.name(diag.span.file).to_string();
     let kind = match diag.severity {
         Severity::Error => ReportKind::Error,
         Severity::Warning => ReportKind::Warning,
     };
-    let range = |s: Span| (file.clone(), s.start as usize..s.end as usize);
+    let range = |s: Span| {
+        (
+            map.name(s.file).to_string(),
+            s.start as usize..s.end as usize,
+        )
+    };
     let mut report = Report::build(kind, range(diag.span))
         .with_config(ariadne::Config::default().with_color(color))
         .with_message(&diag.message)
         .with_label(Label::new(range(diag.span)).with_message(&diag.message));
+    // Every file the report mentions, once. A label in a file the map does not have (the
+    // prelude, a host interface) cannot be shown and is left out.
+    let mut files: Vec<(String, String)> =
+        vec![(file.clone(), map.text(diag.span.file).to_string())];
     for (span, text) in &diag.labels {
+        if !map.contains(span.file) {
+            continue;
+        }
+        let name = map.name(span.file).to_string();
+        if !files.iter().any(|(n, _)| *n == name) {
+            files.push((name, map.text(span.file).to_string()));
+        }
         report = report.with_label(Label::new(range(*span)).with_message(text));
     }
     if let Some(hint) = &diag.hint {
         report = report.with_help(hint);
     }
     let mut out = Vec::new();
-    let written = report.finish().write(
-        (file.clone(), Source::from(map.text(diag.span.file))),
-        &mut out,
-    );
+    let written = report.finish().write(ariadne::sources(files), &mut out);
     if written.is_err() {
         return format!("{}: {}\n", file, diag.message);
     }

@@ -1,0 +1,10 @@
+pub struct Player { pub name: str }
+
+var spawned = 0
+
+pub fn spawn(name: str) -> Player {
+    spawned += 1
+    return Player { name: name }
+}
+
+pub fn count() -> int { return spawned }

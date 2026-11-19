@@ -8,6 +8,7 @@ use crate::body::FnCtx;
 use crate::call::Receiver;
 use crate::checker::ParamInfo;
 use crate::hir::{self, Arg, Callee, Expr, Intrinsic, Lit, Num, NumMethod};
+use crate::modules::BASE;
 use crate::suggest;
 use crate::types::{IntTy, Ty};
 
@@ -254,6 +255,7 @@ impl FnCtx<'_, '_> {
                 span: name.span,
                 default: None,
                 mutable: false,
+                module: BASE,
             })
             .collect();
         let full = format!("{}.{}", self.show(recv_ty), name.name);

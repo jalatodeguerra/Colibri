@@ -558,6 +558,27 @@ impl FnCtx<'_, '_> {
         self.pat(PatKind::Tuple(subs), expected, span)
     }
 
+    /// `shapes.Shape.Circle` with `shapes` an imported module: the type's own name in the scope
+    /// is `shapes.Shape`, so the first two segments become one.
+    fn qualify_pat_path(&self, path: &ast::PatPath) -> ast::PatPath {
+        match path.segments.as_slice() {
+            [module, name, rest @ ..]
+                if !path.leading_dot && self.ck.mod_aliases.contains_key(&module.name) =>
+            {
+                let mut segments = vec![ast::Ident {
+                    name: format!("{}.{}", module.name, name.name),
+                    span: module.span.to(name.span),
+                }];
+                segments.extend(rest.iter().cloned());
+                ast::PatPath {
+                    leading_dot: false,
+                    segments,
+                }
+            }
+            _ => path.clone(),
+        }
+    }
+
     fn struct_pat(
         &mut self,
         path: &ast::PatPath,
@@ -567,6 +588,7 @@ impl FnCtx<'_, '_> {
         cx: &mut PatCx,
         span: Span,
     ) -> Pat {
+        let path = &self.qualify_pat_path(path);
         let wild_fields = |this: &mut Self, cx: &mut PatCx| {
             for f in fields {
                 this.check_pat(&f.pat, &Ty::Error, cx);
@@ -659,6 +681,12 @@ impl FnCtx<'_, '_> {
                 self.ck.report(diag);
                 continue;
             };
+            if !self.ck.field_visible(id, i) {
+                self.check_pat(&f.pat, &Ty::Error, cx);
+                self.ck
+                    .report_private("field", &f.name.name, id, f.name.span);
+                continue;
+            }
             if subs[i].is_some() {
                 self.ck.report(Diagnostic::error(
                     format!("the field `{}` appears twice in this pattern", f.name.name),
@@ -721,6 +749,7 @@ impl FnCtx<'_, '_> {
         cx: &mut PatCx,
         span: Span,
     ) -> Pat {
+        let path = &self.qualify_pat_path(path);
         let fallback = |this: &mut Self, cx: &mut PatCx| {
             for a in args.unwrap_or_default() {
                 this.check_pat(a, &Ty::Error, cx);

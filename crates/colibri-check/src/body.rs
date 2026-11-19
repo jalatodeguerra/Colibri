@@ -13,6 +13,7 @@ use crate::hir::{
     Num, Stmt, Storage,
 };
 use crate::infer::{InferCtx, VarKind};
+use crate::modules::ModId;
 use crate::obligations::Obligation;
 use crate::pat::PatCx;
 use crate::suggest;
@@ -688,11 +689,19 @@ impl<'c, 'a> FnCtx<'c, 'a> {
 
     /// Re-checks a default argument at a call site, in the callee's module-level scope, with
     /// its diagnostics already reported once.
-    pub fn check_default_at_call(&mut self, default: &ast::Expr, ty: &Ty, call: Span) -> Expr {
+    pub fn check_default_at_call(
+        &mut self,
+        default: &ast::Expr,
+        ty: &Ty,
+        call: Span,
+        module: ModId,
+    ) -> Expr {
         let floor = std::mem::replace(&mut self.scope_floor, self.scopes.len());
         self.ck.mute();
+        let back = self.ck.enter_module(module);
         let mut value = self.check_expr(default, Some(ty));
         let ok = self.infer.coerce(&value.ty, ty).is_ok();
+        self.ck.enter_module(back);
         self.ck.unmute();
         self.scope_floor = floor;
         value.span = call;
@@ -1227,6 +1236,12 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     }
 
     pub fn report_unknown_name(&mut self, name: &str, span: Span) {
+        if let Some((alias, member)) = self.ck.split_qualified(name)
+            && let Some(diag) = self.ck.unknown_member(alias, member, span)
+        {
+            self.ck.report(diag);
+            return;
+        }
         if self.ck.scoped_param(name).is_some() {
             self.ck.report(
                 Diagnostic::error(format!("`{name}` is a type parameter, not a value"), span)

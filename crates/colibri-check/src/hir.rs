@@ -69,6 +69,8 @@ pub struct Program {
 #[derive(Clone, Debug)]
 pub struct HostFnDef {
     pub name: String,
+    /// The host module the function belongs to (`host` for the default one).
+    pub module: String,
     /// The function's entry in [`Program::fns`], which has an empty body and carries the
     /// signature and the name shown in stack traces.
     pub f: FnId,

@@ -1,0 +1,9 @@
+import game.player
+import game.player as p
+
+fn main() {
+    let a = player.spawn("ann")
+    let b = p.spawn("bob")
+    print("{a.name} {b.name} {player.count()}")
+}
+// expect: ann bob 2

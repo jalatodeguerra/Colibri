@@ -1,0 +1,7 @@
+import shapes.{Circle, area}
+
+fn main() {
+    let c = Circle { r: 2 }
+    print("{area(c)}")
+}
+// expect: 12

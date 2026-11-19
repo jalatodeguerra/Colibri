@@ -1,0 +1,3 @@
+pub struct Account { pub id: int, balance: int }
+
+pub fn open(id: int) -> Account { return Account { id: id, balance: 0 } }

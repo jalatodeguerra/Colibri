@@ -1,0 +1,4 @@
+import ui.button
+
+fn main() { print(button.label()) }
+// expect: ok

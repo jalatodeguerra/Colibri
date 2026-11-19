@@ -17,6 +17,8 @@ use crate::types::{SigDesc, TypeDecl, TypeRegistry};
 
 /// A registered host function.
 pub(crate) struct HostFnEntry {
+    /// The host module the function is registered in (`host` is the default one).
+    pub module: String,
     pub name: String,
     pub sig: SigDesc,
     pub raw: RawHostFn,
@@ -41,12 +43,15 @@ fn param_name(i: usize) -> char {
     char::from(b'a' + (i as u8 % 26))
 }
 
-/// Prints the canonical interface of the registered types and functions: the types in the
+/// Prints the canonical interface of the types and functions of one module: the types in the
 /// order they were described (which is their type id order), then the functions in
 /// registration order (which is their `HostFnId` order).
-pub(crate) fn render(reg: &TypeRegistry, fns: &[HostFnEntry]) -> Rendered {
+pub(crate) fn render(reg: &TypeRegistry, fns: &[HostFnEntry], module: &str) -> Rendered {
     let mut body = String::new();
-    for decl in &reg.decls {
+    for (i, decl) in reg.decls.iter().enumerate() {
+        if reg.decl_modules[i].as_deref().unwrap_or(DEFAULT_MODULE) != module {
+            continue;
+        }
         match decl {
             TypeDecl::Struct { name, fields } => {
                 if fields.is_empty() {
@@ -93,7 +98,7 @@ pub(crate) fn render(reg: &TypeRegistry, fns: &[HostFnEntry]) -> Rendered {
         }
     }
     let mut caps: Vec<Cap> = Vec::new();
-    for f in fns {
+    for f in fns.iter().filter(|f| f.module == module) {
         let mut line = String::new();
         if let Some(cap) = f.requires {
             line.push_str(&format!("@requires({cap}) "));
@@ -126,7 +131,7 @@ pub(crate) fn render(reg: &TypeRegistry, fns: &[HostFnEntry]) -> Rendered {
     let hash = body_hash(&body);
     let text = format!(
         "{GENERATED}\n{}\n{body}",
-        header_line(DEFAULT_MODULE, &hash, &names)
+        header_line(module, &hash, &names)
     );
     Rendered { text, hash }
 }
@@ -215,6 +220,7 @@ mod tests {
 
     fn entry(name: &str, params: Vec<TypeDesc>, ret: TypeDesc, cap: Option<Cap>) -> HostFnEntry {
         HostFnEntry {
+            module: DEFAULT_MODULE.to_string(),
             name: name.to_string(),
             sig: SigDesc { params, ret },
             raw: std::rc::Rc::new(|_, _| unreachable!()),
@@ -244,7 +250,7 @@ mod tests {
                 Some(Cap::Fs),
             ),
         ];
-        let out = render(&reg, &fns);
+        let out = render(&reg, &fns, DEFAULT_MODULE);
         let lines: Vec<&str> = out.text.lines().collect();
         assert_eq!(lines[0], GENERATED);
         assert!(

@@ -36,11 +36,17 @@ impl FnCtx<'_, '_> {
         if let Some(built) = self.check_constructor(callee, args, expected, span) {
             return built;
         }
+        // `module.f(..)` calls the function `module.f` of the scope (ARCHITECTURE §11.3).
+        let qualified;
         let id = match &callee.kind {
             ExprKind::Ident(id) => id,
-            ExprKind::Field { base, name } => {
-                return self.check_member_call(base, name, None, args, span);
-            }
+            ExprKind::Field { base, name } => match self.qualified_parts(base, name) {
+                Some(q) => {
+                    qualified = q;
+                    &qualified
+                }
+                None => return self.check_member_call(base, name, None, args, span),
+            },
             ExprKind::Paren(inner) if matches!(inner.kind, ExprKind::Ident(_)) => {
                 return self.check_call(inner, args, expected, span);
             }
@@ -90,6 +96,9 @@ impl FnCtx<'_, '_> {
                 !self.is_local(&id.name)
                     && !matches!(self.ck.values.get(&id.name), Some(ValueRef::Global(_)))
             }
+            ExprKind::Field { base, name } if self.qualified_parts(base, name).is_some() => self
+                .qualified_parts(base, name)
+                .is_some_and(|q| !matches!(self.ck.values.get(&q.name), Some(ValueRef::Global(_)))),
             // `x.map[int](..)` names a generic method; `self.handlers[0](..)` indexes a field.
             // (`is` and `as` are keywords, so no field has those names: `e.is[T]()` is the
             // downcast of an `Error`.)
@@ -403,8 +412,14 @@ impl FnCtx<'_, '_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Expr {
+        let qualified = self.qualified(base);
+        let ident = match &base.kind {
+            ExprKind::Ident(id) => Some(id),
+            _ => qualified.as_ref(),
+        };
         match &base.kind {
-            ExprKind::Ident(id) if self.lookup_local(&id.name).is_none() => {
+            _ if ident.is_some_and(|id| self.lookup_local(&id.name).is_none()) => {
+                let id = ident.expect("checked above");
                 if let Some(f) = self.lookup_fn(&id.name) {
                     let Some(explicit) = self.explicit_type_args(type_args) else {
                         self.check_args_loosely(args);
@@ -584,7 +599,7 @@ impl FnCtx<'_, '_> {
             match (slot, param.default) {
                 (Some(b), _) => bound.push(b),
                 (None, Some(default)) => {
-                    let expr = self.check_default_at_call(default, &param.ty, span);
+                    let expr = self.check_default_at_call(default, &param.ty, span, param.module);
                     bound.push(Bound { expr, source: None });
                 }
                 (None, None) => missing.push(param),

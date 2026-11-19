@@ -49,7 +49,8 @@ pub trait HostFn<Marker>: 'static { fn sig(reg: &mut TypeRegistry) -> SigDesc; f
   phase 2 (§14.2).
 - **Namespacing:** host items are keyed by `(module, name)` everywhere. This slice ships the default
   module `host`, whose names are in scope without an import (the §15.4 example). Named modules
-  (`vm.module("physics")` + `import physics`) come with the import slice with no format change. A
+  (`vm.module("physics")` + `import physics`) are built (ARCHITECTURE §11.7), with no format
+  change: each module has its own `.cbi`, and `colibri check --interface` takes several. A
   script definition colliding with a host name is an error. Host functions as values: checker
   error for now ("wrap it in a closure").
 - Parameter names: closures get `a, b, c…` and reject named-argument calls; `#[colibri::export] fn`

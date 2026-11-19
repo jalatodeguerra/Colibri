@@ -1,0 +1,14 @@
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) { print("drop {self.name}") }
+}
+
+let r = make()
+
+fn make() -> Res {
+    print("init a")
+    return Res { name: "a" }
+}
+
+pub fn touch() -> int { return 1 }

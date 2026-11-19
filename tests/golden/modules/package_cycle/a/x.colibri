@@ -1,0 +1,2 @@
+import b.y // error: import cycle
+pub fn x() {}

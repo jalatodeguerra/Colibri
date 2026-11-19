@@ -1,0 +1,6 @@
+import lib.acct
+
+fn main() {
+    let a = acct.Account { id: 1, balance: 5 } // error: not exported
+    print("{a.id}")
+}

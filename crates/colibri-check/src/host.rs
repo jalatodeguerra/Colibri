@@ -29,7 +29,8 @@ pub const HOST_FILE: FileId = FileId(u32::MAX - 1);
 /// The interface format this checker reads.
 pub const INTERFACE_FORMAT: u32 = 1;
 
-/// The only module that exists so far: its names are in scope without an import.
+/// The default module: its names are in scope everywhere without an import. Any other module
+/// (`module = "physics"` in the header) is used with `import physics`.
 pub const DEFAULT_MODULE: &str = "host";
 
 /// The capabilities a host item can require (`@requires(cap)`), by their interface names.
@@ -133,15 +134,49 @@ impl HostEnv {
         self.modules.iter().map(|m| &m.header)
     }
 
-    /// Every top-level item of every interface, in order.
-    pub(crate) fn items(&self) -> impl Iterator<Item = &ast::Item> {
+    /// Every top-level item of the default module's interfaces, in order.
+    pub(crate) fn default_items(&self) -> impl Iterator<Item = &ast::Item> {
+        self.module_items(DEFAULT_MODULE)
+    }
+
+    /// Every top-level item of the interfaces of module `name`, in order.
+    pub(crate) fn module_items<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a ast::Item> {
         self.modules
             .iter()
+            .filter(move |m| m.header.module == name)
             .flat_map(|m| m.file.items.iter())
             .filter_map(|top| match top {
                 TopLevel::Item(item) => Some(item),
                 TopLevel::Stmt(_) => None,
             })
+    }
+
+    /// The syntax trees of the interfaces of module `name`, in order.
+    pub(crate) fn module_files<'a>(&'a self, name: &str) -> Vec<&'a ast::File> {
+        self.modules
+            .iter()
+            .filter(|m| m.header.module == name)
+            .map(|m| &m.file)
+            .collect()
+    }
+
+    /// The names of the modules the interfaces describe, each once, in order of appearance.
+    pub fn module_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for m in &self.modules {
+            if !names.contains(&m.header.module) {
+                names.push(m.header.module.clone());
+            }
+        }
+        names
+    }
+
+    /// The names of the modules other than the default one: what `import` can name.
+    pub fn named_modules(&self) -> Vec<String> {
+        self.module_names()
+            .into_iter()
+            .filter(|m| m != DEFAULT_MODULE)
+            .collect()
     }
 }
 
@@ -318,13 +353,19 @@ fn parse_module(text: &str) -> Result<HostModule, String> {
             ),
         ));
     }
-    if header.module != DEFAULT_MODULE {
+    if !is_module_name(&header.module) {
         return Err(at(
             start,
             &format!(
-                "the module `{}` cannot be used yet: only the default `{DEFAULT_MODULE}` module exists",
+                "`{}` is not a module name: use letters, digits and `_`, starting with a letter or `_`",
                 header.module
             ),
+        ));
+    }
+    if header.module == "std" {
+        return Err(at(
+            start,
+            "the module name `std` is reserved for the standard library",
         ));
     }
     let body_start = start + line.len();
@@ -350,6 +391,13 @@ fn parse_module(text: &str) -> Result<HostModule, String> {
     }
     validate(&ast).map_err(|(offset, m)| at(offset as usize, &m))?;
     Ok(HostModule { header, file: ast })
+}
+
+/// Whether `name` can be the name of a host module: what an `import` can say.
+pub fn is_module_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
+        && chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// Reads `format = 1, module = "host", hash = "..", caps = ["fs"]`.
@@ -600,7 +648,7 @@ mod tests {
         ))
         .expect("parses");
         assert_eq!(env.headers().count(), 1);
-        assert_eq!(env.items().count(), 4);
+        assert_eq!(env.default_items().count(), 4);
     }
 
     #[test]
@@ -614,15 +662,23 @@ mod tests {
     #[test]
     fn bad_headers_and_bodies_are_reported_with_positions() {
         assert!(HostEnv::from_text("fn f()\n").unwrap_err().contains("1:1"));
-        let wrong_module = format!(
+        let bad_module = format!(
+            "{}\nfn f()\n",
+            header_line("not a name", &body_hash("fn f()\n"), &[])
+        );
+        assert!(
+            HostEnv::from_text(&bad_module)
+                .unwrap_err()
+                .contains("not a module name")
+        );
+        let named = format!(
             "{}\nfn f()\n",
             header_line("physics", &body_hash("fn f()\n"), &[])
         );
-        assert!(
-            HostEnv::from_text(&wrong_module)
-                .unwrap_err()
-                .contains("physics")
-        );
+        let env = HostEnv::from_text(&named).expect("a named module parses");
+        assert_eq!(env.named_modules(), ["physics"]);
+        assert_eq!(env.default_items().count(), 0);
+        assert_eq!(env.module_items("physics").count(), 1);
         let err = HostEnv::from_text(&text("let x = 1\n")).unwrap_err();
         assert!(err.contains("3:1"), "{err}");
         assert!(HostEnv::from_text(&text("@requires(sudo) fn f()\n")).is_err());
