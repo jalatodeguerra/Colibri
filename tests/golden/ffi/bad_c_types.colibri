@@ -1,0 +1,25 @@
+// caps: ffi
+
+struct Plain {
+    x: i32
+}
+
+@repr(C)
+struct Bad {
+    name: str // error: cannot be passed to C
+    items: List[int] // error: cannot be passed to C
+    inner: Plain // error: not a `@repr(C)` struct
+}
+
+extern "C" {
+    fn takes_str(s: str) // error: write `cstr`
+    fn takes_plain(p: Plain) // error: not a `@repr(C)` struct
+    fn takes_char(c: char) // error: `char` is not a C type
+    fn has_body(x: int) -> int { return x } // error: has no body
+}
+
+let s: cstr = "text" // error: `cstr` can only be used in the signature of an `extern` function
+fn takes_ptr(p: ptr[str]) { // error: points to something C cannot see
+}
+
+fn main() {}

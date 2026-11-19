@@ -1,0 +1,51 @@
+// caps: ffi
+// `@repr(C)` structs follow the platform C ABI: fields in order, each aligned, the whole padded.
+// `size_of` and `align_of` show what the checker computed.
+
+@repr(C)
+struct Header {
+    tag: u8
+    length: u32
+    flags: u16
+}
+
+@repr(C)
+struct Mixed {
+    id: i32
+    score: float
+}
+
+@repr(C)
+struct Packet {
+    header: Header
+    payload: ptr[u8]
+    valid: bool
+}
+
+@repr(C)
+struct Opaque {}
+
+fn main() {
+    print((size_of[u8](), align_of[u8]()))
+    print((size_of[i16](), align_of[i16]()))
+    print((size_of[f32](), size_of[float](), size_of[bool]()))
+    print((size_of[ptr[Opaque]](), size_of[u64]()))
+    print((size_of[Header](), align_of[Header]()))
+    print((size_of[Mixed](), align_of[Mixed]()))
+    print((size_of[Packet](), align_of[Packet]()))
+    print((size_of[Opaque](), align_of[Opaque]()))
+    // A repr(C) struct is an ordinary struct to Colibri code: literals, fields, copies.
+    var h = Header { tag: 1, length: 2, flags: 3 }
+    let copy = h
+    h.length = 20
+    print(h.length + copy.length)
+}
+// expect: (1, 1)
+// expect: (2, 2)
+// expect: (4, 8, 1)
+// expect: (8, 8)
+// expect: (12, 4)
+// expect: (16, 8)
+// expect: (32, 8)
+// expect: (0, 1)
+// expect: 22

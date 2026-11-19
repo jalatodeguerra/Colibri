@@ -125,7 +125,7 @@ mod enabled {
         }
 
         /// A C value of type `cty` as a Colibri value.
-        fn from_val(&self, cty: CTy, v: Val) -> Result<Value, String> {
+        fn value_from_c(&self, cty: CTy, v: Val) -> Result<Value, String> {
             let bad = || format!("internal error: a C value does not fit the type {cty:?}");
             Ok(match (cty, v) {
                 (CTy::Void, _) => Value::Unit,
@@ -154,7 +154,7 @@ mod enabled {
                     let layout = self.cffi.layouts.get(&id).ok_or_else(bad)?;
                     let mut fields = Vec::with_capacity(vals.len());
                     for (f, v) in layout.fields.iter().zip(vals) {
-                        fields.push(self.from_val(*f, v)?);
+                        fields.push(self.value_from_c(*f, v)?);
                     }
                     Value::strukt(id, fields)
                 }
@@ -191,8 +191,10 @@ mod enabled {
                         vals.push(interp.to_val(*ty, v).map_err(fault)?);
                     }
                     interp.release_all(args);
+                    // What the program printed so far comes before anything C writes.
+                    interp.flush();
                     let out = func.call(&vals).map_err(fault)?;
-                    interp.from_val(rty, out).map_err(fault)
+                    interp.value_from_c(rty, out).map_err(fault)
                 },
             );
             self.set_host_fn(id, imp);
@@ -233,7 +235,7 @@ mod enabled {
                     // SAFETY: inside an `unsafe` block the program promises the address is
                     // valid for a value of this type.
                     unsafe { colibri_ffi::read_memory(&ty, addr) }
-                        .and_then(|v| self.from_val(*cty, v))
+                        .and_then(|v| self.value_from_c(*cty, v))
                 }
                 PtrOp::Write(cty) => {
                     let Some(value) = args.get(1) else {
