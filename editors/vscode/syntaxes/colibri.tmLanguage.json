@@ -1,0 +1,122 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Colibri",
+  "scopeName": "source.colibri",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#chars" },
+    { "include": "#attributes" },
+    { "include": "#numbers" },
+    { "include": "#function-decl" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#function-call" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.documentation.colibri", "match": "///.*$" },
+        { "name": "comment.line.double-slash.colibri", "match": "//.*$" },
+        { "include": "#block-comment" }
+      ]
+    },
+    "block-comment": {
+      "name": "comment.block.colibri",
+      "begin": "/\\*",
+      "end": "\\*/",
+      "patterns": [{ "include": "#block-comment" }]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.colibri", "match": "\\b(if|else|for|in|while|break|continue|match|return|defer|go)\\b" },
+        { "name": "keyword.operator.word.colibri", "match": "\\b(or|and|not|is|as)\\b" },
+        { "name": "keyword.declaration.colibri", "match": "\\b(fn|let|var|const|type|struct|class|enum|interface|impl|import|test)\\b" },
+        { "name": "storage.modifier.colibri", "match": "\\b(pub|own|borrow|weak|extern|unsafe)\\b" },
+        { "name": "variable.language.self.colibri", "match": "\\bself\\b" },
+        { "name": "constant.language.colibri", "match": "\\b(true|false|none)\\b" },
+        { "name": "support.function.builtin.colibri", "match": "\\b(some|ok|err)\\b" }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "name": "support.type.primitive.colibri", "match": "\\b(int|i8|i16|i32|i64|u8|u16|u32|u64|float|f32|f64|bool|char|str|vec2|vec3|vec4|ivec2|ivec3|ivec4|mat3|mat4|quat)\\b" },
+        { "name": "entity.name.type.colibri", "match": "\\b[A-Z][A-Za-z0-9_]*\\b" }
+      ]
+    },
+    "function-decl": {
+      "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.colibri" },
+        "2": { "name": "entity.name.function.colibri" }
+      }
+    },
+    "function-call": {
+      "match": "\\b([a-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+      "name": "entity.name.function.call.colibri"
+    },
+    "attributes": {
+      "name": "meta.attribute.colibri entity.other.attribute-name.colibri",
+      "match": "@[A-Za-z_][A-Za-z0-9_.]*"
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.colibri", "match": "\\b0[xX][0-9A-Fa-f_]+\\b" },
+        { "name": "constant.numeric.binary.colibri", "match": "\\b0[bB][01_]+\\b" },
+        { "name": "constant.numeric.float.colibri", "match": "\\b[0-9][0-9_]*(\\.[0-9][0-9_]*([eE][+-]?[0-9_]+)?|[eE][+-]?[0-9_]+)(?![.\\w])" },
+        { "name": "constant.numeric.integer.colibri", "match": "\\b[0-9][0-9_]*\\b" }
+      ]
+    },
+    "chars": {
+      "name": "string.quoted.single.colibri",
+      "match": "'(\\\\(u\\{[0-9A-Fa-f]+\\}|x[0-9A-Fa-f]{2}|.)|[^'\\\\])'",
+      "captures": {
+        "1": { "patterns": [{ "include": "#escapes" }] }
+      }
+    },
+    "escapes": {
+      "name": "constant.character.escape.colibri",
+      "match": "\\\\(u\\{[0-9A-Fa-f]+\\}|x[0-9A-Fa-f]{2}|.)"
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.raw.colibri",
+          "begin": "r\"\"\"",
+          "end": "\"\"\""
+        },
+        {
+          "name": "string.quoted.double.raw.colibri",
+          "begin": "r\"",
+          "end": "\""
+        },
+        {
+          "name": "string.quoted.triple.colibri",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [{ "include": "#string-content" }]
+        },
+        {
+          "name": "string.quoted.double.colibri",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "include": "#string-content" }]
+        }
+      ]
+    },
+    "string-content": {
+      "patterns": [
+        { "name": "constant.character.escape.brace.colibri", "match": "\\{\\{|\\}\\}" },
+        { "include": "#escapes" },
+        {
+          "name": "meta.interpolation.colibri",
+          "begin": "\\{",
+          "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.colibri" } },
+          "end": "\\}",
+          "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.colibri" } },
+          "patterns": [{ "include": "$self" }]
+        }
+      ]
+    }
+  }
+}
