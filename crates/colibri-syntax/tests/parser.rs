@@ -1274,7 +1274,10 @@ const SKIP: &[(&str, &str)] = &[];
 
 /// The text of every ```colibri block in tests/corpus/design_examples.md with its start line.
 fn corpus() -> Vec<(usize, String)> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/corpus/design_examples.md");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/corpus/design_examples.md"
+    );
     let text = std::fs::read_to_string(path).expect("the examples corpus is readable");
     let mut blocks = Vec::new();
     let mut current: Option<(usize, String)> = None;
@@ -1329,7 +1332,10 @@ fn every_design_block_parses_without_diagnostics() {
                     format!("  block line {line_in_block}: {}", d.message)
                 })
                 .collect();
-            failures.push(format!("design_examples.md line {line}:\n{}", msgs.join("\n")));
+            failures.push(format!(
+                "design_examples.md line {line}:\n{}",
+                msgs.join("\n")
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
