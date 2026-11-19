@@ -51,6 +51,7 @@ class Error {}
 class Coroutine[T] {}
 class CoGroup {}
 class Signal {}
+class StrBuilder {}
 "#;
 
 /// The parsed prelude.

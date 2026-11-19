@@ -953,6 +953,14 @@ pub enum Builtin {
     SetClear,
     /// `Set[T]()`
     SetNew,
+    /// `StrBuilder()`
+    StrBuilderNew,
+    StrBuilderPush,
+    StrBuilderPushChar,
+    StrBuilderLen,
+    StrBuilderIsEmpty,
+    StrBuilderClear,
+    StrBuilderToStr,
     /// `Set(list)`
     SetFromList,
     // ---- closure-taking and ordering list methods (DESIGN §6.3, §9.2) ----

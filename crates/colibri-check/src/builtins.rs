@@ -17,7 +17,9 @@ use crate::optres::{
     SIGNAL_METHODS, cogroup_sig, coroutine_sig, error_sig, option_sig, result_sig, signal_sig,
 };
 use crate::suggest;
-use crate::types::{COGROUP_TYPE, COROUTINE_TYPE, ERROR_TYPE, ITER, RESULT_TYPE, SIGNAL_TYPE, Ty};
+use crate::types::{
+    COGROUP_TYPE, COROUTINE_TYPE, ERROR_TYPE, ITER, RESULT_TYPE, SIGNAL_TYPE, STR_BUILDER_TYPE, Ty,
+};
 
 /// What a method needs of the element type beyond its signature.
 #[derive(Clone)]
@@ -149,6 +151,16 @@ const SET_METHODS: &[&str] = &[
     "enumerate",
     "clone",
 ];
+const STR_BUILDER_METHODS: &[&str] = &[
+    "push",
+    "push_char",
+    "write",
+    "len",
+    "is_empty",
+    "clear",
+    "to_str",
+    "clone",
+];
 const RANGE_METHODS: &[&str] = &[
     "contains",
     "len",
@@ -206,6 +218,18 @@ fn str_sig(name: &str) -> Option<Sig> {
             vec![("width", Ty::INT), ("fill", Ty::Char)],
             Ty::Str,
         ),
+        _ => return None,
+    })
+}
+
+fn str_builder_sig(name: &str) -> Option<Sig> {
+    Some(match name {
+        "push" => sig(Builtin::StrBuilderPush, vec![("s", Ty::Str)], Ty::Unit),
+        "push_char" => sig(Builtin::StrBuilderPushChar, vec![("c", Ty::Char)], Ty::Unit),
+        "len" => sig(Builtin::StrBuilderLen, vec![], Ty::INT),
+        "is_empty" => sig(Builtin::StrBuilderIsEmpty, vec![], Ty::Bool),
+        "clear" => sig(Builtin::StrBuilderClear, vec![], Ty::Unit),
+        "to_str" => sig(Builtin::StrBuilderToStr, vec![], Ty::Str),
         _ => return None,
     })
 }
@@ -399,6 +423,7 @@ pub(crate) fn builtin_method_exists(ty: &Ty, name: &str) -> bool {
         Ty::Adt(COROUTINE_TYPE, a) if a.len() == 1 => coroutine_sig(&a[0], name).is_some(),
         Ty::Adt(COGROUP_TYPE, _) => name == "go" || cogroup_sig(name).is_some(),
         Ty::Adt(SIGNAL_TYPE, _) => signal_sig(name).is_some(),
+        Ty::Adt(STR_BUILDER_TYPE, _) => name == "write" || str_builder_sig(name).is_some(),
         _ => false,
     }
 }
@@ -435,6 +460,12 @@ impl FnCtx<'_, '_> {
             }
             Ty::Adt(COGROUP_TYPE, _) => (cogroup_sig(&name.name), COGROUP_METHODS),
             Ty::Adt(SIGNAL_TYPE, _) => (signal_sig(&name.name), SIGNAL_METHODS),
+            Ty::Adt(STR_BUILDER_TYPE, _) => {
+                if name.name == "write" {
+                    return Ok(self.check_str_builder_write(recv, args, span));
+                }
+                (str_builder_sig(&name.name), STR_BUILDER_METHODS)
+            }
             _ => return Err(recv),
         };
         let Some(sig) = sig else {
@@ -589,6 +620,24 @@ impl FnCtx<'_, '_> {
             diag = diag.with_hint(hint);
         }
         self.ck.report(diag);
+    }
+
+    /// `b.write(v)` on a `StrBuilder`: appends the `Show` text of any value, as the hole of a
+    /// string interpolation would.
+    fn check_str_builder_write(&mut self, recv: Expr, args: &[ast::Arg], span: Span) -> Expr {
+        let [arg] = args else {
+            self.check_args_loosely(args);
+            self.ck.report(Diagnostic::error(
+                format!("`write` takes one value, found {} arguments", args.len()),
+                span,
+            ));
+            return self.error_expr(span);
+        };
+        let text = self.check_hole(&arg.value, None);
+        if text.ty.is_error() {
+            return self.error_expr(span);
+        }
+        self.builtin_call(Builtin::StrBuilderPush, vec![recv, text], Ty::Unit, span)
     }
 
     /// `x.clone()`: a deep copy of any value (DESIGN §5.3, §7.4).

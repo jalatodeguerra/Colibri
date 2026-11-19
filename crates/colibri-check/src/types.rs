@@ -46,8 +46,10 @@ pub const COROUTINE_TYPE: TypeId = TypeId(12);
 pub const COGROUP_TYPE: TypeId = TypeId(13);
 /// The built-in `Signal` (DESIGN §14.2): a reference type coroutines wait on with `wait_for`.
 pub const SIGNAL_TYPE: TypeId = TypeId(14);
+/// The built-in `StrBuilder` (DESIGN §12): a reference type that builds a string by appending.
+pub const STR_BUILDER_TYPE: TypeId = TypeId(15);
 /// The first id a user-defined type can have.
-pub const FIRST_USER_TYPE: u32 = 15;
+pub const FIRST_USER_TYPE: u32 = 16;
 /// The index of `ok` in the prelude `Result`.
 pub const VARIANT_OK: u32 = 0;
 /// The index of `err` in the prelude `Result`.

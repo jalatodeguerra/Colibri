@@ -1,0 +1,48 @@
+fn main() {
+    let b = StrBuilder()
+    print(b.is_empty())
+    print(b.len())
+    b.push("héllo")
+    b.push_char(' ')
+    b.push_char('é')
+    b.write(42)
+    b.write([1, 2])
+    b.write("!")
+    print(b.len())
+    print(b.to_str())
+    // the builder stays usable after `to_str`
+    b.push("?")
+    print("{b}")
+    print(b.to_str() == "héllo é42[1, 2]!?")
+    // a builder is a reference type: a copy shares it
+    let c = b
+    c.push("#")
+    print(b.to_str().ends_with("?#"))
+    print(b == c)
+    // `clone` is a separate builder
+    let d = b.clone()
+    d.clear()
+    print(d.is_empty())
+    print(b.is_empty())
+    d.push("fresh")
+    print(d.to_str())
+    b.clear()
+    print("[{b}]")
+    print(b.to_str() == "")
+    print(b.len())
+}
+
+// expect: true
+// expect: 0
+// expect: 18
+// expect: héllo é42[1, 2]!
+// expect: héllo é42[1, 2]!?
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: false
+// expect: fresh
+// expect: []
+// expect: true
+// expect: 0

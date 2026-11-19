@@ -7,12 +7,13 @@
 use std::rc::Rc;
 
 use colibri_check::hir::Builtin;
+use colibri_check::types::STR_BUILDER_TYPE;
 use colibri_syntax::Span;
 
 use crate::ctl::{Ctl, Eval};
 use crate::eval::Interp;
 use crate::fiber::Fiber;
-use crate::heap::{ListError, ListObj, MapObj, OutOfBounds, SetObj, Violation};
+use crate::heap::{ClassObj, ListError, ListObj, MapObj, OutOfBounds, SetObj, Violation};
 use crate::ordered::OrderedMap;
 use crate::show::show;
 use crate::value::Value;
@@ -93,6 +94,7 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
             | B::StrPadLeft
             | B::StrPadRight
             | B::StrSlice
+            | B::StrBuilderToStr
     );
     if !walks {
         return None;
@@ -102,6 +104,10 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
         Value::Str(s) => s.len(),
         Value::Map(m) => m.len(),
         Value::Set(s) => s.len(),
+        Value::Obj(o) => match o.field(1) {
+            Some(Value::Int(n)) => usize::try_from(n).unwrap_or(0),
+            _ => return None,
+        },
         _ => return None,
     })
 }
@@ -178,6 +184,16 @@ impl Interp {
                 return self.cogroup_builtin(fiber, op, &recv, span);
             }
             Builtin::SignalEmit => return self.signal_builtin(fiber, &recv, span),
+            Builtin::StrBuilderNew => Value::Obj(ClassObj::new(
+                STR_BUILDER_TYPE,
+                vec![Value::list(Vec::new()), Value::Int(0)],
+            )),
+            Builtin::StrBuilderPush
+            | Builtin::StrBuilderPushChar
+            | Builtin::StrBuilderLen
+            | Builtin::StrBuilderIsEmpty
+            | Builtin::StrBuilderClear
+            | Builtin::StrBuilderToStr => return self.str_builder_op(fiber, op, args, span),
             Builtin::SetNew => Value::Set(SetObj::new(OrderedMap::new())),
             Builtin::SetFromList => {
                 let Some(list) = list_of(&recv) else {

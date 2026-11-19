@@ -576,6 +576,14 @@ turns out to matter, it moves into DESIGN.md.
     Iteration order is insertion order. `==` on collections is structural (a map ignores order);
     `is` is identity. `Show` is `[1, 2]`, `{"a": 1}`, `{:}`, `Set([1, 2])`; strings are quoted
     inside.
+    *`StrBuilder` (DESIGN §12).* `StrBuilder()` is a built-in reference type declared in the
+    prelude as an empty `class` (type id `STR_BUILDER_TYPE`), like `Signal`; its object holds two
+    hidden fields: a list of the `str` chunks appended so far and the total byte length, so an
+    append is O(1) and `to_str` joins once (and keeps the joined text as the single chunk).
+    Methods: `push(s: str)`, `push_char(c: char)`, `write(v)` (any value the interpolation
+    `"{v}"` accepts, including a user `Show`; the checker lowers it to `push("{v}")`), `len()`
+    (bytes), `is_empty()`, `clear()`, `to_str()` (the builder stays usable). Equality is identity,
+    `clone()` is a separate builder, `Show` is the built text. `s += x` stays quadratic.
 27. **Hashability.** A key (`Map` key, `Set` element) must be hashable: `int`, `bool`, `char`,
     `str`, `()`, tuples, structs, enums and `Option` of hashable parts (structurally), and class
     objects (by identity). `List`, `Map` and `Set` are not hashable (mutable; the §5.3 hint says

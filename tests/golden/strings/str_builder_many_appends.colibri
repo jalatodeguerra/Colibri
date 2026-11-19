@@ -1,0 +1,19 @@
+fn main() {
+    let b = StrBuilder()
+    for i in 0..200000 {
+        b.push("ab")
+        b.push_char('c')
+    }
+    print(b.len())
+    let s = b.to_str()
+    print(s.len())
+    print(s.starts_with("abcabc"))
+    // asking again, and appending after, is cheap too
+    b.push("end")
+    print(b.to_str().ends_with("abcend"))
+}
+
+// expect: 600000
+// expect: 600000
+// expect: true
+// expect: true

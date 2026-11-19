@@ -240,7 +240,7 @@ impl FnCtx<'_, '_> {
     }
 
     /// One `{expr:spec}` hole, as a resolved `Show` or format operation.
-    fn check_hole(&mut self, expr: &ast::Expr, spec: Option<&str>) -> Expr {
+    pub(crate) fn check_hole(&mut self, expr: &ast::Expr, spec: Option<&str>) -> Expr {
         let value = self.check_expr(expr, None);
         let ty = self.default_ty(&value.ty);
         let span = value.span;

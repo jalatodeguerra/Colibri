@@ -172,6 +172,7 @@ impl FnCtx<'_, '_> {
                         Some(self.check_conversion(target, args, span))
                     }
                     "Set" => Some(self.check_set_from(args, expected, span)),
+                    "StrBuilder" => Some(self.check_str_builder_new(args, span)),
                     "CoGroup" | "Signal" => {
                         Some(self.check_group_or_signal_new(&id.name, args, span))
                     }
@@ -201,6 +202,22 @@ impl FnCtx<'_, '_> {
             }
             _ => None,
         }
+    }
+
+    /// `StrBuilder()` (DESIGN §12): an empty string builder.
+    fn check_str_builder_new(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        if !args.is_empty() {
+            self.check_args_loosely(args);
+            self.ck
+                .report(Diagnostic::error("`StrBuilder()` takes no arguments", span));
+            return self.error_expr(span);
+        }
+        self.builtin_call(
+            Builtin::StrBuilderNew,
+            Vec::new(),
+            Ty::Adt(crate::types::STR_BUILDER_TYPE, Vec::new()),
+            span,
+        )
     }
 
     /// `CoGroup()` and `Signal()` (DESIGN §14.2).
