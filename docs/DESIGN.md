@@ -1,6 +1,6 @@
 # Colibri Language Design
 
-**Status:** Draft v0.3, for review. Nothing here is implemented yet.
+**Status:** Draft v0.4, for review. Nothing here is implemented yet.
 **Date:** 2026-11-19
 
 This document describes what Colibri is, the decisions already agreed, the concrete proposals
@@ -10,6 +10,32 @@ tagged with one of three markers:
 - **[Locked]**: agreed during the brainstorm. Changing it means re-opening the discussion.
 - **[Proposed]**: a recommendation filling in details the brainstorm didn't cover. Review and push back.
 - **[Open]**: a real choice that needs a decision. Listed again in [§18 Open questions](#18-open-questions).
+
+### Changes in v0.4
+
+On 2026-11-19 santiago redirected Colibri to be a **general-purpose language** rather than one
+aimed at game development ("I want colibrì to be general not aimed at game developing"), and
+approved the matching plan. This revises the v0.3 priority order again (second revision on
+2026-11-19):
+
+- **General-purpose first, embedding in Rust kept first-class** (§1). Game scripting is one use
+  case among tools, automation, servers, embedding and games, not the focus. The goals, the
+  non-goal performance bar and the principles are reworded accordingly.
+- **Vectors are a std module** (§15.1): `import vec` gives `vec.vec2`, `vec.vec3`, `vec.vec4` and
+  `vec.ivec2..4` (matrices and quaternions later). They are still plain values with built-in
+  component-wise operators, fields and swizzles, but they are no longer built-in types.
+- **The game kit is no longer in the stock binary** (§15.6). It becomes an optional package for
+  later, `colibri-game`; Q20 is deferred until then. §15 is renamed "Numeric, C interop and
+  embedding features".
+- **Coroutines are general-purpose concurrency** (§14.2): timers, I/O waits, long-running work
+  and event-driven code. They are driven by the event loop `colibri run` runs after `main`, by
+  `task.tick(dt)` in a program with its own loop, or by `vm.tick(dt)` from a host.
+- **Roadmap** (§17.5): phase 2 becomes the general scripting slice on the interpreter, and the
+  old phase 4 (general scripting) is absorbed into it. The game kit and the demo game become an
+  optional later item.
+- **Deviations already built** are recorded as notes where the text says otherwise: hot reload
+  snapshot hooks pass `str` (§16.3), `cstr` arguments are copied (§12, §15.3), the default
+  coroutine stack is 16 MiB (§14.3), and the leak detector is opt-in (§6.2, §11.5).
 
 ### Changes in v0.3
 
@@ -23,7 +49,7 @@ santiago renamed the language to **Colibri** (from the working name Leo, §17.2)
 - **Plain reference counting is the memory model** (§11): value-type structs, refcounted
   reference types and `weak`. Compiler elision of refcount operations is a later optimization;
   `own` and `borrow` stay reserved words, and the ownership checker is not designed now.
-- **Game scripting and embedding come first**, general scripting second (§1). The embedding API
+- **Game scripting and embedding come first**, general scripting second (§1; superseded in v0.4). The embedding API
   is built from phase 1, and the scripting-oriented std (`http`, `regex`, subprocesses) moves to
   a later phase (§13.1, §17.5).
 
@@ -72,7 +98,7 @@ v0.2 answers the advisor review on PR #1. The main changes:
 12. [Strings](#12-strings)
 13. [Modules and packages](#13-modules-and-packages)
 14. [Concurrency: tasks and coroutines](#14-concurrency-tasks-and-coroutines)
-15. [Game-dev features](#15-game-dev-features)
+15. [Numeric, C interop and embedding features](#15-numeric-c-interop-and-embedding-features)
 16. [Tooling and execution modes](#16-tooling-and-execution-modes)
 17. [Implementation plan (Rust)](#17-implementation-plan-rust)
 18. [Open questions](#18-open-questions)
@@ -84,24 +110,29 @@ v0.2 answers the advisor review on PR #1. The main changes:
 
 ### Goals [Locked, revised 2026-11-19]
 
-- **Genuinely usable**, not a toy. Someone should be able to ship a small game, script a Rust
-  game engine, or write a real automation script in Colibri.
+- **Genuinely usable**, not a toy. Someone should be able to write a real automation script, a
+  command-line tool or a small server, embed scripts in a Rust program, or ship a small game in
+  Colibri.
 - **Simple syntax**, in the spirit of Go and Python, with braces. Small keyword set, one
   obvious way to do common things.
 - **Static types with inference.** Errors are caught before the program runs, but day-to-day
   code rarely needs type annotations inside function bodies.
-- **Target domains, in priority order:** (1) **game scripting**, both standalone games and
-  scripts **embedded in Rust engines**; (2) **general scripting**. When the two pull in
-  different directions, games and embedding win.
+- **A general-purpose language**, revised 2026-11-19 (second revision). Colibri is not aimed at
+  one domain. Its use cases are tools and automation, servers, **embedding in Rust programs**,
+  and games, among others, and no one of them decides the design. Embedding stays a first-class
+  goal because it shapes the runtime, but it does not outrank the others. When a feature is
+  useful only to one domain, it belongs in a std module or an optional package, not in the
+  language core.
 - **The bytecode VM is the product.** One engine runs scripts (`colibri run`), hot reload,
-  embedding, the web and shipped games (`colibri build` bundles the VM with the program's
+  embedding, the web and shipped programs (`colibri build` bundles the VM with the program's
   bytecode). Native AOT via Cranelift is a **stretch goal**, built only if a profile of a real
   program shows the VM can't meet a target in §17.4. No JIT.
 - **Predictable memory without a tracing GC: plain reference counting**, with value-type
   structs, refcounted reference types and `weak` references for cycles. Compiler elision of
   refcount operations is a later optimization that may not change meaning; `own` and `borrow`
   are reserved words, and the ownership checker is not designed now.
-- **Embeddable** in Rust game engines as a first-class use from phase 1, and **easy C interop**.
+- **Embeddable** in Rust programs (applications, servers, game engines) as a first-class use from
+  phase 1, and **easy C interop**.
 
 ### Goals [Proposed]
 
@@ -120,8 +151,8 @@ v0.2 answers the advisor review on PR #1. The main changes:
 - Inheritance, exceptions, macros, compile-time metaprogramming, and user-defined
   **arithmetic** operators in v1. (`==` and `<` are user-definable through `Eq` and `Ord`;
   arithmetic on structs through interfaces is planned after phase 1, Q12.)
-- Competing with Rust or C++ on peak performance. "Fast enough for a 2D/3D indie game and
-  much faster than Python" is the bar (numbers in §17.4).
+- Competing with Rust or C++ on peak performance. "Fast enough for scripts, tools and servers,
+  and for a 2D/3D indie game, and much faster than Python" is the bar (numbers in §17.4).
 - A JIT, at any point; M:N task scheduling in v1.
 - Committing to native AOT or an ownership checker in v1. Both are stretch goals.
 - A package registry in v1.
@@ -355,14 +386,13 @@ var score = 0                         // mutable module state
 | `bool` | `true` / `false` |
 | `char` | a Unicode scalar value |
 | `str` | immutable UTF-8 string (§12) |
-| `vec2 vec3 vec4` | `f32` vectors (§15.1) |
 | `()` | unit; functions without `-> T` return it |
 
-**Conversions.** Only two conversions are implicit, both chosen for game code, where every `dt`,
-`math.sin(t)` and time value meets an `f32` vector:
+**Conversions.** Only two conversions are implicit, both chosen for numeric and graphics code,
+where every `dt`, `math.sin(t)` and time value meets an `f32` vector (the `vec` module, §15.1):
 
 1. `f32` widens to `float` implicitly (lossless).
-2. Vector-by-scalar arithmetic (`vec * s`, `s * vec`, `vec / s`) accepts a `float` scalar and
+2. Vector-by-scalar arithmetic (`v * s`, `s * v`, `v / s`, for the `vec` module's types) accepts a `float` scalar and
    narrows it to `f32`. So `self.pos += self.vel * dt` works with `dt: float`.
 
 Everything else is explicit: between integer widths, from integer to float, and assigning a
@@ -516,8 +546,8 @@ button.on_click(fn() {                             // block body: uses `return` 
   })
   ```
 
-  Exact spelling is Q19. The leak detector (§11.5) is on by default in `colibri run` and points at
-  closures that close a cycle.
+  Exact spelling is Q19. The leak detector (§11.5) points at closures that close a cycle.
+  *As built:* it is opt-in (`colibri run --leaks`), not on by default.
 
 ### 6.3 Loops and iteration [Proposed]
 
@@ -535,8 +565,8 @@ button.on_click(fn() {                             // block body: uses `return` 
 
 ## 7. Structs, classes and methods
 
-The brainstorm locked "structs are value types (copied)". Games and scripts also need shared,
-mutable objects with identity (a scene node, an entity referenced from several places), so Colibri
+The brainstorm locked "structs are value types (copied)". Programs also need shared,
+mutable objects with identity (a tree node, a connection, an entity referenced from several places), so Colibri
 has two kinds of user-defined record type (Q3 option (a)).
 
 ### 7.1 `struct`: value types [Locked semantics, Proposed syntax]
@@ -909,7 +939,7 @@ rule is the language semantics**, in every engine and phase:
 - Ownership leaves a binding only by an explicit transfer: a `return`, a store into a field,
   collection or captured cell, or a send to another task.
 - `Drop` hooks therefore run at a predictable point, which is what makes deterministic
-  destruction useful for games (textures, sounds and file handles are released when the last
+  destruction useful (file handles, sockets, textures and sounds are released when the last
   owner goes).
 
 A future optimizer (§11.3) may remove increment/decrement pairs and reuse memory, but it may only shorten a
@@ -964,13 +994,16 @@ RC can't free cycles. Colibri's stance:
 - Known cycle sources the docs call out: parent/child links, callbacks capturing their owner,
   and **suspended coroutines**, whose stacks hold strong references to their arguments and
   locals (§14.2).
-- **Leak detector**, on by default in `colibri run` and available as `colibri run --leaks` elsewhere:
+- **Leak detector**, run with `colibri run --leaks` (and `colibri test --leaks`):
   on exit, and on demand via `mem.report_cycles()`, it reports objects kept alive only by cycles,
   with allocation sites. It is built as **trial deletion** (Python-style), which is a cycle
-  collector that reports instead of freeing.
+  collector that reports instead of freeing. *As built:* it is **opt-in** (ARCHITECTURE §18): the
+  design wanted it on by default in `colibri run`, but a program that works should not start
+  printing to stderr after an upgrade. Flipping the default is one line. `--leaks` alone warns;
+  `--leaks=error` exits 1 when the program would otherwise succeed.
 - No automatic cycle collector in v1 (Q9). Because the detector already is one, it can later be
-  exposed as an explicit `mem.collect_cycles()` at level-load boundaries, where games can afford
-  the pause.
+  exposed as an explicit `mem.collect_cycles()` at phase boundaries (a level load, between
+  requests), where a program can afford the pause.
 
 ### 11.6 Places: mutating values inside containers [Proposed]
 
@@ -1024,6 +1057,9 @@ reference-typed objects. See §14.1.
 
 - `str` is immutable, UTF-8 and reference-counted, and stored with a hidden trailing NUL so it
   converts to a C string for free (§15.3). Small strings may be stored inline later.
+  *As built:* the interpreter stores strings without the hidden NUL, so a `cstr` argument is a
+  copy (§15.3, ARCHITECTURE §19). The design applies again when the VM has its own string
+  layout.
 - Interpolation takes any expression: `"{a + b}"`, `"{p.pos}"`, including expressions with
   their own quotes: `"{m["key"]}"`. The value must implement `Show`. Format specs:
   `"{x:.2}"`, `"{n:>8}"`, `"{id:x}"` (Python-like subset).
@@ -1066,11 +1102,11 @@ let p = player.spawn("Ana")
   is the module `game.player`, and its names are written `player.spawn`. But a package is
   type-checked as one unit, as in Go:
   - **Import cycles are allowed between files of the same package** and forbidden only between
-    packages. Game code is mutually referential (`Player` mentions `World`, `World` holds `Enemy`,
+    packages. Real programs are mutually referential (`Player` mentions `World`, `World` holds `Enemy`,
     `Enemy` targets `Player`), and declarations are order-independent anyway. The only extra rule
     is initialisation order for module-level values (§4.2).
   - **Default visibility is the package.** Anything without `pub` is visible to every file in
-    the same package. `pub` means exported from the package. So a three-file game needs no `pub`
+    the same package. `pub` means exported from the package. So a three-file program needs no `pub`
     at all, and a library marks only its API. A struct with any non-exported field can only be
     constructed inside its package (use a `pub fn` constructor elsewhere).
 - **Name resolution.** `import math` could match a local `math.colibri`, the standard `math`, or a
@@ -1086,15 +1122,16 @@ let p = player.spawn("Ana")
 
 ### 13.1 Standard library [Proposed]
 
-Built in two steps, following the domain priority in §1:
+Built in two steps:
 
-- **Core (phases 1–2):** `io`, `fs`, `path`, `os` (env, process exit), `math`, `rand`, `time`,
+- **Core (phase 1):** `io`, `fs`, `path`, `os` (env, process exit), `math`, `rand`, `time`,
   `json` (with `encode`/`decode[T]`, §7.5), `str` helpers, `collections`, `task` (§14), `mem`,
-  `reflect`, `test`, and the game kit (§15.6).
-- **Scripting (phase 4):** `regex`, `http` (a blocking HTTP client), subprocesses with pipes,
-  `datetime`, and `args` (CLI argument parsing). These are what people reach for Python to do;
-  with a Rust runtime they are thin wrappers over existing crates. An HTTP server and sockets
-  come later still.
+  `reflect` and `test`.
+- **Scripting and numerics (phase 2):** `args` (CLI argument parsing), subprocesses with pipes,
+  `datetime`, `regex`, `http` (a blocking HTTP client, behind the `net` capability), and `vec`
+  (§15.1). These are what people reach for Python to do; with a Rust runtime they are thin
+  wrappers over existing crates. An HTTP server and sockets come later still.
+- **Optional packages (later):** the game kit (§15.6) is not part of std.
 
 ---
 
@@ -1103,7 +1140,8 @@ Built in two steps, following the domain priority in §1:
 [Proposed, approved for the doc 2026-11-18, refined in v0.2] Colibri has **no `async`/`await` and no
 function coloring**. Any function can pause, so libraries never split into sync and async
 versions. There are two tools: **thread tasks** for parallel work such as loading and heavy
-computation, and **coroutines** for game logic that runs over many frames on the current thread.
+computation, and **coroutines** for logic that waits (on timers, I/O, events or the next frame) on the current
+thread.
 
 ### 14.1 Thread tasks are isolates
 
@@ -1128,7 +1166,7 @@ let reply = ch.recv()
   `recv`, `try_recv` and `close`. A channel handle itself is thread-shared. `select` over several
   channels is a later addition.
 - **Scheduling (v1):** a task is a job on a fixed worker pool (one thread per core), and channels
-  are ordinary blocking queues. There is no M:N scheduler, preemption or network poller; games
+  are ordinary blocking queues. There is no M:N scheduler, preemption or network poller; programs
   need a job pool and background loading, not tens of thousands of connections. The syntax
   doesn't change if M:N is ever added.
 - **Blocking inside a coroutine:** `join()` and `recv()` called inside a coroutine (§14.2)
@@ -1160,51 +1198,72 @@ JS workers): each task owns its own object graph.
   deep-copied in and out or accessed under a lock with a callback (`m.with(fn(var x) => ...)`).
 - **Module-level state** belongs to the main isolate (§4.2).
 
-### 14.2 Coroutines for game logic
+### 14.2 Coroutines [Proposed, general-purpose concurrency]
+
+Coroutines are Colibri's concurrency for code that spends its time waiting: timers, I/O waits,
+long-running work split into steps, and event-driven code. They read top to bottom instead of
+becoming hand-written state machines or callback chains.
+
+```colibri
+fn fetch_with_retry(url: str) -> str {
+    for attempt in 1..=3 {
+        let r = http.get(url, timeout: 5.0)
+        if r.ok() { return r.body }
+        wait(1.0 * attempt)                    // back off, resume later; other coroutines run
+    }
+    panic("giving up on {url}")
+}
+
+fn refresh_every(seconds: float, cache: Cache) {
+    while true {                               // a periodic job
+        cache.reload()
+        wait(seconds)
+    }
+}
+
+go refresh_every(60.0, cache)                  // detached: runs until done or cancelled
+let page = go fetch_with_retry("https://example.org")   // a handle; page.join() gives the str
+```
+
+A timeout is the same shape: start the work, `wait` on a deadline, and `cancel()` whichever
+loses. The same tools drive code that is tied to a frame loop:
 
 ```colibri
 fn door_open(door: Door) {
     door.play("creak")
-    wait(0.5)                                  // resume half a second later
+    wait(0.5)
     door.rotate(90, over: 1.0)                 // itself waits 1 second while animating
-    wait_until(fn() => player.near(door))      // checked each frame until true
+    wait_until(fn() => player.near(door))      // re-checked at each tick until true
     door.close()
 }
-
-go door_open(front_door)                       // detached: runs until done or cancelled
-
-class Door {
-    co: CoGroup = CoGroup()                    // cancels its coroutines when the door is freed
-    ...
-}
-door.co.go(door_open(door))                    // owned by the door
+door.co.go(door_open(door))                    // owned by the door: a CoGroup field
 ```
-
-This is the big win for games: cutscenes, AI and animations read top to bottom instead of
-becoming hand-written state machines.
 
 - **Starting.** `go f(args)` creates a coroutine on the current thread, runs it until it first
   pauses, and returns a `Coroutine` handle (`cancel()`, `done()`, and `join()` from another
   coroutine). A bare `go` is **detached**: the scheduler keeps it alive until it finishes or is
   cancelled, and dropping the handle does not stop it.
 - **Ownership.** A `CoGroup` owns the coroutines started through it and **cancels all of them
-  when the group is dropped**. An entity holds a group as a field, so destroying the entity stops
-  its coroutines, which removes the Unity/Godot failure mode of a coroutine outliving the object it
-  animates. Note that a suspended coroutine holds strong references to its locals: a coroutine
-  owned by its own subject keeps it alive until it finishes, so the group's owner should be the
-  game's entity list or the subject should be `weak`.
+  when the group is dropped**. An object (a connection, a job, a game entity) holds a group as a
+  field, so destroying the object stops its coroutines, which removes the failure mode of a
+  coroutine outliving the object it works for. Note that a suspended coroutine holds strong
+  references to its locals: a coroutine owned by its own subject keeps it alive until it
+  finishes, so the group's owner should be a longer-lived object (a registry, an entity list) or
+  the subject should be `weak`. `CoGroup` is built (ARCHITECTURE §16.1), with `group.go(call)` and
+  `join_all`.
 - **Waiting.** `wait(seconds)`, `wait_frames(n)` and `wait_until(cond)` pause the coroutine.
-  `wait_until` takes a closure that the scheduler re-checks every frame. For idle coroutines,
-  **event waits** cost nothing per frame: `wait_for(signal)` on a `Signal` (`door.opened.emit()`)
-  and `ch.recv()` on a channel.
-- **Clock.** `wait(seconds)` counts the `dt` passed to `tick`, not wall time, so pausing the game
-  (`tick(0)`) and slow motion (`tick(dt * 0.5)`) apply to coroutines. `wait_real(seconds)` uses
-  wall time for menus.
-- **The game loop resumes coroutines each frame.** The runtime has a per-thread coroutine
-  scheduler, and the host drives it: a Colibri game calls `task.tick(dt)` once per frame (the built-in
-  game kit does it for you, §15.6), and an engine embedding Colibri calls `vm.tick(dt)` (§15.4).
-  Coroutines never run in parallel with each other, so they share `class` objects freely without
-  locks.
+  `wait_until` takes a closure that the scheduler re-checks at every tick. For idle coroutines,
+  **event waits** cost nothing per tick: `wait_for(signal)` on a `Signal` (`conn.closed.emit()`)
+  and `ch.recv()` on a channel. `Signal`, `wait_for` and `CoGroup` are built (ARCHITECTURE §16.1).
+- **Clock.** `wait(seconds)` counts the `dt` passed to `tick`, not wall time, so a program that
+  drives the scheduler itself can pause (`tick(0)`) or slow down (`tick(dt * 0.5)`) its
+  coroutines. `wait_real(seconds)` uses wall time.
+- **Who drives the scheduler.** The runtime has a per-thread coroutine scheduler, and something
+  has to tick it: `colibri run` runs an **event loop after `main` returns, until all coroutines
+  have finished**, so a script that only starts coroutines needs no loop of its own; a program
+  with its own loop (a UI, a game, a server) calls `task.tick(dt)` once per iteration; and a
+  Rust host calls `vm.tick(dt)` (§15.4). Coroutines never run in parallel with each other, so
+  they share `class` objects freely without locks.
 - Any function can be called from a coroutine and may itself call `wait`; there is no special
   coroutine function type. Calling `wait` outside a coroutine panics with a clear message.
 - **No suspending across a host frame.** If a host (Rust or C) function calls back into Colibri and
@@ -1219,31 +1278,47 @@ becoming hand-written state machines.
   growable and cheap.
 - **Native code (only if the AOT stretch goal is built):** coroutines get **fixed-size stacks with guard pages and lazily committed
   memory** (for example 256 KB of address space each, committed as touched). Compiled Colibri and
-  C both run directly on the coroutine's stack, so raylib calls don't need a stack switch (the
-  reason Go's cgo is slow). Games have hundreds or thousands of coroutines, not millions, so the
+  C both run directly on the coroutine's stack, so C library calls don't need a stack switch (the
+  reason Go's cgo is slow). Programs have hundreds or thousands of coroutines, not millions, so the
   address space is fine. Context switching uses an existing crate such as `corosensei` on the
   platforms Cranelift targets. A guard-page hit is a clean panic ("coroutine stack overflow").
-- **Phasing:** coroutines arrive with the game slice on the interpreter (phase 2 in §17.5);
+- **As built (interpreter):** each coroutine runs on a native stack from `corosensei`, with a
+  default of **16 MiB** of lazily committed address space (`VmBuilder::coroutine_stack_size`), not
+  256 KB. The tree-walking evaluator uses several KiB of native stack per Colibri call, and
+  256 KB gave a recursion depth of about 100 in a debug build (ARCHITECTURE §16). The bytecode VM
+  removes that cost, and the 256 KB figure then applies to native code only.
+- **Phasing:** coroutines arrive with the general scripting slice on the interpreter (phase 2 in §17.5);
   thread tasks need the worker pool, thread-shared objects and deep copy, and come with the VM.
 
 ---
 
-## 15. Game-dev features
+## 15. Numeric, C interop and embedding features
 
-### 15.1 Vector and matrix types [Locked: vec2/3/4, Proposed details]
+### 15.1 Vector and matrix types [Locked 2026-11-19: std module; Proposed details]
 
-- `vec2`, `vec3`, `vec4` (`f32`), `ivec2/3/4` (`i32`), `mat3`, `mat4`, `quat` are built-in
-  value types.
+Vectors started as built-in types. On 2026-11-19, after the redirect to a general-purpose
+language, santiago chose a **std module** instead: the core stays free of domain types, and
+graphics, simulation and numeric code import what they need.
+
+- `import vec` gives `vec.vec2`, `vec.vec3`, `vec.vec4` (`f32`) and `vec.ivec2`, `vec.ivec3`,
+  `vec.ivec4` (`i32`). `mat3`, `mat4` and `quat` follow later in the same module. Examples
+  elsewhere in this document write `vec2(1, 0)` for short; read it as `vec.vec2(1, 0)`, or
+  `import vec as v` and `v.vec2(1, 0)`.
+- They are **plain values** like any struct: copied on assignment, with fields (`v.x`), and the
+  `vec` module's types still get **built-in component-wise operators** and swizzles. The
+  operators are the one place where the compiler knows about them, until user-defined arithmetic
+  exists (Q12). The checker needs no import to type an operator on a `vec` value that was passed
+  in from elsewhere.
 - **`vec3` is three `f32`s: 12 bytes, alignment 4, everywhere.** That matches glam's default
   `Vec3`, Unity's `float3`, raylib's `Vector3`, GPU vertex formats and most file formats, so a
-  `List[vec3]` can go to C or the GPU without repacking. Code generation uses SIMD registers
+  `List[vec.vec3]` can go to C or the GPU without repacking. Code generation uses SIMD registers
   opportunistically; there is no padded layout.
 - Arithmetic operators work component-wise (`a + b`, `a * 2`, `-a`); vector-by-scalar accepts a
   `float` scalar (§5.1). `dot`, `cross`, `len`, `normalize`, `lerp` and swizzles (`v.xy`,
-  `v.zyx`) are built in. The implementation uses glam internally.
+  `v.zyx`) are provided by the module. The implementation uses glam internally.
 - These are the only arithmetic operators on non-primitive types in phase 1. `Add`, `Sub`,
   `Mul` and `Neg` interfaces for user structs are planned after it (Q12), for `Color`,
-  fixed-point numbers and `f64` vectors for large worlds; the built-in types will use the same
+  fixed-point numbers and `f64` vectors for large worlds; the `vec` types will use the same
   machinery.
 
 ### 15.2 C-layout structs [Locked, Proposed syntax]
@@ -1280,7 +1355,9 @@ extern "C" {
 - **`unsafe { }` is required for raw pointer operations** (`ptr[T]` dereference, arithmetic,
   casts) (Q13). Safe code can pass and receive `ptr[T]` values but not use them.
 - `cstr` is a borrowed NUL-terminated string; any `str` converts for free because strings carry a
-  hidden NUL (§12).
+  hidden NUL (§12). *As built (interpreter):* strings carry no hidden NUL, so each `cstr`
+  argument is one allocation and copy for the call, and a `str` with an inner NUL panics when
+  passed (ARCHITECTURE §19).
 - **Structs by value** (`Color`, `Vector2`, `Texture2D`, everywhere in raylib) are supported from
   day one, in the libffi path too.
 - `colibri bindgen header.h` generates `extern` declarations from C headers.
@@ -1318,7 +1395,7 @@ vm.reload_changed()?;            // hot reload, §16.3
 
 ### 15.5 Using Rust crates from Colibri [Planned, Proposed design]
 
-Rust's game ecosystem (rapier for physics, wgpu for graphics, kira for audio) would give Colibri a
+Rust's ecosystem (rapier for physics, wgpu for graphics, kira for audio) would give Colibri a
 lot. Colibri's runtime is already Rust, so the same binding layer that powers embedding (§15.4) can
 expose Rust crates to Colibri code, the way PyO3 does for Python.
 
@@ -1382,29 +1459,36 @@ print(world.position(ball))
   reload still works, because only Colibri code reloads. `colibri build` ships the same runner with
   the program's bytecode.
 - There is no dynamic library and no second ABI to design and keep stable. Using a binding needs a
-  Rust toolchain (or a prebuilt runner per platform); the built-in game kit (§15.6) means most
-  users never need either.
+  Rust toolchain (or a prebuilt runner per platform); most programs never need either, because the std (§13.1) covers scripting and the
+  optional game kit (§15.6) covers games.
 - The type checker reads a generated `.cbi` interface file for each binding, so code using a
   crate is fully type-checked and gets editor completion.
 
-**Curated bindings.** No `glam` binding is needed, since the vector types are built in. The first
-curated binding is `colibri-rapier` when the demo game needs physics, then `colibri-kira` and a renderer
-on `wgpu` for projects that outgrow the game kit.
+**Curated bindings.** No `glam` binding is needed, since the `vec` module (§15.1) covers it. The
+first curated binding is `colibri-rapier` once a demo needs physics, then `colibri-kira` and a
+renderer on `wgpu` for projects that outgrow the game kit.
 
 **One mechanism, two directions.** `#[colibri::export]` is the same API an engine uses to expose its
 own types when embedding Colibri (§15.4): build it once, get both.
 
-### 15.6 Built-in game kit [Proposed]
+### 15.6 Optional game kit package [Proposed, deferred]
 
-The stock `colibri` binary includes a small **game kit**, the way LÖVE does for Lua, so the first game
-needs no Rust toolchain, no C toolchain and no bindings:
+The game kit is **not in the stock binary** (revised 2026-11-19). A general-purpose language
+should not carry a window, a renderer and an audio stack in every install. It becomes an
+**optional package for later**, a separate `colibri-game` package (and crate), built after the
+general scripting slice (§17.5). Until then there is no `game` module, and games use the C FFI
+(§15.3) or the embedding API (§15.4).
+
+The idea is unchanged, the way LÖVE is a kit for Lua: a game needs no Rust toolchain, no C
+toolchain and no bindings beyond installing the package.
 
 ```colibri
 import game
+import vec
 
 fn main() {
     game.window(800, 600, "Arena")
-    var pos = vec2(400, 300)
+    var pos = vec.vec2(400, 300)
     game.run(fn(dt) {                      // calls task.tick(dt) for coroutines, then this
         if game.key_down(.Right) { pos.x += 200 * dt }
         game.clear(game.BLACK)
@@ -1413,10 +1497,11 @@ fn main() {
 }
 ```
 
-- Scope for v1: window and input (keyboard, mouse, gamepad), 2D drawing (shapes, sprites, text),
-  audio playback, and asset loading. 3D is out of scope for the kit.
-- The backend (statically linked raylib, or Rust crates such as winit, wgpu and kira) is Q20.
-- The game kit is ordinary Colibri plus host functions, so it doubles as the reference example of the
+- Scope for v1 of the package: window and input (keyboard, mouse, gamepad), 2D drawing (shapes,
+  sprites, text), audio playback, and asset loading. 3D is out of scope.
+- The backend (statically linked raylib, or Rust crates such as winit, wgpu and kira) is Q20,
+  **deferred** until the package is scheduled.
+- The kit is ordinary Colibri plus host functions, so it doubles as a reference example of the
   embedding API.
 
 ---
@@ -1461,7 +1546,7 @@ source → lexer → parser → AST → name resolution → type check → HIR (
   tests run on every engine and must agree.
 - **The bytecode VM is the product.** It is what `colibri run`, `colibri build`, embedding, hot reload
   and the web use, so one engine is tuned, debugged and shipped.
-- **Native AOT is a stretch goal.** It is started only when a profile of a real game shows the
+- **Native AOT is a stretch goal.** It is started only when a profile of a real program shows the
   VM missing a §17.4 target, and only after the cheaper fix has been tried: moving the hot code
   into Rust through `#[colibri::export]` (§15.4–15.5). If it is built, §10.4 and §14.3 already say
   how panics and coroutines work in native code.
@@ -1469,9 +1554,9 @@ source → lexer → parser → AST → name resolution → type check → HIR (
 
 ### 16.3 Hot reload [Locked goal, Proposed semantics]
 
-Goal: edit a `.colibri` file while the game runs and see the change without restarting.
+Goal: edit a `.colibri` file while the program runs and see the change without restarting.
 
-- **Hot reload is a VM (and interpreter) feature**, so shipped games and embedded scripts can
+- **Hot reload is a VM (and interpreter) feature**, so shipped programs and embedded scripts can
   use it in development. Native AOT code, if it is ever built, doesn't have it.
 - **Function-level patching** when only function bodies changed: the changed module plus every
   module that depends on it is re-checked against the running program, and new bodies replace
@@ -1480,11 +1565,15 @@ Goal: edit a `.colibri` file while the game runs and see the change without rest
   enum gains a variant, a signature changes). Since the VM starts fast, the program restarts
   in place, with an optional pair of hooks to carry state across:
   `fn save_state() -> Snapshot` and `fn restore_state(s: Snapshot)` (serialized through §7.5).
+  *As built:* serialization (§7.5) does not exist yet, so the hooks pass `str`:
+  `fn save_state() -> str` and `fn restore_state(s: str)`, and programs encode with `json` or any
+  format they like. A `Snapshot` type can replace `str` once §7.5 is built (ARCHITECTURE §17).
 - **Rules:** adding an enum variant re-checks `match`es elsewhere; module-level initialisers do
   not re-run on a patch; a coroutine suspended inside an old function keeps running the old body
   until it returns, so long-lived `while true` coroutines pick up changes only on restart. The
   editor shows which coroutines are still on old code.
-- After a panic in a development run, the program can be patched and resumed from the game loop.
+- After a panic in a development run, the program can be patched and resumed from its event
+  loop or main loop.
 
 ### 16.4 Diagnostics [Proposed]
 
@@ -1513,7 +1602,7 @@ Editor support is most of what "usable" means today, so it moves early:
 | iOS, Android | — | later; the VM (no JIT, so App Store rules are met) |
 | Consoles | — | out of scope for v1 |
 
-One engine serves every platform, so a game behaves the same on desktop, in the browser and
+One engine serves every platform, so a program behaves the same on desktop, in the browser and
 inside a host engine. Cranelift has no WebAssembly output, which is one more reason the VM is the
 product.
 
@@ -1542,7 +1631,7 @@ colibri/
     colibri-runtime/             # RC heap, strings, collections, coroutines, FFI, embedding API
     colibri-bind/                # #[colibri::export] macros for embedding and Rust crate bindings
     colibri-std/                 # standard library natives
-    colibri-game/                # the built-in game kit (§15.6)
+    colibri-game/                # the optional game kit package (§15.6), later
     colibri-lsp/                 # language server
     colibri-cli/                 # the `colibri` binary
   std/                       # .colibri sources of the standard library
@@ -1601,21 +1690,27 @@ So each phase has a finish line:
 |---------|--------|
 | `colibri run hello.colibri` startup, including type check | under 50 ms |
 | Type check | at least 100k lines per second |
-| Hot-reload patch, edit to new code running | under 200 ms for a 10k-line game |
+| Hot-reload patch, edit to new code running | under 200 ms for a 10k-line program |
 | Bytecode VM | within 1.5× of Lua 5.4 on standard benchmarks (binary-trees, n-body, fannkuch, spectral-norm) |
-| Shipped game (`colibri build`) | a 2D game loop at 60 fps with no per-frame allocation required; executable under 15 MB |
+| Shipped program (`colibri build`), game loop case | a 2D game loop at 60 fps with no per-frame allocation required; executable under 15 MB |
 | Embedding | calling a Colibri function from Rust in under 100 ns; `vm.tick` with 1,000 idle coroutines under 0.1 ms |
-| Native AOT (stretch) | started only if a profiled game misses 60 fps on the VM; then within 3× of C on n-body and vector math |
-| Interpreter | no target beyond "the demo game runs at 60 fps" |
+| Native AOT (stretch) | started only if a profiled program misses its target (for example a game missing 60 fps) on the VM; then within 3× of C on n-body and vector math |
+| Interpreter | no target beyond "the phase 2 scripting milestone runs comfortably" |
 
-### 17.5 Roadmap [Locked, revised 2026-11-19]
+### 17.5 Roadmap [Locked, revised 2026-11-19 (second revision)]
 
 The original roadmap had three phases: (1) lexer, parser, type checker and tree-walking
 interpreter; (2) bytecode VM, Cranelift and RC optimizations; (3) game bindings and the first
-small game. santiago approved reordering it on 2026-11-19: the game comes before the fast
-engine, because the game is what will force changes to places, struct/class, coroutines and
-modules, and those changes are cheap with one engine. The VM is the product, embedding comes
-first, and native AOT, RC elision and the ownership checker become stretch goals.
+small game. santiago approved reordering it on 2026-11-19 (first revision): the interpreter
+gets a real program before the fast engine, because a real program is what will force changes
+to places, struct/class, coroutines and modules, and those changes are cheap with one engine.
+The VM is the product, embedding comes first, and native AOT, RC elision and the ownership
+checker become stretch goals.
+
+**Second revision, 2026-11-19.** santiago then redirected Colibri to be a general-purpose
+language rather than one aimed at game development, so phase 2 is no longer a game slice: it
+is the general scripting slice, and the old phase 4 (general scripting) is absorbed into it.
+The game kit and the game milestone become an optional later item.
 
 **Phase 1: language core on the tree-walker, embeddable from day one.** Built as **vertical
 slices**: hello world end to end first (lexer → parser → checker → interpreter), then widen
@@ -1633,19 +1728,22 @@ just one host of it.
    `.cbi` interface files, capabilities.
 8. Packages and `import`; `colibri check` and a minimal LSP; `colibri test`, `colibri fmt`; core std
    (§13.1).
-9. **Milestone:** a small Rust program with its own game loop that runs its gameplay logic from
-   Colibri scripts.
+9. **Milestone:** a small Rust program with its own main loop that runs its logic from Colibri
+   scripts (for example a game loop calling script update functions each frame).
 
-**Phase 2: game slice on the interpreter**
+**Phase 2: general scripting slice on the interpreter**
 
-1. Vector types as plain values; `@repr(C)` structs and the C FFI with structs by value.
-2. Coroutines (`go`, `wait`, `wait_until`, `wait_for`, `CoGroup`), driven by `task.tick` and
-   `vm.tick`.
-3. The built-in game kit (§15.6).
-4. Hot reload (patching plus automatic restart), for standalone games and embedded scripts.
-5. The leak detector.
-6. **Milestone:** a small, complete game (e.g. a top-down arena shooter) with hot reload, both
-   standalone on the game kit and with its scripts embedded in a Rust host.
+1. Coroutines (`go`, `wait`, `wait_until`, `wait_for`, `CoGroup`, `Signal`), driven by the
+   event loop after `main`, by `task.tick` and by `vm.tick` (§14.2).
+2. The scripting std moved up from the old phase 4 (§13.1): `args`, subprocesses, `datetime`,
+   `regex`, and an `http` client behind the `net` capability.
+3. `colibri repl`, and startup time tuned for one-off scripts.
+4. Hot reload (patching plus automatic restart), for long-running programs and embedded scripts.
+5. The leak detector (opt-in).
+6. `@repr(C)` structs and the C FFI with structs by value.
+7. Vectors as the std module `vec` (§15.1).
+8. **Milestone:** real automation scripts written in Colibri (a file organiser, a JSON/HTTP
+   report generator).
 
 **Phase 3: the bytecode VM, the product engine**
 
@@ -1654,16 +1752,19 @@ just one host of it.
 3. `colibri build` (one executable: VM plus bytecode and assets) and `colibri build --web`.
 4. Thread tasks, channels, `Shared[T]` and deep copy.
 5. Debugger over DAP; profiler.
-6. **Milestone:** the demo game shipped with `colibri build` on all three desktop platforms and in
+6. **Milestone:** a demo program shipped with `colibri build` on all three desktop platforms and in
    the browser, with the VM within the §17.4 targets.
 
-**Phase 4: general scripting**
+**Phase 4: Rust crate bindings**
 
-1. The scripting std (§13.1): `regex`, `http`, subprocesses, `datetime`, `args`.
-2. `colibri repl`, script ergonomics, and startup time tuned for one-off scripts.
-3. Rust crate bindings through project-specific runners (§15.5); `colibri-rapier`.
-4. **Milestone:** real automation scripts written in Colibri (a file-organising tool, a JSON/HTTP
-   report generator).
+1. Rust crate bindings through project-specific runners (§15.5); `colibri-rapier` once a demo
+   needs it.
+
+**Later, optional: game kit package and a demo game**
+
+1. The `colibri-game` package (§15.6) and the Q20 backend choice.
+2. **Milestone:** a small, complete game (for example a top-down arena shooter) with hot reload,
+   standalone on the kit and with its scripts embedded in a Rust host.
 
 **Stretch goals**, each started only when a profile of a real program asks for it:
 
@@ -1694,15 +1795,15 @@ it reads consistently. Changing one means editing the sections it names.
 | Q9 | Cycle collection | `weak` + leak detector built as trial deletion; maybe an explicit `mem.collect_cycles()` later | §11.5 |
 | Q10 | What crosses a thread boundary | Isolates; sends are explicit deep copies (`.clone()`), implicit only for plain values and `str`; `Shared[T]` freezes and sets a shared bit | §14.1 |
 | Q11 | Enum variant lookup | Bare in patterns, `.Variant` where the type is known, `Type.Variant` otherwise; capitalisation rule in patterns | §8.2 |
-| Q12 | Operator overloading | Built-in only in phase 1; `Add`/`Sub`/`Mul`/`Neg` interfaces for structs after it | §15.1 |
+| Q12 | Operator overloading | Built-in only in phase 1 (the `vec` module's types get component-wise operators); `Add`/`Sub`/`Mul`/`Neg` interfaces for structs after it | §15.1 |
 | Q13 | `unsafe` | `unsafe { }` for raw pointer operations; FFI as a per-package and per-VM capability | §15.3 |
-| Q14 | Hot reload semantics | Function-level patching, automatic restart (with optional save/restore hooks) on layout changes | §16.3 |
+| Q14 | Hot reload semantics | Function-level patching, automatic restart (with optional save/restore hooks, `str` until §7.5 exists) on layout changes | §16.3 |
 | Q15 | Script top-level code | Only in the entry file of a script; imported modules hold declarations only | §13 |
 | Q16 | Name | **Decided 2026-11-19: Colibri**, written `colibri` in anything typed. Renamed from the working name Leo (which collides with Aleo's Leo), briefly Noble. Naming details in §17.2 are [Proposed] | everywhere |
-| Q17 | Rust crate bindings | Static linking everywhere through project-specific runners; no dylib; no `glam` binding; `rapier` when the demo needs it | §15.5 |
+| Q17 | Rust crate bindings | Static linking everywhere through project-specific runners; no dylib; no `glam` binding; `rapier` when a demo needs it | §15.5 |
 | Q18 | Coroutine and task syntax | `go f()` keyword for coroutines; `task.run(fn() => ...)` for thread tasks; with `=>` lambdas `wait_until` needs no sugar. Spelling of `go` (vs `co`) still open | §14 |
 | Q19 | Weak capture syntax | `fn() use(weak self) { ... }` capture list; inside, the name has type `T?` | §6.2 |
-| Q20 | Game kit backend | Statically linked raylib (fastest to ship, C dependency) vs Rust crates (winit + wgpu + kira, pure Rust, more work) | §15.6 |
+| Q20 | Game kit backend | **Deferred 2026-11-19** with the game kit, which is an optional later package. Statically linked raylib (fastest to ship, C dependency) vs Rust crates (winit + wgpu + kira, pure Rust, more work) | §15.6 |
 
 ---
 
@@ -1714,12 +1815,12 @@ it reads consistently. Changing one means editing the sections it names.
 | **Python** | Readability bar, scripting ergonomics, f-string style interpolation |
 | **Rust** | `Result`/`?`, enums + exhaustive `match`, `impl` blocks, Cargo-style tooling, editions |
 | **Swift** | Value structs vs reference classes, ARC with optimization, `weak`, `inout` copy-in/copy-out, trapping overflow |
-| **C# / Unity** | The struct-vs-class split game developers already know; coroutine use cases (and pitfalls) |
+| **C# / Unity** | The struct-vs-class split many developers already know; coroutine use cases (and pitfalls) |
 | **Lobster** | Compile-time RC elision for a game-focused language; closest relative |
 | **Koka / Perceus** | Precise RC with reuse analysis (FBIP); a shared bit for thread-shared objects |
 | **Dart / JS workers** | Isolates with message passing |
 | **Zig** | `catch \|e\| { ... }` error handler blocks |
 | **Vale** | Ideas on generational references and region borrowing (for future work) |
-| **Odin / Jai** | Game-dev ergonomics: vector types, C layout, easy FFI |
-| **Lua / LÖVE** | The embedding experience to match or beat; a game kit in the stock binary |
+| **Odin / Jai** | Ergonomics for systems-adjacent code: vector types, C layout, easy FFI |
+| **Lua / LÖVE** | The embedding experience to match or beat; a game kit as a separate package |
 | **GDScript / Wren** | Scripting languages built for games and hot reload |
