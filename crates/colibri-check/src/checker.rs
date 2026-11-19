@@ -321,7 +321,6 @@ fn host_stub_body(f: &FnInfo<'_>) -> Body {
         },
         ret: f.ret.clone(),
         mutates_self: false,
-        needs_type_args: false,
     }
 }
 

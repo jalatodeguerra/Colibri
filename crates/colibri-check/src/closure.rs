@@ -425,7 +425,6 @@ impl FnCtx<'_, '_> {
                 block: d.block,
                 ret: ret.clone(),
                 mutates_self: false,
-                needs_type_args: false,
             };
             info.params = params;
             info.ret = ret;

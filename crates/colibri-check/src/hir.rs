@@ -364,9 +364,6 @@ pub struct Body {
     /// the engine takes the final value of local 0 back out and the caller writes it to the
     /// receiver place (ARCHITECTURE §4).
     pub mutates_self: bool,
-    /// The body reads its hidden type-argument vector at runtime (ARCHITECTURE §1). Nothing
-    /// does yet (no `json.decode[T]`, no `e.is[T]()`), so the engines may drop `type_args`.
-    pub needs_type_args: bool,
 }
 
 /// How a local's slot is stored.

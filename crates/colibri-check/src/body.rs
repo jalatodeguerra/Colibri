@@ -541,7 +541,6 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             block,
             ret,
             mutates_self: self.self_mut,
-            needs_type_args: false,
         }
     }
 
