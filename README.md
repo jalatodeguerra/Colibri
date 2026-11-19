@@ -70,3 +70,5 @@ Run the test suite with `cargo test --workspace`.
   generator, written in Colibri
 - [examples/host_game](examples/host_game/README.md): a Rust program that drives its logic from
   Colibri scripts, as an embedding example
+- [benchmarks](benchmarks/README.md): eight small programs in Colibri and Python, and the
+  baseline the bytecode VM has to beat

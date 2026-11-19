@@ -1,0 +1,25 @@
+// Class objects: build and walk a linked list, 20 times.
+class Node {
+    value: int
+    next: Node?
+}
+
+fn build(n: int) -> Node? {
+    var head: Node? = none
+    for i in 0..n {
+        head = some(Node { value: i, next: head })
+    }
+    return head
+}
+
+fn main() {
+    var total = 0
+    for round in 0..20 {
+        var cur = build(50000)
+        while let some(n) = cur {
+            total += n.value
+            cur = n.next
+        }
+    }
+    print(total)
+}

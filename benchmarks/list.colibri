@@ -1,0 +1,15 @@
+// A list of a million integers: push, index, iterate.
+fn main() {
+    var xs: List[int] = []
+    for i in 0..1000000 {
+        xs.push(i)
+    }
+    var total = 0
+    for i in 0..1000000 {
+        total += xs[i]
+    }
+    for x in xs {
+        total += x
+    }
+    print(total)
+}

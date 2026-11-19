@@ -1,0 +1,27 @@
+// Value-type structs updated in place through a `var self` method.
+struct P {
+    x: float
+    y: float
+    vx: float
+    vy: float
+}
+
+impl P {
+    fn step(var self, dt: float) {
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+    }
+}
+
+fn main() {
+    var ps: List[P] = []
+    for i in 0..1000 {
+        ps.push(P { x: 0.0, y: 0.0, vx: 1.0, vy: 2.0 })
+    }
+    for round in 0..300 {
+        for var p in ps {
+            p.step(0.016)
+        }
+    }
+    print(ps[0].x)
+}

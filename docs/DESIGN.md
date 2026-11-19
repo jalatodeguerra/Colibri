@@ -1806,7 +1806,7 @@ finished when stage 1 is met, and stage 2 is a later goal.
 | `colibri run hello.colibri` startup, including type check | under 50 ms |
 | Type check | at least 100k lines per second |
 | Hot-reload patch, edit to new code running | under 200 ms for a 10k-line program |
-| Bytecode VM, stage 1 (ends phase 3) | faster than CPython 3.13 on the project's benchmark set (to be assembled; binary-trees, n-body, fannkuch and spectral-norm are the starting candidates) |
+| Bytecode VM, stage 1 (ends phase 3) | faster than CPython 3.13 on every program of the project's benchmark set (`benchmarks/`: calls, loops, lists, maps, structs, objects, closures, strings) |
 | Bytecode VM, stage 2 (later) | within 1.5× of Lua 5.4 on the same benchmarks |
 | Shipped program (`colibri build`), script case | a one-off script starts within the startup target above; executable under 15 MB |
 | Shipped program, long-running service | memory stays flat over a long run (no growth under the leak detector); a request-handling loop allocates only for the request's own data |
