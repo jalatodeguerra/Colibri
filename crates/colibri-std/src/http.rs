@@ -15,9 +15,11 @@
 //! * Timeouts: 30 seconds for a whole request by default; `http.set_timeout(seconds)` changes
 //!   it for the rest of the program (`0` means no timeout).
 //!
-//! A call **blocks the whole Vm**, coroutines included, until the response is complete: a host
-//! function cannot wait (ARCHITECTURE §16). Use short timeouts in a program that must keep
-//! animating.
+//! A call runs the request on a background thread (`Ctx::run_async`, ARCHITECTURE §22). Inside
+//! a coroutine only that coroutine waits: the others keep running and several requests
+//! overlap. On the main fiber the call runs the event loop while it waits, so coroutines
+//! started earlier keep running there too. Cancelling the waiting coroutine abandons the
+//! request (the thread finishes on its own and its result is dropped).
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -128,7 +130,9 @@ fn run(
     let timeout = cx
         .state_mut::<HttpState>()
         .map_or(Some(DEFAULT_TIMEOUT), |s| s.timeout);
-    perform(timeout, method, url, headers, body)
+    let (method, url, headers) = (method.to_string(), url.to_string(), headers.clone());
+    // On a background thread: inside a coroutine only this coroutine waits.
+    cx.run_async(move || perform(timeout, &method, &url, &headers, body))
 }
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {

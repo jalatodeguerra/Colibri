@@ -10,9 +10,10 @@
 //! The `Interp` must not move while a coroutine exists (the suspended stacks hold references
 //! into it); the runtime keeps it in a `Box`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
-use std::time::Instant;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use colibri_check::hir::{Callee, Expr, ExprKind, Intrinsic};
 use colibri_check::types::{COGROUP_TYPE, COROUTINE_TYPE, SIGNAL_TYPE, Ty};
@@ -45,6 +46,16 @@ pub trait Clock {
     fn now(&mut self) -> f64;
     /// Waits for `seconds` (a fake clock just moves forward).
     fn sleep(&mut self, seconds: f64);
+    /// Waits for up to `seconds`, but returns early when `wake(timeout)` reports that an
+    /// external operation finished (`wake` blocks for up to `timeout` real time and says
+    /// whether something arrived). The event loop calls this instead of `sleep` while
+    /// background operations are pending (ARCHITECTURE section 22). The default is for fake
+    /// clocks: it gives real time a millisecond to deliver, then moves forward by at most that.
+    fn sleep_interruptible(&mut self, seconds: f64, wake: &mut dyn FnMut(Duration) -> bool) {
+        if !wake(Duration::from_millis(1)) {
+            self.sleep(seconds.min(0.001));
+        }
+    }
 }
 
 /// The wall clock.
@@ -72,8 +83,84 @@ impl Clock for SystemClock {
     }
     fn sleep(&mut self, seconds: f64) {
         if seconds > 0.0 {
-            std::thread::sleep(std::time::Duration::from_secs_f64(seconds));
+            std::thread::sleep(clamp_sleep(seconds));
         }
+    }
+    fn sleep_interruptible(&mut self, seconds: f64, wake: &mut dyn FnMut(Duration) -> bool) {
+        if seconds > 0.0 {
+            wake(clamp_sleep(seconds));
+        }
+    }
+}
+
+/// A sleep length that cannot overflow `Duration` (an event loop waiting only for background
+/// operations asks for an unbounded sleep; it is cut to a day and asked again).
+fn clamp_sleep(seconds: f64) -> Duration {
+    Duration::from_secs_f64(seconds.clamp(0.0, 86_400.0))
+}
+
+/// Why waiting for a background operation did not give a result.
+#[derive(Debug)]
+pub enum ExternalError {
+    /// The waiting coroutine was cancelled: the operation is abandoned.
+    Cancelled,
+    /// The operation could not run or its thread panicked.
+    Failed(String),
+}
+
+/// Background operations: threads that post their id here when they finish.
+struct Externals {
+    tx: mpsc::Sender<u64>,
+    rx: mpsc::Receiver<u64>,
+    /// Started and not yet finished or abandoned.
+    pending: HashSet<u64>,
+    /// Finished, not yet collected by the waiter.
+    completed: HashSet<u64>,
+}
+
+impl Externals {
+    fn new() -> Self {
+        let (tx, rx) = mpsc::channel();
+        Externals {
+            tx,
+            rx,
+            pending: HashSet::new(),
+            completed: HashSet::new(),
+        }
+    }
+
+    fn note(&mut self, id: u64) {
+        if self.pending.remove(&id) {
+            self.completed.insert(id);
+        }
+    }
+
+    /// Collects every completion that has arrived, without waiting.
+    fn drain(&mut self) {
+        while let Ok(id) = self.rx.try_recv() {
+            self.note(id);
+        }
+    }
+
+    /// Waits up to `timeout` for one completion; whether one arrived.
+    fn wait(&mut self, timeout: Duration) -> bool {
+        match self.rx.recv_timeout(timeout) {
+            Ok(id) => {
+                self.note(id);
+                self.drain();
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+
+/// Tells the scheduler an operation ended, also when its thread panics.
+struct Notify(mpsc::Sender<u64>, u64);
+
+impl Drop for Notify {
+    fn drop(&mut self) {
+        let _ = self.0.send(self.1);
     }
 }
 
@@ -118,6 +205,9 @@ enum Wake {
     Signaled,
     /// `join_all` on this group: when no other coroutine of it is alive.
     Group(u64),
+    /// A background operation (`Interp::await_external`): when its thread has finished. Needs
+    /// no polling: the event loop sleeps until the thread posts its completion.
+    External(u64),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -165,6 +255,7 @@ pub(crate) struct Scheduler {
     groups: HashMap<u64, Vec<u64>>,
     /// How many times any coroutine was resumed (for tests and tuning).
     resumptions: u64,
+    ext: Externals,
 }
 
 impl Scheduler {
@@ -185,6 +276,7 @@ impl Scheduler {
             signaled: Vec::new(),
             groups: HashMap::new(),
             resumptions: 0,
+            ext: Externals::new(),
         }
     }
 
@@ -253,6 +345,16 @@ fn signal_id(v: &Value) -> Option<u64> {
     }
 }
 
+const PANICKED_THREAD: &str = "the background operation failed (its thread panicked)";
+
+/// How driving the scheduler from the main fiber ended.
+enum Drive {
+    Done,
+    Failure(Box<PanicInfo>),
+    /// Nothing is scheduled that could end the wait.
+    Stuck,
+}
+
 /// Why a tick did not happen or did not end well.
 pub enum TickError {
     /// `tick` was called from a coroutine, or from inside a tick.
@@ -281,7 +383,14 @@ impl Interp {
 
     /// Sleeps on the clock.
     pub fn clock_sleep(&mut self, seconds: f64) {
-        self.sched.clock.sleep(seconds);
+        let s = &mut self.sched;
+        if s.ext.pending.is_empty() {
+            s.clock.sleep(seconds);
+        } else {
+            // Background operations are running: a completion ends the sleep early.
+            let ext = &mut s.ext;
+            s.clock.sleep_interruptible(seconds, &mut |d| ext.wait(d));
+        }
     }
 
     /// How many coroutines are alive (started and not yet finished).
@@ -323,13 +432,22 @@ impl Interp {
                     let now = *real_now.get_or_insert_with(|| self.sched.clock.now());
                     (d - now).max(0.0)
                 }
+                // Only a completion (which ends the sleep) can wake it.
+                Wake::External(_) => f64::INFINITY,
                 Wake::Ready | Wake::Frame(_) | Wake::Join(_) | Wake::Group(_) | Wake::Signal(_) => {
                     poll
                 }
             };
             best = Some(best.map_or(delay, |b| b.min(delay)));
         }
-        if any { best } else { None }
+        if any {
+            best
+        } else if self.sched.ext.pending.is_empty() {
+            None
+        } else {
+            // The main fiber waits for a background operation: only its completion helps.
+            Some(f64::INFINITY)
+        }
     }
 
     // ---- ticking ----
@@ -359,11 +477,18 @@ impl Interp {
     }
 
     fn tick_core(&mut self, dt: f64) -> Result<(), TickError> {
+        self.tick_run(dt)?;
+        self.take_failures()
+    }
+
+    /// One tick, leaving the coroutines' failures queued.
+    fn tick_run(&mut self, dt: f64) -> Result<(), TickError> {
         if self.sched.in_tick || !self.sched.running.is_empty() {
             return Err(TickError::Reentrant);
         }
         let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
         self.sched.in_tick = true;
+        self.sched.ext.drain();
         self.sched.time += dt;
         self.sched.frame += 1;
         let mut real_now: Option<f64> = None;
@@ -395,6 +520,7 @@ impl Interp {
                 Wake::Frame(f) => s.frame >= *f,
                 Wake::Real(d) => *real_now.get_or_insert_with(|| s.clock.now()) >= *d,
                 Wake::Join(w) => w.upgrade().is_none_or(|h| handle_status(&h) != RUNNING),
+                Wake::External(op) => s.ext.completed.contains(op),
             };
             if due {
                 let id = e.id;
@@ -403,7 +529,7 @@ impl Interp {
         }
         self.sched.in_tick = false;
         self.compact();
-        self.take_failures()
+        Ok(())
     }
 
     fn compact(&mut self) {
@@ -833,6 +959,13 @@ impl Interp {
                 Err(TickError::Reentrant) => Err(self.panic(fiber, span, "`task.tick` is busy")),
             };
         }
+        if let (Intrinsic::Wait, Value::Float(s), None) = (intrinsic, &arg, &fiber.coro) {
+            if s.is_nan() {
+                return Err(self.panic(fiber, span, "`wait` needs a number of seconds, not NaN"));
+            }
+            let s = s.max(0.0);
+            return self.wait_on_main(fiber, s, span).map(|()| Value::Unit);
+        }
         let id = match self.pause_context(fiber, span, name) {
             Ok(id) => id,
             Err(ctl) => {
@@ -898,6 +1031,166 @@ impl Interp {
                 _ => self.suspend(fiber, id, Wake::Ready)?,
             }
         }
+    }
+
+    // ---- driving the scheduler from the main fiber ----
+
+    /// May the main fiber run the event loop now? `depth` is how many host functions may be
+    /// active (0 for a Colibri-level wait, 1 for a host function waiting on its own thread).
+    fn can_drive(&self, fiber: &Fiber, depth: u32) -> bool {
+        fiber.coro.is_none()
+            && fiber.host_depth <= depth
+            && self.hook_depth == 0
+            && !self.sched.in_tick
+            && self.sched.running.is_empty()
+            && !self.sched.shutting_down
+    }
+
+    /// The checks of a wait on the main fiber, as panics with a message that says why.
+    fn check_drive(&mut self, fiber: &mut Fiber, span: Span, what: &str) -> Eval<()> {
+        let why = if fiber.host_depth > 0 {
+            "inside a host function's callback"
+        } else if self.hook_depth > 0 {
+            "inside a `Drop` hook"
+        } else if self.sched.in_tick || !self.sched.running.is_empty() {
+            "inside a tick"
+        } else if self.sched.shutting_down {
+            "while the program is shutting down"
+        } else {
+            return Ok(());
+        };
+        let message = format!(
+            "`{what}` on the main fiber runs the event loop, which cannot be done {why} (ARCHITECTURE section 22)"
+        );
+        Err(self.panic(fiber, span, message))
+    }
+
+    /// Runs the event loop on the main fiber, as the loop after `main` does (ticks with the
+    /// time elapsed on the clock, sleeping until the next wake or a completion), until `done`
+    /// holds or the clock reaches `deadline`. With `report`, a coroutine's failure ends the
+    /// wait with that panic unless `done` holds. Always ticks once first.
+    fn drive(
+        &mut self,
+        deadline: Option<f64>,
+        report: bool,
+        done: &mut dyn FnMut(&mut Interp) -> bool,
+    ) -> Drive {
+        let mut last = self.sched.clock.now();
+        loop {
+            let now = self.sched.clock.now();
+            let dt = (now - last).max(0.0);
+            last = now;
+            if self.tick_run(dt).is_err() {
+                return Drive::Stuck;
+            }
+            if done(self) {
+                return Drive::Done;
+            }
+            if report && let Err(TickError::Failure(info)) = self.take_failures() {
+                return Drive::Failure(info);
+            }
+            let now = self.sched.clock.now();
+            let mut delay = match (self.next_wake(0.001), deadline) {
+                (Some(d), _) => d,
+                (None, Some(_)) => f64::INFINITY,
+                (None, None) => return Drive::Stuck,
+            };
+            if let Some(d) = deadline {
+                if now + TIME_EPSILON >= d {
+                    return Drive::Done;
+                }
+                delay = delay.min(d - now);
+            }
+            self.clock_sleep(delay);
+        }
+    }
+
+    fn drive_main(
+        &mut self,
+        fiber: &mut Fiber,
+        span: Span,
+        what: &str,
+        deadline: Option<f64>,
+        done: &mut dyn FnMut(&mut Interp) -> bool,
+    ) -> Eval<()> {
+        self.check_drive(fiber, span, what)?;
+        match self.drive(deadline, true, done) {
+            Drive::Done => Ok(()),
+            Drive::Failure(info) => Err(Ctl::Panic(info)),
+            Drive::Stuck => {
+                let message = format!(
+                    "`{what}` on the main fiber would wait forever: no coroutine is left that a clock or a completion could wake"
+                );
+                Err(self.panic(fiber, span, message))
+            }
+        }
+    }
+
+    /// `wait(seconds)` on the main fiber: runs the event loop for that long.
+    fn wait_on_main(&mut self, fiber: &mut Fiber, seconds: f64, span: Span) -> Eval<()> {
+        let deadline = self.sched.clock.now() + seconds;
+        self.drive_main(fiber, span, "wait", Some(deadline), &mut |_| false)
+    }
+
+    // ---- background operations ----
+
+    /// Runs `work` on a background thread and waits for its result without blocking other
+    /// coroutines: the calling coroutine is suspended with `Wake::External`, and the event
+    /// loop (or the host's `tick`) resumes it once the thread has finished. On the main
+    /// fiber the wait runs the event loop instead, so coroutines keep running. Where neither
+    /// is possible (inside a host callback or a `Drop` hook) it just blocks. Meant to be
+    /// called from a host function (host depth 1); it must not hold a borrow of host objects
+    /// across the call, because other coroutines run meanwhile. `Err(Cancelled)` means the
+    /// coroutine was cancelled while waiting: the host function must unwind (its result would
+    /// be discarded).
+    pub fn await_external<R: Send + 'static>(
+        &mut self,
+        fiber: &mut Fiber,
+        work: impl FnOnce() -> R + Send + 'static,
+    ) -> Result<R, ExternalError> {
+        let op = self.sched.next_id;
+        self.sched.next_id += 1;
+        let (result_tx, result_rx) = mpsc::channel::<R>();
+        let notify = Notify(self.sched.ext.tx.clone(), op);
+        self.sched.ext.pending.insert(op);
+        let spawned = std::thread::Builder::new()
+            .name("colibri-async".to_string())
+            .spawn(move || {
+                let _notify = notify;
+                let _ = result_tx.send(work());
+            });
+        if let Err(e) = spawned {
+            self.sched.ext.pending.remove(&op);
+            return Err(ExternalError::Failed(format!(
+                "cannot start a background thread: {e}"
+            )));
+        }
+        let coro = fiber.coro.as_ref().map(|c| c.id);
+        let suspendable = fiber.host_depth <= 1 && self.hook_depth == 0;
+        let waited = if let (Some(id), true) = (coro, suspendable) {
+            let mut outcome = Ok(());
+            while !self.sched.ext.completed.contains(&op) {
+                if self.suspend(fiber, id, Wake::External(op)).is_err() {
+                    outcome = Err(ExternalError::Cancelled);
+                    break;
+                }
+            }
+            outcome
+        } else if self.can_drive(fiber, 1) {
+            self.drive(None, false, &mut |me| me.sched.ext.completed.contains(&op));
+            Ok(())
+        } else {
+            // Nothing can run meanwhile: block this thread until the result is there.
+            let blocked = result_rx.recv();
+            self.sched.ext.pending.remove(&op);
+            return blocked.map_err(|_| ExternalError::Failed(PANICKED_THREAD.to_string()));
+        };
+        self.sched.ext.pending.remove(&op);
+        self.sched.ext.completed.remove(&op);
+        waited?;
+        result_rx
+            .try_recv()
+            .map_err(|_| ExternalError::Failed(PANICKED_THREAD.to_string()))
     }
 
     // ---- handle methods ----
@@ -1006,6 +1299,10 @@ impl Interp {
                 if !others(&self.sched) {
                     return Ok(Value::Unit);
                 }
+                if me.is_none() {
+                    self.drive_main(fiber, span, "join_all", None, &mut |it| !others(&it.sched))?;
+                    return Ok(Value::Unit);
+                }
                 let id = self.pause_context(fiber, span, "join_all")?;
                 while others(&self.sched) {
                     self.suspend(fiber, id, Wake::Group(g))?;
@@ -1035,6 +1332,12 @@ impl Interp {
     }
 
     fn join_coroutine(&mut self, fiber: &mut Fiber, h: &Rc<ClassObj>, span: Span) -> Eval {
+        if handle_status(h) == RUNNING && fiber.coro.is_none() {
+            let target = Rc::clone(h);
+            self.drive_main(fiber, span, "join", None, &mut |_| {
+                handle_status(&target) != RUNNING
+            })?;
+        }
         if handle_status(h) == RUNNING {
             let id = self.pause_context(fiber, span, "join")?;
             if handle_id(h) == id {
@@ -1096,6 +1399,7 @@ impl Interp {
         self.sched.signals.clear();
         self.sched.signaled.clear();
         self.sched.groups.clear();
+        self.sched.ext.completed.clear();
         self.end_entry(outermost, false);
     }
 }

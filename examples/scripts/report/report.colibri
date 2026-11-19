@@ -8,9 +8,9 @@
 // `{"region": "...", "orders": [{"id": 1, "customer": "...", "category": "...", "total": 9.5}]}`.
 // URLs go through `http`, everything else through `fs`. Without `--out` the report is printed.
 //
-// `--concurrency N` runs N worker coroutines over the list of items. `http` blocks the whole
-// Vm, so the workers take turns rather than overlap (see README); the structure is what a
-// non-blocking `http` would need. `--now` fixes the time stamp (for reproducible output);
+// `--concurrency N` runs N worker coroutines over the list of items. `http` suspends only the
+// calling coroutine, so up to N requests are in flight at once; `main` waits with
+// `group.join_all()`. `--now` fixes the time stamp (for reproducible output);
 // `--git` adds the current commit when the working folder is a git repository.
 //
 // Exit codes: 0 done, 1 the index could not be read or some item failed (the report is still
@@ -109,9 +109,7 @@ fn fetch_all(jobs: List[Job], workers: int) {
     for _ in 0..workers {
         group.go(worker(jobs, queue))
     }
-    while group.count() > 0 {
-        task.tick(0.0)
-    }
+    group.join_all()
 }
 
 fn bump_int(m: Map[str, int], key: str, by: int) {

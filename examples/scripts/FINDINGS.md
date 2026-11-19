@@ -12,12 +12,12 @@ program, medium forces a workaround, low is rough edges. "Fixed" ones have a gol
    `let mode = match x { .. other => usage_error(..) }` is not possible. A generic
    `fn f[T]() -> T { os.exit(2) }` fails too ("must return `T`"). Suggest: a `!` return type in
    source (the checker already has `Ty::Never`), and give `os.exit` that type.
-3. **`join_all` and `join` do not work from `main`** (medium). `main` cannot wait for a
+3. **`join_all` and `join` do not work from `main`** (medium, fixed: they and `wait(s)` now run the event loop on the main fiber, ARCHITECTURE section 22). `main` cannot wait for a
    `CoGroup`, so `fetch_all` hand-rolls `while group.count() > 0 { task.tick(0.0) }`. That is
    a correct idiom but not an obvious one (the error says "can only pause a coroutine").
    Suggest `group.run()` / `task.run_until(c)`: drive the event loop until the group or
    coroutine finishes, allowed on the main fiber.
-4. **`http` blocks the Vm, so the report's coroutines never overlap** (medium, known:
+4. **`http` blocks the Vm, so the report's coroutines never overlap** (medium, fixed: `http` runs on a background thread and suspends only its coroutine, ARCHITECTURE section 22; was known:
    ARCHITECTURE §13). The worker pool is structural only; documented in the README. A
    non-blocking `http.get` that a coroutine can suspend on (or a `http.spawn` returning a
    handle that `try_wait`s, like `process`) would make `--concurrency` real.

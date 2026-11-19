@@ -1505,8 +1505,8 @@ in a golden; the CLI grants everything).
 - Timeout: 30 s for a whole request by default; `http.set_timeout(s)` changes it for the rest of
   the program (`0` is none, negative or non-finite panics). The setting lives in a state of its
   own in the `Vm`, not in `StdConfig`.
-- **A call blocks the whole `Vm`, coroutines included**: a host function cannot wait (§16), so no
-  other coroutine runs until the response is complete or the timeout fires.
+- ~~A call blocks the whole `Vm`, coroutines included~~ **Superseded by §22**: the request runs
+  on a background thread and only the calling coroutine waits.
 - Tests: `crates/colibri-std/tests/http.rs` starts a hand-written HTTP/1.1 server on
   `127.0.0.1:0` in the test process (nothing leaves the machine); the golden
   `std/http_needs_capability` covers the refusal without `net`. There is no golden with a live
@@ -2787,3 +2787,85 @@ instead of twice in `colibri run` (about 8 ms of the remaining 19).
 Tab completion and syntax highlighting; persistent history file; `:load` of local modules;
 redefining types; a `_` for the last value (it is `__last`, not meant to be typed);
 recomputing values that depend on a rebound `let`.
+
+## 22. Phase 2 findings fixes, part B
+
+Findings 3 and 4 of `examples/scripts/FINDINGS.md`: waiting from `main`, and a non-blocking
+`http`. Code in `colibri-interp/src/coro.rs` (scheduler), `colibri-runtime/src/ctx.rs`
+(`Ctx::run_async`), `colibri-std/src/http.rs`.
+
+### Waiting on the main fiber
+
+`wait(seconds)`, `c.join()` and `group.join_all()` with no coroutine on the fiber call
+`Interp::drive`, which is the body of `Vm::run_event_loop` run in place: tick with the time elapsed
+on the clock, test the condition, sleep until the next timed wake (`next_wake`) or the deadline,
+repeat. The clock is the scheduler's, so `colibri run` uses the wall clock and the golden harness
+and tests the injected one (`wait(1.0)` in a golden test advances the fake clock, no sleeping).
+Inside a coroutine nothing changed (they pause). Details:
+
+- `wait(s)` ticks at least once (`wait(0.0)` is one tick), then until the clock reaches the
+  deadline. A coroutine panic during a `wait` ends it with that panic. `join` of a panicked
+  coroutine panics in main as before ("the joined coroutine .. panicked"); `join_all` does not
+  report members' panics (they surface at the next tick or at the end of the event loop).
+- Refused with a panic that names the reason when a host function's callback is on the fiber
+  (`host_depth > 0`), inside a `Drop` hook, inside a tick, or while shutting down.
+- A wait that nothing can end (a joined coroutine that only waits for a signal, with no timer
+  or completion pending) panics "would wait forever" instead of hanging.
+- `wait_frames`, `wait_until`, `wait_real` and `wait_for` still panic on the main fiber: they
+  count ticks or need an emitter, and `main` has no tick to count. They could be added the same
+  way.
+- Time spent in `main` between waits is not credited to scheduler time (as before the loop starts
+  after `main`): a `wait(1.0)` coroutine started in main and then 5 s of computation is still due
+  1 s into the next wait.
+- The golden tests `wait_on_main_panics` and `join_on_main_panics` are replaced by
+  `wait_on_main_runs_the_loop`, `join_on_main`, `join_all_on_main`, `join_on_main_panicked`,
+  `wait_on_main_reports_a_failure` and `join_on_main_never_ends`.
+
+### Background operations (`Wake::External`)
+
+A host function cannot return "pending" and be resumed, but it *can* wait on its own stack: a
+coroutine runs on a native stack of its own, and a host function called from it sits on that stack
+like any evaluator frame. So the mechanism is `Ctx::run_async(work)`, called inside the host
+function (host depth 1):
+
+1. `Interp::await_external` allocates an operation id, spawns a thread that runs `work`, sends the
+   result on a one-shot channel and, from a drop guard (so also when `work` panics), posts the id
+   on the scheduler's completion channel (`Externals`: pending and completed sets).
+2. In a coroutine, `suspend(.., Wake::External(id))` suspends the whole coroutine, host frame
+   included. `tick_core` drains the completion channel at the start of every tick and a coroutine
+   with `Wake::External(id)` is due when `id` is completed; the host function then reads its result
+   and returns normally. `next_wake` contributes infinity for such a coroutine (no polling).
+3. `Interp::clock_sleep` (used by the event loop) waits with `recv_timeout` on the completion
+   channel while operations are pending (`Clock::sleep_interruptible`; the wall clock sleeps in
+   it, the default for fake clocks gives real time 1 ms and then moves the fake time by at most
+   1 ms), so it wakes at the earlier of the next timer and a completion, with no busy loop.
+   `tests/async_ops.rs` asserts one resumption to finish, no polling.
+4. Cancelling a waiting coroutine resumes it with the cancel signal; `run_async` then unwinds the
+   host function with a Rust panic payload (`RaisedCancel`, like `Ctx::raise`) that the trampoline
+   turns into `HostFault::Cancel`, which `call_host` maps to `Ctl::Cancel`. The thread finishes by
+   itself and its result is dropped (the id is no longer pending, so the late completion is
+   ignored).
+5. Outside a coroutine (the main fiber) the call drives the loop until the completion arrives, so
+   coroutines started earlier keep running during a blocking `http.get` in `main`. Where driving is
+   impossible (a host callback on the way, a `Drop` hook, a tick) it blocks on the channel.
+
+`http` is the first user: `run` clones the request into a closure and calls `cx.run_async`;
+`Response`, errors and timeouts are unchanged (the ureq timeout runs on the thread).
+`crates/colibri-cli/tests/scripts.rs::report_requests_overlap_with_concurrency` serves 300 ms
+responses: with `--concurrency 4` the server sees four requests in flight at once and the report
+(index, then four items) finishes in about 0.75 s in a debug build, against about 1.65 s with
+`--concurrency 1`.
+
+### Decisions the design documents did not fix
+
+`wait(s)` on the main fiber runs the loop (rather than panicking); one general facility
+(`Ctx::run_async`) instead of an http-only one, with a thread per operation (no pool: operations
+are rare and long, and a pool would put an arbitrary cap on concurrency); the host function stays
+on the coroutine's stack while waiting (so it must hold no borrows; documented); main-fiber `http`
+drives the loop; `HostFault::Cancel` is a new public variant, and `Clock` gained a defaulted
+method. Suspending inside a host function is exactly what §3 said the tree-walker could do but should not (to agree with the bytecode VM): it is allowed only for `run_async`, at host depth 1, and the VM will need the same facility as a re-entrant host call (a pending token that the VM resumes), which is why the API is a closure that returns a value and not a stack trick. `process` (`status`, `Child.join`) still blocks; it could use `run_async` the same way.
+
+### Not built
+
+`wait_real`, `wait_until`, `wait_frames`, `wait_for` on the main fiber; a thread pool or a limit
+on simultaneous operations; async `fs` and `process`.

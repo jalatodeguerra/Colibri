@@ -1265,7 +1265,7 @@ door.co.go(door_open(door))                    // owned by the door: a CoGroup f
   Rust host calls `vm.tick(dt)` (§15.4). Coroutines never run in parallel with each other, so
   they share `class` objects freely without locks.
 - Any function can be called from a coroutine and may itself call `wait`; there is no special
-  coroutine function type. Calling `wait` outside a coroutine panics with a clear message.
+  coroutine function type. `wait(seconds)`, `join` and `join_all` on the main fiber run the event loop until the time has passed or the awaited coroutine or group has finished [built 2026-11-19, ARCHITECTURE §22]; the other waits outside a coroutine panic with a clear message.
 - **No suspending across a host frame.** If a host (Rust or C) function calls back into Colibri and
   that Colibri code tries to `wait`, it panics: the host's stack frame can't be suspended.
 - **Cancellation** stops the coroutine at its current pause point and unwinds it (§10.4),

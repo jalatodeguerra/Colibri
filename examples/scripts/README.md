@@ -76,9 +76,10 @@ top-N customers.
 - `http://` and `https://` locations go through `http.get` (a status other than 200 is an
   error), everything else through `fs.read`.
 - `--concurrency N` (default 2) starts N worker coroutines in a `CoGroup`; each takes the next
-  item from a shared queue. **`http.get` blocks the whole Vm** (ARCHITECTURE §13), so the
-  workers take turns instead of overlapping: nothing is faster with more of them today. The
-  structure is what a non-blocking `http` (or `process.spawn` plus polling) would use unchanged.
+  item from a shared queue, and `main` waits with `group.join_all()`. **The concurrency is
+  real**: `http.get` runs the request on a background thread and suspends only the calling
+  coroutine (ARCHITECTURE section 22), so `--concurrency 4` keeps four requests in flight at
+  once (files are read in order, since `fs` does not wait).
 - `--now` fixes the time stamp (ISO 8601); the default is `datetime.now()`. `--git` adds
   ``commit `abc1234` `` from `process.output("git", ["rev-parse", "--short", "HEAD"])` and does
   nothing outside a repository.
