@@ -495,3 +495,32 @@ fn an_underscore_alias_keeps_the_import_without_a_warning_and_still_loads_it() {
     vm.run_main().unwrap();
     assert_eq!(out.contents(), "registry initialised\nmain\n");
 }
+
+#[test]
+fn lints_are_reported_for_the_apps_code_not_a_dependencys() {
+    let dir = tree(
+        "deplint",
+        &[
+            (
+                "app/colibri.toml",
+                "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n",
+            ),
+            (
+                "app/main.colibri",
+                "import lib\nfn main() {\n    let mine = 1\n    print(\"{lib.f()}\")\n}\n",
+            ),
+            ("lib/colibri.toml", "[package]\nname = \"lib\"\n"),
+            (
+                "lib/lib.colibri",
+                "import helper\npub fn f() -> int {\n    let spare = 1\n    return 2\n}\n",
+            ),
+            ("lib/helper.colibri", "pub fn g() -> int { return 1 }\n"),
+        ],
+    );
+    let (mut vm, _) = vm();
+    vm.load_package(dir.join("app")).unwrap();
+    let warnings = vm.render_warnings(false);
+    assert!(warnings.contains("unused variable `mine`"), "{warnings}");
+    assert!(!warnings.contains("spare"), "{warnings}");
+    assert!(!warnings.contains("unused import `helper`"), "{warnings}");
+}

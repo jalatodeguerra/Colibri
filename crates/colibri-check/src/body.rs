@@ -289,9 +289,11 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     /// Closes the innermost scope and returns its locals (the block's drop list).
     pub fn pop_scope(&mut self) -> Vec<LocalId> {
         let locals = self.scopes.pop().map(|s| s.locals).unwrap_or_default();
+        // Only the program's own packages are linted, not a dependency's code.
+        let own = self.ck.mods[self.ck.cur_mod.0 as usize].root;
         for l in &locals {
             let f = self.flags[l.0 as usize];
-            if f.lint_unused && !f.read {
+            if own && f.lint_unused && !f.read {
                 let info = &self.locals[l.0 as usize];
                 let span = info.span;
                 let name = info.name.clone();
