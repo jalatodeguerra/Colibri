@@ -3,6 +3,8 @@
 pub mod fmt;
 pub mod golden;
 pub mod leakcmd;
+pub mod repl;
+mod repl_input;
 pub mod testcmd;
 pub mod watch;
 
