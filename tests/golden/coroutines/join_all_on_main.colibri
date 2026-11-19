@@ -1,0 +1,26 @@
+// `join_all` on the main fiber waits for the whole group, including coroutines started meanwhile.
+fn child(name: str, t: float) {
+    wait(t)
+    print("{name} done")
+}
+
+fn parent(group: CoGroup) {
+    wait(1.0)
+    group.go(child("late", 1.0))
+    print("parent done")
+}
+
+fn main() {
+    let group = CoGroup()
+    group.go(child("a", 3.0))
+    group.go(child("b", 0.5))
+    group.go(parent(group))
+    group.join_all()
+    print("all done, {group.count()} left")
+}
+
+// expect: b done
+// expect: parent done
+// expect: late done
+// expect: a done
+// expect: all done, 0 left

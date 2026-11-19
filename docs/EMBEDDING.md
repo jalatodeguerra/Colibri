@@ -274,11 +274,34 @@ loop {
   loop and deterministic tests.
 - A script `wait` (any of the four) called from a host function's callback into Colibri panics:
   the host's Rust frame cannot be suspended. The callback sees it as `Err(Error::Panic)` from
-  `Fn::call`. A `wait` on the main program (not inside `go`) panics too.
+  `Fn::call`. A `wait(seconds)`, `join` or `join_all` on the main program (not inside `go`) runs the event loop instead of panicking (§10.1); the other waits still panic there.
 - The `Vm` is boxed internally; moving a `Vm` value while coroutines are suspended is fine.
 - Measured: `vm.tick` with 1,000 idle coroutines takes about 10 microseconds in a debug build
   (`tests/coroutines.rs`); a `wait_until` coroutine costs a resumption per tick.
 
+
+### 10.1 Waiting on the main fiber, and background operations
+
+- **Main-fiber waits.** `wait(s)`, `c.join()` and `group.join_all()` called from the program's
+  main fiber (not inside a coroutine) run the same event loop as `vm.run_event_loop()` until
+  the time has passed or the awaited coroutine or group has finished, with the clock of
+  `VmBuilder::clock` (the wall clock under `colibri run`, the injected one in tests). They panic
+  when they cannot: inside a host function's callback, a `Drop` hook, or a tick. A host that
+  drives `vm.tick` itself and does not want this keeps scripts from calling them.
+- **`Ctx::run_async(work) -> R`** is the host API for blocking work that must not stop the
+  other coroutines. Inside a host function, `cx.run_async(move || do_blocking_thing(args))`
+  runs the closure (`Send + 'static`, no Colibri values, no `Vm`) on a background thread and
+  suspends the calling coroutine until it finishes; the scheduler resumes it on a later tick,
+  and the event loop sleeps until a timer or a completion instead of polling. On the main
+  fiber the call runs the event loop meanwhile; inside a callback or a `Drop` hook it just
+  blocks. Rules: do not hold a borrow of host objects across the call (other coroutines run);
+  if the coroutine is cancelled while waiting, the host function is unwound by a Rust panic
+  that the trampoline turns into a clean cancellation (the thread's result is discarded); a
+  panic of the work is a Colibri panic of the caller. A host driving `vm.tick(dt)` itself gets
+  the completions at its ticks. `http` is built on it (ARCHITECTURE §22).
+- The `Clock` trait has a third method with a default, `sleep_interruptible(seconds, wake)`,
+  which the event loop calls while operations are in flight; a custom clock for tests can keep
+  the default.
 
 ## 11. Hot reload from a host
 
