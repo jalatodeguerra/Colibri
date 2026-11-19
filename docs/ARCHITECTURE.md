@@ -1436,6 +1436,18 @@ any embedding that wants it (and the language server, which should call
 real process (system clock, process environment, real stdin). `interfaces()` gives the same
 interfaces without a `Vm`, for `colibri check`.
 
+`install` only declares the modules (`Vm::lazy_std_module(name, register)`): a module has a
+name from then on, so `import` finds it and `Vm::module_names()` lists it, but its functions are
+registered, and its interface generated, parsed and checked, the first time something needs it:
+a program that imports it (`check_entry` reads the files, registers the lazy modules the
+`import`s name, then builds the interface environment), `Vm::std_module(name)` or
+`Vm::module(name)`, `Vm::materialize_all`, or `session_start` (a session may import anything
+later, so it has every module and the host types keep their ids). An unregistered module is
+printed as an empty interface, so the checker sees its name and no items. A module is registered
+in one go: the per-registration interface check (print and parse back) runs once at its end.
+`colibri_std::interfaces()` asks for every module by name, so the language server and `colibri
+check` see all of them.
+
 ### Names and resolution
 
 A std module's interface name is `std.<name>` (`std.math`). `Vm::std_module(name)` is the only way

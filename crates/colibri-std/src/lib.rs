@@ -59,7 +59,7 @@ pub const MODULES: &[&str] = &[
 
 /// Registers the standard library into `vm` with the default [`StdConfig`]. It must happen
 /// before a program is loaded; calling it twice is an error (a module cannot be registered
-/// twice).
+/// twice). The modules are registered lazily, see [`Vm::lazy_std_module`].
 pub fn install(vm: &mut Vm) -> Result<(), Error> {
     install_with(vm, StdConfig::default())
 }
@@ -67,20 +67,28 @@ pub fn install(vm: &mut Vm) -> Result<(), Error> {
 /// Like [`install`], with a [`StdConfig`] that decides what the world looks like to scripts.
 pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
     vm.insert_state(config::State::new(config));
-    io::register(vm)?;
-    fs::register(vm)?;
-    path::register(vm)?;
-    os::register(vm)?;
-    math::register(vm)?;
-    rand::register(vm)?;
-    time::register(vm)?;
-    strs::register(vm)?;
-    json::register(vm)?;
-    re::register(vm)?;
-    http::register(vm)?;
-    args::register(vm)?;
-    process::register(vm)?;
-    datetime::register(vm)?;
+    // Only the names are declared now: a module is registered (its interface generated,
+    // parsed and checked) when a program imports it or something asks for it by name.
+    type Register = fn(&mut Vm) -> Result<(), Error>;
+    let lazy: [(&str, Register); 14] = [
+        ("io", io::register),
+        ("fs", fs::register),
+        ("path", path::register),
+        ("os", os::register),
+        ("math", math::register),
+        ("rand", rand::register),
+        ("time", time::register),
+        ("str", strs::register),
+        ("json", json::register),
+        ("regex", re::register),
+        ("http", http::register),
+        ("args", args::register),
+        ("process", process::register),
+        ("datetime", datetime::register),
+    ];
+    for (name, register) in lazy {
+        vm.lazy_std_module(name, register);
+    }
     colibri_runtime::install_vec(vm)?;
     Ok(())
 }

@@ -211,6 +211,8 @@ impl VmBuilder {
             host_fns: Vec::new(),
             host_consts: Vec::new(),
             modules: Vec::new(),
+            pending: Vec::new(),
+            bulk: false,
             reload: None,
         }
     }
@@ -238,10 +240,20 @@ pub struct Vm {
     /// The named host modules (`vm.module("physics")`) that have something registered, in the
     /// order they got it. The default `host` module always exists and is not listed.
     modules: Vec<String>,
+    /// Standard modules declared with [`Vm::lazy_std_module`] and not registered yet, by their
+    /// interface name (`std.fs`). They are in `modules` already, so the order of the modules
+    /// does not depend on what a program imports.
+    pending: Vec<(String, LazyModule)>,
+    /// A module is being registered in one go: each registration skips the interface check,
+    /// and the whole module is checked once at the end.
+    bulk: bool,
     /// Where the program came from and which files it was built from, for
     /// [`Vm::reload_changed`]. Kept when a load fails, so that fixing the file loads it.
     reload: Option<ReloadState>,
 }
+
+/// Registers a module that was declared lazily.
+type LazyModule = fn(&mut Vm) -> Result<(), Error>;
 
 impl Default for Vm {
     fn default() -> Self {
@@ -346,6 +358,7 @@ impl Vm {
     /// # }
     /// ```
     pub fn module(&mut self, name: &str) -> HostModule<'_> {
+        self.materialize(name);
         HostModule {
             vm: self,
             name: name.to_string(),
@@ -359,10 +372,70 @@ impl Vm {
     /// crate registers its modules, and it is the only way to get one: [`Vm::module`] refuses
     /// the reserved name `std`.
     pub fn std_module(&mut self, name: &str) -> HostModule<'_> {
+        let name = format!("{}{name}", colibri_check::host::STD_PREFIX);
+        self.materialize(&name);
         HostModule {
             vm: self,
-            name: format!("{}{name}", colibri_check::host::STD_PREFIX),
+            name,
             std: true,
+        }
+    }
+
+    /// Declares the standard module `name` without registering it: `register` runs the first
+    /// time something needs the module (a program that imports it, [`Vm::std_module`] or
+    /// [`Vm::module`] with its name, a session). Until then the module has a name, so
+    /// `import` finds it and [`Vm::module_names`] lists it, and no interface text is
+    /// generated, parsed or checked for it. `register` must register into `name` only.
+    pub fn lazy_std_module(&mut self, name: &str, register: fn(&mut Vm) -> Result<(), Error>) {
+        let name = format!("{}{name}", colibri_check::host::STD_PREFIX);
+        if self.pending.iter().any(|(n, _)| *n == name) || self.modules.contains(&name) {
+            return;
+        }
+        self.note_module(&name);
+        self.pending.push((name, register));
+    }
+
+    /// Registers the module `name` if it was declared lazily and not registered yet.
+    fn materialize(&mut self, name: &str) {
+        let Some(at) = self.pending.iter().position(|(n, _)| n == name) else {
+            return;
+        };
+        let (_, register) = self.pending.remove(at);
+        self.register_in_bulk(name, register);
+    }
+
+    /// Runs `register` for `module` with the interface check done once at its end. The
+    /// standard modules are registered by code that is tested with the library, so a
+    /// failure here is a bug, not an error to report.
+    fn register_in_bulk(&mut self, module: &str, register: LazyModule) {
+        let before = std::mem::replace(&mut self.bulk, true);
+        let result = register(self);
+        self.bulk = before;
+        result.unwrap_or_else(|e| panic!("registering the module `{module}` failed: {e}"));
+        if let Err(message) = self.validate_interfaces(module) {
+            panic!("the interface of the module `{module}` is not valid: {message}");
+        }
+    }
+
+    /// Registers every module that was declared lazily and not registered yet.
+    pub fn materialize_all(&mut self) {
+        while let Some((name, register)) = self.pending.pop() {
+            self.register_in_bulk(&name, register);
+        }
+    }
+
+    /// Registers the lazy modules that the program imports.
+    fn materialize_imports(&mut self, loaded: &colibri_check::package::Loaded) {
+        if self.pending.is_empty() {
+            return;
+        }
+        use colibri_check::package::ImportTarget;
+        for meta in &loaded.metas {
+            for target in meta.imports.values() {
+                if let ImportTarget::Host(name) = target {
+                    self.materialize(name);
+                }
+            }
         }
     }
 
@@ -385,7 +458,7 @@ impl Vm {
             name: name.to_string(),
             message,
         };
-        if self.program.is_some() {
+        if self.program.is_some() && !self.bulk {
             return Err(Error::AlreadyLoaded);
         }
         Self::check_module_name(module).map_err(fail)?;
@@ -435,7 +508,7 @@ impl Vm {
         let before = std::mem::replace(&mut self.registry, registry);
         let added = self.note_module(module);
         // Whatever the names or types, what is printed must read back.
-        if let Err(message) = self.validate_interfaces(module) {
+        if let Err(message) = self.validate_registration(module) {
             self.host_fns.pop();
             self.registry = before;
             self.forget_module(module, added);
@@ -458,7 +531,7 @@ impl Vm {
             name: type_name.to_string(),
             message,
         };
-        if self.program.is_some() {
+        if self.program.is_some() && !self.bulk {
             return Err(Error::AlreadyLoaded);
         }
         Self::check_module_name(module).map_err(fail)?;
@@ -472,7 +545,7 @@ impl Vm {
         let before = std::mem::replace(&mut self.registry, registry);
         let added = self.note_module(module);
         // Whatever the names, what is printed must read back.
-        if let Err(message) = self.validate_interfaces(module) {
+        if let Err(message) = self.validate_registration(module) {
             self.registry = before;
             self.forget_module(module, added);
             return Err(fail(message));
@@ -507,6 +580,16 @@ impl Vm {
     fn forget_module(&mut self, module: &str, added: bool) {
         if added {
             self.modules.retain(|m| m != module);
+        }
+    }
+
+    /// [`Vm::validate_interfaces`] after one registration, unless the module is being
+    /// registered in one go.
+    fn validate_registration(&self, touched: &str) -> Result<(), String> {
+        if self.bulk {
+            Ok(())
+        } else {
+            self.validate_interfaces(touched)
         }
     }
 
@@ -626,7 +709,7 @@ impl Vm {
             name: name.to_string(),
             message,
         };
-        if self.program.is_some() {
+        if self.program.is_some() && !self.bulk {
             return Err(Error::AlreadyLoaded);
         }
         Self::check_module_name(module).map_err(fail)?;
@@ -661,7 +744,7 @@ impl Vm {
             value,
         });
         let added = self.note_module(module);
-        if let Err(message) = self.validate_interfaces(module) {
+        if let Err(message) = self.validate_registration(module) {
             self.host_consts.pop();
             self.forget_module(module, added);
             return Err(fail(message));
@@ -902,33 +985,51 @@ impl Vm {
         self.install(checked?, mode)
     }
 
-    /// Reads and checks a program without touching the loaded one.
+    /// Reads and checks a program without touching the loaded one. The lazy standard modules
+    /// the program imports are registered first.
     fn check_entry(
-        &self,
+        &mut self,
         fs: &dyn SourceFs,
         entry: Entry<'_>,
         mode: LoadMode,
     ) -> Result<Checked, Error> {
-        let env = self.host_env()?;
+        let (sources, loaded) = self.read_program(fs, entry, mode)?;
+        self.materialize_imports(&loaded);
+        self.check_loaded(sources, loaded, mode)
+    }
+
+    /// Reads the files of a program: the syntax trees and what each `import` names.
+    fn read_program(
+        &self,
+        fs: &dyn SourceFs,
+        entry: Entry<'_>,
+        mode: LoadMode,
+    ) -> Result<(SourceMap, colibri_check::package::Loaded), Error> {
         let mut sources = SourceMap::new();
         let options = colibri_check::package::LoadOptions {
             all_modules: mode == LoadMode::Tests,
         };
-        let loaded = colibri_check::package::load_with(
-            fs,
-            &mut sources,
-            entry,
-            &env.named_modules(),
-            options,
-        )
-        .map_err(|e| Error::Io {
-            path: e.path,
-            message: e.message,
-        })?;
+        let names: Vec<String> = self.modules.clone();
+        let loaded = colibri_check::package::load_with(fs, &mut sources, entry, &names, options)
+            .map_err(|e| Error::Io {
+                path: e.path,
+                message: e.message,
+            })?;
+        Ok((sources, loaded))
+    }
+
+    /// Checks a program that was read, against the host as it is now.
+    fn check_loaded(
+        &self,
+        sources: SourceMap,
+        loaded: colibri_check::package::Loaded,
+        mode: LoadMode,
+    ) -> Result<Checked, Error> {
         let mut diagnostics = loaded.diagnostics.clone();
         let mut program = None;
         // A tree with syntax errors would only produce follow-on errors.
         if !loaded.has_errors() {
+            let env = self.host_env()?;
             let checked = colibri_check::check_modules_with(
                 &loaded.inputs(),
                 &loaded.packages,
