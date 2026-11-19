@@ -21,7 +21,7 @@ v0.5 brings the document in line with the implementation and records the decisio
 made on 2026-11-19 about the road to the VM:
 
 - **Status and markers.** The status line says what is built. Described-but-unbuilt features are
-  marked **[Not built yet]** where they appear (§3.6, §5.2, §6.1, §7.5, §10.2, §12, §13, §13.1,
+  marked **[Not built yet]** where they appear (§3.6, §5.2, §6.1, §7.5, §10.2, §13, §13.1,
   §14.1, §15.2, §15.4, §16.1, §16.5, §16.7). Game-first wording is gone from the goals and the sample (§1, §2).
 - **Vectors leave the language core** (§15.1, Q12): they will become a library of ordinary
   structs built on new operator interfaces `Add`, `Sub`, `Mul` and `Neg`. Decided and planned,
@@ -1184,7 +1184,10 @@ reference-typed objects. See §14.1.
   `s.bytes()`, and slicing by byte range `s[0..4]` (panics on a non-boundary).
 - **Slices copy** in v1: `s[0..4]` is a new string, so a small slice never keeps a huge string
   alive. A non-copying view type can come later if profiles ask for it.
-- `StrBuilder` for efficient building; `+` concatenates strings. **[Not built yet]** (`StrBuilder`; `+` is built.)
+- `StrBuilder` for efficient building; `+` concatenates strings. `s += x` in a loop copies the
+  string every time, so build long text with `let b = StrBuilder()`, then `b.push(s)`,
+  `b.push_char(c)` or `b.write(value)` (anything with `Show`), and `b.to_str()` at the end. It also
+  has `len()`, `is_empty()` and `clear()`, and it is a reference type like `List`.
 
 ---
 
