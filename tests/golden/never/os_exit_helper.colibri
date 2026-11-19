@@ -1,0 +1,40 @@
+// caps: os
+import os
+
+// `os.exit` is `-> !`: the helper needs no dead return, and neither do its callers.
+fn usage_error(msg: str) -> ! {
+    print("error: {msg}")
+    os.exit(2)
+}
+
+fn parse_mode(x: str) -> int {
+    return match x {
+        "a" => 1
+        "b" => 2
+        other => usage_error("unknown mode {other}")
+    }
+}
+
+// A generic function can end in a diverging call.
+fn give_up[T]() -> T {
+    os.exit(3)
+}
+
+// `os.exit` can also end a function that returns a value.
+fn bail() -> int {
+    print("bail")
+    os.exit(4)
+}
+
+fn main() -> Result[()] {
+    print(parse_mode("b"))
+    if false {
+        let v: int = give_up()
+        print(v)
+    }
+    let m = parse_mode("zzz")
+    print("not reached {m}")
+}
+// expect: 2
+// expect: error: unknown mode zzz
+// panic: the program exited with code 2

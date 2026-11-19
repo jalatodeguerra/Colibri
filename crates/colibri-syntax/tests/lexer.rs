@@ -315,7 +315,10 @@ fn hashed_raw_strings() {
     assert_eq!(parts(r####"r##"a "# b"##"####), [r##"L(a "# b)"##]);
     assert_eq!(parts("r#\"a\n  b\"#"), ["L(a\n  b)"]);
     assert_eq!(raw(r###"r#"a"# r#"b"#"###), r#"Str("a") Str("b")"#);
-    assert_eq!(errors(r###"r#"open"###), ["unterminated raw string literal"]);
+    assert_eq!(
+        errors(r###"r#"open"###),
+        ["unterminated raw string literal"]
+    );
 }
 
 #[test]

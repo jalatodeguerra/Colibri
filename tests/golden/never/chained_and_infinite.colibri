@@ -1,0 +1,29 @@
+fn fail(msg: str) -> ! => panic(msg)
+
+fn die(msg: str) -> ! {
+    print("fatal")
+    fail(msg)
+}
+
+fn forever() -> ! {
+    while true {
+        print("tick")
+        die("stop")
+    }
+}
+
+fn first_word(s: str) -> str {
+    for w in s.split(" ") {
+        return w
+    }
+    die("empty")
+}
+
+fn main() {
+    print(first_word("hello world"))
+    forever()
+}
+// expect: hello
+// expect: tick
+// expect: fatal
+// panic: stop

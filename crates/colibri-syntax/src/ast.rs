@@ -287,6 +287,8 @@ pub enum TypeKind {
         params: Vec<TypeExpr>,
         ret: Option<Box<TypeExpr>>,
     },
+    /// `!`, the type of a function that never returns (a return type only).
+    Never,
     Error,
 }
 

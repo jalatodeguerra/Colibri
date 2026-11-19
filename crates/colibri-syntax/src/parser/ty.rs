@@ -36,6 +36,10 @@ impl Parser<'_> {
         let start = self.start();
         match self.kind() {
             TokenKind::Ident(_) => self.parse_named_type(),
+            TokenKind::Bang => {
+                self.bump();
+                Ok(self.make_type(start, TypeKind::Never))
+            }
             TokenKind::LParen => {
                 self.bump();
                 self.with_struct_mode(false, |p| {
