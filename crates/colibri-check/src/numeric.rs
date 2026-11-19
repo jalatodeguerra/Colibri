@@ -159,7 +159,12 @@ impl FnCtx<'_, '_> {
                 let hint = if shown == "str" {
                     // Text is parsed, not converted: the parse functions say what went wrong.
                     let (parse, then) = if matches!(Num::of(&target), Some(Num::F32 | Num::Float)) {
-                        ("parse_float", String::new())
+                        let then = if name == "f32" {
+                            format!(", then `{name}(..)` if you need that type")
+                        } else {
+                            String::new()
+                        };
+                        ("parse_float", then)
                     } else if name == "int" {
                         ("parse_int", String::new())
                     } else {

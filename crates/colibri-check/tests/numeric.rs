@@ -237,3 +237,17 @@ fn i64_is_int_and_f64_is_float() {
     let sig = &p.fns[id.0 as usize].sig;
     assert_eq!(sig.params, [Ty::INT, Ty::Float]);
 }
+
+#[test]
+fn converting_text_points_at_the_parse_function_then_the_narrow_type() {
+    for (src, parse, then) in [
+        ("fn main() { let _a = f32(\"2.5\") }", "str.parse_float", true),
+        ("fn main() { let _a = i32(\"2\") }", "str.parse_int", true),
+        ("fn main() { let _a = float(\"2.5\") }", "str.parse_float", false),
+        ("fn main() { let _a = int(\"2\") }", "str.parse_int", false),
+    ] {
+        let (_, hint) = first_error(src);
+        assert!(hint.contains(parse), "{src}: {hint}");
+        assert_eq!(hint.contains(", then `"), then, "{src}: {hint}");
+    }
+}
