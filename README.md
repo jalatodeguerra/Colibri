@@ -34,6 +34,7 @@ Design phase. Nothing is implemented yet. The language design is in
 
 ## Roadmap
 
-1. Lexer, parser, type checker, tree-walking interpreter
-2. Bytecode VM and Cranelift native backend, RC optimizations
-3. Game bindings (raylib, Rust crates) and a first small game
+1. Language core on a tree-walking interpreter (lexer, parser, type checker)
+2. Game slice on the interpreter: vector types, coroutines, a built-in game kit, hot reload, and a first small game
+3. Bytecode VM (fast `leo run`, embedding, web builds)
+4. Cranelift native builds and RC optimizations
