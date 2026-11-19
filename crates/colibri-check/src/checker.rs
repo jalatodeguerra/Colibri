@@ -151,6 +151,8 @@ pub(crate) struct Checker<'a> {
     /// The type ids of host declarations are `FIRST_USER_TYPE ..` this far.
     host_type_count: u32,
     pub diags: Vec<Diagnostic>,
+    /// What the zonker records for [`crate::insight`], when asked to.
+    pub facts: Option<Vec<crate::insight::RawFact>>,
     /// While positive, diagnostics are dropped (re-checking a default argument at a call).
     muted: u32,
     pub values: HashMap<String, ValueRef>,
@@ -350,6 +352,7 @@ impl<'a> Checker<'a> {
             host_fn_count: 0,
             host_type_count: 0,
             diags: Vec::new(),
+            facts: None,
             muted: 0,
             values: HashMap::new(),
             poisoned_types: HashSet::new(),
@@ -382,7 +385,17 @@ impl<'a> Checker<'a> {
         stack_position().abs_diff(self.stack_base) > self.stack_budget
     }
 
-    pub fn run(mut self) -> Checked {
+    /// Makes the checker record what every expression resolved to (see [`crate::insight`]).
+    pub fn recording(mut self) -> Self {
+        self.facts = Some(Vec::new());
+        self
+    }
+
+    pub fn run(self) -> Checked {
+        self.run_with_insight().0
+    }
+
+    pub fn run_with_insight(mut self) -> (Checked, Option<crate::insight::Insight>) {
         self.stack_base = stack_position();
         self.collect();
         for g in 0..self.globals.len() {
@@ -402,10 +415,12 @@ impl<'a> Checker<'a> {
         } else {
             self.assemble(init_order, main)
         };
-        Checked {
+        let insight = self.facts.take().map(|raw| self.build_insight(raw));
+        let checked = Checked {
             program,
-            diagnostics: self.diags,
-        }
+            diagnostics: std::mem::take(&mut self.diags),
+        };
+        (checked, insight)
     }
 
     // ---- diagnostics ----

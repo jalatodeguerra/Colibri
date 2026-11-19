@@ -1307,3 +1307,83 @@ crate of its own: it needs exactly what `colibri-syntax` has (tokens with spans,
 - A very long string, a long pattern or a long type is never broken; lines can exceed 100
   columns where there is no place to break.
 - `.cbi` interface files are not formatted by the CLI (only `*.colibri`).
+
+## 14. Language server (`colibri lsp`)
+
+`colibri-lsp` is a library (the CLI's `lsp` subcommand calls `colibri_lsp::run_stdio`) speaking
+LSP over stdio with the rust-analyzer crates `lsp-server` (synchronous message loop, no async
+runtime) and `lsp-types`, plus `serde`/`serde_json` for the payloads. It depends on
+`colibri-syntax` and `colibri-check` only: it reads `.cbi` files with `HostEnv::from_text` and
+loads packages with `package::load`, so the runtime is not involved.
+
+### What it does
+
+- **Diagnostics.** On open, change and save of a document, the server re-checks the program the
+  document belongs to, synchronously, and publishes the diagnostics of every file the loader
+  read, an empty list for files that became clean or left the program. Unsaved buffers
+  override the disk through an overlay `SourceFs` (`Overlay`: buffers first, then `DiskFs`), so
+  an edit of `lib.colibri` shows up in the errors of `main.colibri`'s package. Which program:
+  the package of the nearest `colibri.toml` above the document (`Entry::Package`), else the
+  `main.colibri` of the document's folder, in each case only if that program reaches the
+  document; otherwise the document alone (`Entry::File`, a script). Syntax errors stop at the
+  loader, as in `colibri check`. A diagnostic's secondary labels become `relatedInformation`
+  (labels in files the program does not hold, such as the prelude, are dropped) and its hint is
+  appended to the message after `hint:`.
+- **Positions** are UTF-16 code units (`convert::LineIndex`); the compiler's spans are byte
+  offsets. A position inside a surrogate pair rounds to the end of the character.
+- **Formatting.** `format_source` on the buffer; one edit replacing the whole text, none if it
+  is already formatted, `null` if the file has syntax errors.
+- **Hover and go to definition** come from `colibri_check::insight` (below). Hover shows a
+  Markdown code block: a binding as `name: type` (`var` for mutable ones), a function or method
+  as its signature, a field as `field: type`, any other expression as its type. Definition
+  works for locals and parameters, functions, methods, struct and class literals (the type),
+  variant constructors, fields (`p.x`, `self.x`), and module-qualified or imported names
+  (across files). Declarations answer too, so hover on the name in `fn f(..)` gives the
+  signature.
+- **Host interfaces.** `.cbi` files come from the client's `initializationOptions`
+  (`{"interfaces": ["engine.cbi"]}`, or the same under a `colibri` key; relative paths are
+  taken from the workspace folder), and from the top level of a folder that has a
+  `colibri.toml` (the workspace folder, and the document's package folder). All capabilities
+  are granted, like `colibri check`. An unreadable `.cbi` is reported once with
+  `window/logMessage` and skipped.
+
+### The position query (`colibri_check::insight`)
+
+Checking normally records nothing extra. `check_modules_with_insight` is `check_modules` that
+also fills a table while it runs: the zonker, the last step of every body (and closure), has
+the final types of every expression, so with a sink present it pushes a `RawFact` (span, type,
+what the span names) for each expression and for each local at its declaration. After the whole
+program is checked those become `Fact`s (`span`, hover `text`, `def` span of the declaration)
+with types rendered by name, plus facts for the declarations of functions, globals, types, fields
+and variants. Without a sink (`check`, `check_modules`) the only cost is a `None` test per
+expression. The table is built even when the program has errors, since the zonker runs for every
+body; only a syntax error (no checking at all) leaves the server without facts.
+
+`Insight::at(file, offset, word)` returns the smallest fact whose span covers the offset, the
+last recorded one on a tie. HIR has no span for the name inside a call or a field access, so
+facts for those (callee, struct literal, field) are *named* and answer only when the word under
+the cursor is that name; the call's type is still the fact of the whole call. For `p.x` the
+local `p` gets its own fact over its name, the whole read is the field.
+
+### Decisions the design documents did not fix
+
+- Full document synchronisation (`TextDocumentSyncKind::FULL`): packages are small in phase 1
+  and it avoids incremental UTF-16 edits. No debounce, and no cancellation: a check runs to
+  the end (the checker's own nesting limit bounds it).
+- The analysis behind a document is the one most recently run that contained its file, so
+  hover after editing a sibling uses that sibling's check.
+- Diagnostics of files that are not open are published too (that is the point for an error in
+  another file); they are cleared when no open document's program holds them any more.
+- Hover on the checked types of a program with a syntax error is empty (the loader stops
+  before checking); the previous analysis is not reused because its spans would be stale.
+
+### Known limitations
+
+- Not implemented: completion, references, rename, document symbols, workspace diagnostics of
+  files nobody opened, semantic tokens, incremental sync, `.cbi` hover for host functions'
+  declarations (they have no source file; definition on a host function says nothing).
+- Definition does not cover type names written in annotations (`let p: Point`), field names in
+  struct literals or patterns, or built-in methods (`list.push`); hover on those shows the
+  expression's type.
+- Default argument values are re-checked at each call, so a hover inside one may show the type
+  recorded at a call site.
