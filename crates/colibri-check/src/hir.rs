@@ -939,6 +939,10 @@ pub enum Builtin {
     MapLen,
     MapIsEmpty,
     MapGet,
+    /// `m.get_or(key, default)`
+    MapGetOr,
+    /// `m.entries() -> List[(K, V)]`
+    MapEntries,
     MapContainsKey,
     MapInsert,
     MapRemove,

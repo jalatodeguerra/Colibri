@@ -550,7 +550,8 @@ turns out to matter, it moves into DESIGN.md.
     `str` has `len` (bytes), `is_empty`, `chars bytes contains starts_with ends_with split trim
     to_upper to_lower replace find` (slice 4b). `pop`, `get`, `first`, `last`, `index_of`, and
     `Map.get`/`remove` return `Option`; `Set.remove` returns whether it was present;
-    `List.remove` panics out of bounds. `keys` and `values` return new lists. `contains` and
+    `List.remove` panics out of bounds. `keys`, `values` and `entries` (`List[(K, V)]`) return new lists; `get_or(key, default)` gives the
+    value or `default`. `contains` and
     `index_of` need `==` on the element. Slice 4b adds, on `List`: `iter map filter retain any all
     find find_index fold for_each sort sort_by sort_by_key min max sum join enumerate`, and on
     `Map`/`Set`: `iter enumerate`. `sort` is stable and needs `T: Ord`; `sort_by` takes

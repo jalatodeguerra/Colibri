@@ -92,6 +92,7 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
             | B::SetIsSuperset
             | B::SetIsDisjoint
             | B::MapKeys
+            | B::MapEntries
             | B::MapValues
             | B::Iter
             | B::StrChars
@@ -298,6 +299,8 @@ impl Interp {
             Builtin::MapLen
             | Builtin::MapIsEmpty
             | Builtin::MapGet
+            | Builtin::MapGetOr
+            | Builtin::MapEntries
             | Builtin::MapContainsKey
             | Builtin::MapInsert
             | Builtin::MapRemove
@@ -483,6 +486,7 @@ impl Interp {
                 | Builtin::MapIsEmpty
                 | Builtin::MapKeys
                 | Builtin::MapValues
+                | Builtin::MapEntries
                 | Builtin::MapClear
         ) {
             let keys = if self.has_custom_eq() {
@@ -496,6 +500,16 @@ impl Interp {
             Builtin::MapLen => Value::Int(map.len() as i64),
             Builtin::MapIsEmpty => Value::Bool(map.is_empty()),
             Builtin::MapGet => Value::option(args.get(1).and_then(|k| map.get(k))),
+            Builtin::MapGetOr => match args.get(1).and_then(|k| map.get(k)) {
+                Some(v) => v,
+                None => args.get(2).cloned().unwrap_or(Value::Unit),
+            },
+            Builtin::MapEntries => Value::list(
+                map.snapshot()
+                    .into_iter()
+                    .map(|(k, v)| Value::tuple(vec![k, v]))
+                    .collect(),
+            ),
             Builtin::MapContainsKey => {
                 Value::Bool(args.get(1).is_some_and(|k| map.contains_key(k)))
             }
