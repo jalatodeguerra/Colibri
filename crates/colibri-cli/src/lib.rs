@@ -1,5 +1,6 @@
 //! Support code for the `colibri` command line tool.
 
+pub mod fmt;
 pub mod golden;
 
 use std::thread;

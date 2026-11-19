@@ -12,7 +12,7 @@ Only the crates phase 1 needs exist. The others in DESIGN §17.1 (`colibri-ir`, 
 
 | Crate | Directory | Role |
 |-------|-----------|------|
-| `colibri-syntax` | `crates/colibri-syntax` | Source map, spans, diagnostics type, lexer, parser, AST |
+| `colibri-syntax` | `crates/colibri-syntax` | Source map, spans, diagnostics type, lexer, parser, AST, the formatter (`fmt`) |
 | `colibri-check` | `crates/colibri-check` | Name resolution, type checking, typed HIR |
 | `colibri-interp` | `crates/colibri-interp` | Tree-walking interpreter over the HIR (the reference engine) |
 | `colibri-runtime` | `crates/colibri-runtime` | Embedding API: `Vm`, `VmBuilder`, `get_fn`, `call`, `register_fn`, host classes and handles, capabilities |
@@ -76,7 +76,8 @@ behind the same `Vm` API.
 8. Embedding API: `register_fn`, exported host types, generational handles, `.cbi`, capabilities.
    Part A (host functions, `.cbi`, capabilities, instruction budget, callbacks) is built (slice 7a);
    part B (exported host types, generational handles, `colibri-bind`) is built (slice 7b).
-9. Packages and `import`; `colibri check`, minimal LSP, `colibri test`, `colibri fmt`; core std.
+9. Packages and `import`; `colibri check`, minimal LSP, `colibri test`, `colibri fmt` (built:
+   ARCHITECTURE §12); core std.
 10. Milestone: a small Rust program with its own game loop running gameplay logic from Colibri.
 
 Large steps may split into several PRs.
