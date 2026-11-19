@@ -92,7 +92,15 @@ impl FnCtx<'_, '_> {
         expected: Option<&Ty>,
         span: Span,
     ) -> Option<Expectation> {
-        let Ty::Fn(params, ret) = self.infer.shallow(expected?) else {
+        let expected = self.infer.shallow(expected?);
+        // A context that already failed: the closure's parameters fail quietly too.
+        if expected.is_error() {
+            return Some(Expectation {
+                params: vec![Ty::Error; c.params.len()],
+                ret: Ty::Error,
+            });
+        }
+        let Ty::Fn(params, ret) = expected else {
             return None;
         };
         if params.len() != c.params.len() {
