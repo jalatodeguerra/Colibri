@@ -1,0 +1,13 @@
+class T { name: str }
+
+fn make(n: str) -> T => T { name: n }
+fn two(a: T, b: T) -> int => 1
+
+fn main() {
+    print(two(make("first"), make("second")))
+    print("next statement")
+}
+
+// expect: 1
+// expect: next statement
+// drops: second, first

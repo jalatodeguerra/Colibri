@@ -3,13 +3,17 @@
 //! Scalars show as themselves, and a `str` or `char` shown on its own is not quoted. Inside a
 //! struct, enum or tuple, strings and chars are quoted and escaped. The forms are
 //! `Player { name: "Ana", hp: 100 }`, `Move(3)`, `Circle(radius: 2.0)`, `Quit`, `(1, "a")`
-//! and `()`.
+//! and `()`. A class object shows like a struct; an object that is already being shown (a
+//! cycle) is `Node {...}`. Collections show as `[1, 2]`, `{"a": 1}` (`{:}` when empty) and
+//! `Set([1, 2])`; `Option` is the prelude enum, so `some(3)` and `none`.
 
 use std::borrow::Cow;
 
-use colibri_check::hir::{TypeDef, TypeDefKind};
+use std::rc::Rc;
 
-use crate::value::Value;
+use colibri_check::hir::{FieldDef, TypeDef, TypeDefKind};
+
+use crate::value::{ClassObj, Value};
 
 /// How deep a value is shown before the rest is elided as `...`, so showing a huge nested
 /// value cannot overflow the Rust stack.
@@ -26,7 +30,14 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
         Value::Float(x) => Cow::Owned(show_float(*x)),
         Value::Char(c) => Cow::Owned(c.to_string()),
         Value::Str(s) => Cow::Borrowed(s),
-        Value::Struct(_) | Value::Tuple(_) | Value::Enum(_) => {
+        Value::Struct(_)
+        | Value::Tuple(_)
+        | Value::Enum(_)
+        | Value::List(_)
+        | Value::Map(_)
+        | Value::Set(_)
+        | Value::Obj(_)
+        | Value::Weak(_) => {
             let mut out = String::new();
             write_nested(&mut out, types, v, 0);
             Cow::Owned(out)
@@ -49,89 +60,171 @@ pub fn show_float(x: f64) -> String {
     }
 }
 
+/// Builds the text of one value. `visiting` holds the class objects being written right now,
+/// so a cycle shows an object that is already open as `Name {...}`.
+struct Writer<'t> {
+    types: &'t [TypeDef],
+    out: String,
+    visiting: Vec<usize>,
+}
+
 /// Writes a value as it appears inside another value: strings and chars quoted.
 fn write_nested(out: &mut String, types: &[TypeDef], v: &Value, depth: u32) {
-    if depth > MAX_SHOW_DEPTH {
-        out.push_str("...");
-        return;
-    }
-    let list = |out: &mut String, items: &[Value]| {
+    let mut w = Writer {
+        types,
+        out: std::mem::take(out),
+        visiting: Vec::new(),
+    };
+    w.value(v, depth);
+    *out = w.out;
+}
+
+impl Writer<'_> {
+    fn list(&mut self, items: &[Value], depth: u32) {
         for (i, item) in items.iter().enumerate() {
             if i > 0 {
-                out.push_str(", ");
+                self.out.push_str(", ");
             }
-            write_nested(out, types, item, depth + 1);
+            self.value(item, depth + 1);
         }
-    };
-    match v {
-        Value::Str(s) => {
-            out.push('"');
-            s.chars().for_each(|c| escape(out, c, '"'));
-            out.push('"');
+    }
+
+    fn value(&mut self, v: &Value, depth: u32) {
+        if depth > MAX_SHOW_DEPTH {
+            self.out.push_str("...");
+            return;
         }
-        Value::Char(c) => {
-            out.push('\'');
-            escape(out, *c, '\'');
-            out.push('\'');
-        }
-        Value::Tuple(items) => {
-            out.push('(');
-            list(out, items);
-            if items.len() == 1 {
-                out.push(',');
+        let types = self.types;
+        match v {
+            Value::Str(s) => {
+                self.out.push('"');
+                s.chars().for_each(|c| escape(&mut self.out, c, '"'));
+                self.out.push('"');
             }
-            out.push(')');
-        }
-        Value::Struct(s) => {
-            let Some(def) = types.get(s.ty.0 as usize) else {
-                out.push_str("<struct>");
-                return;
-            };
-            out.push_str(&def.name);
-            if s.fields.is_empty() {
-                out.push_str(" {}");
-                return;
+            Value::Char(c) => {
+                self.out.push('\'');
+                escape(&mut self.out, *c, '\'');
+                self.out.push('\'');
             }
-            out.push_str(" { ");
-            for (i, (field, value)) in def.fields().iter().zip(s.fields.iter()).enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
+            Value::Tuple(items) => {
+                self.out.push('(');
+                self.list(items, depth);
+                if items.len() == 1 {
+                    self.out.push(',');
                 }
-                out.push_str(&field.name);
-                out.push_str(": ");
-                write_nested(out, types, value, depth + 1);
+                self.out.push(')');
             }
-            out.push_str(" }");
-        }
-        Value::Enum(e) => {
-            let variant = types.get(e.ty.0 as usize).and_then(|def| match &def.kind {
-                TypeDefKind::Enum { variants } => variants.get(e.variant as usize),
-                TypeDefKind::Struct { .. } => None,
-            });
-            let Some(variant) = variant else {
-                out.push_str("<enum>");
-                return;
-            };
-            out.push_str(&variant.name);
-            if e.payload.is_empty() {
-                return;
+            Value::Struct(s) => {
+                let Some(def) = types.get(s.ty.0 as usize) else {
+                    self.out.push_str("<struct>");
+                    return;
+                };
+                self.record(&def.name, def.fields(), &s.fields, depth);
             }
-            out.push('(');
-            if variant.named {
-                for (i, (field, value)) in variant.fields.iter().zip(e.payload.iter()).enumerate() {
-                    if i > 0 {
-                        out.push_str(", ");
+            Value::Enum(e) => {
+                let variant = types.get(e.ty.0 as usize).and_then(|def| match &def.kind {
+                    TypeDefKind::Enum { variants } => variants.get(e.variant as usize),
+                    _ => None,
+                });
+                let Some(variant) = variant else {
+                    self.out.push_str("<enum>");
+                    return;
+                };
+                self.out.push_str(&variant.name);
+                if e.payload.is_empty() {
+                    return;
+                }
+                self.out.push('(');
+                if variant.named {
+                    for (i, (field, value)) in
+                        variant.fields.iter().zip(e.payload.iter()).enumerate()
+                    {
+                        if i > 0 {
+                            self.out.push_str(", ");
+                        }
+                        self.out.push_str(&field.name);
+                        self.out.push_str(": ");
+                        self.value(value, depth + 1);
                     }
-                    out.push_str(&field.name);
-                    out.push_str(": ");
-                    write_nested(out, types, value, depth + 1);
+                } else {
+                    self.list(&e.payload, depth);
                 }
-            } else {
-                list(out, &e.payload);
+                self.out.push(')');
             }
-            out.push(')');
+            Value::List(l) => {
+                self.out.push('[');
+                self.list(&l.snapshot(), depth);
+                self.out.push(']');
+            }
+            Value::Map(m) => {
+                if m.is_empty() {
+                    self.out.push_str("{:}");
+                    return;
+                }
+                self.out.push('{');
+                for (i, (k, v)) in m.snapshot().iter().enumerate() {
+                    if i > 0 {
+                        self.out.push_str(", ");
+                    }
+                    self.value(k, depth + 1);
+                    self.out.push_str(": ");
+                    self.value(v, depth + 1);
+                }
+                self.out.push('}');
+            }
+            Value::Set(s) => {
+                self.out.push_str("Set([");
+                self.list(&s.snapshot(), depth);
+                self.out.push_str("])");
+            }
+            Value::Obj(obj) => self.object(obj, depth),
+            Value::Weak(w) => match w.upgrade() {
+                Some(obj) => {
+                    self.out.push_str("some(");
+                    self.object(&obj, depth + 1);
+                    self.out.push(')');
+                }
+                None => self.out.push_str("none"),
+            },
+            scalar => self.out.push_str(&show(types, scalar)),
         }
-        scalar => out.push_str(&show(types, scalar)),
+    }
+
+    /// `Name { field: value, .. }` for a struct or a class.
+    fn record(&mut self, name: &str, fields: &[FieldDef], values: &[Value], depth: u32) {
+        self.out.push_str(name);
+        if values.is_empty() {
+            self.out.push_str(" {}");
+            return;
+        }
+        self.out.push_str(" { ");
+        for (i, (field, value)) in fields.iter().zip(values.iter()).enumerate() {
+            if i > 0 {
+                self.out.push_str(", ");
+            }
+            self.out.push_str(&field.name);
+            self.out.push_str(": ");
+            self.value(value, depth + 1);
+        }
+        self.out.push_str(" }");
+    }
+
+    /// A class object: its fields like a struct's, unless it is already being written, which
+    /// is a cycle and shows as `Name {...}`.
+    fn object(&mut self, obj: &Rc<ClassObj>, depth: u32) {
+        let Some(def) = self.types.get(obj.ty().0 as usize) else {
+            self.out.push_str("<object>");
+            return;
+        };
+        let address = Rc::as_ptr(obj) as usize;
+        if self.visiting.contains(&address) {
+            self.out.push_str(&def.name);
+            self.out.push_str(" {...}");
+            return;
+        }
+        self.visiting.push(address);
+        self.record(&def.name, def.fields(), &obj.snapshot(), depth);
+        self.visiting.pop();
     }
 }
 
@@ -171,6 +264,7 @@ mod tests {
             name: name.into(),
             ty: Ty::INT,
             span: SP,
+            weak: false,
         }
     }
 

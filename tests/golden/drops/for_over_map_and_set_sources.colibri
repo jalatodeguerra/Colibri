@@ -1,0 +1,16 @@
+class T { name: str }
+
+fn main() {
+    let m = {1: T { name: "m1" }, 2: T { name: "m2" }}
+    for (k, v) in m {
+        print("{k} {v.name}")
+    }
+    let s = Set([1])
+    for x in s {
+        let t = T { name: "s{x}" }
+    }
+}
+
+// expect: 1 m1
+// expect: 2 m2
+// drops: s1, m1, m2

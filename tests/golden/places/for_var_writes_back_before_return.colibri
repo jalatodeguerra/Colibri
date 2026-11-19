@@ -1,0 +1,20 @@
+struct E { hp: int }
+
+fn first_dead(es: List[E]) -> int {
+    for var e in es {
+        e.hp -= 1
+        if e.hp <= 0 {
+            return e.hp
+        }
+    }
+    return 99
+}
+
+fn main() {
+    var es = [E { hp: 5 }, E { hp: 1 }, E { hp: 5 }]
+    print(first_dead(es))
+    print(es)
+}
+
+// expect: 0
+// expect: [E { hp: 4 }, E { hp: 0 }, E { hp: 5 }]

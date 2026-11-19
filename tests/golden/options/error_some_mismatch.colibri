@@ -1,0 +1,4 @@
+fn main() {
+    let x: int? = some("s") // error: expected `int?`, found `str?`
+    print(x)
+}

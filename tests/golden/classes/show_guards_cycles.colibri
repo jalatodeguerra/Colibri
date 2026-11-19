@@ -1,0 +1,18 @@
+class Node {
+    name: str
+    next: Node?
+}
+
+fn main() {
+    let a = Node { name: "a", next: none }
+    let b = Node { name: "b", next: some(a) }
+    a.next = some(b)
+    print(a)
+    print(b)
+    // Break the cycle so both objects can die.
+    a.next = none
+}
+
+// expect: Node { name: "a", next: some(Node { name: "b", next: some(Node {...}) }) }
+// expect: Node { name: "b", next: some(Node { name: "a", next: some(Node {...}) }) }
+// drops: b, a

@@ -1,0 +1,17 @@
+struct C { n: int }
+
+impl C {
+    fn bump(var self) {
+        self.n += 1
+    }
+}
+
+fn main() {
+    // `let` fixes which list `xs` is, not what is in it (a list is a shared object).
+    let xs = [C { n: 1 }]
+    xs[0].n = 2
+    xs[0].bump()
+    print(xs)
+}
+
+// expect: [C { n: 3 }]

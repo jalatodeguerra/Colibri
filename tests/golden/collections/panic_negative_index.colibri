@@ -1,0 +1,7 @@
+fn main() {
+    let xs = [1, 2, 3]
+    let i = 0 - 1
+    print(xs[i])
+}
+
+// panic: index -1 out of bounds for list of length 3

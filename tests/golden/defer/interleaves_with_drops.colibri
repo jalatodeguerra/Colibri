@@ -1,0 +1,18 @@
+class Node {
+    name: str
+    peer: weak Node
+}
+
+fn main() {
+    let probe = Node { name: "probe" }
+    {
+        defer print("early defer sees {probe.peer}")
+        let b = Node { name: "b" }
+        probe.peer = b
+        defer print("late defer sees {probe.peer}")
+    }
+}
+
+// expect: late defer sees some(Node { name: "b", peer: none })
+// expect: early defer sees none
+// drops: b, probe

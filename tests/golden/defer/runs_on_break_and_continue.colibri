@@ -1,0 +1,17 @@
+fn main() {
+    for i in 0..4 {
+        defer print("end of {i}")
+        if i == 1 {
+            continue
+        }
+        if i == 2 {
+            break
+        }
+        print("body {i}")
+    }
+}
+
+// expect: body 0
+// expect: end of 0
+// expect: end of 1
+// expect: end of 2

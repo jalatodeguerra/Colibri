@@ -1,0 +1,33 @@
+fn main() {
+    var m = {"a": 1}
+    m.insert("b", 2)
+    m.insert("a", 10)
+    print(m)
+    print(m.get("a"))
+    print(m.get("z"))
+    print(m.contains_key("b"))
+    print(m.contains_key("q"))
+    print(m.len())
+    print(m.keys())
+    print(m.values())
+    print(m.remove("a"))
+    print(m.remove("a"))
+    print(m)
+    print(m.is_empty())
+    m.clear()
+    print(m.is_empty())
+}
+
+// expect: {"a": 10, "b": 2}
+// expect: some(10)
+// expect: none
+// expect: true
+// expect: false
+// expect: 2
+// expect: ["a", "b"]
+// expect: [10, 2]
+// expect: some(10)
+// expect: none
+// expect: {"b": 2}
+// expect: false
+// expect: true

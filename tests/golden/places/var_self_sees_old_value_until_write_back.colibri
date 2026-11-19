@@ -1,0 +1,18 @@
+struct Acc { n: int }
+
+var list = [Acc { n: 1 }]
+
+impl Acc {
+    fn bump_and_peek(var self) {
+        self.n += 100
+        print(list[0].n)
+    }
+}
+
+fn main() {
+    list[0].bump_and_peek()
+    print(list[0].n)
+}
+
+// expect: 1
+// expect: 101

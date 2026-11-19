@@ -1,0 +1,11 @@
+class Plain { n: int }
+class Named { name: str, n: int }
+class NamedBadly { name: int }
+
+fn main() {
+    let a = Plain { n: 1 }
+    let b = Named { name: "bob", n: 2 }
+    let c = NamedBadly { name: 3 }
+}
+
+// drops: NamedBadly, bob, Plain

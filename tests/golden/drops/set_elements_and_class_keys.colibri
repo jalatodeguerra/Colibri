@@ -1,0 +1,14 @@
+class T { name: str }
+
+fn main() {
+    let a = T { name: "a" }
+    let b = T { name: "b" }
+    var s = Set[T]()
+    s.add(b)
+    s.add(a)
+    s.add(a)
+    print(s.len())
+}
+
+// expect: 2
+// drops: b, a

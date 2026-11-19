@@ -150,3 +150,48 @@ fn panics_carry_the_call_site_of_each_frame() {
     assert_eq!(at(err.stack[1].span), "c()");
     assert_eq!(at(err.stack[2].span), "b()");
 }
+
+#[test]
+fn a_panic_with_live_objects_releases_everything_and_traces_the_drops() {
+    let src = "class T { name: str }\nfn f(z: int) -> int {\n    let a = T { name: \"a\" }\n    let b = T { name: \"b\" }\n    return 1 / z\n}\n";
+    let mut m = machine(src, 100);
+    m.interp.set_trace_drops(true);
+    let err = m.call("f", vec![Value::Int(0)]).unwrap_err();
+    assert_eq!(err.message, "division by zero");
+    assert_eq!((m.fiber.depth(), m.fiber.pending_temps()), (0, 0));
+    assert_eq!(m.interp.take_trace(), ["b", "a"]);
+    // Taking the trace empties it.
+    assert!(m.interp.take_trace().is_empty());
+}
+
+#[test]
+fn module_values_die_once_at_shutdown_in_reverse_order() {
+    let src = "class T { name: str }\nlet a = T { name: \"a\" }\nlet b = T { name: \"b\" }\n";
+    let mut m = machine(src, 100);
+    m.interp.set_trace_drops(true);
+    m.interp.run_module(&mut m.fiber).unwrap();
+    assert!(m.interp.take_trace().is_empty());
+    m.interp.shutdown();
+    assert_eq!(m.interp.take_trace(), ["b", "a"]);
+    m.interp.shutdown();
+    assert!(m.interp.take_trace().is_empty());
+}
+
+#[test]
+fn dropping_the_interpreter_releases_its_module_values() {
+    // In a debug build a class object dropped without `release` aborts the test.
+    let src = "class T { name: str }\nlet a = [T { name: \"a\" }]\n";
+    let mut m = machine(src, 100);
+    m.interp.run_module(&mut m.fiber).unwrap();
+    drop(m);
+}
+
+#[test]
+fn a_panicking_defer_is_a_note_on_the_first_panic() {
+    let src = "fn bad() {\n    let z = 0\n    print(1 / z)\n}\nfn f() {\n    defer bad()\n    let z = 0\n    print(1 % z)\n}\n";
+    let mut m = machine(src, 100);
+    let err = m.call("f", vec![]).unwrap_err();
+    assert_eq!(err.message, "modulo by zero");
+    assert_eq!(err.notes.len(), 1);
+    assert!(err.notes[0].contains("division by zero"), "{:?}", err.notes);
+}

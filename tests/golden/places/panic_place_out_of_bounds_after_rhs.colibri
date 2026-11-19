@@ -1,0 +1,12 @@
+fn boom() -> int {
+    print("rhs ran")
+    return 1
+}
+
+fn main() {
+    var xs = [1]
+    xs[5] = boom()
+}
+
+// expect: rhs ran
+// panic: index 5 out of bounds for list of length 1

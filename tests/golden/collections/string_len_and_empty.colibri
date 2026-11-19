@@ -1,0 +1,16 @@
+fn main() {
+    print("abc".len())
+    print("".len())
+    print("héllo".len())
+    print("".is_empty())
+    print("x".is_empty())
+    let s = "hey"
+    print(s.len() + 1)
+}
+
+// expect: 3
+// expect: 0
+// expect: 6
+// expect: true
+// expect: false
+// expect: 4

@@ -1,19 +1,21 @@
 //! The recursive evaluator (ARCHITECTURE §2).
 
 use std::io::Write;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use colibri_check::hir::{
-    Arg, ArithOp, Arm, BinOp, Block, Body, Callee, CmpOp, Expr, ExprKind, FnId, ForLoop, GlobalId,
-    Intrinsic, Lit, LocalId, LoopId, Num, Operand, Program, Stmt, StmtKind, TypeDef, UnOp,
+    Arg, ArithOp, Arm, BinOp, Block, Body, Callee, CmpOp, Expr, ExprKind, FnId, GlobalId,
+    Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, TypeDef, UnOp,
 };
 use colibri_check::types::IntTy;
 use colibri_syntax::Span;
 
-use crate::compare::{values_cmp, values_equal};
+use crate::compare::{values_cmp, values_equal, values_identical};
 use crate::ctl::{Ctl, Eval, PanicInfo, TraceEntry, into_panic};
 use crate::fiber::{Fiber, Frame};
 use crate::format::format_value;
+use crate::heap::ClassObj;
+use crate::ordered::OrderedMap;
 use crate::place::project;
 use crate::show::show;
 use crate::value::Value;
@@ -24,20 +26,22 @@ pub struct Interp {
     /// Looked up at call time, so a patched function takes effect at its next call.
     fns: Vec<Rc<Body>>,
     pub(crate) globals: Vec<Value>,
-    /// The user-defined types, which `Show` needs for names.
-    types: Vec<TypeDef>,
-    inits: Vec<(GlobalId, Rc<Body>)>,
+    /// The user-defined types, which `Show` and drop tracing need for names.
+    pub(crate) types: Vec<TypeDef>,
+    pub(crate) inits: Vec<(GlobalId, Rc<Body>)>,
     script: Option<Rc<Body>>,
     out: Box<dyn Write>,
     max_depth: usize,
     native_stack_budget: usize,
+    /// The labels of destroyed class objects, when tracing is on (`set_trace_drops`).
+    pub(crate) trace: Option<Vec<String>>,
 }
 
 /// The default for [`Interp::set_native_stack_budget`]: small enough for a default test thread.
 pub const DEFAULT_NATIVE_STACK_BUDGET: usize = 1 << 20;
 
 /// The current position on the native stack (it only has to be comparable with another one).
-fn stack_position() -> usize {
+pub(crate) fn stack_position() -> usize {
     let marker = 0u8;
     std::hint::black_box(&marker) as *const u8 as usize
 }
@@ -60,6 +64,7 @@ impl Interp {
             out,
             max_depth: max_call_depth,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
+            trace: None,
         }
     }
 
@@ -71,8 +76,14 @@ impl Interp {
         self.native_stack_budget = bytes;
     }
 
-    /// Installs a checked program, replacing any earlier one and resetting module state.
+    pub(crate) fn native_stack_budget(&self) -> usize {
+        self.native_stack_budget
+    }
+
+    /// Installs a checked program, replacing any earlier one and resetting module state (the
+    /// old module-level values die first).
     pub fn load(&mut self, program: &Program) {
+        self.shutdown();
         self.fns = program.fns.iter().map(|f| Rc::clone(&f.body)).collect();
         self.globals = vec![Value::Unit; program.globals.len()];
         self.types = program.types.clone();
@@ -89,10 +100,12 @@ impl Interp {
         let inits = self.inits.clone();
         for (g, body) in inits {
             let value = self.run_body(fiber, &body)?;
-            self.globals[g.0 as usize] = value;
+            let old = std::mem::replace(&mut self.globals[g.0 as usize], value);
+            self.release(old);
         }
         if let Some(script) = self.script.clone() {
-            self.run_body(fiber, &script)?;
+            let value = self.run_body(fiber, &script)?;
+            self.release(value);
         }
         Ok(())
     }
@@ -151,6 +164,7 @@ impl Interp {
             message: message.to_string(),
             span: Span::new(colibri_syntax::FileId(0), 0, 0),
             stack: Vec::new(),
+            notes: Vec::new(),
         })
     }
 
@@ -174,6 +188,7 @@ impl Interp {
             message: message.into(),
             span,
             stack,
+            notes: Vec::new(),
         }))
     }
 
@@ -187,9 +202,11 @@ impl Interp {
         self.call_body_inout(fiber, body, args).0
     }
 
-    /// Runs a call. For a `var self` method the second result is the final value of `self`,
-    /// taken out of the frame before its locals are released, for the caller to write back;
-    /// it is present on every path, including a panic.
+    /// Runs a call. The arguments become the callee's parameters, which it releases when it
+    /// ends; the caller keeps its own references on its temporaries. For a `var self` method
+    /// the second result is the final value of `self`, taken out of the frame after every
+    /// other cleanup ran, for the caller to write back; it is present on every path, including
+    /// a panic.
     fn call_body_inout(
         &mut self,
         fiber: &mut Fiber,
@@ -200,21 +217,33 @@ impl Interp {
             let span = fiber.frames.last().map_or(body.span, |f| f.span);
             let message = format!("stack overflow: more than {} nested calls", self.max_depth);
             let ctl = self.panic(fiber, span, message);
-            let receiver = if body.mutates_self {
-                args.into_iter().next()
+            let mut args = args;
+            let receiver = if body.mutates_self && !args.is_empty() {
+                Some(args.remove(0))
             } else {
                 None
             };
+            self.release_all(args);
             return (Err(ctl), receiver);
         }
         let mut slots = args;
         slots.resize(body.locals.len(), Value::Unit);
-        fiber.frames.push(Frame {
+        let mut frame = Frame {
             body: Rc::clone(&body),
             slots,
             span: body.span,
-        });
+            cleanups: Vec::new(),
+        };
+        // The receiver of a `var self` method is not released here: it goes back to the caller.
+        let first_owned = u32::from(body.mutates_self);
+        for i in first_owned..body.param_count {
+            frame
+                .cleanups
+                .push(crate::fiber::Cleanup::Slot(colibri_check::hir::LocalId(i)));
+        }
+        fiber.frames.push(frame);
         let result = self.run_block(fiber, &body.block);
+        let result = self.exit_scope(fiber, 0, result);
         let receiver = match fiber.frames.last_mut() {
             Some(frame) if body.mutates_self => frame
                 .slots
@@ -222,7 +251,6 @@ impl Interp {
                 .map(|s| std::mem::replace(s, Value::Unit)),
             _ => None,
         };
-        self.exit_scope(fiber, &body.block);
         fiber.frames.pop();
         let result = match result {
             Err(Ctl::Return(v)) => Ok(v),
@@ -232,41 +260,29 @@ impl Interp {
     }
 
     /// Evaluates a block and leaves its scope on every path (normal, `break`, `return`, panic).
-    fn eval_block(&mut self, fiber: &mut Fiber, block: &Block) -> Eval {
+    pub(crate) fn eval_block(&mut self, fiber: &mut Fiber, block: &Block) -> Eval {
+        let mark = Self::scope_mark(fiber);
         let result = self.run_block(fiber, block);
-        self.exit_scope(fiber, block);
-        result
+        self.exit_scope(fiber, mark, result)
     }
 
+    /// Runs a block's statements and tail. The tail's temporaries die when it has its value.
     fn run_block(&mut self, fiber: &mut Fiber, block: &Block) -> Eval {
         for stmt in &block.stmts {
             self.exec_stmt(fiber, stmt)?;
         }
         match &block.tail {
-            Some(tail) => self.eval(fiber, tail),
+            Some(tail) => {
+                let mark = fiber.temps.len();
+                let value = self.eval(fiber, tail)?;
+                self.release_temps(fiber, mark);
+                Ok(value)
+            }
             None => Ok(Value::Unit),
         }
     }
 
-    /// Releases the block's locals in reverse declaration order. The one place scope-end
-    /// cleanup happens (`defer` joins it later).
-    fn exit_scope(&mut self, fiber: &mut Fiber, block: &Block) {
-        for local in block.locals.iter().rev() {
-            let old = match fiber.frames.last_mut() {
-                Some(frame) => std::mem::replace(&mut frame.slots[local.0 as usize], Value::Unit),
-                None => continue,
-            };
-            self.release(old);
-        }
-    }
-
-    /// An owned value dies here. Nothing observes drops yet; when classes and `Drop` arrive,
-    /// the last-reference logic and drop tracing live in this function.
-    fn release(&mut self, value: Value) {
-        drop(value);
-    }
-
-    fn release_temps(&mut self, fiber: &mut Fiber, mark: usize) {
+    pub(crate) fn release_temps(&mut self, fiber: &mut Fiber, mark: usize) {
         while fiber.temps.len() > mark {
             if let Some(v) = fiber.temps.pop() {
                 self.release(v);
@@ -274,22 +290,29 @@ impl Interp {
         }
     }
 
-    /// Evaluates an operand that is not an ownership transfer onto the temporaries stack.
-    fn eval_temp(&mut self, fiber: &mut Fiber, e: &Expr) -> Eval<()> {
+    /// Evaluates an operand onto the temporaries stack and returns where its value sits (the
+    /// operand's own leftover temporaries lie below it).
+    pub(crate) fn eval_temp(&mut self, fiber: &mut Fiber, e: &Expr) -> Eval<usize> {
         let v = self.eval(fiber, e)?;
         fiber.temps.push(v);
-        Ok(())
+        Ok(fiber.temps.len() - 1)
     }
 
-    fn pop_temp(&mut self, fiber: &mut Fiber) -> Value {
-        fiber.temps.pop().unwrap_or(Value::Unit)
+    /// Evaluates `e` and keeps a second reference on the temporaries stack, so the temporary
+    /// dies at the end of the statement while the caller uses the returned value. Every value
+    /// a Rust local holds across a nested evaluation has such a twin, so an early exit never
+    /// loses the last reference to anything.
+    pub(crate) fn eval_twin(&mut self, fiber: &mut Fiber, e: &Expr) -> Eval {
+        let v = self.eval(fiber, e)?;
+        fiber.temps.push(v.clone());
+        Ok(v)
     }
 
     // ---- statements ----
 
     /// Every statement is a temporary scope: whatever it left on the temps stack dies at its
     /// end, even when it ends early.
-    fn exec_stmt(&mut self, fiber: &mut Fiber, stmt: &Stmt) -> Eval<()> {
+    pub(crate) fn exec_stmt(&mut self, fiber: &mut Fiber, stmt: &Stmt) -> Eval<()> {
         let mark = fiber.temps.len();
         let result = self.exec_stmt_inner(fiber, stmt);
         self.release_temps(fiber, mark);
@@ -300,17 +323,14 @@ impl Interp {
         match &stmt.kind {
             StmtKind::Let { local, init } => {
                 let value = self.eval(fiber, init)?;
-                let old = match fiber.frames.last_mut() {
-                    Some(frame) => std::mem::replace(&mut frame.slots[local.0 as usize], value),
-                    None => return Err(self.internal(fiber, stmt.span, "no frame")),
-                };
-                self.release(old);
+                self.bind_local(fiber, *local, value);
                 Ok(())
             }
             StmtKind::LetPat { pat, init } => {
                 let value = self.eval(fiber, init)?;
                 let mut binds = Vec::new();
                 if !self.match_pat(pat, &value, &mut binds) {
+                    self.release(value);
                     return Err(self.internal(fiber, stmt.span, "an irrefutable pattern failed"));
                 }
                 self.release(value);
@@ -323,17 +343,7 @@ impl Interp {
                 Ok(())
             }
             StmtKind::Assign { place, op, rhs } => {
-                let rhs_value = self.eval(fiber, rhs)?;
-                let new = match op {
-                    None => rhs_value,
-                    Some(op) => {
-                        let old = self.read_place(fiber, place, stmt.span)?;
-                        self.binary(fiber, *op, old, rhs_value, stmt.span)?
-                    }
-                };
-                let old = self.write_place(fiber, place, new, stmt.span)?;
-                self.release(old);
-                Ok(())
+                self.exec_assign(fiber, place, *op, rhs, stmt.span)
             }
             StmtKind::Return(value) => {
                 let v = match value {
@@ -344,14 +354,48 @@ impl Interp {
             }
             StmtKind::Break(id) => Err(Ctl::Break(*id, Value::Unit)),
             StmtKind::Continue(id) => Err(Ctl::Continue(*id)),
+            StmtKind::Defer(deferred) => {
+                Self::push_defer(fiber, Rc::clone(deferred));
+                Ok(())
+            }
         }
+    }
+
+    /// `place = rhs` and `place op= rhs`: the anchor's operands are evaluated once, then the
+    /// right-hand side, then the place is read (for `op=`) and written.
+    fn exec_assign(
+        &mut self,
+        fiber: &mut Fiber,
+        place: &Place,
+        op: Option<BinOp>,
+        rhs: &Expr,
+        span: Span,
+    ) -> Eval<()> {
+        let anchor = self.resolve_anchor(fiber, place, span)?;
+        let rhs_value = self.eval(fiber, rhs)?;
+        let new = match op {
+            None => rhs_value,
+            Some(op) => {
+                let old = match self.get_resolved(fiber, &anchor, &place.path, span) {
+                    Ok(old) => old,
+                    Err(ctl) => {
+                        self.release(rhs_value);
+                        return Err(ctl);
+                    }
+                };
+                self.binary(fiber, op, old, rhs_value, span)?
+            }
+        };
+        let old = self.write_resolved(fiber, &anchor, &place.path, new, true, span)?;
+        self.release(old);
+        Ok(())
     }
 
     // ---- expressions ----
 
     /// The evaluator's hot recursion. Each arm hands off to a function of its own, which keeps
     /// this frame small: an unoptimised build pays for every arm's locals on every nested call.
-    fn eval(&mut self, fiber: &mut Fiber, e: &Expr) -> Eval {
+    pub(crate) fn eval(&mut self, fiber: &mut Fiber, e: &Expr) -> Eval {
         // Every recursion passes through here, so this one check also bounds deeply nested code.
         if stack_position().abs_diff(fiber.stack_base) > self.native_stack_budget {
             let message = format!(
@@ -379,6 +423,10 @@ impl Interp {
                 let values = self.eval_values(fiber, fields)?;
                 Ok(Value::strukt(*ty, values))
             }
+            ExprKind::Object { ty, fields } => {
+                let values = self.eval_values(fiber, fields)?;
+                Ok(Value::Obj(ClassObj::new(*ty, values)))
+            }
             ExprKind::Variant { ty, variant, args } => {
                 let values = self.eval_values(fiber, args)?;
                 Ok(Value::variant(*ty, *variant, values))
@@ -387,10 +435,20 @@ impl Interp {
                 let values = self.eval_values(fiber, items)?;
                 Ok(Value::tuple(values))
             }
+            ExprKind::ListLit(items) => {
+                let values = self.eval_values(fiber, items)?;
+                Ok(Value::list(values))
+            }
+            ExprKind::MapLit(entries) => self.eval_map_lit(fiber, entries),
+            ExprKind::ToWeak(inner) => self.eval_to_weak(fiber, inner, e.span),
+            ExprKind::FromWeak(inner) => self.eval_from_weak(fiber, inner, e.span),
             ExprKind::Project(base, proj) => {
-                let value = self.eval(fiber, base)?;
-                match project(&value, *proj) {
-                    Some(part) => Ok(part.clone()),
+                // The projected-from value is a temporary: it dies at the end of the statement.
+                let value = self.eval_twin(fiber, base)?;
+                let part = project(&value, *proj).cloned();
+                drop(value);
+                match part {
+                    Some(part) => Ok(part),
                     None => Err(self.internal(fiber, e.span, "ill-typed projection")),
                 }
             }
@@ -414,10 +472,8 @@ impl Interp {
         rhs: &Expr,
         span: Span,
     ) -> Eval {
-        self.eval_temp(fiber, lhs)?;
-        self.eval_temp(fiber, rhs)?;
-        let r = self.pop_temp(fiber);
-        let l = self.pop_temp(fiber);
+        let l = self.eval_twin(fiber, lhs)?;
+        let r = self.eval_twin(fiber, rhs)?;
         self.binary(fiber, op, l, r, span)
     }
 
@@ -439,16 +495,12 @@ impl Interp {
 
     #[inline(never)]
     fn eval_concat(&mut self, fiber: &mut Fiber, parts: &[Expr]) -> Eval {
-        let base = fiber.temps.len();
-        for part in parts {
-            self.eval_temp(fiber, part)?;
-        }
-        let values = fiber.temps.split_off(base);
+        let values = self.eval_values(fiber, parts)?;
         let mut out = String::new();
-        for v in values {
-            out.push_str(&show(&self.types, &v));
-            self.release(v);
+        for v in &values {
+            out.push_str(&show(&self.types, v));
         }
+        self.release_all(values);
         Ok(Value::Str(Rc::from(out)))
     }
 
@@ -461,10 +513,12 @@ impl Interp {
         else_: Option<&Block>,
         span: Span,
     ) -> Eval {
-        // The condition's temporaries are gone before either branch runs.
-        let taken = match self.eval(fiber, cond)? {
-            Value::Bool(b) => b,
-            _ => return Err(self.internal(fiber, span, "`if` condition is not a bool")),
+        // The condition's temporaries are gone before either branch runs (DESIGN §11.2).
+        let mark = fiber.temps.len();
+        let held = self.eval(fiber, cond)?;
+        self.release_temps(fiber, mark);
+        let Value::Bool(taken) = held else {
+            return Err(self.internal(fiber, span, "`if` condition is not a bool"));
         };
         if taken {
             self.eval_block(fiber, then)
@@ -487,54 +541,62 @@ impl Interp {
         }
     }
 
-    /// `for i in a..b`: the bounds are evaluated once; each iteration gets a fresh `i`.
+    /// `{k: v, ..}`: a repeated key keeps its first position and the last value.
     #[inline(never)]
-    fn eval_for(&mut self, fiber: &mut Fiber, f: &ForLoop, span: Span) -> Eval {
-        let (Value::Int(start), Value::Int(end)) =
-            (self.eval(fiber, &f.start)?, self.eval(fiber, &f.end)?)
-        else {
-            return Err(self.internal(fiber, span, "a `for` range is not an integer range"));
-        };
-        let mut i = start;
-        loop {
-            if (f.inclusive && i > end) || (!f.inclusive && i >= end) {
-                break;
-            }
-            if let Some(binding) = f.binding {
-                let old = match fiber.frames.last_mut() {
-                    Some(frame) => {
-                        std::mem::replace(&mut frame.slots[binding.0 as usize], Value::Int(i))
-                    }
-                    None => return Err(self.internal(fiber, span, "no frame")),
-                };
+    fn eval_map_lit(&mut self, fiber: &mut Fiber, entries: &[(Expr, Expr)]) -> Eval {
+        let mut map = OrderedMap::new();
+        for (k, v) in entries {
+            let k = self.eval_twin(fiber, k)?;
+            let v = self.eval_twin(fiber, v)?;
+            let (old, spare) = map.insert(k, v);
+            if let Some(old) = old {
                 self.release(old);
             }
-            match self.eval_block(fiber, &f.body) {
-                Ok(v) => self.release(v),
-                Err(Ctl::Continue(target)) if target == f.id => {}
-                Err(Ctl::Break(target, v)) if target == f.id => {
-                    self.release(v);
-                    break;
-                }
-                Err(other) => return Err(other),
+            if let Some(spare) = spare {
+                self.release(spare);
             }
-            // The last value of an inclusive range must not be stepped past (it may be i64::MAX).
-            if f.inclusive && i == end {
-                break;
-            }
-            i += 1;
         }
-        Ok(Value::Unit)
+        Ok(Value::Map(crate::heap::MapObj::new(map)))
     }
 
-    /// Stores pattern bindings in their slots.
-    pub(crate) fn bind_all(&mut self, fiber: &mut Fiber, binds: Vec<(LocalId, Value)>) {
+    /// A strong reference (or an `Option` of one) stored weakly. The strong value dies at once
+    /// if this was its only owner.
+    #[inline(never)]
+    fn eval_to_weak(&mut self, fiber: &mut Fiber, inner: &Expr, span: Span) -> Eval {
+        let v = self.eval(fiber, inner)?;
+        let weak = match &v {
+            Value::Obj(rc) => Some(Rc::downgrade(rc)),
+            Value::Enum(e) => match e.payload.first() {
+                Some(Value::Obj(rc)) => Some(Rc::downgrade(rc)),
+                None => Some(Weak::new()),
+                _ => None,
+            },
+            _ => None,
+        };
+        self.release(v);
+        match weak {
+            Some(w) => Ok(Value::Weak(w)),
+            None => Err(self.internal(fiber, span, "a weak reference to a non-object")),
+        }
+    }
+
+    /// The value of a weak field as `T?`: `some` while the object lives, `none` after.
+    #[inline(never)]
+    fn eval_from_weak(&mut self, fiber: &mut Fiber, inner: &Expr, span: Span) -> Eval {
+        match self.eval(fiber, inner)? {
+            Value::Weak(w) => Ok(Value::option(w.upgrade().map(Value::Obj))),
+            _ => Err(self.internal(fiber, span, "a weak read of a strong value")),
+        }
+    }
+
+    /// Stores pattern bindings in their slots and registers them for release.
+    pub(crate) fn bind_all(
+        &mut self,
+        fiber: &mut Fiber,
+        binds: Vec<(colibri_check::hir::LocalId, Value)>,
+    ) {
         for (local, value) in binds {
-            let old = match fiber.frames.last_mut() {
-                Some(frame) => std::mem::replace(&mut frame.slots[local.0 as usize], value),
-                None => continue,
-            };
-            self.release(old);
+            self.bind_local(fiber, local, value);
         }
     }
 
@@ -549,8 +611,8 @@ impl Interp {
         span: Span,
     ) -> Eval {
         let mark = fiber.temps.len();
-        self.eval_temp(fiber, scrutinee)?;
-        let result = self.run_arms(fiber, mark, arms, span);
+        let at = self.eval_temp(fiber, scrutinee)?;
+        let result = self.run_arms(fiber, at, arms, span);
         self.release_temps(fiber, mark);
         result
     }
@@ -559,56 +621,53 @@ impl Interp {
         for arm in arms {
             let value = fiber.temps[scrutinee].clone();
             let mut binds = Vec::new();
-            if !self.match_pat(&arm.pat, &value, &mut binds) {
+            let matched = self.match_pat(&arm.pat, &value, &mut binds);
+            self.release(value);
+            if !matched {
+                self.release_all(binds.into_iter().map(|(_, v)| v).collect());
                 continue;
             }
-            drop(value);
+            let mark = Self::scope_mark(fiber);
             self.bind_all(fiber, binds);
             if let Some(guard) = &arm.guard {
-                let held = match self.eval(fiber, guard) {
-                    Ok(Value::Bool(b)) => b,
-                    Ok(_) => false,
-                    Err(ctl) => {
-                        self.release_arm(fiber, &arm.body);
-                        return Err(ctl);
+                let temps = fiber.temps.len();
+                let held = self.eval(fiber, guard);
+                self.release_temps(fiber, temps);
+                match held {
+                    Ok(Value::Bool(true)) => {}
+                    Ok(other) => {
+                        self.release(other);
+                        self.exit_scope(fiber, mark, Ok(Value::Unit))?;
+                        continue;
                     }
-                };
-                if !held {
-                    self.release_arm(fiber, &arm.body);
-                    continue;
+                    Err(ctl) => return self.exit_scope(fiber, mark, Err(ctl)),
                 }
             }
-            return self.eval_block(fiber, &arm.body);
+            let result = self.eval_block(fiber, &arm.body);
+            return self.exit_scope(fiber, mark, result);
         }
         Err(self.internal(fiber, span, "no `match` arm matched"))
     }
 
-    /// Drops an arm's bindings when its guard fails.
-    fn release_arm(&mut self, fiber: &mut Fiber, body: &Block) {
-        self.exit_scope(fiber, body);
-    }
-
-    /// Evaluates expressions left to right into one vector of values.
+    /// Evaluates expressions left to right into one vector of values. Each value also stays
+    /// on the temporaries stack until the statement ends (see [`Interp::eval_twin`]).
     fn eval_values(&mut self, fiber: &mut Fiber, exprs: &[Expr]) -> Eval<Vec<Value>> {
-        let base = fiber.temps.len();
-        for e in exprs {
-            self.eval_temp(fiber, e)?;
-        }
-        Ok(fiber.temps.split_off(base))
+        exprs.iter().map(|e| self.eval_twin(fiber, e)).collect()
     }
 
     fn eval_call(&mut self, fiber: &mut Fiber, callee: &Callee, args: &[Arg], span: Span) -> Eval {
-        let base = fiber.temps.len();
         // The receiver of a `var self` method is taken last, so the other arguments still see
-        // the variable it lives in.
+        // the variable it lives in. The arguments stay on the caller's temporaries, so they die
+        // at the end of the caller's statement (ARCHITECTURE §6); the callee gets its own
+        // references.
         let mut receiver = None;
+        let mut values = Vec::with_capacity(args.len());
         for arg in args {
             match arg {
-                Arg::Value(e) => self.eval_temp(fiber, e)?,
+                Arg::Value(e) => values.push(self.eval_twin(fiber, e)?),
                 Arg::Place(place) => receiver = Some(place),
             }
         }
-        let mut values = fiber.temps.split_off(base);
         match callee {
             Callee::Fn(id) => {
                 let Some(body) = self.fns.get(id.0 as usize).cloned() else {
@@ -620,17 +679,58 @@ impl Interp {
                 let Some(place) = receiver else {
                     return self.call_body(fiber, body, values);
                 };
-                let value = self.take_place(fiber, place, span)?;
-                values.insert(0, value);
-                let (result, out) = self.call_body_inout(fiber, body, values);
-                if let Some(updated) = out {
-                    let old = self.write_place(fiber, place, updated, span)?;
-                    self.release(old);
-                }
-                result
+                self.call_with_receiver(fiber, body, values, place, span)
             }
-            Callee::Intrinsic(intrinsic) => self.intrinsic(fiber, intrinsic, values, span),
+            Callee::Intrinsic(intrinsic) => {
+                if let Some(place) = receiver {
+                    let r = self.resolve_anchor(fiber, place, span)?;
+                    let v = self.get_resolved(fiber, &r, &place.path, span)?;
+                    values.insert(0, v);
+                }
+                self.intrinsic(fiber, intrinsic, values, span)
+            }
         }
+    }
+
+    /// A `var self` call: the receiver is copied in (or, for a local, moved in), the callee
+    /// mutates its own copy, and the final value is written back on every path. An element
+    /// of a collection stays guarded for the whole call (DESIGN §11.6), so the callee cannot
+    /// change the collection's shape under its own receiver.
+    fn call_with_receiver(
+        &mut self,
+        fiber: &mut Fiber,
+        body: Rc<Body>,
+        mut values: Vec<Value>,
+        place: &Place,
+        span: Span,
+    ) -> Eval {
+        let anchor = match self.resolve_anchor(fiber, place, span) {
+            Ok(a) => a,
+            Err(ctl) => {
+                self.release_all(values);
+                return Err(ctl);
+            }
+        };
+        let _hold = self.hold_place(&anchor, place);
+        let current = match self.take_receiver(fiber, &anchor, &place.path, span) {
+            Ok(v) => v,
+            Err(ctl) => {
+                self.release_all(values);
+                return Err(ctl);
+            }
+        };
+        values.insert(0, current);
+        let (result, out) = self.call_body_inout(fiber, body, values);
+        if let Some(updated) = out {
+            match self.write_resolved(fiber, &anchor, &place.path, updated, false, span) {
+                Ok(old) => self.release(old),
+                Err(ctl) => {
+                    self.release_outcome(result);
+                    return Err(ctl);
+                }
+            }
+        }
+        result
     }
 
     fn intrinsic(
@@ -640,6 +740,9 @@ impl Interp {
         mut args: Vec<Value>,
         span: Span,
     ) -> Eval {
+        if let Intrinsic::Builtin(op) = intrinsic {
+            return self.builtin(fiber, *op, args, span);
+        }
         let Some(arg) = args.pop() else {
             return Err(self.internal(fiber, span, "intrinsic without an argument"));
         };
@@ -651,6 +754,7 @@ impl Interp {
             }
             Intrinsic::Show => Value::Str(Rc::from(show(&self.types, &arg).as_ref())),
             Intrinsic::Format(spec) => Value::Str(Rc::from(format_value(&arg, spec))),
+            Intrinsic::Builtin(_) => Value::Unit,
         };
         self.release(arg);
         Ok(result)
@@ -670,10 +774,25 @@ impl Interp {
         }
     }
 
+    /// Applies a binary operator and releases both operands.
     fn binary(&mut self, fiber: &mut Fiber, op: BinOp, l: Value, r: Value, span: Span) -> Eval {
+        let result = self.binary_of(fiber, op, &l, &r, span);
+        self.release(l);
+        self.release(r);
+        result
+    }
+
+    fn binary_of(
+        &mut self,
+        fiber: &mut Fiber,
+        op: BinOp,
+        l: &Value,
+        r: &Value,
+        span: Span,
+    ) -> Eval {
         match (op, l, r) {
             (BinOp::Arith(op, Num::Int(IntTy::I64)), Value::Int(a), Value::Int(b)) => {
-                match int_arith(op, a, b) {
+                match int_arith(op, *a, *b) {
                     Ok(n) => Ok(Value::Int(n)),
                     Err(Fault::Overflow) => Err(self.panic(fiber, span, "integer overflow")),
                     Err(Fault::DivByZero) => Err(self.panic(fiber, span, "division by zero")),
@@ -681,6 +800,7 @@ impl Interp {
                 }
             }
             (BinOp::Arith(op, Num::Float), Value::Float(a), Value::Float(b)) => {
+                let (a, b) = (*a, *b);
                 Ok(Value::Float(match op {
                     ArithOp::Add => a + b,
                     ArithOp::Sub => a - b,
@@ -691,15 +811,16 @@ impl Interp {
             }
             (BinOp::Concat, Value::Str(a), Value::Str(b)) => {
                 let mut s = String::with_capacity(a.len() + b.len());
-                s.push_str(&a);
-                s.push_str(&b);
+                s.push_str(a);
+                s.push_str(b);
                 Ok(Value::Str(Rc::from(s)))
             }
-            (BinOp::Cmp(op, Operand::Structural), l, r) => match structural(op, &l, &r) {
+            (BinOp::Is, l, r) => Ok(Value::Bool(values_identical(l, r))),
+            (BinOp::Cmp(op, Operand::Structural), l, r) => match structural(op, l, r) {
                 Ok(b) => Ok(Value::Bool(b)),
                 Err(_) => Err(self.panic(fiber, span, "these values nest too deeply to compare")),
             },
-            (BinOp::Cmp(op, operand), l, r) => match compare(op, operand, &l, &r) {
+            (BinOp::Cmp(op, operand), l, r) => match compare(op, operand, l, r) {
                 Some(b) => Ok(Value::Bool(b)),
                 None => Err(self.internal(fiber, span, "ill-typed comparison")),
             },

@@ -1,0 +1,18 @@
+struct E { hp: int }
+var es = [E { hp: 1 }]
+var m: Map[str, int] = {:}
+
+fn hit() {
+    es[0].hp += 1
+    m["hits"] = 1
+}
+
+fn main() {
+    hit()
+    hit()
+    print(es)
+    print(m)
+}
+
+// expect: [E { hp: 3 }]
+// expect: {"hits": 1}

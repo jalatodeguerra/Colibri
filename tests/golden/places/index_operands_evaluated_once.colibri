@@ -1,0 +1,23 @@
+var calls = 0
+
+fn idx() -> int {
+    calls += 1
+    return 1
+}
+
+struct C { n: int }
+
+fn main() {
+    var xs = [C { n: 0 }, C { n: 0 }]
+    xs[idx()].n += 5
+    xs[idx()].n += 5
+    var ys = [1, 2, 3]
+    ys[idx()] *= 7
+    print(calls)
+    print(xs)
+    print(ys)
+}
+
+// expect: 3
+// expect: [C { n: 0 }, C { n: 10 }]
+// expect: [1, 14, 3]

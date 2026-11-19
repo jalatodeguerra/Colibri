@@ -23,9 +23,18 @@ pub struct VmBuilder {
     stdout: Option<Box<dyn Write>>,
     max_call_depth: usize,
     native_stack_budget: usize,
+    trace_drops: bool,
 }
 
 impl VmBuilder {
+    /// Records the label of every class object as it is destroyed, for tests of drop order
+    /// (see [`Vm::take_drop_trace`]). Off by default.
+    #[doc(hidden)]
+    pub fn trace_drops(mut self, on: bool) -> Self {
+        self.trace_drops = on;
+        self
+    }
+
     /// Where `print` writes. The default is the process's standard output.
     pub fn stdout(mut self, writer: Box<dyn Write>) -> Self {
         self.stdout = Some(writer);
@@ -54,6 +63,7 @@ impl VmBuilder {
         let out = self.stdout.unwrap_or_else(|| Box::new(std::io::stdout()));
         let mut interp = Interp::new(out, self.max_call_depth);
         interp.set_native_stack_budget(self.native_stack_budget);
+        interp.set_trace_drops(self.trace_drops);
         Vm {
             sources: SourceMap::new(),
             interp,
@@ -93,6 +103,7 @@ impl Vm {
             stdout: None,
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
+            trace_drops: false,
         }
     }
 
@@ -149,6 +160,7 @@ impl Vm {
             }
             Err(info) => {
                 self.epoch += 1;
+                self.interp.shutdown();
                 Err(self.panic_error(*info))
             }
         }
@@ -254,6 +266,22 @@ impl Vm {
                     location: locate(entry.span),
                 })
                 .collect(),
+            notes: info.notes,
         }
+    }
+
+    /// Ends the program's life: module-level values are released in reverse initialisation
+    /// order (DESIGN §11.2). Done automatically when the `Vm` is dropped or loads another
+    /// program; call it to see the effects (and the drop trace) at a chosen moment.
+    pub fn shutdown(&mut self) {
+        self.interp.shutdown();
+        self.interp.flush();
+    }
+
+    /// The labels of the class objects destroyed so far, in order, when the `Vm` was built
+    /// with [`VmBuilder::trace_drops`]; the trace is emptied. Test support.
+    #[doc(hidden)]
+    pub fn take_drop_trace(&mut self) -> Vec<String> {
+        self.interp.take_trace()
     }
 }

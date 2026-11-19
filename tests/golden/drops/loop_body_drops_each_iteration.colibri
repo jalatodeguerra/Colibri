@@ -1,0 +1,13 @@
+class T { name: str }
+
+fn main() {
+    for i in 0..3 {
+        let t = T { name: "t{i}" }
+        print("iteration {i}")
+    }
+}
+
+// expect: iteration 0
+// expect: iteration 1
+// expect: iteration 2
+// drops: t0, t1, t2

@@ -1,0 +1,12 @@
+class T { name: str }
+
+fn main() {
+    let a = T { name: "a" }
+    let b = a.clone()
+    print(a is b)
+    print(a == b)
+}
+
+// expect: false
+// expect: false
+// drops: a, a

@@ -1,0 +1,14 @@
+fn main() {
+    let s = Set([3, 1, 2])
+    var sum = 0
+    for x in s {
+        print(x)
+        sum += x
+    }
+    print(sum)
+}
+
+// expect: 3
+// expect: 1
+// expect: 2
+// expect: 6

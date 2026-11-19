@@ -1,0 +1,13 @@
+class T { name: str }
+
+fn main() {
+    for i in 0..3 {
+        let t = T { name: "t{i}" }
+        if i == 1 {
+            continue
+        }
+        let u = T { name: "u{i}" }
+    }
+}
+
+// drops: u0, t0, t1, u2, t2

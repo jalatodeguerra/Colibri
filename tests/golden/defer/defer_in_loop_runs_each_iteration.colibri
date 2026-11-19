@@ -1,0 +1,15 @@
+fn main() {
+    for i in 0..3 {
+        defer print("defer {i}")
+        print("body {i}")
+    }
+    print("after")
+}
+
+// expect: body 0
+// expect: defer 0
+// expect: body 1
+// expect: defer 1
+// expect: body 2
+// expect: defer 2
+// expect: after

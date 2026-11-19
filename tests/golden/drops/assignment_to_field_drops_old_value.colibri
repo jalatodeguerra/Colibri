@@ -1,0 +1,11 @@
+class T { name: str }
+class Holder { held: T }
+
+fn main() {
+    let h = Holder { held: T { name: "first" } }
+    h.held = T { name: "second" }
+    print("swapped")
+}
+
+// expect: swapped
+// drops: first, Holder, second

@@ -1,0 +1,11 @@
+struct Enemy { hp: int, name: str }
+
+fn main() {
+    var enemies = [Enemy { hp: 10, name: "a" }, Enemy { hp: 20, name: "b" }]
+    enemies[0].hp -= 1
+    enemies[1].hp = 5
+    enemies[1].name = "bee"
+    print(enemies)
+}
+
+// expect: [Enemy { hp: 9, name: "a" }, Enemy { hp: 5, name: "bee" }]

@@ -1,0 +1,17 @@
+class Node {
+    name: str
+    other: weak Node
+}
+
+fn main() {
+    let a = Node { name: "a" }
+    let b = Node { name: "b" }
+    a.other = b
+    print(a.other == some(b))
+    a.other = none
+    print(a.other)
+}
+
+// expect: true
+// expect: none
+// drops: b, a

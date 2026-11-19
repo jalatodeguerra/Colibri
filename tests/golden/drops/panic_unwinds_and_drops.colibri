@@ -1,0 +1,14 @@
+class T { name: str }
+
+fn inner(z: int) -> int {
+    let i = T { name: "inner" }
+    return 10 / z
+}
+
+fn main() {
+    let m = T { name: "main" }
+    print(inner(0))
+}
+
+// panic: division by zero
+// drops: inner, main

@@ -1,0 +1,4 @@
+fn main() {
+    let m = {"a": 1}
+    print(m[1]) // error: expected `str`, found `{integer}`
+}

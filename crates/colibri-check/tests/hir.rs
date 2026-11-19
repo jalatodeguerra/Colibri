@@ -378,8 +378,16 @@ fn for_over_a_range_is_its_own_node_with_a_fresh_binding() {
     else {
         panic!("expected a for loop, got {:?}", f.block.stmts[0]);
     };
-    assert!(l.inclusive);
-    let binding = l.binding.expect("the loop variable is bound");
+    assert!(matches!(
+        l.source,
+        ForSource::Range {
+            inclusive: true,
+            ..
+        }
+    ));
+    let ForBinding::Local(binding) = l.binding else {
+        panic!("the loop variable is bound");
+    };
     assert!(l.body.locals.contains(&binding));
 }
 

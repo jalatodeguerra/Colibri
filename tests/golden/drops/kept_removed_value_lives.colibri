@@ -1,0 +1,13 @@
+class T { name: str }
+
+fn main() {
+    var xs = [T { name: "a" }, T { name: "b" }]
+    let taken = xs.remove(0)
+    print("still alive: " + taken.name)
+    xs.clear()
+    print("list cleared")
+}
+
+// expect: still alive: a
+// expect: list cleared
+// drops: b, a

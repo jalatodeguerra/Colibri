@@ -67,6 +67,8 @@ pub enum Error {
         location: Option<Location>,
         /// The Colibri call stack, innermost first.
         stack: Vec<StackFrame>,
+        /// Further panics raised by `defer` statements while this one unwound (DESIGN §6.1).
+        notes: Vec<String>,
     },
     /// No function with this name is defined.
     FnNotFound { name: String },
@@ -102,6 +104,7 @@ impl Error {
                 message,
                 location,
                 stack,
+                notes,
             } => {
                 let mut out = format!("panic: {message}\n");
                 if stack.is_empty()
@@ -121,6 +124,9 @@ impl Error {
                         .for_each(|f| shown(&mut out, f));
                 } else {
                     stack.iter().for_each(|f| shown(&mut out, f));
+                }
+                for note in notes {
+                    out.push_str(&format!("  note: {note}\n"));
                 }
                 out
             }

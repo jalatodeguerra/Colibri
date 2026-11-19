@@ -1,0 +1,14 @@
+fn main() {
+    let a: int? = some(1)
+    let b: int? = some(1)
+    let c: int? = none
+    print(a == b)
+    print(a == c)
+    print(c == none)
+    print(a != some(2))
+}
+
+// expect: true
+// expect: false
+// expect: true
+// expect: true

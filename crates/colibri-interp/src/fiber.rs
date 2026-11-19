@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use colibri_check::hir::Body;
+use colibri_check::hir::{Body, LocalId, Stmt};
 use colibri_syntax::Span;
 
 use crate::value::Value;
@@ -16,6 +16,18 @@ pub(crate) struct Frame {
     pub body: Rc<Body>,
     pub slots: Vec<Value>,
     pub span: Span,
+    /// What must happen when scopes exit, innermost last (ARCHITECTURE §6): bindings to
+    /// release and `defer` statements to run, in one last-in first-out list.
+    pub cleanups: Vec<Cleanup>,
+}
+
+/// One entry of a frame's cleanup list.
+#[derive(Debug)]
+pub(crate) enum Cleanup {
+    /// The binding in this slot dies.
+    Slot(LocalId),
+    /// A deferred statement runs.
+    Defer(Rc<Stmt>),
 }
 
 /// The stack of one computation.

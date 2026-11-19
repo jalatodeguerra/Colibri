@@ -1,0 +1,11 @@
+class T { name: str }
+
+fn main() {
+    let a = T { name: "a" }
+    let b = T { name: "b" }
+    let c = T { name: "c" }
+    print("body done")
+}
+
+// expect: body done
+// drops: c, b, a

@@ -1,0 +1,19 @@
+fn f(n: int) -> int {
+    defer print("cleanup {n}")
+    if n > 0 {
+        return n
+    }
+    print("not early")
+    return 0
+}
+
+fn main() {
+    print(f(5))
+    print(f(0))
+}
+
+// expect: cleanup 5
+// expect: 5
+// expect: not early
+// expect: cleanup 0
+// expect: 0

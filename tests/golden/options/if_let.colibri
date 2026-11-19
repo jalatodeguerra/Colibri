@@ -1,0 +1,17 @@
+fn main() {
+    let a: int? = some(3)
+    let b: int? = none
+    if let some(x) = a {
+        print("a has {x}")
+    } else {
+        print("a is empty")
+    }
+    if let some(x) = b {
+        print("b has {x}")
+    } else {
+        print("b is empty")
+    }
+}
+
+// expect: a has 3
+// expect: b is empty

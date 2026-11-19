@@ -1,0 +1,4 @@
+fn f(o: int?) -> int? {
+    let v = o? // error: the `?` operator is not supported yet
+    return some(v)
+}

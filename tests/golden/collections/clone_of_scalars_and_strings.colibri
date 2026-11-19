@@ -1,0 +1,16 @@
+fn main() {
+    let s = "hello"
+    let t = s.clone()
+    print(t)
+    print(t == s)
+    print(5.clone())
+    let o: int? = some(3)
+    print(o.clone())
+    print((1, "a").clone())
+}
+
+// expect: hello
+// expect: true
+// expect: 5
+// expect: some(3)
+// expect: (1, "a")

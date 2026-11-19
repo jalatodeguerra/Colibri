@@ -1,0 +1,20 @@
+fn find(xs: List[int], x: int) -> int? {
+    for i in 0..xs.len() {
+        if xs[i] == x {
+            return some(i)
+        }
+    }
+    return none
+}
+
+fn main() {
+    let xs = [5, 6, 7]
+    print(find(xs, 7))
+    print(find(xs, 9))
+    let none_int: int? = none
+    print(none_int)
+}
+
+// expect: some(2)
+// expect: none
+// expect: none

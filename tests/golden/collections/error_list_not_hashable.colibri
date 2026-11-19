@@ -1,0 +1,4 @@
+fn main() {
+    let m: Map[List[int], str] = {:} // error: cannot be used
+    let s = Set[List[int]]() // error: cannot be used
+}

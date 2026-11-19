@@ -1,0 +1,12 @@
+fn main() {
+    var m = {"a": 1}
+    m["b"] = 2
+    m["a"] += 10
+    print(m["a"])
+    print(m["b"])
+    print(m)
+}
+
+// expect: 11
+// expect: 2
+// expect: {"a": 11, "b": 2}

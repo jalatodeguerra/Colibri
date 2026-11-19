@@ -1,0 +1,15 @@
+fn fill(s: Set[int]) {
+    s.add(9)
+}
+
+fn main() {
+    let s = Set[int]()
+    fill(s)
+    let t = s
+    t.add(8)
+    print(s)
+    print(s is t)
+}
+
+// expect: Set([9, 8])
+// expect: true

@@ -1,0 +1,15 @@
+class T { name: str }
+
+fn make(n: str) -> T => T { name: n }
+
+fn main() {
+    match make("scrutinee").name {
+        _ => {
+            let arm = T { name: "arm" }
+        }
+    }
+    print("done")
+}
+
+// expect: done
+// drops: arm, scrutinee

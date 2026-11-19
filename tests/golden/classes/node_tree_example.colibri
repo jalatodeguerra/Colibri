@@ -1,0 +1,24 @@
+class Node {
+    name: str
+    children: List[Node] = []
+    parent: weak Node
+}
+
+fn main() {
+    let root = Node { name: "root" }
+    let child = Node { name: "child", parent: root }
+    root.children.push(child)
+    print(root.children.len())
+    print(child.parent)
+    match child.parent {
+        some(p) => print("parent is {p.name}")
+        none => print("orphan")
+    }
+    print(root.parent)
+}
+
+// expect: 1
+// expect: some(Node { name: "root", children: [Node { name: "child", children: [], parent: some(Node {...}) }], parent: none })
+// expect: parent is root
+// expect: none
+// drops: root, child

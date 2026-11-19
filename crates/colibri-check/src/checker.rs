@@ -9,9 +9,11 @@ use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::FnCtx;
 use crate::decls::{AliasInfo, TypeExtra};
-use crate::hir::{Body, FnDef, FnId, GlobalDef, GlobalId, Program, TypeDef};
+use crate::hir::{
+    Body, FieldDef, FnDef, FnId, GlobalDef, GlobalId, Program, TypeDef, TypeDefKind, VariantDef,
+};
 use crate::suggest;
-use crate::types::{FnSig, Ty, TypeId};
+use crate::types::{FnSig, ParamId, Ty, TypeId};
 
 /// What a module-level name refers to.
 #[derive(Clone, Copy, Debug)]
@@ -110,11 +112,45 @@ pub(crate) struct Checker<'a> {
     pub aliases: HashMap<String, AliasInfo<'a>>,
     /// Methods and static functions by owner and name.
     pub methods: HashMap<(TypeId, String), FnId>,
+    /// Whether struct and enum fields are resolved, so hashability can be decided.
+    pub types_defined: bool,
+    /// `Map` keys and `Set` elements written before the types were defined, checked after.
+    pub pending_hash: Vec<(Ty, &'static str, Span)>,
     script: Vec<&'a ast::Stmt>,
     script_body: Option<Rc<Body>>,
     /// The native stack position where checking started, and how far below it checking may go.
     stack_base: usize,
     stack_budget: usize,
+}
+
+/// The prelude `Option` enum (index 0 of the type table): `none` and `some(T)`, where the
+/// payload's `T` stands for the type argument of `Ty::Option`.
+fn prelude_option(span: Span) -> TypeDef {
+    TypeDef {
+        name: "Option".to_string(),
+        span,
+        kind: TypeDefKind::Enum {
+            variants: vec![
+                VariantDef {
+                    name: "none".to_string(),
+                    span,
+                    fields: Vec::new(),
+                    named: false,
+                },
+                VariantDef {
+                    name: "some".to_string(),
+                    span,
+                    fields: vec![FieldDef {
+                        name: "0".to_string(),
+                        ty: Ty::Param(ParamId(0)),
+                        span,
+                        weak: false,
+                    }],
+                    named: false,
+                },
+            ],
+        },
+    }
 }
 
 /// A position on the native stack, comparable with another one.
@@ -136,11 +172,13 @@ impl<'a> Checker<'a> {
             poisoned_types: HashSet::new(),
             fns: Vec::new(),
             globals: Vec::new(),
-            types: Vec::new(),
-            type_extra: Vec::new(),
+            types: vec![prelude_option(file.span)],
+            type_extra: vec![TypeExtra::default()],
             type_ids: HashMap::new(),
             aliases: HashMap::new(),
             methods: HashMap::new(),
+            types_defined: false,
+            pending_hash: Vec::new(),
             script: Vec::new(),
             script_body: None,
             stack_base: 0,
@@ -294,13 +332,21 @@ impl<'a> Checker<'a> {
         if let Some(r) = &decl.receiver {
             match owner {
                 Some(ty) => {
-                    receiver = Some(r.mutable);
+                    let mut mutable = r.mutable;
+                    if mutable && self.types[ty.0 as usize].is_class() {
+                        self.report(
+                            Diagnostic::error("a class method cannot take `var self`", r.span)
+                                .with_hint("`self` can always change the fields of a class, because the object is shared; write `self`"),
+                        );
+                        mutable = false;
+                    }
+                    receiver = Some(mutable);
                     params.push(ParamInfo {
                         name: "self".to_string(),
                         ty: Ty::Adt(ty, Vec::new()),
                         span: r.span,
                         default: None,
-                        mutable: r.mutable,
+                        mutable,
                     });
                 }
                 None => {
@@ -422,6 +468,12 @@ impl<'a> Checker<'a> {
                     return Ty::Error;
                 }
                 let name = path[0].name.as_str();
+                match name {
+                    "List" | "Set" | "Option" | "Map" => {
+                        return self.resolve_builtin_generic(name, args, t.span);
+                    }
+                    _ => {}
+                }
                 if !args.is_empty() {
                     self.unsupported(&format!("the generic type `{name}[..]`"), t.span);
                     return Ty::Error;
@@ -433,7 +485,7 @@ impl<'a> Checker<'a> {
                     "str" => Ty::Str,
                     "char" => Ty::Char,
                     "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64" | "f32" | "vec2"
-                    | "vec3" | "vec4" | "List" | "Map" | "Set" | "Option" | "Result" => {
+                    | "vec3" | "vec4" | "Result" => {
                         self.unsupported(&format!("the type `{name}`"), t.span);
                         Ty::Error
                     }
@@ -451,12 +503,16 @@ impl<'a> Checker<'a> {
             TypeKind::Tuple(items) => {
                 Ty::Tuple(items.iter().map(|item| self.resolve_type(item)).collect())
             }
-            TypeKind::Optional(_) => {
-                self.unsupported("optional type (`T?`)", t.span);
-                Ty::Error
-            }
-            TypeKind::Weak(_) => {
-                self.unsupported("`weak` reference", t.span);
+            TypeKind::Optional(inner) => match self.resolve_type(inner) {
+                Ty::Error => Ty::Error,
+                inner => Ty::Option(Box::new(inner)),
+            },
+            TypeKind::Weak(inner) => {
+                self.resolve_type(inner);
+                self.report(
+                    Diagnostic::error("`weak` is only allowed on the fields of a class", t.span)
+                        .with_hint("a weak reference is a field that does not keep its target alive: `parent: weak Node`"),
+                );
                 Ty::Error
             }
             TypeKind::Array { .. } => {
@@ -468,6 +524,54 @@ impl<'a> Checker<'a> {
                 Ty::Error
             }
             TypeKind::Error => Ty::Error,
+        }
+    }
+
+    /// `List[T]`, `Set[T]`, `Option[T]` and `Map[K, V]`.
+    fn resolve_builtin_generic(&mut self, name: &str, args: &[ast::TypeExpr], span: Span) -> Ty {
+        let wanted = if name == "Map" { 2 } else { 1 };
+        if args.len() != wanted {
+            let example = match name {
+                "Map" => "Map[str, int]",
+                "List" => "List[int]",
+                "Set" => "Set[int]",
+                _ => "Option[int]",
+            };
+            let plural = if wanted == 1 { "" } else { "s" };
+            self.report(
+                Diagnostic::error(
+                    format!(
+                        "`{name}` takes {wanted} type argument{plural}, found {}",
+                        args.len()
+                    ),
+                    span,
+                )
+                .with_hint(format!("write it like `{example}`")),
+            );
+            for a in args {
+                self.resolve_type(a);
+            }
+            return Ty::Error;
+        }
+        let tys: Vec<Ty> = args.iter().map(|a| self.resolve_type(a)).collect();
+        if tys.iter().any(Ty::is_error) {
+            return Ty::Error;
+        }
+        let mut tys = tys.into_iter();
+        let mut next = || Box::new(tys.next().unwrap_or(Ty::Error));
+        match name {
+            "List" => Ty::List(next()),
+            "Option" => Ty::Option(next()),
+            "Set" => {
+                let elem = next();
+                self.require_hashable(&elem, "Set", args[0].span);
+                Ty::Set(elem)
+            }
+            _ => {
+                let (k, v) = (next(), next());
+                self.require_hashable(&k, "Map", args[0].span);
+                Ty::Map(k, v)
+            }
         }
     }
 
@@ -546,7 +650,13 @@ impl<'a> Checker<'a> {
             for (i, default) in defaults.into_iter().enumerate() {
                 if let Some(default) = default {
                     let field = &self.types[t].fields()[i];
-                    let (name, ty) = (format!("<default {}>", field.name), field.ty.clone());
+                    let name = format!("<default {}>", field.name);
+                    // A weak field's default is an optional: `none` or `some(object)`.
+                    let ty = if field.weak {
+                        Ty::Option(Box::new(field.ty.clone()))
+                    } else {
+                        field.ty.clone()
+                    };
                     FnCtx::new(self, name, None).check_default(default, &ty);
                 }
             }

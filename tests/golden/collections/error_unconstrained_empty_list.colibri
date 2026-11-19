@@ -1,0 +1,4 @@
+fn main() {
+    let xs = [] // error: cannot infer the element type of this list
+    print(xs.len())
+}

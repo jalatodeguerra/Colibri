@@ -1,0 +1,14 @@
+fn bad() {
+    let xs: List[int] = []
+    print(xs[1])
+}
+
+fn main() {
+    defer print("second defer still runs")
+    defer bad()
+    print("body")
+}
+
+// expect: body
+// expect: second defer still runs
+// panic: index 1 out of bounds for list of length 0

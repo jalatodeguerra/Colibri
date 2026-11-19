@@ -1,0 +1,4 @@
+fn main() {
+    let x: int? = some(1)
+    print(x + 1) // error: cannot
+}

@@ -67,6 +67,10 @@ pub(crate) struct FnCtx<'c, 'a> {
     depth: u32,
     /// The body is a `var self` method.
     self_mut: bool,
+    /// How many `defer` statements are being checked (`return` is not allowed in them).
+    defer_depth: u32,
+    /// How many errors the checker had when this body started.
+    errors_at_start: usize,
 }
 
 /// How deeply expressions may nest before the checker gives up, whatever the stack budget.
@@ -75,6 +79,7 @@ const MAX_DEPTH: u32 = 2_000;
 impl<'c, 'a> FnCtx<'c, 'a> {
     pub fn new(ck: &'c mut Checker<'a>, name: String, ret: Option<(Ty, Option<Span>)>) -> Self {
         FnCtx {
+            errors_at_start: ck.error_count(),
             ck,
             infer: InferCtx::new(),
             name,
@@ -88,6 +93,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             deps: Vec::new(),
             depth: 0,
             self_mut: false,
+            defer_depth: 0,
         }
     }
 
@@ -274,7 +280,16 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     fn finish(mut self, block: Block, ret: Ty, span: Span, param_count: u32) -> Body {
         let mut block = block;
         let mut diags = Vec::new();
-        zonk::zonk_body(&mut self.infer, &mut block, &mut self.locals, &mut diags);
+        // Types left open by an earlier mistake in this body are not worth a second error.
+        let had_errors = self.ck.error_count() > self.errors_at_start;
+        zonk::zonk_body(
+            &mut self.infer,
+            &self.ck.types,
+            &mut block,
+            &mut self.locals,
+            &mut diags,
+            had_errors,
+        );
         let ret = self.infer.finalize(&ret).0;
         for d in diags {
             self.ck.report(d);
@@ -586,8 +601,8 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 });
                 false
             }
-            StmtKind::Defer(_) => {
-                self.ck.unsupported("`defer`", s.span);
+            StmtKind::Defer(inner) => {
+                self.check_defer(s.span, inner, out);
                 false
             }
             StmtKind::Go(_) => {
@@ -595,6 +610,31 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 false
             }
             StmtKind::Error => false,
+        }
+    }
+
+    /// `defer stmt`: the statement runs when the enclosing block exits (DESIGN §6.1). It is
+    /// checked in place, so it sees the bindings declared before it.
+    fn check_defer(&mut self, span: Span, inner: &ast::Stmt, out: &mut Vec<Stmt>) {
+        if !matches!(inner.kind, StmtKind::Expr(_) | StmtKind::Assign { .. }) {
+            self.ck.report(
+                Diagnostic::error("`defer` needs a call or an assignment", inner.span)
+                    .with_hint("write `defer cleanup()`; to run several statements, put them in a function or a block"),
+            );
+            return;
+        }
+        // A `break` or `continue` inside would jump out of a block that is already exiting.
+        let loops = std::mem::take(&mut self.loops);
+        self.defer_depth += 1;
+        let mut checked = Vec::new();
+        self.check_stmt(inner, &mut checked);
+        self.defer_depth -= 1;
+        self.loops = loops;
+        for stmt in checked {
+            out.push(Stmt {
+                span,
+                kind: hir::StmtKind::Defer(std::rc::Rc::new(stmt)),
+            });
         }
     }
 
@@ -683,7 +723,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     }
 
     /// A `let` pattern must match every value of its type.
-    fn require_irrefutable(&mut self, pat: &hir::Pat, ty: &Ty, span: Span) {
+    pub(crate) fn require_irrefutable(&mut self, pat: &hir::Pat, ty: &Ty, span: Span) {
         if ty.is_error() {
             return;
         }
@@ -708,6 +748,13 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     }
 
     fn check_return(&mut self, span: Span, value: Option<&ast::Expr>, out: &mut Vec<Stmt>) {
+        if self.defer_depth > 0 {
+            self.ck.report(
+                Diagnostic::error("`return` cannot be used inside `defer`", span)
+                    .with_hint("a deferred statement runs while the block is already exiting"),
+            );
+            return;
+        }
         let Some((ret, ret_span)) = self.ret.clone() else {
             self.ck.report(
                 Diagnostic::error("`return` outside of a function", span)
@@ -853,7 +900,8 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         value: &ast::Expr,
     ) -> Option<Stmt> {
         let place = self.check_place(target)?;
-        let rhs = self.check_expr(value, Some(&place.ty));
+        let weak = self.is_weak_place(&place);
+        let mut rhs = self.check_expr(value, Some(&place.ty));
         let place_ty = place.ty.clone();
         let hir_op = match op {
             AssignOp::Assign => None,
@@ -864,9 +912,13 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             AssignOp::Rem => Some(ArithOp::Rem),
         };
         let reason = Some((target.span, format!("this is `{}`", self.show(&place_ty))));
-        if self.expect(&rhs, &place_ty, reason)
-            && let Some(arith) = hir_op
-        {
+        let stored = if weak && hir_op.is_none() {
+            rhs = self.coerce_to_weak(rhs, &place_ty, reason.clone())?;
+            true
+        } else {
+            self.expect(&rhs, &place_ty, reason)
+        };
+        if stored && let Some(arith) = hir_op {
             let ok = match self.infer.shallow(&place_ty) {
                 Ty::Error => true,
                 Ty::Str => arith == ArithOp::Add,

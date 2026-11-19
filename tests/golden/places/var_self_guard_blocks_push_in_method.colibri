@@ -1,0 +1,14 @@
+struct Enemy { hp: int }
+var enemies = [Enemy { hp: 1 }]
+
+impl Enemy {
+    fn spawn(var self) {
+        enemies.push(Enemy { hp: 9 })
+    }
+}
+
+fn main() {
+    enemies[0].spawn()
+}
+
+// panic: `enemies` modified while an element is being updated; collect the changes in a separate list and apply them afterwards

@@ -1,0 +1,15 @@
+fn main() {
+    var xs = [1, 2, 3]
+    for var x in xs {
+        x *= 10
+    }
+    print(xs)
+    var ps = [(1, 1), (2, 2)]
+    for var p in ps {
+        p.1 += 5
+    }
+    print(ps)
+}
+
+// expect: [10, 20, 30]
+// expect: [(1, 6), (2, 7)]

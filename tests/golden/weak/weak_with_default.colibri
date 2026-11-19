@@ -1,0 +1,12 @@
+class Node {
+    name: str
+    peer: weak Node = none
+}
+
+fn main() {
+    let a = Node { name: "a" }
+    print(a.peer)
+}
+
+// expect: none
+// drops: a

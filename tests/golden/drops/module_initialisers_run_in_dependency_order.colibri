@@ -1,0 +1,11 @@
+class T { name: str, other: T? }
+
+let second = T { name: "second", other: some(first) }
+let first = T { name: "first", other: none }
+
+fn main() {
+    print(second.other == some(first))
+}
+
+// expect: true
+// drops: second, first

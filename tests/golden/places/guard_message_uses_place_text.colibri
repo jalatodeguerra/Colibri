@@ -1,0 +1,10 @@
+class World { enemies: List[int] }
+
+fn main() {
+    let w = World { enemies: [1, 2] }
+    for var e in w.enemies {
+        w.enemies.push(1)
+    }
+}
+
+// panic: `w.enemies` modified while an element is being updated

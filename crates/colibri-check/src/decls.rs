@@ -45,12 +45,15 @@ impl<'a> Checker<'a> {
                         StructKind::Struct => "struct",
                         StructKind::Class => "class",
                     };
-                    if s.kind == StructKind::Class {
-                        self.poison_type(&s.name, "`class`");
-                    } else if !s.generics.is_empty() {
-                        self.poison_type(&s.name, "a generic `struct`");
+                    if !s.generics.is_empty() {
+                        let what = format!("a generic `{what}`");
+                        self.poison_type(&s.name, &what);
                     } else if let Some(id) = self.declare_type(&s.name, what) {
-                        self.types[id.0 as usize].kind = TypeDefKind::Struct { fields: Vec::new() };
+                        let fields = Vec::new();
+                        self.types[id.0 as usize].kind = match s.kind {
+                            StructKind::Struct => TypeDefKind::Struct { fields },
+                            StructKind::Class => TypeDefKind::Class { fields },
+                        };
                     }
                 }
                 ItemKind::Enum(e) => {
@@ -133,7 +136,7 @@ impl<'a> Checker<'a> {
     pub(crate) fn define_types(&mut self, items: &[&'a ast::Item]) {
         for item in items {
             match &item.kind {
-                ItemKind::Struct(s) if s.kind == StructKind::Struct && s.generics.is_empty() => {
+                ItemKind::Struct(s) if s.generics.is_empty() => {
                     if let Some(&id) = self.type_ids.get(&s.name.name)
                         && self.types[id.0 as usize].span == s.name.span
                     {
@@ -158,9 +161,11 @@ impl<'a> Checker<'a> {
         for t in 0..self.types.len() {
             self.check_infinite_size(TypeId(t as u32));
         }
+        self.flush_pending_hash();
     }
 
     fn define_struct(&mut self, id: TypeId, s: &'a ast::StructDecl) {
+        let is_class = s.kind == StructKind::Class;
         let mut fields: Vec<FieldDef> = Vec::new();
         let mut defaults = Vec::new();
         for f in &s.fields {
@@ -175,15 +180,20 @@ impl<'a> Checker<'a> {
                 );
                 continue;
             }
-            let ty = self.resolve_type(&f.ty);
+            let (ty, weak) = self.resolve_field_type(&f.ty, is_class);
             fields.push(FieldDef {
                 name: f.name.name.clone(),
                 ty,
                 span: f.name.span,
+                weak,
             });
             defaults.push(f.default.as_ref());
         }
-        self.types[id.0 as usize].kind = TypeDefKind::Struct { fields };
+        self.types[id.0 as usize].kind = if is_class {
+            TypeDefKind::Class { fields }
+        } else {
+            TypeDefKind::Struct { fields }
+        };
         self.type_extra[id.0 as usize].defaults = defaults;
     }
 
@@ -211,6 +221,7 @@ impl<'a> Checker<'a> {
                             name: i.to_string(),
                             ty: self.resolve_type(t),
                             span: t.span,
+                            weak: false,
                         })
                         .collect();
                     (fields, false)
@@ -230,6 +241,7 @@ impl<'a> Checker<'a> {
                             name: f.name.name.clone(),
                             ty,
                             span: f.name.span,
+                            weak: false,
                         });
                     }
                     (fields, true)
@@ -243,6 +255,35 @@ impl<'a> Checker<'a> {
             });
         }
         self.types[id.0 as usize].kind = TypeDefKind::Enum { variants };
+    }
+
+    /// The type of a declared field and whether it is `weak`. A `weak T` field (DESIGN §11.5)
+    /// is only allowed in a class and only for a class `T`; its type is `T`.
+    fn resolve_field_type(&mut self, t: &ast::TypeExpr, is_class: bool) -> (Ty, bool) {
+        let ast::TypeKind::Weak(inner) = &t.kind else {
+            return (self.resolve_type(t), false);
+        };
+        let ty = self.resolve_type(inner);
+        if ty.is_error() {
+            return (Ty::Error, false);
+        }
+        if !is_class {
+            self.report(
+                Diagnostic::error("only a class can have a `weak` field", t.span)
+                    .with_hint("a struct is copied, so a weak reference in it would be too; hold the weak reference in a class"),
+            );
+            return (Ty::Error, false);
+        }
+        let target_is_class = matches!(&ty, Ty::Adt(id, _) if self.types[id.0 as usize].is_class());
+        if !target_is_class {
+            let shown = self.render(&ty);
+            self.report(
+                Diagnostic::error(format!("`weak` needs a class, but `{shown}` is not one"), t.span)
+                    .with_hint("only class objects have an identity to refer to weakly; other values are plain values"),
+            );
+            return (Ty::Error, false);
+        }
+        (ty, true)
     }
 
     /// The type an alias stands for, resolving it on first use. `None` if `name` is no alias.
@@ -301,6 +342,8 @@ impl<'a> Checker<'a> {
                 .iter()
                 .any(|t| self.contains_by_value(t, target, seen)),
             Ty::Adt(id, _) if *id == target => true,
+            // A class is held by reference, so it never makes a struct infinite.
+            Ty::Adt(id, _) if self.types[id.0 as usize].is_class() => false,
             Ty::Adt(id, _) => {
                 if seen.contains(id) {
                     return false;
@@ -337,7 +380,7 @@ impl<'a> Checker<'a> {
                         format!("cannot add methods to the built-in type `{shown}`"),
                         decl.target.span,
                     )
-                    .with_hint("methods can only be added to your own structs and enums"),
+                    .with_hint("methods can only be added to your own structs, enums and classes"),
                 );
                 return;
             }

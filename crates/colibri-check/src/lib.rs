@@ -8,8 +8,10 @@
 
 mod adt;
 mod body;
+mod builtins;
 mod call;
 mod checker;
+mod collections;
 mod decls;
 mod derive;
 pub mod exhaust;
@@ -19,6 +21,7 @@ pub mod hir;
 pub mod infer;
 mod loops;
 mod matching;
+mod option;
 mod pat;
 mod place;
 mod suggest;

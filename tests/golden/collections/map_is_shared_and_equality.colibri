@@ -1,0 +1,17 @@
+fn main() {
+    let a = {"x": 1, "y": 2}
+    let b = {"y": 2, "x": 1}
+    let c = a
+    print(a == b)
+    print(a is b)
+    print(a is c)
+    c["z"] = 3
+    print(a.len())
+    print(a == b)
+}
+
+// expect: true
+// expect: false
+// expect: true
+// expect: 3
+// expect: false

@@ -1,0 +1,11 @@
+struct Inv { items: List[int] }
+struct Player { inv: Inv, hp: int }
+
+fn main() {
+    var p = Player { inv: Inv { items: [1, 2, 3] }, hp: 1 }
+    p.inv.items[1] = 20
+    p.inv.items[0] += 5
+    print(p)
+}
+
+// expect: Player { inv: Inv { items: [6, 20, 3] }, hp: 1 }

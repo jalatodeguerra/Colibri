@@ -1,0 +1,20 @@
+class T { name: str }
+
+fn find(flag: bool) -> T? {
+    if flag {
+        return some(T { name: "found" })
+    }
+    return none
+}
+
+fn main() {
+    if let some(t) = find(true) {
+        let inner = T { name: "inner" }
+        print(t.name)
+    }
+    print("after")
+}
+
+// expect: found
+// expect: after
+// drops: inner, found

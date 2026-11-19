@@ -1,8 +1,4 @@
 fn main() {
-    let xs = [1, 2, 3] // error: list literal is not supported yet
-    for x in xs {
-        print(x)
-    }
     for i in 0.. { // error: an open-ended range in a `for` loop is not supported yet
         print(i)
     }

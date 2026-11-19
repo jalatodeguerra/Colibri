@@ -1,0 +1,15 @@
+class T { name: str }
+
+fn make(n: str) -> T => T { name: n }
+
+fn main() {
+    print(make("t1").name)
+    print("after t1")
+    let len = make("t2").name.len()
+    print(len)
+}
+
+// expect: t1
+// expect: after t1
+// expect: 2
+// drops: t1, t2

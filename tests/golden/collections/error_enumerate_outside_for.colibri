@@ -1,0 +1,4 @@
+fn main() {
+    let xs = [1]
+    let e = xs.enumerate() // error: has no method `enumerate`
+}

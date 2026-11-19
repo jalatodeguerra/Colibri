@@ -1,0 +1,18 @@
+class T { name: str }
+class Holder {
+    first: T
+    second: T
+    third: T
+}
+
+fn main() {
+    let h = Holder {
+        third: T { name: "third" },
+        first: T { name: "first" },
+        second: T { name: "second" },
+    }
+    print("built")
+}
+
+// expect: built
+// drops: Holder, first, second, third
