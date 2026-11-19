@@ -1473,13 +1473,17 @@ fn trampoline(name: &str, raw: crate::host::RawHostFn) -> HostImpl {
                     }
                     // Worded by the host layer, shown as is.
                     HostFault::Message(message) => HostFault::Message(message),
+                    HostFault::Cancel => HostFault::Cancel,
                 }),
                 Err(payload) => Err(match payload.downcast::<crate::ctx::RaisedPanic>() {
                     Ok(raised) => HostFault::Message(raised.0),
-                    Err(payload) => HostFault::Panic(format!(
-                        "host function `{name}` panicked: {}",
-                        payload_message(payload.as_ref())
-                    )),
+                    Err(payload) => match payload.downcast::<crate::ctx::RaisedCancel>() {
+                        Ok(_) => HostFault::Cancel,
+                        Err(payload) => HostFault::Panic(format!(
+                            "host function `{name}` panicked: {}",
+                            payload_message(payload.as_ref())
+                        )),
+                    },
                 }),
             }
         },

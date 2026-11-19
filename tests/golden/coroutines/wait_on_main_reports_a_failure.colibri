@@ -1,0 +1,13 @@
+// A coroutine that panics while main waits ends the program with that panic.
+fn bad() {
+    wait(1.0)
+    panic("boom")
+}
+
+fn main() {
+    go bad()
+    wait(5.0)
+    print("not reached")
+}
+
+// panic: boom

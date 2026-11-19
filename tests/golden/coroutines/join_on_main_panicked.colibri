@@ -1,0 +1,12 @@
+// Joining from the main fiber a coroutine that panicked panics in main.
+fn bad() {
+    wait(1.0)
+    panic("boom")
+}
+
+fn main() {
+    let c = go bad()
+    c.join()
+}
+
+// panic: the joined coroutine `bad` panicked: boom

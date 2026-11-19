@@ -1,7 +1,0 @@
-fn main() {
-    print("before")
-    wait(1.0)
-}
-
-// expect: before
-// panic: can only pause a coroutine

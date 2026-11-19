@@ -1,0 +1,25 @@
+// `wait(seconds)` on the main fiber runs the event loop for that long (here the fake clock).
+fn blink(n: int) {
+    for i in 0..n {
+        wait(1.0)
+        print("blink {i}")
+    }
+}
+
+fn main() {
+    go blink(5)
+    print("main waits")
+    wait(2.5)
+    print("main resumes")
+    wait(0.0)
+    print("done")
+}
+
+// expect: main waits
+// expect: blink 0
+// expect: blink 1
+// expect: main resumes
+// expect: done
+// expect: blink 2
+// expect: blink 3
+// expect: blink 4

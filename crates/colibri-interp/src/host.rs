@@ -23,6 +23,9 @@ pub enum HostFault {
     /// A panic with exactly this message, which the host layer worded itself (a destroyed or
     /// busy host object).
     Message(String),
+    /// The coroutine running the host function was cancelled while the function waited for a
+    /// background operation (`Ctx::run_async`): unwind without a panic.
+    Cancel,
 }
 
 /// A host function as the interpreter calls it: the arguments are the caller's references,
@@ -366,6 +369,10 @@ impl Interp {
             Ok(v) => Ok(v),
             Err(HostFault::Panic(message) | HostFault::Message(message)) => {
                 Err(self.panic(fiber, span, message))
+            }
+            Err(HostFault::Cancel) => {
+                fiber.cancelling = true;
+                Err(crate::ctl::Ctl::Cancel)
             }
         };
         fiber.frames.pop();
