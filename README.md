@@ -18,9 +18,18 @@ for p in people {
 
 ## Status
 
-Design phase. Nothing is implemented yet. The language design is in
-[docs/DESIGN.md](docs/DESIGN.md) and is open for review, including the list of
-[open questions](docs/DESIGN.md#18-open-questions).
+Phase 1 has started: the workspace, CI, golden-test harness and editor grammar exist; the
+language itself is not implemented yet. The implementation plan is in
+[docs/PHASE1.md](docs/PHASE1.md). The language design is in [docs/DESIGN.md](docs/DESIGN.md) and
+is open for review, including the list of [open questions](docs/DESIGN.md#18-open-questions).
+
+## Building
+
+```sh
+cargo build
+cargo test
+cargo run -p colibri-lang -- --version
+```
 
 ## Highlights (planned)
 

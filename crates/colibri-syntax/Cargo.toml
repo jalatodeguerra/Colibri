@@ -1,0 +1,10 @@
+[package]
+name = "colibri-syntax"
+description = "Colibri source map, spans, diagnostics, lexer and parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
