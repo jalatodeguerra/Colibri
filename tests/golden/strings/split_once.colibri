@@ -1,0 +1,21 @@
+fn main() {
+    print("key=value=more".split_once("="))
+    print("key=value=more".rsplit_once("="))
+    print("novalue".split_once("="))
+    print("novalue".rsplit_once("="))
+    print("=x".split_once("="))
+    print("x=".rsplit_once("="))
+    if let some((dir, name)) = "a/b/file.txt".rsplit_once("/") {
+        print("{dir} | {name}")
+    }
+    print("a::b::c".rsplit_once("::"))
+}
+
+// expect: some(("key", "value=more"))
+// expect: some(("key=value", "more"))
+// expect: none
+// expect: none
+// expect: some(("", "x"))
+// expect: some(("x", ""))
+// expect: a/b | file.txt
+// expect: some(("a::b", "c"))

@@ -1,0 +1,33 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let root = path.join(os.temp_dir(), "rm")
+    fs.create_dir(path.join(root, "empty"))?
+    fs.create_dir(path.join(root, "full"))?
+    fs.write(path.join(root, "full/x.txt"), "x")?
+    fs.remove_empty_dir(path.join(root, "empty"))?
+    print(fs.exists(path.join(root, "empty")))
+    match fs.remove_empty_dir(path.join(root, "full")) {
+        ok(_) => print("unexpected")
+        err(e) => print(e.message().replace(os.temp_dir(), "<dir>"))
+    }
+    // The failed call removed nothing.
+    print(fs.exists(path.join(root, "full/x.txt")))
+    match fs.remove_empty_dir(path.join(root, "nope")) {
+        ok(_) => print("unexpected")
+        err(e) => print(e.message().replace(os.temp_dir(), "<dir>"))
+    }
+    // `remove_dir` stays recursive.
+    fs.remove_dir(root)?
+    print(fs.exists(root))
+    return ok(())
+}
+
+// expect: false
+// expect: cannot remove the empty folder `<dir>/rm/full`: directory not empty
+// expect: true
+// expect: cannot remove the empty folder `<dir>/rm/nope`: no such file or directory
+// expect: false

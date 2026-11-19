@@ -1,0 +1,33 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let root = path.join(os.temp_dir(), "walk")
+    fs.create_dir(path.join(root, "a/b"))?
+    fs.create_dir(path.join(root, "empty"))?
+    fs.write(path.join(root, "z.txt"), "z")?
+    fs.write(path.join(root, "a/one.txt"), "1")?
+    fs.write(path.join(root, "a/b/two.txt"), "2")?
+    // Files and folders, relative to the root, sorted, `/` separated.
+    print(fs.walk(root)?)
+    print(fs.walk(path.join(root, "a"))?)
+    print(fs.walk(path.join(root, "empty"))?)
+    match fs.walk(path.join(root, "nope")) {
+        ok(_) => print("unexpected")
+        err(e) => print(e.message().replace(os.temp_dir(), "<dir>"))
+    }
+    match fs.walk(path.join(root, "z.txt")) {
+        ok(_) => print("unexpected")
+        err(e) => print(e.message().replace(os.temp_dir(), "<dir>"))
+    }
+    fs.remove_dir(root)?
+    return ok(())
+}
+
+// expect: ["a", "a/b", "a/b/two.txt", "a/one.txt", "empty", "z.txt"]
+// expect: ["b", "b/two.txt", "one.txt"]
+// expect: []
+// expect: cannot walk `<dir>/walk/nope`: no such file or directory
+// expect: cannot walk `<dir>/walk/z.txt`: not a directory

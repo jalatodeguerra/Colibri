@@ -1,0 +1,20 @@
+fn main() {
+    print("7".pad_left(3) + "|")
+    print("ab".pad_right(5) + "|")
+    print("long".pad_left(2) + "|")
+    print("7".pad_left_with(3, '0'))
+    print("ab".pad_right_with(5, '.'))
+    print("é".pad_left_with(3, '-'))
+    print("x".pad_left(0) + "|")
+    let name = "bob"
+    print("{name.pad_right(6)}|{"1".pad_left(4)}")
+}
+
+// expect:   7|
+// expect: ab   |
+// expect: long|
+// expect: 007
+// expect: ab...
+// expect: --é
+// expect: x|
+// expect: bob   |   1

@@ -1,6 +1,6 @@
 fn main() {
     let a = 1 as float // error: cannot convert to `float` with `as`
-    let b = "s".pad_left(3) // error: `str` has no method `pad_left`
+    let b = "s".center(3) // error: `str` has no method `center`
     let n = 1
     let c = n.x // error: has no field `x`
     let d = n[0] // error: cannot index into a value of type `int`

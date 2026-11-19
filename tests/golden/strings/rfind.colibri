@@ -1,0 +1,15 @@
+fn main() {
+    print("hello".rfind("l"))
+    print("hello".rfind("lo"))
+    print("hello".rfind("z"))
+    print("héllo".rfind("l"))
+    print("a/b/c".rfind("/"))
+    print("abc".rfind(""))
+}
+
+// expect: some(3)
+// expect: some(3)
+// expect: none
+// expect: some(4)
+// expect: some(3)
+// expect: some(3)
