@@ -23,6 +23,9 @@ use crate::error::{Error, Report};
 use crate::func::Fn;
 use crate::host::{HostFn, Registration, payload_message};
 use crate::iface::{self, ConstEntry, ConstValue, HostFnEntry, Rendered};
+use crate::reload::{
+    Fingerprint, OwnedEntry, RecordingFs, ReloadOptions, ReloadOutcome, ReloadState,
+};
 use crate::types::{TypeDesc, TypeRegistry};
 
 /// The default limit on nested Colibri calls (DESIGN §10.4 leaves the number open).
@@ -37,6 +40,13 @@ enum LoadMode {
     Run,
     /// Check every module of a package and run nothing ([`Vm::load_tests`]).
     Tests,
+}
+
+/// A program that was read and checked, not yet loaded.
+struct Checked {
+    sources: SourceMap,
+    program: Program,
+    warnings: Vec<Diagnostic>,
 }
 
 /// A `test` block of the loaded program ([`Vm::tests`]).
@@ -184,6 +194,7 @@ impl VmBuilder {
             host_fns: Vec::new(),
             host_consts: Vec::new(),
             modules: Vec::new(),
+            reload: None,
         }
     }
 }
@@ -210,6 +221,9 @@ pub struct Vm {
     /// The named host modules (`vm.module("physics")`) that have something registered, in the
     /// order they got it. The default `host` module always exists and is not listed.
     modules: Vec<String>,
+    /// Where the program came from and which files it was built from, for
+    /// [`Vm::reload_changed`]. Kept when a load fails, so that fixing the file loads it.
+    reload: Option<ReloadState>,
 }
 
 impl Default for Vm {
@@ -754,7 +768,12 @@ impl Vm {
     /// every file reached that way is checked together with it. A `colibri.toml` in the folder
     /// supplies the dependencies `import` may name.
     pub fn load_file(&mut self, path: impl AsRef<Path>) -> Result<(), Error> {
-        self.load_entry(&DiskFs, Entry::File(path.as_ref()), LoadMode::Run)
+        self.load_entry(
+            &DiskFs,
+            Entry::File(path.as_ref()),
+            LoadMode::Run,
+            Some(OwnedEntry::File(path.as_ref().to_path_buf())),
+        )
     }
 
     /// Reads, checks and runs the package in folder `dir`: its `colibri.toml` names it and lists
@@ -762,7 +781,12 @@ impl Vm {
     /// dependency order, then the top-level statements of `main.colibri` run). `fn main` is not
     /// called; use [`Vm::run_main`].
     pub fn load_package(&mut self, dir: impl AsRef<Path>) -> Result<(), Error> {
-        self.load_entry(&DiskFs, Entry::Package(dir.as_ref()), LoadMode::Run)
+        self.load_entry(
+            &DiskFs,
+            Entry::Package(dir.as_ref()),
+            LoadMode::Run,
+            Some(OwnedEntry::Package(dir.as_ref().to_path_buf())),
+        )
     }
 
     /// Reads and checks a program for running its tests, and runs nothing: not the module
@@ -778,7 +802,7 @@ impl Vm {
         } else {
             Entry::File(path)
         };
-        self.load_entry(&DiskFs, entry, LoadMode::Tests)
+        self.load_entry(&DiskFs, entry, LoadMode::Tests, None)
     }
 
     /// [`Vm::load_package`] for a folder, [`Vm::load_file`] for anything else: what
@@ -817,18 +841,34 @@ impl Vm {
         for (path, text) in files {
             fs.insert(path, *text);
         }
-        self.load_entry(&fs, Entry::File(Path::new(entry)), LoadMode::Run)
+        self.load_entry(&fs, Entry::File(Path::new(entry)), LoadMode::Run, None)
     }
 
+    /// `watch` is set for programs read from disk by `load_file` and `load_package`: it makes
+    /// the `Vm` remember the files, for [`Vm::reload_changed`].
     fn load_entry(
         &mut self,
         fs: &dyn SourceFs,
         entry: Entry<'_>,
         mode: LoadMode,
+        watch: Option<OwnedEntry>,
     ) -> Result<(), Error> {
         if self.program.is_some() {
             return Err(Error::AlreadyLoaded);
         }
+        let recorder = RecordingFs::new(fs);
+        let checked = self.check_entry(&recorder, entry, mode);
+        self.reload = watch.map(|owned| ReloadState::new(owned, recorder.into_reads()));
+        self.install(checked?, mode)
+    }
+
+    /// Reads and checks a program without touching the loaded one.
+    fn check_entry(
+        &self,
+        fs: &dyn SourceFs,
+        entry: Entry<'_>,
+        mode: LoadMode,
+    ) -> Result<Checked, Error> {
         let env = self.host_env()?;
         let mut sources = SourceMap::new();
         let options = colibri_check::package::LoadOptions {
@@ -858,14 +898,29 @@ impl Vm {
             diagnostics = checked.diagnostics;
             program = checked.program;
         }
-        let Some(program) = program else {
-            return Err(Error::Compile(Report {
+        match program {
+            Some(program) => Ok(Checked {
+                sources,
+                program,
+                warnings: diagnostics,
+            }),
+            None => Err(Error::Compile(Report {
                 sources,
                 diagnostics,
-            }));
-        };
+            })),
+        }
+    }
+
+    /// Makes a checked program the loaded one: runs the module initialisers and top-level
+    /// statements. The previous program must be gone already.
+    fn install(&mut self, checked: Checked, mode: LoadMode) -> Result<(), Error> {
+        let Checked {
+            sources,
+            program,
+            warnings,
+        } = checked;
         self.sources = Rc::new(sources);
-        self.warnings = diagnostics;
+        self.warnings = warnings;
         self.epoch += 1;
         self.interp.load(&program);
         self.install_host_fns(&program);
@@ -890,6 +945,153 @@ impl Vm {
                 Err(error)
             }
         }
+    }
+
+    // ---- hot reload ----
+
+    /// Notices source files that changed since the program was loaded (or last reloaded),
+    /// re-checks the whole program and puts the new code to work (DESIGN §16.3, ARCHITECTURE
+    /// §17). Only programs loaded with [`Vm::load_file`], [`Vm::load_package`] or
+    /// [`Vm::load_path`] have files to watch; for any other this returns
+    /// [`ReloadOutcome::Unchanged`]. Call it at a safe point: between ticks, between frames or
+    /// requests, never from inside a script call.
+    ///
+    /// * [`ReloadOutcome::Patched`]: only function bodies changed (same functions and
+    ///   signatures, same types, same module-level declarations and initialisers), so the new
+    ///   bodies replace the old ones and the next call uses them. Nothing is re-initialised,
+    ///   function handles stay valid, and a coroutine suspended in an old body keeps running
+    ///   it.
+    /// * [`ReloadOutcome::Restarted`]: anything else changed. If the old program defines
+    ///   `fn save_state() -> str` it is called first, and its text goes to the new program's
+    ///   `fn restore_state(s: str)` once the new program is initialised. Coroutines are
+    ///   cancelled, module values released, function handles and callbacks go stale (the epoch
+    ///   moves), and `main` is not called again: the host decides.
+    /// * [`ReloadOutcome::CheckFailed`]: the new sources do not check; the old program keeps
+    ///   running unchanged.
+    ///
+    /// `Err` is an I/O problem (a file vanished mid-save, so the next call tries again), a
+    /// panic in `save_state`, or a panic while the new program initialises or restores its
+    /// state. A failed `save_state` leaves the old program running; a panic in the new
+    /// program's initialisers leaves the `Vm` with no program, and the next edit loads again.
+    pub fn reload_changed(&mut self) -> Result<ReloadOutcome, Error> {
+        self.reload_changed_with(ReloadOptions::default())
+    }
+
+    /// [`Vm::reload_changed`] with options.
+    pub fn reload_changed_with(&mut self, options: ReloadOptions) -> Result<ReloadOutcome, Error> {
+        let Some(state) = self.reload.as_mut() else {
+            return Ok(ReloadOutcome::Unchanged);
+        };
+        if !state.poll_changed() {
+            return Ok(ReloadOutcome::Unchanged);
+        }
+        let owned = state.entry.clone();
+        let recorder = RecordingFs::new(&DiskFs);
+        let checked = match self.check_entry(&recorder, owned.as_entry(), LoadMode::Run) {
+            Ok(checked) => checked,
+            Err(Error::Compile(report)) => {
+                self.accept_reads(recorder);
+                return Ok(ReloadOutcome::CheckFailed(report));
+            }
+            // A file vanished mid-save, say: not accepted, so the next call tries again.
+            Err(e) => return Err(e),
+        };
+        self.accept_reads(recorder);
+        let fingerprint = Fingerprint::of(&checked.program);
+        let Some(old) = self.program.clone() else {
+            // The last load failed in its initialisers: nothing to patch.
+            return self.restart(
+                checked,
+                fingerprint,
+                "no program was running".to_string(),
+                None,
+            );
+        };
+        if self
+            .reload
+            .as_ref()
+            .is_some_and(|r| r.fingerprint.is_none())
+        {
+            let current = Fingerprint::of(&old);
+            if let Some(r) = self.reload.as_mut() {
+                r.fingerprint = Some(current);
+            }
+        }
+        let current = self
+            .reload
+            .as_ref()
+            .and_then(|r| r.fingerprint.clone())
+            .ok_or_else(|| Error::Internal("no fingerprint".to_string()))?;
+        let difference = current.declaration_difference(&fingerprint);
+        if options.force_restart || difference.is_some() {
+            let reason = match difference {
+                Some(what) if !options.force_restart => format!("{what} changed"),
+                _ => "a restart was asked for".to_string(),
+            };
+            return self.restart(checked, fingerprint, reason, Some(&old));
+        }
+        let functions = current.changed_bodies(&fingerprint);
+        // Swap in every body, also the unchanged ones: their spans point into the new sources.
+        self.interp.patch(&checked.program);
+        self.sources = Rc::new(checked.sources);
+        self.warnings = checked.warnings;
+        self.interp
+            .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
+        self.program = Some(Rc::new(checked.program));
+        if let Some(r) = self.reload.as_mut() {
+            r.fingerprint = Some(fingerprint);
+        }
+        self.interp.flush();
+        Ok(if functions == 0 {
+            ReloadOutcome::Unchanged
+        } else {
+            ReloadOutcome::Patched { functions }
+        })
+    }
+
+    /// Records what a reload attempt read as the new baseline.
+    fn accept_reads(&mut self, recorder: RecordingFs<'_>) {
+        if let Some(r) = self.reload.as_mut() {
+            r.set_files(recorder.into_reads());
+        }
+    }
+
+    fn restart(
+        &mut self,
+        checked: Checked,
+        fingerprint: Fingerprint,
+        reason: String,
+        old: Option<&Rc<Program>>,
+    ) -> Result<ReloadOutcome, Error> {
+        // The old program's state, before anything is torn down. A failure here keeps the old
+        // program running.
+        let saved = if old.is_some() {
+            match self.find_fn::<(), String>("save_state")? {
+                Some(save) => Some(save.call(self, ())?),
+                None => None,
+            }
+        } else {
+            None
+        };
+        self.teardown();
+        if let Some(r) = self.reload.as_mut() {
+            r.fingerprint = None;
+        }
+        self.install(checked, LoadMode::Run)?;
+        if let Some(r) = self.reload.as_mut() {
+            r.fingerprint = Some(fingerprint);
+        }
+        let mut state_carried = false;
+        if let Some(text) = saved
+            && let Some(restore) = self.find_fn::<(String,), ()>("restore_state")?
+        {
+            restore.call(self, (text,))?;
+            state_carried = true;
+        }
+        Ok(ReloadOutcome::Restarted {
+            reason,
+            state_carried,
+        })
     }
 
     /// Calls `fn main()` if the program defines it. A `main` that returns `Result[()]` and
@@ -976,6 +1178,36 @@ impl Vm {
             self.tick(dt)?;
             let Some(delay) = self.interp.next_wake(poll) else {
                 return self.collect_failure();
+            };
+            self.interp.clock_sleep(delay);
+        }
+    }
+
+    /// [`Vm::run_event_loop_polling`] for a program that is being reloaded: before every tick
+    /// `between_ticks` runs (the one safe point for [`Vm::reload_changed`]; it may also call
+    /// `main` again after a restart), and the loop never sleeps longer than `max_sleep`
+    /// seconds, so the hook is called often enough to notice an edit. The loop ends when no
+    /// coroutine is alive after the hook, or with the error of the hook or of a tick.
+    pub fn run_event_loop_watching(
+        &mut self,
+        poll: f64,
+        max_sleep: f64,
+        mut between_ticks: impl FnMut(&mut Vm) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let mut last = self.interp.clock_now();
+        loop {
+            between_ticks(self)?;
+            if self.interp.coroutine_count() == 0 {
+                return self.collect_failure();
+            }
+            let now = self.interp.clock_now();
+            let dt = (now - last).max(0.0);
+            last = now;
+            self.tick(dt)?;
+            let delay = match self.interp.next_wake(poll) {
+                Some(delay) => delay.min(max_sleep),
+                None if self.interp.coroutine_count() == 0 => return self.collect_failure(),
+                None => max_sleep,
             };
             self.interp.clock_sleep(delay);
         }
@@ -1144,6 +1376,11 @@ impl Vm {
     /// dropped; call it to see the effects (and the drop trace) at a chosen moment. The program
     /// is gone afterwards, and function handles with it.
     pub fn shutdown(&mut self) {
+        self.reload = None;
+        self.teardown();
+    }
+
+    fn teardown(&mut self) {
         self.interp.shutdown();
         self.interp.flush();
         if self.program.take().is_some() {
