@@ -1,0 +1,22 @@
+class Slot { co: Coroutine[()]? = none }
+
+fn quitter(slot: Slot) {
+    defer print("cleanup")
+    wait(1.0)
+    print("before")
+    let c = slot.co.expect("handle")
+    c.cancel()
+    print("not reached")
+}
+
+fn main() {
+    let slot = Slot {}
+    slot.co = some(go quitter(slot))
+    task.tick(1.0)
+    print("main {slot.co.expect("handle").done()}")
+}
+
+// A coroutine cancelling itself stops at once, running its defers.
+// expect: before
+// expect: cleanup
+// expect: main true

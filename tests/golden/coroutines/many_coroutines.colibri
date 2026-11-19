@@ -1,0 +1,22 @@
+class Counter { n: int = 0 }
+
+fn ticker(c: Counter, id: int) {
+    wait(1.0)
+    c.n += id
+    wait(1.0)
+    c.n += 1
+}
+
+fn main() {
+    let c = Counter {}
+    for i in 0..1000 {
+        go ticker(c, i)
+    }
+    task.tick(1.0)
+    print(c.n)
+    task.tick(1.0)
+    print(c.n)
+}
+
+// expect: 499500
+// expect: 500500

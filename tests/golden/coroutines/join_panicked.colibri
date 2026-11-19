@@ -1,0 +1,20 @@
+fn boom() {
+    wait(1.0)
+    panic("inner")
+}
+
+fn parent(c: Coroutine[()]) {
+    wait(1.0)
+    c.join()
+    print("not reached")
+}
+
+fn main() {
+    let c = go boom()
+    go parent(c)
+    task.tick(1.0)
+}
+
+// `boom` runs first and panics; `parent` joins it in the same tick and panics in turn. The
+// joined panic replaces the report of `boom`, which a joiner took over.
+// panic: the joined coroutine `boom` panicked: inner

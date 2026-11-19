@@ -113,6 +113,7 @@ impl Parser<'_> {
             | TokenKind::Bang
             | TokenKind::Tilde
             | TokenKind::Not
+            | TokenKind::Go
             | TokenKind::Fn
             | TokenKind::If
             | TokenKind::Match
@@ -294,6 +295,17 @@ impl Parser<'_> {
                         .with_hint("use `!` instead of `not`");
                 self.report(diag);
                 UnOp::Not
+            }
+            TokenKind::Go => {
+                self.bump();
+                let call = self.parse_unary()?;
+                if !matches!(call.kind, ExprKind::Call { .. }) {
+                    let diag =
+                        Diagnostic::error("`go` must be followed by a function call", call.span)
+                            .with_hint("write `go work(args)` to start a coroutine");
+                    self.report(diag);
+                }
+                return Ok(self.make_expr(start, ExprKind::Go(Box::new(call))));
             }
             TokenKind::DotDot | TokenKind::DotDotEq => {
                 let inclusive = self.bump().kind == TokenKind::DotDotEq;

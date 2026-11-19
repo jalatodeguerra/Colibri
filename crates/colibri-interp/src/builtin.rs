@@ -166,6 +166,9 @@ impl Interp {
             | Builtin::ErrorMessage
             | Builtin::ErrorContext
             | Builtin::ErrorCause => return self.optres_op(fiber, op, args, span),
+            Builtin::CoroutineCancel | Builtin::CoroutineDone | Builtin::CoroutineJoin => {
+                return self.coroutine_builtin(fiber, op, &recv, span);
+            }
             Builtin::SetNew => Value::Set(SetObj::new(OrderedMap::new())),
             Builtin::SetFromList => {
                 let Some(list) = list_of(&recv) else {

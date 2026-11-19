@@ -1,0 +1,34 @@
+class Actor { name: str }
+
+impl Actor {
+    fn act(self, times: int) {
+        for i in 0..times {
+            print("{self.name} acts {i}")
+            wait(1.0)
+        }
+    }
+}
+
+interface Speaker { fn speak(self) }
+impl Speaker for Actor {
+    fn speak(self) {
+        wait(0.5)
+        print("{self.name} speaks")
+    }
+}
+
+fn main() {
+    let a = Actor { name: "ann" }
+    go a.act(2)
+    let s: Speaker = a
+    go s.speak()
+    let f = fn(x: int) { print("closure {x}") }
+    go f(7)
+    go (fn() { print("literal") })()
+}
+
+// expect: ann acts 0
+// expect: closure 7
+// expect: literal
+// expect: ann speaks
+// expect: ann acts 1

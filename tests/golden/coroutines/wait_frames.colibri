@@ -1,0 +1,26 @@
+// A frame is one scheduler tick.
+fn counter() {
+    wait_frames(2)
+    print("after 2")
+    wait_frames(1)
+    print("after 3")
+    wait_frames(0)
+    print("after 4")
+}
+
+fn main() {
+    go counter()
+    for i in 1..=5 {
+        task.tick(0.0)
+        print("tick {i}")
+    }
+}
+
+// expect: tick 1
+// expect: after 2
+// expect: tick 2
+// expect: after 3
+// expect: tick 3
+// expect: after 4
+// expect: tick 4
+// expect: tick 5

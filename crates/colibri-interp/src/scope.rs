@@ -105,13 +105,17 @@ impl Interp {
     fn fold_cleanup_failure(&mut self, result: Eval, failure: Ctl) -> Eval {
         let failure = match failure {
             Ctl::Panic(info) => info,
-            Ctl::Cancel => Box::new(PanicInfo {
-                message: "cancelled".to_string(),
-                span: colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),
-                stack: Vec::new(),
-                notes: Vec::new(),
-                budget: false,
-            }),
+            // A coroutine cancelled while a `defer` was pausing: the cancellation continues,
+            // and a panic already on its way stays the panic.
+            Ctl::Cancel => {
+                return match result {
+                    Err(Ctl::Panic(_) | Ctl::Cancel) => result,
+                    other => {
+                        self.release_outcome(other);
+                        Err(Ctl::Cancel)
+                    }
+                };
+            }
             // The checker does not allow these in a `defer`; they carry nothing to keep.
             Ctl::Break(_, v) | Ctl::Return(v) => {
                 self.release(v);

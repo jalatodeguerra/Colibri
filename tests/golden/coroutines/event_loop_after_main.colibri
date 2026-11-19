@@ -1,0 +1,17 @@
+// After main returns the program keeps running until no coroutine is left.
+fn blink(n: int) {
+    for i in 0..n {
+        wait(1.0)
+        print("blink {i}")
+    }
+}
+
+fn main() {
+    go blink(3)
+    print("main done")
+}
+
+// expect: main done
+// expect: blink 0
+// expect: blink 1
+// expect: blink 2

@@ -1,0 +1,23 @@
+class Door { open: bool = false }
+
+fn watcher(d: Door) {
+    wait_until(fn() => d.open)
+    print("door opened")
+    wait_until(fn() => d.open)
+    print("still open: no pause when already true")
+}
+
+fn main() {
+    let d = Door {}
+    go watcher(d)
+    task.tick(0.1)
+    print("tick 1")
+    d.open = true
+    task.tick(0.1)
+    print("tick 2")
+}
+
+// expect: tick 1
+// expect: door opened
+// expect: still open: no pause when already true
+// expect: tick 2

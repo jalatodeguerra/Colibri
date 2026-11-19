@@ -1,0 +1,38 @@
+# Phase 2 implementation plan
+
+This file tracks how phase 2 is being built. DESIGN.md is the source of truth for the language;
+ARCHITECTURE.md records how things are built. When they disagree, DESIGN.md wins and this file
+is fixed.
+
+**Status (2026-11-19):** santiago redirected Colibri to be a general-purpose language rather than
+one aimed at game development. Phase 2 was planned as the game slice of DESIGN §17.5; the plan
+below is the proposed general-purpose replacement, pending his approval of the matching DESIGN
+changes (§1 goals, §14.2 wording, §15.1 vectors, §15.6 game kit as an optional package, §17.5
+roadmap). The game kit and the game milestone are paused.
+
+## PR sequence
+
+Each step is one or more small PRs. Every PR lands with golden tests and an ARCHITECTURE.md
+section ("as built") for the decisions it had to make.
+
+1. **Coroutines** (DESIGN §14.2, ARCHITECTURE §2): `go f(args)` and the `Coroutine[T]` handle
+   (`cancel`, `done`, `join`), `wait`, `wait_frames`, `wait_until`, `wait_real`, a per-`Vm`
+   scheduler driven by `vm.tick(dt)`, `task.tick(dt)` or the event loop `colibri run` runs after
+   `main`, and cancellation that unwinds through `defer`s and drops. Built: ARCHITECTURE §16.
+2. **`CoGroup`, `Signal` and `wait_for`** (DESIGN §14.2).
+3. **Scripting std**, moved up from phase 4: `args`, subprocesses, `datetime`, `regex`, and an
+   `http` client behind the `net` capability.
+4. **`colibri repl`** and startup time tuned for one-off scripts.
+5. **Hot reload** (DESIGN §16.3) for long-running programs and embedded scripts.
+6. **The leak detector** (DESIGN §11.5, Q9), built as trial deletion.
+7. **`@repr(C)` structs and the C FFI** (DESIGN §15.2, §15.3).
+8. **Milestone:** real automation scripts written in Colibri (a file organiser, a JSON/HTTP
+   report generator).
+
+Vector types (DESIGN §15.1) wait for santiago's choice: a std module, built-in types, or later.
+
+## Notes
+
+- GitHub Actions is blocked by a billing limit, so PRs are merged on local checks:
+  `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
+  `cargo test --workspace` on Linux.

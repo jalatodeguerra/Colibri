@@ -272,6 +272,13 @@ impl Writer<'_> {
                 self.out.push_str("])");
             }
             Value::Obj(obj) if obj.ty() == ERROR_TYPE => self.error(obj, depth),
+            Value::Obj(obj) if obj.ty() == colibri_check::types::COROUTINE_TYPE => {
+                let name = match obj.field(3) {
+                    Some(Value::Str(s)) => s.to_string(),
+                    _ => "?".to_string(),
+                };
+                self.out.push_str(&format!("<coroutine {name}>"));
+            }
             Value::Obj(obj) => self.object(obj, depth),
             Value::Weak(w) => match w.upgrade() {
                 Some(obj) => {
