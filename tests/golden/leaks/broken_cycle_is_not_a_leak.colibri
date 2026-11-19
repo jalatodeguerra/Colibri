@@ -1,0 +1,17 @@
+// A cycle that the program breaks before the end is freed like any other object.
+class Node {
+    name: str
+    next: Node? = none
+}
+
+fn main() {
+    let a = Node { name: "a" }
+    let b = Node { name: "b" }
+    a.next = some(b)
+    b.next = some(a)
+    b.next = none
+    print("broken")
+}
+
+// expect: broken
+// drops: a, b

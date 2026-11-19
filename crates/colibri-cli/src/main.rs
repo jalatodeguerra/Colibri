@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use colibri_lang::leakcmd::{self, LeakMode};
 use colibri_lang::on_big_stack;
 use colibri_runtime as colibri;
 
@@ -33,6 +34,10 @@ enum Command {
         /// start with a dash)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+        /// Run the leak detector when the program ends and report the reference cycles that
+        /// were never freed to stderr; `--leaks=error` also exits with 1 (ARCHITECTURE §18)
+        #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
+        leaks: Option<colibri_lang::leakcmd::LeakMode>,
     },
     /// Type-check a Colibri script or package without running it
     Check {
@@ -63,6 +68,9 @@ enum Command {
         /// Show what the tests print at once, not only for failing tests
         #[arg(long)]
         nocapture: bool,
+        /// Report the reference cycles each test leaks; `--leaks=error` fails the test
+        #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
+        leaks: Option<colibri_lang::leakcmd::LeakMode>,
     },
     /// Run the language server (LSP) on stdin and stdout
     Lsp,
@@ -103,22 +111,42 @@ fn check(file: &Path, interface_files: &[PathBuf]) -> Result<(), ExitCode> {
     }
 }
 
-fn run(file: &Path, args: Vec<String>) -> ExitCode {
+fn run(file: &Path, args: Vec<String>, leaks: Option<LeakMode>) -> ExitCode {
     if let Err(code) = check(file, &[]) {
         return code;
     }
     let color = io::stderr().is_terminal();
-    let mut vm = colibri_lang::build_vm(colibri_lang::vm_builder().allow_all(), args);
+    let mut vm = colibri_lang::build_vm(
+        colibri_lang::vm_builder()
+            .allow_all()
+            .track_leaks(leaks.is_some()),
+        args,
+    );
     // After `main`, coroutines keep running (timed by the real clock) until none is left.
     let outcome = vm
         .load_path(file)
         .and_then(|()| vm.run_main())
         .and_then(|()| vm.run_event_loop());
+    let code = exit_code(&mut vm, outcome, color);
+    // The program is over: coroutines are cancelled and module-level values released, so a
+    // cycle that is left is a leak.
+    let Some(mode) = leaks else { return code };
+    vm.shutdown();
+    let found = vm.find_leaks();
+    eprint!("{}", leakcmd::render(&found, mode, color));
+    if mode == LeakMode::Error && !found.is_empty() && code == ExitCode::SUCCESS {
+        return ExitCode::from(1);
+    }
+    code
+}
+
+/// The exit code of a finished run, printing its error.
+fn exit_code(vm: &mut colibri::Vm, outcome: Result<(), colibri::Error>, color: bool) -> ExitCode {
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         // `os.exit(n)` ends the program as a panic does; the code is what it asked for.
-        Err(colibri::Error::Panic { .. }) if colibri_std::exit_code(&mut vm).is_some() => {
-            ExitCode::from(colibri_std::exit_code(&mut vm).unwrap_or(1) as u8)
+        Err(colibri::Error::Panic { .. }) if colibri_std::exit_code(vm).is_some() => {
+            ExitCode::from(colibri_std::exit_code(vm).unwrap_or(1) as u8)
         }
         Err(e @ colibri::Error::Panic { .. }) => {
             eprint!("{}", e.render(color));
@@ -154,12 +182,17 @@ fn main() -> ExitCode {
                 Err(code) => code,
             }
         }
-        Command::Run { file, watch, args } => {
+        Command::Run {
+            file,
+            watch,
+            args,
+            leaks,
+        } => {
             let file = file.unwrap_or_else(|| PathBuf::from("."));
             if watch {
                 colibri_lang::watch::run(&file, args)
             } else {
-                run(&file, args)
+                run(&file, args, leaks)
             }
         }
         Command::Test {
@@ -167,11 +200,13 @@ fn main() -> ExitCode {
             filter,
             budget,
             nocapture,
+            leaks,
         } => colibri_lang::testcmd::run(&colibri_lang::testcmd::Options {
             path: file.unwrap_or_else(|| PathBuf::from(".")),
             filter,
             budget,
             nocapture,
+            leaks,
         }),
         Command::Fmt { paths, check } => colibri_lang::fmt::run(&paths, check),
         Command::Lsp => lsp(),

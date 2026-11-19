@@ -1,0 +1,18 @@
+// Two objects that point at each other are never freed: reference counting cannot see a
+// cycle. The detector finds them when the program ends.
+class Node {
+    name: str
+    next: Node? = none
+}
+
+fn main() {
+    let a = Node { name: "a" }
+    let b = Node { name: "b" }
+    a.next = some(b)
+    b.next = some(a)
+    print("built")
+}
+
+// expect: built
+// drops:
+// leaks: Node, Node

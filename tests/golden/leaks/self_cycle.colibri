@@ -1,0 +1,15 @@
+// An object that holds itself is a cycle of one.
+class Node {
+    name: str
+    me: Node? = none
+}
+
+fn main() {
+    let a = Node { name: "a" }
+    a.me = some(a)
+    print("built")
+}
+
+// expect: built
+// drops:
+// leaks: Node

@@ -1,0 +1,20 @@
+// Ten thousand objects in one ring: the detector is linear, so this stays quick.
+class Node {
+    id: int
+    next: Node? = none
+}
+
+fn main() {
+    let first = Node { id: 0 }
+    var last = first
+    for i in 1..10000 {
+        let n = Node { id: i }
+        last.next = some(n)
+        last = n
+    }
+    last.next = some(first)
+    print(last.id)
+}
+
+// expect: 9999
+// leaks: Node x10000

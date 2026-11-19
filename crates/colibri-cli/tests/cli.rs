@@ -584,3 +584,47 @@ fn a_panic_in_a_coroutine_after_main_exits_101() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("in coroutine") && err.contains("w"), "{err}");
 }
+
+const CYCLE: &str = "class Node {\n    name: str\n    next: Node? = none\n}\nfn main() {\n    let a = Node { name: \"a\" }\n    a.next = some(a)\n    print(\"ran\")\n}\n";
+
+#[test]
+fn run_without_leaks_flag_says_nothing_about_cycles() {
+    let path = temp_file("leak_off.colibri", CYCLE);
+    let out = colibri(&["run", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stderr.is_empty());
+}
+
+#[test]
+fn run_leaks_prints_a_warning_and_keeps_the_exit_code() {
+    let path = temp_file("leak_warn.colibri", CYCLE);
+    let out = colibri(&["run", "--leaks", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ran\n");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("warning: 1 leaked reference cycle"), "{err}");
+    assert!(
+        err.contains(r#"Node(name: "a") -> next -> Node(name: "a")"#),
+        "{err}"
+    );
+    assert!(err.contains("leak_warn.colibri:6"), "{err}");
+}
+
+#[test]
+fn run_leaks_error_exits_one() {
+    let path = temp_file("leak_error.colibri", CYCLE);
+    let out = colibri(&["run", "--leaks=error", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("error: 1 leaked reference cycle"));
+}
+
+#[test]
+fn run_leaks_is_quiet_when_nothing_leaks() {
+    let path = temp_file(
+        "leak_none.colibri",
+        "fn main() {\n    print(\"clean\")\n}\n",
+    );
+    let out = colibri(&["run", "--leaks=error", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stderr.is_empty());
+}

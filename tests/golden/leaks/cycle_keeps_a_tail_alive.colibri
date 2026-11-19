@@ -1,0 +1,21 @@
+// What a leaked cycle owns is leaked with it; the report counts it as retained.
+class Payload {
+    size: int
+}
+
+class Node {
+    name: str
+    next: Node? = none
+    payload: Payload
+}
+
+fn main() {
+    let a = Node { name: "a", payload: Payload { size: 1 } }
+    let b = Node { name: "b", payload: Payload { size: 2 } }
+    a.next = some(b)
+    b.next = some(a)
+    print(a.payload.size + b.payload.size)
+}
+
+// expect: 3
+// leaks: Node, Node

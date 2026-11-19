@@ -27,6 +27,7 @@ use crate::reload::{
     Fingerprint, OwnedEntry, RecordingFs, ReloadOptions, ReloadOutcome, ReloadState,
 };
 use crate::types::{TypeDesc, TypeRegistry};
+use colibri_interp::Leak;
 
 /// The default limit on nested Colibri calls (DESIGN §10.4 leaves the number open).
 pub const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
@@ -88,6 +89,7 @@ pub struct VmBuilder {
     max_call_depth: usize,
     native_stack_budget: usize,
     trace_drops: bool,
+    track_leaks: bool,
     caps: CapSet,
     instruction_budget: Option<u64>,
     coroutine_stack_size: Option<usize>,
@@ -116,6 +118,15 @@ impl VmBuilder {
     #[doc(hidden)]
     pub fn trace_drops(mut self, on: bool) -> Self {
         self.trace_drops = on;
+        self
+    }
+
+    /// Turns on the leak detector's registry: every class object and closure made from now on
+    /// is recorded (weakly, with where it was made) so that [`Vm::find_leaks`] can find
+    /// reference cycles that nothing reaches. Off by default; a `Vm` that does not track pays
+    /// one `Option` test per object made. See ARCHITECTURE §18.
+    pub fn track_leaks(mut self, on: bool) -> Self {
+        self.track_leaks = on;
         self
     }
 
@@ -171,6 +182,7 @@ impl VmBuilder {
         let mut interp = Box::new(Interp::new(out, self.max_call_depth));
         interp.set_native_stack_budget(self.native_stack_budget);
         interp.set_trace_drops(self.trace_drops);
+        interp.set_track_leaks(self.track_leaks);
         interp.set_instruction_budget(self.instruction_budget);
         if let Some(size) = self.coroutine_stack_size {
             interp.set_coroutine_stack_size(size);
@@ -245,6 +257,7 @@ impl Vm {
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
             trace_drops: false,
+            track_leaks: false,
             caps: CapSet::none(),
             instruction_budget: None,
             coroutine_stack_size: None,
@@ -1388,6 +1401,17 @@ impl Vm {
         }
         self.interp
             .set_owner((self.id, self.epoch), false, Rc::clone(&self.sources));
+    }
+
+    /// The reference cycles that nothing reaches: garbage that reference counting can never
+    /// free. Works at any moment: mid-run it finds the cycles that no frame, temporary,
+    /// global, suspended coroutine or host-held value reaches (a cycle that is still in use is
+    /// not reported); after [`Vm::shutdown`] (or at the end of `colibri run`) every cycle
+    /// that is left is a leak. `weak` references are not edges. It reports and frees nothing,
+    /// and finds only objects made while [`VmBuilder::track_leaks`] was on; without it the
+    /// result is empty. The cost is linear in the live objects. See ARCHITECTURE §18.
+    pub fn find_leaks(&self) -> Vec<Leak> {
+        self.interp.find_leaks()
     }
 
     /// The labels of the class objects destroyed so far, in order, when the `Vm` was built
