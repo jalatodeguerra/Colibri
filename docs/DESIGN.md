@@ -1,9 +1,9 @@
-# Noble Language Design
+# Colibri Language Design
 
-**Status:** Draft v0.2, for review. Nothing here is implemented yet.
+**Status:** Draft v0.3, for review. Nothing here is implemented yet.
 **Date:** 2026-11-19
 
-This document describes what Noble is, the decisions already agreed, the concrete proposals
+This document describes what Colibri is, the decisions already agreed, the concrete proposals
 that follow from them, and the open questions that still need a call. Every section is
 tagged with one of three markers:
 
@@ -11,17 +11,32 @@ tagged with one of three markers:
 - **[Proposed]**: a recommendation filling in details the brainstorm didn't cover. Review and push back.
 - **[Open]**: a real choice that needs a decision. Listed again in [§18 Open questions](#18-open-questions).
 
+### Changes in v0.3
+
+santiago renamed the language to **Colibri** (from the working name Leo, §17.2), revised three
+[Locked] decisions on 2026-11-19, and confirmed the reordered roadmap:
+
+- **The bytecode VM is the product** (§1, §16.2). It runs scripts, hot reload, embedding, the web
+  and shipped games: `colibri build` bundles the VM and the program's bytecode into one executable.
+  Native AOT via Cranelift is a **stretch goal**, started only if a profile of a real program
+  asks for it. There is no JIT.
+- **Plain reference counting is the memory model** (§11): value-type structs, refcounted
+  reference types and `weak`. Compiler elision of refcount operations is a later optimization;
+  `own` and `borrow` stay reserved words, and the ownership checker is not designed now.
+- **Game scripting and embedding come first**, general scripting second (§1). The embedding API
+  is built from phase 1, and the scripting-oriented std (`http`, `regex`, subprocesses) moves to
+  a later phase (§13.1, §17.5).
+
 ### Changes in v0.2
 
-v0.2 answers the advisor review on PR #1, and renames the language from its working name
-Leo to **Noble** (Q16). The main changes:
+v0.2 answers the advisor review on PR #1. The main changes:
 
 - **Memory safety** is now an explicit goal (§1), and the semantics that decide it are pinned
   down: a normative lifetime rule for drops (§11.2), places as copy-in/copy-out with a runtime
   guard (§11.6), tasks as isolates (§14.1), and one unwinding strategy for panics and
   cancellation (§10.4).
 - **Roadmap reordered** (§17.5): the first game runs on the interpreter, then the bytecode VM,
-  then Cranelift for shipping builds. The JIT is dropped. *(Pending santiago's decision.)*
+  then Cranelift for shipping builds. The JIT is dropped. *(Confirmed by santiago; refined in v0.3.)*
 - **Grammar rules** written down before the parser exists: newlines inside brackets and
   leading-dot chains (§3.2), brace ambiguities (§3.5), keywords (§3.3), and the capitalisation
   rule in patterns (§8.2).
@@ -44,7 +59,7 @@ Leo to **Noble** (Q16). The main changes:
 ## Table of contents
 
 1. [Goals and non-goals](#1-goals-and-non-goals)
-2. [Noble at a glance](#2-noble-at-a-glance)
+2. [Colibri at a glance](#2-colibri-at-a-glance)
 3. [Lexical structure and grammar rules](#3-lexical-structure-and-grammar-rules)
 4. [Bindings, mutability and module-level values](#4-bindings-mutability-and-module-level-values)
 5. [Types](#5-types)
@@ -67,48 +82,57 @@ Leo to **Noble** (Q16). The main changes:
 
 ## 1. Goals and non-goals
 
-### Goals [Locked]
+### Goals [Locked, revised 2026-11-19]
 
-- **Genuinely usable**, not a toy. Someone should be able to ship a small game or a real
-  automation script in Noble.
+- **Genuinely usable**, not a toy. Someone should be able to ship a small game, script a Rust
+  game engine, or write a real automation script in Colibri.
 - **Simple syntax**, in the spirit of Go and Python, with braces. Small keyword set, one
   obvious way to do common things.
 - **Static types with inference.** Errors are caught before the program runs, but day-to-day
   code rarely needs type annotations inside function bodies.
-- **Two target domains:** scripting, and game development.
-- **Two run modes from one language:** a fast-starting interpreter/VM for scripts and hot
-  reload, and native builds via Cranelift. *(v0.2 drops the planned JIT; see §17.5.)*
-- **Predictable memory without a tracing GC:** reference counting by default, with the compiler
-  removing most of the counting overhead.
-- **Embeddable** in Rust game engines, and **easy C interop**.
+- **Target domains, in priority order:** (1) **game scripting**, both standalone games and
+  scripts **embedded in Rust engines**; (2) **general scripting**. When the two pull in
+  different directions, games and embedding win.
+- **The bytecode VM is the product.** One engine runs scripts (`colibri run`), hot reload,
+  embedding, the web and shipped games (`colibri build` bundles the VM with the program's
+  bytecode). Native AOT via Cranelift is a **stretch goal**, built only if a profile of a real
+  program shows the VM can't meet a target in §17.4. No JIT.
+- **Predictable memory without a tracing GC: plain reference counting**, with value-type
+  structs, refcounted reference types and `weak` references for cycles. Compiler elision of
+  refcount operations is a later optimization that may not change meaning; `own` and `borrow`
+  are reserved words, and the ownership checker is not designed now.
+- **Embeddable** in Rust game engines as a first-class use from phase 1, and **easy C interop**.
 
 ### Goals [Proposed]
 
-- **Memory safe outside `unsafe` and FFI.** A Noble program that uses no `unsafe` block and no
+- **Memory safe outside `unsafe` and FFI.** A Colibri program that uses no `unsafe` block and no
   `extern` declaration cannot read freed memory, write out of bounds, or race on memory. Every
   feature in this document (places, `borrow`, drop timing, thread sends, coroutines) is designed
   against this rule; where static checking is impractical, a runtime check panics instead.
-- **The same program means the same thing in every mode.** `noble run`, the VM and `noble build`
-  agree on results, panics and drop order. Only speed differs.
+- **The same program means the same thing in every mode.** The interpreter, the VM (standalone,
+  embedded or on the web) and native code, if it is ever built, agree on results, panics and drop
+  order. Only speed differs.
 
 ### Non-goals
 
 - Audio-plugin / hard-real-time DSP as a first-class target (explicitly dropped).
-- `async`/`await` (Noble uses uncolored tasks and coroutines instead, §14).
+- `async`/`await` (Colibri uses uncolored tasks and coroutines instead, §14).
 - Inheritance, exceptions, macros, compile-time metaprogramming, and user-defined
   **arithmetic** operators in v1. (`==` and `<` are user-definable through `Eq` and `Ord`;
   arithmetic on structs through interfaces is planned after phase 1, Q12.)
 - Competing with Rust or C++ on peak performance. "Fast enough for a 2D/3D indie game and
   much faster than Python" is the bar (numbers in §17.4).
-- A JIT, and M:N task scheduling, in v1.
+- A JIT, at any point; M:N task scheduling in v1.
+- Committing to native AOT or an ownership checker in v1. Both are stretch goals.
 - A package registry in v1.
 
 ### Design principles [Proposed]
 
 1. **Readable by a Python or Go programmer on day one.** If a feature needs a paragraph to
    explain, it needs a strong reason to exist.
-2. **Performance is opt-in, never required.** Plain code is correct and reasonably fast;
-   `own`/`borrow`, C-layout structs and SIMD exist for the hot 5%. An annotation in a library
+2. **Performance is opt-in, never required.** Plain code is correct and reasonably fast. For the
+   hot 5% the tools today are C-layout structs and moving hot code into Rust through the
+   embedding API (§15.4); `own`/`borrow` are reserved for later. An annotation in a library
    never causes an error in a caller that didn't opt in.
 3. **The optimizer must not change meaning.** Refcount elision, moves and backend choice are
    invisible to programs except through speed. Where an optimization *could* be observed (for
@@ -117,9 +141,9 @@ Leo to **Noble** (Q16). The main changes:
 
 ---
 
-## 2. Noble at a glance
+## 2. Colibri at a glance
 
-```noble
+```colibri
 import math
 import fs
 
@@ -172,7 +196,7 @@ fn main() {
 
 ### 3.1 Source files [Proposed]
 
-- UTF-8, extension `.noble` (§17.2 has the naming details).
+- UTF-8, extension `.colibri` (§17.2 has the naming details).
 - Comments: `// line` and `/* block */` (nestable). Doc comments: `///`.
 
 ### 3.2 Statement termination [Proposed]
@@ -189,7 +213,7 @@ is Go's, plus two fixes for Go's most common "why doesn't this parse" moments:
 3. **A line that starts with `.`, `or`, `&&`, `||` or `else` continues the previous
    statement**, so leading-dot method chains work:
 
-```noble
+```colibri
 let total = price * qty +
             shipping                        // rule 1: line ended with `+`
 
@@ -203,7 +227,7 @@ draw_text(
 )
 ```
 
-Semicolons are allowed to put several statements on one line, and `noble fmt` removes them
+Semicolons are allowed to put several statements on one line, and `colibri fmt` removes them
 otherwise.
 
 ### 3.3 Keywords [Proposed]
@@ -268,13 +292,13 @@ Written down now so the parser has one rule for each:
 attributes: `@repr(C)` (§15.2), `@link("lib")` (§15.3), `@deprecated("msg")`, `@inline`, and
 `@when(cond)` for conditional compilation:
 
-```noble
+```colibri
 @when(os == "windows")
 @link("user32")
 extern "C" { fn MessageBoxA(...) -> i32 }
 ```
 
-`@when` conditions can test `os`, `arch`, `debug`, and feature flags from `noble.toml`. User-defined
+`@when` conditions can test `os`, `arch`, `debug`, and feature flags from `colibri.toml`. User-defined
 attributes are not part of v1.
 
 ---
@@ -283,7 +307,7 @@ attributes are not part of v1.
 
 ### 4.1 Local bindings [Proposed]
 
-```noble
+```colibri
 let x = 10        // immutable binding
 var y = 20        // mutable binding
 y += 1
@@ -299,7 +323,7 @@ const MAX_HP = 100   // compile-time constant, module level or local
 
 ### 4.2 Module-level values [Proposed]
 
-```noble
+```colibri
 const GRAVITY = 9.81                  // compile-time constant
 let config = load_defaults()          // initialised once, immutable binding
 var score = 0                         // mutable module state
@@ -342,13 +366,13 @@ var score = 0                         // mutable module state
 Everything else is explicit: between integer widths, from integer to float, and assigning a
 `float` to an `f32` (`f32(x)`). Untyped literals (§3.4) adapt without a conversion.
 
-**Overflow traps in every mode** (`noble run`, the VM and `noble build --release`), as in Swift, so
+**Overflow traps in every mode** (interpreter, VM, and native code if it is ever built), as in Swift, so
 a program can't compute something different once built. `wrapping_add`, `wrapping_mul`,
 `checked_add` (returns `Option`) and `saturating_add` exist for hashes, RNGs and fixed-point
 code (Q6).
 
 **Integer division truncates toward zero**: `7 / 2` is `3`, not `3.5`. This will surprise
-Python users, so the docs say it loudly and `noble check` hints when an integer division result
+Python users, so the docs say it loudly and `colibri check` hints when an integer division result
 flows into a `float`. `%` takes the sign of the dividend (`-7 % 3 == -1`), as in C, Go and
 Rust; `math.floor_div` and `math.floor_mod` give Python's behaviour. Integer division by zero
 panics; float division follows IEEE 754.
@@ -360,7 +384,7 @@ panics; float division follows IEEE 754.
 | `List[T]` | growable array, literal `[a, b]` |
 | `Map[K, V]` | hash map, insertion-ordered, literal `{k: v}` |
 | `Set[T]` | hash set, insertion-ordered |
-| `T?` / `Option[T]` | `some(x)` or `none`; Noble has **no null**. `T?` is sugar for `Option[T]` (Q2) |
+| `T?` / `Option[T]` | `some(x)` or `none`; Colibri has **no null**. `T?` is sugar for `Option[T]` (Q2) |
 | `Result[T]`, `Result[T, E]` | §10 |
 | `(A, B)` | tuple, a value type; `let (a, b) = f()` destructures |
 | `Range[T]` | `a..b`, `a..=b`; iterable, usable in patterns and slicing |
@@ -410,7 +434,7 @@ Go. Consequences, written down:
 There is **one rule for bodies** (Q4, Q4b): a `{ }` body is a statement block and uses
 `return`; an expression body is written with `=>`, the token `match` arms already use.
 
-```noble
+```colibri
 fn add(a: int, b: int) -> int {
     return a + b
 }
@@ -438,7 +462,7 @@ log("disk full", level: "warn")              // named argument
 
 ### 6.2 Closures [Proposed]
 
-```noble
+```colibri
 let double = fn(x: int) -> int => x * 2
 let evens = nums.filter(fn(n) => n % 2 == 0)      // types inferred from `filter`
 button.on_click(fn() {                             // block body: uses `return` if needed
@@ -458,13 +482,13 @@ button.on_click(fn() {                             // block body: uses `return` 
   (`button.on_click(fn() { self.count += 1 })` leaks when `self` owns `button`). A capture list
   makes a capture weak; inside the closure the name has type `T?`:
 
-  ```noble
+  ```colibri
   self.button.on_click(fn() use(weak self) {
       if let some(me) = self { me.count += 1 }
   })
   ```
 
-  Exact spelling is Q19. The leak detector (§11.5) is on by default in `noble run` and points at
+  Exact spelling is Q19. The leak detector (§11.5) is on by default in `colibri run` and points at
   closures that close a cycle.
 
 ### 6.3 Loops and iteration [Proposed]
@@ -484,12 +508,12 @@ button.on_click(fn() {                             // block body: uses `return` 
 ## 7. Structs, classes and methods
 
 The brainstorm locked "structs are value types (copied)". Games and scripts also need shared,
-mutable objects with identity (a scene node, an entity referenced from several places), so Noble
+mutable objects with identity (a scene node, an entity referenced from several places), so Colibri
 has two kinds of user-defined record type (Q3 option (a)).
 
 ### 7.1 `struct`: value types [Locked semantics, Proposed syntax]
 
-```noble
+```colibri
 struct Vec2i {
     x: int
     y: int
@@ -514,7 +538,7 @@ b.x = 10                       // `a` is unchanged
 
 ### 7.2 `class`: reference types [Proposed]
 
-```noble
+```colibri
 class Node {
     name: str
     children: List[Node] = []
@@ -535,7 +559,7 @@ root.children.push(child)          // root and the list share `child`
 
 Methods are declared in `impl` blocks, separate from the data:
 
-```noble
+```colibri
 impl Particle {
     fn new(pos: vec2) -> Particle => Particle { pos: pos, vel: vec2(0, 0) }   // static
 
@@ -568,7 +592,7 @@ unless implemented.
 
 ### 7.5 Type descriptors, serialization and reflection [Proposed]
 
-Noble has no macros, but save games, configs and level data need `json.decode[Player](text)`.
+Colibri has no macros, but save games, configs and level data need `json.decode[Player](text)`.
 The compiler emits a **type descriptor** for every type (name, fields with types and defaults,
 variants, attributes). The same descriptors serve several features, so they're built once:
 
@@ -587,7 +611,7 @@ variants, attributes). The same descriptors serve several features, so they're b
 
 Enums are tagged unions; variants may carry data:
 
-```noble
+```colibri
 enum Shape {
     Circle(radius: float)
     Rect(w: float, h: float)
@@ -601,7 +625,7 @@ Enums are value types. `Option[T]` and `Result[T, E]` are ordinary enums from th
 
 ### 8.2 `match` [Proposed]
 
-```noble
+```colibri
 fn area(s: Shape) -> float {
     return match s {
         Circle(r)    => math.PI * r * r
@@ -638,7 +662,7 @@ match cmd {
 
 ### 9.1 Generics [Locked syntax, Proposed details]
 
-```noble
+```colibri
 fn max[T: Ord](a: T, b: T) -> T => if a > b { a } else { b }
 
 struct Pair[A, B] {
@@ -665,7 +689,7 @@ enum Tree[T] {
 
 ### 9.2 Interfaces [Proposed]
 
-```noble
+```colibri
 interface Shape {
     fn area(self) -> float
     fn name(self) -> str => "shape"              // default method
@@ -703,7 +727,7 @@ fn print_area[T: Shape](s: T) {                 // static dispatch
 - Built-in interfaces in the prelude: `Eq`, `Ord`, `Hash`, `Show` (used by interpolation and
   `print`), `Clone`, `Iter[T]`, `Iterable[T]`, `IntoError` (§10), `Drop`.
 - **`Drop` is limited to `class` types and host handles.** A copyable value type with a
-  destructor would run it once per copy, which is the C++ copy-constructor problem Noble otherwise
+  destructor would run it once per copy, which is the C++ copy-constructor problem Colibri otherwise
   avoids. Structs that own a resource hold it in a class field.
 - Orphan rule: `impl I for T` must live in the package of `I` or of `T`.
 
@@ -719,7 +743,7 @@ fn print_area[T: Shape](s: T) {                 // static dispatch
 - `Result[T]` is shorthand for `Result[T, Error]`, where `Error` is a built-in type. Any type
   implementing `IntoError` converts to it with `?`.
 
-```noble
+```colibri
 enum ParseError {
     UnexpectedEof
     BadToken(line: int, text: str)
@@ -740,7 +764,7 @@ fn run(path: str) -> Result[()] {         // default error type
 
 `Error` keeps the **original typed value**, so a caller can still tell errors apart after `?`:
 
-```noble
+```colibri
 match load_level(path) {
     ok(level) => play(level)
     err(e) if e.is[fs.Error]() => match e.as[fs.Error]().expect("checked") {
@@ -762,7 +786,7 @@ let text = fs.read(path).context("loading level {path}")?   // wrap with context
 
 ### 10.3 Handling forms [Locked, Proposed details]
 
-```noble
+```colibri
 let cfg = load_config()?                              // propagate
 let cfg = load_config() or Config.default()           // fallback value
 let cfg = load_config().expect("config is required")  // panic with message
@@ -778,7 +802,7 @@ match load_config() {
   closure, so `return`, `break` and `continue` inside it act on the enclosing function or loop.
   The block must yield a value or diverge:
 
-  ```noble
+  ```colibri
   let cfg = load_config() or |e| { log("bad config: {e}"); return }
 
   for path in paths {
@@ -804,33 +828,34 @@ Some failures aren't recoverable values: out-of-bounds index, integer overflow, 
 `err`, integer division by zero, a failed mutation guard (§11.6). These **panic**: print a message
 and stack trace and abort the current program, or the current task (surfacing as an `err` from
 its join, §14.1), or, when embedded, return an `Err` to the host without crashing the host
-process. Panics cannot be caught in Noble code.
+process. Panics cannot be caught in Colibri code.
 
 **Unwinding.** A panic, a coroutine cancellation (§14.2) and a hot-reload restart all abandon a
 stack. All three must release every local on it and run every `defer`, or they leak and leave
 `Drop` resources open. The strategy, identical in every engine:
 
-- **Interpreter and VM:** walk the Noble stack, which is a heap object, running cleanups.
-- **Cranelift native code:** panics and cancellation are a **hidden error return**. Every call
+- **Interpreter and VM:** walk the Colibri stack, which is a heap object, running cleanups.
+- **Native code (only if the AOT stretch goal is built):** panics and cancellation are a **hidden error return**. Every call
   that can panic returns a flag the caller checks; on the slow path the caller runs its cleanups
   (drops and `defer`s) and returns the flag upward. No unwind tables or landing pads are needed,
   it works the same on every platform Cranelift targets, and coroutine cancellation reuses the
   same paths. The cost is one predictable branch after calls that can panic; calls proven not to
   panic skip it.
-- Rust panics in host functions are caught at the boundary and turned into Noble panics; Noble panics
+- Rust panics in host functions are caught at the boundary and turned into Colibri panics; Colibri panics
   never unwind through Rust or C frames.
 
 ---
 
 ## 11. Memory model
 
-[Locked] Hybrid: reference counting by default; the compiler infers moves and borrows to
-elide refcount operations; structs are value types; optional `own`/`borrow` for hot code;
-`weak` references for cycles. Ship plain RC first; add optimizations later without changing
-user code.
+[Locked, revised 2026-11-19] **Plain reference counting is the model.** Structs are value types;
+`str`, collections, classes and closures are refcounted; `weak` references break cycles; objects
+are freed deterministically when their last owner goes. Compiler elision of refcount operations
+(§11.3) is a later optimization that must not change meaning, and `own`/`borrow` (§11.4) are
+reserved words with no checker designed now.
 
 [Proposed] Everything in this section is designed against the memory-safety goal in §1: safe
-code cannot observe freed memory, whatever the optimizer does.
+code cannot observe freed memory, whatever a later optimizer does.
 
 ### 11.1 What is reference counted
 
@@ -854,22 +879,23 @@ rule is the language semantics**, in every engine and phase:
 - A binding owns its value **until the end of its scope**. Bindings are dropped in reverse
   declaration order. Temporaries are dropped at the end of the statement that created them.
 - Ownership leaves a binding only by an explicit transfer: a `return`, a store into a field,
-  collection or captured cell, a send to another task, or passing to an `own` parameter
-  (§11.4).
+  collection or captured cell, or a send to another task.
 - `Drop` hooks therefore run at a predictable point, which is what makes deterministic
   destruction useful for games (textures, sounds and file handles are released when the last
   owner goes).
 
-The optimizer may remove increment/decrement pairs and reuse memory, but it may only shorten a
+A future optimizer (§11.3) may remove increment/decrement pairs and reuse memory, but it may only shorten a
 lifetime when **nothing can observe it**: no `Drop` anywhere in the type, and the object provably
 has no weak references and no derived raw pointers.
 
 The phase 1 interpreter is built to exactly this rule, and drop-order cases are part of the
 golden tests (§17.3), so later engines and optimizations are checked against it.
 
-### 11.3 Phase 2: compiler-inferred elision [Locked intent, Proposed approach]
+### 11.3 Later: compiler-inferred elision [Proposed, not scheduled]
 
-The compiler eliminates most counting without user annotations, within the rule above:
+Not part of the v1 plan (§17.5). It is listed so the IR and runtime don't close the door on it.
+Each pass is built only when profiles of real programs ask for it, and must obey §11.2. The
+known techniques, all within that rule:
 
 1. **Borrowed parameters** (Lobster, Swift's `guaranteed` convention). By default a function
    *borrows* its reference parameters: the caller keeps the reference alive, the callee does
@@ -885,36 +911,22 @@ The compiler eliminates most counting without user annotations, within the rule 
 5. **Struct copy elision.** A struct passed to a read-only parameter is passed by pointer;
    it is only physically copied when the callee or the caller could observe a difference.
 
-### 11.4 `own` and `borrow` [Locked keywords, Proposed semantics]
+### 11.4 `own` and `borrow` [Locked: reserved words only]
 
-Optional parameter annotations for hot code. Both keywords are reserved now; the checker that
-enforces them is built late (phase 4, §17.5), when profiles from the demo game show where they
-matter.
+`own` and `borrow` are reserved keywords now, so adding them later is not a breaking change.
+Their semantics and the checker are **not designed now**. Any future design must respect three
+constraints from the review on PR #1:
 
-```noble
-fn consume(own buf: List[u8]) { ... }         // callee takes ownership
-fn inspect(borrow mesh: Mesh) -> int { ... }  // guaranteed zero RC traffic; cannot store `mesh`
-
-let data = load()
-consume(data)          // last use: ownership moves, no RC traffic
-print(data.len())      // also fine: the compiler keeps a reference for this use instead
-```
-
-- **`own` never causes an error in the caller.** If the caller uses the value again, the
-  compiler simply keeps a reference (one increment). A script author who never opted into
-  ownership never gets move errors because a library author wrote `own`. A lint
-  (`@warn(implicit_copy)`) reports these extra references for hot code. No `move` keyword is
-  needed (Q8).
-- **`borrow` on a parameter:** the callee may not store, return or capture the value in an
-  escaping closure. Violations are compile errors in the callee, with a hint.
-- **No local `borrow let` in v1.** "Valid while the source is alive and unmodified" can't be
-  checked lexically when classes and collections alias freely. Parameter-level `borrow` is
-  simple and sufficient.
+- **`own` never causes an error in the caller.** If the caller uses a value again after passing
+  it to an `own` parameter, the compiler keeps a reference instead of reporting a move error.
+  No `move` keyword.
+- **`borrow` is parameter-level only** (the callee may not store, return or capture the value).
+  No local `borrow let`, which can't be checked when classes and collections alias freely.
 - Code without annotations is always valid; annotations only *add* guarantees.
 
 ### 11.5 Cycles and `weak` [Locked]
 
-RC can't free cycles. Noble's stance:
+RC can't free cycles. Colibri's stance:
 
 - **`weak T` reads directly as `T?`**, with no `.get()` call, the way Swift's weak variables
   do: `if let some(p) = node.parent { ... }`. Assigning a `T` to a `weak T` field stores a weak
@@ -924,7 +936,7 @@ RC can't free cycles. Noble's stance:
 - Known cycle sources the docs call out: parent/child links, callbacks capturing their owner,
   and **suspended coroutines**, whose stacks hold strong references to their arguments and
   locals (§14.2).
-- **Leak detector**, on by default in `noble run` and available as `noble run --leaks` elsewhere:
+- **Leak detector**, on by default in `colibri run` and available as `colibri run --leaks` elsewhere:
   on exit, and on demand via `mem.report_cycles()`, it reports objects kept alive only by cycles,
   with allocation sites. It is built as **trial deletion** (Python-style), which is a cycle
   collector that reports instead of freeing.
@@ -938,7 +950,7 @@ Because structs are values, `list[i].hp -= 1` must update the element, not a cop
 field access and `for var x in list` therefore produce **places** when used on the left of an
 assignment, with a compound assignment, or as a `var self` receiver:
 
-```noble
+```colibri
 for var e in enemies {     // `e` is a place in the list
     e.hp -= 1
 }
@@ -955,7 +967,7 @@ mutated in place" counter set. Anything that would resize, reorder or remove fro
 collection during that time **panics** with a clear message ("enemies modified while an element
 is being updated"):
 
-```noble
+```colibri
 for var e in enemies {
     e.hp -= 1
     if e.hp < 10 { enemies.push(minion_at(e.pos)) }   // panics: push while `e` is live
@@ -1003,8 +1015,8 @@ reference-typed objects. See §14.1.
 folder is one package**, like Go. The folder layout *is* the module tree: there are no header
 files and no `mod` declarations.
 
-```noble
-// game/player.noble
+```colibri
+// game/player.colibri
 pub struct Player {
     pub name: str
     hp: i32                  // package-visible, not exported
@@ -1013,8 +1025,8 @@ pub struct Player {
 pub fn spawn(name: str) -> Player { ... }
 ```
 
-```noble
-// main.noble
+```colibri
+// main.colibri
 import game.player                 // use as `player.spawn(...)`
 import game.enemy as foe           // rename
 import rapier.{World, Body}        // bring names in directly
@@ -1022,7 +1034,7 @@ import rapier.{World, Body}        // bring names in directly
 let p = player.spawn("Ana")
 ```
 
-- **Files are namespaces; packages are the unit of checking and visibility.** `game/player.noble`
+- **Files are namespaces; packages are the unit of checking and visibility.** `game/player.colibri`
   is the module `game.player`, and its names are written `player.spawn`. But a package is
   type-checked as one unit, as in Go:
   - **Import cycles are allowed between files of the same package** and forbidden only between
@@ -1033,40 +1045,41 @@ let p = player.spawn("Ana")
     the same package. `pub` means exported from the package. So a three-file game needs no `pub`
     at all, and a library marks only its API. A struct with any non-exported field can only be
     constructed inside its package (use a `pub fn` constructor elsewhere).
-- **Name resolution.** `import math` could match a local `math.noble`, the standard `math`, or a
+- **Name resolution.** `import math` could match a local `math.colibri`, the standard `math`, or a
   dependency named `math`. Ambiguity is an error with the candidates listed; rename with
   `import std.math` or `as`.
-- **Dependencies are listed in `noble.toml`** and the `noble` tool fetches them (git URLs or local
-  paths in v1, a registry later). Resolved versions are pinned in **`noble.lock`**. Rust crate
+- **Dependencies are listed in `colibri.toml`** and the `colibri` tool fetches them (git URLs or local
+  paths in v1, a registry later). Resolved versions are pinned in **`colibri.lock`**. Rust crate
   bindings (§15.5) and capabilities (§15.3) are declared in the same file.
-- **Scripts need no `noble.toml`.** `noble run script.noble` treats the script's folder as an
-  implicit package, so a script can `import helpers` from `helpers.noble` next to it.
+- **Scripts need no `colibri.toml`.** `colibri run script.colibri` treats the script's folder as an
+  implicit package, so a script can `import helpers` from `helpers.colibri` next to it.
 - **Top-level statements are allowed only in the entry file of a script** (Q15). Imported modules
-  hold declarations only. In a package with `noble.toml`, execution starts at `fn main()`.
+  hold declarations only. In a package with `colibri.toml`, execution starts at `fn main()`.
 
-### 13.1 Standard library v1 [Proposed]
+### 13.1 Standard library [Proposed]
 
-`io`, `fs`, `path`, `os` (env, process, **subprocesses with pipes**), `args` (CLI argument
-parsing), `math`, `rand`, `time` and `datetime`, `json` (with `encode`/`decode[T]`, §7.5),
-`regex`, `http` (a blocking HTTP client), `str` helpers, `collections`, `task` (§14), `mem`,
-`reflect`, `test`.
+Built in two steps, following the domain priority in §1:
 
-`regex`, `http`, `datetime` and subprocesses are what people reach for Python to do, and with a
-Rust runtime they are thin wrappers over existing crates, so they are in the first std rather
-than "later". An HTTP server and sockets come later.
+- **Core (phases 1–2):** `io`, `fs`, `path`, `os` (env, process exit), `math`, `rand`, `time`,
+  `json` (with `encode`/`decode[T]`, §7.5), `str` helpers, `collections`, `task` (§14), `mem`,
+  `reflect`, `test`, and the game kit (§15.6).
+- **Scripting (phase 4):** `regex`, `http` (a blocking HTTP client), subprocesses with pipes,
+  `datetime`, and `args` (CLI argument parsing). These are what people reach for Python to do;
+  with a Rust runtime they are thin wrappers over existing crates. An HTTP server and sockets
+  come later still.
 
 ---
 
 ## 14. Concurrency: tasks and coroutines
 
-[Proposed, approved for the doc 2026-11-18, refined in v0.2] Noble has **no `async`/`await` and no
+[Proposed, approved for the doc 2026-11-18, refined in v0.2] Colibri has **no `async`/`await` and no
 function coloring**. Any function can pause, so libraries never split into sync and async
 versions. There are two tools: **thread tasks** for parallel work such as loading and heavy
 computation, and **coroutines** for game logic that runs over many frames on the current thread.
 
 ### 14.1 Thread tasks are isolates
 
-```noble
+```colibri
 // background work
 let t = task.run(fn() => load_level("lvl2.json"))   // runs on the runtime's worker pool
 // ... keep rendering the loading screen with t.done() ...
@@ -1121,7 +1134,7 @@ JS workers): each task owns its own object graph.
 
 ### 14.2 Coroutines for game logic
 
-```noble
+```colibri
 fn door_open(door: Door) {
     door.play("creak")
     wait(0.5)                                  // resume half a second later
@@ -1160,24 +1173,24 @@ becoming hand-written state machines.
   (`tick(0)`) and slow motion (`tick(dt * 0.5)`) apply to coroutines. `wait_real(seconds)` uses
   wall time for menus.
 - **The game loop resumes coroutines each frame.** The runtime has a per-thread coroutine
-  scheduler, and the host drives it: a Noble game calls `task.tick(dt)` once per frame (the built-in
-  game kit does it for you, §15.6), and an engine embedding Noble calls `vm.tick(dt)` (§15.4).
+  scheduler, and the host drives it: a Colibri game calls `task.tick(dt)` once per frame (the built-in
+  game kit does it for you, §15.6), and an engine embedding Colibri calls `vm.tick(dt)` (§15.4).
   Coroutines never run in parallel with each other, so they share `class` objects freely without
   locks.
 - Any function can be called from a coroutine and may itself call `wait`; there is no special
   coroutine function type. Calling `wait` outside a coroutine panics with a clear message.
-- **No suspending across a host frame.** If a host (Rust or C) function calls back into Noble and
-  that Noble code tries to `wait`, it panics: the host's stack frame can't be suspended.
+- **No suspending across a host frame.** If a host (Rust or C) function calls back into Colibri and
+  that Colibri code tries to `wait`, it panics: the host's stack frame can't be suspended.
 - **Cancellation** stops the coroutine at its current pause point and unwinds it (§10.4),
   running its `defer`s and drops, so cleanup still runs.
 
 ### 14.3 Implementation notes
 
 - Uncolored functions require **stackful** coroutines.
-- **Interpreter and VM:** the Noble stack is a heap object, so coroutine stacks are naturally
+- **Interpreter and VM:** the Colibri stack is a heap object, so coroutine stacks are naturally
   growable and cheap.
-- **Native code:** coroutines get **fixed-size stacks with guard pages and lazily committed
-  memory** (for example 256 KB of address space each, committed as touched). Compiled Noble and
+- **Native code (only if the AOT stretch goal is built):** coroutines get **fixed-size stacks with guard pages and lazily committed
+  memory** (for example 256 KB of address space each, committed as touched). Compiled Colibri and
   C both run directly on the coroutine's stack, so raylib calls don't need a stack switch (the
   reason Go's cgo is slow). Games have hundreds or thousands of coroutines, not millions, so the
   address space is fine. Context switching uses an existing crate such as `corosensei` on the
@@ -1207,7 +1220,7 @@ becoming hand-written state machines.
 
 ### 15.2 C-layout structs [Locked, Proposed syntax]
 
-```noble
+```colibri
 @repr(C)
 struct Vertex {
     pos: vec3
@@ -1222,7 +1235,7 @@ or uploaded to the GPU as a byte buffer (`vertices.as_bytes()`).
 
 ### 15.3 C FFI [Locked, Proposed syntax]
 
-```noble
+```colibri
 @link("raylib")
 extern "C" {
     fn InitWindow(width: i32, height: i32, title: cstr)
@@ -1231,9 +1244,9 @@ extern "C" {
 }
 ```
 
-- **FFI is a capability.** A package must declare `ffi = true` in `noble.toml` to contain `extern`
+- **FFI is a capability.** A package must declare `ffi = true` in `colibri.toml` to contain `extern`
   blocks, so a git dependency can't quietly link C. An embedding host can create a `Vm` with FFI,
-  `fs`, `os` and `http` switched off (§15.4), which is what makes Noble usable for mods. The risk in
+  `fs`, `os` and `http` switched off (§15.4), which is what makes Colibri usable for mods. The risk in
   FFI is the declaration (a wrong signature corrupts memory as surely as a bad pointer), so the
   capability guards declarations, and calling a declared function needs no `unsafe`.
 - **`unsafe { }` is required for raw pointer operations** (`ptr[T]` dereference, arithmetic,
@@ -1242,58 +1255,58 @@ extern "C" {
   hidden NUL (§12).
 - **Structs by value** (`Color`, `Vector2`, `Texture2D`, everywhere in raylib) are supported from
   day one, in the libffi path too.
-- `noble bindgen header.h` generates `extern` declarations from C headers.
+- `colibri bindgen header.h` generates `extern` declarations from C headers.
 - The interpreter and VM call C via `libffi`; native builds call directly.
 
-### 15.4 Embedding in Rust [Locked, Proposed API shape]
+### 15.4 Embedding in Rust [Locked, first-class from phase 1; Proposed API shape]
 
 ```rust
-let mut vm = noble::Vm::builder()
-    .allow(noble::Cap::Fs)                // capabilities: nothing beyond pure Noble unless granted
+let mut vm = colibri::Vm::builder()
+    .allow(colibri::Cap::Fs)                // capabilities: nothing beyond pure Colibri unless granted
     .instruction_budget(1_000_000)      // optional sandbox limits
     .memory_limit(64 << 20)
     .build();
 vm.register_fn("spawn_enemy", |x: f32, y: f32| { /* engine code */ });
-vm.write_interface("scripts/engine.noblei")?;   // declarations for `noble check` and the editor
-vm.load_file("scripts/ai.noble")?;
+vm.write_interface("scripts/engine.cbi")?;   // declarations for `colibri check` and the editor
+vm.load_file("scripts/ai.colibri")?;
 let f = vm.get_fn::<(f32,), ()>("update")?;
 f.call(&mut vm, (dt,))?;
-vm.tick(dt)?;                    // resume Noble coroutines for this frame, §14.2
+vm.tick(dt)?;                    // resume Colibri coroutines for this frame, §14.2
 vm.reload_changed()?;            // hot reload, §16.3
 ```
 
-- **Offline checking.** `noble check` and the editor need to know about host functions when the
-  script isn't running inside the engine. The host writes an interface file (`.noblei`, the same
+- **Offline checking.** `colibri check` and the editor need to know about host functions when the
+  script isn't running inside the engine. The host writes an interface file (`.cbi`, the same
   format as Rust bindings in §15.5), and scripts are checked against it.
-- **A `Vm` is single-threaded.** Several VMs can coexist; `noble-runtime` has no global state.
-- Rust types are exposed via `#[noble::export]` (§15.5): `Copy` types as Noble structs, others as
+- **A `Vm` is single-threaded.** Several VMs can coexist; `colibri-runtime` has no global state.
+- Rust types are exposed via `#[colibri::export]` (§15.5): `Copy` types as Colibri structs, others as
   opaque handles.
 - **Host handles are generational.** A script holding a handle to a destroyed engine object gets
   a clean error (or `none` from a checked accessor) instead of a dangling pointer.
 - **Capabilities and sandboxing:** no `fs`, `os`, `http` or FFI unless the host grants them;
   optional instruction budget and memory cap. Together these are the sandbox for embedded
   scripts and mods.
-- Panics in Noble code become `Err` on the Rust side; they never unwind into the host.
+- Panics in Colibri code become `Err` on the Rust side; they never unwind into the host.
 
-### 15.5 Using Rust crates from Noble [Planned, Proposed design]
+### 15.5 Using Rust crates from Colibri [Planned, Proposed design]
 
-Rust's game ecosystem (rapier for physics, wgpu for graphics, kira for audio) would give Noble a
-lot. Noble's runtime is already Rust, so the same binding layer that powers embedding (§15.4) can
-expose Rust crates to Noble code, the way PyO3 does for Python.
+Rust's game ecosystem (rapier for physics, wgpu for graphics, kira for audio) would give Colibri a
+lot. Colibri's runtime is already Rust, so the same binding layer that powers embedding (§15.4) can
+expose Rust crates to Colibri code, the way PyO3 does for Python.
 
 **Why not arbitrary `import some_crate`:** Rust has no stable ABI, and traits, lifetimes,
-generic functions and borrowed references don't map one-to-one onto Noble's type system. A crate
-needs a thin, explicit Noble-facing surface.
+generic functions and borrowed references don't map one-to-one onto Colibri's type system. A crate
+needs a thin, explicit Colibri-facing surface.
 
-**Rust side.** A `noble-bind` crate provides attribute macros that generate the glue:
+**Rust side.** A `colibri-bind` crate provides attribute macros that generate the glue:
 
 ```rust
-use noble_bind::prelude::*;
+use colibri_bind::prelude::*;
 
-#[noble::export]
-pub struct RigidBody { handle: rapier3d::dynamics::RigidBodyHandle }   // opaque handle in Noble
+#[colibri::export]
+pub struct RigidBody { handle: rapier3d::dynamics::RigidBodyHandle }   // opaque handle in Colibri
 
-#[noble::export]
+#[colibri::export]
 impl World {
     pub fn new(gravity: Vec3) -> World { ... }
     pub fn add_ball(&mut self, pos: Vec3, radius: f32) -> RigidBody { ... }
@@ -1301,31 +1314,31 @@ impl World {
     pub fn position(&self, body: &RigidBody) -> Vec3 { ... }
 }
 
-#[noble::module]
-fn physics(m: &mut noble::Module) {
+#[colibri::module]
+fn physics(m: &mut colibri::Module) {
     m.add_class::<World>();
     m.add_class::<RigidBody>();
 }
 ```
 
 - Type mapping: Rust numbers, `bool`, `String`/`&str`, `Vec<T>`, `Option<T>` and `Result<T, E>`
-  map to their Noble counterparts; `glam::Vec2/Vec3/Vec4` map to `vec2/3/4` with no conversion
-  (same 8/12/16-byte layouts, §15.1); `#[noble::export]` structs that are `Copy` become Noble
+  map to their Colibri counterparts; `glam::Vec2/Vec3/Vec4` map to `vec2/3/4` with no conversion
+  (same 8/12/16-byte layouts, §15.1); `#[colibri::export]` structs that are `Copy` become Colibri
   `struct`s; everything else becomes an RC'd opaque handle.
-- Rust `Result::Err` becomes a Noble `err(...)`; a Rust panic is caught at the boundary and
-  becomes a Noble panic.
+- Rust `Result::Err` becomes a Colibri `err(...)`; a Rust panic is caught at the boundary and
+  becomes a Colibri panic.
 - Generic Rust APIs are exported per concrete instantiation; trait-heavy APIs get a small
   hand-written wrapper.
 
-**Noble side.** The crate is declared in `noble.toml`, and Noble code imports it like any module:
+**Colibri side.** The crate is declared in `colibri.toml`, and Colibri code imports it like any module:
 
 ```toml
 [rust-dependencies]
-rapier = { binding = "noble-rapier", version = "0.1" }   # curated binding crate
+rapier = { binding = "colibri-rapier", version = "0.1" }   # curated binding crate
 mygame-native = { path = "native/" }                   # your own Rust code
 ```
 
-```noble
+```colibri
 import rapier
 
 let world = rapier.World.new(vec3(0, -9.81, 0))
@@ -1336,29 +1349,29 @@ print(world.position(ball))
 
 **Build and run: static linking everywhere, no dylib.**
 
-- When a project has `[rust-dependencies]`, `noble run` builds (once, cached) a
+- When a project has `[rust-dependencies]`, `colibri run` builds (once, cached) a
   **project-specific runner executable**: the VM plus those bindings, statically linked. Hot
-  reload still works, because only Noble code reloads. `noble build` links the same bindings into the
-  native executable.
+  reload still works, because only Colibri code reloads. `colibri build` ships the same runner with
+  the program's bytecode.
 - There is no dynamic library and no second ABI to design and keep stable. Using a binding needs a
   Rust toolchain (or a prebuilt runner per platform); the built-in game kit (§15.6) means most
   users never need either.
-- The type checker reads a generated `.noblei` interface file for each binding, so code using a
+- The type checker reads a generated `.cbi` interface file for each binding, so code using a
   crate is fully type-checked and gets editor completion.
 
 **Curated bindings.** No `glam` binding is needed, since the vector types are built in. The first
-curated binding is `noble-rapier` when the demo game needs physics, then `noble-kira` and a renderer
+curated binding is `colibri-rapier` when the demo game needs physics, then `colibri-kira` and a renderer
 on `wgpu` for projects that outgrow the game kit.
 
-**One mechanism, two directions.** `#[noble::export]` is the same API an engine uses to expose its
-own types when embedding Noble (§15.4): build it once, get both.
+**One mechanism, two directions.** `#[colibri::export]` is the same API an engine uses to expose its
+own types when embedding Colibri (§15.4): build it once, get both.
 
 ### 15.6 Built-in game kit [Proposed]
 
-The stock `noble` binary includes a small **game kit**, the way LÖVE does for Lua, so the first game
+The stock `colibri` binary includes a small **game kit**, the way LÖVE does for Lua, so the first game
 needs no Rust toolchain, no C toolchain and no bindings:
 
-```noble
+```colibri
 import game
 
 fn main() {
@@ -1375,7 +1388,7 @@ fn main() {
 - Scope for v1: window and input (keyboard, mouse, gamepad), 2D drawing (shapes, sprites, text),
   audio playback, and asset loading. 3D is out of scope for the kit.
 - The backend (statically linked raylib, or Rust crates such as winit, wgpu and kira) is Q20.
-- The game kit is ordinary Noble plus host functions, so it doubles as the reference example of the
+- The game kit is ordinary Colibri plus host functions, so it doubles as the reference example of the
   embedding API.
 
 ---
@@ -1385,17 +1398,19 @@ fn main() {
 ### 16.1 One binary [Locked, Proposed details]
 
 ```
-noble run file.noble        # type-check, then run on the interpreter (later: the bytecode VM)
-noble build               # native executable via Cranelift
-noble test                # runs `test "name" { ... }` blocks
-noble fmt                 # canonical formatter, no options
-noble check               # type-check only (fast, for editors/CI)
-noble lsp                 # language server
-noble repl                # interactive prompt
+colibri run file.colibri      # type-check, then run (on the tree-walker until the VM lands in phase 3)
+colibri build               # one executable: the VM plus the program's bytecode and assets
+colibri build --web         # the VM compiled to WebAssembly, plus bytecode and assets
+colibri test                # runs `test "name" { ... }` blocks
+colibri fmt                 # canonical formatter, no options
+colibri check               # type-check only (fast, for editors/CI)
+colibri lsp                 # language server
+colibri repl                # interactive prompt
 ```
 
-`noble run` always type-checks first. There is no "dynamic mode"; the interpreter runs the same
-checked program a native build would, with the same results, panics and drop order (§1).
+`colibri run` always type-checks first. There is no "dynamic mode"; every engine runs the same
+checked program, with the same results, panics and drop order (§1). If the AOT stretch goal is
+built, it becomes `colibri build --native`.
 
 ### 16.2 Execution pipeline [Proposed]
 
@@ -1403,28 +1418,33 @@ checked program a native build would, with the same results, panics and drop ord
 source → lexer → parser → AST → name resolution → type check → HIR (typed)
                                                                  │
                     ┌────────────────────────────────────────────┤
-          tree-walking interpreter                      Noble IR (SSA, explicit RC ops)
-          (phases 1–2: the reference)                            │
-                                               ┌─────────────────┴───────────┐
-                                         bytecode VM                  Cranelift → native
-                                     (noble run, embedding,             (noble build, phase 4)
-                                      hot reload, web; phase 3)
+          tree-walking interpreter                      Colibri IR (SSA, explicit RC ops)
+          (phases 1–2; then the reference)                       │
+                                               ┌─────────────────┴────────────────┐
+                                     bytecode VM: the product            Cranelift → native
+                                     (run, build, embedding, hot         (stretch goal, only
+                                      reload, web; phase 3)               if a profile asks)
 ```
 
 - The **HIR** is the shared contract: fully typed, names resolved, sugar removed.
-- **Noble IR** makes RC operations explicit (`inc`, `dec`, `move`), so the RC optimizations of
-  §11.3 are IR passes shared by the VM and the native backend.
-- The **tree-walker remains the reference implementation**: golden tests run on every engine and
-  must agree.
-- **No JIT.** It would be a fourth engine to keep in agreement with the other three, and iOS and
-  consoles forbid it. The VM covers fast startup, embedding and hot reload; Cranelift covers
-  shipping builds.
+- **Colibri IR** makes RC operations explicit (`inc`, `dec`), so future elision passes (§11.3)
+  have a place to live and would serve every backend.
+- The **tree-walker** is the first engine and then remains the reference implementation: golden
+  tests run on every engine and must agree.
+- **The bytecode VM is the product.** It is what `colibri run`, `colibri build`, embedding, hot reload
+  and the web use, so one engine is tuned, debugged and shipped.
+- **Native AOT is a stretch goal.** It is started only when a profile of a real game shows the
+  VM missing a §17.4 target, and only after the cheaper fix has been tried: moving the hot code
+  into Rust through `#[colibri::export]` (§15.4–15.5). If it is built, §10.4 and §14.3 already say
+  how panics and coroutines work in native code.
+- **No JIT.** It would be one more engine to keep in agreement, and iOS and consoles forbid it.
 
 ### 16.3 Hot reload [Locked goal, Proposed semantics]
 
-Goal: edit a `.noble` file while the game runs and see the change without restarting.
+Goal: edit a `.colibri` file while the game runs and see the change without restarting.
 
-- **Hot reload is a VM (and interpreter) feature.** Native builds don't have it.
+- **Hot reload is a VM (and interpreter) feature**, so shipped games and embedded scripts can
+  use it in development. Native AOT code, if it is ever built, doesn't have it.
 - **Function-level patching** when only function bodies changed: the changed module plus every
   module that depends on it is re-checked against the running program, and new bodies replace
   old ones at the next call.
@@ -1449,28 +1469,30 @@ several at once.
 Editor support is most of what "usable" means today, so it moves early:
 
 - **Day one:** a syntax-highlighting grammar (TextMate/tree-sitter) for VS Code and others.
-- **Right after the type checker:** `noble check` and a minimal LSP (diagnostics, hover with types,
+- **Right after the type checker:** `colibri check` and a minimal LSP (diagnostics, hover with types,
   go-to-definition), then completion and rename.
 - **With the VM:** a debugger over DAP (breakpoints, stepping, locals using the type descriptors
-  of §7.5, coroutine list), and a sampling profiler (`noble run --profile`) that writes a
+  of §7.5, coroutine list), and a sampling profiler (`colibri run --profile`) that writes a
   flamegraph and reports RC traffic hot spots.
 
 ### 16.6 Platform targets [Proposed]
 
-| Platform | Development (`noble run`) | Shipping |
-|----------|------------------------|----------|
-| Windows, macOS, Linux | interpreter, then VM | Cranelift native (`noble build`) |
-| Web | — | the VM compiled to WebAssembly, plus the program's bytecode |
-| iOS, Android | — | later; Cranelift AOT (no JIT, so App Store rules are met) or the VM |
+| Platform | Development | Shipping |
+|----------|-------------|----------|
+| Windows, macOS, Linux | `colibri run` (interpreter, then VM) | `colibri build`: the VM plus bytecode in one executable |
+| Web | `colibri run` on desktop | `colibri build --web`: the VM compiled to WebAssembly, plus bytecode |
+| Embedded in a Rust engine | the host's dev build, with hot reload | the host's executable, with `colibri-runtime` linked in |
+| iOS, Android | — | later; the VM (no JIT, so App Store rules are met) |
 | Consoles | — | out of scope for v1 |
 
-Cranelift has no WebAssembly output, so the web target uses the VM. Browser builds matter for
-indie games (game jams, itch.io), which is one more reason the VM comes before Cranelift.
+One engine serves every platform, so a game behaves the same on desktop, in the browser and
+inside a host engine. Cranelift has no WebAssembly output, which is one more reason the VM is the
+product.
 
 ### 16.7 Language editions [Proposed]
 
-`noble.toml` has an `edition = "2027"` field (scripts default to the latest). Syntax changes after
-1.0 happen at edition boundaries, and `noble fmt --migrate` rewrites code to the new edition, so
+`colibri.toml` has an `edition = "2027"` field (scripts default to the latest). Syntax changes after
+1.0 happen at edition boundaries, and `colibri fmt --migrate` rewrites code to the new edition, so
 old code keeps compiling.
 
 ---
@@ -1480,46 +1502,48 @@ old code keeps compiling.
 ### 17.1 Workspace layout [Proposed]
 
 ```
-noble/
+colibri/
   Cargo.toml                 # workspace
   crates/
-    noble-syntax/              # lexer, parser, AST, spans
-    noble-check/               # name resolution, type inference/checking, HIR, type descriptors
-    noble-interp/              # tree-walking interpreter (the reference implementation)
-    noble-ir/                  # Noble IR + RC optimization passes + inliner
-    noble-vm/                  # bytecode VM (native and wasm32)
-    noble-codegen/             # Cranelift AOT backend
-    noble-runtime/             # RC heap, strings, collections, coroutines, FFI, embedding API
-    noble-bind/                # #[noble::export] macros for embedding and Rust crate bindings
-    noble-std/                 # standard library natives
-    noble-game/                # the built-in game kit (§15.6)
-    noble-lsp/                 # language server
-    noble-cli/                 # the `noble` binary
-  std/                       # .noble sources of the standard library
+    colibri-syntax/              # lexer, parser, AST, spans
+    colibri-check/               # name resolution, type inference/checking, HIR, type descriptors
+    colibri-interp/              # tree-walking interpreter (the reference implementation)
+    colibri-ir/                  # Colibri IR, bytecode lowering (later: RC elision passes)
+    colibri-vm/                  # bytecode VM (native and wasm32)
+    colibri-codegen/             # Cranelift AOT backend: stretch goal, not created until needed
+    colibri-runtime/             # RC heap, strings, collections, coroutines, FFI, embedding API
+    colibri-bind/                # #[colibri::export] macros for embedding and Rust crate bindings
+    colibri-std/                 # standard library natives
+    colibri-game/                # the built-in game kit (§15.6)
+    colibri-lsp/                 # language server
+    colibri-cli/                 # the `colibri` binary
+  std/                       # .colibri sources of the standard library
   editors/                   # syntax grammars, VS Code extension
-  tests/                     # golden tests: .noble files with expected output/errors/drop order
+  tests/                     # golden tests: .colibri files with expected output/errors/drop order
   docs/DESIGN.md
 ```
 
 ### 17.2 Names [Proposed]
 
-The language is **Noble** (Q16, decided 2026-11-19). A check of crates.io and GitHub on
-2026-11-19 found these constraints:
+The language is **Colibri** (Q16, decided 2026-11-19), written without the accent in anything
+typed: the command, file extensions, crate names and config files. A check of crates.io and
+GitHub on 2026-11-19 found these constraints:
 
 | Thing | Name | Notes |
 |-------|------|-------|
-| CLI binary | `noble` | |
-| CLI crate on crates.io | `noble-lang` | The bare crate name `noble` is taken by an unrelated terminal app, so the CLI is published as `noble-lang` with a binary named `noble`. |
-| Workspace crates | `noble-syntax`, `noble-check`, `noble-interp`, `noble-ir`, `noble-vm`, `noble-codegen`, `noble-runtime`, `noble-bind`, `noble-std`, `noble-game`, `noble-lsp` | Free on 2026-11-19 (unrelated crates use other `noble-*` names, e.g. a blockchain framework's `noble-staking`). |
-| Embedding crate | `noble-runtime` | Hosts write `use noble_runtime as noble;`, so `noble::Vm` and `#[noble::export]` read as in §15.4–15.5. |
-| Source files | `.noble` | `.nb` is Wolfram notebooks (and a small hobby language also called Noble uses it); `.nbl` is the short fallback if `.noble` proves awkward. |
-| Interface files | `.noblei` | Generated declarations for bindings and hosts (§15.4–15.5). |
-| Project files | `noble.toml`, `noble.lock` | |
-| GitHub org | not assumed | A small hobby project already uses `noble-lang` on GitHub. The repository stays `jalatodeguerra/leo` until santiago renames it. |
+| CLI binary | `colibri` | |
+| CLI crate on crates.io | `colibri-lang` | The bare crate name `colibri` is taken by a Jitsi Meet library, so the CLI is published as `colibri-lang` with a binary named `colibri`. |
+| Workspace crates | `colibri-syntax`, `colibri-check`, `colibri-interp`, `colibri-ir`, `colibri-vm`, `colibri-codegen`, `colibri-runtime`, `colibri-bind`, `colibri-std`, `colibri-game`, `colibri-lsp`, `colibri-cli` | The ones checked (`colibri-lang`, `-cli`, `-runtime`, `-bind`, `-vm`, `-std`, `-syntax`, `-check`) were free on 2026-11-19; reserve all of them before publishing anything. |
+| Embedding crate | `colibri-runtime` | Hosts write `use colibri_runtime as colibri;`, so `colibri::Vm` and `#[colibri::export]` read as in §15.4–15.5. |
+| Source files | `.colibri` | `.col` is taken by ColecoVision ROMs and other formats; `.coli` reads as E. coli. |
+| Interface files | `.cbi` | Generated declarations for bindings and hosts (§15.4–15.5). |
+| Project files | `colibri.toml`, `colibri.lock` | |
+| Repository | `jalatodeguerra/leo` | Unchanged until santiago renames it. |
 
-Search noise to expect: Ubuntu 24.04's codename is "Noble Numbat", and `noble` is also a
-well-known Node.js Bluetooth library. Docs and the website should say "Noble language" or
-"noble-lang".
+No existing programming language called Colibri turned up in two quick searches (a light check,
+not a guarantee). Unrelated projects share the word: Jitsi's Colibri protocol, the Colibri Core
+text-analysis tool and an AI inference engine. People will also mix up colibri, colibrí and
+kolibri, so docs should say "Colibri language" and the website should own the misspellings.
 
 ### 17.3 Key technical choices [Proposed]
 
@@ -1528,16 +1552,17 @@ well-known Node.js Bluetooth library. Docs and the website should say "Noble lan
 - **Type checker:** bidirectional checking with local unification for generics and closures
   (no global Hindley-Milner). Matches §5.4 and keeps errors local. Packages are checked as a
   unit (§13).
-- **Testing:** golden-file tests from day one (`tests/*.noble` with `// expect:` comments for
+- **Testing:** golden-file tests from day one (`tests/*.colibri` with `// expect:` comments for
   output, `// error:` for diagnostics and `// drops:` for drop order, §11.2). Every feature
   lands with tests, and every engine runs the same suite.
 - **Runtime values (interpreter):** a Rust `enum Value` with `Rc<...>` heap objects, built to
   follow §11.2 and §11.6 exactly (explicit scope-end drops, copy-in/copy-out places with the
   mutation guard). It must not rely on `RefCell` panics or accidental copies, which would hide
   the semantics native code has to reproduce.
-- **Unwinding:** hidden error returns in compiled code (§10.4).
-- **Cranelift and inlining:** Cranelift has historically left inlining to the frontend (to be
-  re-checked against its current version when phase 4 starts), so Noble IR has its own inliner
+- **Unwinding:** the VM unwinds its heap stack; native code, if ever built, uses hidden error
+  returns (§10.4).
+- **If the AOT stretch goal is started:** Cranelift has historically left inlining to the
+  frontend (to be re-checked against its current version at that point), so Colibri IR has its own inliner
   before small generic and vector functions get fast.
 
 ### 17.4 Performance targets [Proposed]
@@ -1546,63 +1571,78 @@ So each phase has a finish line:
 
 | Measure | Target |
 |---------|--------|
-| `noble run hello.noble` startup, including type check | under 50 ms |
+| `colibri run hello.colibri` startup, including type check | under 50 ms |
 | Type check | at least 100k lines per second |
 | Hot-reload patch, edit to new code running | under 200 ms for a 10k-line game |
 | Bytecode VM | within 1.5× of Lua 5.4 on standard benchmarks (binary-trees, n-body, fannkuch, spectral-norm) |
-| Native build | within 3× of equivalent C on n-body and vector math; no per-frame allocation needed for a 2D game loop |
+| Shipped game (`colibri build`) | a 2D game loop at 60 fps with no per-frame allocation required; executable under 15 MB |
+| Embedding | calling a Colibri function from Rust in under 100 ns; `vm.tick` with 1,000 idle coroutines under 0.1 ms |
+| Native AOT (stretch) | started only if a profiled game misses 60 fps on the VM; then within 3× of C on n-body and vector math |
 | Interpreter | no target beyond "the demo game runs at 60 fps" |
 
-### 17.5 Roadmap [Proposed reorder of the locked phases]
+### 17.5 Roadmap [Locked, revised 2026-11-19]
 
-The locked roadmap had three phases: (1) lexer, parser, type checker and tree-walking
+The original roadmap had three phases: (1) lexer, parser, type checker and tree-walking
 interpreter; (2) bytecode VM, Cranelift and RC optimizations; (3) game bindings and the first
-small game. **v0.2 proposes moving the game ahead of the fast engines** *(pending santiago's
-decision)*: the game is what will force changes to places, struct/class, coroutines and modules,
-and those changes are cheap with one engine and expensive with three.
+small game. santiago approved reordering it on 2026-11-19: the game comes before the fast
+engine, because the game is what will force changes to places, struct/class, coroutines and
+modules, and those changes are cheap with one engine. The VM is the product, embedding comes
+first, and native AOT, RC elision and the ownership checker become stretch goals.
 
-**Phase 1: language core on the tree-walker**, built as **vertical slices**: hello world end to
-end first (lexer → parser → checker → interpreter), then widen feature by feature.
+**Phase 1: language core on the tree-walker, embeddable from day one.** Built as **vertical
+slices**: hello world end to end first (lexer → parser → checker → interpreter), then widen
+feature by feature. `colibri-runtime` is a library from the first slice, and the `colibri` CLI is
+just one host of it.
 
 1. Syntax highlighting grammar; golden-test harness.
-2. Slice 1: `print`, functions, `let`/`var`, ints, strings with interpolation.
+2. Slice 1: `print`, functions, `let`/`var`, ints, strings with interpolation, run from both the
+   CLI and a Rust host (`Vm::load_file`, `get_fn`, `call`).
 3. Structs, enums, `match` with exhaustiveness, `if`/`for`/`while`, ranges, tuples.
 4. Classes, `List`/`Map`/`Set`, places with the mutation guard, drop order per §11.2.
 5. `Result`/`Option`, `?`, `or` with handler blocks, `Error` with context.
 6. Generics, interfaces, closures, iteration.
-7. Packages and `import`; `noble check` and a minimal LSP.
-8. `noble test`, `noble fmt`; std v1 (`fs`, `os`, `args`, `json`, `regex`, `http`, `time`).
-   **Milestone:** real scripts written in Noble (a file-organising tool, a JSON/HTTP report
-   generator).
+7. Embedding API: `register_fn`, `#[colibri::export]` for host types, generational handles,
+   `.cbi` interface files, capabilities.
+8. Packages and `import`; `colibri check` and a minimal LSP; `colibri test`, `colibri fmt`; core std
+   (§13.1).
+9. **Milestone:** a small Rust program with its own game loop that runs its gameplay logic from
+   Colibri scripts.
 
 **Phase 2: game slice on the interpreter**
 
 1. Vector types as plain values; `@repr(C)` structs and the C FFI with structs by value.
-2. Coroutines (`go`, `wait`, `wait_until`, `wait_for`, `CoGroup`, `task.tick`).
+2. Coroutines (`go`, `wait`, `wait_until`, `wait_for`, `CoGroup`), driven by `task.tick` and
+   `vm.tick`.
 3. The built-in game kit (§15.6).
-4. Hot reload (patching plus automatic restart), which is easiest in an interpreter.
+4. Hot reload (patching plus automatic restart), for standalone games and embedded scripts.
 5. The leak detector.
-6. **Milestone:** a small, complete game (e.g. a top-down arena shooter), running slowly but
-   completely, with hot reload.
+6. **Milestone:** a small, complete game (e.g. a top-down arena shooter) with hot reload, both
+   standalone on the game kit and with its scripts embedded in a Rust host.
 
-**Phase 3: bytecode VM** on Noble IR
+**Phase 3: the bytecode VM, the product engine**
 
-1. Noble IR with explicit RC ops; plain RC.
-2. Bytecode VM replacing the tree-walker for `noble run`; embedding API and `noble-bind`;
-   capabilities and sandbox limits.
-3. Thread tasks, channels, `Shared[T]` and deep copy.
-4. Debugger over DAP; profiler.
-5. Web target: the VM compiled to WebAssembly.
-6. **Milestone:** the demo game at full speed on the VM, in the browser too; VM within the
-   §17.4 target versus Lua.
+1. Colibri IR with explicit RC ops; plain RC.
+2. The bytecode VM replacing the tree-walker for `colibri run` and embedding; sandbox limits.
+3. `colibri build` (one executable: VM plus bytecode and assets) and `colibri build --web`.
+4. Thread tasks, channels, `Shared[T]` and deep copy.
+5. Debugger over DAP; profiler.
+6. **Milestone:** the demo game shipped with `colibri build` on all three desktop platforms and in
+   the browser, with the VM within the §17.4 targets.
 
-**Phase 4: native builds and optimization**
+**Phase 4: general scripting**
 
-1. Cranelift AOT for `noble build`, with the Noble IR inliner and fixed-size native coroutine stacks.
-2. RC optimizations (§11.3), measured against the demo game and the benchmarks.
-3. `own`/`borrow` checking.
-4. Rust crate bindings through project-specific runners; `noble-rapier`.
-5. **Milestone:** the demo game shipped as a native executable on all three desktop platforms.
+1. The scripting std (§13.1): `regex`, `http`, subprocesses, `datetime`, `args`.
+2. `colibri repl`, script ergonomics, and startup time tuned for one-off scripts.
+3. Rust crate bindings through project-specific runners (§15.5); `colibri-rapier`.
+4. **Milestone:** real automation scripts written in Colibri (a file-organising tool, a JSON/HTTP
+   report generator).
+
+**Stretch goals**, each started only when a profile of a real program asks for it:
+
+- RC elision passes (§11.3).
+- `own`/`borrow` semantics and checker (§11.4).
+- Native AOT via Cranelift (§16.2), with the Colibri IR inliner and fixed-size native coroutine
+  stacks (§14.3).
 
 ---
 
@@ -1622,7 +1662,7 @@ it reads consistently. Changing one means editing the sections it names.
 | Q5 | Deep immutability | Shallow `let` in v1 | §4.1 |
 | Q6 | Integer overflow | Trap in every mode; `wrapping_*`/`checked_*`/`saturating_*` methods | §5.1 |
 | Q7 | Interface conformance | Nominal `impl I for T` | §9.2 |
-| Q8 | `own`/`borrow` rules | No `move` keyword; `own` never errors at the caller; no local `borrow` in v1; build the checker late | §11.4 |
+| Q8 | `own`/`borrow` rules | **Decided 2026-11-19:** reserved words only; semantics and checker not designed now (constraints in §11.4) | §11.4 |
 | Q9 | Cycle collection | `weak` + leak detector built as trial deletion; maybe an explicit `mem.collect_cycles()` later | §11.5 |
 | Q10 | What crosses a thread boundary | Isolates; sends are explicit deep copies (`.clone()`), implicit only for plain values and `str`; `Shared[T]` freezes and sets a shared bit | §14.1 |
 | Q11 | Enum variant lookup | Bare in patterns, `.Variant` where the type is known, `Type.Variant` otherwise; capitalisation rule in patterns | §8.2 |
@@ -1630,7 +1670,7 @@ it reads consistently. Changing one means editing the sections it names.
 | Q13 | `unsafe` | `unsafe { }` for raw pointer operations; FFI as a per-package and per-VM capability | §15.3 |
 | Q14 | Hot reload semantics | Function-level patching, automatic restart (with optional save/restore hooks) on layout changes | §16.3 |
 | Q15 | Script top-level code | Only in the entry file of a script; imported modules hold declarations only | §13 |
-| Q16 | Name | **Decided 2026-11-19: Noble** (renamed from the working name Leo, which collides with Aleo's Leo). Naming details in §17.2 are [Proposed] | everywhere |
+| Q16 | Name | **Decided 2026-11-19: Colibri**, written `colibri` in anything typed. Renamed from the working name Leo (which collides with Aleo's Leo), briefly Noble. Naming details in §17.2 are [Proposed] | everywhere |
 | Q17 | Rust crate bindings | Static linking everywhere through project-specific runners; no dylib; no `glam` binding; `rapier` when the demo needs it | §15.5 |
 | Q18 | Coroutine and task syntax | `go f()` keyword for coroutines; `task.run(fn() => ...)` for thread tasks; with `=>` lambdas `wait_until` needs no sugar. Spelling of `go` (vs `co`) still open | §14 |
 | Q19 | Weak capture syntax | `fn() use(weak self) { ... }` capture list; inside, the name has type `T?` | §6.2 |
@@ -1640,7 +1680,7 @@ it reads consistently. Changing one means editing the sections it names.
 
 ## 19. Prior art
 
-| Language | What Noble takes from it |
+| Language | What Colibri takes from it |
 |----------|------------------------|
 | **Go** | Simple syntax, newline-terminated statements, untyped constants, `defer`, packages as folders, one formatter |
 | **Python** | Readability bar, scripting ergonomics, f-string style interpolation |

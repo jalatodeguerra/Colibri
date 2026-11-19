@@ -1,11 +1,11 @@
-# Noble
+# Colibri
 
-Noble is a statically typed programming language for **scripting and game development**,
+Colibri is a statically typed programming language for **game scripting and general scripting**,
 implemented in Rust. It aims for syntax as simple as Go or Python (with braces), memory
-management by compiler-optimized reference counting, and two ways to run the same code: an
-interpreter with hot reload for fast iteration, and native builds via Cranelift.
+management by plain reference counting, and one bytecode VM that runs scripts, hot reload,
+embedding in Rust engines, the web and shipped games.
 
-```noble
+```colibri
 fn greet(name: str) -> str {
     return "Hello, {name}!"
 }
@@ -24,17 +24,20 @@ Design phase. Nothing is implemented yet. The language design is in
 
 ## Highlights (planned)
 
+- Game scripting first: coroutines for game logic, `vec2`/`vec3`/`vec4`, a built-in game kit, hot reload
+- Embeddable in Rust engines from day one, with easy C FFI
+- One engine, the bytecode VM, for scripts, embedding, the web and shipped games
 - Static types with local inference, generics (`List[T]`, `fn max[T](a: T, b: T)`)
-- Value-type structs, reference counting with compile-time elision, `weak` refs, optional `own`/`borrow`
+- Plain reference counting with value-type structs and `weak` refs; no tracing GC
 - Errors as values: `Result[T]`, `?`, `or` fallback, no exceptions
 - Enums with exhaustive `match`, interfaces, no inheritance
-- Game-dev built-ins: `vec2`/`vec3`/`vec4`, C-layout structs, easy C FFI
-- Embeddable in Rust engines, and Rust crates usable from Noble via a binding layer
-- One `noble` binary: `run`, `build`, `test`, `fmt`
+- One `colibri` binary: `run`, `build`, `test`, `fmt`, `check`, `lsp`
 
 ## Roadmap
 
-1. Language core on a tree-walking interpreter (lexer, parser, type checker)
-2. Game slice on the interpreter: vector types, coroutines, a built-in game kit, hot reload, and a first small game
-3. Bytecode VM (fast `noble run`, embedding, web builds)
-4. Cranelift native builds and RC optimizations
+1. Language core on a tree-walking interpreter, embeddable in Rust from the start
+2. Game slice: vector types, coroutines, a built-in game kit, hot reload, and a first small game
+3. The bytecode VM, `colibri build` for desktop and the web
+4. General scripting: `regex`, `http`, subprocesses, a REPL
+
+Stretch goals: native builds via Cranelift, RC elision, an ownership checker.
