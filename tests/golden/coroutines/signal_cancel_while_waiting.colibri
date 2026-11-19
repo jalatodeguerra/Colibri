@@ -1,0 +1,27 @@
+class Res { name: str }
+
+fn listener(s: Signal, tag: str) {
+    let r = Res { name: "res-{tag}" }
+    defer print("defer {tag}")
+    wait_for(s)
+    print("{tag} woke")
+}
+
+fn main() {
+    let s = Signal()
+    let a = go listener(s, "a")
+    go listener(s, "b")
+    a.cancel()
+    print("a cancelled: {a.done()}")
+    s.emit()
+    task.tick(0.0)
+    print("end")
+}
+
+// A cancelled waiter leaves the signal's list: the emit wakes only `b`.
+// expect: defer a
+// expect: a cancelled: true
+// expect: b woke
+// expect: defer b
+// expect: end
+// drops: res-a, res-b

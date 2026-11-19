@@ -123,6 +123,29 @@ pub(crate) fn coroutine_sig(t: &Ty, name: &str) -> Option<Sig> {
     })
 }
 
+pub(crate) const COGROUP_METHODS: &[&str] = &["go", "cancel", "count", "join_all"];
+
+/// The signature of a method of `CoGroup`. (`go` is a special form, see
+/// [`FnCtx::check_group_go`].)
+pub(crate) fn cogroup_sig(name: &str) -> Option<Sig> {
+    Some(match name {
+        "cancel" => sig(Builtin::CoGroupCancel, vec![], Ty::Unit),
+        "count" => sig(Builtin::CoGroupCount, vec![], Ty::INT),
+        "join_all" => sig(Builtin::CoGroupJoinAll, vec![], Ty::Unit),
+        _ => return None,
+    })
+}
+
+pub(crate) const SIGNAL_METHODS: &[&str] = &["emit"];
+
+/// The signature of a method of `Signal`.
+pub(crate) fn signal_sig(name: &str) -> Option<Sig> {
+    Some(match name {
+        "emit" => sig(Builtin::SignalEmit, vec![], Ty::Unit),
+        _ => return None,
+    })
+}
+
 impl FnCtx<'_, '_> {
     /// The receiver of a built-in method and its type. `r.context(msg)` on a `Result[T, E]`
     /// first converts the error to `Error` (through `IntoError`), so the method itself only

@@ -575,6 +575,7 @@ impl Interp {
                 self.eval_call(fiber, &call.callee, &call.type_args, &call.args, e.span)
             }
             ExprKind::Go(call) => self.eval_go(fiber, call, e.span),
+            ExprKind::GoIn(group, call) => self.eval_go_group(fiber, group, call, e.span),
             ExprKind::Coerce(inner, how) => {
                 let value = self.eval(fiber, inner)?;
                 Ok(self.coerce(value, how))
@@ -995,6 +996,9 @@ impl Interp {
                 | Intrinsic::WaitFrames
                 | Intrinsic::WaitUntil
                 | Intrinsic::WaitReal
+                | Intrinsic::WaitFor
+                | Intrinsic::NewCoGroup
+                | Intrinsic::NewSignal
                 | Intrinsic::TaskTick
         ) {
             return self.coro_intrinsic(fiber, intrinsic, args, span);
@@ -1056,6 +1060,9 @@ impl Interp {
             | Intrinsic::WaitFrames
             | Intrinsic::WaitUntil
             | Intrinsic::WaitReal
+            | Intrinsic::WaitFor
+            | Intrinsic::NewCoGroup
+            | Intrinsic::NewSignal
             | Intrinsic::TaskTick => Value::Unit,
         };
         self.release(arg);

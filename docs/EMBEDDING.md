@@ -248,6 +248,12 @@ loop {
 - `vm.run_event_loop()` is what `colibri run` does after `main`: tick with clock time until no
   coroutine is left (sleeping until the next timed wake, polling `wait_until` conditions every
   1 ms). Use it for programs with no loop of their own.
+- Scripts own coroutines with `CoGroup` (cancelled when the group dies) and wake them with
+  `Signal` / `wait_for` (ARCHITECTURE §16.1). A coroutine waiting for a signal costs nothing per
+  tick, and `run_event_loop` returns when only such waiters are left (they stay alive: emit and
+  call `run_event_loop` or `tick` again, or cancel them). A host emits by calling a script
+  function that does `s.emit()`; woken coroutines resume at the next `tick`.
+  `vm.coroutine_resumptions()` counts resumptions, for tests.
 - `VmBuilder::coroutine_stack_size(bytes)` (default 16 MiB, reserved and lazily committed; the evaluator
   panics with "stack overflow" at three quarters of it) and `VmBuilder::clock(impl Clock)`
   (the `Clock` trait: `now()` and `sleep()`; default the wall clock) for `wait_real`, the event

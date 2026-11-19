@@ -1885,8 +1885,99 @@ panics reported by `tick` and joiners; synchronous cancellation; self-cancel imm
 while being cancelled; fresh budget per resumption; 16 MiB stacks; event loop after `main` in
 `colibri run`; shutdown cancels newest first before module values die.
 
-### Not built (next PR)
+### Not built
 
-`CoGroup`, `Signal`, `wait_for`, channels' `recv` pausing. The design leaves room: a `Wake`
-variant per event kind, handle objects with a status field, and `cancel_all_coroutines` that a
-group can reuse for a subset.
+Channels' `recv` pausing (DESIGN §14.2 lists it next to `wait_for`; it comes with channels).
+
+## 16.1. `CoGroup`, `Signal` and `wait_for` as built
+
+PHASE2 step 2, in `coro.rs` unless said otherwise.
+
+### Types and surface
+
+- `CoGroup` and `Signal` are **prelude classes** like `Coroutine[T]` (`class CoGroup {}`,
+  `class Signal {}`; `COGROUP_TYPE` = 13, `SIGNAL_TYPE` = 14, `FIRST_USER_TYPE` = 15). Reference
+  types with identity equality, usable in fields, parameters and collections; `Show` prints
+  `<CoGroup>` and `<Signal>`; `// drops:` traces skip them. Each object has one hidden field, a
+  unique id that the scheduler's tables are keyed by. `CoGroup()` and `Signal()` are checker
+  special forms (`check_group_or_signal_new`, next to `List[T]()`); they take no arguments.
+  Signals carry no payload (see decisions).
+- `group.go(call(args))` is a checker special form (`check_group_go`, in `methods.rs` before
+  inherent-method lookup): a method call named `go` on a `CoGroup` whose single argument is a
+  **call expression**. It checks the call exactly as `go` does (`check_go_call`, same restrictions
+  and errors, e.g. no `var self` receiver) and gives HIR `ExprKind::GoIn(group, call)` of type
+  `Coroutine[T]`. The group is evaluated first, then the arguments, then the call runs to its first
+  pause. `go` is a keyword, but the parser already accepts keywords as member names after a dot
+  (`parse_member`), so `door.co.go(...)` needed no parser change. Anything else as the argument
+  (`group.go(value)`, no argument, two arguments) is "`go` on a `CoGroup` needs a call to start"
+  with a hint to pass the call itself and, to run arbitrary code, to wrap it in a closure.
+- `group.cancel()`, `group.count() -> int` (live coroutines of the group), `group.join_all()`;
+  `signal.emit()`; `wait_for(signal)` is a builtin function (`Intrinsic::WaitFor`, reserved name).
+
+### Groups
+
+The scheduler keeps `groups: HashMap<group id, Vec<coroutine id>>` (start order) and each `Entry`
+knows its group. A coroutine that finishes, panics or is cancelled leaves its group
+(`leave_group`), so `count()` is exact. **A group dies when its last reference does**: `dismantle`
+(release.rs) calls `group_died` before anything else, which removes the group's list and cancels
+its members **newest first** (reverse start order, the scope-exit convention), each unwinding with
+its `defer`s and drops before the release that killed the group returns. A member that is running
+higher up the resume chain (the group died inside it, or it started the code that dropped the
+group) is only marked and stops at its next pause, as with `Coroutine.cancel`.
+
+- `cancel()` does the same without killing the group: the group stays usable and new coroutines
+  can be started on it afterwards. A member cancelling its own group cancels the others first,
+  then stops itself at once (`Ctl::Cancel`).
+- `join_all()` pauses the calling coroutine until **no other coroutine of the group is alive**,
+  including ones started while it waits (it is polled once per tick, like `join`; `Wake::Group`).
+  A member calling it waits for the rest, not for itself. If nobody else is alive it returns
+  at once (also on the main fiber); otherwise outside a coroutine it panics like `wait`. It does
+  not report members' panics (those surface through `tick` as ever).
+- **Strong references** (DESIGN's warning): a suspended coroutine holds strong references to its
+  arguments and locals. `door.co.go(open(door))` therefore keeps `door` (and so its group) alive
+  until the coroutine ends, and the group's drop never fires. Pass what the coroutine needs
+  (a name, a weak reference, a handle to a separately owned object), or keep the group in an owner
+  that something else owns. `tests/golden/coroutines/group_owner_object.colibri` does the former.
+- Starting during shutdown starts nothing (as for `go`); `cancel_all_coroutines` clears the tables.
+
+### Signals and `wait_for`
+
+- `wait_for(s)` pauses the running coroutine (same checks and panics as `wait`: not on the main
+  fiber, not in a host callback, not in a `Drop` hook) with `Wake::Signal(id)` and appends the
+  coroutine to `signals: HashMap<signal id, Vec<coroutine id>>`. The waiting coroutine keeps the
+  signal object alive while it waits, so a waiter's signal cannot die under it.
+- **Event waits cost nothing per tick.** A `Wake::Signal` coroutine is never due in `tick_core`,
+  it is not resumed, and `next_wake` ignores it. The tick still walks the entry list (one
+  comparison per entry, like a timed waiter), but no resumption, no closure call and no polling
+  happens: `tests/coroutines.rs::signal_waiters_cost_nothing_per_tick` starts 1,000 waiters,
+  ticks 100 times and asserts the resumption counter (`Vm::coroutine_resumptions`) did not move,
+  then that one `emit` costs exactly 1,000 resumptions at the next tick.
+- **`emit()` wakes at the next tick, not immediately.** It takes the signal's waiter list, marks
+  each still-suspended waiter `Wake::Signaled` and appends it to `sched.signaled`, in wait order.
+  Nothing runs inside `emit`, so there is no reentrancy: the emitter finishes its step, and a
+  waiter that waits again waits for the *next* emit. At the start of the next `tick`, the
+  `signaled` queue is drained first (resumption in emission order, then wait order inside one
+  emit), then the remaining due coroutines in start order; a coroutine already resumed from the
+  queue in that tick is not resumed again (`Entry::ticked`). An emit during a tick wakes at the
+  following one. An `emit` with no waiter does nothing (signals do not remember emits), and a
+  wait started after an emit does not see it.
+- **Cancellation** of a waiter (`Coroutine.cancel`, group cancel or drop, shutdown) removes it
+  from the signal's list in `resume_coro`; a coroutine cancelled after being woken but before
+  it ran is cancelled and its queue entry is skipped.
+- **The end of the program.** `run_event_loop` and `colibri run` treat coroutines that only wait
+  for a signal as not keeping the program alive: `next_wake` returns `None` when every live
+  coroutine is a signal waiter, so the loop returns, `main`'s program ends and shutdown cancels
+  the waiters (newest first, unwinding their defers and drops). Nothing in a single-threaded
+  program can emit then. A host that can emit from outside the program (a host function called
+  between ticks, or a Colibri function it calls that does `s.emit()`) drives `vm.tick` itself, or
+  calls `run_event_loop` again after emitting; `coroutine_count()` still counts signal waiters.
+  A coroutine woken but not yet resumed (`Wake::Signaled`) does keep the loop going.
+
+### Decisions the design documents did not fix
+
+`Signal` has no payload (no `Signal[T]`: `emit(v)` returning the value from `wait_for` would need
+a generic prelude class and a value slot per waiter; it can be added without changing the rest);
+`emit` is next tick; woken waiters resume before other due coroutines, in emission order; a
+signal does not buffer emits; `join_all` polls and ignores itself; group `cancel` leaves the
+group reusable; the event loop does not wait for signal-only programs; hosts emit by calling a
+Colibri function that emits (no Rust-side `Signal` handle yet).

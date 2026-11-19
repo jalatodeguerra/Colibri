@@ -1,0 +1,17 @@
+fn listener(s: Signal) {
+    wait_for(s)
+    print("woke")
+}
+
+fn main() {
+    let s = Signal()
+    s.emit()
+    go listener(s)
+    task.tick(1.0)
+    print("nothing happened")
+    s.emit()
+    task.tick(0.0)
+}
+
+// expect: nothing happened
+// expect: woke

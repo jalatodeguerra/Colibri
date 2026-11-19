@@ -437,6 +437,9 @@ pub enum ExprKind {
     /// itself runs on a new coroutine, and the value is its `Coroutine[T]` handle, where `T`
     /// is the call's type.
     Go(Box<Expr>),
+    /// `group.go(call(..))` (DESIGN §14.2): like [`ExprKind::Go`], and the coroutine is owned
+    /// by the `CoGroup` value of the first operand, which is evaluated first.
+    GoIn(Box<Expr>, Box<Expr>),
     /// Concatenates its string parts (the desugaring of string interpolation).
     StrConcat(Vec<Expr>),
     If {
@@ -754,6 +757,12 @@ pub enum Intrinsic {
     WaitReal,
     /// `task.tick(dt: float)`: resumes the coroutines that are due.
     TaskTick,
+    /// `wait_for(signal: Signal)`: pauses until the signal is next emitted.
+    WaitFor,
+    /// `CoGroup()`
+    NewCoGroup,
+    /// `Signal()`
+    NewSignal,
 }
 
 /// The methods of the numeric types (DESIGN §5.1, Q6).
@@ -903,6 +912,15 @@ pub enum Builtin {
     CoroutineDone,
     /// `c.join() -> T`
     CoroutineJoin,
+    // ---- CoGroup and Signal (DESIGN §14.2) ----
+    /// `g.cancel()`
+    CoGroupCancel,
+    /// `g.count() -> int`
+    CoGroupCount,
+    /// `g.join_all()`
+    CoGroupJoinAll,
+    /// `s.emit()`
+    SignalEmit,
 }
 
 #[derive(Debug)]

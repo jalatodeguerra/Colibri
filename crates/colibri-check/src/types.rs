@@ -41,8 +41,13 @@ pub const ERROR_TYPE: TypeId = TypeId(11);
 /// empty generic `class`, like `Error`. `T` is the type the coroutine's function returns
 /// (what `join()` gives back).
 pub const COROUTINE_TYPE: TypeId = TypeId(12);
+/// The built-in `CoGroup` (DESIGN §14.2): a reference type that owns coroutines and cancels
+/// them when it dies.
+pub const COGROUP_TYPE: TypeId = TypeId(13);
+/// The built-in `Signal` (DESIGN §14.2): a reference type coroutines wait on with `wait_for`.
+pub const SIGNAL_TYPE: TypeId = TypeId(14);
 /// The first id a user-defined type can have.
-pub const FIRST_USER_TYPE: u32 = 13;
+pub const FIRST_USER_TYPE: u32 = 15;
 /// The index of `ok` in the prelude `Result`.
 pub const VARIANT_OK: u32 = 0;
 /// The index of `err` in the prelude `Result`.
