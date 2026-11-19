@@ -1544,7 +1544,7 @@ time and sleeping".
   (`none` at end of input), `read_all() -> Result[str]`. `print` stays a builtin.
 - `fs`: `read`, `read_bytes`, `write`, `write_bytes`, `append`, `exists`, `is_file`, `is_dir`,
   `list` (sorted names), `create_dir` (like `mkdir -p`), `remove`, `remove_dir` (an empty folder), `remove_tree` (a folder and everything in it), `copy`,
-  `rename`, `stat` (size, modified time as seconds since the Unix epoch, and more), `walk`, `set_modified`. Failures are `err` with the message of the OS error and the path.
+  `rename`, `stat` and `stat_follow` (size, modified time as seconds since the Unix epoch, and more; `stat_follow` follows a symlink), `walk`, `set_modified`. Failures are `err` with the message of the OS error and the path.
 - `path`: pure string functions with `/` separators only: `join`, `file_name`, `stem`, `ext`,
   `with_ext`, `parent`, `is_absolute`, `normalize`, `split`.
 - `os`: see the table; `args() -> List[str]`, `platform() -> str`, `env(name) -> Option[str]`,
@@ -1754,14 +1754,19 @@ output; weekday numbering; floats for instants and spans.
   created: float?, readonly: bool }`. `kind` is a `str` (`"file"`, `"dir"`, `"symlink"`,
   `"other"`) rather than an enum: std has no enum registration helper yet and the values
   compare and `match` fine as text. `stat` does not follow a final symlink (it uses
-  `symlink_metadata`), unlike `is_dir` (the former `fs.size`/`fs.modified` followed it; they are gone, `stat` has both fields). `created` is `none` where the
+  `symlink_metadata`), unlike `is_dir` (the former `fs.size`/`fs.modified` followed it; they are gone, `stat` has both fields, and `fs.stat_follow(path)` is `stat` through a symlink: the size and time of its target). `created` is `none` where the
   platform does not record it. Times are Unix seconds.
 - `fs.walk(path) -> Result[List[str]]`: every file and folder below `path`, relative to it,
   `/`-separated, sorted lexically as a whole (so a folder precedes its contents). Symlinks are
   listed but never followed, so a link cycle cannot loop. There is no `walk_files`; filter with
   `fs.stat(..).kind`.
-- `fs.remove_dir(path)` is non-recursive and fails with "directory not empty"; `fs.remove_tree(path)`
+- `fs.remove_dir(path)` is non-recursive and fails ("cannot remove the folder `p`: it is not empty (use `fs.remove_tree` ...)"); `fs.remove_tree(path)`
   is the recursive one (`remove_dir_all`). The plain name is the safe one.
+- A removed std function (`fs.size`, `fs.modified`, `fs.remove_empty_dir`, `str.pad_left`,
+  `str.pad_right`) gets a replacement hint on the "the module `std.fs` has no `size`" error
+  (`removed_item_hint` in `colibri-check/src/modules.rs`; add a line there when removing another).
+  The interface text of std has no doc comments (host registrations carry none), so the
+  `stat`/`stat_follow` difference is documented in the comments of `colibri-std/src/fs.rs` and here.
 - `fs.set_modified(path, unix_seconds) -> Result[()]` uses `File::set_modified` on a read-only
   handle (works for files and, on Unix, folders); non-finite or absurd times are an `err`.
 - `str` methods (byte offsets, like `find`): `rfind(sub) -> int?`, `split_once(sep)` and

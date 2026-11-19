@@ -767,3 +767,53 @@ fn main() {{
     .unwrap();
     assert_eq!(out.contents(), "false\n");
 }
+
+// ---- removed functions say what replaced them ----
+
+#[test]
+fn a_removed_function_names_its_replacement() {
+    let cases = [
+        ("fs", "size", "fs.stat(path)?.size"),
+        ("fs", "modified", "fs.stat(path)?.modified"),
+        ("fs", "remove_empty_dir", "fs.remove_dir"),
+        ("str", "pad_left", "s.pad_left(width)"),
+        ("str", "pad_right", "s.pad_right(width)"),
+    ];
+    for (module, item, hint) in cases {
+        let (mut first, _) = vm(&[colibri::Cap::Fs]);
+        // Qualified use, and a named import.
+        let qualified = compile_error(
+            &mut first,
+            &format!("import {module}\nfn main() {{\n    let _ = {module}.{item}(\"x\")\n}}\n"),
+        );
+        assert!(
+            qualified.contains(&format!("has no `{item}`")) && qualified.contains(hint),
+            "{module}.{item}: {qualified}"
+        );
+        let (mut second, _) = vm(&[colibri::Cap::Fs]);
+        let named = compile_error(
+            &mut second,
+            &format!("import {module}.{{{item}}}\nfn main() {{}}\n"),
+        );
+        assert!(named.contains(hint), "{module}.{{{item}}}: {named}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn stat_follow_looks_through_a_symlink_and_stat_does_not() {
+    let scratch = Scratch::new("stat-follow");
+    let dir = scratch.0.to_string_lossy().replace('\\', "/");
+    std::fs::write(scratch.0.join("target.txt"), "twelve bytes").unwrap();
+    std::os::unix::fs::symlink(scratch.0.join("target.txt"), scratch.0.join("link")).unwrap();
+    std::os::unix::fs::symlink(scratch.0.join("missing"), scratch.0.join("dangling")).unwrap();
+    let (mut vm, out) = vm(&[colibri::Cap::Fs]);
+    run(
+        &mut vm,
+        &format!(
+            "import fs\nfn main() -> Result[()] {{\n    let direct = fs.stat(\"{dir}/link\")?\n    let through = fs.stat_follow(\"{dir}/link\")?\n    print(\"{{direct.kind}} {{through.kind}} {{through.size}}\")\n    print(fs.stat_follow(\"{dir}/dangling\").is_err())\n    print(fs.stat(\"{dir}/dangling\")?.kind)\n    return ok(())\n}}\n"
+        ),
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "symlink file 12\ntrue\nsymlink\n");
+}

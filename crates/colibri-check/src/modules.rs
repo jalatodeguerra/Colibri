@@ -528,7 +528,9 @@ impl<'a> Checker<'a> {
             format!("the module `{path}` has no `{}`", name.name),
             name.span,
         );
-        if let Some(s) = suggest::closest(&name.name, candidates.iter().copied()) {
+        if let Some(hint) = removed_item_hint(path, &name.name) {
+            diag = diag.with_hint(hint);
+        } else if let Some(s) = suggest::closest(&name.name, candidates.iter().copied()) {
             diag = diag.with_hint(format!("did you mean `{s}`?"));
         } else if candidates.is_empty() {
             diag = diag.with_hint("it exports nothing; mark what should be visible with `pub`");
@@ -582,7 +584,9 @@ impl<'a> Checker<'a> {
             format!("the module `{}` has no `{member}`", info.name),
             span,
         );
-        if let Some(s) = suggest::closest(member, visible.iter().copied()) {
+        if let Some(hint) = removed_item_hint(&info.name, member) {
+            diag = diag.with_hint(hint);
+        } else if let Some(s) = suggest::closest(member, visible.iter().copied()) {
             diag = diag.with_hint(format!("did you mean `{alias}.{s}`?"));
         }
         Some(diag)
@@ -595,6 +599,20 @@ impl<'a> Checker<'a> {
             .contains_key(alias)
             .then_some((alias, member))
     }
+}
+
+/// What replaced a standard library function that was removed, for the diagnostic of a
+/// program that still uses it. `module` is the module as written (`fs`, `std.fs`).
+fn removed_item_hint(module: &str, item: &str) -> Option<&'static str> {
+    let module = module.strip_prefix("std.").unwrap_or(module);
+    Some(match (module, item) {
+        ("fs", "size") => "`fs.size` was removed: use `fs.stat(path)?.size`",
+        ("fs", "modified") => "`fs.modified` was removed: use `fs.stat(path)?.modified`",
+        ("fs", "remove_empty_dir") => "`fs.remove_empty_dir` was renamed: use `fs.remove_dir`",
+        ("str", "pad_left") => "`str.pad_left` was removed: use the method, `s.pad_left(width)`",
+        ("str", "pad_right") => "`str.pad_right` was removed: use the method, `s.pad_right(width)`",
+        _ => return None,
+    })
 }
 
 // ---- visibility of fields and methods ----
