@@ -997,3 +997,108 @@ Decisions the design documents did not fix:
 - `Callee::Host` methods do not appear in `// drops:` goldens: the golden harness has no host,
   so the exact messages and the drop order are tested in `crates/colibri-runtime/tests`.
 - A Rust `Drop` that panics is a Colibri panic at the next statement boundary (hook panics).
+
+## 12. Formatter (`colibri fmt`)
+
+`colibri fmt` is the canonical formatter of DESIGN §16.1: no options. It lives in the module
+`colibri_syntax::fmt` (`format_source(name, text) -> Result<String, Vec<Diagnostic>>`), not in a
+crate of its own: it needs exactly what `colibri-syntax` has (tokens with spans, the parser,
+`ast_dump`) and nothing else, so a new crate would only add a dependency edge. The CLI depends on
+`colibri-syntax` directly; the subcommand's logic is `crates/colibri-cli/src/fmt.rs`.
+
+### Design
+
+- **AST to document to text.** `fmt/print.rs` turns the AST into a `Doc` (`fmt/doc.rs`: text,
+  indent, `Line`/`SoftLine`/`HardLine`, `Group`, `IfBreak`, `LineSuffix`, plus `Either` and
+  `Pad`), the algebra of Wadler's pretty printer as Prettier uses it. A group is printed flat when
+  it fits in the rest of the line (width 100, measured in characters) and broken otherwise.
+- **Comments are not in the AST.** The lexer drops `//` and `/* */`. The formatter finds them
+  itself: everything between two significant tokens is whitespace and comments, and a string
+  (with its `{..}` holes) is one token, so a `//` inside a string is never a comment. Comments are
+  handed out in source order while the document is built, which keeps them in order by
+  construction:
+  - an own-line comment goes on its own line before the element that follows it (statements,
+    items, fields, variants, arms, list elements, method-chain links, operands, `else`);
+  - a comment after code on the same line stays at the end of that line, one space after it
+    (`LineSuffix`; it forces the groups around it to break, since nothing may follow a `//`
+    comment on a line);
+  - a short `/* .. */` followed by code on its line stays inline;
+  - a comment before a closing `}`, `)` or `]` stays before it, after the last element;
+  - a comment anywhere else (inside an expression where no line break is possible, such as
+    between an operator and its operand on one line) moves to the end of the line of the
+    enclosing element. It is never dropped.
+  A doc comment (`///`) is always on its own line before the next element, so it keeps attaching
+  to the same item.
+- **Safety net.** `format_source` re-parses its output and returns an "internal formatter error"
+  instead of the text if the program (`ast_dump` equal, so also the doc comments) or the multiset
+  of comments differs. The tests run it over every golden file, with comments injected at the
+  end, before and inside every line, and over the DESIGN.md examples; the net never fires.
+- **Refuses syntax errors.** A file the parser reports errors for is returned as its
+  diagnostics and never touched.
+
+### Rules
+
+- 4-space indent, one statement per line, `;` removed, spaces around binary operators, `=`, `=>`,
+  `->` and after `,` `:`; none around `..`/`..=`, `.`, unary operators, inside `( )` and `[ ]`
+  and inside map literals `{"a": 1}`; one space inside `{ }` of struct literals and patterns. No
+  trailing whitespace, one final newline, `\r\n` becomes `\n`.
+- Blank lines: a run of them becomes one, kept between statements, items, fields, arms and
+  comments; none at the start or end of a block or file. The formatter never adds one.
+- **Lists** (arguments, parameters, generic parameters and arguments, list/map/struct literals,
+  tuples, variant payloads, imports, struct patterns) are printed on one line if they fit; if
+  not, one element per line with a trailing comma. *Magic trailing comma:* a list that has a
+  trailing comma followed by a line break stays one element per line. A list with a trailing
+  comma on the same line, or with the elements on separate lines but no trailing comma, is
+  collapsed if it fits. A one-element tuple always keeps its comma.
+- **Blocks.** `{}` when empty. A block with exactly one statement or tail expression that was
+  written on one line stays on one line if it fits (`if x { 1 } else { 2 }`, `fn f() { g() }`);
+  anything else is expanded, including a block whose single statement is itself a block
+  construct (`if`, `match`, `for`, `while`, a bare block): `for x in xs { if a { f() } else { g() } }`
+  expands the `for` body, and the inner `if` may then stay on one line. Blocks of expressions
+  in expression position (`let a = if c { 1 } else { 2 }`, `fn() { g() }`) are not affected. A block never has `;` between statements. The one `;` that stays is
+  after the last statement of a block when it is an expression statement, because it is what
+  keeps the expression from being the value of the block (`{ g(); }` and `{ g() }` are
+  different programs); likewise a statement that ends in an open range (`let a = 0..;`) and a
+  `match` arm that does (`0..,`), since a line break after `..` does not end a statement.
+- **Declarations.** `struct`/`class`/`enum` bodies are one field or variant per line, without
+  commas; one written on one line and fitting stays `enum Dir { North, East }`. Attributes are
+  one per line before the item. `impl`, `interface` and `extern` members are always expanded.
+- **Long expressions** break at the places where DESIGN §3.2 makes it legal:
+  - method chains with two or more method calls (`.name(..)` with a lower-case name) break
+    before each `.`, indented once, when they do not fit on one line; a `.Name` with a capital
+    never starts a line (§3.2 rule 3: it would read as a `match` arm);
+  - chains of `&&`, `||` and `or` break before the operator (rule 3 again), one operand per line;
+  - every other binary operator stays at the end of its line, which continues the statement
+    under rule 1; operators of different precedence nest, so `a && b || c` breaks at the `||`
+    first;
+  - a last argument that is a closure with a block, a `match` or a call that ends in one stays
+    on the line of the call (`xs.for_each(fn(x) {`, `print(match a {`), as does the last operand of a
+    chain (`"a" + match x {`), provided the part before it fits.
+- **`match` arms** are one per line, no separators; consecutive arms with a one-line body
+  have their `=>` aligned (the longest pattern plus guard sets the column); a blank line, a
+  comment or an arm with a multi-line body ends a run.
+- **Strings** (including raw and multi-line strings) are copied as written. Interpolation holes
+  are not reformatted: `"{x+1}"` stays. Numeric and char literals are copied as written
+  (`0xFF`, `1_000`). `else` goes on the line of the closing `}` (unless a comment sits between,
+  then it keeps its own line, which rule 3 allows).
+- The parenthesised forms the parser keeps (`(a + b)`, `(weak Node)?`, `(fn(int) -> int)?`,
+  `(a as n) | b`) keep their parentheses; the formatter adds none that are not needed and drops
+  none.
+
+### Decisions the design documents did not fix
+
+- Alignment is done for `match` arms only (as in DESIGN's examples). Trailing comments are not
+  aligned with each other: each is one space after its code. Struct fields are not aligned.
+- No "last element may hug" for list literals, only for the constructs above.
+- Method chains collapse onto one line when they fit, even if the source had them broken.
+- `colibri fmt --check` is the one flag (CI); `colibri fmt -` filters stdin to stdout.
+
+### Known limitations
+
+- Comments inside an expression at a place where no line break is possible move to the end of the
+  line of their statement (`f(a /* x */ + b)` becomes `f(a + /* x */ b)`; a `//` comment between
+  `a` and `+` on one line goes to the end of the line). Their text and order are kept.
+- Trailing whitespace inside multi-line comments and strings is kept: they are copied.
+- A very long string, a long pattern or a long type is never broken; lines can exceed 100
+  columns where there is no place to break.
+- `.cbi` interface files are not formatted by the CLI (only `*.colibri`).

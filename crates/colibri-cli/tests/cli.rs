@@ -293,3 +293,121 @@ fn check_refuses_an_edited_interface_file() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("edited.cbi"));
 }
+
+// ---- colibri fmt ----
+
+use std::io::Write;
+use std::process::Stdio;
+
+/// A fresh empty directory for one test.
+fn temp_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("colibri-fmt-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    dir
+}
+
+fn write(dir: &std::path::Path, name: &str, text: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+const MESSY: &str = "fn main() {\n  print(1);  print(2)\n}\n";
+const TIDY: &str = "fn main() {\n    print(1)\n    print(2)\n}\n";
+
+#[test]
+fn fmt_rewrites_files_in_place() {
+    let dir = temp_dir("rewrite");
+    let path = write(&dir, "a.colibri", MESSY);
+    let out = colibri(&["fmt", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), TIDY);
+    // A second run changes nothing.
+    let out = colibri(&["fmt", "--check", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn fmt_check_lists_files_that_would_change_and_changes_nothing() {
+    let dir = temp_dir("check");
+    let messy = write(&dir, "messy.colibri", MESSY);
+    let tidy = write(&dir, "tidy.colibri", TIDY);
+    let out = colibri(&[
+        "fmt",
+        "--check",
+        messy.to_str().unwrap(),
+        tidy.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("messy.colibri"), "{stderr}");
+    assert!(!stderr.contains("tidy.colibri"), "{stderr}");
+    assert_eq!(std::fs::read_to_string(&messy).unwrap(), MESSY);
+}
+
+#[test]
+fn fmt_walks_directories_but_skips_target_and_hidden_ones() {
+    let dir = temp_dir("walk");
+    let a = write(&dir, "src/a.colibri", MESSY);
+    let b = write(&dir, "b.colibri", MESSY);
+    let skipped = [
+        write(&dir, "target/t.colibri", MESSY),
+        write(&dir, ".hidden/h.colibri", MESSY),
+        write(&dir, "notes.txt", MESSY),
+    ];
+    let out = colibri(&["fmt", dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(std::fs::read_to_string(a).unwrap(), TIDY);
+    assert_eq!(std::fs::read_to_string(b).unwrap(), TIDY);
+    for path in skipped {
+        assert_eq!(std::fs::read_to_string(path).unwrap(), MESSY);
+    }
+}
+
+#[test]
+fn fmt_without_a_path_formats_the_current_directory() {
+    let dir = temp_dir("cwd");
+    let path = write(&dir, "x/a.colibri", MESSY);
+    let out = Command::new(env!("CARGO_BIN_EXE_colibri"))
+        .arg("fmt")
+        .current_dir(&dir)
+        .output()
+        .expect("the colibri binary runs");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), TIDY);
+}
+
+#[test]
+fn fmt_refuses_files_with_syntax_errors_and_leaves_them_alone() {
+    let dir = temp_dir("refuse");
+    let bad = write(&dir, "bad.colibri", "let x = (1 2)\n");
+    let good = write(&dir, "good.colibri", MESSY);
+    let out = colibri(&["fmt", bad.to_str().unwrap(), good.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("expected `,` or `)`"));
+    assert_eq!(std::fs::read_to_string(&bad).unwrap(), "let x = (1 2)\n");
+    // The other file is still formatted.
+    assert_eq!(std::fs::read_to_string(&good).unwrap(), TIDY);
+}
+
+#[test]
+fn fmt_dash_formats_stdin_to_stdout() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+        .args(["fmt", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the colibri binary runs");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(MESSY.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), TIDY);
+}
