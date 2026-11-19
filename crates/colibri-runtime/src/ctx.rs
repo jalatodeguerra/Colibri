@@ -123,12 +123,14 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// [`Ctx::run_async`] for work that can stop early: `work` is given a flag that is set
-    /// when the waiting coroutine is cancelled. A long operation (a child process) polls it and
-    /// gives up, so that it does not go on holding a pool thread for a result nobody wants.
+    /// [`Ctx::run_async`] for work that can stop early: `work` is given a [`CancelToken`]
+    /// that is cancelled when the waiting coroutine is cancelled, or when the `Vm` ends while
+    /// the operation runs. The token's hooks run on the cancelling side before it goes on: an
+    /// operation that holds a child process registers a hook that kills it (`process.run`
+    /// does), so nothing is left running and no pool thread waits for a result nobody wants.
     pub fn run_async_cancellable<R: Send + 'static>(
         &mut self,
-        work: impl FnOnce(&std::sync::atomic::AtomicBool) -> R + Send + 'static,
+        work: impl FnOnce(&colibri_interp::CancelToken) -> R + Send + 'static,
     ) -> R {
         match self.interp.await_external_with(self.fiber, work) {
             Ok(r) => r,

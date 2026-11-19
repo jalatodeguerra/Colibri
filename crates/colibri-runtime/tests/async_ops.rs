@@ -361,3 +361,77 @@ fn main() {
     vm.run_main().unwrap();
     assert_eq!(out.contents(), "released 48\n");
 }
+
+/// Cancelling runs the operation's hooks before `cancel()` returns, however far the
+/// operation is (here: it has not looked at anything for 30 s).
+#[test]
+fn a_cancel_hook_has_run_when_cancel_returns() {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    let hooked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let h = hooked.clone();
+    vm.register_fn("hang", move |cx: &mut colibri::Ctx| {
+        let h = h.clone();
+        cx.run_async_cancellable(move |token| {
+            let h = h.clone();
+            token.on_cancel(move || h.store(true, Ordering::SeqCst));
+            let start = std::time::Instant::now();
+            while !token.is_cancelled() && start.elapsed() < Duration::from_secs(30) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })
+    })
+    .unwrap();
+    let h = hooked.clone();
+    vm.register_fn("hooked", move || h.load(Ordering::SeqCst))
+        .unwrap();
+    vm.load_source(
+        "a.colibri",
+        r#"
+fn waiter() {
+    hang()
+}
+fn main() {
+    let c = go waiter()
+    wait(0.1)
+    c.cancel()
+    print("hook ran: {hooked()}")
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "hook ran: true\n");
+}
+
+/// Ending the `Vm` cancels what still runs.
+#[test]
+fn dropping_the_vm_cancels_running_operations() {
+    let mut vm = colibri::Vm::builder().build();
+    let hooked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (h, s) = (hooked.clone(), started.clone());
+    vm.register_fn("hang", move |cx: &mut colibri::Ctx| {
+        let (h, s) = (h.clone(), s.clone());
+        cx.run_async_cancellable(move |token| {
+            let h = h.clone();
+            token.on_cancel(move || h.store(true, Ordering::SeqCst));
+            s.store(true, Ordering::SeqCst);
+            let start = std::time::Instant::now();
+            while !token.is_cancelled() && start.elapsed() < Duration::from_secs(30) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })
+    })
+    .unwrap();
+    vm.load_source(
+        "a.colibri",
+        "fn waiter() { hang() }\nfn main() {\n    go waiter()\n    wait(0.1)\n}\n",
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    assert!(started.load(Ordering::SeqCst));
+    assert!(!hooked.load(Ordering::SeqCst));
+    drop(vm);
+    assert!(hooked.load(Ordering::SeqCst));
+}

@@ -1697,10 +1697,18 @@ Output is drained on threads, so a program writing a lot cannot deadlock.
 
 Blocking: `run`, `run_with`, `shell` and `status` wait on a background thread through
 `Ctx::run_async_cancellable` (§22): inside a coroutine only that coroutine waits and the others
-keep running, and on the main fiber the wait runs the event loop. The thread polls
-`try_wait` with short naps (0.1 ms growing to 5 ms) so that it can see the cancel flag:
-cancelling the waiting coroutine kills the program (and does not hold a pool thread for it). A
-grandchild that the program started keeps running, as with any kill. `Child.join` and
+keep running, and on the main fiber the wait runs the event loop. The running
+program is shared (`Arc<Mutex<Child>>`) between the worker and a hook on the operation's
+`CancelToken` (`colibri_interp::CancelToken`, handed out by `run_async_cancellable`): whoever
+cancels runs the hook synchronously, which kills and collects the program before `cancel()`
+returns, and the `Vm`'s drop cancels every operation still running (`Externals::drop`), so a
+program that panics, calls `os.exit` or just ends does not leave children behind (the CLI drops
+its `Vm` before it exits; `crates/colibri-cli/tests/children.rs`). Children are not put in a
+process group, so Ctrl-C from the terminal still reaches them and `status` keeps the terminal.
+On Linux and macOS the worker blocks in `waitid(WEXITED | WNOWAIT)` (no polling, and the process
+is not collected until the lock holder does it, so a kill never hits a reused process number);
+elsewhere it polls `try_wait` with naps growing from 0.1 ms to 5 ms. A grandchild that the
+program started keeps running, as with any kill: `process.shell` kills only the shell. `Child.join` and
 `Child.kill` still block the whole `Vm`: a host object stays borrowed while a method runs, so a
 method cannot suspend. For concurrency with a `Child`,
 `spawn` returns at once with a host class `Child` (`id()`, `try_wait() -> Result[Option[Output]]`,

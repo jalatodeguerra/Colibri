@@ -10,11 +10,11 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child as OsChild, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use colibri_runtime::{Cap, Ctx, Error, HostType, TypeBuilder, Vm};
+use colibri_runtime::{CancelToken, Cap, Ctx, Error, HostType, TypeBuilder, Vm};
 
 use crate::config::State;
 use crate::fs::reason;
@@ -123,25 +123,76 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<Vec<u8>> {
     })
 }
 
-/// Waits for `child`, giving up when `cancelled` is set: the child is killed then, so that it
-/// neither goes on running nor keeps a pool thread waiting for it.
-fn wait_for(
-    child: &mut OsChild,
-    program: &str,
-    cancelled: &AtomicBool,
-) -> Result<ExitStatus, String> {
-    // Short naps at first, so that a quick program costs almost nothing, then longer ones.
+/// A program a background operation waits for. The operation and whoever cancels it (the
+/// waiting coroutine, or the `Vm` ending) share it, so the canceller can kill the program
+/// itself instead of leaving it to the worker, which may not look for a while (or ever, when
+/// the process is about to exit).
+type Shared = Arc<Mutex<OsChild>>;
+
+fn lock(child: &Shared) -> std::sync::MutexGuard<'_, OsChild> {
+    child
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Makes `child` shared and has `token` kill it, and reap it, when it is cancelled. Not a
+/// process group: Ctrl-C from the terminal reaches the program as before. `process.shell`
+/// kills only the shell (a program the shell started is not a child of ours).
+fn share(child: OsChild, token: &CancelToken) -> Shared {
+    let child = Arc::new(Mutex::new(child));
+    let victim = Arc::clone(&child);
+    token.on_cancel(move || {
+        let mut child = lock(&victim);
+        // Both fail when it has already ended and been collected, which is fine.
+        let _ = child.kill();
+        let _ = child.wait();
+    });
+    child
+}
+
+/// Blocks until the process has ended, without collecting its status (so a kill by the other
+/// side stays safe: the process number is not reused while it is not collected). Where this
+/// is not available the caller polls.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn block_until_ended(pid: u32) {
+    // SAFETY: `info` is a plain out-parameter that is only written; `pid` is our child.
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        loop {
+            let r = libc::waitid(
+                libc::P_PID,
+                libc::id_t::from(pid),
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            );
+            // Interrupted: again. Anything else (it was collected by the canceller already):
+            // the caller finds out with `try_wait`.
+            if r == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn block_until_ended(_pid: u32) {}
+
+/// Waits for `child`. If `token` is cancelled the child has been killed (by its hook) and
+/// this gives up.
+fn wait_for(child: &Shared, program: &str, token: &CancelToken) -> Result<ExitStatus, String> {
+    let pid = lock(child).id();
+    block_until_ended(pid);
+    // Where `block_until_ended` does nothing, short naps at first so that a quick program
+    // costs almost nothing, then longer ones.
     let mut nap = Duration::from_micros(100);
     loop {
-        match child.try_wait() {
+        if token.is_cancelled() {
+            return Err(format!("`{program}` was stopped: its caller was cancelled"));
+        }
+        match lock(child).try_wait() {
             Ok(Some(status)) => return Ok(status),
             Ok(None) => {}
             Err(e) => return Err(format!("cannot wait for `{program}`: {}", reason(&e))),
-        }
-        if cancelled.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("`{program}` was stopped: its caller was cancelled"));
         }
         std::thread::sleep(nap);
         nap = (nap * 2).min(Duration::from_millis(5));
@@ -153,13 +204,14 @@ fn run_to_end(
     mut cmd: Command,
     program: &str,
     opts: &Options,
-    cancelled: &AtomicBool,
+    token: &CancelToken,
 ) -> Result<Output, String> {
     let mut child = cmd.spawn().map_err(|e| start_error(program, opts, &e))?;
     let feeder = feed(&mut child, opts.input.clone());
     let out = drain(child.stdout.take());
     let err = drain(child.stderr.take());
-    let status = wait_for(&mut child, program, cancelled)?;
+    let child = share(child, token);
+    let status = wait_for(&child, program, token)?;
     if let Some(feeder) = feeder {
         let _ = feeder.join();
     }
@@ -172,11 +224,11 @@ fn run_to_end(
 
 /// Waits for the program and collects its output. The waiting happens on a background thread
 /// (`Ctx::run_async_cancellable`): inside a coroutine only that coroutine waits, the others keep
-/// running, and cancelling it stops the program.
+/// running, and cancelling it (or ending the `Vm`) kills the program before it goes on.
 fn run(cx: &mut Ctx, program: &str, args: &[String], opts: &Options) -> Result<Output, String> {
     let cmd = command(cx, program, args, opts, true);
     let (program, opts) = (program.to_string(), opts.clone());
-    cx.run_async_cancellable(move |cancelled| run_to_end(cmd, &program, &opts, cancelled))
+    cx.run_async_cancellable(move |token| run_to_end(cmd, &program, &opts, token))
 }
 
 /// `run` without capturing: the program shares this one's standard output and error.
@@ -184,9 +236,10 @@ fn run_inheriting(cx: &mut Ctx, program: &str, args: &[String]) -> Result<i64, S
     let opts = Options::default();
     let mut cmd = command(cx, program, args, &opts, false);
     let program = program.to_string();
-    cx.run_async_cancellable(move |cancelled| {
-        let mut child = cmd.spawn().map_err(|e| start_error(&program, &opts, &e))?;
-        wait_for(&mut child, &program, cancelled).map(status_code)
+    cx.run_async_cancellable(move |token| {
+        let child = cmd.spawn().map_err(|e| start_error(&program, &opts, &e))?;
+        let child = share(child, token);
+        wait_for(&child, &program, token).map(status_code)
     })
 }
 

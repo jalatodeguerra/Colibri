@@ -109,6 +109,54 @@ pub enum ExternalError {
     Failed(String),
 }
 
+/// Tells a background operation that nobody waits for its result any more. Cancelling is
+/// synchronous: the hooks given to [`CancelToken::on_cancel`] run on the cancelling side,
+/// before it goes on. An operation that holds something that must not outlive its waiter (a
+/// child process) registers a hook that releases it, instead of noticing a flag some time
+/// later.
+#[derive(Default)]
+pub struct CancelToken {
+    flag: AtomicBool,
+    hooks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+}
+
+impl CancelToken {
+    /// Whether the waiter has given up.
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Runs `hook` when the operation is cancelled, on the cancelling thread; at once if it
+    /// has been. A hook runs at most once and must not wait for the operation.
+    pub fn on_cancel(&self, hook: impl FnOnce() + Send + 'static) {
+        let mut hooks = self
+            .hooks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Checked under the lock `cancel` takes, so a hook is never lost between the two.
+        if self.is_cancelled() {
+            drop(hooks);
+            hook();
+        } else {
+            hooks.push(Box::new(hook));
+        }
+    }
+
+    fn cancel(&self) {
+        let hooks = {
+            let mut hooks = self
+                .hooks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.flag.store(true, Ordering::SeqCst);
+            std::mem::take(&mut *hooks)
+        };
+        for hook in hooks {
+            hook();
+        }
+    }
+}
+
 /// A piece of background work for the pool.
 type Job = Box<dyn FnOnce() + Send>;
 
@@ -239,6 +287,10 @@ struct Externals {
     rx: mpsc::Receiver<u64>,
     /// Started and not yet finished or abandoned.
     pending: HashSet<u64>,
+    /// The tokens of the operations in `pending` that can still be cancelled. When the
+    /// scheduler is dropped (the `Vm` ends) they are cancelled, so a child process does not
+    /// outlive the program.
+    tokens: HashMap<u64, Arc<CancelToken>>,
     /// Finished, not yet collected by the waiter.
     completed: HashSet<u64>,
 }
@@ -251,8 +303,15 @@ impl Externals {
             tx,
             rx,
             pending: HashSet::new(),
+            tokens: HashMap::new(),
             completed: HashSet::new(),
         }
+    }
+
+    /// The operation is over for the waiter, whichever way.
+    fn forget(&mut self, id: u64) {
+        self.pending.remove(&id);
+        self.tokens.remove(&id);
     }
 
     fn note(&mut self, id: u64) {
@@ -277,6 +336,14 @@ impl Externals {
                 true
             }
             Err(_) => false,
+        }
+    }
+}
+
+impl Drop for Externals {
+    fn drop(&mut self) {
+        for (_, token) in self.tokens.drain() {
+            token.cancel();
         }
     }
 }
@@ -1286,25 +1353,27 @@ impl Interp {
         self.await_external_with(fiber, move |_| work())
     }
 
-    /// [`Interp::await_external`] for work that can stop early: `work` is given a flag that is
-    /// set when the waiting coroutine is cancelled, which a long operation (a child process)
-    /// polls so that it does not go on holding a pool thread for nothing.
+    /// [`Interp::await_external`] for work that can stop early: `work` is given a
+    /// [`CancelToken`] that is cancelled when the waiting coroutine is cancelled or the `Vm`
+    /// ends. An operation that holds a child process registers a hook that kills it; the hook
+    /// runs on the cancelling side before it goes on, so nothing is left running.
     pub fn await_external_with<R: Send + 'static>(
         &mut self,
         fiber: &mut Fiber,
-        work: impl FnOnce(&AtomicBool) -> R + Send + 'static,
+        work: impl FnOnce(&CancelToken) -> R + Send + 'static,
     ) -> Result<R, ExternalError> {
         let op = self.sched.next_id;
         self.sched.next_id += 1;
         let (result_tx, result_rx) = mpsc::channel::<Result<R, String>>();
         let notify = Notify(self.sched.ext.tx.clone(), op);
         // Set when the waiter gives up, so an operation still in the queue is not run.
-        let abandoned = Arc::new(AtomicBool::new(false));
-        let skip = Arc::clone(&abandoned);
+        let token = Arc::new(CancelToken::default());
+        let skip = Arc::clone(&token);
         self.sched.ext.pending.insert(op);
+        self.sched.ext.tokens.insert(op, Arc::clone(&token));
         let queued = self.sched.ext.pool.submit(Box::new(move || {
             let _notify = notify;
-            if skip.load(Ordering::SeqCst) {
+            if skip.is_cancelled() {
                 return;
             }
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&skip)))
@@ -1312,7 +1381,7 @@ impl Interp {
             let _ = result_tx.send(outcome);
         }));
         if let Err(message) = queued {
-            self.sched.ext.pending.remove(&op);
+            self.sched.ext.forget(op);
             return Err(ExternalError::Failed(message));
         }
         let coro = fiber.coro.as_ref().map(|c| c.id);
@@ -1321,7 +1390,7 @@ impl Interp {
             let mut outcome = Ok(());
             while !self.sched.ext.completed.contains(&op) {
                 if self.suspend(fiber, id, Wake::External(op)).is_err() {
-                    abandoned.store(true, Ordering::SeqCst);
+                    token.cancel();
                     outcome = Err(ExternalError::Cancelled);
                     break;
                 }
@@ -1333,10 +1402,10 @@ impl Interp {
         } else {
             // Nothing can run meanwhile: block this thread until the result is there.
             let blocked = result_rx.recv();
-            self.sched.ext.pending.remove(&op);
+            self.sched.ext.forget(op);
             return unwrap_outcome(blocked.map_err(|_| ()));
         };
-        self.sched.ext.pending.remove(&op);
+        self.sched.ext.forget(op);
         self.sched.ext.completed.remove(&op);
         waited?;
         unwrap_outcome(result_rx.try_recv().map_err(|_| ()))

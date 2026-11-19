@@ -303,8 +303,10 @@ loop {
   blocks. Rules: do not hold a borrow of host objects across the call (other coroutines run);
   if the coroutine is cancelled while waiting, the host function is unwound by a Rust panic
   that the trampoline turns into a clean cancellation (the result is discarded; work that has not started yet never runs); a panic of the work is a Colibri panic of the caller. Work that can
-  stop early takes `cx.run_async_cancellable(|cancelled| ..)`, which hands it a flag that is
-  set on cancellation (`process.run` kills its program that way); work that blocks for a long
+  stop early takes `cx.run_async_cancellable(|token| ..)`, which hands it a `CancelToken`: it is
+  cancelled when the coroutine is cancelled or the `Vm` is dropped, and `token.on_cancel(hook)`
+  registers a hook that runs on the cancelling side before it goes on (`process.run` kills its
+  program in one, so none is left running); work that blocks for a long
   time holds its thread meanwhile, which costs a stack and nothing else. A host driving `vm.tick(dt)` itself gets
   the completions at its ticks. `http` and `process` are built on it (ARCHITECTURE §22).
 - The `Clock` trait has a third method with a default, `sleep_interruptible(seconds, wake)`,
