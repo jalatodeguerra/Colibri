@@ -194,7 +194,11 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     on_big_stack(move || match cli.command {
         Command::Check { file, interfaces } => {
-            match check(&file.unwrap_or_else(|| PathBuf::from(".")), &interfaces, true) {
+            match check(
+                &file.unwrap_or_else(|| PathBuf::from(".")),
+                &interfaces,
+                true,
+            ) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(code) => code,
             }

@@ -432,7 +432,7 @@ impl Interp {
                 }
                 // Only a completion (which ends the sleep) can wake it.
                 Wake::External(_) => f64::INFINITY,
-                Wake::Ready | Wake::Join(_) | Wake::Group(_) | Wake::Signal(_) => poll
+                Wake::Ready | Wake::Join(_) | Wake::Group(_) | Wake::Signal(_) => poll,
             };
             best = Some(best.map_or(delay, |b| b.min(delay)));
         }

@@ -561,5 +561,8 @@ fn converting_text_to_a_number_points_at_the_parse_functions() {
     assert!(h.contains("parse_int") && h.contains("`u8(..)`"), "{h}");
     // Other types keep the general hint.
     let h = hint("let a = int(true)\n");
-    assert!(h.contains("converts between number types; this is a `bool`"), "{h}");
+    assert!(
+        h.contains("converts between number types; this is a `bool`"),
+        "{h}"
+    );
 }

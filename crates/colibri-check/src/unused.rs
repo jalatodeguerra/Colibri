@@ -5,12 +5,12 @@
 
 use std::collections::HashSet;
 
-use colibri_syntax::ast::{
-    ArmBody, Arg, Block, Closure, Expr, ExprKind, File, FnBody, GenericParam, IndexArg, Item,
-    ItemKind, LetStmt, Pat, PatKind, Stmt, StmtKind, StrSeg, TopLevel, TypeExpr, TypeKind,
-    VariantPayload, ImportKind,
-};
 use colibri_syntax::Diagnostic;
+use colibri_syntax::ast::{
+    Arg, ArmBody, Block, Closure, Expr, ExprKind, File, FnBody, GenericParam, ImportKind, IndexArg,
+    Item, ItemKind, LetStmt, Pat, PatKind, Stmt, StmtKind, StrSeg, TopLevel, TypeExpr, TypeKind,
+    VariantPayload,
+};
 
 use crate::checker::Checker;
 use crate::modules::ModKind;
@@ -334,7 +334,10 @@ impl Mentions {
 
     fn pat(&mut self, p: &Pat) {
         match &p.kind {
-            PatKind::Wild | PatKind::Lit(_) | PatKind::Range { .. } | PatKind::None
+            PatKind::Wild
+            | PatKind::Lit(_)
+            | PatKind::Range { .. }
+            | PatKind::None
             | PatKind::Error => {}
             // A bare name may be a unit variant or a constant, so it counts as a mention.
             PatKind::Ident(id) => self.name(&id.name),
@@ -409,10 +412,7 @@ impl Checker<'_> {
                                 if !bound.name.starts_with('_') && !used.0.contains(&bound.name) {
                                     found.push(
                                         Diagnostic::warning(
-                                            format!(
-                                                "unused import `{}` from `{path}`",
-                                                bound.name
-                                            ),
+                                            format!("unused import `{}` from `{path}`", bound.name),
                                             bound.span,
                                         )
                                         .with_hint("remove it from the import list"),

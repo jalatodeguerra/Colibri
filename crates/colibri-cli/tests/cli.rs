@@ -701,13 +701,20 @@ fn new_creates_a_package_that_checks_runs_and_passes_its_tests() {
 
     let out = colibri(&["check", d]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert!(out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let out = colibri(&["run", d]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "Hello, world!\n");
     let out = colibri(&["test", d]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+        "{out:?}"
+    );
 
     // A folder with something in it is left alone.
     let out = colibri(&["new", d]);

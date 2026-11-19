@@ -162,6 +162,7 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 /// }
 /// ```
 pub use colibri_bind::export;
+pub use colibri_check::package::is_package_name;
 pub use colibri_interp::Leak;
 pub use colibri_interp::{Clock, DEFAULT_NATIVE_STACK_BUDGET, SystemClock};
 pub use colibri_syntax::{Diagnostic, Severity, SourceMap, Span};
@@ -175,7 +176,6 @@ pub use glam;
 pub use handle::{Handle, Ref, RefMut};
 pub use host::{HostFault, HostFn, Plain, RawHostFn, Registration, WithCtx};
 pub use iface::Interface;
-pub use colibri_check::package::is_package_name;
 pub use reload::{ReloadOptions, ReloadOutcome};
 pub use render::render_diagnostic;
 pub use types::{SigDesc, TypeDesc, TypeRegistry};
@@ -315,9 +315,9 @@ fn check_entry(
     let loaded =
         colibri_check::package::load_with(fs, &mut sources, entry, &env.named_modules(), options)
             .map_err(|e| Error::Io {
-                path: e.path,
-                message: e.message,
-            })?;
+            path: e.path,
+            message: e.message,
+        })?;
     let mut diagnostics = loaded.diagnostics.clone();
     // A tree with syntax errors would only produce follow-on errors.
     if !loaded.has_errors() {

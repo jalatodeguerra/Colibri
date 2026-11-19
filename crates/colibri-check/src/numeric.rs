@@ -163,7 +163,10 @@ impl FnCtx<'_, '_> {
                     } else if name == "int" {
                         ("parse_int", String::new())
                     } else {
-                        ("parse_int", format!(", then `{name}(..)` if you need that type"))
+                        (
+                            "parse_int",
+                            format!(", then `{name}(..)` if you need that type"),
+                        )
                     };
                     format!(
                         "`{name}(x)` converts between number types, not text; to read a number from a `str`, `import str` and call `str.{parse}(text)`, which gives a `Result`{then}"

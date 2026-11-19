@@ -20,10 +20,12 @@ test \"greeting names who it greets\" {
 /// Creates the package in `dir`; its name is the last part of the path. `Err` is a message
 /// for the user.
 pub fn create(dir: &Path) -> Result<(), String> {
-    let name = dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| format!("`{}` has no folder name to use as the package name", dir.display()))?;
+    let name = dir.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+        format!(
+            "`{}` has no folder name to use as the package name",
+            dir.display()
+        )
+    })?;
     if !colibri_runtime::is_package_name(name) {
         return Err(format!(
             "`{name}` is not a valid package name: use letters, digits and `_`, not starting with a digit (it is what `import` says)"
