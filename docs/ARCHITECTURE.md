@@ -2986,9 +2986,10 @@ coroutine runs on a native stack of its own, and a host function called from it 
 like any evaluator frame. So the mechanism is `Ctx::run_async(work)`, called inside the host
 function (host depth 1):
 
-1. `Interp::await_external` allocates an operation id and queues `work` on the interpreter's
-   thread pool (`Pool`: workers are started when work arrives and all are busy, at most twice the
-   cores clamped to 8..=16; further operations wait in the queue). The job sends the result on a
+1. `Interp::await_external` allocates an operation id and starts `work` on the interpreter's
+   thread pool (`Pool`: an idle worker takes it, otherwise a new thread is started; there is no
+   upper limit and a job never waits behind a blocked worker. Workers wait for more work and the
+   ones above four end after 5 s idle). The job sends the result on a
    one-shot channel and, from a drop guard (so also when `work` panics; a panic does not end the
    worker), posts the id on the scheduler's completion channel (`Externals`: pending and
    completed sets).
@@ -3005,7 +3006,7 @@ function (host depth 1):
    host function with a Rust panic payload (`RaisedCancel`, like `Ctx::raise`) that the trampoline
    turns into `HostFault::Cancel`, which `call_host` maps to `Ctl::Cancel`. Work that already runs
    finishes by itself and its result is dropped (the id is no longer pending, so the late
-   completion is ignored); work still in the queue is flagged and skipped.
+   completion is ignored); work whose thread has not begun it is flagged and skipped.
 5. Outside a coroutine (the main fiber) the call drives the loop until the completion arrives, so
    coroutines started earlier keep running during a blocking `http.get` in `main`. Where driving is
    impossible (a host callback on the way, a `Drop` hook, a tick) it blocks on the channel.
@@ -3020,10 +3021,13 @@ responses: with `--concurrency 4` the server sees four requests in flight at onc
 ### Decisions the design documents did not fix
 
 `wait(s)` on the main fiber runs the loop (rather than panicking); one general facility
-(`Ctx::run_async`) instead of an http-only one. It first used a thread per operation; it now uses a small
-fixed pool (8 to 16 threads) so that starting thousands of operations does not start thousands of
-threads. The cost: an operation that waits long (a slow request, a child process) holds its thread,
-and once the pool is full later operations queue behind it; the host function stays
+(`Ctx::run_async`) instead of an http-only one. It first used a thread per operation; it now reuses threads
+(idle ones wait a few seconds, those above four then end). A fixed-size pool was tried and
+dropped: operations that wait (a request answered only after a later request, a long child
+process) held a worker each, so a later operation, even one that would have unblocked them or one
+with a short timeout, waited in the queue behind them (a deadlock for programs that worked with a
+thread per operation). So there is no cap; an operation that waits long holds its thread, which
+costs a stack. The host function stays
 on the coroutine's stack while waiting (so it must hold no borrows; documented); main-fiber `http`
 drives the loop; `HostFault::Cancel` is a new public variant, and `Clock` gained a defaulted
 method. Suspending inside a host function is exactly what §3 said the tree-walker could do but should not (to agree with the bytecode VM): it is allowed only for `run_async`, at host depth 1, and the VM will need the same facility as a re-entrant host call (a pending token that the VM resumes), which is why the API is a closure that returns a value and not a stack trick. `process.run`, `run_with`, `shell` and `status` now use it (`run_async_cancellable`, which also tells the work when its coroutine was cancelled); `Child.join` still blocks.

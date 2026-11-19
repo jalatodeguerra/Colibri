@@ -10,10 +10,10 @@
 //! The `Interp` must not move while a coroutine exists (the suspended stacks hold references
 //! into it); the runtime keeps it in a `Box`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::{Rc, Weak};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use colibri_check::hir::{Callee, Expr, ExprKind, Intrinsic};
@@ -112,80 +112,123 @@ pub enum ExternalError {
 /// A piece of background work for the pool.
 type Job = Box<dyn FnOnce() + Send>;
 
-/// How many threads a pool starts at most: twice the cores, between 8 and 16. Background
-/// operations mostly wait (for a socket, a disk, a child process), so more than the cores
-/// is right; many more would only cost stacks.
-fn max_background_threads() -> usize {
-    std::thread::available_parallelism()
-        .map_or(4, std::num::NonZeroUsize::get)
-        .saturating_mul(2)
-        .clamp(8, 16)
+/// Idle workers kept for reuse; the ones above this many end after [`IDLE_LIFETIME`].
+const CORE_THREADS: usize = 4;
+/// How long a worker above the core waits for more work before it ends.
+const IDLE_LIFETIME: Duration = Duration::from_secs(5);
+
+/// What the pool and its workers share.
+struct PoolState {
+    /// Jobs an idle worker has been told about and not yet taken.
+    queue: VecDeque<Job>,
+    /// Workers waiting for a job.
+    idle: usize,
+    /// Workers alive.
+    workers: usize,
+    closed: bool,
 }
 
-/// The threads that run background operations. Workers are started when work arrives and
-/// no worker is free, up to a limit; more operations than workers wait in a queue, in the
-/// order they were started. The workers end when the pool is dropped (after the job they
-/// are running).
+struct PoolShared {
+    state: Mutex<PoolState>,
+    wake: Condvar,
+}
+
+impl PoolShared {
+    fn lock(&self) -> std::sync::MutexGuard<'_, PoolState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// The threads that run background operations. Background operations mostly wait (for a
+/// socket, a disk, a child process), and one may wait for another to be started, so there
+/// is no upper limit: a job goes to an idle worker if there is one, and otherwise to a new
+/// thread. It never waits behind a blocked worker. Idle workers are kept for reuse; those
+/// above [`CORE_THREADS`] end after [`IDLE_LIFETIME`]. All end when the pool is dropped
+/// (after the job they are running).
 struct Pool {
-    queue: mpsc::Sender<Job>,
-    jobs: Arc<Mutex<mpsc::Receiver<Job>>>,
-    /// Jobs queued or running.
-    outstanding: Arc<AtomicUsize>,
-    workers: usize,
-    max: usize,
+    shared: Arc<PoolShared>,
 }
 
 impl Pool {
-    fn new(max: usize) -> Self {
-        let (queue, jobs) = mpsc::channel();
+    fn new() -> Self {
         Pool {
-            queue,
-            jobs: Arc::new(Mutex::new(jobs)),
-            outstanding: Arc::new(AtomicUsize::new(0)),
-            workers: 0,
-            max,
+            shared: Arc::new(PoolShared {
+                state: Mutex::new(PoolState {
+                    queue: VecDeque::new(),
+                    idle: 0,
+                    workers: 0,
+                    closed: false,
+                }),
+                wake: Condvar::new(),
+            }),
         }
     }
 
-    /// Queues `job`, and starts a worker if every worker is busy and the limit allows one.
-    fn submit(&mut self, job: Job) -> Result<(), String> {
-        self.outstanding.fetch_add(1, Ordering::SeqCst);
-        if self.queue.send(job).is_err() {
-            self.outstanding.fetch_sub(1, Ordering::SeqCst);
+    /// Runs `job` on an idle worker, or on a new thread if none is idle.
+    fn submit(&self, job: Job) -> Result<(), String> {
+        let mut state = self.shared.lock();
+        if state.closed {
             return Err("the background pool is closed".to_string());
         }
-        if self.workers < self.max && self.outstanding.load(Ordering::SeqCst) > self.workers {
-            let jobs = Arc::clone(&self.jobs);
-            let outstanding = Arc::clone(&self.outstanding);
-            let spawned = std::thread::Builder::new()
-                .name("colibri-async".to_string())
-                .spawn(move || Pool::work(&jobs, &outstanding));
-            match spawned {
-                Ok(_) => self.workers += 1,
-                // The workers there are will get to the job; with none, nobody would.
-                Err(e) if self.workers == 0 => {
-                    return Err(format!("cannot start a background thread: {e}"));
-                }
-                Err(_) => {}
-            }
+        if state.idle > state.queue.len() {
+            state.queue.push_back(job);
+            drop(state);
+            self.shared.wake.notify_one();
+            return Ok(());
+        }
+        // The job moves into the thread; a failed spawn drops it with the closure.
+        let shared = Arc::clone(&self.shared);
+        state.workers += 1;
+        let spawned = std::thread::Builder::new()
+            .name("colibri-async".to_string())
+            .spawn(move || Pool::work(&shared, job));
+        if let Err(e) = spawned {
+            state.workers -= 1;
+            return Err(format!("cannot start a background thread: {e}"));
         }
         Ok(())
     }
 
-    fn work(jobs: &Mutex<mpsc::Receiver<Job>>, outstanding: &AtomicUsize) {
-        loop {
-            // Waiting for a job holds the lock, so the other idle workers wait for the lock:
-            // one of them gets the next job either way.
-            let next = jobs
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .recv();
-            let Ok(job) = next else { return };
-            // A job that panics must not take its worker with it; the waiter learns of it
-            // from the missing result.
+    fn work(shared: &PoolShared, first: Job) {
+        let run = |job: Job| {
+            // A job that panics must not take its worker with it (the closure `submit` is
+            // given reports the panic to the waiter itself).
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
-            outstanding.fetch_sub(1, Ordering::SeqCst);
+        };
+        run(first);
+        let mut state = shared.lock();
+        loop {
+            if let Some(job) = state.queue.pop_front() {
+                drop(state);
+                run(job);
+                state = shared.lock();
+                continue;
+            }
+            if state.closed {
+                state.workers -= 1;
+                return;
+            }
+            state.idle += 1;
+            let (next, timeout) = shared
+                .wake
+                .wait_timeout(state, IDLE_LIFETIME)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            state.idle -= 1;
+            if timeout.timed_out() && state.queue.is_empty() && state.workers > CORE_THREADS {
+                state.workers -= 1;
+                return;
+            }
         }
+    }
+}
+
+impl Drop for Pool {
+    fn drop(&mut self) {
+        self.shared.lock().closed = true;
+        self.shared.wake.notify_all();
     }
 }
 
@@ -204,7 +247,7 @@ impl Externals {
     fn new() -> Self {
         let (tx, rx) = mpsc::channel();
         Externals {
-            pool: Pool::new(max_background_threads()),
+            pool: Pool::new(),
             tx,
             rx,
             pending: HashSet::new(),
@@ -427,6 +470,26 @@ fn signal_id(v: &Value) -> Option<u64> {
 }
 
 const PANICKED_THREAD: &str = "the background operation failed (its thread panicked)";
+
+/// The text of a panic payload (`panic!("..")` gives a `&str` or a `String`).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "(no message)".to_string())
+}
+
+/// A finished operation's result, or why there is none.
+fn unwrap_outcome<R>(outcome: Result<Result<R, String>, ()>) -> Result<R, ExternalError> {
+    match outcome {
+        Ok(Ok(r)) => Ok(r),
+        Ok(Err(message)) => Err(ExternalError::Failed(format!(
+            "the background operation panicked: {message}"
+        ))),
+        Err(_) => Err(ExternalError::Failed(PANICKED_THREAD.to_string())),
+    }
+}
 
 /// How driving the scheduler from the main fiber ended.
 enum Drive {
@@ -1205,15 +1268,16 @@ impl Interp {
 
     // ---- background operations ----
 
-    /// Runs `work` on a background thread (one of a small pool; more operations than threads
-    /// wait in a queue) and waits for its result without blocking other coroutines: the calling coroutine is suspended with `Wake::External`, and the event
+    /// Runs `work` on a background thread (an idle one of the pool, or a new one: an
+    /// operation never waits behind another) and waits for its result without blocking other
+    /// coroutines: the calling coroutine is suspended with `Wake::External`, and the event
     /// loop (or the host's `tick`) resumes it once the thread has finished. On the main
     /// fiber the wait runs the event loop instead, so coroutines keep running. Where neither
     /// is possible (inside a host callback or a `Drop` hook) it just blocks. Meant to be
     /// called from a host function (host depth 1); it must not hold a borrow of host objects
     /// across the call, because other coroutines run meanwhile. `Err(Cancelled)` means the
     /// coroutine was cancelled while waiting: the host function must unwind (its result would
-    /// be discarded; an operation that had not started yet is dropped from the queue).
+    /// be discarded; an operation whose thread has not started it yet is dropped).
     pub fn await_external<R: Send + 'static>(
         &mut self,
         fiber: &mut Fiber,
@@ -1232,7 +1296,7 @@ impl Interp {
     ) -> Result<R, ExternalError> {
         let op = self.sched.next_id;
         self.sched.next_id += 1;
-        let (result_tx, result_rx) = mpsc::channel::<R>();
+        let (result_tx, result_rx) = mpsc::channel::<Result<R, String>>();
         let notify = Notify(self.sched.ext.tx.clone(), op);
         // Set when the waiter gives up, so an operation still in the queue is not run.
         let abandoned = Arc::new(AtomicBool::new(false));
@@ -1243,7 +1307,9 @@ impl Interp {
             if skip.load(Ordering::SeqCst) {
                 return;
             }
-            let _ = result_tx.send(work(&skip));
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&skip)))
+                .map_err(|payload| panic_message(payload.as_ref()));
+            let _ = result_tx.send(outcome);
         }));
         if let Err(message) = queued {
             self.sched.ext.pending.remove(&op);
@@ -1268,14 +1334,12 @@ impl Interp {
             // Nothing can run meanwhile: block this thread until the result is there.
             let blocked = result_rx.recv();
             self.sched.ext.pending.remove(&op);
-            return blocked.map_err(|_| ExternalError::Failed(PANICKED_THREAD.to_string()));
+            return unwrap_outcome(blocked.map_err(|_| ()));
         };
         self.sched.ext.pending.remove(&op);
         self.sched.ext.completed.remove(&op);
         waited?;
-        result_rx
-            .try_recv()
-            .map_err(|_| ExternalError::Failed(PANICKED_THREAD.to_string()))
+        unwrap_outcome(result_rx.try_recv().map_err(|_| ()))
     }
 
     // ---- handle methods ----

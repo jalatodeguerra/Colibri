@@ -105,14 +105,14 @@ impl<'a> Ctx<'a> {
     /// while this call waits, so the host function must not hold a borrow of host state or
     /// host objects across it (the borrow checker enforces it for [`Ctx::state_mut`]).
     ///
-    /// `work` runs on one of a small fixed pool of threads (8 to 16, by the machine's cores);
-    /// when all are busy it waits in a queue, so starting thousands of operations does not
-    /// start thousands of threads. Work that blocks for a long time (a child process) holds its
-    /// thread meanwhile.
+    /// `work` runs on an idle thread of the `Vm`'s pool, or on a new one: there is no limit,
+    /// and an operation never waits behind another (one may wait for a later one to be
+    /// started). Idle threads are reused; those beyond a few end after some seconds. Work that
+    /// blocks for a long time (a child process) holds its thread meanwhile.
     ///
     /// If the calling coroutine is cancelled meanwhile, the host function is unwound (its
     /// destructors run) and the result is discarded; `work` that already started runs to the
-    /// end, one still queued never runs. A panic of `work` becomes a Colibri panic of the caller.
+    /// end, one whose thread has not begun it never runs. A panic of `work` becomes a Colibri panic of the caller.
     pub fn run_async<R: Send + 'static>(&mut self, work: impl FnOnce() -> R + Send + 'static) -> R {
         match self.interp.await_external(self.fiber, work) {
             Ok(r) => r,
