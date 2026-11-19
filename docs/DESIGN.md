@@ -1187,7 +1187,9 @@ reference-typed objects. See §14.1.
 - `StrBuilder` for efficient building; `+` concatenates strings. `s += x` in a loop copies the
   string every time, so build long text with `let b = StrBuilder()`, then `b.push(s)`,
   `b.push_char(c)` or `b.write(value)` (anything with `Show`), and `b.to_str()` at the end. It also
-  has `len()`, `is_empty()` and `clear()`, and it is a reference type like `List`.
+  has `len()`, `is_empty()` and `clear()`, and it is a reference type like `List`. Like the other
+  built-in classes (`Error`, `Coroutine`, `CoGroup`, `Signal`) it is built only with its
+  function, never with `StrBuilder {}`, and a program cannot define a type with one of these names.
 
 ---
 
@@ -1240,6 +1242,10 @@ let c = cart.new_cart("Ana")
   implicit package, so a script can `import helpers` from `helpers.colibri` next to it.
 - **Top-level statements are allowed only in the entry file of a script** (Q15). Imported modules
   hold declarations only. In a package with `colibri.toml`, execution starts at `fn main()`.
+  A package folder may also hold runnable scripts (an `examples/demo.colibri` that nothing
+  imports): `colibri check` and `colibri test` on the folder type-check their statements but
+  never run them.
+- **Package and dependency names cannot be keywords**, because `import fn` could not be written.
 
 ### 13.1 Standard library [Proposed]
 
@@ -1701,6 +1707,11 @@ Goal: edit a `.colibri` file while the program runs and see the change without r
 Errors show the source span, a short message, and a hint where possible (Rust/Elm style), using a
 crate like `ariadne` or `miette`. The type checker keeps going after the first error to report
 several at once.
+
+Warnings never change an exit code. Two are built: an **unused local variable** and an **unused
+import**, reported only for the program's own packages, not for its dependencies. A name that
+starts with `_` is never reported, so an import kept for what its module does when it loads is
+written `import registry as _registry`.
 
 ### 16.5 Editor support, debugging and profiling [Proposed]
 
