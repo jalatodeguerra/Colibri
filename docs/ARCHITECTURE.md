@@ -3022,8 +3022,10 @@ function (host depth 1):
    and returns normally. `next_wake` contributes infinity for such a coroutine (no polling).
 3. `Interp::clock_sleep` (used by the event loop) waits with `recv_timeout` on the completion
    channel while operations are pending (`Clock::sleep_interruptible`; the wall clock sleeps in
-   it, the default for fake clocks gives real time 1 ms and then moves the fake time by at most
-   1 ms), so it wakes at the earlier of the next timer and a completion, with no busy loop.
+   it, the default for fake clocks waits for real time and does not move the fake time at all, so a
+   program's behaviour at a fake time does not depend on how long an operation really takes;
+   timers then wait for the operations, and an operation that needs a later timer of the same
+   program cannot finish under such a clock), so it wakes at the earlier of the next timer and a completion, with no busy loop.
    `tests/async_ops.rs` asserts one resumption to finish, no polling.
 4. Cancelling a waiting coroutine resumes it with the cancel signal; `run_async` then unwinds the
    host function with a Rust panic payload (`RaisedCancel`, like `Ctx::raise`) that the trampoline

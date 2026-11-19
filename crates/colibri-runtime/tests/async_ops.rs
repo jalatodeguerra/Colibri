@@ -435,3 +435,40 @@ fn dropping_the_vm_cancels_running_operations() {
     drop(vm);
     assert!(hooked.load(Ordering::SeqCst));
 }
+
+/// A fake clock does not move while the loop waits for an operation, so what a program does
+/// at a fake time does not depend on how long the operation really takes.
+#[test]
+fn a_fake_clock_does_not_advance_while_an_operation_runs() {
+    struct Fake(Rc<Cell<f64>>);
+    impl colibri::Clock for Fake {
+        fn now(&mut self) -> f64 {
+            self.0.get()
+        }
+        fn sleep(&mut self, s: f64) {
+            self.0.set(self.0.get() + s);
+        }
+    }
+    for real_ms in [50, 200, 400] {
+        let time = Rc::new(Cell::new(0.0));
+        let out = colibri::SharedBuffer::new();
+        let mut vm = colibri::Vm::builder()
+            .stdout(Box::new(out.clone()))
+            .clock(Fake(Rc::clone(&time)))
+            .build();
+        vm.register_fn("slow", |cx: &mut colibri::Ctx, ms: i64| {
+            cx.run_async(move || std::thread::sleep(Duration::from_millis(ms as u64)))
+        })
+        .unwrap();
+        vm.load_source(
+            "a.colibri",
+            &format!(
+                "var ticks = 0\nfn counter() {{\n    while true {{\n        ticks += 1\n        wait(0.01)\n    }}\n}}\nfn main() {{\n    let c = go counter()\n    slow({real_ms})\n    print(\"ticks {{ticks}}\")\n    c.cancel()\n}}\n"
+            ),
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        assert_eq!(out.contents(), "ticks 1\n", "after {real_ms} ms");
+        assert_eq!(time.get(), 0.0);
+    }
+}

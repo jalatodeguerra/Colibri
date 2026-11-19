@@ -51,11 +51,14 @@ pub trait Clock {
     /// external operation finished (`wake` blocks for up to `timeout` real time and says
     /// whether something arrived). The event loop calls this instead of `sleep` while
     /// background operations are pending (ARCHITECTURE section 22). The default is for fake
-    /// clocks: it gives real time a millisecond to deliver, then moves forward by at most that.
-    fn sleep_interruptible(&mut self, seconds: f64, wake: &mut dyn FnMut(Duration) -> bool) {
-        if !wake(Duration::from_millis(1)) {
-            self.sleep(seconds.min(0.001));
-        }
+    /// clocks: it waits for real time and **does not move the clock**, so what a program
+    /// does at a given fake time does not depend on how long an operation really takes (a
+    /// coroutine that counts `wait(0.01)` while a program runs sees the same count every
+    /// time). The cost: timers wait for background operations to end, so an operation that
+    /// needs a later timer of the same program to fire cannot finish under such a clock;
+    /// a clock that wants timers to run meanwhile overrides this.
+    fn sleep_interruptible(&mut self, _seconds: f64, wake: &mut dyn FnMut(Duration) -> bool) {
+        wake(Duration::from_millis(20));
     }
 }
 

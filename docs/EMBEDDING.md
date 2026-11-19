@@ -311,7 +311,9 @@ loop {
   the completions at its ticks. `http` and `process` are built on it (ARCHITECTURE §22).
 - The `Clock` trait has a third method with a default, `sleep_interruptible(seconds, wake)`,
   which the event loop calls while operations are in flight; a custom clock for tests can keep
-  the default.
+  the default, which waits for real time without moving the clock (so a program's behaviour at a
+  fake time does not depend on how long an operation really takes; timers wait for the
+  operations meanwhile).
 
 ## 11. Hot reload from a host
 
