@@ -1162,7 +1162,12 @@ each import of the cycle.
 
 **Top-level statements** exist only in the entry module. Any other module that has one gets an
 error at its first statement ("only the entry file may have top-level statements"); its
-declarations are still checked. `fn main` is looked up in the entry module only. Function names
+declarations are still checked. The exception is a *script module*: when the whole package is
+loaded (`LoadOptions::all_modules`: `colibri check <folder>`, `colibri test`), a module that no other
+module imports (`ModuleMeta::script`, e.g. `examples/demo.colibri`) may have top-level statements.
+They are checked in their own module (`Checker::check_module_scripts`) and the result is dropped, so
+they never run, also not under `colibri test`. The folder walk does not follow symbolic links to
+folders, and modules are deduplicated on `SourceFs::canonical` (the resolved path). `fn main` is looked up in the entry module only. Function names
 in the HIR (`FnDef.name`, stack traces, `Vm::get_fn`) are the plain name in the entry module and
 the dotted module path before it in any other (`game.player.spawn`, `game.player.Player.update`);
 host items are never prefixed.
@@ -1255,11 +1260,15 @@ shadowing, unreachable arms and an ignored `Result`, the checker reports unused 
   with `_` is exempt; so are parameters, `for` variables, pattern bindings and module-level
   values. A plain `x = value` is not a read (`x += 1`, `x.f = v` and `x[i] = v` are, to stay on
   the safe side), and a closure that captures `x` counts as a read. Found when the scope closes
-  (`FnCtx::pop_scope`, flags `read` and `lint_unused` on `LocalFlags`).
+  (`FnCtx::pop_scope`, flags `read` and `lint_unused` on `LocalFlags`), and only in modules of the
+  program's own packages, not in a dependency's.
 - `unused import`: a module of the program's own packages (not a dependency's) that imports a
   module or a name and never mentions the bound name. Syntactic (`unused.rs` collects every
   identifier written outside `import` items), so a local that shadows the name hides the
-  warning, but a used import is never reported. Skipped when the program has errors.
+  warning, but a used import is never reported. Skipped when the program has errors. An alias
+  that starts with `_` (`import registry as _registry`) silences it; the hint offers that when
+  the imported module runs code as it loads (a top-level statement, or a `let`/`var` whose
+  initialiser is not a plain literal).
 
 Warnings in the prelude or a host interface are dropped (`Checker::report_lint`). The golden
 harness compares warnings exactly, except that unlisted `unused variable` and `unused import`
