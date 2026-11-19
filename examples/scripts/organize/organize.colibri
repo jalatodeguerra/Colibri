@@ -1,0 +1,238 @@
+// organize: sort the files of a folder into subfolders.
+//
+//   colibri run organize.colibri -- <dir> [--dry-run] [--by ext|date]
+//                                   [--rules rules.json] [--match <regex>]
+//
+// `--by ext` (the default) puts a file in the folder of its extension category (images,
+// documents, archives, code, other); `--rules` replaces the categories with a JSON file
+// `{"photos": ["jpg", "png"], ...}`. `--by date` uses the file's modification time:
+// `<dir>/2024/05/name.ext`. `--match` only touches files whose name matches the pattern.
+// A name that is taken becomes `name (1).ext`, `name (2).ext`, ... Nothing is overwritten.
+//
+// Exit codes: 0 done, 1 a file operation or the rules file failed, 2 bad command line.
+import args
+import datetime
+import fs
+import io
+import json
+import os
+import path
+import regex
+
+let USAGE = "usage: colibri run organize.colibri -- <dir> [--dry-run] [--by ext|date] [--rules rules.json] [--match <regex>]"
+
+struct Move {
+    src: str
+    dest: str
+    bucket: str
+    size: int
+}
+
+struct Totals {
+    bucket: str
+    files: int
+    bytes: int
+}
+
+enum Mode {
+    ByExt
+    ByDate
+}
+
+fn default_rules() -> Map[str, List[str]] {
+    return {
+        "images": ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic"],
+        "documents": ["pdf", "doc", "docx", "txt", "md", "odt", "rtf", "xls", "xlsx", "csv", "ppt", "pptx"],
+        "archives": ["zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar"],
+        "code": ["rs", "py", "js", "ts", "c", "h", "cpp", "go", "java", "sh", "colibri", "json", "toml", "yaml", "yml", "html", "css"],
+    }
+}
+
+fn load_rules(file: str) -> Result[Map[str, List[str]]] {
+    let text = fs.read(file).context("reading the rules")?
+    return ok(json.decode[Map[str, List[str]]](text).context("the rules file `{file}`")?)
+}
+
+// extension (lower case) -> category
+fn by_extension(rules: Map[str, List[str]]) -> Map[str, str] {
+    var table: Map[str, str] = {:}
+    for (bucket, exts) in rules {
+        for e in exts {
+            table.insert(e.to_lower(), bucket)
+        }
+    }
+    return table
+}
+
+fn bucket_of(file: str, table: Map[str, str]) -> str {
+    let ext = path.ext(file) or { return "other" }
+    return table.get(ext.to_lower()) or "other"
+}
+
+fn date_bucket(full: str) -> Result[str] {
+    let when = fs.modified(full)?
+    return ok(datetime.format(datetime.from_unix(when), "%Y/%m"))
+}
+
+// Every file under `root/rel`, as paths relative to `root`, in name order. Hidden files
+// (a leading dot) are left alone.
+fn walk(root: str, rel: str, found: List[str]) -> Result[()] {
+    let here = if rel == "" { root } else { path.join(root, rel) }
+    for name in fs.list(here)? {
+        if name.starts_with(".") {
+            continue
+        }
+        let inner = if rel == "" { name } else { path.join(rel, name) }
+        if fs.is_dir(path.join(root, inner)) {
+            walk(root, inner, found)?
+        } else {
+            found.push(inner)
+        }
+    }
+    return ok(())
+}
+
+// `dir/name.ext`, or `dir/name (1).ext` when that is taken (on disk or earlier in the plan).
+fn free_name(root: str, folder: str, file: str, taken: Set[str]) -> str {
+    let stem = path.stem(file) or file
+    let suffix = if let some(e) = path.ext(file) { "." + e } else { "" }
+    var candidate = path.join(folder, file)
+    var n = 1
+    while taken.contains(candidate) || fs.exists(path.join(root, candidate)) {
+        candidate = path.join(folder, "{stem} ({n}){suffix}")
+        n += 1
+    }
+    return candidate
+}
+
+fn plan(root: str, mode: Mode, table: Map[str, str], only: Option[regex.Regex]) -> Result[List[Move]] {
+    var files: List[str] = []
+    walk(root, "", files)?
+    var moves: List[Move] = []
+    var taken: Set[str] = Set[str]()
+    // Files that stay where they are keep their names reserved.
+    var pending: List[(str, str, str)] = []
+    for rel in files {
+        let name = path.file_name(rel) or rel
+        if let some(re) = only {
+            if !re.is_match(name) {
+                taken.add(rel)
+                continue
+            }
+        }
+        let bucket = match mode {
+            ByExt => bucket_of(name, table)
+            ByDate => date_bucket(path.join(root, rel))?
+        }
+        pending.push((rel, name, bucket))
+    }
+    for (rel, name, bucket) in pending {
+        if path.parent(rel) == some(bucket) {
+            taken.add(rel)
+        }
+    }
+    for (rel, name, bucket) in pending {
+        if path.parent(rel) == some(bucket) {
+            continue
+        }
+        let dest = free_name(root, bucket, name, taken)
+        taken.add(dest)
+        let size = fs.size(path.join(root, rel))?
+        moves.push(Move { src: rel, dest: dest, bucket: bucket, size: size })
+    }
+    return ok(moves)
+}
+
+fn apply(root: str, moves: List[Move]) -> Result[()] {
+    for m in moves {
+        let target = path.join(root, m.dest)
+        if let some(dir) = path.parent(target) {
+            fs.create_dir(dir)?
+        }
+        fs.rename(path.join(root, m.src), target).context("moving `{m.src}`")?
+    }
+    return ok(())
+}
+
+fn summarize(moves: List[Move]) {
+    var totals: List[Totals] = []
+    for m in moves {
+        var found = false
+        for i in 0..totals.len() {
+            if totals[i].bucket == m.bucket {
+                totals[i].files += 1
+                totals[i].bytes += m.size
+                found = true
+            }
+        }
+        if !found {
+            totals.push(Totals { bucket: m.bucket, files: 1, bytes: m.size })
+        }
+    }
+    totals.sort_by_key(fn(t) => t.bucket)
+    print("{"folder":<14}{"files":>6}{"bytes":>10}")
+    var files = 0
+    var bytes = 0
+    for t in totals {
+        print("{t.bucket:<14}{t.files:>6}{t.bytes:>10}")
+        files += t.files
+        bytes += t.bytes
+    }
+    print("{"total":<14}{files:>6}{bytes:>10}")
+}
+
+fn usage_error(message: str) {
+    io.eprintln("organize: {message}")
+    io.eprintln(USAGE)
+    os.exit(2)
+}
+
+fn main() -> Result[()] {
+    let dirs = args.positional_with(["by", "rules", "match"])
+    if dirs.len() != 1 {
+        usage_error("expected exactly one folder")
+        return ok(())
+    }
+    let root = dirs[0]
+    let dry = args.flag("dry-run")
+    var mode = Mode.ByExt
+    match args.value("by") or "ext" {
+        "ext" => {}
+        "date" => mode = Mode.ByDate
+        other => {
+            usage_error("--by is `ext` or `date`, not `{other}`")
+            return ok(())
+        }
+    }
+    if !fs.is_dir(root) {
+        usage_error("`{root}` is not a folder")
+        return ok(())
+    }
+    let rules = if let some(file) = args.value("rules") { load_rules(file)? } else { default_rules() }
+    var only: Option[regex.Regex] = none
+    if let some(pattern) = args.value("match") {
+        match regex.compile(pattern) {
+            ok(re) => only = some(re)
+            err(e) => {
+                usage_error("--match: {e.message()}")
+                return ok(())
+            }
+        }
+    }
+
+    let moves = plan(root, mode, by_extension(rules), only)?
+    if moves.is_empty() {
+        print("nothing to do")
+        return ok(())
+    }
+    for m in moves {
+        print("{m.src} -> {m.dest}")
+    }
+    if dry {
+        print("dry run: nothing was moved")
+    } else {
+        apply(root, moves)?
+    }
+    summarize(moves)
+    return ok(())
+}

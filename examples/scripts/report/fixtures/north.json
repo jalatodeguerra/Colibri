@@ -1,0 +1,6 @@
+{"region": "north", "orders": [
+  {"id": 1, "customer": "ann", "category": "books", "total": 12.5},
+  {"id": 2, "customer": "bob", "category": "games", "total": 59.99},
+  {"id": 3, "customer": "ann", "category": "games", "total": 30},
+  {"id": 4, "customer": "dee", "category": "toys", "total": 19.0}
+]}
