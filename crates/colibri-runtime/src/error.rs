@@ -116,6 +116,9 @@ pub enum Error {
     },
     /// An interface file could not be understood.
     Interface { path: String, message: String },
+    /// A host object could not be used: the host destroyed it, an enclosing call has it
+    /// borrowed, or it belongs to the script. The message is the one a script would see.
+    HostObject(String),
 }
 
 /// How many frames of a long stack trace are shown at each end.
@@ -240,6 +243,7 @@ impl fmt::Display for Error {
                 ),
             },
             Error::Interface { path, message } => write!(f, "{path}:{message}"),
+            Error::HostObject(message) => f.write_str(message),
         }
     }
 }

@@ -37,11 +37,15 @@ pub struct Plain<Args>(PhantomData<fn(Args)>);
 /// Marks a host function whose first parameter is `&mut Ctx`.
 pub struct WithCtx<Args>(PhantomData<fn(Args)>);
 
-fn conversion_fault(index: usize, error: Error) -> HostFault {
-    HostFault::Panic(format!("argument {} could not be read: {error}", index + 1))
+pub(crate) fn conversion_fault(index: usize, error: Error) -> HostFault {
+    match error {
+        // A destroyed or busy host object has a message of its own, which scripts see as is.
+        Error::HostObject(message) => HostFault::Message(message),
+        error => HostFault::Panic(format!("argument {} could not be read: {error}", index + 1)),
+    }
 }
 
-fn arity_fault(wanted: usize, got: usize) -> HostFault {
+pub(crate) fn arity_fault(wanted: usize, got: usize) -> HostFault {
     HostFault::Panic(format!(
         "internal error: called with {got} arguments instead of {wanted}"
     ))

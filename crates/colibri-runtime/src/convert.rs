@@ -47,6 +47,12 @@ pub trait IntoColibri {
     /// The Colibri type this becomes. A struct or enum of the host declares itself to `reg`.
     fn ty(reg: &mut TypeRegistry) -> TypeDesc;
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value;
+    /// Whether the value still stands for something: a `Handle` to a destroyed host object
+    /// does not, and `Option<Handle<T>>` turns it into `none` (EMBEDDING §3).
+    #[doc(hidden)]
+    fn is_live(&self, _cx: &Cx<'_>) -> bool {
+        true
+    }
 }
 
 /// A Rust type that a Colibri value can be turned into.
@@ -274,7 +280,8 @@ impl<T: IntoColibri> IntoColibri for Option<T> {
         TypeDesc::Option(Box::new(T::ty(reg)))
     }
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
-        Value(Inner::option(self.map(|t| t.into_colibri(cx).0)))
+        let live = self.filter(|t| t.is_live(cx));
+        Value(Inner::option(live.map(|t| t.into_colibri(cx).0)))
     }
 }
 

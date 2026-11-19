@@ -42,6 +42,9 @@ pub enum Value {
     Set(Rc<SetObj>),
     /// A class object (reference type).
     Obj(Rc<ClassObj>),
+    /// An object of the embedding program, held through the host heap (EMBEDDING §3). Equal
+    /// when it names the same slot and generation.
+    Host(Rc<crate::hostheap::HostRef>),
     /// The content of a `weak` class field; an empty `Weak` stands for a cleared reference.
     Weak(Weak<ClassObj>),
     /// An interface value: a value boxed with the implementation that dispatches its methods
@@ -113,6 +116,7 @@ impl PartialEq for Value {
             (Value::Map(a), Value::Map(b)) => Rc::ptr_eq(a, b),
             (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
             (Value::Obj(a), Value::Obj(b)) => Rc::ptr_eq(a, b),
+            (Value::Host(a), Value::Host(b)) => a.index == b.index && a.generation == b.generation,
             (Value::Weak(a), Value::Weak(b)) => Weak::ptr_eq(a, b),
             (Value::Dyn(a), Value::Dyn(b)) => a == b,
             (Value::Fn(a, _), Value::Fn(b, _)) => a == b,

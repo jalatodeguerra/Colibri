@@ -215,7 +215,7 @@ impl Cx<'_> {
                 TypeDefKind::Enum { variants } => {
                     Some((0..variants.len() as u32).map(Ctor::Variant).collect())
                 }
-                TypeDefKind::Interface { .. } => None,
+                TypeDefKind::Interface { .. } | TypeDefKind::HostClass => None,
             },
             _ => None,
         }
@@ -520,6 +520,7 @@ mod tests {
                 name: "Shape".into(),
                 span: SP,
                 params: Vec::new(),
+                sendable: true,
                 kind: TypeDefKind::Enum {
                     variants: vec![
                         variant("Circle", vec![Ty::Float]),
@@ -532,6 +533,7 @@ mod tests {
                 name: "P".into(),
                 span: SP,
                 params: Vec::new(),
+                sendable: true,
                 kind: TypeDefKind::Struct {
                     fields: vec![field("x", Ty::INT), field("ok", Ty::Bool)],
                 },
@@ -540,6 +542,7 @@ mod tests {
                 name: "Dir".into(),
                 span: SP,
                 params: Vec::new(),
+                sendable: true,
                 kind: TypeDefKind::Enum {
                     variants: vec![variant("N", vec![]), variant("E", vec![])],
                 },
@@ -736,6 +739,7 @@ mod tests {
             name: "Never".into(),
             span: SP,
             params: Vec::new(),
+            sendable: true,
             kind: TypeDefKind::Enum { variants: vec![] },
         });
         let ty = Ty::Adt(TypeId(3), vec![]);

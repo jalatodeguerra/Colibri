@@ -77,7 +77,9 @@ impl<'a> Ctx<'a> {
     pub(crate) fn host_type(&self, name: &str) -> TypeId {
         match self.interp.host_type(name) {
             Some(id) => id,
-            None => panic!("the type `{name}` is not part of the loaded host interface"),
+            None => panic!(
+                "the type `{name}` is not part of the loaded host interface (register it with `Vm::register_type` before loading)"
+            ),
         }
     }
 

@@ -261,6 +261,18 @@ impl<'a> Checker<'a> {
             return;
         }
         if iface == DROP
+            && matches!(&target, Ty::Adt(id, _) if self.types[id.0 as usize].is_host_class())
+        {
+            self.report(
+                Diagnostic::error(
+                    format!("`Drop` cannot be implemented for the host class `{target_shown}`"),
+                    iface_expr.span,
+                )
+                .with_hint("the host owns the object and its Rust `Drop` runs when it is freed; hold the object in a class of your own to run script code at that moment"),
+            );
+            return;
+        }
+        if iface == DROP
             && !matches!(&target, Ty::Adt(id, _) if self.types[id.0 as usize].is_class())
         {
             self.report(

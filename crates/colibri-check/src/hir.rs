@@ -132,6 +132,9 @@ pub struct TypeDef {
     /// The type parameters, in order; `Ty::Adt(id, args)` gives one argument for each.
     pub params: Vec<ParamId>,
     pub kind: TypeDefKind,
+    /// Whether values of the type may move to another thread (`task.run`, DESIGN §14.1). Only
+    /// the host's classes say no for now: the flag is recorded and nothing reads it yet.
+    pub sendable: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -144,6 +147,9 @@ pub enum TypeDefKind {
     Class {
         fields: Vec<FieldDef>,
     },
+    /// A class of the embedding program (EMBEDDING §2): an opaque object with identity, no
+    /// fields and no literal; only the host creates one, and its methods are the host's.
+    HostClass,
     Enum {
         variants: Vec<VariantDef>,
     },
@@ -193,6 +199,7 @@ impl TypeDef {
             TypeDefKind::Enum { variants } => variants,
             TypeDefKind::Struct { .. }
             | TypeDefKind::Class { .. }
+            | TypeDefKind::HostClass
             | TypeDefKind::Interface { .. } => &[],
         }
     }
@@ -201,7 +208,9 @@ impl TypeDef {
     pub fn fields(&self) -> &[FieldDef] {
         match &self.kind {
             TypeDefKind::Struct { fields } | TypeDefKind::Class { fields } => fields,
-            TypeDefKind::Enum { .. } | TypeDefKind::Interface { .. } => &[],
+            TypeDefKind::Enum { .. } | TypeDefKind::HostClass | TypeDefKind::Interface { .. } => {
+                &[]
+            }
         }
     }
 
@@ -221,8 +230,17 @@ impl TypeDef {
         matches!(self.kind, TypeDefKind::Enum { .. })
     }
 
+    /// A reference type with identity: a `class`, or a class of the host.
     pub fn is_class(&self) -> bool {
-        matches!(self.kind, TypeDefKind::Class { .. })
+        matches!(
+            self.kind,
+            TypeDefKind::Class { .. } | TypeDefKind::HostClass
+        )
+    }
+
+    /// A class of the embedding program.
+    pub fn is_host_class(&self) -> bool {
+        matches!(self.kind, TypeDefKind::HostClass)
     }
 }
 
@@ -685,6 +703,9 @@ pub enum Intrinsic {
     ErrorIs(TypeKey),
     /// `e.as[T]() -> T?`: the value an `Error` keeps, if it has this runtime type.
     ErrorAs(TypeKey),
+    /// `object.alive()` on a class of the host: whether the host still has the object. The
+    /// receiver is the only argument.
+    HostAlive,
     /// A conversion call `u8(x)`, `float(x)`, `f32(x)`: from the argument's type to the named
     /// one (DESIGN §5.1). Integer conversions that lose the value panic.
     Convert { from: Num, to: Num },

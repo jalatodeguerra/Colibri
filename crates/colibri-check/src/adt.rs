@@ -74,6 +74,17 @@ impl FnCtx<'_, '_> {
                         self.ck.report(diag);
                         None
                     }
+                    TypeDefKind::HostClass => {
+                        let diag = Diagnostic::error(
+                            format!("the host class `{}` has no fields", def.name),
+                            name.span,
+                        )
+                        .with_hint(
+                            "its state belongs to the host program; use the methods it provides",
+                        );
+                        self.ck.report(diag);
+                        None
+                    }
                     TypeDefKind::Interface { .. } => {
                         let diag = Diagnostic::error(
                             format!("the interface `{}` has no fields", def.name),
@@ -605,6 +616,18 @@ impl FnCtx<'_, '_> {
                 self.ck.report(
                     Diagnostic::error("`Error` cannot be built with `{ ... }`", ty_expr.span)
                         .with_hint("convert a value that implements `IntoError`: `Error.from(value)`, or return `err(value)` from a function that returns `Result[T]`"),
+                );
+                return self.error_expr(span);
+            }
+            Ty::Adt(id, _) if self.ck.types[id.0 as usize].is_host_class() => {
+                loose(self);
+                let tname = self.ck.types[id.0 as usize].name.clone();
+                self.ck.report(
+                    Diagnostic::error(
+                        format!("`{tname}` is a host class and cannot be built with `{{ ... }}`"),
+                        ty_expr.span,
+                    )
+                    .with_hint("only the host program creates its objects; call one of the functions it provides"),
                 );
                 return self.error_expr(span);
             }

@@ -165,6 +165,11 @@ impl Env<'_> {
         if iface == SHOW || iface == CLONE {
             return if self.user_impl_for(ty, iface).is_some() {
                 self.user(ty, iface, args)
+            } else if iface == CLONE
+                && matches!(ty, Ty::Adt(id, _) if self.types.get(id.0 as usize).is_some_and(TypeDef::is_host_class))
+            {
+                // A host object is one thing in the host: there is no copy of it to make.
+                Err(ty.clone())
             } else {
                 Ok(Source::Derived)
             };
@@ -316,7 +321,7 @@ impl Env<'_> {
             TypeDefKind::Struct { fields } | TypeDefKind::Class { fields } => {
                 fields.iter().map(|f| &f.ty).collect()
             }
-            TypeDefKind::Interface { .. } => Vec::new(),
+            TypeDefKind::Interface { .. } | TypeDefKind::HostClass => Vec::new(),
         };
         raw.into_iter().map(|t| t.subst(&map)).collect()
     }

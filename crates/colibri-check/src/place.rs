@@ -219,6 +219,11 @@ impl FnCtx<'_, '_> {
         matches!(self.infer.shallow(ty), Ty::Adt(id, _) if self.ck.types[id.0 as usize].is_class())
     }
 
+    /// Whether `ty` is a class of the host.
+    pub fn is_host_class_ty(&self, ty: &Ty) -> bool {
+        matches!(self.infer.shallow(ty), Ty::Adt(id, _) if self.ck.types[id.0 as usize].is_host_class())
+    }
+
     /// `base[index]` as a place: a list element or a map entry.
     pub fn index_place(
         &mut self,

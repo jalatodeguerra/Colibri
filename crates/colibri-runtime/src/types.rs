@@ -3,8 +3,13 @@
 
 use std::fmt;
 
+use std::any::TypeId as AnyTypeId;
+
 use colibri_check::hir::{Program, TypeDefKind};
 use colibri_check::types::{ERROR_TYPE, FIRST_USER_TYPE, IntTy, RESULT_TYPE, Ty};
+
+use crate::class::{HostType, TypeBuilder};
+use crate::host::RawHostFn;
 
 /// A Colibri type, as far as the embedding API can express it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,8 +130,8 @@ impl TypeDesc {
                     TypeDefKind::Struct { .. } | TypeDefKind::Enum { .. } => {
                         TypeDesc::Value(def.name.clone())
                     }
-                    TypeDefKind::Class { .. } => TypeDesc::Host(def.name.clone()),
-                    TypeDefKind::Interface { .. } => return None,
+                    TypeDefKind::HostClass => TypeDesc::Host(def.name.clone()),
+                    TypeDefKind::Class { .. } | TypeDefKind::Interface { .. } => return None,
                 }
             }
             _ => return None,
@@ -150,7 +155,7 @@ pub(crate) enum TypeDecl {
     },
     /// A `enum` whose variants carry no payload.
     Enum { name: String, variants: Vec<String> },
-    /// A class of host objects. Its methods come with the host-class slice.
+    /// A class of host objects. Its methods are in [`TypeRegistry::classes`].
     Class { name: String },
 }
 
@@ -169,6 +174,8 @@ impl TypeDecl {
 #[derive(Clone, Debug, Default)]
 pub struct TypeRegistry {
     pub(crate) decls: Vec<TypeDecl>,
+    /// The host classes described through [`HostType`], with their methods.
+    pub(crate) classes: Vec<ClassEntry>,
     /// Types described twice in different ways.
     pub(crate) conflicts: Vec<String>,
 }
@@ -212,13 +219,69 @@ impl TypeRegistry {
         TypeDesc::Value(name.to_string())
     }
 
-    /// Declares a host class (objects the host owns). Reserved for the host-class slice: a
-    /// signature that mentions one cannot be loaded yet.
-    pub fn define_host_class(&mut self, name: &str) -> TypeDesc {
+    /// Declares the host class `T` and its methods (what [`HostType::describe`] says) and
+    /// returns the type to use in signatures. Describing it again is a no-op, so a class that
+    /// several signatures mention (or that mentions itself) is declared once; a different Rust
+    /// type with the same name is a conflict, reported when the function is registered.
+    pub fn define_host_type<T: HostType>(&mut self) -> TypeDesc {
+        let name = T::NAME;
+        let any = AnyTypeId::of::<T>();
+        let ty = TypeDesc::Host(name.to_string());
+        if let Some(existing) = self.classes.iter().find(|c| c.name == name) {
+            if existing.any != any {
+                self.conflicts.push(format!(
+                    "the host class `{name}` is described by two different Rust types"
+                ));
+            }
+            return ty;
+        }
         self.define(TypeDecl::Class {
             name: name.to_string(),
         });
-        TypeDesc::Host(name.to_string())
+        // Entered before its methods are described, so a method that mentions the class itself
+        // (or a class that mentions this one) finds it already there.
+        let index = self.classes.len();
+        self.classes.push(ClassEntry {
+            name: name.to_string(),
+            any,
+            methods: Vec::new(),
+        });
+        let mut builder = TypeBuilder::<T>::new(self);
+        T::describe(&mut builder);
+        let methods = builder.finish();
+        self.classes[index].methods = methods;
+        ty
+    }
+}
+
+/// A host class: its Rust type and its methods, in the order they were described.
+#[derive(Clone, Debug)]
+pub(crate) struct ClassEntry {
+    pub name: String,
+    pub any: AnyTypeId,
+    pub methods: Vec<MethodEntry>,
+}
+
+/// A method or static function of a host class.
+#[derive(Clone)]
+pub(crate) struct MethodEntry {
+    pub name: String,
+    /// The names of the parameters, not counting the receiver.
+    pub params: Vec<String>,
+    pub sig: SigDesc,
+    /// Whether the first argument is the object (`self`).
+    pub has_self: bool,
+    pub raw: RawHostFn,
+}
+
+impl std::fmt::Debug for MethodEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MethodEntry")
+            .field("name", &self.name)
+            .field("params", &self.params)
+            .field("sig", &self.sig)
+            .field("has_self", &self.has_self)
+            .finish_non_exhaustive()
     }
 }
 

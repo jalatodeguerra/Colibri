@@ -100,6 +100,7 @@ pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
         Value::Map(_) => TypeKey::Map,
         Value::Set(_) => TypeKey::Set,
         Value::Obj(o) => TypeKey::Adt(o.ty()),
+        Value::Host(r) => TypeKey::Adt(r.ty),
         Value::Range(_) => TypeKey::Range,
         Value::Weak(_)
         | Value::Dyn(_)
@@ -116,6 +117,7 @@ fn adt_of(v: &Value) -> Option<TypeId> {
         Value::Struct(s) => Some(s.ty),
         Value::Enum(e) => Some(e.ty),
         Value::Obj(o) => Some(o.ty()),
+        Value::Host(r) => Some(r.ty),
         _ => None,
     }
 }

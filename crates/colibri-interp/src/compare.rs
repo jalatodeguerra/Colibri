@@ -76,6 +76,7 @@ fn equal(a: &Value, b: &Value, depth: u32, ov: &mut dyn Overrides) -> Result<boo
         (Value::List(_) | Value::Map(_) | Value::Set(_), _) => equal_collections(a, b, depth, ov)?,
         // A class is compared by identity (DESIGN §7.2).
         (Value::Obj(x), Value::Obj(y)) => Rc::ptr_eq(x, y),
+        (Value::Host(x), Value::Host(y)) => x.index == y.index && x.generation == y.generation,
         (Value::Weak(x), Value::Weak(y)) => Weak::ptr_eq(x, y),
         _ => same_range(a, b),
     })
@@ -91,7 +92,7 @@ fn same_range(a: &Value, b: &Value) -> bool {
 #[inline(never)]
 fn override_eq(a: &Value, b: &Value, ov: &mut dyn Overrides) -> Option<Result<bool, Stop>> {
     match a {
-        Value::Struct(_) | Value::Enum(_) | Value::Obj(_) => ov.eq(a, b),
+        Value::Struct(_) | Value::Enum(_) | Value::Obj(_) | Value::Host(_) => ov.eq(a, b),
         _ => None,
     }
 }
@@ -104,7 +105,7 @@ fn override_cmp(
     ov: &mut dyn Overrides,
 ) -> Option<Result<Option<Ordering>, Stop>> {
     match a {
-        Value::Struct(_) | Value::Enum(_) | Value::Obj(_) => ov.cmp(a, b),
+        Value::Struct(_) | Value::Enum(_) | Value::Obj(_) | Value::Host(_) => ov.cmp(a, b),
         _ => None,
     }
 }
@@ -170,6 +171,7 @@ pub fn values_identical(a: &Value, b: &Value) -> bool {
         (Value::Map(x), Value::Map(y)) => Rc::ptr_eq(x, y),
         (Value::Set(x), Value::Set(y)) => Rc::ptr_eq(x, y),
         (Value::Obj(x), Value::Obj(y)) => Rc::ptr_eq(x, y),
+        (Value::Host(x), Value::Host(y)) => x.index == y.index && x.generation == y.generation,
         _ => false,
     }
 }
