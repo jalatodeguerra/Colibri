@@ -265,3 +265,46 @@ loop {
 - Measured: `vm.tick` with 1,000 idle coroutines takes about 10 microseconds in a debug build
   (`tests/coroutines.rs`); a `wait_until` coroutine costs a resumption per tick.
 
+
+## 11. Hot reload from a host
+
+`vm.reload_changed() -> Result<ReloadOutcome, Error>` (DESIGN §15.4, §16.3; as built in
+ARCHITECTURE §17) re-reads the source files of a program loaded with `load_file`,
+`load_package` or `load_path`, and puts changes to work. Call it at a safe point of your own
+loop (between frames, requests or `vm.tick` calls), never from inside a script call.
+
+```rust
+vm.load_file("scripts/main.colibri")?;
+vm.run_main()?;
+loop {
+    match vm.reload_changed()? {
+        ReloadOutcome::Unchanged => {}
+        ReloadOutcome::Patched { functions } => log::info!("patched {functions} functions"),
+        ReloadOutcome::Restarted { reason, .. } => {
+            log::info!("restarted: {reason}");
+            vm.run_main()?;                    // the host decides whether to run main again
+        }
+        ReloadOutcome::CheckFailed(report) => eprintln!("{}", report.render(true)),
+    }
+    vm.tick(dt)?;
+}
+```
+
+- **Patch**: only function bodies changed. `Fn` handles and `Callback`s stay valid, module state
+  is kept, initialisers do not run again, coroutines suspended in an old body finish on it.
+- **Restart**: anything else (signatures, types, module-level declarations or initialisers).
+  Coroutines are cancelled, module values released, the new program initialised, and handles
+  and callbacks from before are `StaleHandle`. State carries across if the old program has
+  `fn save_state() -> str` and the new one `fn restore_state(s: str)` (text, until
+  serialization exists, DESIGN §7.5). `main` is not called.
+- **Check errors** do not change anything and come back as `CheckFailed(report)`; the next call
+  says `Unchanged` until a file changes again. `Err` is for I/O trouble (retried next call) and
+  panics in `save_state`, in the new initialisers or in `restore_state`.
+- Registered host functions and types, capabilities, the instruction budget, clock, output and
+  `insert_state` values live in the `Vm` and survive a restart. Register everything before the
+  first load, as always.
+- `reload_changed_with(ReloadOptions { force_restart: true })` restarts even when a patch
+  would do. `run_event_loop_watching(poll, max_sleep, hook)` is `run_event_loop` with a hook
+  between ticks (what `colibri run --watch` uses).
+- Polling is `std::fs::metadata` per file, cheap enough to call every frame; a file is read
+  and hashed only when its modification time or size moved.

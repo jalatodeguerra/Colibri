@@ -25,7 +25,9 @@ section ("as built") for the decisions it had to make.
 3. **Scripting std**, moved up from phase 4: `args`, subprocesses, `datetime`, `regex`, and an
    `http` client behind the `net` capability.
 4. **`colibri repl`** and startup time tuned for one-off scripts.
-5. **Hot reload** (DESIGN §16.3) for long-running programs and embedded scripts.
+5. **Hot reload** (DESIGN §16.3) for long-running programs and embedded scripts:
+   `vm.reload_changed()`, `colibri run --watch`. Built: ARCHITECTURE §17 (snapshot hooks pass
+   text, `save_state() -> str`, until §7.5 exists).
 6. **The leak detector** (DESIGN §11.5, Q9), built as trial deletion.
 7. **`@repr(C)` structs and the C FFI** (DESIGN §15.2, §15.3).
 8. **Milestone:** real automation scripts written in Colibri (a file organiser, a JSON/HTTP
