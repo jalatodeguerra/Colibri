@@ -1076,7 +1076,8 @@ directly in the root form the *root package*, named after the manifest (or the f
 separate package, **also for scripts without a manifest**: `import util.strings` finds
 `util/strings.colibri` next to the script, and it can only use what that file marks `pub`
 (the implicit package is the script's folder, not its subtree). Only modules reachable by
-`import` from the entry are loaded and checked; a stray file nobody imports is ignored.
+`import` from the entry are loaded and checked for `run`; a stray file nobody imports is ignored
+there (`colibri check` and `colibri test` on a package folder also check such files, §15).
 
 The loader (`colibri_check::package`) reads the files through a `SourceFs` (the real file system,
 or the in-memory one `load_sources` uses), parses each module once into the shared `SourceMap`
