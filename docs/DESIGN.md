@@ -1914,7 +1914,6 @@ Most of these were decided by building the recommendation as written. The **Stat
 **Built** means the recommendation is implemented as described, **Decided, planned** means it is
 agreed and not built, **Open** means no decision. The body of the doc is written as if each
 recommendation were adopted (marked [Proposed]). Changing one means editing the sections it names.
-Q15 is being revised separately and has no status yet.
 
 | # | Question | Recommendation | Sections | Status |
 |---|----------|----------------|----------|--------|
@@ -1933,7 +1932,7 @@ Q15 is being revised separately and has no status yet.
 | Q12 | Operator overloading | Built-in only in phase 1 (the `vec` module's types get component-wise operators); `Add`/`Sub`/`Mul`/`Neg` interfaces for structs after it | §15.1 | Decided, planned: also moves vectors out of the core (§15.1) |
 | Q13 | `unsafe` | `unsafe { }` for raw pointer operations; FFI as a per-package and per-VM capability | §15.3 | Built |
 | Q14 | Hot reload semantics | Function-level patching, automatic restart (with optional save/restore hooks, `str` until §7.5 exists) on layout changes | §16.3 | Built |
-| Q15 | Script top-level code | Only in the entry file of a script; imported modules hold declarations only | §13 |
+| Q15 | Script top-level code | Only in the entry file of a script; imported modules hold declarations only. An entry file without `fn main` runs its `let`, `var` and statements top to bottom (decided 2026-11-19) | §4.2, §13 | Built |
 | Q16 | Name | **Decided 2026-11-19: Colibri**, written `colibri` in anything typed. Renamed from the working name Leo (which collides with Aleo's Leo), briefly Noble. Naming details in §17.2 are [Proposed] | everywhere | Built |
 | Q17 | Rust crate bindings | Static linking everywhere through project-specific runners; no dylib; no `glam` binding; `rapier` when a demo needs it | §15.5 | Decided, planned (phase 4) |
 | Q18 | Coroutine and task syntax | `go f()` keyword for coroutines; `task.run(fn() => ...)` for thread tasks; with `=>` lambdas `wait_until` needs no sugar. Spelling of `go` (vs `co`) still open | §14 | Built for `go`; `task.run` is Decided, planned (phase 3) |
