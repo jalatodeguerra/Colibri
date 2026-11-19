@@ -1,0 +1,21 @@
+fn main() {
+    let s = "abc"
+    print("[{s:5}]")
+    print("[{s:>5}]")
+    print("[{s:^5}]")
+    print("[{s:_<6}]")
+    print("[{s:.2}]")
+    print("[{s:>6.2}]")
+    print("[{true:>6}]")
+    print("[{'x':^3}]")
+    print("[{"日本":>4}]")
+}
+// expect: [abc  ]
+// expect: [  abc]
+// expect: [ abc ]
+// expect: [abc___]
+// expect: [ab]
+// expect: [    ab]
+// expect: [  true]
+// expect: [ x ]
+// expect: [  日本]

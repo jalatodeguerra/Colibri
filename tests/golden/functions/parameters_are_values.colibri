@@ -1,0 +1,12 @@
+fn bump(x: int) -> int {
+    var y = x
+    y += 1
+    return y
+}
+fn main() {
+    let a = 5
+    print(bump(a))
+    print(a)
+}
+// expect: 6
+// expect: 5

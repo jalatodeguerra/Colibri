@@ -1,0 +1,4 @@
+enum Color { // error: `enum` is not supported yet
+    Red
+    Green
+}

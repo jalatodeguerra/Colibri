@@ -1,0 +1,8 @@
+const LIMIT = 10
+let name = "n"
+var open = 1
+fn main() {
+    LIMIT = 11 // error: cannot assign to the constant `LIMIT`
+    name = "m" // error: cannot assign to the variable `name`
+    open = 2
+}

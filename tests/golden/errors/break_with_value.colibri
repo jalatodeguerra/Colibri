@@ -1,0 +1,5 @@
+fn main() {
+    while true {
+        break 5 // error: `break` cannot carry a value out of a `while` loop
+    }
+}

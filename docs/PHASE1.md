@@ -26,7 +26,8 @@ behind the same `Vm` API.
 
 - **Diagnostics** live in `colibri-syntax` (`Diagnostic` with severity, message, primary span,
   secondary labels and an optional hint) so every stage reports the same way. The CLI renders
-  them with `ariadne`. The checker keeps going after the first error (DESIGN §16.4).
+  them with `ariadne` (the renderer lives in `colibri-runtime`, so hosts and the CLI share it).
+  The checker keeps going after the first error (DESIGN §16.4).
 - **Lexer** produces raw tokens including newlines; a separate pass applies the statement
   termination rules of DESIGN §3.2 (Go's rule, bracket stack, leading `.`/`or`/`&&`/`||`/`else`
   continuation). String literals are lexed whole, with interpolation holes recorded as spans that

@@ -1,0 +1,12 @@
+var i = 0
+while i < 3 {
+    if i == 1 {
+        print("one")
+    } else {
+        print("not one: {i}")
+    }
+    i += 1
+}
+// expect: not one: 0
+// expect: one
+// expect: not one: 2

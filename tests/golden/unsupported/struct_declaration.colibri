@@ -1,0 +1,6 @@
+struct Point { // error: `struct` is not supported yet
+    x: int
+    y: int
+}
+fn f(p: Point) {}
+print("still checked")

@@ -1,24 +1,35 @@
 //! Support code for the `colibri` command line tool.
 
 pub mod golden;
-mod render;
 
-use std::io::{self, Write};
-use std::path::Path;
+use std::thread;
 
-use colibri_syntax::{Diagnostic, SourceMap, parse_file};
+/// The stack of the thread that runs Colibri code. Each active Colibri call uses Rust stack
+/// in the tree-walking interpreter; this is enough for the default call-depth limit even in
+/// an unoptimised build, so the limit (a deterministic "stack overflow" panic) always fires
+/// before the Rust stack can overflow.
+pub const STACK_SIZE: usize = 256 * 1024 * 1024;
 
-pub use render::render_diagnostic;
+/// What the interpreter may use of that stack: everything but a margin for the rest of the
+/// program.
+pub const NATIVE_STACK_BUDGET: usize = STACK_SIZE - 16 * 1024 * 1024;
 
-/// Reads and parses `path`, writing every diagnostic to `out` (rendered with
-/// source snippets). Returns whether any of them is an error.
-pub fn check_syntax(path: &Path, color: bool, out: &mut impl Write) -> io::Result<bool> {
-    let text = std::fs::read_to_string(path)?;
-    let mut map = SourceMap::new();
-    let file = map.add_file(path.display().to_string(), text);
-    let (_, diagnostics) = parse_file(file, map.text(file));
-    for diagnostic in &diagnostics {
-        out.write_all(render_diagnostic(diagnostic, &map, color).as_bytes())?;
+/// A `Vm` builder set up for a thread made by [`on_big_stack`].
+pub fn vm_builder() -> colibri_runtime::VmBuilder {
+    colibri_runtime::Vm::builder()
+        .max_call_depth(colibri_runtime::DEFAULT_MAX_CALL_DEPTH)
+        .native_stack_budget(NATIVE_STACK_BUDGET)
+}
+
+/// Runs `f` on a thread with a [`STACK_SIZE`] stack and returns its result.
+pub fn on_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let handle = thread::Builder::new()
+        .name("colibri".to_string())
+        .stack_size(STACK_SIZE)
+        .spawn(f)
+        .expect("the operating system can start a thread");
+    match handle.join() {
+        Ok(value) => value,
+        Err(panic) => std::panic::resume_unwind(panic),
     }
-    Ok(diagnostics.iter().any(Diagnostic::is_error))
 }

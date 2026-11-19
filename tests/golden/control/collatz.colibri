@@ -1,0 +1,17 @@
+fn steps(start: int) -> int {
+    var n = start
+    var count = 0
+    while n != 1 {
+        if n % 2 == 0 {
+            n /= 2
+        } else {
+            n = 3 * n + 1
+        }
+        count += 1
+    }
+    return count
+}
+print(steps(6))
+print(steps(27))
+// expect: 8
+// expect: 111

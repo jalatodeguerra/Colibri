@@ -1,0 +1,6 @@
+fn find(x: int) -> int? { // error: optional type (`T?`) is not supported yet
+    return none // error: `none` is not supported yet
+}
+fn parse(s: str) -> Result[int] { // error: the generic type `Result[..]` is not supported yet
+    return ok(1) // error: `ok` is not supported yet
+}

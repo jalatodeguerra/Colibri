@@ -1,0 +1,7 @@
+fn main() {
+    print(first(3))
+}
+fn first(n: int) -> int => second(n) + 1
+fn second(n: int) -> int => third(n) * 2
+fn third(n: int) -> int => n + 10
+// expect: 27

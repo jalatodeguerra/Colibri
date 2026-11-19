@@ -36,6 +36,7 @@ impl Span {
     }
 }
 
+#[derive(Clone, Debug)]
 struct SourceFile {
     name: String,
     text: String,
@@ -44,7 +45,7 @@ struct SourceFile {
 }
 
 /// Owns all loaded source files.
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SourceMap {
     files: Vec<SourceFile>,
 }

@@ -1,0 +1,7 @@
+fn name() -> str {
+    return 42 // error: expected `str`, found `{integer}`
+}
+fn flag() -> bool => "yes" // error: expected `bool`, found `str`
+fn unit_fn() {
+    return 1 // error: expected `()`, found `{integer}`
+}

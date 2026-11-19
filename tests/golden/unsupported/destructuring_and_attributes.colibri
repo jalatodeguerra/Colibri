@@ -1,0 +1,5 @@
+@inline // error: the attribute `@inline` is not supported yet
+fn f() {}
+fn main() {
+    let (a, b) = 1 // error: destructuring in `let` is not supported yet
+}

@@ -1,0 +1,8 @@
+print("one")
+fn main() {
+    print("three")
+}
+print("two")
+// expect: one
+// expect: two
+// expect: three

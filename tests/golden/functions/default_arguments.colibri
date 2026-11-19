@@ -1,0 +1,18 @@
+const GREETING = "Hello"
+fn log(msg: str, level: str = "info") {
+    print("[{level}] {msg}")
+}
+fn scale(x: float, by: float = 2) -> float => x * by
+fn greet(name: str, greeting: str = GREETING, punct: str = "!") -> str => "{greeting}, {name}{punct}"
+log("starting")
+log("disk full", "warn")
+print(scale(1.5))
+print(scale(1.5, 3))
+print(greet("Ana"))
+print(greet("Ana", "Hi"))
+// expect: [info] starting
+// expect: [warn] disk full
+// expect: 3.0
+// expect: 4.5
+// expect: Hello, Ana!
+// expect: Hi, Ana!

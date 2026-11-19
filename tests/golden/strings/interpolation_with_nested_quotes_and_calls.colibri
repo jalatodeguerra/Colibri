@@ -1,0 +1,8 @@
+fn shout(s: str) -> str => s + "!"
+fn pick(flag: bool) -> str => if flag { "yes" } else { "no" }
+print("{shout("hey")} {pick(true)} {pick(1 > 2)}")
+print("{"inner"}")
+print("{if 2 > 1 { "big" } else { "small" }}")
+// expect: hey! yes no
+// expect: inner
+// expect: big

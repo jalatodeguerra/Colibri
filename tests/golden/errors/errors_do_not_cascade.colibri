@@ -1,0 +1,8 @@
+let bad: nonsense = 1 // error: unknown type `nonsense`
+fn main() {
+    let x = missing // error: unknown name `missing`
+    let y = x + 1
+    let z = y * 2
+    print(z)
+    print(bad + 1)
+}

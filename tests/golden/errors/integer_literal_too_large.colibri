@@ -1,0 +1,2 @@
+let big = 9223372036854775808 // error: does not fit in `int`
+let fine = -9223372036854775808

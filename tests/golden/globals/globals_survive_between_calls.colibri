@@ -1,0 +1,13 @@
+var calls = 0
+fn next() -> int {
+    calls += 1
+    return calls
+}
+print(next())
+print(next())
+print(next() + next())
+print(calls)
+// expect: 1
+// expect: 2
+// expect: 7
+// expect: 4

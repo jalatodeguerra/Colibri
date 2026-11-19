@@ -1,0 +1,13 @@
+fn main() {
+    var i = 0
+    while i < 3 {
+        let squared = i * i
+        var scratch = squared
+        scratch += 1
+        print("{squared} {scratch}")
+        i += 1
+    }
+}
+// expect: 0 1
+// expect: 1 2
+// expect: 4 5

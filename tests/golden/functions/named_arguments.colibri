@@ -1,0 +1,16 @@
+fn log(msg: str, level: str = "info") {
+    print("[{level}] {msg}")
+}
+fn box(w: int, h: int, d: int = 1) -> int => w * h * d
+log("disk full", level: "warn")
+log(level: "debug", msg: "x")
+print(box(2, 3))
+print(box(2, 3, d: 4))
+print(box(h: 5, w: 2))
+print(box(d: 3, w: 1, h: 2))
+// expect: [warn] disk full
+// expect: [debug] x
+// expect: 6
+// expect: 24
+// expect: 10
+// expect: 6

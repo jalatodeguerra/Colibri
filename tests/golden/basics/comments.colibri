@@ -1,0 +1,10 @@
+// line comment
+print(1) // trailing
+/* block /* nested */ still a comment */
+print(2)
+/// doc comment on a function
+fn f() -> int => 3
+print(f())
+// expect: 1
+// expect: 2
+// expect: 3

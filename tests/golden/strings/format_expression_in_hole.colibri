@@ -1,0 +1,7 @@
+fn area(w: float, h: float) -> float => w * h
+fn main() {
+    print("{area(1.5, 2.0):.3} sq")
+    print("{10 / 3:>4}|{10 % 3:<3}|")
+}
+// expect: 3.000 sq
+// expect:    3|1  |

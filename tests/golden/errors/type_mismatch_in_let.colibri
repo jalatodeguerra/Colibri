@@ -1,0 +1,6 @@
+let a: int = "text" // error: expected `int`, found `str`
+let b: str = 5 // error: expected `str`, found `{integer}`
+let c: bool = 1.5 // error: expected `bool`, found `{float}`
+fn main() {
+    let d: float = true // error: expected `float`, found `bool`
+}

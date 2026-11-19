@@ -1,0 +1,4 @@
+fn main() {
+    print("only main")
+}
+// expect: only main

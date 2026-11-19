@@ -1,0 +1,3 @@
+fn ping(n: int) -> int => pong(n + 1)
+fn pong(n: int) -> int => ping(n + 1)
+print(ping(0)) // panic: stack overflow

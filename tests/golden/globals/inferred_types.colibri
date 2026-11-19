@@ -1,0 +1,7 @@
+let ratio = 1.5 * 2
+let count = 3
+let label = "n=" + "{count}"
+let big = count > 2
+let typed: float = 4
+print("{ratio} {count} {label} {big} {typed}")
+// expect: 3.0 3 n=3 true 4.0

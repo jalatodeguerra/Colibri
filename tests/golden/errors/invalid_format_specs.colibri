@@ -1,0 +1,11 @@
+fn main() {
+    let n = 5
+    let x = 1.5
+    print("{n:q}") // error: invalid format spec `q`: unknown format type `q`
+    print("{n:.2}") // error: a precision cannot be used with `int`
+    print("{x:x}") // error: format type `x` only applies to integers
+    print("{"s":05}") // error: the `0` flag only applies to numbers
+    print("{x:.}") // error: expected digits after `.`
+    print("{n:5z}") // error: unknown format type `z`
+    print("{n:>99999}") // error: too large
+}

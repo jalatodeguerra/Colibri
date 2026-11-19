@@ -1,0 +1,9 @@
+let text = """
+    first
+      second
+    third
+    """
+print(text)
+// expect: first
+// expect:   second
+// expect: third

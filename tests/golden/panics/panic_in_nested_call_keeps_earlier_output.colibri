@@ -1,0 +1,17 @@
+fn inner(x: int) -> int {
+    print("inner {x}")
+    return 100 / x
+}
+fn outer(x: int) -> int {
+    print("outer {x}")
+    return inner(x - 1)
+}
+fn main() {
+    print(outer(3))
+    print(outer(1)) // panic: division by zero
+}
+// expect: outer 3
+// expect: inner 2
+// expect: 50
+// expect: outer 1
+// expect: inner 0

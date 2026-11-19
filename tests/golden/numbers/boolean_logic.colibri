@@ -1,0 +1,24 @@
+fn say(label: str, value: bool) -> bool {
+    print(label)
+    return value
+}
+fn main() {
+    print(true && false)
+    print(true || false)
+    print(!true)
+    print(!false && true)
+    print(say("left", false) && say("right", true))
+    print(say("left", true) || say("right", true))
+    print(say("a", true) && say("b", true))
+}
+// expect: false
+// expect: true
+// expect: false
+// expect: true
+// expect: left
+// expect: false
+// expect: left
+// expect: true
+// expect: a
+// expect: b
+// expect: true

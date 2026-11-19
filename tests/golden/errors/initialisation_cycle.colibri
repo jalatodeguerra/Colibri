@@ -1,0 +1,2 @@
+let a = b + 1 // error: initialisation cycle: `a` -> `b` -> `a`
+let b = a + 1

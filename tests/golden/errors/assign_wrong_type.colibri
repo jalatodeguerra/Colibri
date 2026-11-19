@@ -1,0 +1,8 @@
+fn main() {
+    var n = 1
+    n = "one" // error: expected `int`, found `str`
+    var s = "a"
+    s += 1 // error: expected `str`, found `{integer}`
+    var b = true
+    b += true // error: `+=` cannot be applied to `bool`
+}
