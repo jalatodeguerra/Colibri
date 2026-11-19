@@ -1,0 +1,5 @@
+{
+  "photos": ["jpg", "jpeg", "png", "heic"],
+  "paperwork": ["pdf", "docx", "txt"],
+  "source": ["rs", "py", "colibri"]
+}

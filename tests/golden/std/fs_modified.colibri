@@ -1,0 +1,24 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let file = path.join(os.temp_dir(), "m.txt")
+    fs.write(file, "x")?
+    // Seconds since the Unix epoch: a file written just now is newer than 2020 and not in the future.
+    let t = fs.modified(file)?
+    print(t > 1577836800.0)
+    print(t < 4102444800.0)
+    print(fs.modified(path.join(os.temp_dir(), "nope")).is_err())
+    match fs.modified(path.join(os.temp_dir(), "nope")) {
+        ok(_) => print("unexpected")
+        err(e) => print(e.message().replace(os.temp_dir(), "<dir>"))
+    }
+    return ok(())
+}
+
+// expect: true
+// expect: true
+// expect: true
+// expect: cannot look at `<dir>/nope`: no such file or directory

@@ -23,6 +23,12 @@ language itself is not implemented yet. The implementation plan is in
 [docs/PHASE1.md](docs/PHASE1.md). The language design is in [docs/DESIGN.md](docs/DESIGN.md) and
 is open for review, including the list of [open questions](docs/DESIGN.md#18-open-questions).
 
+## Examples
+
+- [examples/scripts](examples/scripts/README.md): a file organiser and a JSON/HTTP report
+  generator, written in Colibri and run with `colibri run`.
+- [examples/host_game](examples/host_game/README.md): a Rust game loop driven by Colibri scripts.
+
 ## Building
 
 ```sh
