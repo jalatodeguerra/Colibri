@@ -753,5 +753,7 @@ fn unused_variables_are_published_as_warnings() {
             .unwrap()
             .contains("unused variable `spare`")
     );
+    // Editors fade unused code (`DiagnosticTag::Unnecessary` = 1).
+    assert_eq!(diags[0]["tags"], serde_json::json!([1]));
     c.shutdown();
 }
