@@ -1,0 +1,9 @@
+import http
+
+fn main() {
+    let _ = http.get("http://127.0.0.1:1/") // error: `http.get` needs the `net` capability, which this host did not grant
+    let _ = http.post("http://127.0.0.1:1/", "x") // error: `http.post` needs the `net` capability
+    let _ = http.post_as("http://127.0.0.1:1/", "{{}}", "application/json") // error: `http.post_as` needs the `net` capability
+    let _ = http.request("GET", "http://127.0.0.1:1/", {"a": "b"}, "") // error: `http.request` needs the `net` capability
+    http.set_timeout(1.0) // error: `http.set_timeout` needs the `net` capability
+}
