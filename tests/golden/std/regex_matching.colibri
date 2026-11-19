@@ -1,0 +1,57 @@
+// Offsets are byte offsets (the unit of `s[a..b]`), not characters.
+import regex
+
+fn must(pattern: str) -> regex.Regex {
+    match regex.compile(pattern) {
+        ok(re) => return re
+        err(e) => panic("bad pattern: {e.message()}")
+    }
+}
+
+fn main() {
+    let digits = must(r"\d+")
+    print(digits.is_match("abc 123"))
+    print(digits.is_match("abc"))
+    print(digits.pattern())
+
+    match digits.find("ab 42 cd 7") {
+        some(m) => print("{m.text} {m.start} {m.end}")
+        none => print("no match")
+    }
+    print(digits.find("none here") == none)
+
+    for m in digits.find_all("a1 b22 c333") {
+        print("{m.text}@{m.start}..{m.end}")
+    }
+
+    // Byte offsets: `é` is two bytes.
+    let text = "éabb"
+    match must("b+").find(text) {
+        some(m) => {
+            print("{m.start} {m.end}")
+            print(text[m.start..m.end])
+        }
+        none => print("no match")
+    }
+
+    print(must(r"\s*,\s*").split("a , b,c ,d"))
+    print(must("x").split("no separator"))
+
+    // Compiled regexes are references: both names are the same object.
+    let alias = digits
+    print(alias.is_match("9"))
+}
+
+// expect: true
+// expect: false
+// expect: \d+
+// expect: 42 3 5
+// expect: true
+// expect: 1@1..2
+// expect: 22@4..6
+// expect: 333@8..11
+// expect: 3 5
+// expect: bb
+// expect: ["a", "b", "c", "d"]
+// expect: ["no separator"]
+// expect: true

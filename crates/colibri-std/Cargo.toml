@@ -1,6 +1,6 @@
 [package]
 name = "colibri-std"
-description = "The Colibri standard library: io, fs, path, os, math, rand, time and json as host modules"
+description = "The Colibri standard library: io, fs, path, os, math, rand, time, json, regex and http as host modules"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,3 +11,8 @@ colibri-runtime = { path = "../colibri-runtime", default-features = false }
 # Bit-identical sin, cos, exp, ln, pow, ... on every platform. `f64::sin` calls the C library
 # of the machine, whose last digit differs between systems.
 libm = "0.2.16"
+# Pattern matching for `regex` (no unsafe, no C).
+regex = { version = "1.12", default-features = false, features = ["std", "unicode", "perf"] }
+# A small blocking HTTP client for `http`: rustls with the bundled webpki roots, so a build
+# needs no system TLS library.
+ureq = { version = "3", default-features = false, features = ["rustls"] }

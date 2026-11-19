@@ -1462,6 +1462,54 @@ and use the hardware.
 - Not done: `@rename`/`@skip` and field defaults in `json` (no attribute support in the
   checked types yet), JSON for data enums, typed error enums.
 
+### `regex` (phase 2, part B)
+
+`regex.compile(pattern) -> Result[Regex]` on the Rust `regex` crate (linear-time matching: no
+look-around, no back-references; Unicode on). An invalid pattern is an `err` carrying the crate's
+multi-line message; patterns whose compiled program exceeds 10 MiB are refused the same way. No
+capability. `Regex` and `Captures` are host classes (reference values: copies of a variable
+share one object, like `rand.Rng`); `Match` is a struct `{ text: str, start: int, end: int }`.
+
+- `Regex`: `is_match(s)`, `find(s) -> Match?`, `find_all(s) -> List[Match]`, `captures(s) ->
+  Captures?`, `replace(s, replacement)` (first match), `replace_all`, `split(s) -> List[str]`,
+  `pattern()`.
+- `Captures`: `len()` (group 0 counts), `get(i) -> str?`, `named(name) -> str?`, `span(i)` and
+  `named_span(name)` (`Match?`). A group that did not take part, an unknown name or an index out
+  of range is `none`.
+- Replacement text expands `$1`, `${1}`, `$name`, `${name}`; `$$` is a dollar sign. `$1a` is the
+  group named `1a`, so write `${1}a`.
+- **Offsets are byte offsets** into the UTF-8 text, the unit of `s[a..b]` (strings cannot be
+  indexed by integer, DESIGN §7), so `s[m.start..m.end] == m.text` always holds.
+
+### `http` (phase 2, part B)
+
+A blocking client on `ureq` 3 with rustls (ring) and the bundled `webpki-roots`: `https://`
+works with no system TLS library and no OpenSSL. Every function needs `Cap::Net` (`// caps: net`
+in a golden; the CLI grants everything).
+
+- `get(url)`, `post(url, body)` (`content-type: text/plain; charset=utf-8`),
+  `post_as(url, body, content_type)` and `request(method, url, headers: Map[str, str], body)`,
+  all `Result[Response]`; `set_timeout(seconds)`. Host functions have no optional parameters, so
+  the "optional content type" is a second function (`post_as`) rather than a defaulted argument.
+  `request` upper-cases the method and sends no body when `body` is `""`.
+- `Response` is a struct `{ status: int, headers: Map[str, str], body: str }`. Header names are
+  lowercased; a header that arrives several times is joined with `, `. Any status is `ok`
+  (`404` is data); `err` means no response: bad URL, refused connection, TLS failure, timeout, a
+  body over 64 MiB. Messages read `http: GET url failed: reason`.
+- The body is text: bytes that are not UTF-8 are decoded lossily (U+FFFD). There is no byte
+  body in v1. There is no `Response.json()`, because a struct has no methods and `json.decode`
+  needs the target type at the call: write `json.decode[T](response.body)`.
+- Redirects are followed (10 at most); `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` are honoured.
+- Timeout: 30 s for a whole request by default; `http.set_timeout(s)` changes it for the rest of
+  the program (`0` is none, negative or non-finite panics). The setting lives in a state of its
+  own in the `Vm`, not in `StdConfig`.
+- **A call blocks the whole `Vm`, coroutines included**: a host function cannot wait (§16), so no
+  other coroutine runs until the response is complete or the timeout fires.
+- Tests: `crates/colibri-std/tests/http.rs` starts a hand-written HTTP/1.1 server on
+  `127.0.0.1:0` in the test process (nothing leaves the machine); the golden
+  `std/http_needs_capability` covers the refusal without `net`. There is no golden with a live
+  server because the harness has no hook for a URL.
+
 ## 14. Language server (`colibri lsp`)
 
 `colibri-lsp` is a library (the CLI's `lsp` subcommand calls `colibri_lsp::run_stdio`) speaking
