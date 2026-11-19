@@ -119,6 +119,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "colibri-example-host-game"
+version = "0.1.0"
+dependencies = [
+ "colibri-runtime",
+]
+
+[[package]]
 name = "colibri-interp"
 version = "0.1.0"
 dependencies = [
