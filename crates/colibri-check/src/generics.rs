@@ -205,7 +205,7 @@ impl Checker<'_> {
             });
         }
         let ret = match &decl.ret {
-            Some(t) => self.resolve_type(t),
+            Some(t) => self.resolve_ret_type(t),
             None => Ty::Unit,
         };
         let ret_span = decl.ret.as_ref().map(|t| t.span);

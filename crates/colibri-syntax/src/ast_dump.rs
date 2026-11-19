@@ -276,6 +276,7 @@ pub fn ty_str(ty: &TypeExpr) -> String {
                 None => format!("fn({})", params.join(", ")),
             }
         }
+        TypeKind::Never => "!".to_string(),
         TypeKind::Error => "<error>".to_string(),
     }
 }

@@ -17,7 +17,7 @@ fn lookup(state: &State, name: &str) -> Option<String> {
     }
 }
 
-fn exit(cx: &mut Ctx, code: i64) {
+fn exit(cx: &mut Ctx, code: i64) -> colibri_runtime::Never {
     let Ok(code) = i32::try_from(code) else {
         cx.raise(format!("os.exit: {code} is not an exit code"));
     };

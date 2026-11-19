@@ -335,6 +335,7 @@ fn print_type(t: &ast::TypeExpr) -> String {
                 None => format!("fn({})", params.join(", ")),
             }
         }
+        TypeKind::Never => "!".to_string(),
         TypeKind::Array { .. } | TypeKind::Error => "?".to_string(),
     }
 }

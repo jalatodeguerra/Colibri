@@ -17,6 +17,8 @@ use crate::host::RawHostFn;
 #[non_exhaustive]
 pub enum TypeDesc {
     Unit,
+    /// `!`, the result of a function that never returns (a return type only): see [`crate::Never`].
+    Never,
     Bool,
     /// `int`, which is also `i64`.
     Int,
@@ -65,6 +67,7 @@ impl fmt::Display for TypeDesc {
         };
         match self {
             TypeDesc::Unit => f.write_str("()"),
+            TypeDesc::Never => f.write_str("!"),
             TypeDesc::Bool => f.write_str("bool"),
             TypeDesc::Int => f.write_str("int"),
             TypeDesc::I8 => f.write_str("i8"),
@@ -141,6 +144,7 @@ impl TypeDesc {
         let of = |t: &Ty| TypeDesc::of(t, program);
         Some(match ty {
             Ty::Unit => TypeDesc::Unit,
+            Ty::Never => TypeDesc::Never,
             Ty::Bool => TypeDesc::Bool,
             Ty::Int(IntTy::I64) => TypeDesc::Int,
             Ty::Int(IntTy::I8) => TypeDesc::I8,

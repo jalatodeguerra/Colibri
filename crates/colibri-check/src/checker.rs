@@ -886,10 +886,18 @@ impl<'a> Checker<'a> {
                 self.unsupported("fixed-size array type", t.span);
                 Ty::Error
             }
+            TypeKind::Never => {
+                self.report(
+                    Diagnostic::error("`!` is only allowed as a return type", t.span).with_hint(
+                        "write it after `->`: `fn die(msg: str) -> !` is a function that never returns",
+                    ),
+                );
+                Ty::Error
+            }
             TypeKind::Fn { params, ret } => {
                 let params: Vec<Ty> = params.iter().map(|p| self.resolve_type(p)).collect();
                 let ret = match ret {
-                    Some(r) => self.resolve_type(r),
+                    Some(r) => self.resolve_ret_type(r),
                     None => Ty::Unit,
                 };
                 if params.iter().any(Ty::is_error) || ret.is_error() {
@@ -898,6 +906,14 @@ impl<'a> Checker<'a> {
                 Ty::Fn(params, Box::new(ret))
             }
             TypeKind::Error => Ty::Error,
+        }
+    }
+
+    /// A type written after `->`: like [`Self::resolve_type`], but `!` is allowed.
+    pub fn resolve_ret_type(&mut self, t: &ast::TypeExpr) -> Ty {
+        match t.kind {
+            TypeKind::Never => Ty::Never,
+            _ => self.resolve_type(t),
         }
     }
 

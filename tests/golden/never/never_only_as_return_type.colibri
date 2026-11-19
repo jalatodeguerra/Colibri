@@ -1,0 +1,3 @@
+fn bad(x: !) {} // error: `!` is only allowed as a return type
+let v: ! = panic("x") // error: `!` is only allowed as a return type
+fn main() {}

@@ -1,0 +1,11 @@
+fn die(msg: str) -> ! => panic(msg)
+
+fn run(f: fn(str) -> !) -> int {
+    f("through a function value")
+}
+
+fn main() {
+    let r = run(die)
+    print(r)
+}
+// panic: through a function value
