@@ -1,0 +1,80 @@
+import datetime
+
+fn show(text: str, pattern: str) {
+    match datetime.parse(text, pattern) {
+        ok(d)  => print(datetime.to_iso(d))
+        err(e) => print("error: " + e.message())
+    }
+}
+
+fn main() {
+    let t = datetime.new(2024, 3, 5, 14, 7, 9) or |e| { panic(e.message()) }
+    print(datetime.format(t, "%Y-%m-%d %H:%M:%S"))
+    print(datetime.format(t, "%A, %e %B %Y"))
+    print(datetime.format(t, "%a %b %d %y | %I:%M %p | day %j | weekday %u"))
+    print(datetime.format(t, "%F %T %z %:z %Z"))
+    print(datetime.format(t, "%s 100%%"))
+    let w = datetime.with_offset(datetime.add(t, 0.123456789), 19800)
+    print(datetime.format(w, "%T.%L / %f %z %Z"))
+    print(datetime.format(datetime.new(2024, 3, 5, 0, 5, 0) or |e| { panic(e.message()) }, "%I:%M %p"))
+
+    show("2024-03-05 14:07:09", "%Y-%m-%d %H:%M:%S")
+    show("05/03/24 02:07 PM", "%d/%m/%y %I:%M %p")
+    show("Tuesday, 5 March 2024", "%A, %e %B %Y")
+    show("mar 5 2024 14:07:09.5 +05:30", "%b %d %Y %T.%f %:z")
+    show("1700000000", "%s")
+    show("2024-366", "%Y-%j")
+    show("2023-02-29", "%F")
+    show("2024-13-01", "%F")
+    show("2024-03-05 25:00", "%F %H:%M")
+    show("hello", "%Y")
+    show("2024-03-05 and more", "%F")
+    show("2024-03", "%F")
+    show("2024", "%Q")
+
+    for text in ["2024-03-05T14:07:09Z", "2024-03-05T14:07:09.123+02:00", "2024-03-05 14:07", "2024-03-05", "2024-03-05T14:07:09-0330", "2024-3-5", "2024-03-05T14:07:09+99:00", "yesterday"] {
+        match datetime.parse_iso(text) {
+            ok(d)  => print(datetime.to_iso(d))
+            err(e) => print("error: " + e.message())
+        }
+    }
+    match datetime.new(2024, 2, 30, 0, 0, 0) {
+        ok(d)  => print(d)
+        err(e) => print(e.message())
+    }
+    match datetime.new(2024, 6, 1, 24, 0, 0) {
+        ok(d)  => print(d)
+        err(e) => print(e.message())
+    }
+}
+
+// expect: 2024-03-05 14:07:09
+// expect: Tuesday,  5 March 2024
+// expect: Tue Mar 05 24 | 02:07 PM | day 065 | weekday 2
+// expect: 2024-03-05 14:07:09 +0000 +00:00 UTC
+// expect: 1709647629 100%
+// expect: 19:37:09.123 / 123456789 +0530 +05:30
+// expect: 12:05 AM
+// expect: 2024-03-05T14:07:09Z
+// expect: 2024-03-05T14:07:00Z
+// expect: 2024-03-05T00:00:00Z
+// expect: 2024-03-05T14:07:09.5+05:30
+// expect: 2023-11-14T22:13:20Z
+// expect: 2024-12-31T00:00:00Z
+// expect: error: cannot parse `2023-02-29` as `%F`: the day 29 is not a day of 2023-02 (it has 28)
+// expect: error: cannot parse `2024-13-01` as `%F`: the month 13 is not between 1 and 12
+// expect: error: cannot parse `2024-03-05 25:00` as `%F %H:%M`: the hour 25 is not between 0 and 23
+// expect: error: cannot parse `hello` as `%Y`: expected a four-digit year at position 0, found `hello`
+// expect: error: cannot parse `2024-03-05 and more` as `%F`: unexpected ` and more` after the end of the pattern (position 10)
+// expect: error: cannot parse `2024-03` as `%F`: expected `-` at position 7, found `the end of the text`
+// expect: error: cannot parse `2024` as `%Q`: unknown specifier `%Q` in the pattern
+// expect: 2024-03-05T14:07:09Z
+// expect: 2024-03-05T14:07:09.123+02:00
+// expect: 2024-03-05T14:07:00Z
+// expect: 2024-03-05T00:00:00Z
+// expect: 2024-03-05T14:07:09-03:30
+// expect: error: `2024-3-5` is not an ISO 8601 date and time: expected a two-digit month
+// expect: error: `2024-03-05T14:07:09+99:00` is not an ISO 8601 date and time: expected `Z` or an offset such as +02:00
+// expect: error: `yesterday` is not an ISO 8601 date and time: expected a four-digit year
+// expect: datetime.new: the day 30 is not a day of 2024-02 (it has 29)
+// expect: datetime.new: the hour 24 is not between 0 and 23

@@ -244,6 +244,7 @@ name = "colibri-std"
 version = "0.1.0"
 dependencies = [
  "colibri-runtime",
+ "libc",
  "libm",
  "regex",
  "ureq",
