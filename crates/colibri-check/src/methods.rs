@@ -93,6 +93,11 @@ impl FnCtx<'_, '_> {
         {
             return self.check_error_downcast(recv, name, explicit, args, span);
         }
+        // the methods of a `ptr[T]` (DESIGN §15.3)
+        if let Ty::Ptr(elem) = &recv_ty {
+            let elem = (**elem).clone();
+            return self.check_ptr_method(recv, &elem, name, explicit, args, span);
+        }
         // `group.go(call(..))` on a `CoGroup` (DESIGN §14.2)
         if matches!(&recv_ty, Ty::Adt(id, _) if *id == crate::types::COGROUP_TYPE)
             && name.name == "go"

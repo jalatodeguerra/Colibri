@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-colibri-runtime = { path = "../colibri-runtime" }
+colibri-runtime = { path = "../colibri-runtime", default-features = false }
 # Bit-identical sin, cos, exp, ln, pow, ... on every platform. `f64::sin` calls the C library
 # of the machine, whose last digit differs between systems.
 libm = "0.2.16"

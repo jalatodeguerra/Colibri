@@ -57,7 +57,9 @@ impl FnCtx<'_, '_> {
             self.declare(&p.name.name, p.name.span, ty.clone(), kind);
         }
         self.declare_explicit_captures(c);
+        let outer_unsafe = std::mem::take(&mut self.unsafe_depth);
         let block = self.closure_body(&c.body, &ret);
+        self.unsafe_depth = outer_unsafe;
         let mut done = self.leave_closure_frame(f, block, ret.clone(), span);
         done.param_count = c.params.len() as u32;
         let captures: Vec<Capture> = done

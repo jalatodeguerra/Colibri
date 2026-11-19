@@ -1,0 +1,15 @@
+[package]
+name = "colibri-ffi"
+description = "C FFI for Colibri: calls through libffi, dynamic library loading and marshalling of C values"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The bundled libffi (built by the `cc` crate): no system libffi and no autotools needed.
+libffi = "5"
+libloading = "0.8"
+
+[dev-dependencies]
+colibri-ffi-testlib = { path = "../colibri-ffi-testlib" }

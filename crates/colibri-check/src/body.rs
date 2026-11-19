@@ -164,6 +164,8 @@ pub(crate) struct FnCtx<'c, 'a> {
     pub obligations: Vec<Obligation>,
     /// Calls of generic functions, whose type arguments must all be known by the end.
     pub generic_calls: Vec<GenericCall>,
+    /// How many `unsafe` blocks enclose the code being checked (a closure starts again at 0).
+    pub(crate) unsafe_depth: u32,
 }
 
 /// A call with type arguments that are inferred, kept so one that is never fixed is reported.
@@ -234,6 +236,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             done: Vec::new(),
             obligations: Vec::new(),
             generic_calls: Vec::new(),
+            unsafe_depth: 0,
         }
     }
 

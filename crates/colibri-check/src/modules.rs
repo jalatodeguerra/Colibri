@@ -87,6 +87,8 @@ pub(crate) struct ModInfo<'a> {
     pub exports: Exports,
     /// Where each `import` bound a module name, for clash messages.
     pub alias_spans: HashMap<String, Span>,
+    /// The module's package may contain `extern` blocks (`ffi = true` in its manifest).
+    pub ffi: bool,
 }
 
 impl<'a> ModInfo<'a> {

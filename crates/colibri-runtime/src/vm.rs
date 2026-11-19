@@ -742,8 +742,20 @@ impl Vm {
 
     /// Installs the host functions the program uses. One whose capability was not granted
     /// stays a trap: the checker already refused every call of it.
-    fn install_host_fns(&mut self, program: &Program) {
+    fn install_host_fns(&mut self, program: &Program) -> Result<(), Error> {
         for (i, def) in program.host_fns.iter().enumerate() {
+            // A function of an `extern` block is bound to its C library now, so a missing
+            // library or symbol is a load error and not a surprise at the first call.
+            if let Some(ext) = &def.ext {
+                if !self.caps.contains(Cap::Ffi) {
+                    continue;
+                }
+                let name = program.fns[def.f.0 as usize].name.clone();
+                self.interp
+                    .bind_extern(HostFnId(i as u32), &name, ext)
+                    .map_err(Error::Ffi)?;
+                continue;
+            }
             let Some((raw, requires)) = self.find_raw(&def.module, &def.name) else {
                 continue;
             };
@@ -753,6 +765,7 @@ impl Vm {
             let imp = trampoline(&def.name, raw);
             self.interp.set_host_fn(HostFnId(i as u32), imp);
         }
+        Ok(())
     }
 
     // ---- budget ----
@@ -936,7 +949,13 @@ impl Vm {
         self.warnings = warnings;
         self.epoch += 1;
         self.interp.load(&program);
-        self.install_host_fns(&program);
+        if let Err(error) = self.install_host_fns(&program) {
+            self.epoch += 1;
+            self.interp.shutdown();
+            self.interp
+                .set_owner((self.id, self.epoch), false, Rc::clone(&self.sources));
+            return Err(error);
+        }
         self.interp
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
         let outcome = match mode {
