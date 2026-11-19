@@ -1,0 +1,4 @@
+let base = 2
+const K = twice() // error: `K` is initialised before the script runs, so it cannot use `base` (through `twice()`)
+fn twice() -> int => base * 2
+print(K)

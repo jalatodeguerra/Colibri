@@ -1,2 +1,4 @@
+// A program (it has `fn main`) initialises its values in dependency order (DESIGN §4.2).
 let a = f() // error: initialisation cycle: `a` -> `f()` -> `a`
 fn f() -> int => a + 1
+fn main() {}

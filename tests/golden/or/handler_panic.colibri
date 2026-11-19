@@ -2,4 +2,5 @@ fn get() -> Result[int, str] => err("critical")
 print("start")
 let v = get() or |e| { panic("cannot continue: {e}") }
 print("unreachable {v}")
+// expect: start
 // panic: cannot continue: critical

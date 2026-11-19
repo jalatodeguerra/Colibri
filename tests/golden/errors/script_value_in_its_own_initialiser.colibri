@@ -1,0 +1,2 @@
+let a = f() // error: `a` is used in its own initialiser (through `f()`)
+fn f() -> int => a + 1

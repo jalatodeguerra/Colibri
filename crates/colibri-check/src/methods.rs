@@ -392,7 +392,7 @@ impl FnCtx<'_, '_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Expr {
-        self.add_dep(Dep::Fn(f));
+        self.add_dep(Dep::Fn(f), span);
         let info = &self.ck.fns[f.0 as usize];
         let (fname, params, ret, receiver, poisoned, generics, host) = (
             info.name.clone(),

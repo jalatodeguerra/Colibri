@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use colibri_syntax::ast::{self, AssignOp, BindKind, ExprKind, PatKind, StmtKind};
 use colibri_syntax::{Diagnostic, Span};
 
-use crate::checker::{Checker, Dep, ParamInfo, ValueRef};
+use crate::checker::{Checker, Dep, ParamInfo, ScriptStep, ValueRef};
 use crate::exhaust::{self, ArmInfo};
 use crate::hir::{
     self, ArithOp, BinOp, BitOp, Block, Body, CaptureMode, Expr, FnId, LocalId, LocalInfo, LoopId,
@@ -142,7 +142,8 @@ pub(crate) struct FnCtx<'c, 'a> {
     broken_loops: Vec<u32>,
     /// The declared return type and its span; `None` where `return` is not allowed.
     pub(crate) ret: Option<(Ty, Option<Span>)>,
-    deps: Vec<Dep>,
+    /// Module-level items referred to, each with the span of a use.
+    deps: Vec<(Dep, Span)>,
     depth: u32,
     /// The body is a `var self` method.
     self_mut: bool,
@@ -250,17 +251,26 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         self
     }
 
-    /// The module-level items this body refers to, without duplicates.
-    pub fn take_deps(&mut self) -> Vec<Dep> {
-        let mut seen = std::collections::HashSet::new();
-        std::mem::take(&mut self.deps)
-            .into_iter()
-            .filter(|d| seen.insert(*d))
-            .collect()
+    /// The module-level items this body refers to, each once with the span of its first use.
+    pub fn take_deps(&mut self) -> Vec<(Dep, Span)> {
+        let deps = self.deps_since(0);
+        self.deps.clear();
+        deps
     }
 
-    pub fn add_dep(&mut self, dep: Dep) {
-        self.deps.push(dep);
+    /// Records a use of a module-level item at `span`.
+    pub fn add_dep(&mut self, dep: Dep, span: Span) {
+        self.deps.push((dep, span));
+    }
+
+    /// The items referred to since `mark` (a length of the list), each once with its first use.
+    fn deps_since(&self, mark: usize) -> Vec<(Dep, Span)> {
+        let mut seen = std::collections::HashSet::new();
+        self.deps[mark..]
+            .iter()
+            .filter(|(d, _)| seen.insert(*d))
+            .copied()
+            .collect()
     }
 
     // ---- scopes and locals ----
@@ -559,7 +569,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         ret: &Ty,
         ret_span: Option<Span>,
         span: Span,
-    ) -> (Body, Vec<Dep>) {
+    ) -> (Body, Vec<(Dep, Span)>) {
         let src = match &decl.body {
             Some(ast::FnBody::Block(b)) => Some(BodySrc::Block(b)),
             Some(ast::FnBody::Expr(e)) => Some(BodySrc::Expr(e)),
@@ -570,7 +580,12 @@ impl<'c, 'a> FnCtx<'c, 'a> {
 
     /// The body of a `test "name" { .. }` block: a function without parameters that returns
     /// `Result[()]` (ARCHITECTURE §15).
-    pub fn check_test_body(mut self, block: &ast::Block, ret: &Ty, span: Span) -> (Body, Vec<Dep>) {
+    pub fn check_test_body(
+        mut self,
+        block: &ast::Block,
+        ret: &Ty,
+        span: Span,
+    ) -> (Body, Vec<(Dep, Span)>) {
         self.test_body = true;
         self.check_body_src(Some(BodySrc::Block(block)), &[], ret, None, span)
     }
@@ -582,7 +597,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         ret: &Ty,
         ret_span: Option<Span>,
         span: Span,
-    ) -> (Body, Vec<Dep>) {
+    ) -> (Body, Vec<(Dep, Span)>) {
         self.push_scope();
         for p in params {
             let kind = if p.mutable {
@@ -666,11 +681,38 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     }
 
     /// The top-level statements of a script, run in order.
-    pub fn check_script(mut self, stmts: &[&ast::Stmt], span: Span) -> Body {
+    /// The top-level code of the entry file, in source order. A [`ScriptStep::Global`] (a
+    /// script `let`/`var`, whose initialiser was checked already) becomes an
+    /// [`hir::StmtKind::InitGlobal`] at its place. Also returns, for each step, the module-level
+    /// items it refers to with their first use (an initialiser's are its own).
+    pub fn check_script(
+        mut self,
+        steps: &[ScriptStep<'_>],
+        span: Span,
+    ) -> (Body, Vec<Vec<(Dep, Span)>>) {
         self.push_scope();
         let mut out = Vec::new();
-        for s in stmts {
-            self.check_stmt(s, &mut out);
+        let mut step_deps = Vec::with_capacity(steps.len());
+        for step in steps {
+            match *step {
+                ScriptStep::Stmt(s) => {
+                    let mark = self.deps.len();
+                    self.check_stmt(s, &mut out);
+                    step_deps.push(self.deps_since(mark));
+                }
+                ScriptStep::Global(g) => {
+                    let info = &self.ck.globals[g.0 as usize];
+                    let init = info
+                        .body
+                        .clone()
+                        .expect("a script value's initialiser is checked before the script");
+                    step_deps.push(info.deps.clone());
+                    out.push(hir::Stmt {
+                        span: info.span,
+                        kind: hir::StmtKind::InitGlobal { global: g, init },
+                    });
+                }
+            }
         }
         let locals = self.pop_scope();
         let block = Block {
@@ -680,7 +722,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             ty: Ty::Unit,
             span,
         };
-        self.finish(block, Ty::Unit, span, 0)
+        (self.finish(block, Ty::Unit, span, 0), step_deps)
     }
 
     /// A module-level initialiser; returns the body and the value's type.
@@ -690,7 +732,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         declared: Option<&Ty>,
         annotation: Option<Span>,
         span: Span,
-    ) -> (Body, Ty, Vec<Dep>) {
+    ) -> (Body, Ty, Vec<(Dep, Span)>) {
         self.push_scope();
         let value = self.check_expr(init, declared);
         let ty = match declared {
@@ -749,7 +791,12 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         let floor = std::mem::replace(&mut self.scope_floor, self.scopes.len());
         self.ck.mute();
         let back = self.ck.enter_module(module);
+        let mark = self.deps.len();
         let mut value = self.check_expr(default, Some(ty));
+        // What the default uses is used by this call: errors point at the call.
+        for dep in &mut self.deps[mark..] {
+            dep.1 = call;
+        }
         let ok = self.infer.coerce(&value.ty, ty).is_ok();
         self.ck.enter_module(back);
         self.ck.unmute();
