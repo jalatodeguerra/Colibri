@@ -1,0 +1,15 @@
+struct Money { cents: int, note: str }
+
+impl Eq for Money {
+    fn eq(self, other: Money) -> bool => self.cents == other.cents
+}
+
+impl Show for Money {
+    fn show(self) -> str => "${self.cents / 100}.{self.cents % 100}"
+}
+
+// Equal by `Eq` although the notes differ.
+assert_eq(Money { cents: 150, note: "a" }, Money { cents: 150, note: "b" })
+print("equal")
+assert_eq(Money { cents: 150, note: "a" }, Money { cents: 250, note: "a" }) // panic: left: $1.50
+// expect: equal

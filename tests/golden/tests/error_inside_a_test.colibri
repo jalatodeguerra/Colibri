@@ -1,0 +1,9 @@
+// A test body is checked like a function body.
+test "bad types" {
+    let x: int = "text" // error: expected `int`, found `str`
+    print(x)
+}
+
+test "unknown name" {
+    print(nobody) // error: unknown name `nobody`
+}

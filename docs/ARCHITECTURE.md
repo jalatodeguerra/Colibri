@@ -1345,7 +1345,7 @@ and `["std", "math"]` to `std.math` when the host provides it.
   ones provided. `task`, `game` and `reflect` (phase 2), `mem` (phase 3) give "the standard
   library module `x` is not available until phase N", and `collections` says `List`, `Map` and
   `Set` are built in (`LATER_STD_MODULES`). `import test` cannot be written: `test` is a keyword
-  (a syntax error). There is no `test` module.
+  (a syntax error). There is no `test` module; `assert` and `assert_eq` are builtins (§15).
 
 ### `.cbi` extensions
 
@@ -1544,3 +1544,182 @@ local `p` gets its own fact over its name, the whole read is the field.
 The language server (§14) always checks against `colibri_std::interfaces()`, as `colibri check`
 does, so `lsp` depends on `colibri-std`. `colibri run file -- a b` passes `a b` to `os.args()`
 (`colibri_lang::build_vm(builder, args)`).
+
+## 15. Tests (`test` blocks, `assert`, `colibri test`)
+
+DESIGN §16.1 says `colibri test` runs `test "name" { ... }` blocks and §13.1 lists a `test`
+module in the core std. This section is how phase 1 builds both; the departures from DESIGN
+are collected at the end.
+
+### Syntax and checking
+
+`test "name" { ... }` is an item, allowed at the top of any module (not inside functions or
+`impl`s). The name is a plain string literal (no `{}` holes). The lexer, parser (`TestDecl`) and
+formatter already handled it; the checker used to answer "unsupported".
+
+A test is checked as a function `() -> Result[()]` that nothing calls: it gets a `FnDef` in
+`Program::fns` named `test "name"` (`game.player.test "name"` outside the entry module, so stack
+traces say which test) and a `TestDef { name, module, root, f, span }` in `Program::tests`, in
+source order (the entry module first, then the others in load order).
+
+- **`Result[()]` return.** The body may use `?` on a `Result`: an `err` fails the test with the
+  error chain. A body that reaches its end returns `ok(())` (DESIGN §6.1), and a bare `return`
+  ends the test successfully (inside a test only; in an ordinary function it stays "needs a
+  value"). `return ok(())` and `return err(..)` also work. A test cannot use `?` on an `Option`
+  (the usual error).
+- **Always checked, never run.** `colibri check`, `colibri run` and every load type-check the
+  test blocks of all the modules they load, so tests cannot rot. `run` and `Vm::run_main` never
+  execute them. The test bodies stay in the HIR (about one function body of memory each); they
+  are not compiled out. Nothing runs them, so they cost nothing at run time, and keeping them in
+  every program keeps one checker path (and one set of `FnId`s) for `check`, `run`, the language
+  server and `test`. Stripping them in a release build is a later `colibri build` option.
+- **Unique names.** A second `test "x"` in one module is an error ("the test "x" is defined more
+  than once in this module", labelled with the first). Equal names in different modules are fine;
+  the report names a test `module::name`.
+- **Language server.** Nothing special: it calls the checker, which checks test bodies, so errors
+  inside them are diagnostics and hover/definition work (`tests/lsp.rs`).
+
+### Assertions: builtins, not a module
+
+`assert(cond: bool, msg: str = "assertion failed")` and `assert_eq(a: T, b: T)` are builtins like
+`print` and `panic`, available everywhere (not only in tests), and reserved names
+(`BUILTIN_FNS`; a program or host function cannot redefine them).
+
+- `assert_eq` needs both sides to have one type that supports `==` (`Eq`; derived for most
+  types, a user `impl Eq` is honoured, a type parameter needs `T: Eq`). `Show` is not checked
+  because every type has it. Mixed types are the usual "cannot apply `==`" error, a function
+  value is the usual "cannot compare" error. There is no third `msg` argument.
+- HIR: `Intrinsic::Assert` (condition, message) and `Intrinsic::AssertEq` (both values), type
+  `()`. A failure is an ordinary panic at the call, so the location and stack are the panic's, and
+  `defer`s run. The message of `assert_eq` is
+  ```text
+  assertion failed: `left == right`
+    left: 3
+   right: 4
+  ```
+  with values in their `Show` form (a user `impl Show` is used) and top-level strings quoted so
+  that spaces and empty strings are visible.
+- `assert` has an optional `msg` (positional or named `msg:`). It does not echo the source of the
+  condition; the location points at it.
+
+### Why not `import test`
+
+`test` is a keyword, so `import test` is a syntax error (§13), and `test.assert(..)` cannot be
+written. Builtins avoid renaming the keyword, need no import in every test file, and also serve
+programs that want a plain `assert`. The std `test` module of DESIGN §13.1 stays unbuilt; extras
+(approximate float comparison, `assert_ne`, `expect_panic`, fixtures) can be builtins or a module
+under another name later.
+
+### Loading for tests
+
+`Vm::load_tests(path)` (and the loader option `package::LoadOptions { all_modules }`) loads a
+script like `load_file`, or a package folder like `load_package` **plus every `.colibri` file
+under the package root**, including ones nobody imports (skipping folders that start with `.` and
+folders with their own `colibri.toml`, which are other packages). `import`ed modules of a script
+are loaded as always; stray siblings of a script are not (they are not part of it, §11.1). The
+extra modules come first in initialisation order, the entry last. Nothing runs at load: no
+initialisers, no top-level statements. `colibri check` does *not* use this option, so a file
+that nobody imports stays unchecked there, as before; `colibri test` checks it.
+
+### Isolation: fresh module state per test
+
+`Vm::run_test(id)` does, for each test: (1) release the module-level values in reverse
+initialisation order (their `Drop` hooks run; `Interp::release_globals`), (2) run every module
+initialiser again (`Interp::run_initialisers`, not the top-level statements), (3) call the test
+function, (4) release the values again. Module initialisation is cheap (§11.4), so a test never
+sees what another did, whatever its order or filter, and drop output belongs to the test that
+caused it. Host state outside the `Vm` (a `Handle` store, `insert_state`) is the host's to
+reset. Each of the four steps is its own entry from the host and gets its own instruction budget.
+A panic in a `Drop` hook during step 4 is discarded (nobody can be told, as at shutdown).
+A `Vm` that was loaded with `load_file` and has run its top-level code loses that state at the
+first `run_test` (it is released and re-initialised without the statements), so use a separate
+`Vm` for tests.
+
+### Runtime API (usable by any host, EMBEDDING §9)
+
+```rust
+vm.load_tests(path)?;                        // check; run nothing
+let tests: Vec<TestInfo> = vm.tests();       // id, name, module, root, file, line
+vm.set_instruction_budget(Some(100_000_000));
+match vm.run_test(tests[0].id) {             // Result<(), Error>
+    Ok(()) => {}
+    Err(Error::Panic { message, location, stack, .. }) => {}   // assert, panic, arithmetic
+    Err(Error::TestReturnedErr { message }) => {}              // `err(e)` returned: the chain
+    Err(Error::BudgetExhausted { .. }) => {}                   // an endless loop
+    Err(_) => {}
+}
+```
+
+`TestInfo::root` is false for the tests of a dependency (`colibri.toml` `[dependencies]`);
+`tests()` lists them anyway, the runner skips them. `Error::TestReturnedErr` is new
+(`#[non_exhaustive]` already). `Vm::tests()` is empty before a load, `run_test` before a load is
+`Error::NotLoaded`, an id out of range `Error::FnNotFound`.
+
+### `colibri test [path] [--filter TEXT] [--budget STEPS] [--nocapture]`
+
+`path` is a script file or a package folder (the current folder by default), loaded with
+`Vm::load_tests`. All capabilities are granted, as for `run`, and the standard library is
+installed with the real process configuration (not the hermetic one goldens use). A compile
+error is printed to stderr and exits 1 before any test runs; warnings go to stderr. Then, on
+stdout:
+
+```text
+running 3 tests
+test main::adds ... ok
+test util.strings::trims ... FAILED
+test main::loops ... FAILED
+
+failures:
+
+---- util.strings::trims ----
+<what the test printed>
+panic: assertion failed: `left == right`
+  left: "x"
+ right: "x "
+  at test "trims" (util/strings.colibri:12:5)
+
+---- main::loops ----
+error: the instruction budget is exhausted
+  at ...
+hint: an endless loop? raise the limit with `--budget <steps>` (0 is unlimited)
+
+1 passed, 2 failed
+```
+
+- Tests are those of the program's own modules, in source order; dependencies' are skipped.
+  `--filter` keeps those whose `module::name` contains the text; the summary adds `(N filtered
+  out)` when it dropped some.
+- A panic, a failed assertion, an `err` and an exhausted budget fail only that test. The exit
+  code is 1 if any test failed or the program does not compile, else 0 (also for zero tests).
+  There is no separate code for panics (`run` uses 101): a failed test is the expected outcome
+  of a test run.
+- `--budget` is the instruction budget of one test (default 100 000 000 steps, `0` unlimited),
+  see EMBEDDING §5. The setting is per entry, so it applies to initialisers and clean-up too.
+- Output a test `print`s (and `io.write`) is held in memory and shown under `---- name ----` for
+  failing tests only; `--nocapture` writes it as it happens (before the test's result line).
+  `eprint` is not captured (it goes straight to stderr).
+- `os.exit(n)` in a test ends that test as a failure ("the program exited with code n"); it does
+  not end the run.
+
+### Decisions the design documents did not fix
+
+- Assertions are builtins (above): **a deviation from DESIGN §13.1**, which lists a std `test`
+  module. Not recorded in DESIGN.md.
+- `Result[()]` tests with `?`; bare `return` allowed in tests.
+- Isolation by re-initialising module values per test, not by loading the program again.
+- Tests stay in the HIR of non-test programs.
+- Test names are unique per module, shown as `module::name`; the entry module's name is its file
+  stem (`main`, `t`), another module's its dotted path.
+- A package's tests include modules `main.colibri` does not import (§Loading for tests);
+  a script's include only what it imports.
+- Exit code 1 for failures; the report is on stdout.
+
+### Known limitations
+
+- `colibri check` does not look at modules a package's entry does not import.
+- No parallel runs, no per-test timeout in time (only the step budget), no test attributes
+  (`@skip`, `@should_panic`), no setup/teardown hooks other than module initialisers and
+  `defer`, no `assert_ne`, no float tolerance helper, no source text in the `assert` message.
+- A `Drop` panic during a test's final clean-up is not reported.
+- Panics raised inside a host function that does not unwind through the interpreter are the
+  host's; only Colibri panics are caught per test.

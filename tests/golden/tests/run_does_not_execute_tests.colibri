@@ -1,0 +1,23 @@
+// `colibri run` type-checks `test` blocks but never executes them.
+var runs = 0
+
+fn bump() -> int {
+    runs += 1
+    return runs
+}
+
+test "would fail" {
+    print("never printed")
+    bump()
+    assert(false, "tests do not run with the program")
+}
+
+test "would panic" {
+    let zero = 0
+    print(1 / zero)
+}
+
+fn main() {
+    print("main ran, runs = {runs}")
+}
+// expect: main ran, runs = 0

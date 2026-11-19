@@ -79,6 +79,8 @@ pub(crate) struct ModInfo<'a> {
     /// The package (folder) a source module is in; `None` for host modules and the base.
     pub package: Option<usize>,
     pub entry: bool,
+    /// Not a module of a dependency: the program's own (false for a dependency's).
+    pub root: bool,
     pub imports: Option<&'a HashMap<NodeId, ImportTarget>>,
     /// The scope while the module is not the one being checked.
     pub scope: Scope,

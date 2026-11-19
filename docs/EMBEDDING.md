@@ -200,3 +200,26 @@ functions `spawn_enemy`, `enemies()`, `Enemy.pos`/`set_pos`/`alive`, `despawn`, 
 7. `.cbi` format: Colibri syntax with an `@interface(...)` header.
 8. Host `Result<T, E>`: `E: Display` becomes the `Error` message; `&mut self` reentrancy is a
    defined borrow-flag panic.
+
+## 9. Running a script's tests from a host
+
+`test "name" { .. }` blocks are checked with every program and never run by `load_*` or
+`run_main`. A host that wants to run them (a game's own test command, an editor) does:
+
+```rust
+let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+// register host functions and modules here, as for the game
+vm.load_tests("scripts/")?;                // a script file or a package folder; runs nothing
+vm.set_instruction_budget(Some(100_000_000));
+for t in vm.tests() {                      // TestInfo { id, name, module, root, file, line }
+    match vm.run_test(t.id) {              // fresh module state for every test
+        Ok(()) => {}
+        Err(e) => eprintln!("{}::{} failed:\n{}", t.module, t.name, e.render(false)),
+    }
+}
+```
+
+`run_test` releases the module-level values, initialises them again (not the top-level statements),
+runs the test and releases them again; failures are `Error::Panic` (including failed `assert`s),
+`Error::TestReturnedErr` (the test returned `err`) and `Error::BudgetExhausted`. Details and the
+reasoning are in ARCHITECTURE §15. Host state (handles, `insert_state`) is not reset.

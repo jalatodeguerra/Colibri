@@ -1,0 +1,4 @@
+let n = 3
+test "has {n}" { // error: string
+    assert(true)
+}

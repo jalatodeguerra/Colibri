@@ -30,8 +30,34 @@ pub const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
 
 static NEXT_VM_ID: AtomicU64 = AtomicU64::new(0);
 
+/// What `load_entry` does after checking.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoadMode {
+    /// Initialise the module and run the top-level statements.
+    Run,
+    /// Check every module of a package and run nothing ([`Vm::load_tests`]).
+    Tests,
+}
+
+/// A `test` block of the loaded program ([`Vm::tests`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TestInfo {
+    /// What [`Vm::run_test`] takes: the index in [`Vm::tests`].
+    pub id: usize,
+    /// The name written after `test`.
+    pub name: String,
+    /// The module it is in: the file name without `.colibri` for the entry file, the dotted
+    /// module path otherwise (`util.strings`, a dependency's name first).
+    pub module: String,
+    /// In the program's own modules, not in a dependency's.
+    pub root: bool,
+    /// The file (as diagnostics name it) and the 1-based line of the block.
+    pub file: String,
+    pub line: u32,
+}
+
 /// Names a host function cannot take: they are built into the language.
-const RESERVED_NAMES: &[&str] = &["print", "panic", "some", "ok", "err"];
+const RESERVED_NAMES: &[&str] = &["print", "panic", "assert", "assert_eq", "some", "ok", "err"];
 
 /// Configures a [`Vm`].
 pub struct VmBuilder {
@@ -688,7 +714,7 @@ impl Vm {
     /// every file reached that way is checked together with it. A `colibri.toml` in the folder
     /// supplies the dependencies `import` may name.
     pub fn load_file(&mut self, path: impl AsRef<Path>) -> Result<(), Error> {
-        self.load_entry(&DiskFs, Entry::File(path.as_ref()))
+        self.load_entry(&DiskFs, Entry::File(path.as_ref()), LoadMode::Run)
     }
 
     /// Reads, checks and runs the package in folder `dir`: its `colibri.toml` names it and lists
@@ -696,7 +722,23 @@ impl Vm {
     /// dependency order, then the top-level statements of `main.colibri` run). `fn main` is not
     /// called; use [`Vm::run_main`].
     pub fn load_package(&mut self, dir: impl AsRef<Path>) -> Result<(), Error> {
-        self.load_entry(&DiskFs, Entry::Package(dir.as_ref()))
+        self.load_entry(&DiskFs, Entry::Package(dir.as_ref()), LoadMode::Run)
+    }
+
+    /// Reads and checks a program for running its tests, and runs nothing: not the module
+    /// initialisers, not the top-level statements (each test starts from freshly initialised
+    /// module values, see [`Vm::run_test`]). `path` is a script file or a package folder; for a
+    /// package every `.colibri` file under its root is loaded, also the ones `main.colibri` does
+    /// not import, so that every `test` block is found (ARCHITECTURE §15). Then
+    /// [`Vm::tests`] lists the tests.
+    pub fn load_tests(&mut self, path: impl AsRef<Path>) -> Result<(), Error> {
+        let path = path.as_ref();
+        let entry = if path.is_dir() {
+            Entry::Package(path)
+        } else {
+            Entry::File(path)
+        };
+        self.load_entry(&DiskFs, entry, LoadMode::Tests)
     }
 
     /// [`Vm::load_package`] for a folder, [`Vm::load_file`] for anything else: what
@@ -735,20 +777,34 @@ impl Vm {
         for (path, text) in files {
             fs.insert(path, *text);
         }
-        self.load_entry(&fs, Entry::File(Path::new(entry)))
+        self.load_entry(&fs, Entry::File(Path::new(entry)), LoadMode::Run)
     }
 
-    fn load_entry(&mut self, fs: &dyn SourceFs, entry: Entry<'_>) -> Result<(), Error> {
+    fn load_entry(
+        &mut self,
+        fs: &dyn SourceFs,
+        entry: Entry<'_>,
+        mode: LoadMode,
+    ) -> Result<(), Error> {
         if self.program.is_some() {
             return Err(Error::AlreadyLoaded);
         }
         let env = self.host_env()?;
         let mut sources = SourceMap::new();
-        let loaded = colibri_check::package::load(fs, &mut sources, entry, &env.named_modules())
-            .map_err(|e| Error::Io {
-                path: e.path,
-                message: e.message,
-            })?;
+        let options = colibri_check::package::LoadOptions {
+            all_modules: mode == LoadMode::Tests,
+        };
+        let loaded = colibri_check::package::load_with(
+            fs,
+            &mut sources,
+            entry,
+            &env.named_modules(),
+            options,
+        )
+        .map_err(|e| Error::Io {
+            path: e.path,
+            message: e.message,
+        })?;
         let mut diagnostics = loaded.diagnostics.clone();
         let mut program = None;
         // A tree with syntax errors would only produce follow-on errors.
@@ -775,7 +831,10 @@ impl Vm {
         self.install_host_fns(&program);
         self.interp
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
-        let outcome = self.interp.run_module(&mut self.fiber);
+        let outcome = match mode {
+            LoadMode::Run => self.interp.run_module(&mut self.fiber),
+            LoadMode::Tests => Ok(()),
+        };
         self.interp.flush();
         match outcome {
             Ok(()) => {
@@ -818,6 +877,89 @@ impl Vm {
         }
         self.interp.release_in_entry(value);
         Ok(())
+    }
+
+    // ---- tests ----
+
+    /// The `test "name" { .. }` blocks of the loaded program, in source order (the entry
+    /// module's first). They include the ones in dependencies (`TestInfo::root` is false for
+    /// those). Empty before a program is loaded. The index in the list is the id
+    /// [`Vm::run_test`] takes.
+    pub fn tests(&self) -> Vec<TestInfo> {
+        let Some(program) = &self.program else {
+            return Vec::new();
+        };
+        program
+            .tests
+            .iter()
+            .enumerate()
+            .map(|(id, t)| {
+                let sources = &self.sources;
+                let known = sources.contains(t.span.file);
+                TestInfo {
+                    id,
+                    name: t.name.clone(),
+                    module: t.module.clone(),
+                    root: t.root,
+                    file: if known {
+                        sources.name(t.span.file).to_string()
+                    } else {
+                        String::new()
+                    },
+                    line: if known {
+                        sources.line_col(t.span.file, t.span.start).0
+                    } else {
+                        0
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Runs one test (an id from [`Vm::tests`]) from a fresh state: the module-level values are
+    /// released (their `Drop` hooks run) and initialised again, the test runs, and they are
+    /// released again, so no test sees what another one did and `Drop` output belongs to the
+    /// test that caused it. The top-level statements of the entry file are not run. The
+    /// instruction budget (if set) is a fresh allotment for the initialisers, the test body and
+    /// the clean-up each.
+    ///
+    /// `Ok(())` if the test body finished or returned `ok(())`. A panic (a failed `assert`, an
+    /// arithmetic fault, a `panic(..)`, a failing initialiser) is [`Error::Panic`], a test that
+    /// returns `err(e)` is [`Error::TestReturnedErr`], and running out of budget is
+    /// [`Error::BudgetExhausted`]. The `Vm` stays usable for the next test.
+    ///
+    /// Call it on a `Vm` that [`Vm::load_tests`] loaded. After a normal `load_*` it works too,
+    /// but it throws away the module state the load built, so do not call `run_main` or other
+    /// functions afterwards on that `Vm`: after any test the module-level values are released.
+    pub fn run_test(&mut self, id: usize) -> Result<(), Error> {
+        let program = self.program.clone().ok_or(Error::NotLoaded)?;
+        let def = program.tests.get(id).ok_or_else(|| Error::FnNotFound {
+            name: format!("test #{id}"),
+        })?;
+        self.interp.release_globals();
+        let outcome = match self.interp.run_initialisers(&mut self.fiber) {
+            Err(info) => Err(panic_error(&self.interp, *info)),
+            Ok(()) => match self.interp.call(&mut self.fiber, def.f, Vec::new()) {
+                Err(info) => Err(panic_error(&self.interp, *info)),
+                Ok(value) => {
+                    let failed = match &value {
+                        InterpValue::Enum(e) if e.variant == VARIANT_ERR => e
+                            .payload
+                            .first()
+                            .map(|p| self.interp.error_report(&mut self.fiber, p)),
+                        _ => None,
+                    };
+                    self.interp.release_in_entry(value);
+                    match failed {
+                        Some(message) => Err(Error::TestReturnedErr { message }),
+                        None => Ok(()),
+                    }
+                }
+            },
+        };
+        self.interp.release_globals();
+        self.interp.flush();
+        outcome
     }
 
     /// A handle to the function `name`, if its Colibri signature matches `A -> R`.

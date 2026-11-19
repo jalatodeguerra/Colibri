@@ -73,6 +73,8 @@ pub enum Error {
     /// `main` returned `err(e)` (DESIGN §10.3): `message` is the whole error chain. The CLI
     /// prints it to stderr and exits with code 1 (a panic exits with 101).
     MainReturnedErr { message: String },
+    /// A test (`Vm::run_test`) returned `err(e)`: `message` is the whole error chain.
+    TestReturnedErr { message: String },
     /// No function with this name is defined.
     FnNotFound { name: String },
     /// The Rust-side signature differs from the Colibri function's.
@@ -142,7 +144,9 @@ impl Error {
                 stack,
                 &[],
             ),
-            Error::MainReturnedErr { message } => format!("error: {message}\n"),
+            Error::MainReturnedErr { message } | Error::TestReturnedErr { message } => {
+                format!("error: {message}\n")
+            }
             other => format!("{other}\n"),
         }
     }
@@ -204,7 +208,9 @@ impl fmt::Display for Error {
                 Some(at) => write!(f, "panic: {message} (at {at})"),
                 None => write!(f, "panic: {message}"),
             },
-            Error::MainReturnedErr { message } => write!(f, "error: {message}"),
+            Error::MainReturnedErr { message } | Error::TestReturnedErr { message } => {
+                write!(f, "error: {message}")
+            }
             Error::FnNotFound { name } => write!(f, "no function named `{name}`"),
             Error::SignatureMismatch {
                 name,

@@ -1,0 +1,5 @@
+// `assert` is available everywhere, not only in tests.
+assert(1 + 1 == 2)
+print("fine")
+assert(1 > 2, "one is not greater") // panic: one is not greater
+// expect: fine
