@@ -198,3 +198,111 @@ fn waiting_on_the_main_fiber_is_refused_inside_a_host_callback() {
     vm.run_main().unwrap();
     assert!(seen.get());
 }
+
+// ---- the pool ----
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// A `Vm` with `tracked(ms, value)`: like `slow`, and it counts how many operations ran at
+/// once (`peak`) and how many started (`started`).
+fn tracked_vm() -> (
+    colibri::Vm,
+    colibri::SharedBuffer,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+) {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    let running = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(AtomicUsize::new(0));
+    let (r, p, s) = (running.clone(), peak.clone(), started.clone());
+    vm.register_fn(
+        "tracked",
+        move |cx: &mut colibri::Ctx, ms: i64, value: i64| {
+            let (r, p, s) = (r.clone(), p.clone(), s.clone());
+            cx.run_async(move || {
+                s.fetch_add(1, Ordering::SeqCst);
+                let now = r.fetch_add(1, Ordering::SeqCst) + 1;
+                p.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(ms as u64));
+                r.fetch_sub(1, Ordering::SeqCst);
+                value
+            })
+        },
+    )
+    .unwrap();
+    (vm, out, peak, started)
+}
+
+#[test]
+fn thousands_of_operations_share_a_few_threads() {
+    let (mut vm, out, peak, started) = tracked_vm();
+    vm.load_source(
+        "a.colibri",
+        r#"
+fn job(i: int) -> int {
+    return tracked(2, i)
+}
+fn main() {
+    let group = CoGroup()
+    var handles: List[Coroutine[int]] = []
+    for i in 0..2000 {
+        handles.push(group.go(job(i)))
+    }
+    group.join_all()
+    var total = 0
+    for h in handles {
+        total += h.join()
+    }
+    print("total {total}")
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(
+        out.contents(),
+        format!("total {}\n", (0..2000).sum::<i64>())
+    );
+    assert_eq!(started.load(Ordering::SeqCst), 2000);
+    let peak = peak.load(Ordering::SeqCst);
+    assert!(
+        (2..=16).contains(&peak),
+        "operations overlap, on a bounded number of threads: peak {peak}"
+    );
+}
+
+#[test]
+fn an_operation_cancelled_while_queued_never_runs() {
+    let (mut vm, out, _, started) = tracked_vm();
+    vm.load_source(
+        "a.colibri",
+        r#"
+fn job(i: int) {
+    defer print("cleanup")
+    let v = tracked(300, i)
+    print("never {v}")
+}
+fn main() {
+    var handles: List[Coroutine[()]] = []
+    // More than any pool has threads: the last ones are still queued.
+    for i in 0..64 {
+        handles.push(go job(i))
+    }
+    wait(0.05)
+    for h in handles {
+        h.cancel()
+    }
+    wait(0.5)
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(out.contents().matches("cleanup").count(), 64);
+    assert!(!out.contents().contains("never"));
+    let started = started.load(Ordering::SeqCst);
+    assert!(started <= 16, "only the first ones ran: {started}");
+}

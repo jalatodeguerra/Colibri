@@ -12,7 +12,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use colibri_check::hir::{Callee, Expr, ExprKind, Intrinsic};
@@ -108,8 +109,89 @@ pub enum ExternalError {
     Failed(String),
 }
 
-/// Background operations: threads that post their id here when they finish.
+/// A piece of background work for the pool.
+type Job = Box<dyn FnOnce() + Send>;
+
+/// How many threads a pool starts at most: twice the cores, between 8 and 16. Background
+/// operations mostly wait (for a socket, a disk, a child process), so more than the cores
+/// is right; many more would only cost stacks.
+fn max_background_threads() -> usize {
+    std::thread::available_parallelism()
+        .map_or(4, std::num::NonZeroUsize::get)
+        .saturating_mul(2)
+        .clamp(8, 16)
+}
+
+/// The threads that run background operations. Workers are started when work arrives and
+/// no worker is free, up to a limit; more operations than workers wait in a queue, in the
+/// order they were started. The workers end when the pool is dropped (after the job they
+/// are running).
+struct Pool {
+    queue: mpsc::Sender<Job>,
+    jobs: Arc<Mutex<mpsc::Receiver<Job>>>,
+    /// Jobs queued or running.
+    outstanding: Arc<AtomicUsize>,
+    workers: usize,
+    max: usize,
+}
+
+impl Pool {
+    fn new(max: usize) -> Self {
+        let (queue, jobs) = mpsc::channel();
+        Pool {
+            queue,
+            jobs: Arc::new(Mutex::new(jobs)),
+            outstanding: Arc::new(AtomicUsize::new(0)),
+            workers: 0,
+            max,
+        }
+    }
+
+    /// Queues `job`, and starts a worker if every worker is busy and the limit allows one.
+    fn submit(&mut self, job: Job) -> Result<(), String> {
+        self.outstanding.fetch_add(1, Ordering::SeqCst);
+        if self.queue.send(job).is_err() {
+            self.outstanding.fetch_sub(1, Ordering::SeqCst);
+            return Err("the background pool is closed".to_string());
+        }
+        if self.workers < self.max && self.outstanding.load(Ordering::SeqCst) > self.workers {
+            let jobs = Arc::clone(&self.jobs);
+            let outstanding = Arc::clone(&self.outstanding);
+            let spawned = std::thread::Builder::new()
+                .name("colibri-async".to_string())
+                .spawn(move || Pool::work(&jobs, &outstanding));
+            match spawned {
+                Ok(_) => self.workers += 1,
+                // The workers there are will get to the job; with none, nobody would.
+                Err(e) if self.workers == 0 => {
+                    return Err(format!("cannot start a background thread: {e}"));
+                }
+                Err(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn work(jobs: &Mutex<mpsc::Receiver<Job>>, outstanding: &AtomicUsize) {
+        loop {
+            // Waiting for a job holds the lock, so the other idle workers wait for the lock:
+            // one of them gets the next job either way.
+            let next = jobs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .recv();
+            let Ok(job) = next else { return };
+            // A job that panics must not take its worker with it; the waiter learns of it
+            // from the missing result.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+            outstanding.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Background operations: pool threads that post their id here when they finish.
 struct Externals {
+    pool: Pool,
     tx: mpsc::Sender<u64>,
     rx: mpsc::Receiver<u64>,
     /// Started and not yet finished or abandoned.
@@ -122,6 +204,7 @@ impl Externals {
     fn new() -> Self {
         let (tx, rx) = mpsc::channel();
         Externals {
+            pool: Pool::new(max_background_threads()),
             tx,
             rx,
             pending: HashSet::new(),
@@ -1122,15 +1205,15 @@ impl Interp {
 
     // ---- background operations ----
 
-    /// Runs `work` on a background thread and waits for its result without blocking other
-    /// coroutines: the calling coroutine is suspended with `Wake::External`, and the event
+    /// Runs `work` on a background thread (one of a small pool; more operations than threads
+    /// wait in a queue) and waits for its result without blocking other coroutines: the calling coroutine is suspended with `Wake::External`, and the event
     /// loop (or the host's `tick`) resumes it once the thread has finished. On the main
     /// fiber the wait runs the event loop instead, so coroutines keep running. Where neither
     /// is possible (inside a host callback or a `Drop` hook) it just blocks. Meant to be
     /// called from a host function (host depth 1); it must not hold a borrow of host objects
     /// across the call, because other coroutines run meanwhile. `Err(Cancelled)` means the
     /// coroutine was cancelled while waiting: the host function must unwind (its result would
-    /// be discarded).
+    /// be discarded; an operation that had not started yet is dropped from the queue).
     pub fn await_external<R: Send + 'static>(
         &mut self,
         fiber: &mut Fiber,
@@ -1140,18 +1223,20 @@ impl Interp {
         self.sched.next_id += 1;
         let (result_tx, result_rx) = mpsc::channel::<R>();
         let notify = Notify(self.sched.ext.tx.clone(), op);
+        // Set when the waiter gives up, so an operation still in the queue is not run.
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let skip = Arc::clone(&abandoned);
         self.sched.ext.pending.insert(op);
-        let spawned = std::thread::Builder::new()
-            .name("colibri-async".to_string())
-            .spawn(move || {
-                let _notify = notify;
-                let _ = result_tx.send(work());
-            });
-        if let Err(e) = spawned {
+        let queued = self.sched.ext.pool.submit(Box::new(move || {
+            let _notify = notify;
+            if skip.load(Ordering::SeqCst) {
+                return;
+            }
+            let _ = result_tx.send(work());
+        }));
+        if let Err(message) = queued {
             self.sched.ext.pending.remove(&op);
-            return Err(ExternalError::Failed(format!(
-                "cannot start a background thread: {e}"
-            )));
+            return Err(ExternalError::Failed(message));
         }
         let coro = fiber.coro.as_ref().map(|c| c.id);
         let suspendable = fiber.host_depth <= 1 && self.hook_depth == 0;
@@ -1159,6 +1244,7 @@ impl Interp {
             let mut outcome = Ok(());
             while !self.sched.ext.completed.contains(&op) {
                 if self.suspend(fiber, id, Wake::External(op)).is_err() {
+                    abandoned.store(true, Ordering::SeqCst);
                     outcome = Err(ExternalError::Cancelled);
                     break;
                 }

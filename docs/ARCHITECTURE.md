@@ -2966,9 +2966,12 @@ coroutine runs on a native stack of its own, and a host function called from it 
 like any evaluator frame. So the mechanism is `Ctx::run_async(work)`, called inside the host
 function (host depth 1):
 
-1. `Interp::await_external` allocates an operation id, spawns a thread that runs `work`, sends the
-   result on a one-shot channel and, from a drop guard (so also when `work` panics), posts the id
-   on the scheduler's completion channel (`Externals`: pending and completed sets).
+1. `Interp::await_external` allocates an operation id and queues `work` on the interpreter's
+   thread pool (`Pool`: workers are started when work arrives and all are busy, at most twice the
+   cores clamped to 8..=16; further operations wait in the queue). The job sends the result on a
+   one-shot channel and, from a drop guard (so also when `work` panics; a panic does not end the
+   worker), posts the id on the scheduler's completion channel (`Externals`: pending and
+   completed sets).
 2. In a coroutine, `suspend(.., Wake::External(id))` suspends the whole coroutine, host frame
    included. `tick_core` drains the completion channel at the start of every tick and a coroutine
    with `Wake::External(id)` is due when `id` is completed; the host function then reads its result
@@ -2980,9 +2983,9 @@ function (host depth 1):
    `tests/async_ops.rs` asserts one resumption to finish, no polling.
 4. Cancelling a waiting coroutine resumes it with the cancel signal; `run_async` then unwinds the
    host function with a Rust panic payload (`RaisedCancel`, like `Ctx::raise`) that the trampoline
-   turns into `HostFault::Cancel`, which `call_host` maps to `Ctl::Cancel`. The thread finishes by
-   itself and its result is dropped (the id is no longer pending, so the late completion is
-   ignored).
+   turns into `HostFault::Cancel`, which `call_host` maps to `Ctl::Cancel`. Work that already runs
+   finishes by itself and its result is dropped (the id is no longer pending, so the late
+   completion is ignored); work still in the queue is flagged and skipped.
 5. Outside a coroutine (the main fiber) the call drives the loop until the completion arrives, so
    coroutines started earlier keep running during a blocking `http.get` in `main`. Where driving is
    impossible (a host callback on the way, a `Drop` hook, a tick) it blocks on the channel.
@@ -2997,16 +3000,17 @@ responses: with `--concurrency 4` the server sees four requests in flight at onc
 ### Decisions the design documents did not fix
 
 `wait(s)` on the main fiber runs the loop (rather than panicking); one general facility
-(`Ctx::run_async`) instead of an http-only one, with a thread per operation (no pool: operations
-are rare and long, and a pool would put an arbitrary cap on concurrency); the host function stays
+(`Ctx::run_async`) instead of an http-only one. It first used a thread per operation; it now uses a small
+fixed pool (8 to 16 threads) so that starting thousands of operations does not start thousands of
+threads. The cost: an operation that waits long (a slow request, a child process) holds its thread,
+and once the pool is full later operations queue behind it; the host function stays
 on the coroutine's stack while waiting (so it must hold no borrows; documented); main-fiber `http`
 drives the loop; `HostFault::Cancel` is a new public variant, and `Clock` gained a defaulted
 method. Suspending inside a host function is exactly what §3 said the tree-walker could do but should not (to agree with the bytecode VM): it is allowed only for `run_async`, at host depth 1, and the VM will need the same facility as a re-entrant host call (a pending token that the VM resumes), which is why the API is a closure that returns a value and not a stack trick. `process` (`status`, `Child.join`) still blocks; it could use `run_async` the same way.
 
 ### Not built
 
-`wait_real`, `wait_until`, `wait_for` on the main fiber; a thread pool or a limit
-on simultaneous operations; async `fs` and `process`.
+`wait_real`, `wait_until`, `wait_for` on the main fiber; async `fs`.
 
 ## 23. Phase 2 findings fixes, part A
 
