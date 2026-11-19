@@ -5,6 +5,8 @@
 
 use std::path::Path;
 
+use colibri_syntax::{SourceMap, parse_file};
+
 /// Directives parsed from one golden file.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Directives {
@@ -67,9 +69,27 @@ pub enum Outcome {
     CompileErrors(Vec<(usize, String)>),
 }
 
-/// Runs a golden file through the engine. No engine exists yet.
-pub fn run_golden(_path: &Path, _source: &str) -> Outcome {
-    Outcome::NotImplemented
+/// Runs a golden file through the engine. Only the parser exists so far: a
+/// file with syntax errors is a compile failure, anything else is not run.
+pub fn run_golden(path: &Path, source: &str) -> Outcome {
+    let mut map = SourceMap::new();
+    let file = map.add_file(path.display().to_string(), source);
+    let (_, diagnostics) = parse_file(file, source);
+    let errors: Vec<(usize, String)> = diagnostics
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| {
+            (
+                map.line_col(file, d.span.start).0 as usize,
+                d.message.clone(),
+            )
+        })
+        .collect();
+    if errors.is_empty() {
+        Outcome::NotImplemented
+    } else {
+        Outcome::CompileErrors(errors)
+    }
 }
 
 /// Compares an outcome with the directives; `Err` describes every mismatch.

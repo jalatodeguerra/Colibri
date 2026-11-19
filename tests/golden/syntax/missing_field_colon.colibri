@@ -1,0 +1,4 @@
+struct Player {
+    name str // error: expected `:` and a type after field `name`
+    hp: int
+}

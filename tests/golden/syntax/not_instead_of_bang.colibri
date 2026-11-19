@@ -1,0 +1,2 @@
+let a = true
+let b = not a // error: `not` is not an operator

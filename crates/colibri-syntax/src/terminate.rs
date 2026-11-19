@@ -40,11 +40,18 @@ fn ends_statement(kind: &TokenKind) -> bool {
     )
 }
 
-/// Whether a line starting with this token continues the previous statement.
-/// Only a single `.`, not `..` or `..=`.
-fn continues_line(kind: &TokenKind) -> bool {
+/// Whether a line starting with `kind` (followed by `next`) continues the
+/// previous statement. Only a single `.`, not `..` or `..=`, and not a `.`
+/// followed by a capitalised name: `.Circle(r) =>` starts a new `match` arm
+/// with a variant shorthand (DESIGN §8.2), while method chains use lower-case
+/// names.
+fn continues_line(kind: &TokenKind, next: Option<&TokenKind>) -> bool {
     use TokenKind::*;
-    matches!(kind, Dot | Or | AndAnd | OrOr | Else)
+    match kind {
+        Dot => !matches!(next, Option::Some(Ident(name)) if name.starts_with(char::is_uppercase)),
+        Or | AndAnd | OrOr | Else => true,
+        _ => false,
+    }
 }
 
 fn implicit_semi(at: u32, like: Span) -> Token {
@@ -66,7 +73,8 @@ pub fn insert_terminators(tokens: Vec<Token>) -> Vec<Token> {
     // token has followed yet; withdrawn if the next line continues this one.
     let mut inserted: Option<usize> = None;
 
-    for tok in tokens {
+    let mut tokens = tokens.into_iter().peekable();
+    while let Some(tok) = tokens.next() {
         let active = frames.last() != Some(&Frame::Inert);
         match tok.kind {
             TokenKind::Newline => {
@@ -84,7 +92,8 @@ pub fn insert_terminators(tokens: Vec<Token>) -> Vec<Token> {
                 out.push(tok);
             }
             _ => {
-                if continues_line(&tok.kind)
+                let next = tokens.peek().map(|t| &t.kind);
+                if continues_line(&tok.kind, next)
                     && let Some(i) = inserted
                 {
                     out.remove(i);
@@ -93,9 +102,16 @@ pub fn insert_terminators(tokens: Vec<Token>) -> Vec<Token> {
                 match tok.kind {
                     TokenKind::LParen | TokenKind::LBracket => frames.push(Frame::Inert),
                     TokenKind::LBrace => frames.push(Frame::Active),
-                    TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
-                        frames.pop();
+                    // A `}` closes the innermost `{` even if a `(` or `[` inside it was
+                    // never closed, and a stray `)` or `]` never closes a `{`. This keeps
+                    // one unbalanced bracket from silencing terminators for the rest of
+                    // the file; the parser reports the bracket itself.
+                    TokenKind::RParen | TokenKind::RBracket => {
+                        if frames.last() == Some(&Frame::Inert) {
+                            frames.pop();
+                        }
                     }
+                    TokenKind::RBrace => while frames.pop() == Some(Frame::Inert) {},
                     _ => {}
                 }
                 can_end = ends_statement(&tok.kind);

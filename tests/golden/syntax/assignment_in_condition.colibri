@@ -1,0 +1,5 @@
+// `=` where a comparison was meant.
+let x = 1
+if x = 5 { // error: found assignment `=`
+    print("five")
+}

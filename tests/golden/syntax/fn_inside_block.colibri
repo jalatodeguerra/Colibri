@@ -1,0 +1,6 @@
+fn main() {
+    fn helper() { // error: functions cannot be declared inside a block
+        print("nested")
+    }
+    helper()
+}

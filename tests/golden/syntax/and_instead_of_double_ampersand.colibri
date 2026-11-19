@@ -1,0 +1,4 @@
+// Python habits get a targeted error.
+let a = true
+let b = false
+let c = a and b // error: `and` is not an operator
