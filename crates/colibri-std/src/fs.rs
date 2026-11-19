@@ -11,7 +11,8 @@ use colibri_runtime::{Cap, Error, Vm};
 use crate::needs;
 use crate::values::value_struct;
 
-/// What `fs.stat` reports: one look at a path, without following a final symlink.
+/// What `fs.stat` reports: one look at a path, without following a final symlink
+/// (`fs.stat_follow` does follow it).
 /// `kind` is `"file"`, `"dir"`, `"symlink"` or `"other"`; times are seconds since the Unix
 /// epoch; `created` is `none` where the platform or filesystem does not record it.
 #[derive(Clone, Debug)]
@@ -81,6 +82,27 @@ fn fail(action: &str, path: &str, e: &std::io::Error) -> String {
     format!("cannot {action} `{path}`: {}", reason(e))
 }
 
+fn stat_of(path: &str, meta: &std::fs::Metadata) -> Result<Stat, String> {
+    let kind = if meta.file_type().is_symlink() {
+        "symlink"
+    } else if meta.is_dir() {
+        "dir"
+    } else if meta.is_file() {
+        "file"
+    } else {
+        "other"
+    };
+    let size = i64::try_from(meta.len()).map_err(|_| format!("`{path}` is too big"))?;
+    let modified = meta.modified().map_err(|e| fail("look at", path, &e))?;
+    Ok(Stat {
+        kind: kind.to_string(),
+        size,
+        modified: unix_seconds(modified),
+        created: meta.created().ok().map(unix_seconds),
+        readonly: meta.permissions().readonly(),
+    })
+}
+
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     let mut m = vm.std_module("fs");
     macro_rules! fs_fn {
@@ -135,10 +157,19 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     fs_fn!("remove", ["path"], |path: String| {
         std::fs::remove_file(&path).map_err(|e| fail("remove", &path, &e))
     });
-    // Only an empty folder; fails with "directory not empty" otherwise. `remove_tree` is the
-    // one that removes a folder with everything in it.
+    // Only an empty folder; `remove_tree` is the one that removes a folder with everything
+    // in it, and the message of a folder that is not empty says so.
     fs_fn!("remove_dir", ["path"], |path: String| {
-        std::fs::remove_dir(&path).map_err(|e| fail("remove the empty folder", &path, &e))
+        std::fs::remove_dir(&path).map_err(|e| {
+            if e.kind() == ErrorKind::DirectoryNotEmpty {
+                format!(
+                    "cannot remove the folder `{path}`: it is not empty \
+                     (use `fs.remove_tree` to remove a folder with its contents)"
+                )
+            } else {
+                fail("remove the folder", &path, &e)
+            }
+        })
     });
     // RECURSIVE: a folder and everything in it.
     fs_fn!("remove_tree", ["path"], |path: String| {
@@ -153,26 +184,17 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
         out.sort();
         Ok::<_, String>(out)
     });
+    // One look at a path; a final symlink is described, not followed (`kind` is `"symlink"`
+    // and `size` is the link's own). `stat_follow` looks at what it points to.
     fs_fn!("stat", ["path"], |path: String| {
         let meta = std::fs::symlink_metadata(&path).map_err(|e| fail("look at", &path, &e))?;
-        let kind = if meta.file_type().is_symlink() {
-            "symlink"
-        } else if meta.is_dir() {
-            "dir"
-        } else if meta.is_file() {
-            "file"
-        } else {
-            "other"
-        };
-        let size = i64::try_from(meta.len()).map_err(|_| format!("`{path}` is too big"))?;
-        let modified = meta.modified().map_err(|e| fail("look at", &path, &e))?;
-        Ok::<_, String>(Stat {
-            kind: kind.to_string(),
-            size,
-            modified: unix_seconds(modified),
-            created: meta.created().ok().map(unix_seconds),
-            readonly: meta.permissions().readonly(),
-        })
+        stat_of(&path, &meta)
+    });
+    // `stat`, but a symlink is followed: the kind, size and times are those of its target
+    // (an error if the target does not exist).
+    fs_fn!("stat_follow", ["path"], |path: String| {
+        let meta = std::fs::metadata(&path).map_err(|e| fail("look at", &path, &e))?;
+        stat_of(&path, &meta)
     });
     // Sets the modification time, in seconds since the Unix epoch.
     fs_fn!(

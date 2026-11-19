@@ -27,7 +27,7 @@ fn main() -> Result[()] {
 }
 
 // expect: false
-// expect: cannot remove the empty folder `<dir>/rm/full`: directory not empty
+// expect: cannot remove the folder `<dir>/rm/full`: it is not empty (use `fs.remove_tree` to remove a folder with its contents)
 // expect: true
-// expect: cannot remove the empty folder `<dir>/rm/nope`: no such file or directory
+// expect: cannot remove the folder `<dir>/rm/nope`: no such file or directory
 // expect: false
