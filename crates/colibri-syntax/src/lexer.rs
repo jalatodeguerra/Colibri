@@ -118,6 +118,11 @@ impl<'a> Lexer<'a> {
                     self.pos += 1;
                     self.string(start, true);
                 }
+                'r' if self.raw_hashes().is_some() => {
+                    let hashes = self.raw_hashes().unwrap_or(0);
+                    self.pos += 1 + hashes;
+                    self.hashed_raw_string(start, hashes);
+                }
                 '\'' => self.quote(),
                 c if is_ident_start(c) => self.ident(),
                 _ => self.operator(),
@@ -453,6 +458,44 @@ impl<'a> Lexer<'a> {
             self.scan_body(start, multi)
         };
         let parts = self.build_parts(segs, multi, raw);
+        self.push(TokenKind::Str(StrLit { parts }), start);
+    }
+
+    /// At an `r`: the number of `#` in a `r#"` / `r##"` opener, if this is one.
+    fn raw_hashes(&self) -> Option<usize> {
+        let rest = self.rest().strip_prefix('r')?;
+        let n = rest.len() - rest.trim_start_matches('#').len();
+        (n > 0 && rest[n..].starts_with('"')).then_some(n)
+    }
+
+    /// Lexes `r#"..."#` (any number of `#`): `pos` is at the opening quote.
+    /// The text is verbatim: no escapes, no interpolation, may span lines and
+    /// holds `"` freely; it ends at a `"` followed by the same number of `#`.
+    fn hashed_raw_string(&mut self, start: usize, hashes: usize) {
+        self.pos += 1;
+        let text_start = self.pos;
+        let closer = format!("\"{}", "#".repeat(hashes));
+        let (end, closed) = match self.rest().find(&closer) {
+            Some(i) => (self.pos + i, true),
+            None => (self.src.len(), false),
+        };
+        self.pos = end;
+        if closed {
+            self.pos += closer.len();
+        } else {
+            self.error(
+                Diagnostic::error(
+                    "unterminated raw string literal",
+                    self.span(start, start + 2 + hashes),
+                )
+                .with_hint(format!(
+                    "the string started here; close it with `\"{}`",
+                    "#".repeat(hashes)
+                )),
+            );
+        }
+        let segs: Vec<Seg> = text(text_start, end).into_iter().collect();
+        let parts = self.build_parts(segs, false, true);
         self.push(TokenKind::Str(StrLit { parts }), start);
     }
 

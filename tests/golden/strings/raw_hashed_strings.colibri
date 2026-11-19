@@ -1,0 +1,19 @@
+// `r#"..."#` holds `"` freely; any number of `#`; no escapes, no interpolation.
+let name = "pen"
+print(r#"say "hi" to {name}\n"#)
+print(r##"a "# inside, still open"##)
+print(r#""#)
+// They may span lines and are verbatim (no indentation stripping).
+let two = r#"first
+  "second""#
+print(two)
+print(two.len())
+let json = r#"[{"name": "pen", "qty": 3}]"#
+print(json)
+// expect: say "hi" to {name}\n
+// expect: a "# inside, still open
+// expect:
+// expect: first
+// expect:   "second"
+// expect: 16
+// expect: [{"name": "pen", "qty": 3}]
