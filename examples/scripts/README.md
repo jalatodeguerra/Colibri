@@ -1,6 +1,6 @@
 # Automation scripts
 
-Phase 2 milestone (history/PHASE2.md step 9): two real programs written in Colibri, run with `colibri run`.
+Two real programs written in Colibri, run with `colibri run`.
 They use the scripting std (`args`, `fs`, `path`, `json`, `regex`, `datetime`, `http`, `process`,
 `io`, `os`), coroutines, `Result`/`?`/`.context`, typed JSON decoding and exit codes.
 What got in the way while writing them is in [FINDINGS.md](FINDINGS.md).
