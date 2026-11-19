@@ -170,7 +170,10 @@ fn indentation_of_the_input_does_not_matter() {
 
 /// The text of every ```colibri block in tests/corpus/design_examples.md.
 fn design_blocks() -> Vec<String> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/corpus/design_examples.md");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/corpus/design_examples.md"
+    );
     let text = std::fs::read_to_string(path).expect("the examples corpus is readable");
     let mut blocks = Vec::new();
     let mut current: Option<String> = None;
