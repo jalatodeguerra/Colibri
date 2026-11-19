@@ -124,6 +124,15 @@ pub struct CancelToken {
 }
 
 impl CancelToken {
+    /// A token that has been cancelled already: every hook given to
+    /// [`CancelToken::on_cancel`] runs at once.
+    pub fn cancelled() -> Self {
+        Self {
+            flag: AtomicBool::new(true),
+            hooks: Mutex::default(),
+        }
+    }
+
     /// Whether the waiter has given up.
     pub fn is_cancelled(&self) -> bool {
         self.flag.load(Ordering::SeqCst)

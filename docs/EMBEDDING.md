@@ -305,8 +305,10 @@ loop {
   that the trampoline turns into a clean cancellation (the result is discarded; work that has not started yet never runs); a panic of the work is a Colibri panic of the caller. Work that can
   stop early takes `cx.run_async_cancellable(|token| ..)`, which hands it a `CancelToken`: it is
   cancelled when the coroutine is cancelled or the `Vm` is dropped, and `token.on_cancel(hook)`
-  registers a hook that runs on the cancelling side before it goes on (`process.run` kills its
-  program in one, so none is left running); work that blocks for a long
+  registers a hook that runs on the cancelling side before it goes on (`process.run`, `run_with`, `shell` and `status` kill the program they started in one; not the
+  processes that program started in turn, as in Python and Go: `shell("sleep 30")` kills `sh`, and a
+  `sleep` that dash forked survives, and the output readers of a killed program end when its pipes
+  close; no process group is used, so Ctrl-C from the terminal still reaches children); work that blocks for a long
   time holds its thread meanwhile, which costs a stack and nothing else. A host driving `vm.tick(dt)` itself gets
   the completions at its ticks. `http` and `process` are built on it (ARCHITECTURE §22).
 - The `Clock` trait has a third method with a default, `sleep_interruptible(seconds, wake)`,

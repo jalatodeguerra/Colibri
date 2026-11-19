@@ -1715,8 +1715,14 @@ its `Vm` before it exits; `crates/colibri-cli/tests/children.rs`). Children are 
 process group, so Ctrl-C from the terminal still reaches them and `status` keeps the terminal.
 On Linux and macOS the worker blocks in `waitid(WEXITED | WNOWAIT)` (no polling, and the process
 is not collected until the lock holder does it, so a kill never hits a reused process number);
-elsewhere it polls `try_wait` with naps growing from 0.1 ms to 5 ms. A grandchild that the
-program started keeps running, as with any kill: `process.shell` kills only the shell. `Child.join` and
+elsewhere it polls `try_wait` with naps growing from 0.1 ms to 5 ms. A cancelled or shut-down
+`run`, `run_with`, `shell` or `status` kills the program it started and nothing that program
+started in turn, the same rule as Python and Go (decided: no process groups, so that Ctrl-C from
+the terminal still reaches the children). `shell("sleep 30")` kills `/bin/sh`; where `sh` is dash it
+forks `sleep`, which survives. For `run`, `run_with` and `shell` the threads that read the killed
+program's output end only when its pipes close, i.e. when the last process holding them has ended.
+If the token is already cancelled when `share` registers the hook, the hook collects the child at
+once and `wait_for` returns without waiting for the (possibly reused) process number. `Child.join` and
 `Child.kill` still block the whole `Vm`: a host object stays borrowed while a method runs, so a
 method cannot suspend. For concurrency with a `Child`,
 `spawn` returns at once with a host class `Child` (`id()`, `try_wait() -> Result[Option[Output]]`,

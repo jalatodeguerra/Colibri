@@ -1,8 +1,8 @@
 //! `process`: running other programs. Everything needs the `os` capability.
 //!
 //! `run` waits for the program and collects its output (on a background thread: inside a
-//! coroutine only that coroutine waits, and cancelling it stops the program); `spawn` starts it and gives back a
-//! `Child` a script can poll with `try_wait` (and `wait(0.01)` between polls, so other
+//! coroutine only that coroutine waits, and cancelling it kills the program); `spawn` starts it
+//! and gives back a `Child` a script can poll with `try_wait` (and `wait(0.01)` between polls, so other
 //! coroutines keep running). A program that cannot be started is an `err`; one that runs and
 //! exits with a non-zero status is an `Output` with that `status`.
 
@@ -135,9 +135,14 @@ fn lock(child: &Shared) -> std::sync::MutexGuard<'_, OsChild> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Makes `child` shared and has `token` kill it, and reap it, when it is cancelled. Not a
-/// process group: Ctrl-C from the terminal reaches the program as before. `process.shell`
-/// kills only the shell (a program the shell started is not a child of ours).
+/// Makes `child` shared and has `token` kill it, and reap it, when it is cancelled. This is
+/// the same for `run`, `run_with`, `shell` and `status`: the kill reaches the program we
+/// started and nothing it started in turn (as in Python and Go). It is not a process group,
+/// because Ctrl-C from the terminal must still reach the children. So `shell("sleep 30")`
+/// kills `/bin/sh`, and where `sh` forks (dash does) the `sleep` lives on; a program that
+/// starts helpers has to stop them itself. The threads that read the killed program's output
+/// (`drain`) end when its pipes close, which is when the last process holding them ends, not
+/// when the program is killed.
 fn share(child: OsChild, token: &CancelToken) -> Shared {
     let child = Arc::new(Mutex::new(child));
     let victim = Arc::clone(&child);
@@ -181,6 +186,11 @@ fn block_until_ended(_pid: u32) {}
 /// this gives up.
 fn wait_for(child: &Shared, program: &str, token: &CancelToken) -> Result<ExitStatus, String> {
     let pid = lock(child).id();
+    // Cancelled before `share` registered its hook: the hook ran at once and has collected
+    // the child, so its pid may be reused and must not be waited for.
+    if token.is_cancelled() {
+        return Err(format!("`{program}` was stopped: its caller was cancelled"));
+    }
     block_until_ended(pid);
     // Where `block_until_ended` does nothing, short naps at first so that a quick program
     // costs almost nothing, then longer ones.
@@ -448,4 +458,24 @@ fn spawn(cx: &mut Ctx, program: String, args: &[String], opts: &Options) -> Resu
         err,
         done: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_token_cancelled_before_the_wait_gives_up_without_waiting_for_the_pid() {
+        let child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep starts");
+        let token = CancelToken::cancelled();
+        // The hook runs inside `share`: the child is killed and collected.
+        let child = share(child, &token);
+        let started = std::time::Instant::now();
+        let result = wait_for(&child, "sleep", &token);
+        assert!(result.is_err_and(|e| e.contains("was stopped")));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 }
