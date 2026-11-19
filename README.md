@@ -474,6 +474,4 @@ its expected output (`// expect:`), diagnostics (`// error:`) or drop order (`//
 
 ## License
 
-Dual-licensed under the [MIT license](https://opensource.org/licenses/MIT) or the
-[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), at your option, as declared
-in `Cargo.toml`.
+Colibri is released under the [MIT license](LICENSE).
