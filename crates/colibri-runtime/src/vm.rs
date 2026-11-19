@@ -84,7 +84,7 @@ pub struct VmBuilder {
 }
 
 impl VmBuilder {
-    /// The size of the native stack of each coroutine (`go`), in bytes. The default is 1 MiB
+    /// The size of the native stack of each coroutine (`go`), in bytes. The default is 16 MiB
     /// (DESIGN §14.3); the memory is reserved lazily and committed as the coroutine uses it.
     /// The evaluator panics with "stack overflow" before a coroutine uses more than three
     /// quarters of it, so deep recursion inside a coroutine needs a bigger size.
