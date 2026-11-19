@@ -1,0 +1,8 @@
+import datetime
+
+fn main() {
+    let t = datetime.from_unix(0.0)
+    print(datetime.format(t, "%Y %Q"))
+}
+
+// panic: datetime.format: unknown specifier `%Q` in the pattern

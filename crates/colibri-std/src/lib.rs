@@ -2,7 +2,7 @@
 //!
 //! Every module is a *named host module* implemented in Rust through the same machinery as
 //! `vm.module(..)`: [`install`] registers `io`, `fs`, `path`, `os`, `math`, `rand`, `time`, `str`,
-//! `json`, `regex` and `http` into a [`Vm`], under the interface names `std.io`, `std.fs`, ... The checker sees
+//! `json`, `regex`, `http`, `args`, `process` and `datetime` into a [`Vm`], under the interface names `std.io`, `std.fs`, ... The checker sees
 //! them exactly as it sees a game's own host modules: from interface (`.cbi`) text generated
 //! from the registrations ([`interfaces`] gives it to a checker that has no `Vm`). A script
 //! writes `import math` (or `import std.math`, which always means the standard library).
@@ -28,7 +28,9 @@
 //! # }
 //! ```
 
+mod args;
 mod config;
+mod datetime;
 mod fs;
 mod http;
 mod io;
@@ -36,10 +38,12 @@ mod json;
 mod math;
 mod os;
 mod path;
+mod process;
 mod rand;
 mod re;
 mod strs;
 mod time;
+mod values;
 
 use colibri_runtime::{Cap, Error, Interface, Registration, Vm};
 
@@ -48,7 +52,8 @@ pub use rand::Rng;
 
 /// The modules of the standard library built so far, in the order they are registered.
 pub const MODULES: &[&str] = &[
-    "io", "fs", "path", "os", "math", "rand", "time", "str", "json", "regex", "http",
+    "io", "fs", "path", "os", "math", "rand", "time", "str", "json", "regex", "http", "args",
+    "process", "datetime",
 ];
 
 /// Registers the standard library into `vm` with the default [`StdConfig`]. It must happen
@@ -72,6 +77,9 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
     json::register(vm)?;
     re::register(vm)?;
     http::register(vm)?;
+    args::register(vm)?;
+    process::register(vm)?;
+    datetime::register(vm)?;
     Ok(())
 }
 

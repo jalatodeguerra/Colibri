@@ -408,6 +408,7 @@ fn a_config_replaces_the_world() {
             temp_dir: Some("/somewhere".into()),
             seed: Some(5),
             stdin: Some(Box::new(Cursor::new("a\nb"))),
+            local_offset: None,
         },
     )
     .unwrap();
@@ -533,4 +534,122 @@ fn a_missing_file_is_an_err_with_the_path_and_the_reason() {
         out.contents(),
         format!("cannot read `{dir}/gone.txt`: no such file or directory\n")
     );
+}
+
+// ---- args, process and datetime under other configurations ----
+
+fn vm_with(config: StdConfig, caps: &[colibri::Cap]) -> (colibri::Vm, colibri::SharedBuffer) {
+    let out = colibri::SharedBuffer::new();
+    let mut builder = colibri::Vm::builder().stdout(Box::new(out.clone()));
+    for cap in caps {
+        builder = builder.allow(*cap);
+    }
+    let mut vm = builder.build();
+    colibri_std::install_with(&mut vm, config).expect("installs");
+    (vm, out)
+}
+
+fn with_args(args: &[&str]) -> StdConfig {
+    StdConfig {
+        args: args.iter().map(|a| a.to_string()).collect(),
+        ..StdConfig::default()
+    }
+}
+
+#[test]
+fn args_reads_flags_values_positionals_and_the_terminator() {
+    let (mut vm, out) = vm_with(
+        with_args(&[
+            "-vq",
+            "--out",
+            "result.txt",
+            "--level=3",
+            "input.txt",
+            "-5",
+            "--",
+            "--not-a-flag",
+            "-v",
+        ]),
+        &[],
+    );
+    run(
+        &mut vm,
+        "import args\nfn main() {\n    print(args.flag(\"v\"))\n    print(args.flag(\"q\"))\n    print(args.flag(\"out\"))  // present, whether or not it takes a value\n    print(args.flag(\"not-a-flag\"))\n    print(args.value(\"out\"))\n    print(args.value(\"level\"))\n    print(args.value(\"missing\"))\n    print(args.positional())\n    print(args.positional_with([\"out\"]))\n    print(args.list().len())\n}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        out.contents(),
+        "true\ntrue\ntrue\nfalse\nsome(\"result.txt\")\nsome(\"3\")\nnone\n\
+         [\"result.txt\", \"input.txt\", \"-5\", \"--not-a-flag\", \"-v\"]\n\
+         [\"input.txt\", \"-5\", \"--not-a-flag\", \"-v\"]\n9\n"
+    );
+}
+
+#[test]
+fn the_local_time_zone_comes_from_the_config() {
+    let config = StdConfig {
+        clock: Box::new(ManualClock::new(0.0)),
+        local_offset: Some(-3600),
+        ..StdConfig::default()
+    };
+    let (mut vm, out) = vm_with(config, &[colibri::Cap::Os]);
+    run(
+        &mut vm,
+        "import datetime\nfn main() {\n    print(datetime.to_iso(datetime.now_local()))\n    print(datetime.to_iso(datetime.to_local(datetime.now())))\n}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        out.contents(),
+        "1969-12-31T23:00:00-01:00\n1969-12-31T23:00:00-01:00\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_child_gets_the_variables_the_script_set_and_its_own_folder() {
+    let scratch = Scratch::new("child");
+    let dir = scratch.0.to_string_lossy().replace('\\', "/");
+    let (mut vm, out) = vm(&[colibri::Cap::Os]);
+    run(
+        &mut vm,
+        &format!(
+            "import process\nimport os\nfn main() {{\n    os.set_env(\"A\", \"from-set-env\")\n    var o = process.options()\n    o.cwd = some(\"{dir}\")\n    o.env = {{ \"B\": \"from-options\" }}\n    let r = process.run_with(\"sh\", [\"-c\", \"echo $A $B; pwd -P\"], o) or |e| {{ panic(e.message()) }}\n    print(r.stdout)\n}}\n"
+        ),
+    )
+    .unwrap();
+    let real = std::fs::canonicalize(&scratch.0).unwrap();
+    assert_eq!(
+        out.contents(),
+        format!("from-set-env from-options\n{}\n\n", real.display())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_child_killed_by_a_signal_has_a_negative_status() {
+    let (mut vm, out) = vm(&[colibri::Cap::Os]);
+    run(
+        &mut vm,
+        "import process\nfn main() {\n    let r = process.shell(\"kill -9 $$\") or |e| { panic(e.message()) }\n    print(r.status)\n}\n",
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "-9\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unfinished_child_is_killed_when_it_is_dropped() {
+    let scratch = Scratch::new("dropped");
+    let marker = scratch.0.join("marker");
+    let (mut vm, _) = vm(&[colibri::Cap::Os]);
+    run(
+        &mut vm,
+        &format!(
+            "import process\nfn start() {{\n    let c = process.spawn(\"sh\", [\"-c\", \"sleep 1; touch {}\"]) or |e| {{ panic(e.message()) }}\n    print(c.id() > 0)\n}}\nfn main() {{\n    start()\n}}\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(!marker.exists(), "the child outlived its handle");
 }

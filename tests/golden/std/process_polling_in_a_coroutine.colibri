@@ -1,0 +1,37 @@
+// caps: os
+// A coroutine that polls a child with `try_wait` and `wait(0.01)` leaves the other coroutines
+// running while the program works; `join` and `run` block everything until the program ends.
+import process
+
+fn runner() -> int {
+    let child = process.spawn("sh", ["-c", "sleep 0.05; echo done"]) or |e| { panic(e.message()) }
+    var out = child.try_wait() or |e| { panic(e.message()) }
+    while out == none {
+        wait(0.01)
+        out = child.try_wait() or |e| { panic(e.message()) }
+    }
+    print(out)
+    return 1
+}
+
+var ticks = 0
+
+fn counter() {
+    while true {
+        ticks += 1
+        wait(0.01)
+    }
+}
+
+fn main() {
+    let c = go counter()
+    let r = go runner()
+    while !r.done() {
+        task.tick(0.01)
+    }
+    c.cancel()
+    print(ticks > 1)
+}
+
+// expect: some(Output { status: 0, stdout: "done\n", stderr: "" })
+// expect: true
