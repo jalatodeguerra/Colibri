@@ -106,7 +106,7 @@ impl CType {
                         s.name
                     ));
                 }
-                if s.fields.iter().any(|f| *f == CType::CStr) {
+                if s.fields.contains(&CType::CStr) {
                     return Err(format!(
                         "the struct `{}` has a `cstr` field; a C string inside a struct would outlive the copy made for the call, so declare the field as `ptr[u8]`",
                         s.name
@@ -377,9 +377,12 @@ impl Function {
                     .call_return_into(CodePtr(self.address.cast_mut()), &ffi_args, ret);
             }
         }
+        // A returned string may point into an argument's temporary copy (a function that
+        // hands its argument back), so it is copied out before the copies are freed.
+        let result = decode_return(&self.ret, &out);
         drop(ffi_args);
         drop(keep);
-        decode_return(&self.ret, &out)
+        result
     }
 }
 

@@ -1,0 +1,28 @@
+// caps: ffi
+
+@repr(C) // error: applies to a `struct`
+class Node {
+    x: i32
+}
+
+@repr(C) // error: cannot be generic
+struct Pair[T] {
+    a: T
+}
+
+@repr(packed) // error: `@repr` takes `C`
+struct Packed {
+    a: u8
+}
+
+@link("c") // error: applies to an `extern "C"` block
+fn not_extern() {}
+
+@repr(C) // error: applies to a `struct`
+fn also_not_a_struct() {}
+
+extern "Rust" { // error: the ABI "Rust" is not supported
+    fn f()
+}
+
+fn main() {}

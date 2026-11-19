@@ -114,8 +114,17 @@ fn extern_blocks_need_the_ffi_capability() {
     );
     let mut ffi = HostEnv::new();
     ffi.grant("ffi");
-    let (_, errors) = check(src, &ffi);
-    assert_eq!(errors, ["`extern` is not supported yet"]);
+    let (program, errors) = check(src, &ffi);
+    assert!(errors.is_empty(), "{errors:?}");
+    // The extern function is a host function with a C signature (ARCHITECTURE "C FFI as built").
+    let program = program.expect("checks");
+    assert_eq!(program.host_fns.len(), 1);
+    let ext = program.host_fns[0]
+        .ext
+        .as_ref()
+        .expect("an extern function");
+    assert_eq!(ext.symbol, "abs");
+    assert_eq!(ext.lib, None);
 }
 
 #[test]

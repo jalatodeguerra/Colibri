@@ -1,0 +1,9 @@
+// caps: ffi
+// The host allows FFI, but the package never declared `ffi = true` in its colibri.toml.
+
+extern "C" { // error: cannot contain `extern` blocks
+    fn abs(x: i32) -> i32
+}
+
+fn main() {
+}

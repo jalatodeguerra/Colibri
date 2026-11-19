@@ -1,0 +1,41 @@
+// caps: ffi
+// Strings cross the boundary as `cstr`: a `str` converts by itself, and a string C returns is
+// copied into a `str`.
+
+@link("c")
+extern "C" {
+    fn strlen(s: cstr) -> u64
+    fn strcmp(a: cstr, b: cstr) -> i32
+    fn atoi(s: cstr) -> i32
+    fn atof(s: cstr) -> float
+    fn toupper(c: i32) -> i32
+    fn getenv(name: cstr) -> cstr?
+    fn strerror(code: i32) -> cstr
+}
+
+fn main() {
+    print(strlen("hello"))
+    print(strlen("colibrì")) // bytes, not characters
+    print(strlen(""))
+    let word = "interpolated {1 + 2}"
+    print(strlen(word))
+    print(strcmp("a", "a"))
+    print(strcmp("a", "b") < 0)
+    print(atoi("1234"))
+    print(atof("2.5"))
+    print(toupper(97))
+    // A NULL result is `none` when the declaration says `cstr?`.
+    print(getenv("COLIBRI_SURELY_NOT_SET_0xDEAD") == none)
+    print(strerror(2))
+}
+// expect: 5
+// expect: 8
+// expect: 0
+// expect: 14
+// expect: 0
+// expect: true
+// expect: 1234
+// expect: 2.5
+// expect: 65
+// expect: true
+// expect: No such file or directory

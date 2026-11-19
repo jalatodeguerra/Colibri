@@ -1,0 +1,37 @@
+// caps: ffi
+// `float` is a C `double` and `f32` a C `float`.
+
+@link("m")
+extern "C" {
+    fn cos(x: float) -> float
+    fn sqrt(x: float) -> float
+    fn pow(base: float, exp: float) -> float
+    fn floor(x: float) -> float
+    fn hypot(x: float, y: float) -> float
+    fn fabsf(x: f32) -> f32
+    fn sqrtf(x: f32) -> f32
+}
+
+fn main() {
+    print(cos(0.0))
+    print(sqrt(2.0))
+    print(pow(2.0, 10.0))
+    print(floor(-1.5))
+    print(hypot(3.0, 4.0))
+    print(fabsf(-2.5))
+    print(sqrtf(16.0))
+    let angles = [0.0, 1.0, 2.0]
+    var total = 0.0
+    for a in angles {
+        total += sqrt(a)
+    }
+    print(total > 2.4)
+}
+// expect: 1.0
+// expect: 1.4142135623730951
+// expect: 1024.0
+// expect: -2.0
+// expect: 5.0
+// expect: 2.5
+// expect: 4.0
+// expect: true

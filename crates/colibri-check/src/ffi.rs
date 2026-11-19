@@ -283,6 +283,9 @@ impl<'a> Checker<'a> {
     /// An `extern "C" { .. }` block: each function becomes a host-style function the runtime
     /// binds to the C library.
     pub(crate) fn collect_extern(&mut self, item: &'a ast::Item, block: &'a ast::ExternBlock) {
+        // A refused block still declares its functions (poisoned: calls are not checked), so a
+        // refusal is one error and not one more for every use.
+        let mut denied = false;
         if !self.host.is_granted("ffi") {
             let diag = Diagnostic::error(
                 "`extern` blocks need the `ffi` capability, which this host did not grant",
@@ -292,10 +295,9 @@ impl<'a> Checker<'a> {
                 "the host grants it with `VmBuilder::allow(Cap::Ffi)`; `colibri run` grants it",
             );
             self.report(diag);
-            return;
-        }
-        let module = &self.mods[self.cur_mod.0 as usize];
-        if !module.ffi {
+            denied = true;
+        } else if !self.mods[self.cur_mod.0 as usize].ffi {
+            let module = &self.mods[self.cur_mod.0 as usize];
             let package = module
                 .package
                 .and_then(|p| self.package_names.get(p).cloned())
@@ -308,8 +310,9 @@ impl<'a> Checker<'a> {
             )
             .with_hint("add `ffi = true` to the `[package]` table of its `colibri.toml`");
             self.report(diag);
-            return;
+            denied = true;
         }
+        self.extern_denied = denied;
         if block.abi != "C" {
             self.report(
                 Diagnostic::error(
@@ -348,6 +351,7 @@ impl<'a> Checker<'a> {
             };
             self.collect_extern_fn(member, decl, lib.clone());
         }
+        self.extern_denied = false;
     }
 
     fn collect_extern_fn(

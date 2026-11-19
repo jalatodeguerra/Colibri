@@ -120,6 +120,13 @@ impl FnCtx<'_, '_> {
             // downcast of an `Error`.)
             ExprKind::Field { name, .. } => {
                 matches!(name.name.as_str(), "is" | "as")
+                    // `p.cast[u8]()` on a `ptr[T]`, unless some struct has a field `cast`.
+                    || (name.name == "cast"
+                        && !self
+                            .ck
+                            .types
+                            .iter()
+                            .any(|t| t.fields().iter().any(|f| f.name == "cast")))
                     || self.ck.methods.iter().any(|((_, n), f)| {
                         n == &name.name && !self.ck.fns[f.0 as usize].generics.is_empty()
                     })

@@ -168,6 +168,9 @@ pub(crate) struct Checker<'a> {
     pub(crate) host_ext: HashMap<u32, crate::hir::ExternDef>,
     /// Set while the signature of an `extern` function is resolved: `cstr` is allowed.
     pub(crate) in_extern: bool,
+    /// The `extern` block being collected was refused (no capability): its functions exist
+    /// but are not callable, so the refusal is reported once.
+    pub(crate) extern_denied: bool,
     /// Set while the functions of an `extern` block are collected: its `@link`.
     pub(crate) extern_lib: Option<Option<String>>,
     pub diags: Vec<Diagnostic>,
@@ -395,6 +398,7 @@ impl<'a> Checker<'a> {
             c_layout_visiting: HashSet::new(),
             host_ext: HashMap::new(),
             in_extern: false,
+            extern_denied: false,
             extern_lib: None,
             diags: Vec::new(),
             facts: None,
@@ -763,7 +767,9 @@ impl<'a> Checker<'a> {
                 positional: !is_extern && item.attrs.iter().any(|a| a.name.name == "positional"),
             }
         });
-        let poisoned = sig.poisoned || (decl.body.is_none() && host.is_none());
+        let poisoned = sig.poisoned
+            || (decl.body.is_none() && host.is_none())
+            || (is_extern && self.extern_denied);
         // A function of a module other than the entry is named after its module.
         let prefix = match &self.mods[self.cur_mod.0 as usize] {
             m if m.kind == ModKind::Source && !m.entry => format!("{}.", m.name),
