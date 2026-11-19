@@ -373,7 +373,7 @@ a program can't compute something different once built. `wrapping_add`, `wrappin
 `checked_add` (returns `Option`) and `saturating_add` exist for hashes, RNGs and fixed-point
 code (Q6).
 
-**Bitwise operators [Proposed].** On integer types, `&` (and), `|` (or), `^` (xor), `~x` (not),
+**Bitwise operators [Locked 2026-11-19].** On integer types, `&` (and), `|` (or), `^` (xor), `~x` (not),
 `x << n` and `x >> n` work for flags, masks, hashes and random number generators. `& | ^`
 need both operands of the same integer type; `~x` has the type of `x`. They bind tighter than
 the comparisons and looser than `+ -`, in the order `|` < `^` < `&` < shifts < `+ -`, so
