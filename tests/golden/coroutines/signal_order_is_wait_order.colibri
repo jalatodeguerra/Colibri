@@ -1,0 +1,19 @@
+fn listener(s: Signal, tag: str, pause: float) {
+    wait(pause)
+    wait_for(s)
+    print("{tag} woke")
+}
+
+fn main() {
+    let s = Signal()
+    go listener(s, "late", 2.0)
+    go listener(s, "early", 1.0)
+    task.tick(1.0)
+    task.tick(1.0)
+    s.emit()
+    task.tick(0.0)
+}
+
+// `late` started first but began waiting after `early`: wait order, not start order.
+// expect: early woke
+// expect: late woke

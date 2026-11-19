@@ -1,0 +1,12 @@
+fn main() {
+    let s = Signal()
+    s.emit()
+    s.emit()
+    print("no one was waiting")
+    let t = s
+    print("{s == t}, {s}")
+    task.tick(1.0)
+}
+
+// expect: no one was waiting
+// expect: true, <Signal>

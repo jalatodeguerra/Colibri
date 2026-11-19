@@ -309,6 +309,7 @@ pub(crate) const BUILTIN_FNS: &[&str] = &[
     "wait_frames",
     "wait_until",
     "wait_real",
+    "wait_for",
 ];
 
 impl<'a> Checker<'a> {

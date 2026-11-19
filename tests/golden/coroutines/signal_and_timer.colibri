@@ -1,0 +1,19 @@
+fn listener(s: Signal) {
+    wait_for(s)
+    print("woke by signal")
+}
+
+fn emitter(s: Signal) {
+    wait(0.5)
+    print("emitting")
+    s.emit()
+}
+
+fn main() {
+    let s = Signal()
+    go listener(s)
+    go emitter(s)
+}
+
+// expect: emitting
+// expect: woke by signal

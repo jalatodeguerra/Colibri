@@ -49,6 +49,8 @@ interface IntoError {
 }
 class Error {}
 class Coroutine[T] {}
+class CoGroup {}
+class Signal {}
 "#;
 
 /// The parsed prelude.

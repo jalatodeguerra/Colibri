@@ -1,0 +1,13 @@
+fn work(n: int) -> int {
+    return n
+}
+
+fn main() {
+    let g = CoGroup()
+    let value = work(1)
+    g.go(value) // error: needs a call to start
+    g.go() // error: needs a call to start
+    g.go(work(1), work(2)) // error: needs a call to start
+    g.go(work("x")) // error: expected
+    let h = CoGroup(1) // error: takes no arguments
+}

@@ -169,6 +169,10 @@ impl Interp {
             Builtin::CoroutineCancel | Builtin::CoroutineDone | Builtin::CoroutineJoin => {
                 return self.coroutine_builtin(fiber, op, &recv, span);
             }
+            Builtin::CoGroupCancel | Builtin::CoGroupCount | Builtin::CoGroupJoinAll => {
+                return self.cogroup_builtin(fiber, op, &recv, span);
+            }
+            Builtin::SignalEmit => return self.signal_builtin(fiber, &recv, span),
             Builtin::SetNew => Value::Set(SetObj::new(OrderedMap::new())),
             Builtin::SetFromList => {
                 let Some(list) = list_of(&recv) else {

@@ -80,6 +80,10 @@ impl Interp {
     fn dismantle(&mut self, value: Value, work: &mut Vec<Value>) {
         match value {
             Value::Obj(rc) if Rc::strong_count(&rc) == 1 => {
+                if rc.ty() == colibri_check::types::COGROUP_TYPE {
+                    // The group dies: its coroutines are cancelled, newest first.
+                    self.group_died(&rc);
+                }
                 // The `Drop` hook runs first; if it stores the object somewhere, the object
                 // lives on and dies (without a second hook) when that reference does.
                 if self.run_drop_hook(&rc) {
@@ -154,6 +158,8 @@ impl Interp {
         if self.trace.is_none()
             || obj.ty() == colibri_check::types::ERROR_TYPE
             || obj.ty() == colibri_check::types::COROUTINE_TYPE
+            || obj.ty() == colibri_check::types::COGROUP_TYPE
+            || obj.ty() == colibri_check::types::SIGNAL_TYPE
         {
             return;
         }

@@ -1,0 +1,22 @@
+class Res { name: str }
+
+fn listener(s: Signal, tag: str) {
+    let r = Res { name: "res-{tag}" }
+    defer print("defer {tag}")
+    wait_for(s)
+    print("never")
+}
+
+fn main() {
+    let s = Signal()
+    go listener(s, "a")
+    go listener(s, "b")
+    print("main done")
+}
+
+// Nothing can wake coroutines that only wait for a signal once `main` has returned and no timed
+// wake is left, so the event loop ends and they are cancelled, newest first.
+// expect: main done
+// expect: defer b
+// expect: defer a
+// drops: res-b, res-a
