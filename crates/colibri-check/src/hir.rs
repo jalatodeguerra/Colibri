@@ -72,6 +72,10 @@ pub struct Program {
     /// standard library), in source order: the entry module first, then the other modules in
     /// load order (ARCHITECTURE §15). Their bodies are ordinary entries of [`Program::fns`].
     pub tests: Vec<TestDef>,
+    /// The `test` blocks of script modules (modules of a package that nothing imports and
+    /// that have top-level statements): checked, but never run, because running them would need
+    /// the script's own initialisers.
+    pub skipped_tests: Vec<TestDef>,
     /// The C layout of every `@repr(C)` struct (DESIGN §15.2), by type.
     pub c_layouts: std::collections::BTreeMap<TypeId, CLayout>,
 }

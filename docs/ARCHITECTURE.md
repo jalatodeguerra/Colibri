@@ -1166,7 +1166,13 @@ declarations are still checked. The exception is a *script module*: when the who
 loaded (`LoadOptions::all_modules`: `colibri check <folder>`, `colibri test`), a module that no other
 module imports (`ModuleMeta::script`, e.g. `examples/demo.colibri`) may have top-level statements.
 They are checked in their own module (`Checker::check_module_scripts`) and the result is dropped, so
-they never run, also not under `colibri test`. The folder walk does not follow symbolic links to
+they never run, also not under `colibri test`. Nothing else of such a module runs either: its
+module-level `let`/`var` are left out of `Program::init_order` (they are still type-checked), and its
+`test` blocks go to `Program::skipped_tests` instead of `Program::tests` (`colibri test <folder>` says
+`skipped N tests in <file>`; `colibri test <file>` runs them, because there the file is the entry).
+A module nothing imports that has no top-level statement is an ordinary module: its initialisers and
+tests run. (For an entry script `colibri test script.colibri` runs the `let`/`var` initialisers before
+each test, in source order, but not its statements.) The folder walk does not follow symbolic links to
 folders, and modules are deduplicated on `SourceFs::canonical` (the resolved path). `fn main` is looked up in the entry module only. Function names
 in the HIR (`FnDef.name`, stack traces, `Vm::get_fn`) are the plain name in the entry module and
 the dotted module path before it in any other (`game.player.spawn`, `game.player.Player.update`);

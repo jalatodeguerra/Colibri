@@ -405,3 +405,77 @@ fn without_the_flag_leaks_are_not_looked_for() {
     assert_eq!(out.status.code(), Some(0));
     assert!(stderr(&out).is_empty());
 }
+
+/// A package folder with a script module (nothing imports it, it has top-level statements) whose
+/// initialiser and statements would leave `marker` behind if anything of it ran.
+fn script_package(name: &str, marker: &std::path::Path) -> PathBuf {
+    let script = format!(
+        "import fs\nlet made = fs.write(\"{}\", \"x\") or |e| {{ panic(e.message()) }}\nprint(\"gen\")\n\ntest \"in the script\" {{\n    assert(false)\n}}\n",
+        marker.display()
+    );
+    folder(
+        name,
+        &[
+            ("colibri.toml", "[package]\nname = \"demo\"\n"),
+            (
+                "main.colibri",
+                "fn main() {}\n\ntest \"main\" {\n    assert(true)\n}\n",
+            ),
+            ("tools/gen.colibri", &script),
+            (
+                "plain.colibri",
+                "let n = 1\n\ntest \"plain\" {\n    assert_eq(n, 1)\n}\n",
+            ),
+        ],
+    )
+}
+
+#[test]
+fn a_script_module_of_a_folder_runs_nothing_under_test() {
+    let marker = std::env::temp_dir().join(format!("colibri-script-marker-{}", std::process::id()));
+    let _ = std::fs::remove_file(&marker);
+    let dir = script_package("script_module_inert", &marker);
+    let out = colibri(&["test", dir.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(!marker.exists(), "the script's initialiser ran");
+    let text = stdout(&out);
+    assert!(text.contains("2 passed, 0 failed"), "{text}");
+    assert!(
+        !text.contains("gen") && !text.contains("in the script"),
+        "{text}"
+    );
+    let err = stderr(&out);
+    assert!(err.contains("skipped 1 test in "), "{err}");
+    assert!(
+        err.contains("gen.colibri: a script's tests run with"),
+        "{err}"
+    );
+    // A module with no statements stays an ordinary one: its tests ran (`plain`, above).
+    assert!(text.contains("plain::plain ... ok"), "{text}");
+}
+
+#[test]
+fn check_still_finds_errors_in_a_script_modules_statements_and_initialisers() {
+    let dir = folder(
+        "script_module_errors",
+        &[
+            ("colibri.toml", "[package]\nname = \"demo\"\n"),
+            ("main.colibri", "fn main() {}\n"),
+            (
+                "tools/gen.colibri",
+                "let a: int = \"initialiser\"\nlet b: str = 1 + \"statement\"\nprint(b)\n",
+            ),
+        ],
+    );
+    let out = colibri(&["check", dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("gen.colibri:1"), "{err}");
+    assert!(err.contains("gen.colibri:2"), "{err}");
+}

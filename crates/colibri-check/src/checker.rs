@@ -236,6 +236,9 @@ pub(crate) struct Checker<'a> {
     /// The top-level statements of unimported modules (scripts of the package): checked in
     /// their own module, never run.
     module_scripts: Vec<(ModId, Vec<&'a ast::Stmt>)>,
+    /// The modules in `module_scripts`: nothing of them runs, neither their initialisers nor
+    /// their tests (they are checked completely all the same).
+    inert_mods: HashSet<ModId>,
     script_body: Option<Rc<Body>>,
     /// For each step of the script, the module-level items it refers to (see
     /// [`FnCtx::check_script`]).
@@ -463,6 +466,7 @@ impl<'a> Checker<'a> {
             derived_impls: HashMap::new(),
             script: Vec::new(),
             module_scripts: Vec::new(),
+            inert_mods: HashSet::new(),
             script_body: None,
             script_deps: Vec::new(),
             dependency_order: false,
@@ -524,6 +528,7 @@ impl<'a> Checker<'a> {
             })
             .collect();
         let mut init_order = self.init_order(&script_globals);
+        init_order.retain(|g| !self.inert_mods.contains(&self.globals[g.0 as usize].module));
         if script_mode {
             self.check_script_order();
         }
@@ -696,6 +701,7 @@ impl<'a> Checker<'a> {
                                     self.script.push(ScriptStep::Stmt(stmt));
                                 }
                                 TopLevel::Stmt(stmt) if self.mods[m.0 as usize].script => {
+                                    self.inert_mods.insert(m);
                                     match self.module_scripts.last_mut() {
                                         Some((last, stmts)) if *last == m => stmts.push(stmt),
                                         _ => self.module_scripts.push((m, vec![stmt])),
@@ -1894,7 +1900,8 @@ impl<'a> Checker<'a> {
             script_from,
             script: self.script_body.clone()?,
             main,
-            tests: self.assemble_tests(),
+            tests: self.assemble_tests(false),
+            skipped_tests: self.assemble_tests(true),
             types: self.types.clone(),
             host_fns,
             host_types: self.host_type_count,
@@ -1902,9 +1909,11 @@ impl<'a> Checker<'a> {
         })
     }
 
-    fn assemble_tests(&self) -> Vec<TestDef> {
+    /// The tests that run (`skipped` false) or the ones of an inert script module, which do not.
+    fn assemble_tests(&self, skipped: bool) -> Vec<TestDef> {
         self.tests
             .iter()
+            .filter(|t| self.inert_mods.contains(&t.module) == skipped)
             .map(|t| {
                 let m = &self.mods[t.module.0 as usize];
                 TestDef {

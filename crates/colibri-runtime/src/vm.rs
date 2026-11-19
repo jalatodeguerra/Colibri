@@ -1461,12 +1461,27 @@ impl Vm {
     /// those). Empty before a program is loaded. The index in the list is the id
     /// [`Vm::run_test`] takes.
     pub fn tests(&self) -> Vec<TestInfo> {
+        self.test_infos(false)
+    }
+
+    /// The `test` blocks of script modules (a module of the package that nothing imports and
+    /// that has top-level statements): they are checked but cannot run in a `colibri test` of
+    /// the folder, since that would run the script's initialisers. The ids are not valid for
+    /// [`Vm::run_test`].
+    pub fn skipped_tests(&self) -> Vec<TestInfo> {
+        self.test_infos(true)
+    }
+
+    fn test_infos(&self, skipped: bool) -> Vec<TestInfo> {
         let Some(program) = &self.program else {
             return Vec::new();
         };
-        program
-            .tests
-            .iter()
+        let list = if skipped {
+            &program.skipped_tests
+        } else {
+            &program.tests
+        };
+        list.iter()
             .enumerate()
             .map(|(id, t)| {
                 let sources = &self.sources;
