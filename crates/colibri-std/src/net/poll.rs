@@ -1994,8 +1994,14 @@ mod tests {
                 let start = Arc::clone(&start);
                 std::thread::spawn(move || {
                     start.wait();
-                    // Refused when the close came first: that is one of the orders.
-                    let _ = TcpStream::connect(addr);
+                    // Started and let go, never waited for: a connect that is refused (the close
+                    // came first, one of the orders) may take seconds to be told so on some
+                    // systems, and the result does not depend on it.
+                    let socket =
+                        Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+                    socket.set_nonblocking(true).unwrap();
+                    let _ = socket.connect(&SockAddr::from(addr));
+                    drop(socket);
                 })
             };
             start.wait();
