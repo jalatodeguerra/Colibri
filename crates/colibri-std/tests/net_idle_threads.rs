@@ -400,10 +400,17 @@ fn writer_count() -> usize {
     let autosndbufmax = sysctl("net.inet.tcp.autosndbufmax");
     let pool = clusters * 2048;
     let count = ((pool / 4 / sendspace.max(1)) as usize).min(WRITERS);
-    println!(
+    let line = format!(
         "macOS buffer pool: nmbclusters {clusters} ({pool} bytes), sendspace {sendspace}, \
          autosndbufmax {autosndbufmax:?}: {count} writers"
     );
+    println!("{line}");
+    // Also straight to the error stream, which the test harness does not capture, so that the
+    // numbers are in the log of a run that passes as well.
+    {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "{line}");
+    }
     assert!(
         count >= MIN_MAC_WRITERS,
         "the buffer pool allows only {count} blocked writers (nmbclusters {clusters}, \
