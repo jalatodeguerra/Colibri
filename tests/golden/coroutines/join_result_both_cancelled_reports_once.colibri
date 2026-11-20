@@ -1,0 +1,28 @@
+// Both waiters are cancelled before they run: the panic is reported, once.
+let gate = Signal()
+let group = CoGroup()
+
+fn boom() {
+    wait_for(gate)
+    panic("reported once")
+}
+
+fn waiter(c: Coroutine[()]) {
+    let _ = c.join_result()
+}
+
+fn killer() {
+    wait_for(gate)
+    group.cancel()
+}
+
+fn main() {
+    let b = go boom()
+    go killer()
+    group.go(waiter(b))
+    group.go(waiter(b))
+    gate.emit()
+    task.tick(0.0)
+}
+
+// panic: reported once

@@ -1,0 +1,33 @@
+// A panic that a woken `join_result` waiter has not yet taken is not lost when a sibling
+// cancels the waiter in the same tick: the program fails with the panic.
+class Slot { co: Coroutine[()]? = none }
+
+let gate = Signal()
+
+fn boom() {
+    wait_for(gate)
+    panic("not lost")
+}
+
+fn waiter(c: Coroutine[()]) {
+    defer print("waiter unwound")
+    let r = c.join_result()
+    print("not reached {r.is_err()}")
+}
+
+fn killer(slot: Slot) {
+    wait_for(gate)
+    slot.co.expect("handle").cancel()
+}
+
+fn main() {
+    let b = go boom()
+    let slot = Slot {}
+    go killer(slot)
+    slot.co = some(go waiter(b))
+    gate.emit()
+    task.tick(0.0)
+}
+
+// expect: waiter unwound
+// panic: not lost
