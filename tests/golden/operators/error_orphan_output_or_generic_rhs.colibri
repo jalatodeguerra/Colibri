@@ -1,0 +1,25 @@
+// Only the right-hand type counts for the orphan rule: a type of ours as the output, or a type
+// parameter for the right-hand type, could still be `int + int`, and `int + int` is not ours.
+struct Money { c: int }
+
+impl Add[int, Money] for int { // error: cannot implement the built-in `Add` for the built-in type `int`
+    fn add(self, o: int) -> Money => Money { c: self * 100 + o }
+}
+impl[R] Add[R, Money] for float { // error: cannot implement the built-in `Add` for the built-in type `float`
+    fn add(self, o: R) -> Money => Money { c: 0 }
+}
+impl Mul[Money, Money] for str { // error: cannot implement the built-in `Mul` for the built-in type `str`
+    fn mul(self, m: Money) -> Money => m
+}
+// the right-hand type is ours: allowed
+impl Add[Money, Money] for int {
+    fn add(self, m: Money) -> Money => Money { c: self + m.c }
+}
+
+fn sum2[T: Add](a: T, b: T) -> T => a + b
+
+fn main() {
+    print(1 + 2)
+    print(sum2(1, 2))
+    print((1 + Money { c: 5 }).c)
+}

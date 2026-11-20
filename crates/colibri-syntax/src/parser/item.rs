@@ -367,7 +367,7 @@ impl Parser<'_> {
         })
     }
 
-    /// Optional `[T: Bound + Bound, U]`.
+    /// Optional `[T: Bound + Bound, U, R = Self]`.
     fn parse_generics_opt(&mut self) -> PResult<Vec<GenericParam>> {
         if !self.eat(&TokenKind::LBracket) {
             return Ok(Vec::new());
@@ -388,7 +388,16 @@ impl Parser<'_> {
                     }
                 }
             }
-            Ok(GenericParam { name, bounds })
+            let default = if p.eat(&TokenKind::Eq) {
+                Some(p.parse_type()?)
+            } else {
+                None
+            };
+            Ok(GenericParam {
+                name,
+                bounds,
+                default,
+            })
         })
     }
 

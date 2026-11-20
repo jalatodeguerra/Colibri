@@ -152,21 +152,11 @@ impl FnCtx<'_, '_> {
                 }
                 Some(self.check_empty_constructor(callee, &id.name, args, span))
             }
-            ExprKind::Field { base, name } => {
-                // `vec.vec2(..)`: a vector type of an imported module.
-                let q = self.qualified_parts(base, name)?;
-                let v = *self.ck.vec_types.get(&q.name)?;
-                Some(self.check_vec_ctor(v, args, span))
-            }
             ExprKind::Ident(id) if self.lookup_local(&id.name).is_none() => {
                 if self.ck.values.contains_key(&id.name) {
                     return None;
                 }
                 match id.name.as_str() {
-                    name if self.ck.vec_types.contains_key(name) => {
-                        let v = *self.ck.vec_types.get(name)?;
-                        Some(self.check_vec_ctor(v, args, span))
-                    }
                     name if Ty::numeric_by_name(name).is_some() => {
                         let target = Ty::numeric_by_name(name)?;
                         Some(self.check_conversion(target, args, span))

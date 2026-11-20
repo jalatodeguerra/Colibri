@@ -13,8 +13,8 @@ use colibri_syntax::Span;
 
 use crate::hir::{ImplId, TypeDef, TypeDefKind, TypeKey};
 use crate::types::{
-    CLONE, EQ, ERROR_TYPE, HASH, INTO_ERROR, ITER, ITERABLE, OPTION_TYPE, ORD, ParamId, SHOW, Ty,
-    TypeId,
+    ADD, CLONE, EQ, ERROR_TYPE, HASH, INTO_ERROR, ITER, ITERABLE, IntTy, NEG, OPTION_TYPE, ORD,
+    ParamId, SHOW, Ty, TypeId, is_binary_operator, is_operator,
 };
 
 /// `T: Hash + Eq`, one bound: an interface and its type arguments.
@@ -37,6 +37,9 @@ pub(crate) struct GenericParamInfo {
     pub name: String,
     pub span: Span,
     pub bounds: Vec<BoundRef>,
+    /// The default type argument of an interface's parameter (`R = Self`), written in terms of
+    /// the interface's `Self` and its earlier parameters.
+    pub default: Option<Ty>,
 }
 
 impl GenericParamInfo {
@@ -91,7 +94,6 @@ pub(crate) fn key_of(ty: &Ty) -> Option<TypeKey> {
         Ty::Set(_) => TypeKey::Set,
         Ty::Range(_) => TypeKey::Range,
         Ty::Ptr(_) => TypeKey::Ptr,
-        Ty::Vec(v) => TypeKey::Vec(*v),
         Ty::Option(_) => TypeKey::Adt(OPTION_TYPE),
         Ty::Adt(id, _) => TypeKey::Adt(*id),
         _ => return None,
@@ -104,6 +106,9 @@ pub(crate) struct Env<'a> {
     pub impls: &'a [ImplInfo],
     /// The explicit implementations, by implementing type head and interface.
     pub by_key: &'a HashMap<(TypeKey, TypeId), ImplId>,
+    /// The implementations of `Add`, `Sub`, `Mul` and `Div`: several for one type, one for each
+    /// right-hand type.
+    pub op_impls: &'a crate::checker::OpImpls,
     /// The bounds of every type parameter.
     pub bounds: &'a HashMap<ParamId, Vec<BoundRef>>,
 }
@@ -182,6 +187,9 @@ impl Env<'_> {
                 Ok(Source::Derived)
             };
         }
+        if is_operator(iface) {
+            return self.operator_implements(ty, iface, args);
+        }
         if self.user_impl_for(ty, iface).is_some() {
             return self.user(ty, iface, args);
         }
@@ -259,6 +267,146 @@ impl Env<'_> {
         let Some(id) = self.user_impl_for(ty, iface) else {
             return Err(ty.clone());
         };
+        self.user_with(id, ty, args)
+    }
+
+    /// Whether `ty` implements an operator interface: by one of the impls written for its head
+    /// (the one whose arguments agree), or because it is a number (or, for `Add`, a string):
+    /// those are derived, so `T: Add` accepts `int`, `float`, `f32`, `u64` and `str`. The
+    /// narrow integer types are not: generic code reaches the operator through the runtime type
+    /// of the values, which for them carries no width.
+    fn operator_implements(&self, ty: &Ty, iface: TypeId, args: &[Ty]) -> Result<Source, Ty> {
+        // A narrow integer is refused before any impl is consulted (see `check_obligation`).
+        if matches!(ty, Ty::Int(t) if !matches!(t, IntTy::I64 | IntTy::U64)) {
+            return Err(ty.clone());
+        }
+        let ids: Vec<ImplId> = match key_of(ty) {
+            Some(k) if is_binary_operator(iface) => self
+                .op_impls
+                .get(&(k, iface))
+                .map(|l| l.iter().map(|(_, id)| *id).collect())
+                .unwrap_or_default(),
+            Some(k) => self.by_key.get(&(k, iface)).copied().into_iter().collect(),
+            None => Vec::new(),
+        };
+        for id in ids {
+            if let Ok(source) = self.user_with(id, ty, args) {
+                return Ok(source);
+            }
+        }
+        let same = |a: &Ty| matches!(a, Ty::Infer(_) | Ty::Error) || a == ty;
+        let numeric = match ty {
+            Ty::Int(IntTy::I64) | Ty::Float | Ty::F32 => true,
+            Ty::Int(IntTy::U64) => iface != NEG,
+            Ty::Str | Ty::Bytes => iface == ADD,
+            _ => false,
+        };
+        if numeric && args.iter().all(same) {
+            Ok(Source::Derived)
+        } else {
+            Err(ty.clone())
+        }
+    }
+
+    /// The methods of the impls that run when `ty` is used through an interface with exactly
+    /// one method (`single` says which): the impl that satisfies it, and the impls its own
+    /// bounds of such interfaces pick (`impl[T: Add] Add for W[T]` runs `T`'s `add`),
+    /// recursively. With one method, every method listed is reached by the call. `seen` holds
+    /// the (impl, type) pairs already walked, which bounds the walk.
+    pub fn single_method_impl_methods(
+        &self,
+        ty: &Ty,
+        iface: TypeId,
+        args: &[Ty],
+        single: &dyn Fn(TypeId) -> bool,
+        seen: &mut Vec<(ImplId, Ty)>,
+        out: &mut Vec<crate::hir::FnId>,
+    ) {
+        if !single(iface) {
+            return;
+        }
+        let Ok(Source::User(id)) = self.implements(ty, iface, args) else {
+            return;
+        };
+        if seen.iter().any(|(i, t)| *i == id && t == ty) {
+            return;
+        }
+        seen.push((id, ty.clone()));
+        let info = &self.impls[id.0 as usize];
+        out.extend(info.methods.iter().flatten().copied());
+        let params: Vec<ParamId> = info.generics.iter().map(|g| g.id).collect();
+        let mut subst = Vec::new();
+        if !match_ty(&info.target, ty, &params, &mut subst) {
+            return;
+        }
+        for g in &info.generics {
+            let Some((_, arg)) = subst.iter().find(|(q, _)| *q == g.id) else {
+                continue;
+            };
+            for b in &g.bounds {
+                let bargs: Vec<Ty> = b.args.iter().map(|a| a.subst(&subst)).collect();
+                self.single_method_impl_methods(arg, b.iface, &bargs, single, seen, out);
+            }
+        }
+    }
+
+    /// The narrow integer that makes `ty` fail `iface` (an operator interface), when that is
+    /// the reason: `ty` is one, or an impl of `ty` that matches in everything else needs an
+    /// operator bound of its own on one (`impl[T: Add] Add for W[T]` with `W[i32]`). `None`
+    /// when the impl is simply missing.
+    pub fn narrow_blocker(&self, ty: &Ty, iface: TypeId, args: &[Ty], depth: usize) -> Option<Ty> {
+        if !crate::types::is_operator(iface) || depth > 64 {
+            return None;
+        }
+        if matches!(ty, Ty::Int(t) if !matches!(t, IntTy::I64 | IntTy::U64)) {
+            return Some(ty.clone());
+        }
+        let key = key_of(ty)?;
+        let ids: Vec<ImplId> = if is_binary_operator(iface) {
+            self.op_impls
+                .get(&(key, iface))
+                .map(|l| l.iter().map(|(_, id)| *id).collect())
+                .unwrap_or_default()
+        } else {
+            self.by_key
+                .get(&(key, iface))
+                .copied()
+                .into_iter()
+                .collect()
+        };
+        for id in ids {
+            let info = &self.impls[id.0 as usize];
+            let params: Vec<ParamId> = info.generics.iter().map(|g| g.id).collect();
+            let mut subst = Vec::new();
+            if !match_ty(&info.target, ty, &params, &mut subst) {
+                continue;
+            }
+            let wanted: Vec<Ty> = info.iface_args.iter().map(|a| a.subst(&subst)).collect();
+            let agree = wanted.len() == args.len()
+                && wanted
+                    .iter()
+                    .zip(args)
+                    .all(|(w, a)| matches!(a, Ty::Infer(_) | Ty::Error) || w == a);
+            if !agree {
+                continue;
+            }
+            for g in &info.generics {
+                let Some((_, arg)) = subst.iter().find(|(q, _)| *q == g.id) else {
+                    continue;
+                };
+                for b in &g.bounds {
+                    let bargs: Vec<Ty> = b.args.iter().map(|a| a.subst(&subst)).collect();
+                    if let Some(n) = self.narrow_blocker(arg, b.iface, &bargs, depth + 1) {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// [`Env::user`] for one particular impl.
+    fn user_with(&self, id: ImplId, ty: &Ty, args: &[Ty]) -> Result<Source, Ty> {
         let info = &self.impls[id.0 as usize];
         let params: Vec<ParamId> = info.generics.iter().map(|g| g.id).collect();
         let mut subst = Vec::new();
@@ -360,7 +508,6 @@ impl Env<'_> {
             | Ty::Bytes
             | Ty::Unit
             | Ty::Ptr(_)
-            | Ty::Vec(_)
             | Ty::Range(_) => Part::Ok,
             Ty::Tuple(items) => Part::Inside(items.clone()),
             Ty::List(t) | Ty::Set(t) | Ty::Option(t) => Part::Inside(vec![(**t).clone()]),
@@ -409,7 +556,6 @@ impl Env<'_> {
             Ty::Int(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Bytes | Ty::Unit | Ty::Ptr(_) => {
                 Part::Ok
             }
-            Ty::Vec(v) if v.int => Part::Ok,
             Ty::Tuple(items) => Part::Inside(items.clone()),
             Ty::Option(t) => Part::Inside(vec![(**t).clone()]),
             Ty::Adt(id, _) if self.is_class(*id) => Part::Ok,

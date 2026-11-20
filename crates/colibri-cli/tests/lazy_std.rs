@@ -20,10 +20,7 @@ fn run_registered(name: &str, source: &str) -> Vec<String> {
     let mut vm = colibri_lang::build_vm(builder, Vec::new());
     let code = colibri_lang::runcmd::run_in(&mut vm, &path, None);
     assert_eq!(code, std::process::ExitCode::SUCCESS);
-    // `std.vec` is installed eagerly by the runtime (`install_vec`), not by the lazy list.
-    let mut modules = vm.registered_std_modules();
-    modules.retain(|m| m != "std.vec");
-    modules
+    vm.registered_std_modules()
 }
 
 #[test]

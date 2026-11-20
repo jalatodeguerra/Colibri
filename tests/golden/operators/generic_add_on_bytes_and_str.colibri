@@ -1,0 +1,10 @@
+// `str + str` and `bytes + bytes` are built-in operators, so both satisfy `T: Add` the way the
+// numbers do.
+fn join[T: Add](a: T, b: T) -> T => a + b
+
+fn main() {
+    print(join("ab", "cd")) // expect: abcd
+    let b = join("ab".to_bytes(), "cd".to_bytes())
+    print(b.len()) // expect: 4
+    print(join(1, 2)) // expect: 3
+}

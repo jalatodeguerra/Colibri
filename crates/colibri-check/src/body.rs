@@ -260,9 +260,45 @@ impl<'c, 'a> FnCtx<'c, 'a> {
 
     /// The module-level items this body refers to, each once with the span of its first use.
     pub fn take_deps(&mut self) -> Vec<(Dep, Span)> {
+        self.add_bound_impl_deps();
         let deps = self.deps_since(0);
         self.deps.clear();
         deps
+    }
+
+    /// A generic call with a bound runs the impl that satisfies it (and the impls that impl's
+    /// own bounds pick), so what their methods read must be initialised before this body's
+    /// initialiser runs: the methods are used here too. Only interfaces with exactly one method
+    /// are followed, because the call reaches it; for a larger interface the methods a generic
+    /// function reaches are not recorded, and listing them all would report initialisation
+    /// cycles that cannot happen.
+    fn add_bound_impl_deps(&mut self) {
+        let pending = std::mem::take(&mut self.obligations);
+        for ob in &pending {
+            if !matches!(ob.origin, crate::obligations::Origin::Bound { .. }) {
+                continue;
+            }
+            let ty = self.infer.finalize(&ob.ty).0;
+            let args: Vec<Ty> = ob.args.iter().map(|a| self.infer.finalize(a).0).collect();
+            let mut methods = Vec::new();
+            let ck = &*self.ck;
+            let single = |i: crate::types::TypeId| {
+                crate::types::is_operator(i)
+                    || ck.ifaces.get(&i).is_some_and(|f| f.methods.len() == 1)
+            };
+            ck.env().single_method_impl_methods(
+                &ty,
+                ob.iface,
+                &args,
+                &single,
+                &mut Vec::new(),
+                &mut methods,
+            );
+            for f in methods {
+                self.add_dep(Dep::Fn(f), ob.span);
+            }
+        }
+        self.obligations = pending;
     }
 
     /// Records a use of a module-level item at `span`.
@@ -1332,6 +1368,20 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         let place = place?;
         let weak = self.is_weak_place(&place);
         let place_ty = place.ty.clone();
+        // `p += v` on a user type is `p = p + v` through its operator impl.
+        let user_iface = match op {
+            AssignOp::Add => Some(crate::types::ADD),
+            AssignOp::Sub => Some(crate::types::SUB),
+            AssignOp::Mul => Some(crate::types::MUL),
+            AssignOp::Div => Some(crate::types::DIV),
+            _ => None,
+        };
+        if let Some(iface) = user_iface {
+            let left = self.infer.shallow(&place_ty);
+            if self.left_uses_operator(&left, iface) {
+                return self.check_user_assign(span, op, place, target.span, iface, value);
+            }
+        }
         // A shift count may have any integer type; every other right-hand side has the type
         // of the place.
         let shift = matches!(op, AssignOp::Shl | AssignOp::Shr);
@@ -1355,27 +1405,8 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             AssignOp::Shr => Some((BitOp::Shr, ">>=")),
             _ => None,
         };
-        if let Ty::Vec(v) = self.infer.shallow(&place_ty)
-            && let Some(arith) = arith
-        {
-            let sym = match arith {
-                ArithOp::Add => "+=",
-                ArithOp::Sub => "-=",
-                ArithOp::Mul => "*=",
-                ArithOp::Div => "/=",
-                ArithOp::Rem => "%=",
-            };
-            let (bop, rhs) = self.check_vec_assign_op(v, arith, sym, rhs, span)?;
-            return Some(Stmt {
-                span,
-                kind: hir::StmtKind::Assign {
-                    place,
-                    op: Some(bop),
-                    rhs,
-                },
-            });
-        }
         let reason = Some((target.span, format!("this is `{}`", self.show(&place_ty))));
+        let left_unknown = matches!(self.infer.shallow(&place_ty), Ty::Infer(_));
         let stored = if weak && op == AssignOp::Assign {
             rhs = self.coerce_to_weak(rhs, &place_ty, reason.clone())?;
             true
@@ -1390,7 +1421,16 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 Ty::Str | Ty::Bytes => arith == ArithOp::Add,
                 t => self.is_numeric(&t),
             };
-            if !ok {
+            if !ok && left_unknown {
+                let sym = match op {
+                    AssignOp::Add => "+=",
+                    AssignOp::Sub => "-=",
+                    AssignOp::Mul => "*=",
+                    AssignOp::Div => "/=",
+                    _ => "%=",
+                };
+                self.report_unknown_operand(sym, target.span, span);
+            } else if !ok {
                 let sym = match op {
                     AssignOp::Add => "+=",
                     AssignOp::Sub => "-=",
@@ -1445,7 +1485,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             self.ck.report(diag.with_hint(hint));
             return;
         }
-        if crate::types::VecTy::from_name(name).is_some() {
+        if crate::checker::is_vec_name(name) {
             diag = diag.with_hint(format!(
                 "the vector types are in the `vec` module: write `import vec` and then `vec.{name}(..)`, or `import vec.{{{name}}}`"
             ));

@@ -1,0 +1,26 @@
+struct V { x: float }
+struct W { x: float }
+
+impl Add for V {
+    fn add(self, o: V) -> V => V { x: self.x + o.x }
+}
+impl Add[V, W] for V { // error: `Add` is implemented for `V` more than once
+    fn add(self, o: V) -> W => W { x: self.x + o.x }
+}
+impl Add[W, V] for V {
+    fn add(self, o: W) -> V => V { x: self.x + o.x }
+}
+impl Mul[W] for V {
+    fn mul(self, o: W) -> V => V { x: self.x * o.x }
+}
+impl[T] Mul[T, T] for V { // error: `Mul` is implemented for `V` more than once
+    fn mul(self, o: T) -> T => o
+}
+impl Neg for V {
+    fn neg(self) -> V => self
+}
+impl Neg for V { // error: `Neg` is implemented for `V` more than once
+    fn neg(self) -> V => self
+}
+
+fn main() {}

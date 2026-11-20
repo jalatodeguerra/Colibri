@@ -1,0 +1,75 @@
+// `T: Add` lets generic code use `+` and `+=`. Numbers and strings satisfy it, and so does any
+// type with an `impl Add`; the operator runs through the runtime type of the values.
+struct Money { cents: int }
+
+impl Add for Money {
+    fn add(self, o: Money) -> Money => Money { cents: self.cents + o.cents }
+}
+
+struct V { x: float }
+
+impl Add for V {
+    fn add(self, o: V) -> V => V { x: self.x + o.x }
+}
+impl Mul[float] for V {
+    fn mul(self, k: float) -> V => V { x: self.x * k }
+}
+
+fn sum[T: Add](xs: List[T], zero: T) -> T {
+    var acc = zero
+    for x in xs {
+        acc += x
+    }
+    return acc
+}
+
+fn pair_sum[T: Add](a: T, b: T) -> T => a + b
+
+fn scaled[T: Mul[float]](x: T, k: float) -> T => x * k
+
+fn scaled_sum[T: Add + Mul[float]](xs: List[T], zero: T, k: float) -> T {
+    var acc = zero
+    for x in xs {
+        acc = acc + x * k
+    }
+    return acc
+}
+
+struct Pair[T] { a: T, b: T }
+
+impl[T: Add] Add for Pair[T] {
+    fn add(self, o: Pair[T]) -> Pair[T] => Pair { a: self.a + o.a, b: self.b + o.b }
+}
+
+fn main() {
+    print(sum([1, 2, 3], 0))
+    print(sum([1.5, 2.5], 0.0))
+    let halves: List[f32] = [0.5, 0.25]
+    let zero: f32 = 0.0
+    print(sum(halves, zero))
+    print(sum(["a", "b", "c"], ""))
+    print(sum([Money { cents: 5 }, Money { cents: 7 }], Money { cents: 0 }).cents)
+    print(sum([V { x: 1.0 }, V { x: 2.0 }], V { x: 0.0 }).x)
+    let big: u64 = 10
+    print(pair_sum(big, big))
+    print(scaled(V { x: 2.0 }, 3.0).x)
+    print(scaled(2.0, 4.0))
+    print(scaled_sum([V { x: 1.0 }, V { x: 2.0 }], V { x: 0.0 }, 10.0).x)
+    let p = Pair { a: 1, b: 2 } + Pair { a: 10, b: 20 }
+    print("{p.a} {p.b}")
+    let q = sum([Pair { a: 1.5, b: 2.5 }, Pair { a: 1.0, b: 1.0 }], Pair { a: 0.0, b: 0.0 })
+    print("{q.a} {q.b}")
+}
+
+// expect: 6
+// expect: 4.0
+// expect: 0.75
+// expect: abc
+// expect: 12
+// expect: 3.0
+// expect: 20
+// expect: 6.0
+// expect: 8.0
+// expect: 30.0
+// expect: 11 22
+// expect: 2.5 3.5

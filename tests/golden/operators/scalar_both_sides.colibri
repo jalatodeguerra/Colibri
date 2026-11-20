@@ -1,0 +1,63 @@
+// A type can implement an operator once for each right-hand type, and a number can implement
+// it for a type of the program: `c * 2`, `2 * c` and `dt * c` all work.
+struct Color { r: float, g: float, b: float }
+
+impl Add for Color {
+    fn add(self, o: Color) -> Color => Color { r: self.r + o.r, g: self.g + o.g, b: self.b + o.b }
+}
+impl Mul for Color {
+    // component by component
+    fn mul(self, o: Color) -> Color => Color { r: self.r * o.r, g: self.g * o.g, b: self.b * o.b }
+}
+impl Mul[float] for Color {
+    fn mul(self, k: float) -> Color => Color { r: self.r * k, g: self.g * k, b: self.b * k }
+}
+impl Mul[Color, Color] for float {
+    fn mul(self, c: Color) -> Color => c * self
+}
+impl Div[float] for Color {
+    fn div(self, k: float) -> Color => Color { r: self.r / k, g: self.g / k, b: self.b / k }
+}
+
+fn show(c: Color) -> str => "({c.r}, {c.g}, {c.b})"
+
+fn main() {
+    let c = Color { r: 1.0, g: 2.0, b: 4.0 }
+    let half: float = 0.5
+    print(show(c * 2))          // an integer literal is a float here
+    print(show(2 * c))
+    print(show(c * 0.5))
+    print(show(0.5 * c))
+    print(show(c * half))
+    print(show(half * c))
+    print(show(c * c))
+    print(show(c / 4))
+    print(show(c + c * 2))      // `*` binds tighter than `+`
+    print(show(2 * c + c))
+
+    // an f32 on either side widens to float, the one implicit numeric conversion
+    let dt: f32 = 0.25
+    print(show(dt * c))
+    print(show(c * dt))
+    print(show(c / dt))
+
+    // the result of `float * Color` is a Color, so it chains
+    print(show(2 * 3 * c))
+    print(show(2 * (3 * c)))
+}
+
+// expect: (2.0, 4.0, 8.0)
+// expect: (2.0, 4.0, 8.0)
+// expect: (0.5, 1.0, 2.0)
+// expect: (0.5, 1.0, 2.0)
+// expect: (0.5, 1.0, 2.0)
+// expect: (0.5, 1.0, 2.0)
+// expect: (1.0, 4.0, 16.0)
+// expect: (0.25, 0.5, 1.0)
+// expect: (3.0, 6.0, 12.0)
+// expect: (3.0, 6.0, 12.0)
+// expect: (0.25, 0.5, 1.0)
+// expect: (0.25, 0.5, 1.0)
+// expect: (4.0, 8.0, 16.0)
+// expect: (6.0, 12.0, 24.0)
+// expect: (6.0, 12.0, 24.0)

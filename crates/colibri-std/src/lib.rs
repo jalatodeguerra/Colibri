@@ -1,12 +1,14 @@
 //! The Colibri standard library (DESIGN §13.1, ARCHITECTURE §13).
 //!
-//! Every module is a *named host module* implemented in Rust through the same machinery as
+//! Every module but `vec` is a *named host module* implemented in Rust through the same machinery as
 //! `vm.module(..)`: [`install`] registers `io`, `fs`, `path`, `os`, `math`, `rand`, `time`, `str`,
-//! `json`, `regex`, `http`, `args`, `process`, `net`, `datetime`, `vec`, `base64`, `hex`, `hash` and `csv` into a [`Vm`], under the
+//! `json`, `regex`, `http`, `args`, `process`, `net`, `datetime`, `base64`, `hex`, `hash` and `csv` into a [`Vm`], under the
 //! interface names `std.io`, `std.fs`, ... The checker sees
 //! them exactly as it sees an embedder's own host modules: from interface (`.cbi`) text generated
 //! from the registrations ([`interfaces`] gives it to a checker that has no `Vm`). A script
 //! writes `import math` (or `import std.math`, which always means the standard library).
+//! `vec` is written in Colibri itself (`src/colibri/vec.colibri`) and loaded like a module of
+//! the program, see [`sources`].
 //!
 //! Modules that reach outside the program are tagged with a capability (`fs` needs
 //! [`Cap::Fs`]; `http` and `net` need [`Cap::Net`]; the environment, `exit`, `sleep`, reading stdin and the wall clock need
@@ -63,8 +65,33 @@ pub use rand::Rng;
 /// The modules of the standard library built so far, in the order they are registered.
 pub const MODULES: &[&str] = &[
     "io", "fs", "path", "os", "math", "rand", "time", "str", "json", "regex", "http", "args",
-    "process", "net", "datetime", "vec", "base64", "hex", "hash", "csv", "toml",
+    "process", "net", "datetime", "base64", "hex", "hash", "csv", "toml",
 ];
+
+/// The text of the `vec` module (`import vec`): Colibri source, not a host module.
+const VEC: &str = include_str!("colibri/vec.colibri");
+
+/// The standard library modules that are written in Colibri and embedded in the toolchain, for
+/// the tools that check a program without a [`Vm`] (`colibri check`, the language server). A
+/// [`Vm`] gets them from [`install`]: `vec`.
+pub fn sources() -> Vec<colibri_runtime::SourceModule> {
+    vec![colibri_runtime::SourceModule {
+        name: "vec",
+        text: VEC,
+    }]
+}
+
+/// Gives scripts `import vec` in a [`Vm`] that does not use the rest of the standard library:
+/// registers the Colibri source of the `vec` module, and declares `math` (which it imports, for
+/// `from_angle` and `angle`). It must happen before a program is loaded. Do not call it after
+/// [`install`], which does the same.
+pub fn install_vec(vm: &mut Vm) -> Result<(), Error> {
+    for source in sources() {
+        vm.std_source_module(source.name, source.text);
+    }
+    vm.lazy_std_module("math", math::register);
+    Ok(())
+}
 
 /// Registers the standard library into `vm` with the default [`StdConfig`]. It must happen
 /// before a program is loaded; calling it twice is an error (a module cannot be registered
@@ -75,7 +102,16 @@ pub fn install(vm: &mut Vm) -> Result<(), Error> {
 
 /// Like [`install`], with a [`StdConfig`] that decides what the world looks like to scripts.
 pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
+    if vm.state_mut::<config::State>().is_some() {
+        return Err(Error::Registration {
+            name: "std".to_string(),
+            message: "the standard library is already installed".to_string(),
+        });
+    }
     vm.insert_state(config::State::new(config));
+    for source in sources() {
+        vm.std_source_module(source.name, source.text);
+    }
     // Only the names are declared now: a module is registered (its interface generated,
     // parsed and checked) when a program imports it or something asks for it by name.
     type Register = fn(&mut Vm) -> Result<(), Error>;
@@ -104,7 +140,6 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
     for (name, register) in lazy {
         vm.lazy_std_module(name, register);
     }
-    colibri_runtime::install_vec(vm)?;
     Ok(())
 }
 
@@ -156,4 +191,48 @@ pub(crate) fn needs(cap: Cap, r: Result<Registration<'_>, Error>) -> Result<(), 
 /// Registers a function with no capability.
 pub(crate) fn plain(r: Result<Registration<'_>, Error>) -> Result<(), Error> {
     r.map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The embedded `vec` is checked as an ordinary program here, because a std source module
+    /// has its warnings dropped: it must have none to drop.
+    #[test]
+    fn vec_colibri_checks_with_no_warnings() {
+        let config = colibri_runtime::CheckConfig {
+            interfaces: interfaces(),
+            ..colibri_runtime::CheckConfig::default()
+        };
+        let report = colibri_runtime::check_source_with("vec.colibri", VEC, &config);
+        assert!(
+            report.diagnostics.is_empty(),
+            "{}",
+            colibri_runtime::render_diagnostics(&report.diagnostics, &report.sources, false)
+        );
+    }
+
+    #[test]
+    fn vec_colibri_is_formatted() {
+        let formatted = colibri_syntax::fmt::format_source("vec.colibri", VEC).unwrap();
+        assert_eq!(formatted, VEC, "run `colibri fmt` on vec.colibri");
+    }
+
+    #[test]
+    fn every_source_module_is_named_without_the_prefix_and_imports_resolve() {
+        for source in sources() {
+            assert!(!source.name.contains('.'), "{}", source.name);
+            assert!(!MODULES.contains(&source.name), "{}", source.name);
+            // An import inside the library names the standard library only, so no module of
+            // the embedder or of the program's folder can take part.
+            for line in source.text.lines().filter(|l| l.starts_with("import ")) {
+                assert!(
+                    line.starts_with("import std."),
+                    "{}: `{line}` must name `std.<module>`",
+                    source.name
+                );
+            }
+        }
+    }
 }

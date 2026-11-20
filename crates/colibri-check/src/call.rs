@@ -529,7 +529,6 @@ impl FnCtx<'_, '_> {
                 | Ty::Fn(..)
                 | Ty::Range(_)
                 | Ty::Ptr(_)
-                | Ty::Vec(_)
         ) {
             let shown = self.show(&ty);
             self.ck.report(Diagnostic::error(
@@ -711,6 +710,10 @@ impl FnCtx<'_, '_> {
                         param: g.name.clone(),
                         func: func.to_string(),
                         bound_span: b.span,
+                        // The bound's right-hand type is a type parameter of the function
+                        // (`T: Mul[U, T]`): generic code finds the impl by the run-time type
+                        // of the right value, which for a narrow integer carries no width.
+                        dyn_rhs: b.args.first().is_some_and(|a| matches!(a, Ty::Param(..))),
                     },
                 });
             }
@@ -929,6 +932,30 @@ impl FnCtx<'_, '_> {
             let arg = &args[source];
             let param = &params[i];
             let expr = self.check_expr(&arg.value, Some(&param.ty));
+            if let Some(vec_name) = fname.strip_prefix("std.vec.")
+                && crate::checker::is_vec_name(vec_name)
+                && let Ty::Adt(id, _) = self.infer.shallow(&expr.ty)
+                && crate::checker::is_vec_name(self.ck.types[id.0 as usize].display_name().as_ref())
+                && matches!(param.ty, Ty::Float | Ty::Int(_))
+            {
+                let given = self.ck.types[id.0 as usize].display_name().to_string();
+                let method = if given.starts_with('i') {
+                    "to_vec"
+                } else {
+                    "to_ivec"
+                };
+                self.ck.report(
+                    Diagnostic::error(
+                        format!("`{vec_name}` takes its components, not a `{given}`"),
+                        arg.value.span,
+                    )
+                    .with_hint(format!(
+                        "there are no conversion constructors: write `v.{method}()` to convert a `{given}`"
+                    )),
+                );
+                ok = false;
+                continue;
+            }
             let reason = Some((
                 param.span,
                 format!(
@@ -975,6 +1002,20 @@ impl FnCtx<'_, '_> {
             );
             for p in &missing {
                 diag = diag.with_label(p.span, format!("parameter `{}` is declared here", p.name));
+            }
+            if let Some(vec_name) = fname.strip_prefix("std.vec.")
+                && crate::checker::is_vec_name(vec_name)
+                && missing.len() + 1 == params.len()
+            {
+                let n: usize = vec_name
+                    .chars()
+                    .last()
+                    .and_then(|c| c.to_digit(10))
+                    .unwrap_or(2) as usize;
+                let list = vec!["7"; n].join(", ");
+                diag = diag.with_hint(format!(
+                    "there is no splat constructor: write every component, for example `{vec_name}({list})`"
+                ));
             }
             self.ck.report(diag);
             ok = false;

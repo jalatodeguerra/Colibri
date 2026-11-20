@@ -1,0 +1,17 @@
+import json
+import vec
+
+// `vec` is an ordinary library, so its structs encode like any struct of the program
+fn show(r: Result[str]) {
+    match r {
+        ok(text) => print(text)
+        err(e) => print(e.message())
+    }
+}
+
+fn main() {
+    show(json.encode(vec.vec2(1, 2)))
+    show(json.encode(vec.ivec3(1, -2, 3)))
+}
+// expect: {"x":1.0,"y":2.0}
+// expect: {"x":1,"y":-2,"z":3}

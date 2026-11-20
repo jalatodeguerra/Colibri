@@ -42,6 +42,8 @@ pub(crate) enum Via {
     },
     /// `eq`, `cmp` or `hash` derived from the structure of the receiver.
     Derived { iface: TypeId },
+    /// `a.mul(b)` on a type with several `Mul` impls: chosen by the argument, as `a * b` is.
+    Operator { iface: TypeId },
 }
 
 impl FnCtx<'_, '_> {
@@ -126,11 +128,6 @@ impl FnCtx<'_, '_> {
         // 2. a method of a number type, or of another built-in type
         if recv_ty.is_number() && crate::numeric::num_method_exists(&recv_ty, &name.name) {
             return self.check_num_method(recv, &recv_ty, name, args, span);
-        }
-        if let Ty::Vec(v) = &recv_ty
-            && crate::vector::vec_method_exists(*v, &name.name)
-        {
-            return self.check_vec_method(recv, *v, name, args, span);
         }
         if name.name != "clone" && builtin_method_exists(&recv_ty, &name.name) {
             return match self.check_builtin_method(recv, name, args, span) {
@@ -221,6 +218,12 @@ impl FnCtx<'_, '_> {
                     if out.iter().any(|(i, _)| *i == b.iface) {
                         continue;
                     }
+                    if crate::types::is_operator(b.iface) && index_of(self, b.iface).is_some() {
+                        // `a.add(b)` means what `a + b` means: the impl is chosen by the
+                        // right-hand type too, and a number runs the built-in operation.
+                        out.push((b.iface, Via::Operator { iface: b.iface }));
+                        continue;
+                    }
                     if let Some(index) = index_of(self, b.iface) {
                         out.push((
                             b.iface,
@@ -265,6 +268,17 @@ impl FnCtx<'_, '_> {
                     let Some(index) = index_of(self, iface) else {
                         continue;
                     };
+                    if let Some(key) = key_of(ty)
+                        && crate::types::is_binary_operator(iface)
+                        && self
+                            .ck
+                            .op_impls
+                            .get(&(key, iface))
+                            .is_some_and(|list| list.len() > 1)
+                    {
+                        out.push((iface, Via::Operator { iface }));
+                        continue;
+                    }
                     if let Some(key) = key_of(ty)
                         && let Some(&imp) = self.ck.impl_by_key.get(&(key, iface))
                     {
@@ -348,6 +362,7 @@ impl FnCtx<'_, '_> {
                     span,
                 )
             }
+            Via::Operator { iface } => self.call_operator_method(iface, recv, name, args, span),
             Via::Bound {
                 iface,
                 index,
@@ -613,9 +628,6 @@ impl FnCtx<'_, '_> {
         if recv_ty.is_number() {
             // Reports the missing method together with what the type does have.
             return self.check_num_method(recv, recv_ty, name, args, span);
-        }
-        if let Ty::Vec(v) = recv_ty {
-            return self.check_vec_method(recv, *v, name, args, span);
         }
         let recv = match self.check_builtin_method(recv, name, args, span) {
             Ok(call) => return call,

@@ -1,0 +1,27 @@
+// The rule for the types of a library module does not depend on where the module is written:
+// `datetime.DateTime` comes from the host, `vec.vec2` from Colibri source.
+import datetime
+
+struct Money { c: int }
+
+impl Show for datetime.DateTime { // error: cannot implement the built-in `Show` for `datetime.DateTime`, which belongs to the standard library
+    fn show(self) -> str => "dt"
+}
+impl Add for datetime.DateTime { // error: cannot implement the built-in `Add` for `datetime.DateTime`, which belongs to the standard library
+    fn add(self, o: datetime.DateTime) -> datetime.DateTime => self
+}
+impl Mul[datetime.DateTime, Money] for int { // error: cannot implement the built-in `Mul` for the built-in type `int`
+    fn mul(self, d: datetime.DateTime) -> Money => Money { c: 1 }
+}
+// a program interface, and an operator with a right-hand type of ours, are fine
+interface Label {
+    fn label(self) -> str
+}
+impl Label for datetime.DateTime {
+    fn label(self) -> str => "a date"
+}
+impl Mul[Money, Money] for datetime.DateTime {
+    fn mul(self, m: Money) -> Money => m
+}
+
+fn main() {}

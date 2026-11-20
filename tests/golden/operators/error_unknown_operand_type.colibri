@@ -1,0 +1,36 @@
+// An operator on a type of the program is chosen when it is checked. An operand whose type is
+// only fixed later in the function cannot be chosen from: say so, instead of blaming the type.
+struct Money { c: int }
+impl Add for Money {
+    fn add(self, o: Money) -> Money => Money { c: self.c + o.c }
+}
+impl Neg for Money {
+    fn neg(self) -> Money => Money { c: -self.c }
+}
+struct V { x: float }
+impl Mul for V {
+    fn mul(self, o: V) -> V => V { x: self.x * o.x }
+}
+impl Mul[float] for V {
+    fn mul(self, k: float) -> V => V { x: self.x * k }
+}
+
+fn main() {
+    let m = Money { c: 1 }
+    var xs = []
+    var ys = []
+    var zs = []
+    var ws = []
+    if false {
+        let t = xs[0] + m // error: the type of the operand of `+` is not known yet
+        let u = -ys[0] // error: the type of the operand of `-` is not known yet
+        let v = V { x: 1.0 } * ws[0] // error: cannot tell which `*` this means
+        print(t.c)
+        print(u.c)
+        print(v.x)
+    }
+    xs.push(m)
+    ys.push(m)
+    ws.push(2.0)
+    zs.push(0)
+}

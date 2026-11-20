@@ -1,0 +1,11 @@
+fn sum[T: Add](a: T, b: T) -> T => a + b
+
+fn main() {
+    let a: i32 = 1
+    let b: u8 = 2
+    print(sum(a, a)) // error: `i32` cannot be used for `T: Add` yet
+    print(sum(b, b)) // error: `u8` cannot be used for `T: Add` yet
+    print(sum(1, 2))
+    let big: u64 = 3
+    print(sum(big, big))
+}

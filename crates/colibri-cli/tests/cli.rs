@@ -1055,3 +1055,42 @@ fn feature_names_on_the_command_line_follow_the_manifest_rules() {
     let out = colibri(&["run", s, "--feature", "fast_2"]);
     assert_eq!(out.status.code(), Some(0));
 }
+
+#[test]
+fn import_vec_checks_runs_and_leaves_the_library_alone() {
+    let source =
+        "import vec\n\nfn main() {\n    print(vec.vec3(1, 2, 3).cross(vec.vec3(0, 1, 0)))\n}\n";
+    let path = temp_file("uses_vec.colibri", source);
+    let out = colibri(&["check", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = colibri(&["run", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "vec3(-3.0, 0.0, 1.0)\n"
+    );
+    // The library is not a file of the program: the formatter has nothing of it to touch.
+    let out = colibri(&["fmt", "--check", path.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_panic_inside_vec_names_the_library_in_the_trace() {
+    let source = "import vec\n\nfn main() {\n    print(vec.ivec2(1, 1) / vec.ivec2(1, 0))\n}\n";
+    let path = temp_file("vec_panics.colibri", source);
+    let out = colibri(&["run", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(101));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("division by zero"), "{stderr}");
+    assert!(stderr.contains("<std>/vec.colibri"), "{stderr}");
+}

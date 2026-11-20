@@ -1,0 +1,29 @@
+// The operator methods through a bound run the built-in operation on a number or a string,
+// exactly as `a + b` does.
+fn plus[T: Add](a: T, b: T) -> T => a.add(b)
+fn minus[T: Sub](a: T, b: T) -> T => a.sub(b)
+fn times[T: Mul](a: T, b: T) -> T => a.mul(b)
+fn over[T: Div](a: T, b: T) -> T => a.div(b)
+fn neg[T: Neg](a: T) -> T => a.neg()
+
+fn main() {
+    print(plus(2, 2))
+    print(plus("ab", "cd"))
+    print(plus(1.5, 2.0))
+    print(minus(10, 4))
+    print(times(3, 4))
+    print(over(9, 2))
+    print(over(9.0, 2.0))
+    print(neg(2.5))
+    print(neg(7))
+    print(over(1, 0)) // panic: division by zero
+}
+// expect: 4
+// expect: abcd
+// expect: 3.5
+// expect: 6
+// expect: 12
+// expect: 4
+// expect: 4.5
+// expect: -2.5
+// expect: -7

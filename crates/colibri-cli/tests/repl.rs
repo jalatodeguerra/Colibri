@@ -113,6 +113,18 @@ fn std_modules_import() {
 }
 
 #[test]
+fn import_vec_loads_the_library_written_in_colibri() {
+    let (out, err) = repl(
+        "import vec\nlet a = vec.vec2(3, 4)\na.len()\na + vec.vec2(1, 1)\n2 * a\nimport vec.{ivec2}\nivec2(1, 2).to_vec()\n",
+    );
+    assert_eq!(
+        out,
+        "= 5.0 : f32\n= vec2(4.0, 5.0) : vec2\n= vec2(6.0, 8.0) : vec2\n= vec2(1.0, 2.0) : vec2\n"
+    );
+    assert_eq!(err, "");
+}
+
+#[test]
 fn types_declare_and_persist() {
     let input = "struct P { a: int }\nlet p = P { a: 7 }\np.a\nenum Dir { Up, Down }\nDir.Up\nstruct P { b: int }\n";
     let (out, err) = repl(input);

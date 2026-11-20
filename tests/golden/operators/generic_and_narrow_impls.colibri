@@ -1,0 +1,51 @@
+// An operator impl may have type parameters, and may be written for the narrow integer types
+// (it is chosen by the checker, so the missing width at runtime does not matter).
+struct Boxed[T] { v: T }
+
+impl[T] Add for Boxed[T] {
+    fn add(self, o: Boxed[T]) -> Boxed[T] => o
+}
+
+struct Pair[A, B] { a: A, b: B }
+
+impl[A, B] Mul[int, Pair[A, B]] for Pair[A, B] {
+    fn mul(self, k: int) -> Pair[A, B] => self
+}
+
+struct Level { n: int }
+
+impl Mul[Level, Level] for i32 {
+    fn mul(self, l: Level) -> Level => Level { n: int(self) * l.n }
+}
+impl Mul[i32] for Level {
+    fn mul(self, k: i32) -> Level => Level { n: self.n * int(k) }
+}
+impl Mul[Level, Level] for u8 {
+    fn mul(self, l: Level) -> Level => Level { n: int(self) + l.n }
+}
+
+fn main() {
+    let a = Boxed { v: 1 } + Boxed { v: 2 }
+    print(a.v)
+    let s = Boxed { v: "x" } + Boxed { v: "y" }
+    print(s.v)
+    let p = Pair { a: 1, b: "b" } * 3
+    print("{p.a} {p.b}")
+
+    let w: i32 = 7
+    let b: u8 = 7
+    let l = Level { n: 6 }
+    print((w * l).n)
+    print((b * l).n)
+    print((l * w).n)
+}
+
+// expect: 2
+// expect: y
+// expect: 1 b
+// expect: 42
+// expect: 13
+// expect: 42
+
+// A literal fits `i32` and `u8` alike, so `3 * l` would be ambiguous: see
+// error_ambiguous_literal.

@@ -24,7 +24,7 @@ use crate::package::{ModuleMeta, PackageNode};
 use crate::prelude;
 use crate::suggest;
 use crate::traits::{BoundRef, GenericParamInfo, ImplInfo};
-use crate::types::{ERROR_TYPE, FnSig, ParamId, RESULT_TYPE, Ty, TypeId, VecTy};
+use crate::types::{ERROR_TYPE, FnSig, ParamId, RESULT_TYPE, Ty, TypeId};
 
 /// What a module-level name refers to.
 #[derive(Clone, Copy, Debug)]
@@ -145,6 +145,16 @@ pub struct Checked {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// The names of the types of the standard `vec` module, for the hints that lead a program that
+/// used them as built-ins to `import vec`.
+pub(crate) fn is_vec_name(name: &str) -> bool {
+    matches!(name, "vec2" | "vec3" | "vec4" | "ivec2" | "ivec3" | "ivec4")
+}
+
+/// The implementations of the operator interfaces: for a type and an interface, one per
+/// right-hand type (`None` when it is a type parameter).
+pub(crate) type OpImpls = HashMap<(TypeKey, TypeId), Vec<(Option<TypeKey>, ImplId)>>;
+
 pub(crate) struct Checker<'a> {
     /// The entry file: where problems with no better place are reported.
     pub file: &'a ast::File,
@@ -205,9 +215,6 @@ pub(crate) struct Checker<'a> {
     pub type_extra: Vec<TypeExtra<'a>>,
     pub type_ids: HashMap<String, TypeId>,
     pub aliases: HashMap<String, AliasId>,
-    /// The vector types in scope (`vec.vec2`, or `vec2` after `import vec.{vec2}`), which are
-    /// built in but only nameable after `import vec`.
-    pub vec_types: HashMap<String, VecTy>,
     /// Every type alias, indexed by [`AliasId`].
     pub alias_infos: Vec<AliasInfo<'a>>,
     /// How many types have been checked for infinite size.
@@ -231,6 +238,12 @@ pub(crate) struct Checker<'a> {
     pub type_scope: Vec<(String, Ty)>,
     /// What `Self` means where the type being resolved is written.
     pub self_ty: Option<Ty>,
+    /// The type that stands for `Self` in the default type arguments of the interface being
+    /// named: the bounded parameter in `T: Add`, the implementing type in `impl Add for V`.
+    /// Taken by the next interface named, so it never reaches a nested one.
+    pub default_self: Option<Ty>,
+    /// The files of the standard modules written in Colibri: no warning points into them.
+    pub std_files: HashSet<colibri_syntax::FileId>,
     /// The interfaces, by type id.
     pub ifaces: HashMap<TypeId, IfaceInfo<'a>>,
     /// Explicit `impl Interface for Type` blocks and the derived implementations that were
@@ -238,6 +251,11 @@ pub(crate) struct Checker<'a> {
     pub impls: Vec<ImplInfo>,
     /// The explicit implementations, by implementing type head and interface.
     pub impl_by_key: HashMap<(TypeKey, TypeId), ImplId>,
+    /// The explicit implementations of `Add`, `Sub`, `Mul` and `Div`, by implementing type head
+    /// and interface: one per right-hand type head (`None` when the right-hand type is a type
+    /// parameter, which then stands for any). `impl_by_key` holds the first of them, for the
+    /// queries that do not choose by right-hand type.
+    pub op_impls: OpImpls,
     /// The derived implementations made so far (built-in interfaces only).
     pub derived_impls: HashMap<(TypeKey, TypeId), ImplId>,
     /// The entry file's top-level statements and `let`/`var` bindings, in source order.
@@ -395,19 +413,7 @@ impl<'a> Checker<'a> {
             ffi: false,
         }];
         for name in host.named_modules() {
-            let mut exports = Exports::default();
-            if name == "std.vec" {
-                // The vector types are built into the checker; this module is what names them.
-                for v in VecTy::ALL {
-                    exports.types.insert(
-                        v.name().to_string(),
-                        crate::modules::Export {
-                            target: crate::modules::TypeEntity::Vec(v),
-                            public: true,
-                        },
-                    );
-                }
-            }
+            let exports = Exports::default();
             mods.push(ModInfo {
                 files: host.module_files(&name),
                 name,
@@ -478,7 +484,6 @@ impl<'a> Checker<'a> {
             type_extra: vec![TypeExtra::default(), TypeExtra::default()],
             type_ids: HashMap::new(),
             aliases: HashMap::new(),
-            vec_types: HashMap::new(),
             methods: HashMap::new(),
             collected: false,
             pending: Vec::new(),
@@ -487,9 +492,16 @@ impl<'a> Checker<'a> {
             param_bounds: HashMap::new(),
             type_scope: Vec::new(),
             self_ty: None,
+            default_self: None,
+            std_files: inputs
+                .iter()
+                .filter(|i| i.meta.std)
+                .map(|i| i.file.span.file)
+                .collect(),
             ifaces: HashMap::new(),
             impls: Vec::new(),
             impl_by_key: HashMap::new(),
+            op_impls: HashMap::new(),
             derived_impls: HashMap::new(),
             script: Vec::new(),
             module_scripts: Vec::new(),
@@ -605,6 +617,10 @@ impl<'a> Checker<'a> {
             diag.span = Span::new(self.file.span.file, 0, 0);
             diag.message = format!("in the host interface: {}", diag.message);
         }
+        // A standard module is the toolchain's own: its warnings are not the program's.
+        if !diag.is_error() && self.std_files.contains(&diag.span.file) {
+            return;
+        }
         if self.muted == 0 {
             self.diags.push(diag);
         }
@@ -665,6 +681,7 @@ impl<'a> Checker<'a> {
         let base_items: Vec<&'a ast::Item> =
             prelude_items.iter().chain(&host_items).copied().collect();
         self.declare_types(&base_items);
+        self.define_type_defaults(&base_items);
         self.define_types(&base_items);
         for item in &prelude_items {
             self.collect_item(item);
@@ -696,6 +713,10 @@ impl<'a> Checker<'a> {
         for &m in &others {
             self.bind_host_uses(m);
             self.bind_imports_types(m);
+        }
+        for (k, &m) in others.iter().enumerate() {
+            self.enter_module(m);
+            self.define_type_defaults(&module_items[k]);
         }
         for (k, &m) in others.iter().enumerate() {
             self.enter_module(m);
@@ -1178,23 +1199,6 @@ impl<'a> Checker<'a> {
             self.note_deprecated_use(DeprKey::Alias(alias), span);
             return self.alias_instance(alias, args, span);
         }
-        // The text of a host interface may always say `vec.vec2` (it has no imports).
-        let vec = self.vec_types.get(name).copied().or_else(|| {
-            (span.file == HOST_FILE)
-                .then(|| name.strip_prefix("vec."))
-                .flatten()
-                .and_then(VecTy::from_name)
-        });
-        if let Some(v) = vec {
-            if !args.is_empty() {
-                self.report(Diagnostic::error(
-                    format!("`{name}` takes no type arguments"),
-                    span,
-                ));
-                return Ty::Error;
-            }
-            return Ty::Vec(v);
-        }
         if !args.is_empty() && !self.poisoned_types.contains(name) {
             let known = Ty::numeric_by_name(name).is_some()
                 || matches!(name, "int" | "bool" | "str" | "char" | "Bytes");
@@ -1249,22 +1253,66 @@ impl<'a> Checker<'a> {
 
     /// `Name[args]` for a user-defined struct, enum, class or interface.
     fn instantiate_type(&mut self, id: TypeId, args: &[ast::TypeExpr], span: Span) -> Ty {
+        let default_self = self.default_self.take();
         let def = &self.types[id.0 as usize];
         let (name, wanted, is_iface) = (
             def.display_name().into_owned(),
             def.params.len(),
             def.is_interface(),
         );
-        if args.len() != wanted {
-            self.report_type_arity(&name, wanted, args.len(), span);
+        // The least a use must write: the trailing parameters of an interface may have defaults.
+        let required = if is_iface {
+            self.type_extra[id.0 as usize]
+                .generics
+                .iter()
+                .rposition(|g| g.default.is_none())
+                .map_or(0, |last| last + 1)
+        } else {
+            wanted
+        };
+        if args.len() > wanted || args.len() < required {
+            if required < wanted {
+                self.report(
+                    Diagnostic::error(
+                        format!(
+                            "`{name}` takes {required} to {wanted} type arguments, found {}",
+                            args.len()
+                        ),
+                        span,
+                    )
+                    .with_hint(format!(
+                        "the last {} can be left out, and then take their defaults",
+                        wanted - required
+                    )),
+                );
+            } else {
+                self.report_type_arity(&name, wanted, args.len(), span);
+            }
             for a in args {
                 self.resolve_type(a);
             }
             return Ty::Error;
         }
-        let tys: Vec<Ty> = args.iter().map(|a| self.resolve_type(a)).collect();
+        let mut tys: Vec<Ty> = args.iter().map(|a| self.resolve_type(a)).collect();
         if tys.iter().any(Ty::is_error) {
             return Ty::Error;
+        }
+        if tys.len() < wanted {
+            match self.fill_defaults(id, &tys, default_self) {
+                Some(full) => tys = full,
+                None => {
+                    self.report(
+                        Diagnostic::error(
+                            format!("`{name}` cannot be used as a type without its type arguments"),
+                            span,
+                        )
+                        .with_hint(format!(
+                            "its defaults mention `Self`, which only a bound (`T: {name}`) or an `impl {name} for Type` header can fill in; elsewhere write every argument"
+                        )),
+                    );
+                    return Ty::Error;
+                }
+            }
         }
         let spans: Vec<Span> = args.iter().map(|a| a.span).collect();
         self.require_type_bounds(id, &tys, &spans, span);
@@ -1273,6 +1321,32 @@ impl<'a> Checker<'a> {
         } else {
             Ty::Adt(id, tys)
         }
+    }
+
+    /// The type arguments of interface `id` once the trailing ones that `given` leaves out take
+    /// their defaults, or `None` when a default needs a `Self` that nothing here gives.
+    fn fill_defaults(&self, id: TypeId, given: &[Ty], default_self: Option<Ty>) -> Option<Vec<Ty>> {
+        let generics = &self.type_extra[id.0 as usize].generics;
+        let self_id = self.ifaces.get(&id)?.self_param.id;
+        let mut map: Vec<(ParamId, Ty)> = generics
+            .iter()
+            .zip(given)
+            .map(|(g, a)| (g.id, a.clone()))
+            .collect();
+        if let Some(s) = default_self {
+            map.push((self_id, s));
+        }
+        let mut full = given.to_vec();
+        for g in &generics[given.len()..] {
+            let default = g.default.as_ref()?;
+            let ty = default.subst(&map);
+            if crate::ifaces::mentions(&ty, self_id) {
+                return None;
+            }
+            map.push((g.id, ty.clone()));
+            full.push(ty);
+        }
+        Some(full)
     }
 
     pub(crate) fn report_type_arity(
@@ -1375,11 +1449,10 @@ impl<'a> Checker<'a> {
             self.report(diag.with_hint(hint));
             return;
         }
-        if VecTy::from_name(name).is_some() {
-            diag = diag.with_hint(format!(
+        if is_vec_name(name) {
+            self.report(diag.with_hint(format!(
                 "the vector types are in the `vec` module: write `import vec` and then `vec.{name}`, or `import vec.{{{name}}}`"
-            ));
-            self.report(diag);
+            )));
             return;
         }
         let known = ["int", "float", "bool", "str", "char", "i64", "f64"];
@@ -2018,6 +2091,9 @@ impl<'a> Checker<'a> {
                 iface_args: i.iface_args.clone(),
                 target: i.target.clone(),
                 key: i.key,
+                rhs: crate::types::is_binary_operator(i.iface)
+                    .then(|| i.iface_args.first().and_then(crate::traits::key_of))
+                    .flatten(),
                 methods: i
                     .methods
                     .iter()

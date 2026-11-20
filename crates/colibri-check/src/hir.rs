@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use colibri_syntax::Span;
 
-use crate::types::{FnSig, IntTy, ParamId, Ty, TypeId, VecTy};
+use crate::types::{FnSig, IntTy, ParamId, Ty, TypeId};
 
 /// A function in [`Program::fns`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -104,9 +104,6 @@ pub enum CTy {
     },
     /// A `@repr(C)` struct, by value.
     Struct(TypeId),
-    /// A vector type: `n` consecutive `f32` or `i32` (12 bytes for a `vec3`, alignment 4), by
-    /// value, as in glam's default layout (DESIGN §15.1).
-    Vec(VecTy),
 }
 
 /// The layout of a `@repr(C)` struct on the platform's C ABI: sequential fields, each at the
@@ -178,8 +175,6 @@ pub enum TypeKey {
     Set,
     Range,
     Ptr,
-    /// A vector type (`vec2`, `ivec3`, ..).
-    Vec(VecTy),
     /// A struct, enum or class (`Option` is the enum at [`crate::types::OPTION_TYPE`]).
     Adt(TypeId),
 }
@@ -193,6 +188,10 @@ pub struct ImplDef {
     pub target: Ty,
     /// The head of `target`, which the engine dispatches on.
     pub key: TypeKey,
+    /// For `Add`, `Sub`, `Mul` and `Div`: the head of the right-hand type `R`, which an operator
+    /// impl is chosen by together with `key` (`None` when `R` is a type parameter, and for every
+    /// other interface).
+    pub rhs: Option<TypeKey>,
     /// One entry per interface method, in the interface's declaration order: the function
     /// that runs (the impl's own, or the interface's default). `None` for the methods of a
     /// derived built-in implementation, which the engine provides itself.
@@ -516,9 +515,6 @@ pub enum Anchor {
 pub enum ValueProj {
     Field(FieldIdx),
     TupleIdx(u32),
-    /// Component `i` of a vector (`v.x` is `Comp(0)`). Always the last step of a path: a
-    /// component is a number, not a place that can be walked into.
-    Comp(u8),
 }
 
 #[derive(Debug)]
@@ -665,9 +661,6 @@ pub enum Coercion {
     ResultIntoError(ErrorConv),
     /// An `f32` becomes a `float` (DESIGN §5.1); lossless.
     F32ToFloat,
-    /// A `float` becomes an `f32` (rounded to nearest): the scalar of vector arithmetic and the
-    /// components of a vector constructor accept a `float` (DESIGN §5.1, §15.1).
-    FloatToF32,
 }
 
 /// How a value is turned into an `Error`: the engine records the implementation with the error
@@ -901,35 +894,6 @@ pub enum Intrinsic {
     NewCoGroup,
     /// `Signal()`
     NewSignal,
-    /// `vec2(x, y)`, `ivec3(1)`, `vec2(iv)`: builds a vector of this type from its components
-    /// (already `f32` or `i32`), one scalar (every component), or one vector of the other kind
-    /// with the same length (converted component-wise).
-    VecNew(VecTy),
-    /// `v.xz`, `v.zyx`: a vector of `len` components, `lanes[i]` being the source component of
-    /// result component `i`. `from` is the type of the argument.
-    VecSwizzle {
-        from: VecTy,
-        lanes: [u8; 4],
-        len: u8,
-    },
-    /// A method of a vector type; the receiver is the first argument and `VecTy` its type.
-    VecMethod(VecMethod, VecTy),
-}
-
-/// The methods of the vector types (DESIGN §15.1, ARCHITECTURE "Vector types as built").
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VecMethod {
-    Dot,
-    /// `vec3` and `ivec3` only.
-    Cross,
-    Len,
-    LenSq,
-    Normalize,
-    Lerp,
-    Distance,
-    Abs,
-    Min,
-    Max,
 }
 
 /// The methods of the numeric types (DESIGN §5.1, Q6).
@@ -1259,29 +1223,30 @@ pub enum BinOp {
     /// `str + str`
     Concat,
     Cmp(CmpOp, Operand),
-    /// Component-wise arithmetic on vectors of this type (`+ - * /`); the shape says where the
-    /// scalar is, if there is one.
-    Vec(ArithOp, VecTy, VecShape),
+    /// `a + b` (and `-`, `*`, `/`) on a type that implements the operator interface.
+    User(UserOp),
     /// `a is b`: whether two references are the same object (DESIGN §5.3).
     Is,
 }
 
-/// The operands of vector arithmetic.
+/// An operator that runs a user-written implementation of `Add`, `Sub`, `Mul`, `Div` or `Neg`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VecShape {
-    /// `a + b`: two vectors of the type.
-    VecVec,
-    /// `v * s`, `v / s`: the right operand is a scalar (`f32` or `i32`).
-    VecScalar,
-    /// `s * v`: the left operand is a scalar.
-    ScalarVec,
+pub enum UserOp {
+    /// The checker knew both operand types and chose the impl: this is its method, called
+    /// directly with the operands.
+    Fn(FnId),
+    /// The left operand is a type parameter bounded by the interface (`T: Add`): the impl is
+    /// found when the operator runs, from the runtime types of the operands. `rhs` is the head
+    /// of the bound's right-hand type when it is known statically (`T: Mul[float]`), and `None`
+    /// when it is a type parameter (`T: Add`), which the runtime type of the right operand tells.
+    Bound { iface: TypeId, rhs: Option<TypeKey> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnOp {
     Neg(Num),
-    /// `-v` on a vector of this type.
-    VecNeg(VecTy),
+    /// `-a` on a type that implements `Neg`.
+    User(UserOp),
     Not,
     /// `~x` on an integer of this type.
     BitNot(IntTy),

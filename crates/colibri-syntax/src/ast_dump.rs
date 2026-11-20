@@ -143,12 +143,15 @@ fn generics(params: &[GenericParam]) -> Option<String> {
     let parts: Vec<String> = params
         .iter()
         .map(|p| {
-            if p.bounds.is_empty() {
-                p.name.name.clone()
-            } else {
+            let mut s = p.name.name.clone();
+            if !p.bounds.is_empty() {
                 let bounds: Vec<String> = p.bounds.iter().map(ty_str).collect();
-                format!("{}: {}", p.name.name, bounds.join(" + "))
+                s = format!("{s}: {}", bounds.join(" + "));
             }
+            if let Some(d) = &p.default {
+                s = format!("{s} = {}", ty_str(d));
+            }
+            s
         })
         .collect();
     Some(format!("[{}]", parts.join(", ")))

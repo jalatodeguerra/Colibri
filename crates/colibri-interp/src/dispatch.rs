@@ -10,9 +10,12 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use colibri_check::hir::{CmpOp, Coercion, FnId, ImplDef, Place, Program, TypeKey};
+use colibri_check::hir::{
+    ArithOp, BinOp, CmpOp, Coercion, FnId, ImplDef, Num, Place, Program, TypeKey, UnOp,
+};
 use colibri_check::types::{
-    CLONE, DROP, EQ, HASH, INTO_ERROR, ITER, ITERABLE, IntTy, ORD, SHOW, Ty, TypeId,
+    ADD, CLONE, DIV, DROP, EQ, HASH, INTO_ERROR, ITER, ITERABLE, IntTy, MUL, NEG, ORD, SHOW, SUB,
+    Ty, TypeId, is_operator,
 };
 use colibri_syntax::{FileId, Span};
 
@@ -34,6 +37,9 @@ pub(crate) const MAX_HOOK_DEPTH: u32 = 64;
 pub(crate) struct Tables {
     pub impls: Vec<ImplDef>,
     index: HashMap<(TypeKey, TypeId), u32>,
+    /// The impls of `Add`, `Sub`, `Mul`, `Div` and `Neg`, by left type, interface and the head
+    /// of the right-hand type (`None` when it is a type parameter, or for `Neg`).
+    operators: HashMap<(TypeKey, TypeId, Option<TypeKey>), u32>,
     eq: HashMap<TypeId, FnId>,
     ord: HashMap<TypeId, FnId>,
     show: HashMap<TypeId, FnId>,
@@ -51,6 +57,9 @@ impl Tables {
         };
         for (i, imp) in program.impls.iter().enumerate() {
             t.index.insert((imp.key, imp.iface), i as u32);
+            if is_operator(imp.iface) && !imp.derived {
+                t.operators.insert((imp.key, imp.iface, imp.rhs), i as u32);
+            }
             if imp.iface == INTO_ERROR
                 && !imp.derived
                 && matches!(imp.methods.first(), Some(Some(_)))
@@ -92,8 +101,6 @@ pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
         Value::Ptr(_) => TypeKey::Ptr,
         Value::Float(_) => TypeKey::Float,
         Value::F32(_) => TypeKey::F32,
-        Value::Vec(v) => TypeKey::Vec(colibri_check::types::VecTy { int: false, n: v.n }),
-        Value::IVec(v) => TypeKey::Vec(colibri_check::types::VecTy { int: true, n: v.n }),
         Value::Char(_) => TypeKey::Char,
         Value::Str(_) => TypeKey::Str,
         Value::Bytes(_) => TypeKey::Bytes,
@@ -495,6 +502,7 @@ impl Interp {
             iface_args: Vec::new(),
             target: Ty::Unit,
             key,
+            rhs: None,
             methods: vec![None; methods],
             derived: true,
             span: Span::new(FileId(0), 0, 0),
@@ -511,12 +519,6 @@ impl Interp {
             Coercion::F32ToFloat => {
                 return match value {
                     Value::F32(x) => Value::Float(f64::from(x)),
-                    other => other,
-                };
-            }
-            Coercion::FloatToF32 => {
-                return match value {
-                    Value::Float(x) => Value::F32(x as f32),
                     other => other,
                 };
             }
@@ -578,6 +580,87 @@ impl Interp {
             }
             None => self.derived_call(fiber, iface, values, span),
         }
+    }
+
+    /// `a + b`, `-a`, ... where the left operand has the type of a bounded type parameter: the
+    /// impl is found from the runtime types, `rhs` being the right-hand head when the bound
+    /// fixes it. Numbers have no impl; they run the built-in operation, with the width of the
+    /// value (`int` and `u64`: the narrow integers cannot satisfy the bound).
+    pub(crate) fn call_operator(
+        &mut self,
+        fiber: &mut Fiber,
+        iface: TypeId,
+        rhs: Option<TypeKey>,
+        values: Vec<Value>,
+        span: Span,
+    ) -> Eval {
+        let left = values.first().and_then(runtime_key);
+        let right = rhs.or_else(|| values.get(1).and_then(runtime_key));
+        // Two primitives of one kind always run the built-in operation: no impl can replace it
+        // (the orphan rule), and none is looked up.
+        let primitives = matches!(
+            (values.first(), values.get(1)),
+            (Some(Value::Int(_)), Some(Value::Int(_)))
+                | (Some(Value::U64(_)), Some(Value::U64(_)))
+                | (Some(Value::Float(_)), Some(Value::Float(_)))
+                | (Some(Value::F32(_)), Some(Value::F32(_)))
+                | (Some(Value::Str(_)), Some(Value::Str(_)))
+        );
+        let found = left.filter(|_| !primitives).and_then(|k| {
+            let ops = &self.dispatch.operators;
+            ops.get(&(k, iface, right))
+                .or_else(|| ops.get(&(k, iface, None)))
+                .copied()
+        });
+        if let Some(f) = self.target_of(found, 0) {
+            let Some(body) = self.fns.get(f.0 as usize).cloned() else {
+                return Err(self.internal(fiber, span, "unknown function"));
+            };
+            if let Some(frame) = fiber.frames.last_mut() {
+                frame.span = span;
+            }
+            return self.call_body(fiber, body, values);
+        }
+        self.builtin_operator(fiber, iface, values, span)
+    }
+
+    /// The operator of a number or a string reached through a bound.
+    fn builtin_operator(
+        &mut self,
+        fiber: &mut Fiber,
+        iface: TypeId,
+        mut values: Vec<Value>,
+        span: Span,
+    ) -> Eval {
+        let num = match values.first() {
+            Some(Value::Int(_)) => Some(Num::Int(IntTy::I64)),
+            Some(Value::U64(_)) => Some(Num::Int(IntTy::U64)),
+            Some(Value::Float(_)) => Some(Num::Float),
+            Some(Value::F32(_)) => Some(Num::F32),
+            _ => None,
+        };
+        if iface == NEG {
+            return match (values.pop(), num) {
+                (Some(v), Some(n)) => self.unary(fiber, UnOp::Neg(n), v, span),
+                _ => Err(self.internal(fiber, span, "an operator without an implementation")),
+            };
+        }
+        let arith = match iface {
+            ADD => ArithOp::Add,
+            SUB => ArithOp::Sub,
+            MUL => ArithOp::Mul,
+            DIV => ArithOp::Div,
+            _ => return Err(self.internal(fiber, span, "not an operator interface")),
+        };
+        let op = match (&values.first(), num) {
+            (Some(Value::Str(_) | Value::Bytes(_)), _) if iface == ADD => BinOp::Concat,
+            (_, Some(n)) => BinOp::Arith(arith, n),
+            _ => return Err(self.internal(fiber, span, "an operator without an implementation")),
+        };
+        let (Some(r), Some(l)) = (values.pop(), values.pop()) else {
+            return Err(self.internal(fiber, span, "an operator without operands"));
+        };
+        self.binary(fiber, op, l, r, span)
     }
 
     /// The function an implementation runs for `method`, if it has one of its own.

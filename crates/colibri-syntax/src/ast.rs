@@ -90,11 +90,13 @@ pub enum ItemKind {
     Error,
 }
 
-/// A generic parameter with its bounds: `T: Hash + Eq`.
+/// A generic parameter with its bounds and its default: `T: Hash + Eq`, `R = Self`. Only an
+/// interface's parameters may have a default (checked by the checker, not the parser).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GenericParam {
     pub name: Ident,
     pub bounds: Vec<TypeExpr>,
+    pub default: Option<TypeExpr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

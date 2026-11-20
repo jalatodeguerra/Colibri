@@ -1,0 +1,24 @@
+struct Mine { n: int }
+
+// the operators of numbers cannot be replaced
+impl Add for int { // error: cannot implement the built-in `Add` for the built-in type `int`
+    fn add(self, o: int) -> int => 0
+}
+impl Mul[float] for float { // error: cannot implement the built-in `Mul` for the built-in type `float`
+    fn mul(self, k: float) -> float => 0.0
+}
+impl Neg for str { // error: cannot implement the built-in `Neg` for the built-in type `str`
+    fn neg(self) -> str => self
+}
+impl Add[Mine, int] for int { // allowed: `Mine` is ours
+    fn add(self, m: Mine) -> int => self + m.n
+}
+impl Add[List[int], List[int]] for List[int] { // error: cannot implement the built-in `Add` for the built-in type `List[int]`
+    fn add(self, o: List[int]) -> List[int] => self
+}
+
+fn main() {
+    print(1 + 2)
+    print(2.5 * 4.0)
+    print(1 + Mine { n: 5 })
+}

@@ -38,7 +38,7 @@ impl Mentions {
 
     fn generics(&mut self, gs: &[GenericParam]) {
         for g in gs {
-            for b in &g.bounds {
+            for b in g.bounds.iter().chain(&g.default) {
                 self.ty(b);
             }
         }

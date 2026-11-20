@@ -3,11 +3,11 @@
 use std::io::Write;
 use std::rc::{Rc, Weak};
 
+use colibri_check::hir::Storage;
 use colibri_check::hir::{
     Arg, ArithOp, Arm, BinOp, Block, Body, Callee, CmpOp, Expr, ExprKind, FnId, GlobalId,
-    Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, TypeDef, UnOp,
+    Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, TypeDef, UnOp, UserOp,
 };
-use colibri_check::hir::{Storage, ValueProj};
 use colibri_check::types::{IntTy, Ty};
 use colibri_syntax::Span;
 
@@ -20,7 +20,6 @@ use crate::num;
 use crate::ordered::OrderedMap;
 use crate::place::project;
 use crate::value::{CellObj, Value};
-use crate::vecmath;
 
 /// The value of a variable slot, looking through a cell.
 pub(crate) fn unwrap_cell_ref(v: &Value) -> Value {
@@ -647,6 +646,20 @@ impl Interp {
         let rhs_value = self.eval(fiber, rhs)?;
         let new = match op {
             None => rhs_value,
+            Some(BinOp::User(user)) => {
+                // The operator of a user type runs script code, which must not change the shape
+                // of the collection the place is an element of (DESIGN §11.6), like a `var self`
+                // method.
+                let _hold = self.hold_place(&anchor, place);
+                let old = match self.get_resolved(fiber, &anchor, &place.path, span) {
+                    Ok(old) => old,
+                    Err(ctl) => {
+                        self.release(rhs_value);
+                        return Err(ctl);
+                    }
+                };
+                self.call_user_op(fiber, user, vec![old, rhs_value], span)?
+            }
             Some(op) => {
                 let old = match self.get_resolved(fiber, &anchor, &place.path, span) {
                     Ok(old) => old,
@@ -732,10 +745,7 @@ impl Interp {
             ExprKind::Project(base, proj) => {
                 // The projected-from value is a temporary: it dies at the end of the statement.
                 let value = self.eval_twin(fiber, base)?;
-                let part = match proj {
-                    ValueProj::Comp(i) => vecmath::component(&value, *i),
-                    _ => project(&value, *proj).cloned(),
-                };
+                let part = project(&value, *proj).cloned();
                 drop(value);
                 match part {
                     Some(part) => Ok(part),
@@ -786,6 +796,10 @@ impl Interp {
 
     #[inline(never)]
     fn eval_unary(&mut self, fiber: &mut Fiber, op: UnOp, operand: &Expr, span: Span) -> Eval {
+        if let UnOp::User(user) = op {
+            let v = self.eval_twin(fiber, operand)?;
+            return self.call_user_op(fiber, user, vec![v], span);
+        }
         let v = self.eval(fiber, operand)?;
         self.unary(fiber, op, v, span)
     }
@@ -801,6 +815,9 @@ impl Interp {
     ) -> Eval {
         let l = self.eval_twin(fiber, lhs)?;
         let r = self.eval_twin(fiber, rhs)?;
+        if let BinOp::User(user) = op {
+            return self.call_user_op(fiber, user, vec![l, r], span);
+        }
         self.binary(fiber, op, l, r, span)
     }
 
@@ -1163,12 +1180,6 @@ impl Interp {
         let numeric = match intrinsic {
             Intrinsic::Convert { from, to } => args.first().map(|v| num::convert(*from, *to, v)),
             Intrinsic::NumMethod(m, n) => Some(num::method(*m, *n, &args)),
-            Intrinsic::VecNew(ty) => Some(vecmath::construct(*ty, &args)),
-            Intrinsic::VecSwizzle { lanes, len, .. } => Some(args.first().map_or_else(
-                || Err("a swizzle without an argument".to_string()),
-                |v| vecmath::swizzle(v, lanes, *len),
-            )),
-            Intrinsic::VecMethod(m, _) => Some(vecmath::method(*m, &args)),
             _ => None,
         };
         if let Some(result) = numeric {
@@ -1218,9 +1229,6 @@ impl Interp {
             | Intrinsic::Compare
             | Intrinsic::Convert { .. }
             | Intrinsic::NumMethod(..)
-            | Intrinsic::VecNew(_)
-            | Intrinsic::VecSwizzle { .. }
-            | Intrinsic::VecMethod(..)
             | Intrinsic::Wait
             | Intrinsic::WaitUntil
             | Intrinsic::WaitReal
@@ -1235,7 +1243,22 @@ impl Interp {
 
     // ---- operators ----
 
-    fn unary(&mut self, fiber: &mut Fiber, op: UnOp, v: Value, span: Span) -> Eval {
+    /// Runs the impl of an operator interface on its operands, which the call then owns.
+    #[inline(never)]
+    fn call_user_op(
+        &mut self,
+        fiber: &mut Fiber,
+        op: UserOp,
+        values: Vec<Value>,
+        span: Span,
+    ) -> Eval {
+        match op {
+            UserOp::Fn(f) => self.call_values(fiber, &Callee::Fn(f), &[], values, span),
+            UserOp::Bound { iface, rhs } => self.call_operator(fiber, iface, rhs, values, span),
+        }
+    }
+
+    pub(crate) fn unary(&mut self, fiber: &mut Fiber, op: UnOp, v: Value, span: Span) -> Eval {
         match (op, v) {
             (UnOp::Neg(Num::Int(IntTy::I64)), Value::Int(i)) => match i.checked_neg() {
                 Some(n) => Ok(Value::Int(n)),
@@ -1248,7 +1271,6 @@ impl Interp {
             },
             (UnOp::Neg(Num::Float), Value::Float(x)) => Ok(Value::Float(-x)),
             (UnOp::Neg(Num::F32), Value::F32(x)) => Ok(Value::F32(-x)),
-            (UnOp::VecNeg(_), v) => vecmath::neg(&v).map_err(|msg| self.panic(fiber, span, msg)),
             (UnOp::BitNot(ty), v) => match num::int_of(&v) {
                 Some(a) => Ok(num::make_int(ty, num::int_not(ty, a))),
                 None => Err(self.internal(fiber, span, "ill-typed bitwise not")),
@@ -1259,7 +1281,14 @@ impl Interp {
     }
 
     /// Applies a binary operator and releases both operands.
-    fn binary(&mut self, fiber: &mut Fiber, op: BinOp, l: Value, r: Value, span: Span) -> Eval {
+    pub(crate) fn binary(
+        &mut self,
+        fiber: &mut Fiber,
+        op: BinOp,
+        l: Value,
+        r: Value,
+        span: Span,
+    ) -> Eval {
         let result = self.binary_of(fiber, op, &l, &r, span);
         self.release(l);
         self.release(r);
@@ -1295,9 +1324,6 @@ impl Interp {
             }
             (BinOp::Arith(op, Num::F32), Value::F32(a), Value::F32(b)) => {
                 Ok(Value::F32(num::f32_arith(op, *a, *b)))
-            }
-            (BinOp::Vec(op, _, shape), l, r) => {
-                vecmath::arith(op, shape, l, r).map_err(|msg| self.panic(fiber, span, msg))
             }
             (BinOp::Bit(op, ty), l, r) => match (num::int_of(l), num::int_of(r)) {
                 (Some(a), Some(b)) => match num::int_bit(op, ty, a, b) {

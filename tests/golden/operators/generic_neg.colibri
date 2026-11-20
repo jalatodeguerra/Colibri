@@ -1,0 +1,43 @@
+// `T: Neg` and `T: Sub + Div` in generic code, for numbers and for types with the impls.
+struct V { x: float }
+
+impl Neg for V {
+    fn neg(self) -> V => V { x: -self.x }
+}
+impl Sub for V {
+    fn sub(self, o: V) -> V => V { x: self.x - o.x }
+}
+impl Div[float] for V {
+    fn div(self, k: float) -> V => V { x: self.x / k }
+}
+
+fn flip[T: Neg](x: T) -> T => -x
+
+fn diff[T: Sub](a: T, b: T) -> T => a - b
+
+fn mid[T: Sub + Add](a: T, b: T) -> T => a - b + b
+
+fn halve[T: Div[float]](x: T) -> T => x / 2.0
+
+fn main() {
+    print(flip(5))
+    print(flip(2.5))
+    let f: f32 = 1.5
+    print(flip(f))
+    print(flip(V { x: 1.0 }).x)
+    print(diff(10, 3))
+    print(diff(V { x: 5.0 }, V { x: 1.5 }).x)
+    print(mid(7, 2))
+    print(halve(V { x: 5.0 }).x)
+    print(halve(5.0))
+}
+
+// expect: -5
+// expect: -2.5
+// expect: -1.5
+// expect: -1.0
+// expect: 7
+// expect: 3.5
+// expect: 7
+// expect: 2.5
+// expect: 2.5

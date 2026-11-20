@@ -29,10 +29,10 @@ fn main() {
     print(i.max(vec.ivec2(0, 0)))
     print(i.distance(vec.ivec2(0, 0)))
     print(vec.ivec3(1, 0, 0).cross(vec.ivec3(0, 1, 0)))
-    // conversions use the name of the target, like `f32(x)`
-    print(vec.ivec2(vec.vec2(2.9, -2.9)))
-    print(vec.vec3(vec.ivec3(1, 2, 3)))
-    print(vec.vec2(a.xy).x)
+    // conversions are methods, `to_ivec` truncates toward zero
+    print(vec.vec2(2.9, -2.9).to_ivec())
+    print(vec.ivec3(1, 2, 3).to_vec())
+    print(a.xy().x)
     // named arguments
     print(vec.vec2(0, 0).lerp(other: vec.vec2(2, 2), t: 0.5))
 }

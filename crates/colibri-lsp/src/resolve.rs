@@ -469,11 +469,17 @@ impl<'a> Walker<'a> {
             };
             match &imp.kind {
                 ast::ImportKind::Plain => {
+                    let std =
+                        matches!(&target, ModTarget::Source(i) if self.a.program.metas[*i].std);
                     let key = self.def_with(
                         last,
                         DefKind::Module,
                         module,
-                        Some("a module is named by its file: rename the file"),
+                        Some(if std {
+                            "it is a module of the standard library, which has no file to rename"
+                        } else {
+                            "a module is named by its file: rename the file"
+                        }),
                     );
                     self.note_module(key, &target);
                     self.mods[module]
@@ -870,7 +876,10 @@ impl<'a> Walker<'a> {
         }
         self.generics.push(scope);
         for p in params {
-            p.bounds.iter().for_each(|b| self.walk_type(b));
+            p.bounds
+                .iter()
+                .chain(&p.default)
+                .for_each(|b| self.walk_type(b));
         }
         f(self);
         self.generics.pop();

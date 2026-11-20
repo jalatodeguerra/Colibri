@@ -1,5 +1,5 @@
 import vec
 
 fn main() {
-    print(vec.ivec2(vec.vec2(3000000000, 0))) // panic: does not fit in `i32`
+    print(vec.vec2(3000000000, 0).to_ivec()) // panic: does not fit in `i32`
 }

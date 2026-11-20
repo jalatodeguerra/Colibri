@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use std::hash::Hash;
 
-use colibri_check::types::{TypeId, VARIANT_NONE, VARIANT_OK, VARIANT_SOME, VecTy};
+use colibri_check::types::{TypeId, VARIANT_NONE, VARIANT_OK, VARIANT_SOME};
 use colibri_interp::{Interp, Value as Inner};
 
 use crate::ctx::Cx;
@@ -281,46 +281,6 @@ scalar!(f64, TypeDesc::Float, Float);
 scalar!(f32, TypeDesc::F32, F32);
 scalar!(bool, TypeDesc::Bool, Bool);
 scalar!(char, TypeDesc::Char, Char);
-
-/// The vector types, as glam's (`Vec2` is `vec.vec2`, `IVec3` is `vec.ivec3`).
-macro_rules! vector {
-    ($($rust:ty => $ty:expr, $variant:ident, $strukt:ident, $n:expr, $scalar:ty;)*) => {$(
-        impl IntoColibri for $rust {
-            fn ty(_: &mut TypeRegistry) -> TypeDesc {
-                TypeDesc::Vec($ty)
-            }
-            fn into_colibri(self, _: &mut Cx<'_>) -> Value {
-                let mut c = [<$scalar>::default(); 4];
-                c[..$n].copy_from_slice(&self.to_array());
-                Value(Inner::$variant(colibri_interp::$strukt { n: $n, c }))
-            }
-        }
-        impl FromColibri for $rust {
-            fn ty(_: &mut TypeRegistry) -> TypeDesc {
-                TypeDesc::Vec($ty)
-            }
-            fn from_colibri(value: &Value, _: &mut Cx<'_>) -> Result<Self, Error> {
-                match &value.0 {
-                    Inner::$variant(v) if v.n == $n => {
-                        let mut a = [<$scalar>::default(); $n];
-                        a.copy_from_slice(&v.c[..$n]);
-                        Ok(<$rust>::from_array(a))
-                    }
-                    other => Err(wrong(&TypeDesc::Vec($ty), other)),
-                }
-            }
-        }
-    )*};
-}
-
-vector! {
-    glam::Vec2 => VecTy { int: false, n: 2 }, Vec, FVec, 2, f32;
-    glam::Vec3 => VecTy { int: false, n: 3 }, Vec, FVec, 3, f32;
-    glam::Vec4 => VecTy { int: false, n: 4 }, Vec, FVec, 4, f32;
-    glam::IVec2 => VecTy { int: true, n: 2 }, IVec, IVec, 2, i32;
-    glam::IVec3 => VecTy { int: true, n: 3 }, IVec, IVec, 3, i32;
-    glam::IVec4 => VecTy { int: true, n: 4 }, IVec, IVec, 4, i32;
-}
 
 /// The integer types stored as `Int(i64)`: every value of the Colibri type fits, so reading
 /// one back narrows without loss (a value out of range is an interpreter bug, reported as

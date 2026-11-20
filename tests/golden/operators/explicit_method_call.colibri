@@ -1,0 +1,31 @@
+// The method of an operator interface can be called by name. With one impl it is an ordinary
+// method; with several it chooses by the argument, exactly as the operator does.
+struct V { x: float }
+
+impl Add for V {
+    fn add(self, o: V) -> V => V { x: self.x + o.x }
+}
+impl Mul for V {
+    fn mul(self, o: V) -> V => V { x: self.x * o.x }
+}
+impl Mul[float] for V {
+    fn mul(self, k: float) -> V => V { x: self.x * k }
+}
+impl Neg for V {
+    fn neg(self) -> V => V { x: -self.x }
+}
+
+fn main() {
+    let a = V { x: 3.0 }
+    print(a.add(a).x)
+    print(a.mul(a).x)
+    print(a.mul(2.0).x)
+    print(a.mul(2).x)
+    print(a.neg().x)
+}
+
+// expect: 6.0
+// expect: 9.0
+// expect: 6.0
+// expect: 6.0
+// expect: -3.0

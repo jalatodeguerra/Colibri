@@ -177,6 +177,77 @@ fn main() {
 }
 ```
 
+### Operators on your own types
+
+`+ - * /` and unary `-` on a type of your own are the interfaces `Add`, `Sub`, `Mul`, `Div` and
+`Neg`. `Add[R, O]` has a right-hand type `R` and a result `O`, and both default to `Self`, so
+`impl Add for Money` means `Add[Money, Money]`. A type can implement an operator once for each
+right-hand type, told apart by the type's head only (`Add[Box[int]]` and `Add[Box[str]]` count as
+one). A number can be the left operand of your type when the right-hand type is yours (comparison
+stays on `Eq` and `Ord`). A type of the standard library (`vec.vec2`, `datetime.DateTime`) is the library's: you
+can give it an operator only with a right-hand type of your own, and no other built-in interface.
+A narrow integer type (`i8` to `u32`) cannot yet stand for a type
+parameter that has an operator bound:
+
+```colibri
+struct Money { cents: int }
+
+impl Add for Money {
+    fn add(self, other: Money) -> Money => Money { cents: self.cents + other.cents }
+}
+impl Mul[int] for Money {
+    fn mul(self, k: int) -> Money => Money { cents: self.cents * k }
+}
+impl Mul[Money, Money] for int {
+    fn mul(self, m: Money) -> Money => m * self
+}
+
+fn total[T: Add](xs: List[T], zero: T) -> T {
+    var sum = zero
+    for x in xs {
+        sum += x
+    }
+    return sum
+}
+
+fn main() {
+    let price = Money { cents: 250 }
+    print((price * 3 + 2 * price).cents) // 1250
+    print(total([price, price], Money { cents: 0 }).cents) // 500
+}
+```
+
+`a += b` is `a = a + b`. `%` and the bit operators are for numbers only. The `vec` module
+(`import vec`) is built this way.
+
+For code written against the vectors that used to be built in, three things change. The vector
+types need `import vec` (`vec.vec3(..)`, or `import vec.{vec3}`). Swizzle fields are methods or
+constructor calls, and the splat and conversion constructors have other names. And an operator
+that has more than one impl for the left type (`v * k`, where `vec2` takes a `vec2` or a
+`float`) must know the type of its right operand where it is written, so a list that is filled
+only later needs its type spelled out:
+
+```colibri
+import vec
+
+fn main() {
+    let v = vec.vec3(1.0, 2.0, 3.0)
+    print(v.xy()) // not v.xy: a method
+    print(vec.vec3(v.z, v.y, v.x)) // not v.zyx
+    print(vec.vec3(7.0, 7.0, 7.0)) // not vec3(7)
+    print(vec.ivec3(1, 2, 3).to_vec()) // not vec3(iv); and v.to_ivec() the other way
+    var ks: List[float] = [] // not `var ks = []`: its type decides which `*` is meant
+    var w = v
+    for i in 0..3 {
+        if ks.len() > 0 {
+            w = w * ks[0]
+        }
+        ks.push(2.0)
+    }
+    print(w)
+}
+```
+
 ### Ordering and bounds
 
 A struct, or an enum whose variants carry data, is ordered by its parts when every part can be
@@ -727,7 +798,7 @@ whose logic comes from Colibri scripts (host classes, handles, callbacks and a s
 | `net` | TCP sockets: `net.listen`, `net.connect` and `net.connect_timeout` give a `net.Listener` or a `net.Conn` that read and write lines, bytes and text without blocking other coroutines |
 | `time`, `datetime` | clocks and sleeping; dates, times and formatting |
 | `math`, `rand` | math functions; random numbers |
-| `vec` | 2D, 3D and 4D vector types |
+| `vec` | 2D, 3D and 4D vector types of `f32` and `i32`, written in Colibri (a library on top of operator interfaces, not part of the language) |
 
 Paths are `/`-separated text on every system, Windows included. `path.from_native` converts a path
 that came from outside (a command-line argument, a file's content) from the system's own spelling,
@@ -748,12 +819,12 @@ they have.
   drop order.
 - The embedding API, the C FFI, coroutines, the 21 std modules above (TCP sockets included),
   `Bytes` and file handles.
+- Operator interfaces (`Add`, `Sub`, `Mul`, `Div`, `Neg`) with default type parameters, which
+  let a library such as `vec` define its own arithmetic.
 - Tooling: `run`, `check`, `test`, `fmt`, `new`, `repl`, `lsp`, hot reload and the leak detector.
 
 **Next** (not started):
 
-- Arithmetic operator interfaces (`Add`, `Sub`, `Mul`, `Neg`), so that vector types can move out
-  of the core into a library.
 - A shared runtime core, then the **bytecode VM**, which becomes the engine behind `colibri run`,
   embedding and hot reload. The interpreter is retired once the VM passes every test. The first
   speed goal is to beat CPython 3.13 on every program in [`benchmarks/`](benchmarks/README.md);

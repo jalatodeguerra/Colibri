@@ -1,0 +1,74 @@
+// `+`, `-` and unary `-` on a struct and on a class run the type's `Add`, `Sub` and `Neg`.
+struct Money { cents: int }
+
+impl Add for Money {
+    fn add(self, other: Money) -> Money => Money { cents: self.cents + other.cents }
+}
+impl Sub for Money {
+    fn sub(self, other: Money) -> Money => Money { cents: self.cents - other.cents }
+}
+impl Neg for Money {
+    fn neg(self) -> Money => Money { cents: -self.cents }
+}
+impl Show for Money {
+    fn show(self) -> str => "{self.cents / 100}.{self.cents % 100}"
+}
+
+class Counter { n: int }
+
+impl Add for Counter {
+    // A class value is a reference: the sum is a new object, the operands are untouched.
+    fn add(self, other: Counter) -> Counter => Counter { n: self.n + other.n }
+}
+
+// The result type is the impl's own `O`: a difference of two points is a vector.
+struct Point { x: int, y: int }
+struct Offset { dx: int, dy: int }
+
+impl Sub[Point, Offset] for Point {
+    fn sub(self, other: Point) -> Offset => Offset { dx: self.x - other.x, dy: self.y - other.y }
+}
+
+fn main() {
+    let a = Money { cents: 1250 }
+    let b = Money { cents: 399 }
+    print(a + b)
+    print(a - b)
+    print(-a)
+    print(a + b - b == a)
+    print(a + b + a)
+    var total = Money { cents: 0 }
+    total += a
+    total += b
+    total -= Money { cents: 49 }
+    print(total)
+
+    let c = Counter { n: 1 }
+    let d = Counter { n: 2 }
+    let e = c + d
+    print(e.n)
+    print(c.n)
+    var acc = Counter { n: 0 }
+    acc += c
+    acc += d
+    print(acc.n)
+    // `+=` on a class variable rebinds it; the object it held before is not changed
+    let before = acc
+    acc += d
+    print("{before.n} {acc.n}")
+
+    let off = Point { x: 5, y: 9 } - Point { x: 2, y: 4 }
+    print("{off.dx} {off.dy}")
+}
+
+// expect: 16.49
+// expect: 8.51
+// expect: -12.-50
+// expect: true
+// expect: 28.99
+// expect: 16.0
+// expect: 3
+// expect: 1
+// expect: 3
+// expect: 3 5
+// expect: 3 5

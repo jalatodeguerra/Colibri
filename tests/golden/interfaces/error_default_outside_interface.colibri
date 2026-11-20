@@ -1,0 +1,21 @@
+struct Pair[A, B = int] { // error: the type parameter `B` cannot have a default
+    a: A
+    b: B
+}
+
+enum Either[L, R = str] { // error: the type parameter `R` cannot have a default
+    left(L)
+    right(R)
+}
+
+type Alias[T = int] = List[T] // error: the type parameter `T` cannot have a default
+
+fn first[T = int](xs: List[T]) -> T { // error: the type parameter `T` cannot have a default
+    return xs[0]
+}
+
+interface Wrong[A = int, B] { // error: the type parameter `B` needs a default, because an earlier parameter has one
+    fn get(self) -> A
+}
+
+fn main() {}

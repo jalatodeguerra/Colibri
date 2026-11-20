@@ -29,6 +29,8 @@ pub(crate) enum Origin {
         param: String,
         func: String,
         bound_span: Span,
+        /// The first argument of an operator bound is a type parameter of the function.
+        dyn_rhs: bool,
     },
     /// A `Map` key: it must be hashable and comparable.
     MapKey,
@@ -54,6 +56,26 @@ pub(crate) enum Origin {
     },
 }
 
+/// An integer type whose values carry no width at run time (`i8`..`u32`).
+fn is_narrow(ty: &Ty) -> bool {
+    matches!(ty, Ty::Int(t) if !matches!(t, crate::types::IntTy::I64 | crate::types::IntTy::U64))
+}
+
+/// The narrow integer an operator bound would hand to run-time dispatch: the bounded type
+/// itself, or the right-hand type when the bound leaves it to a type parameter.
+fn narrow_operand(ob: &Obligation) -> Option<Ty> {
+    if !matches!(ob.origin, Origin::Bound { .. }) {
+        return None;
+    }
+    if is_narrow(&ob.ty) {
+        return Some(ob.ty.clone());
+    }
+    match (&ob.origin, ob.args.first()) {
+        (Origin::Bound { dyn_rhs: true, .. }, Some(a)) if is_narrow(a) => Some(a.clone()),
+        _ => None,
+    }
+}
+
 impl Checker<'_> {
     /// The implementation facts, for [`Env::implements`].
     pub fn env(&self) -> Env<'_> {
@@ -61,6 +83,7 @@ impl Checker<'_> {
             types: &self.types,
             impls: &self.impls,
             by_key: &self.impl_by_key,
+            op_impls: &self.op_impls,
             bounds: &self.param_bounds,
         }
     }
@@ -146,6 +169,16 @@ impl Checker<'_> {
 
     /// Decides one requirement, reporting it when it does not hold.
     pub fn check_obligation(&mut self, ob: &Obligation) -> bool {
+        // Generic code reaches an operator through the run-time type of the values, and a
+        // `Value::Int` of a narrow width carries none: refuse the narrow integers wherever a
+        // bound could hand one to that dispatch, before any impl is consulted.
+        if crate::types::is_operator(ob.iface)
+            && let Some(narrow) = narrow_operand(ob)
+        {
+            let diag = self.explain(ob, &narrow);
+            self.report(diag);
+            return false;
+        }
         let blame = match self.env().implements(&ob.ty, ob.iface, &ob.args) {
             Ok(_) => match ob.origin {
                 // A key must also be comparable for equality.
@@ -159,6 +192,15 @@ impl Checker<'_> {
                 | Origin::AliasBound { .. } => return true,
             },
             Err(blame) => blame,
+        };
+        // An operator bound that fails because a narrow integer is in the way (`W[i32]` through
+        // `impl[T: Add] Add for W[T]`) says so; one that fails because an impl is missing does not.
+        let blame = if matches!(ob.origin, Origin::Bound { .. }) && !is_narrow(&blame) {
+            self.env()
+                .narrow_blocker(&ob.ty, ob.iface, &ob.args, 0)
+                .unwrap_or(blame)
+        } else {
+            blame
         };
         let diag = self.explain(ob, &blame);
         self.report(diag);
@@ -184,7 +226,6 @@ impl Checker<'_> {
                 };
                 let hint = match blame {
                     Ty::Float | Ty::F32 => "floats are not hashable (`nan` is not equal to itself); use an integer or a string instead".to_string(),
-                    Ty::Vec(_) => "a float vector is not hashable (`nan` is not equal to itself); use an `ivec` as the key, or a tuple of integers".to_string(),
                     Ty::List(_) | Ty::Map(..) | Ty::Set(_) => "mutable collections are not hashable; use a tuple, a struct or a frozen copy as the key".to_string(),
                     Ty::Param(_, name) => format!("add the bounds `{name}: Hash + Eq` to the type parameter"),
                     Ty::Adt(..) => format!("implement `Hash` and `Eq` for `{blamed}`, or key on one of its fields"),
@@ -248,7 +289,31 @@ impl Checker<'_> {
                 param,
                 func,
                 bound_span,
+                ..
             } => {
+                if crate::types::is_operator(ob.iface) && is_narrow(blame) {
+                    let name = &self.types[ob.iface.0 as usize].name;
+                    let message = if blame == &ob.ty {
+                        format!("`{blamed}` cannot be used for `{param}: {name}` yet")
+                    } else if ob.args.first() == Some(blame) {
+                        format!(
+                            "`{blamed}` cannot be used as the right-hand type of `{param}: {name}` yet"
+                        )
+                    } else {
+                        format!(
+                            "`{blamed}`, the type argument of `{shown}`, cannot be used for `{param}: {name}` yet"
+                        )
+                    };
+                    return Diagnostic::error(
+                        message,
+                        ob.span,
+                    )
+                    .with_label(
+                        *bound_span,
+                        format!("the bound `{param}: {iface_name}` of `{func}` is declared here"),
+                    )
+                    .with_hint(format!("generic code cannot tell integer widths apart yet; the narrow type here is `{blamed}`: convert that operand to `int` (`int(x)`), or write the function for `{blamed}` alone"));
+                }
                 let message = if blame == &ob.ty {
                     format!("`{shown}` does not implement `{iface_name}`")
                 } else if ob.iface == HASH {
@@ -277,10 +342,6 @@ impl Checker<'_> {
             Ty::Param(_, name) => {
                 format!("add the bound to the type parameter: `{name}: {iface}`")
             }
-            Ty::Vec(_) if ob.iface == HASH => {
-                "float vectors are not hashable (`nan` is not equal to itself); `ivec2` is"
-                    .to_string()
-            }
             Ty::Float | Ty::F32 if ob.iface == HASH => {
                 "floats are not hashable (`nan` is not equal to itself)".to_string()
             }
@@ -306,6 +367,24 @@ impl Checker<'_> {
                 };
                 format!(
                     "{kind} is ordered by its parts, and this one has a part that cannot be ordered; implement `Ord` for it: `impl Ord for {blamed} {{ fn cmp(self, other: {blamed}) -> int {{ ... }} }}`"
+                )
+            }
+            Ty::Int(_) | Ty::Float | Ty::F32
+                if crate::types::is_operator(ob.iface)
+                    && matches!(ob.args.first(), Some(a @ (Ty::Int(_) | Ty::Float | Ty::F32)) if a != blame) =>
+            {
+                let other = ob.args.first().map(|a| self.render(a)).unwrap_or_default();
+                format!(
+                    "`{blamed}` and `{other}` are different types, and an arithmetic operator takes two operands of one type: convert one of them, for example `{blamed}(x)`"
+                )
+            }
+            Ty::Int(_) | Ty::Float | Ty::F32 | Ty::Str | Ty::Bytes | Ty::Bool | Ty::Char
+                if crate::types::is_operator(ob.iface)
+                    && !matches!(ob.args.first(), Some(Ty::Adt(id, _)) if id.0 >= crate::types::FIRST_USER_TYPE) =>
+            {
+                format!(
+                    "`{blamed}` has no `{}` of this shape and the orphan rule does not let a program add one; use a type of your own, or `int`, `float`, `u64` or `str` where the bound allows it",
+                    self.types[ob.iface.0 as usize].name
                 )
             }
             _ => format!("add `impl {iface} for {blamed} {{ ... }}`"),

@@ -242,6 +242,7 @@ impl VmBuilder {
             host_consts: Vec::new(),
             modules: Vec::new(),
             pending: Vec::new(),
+            source_modules: Vec::new(),
             bulk: false,
             failed: Vec::new(),
             registering: Vec::new(),
@@ -283,6 +284,8 @@ pub struct Vm {
     /// interface name (`std.fs`). They are in `modules` already, so the order of the modules
     /// does not depend on what a program imports.
     pending: Vec<(String, LazyModule)>,
+    /// Standard modules written in Colibri, by interface name (`std.vec`) and text.
+    source_modules: Vec<(String, &'static str)>,
     /// A module is being registered in one go: each registration skips the interface check,
     /// and the whole module is checked once at the end.
     bulk: bool,
@@ -479,6 +482,20 @@ impl Vm {
         }
         self.note_module(&name);
         self.pending.push((name, register));
+    }
+
+    /// Declares the standard module `name` as Colibri source: `import name` and `import
+    /// std.name` read `text` (once, when a program imports it) as the module `std.name`, with
+    /// the file name `<std>/name.colibri`, unless a file or a dependency has that name. It is
+    /// not a host module: nothing is registered and no interface is generated.
+    ///
+    /// For the `colibri-std` crate; not part of the embedding API, hence hidden.
+    #[doc(hidden)]
+    pub fn std_source_module(&mut self, name: &str, text: &'static str) {
+        let name = format!("{}{name}", colibri_check::host::STD_PREFIX);
+        if !self.source_modules.iter().any(|(n, _)| *n == name) {
+            self.source_modules.push((name, text));
+        }
     }
 
     /// Registers the module `name` if it was declared lazily and not registered yet. A module
@@ -1396,6 +1413,7 @@ impl Vm {
         let options = colibri_check::package::LoadOptions {
             all_modules: mode == LoadMode::Tests,
             cfg: self.cfg.clone(),
+            std_sources: self.source_modules.clone(),
         };
         let names: Vec<String> = self.modules.clone();
         let loaded = colibri_check::package::load_with(fs, &mut sources, entry, &names, options)

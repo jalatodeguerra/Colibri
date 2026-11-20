@@ -1,0 +1,13 @@
+// A module-level initialiser that calls a generic function runs the impl that satisfies its
+// bound, so the globals that impl reads are initialised first, whatever the source order.
+struct V { x: int }
+impl Add for V {
+    fn add(self, o: V) -> V => V { x: self.x + o.x + bias }
+}
+fn twice[T: Add](a: T) -> T => a + a
+let s = twice(V { x: 1 })
+let bias = 1000
+
+fn main() {
+    print(s.x) // expect: 1002
+}

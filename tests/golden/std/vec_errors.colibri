@@ -9,25 +9,24 @@ fn main() {
     print(a + i) // error: cannot apply `+` to `vec2` and `ivec2`
     print(a.cross(a)) // error: `vec2` has no method `cross`
     print(a.foo()) // error: `vec2` has no method `foo`
-    print(a.z) // error: `vec2` has no component `z`
+    print(a.z) // error: the struct `vec2` has no field `z`
     print(a.q) // error: `vec2` has no field `q`
-    print(b.w) // error: `vec3` has no component `w`
+    print(b.w) // error: the struct `vec3` has no field `w`
     print(b.xq) // error: `vec3` has no field `xq`
     print(a.xxxxx) // error: has no field `xxxxx`
-    print(a + 1) // error: cannot be applied to `vec2` and
-    print(a - 1.5) // error: cannot be applied to `vec2` and
-    print(1 / a) // error: cannot be applied to
-    print(a % a) // error: `%` cannot be applied to vectors
-    print(a < a) // error: cannot compare values of type `vec2`
-    print(i * 1.5) // error: expected `i32`, found
+    print(a + 1) // error: cannot apply `+` to `vec2` and `{integer}`
+    print(a - 1.5) // error: cannot apply `-` to `vec2` and `{float}`
+    print(1 / a) // error: cannot apply `/` to `{integer}` and `vec2`
+    print(a % a) // error: `%` cannot be applied to values of type `vec2`
+    print(i * 1.5) // error: cannot apply `*` to `ivec2` and `{float}`
     let n = 3
-    print(a * n) // error: expected `f32`, found `int`
-    print(vec.vec2(1, 2, 3)) // error: takes 2 components
-    print(vec.vec2(1, "x")) // error: expected `f32`, found `str`
-    print(vec.vec3(i)) // error: cannot convert `ivec2` to `vec3`
-    print(vec.ivec2(a).normalize()) // error: `ivec2` has no method `normalize`
+    print(a * n) // error: cannot apply `*` to `vec2` and `int`
+    print(vec.vec2(1, 2, 3)) // error: takes 2 arguments
+    print(vec.vec2(1, "x")) // error: expected `float`, found `str`
+    print(i.to_vec().foo()) // error: `vec2` has no method `foo`
+    print(a.to_ivec().normalize()) // error: `ivec2` has no method `normalize`
     var m = a
-    m.xy = a // error: cannot assign to the swizzle
+    m.xy = a // error: the struct `vec2` has no field `xy`
     let k = vec.vec2(0, 0)
     k.x = 1 // error: cannot assign
     let r: vec.vec3 = a // error: expected `vec3`, found `vec2`

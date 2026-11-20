@@ -1,0 +1,16 @@
+// A user impl does not make a narrow integer fit an operator bound: the run-time value is an
+// `int` (it has no width), which would not find the impl written for `i32`.
+struct Money { c: int }
+impl Mul[Money, Money] for i32 {
+    fn mul(self, m: Money) -> Money => Money { c: m.c * int(self) }
+}
+
+fn scale[T: Mul[Money, Money]](k: T, m: Money) -> Money => k * m
+
+fn main() {
+    let k: i32 = 3
+    let m = Money { c: 2 }
+    print((k * m).c)
+    print(scale(k, m).c) // error: `i32` cannot be used for `T: Mul` yet
+}
+// expect: 6

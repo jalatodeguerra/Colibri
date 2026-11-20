@@ -1,0 +1,12 @@
+// A generic call in an initialiser runs the impl its bound picks, so the global that impl reads
+// is initialised first, for any interface with one method.
+struct V { x: int }
+impl Show for V {
+    fn show(self) -> str => "V{self.x + bias}"
+}
+fn render[T: Show](a: T) -> str => a.show()
+let s = render(V { x: 1 })
+let bias = 1000
+fn main() {
+    print(s) // expect: V1001
+}

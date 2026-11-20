@@ -37,6 +37,7 @@ mod methods;
 mod modules;
 mod numeric;
 mod obligations;
+mod operators;
 mod option;
 mod optres;
 pub mod package;
@@ -49,7 +50,6 @@ pub mod traits;
 mod tryop;
 pub mod types;
 mod unused;
-mod vector;
 mod zonk;
 
 pub use checker::Checked;
@@ -84,6 +84,7 @@ pub fn check_with_host(file: &colibri_syntax::ast::File, host: &HostEnv, budget:
         script: false,
         dependency: false,
         ffi: true,
+        std: false,
         imports: std::collections::HashMap::new(),
         excluded: Vec::new(),
     };

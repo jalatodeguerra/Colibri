@@ -1,0 +1,16 @@
+import vec
+
+// The length and the distance of an integer vector are computed in `float` and rounded once to
+// `f32`: a valid vector never traps, even when the sum of the squares does not fit in an `int`.
+fn main() {
+    print(vec.ivec3(2000000000, 2000000000, 2000000000).len())
+    print(vec.ivec2(2147483647, 2147483647).len())
+    print(vec.ivec2(-2147483648, 2147483647).distance(vec.ivec2(2147483647, -2147483648)))
+    print(vec.ivec4(1, 2, 2, 4).len())
+    print(vec.ivec2(3, -4).len())
+}
+// expect: 3464101600.0
+// expect: 3037000400.0
+// expect: 6074001000.0
+// expect: 5.0
+// expect: 5.0

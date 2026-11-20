@@ -50,6 +50,25 @@ pub const SIGNAL_TYPE: TypeId = TypeId(14);
 pub const STR_BUILDER_TYPE: TypeId = TypeId(15);
 /// The built-in `BytesBuilder` (DESIGN §12): a reference type that builds a `Bytes` by appending.
 pub const BYTES_BUILDER_TYPE: TypeId = TypeId(16);
+/// The operator interfaces (DESIGN §9.2): `a + b` is `Add`, `a - b` is `Sub`, `a * b` is `Mul`,
+/// `a / b` is `Div` and `-a` is `Neg`. They follow `BytesBuilder` in the prelude source.
+pub const ADD: TypeId = TypeId(17);
+pub const SUB: TypeId = TypeId(18);
+pub const MUL: TypeId = TypeId(19);
+pub const DIV: TypeId = TypeId(20);
+pub const NEG: TypeId = TypeId(21);
+
+/// Whether `id` is `Add`, `Sub`, `Mul` or `Div`: an operator interface with a right-hand type
+/// (`R`), which a type may implement once for each right-hand type.
+pub fn is_binary_operator(id: TypeId) -> bool {
+    (ADD.0..=DIV.0).contains(&id.0)
+}
+
+/// Whether `id` is one of the five operator interfaces.
+pub fn is_operator(id: TypeId) -> bool {
+    (ADD.0..=NEG.0).contains(&id.0)
+}
+
 /// The prelude classes that only built-in functions create: how to make one, if it can be made.
 pub fn prelude_class_maker(id: TypeId) -> Option<&'static str> {
     match id {
@@ -63,7 +82,7 @@ pub fn prelude_class_maker(id: TypeId) -> Option<&'static str> {
 }
 
 /// The first id a user-defined type can have.
-pub const FIRST_USER_TYPE: u32 = 17;
+pub const FIRST_USER_TYPE: u32 = 22;
 /// The index of `ok` in the prelude `Result`.
 pub const VARIANT_OK: u32 = 0;
 /// The index of `err` in the prelude `Result`.
@@ -177,72 +196,9 @@ impl IntTy {
     }
 }
 
-/// A built-in vector type: `vec2`..`vec4` (`f32` components) or `ivec2`..`ivec4` (`i32`
-/// components), DESIGN §15.1. A plain value, copied by value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct VecTy {
-    /// Whether the components are `i32` (`ivecN`) rather than `f32` (`vecN`).
-    pub int: bool,
-    /// The number of components, 2 to 4.
-    pub n: u8,
-}
-
-impl VecTy {
-    /// Every vector type.
-    pub const ALL: [VecTy; 6] = [
-        VecTy { int: false, n: 2 },
-        VecTy { int: false, n: 3 },
-        VecTy { int: false, n: 4 },
-        VecTy { int: true, n: 2 },
-        VecTy { int: true, n: 3 },
-        VecTy { int: true, n: 4 },
-    ];
-
-    /// The type a name written in source stands for.
-    pub fn from_name(name: &str) -> Option<VecTy> {
-        VecTy::ALL.into_iter().find(|v| v.name() == name)
-    }
-
-    /// The type's name as written in source.
-    pub fn name(self) -> &'static str {
-        match (self.int, self.n) {
-            (false, 2) => "vec2",
-            (false, 3) => "vec3",
-            (false, _) => "vec4",
-            (true, 2) => "ivec2",
-            (true, 3) => "ivec3",
-            (true, _) => "ivec4",
-        }
-    }
-
-    /// The type of one component.
-    pub fn scalar(self) -> Ty {
-        if self.int {
-            Ty::Int(IntTy::I32)
-        } else {
-            Ty::F32
-        }
-    }
-
-    /// The vector type of the same kind with `n` components.
-    pub fn with_len(self, n: u8) -> VecTy {
-        VecTy { n, ..self }
-    }
-
-    /// The same number of components of the other kind (`vec3` and `ivec3`).
-    pub fn other_kind(self) -> VecTy {
-        VecTy {
-            int: !self.int,
-            n: self.n,
-        }
-    }
-}
-
 /// A Colibri type.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ty {
-    /// `vec2`..`vec4`, `ivec2`..`ivec4`.
-    Vec(VecTy),
     Int(IntTy),
     /// `float` (`f64`).
     Float,
@@ -394,7 +350,6 @@ impl fmt::Display for Shown<'_> {
             Ty::Int(i) => f.write_str(i.name()),
             Ty::Float => f.write_str("float"),
             Ty::F32 => f.write_str("f32"),
-            Ty::Vec(v) => f.write_str(v.name()),
             Ty::Bool => f.write_str("bool"),
             Ty::Char => f.write_str("char"),
             Ty::Str => f.write_str("str"),

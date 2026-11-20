@@ -1,0 +1,18 @@
+// The right-hand type is ours, so `vec3 * Scale` cannot clash with anything the library adds.
+import vec
+
+struct Scale { k: float }
+
+impl Mul[Scale] for vec.vec3 {
+    fn mul(self, s: Scale) -> vec.vec3 => vec.vec3(self.x * s.k, self.y * s.k, self.z * s.k)
+}
+impl Mul[vec.vec3, vec.vec3] for Scale {
+    fn mul(self, v: vec.vec3) -> vec.vec3 => v * self
+}
+
+fn main() {
+    let v = vec.vec3(1.0, 2.0, 3.0)
+    print(v * Scale { k: 2.0 }) // expect: vec3(2.0, 4.0, 6.0)
+    print(Scale { k: 0.5 } * v) // expect: vec3(0.5, 1.0, 1.5)
+    print(v * 2.0) // expect: vec3(2.0, 4.0, 6.0)
+}

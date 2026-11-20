@@ -1,0 +1,32 @@
+import vec
+
+// The permutations of a vector are written with the constructor; `xy()` and `xyz()` cut a longer
+// vector short.
+fn main() {
+    let v = vec.vec4(1, 2, 3, 4)
+    print(v.xy())
+    print(v.xyz())
+    print(v.xyz().xy())
+    let w = vec.vec3(7, 8, 9)
+    print(w.xy())
+    let i = vec.ivec4(5, 6, 7, 8)
+    print(i.xyz())
+    print(i.xy())
+    print(vec.ivec3(5, 6, 7).xy())
+    // a permutation is the constructor with the components in another order
+    print(vec.vec3(v.z, v.y, v.x))
+    print(vec.ivec2(i.y, i.x))
+    var p = vec.vec2(1, 2)
+    p.x = vec.vec2(p.y, p.x).x * 10
+    print(p)
+}
+// expect: vec2(1.0, 2.0)
+// expect: vec3(1.0, 2.0, 3.0)
+// expect: vec2(1.0, 2.0)
+// expect: vec2(7.0, 8.0)
+// expect: ivec3(5, 6, 7)
+// expect: ivec2(5, 6)
+// expect: ivec2(5, 6)
+// expect: vec3(3.0, 2.0, 1.0)
+// expect: ivec2(6, 5)
+// expect: vec2(20.0, 2.0)

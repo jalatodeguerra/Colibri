@@ -1,0 +1,50 @@
+// `p op= v` is `p = p op v` with the place evaluated once. It works on locals, list elements,
+// struct fields, map entries and fields of classes; on a class it rebinds, it does not mutate.
+struct Money { cents: int }
+impl Add for Money {
+    fn add(self, o: Money) -> Money => Money { cents: self.cents + o.cents }
+}
+impl Mul[int] for Money {
+    fn mul(self, k: int) -> Money => Money { cents: self.cents * k }
+}
+
+struct Wallet { cash: Money, saved: List[Money] }
+class Account { balance: Money, log: List[str] }
+
+var calls = 0
+fn next() -> int {
+    calls += 1
+    return calls - 1
+}
+
+fn main() {
+    var m = Money { cents: 5 }
+    m += Money { cents: 10 }
+    m *= 3
+    print(m.cents)
+
+    var xs = [Money { cents: 1 }, Money { cents: 2 }]
+    xs[1] += Money { cents: 40 }
+    xs[next()] += Money { cents: 100 }     // the index is evaluated once
+    print("{xs[0].cents} {xs[1].cents} {calls}")
+
+    var w = Wallet { cash: Money { cents: 7 }, saved: [Money { cents: 1 }] }
+    w.cash += Money { cents: 3 }
+    w.saved[0] *= 9
+    print("{w.cash.cents} {w.saved[0].cents}")
+
+    let a = Account { balance: Money { cents: 50 }, log: [] }
+    let alias = a
+    a.balance += Money { cents: 25 }
+    print(alias.balance.cents)
+
+    var by_name: Map[str, Money] = {"a": Money { cents: 1 }}
+    by_name["a"] += Money { cents: 41 }
+    print(by_name["a"].cents)
+}
+
+// expect: 45
+// expect: 101 42 1
+// expect: 10 9
+// expect: 75
+// expect: 42

@@ -79,6 +79,7 @@ impl Checker<'_> {
         let mut infos: Vec<GenericParamInfo> = Vec::new();
         let mark = self.type_scope.len();
         for d in decls {
+            self.refuse_default(d);
             if infos.iter().any(|g| g.name == d.name.name) {
                 self.report(Diagnostic::error(
                     format!(
@@ -94,16 +95,24 @@ impl Checker<'_> {
                 name: d.name.name.clone(),
                 span: d.name.span,
                 bounds: Vec::new(),
+                default: None,
             };
             self.type_scope.push((info.name.clone(), info.ty()));
             infos.push(info);
         }
         for d in decls {
-            let bounds: Vec<BoundRef> = d
-                .bounds
+            let bounded = infos
                 .iter()
-                .filter_map(|b| self.resolve_bound(b))
-                .collect();
+                .find(|g| g.name == d.name.name && g.span == d.name.span)
+                .map(GenericParamInfo::ty);
+            let bounds: Vec<BoundRef> = match bounded {
+                Some(bounded) => d
+                    .bounds
+                    .iter()
+                    .filter_map(|b| self.resolve_bound(b, bounded.clone()))
+                    .collect(),
+                None => Vec::new(),
+            };
             if let Some(info) = infos
                 .iter_mut()
                 .find(|g| g.name == d.name.name && g.span == d.name.span)
@@ -115,9 +124,13 @@ impl Checker<'_> {
         (infos, mark)
     }
 
-    /// One bound of a type parameter: an interface with its type arguments.
-    pub fn resolve_bound(&mut self, t: &ast::TypeExpr) -> Option<BoundRef> {
-        match self.resolve_type(t) {
+    /// One bound of the type parameter `bounded`: an interface with its type arguments. A
+    /// type argument left out takes the interface's default, with `Self` standing for `bounded`.
+    pub fn resolve_bound(&mut self, t: &ast::TypeExpr, bounded: Ty) -> Option<BoundRef> {
+        self.default_self = Some(bounded);
+        let resolved = self.resolve_type(t);
+        self.default_self = None;
+        match resolved {
             Ty::Dyn(iface, args) => Some(BoundRef {
                 iface,
                 args,

@@ -76,7 +76,6 @@ mod iface;
 mod reload;
 mod render;
 mod types;
-mod vecmod;
 mod vm;
 
 pub use buffer::SharedBuffer;
@@ -181,16 +180,12 @@ pub use ctx::Incomplete;
 pub use ctx::{Caller, Ctx, Cx};
 pub use error::{Error, Location, Report, StackFrame};
 pub use func::Fn;
-/// The `glam` the vector conversions are written against (`glam::Vec3` is `vec.vec3`), so a
-/// host uses the version this crate does.
-pub use glam;
 pub use handle::{Handle, Ref, RefMut};
 pub use host::{HostFault, HostFn, Plain, RawHostFn, Registration, WithCtx};
 pub use iface::Interface;
 pub use reload::{ReloadOptions, ReloadOutcome};
 pub use render::{render_diagnostic, render_diagnostics};
 pub use types::{SigDesc, TypeDesc, TypeRegistry};
-pub use vecmod::install_vec;
 pub use vm::{
     DEFAULT_MAX_CALL_DEPTH, HostModule, SessionCheck, SessionError, TestInfo, Vm, VmBuilder,
 };
@@ -253,6 +248,17 @@ pub struct CheckConfig {
     pub caps: CapSet,
     /// What `@when` conditions are decided with (see [`VmBuilder::build_cfg`]).
     pub cfg: BuildCfg,
+    /// Standard modules written in Colibri that `import` may name (`colibri_std::sources()`).
+    pub sources: Vec<SourceModule>,
+}
+
+/// A standard library module written in Colibri, embedded in the toolchain: `import name` and
+/// `import std.name` read `text` as the module `std.name` (its file is virtual:
+/// `<std>/name.colibri`). Unlike a host module it has no interface (`.cbi`) text.
+#[derive(Clone, Copy, Debug)]
+pub struct SourceModule {
+    pub name: &'static str,
+    pub text: &'static str,
 }
 
 impl Default for CheckConfig {
@@ -262,6 +268,7 @@ impl Default for CheckConfig {
             interfaces: Vec::new(),
             caps: CapSet::none(),
             cfg: BuildCfg::default(),
+            sources: Vec::new(),
         }
     }
 }
@@ -388,6 +395,16 @@ fn check_entry_lazy(
     let options = colibri_check::package::LoadOptions {
         all_modules,
         cfg: config.cfg.clone(),
+        std_sources: config
+            .sources
+            .iter()
+            .map(|s| {
+                (
+                    format!("{}{}", colibri_check::host::STD_PREFIX, s.name),
+                    s.text,
+                )
+            })
+            .collect(),
     };
     let loaded = colibri_check::package::load_with(fs, &mut sources, entry, &names, options)
         .map_err(|e| Error::Io {

@@ -64,16 +64,6 @@ mod enabled {
             CTy::F64 => CType::F64,
             CTy::Ptr { .. } => CType::Ptr,
             CTy::CStr { .. } => CType::CStr,
-            CTy::Vec(v) => {
-                let scalar = if v.int { CType::I32 } else { CType::F32 };
-                CType::Struct(Rc::new(CStruct {
-                    name: v.name().to_string(),
-                    fields: vec![scalar; v.n as usize],
-                    offsets: (0..v.n as usize).map(|i| 4 * i).collect(),
-                    size: 4 * v.n as usize,
-                    align: 4,
-                }))
-            }
             CTy::Struct(id) => {
                 let Some(layout) = layouts.get(&id) else {
                     return CType::Void;
@@ -122,15 +112,6 @@ mod enabled {
                     None => Val::Str(None),
                     _ => return Err(bad()),
                 },
-                (CTy::Vec(v), Value::Vec(f)) if !v.int && f.n == v.n => {
-                    Val::Struct(f.c[..f.n as usize].iter().map(|x| Val::F32(*x)).collect())
-                }
-                (CTy::Vec(v), Value::IVec(i)) if v.int && i.n == v.n => Val::Struct(
-                    i.c[..i.n as usize]
-                        .iter()
-                        .map(|x| Val::Int(i64::from(*x)))
-                        .collect(),
-                ),
                 (CTy::Struct(id), Value::Struct(s)) => {
                     let layout = self.cffi.layouts.get(&id).ok_or_else(bad)?;
                     let mut fields = Vec::with_capacity(s.fields.len());
@@ -169,23 +150,6 @@ mod enabled {
                     (Some(s), false) => Value::Str(Rc::from(s)),
                     (Some(s), true) => Value::option(Some(Value::Str(Rc::from(s)))),
                 },
-                (CTy::Vec(v), Val::Struct(vals)) if vals.len() == v.n as usize => {
-                    if v.int {
-                        let mut c = [0i32; 4];
-                        for (slot, x) in c.iter_mut().zip(vals) {
-                            let Val::Int(x) = x else { return Err(bad()) };
-                            *slot = i32::try_from(x).map_err(|_| bad())?;
-                        }
-                        Value::IVec(crate::IVec { n: v.n, c })
-                    } else {
-                        let mut c = [0f32; 4];
-                        for (slot, x) in c.iter_mut().zip(vals) {
-                            let Val::F32(x) = x else { return Err(bad()) };
-                            *slot = x;
-                        }
-                        Value::Vec(crate::FVec { n: v.n, c })
-                    }
-                }
                 (CTy::Struct(id), Val::Struct(vals)) => {
                     let layout = self.cffi.layouts.get(&id).ok_or_else(bad)?;
                     let mut fields = Vec::with_capacity(vals.len());

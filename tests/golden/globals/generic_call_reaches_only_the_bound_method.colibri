@@ -1,0 +1,18 @@
+// A generic function that calls only `name()` does not run the impl's `size()`, so `size()`
+// reading a global that is initialised later is no cycle.
+interface Named {
+    fn name(self) -> str
+    fn size(self) -> int
+}
+struct V { x: int }
+impl Named for V {
+    fn name(self) -> str => "v"
+    fn size(self) -> int => table.len()
+}
+fn describe[T: Named](a: T) -> str => a.name()
+let label = describe(V { x: 1 })
+let table = [label, label]
+
+fn main() {
+    print(table.len()) // expect: 2
+}

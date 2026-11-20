@@ -84,6 +84,60 @@ impl FnCtx<'_, '_> {
                             def.span,
                             format!("`{}` is declared here", def.display_name()),
                         );
+                        let tname = def.display_name().to_string();
+                        let is_vec = crate::checker::is_vec_name(&tname)
+                            && self.ck.std_files.contains(&def.span.file);
+                        let swizzle = is_vec
+                            && (2..=4).contains(&name.name.len())
+                            && name.name.chars().all(|c| "xyzw".contains(c));
+                        if self.ck.methods.contains_key(&(*id, name.name.clone())) {
+                            diag = diag.with_hint(format!(
+                                "`{0}` is a method, not a field: call it, `value.{0}()`",
+                                name.name
+                            ));
+                        } else if swizzle {
+                            // The example is made of the letters written when the type has
+                            // them all, and says which component it lacks when it does not.
+                            let n = tname
+                                .chars()
+                                .last()
+                                .and_then(|c| c.to_digit(10))
+                                .unwrap_or(2) as usize;
+                            let own = &"xyzw"[..n];
+                            let mut lacking: Vec<char> = Vec::new();
+                            for c in name.name.chars() {
+                                if !own.contains(c) && !lacking.contains(&c) {
+                                    lacking.push(c);
+                                }
+                            }
+                            let mut letters: Vec<char> =
+                                name.name.chars().filter(|c| own.contains(*c)).collect();
+                            letters.truncate(n);
+                            for c in own.chars() {
+                                if letters.len() < n && !letters.contains(&c) {
+                                    letters.push(c);
+                                }
+                            }
+                            let parts: Vec<String> =
+                                letters.iter().map(|c| format!("v.{c}")).collect();
+                            let missing = if lacking.is_empty() {
+                                String::new()
+                            } else {
+                                let list: Vec<String> =
+                                    lacking.iter().map(|c| format!("`{c}`")).collect();
+                                let have: Vec<String> =
+                                    own.chars().map(|c| format!("`{c}`")).collect();
+                                format!(
+                                    "`{tname}` has no {} component (its components are {}); ",
+                                    list.join(" or "),
+                                    have.join(", ")
+                                )
+                            };
+                            diag = diag.with_hint(format!(
+                                "{missing}there are no swizzles: `xy()` and `xyz()` cut a longer vector short, and any other order is written with the constructor, for example `vec.{tname}({})`",
+                                parts.join(", ")
+                            ));
+                        }
                         self.ck.report(diag);
                         None
                     }
@@ -189,9 +243,6 @@ impl FnCtx<'_, '_> {
         name: &ast::Ident,
         span: Span,
     ) -> Expr {
-        if let Ty::Vec(v) = self.infer.shallow(&value.ty) {
-            return self.vec_field_value(v, value, name, span);
-        }
         let Some((idx, ty)) = self.field_of(&value.ty, name, base.span) else {
             return self.error_expr(span);
         };

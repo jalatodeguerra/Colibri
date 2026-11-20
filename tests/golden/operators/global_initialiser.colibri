@@ -1,0 +1,25 @@
+// An operator used by the initialiser of a module-level value runs when the program starts, and
+// the impl's function is initialised first.
+struct V { x: int, y: int }
+
+impl Add for V {
+    fn add(self, o: V) -> V => V { x: self.x + o.x + bias, y: self.y + o.y + bias }
+}
+impl Neg for V {
+    fn neg(self) -> V => V { x: -self.x, y: -self.y }
+}
+
+let bias = 1000
+let origin = V { x: 1, y: 2 } + V { x: 3, y: 4 }
+let opposite = -origin
+let doubled = [origin, opposite].map(fn(v: V) -> V => v + v)
+
+fn main() {
+    print("{origin.x} {origin.y}")
+    print("{opposite.x} {opposite.y}")
+    print("{doubled[0].x} {doubled[1].y}")
+}
+
+// expect: 1004 1006
+// expect: -1004 -1006
+// expect: 3008 -1012

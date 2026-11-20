@@ -33,8 +33,6 @@ pub(crate) struct AliasId(pub u32);
 pub(crate) enum TypeEntity {
     Adt(TypeId),
     Alias(AliasId),
-    /// A vector type, exported by the `vec` module of the standard library.
-    Vec(crate::types::VecTy),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -51,7 +49,6 @@ pub(crate) struct Scope {
     pub values: HashMap<String, ValueRef>,
     pub type_ids: HashMap<String, TypeId>,
     pub aliases: HashMap<String, AliasId>,
-    pub vec_types: HashMap<String, crate::types::VecTy>,
     pub poisoned_types: HashSet<String>,
     /// Imported modules, by the name they are used under.
     pub modules: HashMap<String, ModId>,
@@ -135,7 +132,6 @@ impl<'a> Checker<'a> {
         std::mem::swap(&mut self.values, &mut s.values);
         std::mem::swap(&mut self.type_ids, &mut s.type_ids);
         std::mem::swap(&mut self.aliases, &mut s.aliases);
-        std::mem::swap(&mut self.vec_types, &mut s.vec_types);
         std::mem::swap(&mut self.poisoned_types, &mut s.poisoned_types);
         std::mem::swap(&mut self.mod_aliases, &mut s.modules);
         std::mem::swap(&mut self.origins, &mut s.origins);
@@ -147,7 +143,6 @@ impl<'a> Checker<'a> {
             values: self.values.clone(),
             type_ids: self.type_ids.clone(),
             aliases: self.aliases.clone(),
-            vec_types: self.vec_types.clone(),
             poisoned_types: self.poisoned_types.clone(),
             modules: self.mod_aliases.clone(),
             origins: self.origins.clone(),
@@ -437,9 +432,6 @@ impl<'a> Checker<'a> {
             TypeEntity::Alias(id) => {
                 self.aliases.insert(name.to_string(), id);
             }
-            TypeEntity::Vec(v) => {
-                self.vec_types.insert(name.to_string(), v);
-            }
         }
     }
 
@@ -482,7 +474,6 @@ impl<'a> Checker<'a> {
         }
         let clash = self.type_ids.contains_key(&alias.name)
             || self.aliases.contains_key(&alias.name)
-            || self.vec_types.contains_key(&alias.name)
             || self.mod_aliases.contains_key(&alias.name);
         if clash {
             let existing = self.describe_name(&alias.name);
@@ -506,14 +497,12 @@ impl<'a> Checker<'a> {
         let same = match entity {
             TypeEntity::Adt(id) => self.type_ids.get(&bound.name) == Some(&id),
             TypeEntity::Alias(id) => self.aliases.get(&bound.name) == Some(&id),
-            TypeEntity::Vec(v) => self.vec_types.get(&bound.name) == Some(&v),
         };
         if same {
             return;
         }
         let clash = self.type_ids.contains_key(&bound.name)
             || self.aliases.contains_key(&bound.name)
-            || self.vec_types.contains_key(&bound.name)
             || self.mod_aliases.contains_key(&bound.name);
         if clash {
             let existing = self.describe_name(&bound.name);

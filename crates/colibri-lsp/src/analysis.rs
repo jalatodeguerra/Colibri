@@ -187,6 +187,10 @@ pub struct Analysis {
     canon: Vec<PathBuf>,
     /// The file of each canonical path.
     by_path: HashMap<PathBuf, FileId>,
+    /// The files of the standard modules written in Colibri (`<std>/vec.colibri`): they are
+    /// not on disk, so no URI names them, nothing is published for them and nothing in them
+    /// is edited.
+    std_files: HashSet<FileId>,
 }
 
 /// How much work the server on this thread has done: what the tests that bound the cost of a
@@ -228,6 +232,13 @@ impl Analysis {
         for (i, p) in canon.iter().enumerate() {
             by_path.entry(p.clone()).or_insert(FileId(i as u32));
         }
+        let std_files = program
+            .files
+            .iter()
+            .zip(&program.metas)
+            .filter(|(_, meta)| meta.std)
+            .map(|(file, _)| file.span.file)
+            .collect();
         Analysis {
             sources,
             diagnostics,
@@ -237,16 +248,23 @@ impl Analysis {
             spec,
             canon,
             by_path,
+            std_files,
         }
     }
 
-    /// Every file of the program, with its canonical path.
+    /// Every file of the program that is on disk (or a buffer), with its canonical path.
     pub fn files(&self) -> Vec<(FileId, PathBuf)> {
         self.canon
             .iter()
             .enumerate()
             .map(|(i, p)| (FileId(i as u32), p.clone()))
+            .filter(|(f, _)| !self.std_files.contains(f))
             .collect()
+    }
+
+    /// Whether `file` is a standard module written in Colibri: a virtual file with no URI.
+    pub fn is_std_file(&self, file: FileId) -> bool {
+        self.std_files.contains(&file)
     }
 
     /// The canonical path of `file`.
@@ -284,7 +302,11 @@ impl Analysis {
 
     /// The canonical paths of the source modules this program loaded.
     pub fn module_paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
-        self.program.files.iter().map(|f| self.path_of(f.span.file))
+        self.program
+            .files
+            .iter()
+            .filter(|f| !self.std_files.contains(&f.span.file))
+            .map(|f| self.path_of(f.span.file))
     }
 }
 
@@ -495,6 +517,10 @@ impl<'a> Reader<'a> {
             &modules,
             LoadOptions {
                 all_modules,
+                std_sources: colibri_std::sources()
+                    .into_iter()
+                    .map(|s| (format!("std.{}", s.name), s.text))
+                    .collect(),
                 ..LoadOptions::default()
             },
         )?;

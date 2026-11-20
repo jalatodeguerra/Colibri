@@ -2510,7 +2510,23 @@ mod tests {
             patience(&live, Some(Instant::now() + Duration::from_secs(60))),
         );
         assert!(r.is_ok());
-        assert!(listener.accept().is_ok());
+        // The connect returns when the client's side of the handshake is done. The listener
+        // has the connection at once on some systems and a moment later on others, so the
+        // accept (which does not block here) is asked again until it has it.
+        let began = Instant::now();
+        loop {
+            match listener.accept() {
+                Ok(_) => break,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    assert!(
+                        began.elapsed() < Duration::from_secs(30),
+                        "the connection never reached the listener"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+        }
     }
 
     /// Each address left to try gets its share of the time left, the last one all of it.
