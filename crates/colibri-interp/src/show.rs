@@ -169,15 +169,23 @@ fn write_nested(
 
 impl<'t> Writer<'t> {
     fn list(&mut self, items: &[Value], depth: u32) {
-        for (i, item) in items.iter().enumerate() {
+        // Plain indexing rather than an iterator chain: a debug build gives the iterator
+        // adapters frame space of their own, on every level of a nested value.
+        for i in 0..items.len() {
             if i > 0 {
                 self.out.push_str(", ");
             }
-            self.value(item, depth + 1);
+            self.value(&items[i], depth + 1);
         }
     }
 
     fn value(&mut self, v: &Value, depth: u32) {
+        // A `dyn` shows as the value it holds, at the same depth: peeled here, in a loop, so
+        // that it costs no frame of its own.
+        let mut v = v;
+        while let Value::Dyn(d) = v {
+            v = &d.val;
+        }
         if depth > MAX_SHOW_DEPTH || self.stop.is_some() {
             self.out.push_str("...");
             return;
@@ -190,7 +198,6 @@ impl<'t> Writer<'t> {
             return;
         }
         match v {
-            Value::Dyn(d) => self.value(&d.val, depth),
             Value::Str(_) | Value::Bytes(_) | Value::Char(_) => self.leaf(v),
             Value::Tuple(items) => self.tuple(items, depth),
             Value::Struct(s) => self.structure(s, depth),
@@ -266,13 +273,13 @@ impl<'t> Writer<'t> {
     }
 
     fn named_payload(&mut self, fields: &[FieldDef], payload: &[Value], depth: u32) {
-        for (i, (field, value)) in fields.iter().zip(payload.iter()).enumerate() {
+        for i in 0..fields.len().min(payload.len()) {
             if i > 0 {
                 self.out.push_str(", ");
             }
-            self.out.push_str(&field.name);
+            self.out.push_str(&fields[i].name);
             self.out.push_str(": ");
-            self.value(value, depth + 1);
+            self.value(&payload[i], depth + 1);
         }
     }
 
@@ -282,13 +289,14 @@ impl<'t> Writer<'t> {
             return;
         }
         self.out.push('{');
-        for (i, (k, v)) in m.snapshot().iter().enumerate() {
+        let entries = m.snapshot();
+        for i in 0..entries.len() {
             if i > 0 {
                 self.out.push_str(", ");
             }
-            self.value(k, depth + 1);
+            self.value(&entries[i].0, depth + 1);
             self.out.push_str(": ");
-            self.value(v, depth + 1);
+            self.value(&entries[i].1, depth + 1);
         }
         self.out.push('}');
     }
@@ -373,13 +381,13 @@ impl<'t> Writer<'t> {
             return;
         }
         self.out.push_str(" { ");
-        for (i, (field, value)) in fields.iter().zip(values.iter()).enumerate() {
+        for i in 0..fields.len().min(values.len()) {
             if i > 0 {
                 self.out.push_str(", ");
             }
-            self.out.push_str(&field.name);
+            self.out.push_str(&fields[i].name);
             self.out.push_str(": ");
-            self.value(value, depth + 1);
+            self.value(&values[i], depth + 1);
         }
         self.out.push_str(" }");
     }
@@ -510,6 +518,16 @@ mod tests {
                     ],
                 },
             },
+            TypeDef {
+                name: "Node".into(),
+                span: SP,
+                params: Vec::new(),
+                module: None,
+                open: false,
+                kind: TypeDefKind::Struct {
+                    fields: vec![field("next")],
+                },
+            },
         ]
     }
 
@@ -577,8 +595,8 @@ mod tests {
     /// it calls adds to the stack used by each of the 1,000 levels. A new arm that grows
     /// those frames overflowed the 2 MB test stack only on a build with debug info, which
     /// the local setup does not use. Running on 1 MB makes that show up here, with a margin
-    /// of about two against the figure measured when this test was written (560 bytes a level
-    /// with debug info, so about 560 KB).
+    /// of about two against the figure measured when this test was written (496 bytes a level
+    /// with debug info, so about 500 KB).
     #[test]
     fn very_deep_values_are_elided_within_one_megabyte_of_stack() {
         let worker = std::thread::Builder::new()
@@ -593,5 +611,55 @@ mod tests {
             })
             .expect("a thread starts");
         worker.join().expect("the show stays within the stack");
+    }
+
+    /// Shows a chain of 100,000 values made by `make` on a thread with a 1 MB stack. The chain
+    /// is leaked: dropping it is not what is measured here, and a chain of 100,000 structs
+    /// would drop recursively.
+    fn deep_on_one_megabyte(make: fn(Value) -> Value) {
+        let worker = std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(move || {
+                let mut v = Value::Unit;
+                for _ in 0..100_000 {
+                    v = make(v);
+                }
+                let text = show(&types(), &v);
+                assert!(text.contains("..."));
+                std::mem::forget(v);
+            })
+            .expect("a thread starts");
+        worker.join().expect("the show stays within the stack");
+    }
+
+    /// The other recursive paths of `Writer`, which the guard above does not run through, so
+    /// that a frame that grows in `record`, `object` or `named_payload` shows up here too.
+    /// Bytes per level with debug info, as measured when this was written: a struct 560, a
+    /// class object 688, a `dyn` holding a struct 560, a named variant 544. The worst is 688 KB
+    /// at depth 1,000, which leaves the 1 MB of these tests a margin of 1.5 on the target that
+    /// was measured; other targets have room above that, up to the 2 MB of a test thread.
+    #[test]
+    fn very_deep_structs_are_elided_within_one_megabyte_of_stack() {
+        deep_on_one_megabyte(|v| Value::strukt(TypeId(2), vec![v]));
+    }
+
+    #[test]
+    fn very_deep_class_objects_are_elided_within_one_megabyte_of_stack() {
+        deep_on_one_megabyte(|v| Value::Obj(ClassObj::new(TypeId(2), vec![v])));
+    }
+
+    #[test]
+    fn very_deep_dyn_structs_are_elided_within_one_megabyte_of_stack() {
+        deep_on_one_megabyte(|v| {
+            Value::Dyn(Rc::new(crate::value::DynVal {
+                impl_id: 0,
+                val: Value::strukt(TypeId(2), vec![v]),
+            }))
+        });
+    }
+
+    #[test]
+    fn very_deep_named_variants_are_elided_within_one_megabyte_of_stack() {
+        deep_on_one_megabyte(|v| Value::variant(TypeId(1), 0, vec![v]));
     }
 }
