@@ -686,11 +686,46 @@ fn suspend(
 /// Gives the interpreter thread to the other coroutines once: a call that is only a scheduling
 /// point (the completion is made inside `start`). Where nothing else can run it does nothing.
 fn give_way(cx: &mut Ctx) {
+    #[cfg(test)]
+    give_way_probe::called();
     if cx.can_suspend() {
         let _ = cx.try_await_completion::<()>(|completer| {
             completer.complete(());
             Ok(())
         });
+    }
+}
+
+/// What the unit tests see of `give_way`: how many times this thread has called it, and a hook
+/// that runs at the moment it is called (before the coroutine gives the thread away).
+#[cfg(test)]
+mod give_way_probe {
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        static CALLS: Cell<usize> = const { Cell::new(0) };
+        static HOOK: RefCell<Option<Box<dyn FnMut()>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn called() {
+        CALLS.with(|c| c.set(c.get() + 1));
+        // Taken out while it runs, so that a hook may itself call things that give way.
+        if let Some(mut hook) = HOOK.with(|h| h.borrow_mut().take()) {
+            hook();
+            HOOK.with(|h| *h.borrow_mut() = Some(hook));
+        }
+    }
+
+    pub(super) fn calls() -> usize {
+        CALLS.with(Cell::get)
+    }
+
+    pub(super) fn set_hook(hook: impl FnMut() + 'static) {
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn clear_hook() {
+        HOOK.with(|h| *h.borrow_mut() = None);
     }
 }
 
@@ -1680,6 +1715,9 @@ impl Shared {
         // After the deadline came one more try is made (data that arrived at the last moment is
         // not a timeout), and only then does the call time out.
         let mut final_try = false;
+        // A wake that said "ready" is owed its try, whatever the clock says by the time this
+        // coroutine runs again (the thread may have been busy past the deadline meanwhile).
+        let mut owed = false;
         loop {
             // Closed first: what is buffered of a connection that was closed is not for anyone.
             if self.closed.load(Ordering::SeqCst) {
@@ -1693,9 +1731,10 @@ impl Shared {
                     Probe::Pending(want) => want,
                 }
             };
-            if tried && !final_try && limit.late() {
+            if tried && !final_try && !owed && limit.late() {
                 return Err(self.timeout_error(limit, action, None));
             }
+            owed = false;
             let Some(sock) = self.sock.get() else {
                 return Err(self.closed_error(action, None));
             };
@@ -1718,6 +1757,9 @@ impl Shared {
                 Ok(Ok(n)) => {
                     final_try = false;
                     if self.burst.spend(n) {
+                        // No reference to the socket while the coroutine is away: a close that
+                        // runs meanwhile must release the descriptor.
+                        drop(sock);
                         give_way(cx);
                     }
                 }
@@ -1727,7 +1769,7 @@ impl Shared {
                         return Err(self.timeout_error(limit, action, None));
                     }
                     match self.wait_ready(cx, sock, poll::Dir::Read, limit, action, None)? {
-                        Ended::Ready => {}
+                        Ended::Ready => owed = true,
                         Ended::TimedOut => final_try = true,
                         Ended::Closed => return Err(self.closed_error(action, None)),
                     }
@@ -1786,15 +1828,18 @@ impl Shared {
         }
         let mut tried = false;
         let mut final_try = false;
+        // As in `read_call`: a wake that said "ready" is owed its try.
+        let mut owed = false;
         while *done < total {
             if self.closed.load(Ordering::SeqCst) {
                 return Err(self.closed_error(action, Some((*done, total))));
             }
             // Between every two sends, so a deadline does not wait for the end of a big write.
             // The first send is tried whatever the deadline says.
-            if tried && !final_try && limit.late() {
+            if tried && !final_try && !owed && limit.late() {
                 return Err(self.timeout_error(limit, action, Some((*done, total))));
             }
+            owed = false;
             tried = true;
             let Some(sock) = self.sock.get() else {
                 return Err(self.closed_error(action, Some((*done, total))));
@@ -1816,6 +1861,7 @@ impl Shared {
                     *done += n;
                     final_try = false;
                     if self.burst.spend(n) {
+                        drop(sock);
                         give_way(cx);
                     }
                 }
@@ -1833,7 +1879,7 @@ impl Shared {
                         action,
                         Some((*done, total)),
                     )? {
-                        Ended::Ready => {}
+                        Ended::Ready => owed = true,
                         Ended::TimedOut => final_try = true,
                         Ended::Closed => {
                             return Err(self.closed_error(action, Some((*done, total))));
@@ -3764,6 +3810,134 @@ mod tests {
             });
             assert_eq!(error, Err("Closed".to_string()));
             assert!(released, "the socket was still held when close returned");
+        }
+    }
+
+    /// Makes the next successful read or write of `sh` use the burst budget up.
+    fn nearly_spent(sh: &Shared) {
+        sh.burst.reset();
+        assert!(!sh.burst.spend(MAX_BURST - 1));
+    }
+
+    /// The byte half of the burst budget yields at its call sites: a read and a write that use
+    /// the bytes up give the thread away once, inside the call. (The counter is the test build's
+    /// `give_way_probe`; the budget is made nearly spent by hand, so that no timing or buffer size
+    /// decides whether a burst of a mebibyte happened.)
+    #[test]
+    fn the_byte_budget_gives_way_inside_a_read_and_inside_a_write() {
+        let (c, mut peer) = conn_pair();
+        peer.write_all(&vec![7u8; 100_000]).unwrap();
+        let sh = Arc::clone(&c.sh);
+        let (read, written) = with_cx(move |cx| {
+            let before = give_way_probe::calls();
+            nearly_spent(&sh);
+            let ticket = sh.reads.ticket();
+            let got = sh
+                .read_call(
+                    cx,
+                    ticket,
+                    Limit::NONE,
+                    |r| {
+                        if r.available().len() >= 100_000 {
+                            Probe::Ready
+                        } else {
+                            Probe::Pending(100_000 - r.available().len())
+                        }
+                    },
+                    |r| Ok(r.take(100_000)),
+                )
+                .unwrap();
+            let read = (got.len(), give_way_probe::calls() - before);
+            let before = give_way_probe::calls();
+            nearly_spent(&sh);
+            let ticket = sh.writes.ticket();
+            sh.write_call(cx, ticket, Limit::NONE, &vec![9u8; 100_000])
+                .unwrap();
+            (read, give_way_probe::calls() - before)
+        });
+        assert_eq!(read, (100_000, 1), "the read gave way once");
+        assert_eq!(written, 1, "the write gave way once");
+        let mut got = vec![0u8; 100_000];
+        peer.read_exact(&mut got).unwrap();
+        assert!(got.iter().all(|&b| b == 9));
+    }
+
+    /// A close that runs while a read or a write has given the thread away after its burst
+    /// releases the descriptor before `close` returns: the call holds no reference to the socket
+    /// while it is away. The hook of `give_way_probe` is the other coroutine: it closes at the
+    /// moment of the yield, on this thread, and looks at who still holds the socket.
+    #[test]
+    fn a_close_during_a_give_way_releases_the_socket_of_a_read_and_of_a_write() {
+        for writing in [false, true] {
+            let (c, mut peer) = conn_pair();
+            let sh = Arc::clone(&c.sh);
+            let weak = Arc::downgrade(&sh.sock.get().expect("open"));
+            let drain = writing.then(|| {
+                let mut peer = peer.try_clone().unwrap();
+                std::thread::spawn(move || {
+                    let mut all = Vec::new();
+                    peer.read_to_end(&mut all).unwrap();
+                    all.len()
+                })
+            });
+            if !writing {
+                peer.write_all(&vec![7u8; 100_000]).unwrap();
+            }
+            let (outcome, released) = with_cx(move |cx| {
+                let released = Arc::new(Mutex::new(None));
+                {
+                    let (sh, weak, released) =
+                        (Arc::clone(&sh), weak.clone(), Arc::clone(&released));
+                    give_way_probe::set_hook(move || {
+                        sh.close();
+                        *released.lock().unwrap() = Some(weak.strong_count() == 0);
+                    });
+                }
+                nearly_spent(&sh);
+                let outcome = if writing {
+                    let ticket = sh.writes.ticket();
+                    // More than one chunk, so that the loop is still going at the yield.
+                    sh.write_call(cx, ticket, Limit::NONE, &vec![9u8; SEND_CHUNK + 1000])
+                } else {
+                    let ticket = sh.reads.ticket();
+                    sh.read_call(
+                        cx,
+                        ticket,
+                        Limit::NONE,
+                        |r| {
+                            if r.available().len() >= 100_000 {
+                                Probe::Ready
+                            } else {
+                                Probe::Pending(100_000 - r.available().len())
+                            }
+                        },
+                        |r| Ok(r.take(100_000).len()).map(|_| ()),
+                    )
+                }
+                .map_err(|e| format!("{e:?}"));
+                give_way_probe::clear_hook();
+                let released = *released.lock().unwrap();
+                (outcome, released)
+            });
+            let text = outcome.expect_err("the call ends: the connection was closed");
+            assert!(text.contains("Closed"), "writing {writing}: {text}");
+            if writing {
+                assert!(
+                    text.contains("bytes were sent"),
+                    "the writer says how much it had sent: {text}"
+                );
+            }
+            assert_eq!(
+                released,
+                Some(true),
+                "writing {writing}: the socket was held while the call was away"
+            );
+            if let Some(drain) = drain {
+                drop(c);
+                // The peer got what was sent, cut short, and then the end.
+                let got = drain.join().unwrap();
+                assert!(got > 0 && got < SEND_CHUNK + 1000, "{got}");
+            }
         }
     }
 }

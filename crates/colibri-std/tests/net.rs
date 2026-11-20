@@ -497,9 +497,18 @@ fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
     let one = BytesBuilder()
     let two = BytesBuilder()
-    for _ in 0..3_000_000 {{
-        one.push(u8(1))
-        two.push(u8(2))
+    // In blocks: byte by byte takes seconds in a debug build, while the peer's read timeout runs.
+    let block_one = BytesBuilder()
+    let block_two = BytesBuilder()
+    for _ in 0..1000 {{
+        block_one.push(u8(1))
+        block_two.push(u8(2))
+    }}
+    let bytes_one = block_one.to_bytes()
+    let bytes_two = block_two.to_bytes()
+    for _ in 0..3000 {{
+        one.push_bytes(bytes_one)
+        two.push_bytes(bytes_two)
     }}
     let r1 = go reader(c)
     let r2 = go reader(c)
@@ -1987,6 +1996,93 @@ fn main() -> Result[()] {{
         );
         assert_eq!(peer.join().unwrap(), SIZE, "from_hook = {from_hook}");
     }
+}
+
+/// `output_within`, with a `Vm` that `setup` has put host functions into.
+fn output_within_setup(
+    setup: impl FnOnce(&mut colibri::Vm) + Send + 'static,
+    source: String,
+    limit: Duration,
+) -> String {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut vm, out) = vm();
+        setup(&mut vm);
+        let result = run(&mut vm, &source).map(|()| out.contents());
+        let _ = tx.send(result.map_err(|e| e.to_string()));
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Ok(text)) => text,
+        Ok(Err(e)) => panic!("{e}"),
+        Err(_) => panic!("the program did not finish within {limit:?}: it hangs"),
+    }
+}
+
+/// A wake that said "ready" is owed its try even when the coroutine runs again after the
+/// deadline: the poller reports the data before the deadline, the interpreter thread is held
+/// (by a host function) until after it, and the read must still give the line, not a timeout.
+///
+/// Nothing here beats a fixed sleep. The host function first tells the peer to write and waits
+/// until the peer says it has (so the data is there), then holds the thread until the clock is
+/// past the deadline: the deadline is the read's call time plus the timeout, and the call came
+/// before the host function began, so `began + timeout` is after it, measured and not assumed.
+/// If a very slow machine delivered the wake only after the deadline, the call still gets its
+/// line (the timeout wake is owed a try too), so the test cannot fail for being slow; it can
+/// only stop testing the ready-then-late order.
+#[test]
+fn a_ready_wake_that_resumes_after_the_deadline_still_gets_its_read() {
+    const TIMEOUT: f64 = 1.5;
+    let (listener, addr) = rust_listener();
+    let (write_now, told) = mpsc::channel::<()>();
+    let (written, confirmed) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        told.recv_timeout(LIMIT).unwrap();
+        s.write_all(b"hi\n").unwrap();
+        written.send(()).unwrap();
+        // Until the script closes.
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output_within_setup(
+        move |vm| {
+            vm.register_fn("hold", move || {
+                let began = Instant::now();
+                write_now.send(()).unwrap();
+                confirmed.recv_timeout(LIMIT).unwrap();
+                let past = began + Duration::from_secs_f64(TIMEOUT) + Duration::from_millis(100);
+                while Instant::now() < past {
+                    std::hint::spin_loop();
+                }
+            })
+            .unwrap();
+        },
+        format!(
+            r#"import net
+
+fn reader(c: net.Conn) -> str {{
+    match c.read_line() {{
+        ok(_) => return "line"
+        err(e) => return "{{e.as[net.Error]().expect("a net error")}}"
+    }}
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    c.set_timeout({TIMEOUT})
+    let r = go reader(c)
+    task.tick(0.0)
+    hold()
+    print(r.join())
+    c.close()
+    return ok(())
+}}
+"#
+        ),
+        LIMIT,
+    );
+    peer.join().unwrap();
+    assert_eq!(out, "line\n");
 }
 
 /// A coroutine in a loop of reads and writes against a peer that is always ready never has to
