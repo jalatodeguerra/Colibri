@@ -1,0 +1,20 @@
+// only: unix - `C:` and `//host/share` are ordinary names on Unix; path_roots_windows.colibri is the Windows counterpart
+// On Unix the only root is `/`: a drive letter is a file name and two slashes are one.
+import path
+
+fn main() {
+    print(path.is_absolute("C:/Users/me"))
+    print(path.join("C:/a", "D:/b"))
+    print(path.normalize("C:/../x"))
+    print(path.parent("C:/x") or "none")
+    print(path.file_name("C:/") or "none")
+    print(path.normalize("//server/share/f"))
+    print(path.split("C:/a/b"))
+}
+// expect: false
+// expect: C:/a/D:/b
+// expect: x
+// expect: C:
+// expect: C:
+// expect: /server/share/f
+// expect: ["C:", "a", "b"]

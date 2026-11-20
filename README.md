@@ -417,6 +417,10 @@ runs its logic from Colibri scripts. The API reference is in the crate's documen
 | `math`, `rand` | math functions; random numbers |
 | `vec` | 2D, 3D and 4D vector types |
 
+Paths are `/`-separated text on every system, Windows included. `path.from_native` converts a path
+that came from outside (a command-line argument, a file's content) from the system's own spelling,
+and on Windows, and only there, `C:/` and `//host/share/` are roots.
+
 `List`, `Map`, `Set` and `StrBuilder` are built in. A Rust program that embeds Colibri decides
 whether its scripts get the standard library (the `colibri-std` crate) and which capabilities
 they have.
