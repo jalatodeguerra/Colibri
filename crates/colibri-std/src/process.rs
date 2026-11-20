@@ -6,9 +6,12 @@
 //! coroutines keep running). A program that cannot be started is an `err`; one that runs and
 //! exits with a non-zero status is an `Output` with that `status`.
 //!
-//! `shell(line)` hands the line to the system's shell: `sh -c` on Unix, `cmd /C` on Windows
-//! (so `%VAR%` and `&` there, `$VAR` and `;` elsewhere: a script that must run on both
-//! starts its programs with `run`, whose arguments no shell reads). A `cwd` option that names
+//! `shell(line)` hands the line to the system's shell: `sh -c` on Unix, `cmd /D /S /C "line"` on
+//! Windows (so `%VAR%` and `&` there, `$VAR` and `;` elsewhere: a script that must run on both
+//! starts its programs with `run`, whose arguments no shell reads). On Windows the line is
+//! passed to `cmd` as it is, not as an ordinary argument (Rust would write a `"` in it as `\"`,
+//! which `cmd` does not understand): `cmd` strips the first and the last quote of the command
+//! line and runs the rest verbatim, and `/D` keeps AutoRun commands out. A `cwd` option that names
 //! no folder is refused before anything starts, with the same message on every system. The
 //! text a program writes is passed on unchanged, so what `cmd` writes ends its lines with
 //! `\r\n`.
@@ -77,9 +80,26 @@ fn text(bytes: Vec<u8>) -> String {
 
 /// The command, with the environment of this program: the process's own plus whatever
 /// `os.set_env` changed, then the options' own variables on top.
-fn command(cx: &mut Ctx, program: &str, args: &[String], opts: &Options, piped: bool) -> Command {
+///
+/// `raw` is text appended to the command line exactly as it is, after the arguments, with no
+/// quoting; only `shell` uses it, and only on Windows (elsewhere it is always `None`).
+fn command(
+    cx: &mut Ctx,
+    program: &str,
+    args: &[String],
+    raw: Option<&str>,
+    opts: &Options,
+    piped: bool,
+) -> Command {
     let mut cmd = Command::new(program);
     cmd.args(args);
+    #[cfg(windows)]
+    if let Some(raw) = raw {
+        use std::os::windows::process::CommandExt;
+        cmd.raw_arg(raw);
+    }
+    #[cfg(not(windows))]
+    let _ = raw;
     if let Some(cwd) = &opts.cwd {
         cmd.current_dir(cwd);
     }
@@ -253,9 +273,15 @@ fn run_to_end(
 /// Waits for the program and collects its output. The waiting happens on a background thread
 /// (`Ctx::run_async_cancellable`): inside a coroutine only that coroutine waits, the others keep
 /// running, and cancelling it (or ending the `Vm`) kills the program before it goes on.
-fn run(cx: &mut Ctx, program: &str, args: &[String], opts: &Options) -> Result<Output, String> {
+fn run(
+    cx: &mut Ctx,
+    program: &str,
+    args: &[String],
+    raw: Option<&str>,
+    opts: &Options,
+) -> Result<Output, String> {
     check_folder(program, opts)?;
-    let cmd = command(cx, program, args, opts, true);
+    let cmd = command(cx, program, args, raw, opts, true);
     let (program, opts) = (program.to_string(), opts.clone());
     cx.run_async_cancellable(move |token| run_to_end(cmd, &program, &opts, token))
 }
@@ -263,7 +289,7 @@ fn run(cx: &mut Ctx, program: &str, args: &[String], opts: &Options) -> Result<O
 /// `run` without capturing: the program shares this one's standard output and error.
 fn run_inheriting(cx: &mut Ctx, program: &str, args: &[String]) -> Result<i64, String> {
     let opts = Options::default();
-    let mut cmd = command(cx, program, args, &opts, false);
+    let mut cmd = command(cx, program, args, None, &opts, false);
     let program = program.to_string();
     cx.run_async_cancellable(move |token| {
         let child = cmd.spawn().map_err(|e| start_error(&program, &e))?;
@@ -361,14 +387,32 @@ impl HostType for Child {
     }
 }
 
-#[cfg(windows)]
-fn shell_command(line: &str) -> (String, Vec<String>) {
-    ("cmd".to_string(), vec!["/C".to_string(), line.to_string()])
+/// What `shell` starts: the program, its ordinary arguments and the raw tail of the command
+/// line (see `command`).
+type ShellCommand = (String, Vec<String>, Option<String>);
+
+/// The raw argument that makes `cmd` run `line` as typed: `/D /S /C "line"`. With `/S`, `cmd`
+/// removes exactly the first and the last quote of what follows `/C` and runs the rest
+/// verbatim, so quotes inside the line mean what they mean at a prompt. (A pure function, so
+/// that the other systems' tests can look at it.)
+fn windows_shell_tail(line: &str) -> String {
+    format!("/D /S /C \"{line}\"")
 }
 
-#[cfg(not(windows))]
-fn shell_command(line: &str) -> (String, Vec<String>) {
-    ("sh".to_string(), vec!["-c".to_string(), line.to_string()])
+fn shell_command(line: &str, windows: bool) -> ShellCommand {
+    if windows {
+        (
+            "cmd".to_string(),
+            Vec::new(),
+            Some(windows_shell_tail(line)),
+        )
+    } else {
+        (
+            "sh".to_string(),
+            vec!["-c".to_string(), line.to_string()],
+            None,
+        )
+    }
 }
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
@@ -385,7 +429,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             "run",
             ["program", "args"],
             |cx: &mut Ctx, program: String, args: Vec<String>| {
-                run(cx, &program, &args, &Options::default())
+                run(cx, &program, &args, None, &Options::default())
             },
         ),
     )?;
@@ -395,7 +439,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             "run_with",
             ["program", "args", "options"],
             |cx: &mut Ctx, program: String, args: Vec<String>, options: Options| {
-                run(cx, &program, &args, &options)
+                run(cx, &program, &args, None, &options)
             },
         ),
     )?;
@@ -407,7 +451,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             "output",
             ["program", "args"],
             |cx: &mut Ctx, program: String, args: Vec<String>| {
-                let out = run(cx, &program, &args, &Options::default())?;
+                let out = run(cx, &program, &args, None, &Options::default())?;
                 if out.status == 0 {
                     return Ok(out.stdout);
                 }
@@ -430,13 +474,13 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             |cx: &mut Ctx, program: String, args: Vec<String>| run_inheriting(cx, &program, &args),
         ),
     )?;
-    // `run` through the system shell (`sh -c`, `cmd /C` on Windows): pipes, globs and quoting
+    // `run` through the system shell (`sh -c`, `cmd /D /S /C "line"` on Windows): pipes, globs and quoting
     // are the shell's, and so are its portability problems.
     needs(
         Cap::Os,
         m.register_fn_named("shell", ["line"], |cx: &mut Ctx, line: String| {
-            let (program, args) = shell_command(&line);
-            run(cx, &program, &args, &Options::default())
+            let (program, args, raw) = shell_command(&line, cfg!(windows));
+            run(cx, &program, &args, raw.as_deref(), &Options::default())
         }),
     )?;
     needs(
@@ -464,7 +508,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
 
 fn spawn(cx: &mut Ctx, program: String, args: &[String], opts: &Options) -> Result<Child, String> {
     check_folder(&program, opts)?;
-    let mut child = command(cx, &program, args, opts, true)
+    let mut child = command(cx, &program, args, None, opts, true)
         .spawn()
         .map_err(|e| start_error(&program, &e))?;
     let feeder = feed(&mut child, opts.input.clone());
@@ -483,6 +527,27 @@ fn spawn(cx: &mut Ctx, program: String, args: &[String], opts: &Options) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shell_line_is_unchanged_on_unix_and_one_raw_argument_on_windows() {
+        assert_eq!(
+            shell_command("echo \"a b\" & x", false),
+            (
+                "sh".to_string(),
+                vec!["-c".to_string(), "echo \"a b\" & x".to_string()],
+                None
+            )
+        );
+        assert_eq!(
+            shell_command("echo \"a b\" & x", true),
+            (
+                "cmd".to_string(),
+                Vec::new(),
+                Some("/D /S /C \"echo \"a b\" & x\"".to_string())
+            )
+        );
+        assert_eq!(windows_shell_tail(""), "/D /S /C \"\"");
+    }
 
     #[test]
     fn a_token_cancelled_before_the_wait_gives_up_without_waiting_for_the_pid() {
