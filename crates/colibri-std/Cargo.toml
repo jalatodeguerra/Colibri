@@ -1,6 +1,6 @@
 [package]
 name = "colibri-std"
-description = "The Colibri standard library: io, fs, path, os, math, rand, time, json, regex, http, args, process and datetime as host modules"
+description = "The Colibri standard library: io, fs, path, os, math, rand, time, json, regex, http, args, process, net and datetime as host modules"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

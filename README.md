@@ -74,9 +74,10 @@ error: reading notes.txt: cannot read `notes.txt`: no such file or directory
   any code.
 - **Coroutines without colored functions.** `go f()` starts a coroutine and `wait(secs)`,
   `join()`, groups and signals suspend it. There is no `async`/`await`, so any function can wait.
-- **Batteries for scripting.** 20 standard library modules, including files (whole or streamed
+- **Batteries for scripting.** 21 standard library modules, including files (whole or streamed
   through a handle) and paths, JSON, TOML and CSV, regular expressions, subprocesses,
-  command-line arguments, dates and an HTTP client, and `Bytes` for data that is not text.
+  command-line arguments, dates, an HTTP client and TCP sockets, and `Bytes` for data that is not
+  text.
 - **Conditional code.** `@when(os == "windows")`, `@when(debug)` and feature flags from
   `colibri.toml` decide which items exist; `@deprecated` makes a use of an old item warn.
 - **One binary for the whole workflow:** run, check, test, format, a REPL, a language server,
@@ -310,6 +311,79 @@ their end first), and the operations on one handle happen in the order they were
 from different coroutines. A handle that goes out of scope is flushed and closed; call
 `close()` (best with `defer`) to see an error from that. Reading or writing a folder as a file
 is `fs.Error.IsADirectory` on every system.
+
+### Sockets
+
+`net` is TCP over IPv4 and IPv6. An address is always `"host:port"`; port 0 asks the system for a
+free port, and `listener.addr()` says which one it picked. This script is a server and its client
+in one program, over the loopback address:
+
+```colibri
+import net
+
+// The server side: answer each line a client sends with a greeting.
+fn greet(conn: net.Conn) {
+    defer conn.close()
+    while true {
+        let line = conn.read_line() or |e| { return }
+        let name = line or { return }
+        conn.write("hello, {name}!\n") or |e| { return }
+    }
+}
+
+fn serve(listener: net.Listener) {
+    while true {
+        let conn = listener.accept() or |e| { return }
+        go greet(conn)
+    }
+}
+
+fn main() -> Result[()] {
+    let listener = net.listen("127.0.0.1:0")? // port 0: the system picks a free port
+    let server = go serve(listener)
+
+    let conn = net.connect(listener.addr())?
+    conn.write("Colibri\n")?
+    print(conn.read_line()?) // some("hello, Colibri!")
+    conn.close()
+
+    listener.close() // ends the accept loop
+    server.join()
+    return ok(())
+}
+```
+
+```console
+$ colibri run greet.colibri
+some("hello, Colibri!")
+```
+
+`accept`, the reads, the writes and `connect` wait on background threads, so while one coroutine
+waits for a peer the others keep running. Cancelling a coroutine that waits in `read` or `accept`
+never loses data or a connection: what had arrived stays for the next call. `close()` never
+waits and never fails, and it ends every call that waits on that object with `net.Error.Closed`.
+
+- A `net.Conn` has `read(n)` (up to `n` bytes, waiting for at least one; empty `Bytes` is the
+  end of the stream), `read_exact(n)`, `read_line()` (`none` at the end; a line may be up to 1 MiB
+  and must be UTF-8), `write(text)`, `write_bytes(data)`, `close_write()` (tells the peer that
+  nothing more comes, and the connection still reads), `set_timeout(seconds)` for each later read
+  and write (0 means none), `local_addr()`, `peer_addr()` and `close()`.
+- `net.connect_timeout(addr, seconds)` gives up after that long. A timed-out read keeps what it
+  had read, and the connection stays usable.
+- `listen("[::]:0")` accepts IPv4 connections too, on every system, and connecting to an
+  unspecified address (`0.0.0.0`) means the loopback address.
+- A write to a peer that has gone is `net.Error.BrokenPipe` on every system. A write that
+  stopped part way (cancelled, timed out) breaks the write side of that connection, so a later
+  write cannot continue in the middle of a message; reading still works.
+- Failures are a `net.Error` (`Refused`, `Timeout`, `Reset`, `BrokenPipe`, `AddrInUse`,
+  `AddrNotAvailable`, `Unreachable`, `Dns`, `InvalidAddress`, `PermissionDenied`, `Closed`,
+  `UnexpectedEnd`, `LineTooLong`, `InvalidData` and `Other`). The text of each is Colibri's own
+  and is the same on Linux, macOS and Windows; only `Other` shows the system's words.
+
+`net` needs the `net` capability, like `http`: `colibri run` grants it, and a program that embeds
+Colibri decides whether its scripts have it (`Cap::Net`). There is no HTTP server in the
+standard library yet; [`examples/scripts/kvserver`](examples/scripts/kvserver/kvserver.colibri)
+is a key-value server over a line protocol, written with `net`.
 
 ### Tests
 
@@ -632,6 +706,7 @@ whose logic comes from Colibri scripts (host classes, handles, callbacks and a s
 | `hash` | SHA-256 of text and of `Bytes` |
 | `regex` | regular expressions |
 | `http` | a blocking HTTP client that does not block other coroutines; `get_bytes` and `request_bytes` for bodies that are not text |
+| `net` | TCP sockets: `net.listen`, `net.connect` and `net.connect_timeout` give a `net.Listener` or a `net.Conn` that read and write lines, bytes and text without blocking other coroutines |
 | `time`, `datetime` | clocks and sleeping; dates, times and formatting |
 | `math`, `rand` | math functions; random numbers |
 | `vec` | 2D, 3D and 4D vector types |
@@ -653,7 +728,8 @@ they have.
   ordering, `@deprecated` and conditional code with `@when` and features.
 - A tree-walking interpreter over a typed intermediate representation, with a deterministic
   drop order.
-- The embedding API, the C FFI, coroutines, the 20 std modules above, `Bytes` and file handles.
+- The embedding API, the C FFI, coroutines, the 21 std modules above (TCP sockets included),
+  `Bytes` and file handles.
 - Tooling: `run`, `check`, `test`, `fmt`, `new`, `repl`, `lsp`, hot reload and the leak detector.
 
 **Next** (not started):
