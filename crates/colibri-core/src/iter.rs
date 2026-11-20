@@ -192,7 +192,7 @@ impl IterObj {
             },
             State::Enumerate { inner, index } => {
                 let taken = std::mem::replace(inner, Value::Unit);
-                return Step::Inner(taken, *index);
+                Step::Inner(taken, *index)
             }
             State::Done => Step::End,
         }

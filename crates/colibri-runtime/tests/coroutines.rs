@@ -671,7 +671,8 @@ fn main() {
         "the other coroutine ran to its end"
     );
     let ping = vm.get_fn::<(), ()>("ping").unwrap();
-    ping.call(&mut vm, ()).expect("the host's next call is not charged");
+    ping.call(&mut vm, ())
+        .expect("the host's next call is not charged");
 }
 
 #[test]
@@ -719,7 +720,8 @@ fn main() {
 }
 "#,
     );
-    vm.run_main().expect("main is not charged with the child's hook");
+    vm.run_main()
+        .expect("main is not charged with the child's hook");
     assert_eq!(out.contents(), "hook b\nmain after cancel\n");
     let err = vm.tick(0.0).expect_err("the child's failure is reported");
     assert!(err.to_string().contains("boom b"), "{err}");
@@ -746,9 +748,13 @@ fn main() {
     vm.run_main().unwrap();
     let err = vm.tick(0.5).expect_err("the child failed");
     assert!(err.to_string().contains("boom"), "{err}");
-    assert_eq!(out.contents(), "child captured local\nhook local\nhook captured\n");
+    assert_eq!(
+        out.contents(),
+        "child captured local\nhook local\nhook captured\n"
+    );
     assert_eq!(vm.coroutine_count(), 0);
-    vm.tick(0.0).expect("nothing is left over for the next tick");
+    vm.tick(0.0)
+        .expect("nothing is left over for the next tick");
 }
 
 #[test]
