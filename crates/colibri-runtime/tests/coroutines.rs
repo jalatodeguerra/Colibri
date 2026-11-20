@@ -435,3 +435,67 @@ fn main() {
     // Newest first: the waiter leaves the target's list, then the target ends.
     assert_eq!(out.contents(), "waiter cancelled\ntarget cancelled\n");
 }
+
+/// `join` and `join_all` waiters, like `join_result` ones, do not keep the event loop polling.
+#[test]
+fn join_and_join_all_waiters_do_not_keep_the_event_loop_polling() {
+    let (mut vm, out, sleeps) = counting_vm();
+    vm.load_source(
+        "stuck.colibri",
+        r#"
+let never = Signal()
+let group = CoGroup()
+fn member() {
+    wait_for(never)
+}
+fn joiner(c: Coroutine[()]) {
+    defer print("joiner cancelled")
+    c.join()
+}
+fn all() {
+    defer print("join_all cancelled")
+    group.join_all()
+}
+fn main() {
+    let m = group.go(member())
+    go joiner(m)
+    go all()
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    vm.run_event_loop().unwrap();
+    assert_eq!(sleeps.get(), 0);
+    assert_eq!(vm.coroutine_count(), 3);
+    vm.cancel_coroutines();
+    assert_eq!(out.contents(), "join_all cancelled\njoiner cancelled\n");
+}
+
+/// On the main fiber `join` and `join_all` run the event loop: one sleep to the target's timer,
+/// not one per millisecond.
+#[test]
+fn join_on_the_main_fiber_sleeps_to_the_timer_and_does_not_poll() {
+    let (mut vm, out, sleeps) = counting_vm();
+    vm.load_source(
+        "main_join.colibri",
+        r#"
+fn slow(n: int) -> int {
+    wait(3600.0)
+    return n
+}
+fn main() {
+    let c = go slow(7)
+    print("{c.join()}")
+    let g = CoGroup()
+    g.go(slow(8))
+    g.join_all()
+    print("{c.join_result().expect("v")}")
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "7\n7\n");
+    assert!(sleeps.get() <= 4, "{} sleeps", sleeps.get());
+}

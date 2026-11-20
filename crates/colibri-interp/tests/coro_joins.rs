@@ -89,7 +89,11 @@ fn pairs(how: &str) -> String {
 /// While their targets live, the waiters are not resumed by any number of ticks, and the
 /// event loop is told there is nothing to poll for. When the targets end, every waiter is
 /// woken, in the order they began waiting.
-fn waiters_cost_nothing(how: &str) {
+///
+/// `queued`: whether the woken waiters wait for the tick after the one in which their targets
+/// ended (a `join_result` waiter is queued like a signal's), or run in that tick's ordinary pass
+/// when they start after their target (`join`).
+fn waiters_cost_nothing(how: &str, queued: bool) {
     let mut m = machine(&pairs(how));
     m.call("main");
     assert_eq!(m.interp.coroutine_count(), 2 * N);
@@ -108,15 +112,17 @@ fn waiters_cost_nothing(how: &str) {
         "nothing is due, so the event loop has nothing to poll for"
     );
     m.call("fire");
-    // The targets end in the next tick; their waiters are woken for the one after.
     m.tick(0.0);
-    assert_eq!(m.interp.coroutine_resumptions(), after_start + N as u64);
-    assert_eq!(
-        m.interp.next_wake(0.001),
-        Some(0.0),
-        "the woken are due now"
-    );
-    m.tick(0.0);
+    if queued {
+        // The targets end in this tick; their waiters were queued for the next one.
+        assert_eq!(m.interp.coroutine_resumptions(), after_start + N as u64);
+        assert_eq!(
+            m.interp.next_wake(0.001),
+            Some(0.0),
+            "the woken are due now"
+        );
+        m.tick(0.0);
+    }
     assert_eq!(m.interp.coroutine_resumptions(), after_start + 2 * N as u64);
     assert_eq!(m.interp.coroutine_count(), 0);
     let expected: String = (0..N).map(|i| format!("{i}\n")).collect();
@@ -125,7 +131,7 @@ fn waiters_cost_nothing(how: &str) {
 
 #[test]
 fn a_thousand_join_result_waiters_cost_no_resumptions_and_no_polling() {
-    waiters_cost_nothing("let _ = c.join_result()");
+    waiters_cost_nothing("let _ = c.join_result()", true);
 }
 
 /// A waiter that is cancelled while it waits leaves the target's list at once: nothing stays
@@ -178,7 +184,7 @@ fn join_result_on_a_finished_coroutine_does_not_suspend() {
 
 /// Many waiters on one target are woken in the order they began waiting, all in the tick after
 /// the target ends, and the target keeps one list: nothing is left registered.
-fn one_target_many_waiters(how: &str) {
+fn one_target_many_waiters(how: &str, queued: bool) {
     let src = format!(
         "let gate = Signal()\n\
          fn target() {{\n    wait_for(gate)\n}}\n\
@@ -197,8 +203,10 @@ fn one_target_many_waiters(how: &str) {
     assert_eq!(m.interp.next_wake(0.001), None);
     m.call("fire");
     m.tick(0.0);
-    assert_eq!(m.printed(), "", "the waiters are woken for the next tick");
-    m.tick(0.0);
+    if queued {
+        assert_eq!(m.printed(), "", "the waiters are woken for the next tick");
+        m.tick(0.0);
+    }
     let expected: String = (0..N).map(|i| format!("{i}\n")).collect();
     assert_eq!(m.printed(), expected, "woken in the order they waited");
     assert_eq!(m.interp.coroutine_waiters(), 0);
@@ -207,5 +215,132 @@ fn one_target_many_waiters(how: &str) {
 
 #[test]
 fn many_join_result_waiters_on_one_target_wake_in_waiting_order() {
-    one_target_many_waiters("let _ = c.join_result()");
+    one_target_many_waiters("let _ = c.join_result()", true);
+}
+
+#[test]
+fn a_thousand_join_waiters_cost_no_resumptions_and_no_polling() {
+    waiters_cost_nothing("c.join()", false);
+}
+
+#[test]
+fn many_join_waiters_on_one_target_wake_in_waiting_order() {
+    one_target_many_waiters("c.join()", false);
+}
+
+/// `n` coroutines (members of one group) wait for the gate; `k` others wait in `join_all` on
+/// the group. They are not resumed while the members live, the event loop has nothing to poll,
+/// and when the last member ends every waiter is woken, in the order they began waiting.
+#[test]
+fn a_thousand_join_all_waiters_cost_no_resumptions_and_no_polling() {
+    let src = format!(
+        "let gate = Signal()\n\
+         fn member() {{\n    wait_for(gate)\n}}\n\
+         fn waiter(n: int, g: CoGroup) {{\n    g.join_all()\n    print(n)\n}}\n\
+         fn main() {{\n    let g = CoGroup()\n    g.go(member())\n    g.go(member())\n    for i in 0..{N} {{\n        go waiter(i, g)\n    }}\n}}\n\
+         fn fire() {{\n    gate.emit()\n}}\n"
+    );
+    let mut m = machine(&src);
+    m.call("main");
+    let after_start = m.interp.coroutine_resumptions();
+    for _ in 0..100 {
+        m.tick(0.01);
+    }
+    assert_eq!(m.interp.coroutine_resumptions(), after_start);
+    assert_eq!(m.interp.next_wake(0.001), None);
+    assert_eq!(
+        m.interp.coroutine_waiters(),
+        N + 2,
+        "the two members on the gate, the waiters on the group"
+    );
+    m.call("fire");
+    m.tick(0.0);
+    // The members end in this tick; the waiters, which started after them, run in its
+    // ordinary pass, in start order.
+    let expected: String = (0..N).map(|i| format!("{i}\n")).collect();
+    assert_eq!(m.printed(), expected);
+    assert_eq!(m.interp.coroutine_waiters(), 0);
+    assert_eq!(m.interp.coroutine_count(), 0);
+}
+
+/// A waiter in `join` or `join_all` that is cancelled while it waits leaves the list at once.
+#[test]
+fn a_cancelled_join_or_join_all_waiter_leaves_no_entry_behind() {
+    let src = "let gate = Signal()\nlet g = CoGroup()\n\
+        fn member() {\n    wait_for(gate)\n}\n\
+        fn joiner(c: Coroutine[()]) {\n    defer print(\"joiner unwound\")\n    c.join()\n}\n\
+        fn all(g: CoGroup) {\n    defer print(\"all unwound\")\n    g.join_all()\n}\n\
+        fn main() {\n    let m = g.go(member())\n    let a = go joiner(m)\n    let b = go all(g)\n    a.cancel()\n    b.cancel()\n}\n\
+        fn fire() {\n    gate.emit()\n}\n";
+    let mut m = machine(src);
+    m.call("main");
+    assert_eq!(m.printed(), "joiner unwound\nall unwound\n");
+    assert_eq!(
+        m.interp.coroutine_waiters(),
+        1,
+        "only the member's wait for the gate"
+    );
+    assert_eq!(m.interp.coroutine_count(), 1);
+    m.call("fire");
+    let before = m.interp.coroutine_resumptions();
+    m.tick(0.0);
+    assert_eq!(
+        m.interp.coroutine_resumptions(),
+        before + 1,
+        "only the member"
+    );
+    assert_eq!(m.interp.coroutine_waiters(), 0);
+    assert_eq!(m.interp.coroutine_count(), 0);
+}
+
+/// `join` on a finished coroutine and `join_all` on a group with no other member do not
+/// suspend: the coroutine runs to its end in the resumption that started it.
+#[test]
+fn join_and_join_all_with_nothing_to_wait_for_do_not_suspend() {
+    let src = "fn quick() -> int {\n    return 5\n}\n\
+        fn joiner(c: Coroutine[int], g: CoGroup) {\n    print(c.join())\n    g.join_all()\n    print(\"done\")\n}\n\
+        fn main() {\n    let g = CoGroup()\n    let c = g.go(quick())\n    go joiner(c, g)\n}\n";
+    let mut m = machine(src);
+    m.call("main");
+    assert_eq!(m.printed(), "5\ndone\n");
+    assert_eq!(m.interp.coroutine_count(), 0);
+    assert_eq!(m.interp.coroutine_waiters(), 0);
+    assert_eq!(m.interp.coroutine_resumptions(), 2);
+}
+
+/// A member of a group that joins its own group waits for the others only.
+#[test]
+fn a_member_joining_its_own_group_waits_for_the_others() {
+    let src = "let gate = Signal()\n\
+        fn other() {\n    wait_for(gate)\n    print(\"other ends\")\n}\n\
+        fn me(g: CoGroup) {\n    g.join_all()\n    print(\"me resumed\")\n}\n\
+        fn main() {\n    let g = CoGroup()\n    g.go(other())\n    g.go(me(g))\n}\n\
+        fn fire() {\n    gate.emit()\n}\n";
+    let mut m = machine(src);
+    m.call("main");
+    assert_eq!(m.interp.coroutine_count(), 2);
+    for _ in 0..10 {
+        m.tick(0.1);
+    }
+    assert_eq!(m.printed(), "");
+    assert_eq!(m.interp.next_wake(0.001), None);
+    m.call("fire");
+    m.tick(0.0);
+    assert_eq!(m.printed(), "other ends\nme resumed\n");
+    assert_eq!(m.interp.coroutine_count(), 0);
+}
+
+/// Cancelling the target wakes its joiners with the cancel outcome (`join` panics in the
+/// joiner, here left as a failure of the tick), and a group's death cancels its members, whose
+/// end wakes a `join_all` on it.
+#[test]
+fn cancelling_the_target_wakes_a_join_waiter() {
+    let src = "fn forever() {\n    wait(1000.0)\n}\n\
+        fn joiner(c: Coroutine[()]) {\n    let r = c.join_result()\n    print(r.is_err())\n}\n\
+        fn main() {\n    let c = go forever()\n    go joiner(c)\n    c.cancel()\n}\n";
+    let mut m = machine(src);
+    m.call("main");
+    m.tick(0.0);
+    assert_eq!(m.printed(), "true\n");
+    assert_eq!(m.interp.coroutine_count(), 0);
 }
