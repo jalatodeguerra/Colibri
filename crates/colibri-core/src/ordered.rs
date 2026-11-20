@@ -26,6 +26,7 @@ const COMPACT_MIN: usize = 32;
 /// The hash of a key value. Equal keys hash equally: strings by content, aggregates by their
 /// parts, class objects by identity. (The checker only lets hashable types be keys; anything
 /// else still hashes without panicking.)
+#[inline]
 pub fn hash_value(v: &Value) -> u64 {
     hash_value_with(v, &mut |_| None)
 }

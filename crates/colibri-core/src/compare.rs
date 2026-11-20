@@ -57,6 +57,7 @@ thread_local! {
 
 /// [`values_equal`] for callers that cannot report an error: when the comparison gives up the
 /// answer is `false` and [`take_gave_up`] says so until the evaluator has turned it into a panic.
+#[inline]
 #[doc(hidden)]
 pub fn equal_or_give_up(a: &Value, b: &Value) -> bool {
     values_equal(a, b).unwrap_or_else(|TooDeep| {
@@ -74,6 +75,7 @@ pub fn take_gave_up() -> bool {
 
 /// Structural equality. Floats compare as IEEE numbers, so a value containing `nan` is not
 /// equal to itself, exactly as `nan == nan` is false.
+#[inline]
 pub fn values_equal(a: &Value, b: &Value) -> Result<bool, TooDeep> {
     equal(a, b, 0, &Guard::here(), &mut Plain).map_err(|_| TooDeep)
 }

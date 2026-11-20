@@ -329,6 +329,7 @@ impl ListObj {
         self.replace_at(index, v)
     }
 
+    #[inline]
     fn replace_at(&self, index: i64, v: Value) -> Result<Value, (ListError, Value)> {
         let mut items = self.items.borrow_mut();
         match in_bounds(index, items.len()) {
