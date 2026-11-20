@@ -1,0 +1,30 @@
+// caps: net
+// `listen("0.0.0.0:0")` and `connect(listener.addr())` work on every system: a connect to the
+// unspecified address goes to this machine's loopback address (Windows refuses a connect to
+// `0.0.0.0` itself, so it is never sent there).
+import net
+
+fn main() -> Result[()] {
+    let l = net.listen("0.0.0.0:0")?
+    print(l.addr().starts_with("0.0.0.0:"))
+    let c = net.connect(l.addr())?
+    let s = l.accept()?
+    c.write("hello\n")?
+    print(s.read_line()?)
+    print(c.peer_addr().starts_with("127.0.0.1:"))
+    let d = net.connect_timeout(l.addr(), 10.0)?
+    let t = l.accept()?
+    d.write("again\n")?
+    print(t.read_line()?)
+    c.close()
+    s.close()
+    d.close()
+    t.close()
+    l.close()
+    return ok(())
+}
+
+// expect: true
+// expect: some("hello")
+// expect: true
+// expect: some("again")

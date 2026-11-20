@@ -1,0 +1,51 @@
+// caps: net
+// An echo server and its clients in one script: `accept` and the reads wait on background
+// threads, so the server, three client coroutines and the main function all make progress.
+import net
+
+fn echo(c: net.Conn) {
+    defer c.close()
+    while true {
+        let data = c.read(1024) or |e| { return }
+        if data.len() == 0 {
+            return
+        }
+        c.write_bytes(data) or |e| { return }
+    }
+}
+
+fn serve(l: net.Listener) {
+    while true {
+        let c = l.accept() or |e| { return }
+        go echo(c)
+    }
+}
+
+fn client(addr: str, name: str) -> str {
+    let c = net.connect(addr).expect("connected")
+    defer c.close()
+    c.write("hello from {name}").expect("written")
+    let got = c.read_exact(("hello from {name}").len()).expect("echoed")
+    return "{name}: {got.to_str_lossy()}"
+}
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let addr = l.addr()
+    print(addr.starts_with("127.0.0.1:") && addr != "127.0.0.1:0")
+    let server = go serve(l)
+    let a = go client(addr, "ann")
+    let b = go client(addr, "bob")
+    let c = go client(addr, "cy")
+    print(a.join())
+    print(b.join())
+    print(c.join())
+    l.close()
+    server.join()
+    return ok(())
+}
+
+// expect: true
+// expect: ann: hello from ann
+// expect: bob: hello from bob
+// expect: cy: hello from cy

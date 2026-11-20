@@ -1,0 +1,60 @@
+// caps: net
+// Closing twice is fine; every other use of a closed connection or listener is `Closed`.
+// Closing a listener frees its port and ends an `accept` that waits.
+import net
+
+fn kind[T](r: Result[T]) -> str {
+    match r {
+        ok(_) => return "ok"
+        err(e) => return "{e.as[net.Error]().expect("a net error")}"
+    }
+}
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let addr = l.addr()
+    let c = net.connect(addr)?
+    let s = l.accept()?
+    c.close()
+    c.close()
+    print(kind(c.read(1)))
+    print(kind(c.read_exact(1)))
+    print(kind(c.read_line()))
+    print(kind(c.write("x")))
+    print(kind(c.write_bytes(Bytes([1]))))
+    print(kind(c.close_write()))
+    print(c.write("x").err().expect("closed").message().replace(addr, "<addr>"))
+    // The addresses stay readable.
+    print(c.peer_addr() == addr)
+    // The other end sees the end of the stream.
+    print(s.read(1)?.len())
+    s.close()
+
+    // An `accept` that waits ends when its listener is closed.
+    let waiting = go fn() -> str { return kind(l.accept()) }()
+    task.tick(0.0)
+    l.close()
+    print(waiting.join())
+    l.close()
+    print(kind(l.accept()))
+    // The port is free: nobody listens on it any more.
+    print(kind(net.connect(addr)))
+    let again = net.listen(addr)?
+    print(again.addr() == addr)
+    again.close()
+    return ok(())
+}
+
+// expect: Closed
+// expect: Closed
+// expect: Closed
+// expect: Closed
+// expect: Closed
+// expect: Closed
+// expect: cannot write to `<addr>`: it was closed (do not use a connection or listener after `close()`)
+// expect: true
+// expect: 0
+// expect: Closed
+// expect: Closed
+// expect: Refused
+// expect: true

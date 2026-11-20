@@ -42,7 +42,12 @@ fn temp_dir(name: &str) -> PathBuf {
 
 #[test]
 fn both_scripts_check() {
-    for script in ["organize/organize.colibri", "report/report.colibri"] {
+    for script in [
+        "organize/organize.colibri",
+        "report/report.colibri",
+        "kvserver/kvserver.colibri",
+        "kvserver/kvclient.colibri",
+    ] {
         let path = scripts().join(script);
         let out = colibri(&["check", path.to_str().unwrap()]);
         assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
@@ -617,6 +622,359 @@ fn report_requests_overlap_with_concurrency() {
     assert_eq!(peak1, 1);
     assert!(overlapped < Duration::from_millis(1000), "{overlapped:?}");
     assert!(serial >= Duration::from_millis(1500), "{serial:?}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------- kvserver
+
+/// A running `kvserver` and the address it printed.
+struct Kv {
+    child: std::process::Child,
+    addr: String,
+}
+
+impl Kv {
+    fn start(extra: &[&str]) -> Kv {
+        use std::io::BufRead;
+        let script = scripts().join("kvserver/kvserver.colibri");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+            .args(["run", script.to_str().unwrap(), "--"])
+            .args(extra)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the colibri binary runs");
+        let mut first = String::new();
+        std::io::BufReader::new(child.stdout.as_mut().unwrap())
+            .read_line(&mut first)
+            .unwrap();
+        let addr = first
+            .trim()
+            .strip_prefix("listening on ")
+            .unwrap_or_else(|| panic!("unexpected first line {first:?}"))
+            .to_string();
+        Kv { child, addr }
+    }
+
+    fn client(&self) -> (TcpStream, std::io::BufReader<TcpStream>) {
+        let s = TcpStream::connect(&self.addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let r = std::io::BufReader::new(s.try_clone().unwrap());
+        (s, r)
+    }
+}
+
+impl Drop for Kv {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Whether the server turns this new client away: its one line is read before anything is
+/// written, because a connection closed with unread input is reset on Windows, and the reset can
+/// drop the line before it is read. A client that is served says nothing, so no line within the
+/// wait means it is served.
+fn is_turned_away(c: &mut (TcpStream, std::io::BufReader<TcpStream>)) -> bool {
+    use std::io::BufRead;
+    c.0.set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let mut line = String::new();
+    let got = c.1.read_line(&mut line);
+    c.0.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    match got {
+        Ok(_) => {
+            assert_eq!(line.trim_end(), "ERR too many connections");
+            true
+        }
+        Err(e) => {
+            assert!(
+                matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ),
+                "{e}"
+            );
+            false
+        }
+    }
+}
+
+fn ask(c: &mut (TcpStream, std::io::BufReader<TcpStream>), request: &str) -> String {
+    use std::io::BufRead;
+    c.0.write_all(request.as_bytes()).unwrap();
+    let mut line = String::new();
+    c.1.read_line(&mut line).unwrap();
+    line.trim_end().to_string()
+}
+
+#[test]
+fn kvserver_serves_several_clients_and_shuts_down() {
+    let mut kv = Kv::start(&[]);
+    let mut a = kv.client();
+    let mut b = kv.client();
+    assert_eq!(ask(&mut a, "SET colour dark blue\r\n"), "OK");
+    // Another client sees it at once; and `\n` alone ends a request too.
+    assert_eq!(ask(&mut b, "GET colour\n"), "VALUE dark blue");
+    assert_eq!(ask(&mut b, "set size 3\n"), "OK");
+    assert_eq!(ask(&mut a, "KEYS\n"), "KEYS colour size");
+    assert_eq!(ask(&mut a, "COUNT\n"), "2");
+    assert_eq!(ask(&mut a, "DEL size\n"), "DELETED");
+    assert_eq!(ask(&mut b, "DEL size\n"), "MISSING");
+    assert_eq!(ask(&mut b, "GET size\n"), "MISSING");
+    assert!(ask(&mut b, "FROB\n").starts_with("ERR unknown"));
+    assert_eq!(ask(&mut a, "QUIT\n"), "BYE");
+    // QUIT closed that connection only.
+    assert_eq!(ask(&mut b, "COUNT\n"), "1");
+    assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
+    let status = kv.child.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
+}
+
+/// The Colibri client that the README shows (for systems without `nc`) talks to the server, and
+/// says so when there is nobody to talk to.
+#[test]
+fn kvclient_talks_to_kvserver_and_reports_a_missing_server() {
+    let kv = Kv::start(&[]);
+    let client = scripts().join("kvserver/kvclient.colibri");
+    let out = run_script(
+        &client,
+        &[&kv.addr, "SET a 1", "GET a", "COUNT", "SHUTDOWN"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "OK\nVALUE 1\n1\nBYE\n");
+    let mut kv = kv;
+    assert_eq!(kv.child.wait().unwrap().code(), Some(0));
+    // The server has stopped: its port refuses (a port that was just closed).
+    let out = run_script(&client, &[&kv.addr, "COUNT"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("cannot reach the server"),
+        "{}",
+        text(&out.stderr)
+    );
+    let out = run_script(&client, &[&kv.addr]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn kvserver_closes_idle_connections_and_reports_a_bad_address() {
+    let kv = Kv::start(&["--idle", "1.5"]);
+    let mut c = kv.client();
+    assert_eq!(ask(&mut c, "COUNT\n"), "0");
+    // Silent for longer than the idle time: the server closes the connection.
+    use std::io::BufRead;
+    let mut line = String::new();
+    assert_eq!(c.1.read_line(&mut line).unwrap(), 0);
+    drop(kv);
+
+    let script = scripts().join("kvserver/kvserver.colibri");
+    let out = run_script(&script, &["--addr", "not an address"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("is not an address"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+/// `--idle` is a deadline for each request line, and what it is given must be a number of
+/// seconds that `set_timeout` takes: anything else is a usage error (exit 2), not a panic.
+#[test]
+fn kvserver_refuses_an_idle_time_or_a_connection_cap_that_makes_no_sense() {
+    let script = scripts().join("kvserver/kvserver.colibri");
+    for (flag, value) in [
+        ("--idle", "-1"),
+        ("--idle", "nan"),
+        ("--idle", "inf"),
+        ("--idle", "soon"),
+        ("--max-connections", "0"),
+        ("--max-connections", "-3"),
+        ("--max-connections", "many"),
+    ] {
+        let out = run_script(&script, &[flag, value]);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{flag} {value}: {}",
+            text(&out.stderr)
+        );
+        assert!(
+            text(&out.stderr).contains("usage:") && !text(&out.stderr).contains("panic"),
+            "{flag} {value}: {}",
+            text(&out.stderr)
+        );
+        assert_eq!(text(&out.stdout), "", "{flag} {value}");
+    }
+}
+
+/// With `--max-connections 2` a third connection is told so in one line and closed, and a
+/// connection that leaves makes room again.
+#[test]
+fn kvserver_turns_away_connections_over_its_cap() {
+    use std::io::BufRead;
+    let kv = Kv::start(&["--max-connections", "2"]);
+    let mut a = kv.client();
+    let mut b = kv.client();
+    // Both are being served (the answer shows the server has taken them into its table).
+    assert_eq!(ask(&mut a, "SET k v\n"), "OK");
+    assert_eq!(ask(&mut b, "GET k\n"), "VALUE v");
+    let mut c = kv.client();
+    let mut line = String::new();
+    c.1.read_line(&mut line).unwrap();
+    assert_eq!(line.trim_end(), "ERR too many connections");
+    line.clear();
+    assert_eq!(
+        c.1.read_line(&mut line).unwrap(),
+        0,
+        "it is closed after that"
+    );
+    // The others are not disturbed.
+    assert_eq!(ask(&mut a, "COUNT\n"), "1");
+    // `a` leaves; the server notices when its coroutine ends, so ask until there is room.
+    assert_eq!(ask(&mut a, "QUIT\n"), "BYE");
+    let started = std::time::Instant::now();
+    loop {
+        let mut d = kv.client();
+        // The wait in `is_turned_away` only saves time: whatever it says, the answer to `COUNT`
+        // decides. The refusal line may come late on a slow machine, and then it is the answer
+        // (or, where closing with unread input resets the connection, the read fails: that is
+        // the documented case of a client that was turned away).
+        if !is_turned_away(&mut d) {
+            let asked = d.0.write_all(b"COUNT\n").and_then(|()| {
+                use std::io::BufRead;
+                let mut line = String::new();
+                d.1.read_line(&mut line).map(|_| line)
+            });
+            match asked {
+                Ok(line) if line.trim_end() == "1" => break,
+                Ok(line) => assert_eq!(line.trim_end(), "ERR too many connections"),
+                Err(e) => assert!(
+                    matches!(
+                        e.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::BrokenPipe
+                    ),
+                    "{e}"
+                ),
+            }
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "no room after a connection left"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
+}
+
+/// Clients that are turned away and then say nothing do not hold up the accept loop: with a cap
+/// of one, fifteen of them are held open and a sixteenth still gets its line soon. The server
+/// reads from a turned-away client for a hundredth of a second at most; at a fifth of a second
+/// each (the first version) the sixteenth would wait three seconds, and the bound is 1.5 s, with
+/// the real figure a few tenths of a second on a slow runner.
+#[test]
+fn kvserver_does_not_stall_on_silent_clients_it_turns_away() {
+    use std::io::BufRead;
+    let kv = Kv::start(&["--max-connections", "1"]);
+    let mut a = kv.client();
+    assert_eq!(ask(&mut a, "SET k v\n"), "OK");
+    let silent: Vec<_> = (0..15).map(|_| kv.client()).collect();
+    let started = std::time::Instant::now();
+    let mut last = kv.client();
+    let mut line = String::new();
+    last.1.read_line(&mut line).unwrap();
+    let took = started.elapsed();
+    assert_eq!(line.trim_end(), "ERR too many connections");
+    assert!(
+        took < Duration::from_millis(1500),
+        "the line came after {took:?}"
+    );
+    drop(silent);
+    assert_eq!(ask(&mut a, "SHUTDOWN\n"), "BYE");
+}
+
+/// A server that runs out of descriptors reports it and goes on: `accept` fails with a
+/// `net.Error` while the table is full, and works again when connections have ended. Unix only,
+/// because the limit is set with `ulimit -n` (a Windows process has no such limit to lower).
+#[cfg(unix)]
+#[test]
+fn kvserver_survives_running_out_of_descriptors() {
+    use std::io::BufRead;
+    let script = scripts().join("kvserver/kvserver.colibri");
+    let mut child = Command::new("sh")
+        .args(["-c", "ulimit -n 40; exec \"$0\" run \"$1\" --"])
+        .arg(env!("CARGO_BIN_EXE_colibri"))
+        .arg(&script)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh runs");
+    let mut first = String::new();
+    std::io::BufReader::new(child.stdout.as_mut().unwrap())
+        .read_line(&mut first)
+        .unwrap();
+    let addr = first
+        .trim()
+        .strip_prefix("listening on ")
+        .unwrap_or_else(|| panic!("unexpected first line {first:?}"))
+        .to_string();
+    let mut kv = Kv { child, addr };
+    // Many more connections than the server has descriptors for. Each is served or waits in
+    // the queue of the listener.
+    let crowd: Vec<_> = (0..80).map(|_| kv.client()).collect();
+    let mut first_ones = crowd;
+    let mut a = first_ones.remove(0);
+    assert_eq!(ask(&mut a, "SET k v\n"), "OK");
+    // They all go away; the server accepts the queued ones, finds them closed, and is free.
+    drop(first_ones);
+    let mut b = kv.client();
+    assert_eq!(ask(&mut b, "GET k\n"), "VALUE v");
+    assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
+    let status = kv.child.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
+}
+
+/// `os.exit` with coroutines blocked in `accept` and `read` ends the process at once: no
+/// background thread keeps it alive.
+#[test]
+fn os_exit_with_blocked_sockets_ends_the_process() {
+    let dir = temp_dir("net-exit");
+    let script = dir.join("exit.colibri");
+    fs::write(
+        &script,
+        r#"import net
+import os
+
+fn accepting(l: net.Listener) {
+    let _ = l.accept()
+}
+
+fn reading(c: net.Conn) {
+    let _ = c.read(1)
+}
+
+fn main() {
+    let l = net.listen("127.0.0.1:0").expect("listens")
+    let c = net.connect(l.addr()).expect("connects")
+    let s = l.accept().expect("accepts")
+    go reading(c)
+    go reading(s)
+    go accepting(l)
+    wait(0.05)
+    os.exit(3)
+}
+"#,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let out = run_script(&script, &[]);
+    assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "{:?}",
+        started.elapsed()
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 

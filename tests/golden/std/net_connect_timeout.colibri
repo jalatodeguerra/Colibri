@@ -1,0 +1,37 @@
+// caps: net
+// `connect_timeout` connects like `connect`, fails like it, and counts from the call. Its
+// number of seconds must be more than zero.
+import net
+import str
+
+fn kind[T](r: Result[T]) -> str {
+    match r {
+        ok(_) => return "ok"
+        err(e) => return "{e.as[net.Error]().expect("a net error")}"
+    }
+}
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let addr = l.addr()
+    let c = net.connect_timeout(addr, 10.0)?
+    let s = l.accept()?
+    c.write("hi\n")?
+    print(s.read_line()?)
+    c.close()
+    s.close()
+    l.close()
+    // A port nobody listens on: refused, not a timeout.
+    print(kind(net.connect_timeout(addr, 10.0)))
+    // A name with a label of 64 bytes cannot exist, so no resolver is asked.
+    print(kind(net.connect_timeout("{str.repeat("x", 64)}.invalid:80", 10.0)))
+    print(kind(net.connect_timeout("not an address", 10.0)))
+    // A timeout that is not a number of seconds is a panic.
+    let _ = net.connect_timeout(addr, 0.0) // panic: net.connect_timeout: 0 is not a number of seconds (it must be finite and more than 0; use `net.connect` for no timeout of its own)
+    return ok(())
+}
+
+// expect: some("hi")
+// expect: Refused
+// expect: Dns
+// expect: InvalidAddress

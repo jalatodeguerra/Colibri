@@ -1,6 +1,6 @@
 [package]
 name = "colibri-std"
-description = "The Colibri standard library: io, fs, path, os, math, rand, time, json, regex, http, args, process and datetime as host modules"
+description = "The Colibri standard library: io, fs, path, os, math, rand, time, json, regex, http, args, process, net and datetime as host modules"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,7 +19,18 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 # Only to recognise a TLS failure that ureq wraps in an `io::Error` (`http.Error.Tls`); the
 # features are those ureq already turns on.
 rustls = { version = "0.23", default-features = false }
+# TCP sockets for `net`: creating them with close-on-exec set at once, the non-blocking
+# `connect`, `SO_REUSEADDR`, `IPV6_V6ONLY` and the listen backlog behave the same on every system.
+socket2 = { version = "0.6", features = ["all"] }
 toml = { version = "1.2.1", default-features = false, features = ["parse", "preserve_order"] }
 # The machine's time zone for `datetime.now_local` (`localtime_r`), on Unix only.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# `WSAPoll`, the readiness wait of `net` on Windows (`poll(2)` is the one on Unix).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Networking_WinSock"] }
+
+# `GetProcessTimes`, for the idle-CPU test of `net` (`getrusage` is the call on Unix).
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_System_Threading"] }

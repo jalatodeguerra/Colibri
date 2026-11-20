@@ -1,17 +1,19 @@
 # Automation scripts
 
-Two real programs written in Colibri, run with `colibri run`.
+Three real programs written in Colibri, run with `colibri run`.
 They use the scripting std (`args`, `fs`, `path`, `json`, `regex`, `datetime`, `http`, `process`,
-`io`, `os`), coroutines, `Result`/`?`/`.context`, typed JSON decoding and exit codes.
+`io`, `os`, `net`), coroutines, `Result`/`?`/`.context`, typed JSON decoding and exit codes.
 
 | Script | Lines | What it does |
 |--------|-------|--------------|
-| [`organize/organize.colibri`](organize/organize.colibri) | 238 | sorts a folder into subfolders by extension category or modification date |
-| [`report/report.colibri`](report/report.colibri) | 329 | fetches a JSON index and its items over HTTP or from files, writes a Markdown report |
+| [`organize/organize.colibri`](organize/organize.colibri) | 270 | sorts a folder into subfolders by extension category or modification date |
+| [`report/report.colibri`](report/report.colibri) | 327 | fetches a JSON index and its items over HTTP or from files, writes a Markdown report |
+| [`kvserver/kvserver.colibri`](kvserver/kvserver.colibri) | 131 | a key-value store served over TCP with a line protocol, one coroutine per connection |
+| [`kvserver/kvclient.colibri`](kvserver/kvclient.colibri) | 31 | sends request lines to the key-value server and prints the answers (no `nc` needed) |
 
 Tests: `cargo test -p colibri-lang --test scripts` (`crates/colibri-cli/tests/scripts.rs`) runs
-both through the real `colibri` binary on a temporary tree and a local `127.0.0.1` HTTP server,
-compares the report with [`report/expected.md`](report/expected.md) (`UPDATE_EXPECTED=1`
+all three through the real `colibri` binary on a temporary tree and a local `127.0.0.1` HTTP server,
+starts the key-value server and talks to it over a socket (with a Rust client and with `kvclient`), compares the report with [`report/expected.md`](report/expected.md) (`UPDATE_EXPECTED=1`
 rewrites it) and runs `colibri check` on both. Nothing touches the network.
 
 ## organize
@@ -56,6 +58,58 @@ images             4        28
 other              2        15
 total             10        81
 ```
+
+## kvserver
+
+```sh
+colibri run kvserver/kvserver.colibri -- [--addr 127.0.0.1:0] [--idle SECONDS]
+                                         [--max-connections N]
+```
+
+A key-value store that speaks a line protocol over TCP, written with `net`. The first line it
+prints is `listening on HOST:PORT` (port 0 lets the system pick). One request per line, `\n` or
+`\r\n`, one answer per line:
+
+| Request | Answer |
+|---------|--------|
+| `SET key value` | `OK` (the value is the rest of the line) |
+| `GET key` | `VALUE value` or `MISSING` |
+| `DEL key` | `DELETED` or `MISSING` |
+| `COUNT` | the number of keys |
+| `KEYS` | `KEYS a b c` (sorted) |
+| `QUIT` | `BYE`, and that connection is closed |
+| `SHUTDOWN` | `BYE`, and the server stops, closing every connection |
+
+`main` is an accept loop that starts one coroutine per connection (`go serve(..)`), so clients
+are served at the same time; `net` waits on background threads and only the waiting coroutine
+stops. `--idle SECONDS` is a deadline for each request line (`conn.set_timeout` counts from the
+call): a client whose next line has not arrived whole within that time is closed, also when it
+sent part of the line meanwhile. Each connection waiting for a request holds one operating system
+thread, so the server serves at most `--max-connections N` at once (default 256); a connection
+over that is told `ERR too many connections` and closed. A connection
+leaves the server's table when it ends, and an `accept` that fails for another reason than the
+listener being closed (no descriptor left, say) is reported on stderr and retried after a short
+wait. Exit codes: 0 stopped by `SHUTDOWN`, 1 the address cannot be used, 2 bad command line.
+
+It runs the same on Linux, macOS and Windows. To try it, start it in one terminal and talk to it
+from another with the Colibri client, which needs nothing else installed:
+
+```
+$ colibri run kvserver/kvserver.colibri -- --addr 127.0.0.1:7000
+listening on 127.0.0.1:7000
+```
+
+```
+$ colibri run kvserver/kvclient.colibri -- 127.0.0.1:7000 "SET a 1" "GET a" SHUTDOWN
+OK
+VALUE 1
+BYE
+```
+
+`kvclient.colibri -- HOST:PORT REQUEST...` sends each request as a line and prints the answer to
+it; it exits 1 when the server cannot be reached or goes away. Any other TCP client speaks the
+protocol too: `nc 127.0.0.1 7000` on Linux and macOS (type the requests, one per line), or
+`telnet 127.0.0.1 7000` on a system that has it.
 
 ## report
 

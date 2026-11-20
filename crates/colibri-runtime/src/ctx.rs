@@ -141,8 +141,21 @@ impl<'a> Ctx<'a> {
             Err(colibri_interp::ExternalError::Cancelled) => {
                 std::panic::resume_unwind(Box::new(RaisedCancel))
             }
-            Err(colibri_interp::ExternalError::Failed(message)) => self.raise(message),
+            Err(
+                colibri_interp::ExternalError::Failed(message)
+                | colibri_interp::ExternalError::CannotStart(message),
+            ) => self.raise(message),
         }
+    }
+
+    /// Whether other coroutines keep running while [`Ctx::run_async`] (or
+    /// [`Ctx::run_async_cancellable`]) waits: `true` in a coroutine and on the main fiber where
+    /// it may run the event loop, `false` inside a `Drop` hook or a host function's callback,
+    /// where the call blocks the interpreter thread. A host function whose work waits for
+    /// something that only another coroutine can do (a turn that a suspended coroutine still
+    /// holds) must not start that work when this is `false`: nothing could ever finish it.
+    pub fn can_suspend(&self) -> bool {
+        self.interp.external_wait_runs_others(self.fiber)
     }
 
     /// [`Ctx::run_async`] for work that can stop early: `work` is given a [`CancelToken`]
@@ -159,6 +172,27 @@ impl<'a> Ctx<'a> {
             Err(colibri_interp::ExternalError::Cancelled) => {
                 std::panic::resume_unwind(Box::new(RaisedCancel))
             }
+            Err(
+                colibri_interp::ExternalError::Failed(message)
+                | colibri_interp::ExternalError::CannotStart(message),
+            ) => self.raise(message),
+        }
+    }
+
+    /// [`Ctx::run_async_cancellable`] for a host function that wants to report a thread that
+    /// cannot be started (the system is out of threads or memory) as an error of its own
+    /// instead of a panic: the `Err` is the system's reason, and none of `work` has run. A
+    /// panic of `work`, and a cancel of the caller, are handled as for `run_async_cancellable`.
+    pub fn try_run_async_cancellable<R: Send + 'static>(
+        &mut self,
+        work: impl FnOnce(&colibri_interp::CancelToken) -> R + Send + 'static,
+    ) -> Result<R, String> {
+        match self.interp.await_external_with(self.fiber, work) {
+            Ok(r) => Ok(r),
+            Err(colibri_interp::ExternalError::Cancelled) => {
+                std::panic::resume_unwind(Box::new(RaisedCancel))
+            }
+            Err(colibri_interp::ExternalError::CannotStart(message)) => Err(message),
             Err(colibri_interp::ExternalError::Failed(message)) => self.raise(message),
         }
     }
