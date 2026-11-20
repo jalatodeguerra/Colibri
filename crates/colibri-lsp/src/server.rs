@@ -341,7 +341,9 @@ impl<'c> Server<'c> {
 
     /// Analyses every document that changed since it was last analysed. Documents of one
     /// package are analysed once between them: the analysis of the first covers the others that
-    /// it loaded, which take it over without a second analysis or a second publish.
+    /// belong to that package, which take it over without a second analysis or a second
+    /// publish. A document of a dependency is a member of its own package: it is analysed on
+    /// its own, with its own features.
     fn flush(&mut self) {
         self.due = None;
         let mut pending = std::mem::take(&mut self.dirty);
@@ -349,9 +351,8 @@ impl<'c> Server<'c> {
         while !pending.is_empty() {
             let path = pending.remove(0);
             let analysis = self.check(&path);
-            let (covered, rest): (Vec<PathBuf>, Vec<PathBuf>) = pending
-                .into_iter()
-                .partition(|p| analysis.file_of(p).is_some());
+            let (covered, rest): (Vec<PathBuf>, Vec<PathBuf>) =
+                pending.into_iter().partition(|p| analysis.owns(p));
             pending = rest;
             for other in covered {
                 self.adopt(&other, &analysis);

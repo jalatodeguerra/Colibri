@@ -4122,3 +4122,50 @@ fn the_refusal_for_left_out_code_names_the_file_by_its_path_in_the_folder() {
     assert!(!message.contains('\\'), "{message}");
     c.shutdown();
 }
+
+#[test]
+fn a_package_and_its_dependency_changed_together_are_each_analysed_as_themselves() {
+    let dir = temp_dir("debounce_dependency");
+    write(
+        &dir,
+        "app/colibri.toml",
+        "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n",
+    );
+    write(&dir, "lib/colibri.toml", "[package]\nname = \"lib\"\n");
+    let lib_text = "pub fn f() -> int {\n    let spare = 1\n    return 2\n}\n";
+    let lib = write(&dir, "lib/lib.colibri", lib_text);
+    let main_text = "import lib\nfn main() {\n    print(lib.f())\n}\n";
+    let main = write(&dir, "app/main.colibri", main_text);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, main_text);
+    c.open(&lib, lib_text);
+    let lints = |c: &Client| -> Vec<String> {
+        c.diags(&lib)
+            .iter()
+            .map(|d| d["message"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(
+        lints(&c)
+            .iter()
+            .any(|m| m.contains("unused variable `spare`")),
+        "{:?}",
+        lints(&c)
+    );
+    // Both change before the quiet period ends: the library is analysed as its own package, so
+    // its own lint is still there, and the app is not told about the library's code.
+    let main2 = "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n";
+    let lib2 = "pub fn f() -> int {\n    let spare = 1\n    return 3\n}\n";
+    c.change_without_sync(&main, main2);
+    c.change_without_sync(&lib, lib2);
+    c.sync();
+    assert!(
+        lints(&c)
+            .iter()
+            .any(|m| m.contains("unused variable `spare`")),
+        "the library's own lints: {:?}",
+        lints(&c)
+    );
+    assert!(c.diags(&main).is_empty(), "{:?}", c.diags(&main));
+    c.shutdown();
+}

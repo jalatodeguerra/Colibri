@@ -267,6 +267,21 @@ impl Analysis {
         self.by_path.get(path).copied()
     }
 
+    /// Whether `path` is a module of the analysed package itself: loaded, and not a module of
+    /// one of its dependencies (which is a member of another package, with its own features and
+    /// its own lints, and is analysed as that one).
+    pub fn owns(&self, path: &Path) -> bool {
+        let Some(file) = self.file_of(path) else {
+            return false;
+        };
+        self.program
+            .files
+            .iter()
+            .position(|f| f.span.file == file)
+            .and_then(|m| self.program.metas.get(m))
+            .is_some_and(|meta| !meta.dependency)
+    }
+
     /// The canonical paths of the source modules this program loaded.
     pub fn module_paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
         self.program.files.iter().map(|f| self.path_of(f.span.file))
