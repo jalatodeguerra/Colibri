@@ -1970,17 +1970,28 @@ fn close_write_after_a_cut_write_still_ends_the_stream() {
     const SIZE: usize = 64 * 1024 * 1024;
     let (listener, addr) = rust_listener();
     let (tx, rx) = mpsc::channel::<()>();
+    // Set by the peer once some of the data has arrived: the write has then really sent part of
+    // it, and (the peer reads no more until told) cannot finish, so cancelling it cuts it.
+    let arrived = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = std::sync::Arc::clone(&arrived);
     let peer = thread::spawn(move || {
         let (mut s, _) = listener.accept().unwrap();
         with_timeouts(&s);
+        let mut first = [0u8; 1];
+        s.read_exact(&mut first).unwrap();
+        seen.store(true, std::sync::atomic::Ordering::SeqCst);
         rx.recv_timeout(LIMIT).unwrap();
-        let mut all = Vec::new();
+        let mut all = first.to_vec();
         s.read_to_end(&mut all).unwrap();
         all.len()
     });
     let (mut vm, out) = vm();
     vm.register_fn("signal", move || tx.send(()).unwrap())
         .unwrap();
+    vm.register_fn("peer_has_data", move || {
+        arrived.load(std::sync::atomic::Ordering::SeqCst)
+    })
+    .unwrap();
     run(
         &mut vm,
         &format!(
@@ -2002,7 +2013,14 @@ fn main() -> Result[()] {{
         b.push_bytes(piece)
     }}
     let w = go sender(c, b.to_bytes())
-    wait(0.3)
+    var tries = 0
+    while !peer_has_data() {{
+        tries += 1
+        if tries > 2000 {{
+            panic("no part of the write reached the peer")
+        }}
+        wait(0.01)
+    }}
     w.cancel()
     print(c.close_write().is_ok())
     print(c.write("more").is_err())
@@ -2017,7 +2035,7 @@ fn main() -> Result[()] {{
     .unwrap_or_else(|e| panic!("{e}"));
     let got = peer.join().unwrap();
     assert_eq!(out.contents(), "true\ntrue\n");
-    assert!(got < SIZE, "{got}");
+    assert!(got > 0 && got < SIZE, "{got}");
 }
 
 /// `close()` does not wait for anyone: two hundred sockets with a blocked acceptor, reader or
