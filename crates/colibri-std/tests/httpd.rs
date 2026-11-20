@@ -1359,6 +1359,31 @@ fn a_chunked_body_over_the_limit_is_a_413_before_the_bytes_past_it_are_sent() {
 }
 
 #[test]
+fn chunk_extensions_count_against_the_body_limit() {
+    let server = Server::app("httpd.Options { max_body_bytes: 1000 }");
+    // Twenty chunks of one byte, each with 50 bytes of extension: 20 bytes of body and over
+    // 1,000 on the size lines.
+    let ext = "a".repeat(50);
+    let mut body = Vec::new();
+    for _ in 0..20 {
+        body.extend_from_slice(format!("1;{ext}\r\nx\r\n").as_bytes());
+    }
+    body.extend_from_slice(b"0\r\n\r\n");
+    let mut w = server.connect();
+    w.send(chunked_post("/echo", &body));
+    let r = w.read();
+    assert_eq!(r.status, 413, "{r:?}");
+    assert!(r.says_close());
+    w.expect_closed();
+    // Ordinary extensions are fine.
+    let mut w = server.connect();
+    w.send(chunked_post("/echo", b"5;a=b\r\nhello\r\n0;x\r\n\r\n"));
+    assert_eq!(w.read().text(), "hello");
+    drop(w);
+    server.finish();
+}
+
+#[test]
 fn a_chunked_body_the_handler_does_not_read_closes_the_connection() {
     let server = Server::app("httpd.Options {}");
     let mut w = server.connect();

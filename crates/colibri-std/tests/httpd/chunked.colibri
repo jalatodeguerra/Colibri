@@ -260,3 +260,26 @@ test "an error of a source is the error of the read" {
     assert_eq(status_of(timeout.all()), 408)
     assert_eq(timeout.unread(), none)
 }
+
+test "chunk extensions count against the limit with the data" {
+    let limit = httpd_impl.Options { max_body_bytes: 100 }
+    let ext = str_of("a", 60)
+    // Two chunks of one byte with 61 bytes of extension each: 122 over the limit of 100.
+    let f = feed("1;" + ext + "\r\nx\r\n1;" + ext + "\r\ny\r\n0\r\n\r\n")
+    assert_eq(status_of(reader_with(limit, f).all()), 413)
+    // One of them is fine.
+    let g = feed("1;" + ext + "\r\nx\r\n0\r\n\r\n")
+    assert_eq(text_of(reader_with(limit, g).all()), "x")
+    // The final chunk's extension counts too.
+    let h = feed("0;" + str_of("b", 150) + "\r\n\r\n")
+    assert_eq(status_of(reader_with(limit, h).all()), 413)
+    // Data and extensions are one total: 40 + 61 is over.
+    let i = feed("28;" + ext + "\r\n" + str_of("d", 40) + "\r\n0\r\n\r\n")
+    assert_eq(status_of(reader_with(limit, i).all()), 413)
+}
+
+test "ordinary extensions and whitespace still pass under a small limit" {
+    let limit = httpd_impl.Options { max_body_bytes: 30 }
+    let f = feed("5;a=b\r\nhello\r\n3 ; c\r\nabc\r\n0;done\r\n\r\n")
+    assert_eq(text_of(reader_with(limit, f).all()), "helloabc")
+}

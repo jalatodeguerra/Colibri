@@ -47,6 +47,10 @@ pub struct Options {
     /// The field lines of one request. More is 431.
     pub max_headers: int = 100
     /// The bytes of a body a handler may read; `Request.set_body_limit` changes it for one request.
+    /// For a chunked body the total counts the data and also the bytes of the size lines after
+    /// their hex digits (whitespace and chunk extensions), so that many small chunks with large
+    /// extensions cannot make the server read without bound; a total over the limit is 413. A
+    /// handler that calls `Request.body` holds up to this many bytes for each such request.
     pub max_body_bytes: int = 10485760
     /// The whole head of a request: its fields have this long from the end of the request line,
     /// and on a new connection the empty lines and the request line have this long from the
@@ -987,6 +991,13 @@ fn keeps_alive(g: Grammar, headers: Headers, http10: bool) -> bool {
 /// 7.1): 1 to 15 hex digits, then optional whitespace and extensions, which are ignored and hold
 /// no control character. 15 digits cannot overflow an `int`.
 fn chunk_size(g: Grammar, line: Bytes) -> Result[int, Reject] {
+    let (size, _) = chunk_head(g, line)?
+    return ok(size)
+}
+
+/// `chunk_size`, and the bytes of the line that are not the hex digits (the whitespace and the
+/// extensions), which count against the body limit like data.
+fn chunk_head(g: Grammar, line: Bytes) -> Result[(int, int), Reject] {
     if line.len() > 4096 {
         return err(reject(400, "a chunk-size line is longer than 4096 bytes"))
     }
@@ -997,11 +1008,12 @@ fn chunk_size(g: Grammar, line: Bytes) -> Result[int, Reject] {
         return err(reject(400, "a chunk-size line is not a hex size and extensions"))
     }
     // At most 15 digits, and once for each chunk, so a loop is cheap here.
+    let digits = c.get(1) or ""
     var size = 0
-    for b in (c.get(1) or "").bytes() {
+    for b in digits.bytes() {
         size = size * 16 + hex_value(b)
     }
-    return ok(size)
+    return ok((size, line.len() - digits.len()))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1052,6 +1064,9 @@ class BodyReader {
     /// CRLFs, as for the fields of a head.
     max_headers: int = 100
     max_header_bytes: int = 65536
+    /// The bytes of the size lines after their digits (extensions): they count against the
+    /// limit with the data, so a body of small chunks with large extensions is bounded too.
+    extension_bytes: int = 0
     /// The bytes of the current chunk not handed out yet.
     chunk_left: int = 0
     /// The CRLF after the data of a chunk is read at the next read.
@@ -1141,9 +1156,14 @@ impl BodyReader {
             let got = (self.line)(4096) or |e| {
                 return err(self.halt(e))
             }
+            var extra = 0
             let size = match got {
-                Line(b) => chunk_size(g, b) or |r| {
-                    return err(self.halt(fail(r.status, r.why)))
+                Line(b) => {
+                    let (n, e) = chunk_head(g, b) or |r| {
+                        return err(self.halt(fail(r.status, r.why)))
+                    }
+                    extra = e
+                    n
                 }
                 End => return err(
                     self.halt(fail(400, "the request body ended inside a chunked body")),
@@ -1152,12 +1172,19 @@ impl BodyReader {
                     self.halt(fail(400, "a chunk-size line is longer than 4096 bytes")),
                 )
             }
+            // The data, and the whitespace and extensions of the size lines, are one total.
+            self.extension_bytes += extra
+            if self.extension_bytes > self.limit - self.delivered {
+                return err(
+                    self.halt(fail(413, "the request body is larger than {self.limit} bytes")),
+                )
+            }
             if size == 0 {
                 self.trailers(g)?
                 self.finished = true
                 return ok(Bytes())
             }
-            if size > self.limit - self.delivered {
+            if size > self.limit - self.delivered - self.extension_bytes {
                 return err(
                     self.halt(fail(413, "the request body is larger than {self.limit} bytes")),
                 )
