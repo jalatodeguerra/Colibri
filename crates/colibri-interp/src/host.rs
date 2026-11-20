@@ -71,17 +71,11 @@ impl Interp {
         self.host_impls.class_hooks.insert(ty, hooks);
     }
 
-    // ---- the host side, which lives in `Core` ----
-
     /// How many parameters function `f` takes; `None` if there is no such function in the
     /// loaded program.
     pub fn fn_param_count(&self, f: colibri_check::hir::FnId) -> Option<u32> {
         self.fns.get(f.0 as usize).map(|body| body.param_count)
     }
-
-    // ---- roots ----
-
-    // ---- values ----
 
     // ---- calls ----
 

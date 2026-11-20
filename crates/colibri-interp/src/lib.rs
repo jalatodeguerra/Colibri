@@ -5,7 +5,6 @@
 //! one `exit_scope`, and calls look functions up by id at call time. Hosts use it through
 //! `colibri-runtime`, not directly.
 
-mod budget;
 mod cffi;
 mod closure;
 mod coro;

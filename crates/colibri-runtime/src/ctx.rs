@@ -116,7 +116,7 @@ impl<'a> Ctx<'a> {
 
     /// Writes text to the `Vm`'s standard output, where `print` writes. It adds no newline.
     pub fn write_stdout(&mut self, text: &str) {
-        self.interp.write_stdout(text);
+        self.interp.core_mut().write_stdout(text);
     }
 
     /// Ends the running program with a Colibri panic whose message is exactly `message`, from
@@ -283,7 +283,7 @@ impl<'a> Ctx<'a> {
             }
         }
         let result = self.interp.call(self.fiber, f, Vec::new());
-        self.interp.flush();
+        self.interp.core_mut().flush();
         match result {
             Ok(v) => Ok(Value(v)),
             Err(info) => Err(panic_error(self.interp, *info)),
@@ -422,7 +422,7 @@ impl<'a> Ctx<'a> {
         }
         let args = args.into_iter().map(|v| v.0).collect();
         let result = self.interp.call(self.fiber, id, args);
-        self.interp.flush();
+        self.interp.core_mut().flush();
         match result {
             Ok(v) => Ok(Value(v)),
             Err(info) => Err(panic_error(self.interp, *info)),
@@ -433,7 +433,7 @@ impl<'a> Ctx<'a> {
     pub(crate) fn call_value(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, Error> {
         let args = args.into_iter().map(|v| v.0).collect();
         let result = self.interp.call_function(self.fiber, &f.0, args);
-        self.interp.flush();
+        self.interp.core_mut().flush();
         match result {
             Ok(v) => Ok(Value(v)),
             Err(info) => Err(panic_error(self.interp, *info)),

@@ -140,7 +140,13 @@ pub(crate) type Y = Yielder<Resume, *mut Interp>;
 pub(crate) type Co = Coroutine<Resume, *mut Interp, Finish, DefaultStack>;
 
 impl Interp {
-    // ---- configuration and inspection (the scheduler's own, for the host) ----
+    // ---- the scheduler's calls for the host ----
+    //
+    // `next_wake`, `tick` and `take_coroutine_failure` forward to `Core`/`Sched` on purpose: the
+    // runtime's event loop and many tests call them as methods of the engine (`tick` takes the
+    // fiber that a heap-frame engine will need, and the tree-walker ignores), so they are the
+    // engine's own API, not accessors of the shared state. Removing them would also make the
+    // `local/r6-join` branch, which adds to this block, harder to rebase.
 
     /// How long until the next coroutine needs a tick, for an event loop: `None` when nothing
     /// is alive or every live coroutine waits for a signal (nothing but an emit can wake it), `Some(0.0)`-ish small polling interval when something is checked at every tick

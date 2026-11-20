@@ -115,7 +115,7 @@ impl Vm {
         let outcome = self
             .interp
             .session_run(&mut self.fiber, &program, new_from, &reinit_ids);
-        self.interp.flush();
+        self.interp.core_mut().flush();
         match outcome {
             Ok(()) => {
                 self.interp.session_commit(undo);

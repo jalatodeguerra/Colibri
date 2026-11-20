@@ -256,16 +256,6 @@ impl Interp {
         self.enter_from_host(fiber, true, |this, fiber| this.call_body(fiber, body, args))
     }
 
-    /// Writes text to the program's standard output, where `print` writes (without a newline).
-    pub fn write_stdout(&mut self, text: &str) {
-        let _ = self.core.out.write_all(text.as_bytes());
-    }
-
-    /// Writes buffered output through to the writer.
-    pub fn flush(&mut self) {
-        let _ = self.core.out.flush();
-    }
-
     /// The module-level value `g` (for hosts and tests).
     pub fn global(&self, g: GlobalId) -> Option<&Value> {
         self.globals.get(g.0 as usize)

@@ -1,5 +1,4 @@
-//! The interpreter as an [`Engine`]: what `colibri-core` asks of it, and the wrappers that keep
-//! the methods `colibri-runtime` calls on [`Interp`].
+//! The interpreter as an [`Engine`]: what `colibri-core` asks of it.
 
 use colibri_check::hir::{Builtin, FnId};
 use colibri_check::types::TypeId;
@@ -174,5 +173,3 @@ impl Engine for Interp {
         self.resume_native_stack(slot, cancel)
     }
 }
-
-impl Interp {}

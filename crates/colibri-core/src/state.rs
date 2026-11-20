@@ -51,6 +51,16 @@ pub struct Core {
 }
 
 impl Core {
+    /// Writes text to the program's standard output, where `print` writes (without a newline).
+    pub fn write_stdout(&mut self, text: &str) {
+        let _ = self.out.write_all(text.as_bytes());
+    }
+
+    /// Writes buffered output through to the writer.
+    pub fn flush(&mut self) {
+        let _ = self.out.flush();
+    }
+
     /// A core with nothing loaded, writing program output to `out`.
     pub fn new(out: Box<dyn Write>) -> Core {
         Core {

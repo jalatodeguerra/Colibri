@@ -311,10 +311,18 @@ fn only_keys_that_reach_a_user_eq_are_scanned() {
         m.call("plain", vec![]).unwrap(),
         Value::Int(300 + 300 + 301 + 1)
     );
-    assert_eq!(m.interp.key_scans(), 0, "no key of these types may scan");
+    assert_eq!(
+        m.interp.core().key_scans,
+        0,
+        "no key of these types may scan"
+    );
     assert_eq!(
         m.call("user", vec![]).unwrap(),
         Value::Int(10 * 10000 + 10 * 100 + 10)
     );
-    assert!(m.interp.key_scans() >= 90, "{}", m.interp.key_scans());
+    assert!(
+        m.interp.core().key_scans >= 90,
+        "{}",
+        m.interp.core().key_scans
+    );
 }

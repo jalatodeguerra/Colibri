@@ -1497,7 +1497,7 @@ impl Vm {
             LoadMode::Run => self.interp.run_module(&mut self.fiber),
             LoadMode::Tests | LoadMode::Session => Ok(()),
         };
-        self.interp.flush();
+        self.interp.core_mut().flush();
         match outcome {
             Ok(()) => {
                 self.program = Some(Rc::new(program));
@@ -1612,7 +1612,7 @@ impl Vm {
         if let Some(r) = self.reload.as_mut() {
             r.fingerprint = Some(fingerprint);
         }
-        self.interp.flush();
+        self.interp.core_mut().flush();
         Ok(if functions == 0 {
             ReloadOutcome::Unchanged
         } else {
@@ -1678,7 +1678,7 @@ impl Vm {
             Ty::Adt(RESULT_TYPE, _)
         );
         let result = self.interp.call(&mut self.fiber, main, Vec::new());
-        self.interp.flush();
+        self.interp.core_mut().flush();
         let value = result.map_err(|info| panic_error(&self.interp, *info))?;
         if returns_result
             && let InterpValue::Enum(e) = &value
@@ -1705,7 +1705,7 @@ impl Vm {
     /// stays usable. Each resumption gets a fresh instruction budget.
     pub fn tick(&mut self, dt: f64) -> Result<(), Error> {
         let result = self.interp.tick(&mut self.fiber, dt);
-        self.interp.flush();
+        self.interp.core_mut().flush();
         result.map_err(|info| panic_error(&self.interp, *info))
     }
 
@@ -1724,7 +1724,7 @@ impl Vm {
     /// automatically by [`Vm::shutdown`] and when the `Vm` is dropped.
     pub fn cancel_coroutines(&mut self) {
         self.interp.cancel_all_coroutines();
-        self.interp.flush();
+        self.interp.core_mut().flush();
     }
 
     /// Runs the event loop until no coroutine is alive: what `colibri run` does after `main`.
@@ -1957,7 +1957,7 @@ impl Vm {
             },
         };
         self.interp.release_globals();
-        self.interp.flush();
+        self.interp.core_mut().flush();
         outcome
     }
 
@@ -2054,7 +2054,7 @@ impl Vm {
 
     fn teardown(&mut self) {
         self.interp.shutdown();
-        self.interp.flush();
+        self.interp.core_mut().flush();
         if self.program.take().is_some() {
             self.epoch += 1;
         }
