@@ -1,0 +1,24 @@
+// Many short coroutines, started and joined, plus a few that wait on ticks.
+fn square(n: int) -> int {
+    wait(0.0)
+    return n * n
+}
+
+fn ticker(n: int) {
+    for i in 0..n {
+        wait(0.0)
+    }
+}
+
+fn main() {
+    let g = CoGroup()
+    g.go(ticker(20000))
+    g.go(ticker(20000))
+    var total = 0
+    for i in 0..40000 {
+        let c = go square(i)
+        total += c.join()
+    }
+    g.join_all()
+    print(total)
+}
