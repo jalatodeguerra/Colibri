@@ -1563,7 +1563,17 @@ fn a_panic_in_a_stream_closure_cuts_that_connection_and_the_server_goes_on() {
     assert_eq!(other.call(get("/")).text(), "hello\n");
     // How the panic is reported (a 500 for a handler, a log line) is for step 7, with
     // `join_result`: here it is only that the connection is cut and the run goes on and ends.
-    assert_eq!(server.finish().seen, ["GET /stream_panic", "GET /"]);
+    let mut stop = server.connect();
+    let r = stop.call(request("POST", "/__stop", &["Content-Length: 0"], b""));
+    assert_eq!(r.status, 200);
+    drop(stop);
+    // The run ends either normally or, when the join at the stop raises the coroutine's panic,
+    // with that panic (it depends on when the scheduler reports it): never in another way.
+    match server.done.recv_timeout(CEILING) {
+        Ok(Ok(printed)) => assert_eq!(printed, "GET /stream_panic\nGET /\n"),
+        Ok(Err(e)) => assert!(e.contains("index 5 out of bounds"), "{e}"),
+        Err(_) => panic!("the server did not end within {CEILING:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
