@@ -148,8 +148,25 @@ impl Client {
     }
 }
 
+/// The `file:` URI of a path, written the way editors write them (VS Code: `file:///c%3A/dir`):
+/// `/` separators, a leading `/` before a Windows drive, everything but letters, digits and
+/// `-._~/` percent-encoded. A native path pasted after `file://` (`file://C:\dir`) is not a
+/// URI. This is a separate implementation from the server's own, so a mistake in one of them
+/// shows as a difference.
 fn uri(path: &Path) -> String {
-    format!("file://{}", path.display())
+    let text = path.to_string_lossy().replace('\\', "/");
+    let mut out = String::from("file://");
+    if !text.starts_with('/') {
+        out.push('/');
+    }
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 /// A fresh folder for a test.

@@ -69,35 +69,84 @@ impl<'a> LineIndex<'a> {
 /// The path a `file:` URI names (any other scheme: the part after it, so an unsaved buffer
 /// still has a key).
 pub fn uri_to_path(uri: &Uri) -> PathBuf {
-    let s = uri.as_str();
-    let rest = match s.strip_prefix("file://") {
-        Some(after_scheme) => after_scheme.find('/').map_or("", |i| &after_scheme[i..]),
-        None => s.split_once(':').map_or(s, |(_, rest)| rest),
-    };
-    let decoded = percent_decode(rest);
-    // `/C:/dir/file` is a Windows path.
-    let bytes = decoded.as_bytes();
-    if bytes.len() > 2 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
-        return PathBuf::from(&decoded[1..]);
-    }
-    PathBuf::from(decoded)
+    PathBuf::from(uri_to_path_text(uri.as_str(), cfg!(windows)))
 }
 
 /// The `file:` URI of a path.
 pub fn path_to_uri(path: &Path) -> Option<Uri> {
-    let text = path.to_string_lossy().replace('\\', "/");
+    Uri::from_str(&path_text_to_uri(&path.to_string_lossy(), cfg!(windows))).ok()
+}
+
+/// [`uri_to_path`] on text, for the system's kind of paths: pure, so that the Windows forms
+/// are tested on every system. For Windows (`windows`):
+///
+/// - `file:///C:/dir/a.colibri` and what VS Code sends, `file:///c%3A/dir/a.colibri` (a
+///   lower-case drive, the colon percent-encoded), are `C:/dir/a.colibri` (the drive's case is
+///   kept: the URIs the server publishes must read like the client's);
+/// - `file://server/share/a.colibri` is the UNC path `//server/share/a.colibri`.
+///
+/// A Unix path keeps its leading `/`, and a name such as `/c:/x` is an ordinary one there.
+fn uri_to_path_text(uri: &str, windows: bool) -> String {
+    let (authority, rest) = match uri.strip_prefix("file://") {
+        Some(after_scheme) => match after_scheme.find('/') {
+            Some(i) => (&after_scheme[..i], &after_scheme[i..]),
+            None => (after_scheme, ""),
+        },
+        None => ("", uri.split_once(':').map_or(uri, |(_, rest)| rest)),
+    };
+    let decoded = percent_decode(rest);
+    if !windows {
+        return decoded;
+    }
+    if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+        return format!("//{}{decoded}", percent_decode(authority));
+    }
+    // `/C:/dir/file` is a Windows path.
+    let bytes = decoded.as_bytes();
+    let drive = bytes.len() > 2 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic();
+    if drive && bytes[2] == b':' && (bytes.len() == 3 || bytes[3] == b'/') {
+        return decoded[1..].to_string();
+    }
+    decoded
+}
+
+/// [`path_to_uri`] on text. For Windows (`windows`), backslashes are separators, the verbatim
+/// prefix that canonicalising adds (`\\?\C:\x`, `\\?\UNC\server\share`) is dropped, a drive
+/// path gets its leading `/` (`file:///C%3A/x`) and a UNC path its host as the authority
+/// (`file://server/share/x`).
+fn path_text_to_uri(path: &str, windows: bool) -> String {
+    let mut text = path.to_string();
+    let mut authority = String::new();
+    if windows {
+        text = text.replace('\\', "/");
+        if let Some(unc) = text.strip_prefix("//?/UNC/") {
+            text = format!("//{unc}");
+        } else if let Some(local) = text.strip_prefix("//?/") {
+            text = local.to_string();
+        }
+        if let Some(unc) = text.strip_prefix("//") {
+            let (host, rest) = unc.split_once('/').unwrap_or((unc, ""));
+            authority = host.to_string();
+            text = format!("/{rest}");
+        }
+    }
     let mut out = String::from("file://");
+    percent_encode_into(&authority, &mut out, false);
     if !text.starts_with('/') {
         out.push('/');
     }
+    percent_encode_into(&text, &mut out, true);
+    out
+}
+
+fn percent_encode_into(text: &str, out: &mut String, slashes: bool) {
     for b in text.bytes() {
-        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) || (slashes && b == b'/') {
             out.push(b as char);
         } else {
             out.push_str(&format!("%{b:02X}"));
         }
     }
-    Uri::from_str(&out).ok()
 }
 
 fn percent_decode(s: &str) -> String {
@@ -154,7 +203,69 @@ mod tests {
         let uri = path_to_uri(path).unwrap();
         assert_eq!(uri.as_str(), "file:///home/me/my%20game/%C3%A9.colibri");
         assert_eq!(uri_to_path(&uri), path);
-        let win = Uri::from_str("file:///C%3A/dir/a.colibri").unwrap();
-        assert_eq!(uri_to_path(&win), Path::new("C:/dir/a.colibri"));
+    }
+
+    #[test]
+    fn windows_uris_become_windows_paths() {
+        let to_path = |uri: &str| uri_to_path_text(uri, true);
+        assert_eq!(to_path("file:///C:/dir/a.colibri"), "C:/dir/a.colibri");
+        // What VS Code sends: a lower-case drive with the colon percent-encoded.
+        assert_eq!(to_path("file:///c%3A/dir/a.colibri"), "c:/dir/a.colibri");
+        assert_eq!(
+            to_path("file:///C%3a/My%20Dir/%C3%A9.colibri"),
+            "C:/My Dir/é.colibri"
+        );
+        assert_eq!(to_path("file://localhost/C:/dir"), "C:/dir");
+        assert_eq!(to_path("file:///C:"), "C:");
+        // A UNC path keeps its host.
+        assert_eq!(
+            to_path("file://server/share/dir/a.colibri"),
+            "//server/share/dir/a.colibri"
+        );
+        // Not a drive: a folder called `cc:` is not one.
+        assert_eq!(to_path("file:///cc:/x"), "/cc:/x");
+        // On Unix the same text is an ordinary absolute path.
+        assert_eq!(uri_to_path_text("file:///c%3A/dir", false), "/c:/dir");
+        assert_eq!(uri_to_path_text("file:///a/b", false), "/a/b");
+        // Other schemes: the part after the scheme, as a key.
+        assert_eq!(uri_to_path_text("untitled:Untitled-1", true), "Untitled-1");
+    }
+
+    #[test]
+    fn windows_paths_become_file_uris() {
+        let to_uri = |path: &str| path_text_to_uri(path, true);
+        assert_eq!(to_uri(r"C:\dir\a.colibri"), "file:///C%3A/dir/a.colibri");
+        assert_eq!(
+            to_uri(r"c:/dir\a b.colibri"),
+            "file:///c%3A/dir/a%20b.colibri"
+        );
+        assert_eq!(
+            to_uri(r"C:\Users\RUNNER~1\AppData\Local\Temp\x"),
+            "file:///C%3A/Users/RUNNER~1/AppData/Local/Temp/x"
+        );
+        // What canonicalising adds.
+        assert_eq!(
+            to_uri(r"\\?\C:\dir\a.colibri"),
+            "file:///C%3A/dir/a.colibri"
+        );
+        assert_eq!(
+            to_uri(r"\\?\UNC\server\share\a.colibri"),
+            "file://server/share/a.colibri"
+        );
+        assert_eq!(
+            to_uri(r"\\server\share\a.colibri"),
+            "file://server/share/a.colibri"
+        );
+        // And back, whichever way the drive was written.
+        for path in [
+            r"C:\dir\a b.colibri",
+            r"c:\dir\é.colibri",
+            r"\\server\share\x.colibri",
+        ] {
+            let back = uri_to_path_text(&to_uri(path), true);
+            assert_eq!(back, path.replace('\\', "/"), "{path}");
+        }
+        // Unix paths are untouched by the Windows rules, a backslash included.
+        assert_eq!(path_text_to_uri("/a/b\\c", false), "file:///a/b%5Cc");
     }
 }
