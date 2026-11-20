@@ -71,6 +71,13 @@ fn sync(target: &Path, flags: DepFlags, update: Update) -> Result<(), ExitCode> 
 /// `colibri update [name..]`: resolves branches, tags and default branches again (all
 /// dependencies, or the named ones) and writes the new commits to `colibri.lock`.
 pub fn update(dir: &Path, names: Vec<String>, flags: DepFlags) -> ExitCode {
+    // `--path` wants the folder of the package; the manifest itself is a natural mistake.
+    if !dir.is_dir()
+        && let Some(message) = colibri_runtime::not_a_script(dir)
+    {
+        eprintln!("error: {}: {message}", dir.display());
+        return ExitCode::from(1);
+    }
     if !dir.join(colibri_runtime::MANIFEST_FILE).is_file() {
         eprintln!(
             "error: there is no `{}` in `{}`",

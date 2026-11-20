@@ -1003,6 +1003,40 @@ fn the_hint_for_an_unknown_when_name_in_a_package_can_be_followed() {
 }
 
 #[test]
+fn update_given_the_manifest_itself_asks_for_the_folder_and_interface_asks_for_a_file() {
+    let dir = std::env::temp_dir().join(format!("colibri-cli-manifest-arg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let manifest = dir.join("colibri.toml");
+    std::fs::write(&manifest, "[package]\nname = \"w\"\n").unwrap();
+    let out = colibri(&["update", "--path", manifest.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("is the manifest of a package, not a script")
+            && stderr.contains("pass the folder that holds it instead"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("there is no `colibri.toml`"), "{stderr}");
+    // An interface is a file, so the advice to pass a folder does not fit there.
+    let script = dir.join("s.colibri");
+    std::fs::write(&script, "fn main() {}\n").unwrap();
+    let out = colibri(&[
+        "check",
+        "--interface",
+        manifest.to_str().unwrap(),
+        script.to_str().unwrap(),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("is the manifest of a package, not a script"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("pass the folder"), "{stderr}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn feature_names_on_the_command_line_follow_the_manifest_rules() {
     let script = temp_file("feature_names.colibri", "fn main() { print(1) }\n");
     let s = script.to_str().unwrap();
