@@ -1,0 +1,41 @@
+// only: windows - starts a program with `ping`; process_polling_in_a_coroutine.colibri is the Unix counterpart
+// caps: os
+// A coroutine that polls a child with `try_wait` and `wait(0.01)` leaves the other coroutines
+// running while the program works.
+import process
+
+fn runner() -> int {
+    // Two pings, about a second.
+    let child = process.spawn("ping", ["-n", "2", "127.0.0.1"]) or |e| { panic(e.message()) }
+    var out = child.try_wait() or |e| { panic(e.message()) }
+    while out == none {
+        wait(0.01)
+        out = child.try_wait() or |e| { panic(e.message()) }
+    }
+    if let some(o) = out {
+        print(o.status)
+    }
+    return 1
+}
+
+var ticks = 0
+
+fn counter() {
+    while true {
+        ticks += 1
+        wait(0.01)
+    }
+}
+
+fn main() {
+    let c = go counter()
+    let r = go runner()
+    while !r.done() {
+        task.tick(0.01)
+    }
+    c.cancel()
+    print(ticks > 1)
+}
+
+// expect: 0
+// expect: true

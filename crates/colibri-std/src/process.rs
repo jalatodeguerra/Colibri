@@ -5,6 +5,13 @@
 //! and gives back a `Child` a script can poll with `try_wait` (and `wait(0.01)` between polls, so other
 //! coroutines keep running). A program that cannot be started is an `err`; one that runs and
 //! exits with a non-zero status is an `Output` with that `status`.
+//!
+//! `shell(line)` hands the line to the system's shell: `sh -c` on Unix, `cmd /C` on Windows
+//! (so `%VAR%` and `&` there, `$VAR` and `;` elsewhere: a script that must run on both
+//! starts its programs with `run`, whose arguments no shell reads). A `cwd` option that names
+//! no folder is refused before anything starts, with the same message on every system. The
+//! text a program writes is passed on unchanged, so what `cmd` writes ends its lines with
+//! `\r\n`.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};

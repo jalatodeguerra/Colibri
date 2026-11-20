@@ -1,3 +1,4 @@
+// only: unix - starts programs with `sh`, `wc` and `sleep`; process_spawn_windows.colibri is the Windows counterpart
 // caps: os
 // `spawn` starts a program and returns at once: poll it with `try_wait` and collect it with
 // `join`. (Inside a coroutine, poll with `wait(0.01)` between calls: see
