@@ -28,8 +28,6 @@ pub trait Protocol: Engine {
         self.panic(fiber, span, format!("internal error: {what}"))
     }
 
-    /// Counts one step; `Err` when the budget is used up.
-    #[inline(always)]
     /// The control flow a failed host function or host hook ends the running operation with:
     /// a panic at the position of the innermost frame, or cancellation.
     fn host_fault_ctl(&self, fiber: &mut Self::Fiber, fault: HostFault) -> Ctl {
@@ -45,6 +43,8 @@ pub trait Protocol: Engine {
         }
     }
 
+    /// Counts one step; `Err` when the budget is used up.
+    #[inline(always)]
     fn step(&mut self, fiber: &mut Self::Fiber, span: Span) -> crate::ctl::Eval<()> {
         let budget = &mut self.core_mut().budget;
         budget.left -= 1;
