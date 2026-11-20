@@ -1,0 +1,14 @@
+interface Combine[R = Self] {
+    fn combine(self, other: R) -> Self
+}
+
+interface Scaled[R = int] {
+    fn scale(self, by: R) -> Self
+}
+
+fn takes(c: Combine) {} // error: `Combine` cannot be used as a type without its type arguments
+
+// A default that does not mention `Self` is fine anywhere, but too many arguments are not.
+fn also(s: Scaled[int, int]) {} // error: `Scaled` takes 0 to 1 type arguments, found 2
+
+fn main() {}

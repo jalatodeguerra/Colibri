@@ -37,6 +37,9 @@ pub(crate) struct GenericParamInfo {
     pub name: String,
     pub span: Span,
     pub bounds: Vec<BoundRef>,
+    /// The default type argument of an interface's parameter (`R = Self`), written in terms of
+    /// the interface's `Self` and its earlier parameters.
+    pub default: Option<Ty>,
 }
 
 impl GenericParamInfo {

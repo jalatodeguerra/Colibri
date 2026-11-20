@@ -191,6 +191,21 @@ fn trailing_commas_are_allowed_everywhere() {
     ]);
 }
 
+#[test]
+fn an_interface_parameter_may_have_a_default() {
+    check(&[
+        (
+            "interface Add[R = Self, O = Self] { fn add(self, other: R) -> O }",
+            "(interface Add [R = Self, O = Self] (fn add (params self (other : R)) -> O))",
+        ),
+        (
+            "interface C[T: Eq + Hash = int] { fn f(self) }",
+            "(interface C [T: Eq + Hash = int] (fn f (params self)))",
+        ),
+        ("fn f[T = int]() {}", "(fn f [T = int] (params) (block))"),
+    ]);
+}
+
 // ---- strings ----
 
 #[test]

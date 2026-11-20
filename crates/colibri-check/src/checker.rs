@@ -231,6 +231,10 @@ pub(crate) struct Checker<'a> {
     pub type_scope: Vec<(String, Ty)>,
     /// What `Self` means where the type being resolved is written.
     pub self_ty: Option<Ty>,
+    /// The type that stands for `Self` in the default type arguments of the interface being
+    /// named: the bounded parameter in `T: Add`, the implementing type in `impl Add for V`.
+    /// Taken by the next interface named, so it never reaches a nested one.
+    pub default_self: Option<Ty>,
     /// The interfaces, by type id.
     pub ifaces: HashMap<TypeId, IfaceInfo<'a>>,
     /// Explicit `impl Interface for Type` blocks and the derived implementations that were
@@ -487,6 +491,7 @@ impl<'a> Checker<'a> {
             param_bounds: HashMap::new(),
             type_scope: Vec::new(),
             self_ty: None,
+            default_self: None,
             ifaces: HashMap::new(),
             impls: Vec::new(),
             impl_by_key: HashMap::new(),
@@ -665,6 +670,7 @@ impl<'a> Checker<'a> {
         let base_items: Vec<&'a ast::Item> =
             prelude_items.iter().chain(&host_items).copied().collect();
         self.declare_types(&base_items);
+        self.define_type_defaults(&base_items);
         self.define_types(&base_items);
         for item in &prelude_items {
             self.collect_item(item);
@@ -696,6 +702,10 @@ impl<'a> Checker<'a> {
         for &m in &others {
             self.bind_host_uses(m);
             self.bind_imports_types(m);
+        }
+        for (k, &m) in others.iter().enumerate() {
+            self.enter_module(m);
+            self.define_type_defaults(&module_items[k]);
         }
         for (k, &m) in others.iter().enumerate() {
             self.enter_module(m);
@@ -1249,22 +1259,66 @@ impl<'a> Checker<'a> {
 
     /// `Name[args]` for a user-defined struct, enum, class or interface.
     fn instantiate_type(&mut self, id: TypeId, args: &[ast::TypeExpr], span: Span) -> Ty {
+        let default_self = self.default_self.take();
         let def = &self.types[id.0 as usize];
         let (name, wanted, is_iface) = (
             def.display_name().into_owned(),
             def.params.len(),
             def.is_interface(),
         );
-        if args.len() != wanted {
-            self.report_type_arity(&name, wanted, args.len(), span);
+        // The least a use must write: the trailing parameters of an interface may have defaults.
+        let required = if is_iface {
+            self.type_extra[id.0 as usize]
+                .generics
+                .iter()
+                .rposition(|g| g.default.is_none())
+                .map_or(0, |last| last + 1)
+        } else {
+            wanted
+        };
+        if args.len() > wanted || args.len() < required {
+            if required < wanted {
+                self.report(
+                    Diagnostic::error(
+                        format!(
+                            "`{name}` takes {required} to {wanted} type arguments, found {}",
+                            args.len()
+                        ),
+                        span,
+                    )
+                    .with_hint(format!(
+                        "the last {} can be left out, and then take their defaults",
+                        wanted - required
+                    )),
+                );
+            } else {
+                self.report_type_arity(&name, wanted, args.len(), span);
+            }
             for a in args {
                 self.resolve_type(a);
             }
             return Ty::Error;
         }
-        let tys: Vec<Ty> = args.iter().map(|a| self.resolve_type(a)).collect();
+        let mut tys: Vec<Ty> = args.iter().map(|a| self.resolve_type(a)).collect();
         if tys.iter().any(Ty::is_error) {
             return Ty::Error;
+        }
+        if tys.len() < wanted {
+            match self.fill_defaults(id, &tys, default_self) {
+                Some(full) => tys = full,
+                None => {
+                    self.report(
+                        Diagnostic::error(
+                            format!("`{name}` cannot be used as a type without its type arguments"),
+                            span,
+                        )
+                        .with_hint(format!(
+                            "its defaults mention `Self`, which only a bound (`T: {name}`) or an `impl {name} for Type` header can fill in; elsewhere write every argument"
+                        )),
+                    );
+                    return Ty::Error;
+                }
+            }
         }
         let spans: Vec<Span> = args.iter().map(|a| a.span).collect();
         self.require_type_bounds(id, &tys, &spans, span);
@@ -1273,6 +1327,37 @@ impl<'a> Checker<'a> {
         } else {
             Ty::Adt(id, tys)
         }
+    }
+
+    /// The type arguments of interface `id` once the trailing ones that `given` leaves out take
+    /// their defaults, or `None` when a default needs a `Self` that nothing here gives.
+    fn fill_defaults(
+        &self,
+        id: TypeId,
+        given: &[Ty],
+        default_self: Option<Ty>,
+    ) -> Option<Vec<Ty>> {
+        let generics = &self.type_extra[id.0 as usize].generics;
+        let self_id = self.ifaces.get(&id)?.self_param.id;
+        let mut map: Vec<(ParamId, Ty)> = generics
+            .iter()
+            .zip(given)
+            .map(|(g, a)| (g.id, a.clone()))
+            .collect();
+        if let Some(s) = default_self {
+            map.push((self_id, s));
+        }
+        let mut full = given.to_vec();
+        for g in &generics[given.len()..] {
+            let default = g.default.as_ref()?;
+            let ty = default.subst(&map);
+            if crate::ifaces::mentions(&ty, self_id) {
+                return None;
+            }
+            map.push((g.id, ty.clone()));
+            full.push(ty);
+        }
+        Some(full)
     }
 
     pub(crate) fn report_type_arity(

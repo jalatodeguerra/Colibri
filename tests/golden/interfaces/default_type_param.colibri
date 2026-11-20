@@ -1,0 +1,31 @@
+// A type parameter of an interface may have a default, which may mention `Self` and the
+// parameters before it. A bound or an `impl` header may leave the trailing arguments out.
+interface Combine[R = Self, O = R] {
+    fn combine(self, other: R) -> O
+}
+
+struct Money { cents: int }
+struct Basket { items: int }
+
+// `Combine` is `Combine[Money, Money]` here.
+impl Combine for Money {
+    fn combine(self, other: Money) -> Money => Money { cents: self.cents + other.cents }
+}
+
+// `Combine[int]` is `Combine[int, int]`.
+impl Combine[int] for Basket {
+    fn combine(self, other: int) -> int => self.items + other
+}
+
+// A bound without arguments is `T: Combine[T, T]`.
+fn twice[T: Combine](x: T) -> T => x.combine(x)
+
+fn plus_one[T: Combine[int]](x: T) -> int => x.combine(1)
+
+fn main() {
+    print(twice(Money { cents: 21 }).cents)
+    print(plus_one(Basket { items: 41 }))
+}
+
+// expect: 42
+// expect: 42

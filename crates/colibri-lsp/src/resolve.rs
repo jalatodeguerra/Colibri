@@ -870,7 +870,10 @@ impl<'a> Walker<'a> {
         }
         self.generics.push(scope);
         for p in params {
-            p.bounds.iter().for_each(|b| self.walk_type(b));
+            p.bounds
+                .iter()
+                .chain(&p.default)
+                .for_each(|b| self.walk_type(b));
         }
         f(self);
         self.generics.pop();

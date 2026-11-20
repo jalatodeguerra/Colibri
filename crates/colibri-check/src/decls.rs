@@ -112,7 +112,7 @@ impl<'a> Checker<'a> {
                     }
                 }
                 ItemKind::TypeAlias(t) if self.name_is_free(&t.name, "type alias") => {
-                    let generics = self.type_params(&t.generics, false);
+                    let generics = self.type_params(&t.generics, false, false);
                     let id = AliasId(self.alias_infos.len() as u32);
                     self.alias_infos.push(AliasInfo {
                         name: t.name.name.clone(),
@@ -137,9 +137,34 @@ impl<'a> Checker<'a> {
         &mut self,
         decls: &[ast::GenericParam],
         bounds_allowed: bool,
+        defaults_allowed: bool,
     ) -> Vec<GenericParamInfo> {
         let mut out: Vec<GenericParamInfo> = Vec::new();
+        let mut defaulted: Option<&ast::GenericParam> = None;
         for d in decls {
+            if d.default.is_some() && !defaults_allowed {
+                self.refuse_default(d);
+            }
+            if defaults_allowed {
+                match (&d.default, defaulted) {
+                    (Some(_), None) => defaulted = Some(d),
+                    (None, Some(first)) => {
+                        let first_span = first.name.span;
+                        self.report(
+                            Diagnostic::error(
+                                format!(
+                                    "the type parameter `{}` needs a default, because an earlier parameter has one",
+                                    d.name.name
+                                ),
+                                d.name.span,
+                            )
+                            .with_label(first_span, "the first parameter with a default")
+                            .with_hint("parameters with a default come last, so a use can leave them out"),
+                        );
+                    }
+                    _ => {}
+                }
+            }
             if out.iter().any(|g| g.name == d.name.name) {
                 self.report(Diagnostic::error(
                     format!(
@@ -168,9 +193,27 @@ impl<'a> Checker<'a> {
                 name: d.name.name.clone(),
                 span: d.name.span,
                 bounds: Vec::new(),
+                default: None,
             });
         }
         out
+    }
+
+    /// Reports a default type argument where the language does not take one.
+    pub(crate) fn refuse_default(&mut self, d: &ast::GenericParam) {
+        let Some(default) = &d.default else {
+            return;
+        };
+        self.report(
+            Diagnostic::error(
+                format!(
+                    "the type parameter `{}` cannot have a default",
+                    d.name.name
+                ),
+                default.span,
+            )
+            .with_hint("only the type parameters of an interface take a default: `interface Add[R = Self] { .. }`"),
+        );
     }
 
     /// The name of the named host module being declared, if the current module is one.
@@ -242,7 +285,7 @@ impl<'a> Checker<'a> {
         if !self.name_is_free(name, what) {
             return None;
         }
-        let generics = self.type_params(generics, true);
+        let generics = self.type_params(generics, true, what == "interface");
         let id = TypeId(self.types.len() as u32);
         self.types.push(TypeDef {
             name: name.name.clone(),
@@ -297,6 +340,50 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Resolves the default type arguments of interfaces (`interface Add[R = Self]`). A default
+    /// may mention `Self` and the parameters before it. It runs once every type has a name and
+    /// every import is bound, before any bound is resolved, so a bound `T: Add` finds the defaults.
+    pub(crate) fn define_type_defaults(&mut self, items: &[&'a ast::Item]) {
+        for item in items {
+            let ItemKind::Interface(i) = &item.kind else {
+                continue;
+            };
+            if i.generics.iter().all(|g| g.default.is_none()) {
+                continue;
+            }
+            let Some(id) = self.own_type(&i.name) else {
+                continue;
+            };
+            let Some(self_ty) = self.ifaces.get(&id).map(|f| f.self_param.ty()) else {
+                continue;
+            };
+            let mut generics = self.type_extra[id.0 as usize].generics.clone();
+            let saved = std::mem::replace(&mut self.self_ty, Some(self_ty));
+            for decl in &i.generics {
+                let Some(written) = &decl.default else {
+                    continue;
+                };
+                let Some(at) = generics
+                    .iter()
+                    .position(|g| g.name == decl.name.name && g.span == decl.name.span)
+                else {
+                    continue;
+                };
+                let mark = self.enter_generics(&generics[..at]);
+                let ty = self.resolve_type(written);
+                self.leave_generics(mark);
+                if !ty.is_error() {
+                    generics[at].default = Some(ty);
+                }
+            }
+            self.self_ty = saved;
+            if let Some(iface) = self.ifaces.get_mut(&id) {
+                iface.generics = generics.clone();
+            }
+            self.type_extra[id.0 as usize].generics = generics;
+        }
+    }
+
     /// Resolves the bounds written on the type parameters of structs, enums and interfaces
     /// (`struct Sorted[T: Ord]`). It runs once every type has a name and every import is bound,
     /// and before any field or signature is resolved, so each use of a type finds its bounds.
@@ -317,10 +404,11 @@ impl<'a> Checker<'a> {
             let mark = self.enter_type_params(id);
             let mut generics = self.type_extra[id.0 as usize].generics.clone();
             for (info, decl) in generics.iter_mut().zip(decls.iter()) {
+                let bounded = info.ty();
                 let bounds: Vec<_> = decl
                     .bounds
                     .iter()
-                    .filter_map(|b| self.resolve_bound(b))
+                    .filter_map(|b| self.resolve_bound(b, bounded.clone()))
                     .collect();
                 self.param_bounds.insert(info.id, bounds.clone());
                 info.bounds = bounds;

@@ -1082,7 +1082,11 @@ impl<'a> Fmt<'a> {
         let items = params
             .iter()
             .map(|p| {
-                let end = p.bounds.last().map_or(p.name.span.end, |b| b.span.end);
+                let end = p
+                    .default
+                    .as_ref()
+                    .or(p.bounds.last())
+                    .map_or(p.name.span.end, |b| b.span.end);
                 self.element(p.name.span.start, end, |f| f.generic_param(p))
             })
             .collect();
@@ -1095,6 +1099,10 @@ impl<'a> Fmt<'a> {
             parts.push(text(": "));
             let bounds = p.bounds.iter().map(|b| self.ty(b)).collect();
             parts.push(join(&text(" + "), bounds));
+        }
+        if let Some(default) = &p.default {
+            parts.push(text(" = "));
+            parts.push(self.ty(default));
         }
         concat(parts)
     }

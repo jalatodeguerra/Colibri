@@ -50,7 +50,7 @@ impl IfaceMethodInfo<'_> {
 }
 
 /// Whether `ty` mentions the type parameter `p`.
-fn mentions(ty: &Ty, p: ParamId) -> bool {
+pub(crate) fn mentions(ty: &Ty, p: ParamId) -> bool {
     match ty {
         Ty::Param(q, _) => *q == p,
         Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().any(|t| mentions(t, p)),
@@ -69,6 +69,7 @@ impl<'a> Checker<'a> {
             id: self.new_param(),
             name: "Self".to_string(),
             span: decl.name.span,
+            default: None,
             bounds: vec![BoundRef {
                 iface: id,
                 args: generics.iter().map(GenericParamInfo::ty).collect(),
@@ -227,7 +228,12 @@ impl<'a> Checker<'a> {
         target: Ty,
         generics: &[GenericParamInfo],
     ) {
-        let (iface, iface_args) = match self.resolve_type(iface_expr) {
+        // A type argument left out of the header takes the interface's default, with `Self`
+        // standing for the implementing type.
+        self.default_self = Some(target.clone());
+        let resolved = self.resolve_type(iface_expr);
+        self.default_self = None;
+        let (iface, iface_args) = match resolved {
             Ty::Dyn(id, args) => (id, args),
             Ty::Error => return,
             other => {

@@ -227,6 +227,19 @@ fn statements_one_per_line_without_semicolons() {
 }
 
 #[test]
+fn interface_defaults_are_printed_after_the_bounds() {
+    check(
+        "interface Add[R=Self,O=Self]{fn add(self,other:R)->O}",
+        "interface Add[R = Self, O = Self] {\n    fn add(self, other: R) -> O\n}\n",
+    );
+    check(
+        "interface C[T:Eq+Hash=int]{}",
+        "interface C[T: Eq + Hash = int] {}\n",
+    );
+    check("impl[T] Add for List[T]{}", "impl[T] Add for List[T] {}\n");
+}
+
+#[test]
 fn a_semicolon_after_the_last_expression_statement_is_kept() {
     // `{ f(); }` has no value; `{ f() }` yields `f()`: the `;` is not noise.
     check("fn f() { g(); }", "fn f() { g(); }\n");
