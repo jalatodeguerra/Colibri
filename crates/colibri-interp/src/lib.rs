@@ -28,11 +28,3 @@ pub use eval::{DEFAULT_NATIVE_STACK_BUDGET, Interp};
 pub use fiber::Fiber;
 pub use host::{HostClassHooks, HostImpl};
 pub use session::SessionUndo;
-
-// What the interpreter's own tests name; the engine-neutral types are `colibri_core`'s.
-#[doc(hidden)]
-pub use colibri_core::ctl::PanicInfo;
-#[doc(hidden)]
-pub use colibri_core::hostheap::HostBorrowError;
-#[doc(hidden)]
-pub use colibri_core::value::Value;

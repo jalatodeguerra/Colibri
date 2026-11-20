@@ -6,7 +6,8 @@ use std::any::TypeId as AnyTypeId;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use colibri_interp::{HostBorrowError, Interp};
+use colibri_core::hostheap::HostBorrowError;
+use colibri_interp::Interp;
 
 fn interp() -> Interp {
     Interp::new(Box::new(std::io::sink()), 100)

@@ -994,7 +994,12 @@ mod tests {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(20));
             if flag.load(Ordering::SeqCst) == 0 {
-                eprintln!("a lost stack kept its coroutine alive: cancel_all_coroutines hangs");
+                // Written to the real stderr: the harness captures `eprintln!` and the exit
+                // below would discard it.
+                let _ = std::io::Write::write_all(
+                    &mut std::io::stderr(),
+                    b"a_lost_stack_ends_its_coroutine_as_an_internal_error: the lost stack kept its coroutine alive, so cancel_all_coroutines hangs\n",
+                );
                 std::process::exit(1);
             }
         });

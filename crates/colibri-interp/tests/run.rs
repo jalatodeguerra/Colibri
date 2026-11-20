@@ -5,7 +5,9 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
-use colibri_interp::{Fiber, Interp, PanicInfo, Value};
+use colibri_core::ctl::PanicInfo;
+use colibri_core::value::Value;
+use colibri_interp::{Fiber, Interp};
 use colibri_syntax::{FileId, parse_file};
 
 #[derive(Clone, Default)]

@@ -47,19 +47,19 @@ pub use state::Core;
 /// engine. Their methods read as methods of the engine (`self.release(v)`).
 #[doc(hidden)]
 pub mod prelude {
-    pub use crate::builtin::Builtins as _;
-    pub use crate::bytesfn::BytesOps as _;
-    pub use crate::coro::Sched as _;
-    pub use crate::deep::Deep as _;
-    pub use crate::dispatch::Dispatch as _;
-    pub use crate::engine::Engine as _;
-    pub use crate::iter::IterOps as _;
-    pub use crate::listfn::ListFnOps as _;
-    pub use crate::ops::Operators as _;
-    pub use crate::protocol::Protocol as _;
-    pub use crate::release::Release as _;
-    pub use crate::results::ResultOps as _;
-    pub use crate::strfn::StrOps as _;
+    pub use crate::builtin::Builtins;
+    pub use crate::bytesfn::BytesOps;
+    pub use crate::coro::Sched;
+    pub use crate::deep::Deep;
+    pub use crate::dispatch::Dispatch;
+    pub use crate::engine::Engine;
+    pub use crate::iter::IterOps;
+    pub use crate::listfn::ListFnOps;
+    pub use crate::ops::Operators;
+    pub use crate::protocol::Protocol;
+    pub use crate::release::Release;
+    pub use crate::results::ResultOps;
+    pub use crate::strfn::StrOps;
 }
 
 /// The current position on the native stack (it only has to be comparable with another one).

@@ -10,7 +10,8 @@ use std::rc::Rc;
 use colibri_check::HostEnv;
 use colibri_check::hir::HostFnId;
 use colibri_check::host::{body_hash, header_line};
-use colibri_interp::{Fiber, Interp, Value};
+use colibri_core::value::Value;
+use colibri_interp::{Fiber, Interp};
 use colibri_syntax::{FileId, parse_file};
 
 #[derive(Clone, Default)]
