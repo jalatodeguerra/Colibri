@@ -1,7 +1,7 @@
 //! The tree-walking interpreter: the reference engine for the checked HIR.
 //!
 //! A recursive evaluator over [`colibri_check::hir`] following ARCHITECTURE §2: all Colibri state
-//! is in a heap [`Fiber`], control flow is one [`Ctl`] channel, every scope exit goes through
+//! is in a heap [`Fiber`], control flow is one `Ctl` channel, every scope exit goes through
 //! one `exit_scope`, and calls look functions up by id at call time. Hosts use it through
 //! `colibri-runtime`, not directly.
 

@@ -5,7 +5,7 @@
 //! positions stay valid (an iteration holds positions while the mutation guard blocks any
 //! removal); the vector is compacted when tombstones outnumber live entries. Lookup, insert and
 //! remove are O(1) on average. Keys are compared with the structural equality of
-//! [`crate::compare::values_equal`], so a key is stored once, in the entry, and the index holds
+//! `crate::compare::values_equal`, so a key is stored once, in the entry, and the index holds
 //! no second reference to it.
 //!
 //! This module is pure data structure code: it never runs Colibri code.
@@ -265,7 +265,7 @@ impl OrderedMap {
         self.live == 0
     }
 
-    /// How many positions exist, live or removed: the bound of [`OrderedMap::entry_at`].
+    /// How many positions exist, live or removed: the bound of `OrderedMap::entry_at`.
     #[inline]
     pub fn slots(&self) -> usize {
         self.entries.len()

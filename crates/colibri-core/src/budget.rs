@@ -4,7 +4,7 @@
 //! The budget is an allotment for each outermost entry from the host (`call`, `load`, `run_main`):
 //! reentrant calls from a host function share it. The hot path is one decrement and one branch.
 //! When the allotment runs out, evaluation unwinds like a panic, so `defer` statements and `Drop`
-//! hooks run, but only for a grace of [`GRACE_STEPS`] steps; after that remaining `defer`
+//! hooks run, but only for a grace of `GRACE_STEPS` steps; after that remaining `defer`
 //! statements and hooks are skipped (plain releases still happen), so a script cannot extend its
 //! life with an infinite cleanup.
 

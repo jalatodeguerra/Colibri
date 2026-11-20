@@ -114,7 +114,7 @@ pub struct DynVal {
 
 impl PartialEq for Value {
     /// Scalars, strings, structs, tuples and enums by content; reference types and weak
-    /// references by identity. (Colibri's own `==` is [`crate::compare::values_equal`].)
+    /// references by identity. (Colibri's own `==` is `crate::compare::values_equal`.)
     fn eq(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::Unit, Value::Unit) => true,
