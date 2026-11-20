@@ -1007,7 +1007,11 @@ impl Interp {
                 if let Some(frame) = fiber.frames.last_mut() {
                     frame.span = span;
                 }
-                self.call_function_value(fiber, &f, values, span)
+                let result = self.call_function_value(fiber, &f, values, span);
+                // The callee is an owned value: a temporary closure (the one of `go fn() {..}()`)
+                // is dropped here, and may hold the last reference to what it captured.
+                self.release(f);
+                result
             }
             Callee::Intrinsic(_) => Err(self.internal(fiber, span, "an intrinsic is not a call")),
         }

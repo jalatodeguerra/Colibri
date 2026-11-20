@@ -499,3 +499,118 @@ fn main() {
     assert_eq!(out.contents(), "7\n7\n");
     assert!(sleeps.get() <= 4, "{} sleeps", sleeps.get());
 }
+
+/// A closure started with `go` is a temporary: when its coroutine ends, the coroutine holds the
+/// last reference to what the closure captured, so the captured object's `Drop` hook must run
+/// then (the object is released, never just dropped by Rust: a debug build stops on that).
+const GUARD: &str = r#"
+class Guard {
+    name: str
+}
+impl Drop for Guard {
+    fn drop(self) {
+        print("drop {self.name}")
+    }
+}
+"#;
+
+fn run_with_guard(body: &str) -> (colibri::Vm, colibri::SharedBuffer) {
+    let (mut vm, out) = vm();
+    vm.load_source("guard.colibri", &format!("{GUARD}{body}"))
+        .unwrap();
+    vm.run_main().unwrap();
+    (vm, out)
+}
+
+#[test]
+fn a_go_closure_that_finishes_releases_the_object_only_it_holds() {
+    let (mut vm, out) = run_with_guard(
+        r#"
+fn start() {
+    let g = Guard { name: "g" }
+    let _child = go fn() {
+        wait(0.5)
+        print("child uses {g.name}")
+    }()
+    print("start returns")
+}
+fn main() {
+    start()
+    print("main returns")
+}
+"#,
+    );
+    assert_eq!(out.contents(), "start returns\nmain returns\n");
+    vm.tick(0.5).unwrap();
+    assert_eq!(
+        out.contents(),
+        "start returns\nmain returns\nchild uses g\ndrop g\n"
+    );
+    assert_eq!(vm.coroutine_count(), 0);
+}
+
+#[test]
+fn a_go_closure_that_is_cancelled_releases_the_object_only_it_holds() {
+    let (_vm, out) = run_with_guard(
+        r#"
+fn start() -> Coroutine[()] {
+    let g = Guard { name: "g" }
+    return go fn() {
+        wait(5.0)
+        print("never {g.name}")
+    }()
+}
+fn main() {
+    let h = start()
+    h.cancel()
+    print("cancelled")
+}
+"#,
+    );
+    assert_eq!(out.contents(), "drop g\ncancelled\n");
+}
+
+#[test]
+fn a_go_closure_that_panics_releases_the_object_only_it_holds() {
+    let (mut vm, out) = run_with_guard(
+        r#"
+fn start() {
+    let g = Guard { name: "g" }
+    let _child = go fn() {
+        wait(0.5)
+        let xs: List[int] = []
+        print("{g.name} {xs[3]}")
+    }()
+}
+fn main() {
+    start()
+}
+"#,
+    );
+    assert!(vm.tick(0.5).is_err(), "the child's panic is reported");
+    assert_eq!(out.contents(), "drop g\n");
+}
+
+#[test]
+fn a_go_closure_with_arguments_releases_what_it_captured_and_what_it_got() {
+    let (mut vm, out) = run_with_guard(
+        r#"
+fn start() {
+    let a = Guard { name: "captured" }
+    let b = Guard { name: "argument" }
+    let _child = go fn(x: Guard) {
+        wait(0.5)
+        print("{a.name} {x.name}")
+    }(b)
+}
+fn main() {
+    start()
+}
+"#,
+    );
+    vm.tick(0.5).unwrap();
+    assert_eq!(
+        out.contents(),
+        "captured argument\ndrop argument\ndrop captured\n"
+    );
+}
