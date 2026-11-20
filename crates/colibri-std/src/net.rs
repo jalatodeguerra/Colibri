@@ -880,10 +880,10 @@ impl Drop for Ticket {
                 let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     cell.fire(poll::Why::Turn)
                 }));
-                if let Err(panic) = fired {
-                    if !std::thread::panicking() {
-                        std::panic::resume_unwind(panic);
-                    }
+                if let Err(panic) = fired
+                    && !std::thread::panicking()
+                {
+                    std::panic::resume_unwind(panic);
                 }
             }
         } else {
