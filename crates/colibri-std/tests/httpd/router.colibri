@@ -140,10 +140,42 @@ test "an escaped slash stays inside its segment" {
     assert_eq(answer(r, "GET", "/items/a%2Fb"), "200 item id=a/b rest=-")
 }
 
-test "a literal is compared with the decoded segment" {
+test "a parameter with a plus and an escape is decoded by the escape alone" {
     let r = httpd_impl.Router()
+    r.get("/items/:id", labelled("item"))
+    assert_eq(answer(r, "GET", "/items/a+b%20c"), "200 item id=a+b c rest=-")
+    assert_eq(answer(r, "GET", "/items/a%2Bb+c"), "200 item id=a+b+c rest=-")
+}
+
+test "a literal is compared with the segment as it came: /%61dmin is not /admin" {
+    let r = httpd_impl.Router()
+    r.get("/admin", labelled("admin"))
     r.get("/items", labelled("items"))
-    assert_eq(answer(r, "GET", "/it%65ms"), "200 items id=- rest=-")
+    assert_eq(answer(r, "GET", "/%61dmin"), "404 404 Not Found\n")
+    assert_eq(answer(r, "GET", "/it%65ms"), "404 404 Not Found\n")
+    assert_eq(answer(r, "GET", "/admin"), "200 admin id=- rest=-")
+    // The router and `Request.path` agree: a check on the path sees what the router matched.
+    var seen = ""
+    let h = r.handler()
+    let req = httpd_impl.test_request("GET", "/%61dmin")
+    let _ = h(req)
+    seen = req.path
+    assert_eq(seen, "/%61dmin")
+}
+
+test "a literal with an escape matches exactly that text" {
+    let r = httpd_impl.Router()
+    r.get("/a%20b", labelled("escaped"))
+    assert_eq(answer(r, "GET", "/a%20b"), "200 escaped id=- rest=-")
+    assert_eq(answer(r, "GET", "/a%2520b"), "404 404 Not Found\n")
+    assert_eq(answer(r, "GET", "/a%20c"), "404 404 Not Found\n")
+    assert_eq(answer(r, "GET", "/a%2ob"), "400 400 Bad Request: a bad percent-escape in the path\n")
+}
+
+test "a literal can hold the characters of a path" {
+    let r = httpd_impl.Router()
+    r.get("/v1.2/a-b_c~d/x:y/@me/(a)/!$&'*+,;=", labelled("chars"))
+    assert_eq(answer(r, "GET", "/v1.2/a-b_c~d/x:y/@me/(a)/!$&'*+,;="), "200 chars id=- rest=-")
 }
 
 test "a bad escape in the path is 400" {
@@ -283,12 +315,51 @@ test "there is no trailing-slash redirect: /items/ is not /items" {
     assert_eq(answer(s, "GET", "/items"), "404 404 Not Found\n")
 }
 
-test "dot segments are not removed: .. is an ordinary segment" {
+fn is_400(r: httpd_impl.Router, target: str) -> bool => call(r, "GET", target).status == 400
+
+test "a path with a . or .. segment is 400, written with dots or with %2E, whatever routes exist" {
     let r = httpd_impl.Router()
-    r.get("/a/..", labelled("dots"))
+    r.get("/files/*rest", labelled("files"))
+    r.get("/admin/:id", labelled("admin"))
     r.get("/b", labelled("b"))
-    assert_eq(answer(r, "GET", "/a/.."), "200 dots id=- rest=-")
-    assert_eq(answer(r, "GET", "/a/../b"), "404 404 Not Found\n")
+    for target in [
+        "/files/../../etc/passwd", "/files/a/..", "/files/./a", "/admin/%2e%2e", "/admin/%2E%2E",
+        "/admin/.%2e", "/admin/%2e.", "/admin/..", "/admin/.", "/%2e", "/a/../b", "/..", "/.",
+        "/nothing/../b", "/files/a/%2e/b",
+    ] {
+        assert(is_400(r, target))
+    }
+    assert(body_of(call(r, "GET", "/a/../b")).contains("dot segment"))
+}
+
+test "a segment that only starts or ends with a dot, or has three, is not a dot segment" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", labelled("files"))
+    for target in ["/files/.hidden", "/files/a.b", "/files/...", "/files/a./b", "/files/.a/b", "/files/%2ea"] {
+        assert_eq(call(r, "GET", target).status, 200)
+    }
+}
+
+test "an escape of a control character in the path is 400, in a parameter or anywhere" {
+    let r = httpd_impl.Router()
+    r.get("/admin/:id", labelled("admin"))
+    r.get("/files/*rest", labelled("files"))
+    for target in [
+        "/admin/%00", "/admin/a%0Ab", "/admin/%0D%0A", "/admin/%1f", "/admin/%7F", "/admin/%7f",
+        "/files/a/%00", "/nothing/%00", "/%0a",
+    ] {
+        assert(is_400(r, target))
+    }
+    assert(body_of(call(r, "GET", "/admin/%00")).contains("control character"))
+}
+
+test "an escape that is not a control character is a value like any other" {
+    let r = httpd_impl.Router()
+    r.get("/admin/:id", labelled("admin"))
+    assert_eq(answer(r, "GET", "/admin/%20"), "200 admin id=  rest=-")
+    assert_eq(answer(r, "GET", "/admin/%2F"), "200 admin id=/ rest=-")
+    assert_eq(answer(r, "GET", "/admin/%7E"), "200 admin id=~ rest=-")
+    assert_eq(answer(r, "GET", "/admin/%80"), "400 400 Bad Request: a parameter that is not valid text\n")
 }
 
 test "paths are case-sensitive" {
@@ -386,6 +457,15 @@ test "HEAD runs the route of GET when there is none for HEAD" {
     let r = httpd_impl.Router()
     r.get("/items/:id", labelled("item"))
     assert_eq(answer(r, "HEAD", "/items/7"), "200 item id=7 rest=-")
+}
+
+test "an explicit HEAD route wins even when it is a :name route and GET has a literal" {
+    let r = httpd_impl.Router()
+    r.handle("HEAD", "/items/:id", labelled("head-id"))
+    r.get("/items/new", labelled("get-new"))
+    assert_eq(answer(r, "HEAD", "/items/new"), "200 head-id id=new rest=-")
+    assert_eq(answer(r, "GET", "/items/new"), "200 get-new id=- rest=-")
+    assert_eq(answer(r, "HEAD", "/items/other"), "200 head-id id=other rest=-")
 }
 
 test "a route of HEAD is preferred to the route of GET" {

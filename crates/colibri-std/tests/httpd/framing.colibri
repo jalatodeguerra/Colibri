@@ -283,3 +283,52 @@ test "a Content-Length that is not plain ASCII digits is 400, whatever the digit
     assert_eq(common.status_of(with(["Content-Length: \u{663}"])), 400)
     assert_eq(common.status_of(with(["Content-Length: \u{ff15}"])), 400)
 }
+
+fn keeps(version: str, fields: List[str]) -> bool {
+    let lines = ["GET / {version}"]
+    if version == "HTTP/1.1" {
+        lines.push("Host: x")
+    }
+    lines.extend(fields)
+    return common.accepted(common.head(lines)).keep_alive
+}
+
+test "close is found as a token wherever it stands in the list, with white space around it" {
+    assert(!keeps("HTTP/1.1", ["Connection: upgrade, close"]))
+    assert(!keeps("HTTP/1.1", ["Connection: close, upgrade"]))
+    assert(!keeps("HTTP/1.1", ["Connection: a , close ,b"]))
+    assert(!keeps("HTTP/1.1", ["Connection:\tclose\t"]))
+    assert(!keeps("HTTP/1.1", ["Connection: CLOSE"]))
+    assert(!keeps("HTTP/1.1", ["Connection: cLoSe"]))
+    assert(!keeps("HTTP/1.1", ["Connection: keep-alive", "Connection: Close"]))
+}
+
+test "a token that only contains close, or a letter that folds to one, is not close" {
+    assert(keeps("HTTP/1.1", ["Connection: closed"]))
+    assert(keeps("HTTP/1.1", ["Connection: x-close"]))
+    assert(keeps("HTTP/1.1", ["Connection: close-x"]))
+    assert(keeps("HTTP/1.1", ["Connection: xclose"]))
+    assert(keeps("HTTP/1.1", ["Connection: clos"]))
+    // LATIN SMALL LETTER LONG S folds to `s` in a case-insensitive Unicode match.
+    assert(keeps("HTTP/1.1", ["Connection: clo\u{17f}e"]))
+    assert(keeps("HTTP/1.1", ["Connection: close\u{a0}"]))
+    assert(keeps("HTTP/1.1", ["Connection: \u{a0}close"]))
+}
+
+test "keep-alive is a token in the same way, and close beats it" {
+    assert(keeps("HTTP/1.0", ["Connection: upgrade, keep-alive"]))
+    assert(keeps("HTTP/1.0", ["Connection: KEEP-ALIVE"]))
+    assert(keeps("HTTP/1.0", ["Connection: a,\tkeep-alive\t,b"]))
+    assert(!keeps("HTTP/1.0", ["Connection: keep-alives"]))
+    assert(!keeps("HTTP/1.0", ["Connection: x-keep-alive"]))
+    assert(!keeps("HTTP/1.0", ["Connection: keep-aliv\u{17f}e"]))
+    assert(!keeps("HTTP/1.0", ["Connection: keep-alive, close"]))
+    assert(!keeps("HTTP/1.0", []))
+}
+
+test "a long Connection value is read with the same few calls: a list of 30000 tokens" {
+    let tokens = str.repeat("a,", 30000)
+    assert(keeps("HTTP/1.1", ["Connection: " + tokens + "x"]))
+    assert(!keeps("HTTP/1.1", ["Connection: " + tokens + "close"]))
+    assert(keeps("HTTP/1.0", ["Connection: " + tokens + "keep-alive"]))
+}

@@ -21,9 +21,11 @@
 //   `BodyReader.read`.
 // - Every scan of client bytes is done by a `regex`, `split`, `find` or `contains`, which run in
 //   Rust, and never by a loop over bytes in Colibri, which costs about half a microsecond a byte.
-//   The exceptions are the digits of a chunk size (at most 15) and the escapes of a percent-encoded
-//   text, which are looked at only where a `%` is.
+//   The exception is the digits of a chunk size (at most 15). The escapes of a percent-encoded
+//   text are found by one `regex` call for the whole text, and each run of escapes is decoded by
+//   one call of `hex.decode`.
 import std.datetime
+import std.hex
 import std.io
 import std.json as json_codec
 import std.net
@@ -153,7 +155,9 @@ impl Headers {
         return n
     }
 
-    /// Every field line as it is written: the name as first spelled, and the value.
+    /// Every field line as it is written: the name as first spelled, and the value. The lines are
+    /// grouped by name, in the order the names were first set, and not in the order the lines
+    /// were added: it is what a response writes, not a record of what came over the wire.
     fn lines(self) -> List[(str, str)] {
         let out: List[(str, str)] = []
         for entry in self.entries.values() {
@@ -276,37 +280,33 @@ fn hex_value(b: int) -> int {
     return -1
 }
 
+/// A run of one or more `%XX` escapes.
+const ESCAPE_RUNS: str = r"(?:%[0-9A-Fa-f]{2})+"
+
 /// The bytes of `text` with its `%XX` escapes decoded, and its `+` read as a space when
-/// `plus_is_space`. A bad escape (a `%` not followed by two hex digits) is `none` when `strict`,
-/// and is kept as written otherwise. A `+` is replaced before the escapes are read, so `%2B`
-/// stays a plus sign.
-fn decode_percent(text: str, plus_is_space: bool, strict: bool) -> Bytes? {
+/// `plus_is_space`. `escapes` is the pattern `ESCAPE_RUNS`. A bad escape (a `%` not followed by
+/// two hex digits) is `none` when `strict`, and is kept as written otherwise. A `+` is replaced
+/// before the escapes are read, so `%2B` stays a plus sign. The cost is the same few host calls
+/// whatever the number of escapes: the runs of escapes are found at once, and each run is decoded
+/// as one string of hex digits.
+fn decode_percent(escapes: regex.Regex, text: str, plus_is_space: bool, strict: bool) -> Bytes? {
     let src = if plus_is_space && text.contains("+") { text.replace("+", " ") } else { text }
     if !src.contains("%") {
         return some(src.to_bytes())
     }
-    // Only the text after each `%` needs a look: the first part is plain.
-    let parts = src.split("%")
+    let runs = escapes.find_all(src)
+    let plains = escapes.split(src)
     let out = BytesBuilder()
-    out.push_str(parts[0])
-    for i in 1..parts.len() {
-        let rest = parts[i].to_bytes()
-        var decoded = false
-        if rest.len() >= 2 {
-            let hi = hex_value(int(rest[0]))
-            let lo = hex_value(int(rest[1]))
-            if hi >= 0 && lo >= 0 {
-                out.push(u8(hi * 16 + lo))
-                out.push_bytes(rest.slice(2, rest.len()))
-                decoded = true
-            }
+    for i in 0..plains.len() {
+        let plain = plains[i]
+        // A `%` between runs is not the start of an escape.
+        if strict && plain.contains("%") {
+            return none
         }
-        if !decoded {
-            if strict {
-                return none
-            }
-            out.push_str("%")
-            out.push_bytes(rest)
+        out.push_str(plain)
+        if i < runs.len() {
+            let digits = runs[i].text.replace("%", "")
+            out.push_bytes(hex.decode(digits) or Bytes())
         }
     }
     return some(out.to_bytes())
@@ -315,21 +315,21 @@ fn decode_percent(text: str, plus_is_space: bool, strict: bool) -> Bytes? {
 /// `text` with its `%XX` escapes decoded and, with `plus_is_space`, its `+` as a space. `none`
 /// when an escape is bad or the result is not UTF-8: for a path segment, where either is a
 /// mistake of the client.
-fn percent_decode(text: str, plus_is_space: bool) -> str? {
+fn percent_decode(escapes: regex.Regex, text: str, plus_is_space: bool) -> str? {
     if !text.contains("%") && !(plus_is_space && text.contains("+")) {
         return some(text)
     }
-    let decoded = decode_percent(text, plus_is_space, true)?
+    let decoded = decode_percent(escapes, text, plus_is_space, true)?
     return decoded.to_str().ok()
 }
 
 /// Like `percent_decode`, with nothing refused: a bad escape stays as written and bytes that are
 /// not UTF-8 become U+FFFD. For a query, which a browser or a script may write loosely.
-fn percent_decode_lossy(text: str, plus_is_space: bool) -> str {
+fn percent_decode_lossy(escapes: regex.Regex, text: str, plus_is_space: bool) -> str {
     if !text.contains("%") && !(plus_is_space && text.contains("+")) {
         return text
     }
-    let decoded = decode_percent(text, plus_is_space, false) or Bytes()
+    let decoded = decode_percent(escapes, text, plus_is_space, false) or Bytes()
     return decoded.to_str_lossy()
 }
 
@@ -337,26 +337,41 @@ fn percent_decode_lossy(text: str, plus_is_space: bool) -> str {
 /// name with all its values in the order they came. Names and values are decoded: `+` is a
 /// space, a `%XX` escape is the byte, a bad escape stays as written, and bytes that are not UTF-8
 /// become U+FFFD. A parameter with no `=` has the value "", and empty pairs (`a=1&&b=2`) are
-/// skipped.
-pub fn parse_query(text: str) -> Map[str, List[str]] {
+/// skipped. More than `max_pairs` pairs is a 400 `Failure`: the work and the memory of a query
+/// grow with its pairs, and a form handler should also lower `Request.set_body_limit` to what a
+/// form of its own needs (the default allows 10 MiB).
+pub fn parse_query(text: str, max_pairs: int = 1000) -> Result[Map[str, List[str]]] {
+    return query_pairs(pattern(ESCAPE_RUNS), text, max_pairs)
+}
+
+fn query_pairs(
+    escapes: regex.Regex,
+    text: str,
+    max_pairs: int,
+) -> Result[Map[str, List[str]]] {
     let out: Map[str, List[str]] = {:}
     if text.is_empty() {
-        return out
+        return ok(out)
     }
+    var pairs = 0
     for pair in text.split("&") {
         if pair.is_empty() {
             continue
         }
+        pairs += 1
+        if pairs > max_pairs {
+            return err(fail(400, "the query has more than {max_pairs} parameters"))
+        }
         let (raw_key, raw_value) = pair.split_once("=") or (pair, "")
-        let key = percent_decode_lossy(raw_key, true)
-        let value = percent_decode_lossy(raw_value, true)
+        let key = percent_decode_lossy(escapes, raw_key, true)
+        let value = percent_decode_lossy(escapes, raw_value, true)
         if let some(values) = out.get(key) {
             values.push(value)
         } else {
             out[key] = [value]
         }
     }
-    return out
+    return ok(out)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -383,8 +398,24 @@ class Grammar {
     absolute: regex.Regex
     /// One element of a list: optional whitespace, a token, optional whitespace, as group 1.
     element: regex.Regex
-    /// A run of token characters, for the elements of a `Connection` value.
+    /// A run of token characters, to tell whether a text is a token.
     tokens: regex.Regex
+    /// A run of `%XX` escapes (`ESCAPE_RUNS`).
+    escapes: regex.Regex
+    /// A `%` that does not start an escape (it is followed by fewer than two hex digits).
+    bad_escape: regex.Regex
+    /// An escape of a control character: `%00` to `%1F`, `%7F`.
+    control_escape: regex.Regex
+    /// A path segment that is `.` or `..`, written with dots or with `%2E`.
+    dot_segment: regex.Regex
+    /// What a literal segment of a route may be: path characters and escapes (RFC 3986 3.3).
+    path_literal: regex.Regex
+    /// `close` as a token of a `Connection` value: after the start or a comma, before a comma or
+    /// the end, with optional white space around it. The letters are spelled in both cases so
+    /// that no case folding of Unicode (the long s) takes part.
+    close_token: regex.Regex
+    /// `keep-alive` as a token of a `Connection` value, like `close_token`.
+    keep_token: regex.Regex
     /// A header value of a response: no control character but HTAB (RFC 9112 11.1).
     value_chars: regex.Regex
     /// A `Content-Length` value: 1 to 18 digits, which cannot overflow an `int` (RFC 9110 8.6).
@@ -414,6 +445,15 @@ fn grammar() -> Grammar {
         ),
         element: pattern(r"^[ \t]*([!#$%&'*+.^_`|~0-9A-Za-z-]*)[ \t]*$"),
         tokens: pattern(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"),
+        escapes: pattern(ESCAPE_RUNS),
+        bad_escape: pattern(r"%(?:[0-9A-Fa-f]?[^0-9A-Fa-f]|[0-9A-Fa-f]?$)"),
+        control_escape: pattern(r"%(?:[01][0-9A-Fa-f]|7[Ff])"),
+        dot_segment: pattern(r"(?:^|/)(?:\.|%2[Ee])(?:\.|%2[Ee])?(?:/|$)"),
+        path_literal: pattern(r"^(?:[A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-Fa-f]{2})*$"),
+        close_token: pattern(r"(?:^|,)[ \t]*[Cc][Ll][Oo][Ss][Ee][ \t]*(?:,|$)"),
+        keep_token: pattern(
+            r"(?:^|,)[ \t]*[Kk][Ee][Ee][Pp]-[Aa][Ll][Ii][Vv][Ee][ \t]*(?:,|$)",
+        ),
         value_chars: pattern(r"^[\t\x20-\x7e\x{80}-\x{10FFFF}]*$"),
         digits: pattern(r"^[0-9]{1,18}$"),
         chunk: pattern(r"^([0-9A-Fa-f]{1,15})(?:[ \t]*;[\t\x20-\x7e]*)?$"),
@@ -459,6 +499,8 @@ struct Head {
     expect_continue: bool
     /// The connection stays open after the response (RFC 9112 9.3).
     keep_alive: bool
+    /// The patterns the parser used, which the request goes on using for its query.
+    grammar: Grammar
 }
 
 /// Reads a request head one line at a time: `request_line`, then `field_line` for each field
@@ -714,6 +756,7 @@ impl HeadParser {
                 framing: framing,
                 expect_continue: expect_continue,
                 keep_alive: keeps_alive(g, self.headers, self.http10),
+                grammar: g,
             },
         )
     }
@@ -824,20 +867,13 @@ fn parse_cl(g: Grammar, values: List[str]) -> Result[int?, Reject] {
 /// Whether the connection stays open after the response (RFC 9112 9.3): never with a `close`
 /// token in `Connection`; otherwise in HTTP/1.1 always, and in 1.0 only with `keep-alive`.
 fn keeps_alive(g: Grammar, headers: Headers, http10: bool) -> bool {
-    var close = false
     var keep = false
     if let some(value) = headers.get("connection") {
-        for m in g.tokens.find_all(value) {
-            let token = m.text.to_lower()
-            if token == "close" {
-                close = true
-            } else if token == "keep-alive" {
-                keep = true
-            }
+        // Two calls, whatever the length of the value (it can be 64 KiB of commas).
+        if g.close_token.is_match(value) {
+            return false
         }
-    }
-    if close {
-        return false
+        keep = g.keep_token.is_match(value)
     }
     return if http10 { keep } else { true }
 }
@@ -1008,6 +1044,7 @@ pub class Request {
     params: Map[str, str] = {:}
     reader: BodyReader
     parsed_query: Map[str, List[str]]? = none
+    grammar: Grammar
 }
 
 fn request(head: Head, reader: BodyReader, remote_addr: str) -> Request {
@@ -1021,6 +1058,7 @@ fn request(head: Head, reader: BodyReader, remote_addr: str) -> Request {
         remote_addr: remote_addr,
         host_name: head.host,
         reader: reader,
+        grammar: head.grammar,
     }
 }
 
@@ -1033,22 +1071,29 @@ impl Request {
     pub fn host(self) -> str => self.host_name
 
     /// A parameter of the route that matched, percent-decoded: `:id` or `*rest` of the pattern.
+    /// The value is what the client wrote, decoded once: `%2F` gives a `/` inside the value, and
+    /// a program that uses it as a file name or a key must check it itself. A `.` or `..`
+    /// segment, and an escape of a control character, never reach a handler: the router answers
+    /// 400 for them.
     pub fn param(self, name: str) -> str? => self.params.get(name)
 
-    /// All the parameters of the query, decoded; see `parse_query`.
-    pub fn query_values(self) -> Map[str, List[str]] {
+    /// All the parameters of the query, decoded; see `parse_query`. More than `max_pairs` is a
+    /// 400 `Failure`, which a handler returns as it is.
+    pub fn query_values(self, max_pairs: int = 1000) -> Result[Map[str, List[str]]] {
         if let some(parsed) = self.parsed_query {
-            return parsed
+            return ok(parsed)
         }
-        let parsed = parse_query(self.query)
+        let parsed = query_pairs(self.grammar.escapes, self.query, max_pairs)?
         self.parsed_query = some(parsed)
-        return parsed
+        return ok(parsed)
     }
 
     /// The first value of a parameter of the query, decoded.
-    pub fn query_value(self, name: str) -> str? {
-        let values = self.query_values().get(name)?
-        return values.first()
+    pub fn query_value(self, name: str) -> Result[str?] {
+        let values = self.query_values()?.get(name) or {
+            return ok(none)
+        }
+        return ok(values.first())
     }
 
     /// The length the body is declared to have: 0 when there is no body, `none` when it is
@@ -1085,15 +1130,23 @@ impl Request {
 
 /// A request with an in-memory body and no connection, to test a handler: `test_request("POST",
 /// "/items?x=1", [("Content-Type", "application/json")], body)`. The version is HTTP/1.1, and
-/// the body limit is the default of `Options`. A `Content-Length` is added when there is a body
-/// and no such header is given; a `Transfer-Encoding` header is not acted on, the body is
-/// delivered as it is. A target that is not a path or `*` is a mistake of the test and panics.
+/// the body limit is the default of `Options`; `version` can be `HTTP/1.0`, and `remote_addr` is
+/// what `Request.remote_addr` says. A `Content-Length` is added when there is a body and no such
+/// header is given, and one that is given and differs from the length of the body is a mistake of
+/// the test and panics, like a `version` that is neither `HTTP/1.1` nor `HTTP/1.0`; a
+/// `Transfer-Encoding` header is not acted on, the body is delivered as it is. A target that is
+/// not a path or `*` is a mistake of the test and panics.
 pub fn test_request(
     method: str,
     target: str,
     headers: List[(str, str)] = [],
     body: Bytes = Bytes(),
+    version: str = "HTTP/1.1",
+    remote_addr: str = "127.0.0.1:0",
 ) -> Request {
+    if version != "HTTP/1.1" && version != "HTTP/1.0" {
+        panic("httpd.test_request: the version `{version}` must be HTTP/1.1 or HTTP/1.0")
+    }
     if method.is_empty() {
         panic("httpd.test_request: the method is empty")
     }
@@ -1111,6 +1164,13 @@ pub fn test_request(
         query = q
     }
     var framing: Framing = .NoBody
+    if let some(given) = fields.get("content-length") {
+        if given != "{body.len()}" {
+            panic(
+                "httpd.test_request: the Content-Length `{given}` is not the length of the body, {body.len()}",
+            )
+        }
+    }
     if !body.is_empty() {
         framing = .Length(body.len())
         if !fields.has("content-length") {
@@ -1129,14 +1189,15 @@ pub fn test_request(
         target: target,
         path: path,
         query: query,
-        version: "HTTP/1.1",
+        version: version,
         headers: fields,
         host: fields.get("host") or "",
         framing: framing,
         expect_continue: false,
-        keep_alive: true,
+        keep_alive: version == "HTTP/1.1",
+        grammar: grammar(),
     }
-    return request(head, body_reader(framing, Options {}.max_body_bytes, pull), "127.0.0.1:0")
+    return request(head, body_reader(framing, Options {}.max_body_bytes, pull), remote_addr)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1178,25 +1239,40 @@ const KNOWN_METHODS: List[str] = [
 /// segments joined with `/`, the last possibly empty: `/files/*rest` takes `/files/a/b` and
 /// `/files/`, not `/files`). A literal beats `:name`, which beats `*name`, decided segment by
 /// segment from the left and whatever the order of registration. There is no trailing-slash
-/// redirect, and `..` is an ordinary segment. A pattern that is malformed, or that repeats a
-/// method and pattern, panics where it is added.
+/// redirect. A literal is compared with the segment as it came on the wire, so it matches what
+/// `Request.path` says: `/admin` does not match `/%61dmin`. Only the values of `:name` and
+/// `*name` are percent-decoded. A literal is written as it appears in a URL, so it may hold
+/// `%XX` escapes and then matches exactly that text. A pattern that is malformed, that has a
+/// literal that is not valid path text (a space, a control character, `?`, `#`, a bad escape, a
+/// `.` or `..`), that repeats a method and pattern, or that has a method that is not a token or
+/// is a lower-case spelling of a standard method, panics where it is added.
 ///
 /// The router answers by itself: 404 when no pattern fits the path, 405 with `Allow` when the
 /// path fits under other methods, 501 for a method that is neither one of the standard methods
-/// nor used by a route, 400 for a bad percent-escape in the path, HEAD by the route of GET when
-/// there is no route of HEAD, and OPTIONS by 204 with `Allow` when there is no route of OPTIONS.
+/// nor used by a route, 400 for a bad percent-escape in the path, for an escape of a control
+/// character, and for a `.` or `..` segment (written with dots or `%2E`), which a proxy in front
+/// resolves before it routes, HEAD by the route of GET when there is no route of HEAD (a route
+/// of HEAD, even a `:name` one, comes first), and OPTIONS by 204 with `Allow` when there is no
+/// route of OPTIONS.
 pub class Router {
+    grammar: Grammar
     root: Node = Node {}
     methods: List[str] = []
 }
 
-pub fn Router() -> Router => Router {}
+pub fn Router() -> Router => Router { grammar: grammar() }
 
 impl Router {
     /// Adds a route; panics when the pattern is malformed or the route exists.
     pub fn handle(self, method: str, pattern: str, handler: Handler) {
-        if method.is_empty() || method.contains(" ") {
-            panic("httpd.Router: `{method}` is not a method")
+        if !is_token(self.grammar, method) {
+            panic("httpd.Router: `{method}` is not a method: a method is a token such as GET")
+        }
+        let upper = method.to_upper()
+        if upper != method && KNOWN_METHODS.contains(upper) {
+            panic(
+                "httpd.Router: `{method}` is never reached: methods are case-sensitive, write {upper}",
+            )
         }
         if !pattern.starts_with("/") {
             panic("httpd.Router: the pattern `{pattern}` must start with `/`")
@@ -1238,6 +1314,7 @@ impl Router {
             } else if let some(child) = node.literal.get(segment) {
                 node = child
             } else {
+                self.check_literal(pattern, segment)
                 let child = Node {}
                 node.literal[segment] = child
                 node = child
@@ -1256,6 +1333,27 @@ impl Router {
         }
         if !self.methods.contains(method) {
             self.methods.push(method)
+        }
+    }
+
+    /// Panics unless `segment` can be the literal of a route: valid path text that the router
+    /// can ever be asked for.
+    fn check_literal(self, pattern: str, segment: str) {
+        let g = self.grammar
+        if !g.path_literal.is_match(segment) {
+            panic(
+                "httpd.Router: the segment `{segment}` of `{pattern}` is not valid path text: use letters, digits, -._~!$&'()*+,;=:@ and %XX escapes",
+            )
+        }
+        if g.control_escape.is_match(segment) {
+            panic(
+                "httpd.Router: the segment `{segment}` of `{pattern}` has an escape of a control character, which the server refuses",
+            )
+        }
+        if g.dot_segment.is_match(segment) {
+            panic(
+                "httpd.Router: the segment `{segment}` of `{pattern}` is a dot segment, which the server refuses with 400",
+            )
         }
     }
 
@@ -1281,16 +1379,25 @@ impl Router {
             }
             return ok(text(404, "404 Not Found\n"))
         }
-        // The path is split before it is decoded, so a `%2F` stays inside its segment. The
-        // first segment is the empty one before the first `/`.
-        let segments = req.path.split("/")
-        for i in 1..segments.len() {
-            if segments[i].contains("%") {
-                segments[i] = percent_decode(segments[i], false) or {
-                    return ok(text(400, "400 Bad Request: a bad percent-escape in the path\n"))
-                }
+        // The path is matched as it came, segment by segment, and only the values of parameters
+        // are decoded: `req.path` and the router then agree on what the path is. A path that a
+        // proxy in front would read differently is refused (3 patterns at most, whatever its
+        // length).
+        let g = self.grammar
+        let path = req.path
+        if path.contains("%") {
+            if g.bad_escape.is_match(path) {
+                return ok(text(400, "400 Bad Request: a bad percent-escape in the path\n"))
+            }
+            if g.control_escape.is_match(path) {
+                return ok(text(400, "400 Bad Request: a control character in the path\n"))
             }
         }
+        if g.dot_segment.is_match(path) {
+            return ok(text(400, "400 Bad Request: a dot segment in the path\n"))
+        }
+        // The first segment is the empty one before the first `/`.
+        let segments = path.split("/")
         let values: List[str] = []
         var route = find_route(self.root, segments, 1, req.method, values)
         if route == none && req.method == "HEAD" {
@@ -1298,6 +1405,11 @@ impl Router {
             route = find_route(self.root, segments, 1, "GET", values)
         }
         if let some(r) = route {
+            for i in 0..values.len() {
+                values[i] = percent_decode(g.escapes, values[i], false) or {
+                    return ok(text(400, "400 Bad Request: a parameter that is not valid text\n"))
+                }
+            }
             let params: Map[str, str] = {:}
             for i in 0..r.names.len() {
                 params[r.names[i]] = values[i]

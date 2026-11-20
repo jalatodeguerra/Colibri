@@ -68,3 +68,68 @@ test "a method with a space => is not a method" {
     let r = httpd_impl.Router()
     r.handle("GET POST", "/a", nothing())
 }
+
+test "a method with a separator => is not a method" {
+    let r = httpd_impl.Router()
+    r.handle("GET,POST", "/x", nothing())
+}
+
+test "a lower-case spelling of a standard method => never reached" {
+    let r = httpd_impl.Router()
+    r.handle("get", "/x", nothing())
+}
+
+test "a mixed-case spelling of a standard method => never reached" {
+    let r = httpd_impl.Router()
+    r.handle("Post", "/x", nothing())
+}
+
+test "a literal with a space => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/a b", nothing())
+}
+
+test "a literal with a question mark => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/a?b", nothing())
+}
+
+test "a literal with a hash => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/a#b", nothing())
+}
+
+test "a literal with a control character => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/a\tb", nothing())
+}
+
+test "a literal with a bad escape => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/a%zzb", nothing())
+}
+
+test "a literal that ends in a lone percent sign => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/a%", nothing())
+}
+
+test "a literal with an escape of a control character => escape of a control character" {
+    let r = httpd_impl.Router()
+    r.get("/a%0Ab", nothing())
+}
+
+test "a literal that is .. => is a dot segment" {
+    let r = httpd_impl.Router()
+    r.get("/a/..", nothing())
+}
+
+test "a literal that is a dot written as an escape => is a dot segment" {
+    let r = httpd_impl.Router()
+    r.get("/a/%2e", nothing())
+}
+
+test "a literal with non-ASCII text => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/caf\u{e9}", nothing())
+}
