@@ -651,7 +651,7 @@ fn an_unfinished_child_is_killed_when_it_is_dropped() {
         &mut vm,
         &format!(
             "import process\nfn start() {{\n    let c = process.spawn(\"sh\", [\"-c\", \"sleep 1; touch {}\"]) or |e| {{ panic(e.message()) }}\n    print(c.id() > 0)\n}}\nfn main() {{\n    start()\n}}\n",
-            marker.display()
+            marker.to_string_lossy().replace('\\', "/")
         ),
     )
     .unwrap();

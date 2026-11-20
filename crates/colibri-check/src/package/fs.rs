@@ -21,6 +21,12 @@ pub trait SourceFs {
     fn canonical(&self, path: &Path) -> PathBuf {
         normalize(path)
     }
+    /// How diagnostics and stack traces name the file at `path`. For files on disk it is the
+    /// path the tool built, shown the system's way (`dir\\lib.colibri` on Windows). Files that
+    /// a host named keep the name it gave them (see [`MemoryFs`]).
+    fn display_name(&self, path: &Path) -> String {
+        path.display().to_string()
+    }
 }
 
 /// The operating system's files.
@@ -74,7 +80,14 @@ fn or_dot(path: &Path) -> &Path {
 /// Files held in memory, keyed by their normalised path.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryFs {
-    files: BTreeMap<PathBuf, String>,
+    files: BTreeMap<PathBuf, MemoryFile>,
+}
+
+/// A file held in memory: the name the host gave it and its text.
+#[derive(Clone, Debug)]
+struct MemoryFile {
+    name: String,
+    text: String,
 }
 
 impl MemoryFs {
@@ -82,9 +95,16 @@ impl MemoryFs {
         Self::default()
     }
 
-    /// Adds a file (a later one with the same path replaces it).
+    /// Adds a file (a later one with the same path replaces it). The file keeps the name given
+    /// here for diagnostics, however an `import` reaches it (the resolver joins folders with
+    /// the system's separator, which is not what the host wrote on Windows).
     pub fn insert(&mut self, path: impl AsRef<Path>, text: impl Into<String>) {
-        self.files.insert(normalize(path.as_ref()), text.into());
+        let path = path.as_ref();
+        let file = MemoryFile {
+            name: path.to_string_lossy().into_owned(),
+            text: text.into(),
+        };
+        self.files.insert(normalize(path), file);
     }
 }
 
@@ -92,7 +112,7 @@ impl SourceFs for MemoryFs {
     fn read(&self, path: &Path) -> Result<String, String> {
         self.files
             .get(&normalize(path))
-            .cloned()
+            .map(|f| f.text.clone())
             .ok_or_else(|| "no such file".to_string())
     }
 
@@ -105,6 +125,15 @@ impl SourceFs for MemoryFs {
         self.files
             .keys()
             .any(|f| f.parent().is_some_and(|p| p.starts_with(&dir)) && *f != dir)
+    }
+
+    fn display_name(&self, path: &Path) -> String {
+        match self.files.get(&normalize(path)) {
+            Some(file) => file.name.clone(),
+            // A folder, or a file that is not there (a "looked for" hint): in memory there is
+            // no system's way, so `/`.
+            None => path.to_string_lossy().replace('\\', "/"),
+        }
     }
 
     fn list(&self, dir: &Path) -> Vec<String> {
@@ -171,5 +200,19 @@ mod tests {
         assert_eq!(fs.list(Path::new("app")), ["game", "main.colibri"]);
         assert_eq!(fs.read(Path::new("app/main.colibri")).unwrap(), "a");
         assert!(fs.read(Path::new("nope")).is_err());
+    }
+
+    #[test]
+    fn a_memory_file_keeps_the_name_it_was_given() {
+        let mut fs = MemoryFs::new();
+        fs.insert("app/game/player.colibri", "b");
+        // However the resolver spells the path (with the system's separator on Windows).
+        let joined: PathBuf = ["app", "game", "player.colibri"].iter().collect();
+        assert_eq!(fs.display_name(&joined), "app/game/player.colibri");
+        // Not there: shown with `/`.
+        assert_eq!(
+            fs.display_name(Path::new("app/none.colibri")),
+            "app/none.colibri"
+        );
     }
 }
