@@ -1,0 +1,32 @@
+// A second `join_result`, on the main fiber and in a coroutine, gives the same outcome.
+fn bad() {
+    wait(1.0)
+    panic("same")
+}
+
+fn later(c: Coroutine[()]) {
+    wait(5.0)
+    print("later: {c.join_result().is_err()}")
+}
+
+fn main() {
+    let c = go bad()
+    go later(c)
+    let first = c.join_result()
+    let second = c.join_result()
+    print("{first.is_err()} {second.is_err()}")
+    match first {
+        ok(_) => print("ok?"),
+        err(e) => print("{e.message()}"),
+    }
+    match second {
+        ok(_) => print("ok?"),
+        err(e) => print("{e.message()}"),
+    }
+    task.tick(5.0)
+}
+
+// expect: true true
+// expect: the coroutine `bad` panicked: same
+// expect: the coroutine `bad` panicked: same
+// expect: later: true

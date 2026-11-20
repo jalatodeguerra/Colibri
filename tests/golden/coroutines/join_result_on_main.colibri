@@ -1,0 +1,28 @@
+// `join_result` on the main fiber runs the event loop like `join`. A panic of the target
+// arrives as `err` and is not a failure of the program.
+fn fine() -> int {
+    wait(1.0)
+    return 7
+}
+
+fn bad() -> int {
+    wait(1.0)
+    panic("on main")
+}
+
+fn main() {
+    let a = go fine()
+    let b = go bad()
+    print("waiting")
+    print("a {a.join_result().expect("a")}")
+    match b.join_result() {
+        ok(v) => print("ok? {v}"),
+        err(e) => print("b: {e.message()}"),
+    }
+    print("done")
+}
+
+// expect: waiting
+// expect: a 7
+// expect: b: the coroutine `bad` panicked: on main
+// expect: done

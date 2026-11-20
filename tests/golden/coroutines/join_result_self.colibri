@@ -1,0 +1,16 @@
+// A coroutine that joins itself with `join_result` panics, as `join` does.
+fn selfish(slot: Slot) {
+    wait(1.0)
+    let me = slot.co.expect("handle")
+    let _ = me.join_result()
+}
+
+class Slot { co: Coroutine[()]? = none }
+
+fn main() {
+    let slot = Slot {}
+    slot.co = some(go selfish(slot))
+    task.tick(1.0)
+}
+
+// panic: a coroutine cannot join itself

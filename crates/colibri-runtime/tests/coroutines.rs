@@ -305,3 +305,133 @@ fn main() {
     vm.cancel_coroutines();
     assert_eq!(out.contents(), "cancelled\n");
 }
+
+/// A fake clock for event loops that must not poll: sleeping moves time forward, and a loop
+/// that sleeps more than `CEILING` times is stopped by a panic (a loop that polls a join every
+/// millisecond would otherwise run for as long as its target lives, which is never).
+struct CountingClock {
+    time: Rc<Cell<f64>>,
+    sleeps: Rc<Cell<u32>>,
+}
+
+const CEILING: u32 = 2_000;
+
+impl colibri::Clock for CountingClock {
+    fn now(&mut self) -> f64 {
+        self.time.get()
+    }
+    fn sleep(&mut self, s: f64) {
+        self.sleeps.set(self.sleeps.get() + 1);
+        assert!(
+            self.sleeps.get() < CEILING,
+            "the event loop keeps sleeping: something polls"
+        );
+        self.time.set(self.time.get() + s);
+    }
+}
+
+fn counting_vm() -> (colibri::Vm, colibri::SharedBuffer, Rc<Cell<u32>>) {
+    let out = colibri::SharedBuffer::new();
+    let sleeps = Rc::new(Cell::new(0));
+    let vm = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .clock(CountingClock {
+            time: Rc::new(Cell::new(0.0)),
+            sleeps: Rc::clone(&sleeps),
+        })
+        .build();
+    (vm, out, sleeps)
+}
+
+/// The panic of a coroutine that a `join_result` receives is a value: the event loop returns
+/// `Ok`, with the panic nowhere left to report.
+#[test]
+fn a_panic_handed_to_join_result_is_not_a_failure_of_the_event_loop() {
+    let (mut vm, out, _) = counting_vm();
+    vm.load_source(
+        "contained.colibri",
+        r#"
+fn bad() {
+    wait(1.0)
+    panic("contained")
+}
+fn handler() {
+    let c = go bad()
+    match c.join_result() {
+        ok(_) => print("ok?"),
+        err(e) => print("500: {e.message()}"),
+    }
+}
+fn main() {
+    go handler()
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    vm.run_event_loop().unwrap();
+    assert_eq!(
+        out.contents(),
+        "500: the coroutine `bad` panicked: contained\n"
+    );
+    assert_eq!(vm.coroutine_count(), 0);
+    // Nothing is left to report after the program either.
+    vm.run_event_loop().unwrap();
+}
+
+/// A panic that nobody receives still fails the program: a `join_result` that comes after the
+/// tick of the panic is too late, and so is a coroutine nobody joins.
+#[test]
+fn a_panic_nobody_receives_still_fails_the_event_loop() {
+    for src in [
+        // Nobody joins.
+        "fn bad() {\n wait(1.0)\n panic(\"alone\")\n}\nfn main() { go bad() }\n",
+        // The `join_result` comes in a later tick than the panic.
+        "fn bad() {\n wait(1.0)\n panic(\"alone\")\n}\nfn late(c: Coroutine[()]) {\n wait(2.0)\n let _ = c.join_result()\n}\nfn main() {\n let c = go bad()\n go late(c)\n}\n",
+        // A waiting `join` does not receive it either: it panics in turn.
+        "fn bad() {\n wait(1.0)\n panic(\"alone\")\n}\nfn j(c: Coroutine[()]) {\n c.join()\n}\nfn main() {\n let c = go bad()\n go j(c)\n}\n",
+    ] {
+        let (mut vm, _, _) = counting_vm();
+        vm.load_source("uncontained.colibri", src).unwrap();
+        vm.run_main().unwrap();
+        let err = vm.run_event_loop().unwrap_err();
+        let colibri::Error::Panic { message, .. } = err else {
+            panic!("expected a panic for {src}");
+        };
+        assert!(message.contains("alone"), "{message}");
+    }
+}
+
+/// A `join_result` that waits for a coroutine that never ends does not keep the event loop
+/// polling: with nothing left that a clock or a completion could wake, the loop returns.
+#[test]
+fn join_result_waiters_do_not_keep_the_event_loop_polling() {
+    let (mut vm, out, sleeps) = counting_vm();
+    vm.load_source(
+        "stuck.colibri",
+        r#"
+let never = Signal()
+fn target() {
+    defer print("target cancelled")
+    wait_for(never)
+}
+fn waiter(c: Coroutine[()]) {
+    defer print("waiter cancelled")
+    let _ = c.join_result()
+    print("not reached")
+}
+fn main() {
+    let c = go target()
+    go waiter(c)
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    vm.run_event_loop().unwrap();
+    assert_eq!(sleeps.get(), 0);
+    assert_eq!(vm.coroutine_count(), 2);
+    vm.cancel_coroutines();
+    // Newest first: the waiter leaves the target's list, then the target ends.
+    assert_eq!(out.contents(), "waiter cancelled\ntarget cancelled\n");
+}

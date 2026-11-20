@@ -1,0 +1,35 @@
+// The target of a `join_result` is cancelled: the waiter gets `err`, and joining a
+// coroutine that was cancelled before gives the same.
+fn forever() {
+    defer print("target unwinds")
+    wait(100.0)
+    print("not reached")
+}
+
+fn parent(c: Coroutine[()]) {
+    match c.join_result() {
+        ok(_) => print("ok?"),
+        err(e) => print("err: {e.message()}"),
+    }
+    match c.join_result() {
+        ok(_) => print("ok?"),
+        err(e) => print("again: {e.message()}"),
+    }
+}
+
+fn killer(c: Coroutine[()]) {
+    wait(1.0)
+    c.cancel()
+    print("cancelled")
+}
+
+fn main() {
+    let c = go forever()
+    go parent(c)
+    go killer(c)
+}
+
+// expect: target unwinds
+// expect: cancelled
+// expect: err: the coroutine `forever` was cancelled
+// expect: again: the coroutine `forever` was cancelled
