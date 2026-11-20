@@ -801,14 +801,14 @@ impl Interp {
     /// module-level values die. Nothing can start meanwhile. While a coroutine runs this does
     /// nothing (see [`Sched::cancel_all_coroutines`]).
     pub fn cancel_all_coroutines(&mut self) {
-        let was_busy = self.core.sched.is_busy();
+        let was_running = self.core.sched.coroutine_running();
         Sched::cancel_all_coroutines(self);
         // Every suspended coroutine was resumed with a cancel and ran to its end, which frees
         // its stack, so none is left. This guards the rule that a stack is freed only after
         // its coroutine ended: a stack left here would later be unwound by force. (When this
         // call did nothing because a coroutine is running, the slab is in use and untouched.)
         debug_assert!(
-            was_busy || self.stacks.is_empty(),
+            was_running || self.stacks.is_empty(),
             "a coroutine stack outlived `cancel_all_coroutines`"
         );
     }
@@ -816,6 +816,7 @@ impl Interp {
 
 #[cfg(test)]
 mod tests {
+    use colibri_core::coro::Sched;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1011,6 +1012,17 @@ mod tests {
         assert_eq!(interp.coroutine_count(), 1);
         let lost = interp.stacks.take(0).expect("the worker's stack").0;
         std::mem::forget(lost);
+        // If the lost coroutine stayed suspended, the cancel below would never end: a watchdog
+        // turns that hang into a failure.
+        let done = Arc::new(AtomicUsize::new(0));
+        let flag = Arc::clone(&done);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(20));
+            if flag.load(Ordering::SeqCst) == 0 {
+                eprintln!("a lost stack kept its coroutine alive: cancel_all_coroutines hangs");
+                std::process::exit(1);
+            }
+        });
         let failure = interp
             .tick(&mut fiber, 2.0)
             .expect_err("the tick reports it");
@@ -1022,5 +1034,29 @@ mod tests {
         assert_eq!(interp.coroutine_count(), 0, "the coroutine is over");
         assert_eq!(out.text(), "");
         interp.cancel_all_coroutines();
+        done.store(1, Ordering::SeqCst);
+    }
+
+    /// Asking the scheduler to resume a coroutine that already finished (its entry is not yet
+    /// compacted away) changes nothing: it does not reach the engine, which would report the
+    /// stack as lost and turn the finished coroutine into a failure.
+    #[test]
+    fn resuming_a_finished_entry_does_nothing() {
+        use crate::Fiber;
+        let src =
+            "fn quick() {\n    print(\"quick\")\n}\nfn main() {\n    let _a = go quick()\n}\n";
+        let (mut interp, program) = loaded(src, Box::new(std::io::sink()));
+        let mut fiber = Fiber::new();
+        interp
+            .call(&mut fiber, program.fn_by_name("main").unwrap(), vec![])
+            .expect("main");
+        // It ran to its end at its start, and the next tick has not removed its entry yet.
+        assert_eq!(interp.stacks.live(), 0, "the coroutine finished");
+        // The first coroutine has id 1.
+        Sched::resume_coro(&mut interp, 1, false, true);
+        assert!(interp.take_coroutine_failure().is_none());
+        interp
+            .tick(&mut fiber, 1.0)
+            .expect("a later tick still works");
     }
 }

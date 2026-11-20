@@ -255,9 +255,14 @@ impl Scheduler {
         self.resumptions
     }
 
+    /// Whether a coroutine is running now (on any level of a resume chain).
+    pub fn coroutine_running(&self) -> bool {
+        !self.running.is_empty()
+    }
+
     /// Whether a tick is running or a coroutine is: the scheduler cannot be ticked or driven.
     pub fn is_busy(&self) -> bool {
-        self.in_tick || !self.running.is_empty()
+        self.in_tick || self.coroutine_running()
     }
 
     /// Whether the program is being torn down: nothing new may start.
