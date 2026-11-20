@@ -415,20 +415,31 @@ pub enum UrlKind {
 /// Anything else (`r4`, `sub/repo`, `.git`) would be read relative to the folder the tool
 /// happens to run in.
 pub fn classify_url(url: &str) -> Result<UrlKind, String> {
+    classify(url).map_err(|(message, _)| message)
+}
+
+/// [`classify_url`] with the hint that fits the error, if one does.
+fn classify(url: &str) -> Result<UrlKind, (String, Option<&'static str>)> {
     if let Some(problem) = super::git::transport_problem(url) {
-        return Err(problem);
+        return Err((problem, None));
     }
     if let Some(problem) = option_like(url) {
-        return Err(format!(
-            "`{}` is not a git url: {problem}",
-            super::git::redact_url(url)
+        return Err((
+            format!(
+                "`{}` is not a git url: {problem}",
+                super::git::redact_url(url)
+            ),
+            None,
         ));
     }
     if let Some((scheme, rest)) = url.split_once("://") {
         if rest.is_empty() {
-            return Err(format!(
-                "`{}` is not a git url: it names no repository",
-                super::git::redact_url(url)
+            return Err((
+                format!(
+                    "`{}` is not a git url: it names no repository",
+                    super::git::redact_url(url)
+                ),
+                None,
             ));
         }
         return Ok(if scheme.eq_ignore_ascii_case("file") {
@@ -450,9 +461,14 @@ pub fn classify_url(url: &str) -> Result<UrlKind, String> {
     {
         return Ok(UrlKind::Remote);
     }
-    Err(format!(
-        "`{}` is not a git url: write an `https://`, `ssh://`, `git://` or `file://` url, `user@host:path`, or an absolute path",
-        super::git::redact_url(url)
+    Err((
+        format!(
+            "`{}` is not a git url: write an `https://`, `ssh://`, `git://` or `file://` url, `user@host:path`, or an absolute path",
+            super::git::redact_url(url)
+        ),
+        Some(
+            "a relative path would mean a different place from each folder the tool is started in; for a folder inside this repository use `path`",
+        ),
     ))
 }
 
@@ -462,23 +478,61 @@ pub fn classify_url(url: &str) -> Result<UrlKind, String> {
 fn option_like(url: &str) -> Option<&'static str> {
     const HOST: &str = "the host starts with `-`, which `ssh` would read as an option";
     const PATH: &str = "the path starts with `-`, which would be read as an option";
+    const PORT: &str = "the port is not a number";
+    // What `ssh` would read as the host: percent-escapes undone, a bracket pair (an address
+    // in brackets) taken off.
+    let dashed = |host: &str| {
+        let host = percent_decode(host);
+        host.trim_start_matches('[').starts_with('-')
+    };
     if let Some((scheme, rest)) = url.split_once("://") {
         if !scheme.eq_ignore_ascii_case("ssh") {
             return None;
         }
         let authority = rest.split('/').next().unwrap_or("");
-        let host = authority.rsplit('@').next().unwrap_or("");
-        return (authority.starts_with('-') || host.starts_with('-')).then_some(HOST);
+        let host_port = authority.rsplit('@').next().unwrap_or("");
+        if dashed(authority) || dashed(host_port) {
+            return Some(HOST);
+        }
+        // `host:port`, the port after the last `:` outside brackets.
+        let after_bracket = host_port.rsplit(']').next().unwrap_or(host_port);
+        if let Some((_, port)) = after_bracket.split_once(':')
+            && !port.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Some(PORT);
+        }
+        return None;
     }
     if is_absolute_path(url) {
         return None;
     }
     let (user_host, path) = url.split_once(':')?;
     let (_, host) = user_host.split_once('@')?;
-    if user_host.starts_with('-') || host.starts_with('-') {
+    if dashed(user_host) || dashed(host) {
         return Some(HOST);
     }
-    path.starts_with('-').then_some(PATH)
+    percent_decode(path).starts_with('-').then_some(PATH)
+}
+
+/// `text` with its `%XX` escapes undone (an escape that is not valid stays as written).
+fn percent_decode(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2]))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 pub(super) fn is_absolute_path(url: &str) -> bool {
@@ -523,10 +577,12 @@ fn bad_url(url: &str, span: Span) -> Option<Diagnostic> {
                 .with_hint("write an absolute path or a `file://` url; for a folder inside this repository use `path`"),
         );
     }
-    classify_url(url).err().map(|message| {
-        Diagnostic::error(message, span).with_hint(
-            "a relative path would mean a different place from each folder the tool is started in; for a folder inside this repository use `path`",
-        )
+    classify(url).err().map(|(message, hint)| {
+        let d = Diagnostic::error(message, span);
+        match hint {
+            Some(hint) => d.with_hint(hint),
+            None => d,
+        }
     })
 }
 
@@ -802,6 +858,65 @@ mod tests {
             "https://host/-x",
         ] {
             assert!(classify_url(ok).is_ok(), "{ok}");
+        }
+    }
+
+    #[test]
+    fn an_option_hidden_by_brackets_or_escapes_or_a_port_is_refused() {
+        for bad in [
+            "ssh://[-oProxyCommand=x]/r",
+            "ssh://%2doProxyCommand=x/r",
+            "ssh://git@%2DoProxyCommand=x/r",
+            "git@[-oProxyCommand=x]:r",
+            "git@%2doProxyCommand=x:r",
+            "u@h:%2doProxyCommand=x",
+        ] {
+            let e = classify_url(bad).unwrap_err();
+            assert!(
+                e.contains("not a git url") && e.contains("`-`"),
+                "{bad}: {e}"
+            );
+            let d = dep_errs(&format!("foo = {{ git = \"{bad}\" }}"));
+            assert_eq!(d.len(), 1, "{bad}: {d:?}");
+        }
+        for bad in ["ssh://h:-p/r", "ssh://git@h:-oX/r", "ssh://h:2a2/r"] {
+            let e = classify_url(bad).unwrap_err();
+            assert!(e.contains("the port is not a number"), "{bad}: {e}");
+        }
+        for ok in [
+            "ssh://h:22/r",
+            "ssh://git@h:2222/r",
+            "ssh://[::1]:22/r",
+            "ssh://h/r",
+        ] {
+            assert!(classify_url(ok).is_ok(), "{ok}");
+        }
+    }
+
+    #[test]
+    fn each_url_error_has_only_the_hint_that_fits_it() {
+        let hint = |url: &str| {
+            let text =
+                format!("[package]\nname = \"x\"\n[dependencies]\nfoo = {{ git = \"{url}\" }}\n");
+            let d = parse(FileId(0), &text).expect_err("a bad url").remove(0);
+            d.hint
+        };
+        // A relative path: the hint about the folder the tool is started in.
+        let h = hint("sub/repo").expect("a hint");
+        assert!(h.contains("different place"), "{h}");
+        // Not a path at all: nothing about relative paths.
+        for url in [
+            "ssh://-oX/r",
+            "ssh://h:-p/r",
+            "git@[-oX]:r",
+            "ext::sh -c x",
+            "https://",
+        ] {
+            let h = hint(url);
+            assert!(
+                h.as_deref().is_none_or(|h| !h.contains("different place")),
+                "{url}: {h:?}"
+            );
         }
     }
 
