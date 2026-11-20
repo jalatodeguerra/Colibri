@@ -1283,8 +1283,10 @@ fn is_connected(sock: &Socket) -> io::Result<bool> {
 /// way (it gives back the address that was passed to `connect`), so a peer address proves
 /// nothing, and a connect that is going to be refused stays in that state for about two seconds
 /// while the SYN is sent again. `SO_CONNECT_TIME` is what says: the seconds the socket has been
-/// connected, or `0xFFFFFFFF` while it is not (Microsoft documents it for `ConnectEx`, and it is
-/// the one the event loops of Windows use for a plain non-blocking `connect` as well).
+/// connected, or `0xFFFFFFFF` while it is not. Microsoft documents it for connection-oriented
+/// sockets; that it answers for a plain non-blocking `connect` is what the Windows CI of this
+/// project confirmed on the refused-connect tests. A socket that is not connected may also make
+/// the call fail with `WSAENOTCONN`, which means "not yet" as well, and is no error of the connect.
 #[cfg(windows)]
 fn is_connected(sock: &Socket) -> io::Result<bool> {
     use std::os::windows::io::AsRawSocket;
@@ -1306,7 +1308,13 @@ fn is_connected(sock: &Socket) -> io::Result<bool> {
     };
     if r == SOCKET_ERROR {
         // SAFETY: a plain call that reads the thread's last Winsock error.
-        return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+        let code = unsafe { WSAGetLastError() };
+        // WSAENOTCONN: not connected (yet), not a failure of the connect.
+        return if code == 10057 {
+            Ok(false)
+        } else {
+            Err(io::Error::from_raw_os_error(code))
+        };
     }
     Ok(seconds != u32::MAX)
 }
@@ -3140,44 +3148,80 @@ mod tests {
         assert_eq!(counts, (0, 0));
     }
 
-    /// A wake proves nothing by itself: a connect that is under way (the queue of the listener is
-    /// full, so it stays so) is not concluded on the one-second recheck, which is a timer and
-    /// no event, nor on a "ready" wake that finds it neither failed nor connected (forced by the
-    /// hook): the wait is armed again. Each of the two wakes is followed by a second arm, where
-    /// the hook cancels. (Windows needs this most: there `getpeername` succeeds while a connect
-    /// is under way, and a refused one stays so for about two seconds.)
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    /// A wake proves nothing by itself: a connect that is under way (Linux and macOS: the queue of
+    /// the listener is full; Windows: a port that nothing is bound to, which that system keeps
+    /// pending for about two seconds) is not concluded on the one-second recheck, which is a timer
+    /// and no event, nor on a "ready" wake that finds it neither failed nor connected (forced by
+    /// the hook): the wait is armed again. Each of the two wakes is followed by a second arm, where
+    /// the hook cancels. After the forced "ready" the second arm comes no sooner than
+    /// `CONNECT_PAUSE`, measured between the two arms: a lower bound that a timer cannot break, so
+    /// the test cannot fail for being slow, only for a missing pause. A connect that ends before
+    /// the second arm fails the precondition, and the test says so.
     #[test]
     fn a_wake_that_finds_the_connect_neither_failed_nor_done_arms_again() {
         for forced_ready in [false, true] {
-            let (_listener, addr, _clients) = full_listener();
-            let (arms, error) = with_cx(move |cx| {
+            let (addr, _keep) = pending_target();
+            let (arms, error, gap) = with_cx(move |cx| {
                 let site = ConnectSite::new("test");
-                let Ok(Started::Pending(sock)) = start_connect(addr, None) else {
-                    panic!("the connect to a full queue was not left under way");
+                let sock = match start_connect(addr, None) {
+                    Ok(Started::Pending(sock)) => sock,
+                    Ok(Started::Connected(_)) => {
+                        panic!(
+                            "precondition: the connect finished at once, it was not left under way"
+                        )
+                    }
+                    Err(Attempt::Io(e)) => panic!(
+                        "precondition: the connect was refused at once, not left under way: {e}"
+                    ),
+                    Err(_) => panic!("precondition: the connect did not start"),
                 };
                 let arms = std::rc::Rc::new(std::cell::Cell::new(0));
-                let counted = std::rc::Rc::clone(&arms);
+                let first = std::rc::Rc::new(std::cell::Cell::new(None::<Instant>));
+                let second = std::rc::Rc::new(std::cell::Cell::new(None::<Instant>));
+                let (counted, t1, t2) = (
+                    std::rc::Rc::clone(&arms),
+                    std::rc::Rc::clone(&first),
+                    std::rc::Rc::clone(&second),
+                );
                 arm_probe::set_hook_for_every_arm(move |cell| {
                     counted.set(counted.get() + 1);
                     if counted.get() == 1 {
+                        t1.set(Some(Instant::now()));
                         // The first wake: a "ready" (forced), or none (the recheck comes).
                         if forced_ready {
                             cell.fire(poll::Why::Ready);
                         }
                     } else {
+                        if counted.get() == 2 {
+                            t2.set(Some(Instant::now()));
+                        }
                         cell.fire(poll::Why::Cancelled);
                     }
                 });
                 let error = match finish_connect(cx, &site, Arc::new(sock), None) {
                     Err(Attempt::Failed(e)) => e.message().to_string(),
-                    Err(_) => panic!("another end"),
+                    Err(Attempt::Io(e)) => panic!(
+                        "precondition: the connect ended before the second arm (forced_ready \
+                         {forced_ready}): {e}"
+                    ),
+                    Err(Attempt::TimedOut) => panic!("another end"),
                     Ok(_) => panic!("concluded that the connect was done"),
                 };
-                (arms.get(), error)
+                let gap = match (first.get(), second.get()) {
+                    (Some(a), Some(b)) => b.duration_since(a),
+                    _ => Duration::ZERO,
+                };
+                (arms.get(), error, gap)
             });
             assert_eq!(arms, 2, "forced_ready {forced_ready}");
             assert!(error.contains("cancelled"), "{error}");
+            if forced_ready {
+                assert!(
+                    gap >= CONNECT_PAUSE,
+                    "the second arm came {gap:?} after the first, before the pause of \
+                     {CONNECT_PAUSE:?} was over"
+                );
+            }
         }
     }
 
