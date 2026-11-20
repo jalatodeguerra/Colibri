@@ -3267,7 +3267,9 @@ fn main() -> Result[()] {{
 // all the waiters, the deadline of another waiter, a periodic round) can miss it.
 
 const WAITERS: usize = 1000;
-const TARGET: usize = 500;
+/// The last connection made, so that the deadline of the timeout scenario (which starts when its
+/// read starts) begins when every other reader is already waiting, however slow the machine.
+const TARGET: usize = WAITERS - 1;
 const PROMPT: Duration = Duration::from_secs(5);
 
 /// The thousand-connection scenarios do not run side by side: each holds two thousand
@@ -3373,10 +3375,12 @@ fn main() -> Result[()] {{
     while started < {WAITERS} {{
         task.tick(0.0)
     }}
+    let ended_at_ready = ended
     ready()
     {act}
     {wait_for_target}
     target_ended()
+    print("ended when the readers were waiting: {{ended_at_ready}}")
     print("target {{{result}}}, ended before the rest: {{ended}}")
     for c in conns {{
         c.close()
@@ -3411,7 +3415,7 @@ fn one_read_among_a_thousand_ends_promptly_on_data() {
     assert_eq!(
         out,
         format!(
-            "target data 1, ended before the rest: 1\nclosed {}\n",
+            "ended when the readers were waiting: 0\ntarget data 1, ended before the rest: 1\nclosed {}\n",
             WAITERS - 1
         )
     );
@@ -3424,7 +3428,7 @@ fn one_read_among_a_thousand_ends_promptly_on_the_close_of_the_peer() {
     assert_eq!(
         out,
         format!(
-            "target data 0, ended before the rest: 1\nclosed {}\n",
+            "ended when the readers were waiting: 0\ntarget data 0, ended before the rest: 1\nclosed {}\n",
             WAITERS - 1
         )
     );
@@ -3437,7 +3441,7 @@ fn one_read_among_a_thousand_ends_promptly_on_cancel() {
     assert_eq!(
         out,
         format!(
-            "target true, ended before the rest: 0\nclosed {}\n",
+            "ended when the readers were waiting: 0\ntarget true, ended before the rest: 0\nclosed {}\n",
             WAITERS - 1
         )
     );
@@ -3450,7 +3454,7 @@ fn one_read_among_a_thousand_ends_promptly_on_its_timeout() {
     assert_eq!(
         out,
         format!(
-            "target Timeout, ended before the rest: 1\nclosed {}\n",
+            "ended when the readers were waiting: 0\ntarget Timeout, ended before the rest: 1\nclosed {}\n",
             WAITERS - 1
         )
     );

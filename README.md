@@ -432,7 +432,9 @@ some("hello, Colibri!")
 `accept`, the reads, the writes and `connect` suspend the coroutine that calls them while they
 wait, so the other coroutines keep running. One poller thread per program waits for every
 connection and listener at once, so a connection or a listener that waits costs no thread and
-no wake-ups, only its descriptor and its coroutine: measured by
+no wake-ups, only its descriptor and its coroutine (and a read that waits with nothing buffered
+holds no buffer; one that holds a half line or the start of a `read_exact` keeps those bytes and
+the room made for them): measured by
 hand in a release build on Linux with the peer in another process, 10,000 idle blocked reads are
 3 threads in all, no CPU time over ten seconds and 117 MB of resident memory (a thousand idle
 accepts and a thousand writes blocked on full buffers are tested to cost a few threads and no CPU

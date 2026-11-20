@@ -34,8 +34,9 @@
 //! non-blocking connect and waits for the socket to become writable with the attempt's share of
 //! the time left. The wait is at most a second long. Whenever it ends, `SO_ERROR` is read first
 //! (a failed connect is not reported as an event by every system), then whether the socket is
-//! connected at all (a wake proves nothing: on Windows a socket whose connect is still under
-//! way, or is going to be refused, can be reported ready); a connect that is neither failed nor
+//! connected at all (a wake proves nothing: the one-second recheck is a timer and no event, and
+//! on Windows `getpeername` succeeds on a socket whose connect is still under way, so a connect
+//! that is going to be refused looked connected at the recheck); a connect that is neither failed nor
 //! done waits again, after a pause of 50 ms when the wake said "ready", so that no system can
 //! turn that into a spin. The socket belongs to the call: a cancel ends the wait, and the socket
 //! is closed when the call is left, which withdraws a connect that was under way. `listen` (its lookup and its bind never wait for a
@@ -518,6 +519,76 @@ enum Lookup {
     NoThread(String),
 }
 
+/// The system's answer for a name (what the helper thread of a lookup asks).
+fn resolve_name(name: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+    #[cfg(test)]
+    if let Some(answer) = lookup_probe::answer(name, port) {
+        return answer;
+    }
+    (name, port)
+        .to_socket_addrs()
+        .map(Iterator::collect::<Vec<SocketAddr>>)
+}
+
+/// What the unit tests see of the lookup helper: a name can be held (the helper waits until the
+/// test lets it go, then answers with an address the test chose, no resolver asked), and the
+/// end of the helper's work is reported.
+#[cfg(test)]
+mod lookup_probe {
+    use std::collections::HashMap;
+    use std::io;
+    use std::net::SocketAddr;
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::sync::{Mutex, PoisonError};
+
+    struct Held {
+        go: Receiver<()>,
+        answer: SocketAddr,
+        done: Sender<()>,
+    }
+
+    static HELD: Mutex<Option<HashMap<String, Held>>> = Mutex::new(None);
+
+    /// Holds the lookup of `name` until `go` is sent on; `done` gets a message when the helper
+    /// has finished with its answer.
+    pub(super) fn hold(name: &str, go: Receiver<()>, answer: SocketAddr, done: Sender<()>) {
+        HELD.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(HashMap::new)
+            .insert(name.to_string(), Held { go, answer, done });
+    }
+
+    pub(super) fn answer(name: &str, _port: u16) -> Option<io::Result<Vec<SocketAddr>>> {
+        let held = HELD
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()?
+            .remove(name)?;
+        let _ = held.go.recv();
+        let answer = held.answer;
+        // Kept for `finished`.
+        FINISHED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(HashMap::new)
+            .insert(name.to_string(), held.done);
+        Some(Ok(vec![answer]))
+    }
+
+    static FINISHED: Mutex<Option<HashMap<String, Sender<()>>>> = Mutex::new(None);
+
+    pub(super) fn finished(name: &str) {
+        if let Some(done) = FINISHED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+            .and_then(|m| m.remove(name))
+        {
+            let _ = done.send(());
+        }
+    }
+}
+
 /// What a `connect` suspends on: it belongs to no connection or listener, so nothing closes it
 /// (the closed flag stays false) and the slot only holds the cell of its wait.
 struct ConnectSite {
@@ -604,20 +675,22 @@ fn lookup(
             let spawned = std::thread::Builder::new()
                 .name("colibri-net-resolve".into())
                 .spawn(move || {
-                    let found = (name.as_str(), port)
-                        .to_socket_addrs()
-                        .map(Iterator::collect::<Vec<SocketAddr>>);
+                    let found = resolve_name(&name, port);
                     *answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(match found {
                         Ok(found) => Lookup::Found(found),
                         Err(_) => Lookup::Failed,
                     });
                     helper_cell.fire(poll::Why::Ready);
+                    #[cfg(test)]
+                    lookup_probe::finished(&name);
                 });
             if let Err(e) = spawned {
                 *slot.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some(Lookup::NoThread(reason(&e)));
                 cell.fire(poll::Why::Ready);
             }
+            #[cfg(test)]
+            arm_probe::armed(cell);
             Ok(())
         }
     });
@@ -1415,13 +1488,20 @@ struct Reader {
 /// Where a read gets its bytes from: the socket (`recv` into room that holds nothing yet, so the
 /// room is never zero-filled and only the bytes that arrive are ever written), or a test's
 /// source.
-trait Recv {
+///
+/// # Safety
+///
+/// An implementation must have written (initialised) the first `n` bytes of `buf` when it
+/// returns `Ok(n)`, and must not return an `n` above `buf.len()`: `Reader::read_from` takes those
+/// bytes as part of its data without looking.
+unsafe trait Recv {
     /// Writes up to `buf.len()` bytes at the start of `buf` and returns how many; the bytes
     /// after those are not touched.
     fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize>;
 }
 
-impl Recv for &TcpStream {
+// SAFETY: `SockRef::recv` is `recv(2)`, which writes the bytes it returns the count of.
+unsafe impl Recv for &TcpStream {
     fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
         SockRef::from(*self).recv(buf)
     }
@@ -2035,8 +2115,9 @@ impl Shared {
                     if final_try || limit.late() {
                         return Err(self.timeout_error(limit, action, Some((*done, total))));
                     }
-                    // Room for no byte at all, or for fewer than were wanted: the wait ends when
-                    // the socket says "try again", which is not a promise of room for the rest.
+                    // No room at all: the wait ends when the socket says "try again", which is
+                    // not a promise of room for the rest (a short send is followed by another
+                    // send, not by a wait).
                     match self.wait_ready(
                         cx,
                         sock,
@@ -3168,6 +3249,52 @@ mod tests {
         assert_eq!(counts, (0, 0));
     }
 
+    /// A connect that is cancelled while its name is being looked up ends at once, leaves nothing
+    /// armed (the timer of its deadline is gone from the poller), and the late answer of the
+    /// helper thread is dropped harmlessly: the helper finishes, resolves a cell that is
+    /// resolved already, and nothing is connected to. The hook cancels where the lookup was
+    /// armed, and the name is held (no resolver, no network) until after the cancel; then the
+    /// test lets the helper go and waits for it to report that it is done, with a ceiling.
+    #[test]
+    fn a_connect_cancelled_during_its_lookup_ends_and_the_late_answer_is_dropped() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let name = "held.lookup.test";
+        let (go, gate) = std::sync::mpsc::channel::<()>();
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        lookup_probe::hold(name, gate, listener.local_addr().unwrap(), done);
+        let (error, counts, hook_ran) = with_cx(move |cx| {
+            let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+            let flag = std::rc::Rc::clone(&ran);
+            arm_probe::set_hook(move |cell| {
+                flag.set(true);
+                cell.fire(poll::Why::Cancelled);
+            });
+            let error = match connect(cx, format!("{name}:{port}"), Some(Duration::from_secs(60))) {
+                Err(e) => e.message().to_string(),
+                Ok(_) => panic!("connected"),
+            };
+            let poller = cx
+                .state_mut::<poll::NetState>()
+                .unwrap()
+                .poller()
+                .expect("the poller started");
+            (error, poller.counts(), ran.get())
+        });
+        assert!(hook_ran, "the lookup was never armed");
+        assert!(error.contains("cancelled"), "{error}");
+        assert_eq!(counts, (0, 0), "something is left armed");
+        // The helper has not answered yet (it is held): let it, and wait until it has finished.
+        assert!(finished.try_recv().is_err(), "the helper was not held");
+        go.send(()).unwrap();
+        finished
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the helper thread did not finish its late answer");
+        // Nothing connected to the listener.
+        assert!(listener.accept().is_err(), "a connection was made");
+    }
+
     /// A wake proves nothing by itself: a connect that is under way (Linux and macOS: the queue of
     /// the listener is full; Windows: a port that nothing is bound to, which that system keeps
     /// pending for about two seconds) is not concluded on the one-second recheck, which is a timer
@@ -3844,7 +3971,8 @@ mod tests {
     /// A peer that sends `piece` bytes at a time (or as many as the room takes, if less).
     struct Pieces(usize);
 
-    impl Recv for Pieces {
+    // SAFETY: writes the first `n` bytes of the room before it returns `n`.
+    unsafe impl Recv for Pieces {
         fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
             let n = self.0.min(buf.len());
             for b in &mut buf[..n] {
@@ -3896,11 +4024,20 @@ mod tests {
     /// byte per read, and the bytes after the data are as they were at the end.
     #[test]
     fn a_trickle_of_single_bytes_zero_fills_nothing() {
-        struct Checked(usize);
-        impl Recv for Checked {
+        /// `(piece size, start of the filled capacity, its end)`.
+        struct Checked(usize, usize, usize);
+        // SAFETY: writes the first `n` bytes of the room before it returns `n`.
+        unsafe impl Recv for Checked {
             fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
+                // The room must lie in the region the test filled, or it is not read at all.
+                let (from, to) = (buf.as_ptr() as usize, buf.as_ptr() as usize + buf.len());
+                assert!(
+                    from >= self.1 && to <= self.2,
+                    "the room lies outside the capacity the test filled: the buffer moved"
+                );
                 for b in buf.iter() {
-                    // SAFETY: the test wrote the pattern to all of the capacity.
+                    // SAFETY: the test wrote the pattern to all of the capacity, and the room
+                    // is inside it (checked above).
                     assert_eq!(
                         unsafe { b.assume_init() },
                         0xCD,
@@ -3921,7 +4058,8 @@ mod tests {
             for b in r.data.spare_capacity_mut() {
                 b.write(0xCD);
             }
-            let mut src = Checked(1);
+            let start = r.data.as_ptr() as usize;
+            let mut src = Checked(1, start, start + capacity);
             for i in 1..=5000 {
                 let more = if want == 0 { 0 } else { want - (i - 1) };
                 r.read_from(&mut src, more).unwrap().unwrap();
