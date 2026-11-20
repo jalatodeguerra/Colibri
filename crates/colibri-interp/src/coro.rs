@@ -1502,7 +1502,8 @@ impl Interp {
     /// the event loop instead; where neither is possible the thread blocks. The same rules
     /// hold: the host function must not hold a borrow of host objects across the call, and
     /// `Err(Cancelled)` means the host function must unwind, the token's hooks having run
-    /// already. A completer dropped without a result is `Err(Failed)`.
+    /// already (a hook that panics there is a panic of the host function, and the operation's
+    /// entries are gone by then). A completer dropped without a result is `Err(Failed)`.
     #[doc(hidden)]
     pub fn await_completion<R: Send + 'static>(
         &mut self,
@@ -1523,8 +1524,9 @@ impl Interp {
             }
             Err(payload) => {
                 self.sched.ext.forget(op);
-                // The dropped completer has posted its id; nobody will collect it.
-                self.sched.ext.completed.remove(&op);
+                // The dropped completer has posted its id; collecting it later finds the
+                // operation no longer pending and ignores it. A hook that panics too does not
+                // replace the panic of `start`, which is the one that is passed on.
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| token.cancel()));
                 std::panic::resume_unwind(payload);
             }
@@ -1548,6 +1550,19 @@ impl Interp {
         (completer, result_rx)
     }
 
+    /// Runs the cancel hooks of an operation whose waiter is giving up. A hook that panics must
+    /// not leave the operation's entries behind: they are removed, and the panic is passed on
+    /// (so it becomes a panic of the host function that is waiting).
+    fn cancel_completion(&mut self, op: u64, token: &CancelToken) {
+        if let Err(payload) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| token.cancel()))
+        {
+            self.sched.ext.forget(op);
+            self.sched.ext.completed.remove(&op);
+            std::panic::resume_unwind(payload);
+        }
+    }
+
     /// The one wait loop of every background operation (suspend, drive the loop, or block).
     fn wait_completion<R>(
         &mut self,
@@ -1561,14 +1576,7 @@ impl Interp {
             let mut outcome = Ok(());
             while !self.sched.ext.completed.contains(&op) {
                 if self.suspend(fiber, id, Wake::External(op)).is_err() {
-                    // A hook that panics must not leave the operation's entries behind.
-                    if let Err(payload) =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| token.cancel()))
-                    {
-                        self.sched.ext.forget(op);
-                        self.sched.ext.completed.remove(&op);
-                        std::panic::resume_unwind(payload);
-                    }
+                    self.cancel_completion(op, token);
                     outcome = Err(ExternalError::Cancelled);
                     break;
                 }
@@ -2012,5 +2020,28 @@ mod tests {
             assert!(ext.pending.is_empty() && ext.tokens.is_empty() && ext.completed.is_empty());
         }
         assert_eq!(hooks.load(Ordering::SeqCst), 2, "the hooks ran");
+    }
+
+    /// A cancel hook that panics, when the waiter gives up, leaves nothing of the operation in
+    /// the scheduler (not even the completion that had already arrived), and the panic is passed
+    /// on.
+    #[test]
+    fn a_cancel_hook_that_panics_still_forgets_the_operation() {
+        use crate::Interp;
+        let mut interp = Interp::new(Box::new(std::io::sink()), 100);
+        let (completer, _result_rx) = interp.begin_completion::<u8>();
+        let op = completer._notify.1;
+        let token = Arc::clone(&completer.token);
+        token.on_cancel(|| panic!("the hook panics"));
+        // The completion arrived before the waiter noticed the cancellation.
+        drop(completer);
+        interp.sched.ext.drain();
+        assert!(interp.sched.ext.completed.contains(&op));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            interp.cancel_completion(op, &token)
+        }));
+        assert!(outcome.is_err(), "the panic is passed on");
+        let ext = &interp.sched.ext;
+        assert!(ext.pending.is_empty() && ext.tokens.is_empty() && ext.completed.is_empty());
     }
 }
