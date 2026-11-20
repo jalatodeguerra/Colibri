@@ -110,7 +110,8 @@ fn one_rust_type_in_a_module_twice_and_in_several_modules_is_fine() {
 
 #[test]
 fn a_host_class_is_refused_by_any_other_module_in_every_order() {
-    let orders: [(&str, fn(&mut colibri::Vm) -> Result<(), colibri::Error>); 4] = [
+    type Order = fn(&mut colibri::Vm) -> Result<(), colibri::Error>;
+    let orders: [(&str, Order); 4] = [
         ("a then b", |vm| {
             vm.module("a").register_type::<Holder>()?;
             vm.module("b").register_type::<Holder>()

@@ -3474,7 +3474,7 @@ fn a_rename_never_edits_a_file_outside_the_open_folder_even_through_a_link() {
                     "{u}"
                 );
                 assert_eq!(
-                    edited(&edit, &PathBuf::from(uri_path(u)), x_text),
+                    edited(&edit, &uri_path(u), x_text),
                     x_text.replace("helper", "h"),
                 );
             }
