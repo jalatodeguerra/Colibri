@@ -2758,6 +2758,12 @@ impl Server {
                     return
                 }
             }
+            // A request whose line arrives after `stop` is not started (RFC 9112 9.3.1 lets the
+            // client retry it): `stop` has closed this connection while it was idle, and the
+            // line was read before the coroutine could see that.
+            if self.stopping {
+                return
+            }
             state.phase = .Head
             parser.request_line(first_line) or |r| {
                 self.refuse(state, r, parser.method == "HEAD")

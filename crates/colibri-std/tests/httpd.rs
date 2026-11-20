@@ -1868,6 +1868,33 @@ fn stopping_closes_the_idle_connections_and_ends_serve_and_nothing_listens_any_m
 }
 
 #[test]
+fn a_request_that_is_completed_after_stop_is_not_started() {
+    let server = Server::hello();
+    let mut half = server.connect();
+    // Half a request line: the connection is idle as far as the server can tell.
+    half.send("GET / HT");
+    let mut kept = server.connect();
+    assert_eq!(kept.call(get("/")).status, 200);
+    // Stopping with a long grace: the idle connections are closed, and nothing is cancelled.
+    let mut stopper = server.connect();
+    let r = stopper.call(request(
+        "POST",
+        "/__stop_slowly",
+        &["Content-Length: 0"],
+        b"",
+    ));
+    assert_eq!(r.status, 200);
+    drop(stopper);
+    // The rest of the line, and a whole request on the other connection, get no answer.
+    let _ = half.try_send(b"TP/1.1\r\nHost: test\r\n\r\n");
+    let _ = kept.try_send(&get("/late"));
+    half.expect_silent_close();
+    kept.expect_silent_close();
+    let seen = server.wait().seen;
+    assert_eq!(seen, ["GET /"]);
+}
+
+#[test]
 fn a_stop_during_a_request_lets_it_finish_and_the_answer_says_close() {
     let server = Server::app("httpd.Options {}");
     let mut waiting = server.connect();
