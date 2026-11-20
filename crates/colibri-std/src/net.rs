@@ -284,9 +284,15 @@ fn describe(kind: Kind, e: &io::Error, listening: bool) -> String {
             "broken pipe",
             " (the writing end is shut down, or the peer is gone)",
         ),
-        Kind::AddrInUse => (
+        Kind::AddrInUse if listening => (
             "address already in use",
             " (another socket has or reserves that port: stop it, or listen on port 0 for a free one)",
+        ),
+        // From a connect (Windows says this when it has no free local port left): advice about
+        // listening would be wrong.
+        Kind::AddrInUse => (
+            "address already in use",
+            " (no local port is free for the connection: close the ones that are not needed)",
         ),
         Kind::AddrNotAvailable if listening => (
             "address not available",
@@ -2211,6 +2217,18 @@ mod tests {
             "cannot connect to `h:1`: connection refused (nothing is listening there)"
         );
         assert!(text(ErrorKind::AddrInUse).contains("address already in use"));
+        // The advice to listen on port 0 is for a listen only.
+        let in_use = |action: &str| {
+            fail(action, "h:1", &Error::from(ErrorKind::AddrInUse))
+                .message()
+                .to_string()
+        };
+        assert!(in_use("listen on").contains("listen on port 0"));
+        assert!(
+            !in_use("connect to").contains("port 0"),
+            "{}",
+            in_use("connect to")
+        );
         assert!(text(ErrorKind::ConnectionReset).contains("connection reset by the peer"));
         assert!(text(ErrorKind::BrokenPipe).contains("broken pipe"));
         assert!(text(ErrorKind::TimedOut).contains("timed out"));
