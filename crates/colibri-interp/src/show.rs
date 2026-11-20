@@ -169,13 +169,11 @@ fn write_nested(
 
 impl<'t> Writer<'t> {
     fn list(&mut self, items: &[Value], depth: u32) {
-        // Plain indexing rather than an iterator chain: a debug build gives the iterator
-        // adapters frame space of their own, on every level of a nested value.
-        for i in 0..items.len() {
+        for (i, item) in items.iter().enumerate() {
             if i > 0 {
                 self.out.push_str(", ");
             }
-            self.value(&items[i], depth + 1);
+            self.value(item, depth + 1);
         }
     }
 
@@ -290,13 +288,13 @@ impl<'t> Writer<'t> {
         }
         self.out.push('{');
         let entries = m.snapshot();
-        for i in 0..entries.len() {
+        for (i, (key, value)) in entries.iter().enumerate() {
             if i > 0 {
                 self.out.push_str(", ");
             }
-            self.value(&entries[i].0, depth + 1);
+            self.value(key, depth + 1);
             self.out.push_str(": ");
-            self.value(&entries[i].1, depth + 1);
+            self.value(value, depth + 1);
         }
         self.out.push('}');
     }
@@ -595,8 +593,8 @@ mod tests {
     /// it calls adds to the stack used by each of the 1,000 levels. A new arm that grows
     /// those frames overflowed the 2 MB test stack only on a build with debug info, which
     /// the local setup does not use. Running on 1 MB makes that show up here, with a margin
-    /// of about two against the figure measured when this test was written (496 bytes a level
-    /// with debug info, so about 500 KB).
+    /// of about two against the figure measured when this test was written (544 bytes a level
+    /// with debug info, so about 540 KB).
     #[test]
     fn very_deep_values_are_elided_within_one_megabyte_of_stack() {
         let worker = std::thread::Builder::new()
