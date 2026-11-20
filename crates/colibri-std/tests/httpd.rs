@@ -166,6 +166,14 @@ fn app(r: httpd.Request, seen: Seen, server: httpd.Server) -> Result[httpd.Respo
         wait_for(seen.release)
         return ok(httpd.text(200, "released\n"))
     }
+    if r.path == "/grandchild" {
+        let child = go fn() {
+            wait(0.05)
+            let small = [1]
+            seen.items.push("{small[5]}")
+        }()
+        return ok(httpd.text(200, "started\n"))
+    }
     if r.path == "/sleep30" {
         defer {
             seen.items.push("sleep deferred")
@@ -1788,6 +1796,18 @@ fn the_end_of_the_grace_cancels_a_handler_that_is_asleep_and_serve_ends_with_it(
     );
     assert_eq!(seen, ["GET /sleep30", "sleep deferred"]);
     w.expect_closed();
+}
+
+#[test]
+fn a_panic_in_a_coroutine_a_handler_started_and_never_joined_still_ends_the_server() {
+    // Documented: containment covers the handler and the stream closure, not what they start.
+    let server = Server::app("httpd.Options { log_errors: false }");
+    let mut w = server.connect();
+    assert_eq!(w.call(get("/grandchild")).text(), "started\n");
+    match server.done.recv_timeout(CEILING) {
+        Ok(Err(e)) => assert!(e.contains("index 5 out of bounds"), "{e}"),
+        other => panic!("expected the run to end in the panic: {other:?}"),
+    }
 }
 
 #[test]
