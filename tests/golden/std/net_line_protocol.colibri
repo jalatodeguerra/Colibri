@@ -31,7 +31,6 @@ fn serve_one(l: net.Listener) -> Result[()] {
             }
         }
     }
-    return ok(())
 }
 
 fn main() -> Result[()] {
