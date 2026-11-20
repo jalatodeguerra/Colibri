@@ -1311,7 +1311,7 @@ fn a_chunked_body_that_ends_early_is_a_400_not_the_end_of_the_body() {
     let seen = server.finish().seen;
     assert_eq!(
         seen.iter().filter(|s| *s == "body failed").count(),
-        4,
+        5,
         "{seen:?}"
     );
 }
