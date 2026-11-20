@@ -1059,7 +1059,7 @@ struct Reader {
     scanned: usize,
     eof: bool,
     /// The buffer the socket is read into before the bytes are appended to `data`. It is zeroed
-    /// once, when it is made, and never again, so a peer that sends single bytes costs a copy of
+    /// once, when it is made, and lives for one read call (`end_call`), so a peer that sends single bytes costs a copy of
     /// one byte per read and not a zero-fill of the room that was offered (which, done into
     /// `data` itself, is a `memset` of up to a mebibyte for every byte that arrives).
     stage: Vec<u8>,
@@ -1147,6 +1147,13 @@ impl Reader {
         }
     }
 
+    /// The end of one read call (`read`, `read_line`, `read_exact`): lets go of the buffer the
+    /// socket was read into. It is made again, and zero-filled again, by the next call that has
+    /// to read from the socket.
+    fn end_call(&mut self) {
+        self.stage = Vec::new();
+    }
+
     /// Reads once from `src` into the buffer: room for up to one `READ_STEP` (or `READ_UNKNOWN`
     /// when `want` is 0). Gives `Err(bytes)` when memory for that many cannot be had, and
     /// otherwise the result of the read (the number of bytes appended; 0 is the end of the
@@ -1158,7 +1165,7 @@ impl Reader {
             want.min(READ_STEP)
         };
         self.make_room(want, chunk)
-            .map_err(|_| self.step(want).max(chunk))?;
+            .map_err(|_| self.step(want).saturating_add(chunk).min(want.max(chunk)))?;
         if self.stage.len() < READ_STEP {
             #[cfg(test)]
             {
@@ -1311,6 +1318,21 @@ impl Shared {
         ticket.wait_turn(wait, action)?;
         // Only the holder of the turn gets here, so this never waits.
         let mut r = self.reader.lock().unwrap_or_else(PoisonError::into_inner);
+        let result = self.read_loop(&mut r, wait, action, probe);
+        // The buffer the socket is read into is for the length of one call: a connection that
+        // is idle holds none (1,000 of them would hold 64 MB), and one call over a trickle of
+        // single bytes still zero-fills it only once.
+        r.end_call();
+        result
+    }
+
+    fn read_loop(
+        &self,
+        r: &mut Reader,
+        wait: &Wait<'_>,
+        action: &str,
+        probe: impl Fn(&mut Reader) -> Probe,
+    ) -> Result<(), TypedError> {
         let mut tried = false;
         loop {
             // Cancelled first: bytes that arrive after a cancel stay in the buffer for the
@@ -1318,7 +1340,7 @@ impl Shared {
             if let Some(stop) = wait.stop_unless_late() {
                 return Err(wait.stop_error(stop, action, None));
             }
-            let want = match probe(&mut r) {
+            let want = match probe(r) {
                 Probe::Ready => return Ok(()),
                 Probe::Failed(e) => return Err(e),
                 Probe::Pending(want) => want,
@@ -1326,7 +1348,7 @@ impl Shared {
             if tried && wait.late() {
                 return Err(wait.stop_error(Stop::Timeout, action, None));
             }
-            self.fill(&mut r, wait, action, want)?;
+            self.fill(r, wait, action, want)?;
             tried = true;
         }
     }
@@ -2800,9 +2822,58 @@ mod tests {
                 r.read_from(&mut src, more).unwrap().unwrap();
                 assert_eq!(r.data.len(), i);
             }
+            // Over one call (the lifetime of the buffer) it is zero-filled once, however many
+            // reads the call makes.
             assert_eq!(r.zero_filled, READ_STEP, "want {want}");
             // Nor does a read hand the system more room than one step.
             assert_eq!(r.stage.len(), READ_STEP);
+            // The next call makes it again: the cost is one step for each call, not for each read.
+            r.end_call();
+            for _ in 0..100 {
+                r.read_from(&mut src, 0).unwrap().unwrap();
+            }
+            assert_eq!(r.zero_filled, 2 * READ_STEP, "want {want}");
         }
+    }
+
+    /// A connection that has read holds no buffer for reading while it is idle: after a read has
+    /// returned (here a line, with the worker's call over) the `Reader` has none, and a second
+    /// read makes it again and lets it go again.
+    #[test]
+    fn a_reader_holds_no_stage_buffer_after_a_read_has_returned() {
+        let (c, mut peer) = conn_pair();
+        let sh = &c.sh;
+        let live = test_token();
+        let limit = Limit {
+            deadline: Some(Instant::now() + Duration::from_secs(20)),
+            timeout: Duration::from_secs(20),
+        };
+        let wait = sh.wait(Some(&live), limit);
+        for expected in ["one", "two"] {
+            peer.write_all(format!("{expected}\n").as_bytes()).unwrap();
+            let ticket = sh.reads.ticket();
+            sh.read_wait(&ticket, &wait, "read from", |r| line_probe(r, "p"))
+                .unwrap();
+            let mut r = sh.reader.lock().unwrap();
+            assert_eq!(r.stage.capacity(), 0, "after reading {expected}");
+            assert_eq!(take_line(&mut r, "p").unwrap().as_deref(), Some(expected));
+        }
+        // It was made for each of the two calls.
+        assert_eq!(sh.reader.lock().unwrap().zero_filled, 2 * READ_STEP);
+        // And a call that fails (here: a read that times out half way through a line) lets go too.
+        peer.write_all(b"three").unwrap();
+        let ticket = sh.reads.ticket();
+        let late = sh.wait(
+            Some(&live),
+            Limit {
+                deadline: Some(Instant::now() + Duration::from_millis(150)),
+                timeout: Duration::from_millis(150),
+            },
+        );
+        assert!(
+            sh.read_wait(&ticket, &late, "read from", |r| line_probe(r, "p"))
+                .is_err()
+        );
+        assert_eq!(sh.reader.lock().unwrap().stage.capacity(), 0);
     }
 }
