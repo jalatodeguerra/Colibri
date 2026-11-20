@@ -848,6 +848,32 @@ fn kvserver_turns_away_connections_over_its_cap() {
     assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
 }
 
+/// Clients that are turned away and then say nothing do not hold up the accept loop: with a cap
+/// of one, fifteen of them are held open and a sixteenth still gets its line soon. The server
+/// reads from a turned-away client for a hundredth of a second at most; at a fifth of a second
+/// each (the first version) the sixteenth would wait three seconds, and the bound is 1.5 s, with
+/// the real figure a few tenths of a second on a slow runner.
+#[test]
+fn kvserver_does_not_stall_on_silent_clients_it_turns_away() {
+    use std::io::BufRead;
+    let kv = Kv::start(&["--max-connections", "1"]);
+    let mut a = kv.client();
+    assert_eq!(ask(&mut a, "SET k v\n"), "OK");
+    let silent: Vec<_> = (0..15).map(|_| kv.client()).collect();
+    let started = std::time::Instant::now();
+    let mut last = kv.client();
+    let mut line = String::new();
+    last.1.read_line(&mut line).unwrap();
+    let took = started.elapsed();
+    assert_eq!(line.trim_end(), "ERR too many connections");
+    assert!(
+        took < Duration::from_millis(1500),
+        "the line came after {took:?}"
+    );
+    drop(silent);
+    assert_eq!(ask(&mut a, "SHUTDOWN\n"), "BYE");
+}
+
 /// A server that runs out of descriptors reports it and goes on: `accept` fails with a
 /// `net.Error` while the table is full, and works again when connections have ended. Unix only,
 /// because the limit is set with `ulimit -n` (a Windows process has no such limit to lower).
