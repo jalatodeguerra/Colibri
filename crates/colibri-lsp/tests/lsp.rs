@@ -4710,5 +4710,26 @@ fn std_source_modules_hover_and_complete_but_have_no_location_and_no_rename() {
         .unwrap_err();
     let message = err["message"].as_str().unwrap();
     assert!(message.contains("standard library"), "{message}");
+
+    // So is renaming the module itself, at the import and where it is used: there is no file.
+    for at in ["vec\n\nfn main", "vec.vec2(3"] {
+        let err = c.rename(&file, pos_of(text, at), "vector").unwrap_err();
+        assert_eq!(
+            err["message"].as_str().unwrap(),
+            "`vec` cannot be renamed: it is a module of the standard library, which has no file to rename",
+            "{err}"
+        );
+        let prep = c.request_raw(
+            "textDocument/prepareRename",
+            json!({"textDocument": {"uri": uri(&file)},
+                   "position": {"line": pos_of(text, at).0, "character": pos_of(text, at).1}}),
+        );
+        let err = prep.unwrap_err();
+        assert_eq!(
+            err["message"].as_str().unwrap(),
+            "`vec` cannot be renamed: it is a module of the standard library, which has no file to rename",
+            "{err}"
+        );
+    }
     c.shutdown();
 }
