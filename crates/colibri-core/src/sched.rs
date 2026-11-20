@@ -311,6 +311,7 @@ impl Scheduler {
     /// the end of a group: nothing but code that runs at a tick or before it can wake it), a
     /// small polling interval (`poll`) when something is checked at every tick (`wait_until`
     /// only), else the time to the earliest timed wake.
+    #[inline]
     pub fn next_wake(&mut self, poll: f64) -> Option<f64> {
         let mut best: Option<f64> = None;
         let mut real_now: Option<f64> = None;
@@ -409,6 +410,10 @@ impl Scheduler {
     /// check found it. Returns whether a `join_result` waiter will receive the target's
     /// outcome, which is what makes a panic "handed over".
     pub(crate) fn wake_joiners(&mut self, target: u64) -> bool {
+        // Most coroutines end with nobody waiting for them: no hashing then.
+        if self.joiners.is_empty() {
+            return false;
+        }
         let Some(waiters) = self.joiners.remove(&target) else {
             return false;
         };
@@ -467,6 +472,9 @@ impl Scheduler {
     /// A member left `group` (or the group was dropped): each coroutine waiting in `join_all`
     /// on it for which no other member is alive is woken ([`Wake::Woken`]).
     fn wake_group_waiters(&mut self, group: u64) {
+        if self.group_waiters.is_empty() {
+            return;
+        }
         let Some(waiters) = self.group_waiters.get_mut(&group) else {
             return;
         };

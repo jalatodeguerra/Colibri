@@ -255,21 +255,23 @@ pub trait Sched: Engine {
     /// ended. `join` returns the value and panics for a panic or a cancel of the target.
     /// `join_result` returns `ok(value)`, or `err(e)` for either of those. A panic that the
     /// target left in the failure queue is taken out of it: whoever joins it reports it
-    /// instead. The pausing is the engine's; this is what both do afterwards.
+    /// instead. `status` is the handle's status, which is not `RUNNING`. The pausing is the
+    /// engine's; this is what both do afterwards.
     fn joined_outcome(
         &mut self,
         fiber: &mut Self::Fiber,
         h: &ClassObj,
+        status: i64,
         span: Span,
         as_result: bool,
     ) -> Eval {
-        let name = handle_name(h);
-        let message = match handle_status(h) {
+        let message = match status {
             DONE => {
                 let v = h.field(H_RESULT).unwrap_or(Value::Unit);
                 return Ok(if as_result { ok_variant(v) } else { v });
             }
             PANICKED => {
+                let name = handle_name(h);
                 self.core_mut().sched.forget_failure_of(handle_id(h));
                 let msg = match h.field(H_RESULT) {
                     Some(Value::Str(s)) => s.to_string(),
@@ -281,8 +283,8 @@ pub trait Sched: Engine {
                     format!("the joined coroutine `{name}` panicked: {msg}")
                 }
             }
-            _ if as_result => format!("the coroutine `{name}` was cancelled"),
-            _ => format!("the joined coroutine `{name}` was cancelled"),
+            _ if as_result => format!("the coroutine `{}` was cancelled", handle_name(h)),
+            _ => format!("the joined coroutine `{}` was cancelled", handle_name(h)),
         };
         if as_result {
             Ok(err_variant(error_value(&message)))

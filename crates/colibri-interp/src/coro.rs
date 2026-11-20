@@ -730,29 +730,35 @@ impl Interp {
         as_result: bool,
     ) -> Eval {
         let what = if as_result { "join_result" } else { "join" };
-        if handle_status(h) == RUNNING && fiber.state.coro.is_none() {
+        let mut status = handle_status(h);
+        if status == RUNNING && fiber.state.coro.is_none() {
             let target = Rc::clone(h);
             self.drive_main(fiber, span, what, None, &mut |_| {
                 handle_status(&target) != RUNNING
             })?;
+            status = handle_status(h);
         }
-        if handle_status(h) == RUNNING {
+        if status == RUNNING {
             let id = self.pause_context(fiber, span, what)?;
             if handle_id(h) == id {
                 return Err(self.panic(fiber, span, "a coroutine cannot join itself"));
             }
-            while handle_status(h) == RUNNING {
-                // Registered with the target: woken when it ends, never polled.
-                let target = handle_id(h);
+            // Registered with the target: woken when it ends, never polled.
+            let target = handle_id(h);
+            loop {
                 let wake = if as_result {
                     Wake::JoinResult(target)
                 } else {
                     Wake::Join(target)
                 };
                 self.suspend(fiber, id, wake)?;
+                status = handle_status(h);
+                if status != RUNNING {
+                    break;
+                }
             }
         }
-        self.joined_outcome(fiber, h, span, as_result)
+        self.joined_outcome(fiber, h, status, span, as_result)
     }
 
     /// `join_all` on a `CoGroup`: pauses until no other member of the group is alive.
