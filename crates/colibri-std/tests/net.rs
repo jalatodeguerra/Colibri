@@ -768,8 +768,9 @@ fn main() -> Result[()] {{
     assert_eq!(time.get(), 0.0);
 }
 
-/// A line too long for `read_line`, and a line that is not text, are errors; the data of the
-/// second stays readable as bytes.
+/// A line too long for `read_line`, and a line that is not text, are errors. The line that is
+/// not text is taken off the stream (as `fs.File` does), the error says so, and the next line
+/// is still there.
 #[test]
 fn read_line_refuses_a_huge_line_and_bad_utf8() {
     let (listener, addr) = rust_listener();
@@ -799,7 +800,9 @@ fn kind[T](r: Result[T]) -> str {{
 
 fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
-    print(kind(c.read_line()))
+    let bad = c.read_line()
+    print(kind(bad))
+    print(bad.err().expect("an error").message().contains("taken off the stream"))
     print(c.read_line()?)
     print(kind(c.read_line()))
     c.close()
@@ -807,7 +810,7 @@ fn main() -> Result[()] {{
 }}
 "#
     ));
-    assert_eq!(out, "InvalidData\nsome(\"ok\")\nLineTooLong\n");
+    assert_eq!(out, "InvalidData\ntrue\nsome(\"ok\")\nLineTooLong\n");
     peer.join().unwrap();
 }
 
@@ -1264,6 +1267,51 @@ fn main() -> Result[()] {{
         later.contains("an earlier write stopped part way")
             && later.contains("close the connection"),
         "{later}"
+    );
+}
+
+/// The text of a timeout is true when part of the line has arrived: it says the call did not
+/// finish, not that nothing happened.
+#[test]
+fn a_timeout_in_the_middle_of_a_line_says_it_did_not_finish() {
+    let (listener, addr) = rust_listener();
+    let (tx, rx) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        s.write_all(b"par").unwrap();
+        rx.recv_timeout(LIMIT).unwrap();
+        s.write_all(b"t\n").unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let (mut vm, out) = vm();
+    vm.register_fn("signal", move || tx.send(()).unwrap())
+        .unwrap();
+    run(
+        &mut vm,
+        &format!(
+            r#"import net
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    c.set_timeout(0.2)
+    let first = c.read_line()
+    print(first.err().expect("a timeout").message().replace("{addr}", "<addr>"))
+    // What had arrived is still there.
+    signal()
+    c.set_timeout(10.0)
+    print(c.read_line()?)
+    c.close()
+    return ok(())
+}}
+"#
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    peer.join().unwrap();
+    assert_eq!(
+        out.contents(),
+        "cannot read from `<addr>`: did not finish within 0.2 seconds (see `set_timeout`; the connection is still usable)\nsome(\"part\")\n"
     );
 }
 

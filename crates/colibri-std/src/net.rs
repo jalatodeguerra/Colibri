@@ -118,11 +118,13 @@ error_kind!(
         UnexpectedEnd,
         /// `read_line` found no end of line in the first mebibyte.
         LineTooLong,
-        /// `read_line` got bytes that are not UTF-8 text.
+        /// `read_line` got a line that is not UTF-8 text (the line is gone from the stream, as
+        /// with `fs.File`: a program that expects binary data reads it with `read`).
         InvalidData,
-        /// Anything else, with the system's own text (also: out of descriptors or memory, the
-        /// helper thread of a name lookup that cannot start; a thread of the pool that cannot
-        /// start is a panic, not this). The one variant whose text is not Colibri's own.
+        /// Anything else, with the system's own text (also: out of descriptors or memory, a
+        /// thread that cannot be started for an operation or for a name lookup, a read or accept
+        /// refused because it could never finish). The one variant whose text is not always
+        /// Colibri's own.
         Other,
     }
 );
@@ -558,12 +560,12 @@ impl Wait<'_> {
                 self.name
             )),
             Stop::Timeout if note.is_empty() => Kind::Timeout.error(format!(
-                "cannot {action} `{}`: nothing happened within {} seconds (see `set_timeout`; the connection is still usable)",
+                "cannot {action} `{}`: did not finish within {} seconds (see `set_timeout`; the connection is still usable)",
                 self.name,
                 self.limit.timeout.as_secs_f64()
             )),
             Stop::Timeout => Kind::Timeout.error(format!(
-                "cannot {action} `{}`: nothing happened within {} seconds (see `set_timeout`){note}",
+                "cannot {action} `{}`: did not finish within {} seconds (see `set_timeout`){note}",
                 self.name,
                 self.limit.timeout.as_secs_f64()
             )),
@@ -1400,7 +1402,7 @@ fn bad_count(this: &str, what: &str, n: i64) -> TypedError {
 fn text_of(line: Vec<u8>, peer: &str) -> Result<String, TypedError> {
     String::from_utf8(line).map_err(|e| {
         Kind::InvalidData.error(format!(
-            "cannot read a line from `{peer}`: the line is not valid UTF-8 ({}); `read` gives the bytes of data that is not text",
+            "cannot read a line from `{peer}`: the line is not valid UTF-8 ({}); the line has been taken off the stream (read data that is not text with `read` or `read_exact`, not `read_line`)",
             utf8_problem(&e.utf8_error())
         ))
     })
@@ -1532,7 +1534,13 @@ impl HostType for Conn {
                         Probe::Ready
                     } else if r.eof {
                         Probe::Failed(Kind::UnexpectedEnd.error(format!(
-                            "cannot read {n} bytes from `{peer}`: the stream ended after {have} (the {have} bytes stay readable with `read`)"
+                            "cannot read {} from `{peer}`: the stream ended after {have} ({})",
+                            count_of_bytes(n),
+                            match have {
+                                0 => "nothing is left to read".to_string(),
+                                1 => "the 1 byte stays readable with `read`".to_string(),
+                                _ => format!("the {have} bytes stay readable with `read`"),
+                            }
                         )))
                     } else {
                         Probe::Pending(n - have)
@@ -2109,6 +2117,21 @@ mod tests {
         assert_eq!(line_of(&mut r).unwrap().unwrap().len(), MAX_LINE);
         let mut r = reader(&line(MAX_LINE + 1, b""), true);
         assert!(line_of(&mut r).is_err());
+    }
+
+    /// `read_line` of a line that is not text takes the line off the stream, and the line after
+    /// it is still there.
+    #[test]
+    fn a_line_that_is_not_text_is_taken_off_the_stream() {
+        let mut r = reader(b"\xff\xfe\nok\n", false);
+        let e = take_line(&mut r, "peer").unwrap_err();
+        assert_eq!(variant(&e), "InvalidData");
+        assert!(
+            e.message().contains("taken off the stream"),
+            "{}",
+            e.message()
+        );
+        assert_eq!(take_line(&mut r, "peer").unwrap().as_deref(), Some("ok"));
     }
 
     fn patience(token: &CancelToken, deadline: Option<Instant>) -> Patience<'_> {
