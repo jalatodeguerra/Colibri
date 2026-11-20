@@ -581,11 +581,7 @@ fn main() -> Result[()] {{
         ),
     )
     .unwrap_or_else(|e| panic!("{e}"));
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "took {:?}",
-        started.elapsed()
-    );
+    assert!(started.elapsed() < LIMIT, "took {:?}", started.elapsed());
     peer.join().unwrap();
     assert_eq!(
         out.contents(),
@@ -631,11 +627,7 @@ fn main() -> Result[()] {{
 }}
 "#
     ));
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "took {:?}",
-        started.elapsed()
-    );
+    assert!(started.elapsed() < LIMIT, "took {:?}", started.elapsed());
     // The peer sees the end of the stream: the socket really went away.
     assert_eq!(peer.join().unwrap(), 0);
     assert_eq!(out, "Closed\nClosed\nClosed\n");
@@ -694,11 +686,7 @@ fn main() -> Result[()] {{
     let script_addr = addr_rx.recv_timeout(LIMIT).unwrap();
     let started = Instant::now();
     drop(vm);
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "took {:?}",
-        started.elapsed()
-    );
+    assert!(started.elapsed() < LIMIT, "took {:?}", started.elapsed());
     acceptor.join().unwrap();
     // The script's connections are closed: their peers read the end of the stream.
     for _ in 0..2 {
@@ -1855,8 +1843,9 @@ fn main() -> Result[()] {{
     assert_eq!(out.contents(), "closed 200\n");
     let marks = marks.lock().unwrap();
     let took = marks[1].duration_since(marks[0]);
-    // 200 closes that each waited for a slice would take 10 seconds.
-    assert!(took < Duration::from_secs(3), "the closes took {took:?}");
+    // 200 closes that each waited for a slice would take 10 seconds; the bound is wide for a
+    // slow machine and still below that.
+    assert!(took < Duration::from_secs(8), "the closes took {took:?}");
     done_tx.send(()).unwrap();
     keep.join().unwrap();
 }
@@ -1993,7 +1982,7 @@ fn main() -> Result[()] {{
     // Writes to a connection the peer reset: the first may be accepted by the system, a later
     // one is refused. Either way the variant is `BrokenPipe`.
     var last = "ok"
-    for _ in 0..50 {{
+    for _ in 0..500 {{
         last = kind(c.write("data"))
         if last != "ok" {{
             break

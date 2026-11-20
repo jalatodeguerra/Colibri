@@ -1,8 +1,7 @@
 //! What a thousand idle blocked reads cost. This is a test file of its own because it measures
 //! the CPU time of the whole process, which the other tests of `net` (they run in threads of one
-//! process) would pollute. Unix only: it reads the time with `getrusage`.
-
-#![cfg(unix)]
+//! process) would pollute. The process's CPU time is read with `getrusage` on Unix and with
+//! `GetProcessTimes` on Windows: no portable call gives it.
 
 use std::io::Read;
 use std::net::TcpListener;
@@ -16,6 +15,36 @@ const READERS: usize = 1000;
 const IDLE_SECONDS: f64 = 3.0;
 
 /// CPU seconds (user and system) the process has used so far.
+#[cfg(windows)]
+fn cpu_seconds() -> f64 {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: the four `FILETIME`s are valid for the call to fill in, and the pseudo handle of
+    // the current process needs no closing.
+    let ok = unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    assert_ne!(ok, 0, "GetProcessTimes failed");
+    // Units of 100 ns.
+    let secs = |t: FILETIME| {
+        ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) as f64 / 1e7
+    };
+    secs(kernel) + secs(user)
+}
+
+/// CPU seconds (user and system) the process has used so far.
+#[cfg(unix)]
 fn cpu_seconds() -> f64 {
     let mut ru = std::mem::MaybeUninit::<libc::rusage>::zeroed();
     // SAFETY: `ru` is a valid `rusage` for the call to fill in.
@@ -27,6 +56,12 @@ fn cpu_seconds() -> f64 {
     secs(ru.ru_utime) + secs(ru.ru_stime)
 }
 
+/// Unix only: a Windows process has no soft descriptor limit to raise (sockets are not
+/// descriptors there).
+#[cfg(windows)]
+fn raise_descriptor_limit() {}
+
+#[cfg(unix)]
 fn raise_descriptor_limit() {
     let mut lim = libc::rlimit {
         rlim_cur: 0,

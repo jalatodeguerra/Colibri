@@ -1,0 +1,31 @@
+// kvclient: sends request lines to a kvserver and prints each answer. It is the way to talk to
+// the server on a system that has no `nc`.
+//
+//   colibri run kvclient.colibri -- HOST:PORT REQUEST...
+//
+// Each request is one argument (quote the ones with spaces): `"SET a 1" "GET a"`.
+//
+// Exit codes: 0 every request was answered, 1 the server cannot be reached or went away,
+// 2 bad command line.
+import args
+import io
+import net
+import os
+
+fn main() -> Result[()] {
+    let given = args.positional()
+    if given.len() < 2 {
+        io.eprintln("usage: colibri run kvclient.colibri -- HOST:PORT REQUEST...")
+        os.exit(2)
+    }
+    let conn = net.connect(given[0]).context("cannot reach the server")?
+    // Never wait for ever on a server that does not answer.
+    conn.set_timeout(30.0)
+    for request in given[1..] {
+        conn.write("{request}\n")?
+        let line = conn.read_line()?
+        let text = line or { return err(error("the server closed the connection")) }
+        print(text)
+    }
+    return ok(())
+}

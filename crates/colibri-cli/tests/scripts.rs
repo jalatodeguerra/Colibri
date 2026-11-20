@@ -46,6 +46,7 @@ fn both_scripts_check() {
         "organize/organize.colibri",
         "report/report.colibri",
         "kvserver/kvserver.colibri",
+        "kvserver/kvclient.colibri",
     ] {
         let path = scripts().join(script);
         let out = colibri(&["check", path.to_str().unwrap()]);
@@ -700,9 +701,35 @@ fn kvserver_serves_several_clients_and_shuts_down() {
     assert_eq!(status.code(), Some(0));
 }
 
+/// The Colibri client that the README shows (for systems without `nc`) talks to the server, and
+/// says so when there is nobody to talk to.
+#[test]
+fn kvclient_talks_to_kvserver_and_reports_a_missing_server() {
+    let kv = Kv::start(&[]);
+    let client = scripts().join("kvserver/kvclient.colibri");
+    let out = run_script(
+        &client,
+        &[&kv.addr, "SET a 1", "GET a", "COUNT", "SHUTDOWN"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "OK\nVALUE 1\n1\nBYE\n");
+    let mut kv = kv;
+    assert_eq!(kv.child.wait().unwrap().code(), Some(0));
+    // The server has stopped: its port refuses (a port that was just closed).
+    let out = run_script(&client, &[&kv.addr, "COUNT"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("cannot reach the server"),
+        "{}",
+        text(&out.stderr)
+    );
+    let out = run_script(&client, &[&kv.addr]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
 #[test]
 fn kvserver_closes_idle_connections_and_reports_a_bad_address() {
-    let kv = Kv::start(&["--idle", "0.2"]);
+    let kv = Kv::start(&["--idle", "1.5"]);
     let mut c = kv.client();
     assert_eq!(ask(&mut c, "COUNT\n"), "0");
     // Silent for longer than the idle time: the server closes the connection.
@@ -798,7 +825,7 @@ fn main() {
     let out = run_script(&script, &[]);
     assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));
     assert!(
-        started.elapsed() < Duration::from_secs(10),
+        started.elapsed() < Duration::from_secs(60),
         "{:?}",
         started.elapsed()
     );

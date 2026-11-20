@@ -1,6 +1,8 @@
 // caps: net
 // `set_timeout` limits each later read and write: a read that waits too long is a `Timeout`
-// and the connection is still usable (a half-read line is kept for the next call).
+// and the connection is still usable (a half-read line is kept for the next call). The reads
+// that must find their data use a long timeout: a slow machine may take longer than 50 ms to
+// start the wait, and the data is already there.
 import net
 
 fn main() -> Result[()] {
@@ -16,11 +18,14 @@ fn main() -> Result[()] {
     s.write("par")?
     print(c.read_line().is_err())
     s.write("tial\n")?
+    c.set_timeout(30.0)
     print(c.read_line()?)
+    c.set_timeout(0.05)
     print(c.read(5).is_err())
     s.write("xyz")?
     print(c.read_exact(5).is_err())
     s.write("12")?
+    c.set_timeout(30.0)
     print(c.read_exact(5)?)
     // No timeout again: the read waits for the writer, which is another coroutine.
     c.set_timeout(0.0)

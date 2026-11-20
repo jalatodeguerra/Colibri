@@ -103,7 +103,6 @@ fn main() -> Result[()] {
     if let some(text) = args.value("idle") {
         idle = str.parse_float(text) or |e| {
             usage_error("--idle: {e.message()}")
-            return ok(())
         }
     }
     let listener = net.listen(addr).context("cannot start")?
