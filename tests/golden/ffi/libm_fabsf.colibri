@@ -1,0 +1,12 @@
+// only: unix - `fabsf` is a compiler intrinsic that the Windows C runtime does not export; libm_functions.colibri covers `f32` (`sqrtf`) everywhere
+// caps: ffi
+
+@link("m")
+extern "C" {
+    fn fabsf(x: f32) -> f32
+}
+
+fn main() {
+    print(fabsf(-2.5))
+}
+// expect: 2.5

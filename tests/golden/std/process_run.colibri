@@ -1,5 +1,6 @@
 // caps: os
-// Subprocesses through `sh`, so this golden runs on Linux and macOS.
+// only: unix - runs `sh`, `printf` and `tr` and uses `$VAR` and `$((..))` syntax; see process_windows.colibri
+// Subprocesses through `sh`. The errors that do not depend on a shell are in process_errors.colibri.
 import process
 import os
 
@@ -10,11 +11,8 @@ fn main() {
     print(r.stderr)
     print(r)
 
-    // A program that fails to run is an error, one that exits non-zero is not.
-    match process.run("colibri-no-such-program", []) {
-        ok(_)  => print("ran?")
-        err(e) => print(e.message())
-    }
+    // A program that exits non-zero is not an error (one that fails to run is: see
+    // process_errors.colibri).
     print(process.status("sh", ["-c", "exit 7"]) or |e| { -1 })
     print(process.output("sh", ["-c", "printf abc"]) or |e| { "failed" })
     match process.output("sh", ["-c", "echo bad >&2; exit 2"]) {
@@ -39,13 +37,6 @@ fn main() {
     os.set_env("COLIBRI_CHILD", "yes")
     let c = process.shell("echo $COLIBRI_CHILD") or |e| { panic(e.message()) }
     print(c.stdout)
-
-    var missing = process.options()
-    missing.cwd = some("/colibri/no/such/folder")
-    match process.run_with("sh", ["-c", "true"], missing) {
-        ok(_)  => print("ran?")
-        err(e) => print(e.message())
-    }
 }
 
 // expect: 3
@@ -54,7 +45,6 @@ fn main() {
 // expect: oops
 // expect:
 // expect: Output { status: 3, stdout: "hello\n", stderr: "oops\n" }
-// expect: cannot run `colibri-no-such-program`: no such file or directory
 // expect: 7
 // expect: abc
 // expect: `sh` failed with status 2: bad
@@ -66,4 +56,3 @@ fn main() {
 // expect:
 // expect: yes
 // expect:
-// expect: cannot run `sh`: the folder `/colibri/no/such/folder` does not exist

@@ -1,12 +1,11 @@
 // caps: ffi
-// Integers of every width; the process's own symbols need no `@link`.
+// Integers of every width; the process's own symbols need no `@link`. The functions only
+// Unix has are in libc_posix_integers.colibri (and libc_windows_integers.colibri).
 
 extern "C" {
     fn abs(x: i32) -> i32
     fn labs(x: int) -> int
     fn llabs(x: int) -> int
-    fn htons(x: u16) -> u16
-    fn getpid() -> i32
     fn isdigit(c: i32) -> i32
     fn rand() -> i32
     fn srand(seed: u32)
@@ -16,8 +15,6 @@ fn main() {
     print(abs(-7))
     print(labs(-(1 << 40)))
     print(llabs(-3))
-    print(htons(1) == 256 || htons(1) == 1)
-    print(getpid() > 0)
     print(isdigit(55) != 0)
     print(isdigit(65) != 0)
     srand(1)
@@ -28,8 +25,6 @@ fn main() {
 // expect: 7
 // expect: 1099511627776
 // expect: 3
-// expect: true
-// expect: true
 // expect: true
 // expect: false
 // expect: true

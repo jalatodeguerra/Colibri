@@ -92,14 +92,25 @@ fn command(cx: &mut Ctx, program: &str, args: &[String], opts: &Options, piped: 
     cmd
 }
 
-fn start_error(program: &str, opts: &Options, e: &std::io::Error) -> String {
-    // A missing folder is reported by the OS as the program being missing.
-    if e.kind() == std::io::ErrorKind::NotFound
-        && let Some(cwd) = &opts.cwd
-        && !Path::new(cwd).is_dir()
-    {
-        return format!("cannot run `{program}`: the folder `{cwd}` does not exist");
+/// Looks at the folder the program is to run in before starting it, so the message is the
+/// same on every system (Unix says the program is missing, Windows says "not a directory").
+fn check_folder(program: &str, opts: &Options) -> Result<(), String> {
+    let Some(cwd) = &opts.cwd else {
+        return Ok(());
+    };
+    let path = Path::new(cwd);
+    if path.is_dir() {
+        Ok(())
+    } else if path.exists() {
+        Err(format!("cannot run `{program}`: `{cwd}` is not a folder"))
+    } else {
+        Err(format!(
+            "cannot run `{program}`: the folder `{cwd}` does not exist"
+        ))
     }
+}
+
+fn start_error(program: &str, e: &std::io::Error) -> String {
     format!("cannot run `{program}`: {}", reason(e))
 }
 
@@ -216,7 +227,7 @@ fn run_to_end(
     opts: &Options,
     token: &CancelToken,
 ) -> Result<Output, String> {
-    let mut child = cmd.spawn().map_err(|e| start_error(program, opts, &e))?;
+    let mut child = cmd.spawn().map_err(|e| start_error(program, &e))?;
     let feeder = feed(&mut child, opts.input.clone());
     let out = drain(child.stdout.take());
     let err = drain(child.stderr.take());
@@ -236,6 +247,7 @@ fn run_to_end(
 /// (`Ctx::run_async_cancellable`): inside a coroutine only that coroutine waits, the others keep
 /// running, and cancelling it (or ending the `Vm`) kills the program before it goes on.
 fn run(cx: &mut Ctx, program: &str, args: &[String], opts: &Options) -> Result<Output, String> {
+    check_folder(program, opts)?;
     let cmd = command(cx, program, args, opts, true);
     let (program, opts) = (program.to_string(), opts.clone());
     cx.run_async_cancellable(move |token| run_to_end(cmd, &program, &opts, token))
@@ -247,7 +259,7 @@ fn run_inheriting(cx: &mut Ctx, program: &str, args: &[String]) -> Result<i64, S
     let mut cmd = command(cx, program, args, &opts, false);
     let program = program.to_string();
     cx.run_async_cancellable(move |token| {
-        let child = cmd.spawn().map_err(|e| start_error(&program, &opts, &e))?;
+        let child = cmd.spawn().map_err(|e| start_error(&program, &e))?;
         let child = share(child, token);
         wait_for(&child, &program, token).map(status_code)
     })
@@ -444,9 +456,10 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
 }
 
 fn spawn(cx: &mut Ctx, program: String, args: &[String], opts: &Options) -> Result<Child, String> {
+    check_folder(&program, opts)?;
     let mut child = command(cx, &program, args, opts, true)
         .spawn()
-        .map_err(|e| start_error(&program, opts, &e))?;
+        .map_err(|e| start_error(&program, &e))?;
     let feeder = feed(&mut child, opts.input.clone());
     let out = Some(drain(child.stdout.take()));
     let err = Some(drain(child.stderr.take()));

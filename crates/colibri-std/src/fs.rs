@@ -55,6 +55,54 @@ fn walk_into(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<
     Ok(())
 }
 
+/// A path the standard library hands to a script (`os.temp_dir`, `os.cwd`): scripts use `/`
+/// on every system (see `path`), so on Windows `C:\Users\me` is given as `C:/Users/me`, which
+/// Windows accepts everywhere. A path that comes from a script (a name it passed in) is never
+/// changed.
+pub(crate) fn script_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        windows_script_path(&text)
+    } else {
+        text.into_owned()
+    }
+}
+
+/// [`script_path`] for a Windows path: backslashes become `/`, and the verbatim prefix that
+/// some system calls add (`\\?\C:\x`, `\\?\UNC\server\share`) is dropped, so that `C:/x` and
+/// `//server/share` come out. Pure text, so it is tested on every system.
+pub(crate) fn windows_script_path(path: &str) -> String {
+    let plain = if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else if let Some(local) = path.strip_prefix(r"\\?\") {
+        local.to_string()
+    } else {
+        path.to_string()
+    };
+    plain.replace('\\', "/")
+}
+
+/// Opens a file or folder to change its times. Unix lets a read-only handle do it; Windows
+/// needs a handle with `FILE_WRITE_ATTRIBUTES` access (a plain read handle gives "permission
+/// denied"), and `FILE_FLAG_BACKUP_SEMANTICS` to open a folder at all. That access does not
+/// need the file to be writable, nor does it change its contents.
+fn open_for_times(path: &str) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::File::open(path)
+    }
+}
+
 /// Why an operation failed, worded the same on every platform for the common cases.
 pub(crate) fn reason(e: &std::io::Error) -> String {
     match e.kind() {
@@ -213,7 +261,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             } else {
                 std::time::UNIX_EPOCH - magnitude
             };
-            let file = std::fs::File::open(&path).map_err(|e| fail_set(&e))?;
+            let file = open_for_times(&path).map_err(|e| fail_set(&e))?;
             file.set_modified(time).map_err(|e| fail_set(&e))
         }
     );
@@ -226,4 +274,27 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
         std::fs::rename(&from, &to).map_err(|e| fail("rename", &from, &e))
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::windows_script_path;
+
+    #[test]
+    fn windows_paths_reach_scripts_with_forward_slashes() {
+        assert_eq!(
+            windows_script_path(r"C:\Users\RUNNER~1\AppData\Local\Temp"),
+            "C:/Users/RUNNER~1/AppData/Local/Temp"
+        );
+        // Mixed separators, as a path built from a folder and a name can have.
+        assert_eq!(windows_script_path(r"C:\a/b\c"), "C:/a/b/c");
+        // What canonicalising adds.
+        assert_eq!(windows_script_path(r"\\?\C:\x\y"), "C:/x/y");
+        assert_eq!(
+            windows_script_path(r"\\?\UNC\server\share\x"),
+            "//server/share/x"
+        );
+        assert_eq!(windows_script_path(r"\\server\share"), "//server/share");
+        assert_eq!(windows_script_path("relative/already"), "relative/already");
+    }
 }

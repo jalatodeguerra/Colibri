@@ -1,0 +1,51 @@
+// only: windows - runs `cmd`, the program every Windows system has; process_run.colibri is the Unix counterpart
+// caps: os
+// Subprocesses on Windows: `cmd /C`, exit status, captured output, the environment, and what
+// `process.shell` means there (`cmd /C line`). The text a program writes keeps its own line
+// ends (`cmd` writes `\r\n`), so these goldens trim it.
+import process
+import os
+
+fn main() {
+    let r = process.run("cmd", ["/C", "echo", "hello"]) or |e| { panic(e.message()) }
+    print(r.status)
+    print(r.stdout.trim())
+    print(r.stderr.len())
+
+    // The status and the standard error are kept apart.
+    let bad = process.run("cmd", ["/C", "echo", "oops", "1>&2"]) or |e| { panic(e.message()) }
+    print(bad.stdout.len())
+    print(bad.stderr.trim())
+    let three = process.run("cmd", ["/C", "exit", "3"]) or |e| { panic(e.message()) }
+    print(three.status)
+
+    print(process.status("cmd", ["/C", "exit", "7"]) or |e| { -1 })
+    print((process.output("cmd", ["/C", "echo", "abc"]) or |e| { "failed" }).trim())
+    match process.output("cmd", ["/C", "echo", "bad", "1>&2", "&", "exit", "2"]) {
+        ok(text) => print(text)
+        err(e)   => print(e.message())
+    }
+
+    // `process.shell` is `cmd /C`: `%VAR%` is expanded by it.
+    os.set_env("COLIBRI_CHILD", "yes")
+    let c = process.shell("echo %COLIBRI_CHILD%") or |e| { panic(e.message()) }
+    print(c.stdout.trim())
+
+    // Options: the environment of the program.
+    var o = process.options()
+    o.env = { "GREETING": "hi" }
+    let b = process.run_with("cmd", ["/C", "echo", "%GREETING%"], o) or |e| { panic(e.message()) }
+    print(b.stdout.trim())
+}
+
+// expect: 0
+// expect: hello
+// expect: 0
+// expect: 0
+// expect: oops
+// expect: 3
+// expect: 7
+// expect: abc
+// expect: `cmd` failed with status 2: bad
+// expect: yes
+// expect: hi
