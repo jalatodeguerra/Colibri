@@ -7,7 +7,7 @@ use std::any::TypeId as AnyTypeId;
 
 use colibri_check::hir::{Program, TypeDefKind};
 use colibri_check::host::DEFAULT_MODULE;
-use colibri_check::types::{ERROR_TYPE, FIRST_USER_TYPE, IntTy, RESULT_TYPE, Ty, VecTy};
+use colibri_check::types::{ERROR_TYPE, FIRST_USER_TYPE, IntTy, RESULT_TYPE, Ty};
 
 use crate::class::{HostType, TypeBuilder};
 use crate::host::RawHostFn;
@@ -36,9 +36,6 @@ pub enum TypeDesc {
     Str,
     /// `Bytes`: an immutable byte string, [`crate::Bytes`] on the Rust side.
     Bytes,
-    /// A vector type of the `vec` module (`vec.vec3`, `vec.ivec2`); glam's `Vec3` and `IVec2`
-    /// are its Rust side.
-    Vec(VecTy),
     List(Box<TypeDesc>),
     Option(Box<TypeDesc>),
     /// `Result[T]`, whose error is the built-in `Error`.
@@ -87,7 +84,6 @@ impl fmt::Display for TypeDesc {
             TypeDesc::Char => f.write_str("char"),
             TypeDesc::Str => f.write_str("str"),
             TypeDesc::Bytes => f.write_str("Bytes"),
-            TypeDesc::Vec(v) => write!(f, "vec.{}", v.name()),
             TypeDesc::List(t) => write!(f, "List[{t}]"),
             TypeDesc::Option(t) => write!(f, "Option[{t}]"),
             TypeDesc::Result(t) => write!(f, "Result[{t}]"),
@@ -184,7 +180,6 @@ impl TypeDesc {
             Ty::Char => TypeDesc::Char,
             Ty::Str => TypeDesc::Str,
             Ty::Bytes => TypeDesc::Bytes,
-            Ty::Vec(v) => TypeDesc::Vec(*v),
             Ty::List(t) => TypeDesc::List(Box::new(of(t)?)),
             Ty::Option(t) => TypeDesc::Option(Box::new(of(t)?)),
             Ty::Tuple(items) => TypeDesc::Tuple(items.iter().map(of).collect::<Option<Vec<_>>>()?),

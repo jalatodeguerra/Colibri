@@ -8,9 +8,9 @@ fn main() {
     print(b)
     print(c)
     print("a = {a}, b = {b}")
-    print(vec.vec3(7))
+    print(vec.vec3(7, 7, 7))
     print(vec.ivec2(3, -4))
-    print(vec.ivec4(1))
+    print(vec.ivec4(1, 1, 1, 1))
     // a vector is a value: a copy does not follow the original
     var m = a
     m.x = 10

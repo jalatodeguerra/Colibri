@@ -358,7 +358,7 @@ impl<'a> Checker<'a> {
                 continue;
             };
             let mut generics = self.type_extra[id.0 as usize].generics.clone();
-            let saved = std::mem::replace(&mut self.self_ty, Some(self_ty));
+            let saved = self.self_ty.replace(self_ty);
             for decl in &i.generics {
                 let Some(written) = &decl.default else {
                     continue;

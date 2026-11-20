@@ -1,7 +1,0 @@
-import vec
-import json
-
-fn main() {
-    print(json.encode(vec.vec2(1, 2)).is_err())
-}
-// expect: true

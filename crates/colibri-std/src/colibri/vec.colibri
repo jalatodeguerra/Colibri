@@ -1,0 +1,590 @@
+// The `vec` module of the standard library: small vectors of `f32` (`vec2`..`vec4`) and of `i32`
+// (`ivec2`..`ivec4`). This file is Colibri source embedded in the toolchain and loaded like any
+// module of the program (`import vec`); it uses nothing a program could not write itself.
+//
+// Arithmetic is component-wise, in single precision for `vecN` and with the trapping `i32`
+// arithmetic for `ivecN`. `v * s` and `v / s` take a scalar (a `float` narrowed to `f32`, an
+// `i32`), and `s * v` is written for `float` and `i32` here. A struct of floats has `==` but no
+// hash, so a `vecN` is not a `Set` element or a `Map` key, while an `ivecN` is both.
+import math
+
+/// A float vector of 2 components, `f32` each; 4 bytes per component, laid out like C.
+@repr(C)
+pub struct vec2 { pub x: f32, pub y: f32 }
+
+/// `vec2(x, y, ..)`: an untyped literal, an `f32` or a `float` is accepted, rounded to `f32`.
+pub fn vec2(x: float, y: float) -> vec2 => vec2 { x: f32(x), y: f32(y) }
+
+impl Add for vec2 {
+    fn add(self, other: vec2) -> vec2 => vec2 { x: self.x + other.x, y: self.y + other.y }
+}
+impl Sub for vec2 {
+    fn sub(self, other: vec2) -> vec2 => vec2 { x: self.x - other.x, y: self.y - other.y }
+}
+impl Mul for vec2 {
+    // component by component
+    fn mul(self, other: vec2) -> vec2 => vec2 { x: self.x * other.x, y: self.y * other.y }
+}
+impl Div for vec2 {
+    fn div(self, other: vec2) -> vec2 => vec2 { x: self.x / other.x, y: self.y / other.y }
+}
+impl Mul[float] for vec2 {
+    fn mul(self, s: float) -> vec2 {
+        let k = f32(s)
+        return vec2 { x: self.x * k, y: self.y * k }
+    }
+}
+impl Div[float] for vec2 {
+    fn div(self, s: float) -> vec2 {
+        let k = f32(s)
+        return vec2 { x: self.x / k, y: self.y / k }
+    }
+}
+impl Mul[vec2, vec2] for float {
+    fn mul(self, v: vec2) -> vec2 => v * self
+}
+impl Neg for vec2 {
+    fn neg(self) -> vec2 => vec2 { x: -self.x, y: -self.y }
+}
+impl Show for vec2 {
+    fn show(self) -> str => "vec2({self.x}, {self.y})"
+}
+
+impl vec2 {
+    /// The sum of the products of the components, left to right.
+    pub fn dot(self, other: vec2) -> f32 => self.x * other.x + self.y * other.y
+    /// The squared length.
+    pub fn len_sq(self) -> f32 => self.dot(self)
+    /// The length, the square root of `len_sq`.
+    pub fn len(self) -> f32 => self.len_sq().sqrt()
+    /// The distance between two points.
+    pub fn distance(self, other: vec2) -> f32 => (self - other).len()
+    /// The vector with the same direction and length 1; the zero vector stays zero.
+    pub fn normalize(self) -> vec2 {
+        let l = self.len()
+        if l == 0.0 {
+            return self
+        }
+        return vec2 { x: self.x / l, y: self.y / l }
+    }
+    /// `self + (other - self) * t`
+    pub fn lerp(self, other: vec2, t: float) -> vec2 => self + (other - self) * t
+    /// Each component truncated toward zero; a `nan` or a value out of range panics.
+    pub fn to_ivec(self) -> ivec2 => ivec2(i32(self.x), i32(self.y))
+    pub fn abs(self) -> vec2 => vec2 { x: self.x.abs(), y: self.y.abs() }
+    /// The smaller of each pair of components.
+    pub fn min(self, other: vec2) -> vec2 => vec2 { x: self.x.min(other.x), y: self.y.min(other.y) }
+    /// The larger of each pair of components.
+    pub fn max(self, other: vec2) -> vec2 => vec2 { x: self.x.max(other.x), y: self.y.max(other.y) }
+}
+
+/// A integer vector of 2 components, `i32` each; 4 bytes per component, laid out like C.
+@repr(C)
+pub struct ivec2 { pub x: i32, pub y: i32 }
+
+/// `ivec2(x, y, ..)`
+pub fn ivec2(x: i32, y: i32) -> ivec2 => ivec2 { x, y }
+
+impl Add for ivec2 {
+    fn add(self, other: ivec2) -> ivec2 => ivec2 { x: self.x + other.x, y: self.y + other.y }
+}
+impl Sub for ivec2 {
+    fn sub(self, other: ivec2) -> ivec2 => ivec2 { x: self.x - other.x, y: self.y - other.y }
+}
+impl Mul for ivec2 {
+    // component by component
+    fn mul(self, other: ivec2) -> ivec2 => ivec2 { x: self.x * other.x, y: self.y * other.y }
+}
+impl Div for ivec2 {
+    fn div(self, other: ivec2) -> ivec2 => ivec2 { x: self.x / other.x, y: self.y / other.y }
+}
+impl Mul[i32] for ivec2 {
+    fn mul(self, k: i32) -> ivec2 => ivec2 { x: self.x * k, y: self.y * k }
+}
+impl Div[i32] for ivec2 {
+    fn div(self, k: i32) -> ivec2 => ivec2 { x: self.x / k, y: self.y / k }
+}
+impl Mul[ivec2, ivec2] for i32 {
+    fn mul(self, v: ivec2) -> ivec2 => v * self
+}
+impl Neg for ivec2 {
+    fn neg(self) -> ivec2 => ivec2 { x: -self.x, y: -self.y }
+}
+impl Show for ivec2 {
+    fn show(self) -> str => "ivec2({self.x}, {self.y})"
+}
+
+impl ivec2 {
+    /// The sum of the products of the components, left to right.
+    pub fn dot(self, other: ivec2) -> i32 => self.x * other.x + self.y * other.y
+    /// The squared length.
+    pub fn len_sq(self) -> i32 => self.dot(self)
+    /// The length, computed exactly and rounded once.
+    pub fn len(self) -> f32 {
+        let s = int(self.x) * int(self.x) + int(self.y) * int(self.y)
+        return f32(float(s).sqrt())
+    }
+    /// The distance between two points, computed exactly and rounded once.
+    pub fn distance(self, other: ivec2) -> f32 {
+        let dx = int(self.x) - int(other.x)
+        let dy = int(self.y) - int(other.y)
+        let s = dx * dx + dy * dy
+        return f32(float(s).sqrt())
+    }
+    /// Each component made positive; `i32` `MIN` panics.
+    pub fn abs(self) -> ivec2 => ivec2 { x: self.x.abs(), y: self.y.abs() }
+    pub fn to_vec(self) -> vec2 => vec2(f32(self.x), f32(self.y))
+    /// The smaller of each pair of components.
+    pub fn min(self, other: ivec2) -> ivec2 => ivec2 {
+        x: self.x.min(other.x),
+        y: self.y.min(other.y),
+    }
+    /// The larger of each pair of components.
+    pub fn max(self, other: ivec2) -> ivec2 => ivec2 {
+        x: self.x.max(other.x),
+        y: self.y.max(other.y),
+    }
+}
+
+/// A float vector of 3 components, `f32` each; 4 bytes per component, laid out like C.
+@repr(C)
+pub struct vec3 { pub x: f32, pub y: f32, pub z: f32 }
+
+/// `vec3(x, y, ..)`: an untyped literal, an `f32` or a `float` is accepted, rounded to `f32`.
+pub fn vec3(x: float, y: float, z: float) -> vec3 => vec3 { x: f32(x), y: f32(y), z: f32(z) }
+
+impl Add for vec3 {
+    fn add(self, other: vec3) -> vec3 => vec3 {
+        x: self.x + other.x,
+        y: self.y + other.y,
+        z: self.z + other.z,
+    }
+}
+impl Sub for vec3 {
+    fn sub(self, other: vec3) -> vec3 => vec3 {
+        x: self.x - other.x,
+        y: self.y - other.y,
+        z: self.z - other.z,
+    }
+}
+impl Mul for vec3 {
+    // component by component
+    fn mul(self, other: vec3) -> vec3 => vec3 {
+        x: self.x * other.x,
+        y: self.y * other.y,
+        z: self.z * other.z,
+    }
+}
+impl Div for vec3 {
+    fn div(self, other: vec3) -> vec3 => vec3 {
+        x: self.x / other.x,
+        y: self.y / other.y,
+        z: self.z / other.z,
+    }
+}
+impl Mul[float] for vec3 {
+    fn mul(self, s: float) -> vec3 {
+        let k = f32(s)
+        return vec3 { x: self.x * k, y: self.y * k, z: self.z * k }
+    }
+}
+impl Div[float] for vec3 {
+    fn div(self, s: float) -> vec3 {
+        let k = f32(s)
+        return vec3 { x: self.x / k, y: self.y / k, z: self.z / k }
+    }
+}
+impl Mul[vec3, vec3] for float {
+    fn mul(self, v: vec3) -> vec3 => v * self
+}
+impl Neg for vec3 {
+    fn neg(self) -> vec3 => vec3 { x: -self.x, y: -self.y, z: -self.z }
+}
+impl Show for vec3 {
+    fn show(self) -> str => "vec3({self.x}, {self.y}, {self.z})"
+}
+
+impl vec3 {
+    /// The sum of the products of the components, left to right.
+    pub fn dot(self, other: vec3) -> f32 => self.x * other.x + self.y * other.y + self.z * other.z
+    /// The squared length.
+    pub fn len_sq(self) -> f32 => self.dot(self)
+    /// The length, the square root of `len_sq`.
+    pub fn len(self) -> f32 => self.len_sq().sqrt()
+    /// The distance between two points.
+    pub fn distance(self, other: vec3) -> f32 => (self - other).len()
+    /// The vector with the same direction and length 1; the zero vector stays zero.
+    pub fn normalize(self) -> vec3 {
+        let l = self.len()
+        if l == 0.0 {
+            return self
+        }
+        return vec3 { x: self.x / l, y: self.y / l, z: self.z / l }
+    }
+    /// `self + (other - self) * t`
+    pub fn lerp(self, other: vec3, t: float) -> vec3 => self + (other - self) * t
+    /// Each component truncated toward zero; a `nan` or a value out of range panics.
+    pub fn to_ivec(self) -> ivec3 => ivec3(i32(self.x), i32(self.y), i32(self.z))
+    pub fn abs(self) -> vec3 => vec3 { x: self.x.abs(), y: self.y.abs(), z: self.z.abs() }
+    /// The smaller of each pair of components.
+    pub fn min(self, other: vec3) -> vec3 => vec3 {
+        x: self.x.min(other.x),
+        y: self.y.min(other.y),
+        z: self.z.min(other.z),
+    }
+    /// The larger of each pair of components.
+    pub fn max(self, other: vec3) -> vec3 => vec3 {
+        x: self.x.max(other.x),
+        y: self.y.max(other.y),
+        z: self.z.max(other.z),
+    }
+    /// The vector perpendicular to both, by the right-hand rule.
+    pub fn cross(self, other: vec3) -> vec3 {
+        return vec3 {
+            x: self.y * other.z - self.z * other.y,
+            y: self.z * other.x - self.x * other.z,
+            z: self.x * other.y - self.y * other.x,
+        }
+    }
+    /// The first two components.
+    pub fn xy(self) -> vec2 => vec2(self.x, self.y)
+}
+
+/// A integer vector of 3 components, `i32` each; 4 bytes per component, laid out like C.
+@repr(C)
+pub struct ivec3 { pub x: i32, pub y: i32, pub z: i32 }
+
+/// `ivec3(x, y, ..)`
+pub fn ivec3(x: i32, y: i32, z: i32) -> ivec3 => ivec3 { x, y, z }
+
+impl Add for ivec3 {
+    fn add(self, other: ivec3) -> ivec3 => ivec3 {
+        x: self.x + other.x,
+        y: self.y + other.y,
+        z: self.z + other.z,
+    }
+}
+impl Sub for ivec3 {
+    fn sub(self, other: ivec3) -> ivec3 => ivec3 {
+        x: self.x - other.x,
+        y: self.y - other.y,
+        z: self.z - other.z,
+    }
+}
+impl Mul for ivec3 {
+    // component by component
+    fn mul(self, other: ivec3) -> ivec3 => ivec3 {
+        x: self.x * other.x,
+        y: self.y * other.y,
+        z: self.z * other.z,
+    }
+}
+impl Div for ivec3 {
+    fn div(self, other: ivec3) -> ivec3 => ivec3 {
+        x: self.x / other.x,
+        y: self.y / other.y,
+        z: self.z / other.z,
+    }
+}
+impl Mul[i32] for ivec3 {
+    fn mul(self, k: i32) -> ivec3 => ivec3 { x: self.x * k, y: self.y * k, z: self.z * k }
+}
+impl Div[i32] for ivec3 {
+    fn div(self, k: i32) -> ivec3 => ivec3 { x: self.x / k, y: self.y / k, z: self.z / k }
+}
+impl Mul[ivec3, ivec3] for i32 {
+    fn mul(self, v: ivec3) -> ivec3 => v * self
+}
+impl Neg for ivec3 {
+    fn neg(self) -> ivec3 => ivec3 { x: -self.x, y: -self.y, z: -self.z }
+}
+impl Show for ivec3 {
+    fn show(self) -> str => "ivec3({self.x}, {self.y}, {self.z})"
+}
+
+impl ivec3 {
+    /// The sum of the products of the components, left to right.
+    pub fn dot(self, other: ivec3) -> i32 => self.x * other.x + self.y * other.y + self.z * other.z
+    /// The squared length.
+    pub fn len_sq(self) -> i32 => self.dot(self)
+    /// The length, computed exactly and rounded once.
+    pub fn len(self) -> f32 {
+        let s = int(self.x) * int(self.x) + int(self.y) * int(self.y) + int(self.z) * int(self.z)
+        return f32(float(s).sqrt())
+    }
+    /// The distance between two points, computed exactly and rounded once.
+    pub fn distance(self, other: ivec3) -> f32 {
+        let dx = int(self.x) - int(other.x)
+        let dy = int(self.y) - int(other.y)
+        let dz = int(self.z) - int(other.z)
+        let s = dx * dx + dy * dy + dz * dz
+        return f32(float(s).sqrt())
+    }
+    /// Each component made positive; `i32` `MIN` panics.
+    pub fn abs(self) -> ivec3 => ivec3 { x: self.x.abs(), y: self.y.abs(), z: self.z.abs() }
+    pub fn to_vec(self) -> vec3 => vec3(f32(self.x), f32(self.y), f32(self.z))
+    /// The smaller of each pair of components.
+    pub fn min(self, other: ivec3) -> ivec3 => ivec3 {
+        x: self.x.min(other.x),
+        y: self.y.min(other.y),
+        z: self.z.min(other.z),
+    }
+    /// The larger of each pair of components.
+    pub fn max(self, other: ivec3) -> ivec3 => ivec3 {
+        x: self.x.max(other.x),
+        y: self.y.max(other.y),
+        z: self.z.max(other.z),
+    }
+    /// The vector perpendicular to both, by the right-hand rule.
+    pub fn cross(self, other: ivec3) -> ivec3 {
+        return ivec3 {
+            x: self.y * other.z - self.z * other.y,
+            y: self.z * other.x - self.x * other.z,
+            z: self.x * other.y - self.y * other.x,
+        }
+    }
+    /// The first two components.
+    pub fn xy(self) -> ivec2 => ivec2(self.x, self.y)
+}
+
+/// A float vector of 4 components, `f32` each; 4 bytes per component, laid out like C.
+@repr(C)
+pub struct vec4 { pub x: f32, pub y: f32, pub z: f32, pub w: f32 }
+
+/// `vec4(x, y, ..)`: an untyped literal, an `f32` or a `float` is accepted, rounded to `f32`.
+pub fn vec4(x: float, y: float, z: float, w: float) -> vec4 => vec4 {
+    x: f32(x),
+    y: f32(y),
+    z: f32(z),
+    w: f32(w),
+}
+
+impl Add for vec4 {
+    fn add(self, other: vec4) -> vec4 => vec4 {
+        x: self.x + other.x,
+        y: self.y + other.y,
+        z: self.z + other.z,
+        w: self.w + other.w,
+    }
+}
+impl Sub for vec4 {
+    fn sub(self, other: vec4) -> vec4 => vec4 {
+        x: self.x - other.x,
+        y: self.y - other.y,
+        z: self.z - other.z,
+        w: self.w - other.w,
+    }
+}
+impl Mul for vec4 {
+    // component by component
+    fn mul(self, other: vec4) -> vec4 => vec4 {
+        x: self.x * other.x,
+        y: self.y * other.y,
+        z: self.z * other.z,
+        w: self.w * other.w,
+    }
+}
+impl Div for vec4 {
+    fn div(self, other: vec4) -> vec4 => vec4 {
+        x: self.x / other.x,
+        y: self.y / other.y,
+        z: self.z / other.z,
+        w: self.w / other.w,
+    }
+}
+impl Mul[float] for vec4 {
+    fn mul(self, s: float) -> vec4 {
+        let k = f32(s)
+        return vec4 { x: self.x * k, y: self.y * k, z: self.z * k, w: self.w * k }
+    }
+}
+impl Div[float] for vec4 {
+    fn div(self, s: float) -> vec4 {
+        let k = f32(s)
+        return vec4 { x: self.x / k, y: self.y / k, z: self.z / k, w: self.w / k }
+    }
+}
+impl Mul[vec4, vec4] for float {
+    fn mul(self, v: vec4) -> vec4 => v * self
+}
+impl Neg for vec4 {
+    fn neg(self) -> vec4 => vec4 { x: -self.x, y: -self.y, z: -self.z, w: -self.w }
+}
+impl Show for vec4 {
+    fn show(self) -> str => "vec4({self.x}, {self.y}, {self.z}, {self.w})"
+}
+
+impl vec4 {
+    /// The sum of the products of the components, left to right.
+    pub fn dot(self, other: vec4) -> f32 => self.x * other.x +
+        self.y * other.y +
+        self.z * other.z +
+        self.w * other.w
+    /// The squared length.
+    pub fn len_sq(self) -> f32 => self.dot(self)
+    /// The length, the square root of `len_sq`.
+    pub fn len(self) -> f32 => self.len_sq().sqrt()
+    /// The distance between two points.
+    pub fn distance(self, other: vec4) -> f32 => (self - other).len()
+    /// The vector with the same direction and length 1; the zero vector stays zero.
+    pub fn normalize(self) -> vec4 {
+        let l = self.len()
+        if l == 0.0 {
+            return self
+        }
+        return vec4 { x: self.x / l, y: self.y / l, z: self.z / l, w: self.w / l }
+    }
+    /// `self + (other - self) * t`
+    pub fn lerp(self, other: vec4, t: float) -> vec4 => self + (other - self) * t
+    /// Each component truncated toward zero; a `nan` or a value out of range panics.
+    pub fn to_ivec(self) -> ivec4 => ivec4(i32(self.x), i32(self.y), i32(self.z), i32(self.w))
+    pub fn abs(self) -> vec4 => vec4 {
+        x: self.x.abs(),
+        y: self.y.abs(),
+        z: self.z.abs(),
+        w: self.w.abs(),
+    }
+    /// The smaller of each pair of components.
+    pub fn min(self, other: vec4) -> vec4 => vec4 {
+        x: self.x.min(other.x),
+        y: self.y.min(other.y),
+        z: self.z.min(other.z),
+        w: self.w.min(other.w),
+    }
+    /// The larger of each pair of components.
+    pub fn max(self, other: vec4) -> vec4 => vec4 {
+        x: self.x.max(other.x),
+        y: self.y.max(other.y),
+        z: self.z.max(other.z),
+        w: self.w.max(other.w),
+    }
+    /// The first two components.
+    pub fn xy(self) -> vec2 => vec2(self.x, self.y)
+    /// The first three components.
+    pub fn xyz(self) -> vec3 => vec3(self.x, self.y, self.z)
+}
+
+/// A integer vector of 4 components, `i32` each; 4 bytes per component, laid out like C.
+@repr(C)
+pub struct ivec4 { pub x: i32, pub y: i32, pub z: i32, pub w: i32 }
+
+/// `ivec4(x, y, ..)`
+pub fn ivec4(x: i32, y: i32, z: i32, w: i32) -> ivec4 => ivec4 { x, y, z, w }
+
+impl Add for ivec4 {
+    fn add(self, other: ivec4) -> ivec4 => ivec4 {
+        x: self.x + other.x,
+        y: self.y + other.y,
+        z: self.z + other.z,
+        w: self.w + other.w,
+    }
+}
+impl Sub for ivec4 {
+    fn sub(self, other: ivec4) -> ivec4 => ivec4 {
+        x: self.x - other.x,
+        y: self.y - other.y,
+        z: self.z - other.z,
+        w: self.w - other.w,
+    }
+}
+impl Mul for ivec4 {
+    // component by component
+    fn mul(self, other: ivec4) -> ivec4 => ivec4 {
+        x: self.x * other.x,
+        y: self.y * other.y,
+        z: self.z * other.z,
+        w: self.w * other.w,
+    }
+}
+impl Div for ivec4 {
+    fn div(self, other: ivec4) -> ivec4 => ivec4 {
+        x: self.x / other.x,
+        y: self.y / other.y,
+        z: self.z / other.z,
+        w: self.w / other.w,
+    }
+}
+impl Mul[i32] for ivec4 {
+    fn mul(self, k: i32) -> ivec4 => ivec4 {
+        x: self.x * k,
+        y: self.y * k,
+        z: self.z * k,
+        w: self.w * k,
+    }
+}
+impl Div[i32] for ivec4 {
+    fn div(self, k: i32) -> ivec4 => ivec4 {
+        x: self.x / k,
+        y: self.y / k,
+        z: self.z / k,
+        w: self.w / k,
+    }
+}
+impl Mul[ivec4, ivec4] for i32 {
+    fn mul(self, v: ivec4) -> ivec4 => v * self
+}
+impl Neg for ivec4 {
+    fn neg(self) -> ivec4 => ivec4 { x: -self.x, y: -self.y, z: -self.z, w: -self.w }
+}
+impl Show for ivec4 {
+    fn show(self) -> str => "ivec4({self.x}, {self.y}, {self.z}, {self.w})"
+}
+
+impl ivec4 {
+    /// The sum of the products of the components, left to right.
+    pub fn dot(self, other: ivec4) -> i32 => self.x * other.x +
+        self.y * other.y +
+        self.z * other.z +
+        self.w * other.w
+    /// The squared length.
+    pub fn len_sq(self) -> i32 => self.dot(self)
+    /// The length, computed exactly and rounded once.
+    pub fn len(self) -> f32 {
+        let s = int(self.x) * int(self.x) +
+            int(self.y) * int(self.y) +
+            int(self.z) * int(self.z) +
+            int(self.w) * int(self.w)
+        return f32(float(s).sqrt())
+    }
+    /// The distance between two points, computed exactly and rounded once.
+    pub fn distance(self, other: ivec4) -> f32 {
+        let dx = int(self.x) - int(other.x)
+        let dy = int(self.y) - int(other.y)
+        let dz = int(self.z) - int(other.z)
+        let dw = int(self.w) - int(other.w)
+        let s = dx * dx + dy * dy + dz * dz + dw * dw
+        return f32(float(s).sqrt())
+    }
+    /// Each component made positive; `i32` `MIN` panics.
+    pub fn abs(self) -> ivec4 => ivec4 {
+        x: self.x.abs(),
+        y: self.y.abs(),
+        z: self.z.abs(),
+        w: self.w.abs(),
+    }
+    pub fn to_vec(self) -> vec4 => vec4(f32(self.x), f32(self.y), f32(self.z), f32(self.w))
+    /// The smaller of each pair of components.
+    pub fn min(self, other: ivec4) -> ivec4 => ivec4 {
+        x: self.x.min(other.x),
+        y: self.y.min(other.y),
+        z: self.z.min(other.z),
+        w: self.w.min(other.w),
+    }
+    /// The larger of each pair of components.
+    pub fn max(self, other: ivec4) -> ivec4 => ivec4 {
+        x: self.x.max(other.x),
+        y: self.y.max(other.y),
+        z: self.z.max(other.z),
+        w: self.w.max(other.w),
+    }
+    /// The first two components.
+    pub fn xy(self) -> ivec2 => ivec2(self.x, self.y)
+    /// The first three components.
+    pub fn xyz(self) -> ivec3 => ivec3(self.x, self.y, self.z)
+}
+
+/// The unit vector that points `radians` counter-clockwise from the x axis.
+pub fn from_angle(radians: f32) -> vec2 => vec2(math.cos(radians), math.sin(radians))
+
+/// The angle of a vector from the x axis, in radians, in `-PI..=PI` (`0` for the zero vector).
+pub fn angle(v: vec2) -> f32 => f32(math.atan2(v.y, v.x))

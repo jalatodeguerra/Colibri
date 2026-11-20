@@ -109,7 +109,7 @@ pub(crate) struct Env<'a> {
     pub by_key: &'a HashMap<(TypeKey, TypeId), ImplId>,
     /// The implementations of `Add`, `Sub`, `Mul` and `Div`: several for one type, one for each
     /// right-hand type.
-    pub op_impls: &'a HashMap<(TypeKey, TypeId), Vec<(Option<TypeKey>, ImplId)>>,
+    pub op_impls: &'a crate::checker::OpImpls,
     /// The bounds of every type parameter.
     pub bounds: &'a HashMap<ParamId, Vec<BoundRef>>,
 }

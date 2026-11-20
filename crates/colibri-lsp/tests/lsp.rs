@@ -4655,3 +4655,60 @@ fn closing_an_open_dependency_gives_its_diagnostics_back_to_its_app() {
     assert_eq!(c.diags(&lib).len(), 1, "{:?}", c.diags(&lib));
     c.shutdown();
 }
+
+/// `vec` is Colibri source embedded in the toolchain (`<std>/vec.colibri`, not a file): the
+/// editor reads types and signatures from it, completes its members, and is never sent to it.
+#[test]
+fn std_source_modules_hover_and_complete_but_have_no_location_and_no_rename() {
+    let dir = temp_dir("std_source");
+    let file = dir.join("a.colibri");
+    let text = "import vec\n\nfn main() {\n    let a = vec.vec2(3, 4)\n    let n = a.len()\n    print(a.x + n)\n}\n";
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&file, text);
+    assert!(c.diags(&file).is_empty(), "{:?}", c.diags(&file));
+
+    // The constructor and a method of a type that the library declares.
+    let (l, col) = pos_of(text, "vec2(3");
+    assert_eq!(
+        hover_text(&c.hover(&file, l, col)),
+        "```colibri\nfn std.vec.vec2(x: float, y: float) -> vec2\n```"
+    );
+    let (l, col) = pos_of(text, "len()");
+    assert_eq!(
+        hover_text(&c.hover(&file, l, col)),
+        "```colibri\nfn std.vec.vec2.len(self) -> f32\n```"
+    );
+    let (l, col) = pos_of(text, "x + n");
+    assert_eq!(
+        hover_text(&c.hover(&file, l, col)),
+        "```colibri\nx: f32\n```"
+    );
+
+    // Completion offers the module's names and the members of its types.
+    let items = c.complete_after(&file, text, "vec.");
+    let labels: Vec<&str> = items.iter().filter_map(|i| i["label"].as_str()).collect();
+    for want in ["vec2", "ivec4", "from_angle", "angle"] {
+        assert!(labels.contains(&want), "{want} in {labels:?}");
+    }
+    let items = c.complete_after(&file, text, "a.");
+    let labels: Vec<&str> = items.iter().filter_map(|i| i["label"].as_str()).collect();
+    for want in ["x", "y", "len", "dot", "normalize", "to_ivec"] {
+        assert!(labels.contains(&want), "{want} in {labels:?}");
+    }
+
+    // The definition is in a text that is not a file, so there is nowhere to go.
+    let (l, col) = pos_of(text, "len()");
+    let def = c.definition(&file, l, col);
+    assert!(def.is_null() || def == json!([]), "{def}");
+    let (l, col) = pos_of(text, "vec2(3");
+    let def = c.definition(&file, l, col);
+    assert!(def.is_null() || def == json!([]), "{def}");
+
+    // Renaming a name that the library declares is refused.
+    let err = c
+        .rename(&file, pos_of(text, "len()"), "length")
+        .unwrap_err();
+    let message = err["message"].as_str().unwrap();
+    assert!(message.contains("standard library"), "{message}");
+    c.shutdown();
+}

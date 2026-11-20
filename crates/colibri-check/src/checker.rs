@@ -145,6 +145,10 @@ pub struct Checked {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// The implementations of the operator interfaces: for a type and an interface, one per
+/// right-hand type (`None` when it is a type parameter).
+pub(crate) type OpImpls = HashMap<(TypeKey, TypeId), Vec<(Option<TypeKey>, ImplId)>>;
+
 pub(crate) struct Checker<'a> {
     /// The entry file: where problems with no better place are reported.
     pub file: &'a ast::File,
@@ -248,7 +252,7 @@ pub(crate) struct Checker<'a> {
     /// and interface: one per right-hand type head (`None` when the right-hand type is a type
     /// parameter, which then stands for any). `impl_by_key` holds the first of them, for the
     /// queries that do not choose by right-hand type.
-    pub op_impls: HashMap<(TypeKey, TypeId), Vec<(Option<TypeKey>, ImplId)>>,
+    pub op_impls: OpImpls,
     /// The derived implementations made so far (built-in interfaces only).
     pub derived_impls: HashMap<(TypeKey, TypeId), ImplId>,
     /// The entry file's top-level statements and `let`/`var` bindings, in source order.
@@ -406,19 +410,7 @@ impl<'a> Checker<'a> {
             ffi: false,
         }];
         for name in host.named_modules() {
-            let mut exports = Exports::default();
-            if name == "std.vec" {
-                // The vector types are built into the checker; this module is what names them.
-                for v in VecTy::ALL {
-                    exports.types.insert(
-                        v.name().to_string(),
-                        crate::modules::Export {
-                            target: crate::modules::TypeEntity::Vec(v),
-                            public: true,
-                        },
-                    );
-                }
-            }
+            let exports = Exports::default();
             mods.push(ModInfo {
                 files: host.module_files(&name),
                 name,
@@ -1205,13 +1197,7 @@ impl<'a> Checker<'a> {
             self.note_deprecated_use(DeprKey::Alias(alias), span);
             return self.alias_instance(alias, args, span);
         }
-        // The text of a host interface may always say `vec.vec2` (it has no imports).
-        let vec = self.vec_types.get(name).copied().or_else(|| {
-            (span.file == HOST_FILE)
-                .then(|| name.strip_prefix("vec."))
-                .flatten()
-                .and_then(VecTy::from_name)
-        });
+        let vec = self.vec_types.get(name).copied();
         if let Some(v) = vec {
             if !args.is_empty() {
                 self.report(Diagnostic::error(
