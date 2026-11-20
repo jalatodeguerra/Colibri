@@ -147,6 +147,13 @@ const BACKLOG: i32 = 1024;
 /// The least a `read_exact` buffer grows by while the bytes it waits for are still arriving.
 const GROW_STEP: usize = 1 << 20;
 
+/// The most one `read` call on the socket is given room for, and the size of the buffer that the
+/// reads go through (see `Reader::stage`).
+const READ_STEP: usize = 64 * 1024;
+
+/// What a read of unknown size (a line, `read`) is given room for.
+const READ_UNKNOWN: usize = 32 * 1024;
+
 /// From this many bytes on, reads hand out the buffer itself instead of a copy of it.
 const HAND_OUT: usize = 64 * 1024;
 
@@ -1039,9 +1046,29 @@ struct Reader {
     /// Bytes after `pos` known to hold no `\n`.
     scanned: usize,
     eof: bool,
+    /// The buffer the socket is read into before the bytes are appended to `data`. It is zeroed
+    /// once, when it is made, and never again, so a peer that sends single bytes costs a copy of
+    /// one byte per read and not a zero-fill of the room that was offered (which, done into
+    /// `data` itself, is a `memset` of up to a mebibyte for every byte that arrives).
+    stage: Vec<u8>,
+    /// How many bytes `stage` has had zero-filled in all (for the test of the above).
+    #[cfg(test)]
+    zero_filled: usize,
 }
 
 impl Reader {
+    fn new() -> Reader {
+        Reader {
+            data: Vec::new(),
+            pos: 0,
+            scanned: 0,
+            eof: false,
+            stage: Vec::new(),
+            #[cfg(test)]
+            zero_filled: 0,
+        }
+    }
+
     fn available(&self) -> &[u8] {
         &self.data[self.pos..]
     }
@@ -1075,12 +1102,15 @@ impl Reader {
         want.min(self.data.len().max(GROW_STEP))
     }
 
-    /// Makes room for the next read. `want` is how many more bytes a `read_exact` waits for
-    /// (0 when unknown). The room grows with what has arrived, not with what is asked for: a
-    /// peer that announces a gigabyte and sends one byte holds one step of memory, not a
-    /// gigabyte. Each step is as big as everything received so far (and at least one mebibyte),
-    /// so the buffer stays within about twice the bytes received plus a step, and the number
-    /// of reallocations of a big read is logarithmic.
+    /// Makes room for the next read of up to `chunk` bytes. `want` is how many more bytes a
+    /// `read_exact` waits for (0 when unknown). The room grows with what has arrived, not with
+    /// what is asked for: a peer that announces a gigabyte and sends one byte holds one step of
+    /// memory, not a gigabyte. Nothing is reserved while the spare room still takes the next
+    /// read; when it does not, the buffer grows by a step as big as everything received so far
+    /// (at least one mebibyte) and one read more, never past `want`, so that a request ends with
+    /// a capacity of exactly the bytes asked for. The buffer thus stays within about twice the
+    /// bytes received plus a step, and the number of reallocations of a read of `n` bytes is
+    /// about `log2(n / 1 MiB)` plus a few, whatever the size of the pieces it arrives in.
     fn make_room(
         &mut self,
         want: usize,
@@ -1095,10 +1125,43 @@ impl Reader {
                 self.data.drain(..self.pos);
                 self.pos = 0;
             }
-            self.data.try_reserve_exact(self.step(want))
+            if self.data.capacity() - self.data.len() < chunk {
+                self.data
+                    .try_reserve_exact(want.min(self.step(want).saturating_add(chunk)))?;
+            }
+            Ok(())
         } else {
             self.data.try_reserve(chunk)
         }
+    }
+
+    /// Reads once from `src` into the buffer: room for up to one `READ_STEP` (or `READ_UNKNOWN`
+    /// when `want` is 0). Gives `Err(bytes)` when memory for that many cannot be had, and
+    /// otherwise the result of the read (the number of bytes appended; 0 is the end of the
+    /// stream).
+    fn read_from(&mut self, src: &mut impl Read, want: usize) -> Result<io::Result<usize>, usize> {
+        let chunk = if want == 0 {
+            READ_UNKNOWN
+        } else {
+            want.min(READ_STEP)
+        };
+        self.make_room(want, chunk)
+            .map_err(|_| self.step(want).max(chunk))?;
+        if self.stage.len() < READ_STEP {
+            #[cfg(test)]
+            {
+                self.zero_filled += READ_STEP - self.stage.len();
+            }
+            self.stage.resize(READ_STEP, 0);
+        }
+        Ok(match src.read(&mut self.stage[..chunk]) {
+            Ok(n) => {
+                // The room is there (`make_room`), so this does not reallocate.
+                self.data.extend_from_slice(&self.stage[..n]);
+                Ok(n)
+            }
+            Err(e) => Err(e),
+        })
     }
 }
 
@@ -1147,12 +1210,7 @@ impl Conn {
                 closed: AtomicBool::new(false),
                 write_broken: AtomicBool::new(false),
                 timeout_ns: AtomicU64::new(0),
-                reader: Mutex::new(Reader {
-                    data: Vec::new(),
-                    pos: 0,
-                    scanned: 0,
-                    eof: false,
-                }),
+                reader: Mutex::new(Reader::new()),
                 reads: Turns::new(),
                 writes: Turns::new(),
                 local,
@@ -1207,29 +1265,17 @@ impl Shared {
                 return Err(fail(action, &self.peer, &e));
             }
         }
-        let chunk = if want == 0 {
-            32 * 1024
-        } else {
-            want.min(GROW_STEP)
-        };
-        r.make_room(want, chunk).map_err(|_| {
-            Kind::Other.error(format!(
-                "cannot {action} `{}`: not enough memory for {} more bytes",
-                self.peer,
-                r.step(want).max(chunk)
-            ))
-        })?;
-        let start = r.data.len();
-        r.data.resize(start + chunk, 0);
-        match (&*sock).read(&mut r.data[start..]) {
-            Ok(n) => {
-                r.data.truncate(start + n);
-                r.eof |= n == 0;
+        match r.read_from(&mut &*sock, want) {
+            Err(asked) => {
+                return Err(Kind::Other.error(format!(
+                    "cannot {action} `{}`: not enough memory for {asked} more bytes",
+                    self.peer
+                )));
             }
-            Err(e) => {
-                r.data.truncate(start);
-                // Not readable after all (the readiness was an error that went away, or
-                // another wake-up): the next step waits again.
+            Ok(Ok(n)) => r.eof |= n == 0,
+            // Not readable after all (the readiness was an error that went away, or another
+            // wake-up): the next step waits again.
+            Ok(Err(e)) => {
                 if !matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) {
                     wait.check_open(action)?;
                     return Err(fail(action, &self.peer, &e));
@@ -2233,9 +2279,8 @@ mod tests {
     fn reader(bytes: &[u8], eof: bool) -> Reader {
         Reader {
             data: bytes.to_vec(),
-            pos: 0,
-            scanned: 0,
             eof,
+            ..Reader::new()
         }
     }
 
@@ -2647,5 +2692,70 @@ mod tests {
         let mut r = reader(b"x", false);
         r.make_room(100, 100).unwrap();
         assert!(r.data.capacity() >= 101 && r.data.capacity() < GROW_STEP);
+    }
+
+    /// A peer that sends `piece` bytes at a time (or as many as the room takes, if less).
+    struct Pieces(usize);
+
+    impl Read for Pieces {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let n = self.0.min(buf.len());
+            buf[..n].fill(0xAB);
+            Ok(n)
+        }
+    }
+
+    /// The buffer of a `read_exact` reallocates a logarithmic number of times whatever the size
+    /// of the pieces the bytes come in, and ends with a capacity of exactly the bytes asked for.
+    /// (It was one reallocation per fill until half of the bytes had arrived.)
+    #[test]
+    fn read_exact_reallocates_a_logarithmic_number_of_times() {
+        let mib = GROW_STEP;
+        let big = 64 * mib + 5;
+        for n in [mib - 1, mib, mib + 1, 3 * mib + 7, big] {
+            for piece in [1, 1_500, 16 * 1024, 64 * 1024, 300_000] {
+                // A byte at a time is for the sizes a test can count to.
+                if n / piece > 4_000_000 {
+                    continue;
+                }
+                let mut r = reader(b"", false);
+                let mut src = Pieces(piece);
+                let mut changes = 0;
+                while r.available().len() < n {
+                    let want = n - r.available().len();
+                    let before = r.data.capacity();
+                    r.read_from(&mut src, want).unwrap().unwrap();
+                    changes += usize::from(r.data.capacity() != before);
+                    assert!(r.data.capacity() <= n, "n {n}, piece {piece}");
+                }
+                let bound = 4 + (n / mib + 1).ilog2() as usize;
+                assert!(
+                    changes <= bound,
+                    "n {n}, piece {piece}: {changes} capacity changes, bound {bound}"
+                );
+                assert_eq!(r.data.len(), n, "n {n}, piece {piece}");
+                assert_eq!(r.data.capacity(), n, "n {n}, piece {piece}");
+                assert!(r.available().iter().all(|&b| b == 0xAB));
+            }
+        }
+    }
+
+    /// A peer that sends single bytes costs a copy of one byte per read: the buffer the socket is
+    /// read into is zero-filled once, not the room offered for each read (which was up to a
+    /// mebibyte of `memset` for every byte that arrived).
+    #[test]
+    fn a_trickle_of_single_bytes_zero_fills_nothing_after_the_first_read() {
+        for want in [4 * GROW_STEP, 0] {
+            let mut r = reader(b"", false);
+            let mut src = Pieces(1);
+            for i in 1..=5000 {
+                let more = if want == 0 { 0 } else { want - (i - 1) };
+                r.read_from(&mut src, more).unwrap().unwrap();
+                assert_eq!(r.data.len(), i);
+            }
+            assert_eq!(r.zero_filled, READ_STEP, "want {want}");
+            // Nor does a read hand the system more room than one step.
+            assert_eq!(r.stage.len(), READ_STEP);
+        }
     }
 }
