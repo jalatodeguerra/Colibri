@@ -97,6 +97,11 @@ pub fn run(paths: &[PathBuf], check: bool) -> ExitCode {
     let mut changed = Vec::new();
     for path in &files {
         let name = path.display().to_string();
+        // A manifest is no source: it is neither read nor rewritten.
+        if crate::depscmd::refuse_package_file(path).is_err() {
+            failed = true;
+            continue;
+        }
         let source = match std::fs::read_to_string(path) {
             Ok(source) => source,
             Err(e) => {

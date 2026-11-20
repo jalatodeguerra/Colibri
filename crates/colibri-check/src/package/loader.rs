@@ -169,6 +169,23 @@ pub fn load(
     load_with(fs, sources, entry, host_modules, LoadOptions::default())
 }
 
+/// What to say when `path` names the manifest or the lock file of a package, which is never
+/// Colibri source (its text would be parsed and printed as such): `None` for any other file.
+/// The names are compared without regard to case, as the file systems that ignore it do.
+pub fn not_a_script(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let (file, what) = if name.eq_ignore_ascii_case(MANIFEST_FILE) {
+        (MANIFEST_FILE, "manifest")
+    } else if name.eq_ignore_ascii_case(super::lock::LOCK_FILE) {
+        (super::lock::LOCK_FILE, "lock file")
+    } else {
+        return None;
+    };
+    Some(format!(
+        "`{file}` is the {what} of a package, not a script: pass the folder that holds it instead"
+    ))
+}
+
 /// [`load`] with options.
 pub fn load_with(
     fs: &dyn SourceFs,
@@ -180,6 +197,12 @@ pub fn load_with(
     let mut loader = Loader::new(fs, sources, host_modules);
     let (root, file, require_manifest) = match entry {
         Entry::File(path) => {
+            if let Some(message) = not_a_script(path) {
+                return Err(LoadError {
+                    path: fs.display_name(path),
+                    message,
+                });
+            }
             let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
             let name = path
                 .file_name()
@@ -1179,6 +1202,19 @@ mod tests {
         let loaded =
             load(&fs, &mut sources, Entry::File(Path::new(files[0].0)), &host).expect("loads");
         (loaded, sources)
+    }
+
+    #[test]
+    fn a_manifest_or_a_lock_is_not_an_entry_file() {
+        for name in ["colibri.toml", "app/colibri.lock", "app/Colibri.TOML"] {
+            let mut fs = MemoryFs::new();
+            fs.insert(name, "x = \"https://u:SeCrEt@h\"\n");
+            let mut sources = SourceMap::new();
+            let err =
+                load(&fs, &mut sources, Entry::File(Path::new(name)), &[]).expect_err("refused");
+            assert!(err.message.contains("not a script"), "{name}: {err:?}");
+            assert!(!err.message.contains("SeCrEt"));
+        }
     }
 
     fn all_module_names(files: &[(&str, &str)]) -> Vec<String> {

@@ -2801,3 +2801,42 @@ fn a_manifest_that_is_a_symbolic_link_is_named_as_one() {
         out.stderr
     );
 }
+
+#[test]
+fn a_manifest_or_a_lock_is_never_taken_for_a_script() {
+    let sb = Sandbox::new("manifest_as_script");
+    let manifests = [
+        "[package]\nname = \"p4\"\nx = { git = \"https://user:SeCrEt@example.invalid/r\" \n",
+        "# was https://user:SeCrEt@example.invalid/r\n[package]\nname = \"p4\"\n",
+    ];
+    for (i, text) in manifests.iter().enumerate() {
+        let app = package_with(&sb, &format!("script{i}"), text);
+        sb.write(&format!("apps/script{i}/colibri.lock"), text);
+        for file in ["colibri.toml", "colibri.lock"] {
+            let target = app.join(file);
+            let target = target.to_str().unwrap();
+            for args in [
+                vec!["check", target],
+                vec!["run", target],
+                vec!["run", "--watch", target],
+                vec!["test", target],
+                vec!["fmt", target],
+                vec!["fmt", "--check", target],
+            ] {
+                let out = sb.colibri(&args);
+                let all = format!("{}{}", out.stdout, out.stderr);
+                assert_eq!(out.code, 1, "{args:?}: {all}");
+                assert!(!all.contains("SeCrEt"), "{args:?}: {all}");
+                assert!(
+                    all.contains(file) && all.contains("not a script") && all.contains("folder"),
+                    "{args:?}: {all}"
+                );
+                assert_eq!(&fs::read_to_string(&target).unwrap(), text, "{args:?}");
+            }
+        }
+        // A folder walk takes `.colibri` files only: the manifest is left alone.
+        let out = sb.colibri(&["fmt", app.to_str().unwrap()]);
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(&fs::read_to_string(app.join("colibri.toml")).unwrap(), text);
+    }
+}

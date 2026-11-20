@@ -26,7 +26,21 @@ pub struct DepFlags {
 /// package folder, or a script next to a `colibri.toml`), printing what changed to stderr.
 /// `Err` is the exit code to stop with.
 pub fn prepare(target: &Path, flags: DepFlags) -> Result<(), ExitCode> {
+    refuse_package_file(target)?;
     sync(target, flags, Update::Nothing)
+}
+
+/// A `colibri.toml` or `colibri.lock` is not a script (`check`, `run` and `test` take scripts
+/// and package folders): says so, naming the file, and never reads it. `Err` is the exit
+/// code, 1 as for a file that cannot be read.
+pub fn refuse_package_file(target: &Path) -> Result<(), ExitCode> {
+    if !target.is_dir()
+        && let Some(message) = colibri_runtime::not_a_script(target)
+    {
+        eprintln!("error: {}: {message}", target.display());
+        return Err(ExitCode::from(1));
+    }
+    Ok(())
 }
 
 fn sync(target: &Path, flags: DepFlags, update: Update) -> Result<(), ExitCode> {
