@@ -128,6 +128,19 @@ impl Wire {
         assert!(self.try_send(data.as_ref()), "the write failed");
     }
 
+    /// Whatever has arrived, waiting up to `wait` for something if nothing has: the bytes of a
+    /// response that is still being sent.
+    #[track_caller]
+    pub fn read_some(&mut self, wait: Duration) -> Vec<u8> {
+        if self.buf.is_empty() {
+            match self.fill(wait) {
+                Fill::Data => {}
+                other => panic!("expected bytes, got {other:?}"),
+            }
+        }
+        std::mem::take(&mut self.buf)
+    }
+
     /// Closes the sending side only: the server sees the end of its input and may still answer.
     pub fn close_write(&mut self) {
         let _ = self.stream.shutdown(std::net::Shutdown::Write);

@@ -209,14 +209,71 @@ impl Response {
     }
 }
 
+/// The most a write puts in one piece on the connection (and in one chunk): a larger write is
+/// split, each piece under its own `write_timeout`.
+const WRITE_PIECE: int = 262144
+
 /// Where a streamed body is written. A connection gives one to the closure of `stream`.
 pub class BodyWriter {
+    /// Sends bytes to the peer under the write timeout: the connection.
+    send: fn(Bytes) -> Result[()]
+    /// Chunked framing (HTTP/1.1 and no length): each write is one or more chunks.
+    chunked: bool
+    /// The length the response promised, when it did.
+    length: int?
+    /// What the connection's coroutine is, so that a write after an error can cancel it.
+    co: Coroutine[()]?
     written: int = 0
+    /// The first error of a write: after it the peer has half a body, and nothing more is sent.
+    failed: Error? = none
+    /// The failure was a write past `length`, which is a mistake of the program.
+    over: bool = false
 }
 
 impl BodyWriter {
+    /// Writes `data`; empty data writes nothing. An `Err` means the peer is gone or too slow, or
+    /// the write went past the response's length, and the closure should pass it up with `?`. A
+    /// closure that writes again after an error is cancelled at that write: it stops there and
+    /// its `defer`s run, so a stream that ignores errors cannot spin.
     pub fn write(self, data: Bytes) -> Result[()] {
-        self.written += data.len()
+        if let some(e) = self.failed {
+            if let some(co) = self.co {
+                co.cancel()
+            }
+            return err(e)
+        }
+        if data.is_empty() {
+            return ok(())
+        }
+        if let some(n) = self.length {
+            if self.written + data.len() > n {
+                self.over = true
+                let e = error("httpd: the stream wrote past its length of {n} bytes")
+                self.failed = some(e)
+                return err(e)
+            }
+        }
+        var at = 0
+        while at < data.len() {
+            let end = (at + WRITE_PIECE).min(data.len())
+            let piece = if at == 0 && end == data.len() { data } else { data.slice(at, end) }
+            var out = piece
+            if self.chunked {
+                // One write for a chunk: its size line, its data and its CRLF.
+                let frame = BytesBuilder()
+                frame.push_str("{piece.len():x}\r\n")
+                frame.push_bytes(piece)
+                frame.push_str("\r\n")
+                out = frame.to_bytes()
+            }
+            (self.send)(out) or |e| {
+                self.failed = some(e)
+                return err(e)
+            }
+            self.written += piece.len()
+            at = end
+        }
+        return ok(())
     }
 
     pub fn write_str(self, text: str) -> Result[()] => self.write(text.to_bytes())
@@ -1794,8 +1851,8 @@ fn error_response(status: int, why: str) -> Response {
 }
 
 /// Why a response cannot be sent as it is, or `none`: a status outside 200 to 599, a header
-/// that could split the response or that the server owns (RFC 9112 11.1, plan 2.6), or a body
-/// this server cannot send yet.
+/// that could split the response or that the server owns (RFC 9112 11.1, plan 2.6), or a
+/// stream with a negative length.
 fn response_fault(g: Grammar, response: Response) -> str? {
     if response.status < 200 || response.status > 599 {
         return some("the status {response.status} is not between 200 and 599")
@@ -1823,8 +1880,12 @@ fn response_fault(g: Grammar, response: Response) -> str? {
 
 fn body_fault(response: Response) -> str? {
     return match response.body {
-        Stream(_, _) => some("a streamed body is not supported by this server yet")
-        _            => none
+        Stream(_, length) => if (length or 0) < 0 {
+            some("the length of a streamed body cannot be negative")
+        } else {
+            none
+        }
+        _ => none
     }
 }
 
@@ -1857,6 +1918,8 @@ enum Phase {
 class ConnState {
     conn: net.Conn
     phase: Phase = .Idle
+    /// The coroutine of the connection, for a stream that goes on writing after an error.
+    co: Coroutine[()]? = none
 }
 
 /// The result of reading one line of a head.
@@ -2002,6 +2065,10 @@ fn grace_timer(server: Server, grace: float) {
 
 /// A connection's coroutine: what runs `Server.connection` and always lets the connection go.
 fn connection_task(server: Server, state: ConnState, id: int, handler: Handler) {
+    // The first run of a coroutine goes on until it pauses, and `state.co` is set after that
+    // first run: the pause makes sure it is set before anything (a stream that writes after an
+    // error) needs it.
+    wait(0.0)
     defer {
         state.conn.close()
         let _ = server.conns.remove(id)
@@ -2060,7 +2127,7 @@ impl Server {
             self.next_id += 1
             let state = ConnState { conn: conn }
             self.conns[id] = state
-            self.group.go(connection_task(self, state, id, handler))
+            state.co = some(self.group.go(connection_task(self, state, id, handler)))
         }
         // Waits for the connections to end. This is polled (an event wait is not allowed on the
         // main fiber), but only while the server shuts down.
@@ -2116,15 +2183,22 @@ impl Server {
 
     /// Writes a response head and body. The head and a body of at most 64 KiB go in one write; a
     /// larger body follows in pieces of 256 KiB. `closing` puts `Connection: close` on it, and
-    /// `keep_alive_word` puts `Connection: keep-alive` (HTTP/1.0). The error is the write's.
+    /// `keep_alive_word` puts `Connection: keep-alive` (HTTP/1.0). A streamed body is written
+    /// as its closure produces it: chunked, unless it has a length or the request is HTTP/1.0,
+    /// where it ends with the connection (the caller then closes). The error is the write's, or
+    /// the stream's: either way the connection ends, without a lingering close. `what` names
+    /// the request in the log.
     fn write_response(
         self,
-        conn: net.Conn,
+        state: ConnState,
+        what: str,
+        version: str,
         response: Response,
         head_only: bool,
         closing: bool,
         keep_alive_word: bool,
     ) -> Result[()] {
+        let conn = state.conn
         let head = StrBuilder()
         head.push("HTTP/1.1 {response.status} {reason(response.status)}\r\n")
         var has_date = false
@@ -2143,8 +2217,21 @@ impl Server {
         }
         let size = body_size(response)
         let has_body = !bodyless(response.status)
+        var chunked = false
+        var streamed = false
         if has_body {
-            head.push("Content-Length: {size}\r\n")
+            match response.body {
+                Stream(_, length) => {
+                    streamed = true
+                    if let some(n) = length {
+                        head.push("Content-Length: {n}\r\n")
+                    } else if version != "HTTP/1.0" && !head_only {
+                        chunked = true
+                        head.push("Transfer-Encoding: chunked\r\n")
+                    }
+                }
+                _ => head.push("Content-Length: {size}\r\n")
+            }
         }
         if !has_date {
             head.push("Date: {self.date()}\r\n")
@@ -2158,10 +2245,23 @@ impl Server {
             head.push("Connection: keep-alive\r\n")
         }
         head.push("\r\n")
-        let send_body = has_body && !head_only && size > 0
+        let send_body = has_body && !head_only && (size > 0 || streamed)
         conn.set_timeout(self.options.write_timeout)
         if !send_body {
             return conn.write(head.to_str())
+        }
+        if streamed {
+            return match response.body {
+                Stream(write, length) => self.stream_body(
+                    state,
+                    what,
+                    head.to_str(),
+                    write,
+                    length,
+                    chunked,
+                )
+                _ => ok(())
+            }
         }
         if size <= 65536 {
             return match response.body {
@@ -2194,11 +2294,61 @@ impl Server {
         return ok(())
     }
 
+    /// Sends the head of a streamed response and then runs its closure, which writes the body.
+    /// It ends with the final chunk when the framing is chunked. The head is out when the
+    /// closure starts, so a failure of the closure cannot change the status: the connection is
+    /// closed without the final chunk, and the peer sees a body that was cut (RFC 9112 8). An
+    /// error of the peer is not logged (browsers leave); one of the closure is.
+    fn stream_body(
+        self,
+        state: ConnState,
+        what: str,
+        head: str,
+        write: fn(BodyWriter) -> Result[()],
+        length: int?,
+        chunked: bool,
+    ) -> Result[()] {
+        let conn = state.conn
+        let timeout = self.options.write_timeout
+        conn.set_timeout(timeout)
+        conn.write(head)?
+        let send = fn(data: Bytes) -> Result[()] {
+            conn.set_timeout(timeout)
+            return conn.write_bytes(data)
+        }
+        let writer = BodyWriter { send: send, chunked: chunked, length: length, co: state.co }
+        let outcome = write(writer)
+        if let some(e) = writer.failed {
+            if writer.over {
+                self.log("{what}: {e}")
+            }
+            return err(e)
+        }
+        if let err(e) = outcome {
+            self.log("{what}: the stream failed: {e}")
+            return err(e)
+        }
+        if let some(n) = length {
+            if writer.written != n {
+                self.log("{what}: the stream ended after {writer.written} of {n} bytes")
+                return err(error("httpd: the stream is shorter than its length"))
+            }
+        }
+        if chunked {
+            conn.set_timeout(timeout)
+            return conn.write("0\r\n\r\n")
+        }
+        return ok(())
+    }
+
     /// Answers with an error the server found in the request and ends the connection (the
     /// lingering close of 3.10 follows in the caller's return).
-    fn refuse(self, conn: net.Conn, why: Reject, head_only: bool) {
+    fn refuse(self, state: ConnState, why: Reject, head_only: bool) {
+        let conn = state.conn
         let sent = self.write_response(
-            conn,
+            state,
+            "",
+            "HTTP/1.1",
             error_response(why.status, why.why),
             head_only,
             true,
@@ -2382,13 +2532,13 @@ impl Server {
                 Text(t) => t
                 Gone    => return
                 Refuse(r) => {
-                    self.refuse(conn, r, parser.method == "HEAD")
+                    self.refuse(state, r, parser.method == "HEAD")
                     return
                 }
             }
             state.phase = .Head
             parser.request_line(first_line) or |r| {
-                self.refuse(conn, r, parser.method == "HEAD")
+                self.refuse(state, r, parser.method == "HEAD")
                 return
             }
             // The rest of the head has `header_timeout` for each line, and the whole of it is
@@ -2403,13 +2553,13 @@ impl Server {
                 match line {
                     Text(t) => {
                         ended = parser.field_line(t) or |r| {
-                            self.refuse(conn, r, parser.method == "HEAD")
+                            self.refuse(state, r, parser.method == "HEAD")
                             return
                         }
                     }
                     Gone => return
                     Refuse(r) => {
-                        self.refuse(conn, r, parser.method == "HEAD")
+                        self.refuse(state, r, parser.method == "HEAD")
                         return
                     }
                 }
@@ -2417,7 +2567,7 @@ impl Server {
                     && o.header_timeout > 0.0
                     && time.now() - head_started > o.header_timeout {
                     self.refuse(
-                        conn,
+                        state,
                         reject(408, "the request head did not arrive in time"),
                         parser.method == "HEAD",
                     )
@@ -2425,7 +2575,7 @@ impl Server {
                 }
             }
             let head = parser.finish() or |r| {
-                self.refuse(conn, r, parser.method == "HEAD")
+                self.refuse(state, r, parser.method == "HEAD")
                 return
             }
             state.phase = .Handler
@@ -2438,6 +2588,15 @@ impl Server {
             var closing = !head.keep_alive || self.stopping
             if response.headers.get("connection") != none {
                 closing = true
+            }
+            // The end of a stream with no length, in HTTP/1.0, is the close.
+            if head.version == "HTTP/1.0" && !bodyless(response.status) {
+                match response.body {
+                    Stream(_, length) => if length == none {
+                        closing = true
+                    }
+                    _ => {}
+                }
             }
             var drain = 0
             if head.expect_continue && !reader.started {
@@ -2456,7 +2615,9 @@ impl Server {
             }
             let keep_alive_word = !closing && head.version == "HTTP/1.0"
             let sent = self.write_response(
-                conn,
+                state,
+                "{request.method} {request.target}",
+                head.version,
                 response,
                 head.method == "HEAD",
                 closing,

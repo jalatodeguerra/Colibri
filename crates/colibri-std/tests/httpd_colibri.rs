@@ -171,6 +171,7 @@ suite!(
     router,
     response,
     body,
+    stream,
     writer,
     options,
 );

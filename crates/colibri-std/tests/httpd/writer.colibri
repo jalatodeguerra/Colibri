@@ -77,11 +77,14 @@ test "Connection can only be close" {
     assert(faulty(httpd_impl.text(200, "x").header("Connection", "upgrade")))
 }
 
-test "a streamed body is refused until streams are served" {
-    let r = httpd_impl.stream(200, "text/plain", fn(w: httpd_impl.BodyWriter) -> Result[()] {
+test "a streamed body is fine, with no length or a length of 0 or more, but not a negative one" {
+    let body = fn(w: httpd_impl.BodyWriter) -> Result[()] {
         return ok(())
-    })
-    assert(faulty(r))
+    }
+    assert(!faulty(httpd_impl.stream(200, "text/plain", body)))
+    assert(!faulty(httpd_impl.stream(200, "text/plain", body, length: some(0))))
+    assert(!faulty(httpd_impl.stream(200, "text/plain", body, length: some(10))))
+    assert(faulty(httpd_impl.stream(200, "text/plain", body, length: some(-1))))
 }
 
 test "a response of 1xx, 204 or 304 has no body" {

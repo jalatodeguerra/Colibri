@@ -100,6 +100,85 @@ fn app(r: httpd.Request, seen: Seen, server: httpd.Server) -> Result[httpd.Respo
             }
         }
     }
+    if r.path == "/stream" {
+        return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
+            seen.items.push("stream ran")
+            w.write_str("one\n")?
+            w.write_str("two\n")?
+            w.write_str("three\n")?
+            return ok(())
+        }))
+    }
+    if r.path == "/stream_len" {
+        return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
+            seen.items.push("stream ran")
+            w.write_str("one\n")?
+            w.write_str("two\n")?
+            w.write_str("three\n")?
+            return ok(())
+        }, length: some(14)))
+    }
+    if r.path == "/stream_short" {
+        return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
+            w.write_str("abc")?
+            return ok(())
+        }, length: some(20)))
+    }
+    if r.path == "/stream_over" {
+        return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
+            w.write_str("abc")?
+            let r = w.write_str("defg")
+            if r.is_err() {
+                seen.items.push("past length")
+            }
+            return r
+        }, length: some(5)))
+    }
+    if r.path == "/stream_fail" {
+        return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
+            w.write_str("one\n")?
+            return err(error("stream boom"))
+        }))
+    }
+    if r.path == "/stream_big" {
+        return ok(httpd.stream(200, "application/octet-stream", fn(w: httpd.BodyWriter) -> Result[()] {
+            return w.write(str.repeat("0123456789abcdef", 65536).to_bytes())
+        }))
+    }
+    if r.path == "/stream_empty" {
+        return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
+            w.write_str("")?
+            w.write_str("x")?
+            w.write(Bytes())?
+            return ok(())
+        }))
+    }
+    if r.path == "/stream_panic" {
+        return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
+            w.write_str("x")?
+            let small = [1]
+            seen.items.push("{small[5]}")
+            return ok(())
+        }))
+    }
+    if r.path == "/endless" {
+        return ok(httpd.stream(200, "application/octet-stream", fn(w: httpd.BodyWriter) -> Result[()] {
+            defer {
+                seen.items.push("deferred")
+            }
+            let piece = str.repeat("0123456789abcdef", 4096).to_bytes()
+            for i in 0..800 {
+                let r = w.write(piece)
+                if r.is_err() {
+                    seen.items.push("write failed")
+                    let _ = w.write(piece)
+                    seen.items.push("not cancelled")
+                    return ok(())
+                }
+            }
+            return ok(())
+        }))
+    }
     if r.path == "/sum" {
         let b = r.body()?
         return ok(httpd.text(200, "{b.len()} {hash.sha256_hex(b)}\n"))
@@ -1306,6 +1385,184 @@ fn expect_100_continue_with_a_chunked_body_is_sent_when_the_handler_reads() {
     w2.expect_closed();
     drop(w);
     server.finish();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Streamed response bodies
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_stream_without_a_length_is_chunked_and_ends_with_a_bare_last_chunk() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    let r = w.call(get("/stream"));
+    assert_eq!(r.status, 200);
+    assert_eq!(r.text(), "one\ntwo\nthree\n");
+    assert_eq!(r.header("transfer-encoding"), Some("chunked"));
+    assert_eq!(r.header("content-length"), None);
+    assert_eq!(r.chunk_sizes, [4, 4, 6]);
+    assert_eq!(r.trailer_lines, 0);
+    assert!(!r.says_close());
+    // The connection is kept, and the framing was exact: the next response parses.
+    assert_eq!(w.call(get("/")).text(), "hello\n");
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn a_stream_with_a_length_has_content_length_and_no_chunks() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    let r = w.call(get("/stream_len"));
+    assert_eq!(r.text(), "one\ntwo\nthree\n");
+    assert_eq!(r.header("content-length"), Some("14"));
+    assert_eq!(r.header("transfer-encoding"), None);
+    assert_eq!(r.chunk_sizes, Vec::<usize>::new());
+    assert_eq!(w.call(get("/")).text(), "hello\n");
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn a_large_write_goes_out_in_chunks_of_at_most_256_kib_and_an_empty_one_not_at_all() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    let r = w.call(get("/stream_big"));
+    assert_eq!(r.body.len(), 1 << 20);
+    assert_eq!(r.chunk_sizes, [262144; 4]);
+    let r = w.call(get("/stream_empty"));
+    assert_eq!(r.text(), "x");
+    assert_eq!(r.chunk_sizes, [1]);
+    assert_eq!(w.call(get("/")).text(), "hello\n");
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn a_stream_for_an_http_1_0_request_is_close_delimited() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    w.send("GET /stream HTTP/1.0\r\n\r\n");
+    let r = w.read();
+    assert_eq!(r.status, 200);
+    assert_eq!(r.text(), "one\ntwo\nthree\n");
+    assert!(r.until_close, "{r:?}");
+    assert!(r.says_close());
+    assert_eq!(r.header("transfer-encoding"), None);
+    assert_eq!(r.header("content-length"), None);
+    // Asking to keep the connection alive changes nothing for a stream with no length.
+    let mut w = server.connect();
+    w.send("GET /stream HTTP/1.0\r\nConnection: keep-alive\r\n\r\n");
+    let r = w.read();
+    assert!(r.until_close && r.says_close(), "{r:?}");
+    assert_eq!(r.text(), "one\ntwo\nthree\n");
+    // With a length it can be kept.
+    let mut w = server.connect();
+    w.send("GET /stream_len HTTP/1.0\r\nConnection: keep-alive\r\n\r\n");
+    let r = w.read();
+    assert_eq!(r.header("connection"), Some("keep-alive"));
+    assert_eq!(r.text(), "one\ntwo\nthree\n");
+    assert_eq!(w.call(get("/")).text(), "hello\n");
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn head_of_a_stream_never_runs_the_closure_and_sends_the_length_only_when_it_is_known() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    let mut data = request("HEAD", "/stream", &[], b"");
+    data.extend(request("HEAD", "/stream_len", &[], b""));
+    data.extend(get("/"));
+    w.send(&data);
+    let h = w.read_head();
+    assert_eq!(h.status, 200);
+    assert_eq!(h.header("content-length"), None);
+    assert_eq!(h.header("transfer-encoding"), None);
+    let h = w.read_head();
+    assert_eq!(h.header("content-length"), Some("14"));
+    assert_eq!(w.read().text(), "hello\n");
+    drop(w);
+    assert_eq!(
+        server.finish().seen,
+        ["HEAD /stream", "HEAD /stream_len", "GET /"]
+    );
+}
+
+#[test]
+fn a_stream_that_ends_short_of_its_length_or_goes_past_it_or_fails_cuts_the_connection() {
+    let server = Server::app("httpd.Options { log_errors: false }");
+    // Short: the head promised 20 bytes, 3 came, and the end is a close, not a wait.
+    let mut w = server.connect();
+    w.send(get("/stream_short"));
+    assert!(matches!(w.read_within(EVENT, false), Read1::Closed));
+    // Past the length: the closure got the error, and at most 5 bytes of body were sent.
+    let mut w = server.connect();
+    w.send(get("/stream_over"));
+    assert!(matches!(w.read_within(EVENT, false), Read1::Closed));
+    // An error of the closure after the head: the status stays 200, and the body is cut, with
+    // no last chunk to make it look whole.
+    let mut w = server.connect();
+    w.send(get("/stream_fail"));
+    assert!(matches!(w.read_within(EVENT, false), Read1::Closed));
+    let seen = server.finish().seen;
+    assert_eq!(
+        seen,
+        [
+            "GET /stream_short",
+            "GET /stream_over",
+            "past length",
+            "GET /stream_fail"
+        ]
+    );
+}
+
+#[test]
+fn a_client_that_leaves_during_a_stream_gets_the_closure_an_error_and_a_closure_that_goes_on_is_cancelled()
+ {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    w.send(get("/endless"));
+    // Some of the body arrives, so the stream is running; then the client resets.
+    let mut got = 0;
+    while got < 100_000 {
+        got += w.read_some(EVENT).len();
+    }
+    w.reset();
+    server.wait_seen(3);
+    let outcome = server.finish();
+    // The closure saw the error, its next write was the one that was cancelled (nothing after
+    // it ran, and its defer did), and the server went on to stop normally.
+    assert_eq!(outcome.seen, ["GET /endless", "write failed", "deferred"]);
+}
+
+#[test]
+fn a_client_that_never_reads_a_stream_is_cut_off_by_the_write_timeout() {
+    let server = Server::app("httpd.Options { write_timeout: 0.5 }");
+    let mut w = server.connect();
+    w.send(get("/endless"));
+    // Never read: the buffers fill, a write times out, and the connection goes.
+    server.wait_connections_at_most(1);
+    let outcome = {
+        drop(w);
+        server.finish()
+    };
+    assert_eq!(outcome.seen, ["GET /endless", "write failed", "deferred"]);
+}
+
+#[test]
+fn a_panic_in_a_stream_closure_cuts_that_connection_and_the_server_goes_on() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    w.send(get("/stream_panic"));
+    // The head and the first chunk may arrive; the response is never completed.
+    assert!(matches!(w.read_within(EVENT, false), Read1::Closed));
+    // Another connection is served as before.
+    let mut other = server.connect();
+    assert_eq!(other.call(get("/")).text(), "hello\n");
+    // How the panic is reported (a 500 for a handler, a log line) is for step 7, with
+    // `join_result`: here it is only that the connection is cut and the run goes on and ends.
+    assert_eq!(server.finish().seen, ["GET /stream_panic", "GET /"]);
 }
 
 // ---------------------------------------------------------------------------------------------

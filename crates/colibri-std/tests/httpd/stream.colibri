@@ -1,0 +1,164 @@
+import common
+import httpd_impl
+
+/// A sink for a `BodyWriter`: what was sent, piece by piece, and the call after which it fails
+/// (0 never).
+class Sink {
+    pieces: List[Bytes] = []
+    fail_at: int = 0
+}
+
+fn writer_over(sink: Sink, chunked: bool, length: int?) -> httpd_impl.BodyWriter {
+    let send = fn(data: Bytes) -> Result[()] {
+        sink.pieces.push(data)
+        if sink.fail_at > 0 && sink.pieces.len() >= sink.fail_at {
+            return err(error("the peer is gone"))
+        }
+        return ok(())
+    }
+    return httpd_impl.BodyWriter { send: send, chunked: chunked, length: length, co: none }
+}
+
+fn sent(sink: Sink) -> str {
+    let out = BytesBuilder()
+    for p in sink.pieces {
+        out.push_bytes(p)
+    }
+    return out.to_bytes().to_str().expect("text")
+}
+
+fn repeat(s: str, n: int) -> Bytes {
+    let out = BytesBuilder()
+    for i in 0..n {
+        out.push_str(s)
+    }
+    return out.to_bytes()
+}
+
+fn is_ok(r: Result[()]) -> bool {
+    return match r {
+        ok(_) => true
+        err(_) => false
+    }
+}
+
+test "a chunked write is one chunk in one piece: size line, data, CRLF" {
+    let sink = Sink {}
+    let w = writer_over(sink, true, none)
+    assert(is_ok(w.write_str("hello")))
+    assert_eq(sink.pieces.len(), 1)
+    assert_eq(sent(sink), "5\r\nhello\r\n")
+    assert(is_ok(w.write_str("0123456789abcdef")))
+    assert_eq(sink.pieces.len(), 2)
+    assert_eq(sent(sink), "5\r\nhello\r\n10\r\n0123456789abcdef\r\n")
+    assert_eq(w.written, 21)
+}
+
+test "the chunk size is in lower-case hex, with no leading zeros" {
+    let sink = Sink {}
+    let w = writer_over(sink, true, none)
+    assert(is_ok(w.write(repeat("x", 10))))
+    assert(is_ok(w.write(repeat("y", 255))))
+    assert_eq(sink.pieces[0].to_str().expect("text").starts_with("a\r\n"), true)
+    assert_eq(sink.pieces[1].to_str().expect("text").starts_with("ff\r\n"), true)
+}
+
+test "an empty write sends nothing, since an empty chunk would end the body" {
+    let sink = Sink {}
+    let w = writer_over(sink, true, none)
+    assert(is_ok(w.write(Bytes())))
+    assert(is_ok(w.write_str("")))
+    assert_eq(sink.pieces.len(), 0)
+    assert_eq(w.written, 0)
+}
+
+test "without chunking the bytes go as they are" {
+    let sink = Sink {}
+    let w = writer_over(sink, false, none)
+    assert(is_ok(w.write_str("hello")))
+    assert(is_ok(w.write_str(" world")))
+    assert_eq(sent(sink), "hello world")
+}
+
+test "a large write is split in pieces of 256 KiB, each one chunk" {
+    let sink = Sink {}
+    let w = writer_over(sink, true, none)
+    assert(is_ok(w.write(repeat("0123456789", 60000))))
+    assert_eq(sink.pieces.len(), 3)
+    assert_eq(sink.pieces[0].len(), 262144 + "40000\r\n".len() + 2)
+    assert_eq(sink.pieces[1].len(), 262144 + "40000\r\n".len() + 2)
+    assert_eq(w.written, 600000)
+    let plain = Sink {}
+    let p = writer_over(plain, false, none)
+    assert(is_ok(p.write(repeat("0123456789", 60000))))
+    assert_eq(plain.pieces.len(), 3)
+    assert_eq(plain.pieces[0].len(), 262144)
+    assert_eq(plain.pieces[2].len(), 600000 - 2 * 262144)
+}
+
+test "a write past the length of the response is refused, and nothing of it is sent" {
+    let sink = Sink {}
+    let w = writer_over(sink, false, some(8))
+    assert(is_ok(w.write_str("12345")))
+    assert(!is_ok(w.write_str("6789")))
+    assert_eq(sent(sink), "12345")
+    assert_eq(w.over, true)
+    assert_eq(w.written, 5)
+}
+
+test "a write up to exactly the length is fine" {
+    let sink = Sink {}
+    let w = writer_over(sink, false, some(8))
+    assert(is_ok(w.write_str("12345")))
+    assert(is_ok(w.write_str("678")))
+    assert_eq(w.written, 8)
+    assert_eq(w.over, false)
+}
+
+test "a failed write is the error of the writer, which sends nothing more" {
+    let sink = Sink { fail_at: 2 }
+    let w = writer_over(sink, true, none)
+    assert(is_ok(w.write_str("a")))
+    assert(!is_ok(w.write_str("b")))
+    assert(w.failed.is_some())
+    assert_eq(w.over, false)
+    let before = sink.pieces.len()
+    assert(!is_ok(w.write_str("c")))
+    assert(!is_ok(w.write(Bytes())))
+    assert_eq(sink.pieces.len(), before)
+}
+
+class Spin {
+    co: Coroutine[()]? = none
+    writes: int = 0
+    deferred: bool = false
+    reached_end: bool = false
+}
+
+fn spin(w: httpd_impl.BodyWriter, state: Spin) {
+    defer {
+        state.deferred = true
+    }
+    // The handle is given after this first pause.
+    wait(0.0)
+    for i in 0..50 {
+        state.writes += 1
+        let _ = w.write_str("x")
+    }
+    state.reached_end = true
+}
+
+test "a closure that writes again after an error is cancelled at that write, and its defers run" {
+    let sink = Sink { fail_at: 2 }
+    let w = writer_over(sink, true, none)
+    let state = Spin {}
+    let co = go spin(w, state)
+    w.co = some(co)
+    // The coroutine runs in the scheduler's ticks, which `wait` on the main fiber drives.
+    wait(0.01)
+    assert_eq(co.done(), true)
+    // Writes 1 and 2 are made, the second fails, the third is the one that is cancelled.
+    assert_eq(state.writes, 3)
+    assert_eq(state.deferred, true)
+    assert_eq(state.reached_end, false)
+}
