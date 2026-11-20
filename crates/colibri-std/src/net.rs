@@ -184,6 +184,10 @@ mod poll;
 /// The longest line `read_line` accepts, without its end of line.
 pub(crate) const MAX_LINE: usize = 1 << 20;
 
+/// The longest delimiter `read_until` takes: the check for a delimiter that straddles the limit
+/// costs the square of its length, and no protocol has one near this size.
+const MAX_DELIM: usize = 1024;
+
 /// The most bytes one `read_exact` buffers.
 const MAX_EXACT: usize = 1 << 30;
 
@@ -2387,9 +2391,23 @@ fn too_long(peer: &str, limit: usize) -> TypedError {
     ))
 }
 
+/// How much a read for a line or a delimited piece asks for: no more than can still matter, so
+/// that a peer cannot make a call buffer more than the limit and the end of the line (or the
+/// delimiter) before it fails. `room` is that many bytes less what is pending. From the size of
+/// an ordinary read up it is 0 ("unknown": the usual read of `READ_UNKNOWN` bytes), so a limit of
+/// a mebibyte reads as before until it is nearly reached; below that it is the exact number
+/// (at least 1).
+fn want_within(room: usize) -> usize {
+    if room >= READ_UNKNOWN { 0 } else { room.max(1) }
+}
+
 fn line_probe(r: &mut Reader, peer: &str, limit: usize) -> Probe {
     match find_line(r, peer, limit) {
-        Ok(Line::More) => Probe::Pending(0),
+        // A line of `limit` bytes with `\r\n` is the longest that can still be taken: with two
+        // bytes more and no end the call fails.
+        Ok(Line::More) => {
+            Probe::Pending(want_within((limit + 2).saturating_sub(r.available().len())))
+        }
         Ok(_) => Probe::Ready,
         Err(e) => Probe::Failed(e),
     }
@@ -2484,7 +2502,10 @@ fn too_long_until(peer: &str, max: usize) -> TypedError {
 
 fn delim_probe(r: &mut Reader, delim: &[u8], max: usize, peer: &str) -> Probe {
     match find_delim(r, delim, max, peer) {
-        Ok(Found::More) => Probe::Pending(0),
+        // `max + delim.len()` pending bytes without a delimiter are too long whatever follows.
+        Ok(Found::More) => Probe::Pending(want_within(
+            (max + delim.len()).saturating_sub(r.available().len()),
+        )),
         Ok(Found::Tail(have)) => Probe::Failed(Kind::UnexpectedEnd.error(format!(
             "cannot read from `{peer}`: the stream ended after {have} bytes without the delimiter ({})",
             if have == 1 {
@@ -2603,6 +2624,13 @@ impl HostType for Conn {
                     return Err(Kind::Other.error(format!(
                         "cannot read from `{}`: the delimiter is empty (give at least one byte)",
                         this.sh.peer
+                    )));
+                }
+                if delim.0.len() > MAX_DELIM {
+                    return Err(Kind::Other.error(format!(
+                        "cannot read from `{}`: the delimiter has {} bytes, and at most {MAX_DELIM} are allowed",
+                        this.sh.peer,
+                        delim.0.len()
                     )));
                 }
                 let max = match usize::try_from(max) {
@@ -4672,7 +4700,9 @@ mod tests {
     }
 
     /// The deadline of a call counts from the call and the call ends with `Timeout`, with the
-    /// half match still readable.
+    /// half match still readable. The bytes are in the buffer before the call that times out is
+    /// made (a call without a deadline waits for all five and takes the first), so the result
+    /// does not depend on how fast the system delivers them; only the deadline has to pass.
     #[test]
     fn a_read_until_that_times_out_keeps_the_bytes() {
         let (c, mut peer) = conn_pair();
@@ -4680,6 +4710,20 @@ mod tests {
         peer.write_all(b"half\r").unwrap();
         let shared = Arc::clone(&sh);
         let failed = with_cx(move |cx| {
+            let ticket = shared.reads.ticket();
+            let first = shared
+                .read_call(
+                    cx,
+                    ticket,
+                    Limit::NONE,
+                    |r| match r.available().len() {
+                        5.. => Probe::Ready,
+                        have => Probe::Pending(5 - have),
+                    },
+                    |r| Ok(r.take(1)),
+                )
+                .unwrap();
+            assert_eq!(first, b"h");
             let limit = Limit {
                 deadline: Some(Instant::now() + Duration::from_millis(150)),
                 timeout: Duration::from_millis(150),
@@ -4689,7 +4733,7 @@ mod tests {
                 .map_err(|e| variant(&e))
         });
         assert_eq!(failed, Err("Timeout".to_string()));
-        assert_eq!(sh.reader.lock().unwrap().available(), b"half\r");
+        assert_eq!(sh.reader.lock().unwrap().available(), b"alf\r");
     }
 
     /// A wake that said "ready" is owed its try for a `read_until` as for a `read_line` (see
@@ -4722,6 +4766,158 @@ mod tests {
                 .map_err(|e| variant(&e))
         });
         assert_eq!(result, Ok(Some(b"line".to_vec())));
+    }
+
+    /// A source that has endless bytes and records how much room each read was given.
+    struct Endless(Vec<usize>);
+
+    // SAFETY: writes the whole room before it returns its length.
+    unsafe impl Recv for Endless {
+        fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
+            self.0.push(buf.len());
+            for b in &mut buf[..] {
+                b.write(b'x');
+            }
+            Ok(buf.len())
+        }
+    }
+
+    /// Reads from an endless source until `probe` stops asking for more; gives its answer, the
+    /// bytes held then, and the sizes of the reads.
+    fn read_until_done(
+        r: &mut Reader,
+        probe: impl Fn(&mut Reader) -> Probe,
+    ) -> (Result<(), String>, usize, Vec<usize>) {
+        let mut src = Endless(Vec::new());
+        let answer = loop {
+            match probe(r) {
+                Probe::Pending(want) => {
+                    r.read_from(&mut src, want).unwrap().unwrap();
+                }
+                Probe::Ready => break Ok(()),
+                Probe::Failed(e) => break Err(variant(&e)),
+            }
+        };
+        (answer, r.available().len(), src.0)
+    }
+
+    /// A call that fails with `LineTooLong` holds no more than the limit and the end of the line
+    /// (`read_line`: the limit and `\r\n`) or the delimiter (`read_until`: `max` and its length):
+    /// the read that would pass it is not asked for. The reads are never bigger than the usual
+    /// 32 KiB, and the first one at a limit of a mebibyte still is one (the size of a read does not
+    /// change for the default).
+    #[test]
+    fn a_call_that_fails_as_too_long_holds_no_more_than_its_limit_and_the_end() {
+        for (max, delim) in [
+            (0, &b"\n"[..]),
+            (4096, b"\r\n"),
+            (16, b"--=="),
+            (40_000, b"\r\n"),
+            (100_000, b"\0"),
+        ] {
+            let mut r = reader(b"", false);
+            let (answer, held, reads) =
+                read_until_done(&mut r, |r| delim_probe(r, delim, max, "p"));
+            assert_eq!(answer, Err("LineTooLong".to_string()), "{max}");
+            assert_eq!(held, max + delim.len(), "max {max}: the bytes held");
+            assert!(reads.iter().all(|&n| n <= READ_UNKNOWN), "{reads:?}");
+            assert_eq!(reads[0], (max + delim.len()).min(READ_UNKNOWN));
+        }
+        for limit in [1, 16, 4096, MAX_LINE] {
+            let mut r = reader(b"", false);
+            let (answer, held, reads) = read_until_done(&mut r, |r| line_probe(r, "p", limit));
+            assert_eq!(answer, Err("LineTooLong".to_string()), "{limit}");
+            assert_eq!(held, limit + 2, "limit {limit}: the bytes held");
+            assert!(reads.iter().all(|&n| n <= READ_UNKNOWN), "{reads:?}");
+            assert_eq!(reads[0], (limit + 2).min(READ_UNKNOWN));
+        }
+        // With bytes already buffered the next read asks for what is left to the bound.
+        let mut r = reader(&[b'x'; 10], false);
+        let (answer, held, reads) = read_until_done(&mut r, |r| delim_probe(r, b"\r\n", 16, "p"));
+        assert_eq!((answer, held), (Err("LineTooLong".to_string()), 18));
+        assert_eq!(reads, [8]);
+    }
+
+    /// The same through the socket: a peer that sends 64,000 bytes with no delimiter makes
+    /// `read_until(.., 4096)` fail with at most 4098 bytes read, and a `read_line` at a limit of 100
+    /// with at most 102 (the rest is still in the system).
+    #[test]
+    fn a_peer_that_sends_too_much_is_not_read_past_the_bound() {
+        for (until, bound) in [(true, 4098), (false, 102)] {
+            let (c, mut peer) = conn_pair();
+            peer.write_all(&[b'x'; 64_000]).unwrap();
+            let sh = Arc::clone(&c.sh);
+            let shared = Arc::clone(&sh);
+            let error = with_cx(move |cx| {
+                if until {
+                    until_call(cx, &shared, b"\r\n", 4096, Limit::NONE)
+                        .map(|_| ())
+                        .map_err(|e| variant(&e))
+                } else {
+                    let ticket = shared.reads.ticket();
+                    shared
+                        .read_call(
+                            cx,
+                            ticket,
+                            Limit::NONE,
+                            |r| line_probe(r, "p", 100),
+                            |r| take_line(r, "p", 100),
+                        )
+                        .map(|_| ())
+                        .map_err(|e| variant(&e))
+                }
+            });
+            assert_eq!(error, Err("LineTooLong".to_string()));
+            let held = sh.reader.lock().unwrap().available().len();
+            assert!(held <= bound, "until {until}: {held} bytes held");
+        }
+    }
+
+    /// `close` of a connection that a `read_until` waits on ends it with `Closed` and releases
+    /// the descriptor by the time `close` returns, as it does for a `read_line`; also with half a
+    /// match buffered (what is buffered of a closed connection is for no one).
+    #[test]
+    fn close_releases_the_socket_of_a_connection_that_a_read_until_waits_on() {
+        for partial in [false, true] {
+            for _ in 0..10 {
+                let (c, mut peer) = conn_pair();
+                if partial {
+                    peer.write_all(b"ab\r").unwrap();
+                }
+                let sh = Arc::clone(&c.sh);
+                let weak = Arc::downgrade(&sh.sock.get().expect("open"));
+                let (error, released) = with_cx(move |cx| {
+                    let poller = cx
+                        .state_mut::<poll::NetState>()
+                        .unwrap()
+                        .poller()
+                        .expect("the poller starts");
+                    let closer = {
+                        let sh = Arc::clone(&sh);
+                        std::thread::spawn(move || {
+                            // Waiting: armed, and the connection's and the poller's references
+                            // are the two left (see the `read_line` test).
+                            let began = Instant::now();
+                            while poller.counts() != (1, 1) || weak.strong_count() != 2 {
+                                assert!(
+                                    began.elapsed() < Duration::from_secs(30),
+                                    "the read never waited"
+                                );
+                                std::thread::yield_now();
+                            }
+                            sh.close();
+                            weak.strong_count() == 0
+                        })
+                    };
+                    let error = until_call(cx, &sh, b"\r\n", 100, Limit::NONE)
+                        .map(|_| ())
+                        .map_err(|e| variant(&e));
+                    (error, closer.join().unwrap())
+                });
+                assert_eq!(error, Err("Closed".to_string()), "partial {partial}");
+                assert!(released, "the socket was still held when close returned");
+            }
+        }
     }
 
     /// A wait that ends because the poller stopped (or broke) is an error of `net` that says so,

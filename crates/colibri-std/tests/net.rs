@@ -4033,3 +4033,40 @@ fn main() -> Result[()] {{
     assert_eq!(out, "true\n");
     assert_eq!(peer.join().unwrap(), LINES * 3);
 }
+
+/// A delimiter of 1,024 bytes is taken (and found when it is there); one of 1,025 is a
+/// `net.Error.Other` with words of Colibri's own, and nothing is taken from the stream.
+#[test]
+fn a_delimiter_of_a_thousand_and_twenty_four_bytes_is_the_longest() {
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        let mut piece = b"head".to_vec();
+        piece.extend_from_slice(&[b'z'; 1024]);
+        piece.extend_from_slice(b"tail");
+        s.write_all(&piece).unwrap();
+        s.shutdown(std::net::Shutdown::Write).unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output(&format!(
+        r#"import net
+import str
+{SHOW}
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let longest = str.repeat("z", 1024).to_bytes()
+    let too_long = str.repeat("z", 1025).to_bytes()
+    let refused = c.read_until(too_long, 64)
+    print(show(refused))
+    print(refused.err().expect("an error").message().contains("at most 1024"))
+    print(c.read_until(longest, 64)?.expect("a piece").len())
+    print(c.read(10)?.len())
+    c.close()
+    return ok(())
+}}
+"#
+    ));
+    peer.join().unwrap();
+    assert_eq!(out, "Other\ntrue\n4\n4\n");
+}
