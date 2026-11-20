@@ -136,7 +136,7 @@ impl IterObj {
     /// The next item, or what is needed to find it.
     pub fn step(&self) -> Step {
         let mut state = self.state.borrow_mut();
-        let step = match &mut *state {
+        match &mut *state {
             State::List { list, pos, .. } => match list.at(*pos) {
                 Some(v) => {
                     *pos += 1;
@@ -195,12 +195,7 @@ impl IterObj {
                 return Step::Inner(taken, *index);
             }
             State::Done => Step::End,
-        };
-        if matches!(step, Step::End) {
-            // Out of items: let go of the collection's guard for good.
-            *state = State::Done;
         }
-        step
     }
 
     /// Puts an enumerating iterator's inner iterator back after a step; `produced` says
@@ -306,7 +301,12 @@ pub trait IterOps: Engine {
     ) -> Eval<Option<Value>> {
         match obj.step() {
             Step::Item(v) => Ok(Some(v)),
-            Step::End => Ok(None),
+            Step::End => {
+                // Out of items: the collection (and its guard) is let go of for good, and
+                // released here, since it may be the last reference to class objects.
+                self.release_all(obj.take_inner());
+                Ok(None)
+            }
             Step::Inner(mut inner, index) => {
                 // The inner iterator is out of its object while user code may run: a twin on
                 // the temporaries keeps it alive on every path.
