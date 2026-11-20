@@ -19,7 +19,9 @@ use std::rc::Rc;
 pub struct Library {
     name: String,
     inner: libloading::Library,
-    /// Whether this is the process itself rather than one library.
+    /// Whether this is the process itself rather than one library (only Windows asks: there
+    /// the handle of the program finds only what the program exports).
+    #[cfg(windows)]
     whole_process: bool,
 }
 
@@ -47,11 +49,6 @@ impl Library {
             "the library `{}` has no symbol `{symbol}`",
             self.name
         ))
-    }
-
-    /// Whether this is the process itself (every loaded library) rather than one library.
-    pub fn is_whole_process(&self) -> bool {
-        self.whole_process
     }
 }
 
@@ -82,8 +79,14 @@ mod loaded {
         if module.is_null() {
             return None;
         }
-        // SAFETY: `module` is a handle the system just gave for a loaded module and `name`
-        // is a NUL-terminated string; a handle gone stale in between makes the call fail.
+        // SAFETY: `name` is a NUL-terminated string. `module` is not checked: Windows does not
+        // promise that a handle to an unloaded module fails cleanly. What this relies on is that
+        // `module` came from the list of modules loaded in this process a moment ago (or from
+        // `GetModuleHandleA`, which does not count a reference) and that nothing unloads a
+        // module while the lookup runs: this crate only unloads a library when its `Library` is
+        // dropped, and that is not during a lookup. Another thread of the program calling
+        // `FreeLibrary` on that very module in that moment would make the call undefined, and
+        // nothing here prevents it.
         let address = unsafe { GetProcAddress(module, name.as_ptr()) };
         (!address.is_null()).then_some(address)
     }
@@ -167,6 +170,7 @@ fn process() -> Result<Library, String> {
     Ok(Library {
         name: "the running program".to_string(),
         inner,
+        #[cfg(windows)]
         whole_process: true,
     })
 }
@@ -186,6 +190,7 @@ fn open(name: &str) -> Result<Library, String> {
                 return Ok(Library {
                     name: name.to_string(),
                     inner,
+                    #[cfg(windows)]
                     whole_process: false,
                 });
             }
@@ -198,6 +203,7 @@ fn open(name: &str) -> Result<Library, String> {
         return Ok(Library {
             name: name.to_string(),
             inner: lib.inner,
+            #[cfg(windows)]
             whole_process: true,
         });
     }
