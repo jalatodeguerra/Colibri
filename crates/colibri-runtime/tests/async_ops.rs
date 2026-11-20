@@ -104,38 +104,71 @@ fn the_event_loop_sleeps_until_a_completion() {
     assert_eq!(vm.coroutine_resumptions() - before, 1);
 }
 
+/// While the main fiber waits for an operation, the loop keeps running the coroutines. The
+/// operation here ends when the ticker has ticked `want` times (or after a safety limit), and
+/// the ticker only runs if the wait drives the loop: so the test waits for a condition and
+/// does not depend on how precisely this machine's timers sleep (a macOS runner sleeps far
+/// longer than asked).
 #[test]
 fn on_the_main_fiber_the_wait_runs_the_loop() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
     let (mut vm, out) = vm();
+    let ticks = Arc::new(AtomicI64::new(0));
+    let counter = Arc::clone(&ticks);
+    vm.register_fn("ticked", move |_cx: &mut colibri::Ctx| -> i64 {
+        counter.fetch_add(1, Ordering::SeqCst) + 1
+    })
+    .unwrap();
+    // A monotonic clock for the script, in microseconds since the test began.
+    let began = Instant::now();
+    vm.register_fn("micros", move |_cx: &mut colibri::Ctx| -> i64 {
+        i64::try_from(began.elapsed().as_micros()).unwrap_or(i64::MAX)
+    })
+    .unwrap();
+    let watched = Arc::clone(&ticks);
+    vm.register_fn("until_ticks", move |cx: &mut colibri::Ctx, want: i64| {
+        let watched = Arc::clone(&watched);
+        cx.run_async(move || {
+            let limit = Instant::now() + Duration::from_secs(20);
+            while watched.load(Ordering::SeqCst) < want && Instant::now() < limit {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            watched.load(Ordering::SeqCst)
+        })
+    })
+    .unwrap();
     vm.load_source(
         "a.colibri",
         r#"
 fn ticker() {
-    for i in 0..100 {
-        wait(0.02)
-        print("tick")
+    for _ in 0..100000 {
+        let _ = ticked()
+        wait(0.001)
     }
 }
 fn main() {
     go ticker()
+    let seen = until_ticks(6)
+    print("seen {seen >= 6}")
     let v = slow(210, 3)
     print("got {v}")
-    wait(0.05)
-    print("after wait")
+    let before = ticked()
+    let started = micros()
+    wait(0.2)
+    let waited = micros() - started
+    let after = ticked()
+    print("kept going {after - before >= 3}")
+    // A lower bound only: a slow machine may wait longer, never less.
+    print("waited long enough {waited >= 200000}")
 }
 "#,
     )
     .unwrap();
     vm.run_main().unwrap();
-    let text = out.contents();
-    let ticks = text.matches("tick").count();
-    assert!(
-        (6..=14).contains(&ticks),
-        "ticker ran while main waited: {text}"
-    );
-    assert!(
-        text.contains("got 3\n") && text.contains("after wait\n"),
-        "{text}"
+    assert_eq!(
+        out.contents(),
+        "seen true\ngot 3\nkept going true\nwaited long enough true\n"
     );
     vm.cancel_coroutines();
 }

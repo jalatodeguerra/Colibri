@@ -231,6 +231,10 @@ impl SourceFs for RecordingFs<'_> {
     fn canonical(&self, path: &Path) -> PathBuf {
         self.inner.canonical(path)
     }
+
+    fn display_name(&self, path: &Path) -> String {
+        self.inner.display_name(path)
+    }
 }
 
 /// What makes two programs "the same declarations" for patching, in labelled parts, plus one

@@ -22,6 +22,7 @@ import http
 import io
 import json
 import os
+import path
 import process
 import str
 
@@ -75,7 +76,10 @@ fn resolve(index: str, item: str) -> str {
     if is_url(item) {
         return item
     }
-    var parts = index.split("/")
+    // A file named on the command line is spelled the system's way (`C:\data\index.json` on
+    // Windows); a URL already has `/`.
+    let location = if is_url(index) { index } else { path.from_native(index) }
+    var parts = location.split("/")
     parts.pop()
     if is_url(index) {
         return parts.join("/") + "/" + item

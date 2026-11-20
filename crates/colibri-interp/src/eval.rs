@@ -326,6 +326,8 @@ impl Interp {
         let outermost = self.begin_entry();
         if outermost {
             self.drain_root_drops();
+            // What the host compared before this entry is not this script's failure.
+            crate::compare::take_gave_up();
         }
         let result = f(self, fiber);
         fiber.frames.truncate(frames);
@@ -658,7 +660,12 @@ impl Interp {
             );
             return Err(self.panic(fiber, e.span, message));
         }
-        match &e.kind {
+        // A key lookup or a constant pattern of a statement gave up: stop before its stand-in
+        // answer is used.
+        if crate::compare::take_gave_up() {
+            return Err(self.gave_up(fiber, e.span, None));
+        }
+        let result = match &e.kind {
             ExprKind::Lit(lit) => Ok(literal(lit)),
             ExprKind::Read(place) => self.read_place(fiber, place, e.span),
             ExprKind::Unary(op, operand) => self.eval_unary(fiber, *op, operand, e.span),
@@ -738,7 +745,27 @@ impl Interp {
                 Ok(Value::range(start, end, *inclusive))
             }
             ExprKind::Error => Err(self.internal(fiber, e.span, "unchecked expression")),
+        };
+        // The same for this expression's own lookups: its value was computed from the stand-in.
+        if crate::compare::take_gave_up() {
+            return Err(self.gave_up(fiber, e.span, result.ok()));
         }
+        result
+    }
+
+    /// The panic for a comparison that had no way to report that it gave up (a `Map` or `Set`
+    /// key, a constant pattern); `computed` is the value that depended on its stand-in answer.
+    #[cold]
+    #[inline(never)]
+    fn gave_up(&mut self, fiber: &mut Fiber, span: Span, computed: Option<Value>) -> Ctl {
+        if let Some(value) = computed {
+            self.release(value);
+        }
+        self.panic(
+            fiber,
+            span,
+            "these values nest too deeply to compare".to_string(),
+        )
     }
 
     #[inline(never)]

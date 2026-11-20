@@ -1,0 +1,31 @@
+// only: windows - `process.shell` is `cmd /D /S /C "line"` there, and `%VAR%`, `&` and `|` mean what `cmd` says
+// caps: os
+// The line reaches `cmd` as typed: quotes are not turned into `\"`, `&` and `|` are `cmd`'s
+// operators, `%VAR%` is expanded. `cmd`'s `echo` prints the quotes it is given and the space
+// before an `&` (so the line below has none), and ends its lines with `\r\n`, so these goldens trim.
+import process
+import os
+
+fn show(line: str) {
+    let r = process.shell(line) or |e| { panic(e.message()) }
+    let text = r.stdout.trim().replace("\r\n", "|")
+    print("[{text}]")
+}
+
+fn main() {
+    show("echo \"a b\"")
+    show("echo one& echo two")
+    show("echo piped | findstr piped")
+    os.set_env("COLIBRI_SHELL", "x y")
+    show("echo \"%COLIBRI_SHELL%\"")
+    show("echo \"a & b\" | findstr \"&\"")
+    let bad = process.shell("exit 4") or |e| { panic(e.message()) }
+    print(bad.status)
+}
+
+// expect: ["a b"]
+// expect: [one|two]
+// expect: [piped]
+// expect: ["x y"]
+// expect: ["a & b"]
+// expect: 4

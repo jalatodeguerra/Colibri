@@ -7,7 +7,7 @@ exclude = ["examples/scripts"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/jalatodeguerra/leo"
+repository = "https://github.com/jalatodeguerra/Colibri"
 
 [profile.release]
 # Fat LTO and one codegen unit: a smaller, faster binary, for a longer release build.

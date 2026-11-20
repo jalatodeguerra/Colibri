@@ -31,6 +31,32 @@ fn compile_error(vm: &mut colibri::Vm, source: &str) -> String {
         .render(false)
 }
 
+/// A child that waits and then creates `marker`, as the program and the Colibri list literal of
+/// its arguments: `sh -c "sleep S; touch marker"` on Unix; on Windows `cmd` with `ping -n N
+/// 127.0.0.1` as the sleep (about N-1 seconds; `timeout` fails without a console), each word
+/// its own argument so that nothing depends on how `cmd` reads quotes.
+fn sleep_then_touch(unix_seconds: &str, pings: u32, marker: &std::path::Path) -> (String, String) {
+    let marker = colibri_text(&marker.to_string_lossy());
+    if cfg!(windows) {
+        (
+            "cmd".to_string(),
+            format!(
+                "[\"/C\", \"ping\", \"-n\", \"{pings}\", \"127.0.0.1\", \">nul\", \"&\", \"echo\", \"x\", \">\", \"{marker}\"]"
+            ),
+        )
+    } else {
+        (
+            "sh".to_string(),
+            format!("[\"-c\", \"sleep {unix_seconds}; touch {marker}\"]"),
+        )
+    }
+}
+
+/// Text for the inside of a Colibri string literal: `\` and `{` are special there.
+fn colibri_text(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('{', "\\{")
+}
+
 #[test]
 fn every_module_installs_and_is_listed() {
     let (vm, _) = vm(&[]);
@@ -609,6 +635,7 @@ fn the_local_time_zone_comes_from_the_config() {
     );
 }
 
+// Unix only: `sh`, `$VAR` and `pwd -P` (the folder with symlinks resolved); the same options are checked on every system by crates/colibri-cli/tests/process_options.rs and tests/golden/std/process_windows.colibri.
 #[cfg(unix)]
 #[test]
 fn a_child_gets_the_variables_the_script_set_and_its_own_folder() {
@@ -629,6 +656,7 @@ fn a_child_gets_the_variables_the_script_set_and_its_own_folder() {
     );
 }
 
+// Unix only: a signal that ends a program exists only on Unix (Windows has exit codes only).
 #[cfg(unix)]
 #[test]
 fn a_child_killed_by_a_signal_has_a_negative_status() {
@@ -641,17 +669,17 @@ fn a_child_killed_by_a_signal_has_a_negative_status() {
     assert_eq!(out.contents(), "-9\n");
 }
 
-#[cfg(unix)]
 #[test]
 fn an_unfinished_child_is_killed_when_it_is_dropped() {
     let scratch = Scratch::new("dropped");
     let marker = scratch.0.join("marker");
+    // The child waits about a second and then creates the marker, unless it was killed.
+    let (program, args) = sleep_then_touch("1", 2, &marker);
     let (mut vm, _) = vm(&[colibri::Cap::Os]);
     run(
         &mut vm,
         &format!(
-            "import process\nfn start() {{\n    let c = process.spawn(\"sh\", [\"-c\", \"sleep 1; touch {}\"]) or |e| {{ panic(e.message()) }}\n    print(c.id() > 0)\n}}\nfn main() {{\n    start()\n}}\n",
-            marker.display()
+            "import process\nfn start() {{\n    let c = process.spawn(\"{program}\", {args}) or |e| {{ panic(e.message()) }}\n    print(c.id() > 0)\n}}\nfn main() {{\n    start()\n}}\n"
         ),
     )
     .unwrap();
@@ -663,80 +691,15 @@ fn an_unfinished_child_is_killed_when_it_is_dropped() {
 
 /// `process.run` waits on a background thread: a coroutine that is not waiting for the
 /// program keeps running meanwhile (real clock; `sh` is on every platform the tests run on).
+// Unix only: the child is an `sh` loop that polls for a marker file (a `cmd` loop needs `goto`/`timeout`, and `timeout` fails without a console); the Windows side of running a child beside coroutines is tests/golden/std/process_polling_windows.colibri.
 #[cfg(unix)]
 #[test]
 fn coroutines_make_progress_while_a_child_process_runs() {
-    let (mut vm, out) = vm(&[colibri::Cap::Os]);
-    run(
-        &mut vm,
-        r#"import process
-
-var ticks = 0
-var finished_at = 0
-
-fn ticker() {
-    while true {
-        ticks += 1
-        wait(0.01)
-    }
-}
-
-fn runner() -> int {
-    let r = process.run("sh", ["-c", "sleep 0.4; echo done"]) or |e| { panic(e.message()) }
-    finished_at = ticks
-    return r.status
-}
-
-fn main() {
-    let t = go ticker()
-    let r = go runner()
-    print(r.join())
-    t.cancel()
-    // About forty ticks happened while the child slept; with a blocked `Vm` there would be one.
-    print(finished_at > 10)
-}
-"#,
-    )
-    .unwrap();
-    assert_eq!(out.contents(), "0\ntrue\n");
-}
-
-/// Two children started by two coroutines run at the same time.
-#[cfg(unix)]
-#[test]
-fn child_processes_of_different_coroutines_overlap() {
-    let (mut vm, out) = vm(&[colibri::Cap::Os]);
-    let start = std::time::Instant::now();
-    run(
-        &mut vm,
-        r#"import process
-
-fn one(n: int) -> str {
-    let r = process.shell("sleep 0.4; echo {n}") or |e| { panic(e.message()) }
-    return r.stdout.trim()
-}
-
-fn main() {
-    let a = go one(1)
-    let b = go one(2)
-    print(a.join() + b.join())
-}
-"#,
-    )
-    .unwrap();
-    assert_eq!(out.contents(), "12\n");
-    let took = start.elapsed();
-    assert!(
-        took < std::time::Duration::from_millis(750),
-        "two 0.4 s programs should overlap, took {took:?}"
-    );
-}
-
-/// Cancelling the coroutine that waits for a program stops the program.
-#[cfg(unix)]
-#[test]
-fn cancelling_a_coroutine_stops_its_child_process() {
-    let scratch = Scratch::new("cancel-child");
+    // The child ends when the ticker has written a marker after its tenth tick, so the test
+    // waits for a condition and not for a duration (timers on a loaded macOS runner sleep far
+    // longer than asked). A blocked `Vm` never writes the marker: the child gives up after
+    // twenty seconds and the count stays at one.
+    let scratch = Scratch::new("progress");
     let marker = scratch
         .0
         .join("marker")
@@ -749,8 +712,100 @@ fn cancelling_a_coroutine_stops_its_child_process() {
             r#"import process
 import fs
 
+var ticks = 0
+var finished_at = 0
+
+fn ticker() {{
+    while true {{
+        ticks += 1
+        if ticks == 10 {{
+            let _ = fs.write("{marker}", "x")
+        }}
+        wait(0.001)
+    }}
+}}
+
+fn runner() -> int {{
+    let script = "i=0; while [ ! -f \"$1\" ] && [ $i -lt 1000 ]; do sleep 0.02; i=$((i+1)); done; echo done"
+    let r = process.run("sh", ["-c", script, "sh", "{marker}"]) or |e| {{ panic(e.message()) }}
+    finished_at = ticks
+    return r.status
+}}
+
+fn main() {{
+    let t = go ticker()
+    let r = go runner()
+    print(r.join())
+    t.cancel()
+    print(finished_at >= 10)
+}}
+"#
+        ),
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "0\ntrue\n");
+}
+
+/// Two children started by two coroutines run at the same time.
+#[test]
+fn child_processes_of_different_coroutines_overlap() {
+    // Each child sleeps `nap` seconds (`ping -n 5` is the four seconds a Windows console-less
+    // `cmd` can sleep for, long enough that starting two `cmd`s on a busy machine does not
+    // eat the margin); run one after the other they would take twice that.
+    let (line, nap) = if cfg!(windows) {
+        ("ping -n 5 127.0.0.1 >nul & echo {n}", 4.0)
+    } else {
+        ("sleep 0.4; echo {n}", 0.4)
+    };
+    let (mut vm, out) = vm(&[colibri::Cap::Os]);
+    let start = std::time::Instant::now();
+    run(
+        &mut vm,
+        &format!(
+            r#"import process
+
+fn one(n: int) -> str {{
+    let r = process.shell("{line}") or |e| {{ panic(e.message()) }}
+    return r.stdout.trim()
+}}
+
+fn main() {{
+    let a = go one(1)
+    let b = go one(2)
+    print(a.join() + b.join())
+}}
+"#
+        ),
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "12\n");
+    let took = start.elapsed();
+    let limit = std::time::Duration::from_secs_f64(nap * 1.875);
+    assert!(
+        took < limit,
+        "two {nap} s programs should overlap, took {took:?}"
+    );
+}
+
+/// Cancelling the coroutine that waits for a program stops the program.
+#[test]
+fn cancelling_a_coroutine_stops_its_child_process() {
+    let scratch = Scratch::new("cancel-child");
+    let marker = scratch.0.join("marker");
+    // The child waits and then creates the marker, unless it was stopped; the script looks
+    // once the child would have been done.
+    let (program, args) = sleep_then_touch("0.5", 2, &marker);
+    let settle = if cfg!(windows) { 1.5 } else { 0.8 };
+    let marker = colibri_text(&marker.to_string_lossy());
+    let (mut vm, out) = vm(&[colibri::Cap::Os, colibri::Cap::Fs]);
+    run(
+        &mut vm,
+        &format!(
+            r#"import process
+import fs
+
 fn job() {{
-    let _ = process.run("sh", ["-c", "sleep 0.5; touch {marker}"])
+    let _ = process.run("{program}", {args})
     print("never")
 }}
 
@@ -758,7 +813,7 @@ fn main() {{
     let c = go job()
     wait(0.1)
     c.cancel()
-    wait(0.8)
+    wait({settle})
     print(fs.exists("{marker}"))
 }}
 "#
@@ -799,6 +854,7 @@ fn a_removed_function_names_its_replacement() {
     }
 }
 
+// Unix only: creating a symlink needs a privilege on Windows that a test cannot count on.
 #[cfg(unix)]
 #[test]
 fn stat_follow_looks_through_a_symlink_and_stat_does_not() {

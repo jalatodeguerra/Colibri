@@ -9,6 +9,17 @@ use colibri_runtime as colibri;
 
 const LIB: &str = colibri_ffi_testlib::PATH;
 
+/// The text of a Colibri string literal's contents for `text`: a native path pasted into
+/// Colibri source (`@link("...")`, `fs.write("...")`) has to be escaped, because `\` starts an
+/// escape (`C:\Users` is "unknown escape `\U`") and `{` starts an interpolation. Every test
+/// that puts a path into Colibri source, JSON or TOML text goes through such a helper; never `format!("\"{}\"", path.display())`.
+fn string_contents(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('{', "\\{")
+        .replace('}', "\\}")
+}
+
 fn vm() -> (Vm, colibri::SharedBuffer) {
     let out = colibri::SharedBuffer::new();
     let vm = Vm::builder()
@@ -22,7 +33,7 @@ fn vm() -> (Vm, colibri::SharedBuffer) {
 /// what it printed.
 fn run(script: &str) -> String {
     let (mut vm, out) = vm();
-    let source = script.replace("LIB", LIB);
+    let source = script.replace("LIB", &string_contents(LIB));
     if let Err(e) = vm.load_source("t.colibri", &source) {
         panic!("{}", e.render(false));
     }
@@ -35,7 +46,7 @@ fn run(script: &str) -> String {
 /// The error a script gives, as text.
 fn fails(script: &str) -> String {
     let (mut vm, _) = vm();
-    let source = script.replace("LIB", LIB);
+    let source = script.replace("LIB", &string_contents(LIB));
     match vm.load_source("t.colibri", &source) {
         Err(e) => e.render(false),
         Ok(()) => match vm.run_main() {

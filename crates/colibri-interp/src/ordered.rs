@@ -5,7 +5,7 @@
 //! positions stay valid (an iteration holds positions while the mutation guard blocks any
 //! removal); the vector is compacted when tombstones outnumber live entries. Lookup, insert and
 //! remove are O(1) on average. Keys are compared with the structural equality of
-//! [`values_equal`], so a key is stored once, in the entry, and the index holds no second
+//! [`crate::values_equal`], so a key is stored once, in the entry, and the index holds no second
 //! reference to it.
 //!
 //! This module is pure data structure code: it never runs Colibri code.
@@ -15,7 +15,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use crate::compare::values_equal;
+use crate::compare::equal_or_give_up;
 use crate::value::Value;
 
 /// Hashing gives up (and returns a constant) below this nesting, which only costs speed.
@@ -124,7 +124,7 @@ impl OrderedMap {
         bucket.positions().iter().copied().find(|&p| {
             self.entries[p]
                 .as_ref()
-                .is_some_and(|(k, _)| values_equal(k, key).unwrap_or(false))
+                .is_some_and(|(k, _)| equal_or_give_up(k, key))
         })
     }
 

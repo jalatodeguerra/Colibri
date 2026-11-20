@@ -1,0 +1,47 @@
+// caps: os, fs
+// Errors that do not depend on any shell: the same text on every system.
+import process
+import os
+import fs
+
+fn main() -> Result[()] {
+    // A program that fails to run is an error.
+    match process.run("colibri-no-such-program", []) {
+        ok(_)  => print("ran?")
+        err(e) => print(e.message())
+    }
+
+    // The folder is looked at before the program is started: the same message everywhere,
+    // whatever the system says about it, and the program does not matter.
+    var missing = process.options()
+    missing.cwd = some("/colibri/no/such/folder")
+    match process.run_with("colibri-no-such-program", [], missing) {
+        ok(_)  => print("ran?")
+        err(e) => print(e.message())
+    }
+    match process.spawn_with("colibri-no-such-program", [], missing) {
+        ok(_)  => print("ran?")
+        err(e) => print(e.message())
+    }
+
+    // A file is not a folder to run in.
+    let file = path_in_temp("a-file")
+    fs.write(file, "x")?
+    var not_a_folder = process.options()
+    not_a_folder.cwd = some(file)
+    match process.run_with("colibri-no-such-program", [], not_a_folder) {
+        ok(_)  => print("ran?")
+        err(e) => print(e.message().replace(file, "<file>"))
+    }
+    fs.remove(file)?
+    return ok(())
+}
+
+fn path_in_temp(name: str) -> str {
+    return os.temp_dir() + "/" + name
+}
+
+// expect: cannot run `colibri-no-such-program`: no such file or directory
+// expect: cannot run `colibri-no-such-program`: the folder `/colibri/no/such/folder` does not exist
+// expect: cannot run `colibri-no-such-program`: the folder `/colibri/no/such/folder` does not exist
+// expect: cannot run `colibri-no-such-program`: `<file>` is not a folder

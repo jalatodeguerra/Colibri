@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use colibri_check::hir::{Lit, LocalId, Pat, PatKind};
 
-use crate::compare::values_equal;
+use crate::compare::equal_or_give_up;
 use crate::eval::Interp;
 use crate::value::Value;
 
@@ -39,7 +39,7 @@ impl Interp {
                 above && below
             }
             (PatKind::Const(g), v) => match self.global(*g) {
-                Some(constant) => values_equal(constant, v).unwrap_or(false),
+                Some(constant) => equal_or_give_up(constant, v),
                 None => false,
             },
             (

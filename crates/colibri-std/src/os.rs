@@ -80,14 +80,14 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
                 .state_mut::<State>()
                 .and_then(|s| s.temp_dir.clone())
                 .unwrap_or_else(std::env::temp_dir);
-            dir.to_string_lossy().into_owned()
+            crate::fs::script_path(&dir)
         }),
     )?;
     needs(
         Cap::Os,
         m.register_fn_named("cwd", [], || {
             std::env::current_dir()
-                .map(|p| p.to_string_lossy().into_owned())
+                .map(|p| crate::fs::script_path(&p))
                 .map_err(|e| format!("cannot find the current folder: {}", crate::fs::reason(&e)))
         }),
     )?;

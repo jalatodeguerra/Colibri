@@ -5,6 +5,10 @@
 //! extension), the platform's file names for it, the versioned files the system keeps
 //! (`libm.so.6`), and, for the C runtime's own libraries (`c`, `m`, `dl`, `pthread`), the
 //! symbols already in the process.
+//!
+//! "The process" (an `extern` block without `@link`) means the running program and every
+//! library it has loaded. Unix has one handle for that; on Windows each loaded module is
+//! asked in turn, the program first and the C runtime second.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -15,6 +19,10 @@ use std::rc::Rc;
 pub struct Library {
     name: String,
     inner: libloading::Library,
+    /// Whether this is the process itself rather than one library (only Windows asks: there
+    /// the handle of the program finds only what the program exports).
+    #[cfg(windows)]
+    whole_process: bool,
 }
 
 impl Library {
@@ -28,13 +36,100 @@ impl Library {
         // SAFETY: only the address is read; calling it is `Function::call`'s business.
         let found: Result<libloading::Symbol<'_, *const c_void>, _> =
             unsafe { self.inner.get(symbol.as_bytes()) };
-        match found {
-            Ok(sym) => Ok(*sym),
-            Err(_) => Err(format!(
-                "the library `{}` has no symbol `{symbol}`",
-                self.name
-            )),
+        if let Ok(sym) = found {
+            return Ok(*sym);
         }
+        #[cfg(windows)]
+        if self.whole_process
+            && let Some(address) = loaded::symbol(symbol)
+        {
+            return Ok(address);
+        }
+        Err(format!(
+            "the library `{}` has no symbol `{symbol}`",
+            self.name
+        ))
+    }
+}
+
+/// The libraries the process has loaded, on Windows, where the handle of the program finds
+/// only what the program itself exports (`dlopen(NULL)` on Unix finds all of it).
+#[cfg(windows)]
+mod loaded {
+    use std::ffi::{CString, c_char, c_void};
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut c_void;
+        fn GetModuleHandleA(name: *const c_char) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *const c_void;
+        fn K32EnumProcessModules(
+            process: *mut c_void,
+            modules: *mut *mut c_void,
+            bytes: u32,
+            needed: *mut u32,
+        ) -> i32;
+    }
+
+    /// The C runtime libraries, asked before the rest: system libraries such as `ntdll`
+    /// export reduced versions of some C functions under the same names.
+    const C_RUNTIME: [&std::ffi::CStr; 2] = [c"ucrtbase.dll", c"msvcrt.dll"];
+
+    fn in_module(module: *mut c_void, name: &CString) -> Option<*const c_void> {
+        if module.is_null() {
+            return None;
+        }
+        // SAFETY: `name` is a NUL-terminated string. `module` is not checked: Windows does not
+        // promise that a handle to an unloaded module fails cleanly. What this relies on is that
+        // `module` came from the list of modules loaded in this process a moment ago (or from
+        // `GetModuleHandleA`, which does not count a reference) and that nothing unloads a
+        // module while the lookup runs: this crate only unloads a library when its `Library` is
+        // dropped, and that is not during a lookup. Another thread of the program calling
+        // `FreeLibrary` on that very module in that moment would make the call undefined, and
+        // nothing here prevents it.
+        let address = unsafe { GetProcAddress(module, name.as_ptr()) };
+        (!address.is_null()).then_some(address)
+    }
+
+    /// Every module loaded in the process, in load order (the program is first).
+    fn modules() -> Vec<*mut c_void> {
+        let slot = std::mem::size_of::<*mut c_void>();
+        let mut found: Vec<*mut c_void> = vec![std::ptr::null_mut(); 256];
+        for _ in 0..4 {
+            let bytes = u32::try_from(found.len() * slot).unwrap_or(u32::MAX);
+            let mut needed = 0u32;
+            // SAFETY: `found` is `bytes` bytes of writable handles and `needed` a valid place
+            // for the size the full list takes.
+            let ok = unsafe {
+                K32EnumProcessModules(GetCurrentProcess(), found.as_mut_ptr(), bytes, &mut needed)
+            };
+            if ok == 0 {
+                return Vec::new();
+            }
+            let count = needed as usize / slot;
+            if count <= found.len() {
+                found.truncate(count);
+                return found;
+            }
+            // More modules than fitted: ask again with room for all of them.
+            found = vec![std::ptr::null_mut(); count + 64];
+        }
+        Vec::new()
+    }
+
+    /// The address of `symbol` in the first loaded module that exports it.
+    pub fn symbol(symbol: &str) -> Option<*const c_void> {
+        let name = CString::new(symbol).ok()?;
+        for runtime in C_RUNTIME {
+            // SAFETY: the name is a NUL-terminated string; the call only looks the module up.
+            let module = unsafe { GetModuleHandleA(runtime.as_ptr()) };
+            if let Some(address) = in_module(module, &name) {
+                return Some(address);
+            }
+        }
+        modules()
+            .into_iter()
+            .find_map(|module| in_module(module, &name))
     }
 }
 
@@ -75,6 +170,8 @@ fn process() -> Result<Library, String> {
     Ok(Library {
         name: "the running program".to_string(),
         inner,
+        #[cfg(windows)]
+        whole_process: true,
     })
 }
 
@@ -93,6 +190,8 @@ fn open(name: &str) -> Result<Library, String> {
                 return Ok(Library {
                     name: name.to_string(),
                     inner,
+                    #[cfg(windows)]
+                    whole_process: false,
                 });
             }
             Err(_) => tried.push(candidate),
@@ -104,6 +203,8 @@ fn open(name: &str) -> Result<Library, String> {
         return Ok(Library {
             name: name.to_string(),
             inner: lib.inner,
+            #[cfg(windows)]
+            whole_process: true,
         });
     }
     tried.dedup();

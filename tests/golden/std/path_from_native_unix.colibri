@@ -1,0 +1,8 @@
+// only: unix - a backslash is an ordinary character in a Unix name; path_from_native_windows.colibri is the Windows counterpart
+// On Unix the text is unchanged, a backslash included.
+import path
+
+fn main() {
+    print(path.from_native("a\\b"))
+}
+// expect: a\b

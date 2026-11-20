@@ -75,7 +75,9 @@ fn main() {
                 Test::File(path) => {
                     let source = fs::read_to_string(&path).expect("golden file is readable");
                     let directives = parse_directives(&source);
-                    let skipped = directives.skip.is_some();
+                    // `// skip:` everywhere, `// only:` on the other systems: reported as
+                    // ignored (not run), never as passed.
+                    let skipped = directives.not_run_here().is_some();
                     Trial::test(name, move || {
                         let outcome = on_big_stack(move || run_golden(&path, &source));
                         check(&directives, &outcome).map_err(Failed::from)
@@ -86,7 +88,7 @@ fn main() {
                     let mut files = Vec::new();
                     package_files(&dir, &dir, &mut files);
                     let directives = PackageDirectives::parse(&files);
-                    let skipped = directives.skip().is_some();
+                    let skipped = directives.not_run_here().is_some();
                     Trial::test(format!("{name}/"), move || {
                         let outcome = on_big_stack(move || run_golden_package(&dir));
                         check_package(&directives, &outcome).map_err(Failed::from)

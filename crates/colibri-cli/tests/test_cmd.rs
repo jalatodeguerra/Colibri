@@ -406,12 +406,24 @@ fn without_the_flag_leaks_are_not_looked_for() {
     assert!(stderr(&out).is_empty());
 }
 
+/// The contents of a Colibri string literal for a path: `\` starts an escape in Colibri
+/// (`C:\Users` is "unknown escape `\U`") and `{` an interpolation, so a native path pasted
+/// into Colibri source (or JSON or TOML text) has to be escaped. Every test here that puts a
+/// path into source text goes through this; never `format!("\"{}\"", path.display())`.
+fn string_contents(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('{', "\\{")
+        .replace('}', "\\}")
+}
+
 /// A package folder with a script module (nothing imports it, it has top-level statements) whose
 /// initialiser and statements would leave `marker` behind if anything of it ran.
 fn script_package(name: &str, marker: &std::path::Path) -> PathBuf {
     let script = format!(
         "import fs\nlet made = fs.write(\"{}\", \"x\") or |e| {{ panic(e.message()) }}\nprint(\"gen\")\n\ntest \"in the script\" {{\n    assert(false)\n}}\n",
-        marker.display()
+        string_contents(marker)
     );
     folder(
         name,

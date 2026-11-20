@@ -217,7 +217,7 @@ Colibri is built from source. You need a recent stable [Rust toolchain](https://
 workspace uses edition 2024) and a C compiler, which builds the bundled `libffi`.
 
 ```sh
-git clone https://github.com/jalatodeguerra/leo colibri
+git clone https://github.com/jalatodeguerra/Colibri colibri
 cd colibri
 cargo install --path crates/colibri-cli
 colibri --version
@@ -226,8 +226,7 @@ colibri --version
 This puts the `colibri` binary in `~/.cargo/bin`. To build without installing, run
 `cargo build --release` and use `./target/release/colibri`.
 
-Development and testing happen on Linux. macOS and Windows are intended targets but are not
-tested yet.
+Every change is tested on Linux, macOS and Windows.
 
 ## Quick start
 
@@ -417,6 +416,10 @@ runs its logic from Colibri scripts. The API reference is in the crate's documen
 | `time`, `datetime` | clocks and sleeping; dates, times and formatting |
 | `math`, `rand` | math functions; random numbers |
 | `vec` | 2D, 3D and 4D vector types |
+
+Paths are `/`-separated text on every system, Windows included. `path.from_native` converts a path
+that came from outside (a command-line argument, a file's content) from the system's own spelling,
+and on Windows, and only there, `C:/` and `//host/share/` are roots.
 
 `List`, `Map`, `Set` and `StrBuilder` are built in. A Rust program that embeds Colibri decides
 whether its scripts get the standard library (the `colibri-std` crate) and which capabilities

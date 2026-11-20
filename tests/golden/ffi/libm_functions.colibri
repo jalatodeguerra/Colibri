@@ -1,5 +1,5 @@
 // caps: ffi
-// `float` is a C `double` and `f32` a C `float`.
+// `float` is a C `double` and `f32` a C `float`. `fabsf` is in libm_fabsf.colibri.
 
 @link("m")
 extern "C" {
@@ -8,7 +8,6 @@ extern "C" {
     fn pow(base: float, exp: float) -> float
     fn floor(x: float) -> float
     fn hypot(x: float, y: float) -> float
-    fn fabsf(x: f32) -> f32
     fn sqrtf(x: f32) -> f32
 }
 
@@ -18,7 +17,6 @@ fn main() {
     print(pow(2.0, 10.0))
     print(floor(-1.5))
     print(hypot(3.0, 4.0))
-    print(fabsf(-2.5))
     print(sqrtf(16.0))
     let angles = [0.0, 1.0, 2.0]
     var total = 0.0
@@ -32,6 +30,5 @@ fn main() {
 // expect: 1024.0
 // expect: -2.0
 // expect: 5.0
-// expect: 2.5
 // expect: 4.0
 // expect: true

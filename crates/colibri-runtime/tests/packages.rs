@@ -588,6 +588,7 @@ fn an_imported_module_still_may_not_have_top_level_statements() {
     );
 }
 
+// Unix only: creating a symlink needs a privilege on Windows that a test cannot count on.
 #[cfg(unix)]
 #[test]
 fn the_folder_walk_does_not_follow_links() {

@@ -34,6 +34,16 @@ pub struct Directives {
     pub leaks: Vec<String>,
     /// `// skip:` reason; the file is not run.
     pub skip: Option<String>,
+    /// `// only: unix - why`: the file is run only on that kind of system (`unix` or
+    /// `windows`) and is reported as not run (an ignored test, counted in the summary) on
+    /// the others. Use it only where the behaviour under test is itself system-specific (a
+    /// C function that one system does not have, a shell that is not there), never to hide
+    /// a failure; where a golden mixes portable and system-specific parts, split it so the
+    /// portable part runs everywhere. The reason after the platform is mandatory.
+    pub only: Option<Only>,
+    /// Directives that are written wrongly (an `// only:` without a reason, an unknown
+    /// platform); the test fails with these, so nothing is silently dropped.
+    pub malformed: Vec<String>,
     /// `// caps: fs, os`: the capabilities the test's `Vm` grants (the default is none). Read
     /// from the file that starts the program.
     pub caps: Vec<String>,
@@ -41,6 +51,77 @@ pub struct Directives {
     /// unused-import warnings in this file need not be listed. Every other file must list them
     /// as `// warning:` or have none.
     pub allow_unused: bool,
+}
+
+/// A system a golden file is restricted to (`// only:`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Unix,
+    Windows,
+}
+
+impl Platform {
+    /// The system this test binary was built for.
+    pub fn current() -> Platform {
+        if cfg!(windows) {
+            Platform::Windows
+        } else {
+            Platform::Unix
+        }
+    }
+}
+
+/// The value of an `// only:` directive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Only {
+    pub platform: Platform,
+    pub reason: String,
+}
+
+impl Directives {
+    /// Why this file is not run on this system (`// skip:` on every system, `// only:` on
+    /// the others), if it is not.
+    pub fn not_run_here(&self) -> Option<String> {
+        // A file with a malformed directive is run, so that the failure is reported (it would
+        // otherwise be ignored for good, here or on the other system).
+        if !self.malformed.is_empty() {
+            return None;
+        }
+        if let Some(reason) = &self.skip {
+            return Some(reason.clone());
+        }
+        match &self.only {
+            Some(only) if only.platform != Platform::current() => {
+                Some(format!("only on {:?}: {}", only.platform, only.reason))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Reads the value of `// only: unix - reason`.
+fn parse_only(value: &str) -> Result<Only, String> {
+    let value = value.trim();
+    let (word, rest) = value.split_once(char::is_whitespace).unwrap_or((value, ""));
+    let platform = match word.trim_end_matches([',', ':', '-']) {
+        "unix" => Platform::Unix,
+        "windows" => Platform::Windows,
+        other => {
+            return Err(format!(
+                "`// only:` names the system `{other}`; write `unix` or `windows`, then a reason"
+            ));
+        }
+    };
+    let reason = rest.trim_start_matches([' ', '-', ':', ',']).trim();
+    if reason.is_empty() {
+        return Err(format!(
+            "`// only: {word}` needs a reason after the system (`// only: {word} - why`)"
+        ));
+    }
+    Ok(Only {
+        platform,
+        reason: reason.to_string(),
+    })
 }
 
 /// Parses the directives of a golden file.
@@ -83,6 +164,11 @@ pub fn parse_directives(source: &str) -> Directives {
                 }
             } else if let Some(v) = comment.strip_prefix("skip:") {
                 d.skip = Some(v.trim().to_string());
+            } else if let Some(v) = comment.strip_prefix("only:") {
+                match parse_only(v) {
+                    Ok(only) => d.only = Some(only),
+                    Err(problem) => d.malformed.push(format!("line {}: {problem}", i + 1)),
+                }
             } else if let Some(v) = comment.strip_prefix("caps:") {
                 d.caps.extend(
                     v.split(',')
@@ -150,18 +236,17 @@ pub enum Outcome {
 pub fn run_golden(path: &Path, source: &str) -> Outcome {
     let name = path.display().to_string();
     let caps = parse_directives(source).caps;
-    run_with(|vm| vm.load_source(&name, source), "", &name, &caps)
+    run_with(|vm| vm.load_source(&name, source), None, &name, &caps)
 }
 
 /// Runs a golden test that is a folder: the files in it are one program, started from
 /// `main.colibri` (see `Vm::load_file`, which makes the folder its implicit package).
 pub fn run_golden_package(dir: &Path) -> Outcome {
     let main = dir.join("main.colibri");
-    let prefix = format!("{}/", dir.display());
     let caps = std::fs::read_to_string(&main)
         .map(|text| parse_directives(&text).caps)
         .unwrap_or_default();
-    run_with(|vm| vm.load_file(&main), &prefix, "", &caps)
+    run_with(|vm| vm.load_file(&main), Some(dir), "", &caps)
 }
 
 /// The standard library's view of the world in a golden test: a clock that only moves when the
@@ -226,9 +311,19 @@ impl colibri::Clock for FakeClock {
     }
 }
 
+/// How a source file is named in a golden test's results: relative to the test's folder and
+/// with `/` on every system (the resolver builds the names of the files it reaches with the
+/// system's own separator, and the folder itself may be spelled with both).
+fn relative_name(dir: &Path, name: &str) -> String {
+    match Path::new(name).strip_prefix(dir) {
+        Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+        Err(_) => name.to_string(),
+    }
+}
+
 fn run_with(
     load: impl FnOnce(&mut colibri::Vm) -> Result<(), colibri::Error>,
-    prefix: &str,
+    dir: Option<&Path>,
     blank: &str,
     caps: &[String],
 ) -> Outcome {
@@ -270,9 +365,12 @@ fn run_with(
             .map(|d| {
                 let line = sources.line_col(d.span.file, d.span.start).0;
                 let file = sources.name(d.span.file);
-                let file = file.strip_prefix(prefix).unwrap_or(file);
-                let file = if file == blank { "" } else { file };
-                (file.to_string(), line as usize, d.message.clone())
+                let file = match dir {
+                    Some(dir) => relative_name(dir, file),
+                    None => file.to_string(),
+                };
+                let file = if file == blank { String::new() } else { file };
+                (file, line as usize, d.message.clone())
             })
             .collect::<Vec<_>>()
     };
@@ -337,14 +435,28 @@ impl PackageDirectives {
                 d.drops = files.drops.clone();
                 d.leaks = files.leaks.clone();
                 d.skip = files.skip.clone();
+                d.only = files.only.clone();
             }
+            if !(path == "main.colibri" || path.is_empty()) && files.only.is_some() {
+                d.malformed.push(format!(
+                    "{path}: `// only:` counts in main.colibri alone; it would be ignored here"
+                ));
+            }
+            d.malformed.extend(files.malformed.iter().map(|m| {
+                if path.is_empty() {
+                    m.clone()
+                } else {
+                    format!("{path}: {m}")
+                }
+            }));
         }
         d
     }
 
-    /// Whether `main.colibri` says to skip the test.
-    pub fn skip(&self) -> Option<String> {
-        self.whole().skip
+    /// Why `main.colibri` keeps the test from running on this system (`// skip:` or
+    /// `// only:`), if it does.
+    pub fn not_run_here(&self) -> Option<String> {
+        self.whole().not_run_here()
     }
 }
 
@@ -360,6 +472,8 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
         drops: d.drops.clone(),
         leaks: d.leaks.clone(),
         skip: d.skip.clone(),
+        only: d.only.clone(),
+        malformed: d.malformed.clone(),
         caps: d.caps.clone(),
         allow_unused: d.allow_unused,
     };
@@ -375,6 +489,9 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
 /// mismatch.
 pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), String> {
     let d = p.whole();
+    if !d.malformed.is_empty() {
+        return Err(d.malformed.join("\n"));
+    }
     let errors_wanted: Vec<Located> = p
         .files
         .iter()
@@ -615,6 +732,97 @@ mod tests {
         assert_eq!(parse_directives("// drops:\n").drops, Some(Vec::new()));
         assert_eq!(parse_directives("print(1)\n").drops, None);
         assert_eq!(d.skip.as_deref(), Some("later"));
+    }
+
+    #[test]
+    fn only_names_a_system_and_needs_a_reason() {
+        let d = parse_directives("// only: unix - sh is not on Windows\nfn main() {}\n");
+        let only = d.only.expect("parsed");
+        assert_eq!(only.platform, Platform::Unix);
+        assert_eq!(only.reason, "sh is not on Windows");
+        let d = parse_directives("// only: windows: cmd\n");
+        assert_eq!(d.only.expect("parsed").platform, Platform::Windows);
+        for bad in ["// only: unix\n", "// only:\n", "// only: plan9 - no\n"] {
+            let d = parse_directives(bad);
+            assert!(d.only.is_none() && d.malformed.len() == 1, "{bad}");
+            let outcome = compiled("", None);
+            assert!(check(&d, &outcome).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_only_is_never_hidden_by_a_skip() {
+        let d = parse_directives("// skip: later\n// only: unix\nfn main() {}\n");
+        assert_eq!(d.malformed.len(), 1);
+        // Run, not ignored, so that the check reports it.
+        assert_eq!(d.not_run_here(), None);
+        let outcome = Outcome::CompileErrors {
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        };
+        assert!(check(&d, &outcome).is_err_and(|e| e.contains("needs a reason")));
+    }
+
+    #[test]
+    fn an_only_outside_main_colibri_is_a_failure_not_silence() {
+        let files = vec![
+            ("main.colibri".to_string(), "fn main() {}\n".to_string()),
+            ("m.colibri".to_string(), "// only: unix - sh\n".to_string()),
+        ];
+        let p = PackageDirectives::parse(&files);
+        assert_eq!(p.not_run_here(), None);
+        let malformed = p.whole().malformed;
+        assert_eq!(malformed.len(), 1, "{malformed:?}");
+        assert!(malformed[0].starts_with("m.colibri:") && malformed[0].contains("main.colibri"));
+        let files = vec![(
+            "main.colibri".to_string(),
+            "// only: unix - sh\nfn main() {}\n".to_string(),
+        )];
+        assert!(
+            PackageDirectives::parse(&files)
+                .whole()
+                .malformed
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn only_skips_on_the_other_system_but_not_on_this_one() {
+        let other = if cfg!(windows) { "unix" } else { "windows" };
+        let here = if cfg!(windows) { "windows" } else { "unix" };
+        let d = parse_directives(&format!("// only: {other} - because\n"));
+        assert!(d.not_run_here().is_some_and(|r| r.contains("because")));
+        let d = parse_directives(&format!("// only: {here} - because\n"));
+        assert!(d.not_run_here().is_none());
+        assert!(
+            parse_directives("// skip: later\n")
+                .not_run_here()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn names_are_relative_to_the_folder_with_slashes() {
+        let dir = Path::new("a/b/../../golden/mod");
+        assert_eq!(
+            relative_name(dir, "a/b/../../golden/mod/main.colibri"),
+            "main.colibri"
+        );
+        assert_eq!(
+            relative_name(dir, "a/b/../../golden/mod/sub/x.colibri"),
+            "sub/x.colibri"
+        );
+        assert_eq!(
+            relative_name(dir, "elsewhere/x.colibri"),
+            "elsewhere/x.colibri"
+        );
+        // The resolver builds the names it reaches with the system's separator, so on Windows
+        // the same folder is spelled with both.
+        #[cfg(windows)]
+        assert_eq!(
+            relative_name(dir, r"a/b/../../golden\mod\sub\x.colibri"),
+            "sub/x.colibri"
+        );
     }
 
     #[test]

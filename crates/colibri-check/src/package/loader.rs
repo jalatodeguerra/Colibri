@@ -73,11 +73,11 @@ enum Candidate {
 }
 
 impl Candidate {
-    fn describe(&self) -> String {
+    fn describe(&self, fs: &dyn SourceFs) -> String {
         match self {
-            Candidate::Local { file, .. } => format!("the file `{}`", file.display()),
+            Candidate::Local { file, .. } => format!("the file `{}`", fs.display_name(file)),
             Candidate::Dependency { name, file, .. } => {
-                format!("the dependency `{name}` (`{}`)", file.display())
+                format!("the dependency `{name}` (`{}`)", fs.display_name(file))
             }
             Candidate::Host(name) => format!("the host module `{name}`"),
             Candidate::Std(name) => format!("the standard library module `{name}`"),
@@ -149,7 +149,7 @@ pub fn load_with(
                 .file_name()
                 .map(PathBuf::from)
                 .ok_or_else(|| LoadError {
-                    path: path.display().to_string(),
+                    path: fs.display_name(path),
                     message: "this is not a file".to_string(),
                 })?;
             (root, name, false)
@@ -158,14 +158,14 @@ pub fn load_with(
     };
     if require_manifest && !fs.is_dir(&root) {
         return Err(LoadError {
-            path: root.display().to_string(),
+            path: fs.display_name(&root),
             message: "no such folder".to_string(),
         });
     }
     let tree = loader
         .load_tree(&root, require_manifest, false)
         .map_err(|message| LoadError {
-            path: root.join(MANIFEST_FILE).display().to_string(),
+            path: fs.display_name(&root.join(MANIFEST_FILE)),
             message,
         })?;
     let entry_path = match entry {
@@ -174,12 +174,12 @@ pub fn load_with(
     };
     if matches!(entry, Entry::Package(_)) && !fs.is_file(&entry_path) {
         return Err(LoadError {
-            path: entry_path.display().to_string(),
+            path: fs.display_name(&entry_path),
             message: "the package has no `main.colibri` to start from".to_string(),
         });
     }
     let text = fs.read(&entry_path).map_err(|message| LoadError {
-        path: entry_path.display().to_string(),
+        path: fs.display_name(&entry_path),
         message,
     })?;
     let entry_id = loader.add_module(&entry_path, text, tree, &file, true);
@@ -218,7 +218,7 @@ impl Loader<'_> {
                 .map_err(|e| format!("cannot read it: {e}"))?;
             let file = self
                 .sources
-                .add_file(manifest_path.display().to_string(), text.clone());
+                .add_file(self.fs.display_name(&manifest_path), text.clone());
             match manifest::parse(file, &text) {
                 Ok(m) => manifest = Some((m, file)),
                 Err(diags) => self.diags.extend(diags),
@@ -226,7 +226,7 @@ impl Loader<'_> {
         } else if require_manifest {
             return Err(format!(
                 "there is no `{MANIFEST_FILE}` in `{}`",
-                display_dir(dir)
+                display_dir(self.fs, dir)
             ));
         }
         let folder_name = key
@@ -256,7 +256,7 @@ impl Loader<'_> {
                             format!(
                                 "the dependency `{}` is not at `{}`: no such folder",
                                 dep.name,
-                                display_dir(&dep_dir)
+                                display_dir(self.fs, &dep_dir)
                             ),
                             dep.path_span,
                         )
@@ -332,7 +332,7 @@ impl Loader<'_> {
     ) -> usize {
         let file_id = self
             .sources
-            .add_file(path.display().to_string(), text.clone());
+            .add_file(self.fs.display_name(path), text.clone());
         let (file, diags) = parse_file(file_id, &text);
         self.diags.extend(diags);
         let package = self.package_of(tree, rel);
@@ -495,7 +495,7 @@ impl Loader<'_> {
                         }
                         Err(e) => {
                             self.diags.push(Diagnostic::error(
-                                format!("cannot read `{}`: {e}", file.display()),
+                                format!("cannot read `{}`: {e}", self.fs.display_name(&file)),
                                 span,
                             ));
                             ImportTarget::Failed
@@ -504,7 +504,7 @@ impl Loader<'_> {
                 }
             },
             _ => {
-                let list: Vec<String> = candidates.iter().map(Candidate::describe).collect();
+                let list: Vec<String> = candidates.iter().map(|c| c.describe(self.fs)).collect();
                 let hint = if candidates.iter().any(|c| matches!(c, Candidate::Std(_))) {
                     format!(
                         "rename the file or the dependency, or write `import std.{dotted_path}` for the standard library"
@@ -588,12 +588,12 @@ impl Loader<'_> {
         let mut rel: PathBuf = names.iter().collect();
         let folder = t.root.join(&rel);
         rel.set_extension(SOURCE_EXT);
-        let mut hint = format!("looked for `{}`", t.root.join(&rel).display());
+        let mut hint = format!("looked for `{}`", self.fs.display_name(&t.root.join(&rel)));
         if let Some((_, dep)) = t.deps.iter().find(|(n, _)| n == names[0]) {
             hint.push_str(&format!(
                 " and in the dependency `{}` (`{}`)",
                 names[0],
-                self.trees[*dep].root.display()
+                self.fs.display_name(&self.trees[*dep].root)
             ));
         }
         if self.fs.is_dir(&folder) {
@@ -845,11 +845,11 @@ fn dotted(path: &Path) -> String {
         .join(".")
 }
 
-fn display_dir(dir: &Path) -> String {
+fn display_dir(fs: &dyn SourceFs, dir: &Path) -> String {
     if dir.as_os_str().is_empty() {
         ".".to_string()
     } else {
-        dir.display().to_string()
+        fs.display_name(dir)
     }
 }
 

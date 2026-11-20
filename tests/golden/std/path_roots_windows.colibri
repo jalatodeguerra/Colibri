@@ -1,0 +1,59 @@
+// only: windows - a drive `C:/` and a share `//host/share/` are roots only there; path_roots_unix.colibri is the Unix counterpart
+// caps: os
+// The paths std gives a script on Windows (`os.cwd()`, `path.from_native`) start with a drive or
+// a share, and `path` treats those as roots.
+import path
+import os
+
+fn main() {
+    print(path.is_absolute("C:/Users/me"))
+    print(path.is_absolute("//server/share/f"))
+    print(path.is_absolute("C:"))
+    print(path.is_absolute("C:x"))
+    print(path.join("C:/a", "D:/b"))
+    print(path.join("C:/a", "b"))
+    print(path.join("C:", "x"))
+    print(path.normalize("C:/../x"))
+    print(path.normalize("C:/a/../../b/./c"))
+    print(path.normalize("//server/share/f"))
+    print(path.normalize("//server/share/../x"))
+    print(path.parent("C:/x") or "none")
+    print(path.parent("C:/") or "none")
+    print(path.parent("//server/share/f") or "none")
+    print(path.parent("//server/share/") or "none")
+    print(path.file_name("C:/") or "none")
+    print(path.file_name("//server/share") or "none")
+    print(path.file_name("C:/data/index.json") or "none")
+    print(path.with_ext("C:/data/index.json", "md"))
+    print(path.split("C:/a/b"))
+    print(path.split("//server/share/a"))
+    // What `os.cwd()` gives is a path of this form.
+    let cwd = os.cwd() or |e| { panic(e.message()) }
+    print(path.is_absolute(cwd))
+    print(path.normalize(cwd) == cwd)
+    print(path.is_absolute(path.from_native("\\\\server\\share\\f")))
+}
+// expect: true
+// expect: true
+// expect: false
+// expect: false
+// expect: D:/b
+// expect: C:/a/b
+// expect: C:x
+// expect: C:/x
+// expect: C:/b/c
+// expect: //server/share/f
+// expect: //server/share/x
+// expect: C:/
+// expect: none
+// expect: //server/share/
+// expect: none
+// expect: none
+// expect: none
+// expect: index.json
+// expect: C:/data/index.md
+// expect: ["C:/", "a", "b"]
+// expect: ["//server/share/", "a"]
+// expect: true
+// expect: true
+// expect: true

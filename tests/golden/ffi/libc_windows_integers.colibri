@@ -1,0 +1,12 @@
+// only: windows - `_getpid` is the Windows C runtime's name; libc_posix_integers.colibri is the Unix counterpart
+// caps: ffi
+// The C runtime's own function under its Windows name.
+
+extern "C" {
+    fn _getpid() -> i32
+}
+
+fn main() {
+    print(_getpid() > 0)
+}
+// expect: true
