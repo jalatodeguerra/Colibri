@@ -556,6 +556,14 @@ fn completion_vm() -> (colibri::Vm, colibri::SharedBuffer, Parked) {
         }))
     })
     .unwrap();
+    // `inline(v)`: completed inside `start`, on the calling thread, before the wait begins.
+    vm.register_fn("inline", |cx: &mut colibri::Ctx, v: i64| -> String {
+        describe(cx.try_await_completion(move |completer| {
+            completer.complete(v);
+            Ok(())
+        }))
+    })
+    .unwrap();
     // `gated(v)`: another thread completes once `open()` has been called.
     let gate = Arc::clone(&shared.gate);
     vm.register_fn("gated", move |cx: &mut colibri::Ctx, v: i64| -> String {
@@ -868,4 +876,49 @@ fn main() {
         completer.complete(Probe(Arc::clone(&shared.probe_drops)));
     }
     assert_eq!(shared.probe_drops.load(Ordering::SeqCst), 1);
+}
+
+/// A completer that `start` completes itself is a plain yield: the call gives the result at
+/// once, and still goes through the scheduler once, so the coroutines behind it run first. (This
+/// is how a call that could proceed yields after its burst budget; see the poller's notes.)
+#[test]
+fn a_completion_made_inside_start_yields_once_and_gives_its_value() {
+    let text = run_completion(
+        r#"
+fn first() {
+    print("first begins")
+    print("first got {inline(5)}")
+}
+fn second() { print("second runs") }
+fn main() {
+    let group = CoGroup()
+    group.go(first())
+    group.go(second())
+    group.join_all()
+    print("main got {inline(6)}")
+}
+"#,
+    );
+    assert_eq!(
+        text,
+        "first begins\nsecond runs\nfirst got ok 5\nmain got ok 6\n"
+    );
+}
+
+#[test]
+fn a_completion_made_inside_start_works_where_the_wait_blocks() {
+    let text = run_completion(
+        r#"
+class Res { label: str }
+
+impl Drop for Res {
+    fn drop(self) { print("drop {self.label} {inline(8)}") }
+}
+
+fn main() {
+    let r = Res { label: "r" }
+}
+"#,
+    );
+    assert_eq!(text, "drop r ok 8\n");
 }
