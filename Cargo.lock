@@ -189,6 +189,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "colibri-core"
+version = "0.1.0"
+dependencies = [
+ "colibri-check",
+ "colibri-syntax",
+]
+
+[[package]]
 name = "colibri-example-host-jobs"
 version = "0.1.0"
 dependencies = [
@@ -216,6 +224,7 @@ name = "colibri-interp"
 version = "0.1.0"
 dependencies = [
  "colibri-check",
+ "colibri-core",
  "colibri-ffi",
  "colibri-syntax",
  "corosensei",

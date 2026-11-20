@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 colibri-syntax = { path = "../colibri-syntax" }
 colibri-check = { path = "../colibri-check" }
+colibri-core = { path = "../colibri-core" }
 colibri-ffi = { path = "../colibri-ffi", optional = true }
 corosensei = "0.3.4"
 memchr = "2.8.3"
