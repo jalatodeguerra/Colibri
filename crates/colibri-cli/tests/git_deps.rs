@@ -2419,9 +2419,19 @@ fn refused_without_the_secret(sb: &Sandbox, app: &Path, what: &str) {
     ] {
         let mut args = args;
         let target = app.to_str().unwrap().to_string();
+        // `update` takes the folder as `--path`; as a plain argument it names a dependency,
+        // and the manifest would never be read.
+        if args[0] == "update" {
+            args.push("--path");
+        }
         args.push(&target);
         let out = sb.colibri(&args);
         assert_eq!(out.code, 1, "{what} {args:?}: {}", out.stderr);
+        assert!(
+            !out.stderr.contains("there is no `colibri.toml`"),
+            "{what} {args:?} never reached the manifest: {}",
+            out.stderr
+        );
         assert!(
             !format!("{}{}", out.stdout, out.stderr).contains("SeCrEt"),
             "{what} {args:?}: {}{}",
@@ -2638,9 +2648,17 @@ fn odd_text_around_an_at_sign_is_an_error_not_a_panic() {
         let app = package_with(&sb, &format!("odd{i}"), text);
         for args in [vec!["check"], vec!["run"], vec!["update"]] {
             let mut args = args;
+            if args[0] == "update" {
+                args.push("--path");
+            }
             args.push(app.to_str().unwrap());
             let out = sb.colibri(&args);
             assert_eq!(out.code, 1, "{text} {args:?}: {}", out.stderr);
+            assert!(
+                !out.stderr.contains("there is no `colibri.toml`"),
+                "{text} {args:?} never reached the manifest: {}",
+                out.stderr
+            );
             assert!(!out.stderr.contains("panicked"), "{text}: {}", out.stderr);
             assert!(!out.stderr.contains("SeCrEt"), "{text}: {}", out.stderr);
         }
