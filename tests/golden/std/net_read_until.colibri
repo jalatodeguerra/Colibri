@@ -1,0 +1,62 @@
+// caps: net
+// `read_until(delim, max)` gives the bytes before the first delimiter (of one or more bytes)
+// and takes the delimiter off the stream. A `\n` inside the piece is data when the delimiter is
+// `\r\n`. A piece with more than `max` bytes before its delimiter is `LineTooLong` and stays in
+// the stream; the end of the stream is `none`, or `UnexpectedEnd` when bytes are pending.
+import net
+
+fn serve(l: net.Listener) -> Result[()] {
+    let c = l.accept()?
+    c.write("a\nb\r\n\r\nx--=--y--==0123456789abcdefg\r\ntail")?
+    c.close()
+    return ok(())
+}
+
+fn kind[T](r: Result[T]) -> str {
+    match r {
+        ok(_) => return "ok"
+        err(e) => return "{e.as[net.Error]().expect("a net error")}"
+    }
+}
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let server = go serve(l)
+    let c = net.connect(l.addr())?
+    let crlf = "\r\n".to_bytes()
+    print(c.read_until(crlf, 16)?)
+    print(c.read_until(crlf, 16)?)
+    // A delimiter of four bytes, found after a lookalike.
+    print(c.read_until("--==".to_bytes(), 16)?)
+    // 17 bytes before the `\r\n`: too long for 16, and the bytes stay for 17.
+    let long = c.read_until(crlf, 16)
+    print(kind(long))
+    print(long.err().expect("too long").message().replace(l.addr(), "<addr>"))
+    print(c.read_until(crlf, 17)?)
+    // `tail` has no delimiter and the stream ends.
+    let end = c.read_until(crlf, 16)
+    print(kind(end))
+    print(end.err().expect("the end").message().replace(l.addr(), "<addr>").replace(c.local_addr(), "<local>"))
+    print(c.read(10)?)
+    print(c.read_until(crlf, 16)?)
+    // Bad arguments are `net.Error.Other`.
+    print(kind(c.read_until(Bytes(), 16)))
+    print(kind(c.read_until(crlf, -1)))
+    print(c.read_until(Bytes(), 16).err().expect("empty").message().replace(l.addr(), "<addr>").replace(c.local_addr(), "<local>"))
+    server.join()?
+    return ok(())
+}
+
+// expect: some(b"a\nb")
+// expect: some(b"")
+// expect: some(b"x--=--y")
+// expect: LineTooLong
+// expect: cannot read from `<addr>`: more than 16 bytes without the delimiter (close the connection, or raise the limit given to `read_until`)
+// expect: some(b"0123456789abcdefg")
+// expect: UnexpectedEnd
+// expect: cannot read from `<addr>`: the stream ended after 4 bytes without the delimiter (the 4 bytes stay readable with `read`)
+// expect: b"tail"
+// expect: none
+// expect: Other
+// expect: Other
+// expect: cannot read from `<addr>`: the delimiter is empty (give at least one byte)

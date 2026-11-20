@@ -1,0 +1,45 @@
+// caps: net
+// `set_line_limit(bytes)` is the most `read_line` takes before the end of its line (1 MiB when
+// it is not set): a line of that many bytes is fine, with `\n` or `\r\n`, and one byte more is
+// `LineTooLong`, with its bytes still in the stream. `read_until` has its own limit.
+import net
+
+fn serve(l: net.Listener) -> Result[()] {
+    let c = l.accept()?
+    c.write("0123456789abcdef\r\n0123456789abcdef\n0123456789abcdefg\r\nrest\n")?
+    c.close()
+    return ok(())
+}
+
+fn kind[T](r: Result[T]) -> str {
+    match r {
+        ok(_) => return "ok"
+        err(e) => return "{e.as[net.Error]().expect("a net error")}"
+    }
+}
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let server = go serve(l)
+    let c = net.connect(l.addr())?
+    c.set_line_limit(16)
+    print(c.read_line()?)
+    print(c.read_line()?)
+    let long = c.read_line()
+    print(kind(long))
+    print(long.err().expect("too long").message().replace(l.addr(), "<addr>"))
+    // The bytes are still in the stream: `read_until` has a limit of its own, here 17.
+    print(c.read_until("\r\n".to_bytes(), 17)?)
+    // Raised, the same line would have fit.
+    c.set_line_limit(1048576)
+    print(c.read_line()?)
+    server.join()?
+    return ok(())
+}
+
+// expect: some("0123456789abcdef")
+// expect: some("0123456789abcdef")
+// expect: LineTooLong
+// expect: cannot read a line from `<addr>`: it is longer than 16 bytes without an end of line (close the connection, raise the limit with `set_line_limit`, or read the data with `read`)
+// expect: some(b"0123456789abcdefg")
+// expect: some("rest")
