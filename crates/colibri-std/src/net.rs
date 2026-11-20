@@ -37,7 +37,9 @@
 //! socket is reference counted: every operation holds a reference while it works, and the
 //! descriptor is released when the last one is gone (at once, or within one slice for a worker
 //! whose `poll` the shutdown did not wake), so a `poll` never sees a closed or reused descriptor
-//! and `close` waits for nobody.
+//! and `close` waits for nobody. (The connection that a listener makes to itself to wake an
+//! accept is started and not waited for either; its socket is kept in the listener's shared
+//! state, which every waiting accept holds, so it is not closed before the accept has left.)
 //!
 //! A `Conn` is full duplex. Reads wait for one turn queue, writes (and `close_write`, which
 //! must not cut a write that is still queued) for another, and `close` takes neither: two
@@ -1745,6 +1747,11 @@ struct ListenShared {
     /// Connections accepted for a caller that was cancelled before it could take them. The
     /// next `accept` returns them first (see the module comment).
     pending: Mutex<VecDeque<TcpStream>>,
+    /// The socket of the connection that `close` made to wake an accept. It is kept, not waited
+    /// for: a socket that is closed while its handshake is still in flight withdraws the
+    /// connection (macOS), so it lives as long as this state does, and an accept that waits holds
+    /// a reference to the state, so it outlives the wake-up it is for.
+    wake: Mutex<Option<Socket>>,
     addr: String,
 }
 
@@ -1795,6 +1802,7 @@ impl ListenShared {
             closed: AtomicBool::new(false),
             accepts: Turns::new(),
             pending: Mutex::new(VecDeque::new()),
+            wake: Mutex::new(None),
             addr,
         })
     }
@@ -1888,7 +1896,8 @@ impl ListenShared {
             // does: the wait sees a readable listener, the accept looks at `closed` and
             // leaves, and the connection goes away with the socket. It is made before the
             // shutdown, while the port is still ours: afterwards another program could have it.
-            wake_listener(&self.addr);
+            let wake = wake_listener(&self.addr);
+            *self.wake.lock().unwrap_or_else(PoisonError::into_inner) = wake;
             let _ = SockRef::from(&*listener).shutdown(Shutdown::Read);
         }
         self.accepts.wake();
@@ -1910,36 +1919,21 @@ fn loopback_for(addr: SocketAddr) -> SocketAddr {
 }
 
 /// Makes a listener at `addr` readable by connecting to it (on loopback when it listens on every
-/// interface). It returns when the handshake is over (or after `WAKE_PATIENCE`), and the
-/// connection is dropped.
-fn wake_listener(addr: &str) {
-    let Ok(addr) = addr.parse::<SocketAddr>().map(loopback_for) else {
-        return;
-    };
-    let Ok(sock) = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP)) else {
-        return;
-    };
-    if sock.set_nonblocking(true).is_err() {
-        return;
-    }
-    match sock.connect(&SockAddr::from(addr)) {
-        Ok(()) => {}
-        // The socket is kept until the handshake is over, because a socket that is closed
-        // while it still waits for the answer to its first packet takes the connection with
-        // it. Linux hands loopback packets on inside the `connect` call itself, so there the
-        // handshake is over when the call returns; macOS queues them for another thread, and
-        // the listener then only ever sees a connection that was withdrawn (it never becomes
-        // readable). The wait is short and bounded: on loopback the handshake takes
-        // microseconds, and `close` must not wait for more.
-        Err(e) if in_progress(&e) => {
-            let _ = sys::wait_ready(&sock, true, WAKE_PATIENCE);
-        }
-        Err(_) => {}
-    }
+/// interface), without waiting for the connection to complete. Returns the socket of the
+/// connection, which the caller must keep until the accept it is for has left: a socket that is
+/// closed while it still waits for the answer to its first packet takes the connection with it.
+/// Linux hands loopback packets on inside the `connect` call itself, so there the handshake is
+/// over when the call returns; macOS queues them for another thread, and the listener then only
+/// ever sees a connection that was withdrawn (it never becomes readable). Not waiting is also
+/// what lets `close` return at once when the accept queue is full and the handshake cannot end.
+fn wake_listener(addr: &str) -> Option<Socket> {
+    let addr = addr.parse::<SocketAddr>().map(loopback_for).ok()?;
+    let sock = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP)).ok()?;
+    sock.set_nonblocking(true).ok()?;
+    // Started, not finished: `EINPROGRESS` is the usual answer, and the system goes on.
+    let _ = sock.connect(&SockAddr::from(addr));
+    Some(sock)
 }
-
-/// The longest `wake_listener` waits for the handshake of its connection to finish.
-const WAKE_PATIENCE: Duration = Duration::from_millis(200);
 
 impl HostType for Listener {
     const NAME: &'static str = "Listener";
@@ -2581,9 +2575,47 @@ mod tests {
         let addr = l.local_addr().unwrap().to_string();
         let started = Instant::now();
         assert!(!sys::wait_ready(&l, false, Duration::from_millis(20)).unwrap());
-        wake_listener(&addr);
+        // Kept open while the wait lasts, as `close` keeps it (macOS withdraws the connection
+        // of a socket that is closed before its handshake is over).
+        let _wake = wake_listener(&addr);
         assert!(sys::wait_ready(&l, false, Duration::from_secs(20)).unwrap());
         assert!(started.elapsed() < Duration::from_secs(15));
+    }
+
+    /// `close` of a listener whose accept queue is full does not wait for the connection it makes
+    /// to wake an accept (that handshake cannot end: the system drops the SYN of a full queue).
+    /// It waited 200 ms for it once. Five listeners are closed and the quickest is measured, so a
+    /// slow moment of the machine cannot fail the test (it would have to hit all five), while the
+    /// waiting version is never under 200 ms.
+    #[test]
+    fn closing_a_listener_with_a_full_accept_queue_does_not_wait() {
+        let mut quickest = Duration::MAX;
+        for _ in 0..5 {
+            let sock = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+            sock.bind(&SockAddr::from(
+                "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            ))
+            .unwrap();
+            sock.listen(1).unwrap();
+            let addr = sock.local_addr().unwrap().as_socket().unwrap();
+            let sh = ListenShared::new(sock.into(), addr.to_string());
+            // Connect until one does not finish (or is refused: then nothing more can be done).
+            let mut clients = Vec::new();
+            while clients.len() < 400 {
+                match TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
+                    Ok(c) => clients.push(c),
+                    Err(_) => break,
+                }
+            }
+            let started = Instant::now();
+            sh.close();
+            quickest = quickest.min(started.elapsed());
+            drop(clients);
+        }
+        assert!(
+            quickest < Duration::from_millis(100),
+            "close took {quickest:?} at the quickest"
+        );
     }
 
     /// The listener of a test, and its address.
