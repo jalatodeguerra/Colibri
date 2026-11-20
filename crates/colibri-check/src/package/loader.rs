@@ -934,7 +934,11 @@ impl<'a> Loader<'a> {
         let t = &self.trees[tree];
         // `std` is reserved for the standard library: `import std.math` is never a file, a
         // dependency or a host module (ARCHITECTURE §13).
-        if path[0] == "std" {
+        // The same goes for every import inside a module of the standard library written in
+        // Colibri: it names the standard library only. Nothing is looked up on disk (the tree's
+        // root is a virtual name, and a folder that happens to be called that is not the
+        // library) and an embedder's own module of the same name does not take part.
+        if path[0] == "std" || self.std_tree == Some(tree) {
             if let Some(name) = std_module(path, self.host_modules) {
                 out.push(Candidate::Std(name));
             }

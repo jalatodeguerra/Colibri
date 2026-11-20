@@ -143,21 +143,12 @@ fn a_panic_names_the_virtual_file() {
 
 #[test]
 fn the_text_may_have_windows_line_endings() {
-    let mut vm = Vm::builder().build();
+    let out = colibri::SharedBuffer::new();
+    let mut vm = Vm::builder().stdout(Box::new(out.clone())).build();
     vm.std_source_module(
         "crlf",
         "pub fn answer() -> int {\r\n    // a comment\r\n    return 42\r\n}\r\n",
     );
-    let out = colibri::SharedBuffer::new();
-    let mut vm = {
-        drop(vm);
-        let mut vm = Vm::builder().stdout(Box::new(out.clone())).build();
-        vm.std_source_module(
-            "crlf",
-            "pub fn answer() -> int {\r\n    // a comment\r\n    return 42\r\n}\r\n",
-        );
-        vm
-    };
     vm.load_source("main.colibri", "import crlf\nprint(crlf.answer())\n")
         .unwrap();
     assert_eq!(out.contents(), "42\n");
@@ -256,4 +247,29 @@ fn a_hot_reload_of_the_program_still_patches_and_ignores_the_module() {
         vm.reload_changed().unwrap(),
         ReloadOutcome::Unchanged
     ));
+}
+
+#[test]
+fn a_feature_of_the_program_is_unknown_inside_the_module() {
+    // The module's tree has no manifest, so it declares no feature: using the program's `fast`
+    // there is an error in the module, not a silent `false`.
+    let src = "@when(fast)\npub fn mode() -> str => \"on\"\n";
+    let cfg = colibri::BuildCfg::default().with_feature("fast");
+    let mut vm = Vm::builder()
+        .stdout(Box::new(std::io::sink()))
+        .build_cfg(cfg)
+        .build();
+    vm.std_source_module("feat", src);
+    let err = vm
+        .load_source("main.colibri", "import feat\nprint(feat.mode())\n")
+        .unwrap_err();
+    let colibri::Error::Compile(report) = &err else {
+        panic!("expected a compile error, got {err}");
+    };
+    let d = report
+        .diagnostics
+        .iter()
+        .find(|d| d.message == "unknown name `fast` in `@when`")
+        .unwrap_or_else(|| panic!("{:?}", report.diagnostics));
+    assert_eq!(report.sources.name(d.span.file), "<std>/feat.colibri");
 }

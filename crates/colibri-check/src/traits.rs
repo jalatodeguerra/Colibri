@@ -276,6 +276,10 @@ impl Env<'_> {
     /// narrow integer types are not: generic code reaches the operator through the runtime type
     /// of the values, which for them carries no width.
     fn operator_implements(&self, ty: &Ty, iface: TypeId, args: &[Ty]) -> Result<Source, Ty> {
+        // A narrow integer is refused before any impl is consulted (see `check_obligation`).
+        if matches!(ty, Ty::Int(t) if !matches!(t, IntTy::I64 | IntTy::U64)) {
+            return Err(ty.clone());
+        }
         let ids: Vec<ImplId> = match key_of(ty) {
             Some(k) if is_binary_operator(iface) => self
                 .op_impls

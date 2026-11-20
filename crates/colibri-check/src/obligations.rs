@@ -29,6 +29,8 @@ pub(crate) enum Origin {
         param: String,
         func: String,
         bound_span: Span,
+        /// The first argument of an operator bound is a type parameter of the function.
+        dyn_rhs: bool,
     },
     /// A `Map` key: it must be hashable and comparable.
     MapKey,
@@ -52,6 +54,26 @@ pub(crate) enum Origin {
         param: String,
         bound_span: Span,
     },
+}
+
+/// An integer type whose values carry no width at run time (`i8`..`u32`).
+fn is_narrow(ty: &Ty) -> bool {
+    matches!(ty, Ty::Int(t) if !matches!(t, crate::types::IntTy::I64 | crate::types::IntTy::U64))
+}
+
+/// The narrow integer an operator bound would hand to run-time dispatch: the bounded type
+/// itself, or the right-hand type when the bound leaves it to a type parameter.
+fn narrow_operand(ob: &Obligation) -> Option<Ty> {
+    if !matches!(ob.origin, Origin::Bound { .. }) {
+        return None;
+    }
+    if is_narrow(&ob.ty) {
+        return Some(ob.ty.clone());
+    }
+    match (&ob.origin, ob.args.first()) {
+        (Origin::Bound { dyn_rhs: true, .. }, Some(a)) if is_narrow(a) => Some(a.clone()),
+        _ => None,
+    }
 }
 
 impl Checker<'_> {
@@ -147,6 +169,16 @@ impl Checker<'_> {
 
     /// Decides one requirement, reporting it when it does not hold.
     pub fn check_obligation(&mut self, ob: &Obligation) -> bool {
+        // Generic code reaches an operator through the run-time type of the values, and a
+        // `Value::Int` of a narrow width carries none: refuse the narrow integers wherever a
+        // bound could hand one to that dispatch, before any impl is consulted.
+        if crate::types::is_operator(ob.iface)
+            && let Some(narrow) = narrow_operand(ob)
+        {
+            let diag = self.explain(ob, &narrow);
+            self.report(diag);
+            return false;
+        }
         let blame = match self.env().implements(&ob.ty, ob.iface, &ob.args) {
             Ok(_) => match ob.origin {
                 // A key must also be comparable for equality.
@@ -248,16 +280,19 @@ impl Checker<'_> {
                 param,
                 func,
                 bound_span,
+                ..
             } => {
-                if crate::types::is_operator(ob.iface)
-                    && blame == &ob.ty
-                    && matches!(blame, Ty::Int(t) if !matches!(t, crate::types::IntTy::I64 | crate::types::IntTy::U64))
-                {
-                    return Diagnostic::error(
+                if crate::types::is_operator(ob.iface) && is_narrow(blame) {
+                    let name = &self.types[ob.iface.0 as usize].name;
+                    let message = if blame == &ob.ty {
+                        format!("`{blamed}` cannot be used for `{param}: {name}` yet")
+                    } else {
                         format!(
-                            "`{shown}` cannot be used for `{param}: {}` yet",
-                            self.types[ob.iface.0 as usize].name
-                        ),
+                            "`{blamed}` cannot be used as the right-hand type of `{param}: {name}` yet"
+                        )
+                    };
+                    return Diagnostic::error(
+                        message,
                         ob.span,
                     )
                     .with_label(
@@ -319,6 +354,15 @@ impl Checker<'_> {
                 };
                 format!(
                     "{kind} is ordered by its parts, and this one has a part that cannot be ordered; implement `Ord` for it: `impl Ord for {blamed} {{ fn cmp(self, other: {blamed}) -> int {{ ... }} }}`"
+                )
+            }
+            Ty::Int(_) | Ty::Float | Ty::F32 | Ty::Str | Ty::Bytes | Ty::Bool | Ty::Char
+                if crate::types::is_operator(ob.iface)
+                    && !matches!(ob.args.first(), Some(Ty::Adt(id, _)) if id.0 >= crate::types::FIRST_USER_TYPE) =>
+            {
+                format!(
+                    "`{blamed}` has no `{}` of this shape and the orphan rule does not let a program add one; use a type of your own, or `int`, `float`, `u64` or `str` where the bound allows it",
+                    self.types[ob.iface.0 as usize].name
                 )
             }
             _ => format!("add `impl {iface} for {blamed} {{ ... }}`"),

@@ -276,13 +276,15 @@ impl<'a> Checker<'a> {
         // The orphan rule (DESIGN §9.2): the interface or the type must be ours. Everything
         // user-written is one package for now, so only built-in against built-in is refused.
         let target_builtin = !matches!(&target, Ty::Adt(id, _) if id.0 >= FIRST_USER_TYPE);
-        // An operator interface may also be implemented for a built-in type when one of its
-        // type arguments is not built in: `impl Mul[Vec3, Vec3] for float` is the `float` side of
-        // `2.0 * v`, and cannot change what `2.0 * 3.0` means.
+        // An operator interface may also be implemented for a number type when the right-hand
+        // type `R` (its first argument) is a type of the program: `impl Mul[Vec3, Vec3] for
+        // float` is the `float` side of `2.0 * v`, and cannot change what `2.0 * 3.0` means. The
+        // output type does not count, and neither does a type parameter `R`: either could be a
+        // built-in type, and a built-in operator must never be replaceable. Only numbers can be
+        // the left operand of a user type, so no other built-in type qualifies.
         let theirs = is_binary_operator(iface)
-            && iface_args
-                .iter()
-                .any(|a| matches!(a, Ty::Adt(id, _) if id.0 >= FIRST_USER_TYPE));
+            && matches!(&target, Ty::Int(_) | Ty::Float | Ty::F32)
+            && matches!(iface_args.first(), Some(Ty::Adt(id, _)) if id.0 >= FIRST_USER_TYPE);
         if iface.0 < FIRST_USER_TYPE && target_builtin && !theirs {
             self.report(
                 Diagnostic::error(
@@ -290,7 +292,7 @@ impl<'a> Checker<'a> {
                     iface_expr.span,
                 )
                 .with_hint(if is_binary_operator(iface) {
-                    format!("the orphan rule: `impl I for T` must be written in the package that defines `I` or `T`; an operator interface may also be implemented for a built-in type when one of its type arguments is yours (`impl {iface_name}[YourType, YourType] for {target_shown}`)")
+                    format!("the orphan rule: `impl I for T` must be written in the package that defines `I` or `T`; an operator interface may also be implemented for a number type when its right-hand type is yours (`impl {iface_name}[YourType, YourType] for float`); the output type and a type parameter do not count")
                 } else {
                     "the orphan rule: `impl I for T` must be written in the package that defines `I` or `T`; wrap the type in your own struct, or declare your own interface".to_string()
                 }),

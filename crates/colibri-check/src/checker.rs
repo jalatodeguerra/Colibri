@@ -145,6 +145,12 @@ pub struct Checked {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// The names of the types of the standard `vec` module, for the hints that lead a program that
+/// used them as built-ins to `import vec`.
+pub(crate) fn is_vec_name(name: &str) -> bool {
+    matches!(name, "vec2" | "vec3" | "vec4" | "ivec2" | "ivec3" | "ivec4")
+}
+
 /// The implementations of the operator interfaces: for a type and an interface, one per
 /// right-hand type (`None` when it is a type parameter).
 pub(crate) type OpImpls = HashMap<(TypeKey, TypeId), Vec<(Option<TypeKey>, ImplId)>>;
@@ -1441,6 +1447,12 @@ impl<'a> Checker<'a> {
         let mut diag = Diagnostic::error(format!("unknown type `{name}`"), span);
         if let Some(hint) = self.excluded_hint(self.cur_mod, name) {
             self.report(diag.with_hint(hint));
+            return;
+        }
+        if is_vec_name(name) {
+            self.report(diag.with_hint(format!(
+                "the vector types are in the `vec` module: write `import vec` and then `vec.{name}`, or `import vec.{{{name}}}`"
+            )));
             return;
         }
         let known = ["int", "float", "bool", "str", "char", "i64", "f64"];

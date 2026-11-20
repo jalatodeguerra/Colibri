@@ -6,7 +6,7 @@
 // arithmetic for `ivecN`. `v * s` and `v / s` take a scalar (a `float` narrowed to `f32`, an
 // `i32`), and `s * v` is written for `float` and `i32` here. A struct of floats has `==` but no
 // hash, so a `vecN` is not a `Set` element or a `Map` key, while an `ivecN` is both.
-import math
+import std.math
 
 /// A float vector of 2 components, `f32` each; 4 bytes per component, laid out like C.
 @repr(C)
@@ -119,17 +119,17 @@ impl ivec2 {
     pub fn dot(self, other: ivec2) -> i32 => self.x * other.x + self.y * other.y
     /// The squared length.
     pub fn len_sq(self) -> i32 => self.dot(self)
-    /// The length, computed exactly and rounded once.
+    /// The length, computed in `float` (never traps for a valid vector) and rounded once to `f32`.
     pub fn len(self) -> f32 {
-        let s = int(self.x) * int(self.x) + int(self.y) * int(self.y)
-        return f32(float(s).sqrt())
+        let s = float(self.x) * float(self.x) + float(self.y) * float(self.y)
+        return f32(s.sqrt())
     }
-    /// The distance between two points, computed exactly and rounded once.
+    /// The distance between two points, computed in `float` and rounded once to `f32`.
     pub fn distance(self, other: ivec2) -> f32 {
-        let dx = int(self.x) - int(other.x)
-        let dy = int(self.y) - int(other.y)
+        let dx = float(self.x) - float(other.x)
+        let dy = float(self.y) - float(other.y)
         let s = dx * dx + dy * dy
-        return f32(float(s).sqrt())
+        return f32(s.sqrt())
     }
     /// Each component made positive; `i32` `MIN` panics.
     pub fn abs(self) -> ivec2 => ivec2 { x: self.x.abs(), y: self.y.abs() }
@@ -307,18 +307,20 @@ impl ivec3 {
     pub fn dot(self, other: ivec3) -> i32 => self.x * other.x + self.y * other.y + self.z * other.z
     /// The squared length.
     pub fn len_sq(self) -> i32 => self.dot(self)
-    /// The length, computed exactly and rounded once.
+    /// The length, computed in `float` (never traps for a valid vector) and rounded once to `f32`.
     pub fn len(self) -> f32 {
-        let s = int(self.x) * int(self.x) + int(self.y) * int(self.y) + int(self.z) * int(self.z)
-        return f32(float(s).sqrt())
+        let s = float(self.x) * float(self.x) +
+            float(self.y) * float(self.y) +
+            float(self.z) * float(self.z)
+        return f32(s.sqrt())
     }
-    /// The distance between two points, computed exactly and rounded once.
+    /// The distance between two points, computed in `float` and rounded once to `f32`.
     pub fn distance(self, other: ivec3) -> f32 {
-        let dx = int(self.x) - int(other.x)
-        let dy = int(self.y) - int(other.y)
-        let dz = int(self.z) - int(other.z)
+        let dx = float(self.x) - float(other.x)
+        let dy = float(self.y) - float(other.y)
+        let dz = float(self.z) - float(other.z)
         let s = dx * dx + dy * dy + dz * dz
-        return f32(float(s).sqrt())
+        return f32(s.sqrt())
     }
     /// Each component made positive; `i32` `MIN` panics.
     pub fn abs(self) -> ivec3 => ivec3 { x: self.x.abs(), y: self.y.abs(), z: self.z.abs() }
@@ -538,22 +540,22 @@ impl ivec4 {
         self.w * other.w
     /// The squared length.
     pub fn len_sq(self) -> i32 => self.dot(self)
-    /// The length, computed exactly and rounded once.
+    /// The length, computed in `float` (never traps for a valid vector) and rounded once to `f32`.
     pub fn len(self) -> f32 {
-        let s = int(self.x) * int(self.x) +
-            int(self.y) * int(self.y) +
-            int(self.z) * int(self.z) +
-            int(self.w) * int(self.w)
-        return f32(float(s).sqrt())
+        let s = float(self.x) * float(self.x) +
+            float(self.y) * float(self.y) +
+            float(self.z) * float(self.z) +
+            float(self.w) * float(self.w)
+        return f32(s.sqrt())
     }
-    /// The distance between two points, computed exactly and rounded once.
+    /// The distance between two points, computed in `float` and rounded once to `f32`.
     pub fn distance(self, other: ivec4) -> f32 {
-        let dx = int(self.x) - int(other.x)
-        let dy = int(self.y) - int(other.y)
-        let dz = int(self.z) - int(other.z)
-        let dw = int(self.w) - int(other.w)
+        let dx = float(self.x) - float(other.x)
+        let dy = float(self.y) - float(other.y)
+        let dz = float(self.z) - float(other.z)
+        let dw = float(self.w) - float(other.w)
         let s = dx * dx + dy * dy + dz * dz + dw * dw
-        return f32(float(s).sqrt())
+        return f32(s.sqrt())
     }
     /// Each component made positive; `i32` `MIN` panics.
     pub fn abs(self) -> ivec4 => ivec4 {

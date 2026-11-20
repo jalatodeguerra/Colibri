@@ -56,6 +56,8 @@ enum Pick {
     None,
     /// An untyped literal fits more than one impl.
     Ambiguous,
+    /// The operand has no type yet and several impls could take it.
+    Unknown,
 }
 
 /// The type an operator impl takes and gives, instantiated for one use.
@@ -131,6 +133,7 @@ impl FnCtx<'_, '_> {
             return match fits.as_slice() {
                 [] => Pick::None,
                 [one] => Pick::One(*one, false),
+                _ if kind == VarKind::General => Pick::Unknown,
                 _ => Pick::Ambiguous,
             };
         }
@@ -484,6 +487,22 @@ impl FnCtx<'_, '_> {
                 );
                 None
             }
+            Pick::Unknown => {
+                let sym = op_symbol(op);
+                let lt = self.show(&l.ty);
+                let rights = self.rhs_names(cands);
+                self.ck.report(
+                    Diagnostic::error(
+                        format!(
+                            "cannot tell which `{sym}` this means: `{lt}` implements it with {rights} on the right, and the type of the right operand is not known yet"
+                        ),
+                        span,
+                    )
+                    .with_label(r.span, "its type is decided later in the function")
+                    .with_hint("give it a type where it is declared (for example `var xs: List[float] = []`) or convert it, so that the impl can be chosen here"),
+                );
+                None
+            }
             Pick::None => {
                 self.report_no_operator(op, iface, cands, l, r, span);
                 None
@@ -504,6 +523,56 @@ impl FnCtx<'_, '_> {
         }
     }
 
+    /// When a number is on the left of a type of the program that implements the operator only
+    /// with the number on the right, or for another number type on the left: what to write.
+    pub(crate) fn hint_number_on_the_left(&self, op: AstBin, l: &Ty, r: &Ty) -> Option<String> {
+        let iface = match op {
+            AstBin::Add => ADD,
+            AstBin::Sub => SUB,
+            AstBin::Mul => MUL,
+            AstBin::Div => DIV,
+            _ => return None,
+        };
+        let (l, r) = (self.infer.shallow(l), self.infer.shallow(r));
+        if !matches!(l, Ty::Int(_) | Ty::Float | Ty::F32 | Ty::Infer(_)) {
+            return None;
+        }
+        if !matches!(&r, Ty::Adt(id, _) if id.0 >= FIRST_USER_TYPE) {
+            return None;
+        }
+        let rt = self.show(&r);
+        let rk = key_of(&r)?;
+        // The number types that have an impl taking `r` on the right.
+        let lefts: Vec<String> = SCALAR_KEYS
+            .iter()
+            .filter(|k| {
+                self.ck
+                    .op_impls
+                    .get(&(**k, iface))
+                    .is_some_and(|list| list.iter().any(|(rhs, _)| *rhs == Some(rk)))
+            })
+            .map(|k| self.show(&scalar_ty(*k)))
+            .collect();
+        let sym = op_symbol(op);
+        let own: Vec<(Option<TypeKey>, ImplId)> = self
+            .operator_candidates(&r, iface)
+            .into_iter()
+            .filter(|(k, _)| k.is_some_and(|k| SCALAR_KEYS.contains(&k)))
+            .collect();
+        if let [first, ..] = lefts.as_slice() {
+            Some(format!(
+                "a number on the left of `{sym}` must be a `{first}` here: convert it, for example `{first}(n) {sym} v`, or write the `{rt}` first"
+            ))
+        } else if !own.is_empty() {
+            Some(format!(
+                "`{rt}` takes a number on the right of `{sym}` but nothing takes a number on the left: write the `{rt}` first (`v {sym} n`), or implement `impl {} [{rt}, {rt}] for <number>`",
+                self.ck.types[iface.0 as usize].name
+            ))
+        } else {
+            None
+        }
+    }
+
     /// "cannot apply `*` to `A` and `B`", with what the left type does implement.
     fn report_no_operator(
         &mut self,
@@ -517,7 +586,13 @@ impl FnCtx<'_, '_> {
         let (lt, rt) = (self.show(&l.ty), self.show(&r.ty));
         let iface_name = self.ck.types[iface.0 as usize].name.clone();
         let method = iface_name.to_lowercase();
-        let hint = if cands.is_empty() {
+        let left_ours =
+            matches!(self.infer.shallow(&l.ty), Ty::Adt(id, _) if id.0 >= FIRST_USER_TYPE);
+        let hint = if cands.is_empty() && !left_ours {
+            format!(
+                "there is no `{iface_name}` for `{lt}` and `{rt}`: a built-in operator cannot be given to built-in types, wrap one in a type of your own"
+            )
+        } else if cands.is_empty() {
             let header = if lt == rt {
                 format!("impl {iface_name} for {lt}")
             } else {
@@ -585,6 +660,17 @@ impl FnCtx<'_, '_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Expr {
+        if iface == NEG {
+            if !args.is_empty() {
+                self.check_args_loosely(args);
+                self.ck.report(Diagnostic::error(
+                    format!("`{}` takes no arguments, found {}", name.name, args.len()),
+                    name.span,
+                ));
+                return self.error_expr(span);
+            }
+            return self.check_user_neg(recv, span);
+        }
         let ast_op = match iface {
             ADD => AstBin::Add,
             SUB => AstBin::Sub,

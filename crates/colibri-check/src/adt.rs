@@ -84,6 +84,22 @@ impl FnCtx<'_, '_> {
                             def.span,
                             format!("`{}` is declared here", def.display_name()),
                         );
+                        let tname = def.display_name().to_string();
+                        let is_vec = crate::checker::is_vec_name(&tname);
+                        let swizzle = is_vec
+                            && (2..=4).contains(&name.name.len())
+                            && name.name.chars().all(|c| "xyzw".contains(c));
+                        if self.ck.methods.contains_key(&(*id, name.name.clone())) {
+                            diag = diag.with_hint(format!(
+                                "`{0}` is a method, not a field: call it, `value.{0}()`",
+                                name.name
+                            ));
+                        } else if swizzle {
+                            diag = diag.with_hint(format!(
+                                "there are no swizzles: `xy()` and `xyz()` cut a longer vector short, and any other order is written with the constructor, for example `{}(v.z, v.y, v.x)`",
+                                tname.trim_start_matches('i')
+                            ));
+                        }
                         self.ck.report(diag);
                         None
                     }

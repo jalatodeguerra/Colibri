@@ -218,6 +218,12 @@ impl FnCtx<'_, '_> {
                     if out.iter().any(|(i, _)| *i == b.iface) {
                         continue;
                     }
+                    if crate::types::is_operator(b.iface) && index_of(self, b.iface).is_some() {
+                        // `a.add(b)` means what `a + b` means: the impl is chosen by the
+                        // right-hand type too, and a number runs the built-in operation.
+                        out.push((b.iface, Via::Operator { iface: b.iface }));
+                        continue;
+                    }
                     if let Some(index) = index_of(self, b.iface) {
                         out.push((
                             b.iface,

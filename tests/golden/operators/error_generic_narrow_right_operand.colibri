@@ -1,0 +1,27 @@
+// An operator bound whose right-hand type is a type parameter finds its impl from the run-time
+// type of the right value, and an `i32` carries no width: refused, instead of running the `int`
+// impl or none at all.
+struct Money { c: int }
+impl Mul[i32] for Money {
+    fn mul(self, k: i32) -> Money => Money { c: self.c * int(k) }
+}
+impl Mul[int] for Money {
+    fn mul(self, k: int) -> Money => Money { c: self.c * k * 1000 }
+}
+
+fn scale[T: Mul[U, T], U](a: T, k: U) -> T => a * k
+
+// a bound that names the right-hand type is resolved statically and works
+fn scale_i32[T: Mul[i32, T]](a: T, k: i32) -> T => a * k
+
+fn main() {
+    let k: i32 = 3
+    let m = Money { c: 2 }
+    print((m * k).c)
+    print(scale_i32(m, k).c)
+    print(scale(m, 3).c)
+    print(scale(m, k).c) // error: `i32` cannot be used as the right-hand type of `T: Mul` yet
+}
+// expect: 6
+// expect: 6
+// expect: 6000

@@ -361,6 +361,10 @@ impl FnCtx<'_, '_> {
                     return self.check_user_neg(value, span);
                 }
                 if !self.is_numeric(&value.ty) && !self.infer.shallow(&value.ty).is_error() {
+                    if matches!(self.infer.shallow(&value.ty), Ty::Infer(_)) {
+                        self.report_unknown_operand("-", value.span, span);
+                        return self.error_expr(span);
+                    }
                     let shown = self.show(&value.ty);
                     self.ck.report(Diagnostic::error(
                         format!("cannot negate a value of type `{shown}`"),
@@ -657,6 +661,7 @@ impl FnCtx<'_, '_> {
                 return self.check_user_arith(op, iface, l, rhs, span);
             }
         }
+        let left_unknown = matches!(self.infer.shallow(&l.ty), Ty::Infer(_));
         let mut r = self.check_expr(rhs, Some(&l.ty));
         // A number on the left and a user type on the right: `2 * v`.
         if let Some(iface) = iface
@@ -673,6 +678,12 @@ impl FnCtx<'_, '_> {
             t => self.is_numeric(&t),
         };
         if !ok {
+            if left_unknown && iface.is_some() {
+                // The right operand fixed the type, but the left one had none when the
+                // operator had to be chosen, so a type of the program could not be asked.
+                self.report_unknown_operand(op_symbol(op), l.span, span);
+                return self.error_expr(span);
+            }
             let shown = self.show(&l.ty);
             let mut diag = Diagnostic::error(
                 format!(
@@ -681,7 +692,14 @@ impl FnCtx<'_, '_> {
                 ),
                 span,
             );
-            if shown == "str" {
+            if matches!(self.infer.shallow(&l.ty), Ty::Adt(id, _) if id.0 >= crate::types::FIRST_USER_TYPE)
+                && iface.is_none()
+            {
+                diag = diag.with_hint(format!(
+                    "`{}` is defined for numbers only; there is no interface for it, so a type of your own cannot implement it (write a method such as `rem` instead)",
+                    op_symbol(op)
+                ));
+            } else if shown == "str" {
                 diag = diag.with_hint("`+` joins strings; there is no other arithmetic on `str`");
             } else if shown == "Bytes" {
                 diag =
@@ -701,6 +719,19 @@ impl FnCtx<'_, '_> {
             ty,
             span,
         )
+    }
+
+    /// The left operand of an operator has no type yet, so the operator of a type of the program
+    /// cannot be chosen (it is chosen when the operator is checked, not at the end of the body).
+    pub(crate) fn report_unknown_operand(&mut self, symbol: &str, operand: Span, span: Span) {
+        self.ck.report(
+            Diagnostic::error(
+                format!("the type of the operand of `{symbol}` is not known yet"),
+                span,
+            )
+            .with_label(operand, "its type is decided later in the function")
+            .with_hint("give it a type where it is declared (for example `let xs: List[Money] = []`) or convert it, so that the operator can be chosen here"),
+        );
     }
 
     /// Makes both operands one type, or reports why that cannot be. The one exception is an
@@ -740,6 +771,16 @@ impl FnCtx<'_, '_> {
             diag = diag.with_hint(
                 "numbers of different types never mix (only `f32` widens to `float`); convert one side explicitly, for example `int(x)` or `f32(x)`, or write the literal with the right type",
             );
+        } else if matches!(op, AstBin::Rem)
+            && [&l.ty, &r.ty].iter().any(|t| {
+                matches!(self.infer.shallow(t), Ty::Adt(id, _) if id.0 >= crate::types::FIRST_USER_TYPE)
+            })
+        {
+            diag = diag.with_hint(
+                "`%` is defined for numbers only; there is no interface for it, so a type of your own cannot implement it (write a method such as `rem` instead)",
+            );
+        } else if let Some(hint) = self.hint_number_on_the_left(op, &l.ty, &r.ty) {
+            diag = diag.with_hint(hint);
         } else if lt == "str" || rt == "str" {
             diag = diag.with_hint("both sides must have the same type");
         }

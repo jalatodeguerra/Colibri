@@ -1,0 +1,31 @@
+// `a.add(b)` through a bound means what `a + b` means: the impl is chosen by the right-hand
+// type, whatever order the impls are written in.
+struct Money { c: int }
+impl Add[int] for Money {
+    fn add(self, o: int) -> Money => Money { c: self.c + o * 1000 }
+}
+impl Add for Money {
+    fn add(self, o: Money) -> Money => Money { c: self.c + o.c }
+}
+
+struct Cash { c: int }
+impl Add for Cash {
+    fn add(self, o: Cash) -> Cash => Cash { c: self.c + o.c }
+}
+impl Add[int] for Cash {
+    fn add(self, o: int) -> Cash => Cash { c: self.c + o * 1000 }
+}
+
+fn plus_int[T: Add[int, T]](a: T) -> T => a.add(5)
+fn plus_self[T: Add](a: T) -> T => a.add(a)
+
+fn main() {
+    print(plus_self(Money { c: 1 }).c)
+    print(plus_int(Money { c: 1 }).c)
+    print(plus_self(Cash { c: 1 }).c)
+    print(plus_int(Cash { c: 1 }).c)
+}
+// expect: 2
+// expect: 5001
+// expect: 2
+// expect: 5001

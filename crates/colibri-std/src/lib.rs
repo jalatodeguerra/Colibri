@@ -224,6 +224,15 @@ mod tests {
         for source in sources() {
             assert!(!source.name.contains('.'), "{}", source.name);
             assert!(!MODULES.contains(&source.name), "{}", source.name);
+            // An import inside the library names the standard library only, so no module of
+            // the embedder or of the program's folder can take part.
+            for line in source.text.lines().filter(|l| l.starts_with("import ")) {
+                assert!(
+                    line.starts_with("import std."),
+                    "{}: `{line}` must name `std.<module>`",
+                    source.name
+                );
+            }
         }
     }
 }

@@ -596,7 +596,17 @@ impl Interp {
     ) -> Eval {
         let left = values.first().and_then(runtime_key);
         let right = rhs.or_else(|| values.get(1).and_then(runtime_key));
-        let found = left.and_then(|k| {
+        // Two primitives of one kind always run the built-in operation: no impl can replace it
+        // (the orphan rule), and none is looked up.
+        let primitives = matches!(
+            (values.first(), values.get(1)),
+            (Some(Value::Int(_)), Some(Value::Int(_)))
+                | (Some(Value::U64(_)), Some(Value::U64(_)))
+                | (Some(Value::Float(_)), Some(Value::Float(_)))
+                | (Some(Value::F32(_)), Some(Value::F32(_)))
+                | (Some(Value::Str(_)), Some(Value::Str(_)))
+        );
+        let found = left.filter(|_| !primitives).and_then(|k| {
             let ops = &self.dispatch.operators;
             ops.get(&(k, iface, right))
                 .or_else(|| ops.get(&(k, iface, None)))

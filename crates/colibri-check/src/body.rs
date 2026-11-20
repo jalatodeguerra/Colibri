@@ -1370,6 +1370,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             _ => None,
         };
         let reason = Some((target.span, format!("this is `{}`", self.show(&place_ty))));
+        let left_unknown = matches!(self.infer.shallow(&place_ty), Ty::Infer(_));
         let stored = if weak && op == AssignOp::Assign {
             rhs = self.coerce_to_weak(rhs, &place_ty, reason.clone())?;
             true
@@ -1384,7 +1385,16 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 Ty::Str | Ty::Bytes => arith == ArithOp::Add,
                 t => self.is_numeric(&t),
             };
-            if !ok {
+            if !ok && left_unknown {
+                let sym = match op {
+                    AssignOp::Add => "+=",
+                    AssignOp::Sub => "-=",
+                    AssignOp::Mul => "*=",
+                    AssignOp::Div => "/=",
+                    _ => "%=",
+                };
+                self.report_unknown_operand(sym, target.span, span);
+            } else if !ok {
                 let sym = match op {
                     AssignOp::Add => "+=",
                     AssignOp::Sub => "-=",
@@ -1437,6 +1447,13 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         let mut diag = Diagnostic::error(format!("unknown name `{name}`"), span);
         if let Some(hint) = self.ck.excluded_hint(self.ck.cur_mod, name) {
             self.ck.report(diag.with_hint(hint));
+            return;
+        }
+        if crate::checker::is_vec_name(name) {
+            diag = diag.with_hint(format!(
+                "the vector types are in the `vec` module: write `import vec` and then `vec.{name}(..)`, or `import vec.{{{name}}}`"
+            ));
+            self.ck.report(diag);
             return;
         }
         if name == "wait_frames" {

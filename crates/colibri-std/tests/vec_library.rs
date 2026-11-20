@@ -102,7 +102,11 @@ fn a_script_function_with_vectors_in_its_signature_is_not_a_typed_entry_point() 
         "import vec\n\nfn advance(p: vec.vec2, dt: f32) -> vec.vec2 => p * dt\nfn len(x: f32, y: f32) -> f32 => vec.vec2(x, y).len()\nfn main() {}\n",
     )
     .unwrap();
-    assert!(vm.get_fn::<(Value, f32), Value>("advance").is_err());
+    let err = vm.get_fn::<(Value, f32), Value>("advance").unwrap_err();
+    assert!(
+        matches!(&err, colibri::Error::SignatureMismatch { name, .. } if name == "advance"),
+        "{err:?}"
+    );
     let len = vm.get_fn::<(f32, f32), f32>("len").unwrap();
     assert_eq!(len.call(&mut vm, (3.0, 4.0)).unwrap(), 5.0);
 }
@@ -117,13 +121,43 @@ fn install_vec_gives_import_vec_and_math_without_the_rest_of_std() {
     .unwrap();
     vm.run_main().unwrap();
     assert_eq!(out.contents(), "vec2(1.0, 0.0)\ntrue\n");
+    // Without `install_vec` the module does not exist.
     let mut other = colibri::Vm::builder()
         .stdout(Box::new(std::io::sink()))
         .build();
     let err = other
         .load_source("game.colibri", "import vec\nfn main() {}\n")
         .unwrap_err();
-    assert!(err.to_string().contains("vec"), "{err}");
+    let colibri::Error::Compile(report) = &err else {
+        panic!("expected a compile error, got {err:?}");
+    };
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.message == "no module `vec`"),
+        "{:?}",
+        report.diagnostics
+    );
+}
+
+/// An embedder's own host module called `math` does not change what `import math` means inside
+/// the library: it imports the standard `math`.
+#[test]
+fn a_host_module_named_math_does_not_break_import_vec() {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    colibri_std::install(&mut vm).unwrap();
+    vm.module("math")
+        .register_fn("twice", |x: i64| x * 2)
+        .unwrap();
+    vm.load_source(
+        "g.colibri",
+        "import vec\nfn main() {\n    print(vec.from_angle(0.0))\n    print(vec.vec2(1, 2) * 2)\n}\n",
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "vec2(1.0, 0.0)\nvec2(2.0, 4.0)\n");
 }
 
 #[test]
