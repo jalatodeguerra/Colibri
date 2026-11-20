@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use colibri_runtime as colibri;
-use wire::{EVENT, Read1, Response, Wire, get, request};
+use wire::{EVENT, Read1, Wire, get, request};
 
 /// The longest a whole server run may take once it is told to stop.
 const CEILING: Duration = Duration::from_secs(30);
@@ -291,7 +291,9 @@ fn a_get_is_answered_with_a_length_and_a_date() {
     let server = Server::hello();
     let mut w = server.connect();
     let r = w.call(get("/"));
+    assert_eq!(r.version, "HTTP/1.1");
     assert_eq!(r.status, 200);
+    assert_eq!(r.reason, "OK");
     assert_eq!(r.text(), "hello\n");
     assert_eq!(r.header("content-length"), Some("6"));
     drop(w);
@@ -725,9 +727,8 @@ fn an_unread_body_declared_a_megabyte_long_ends_the_connection() {
 // Timeouts: small options, a lower bound that the close did not come before, and a ceiling
 // ---------------------------------------------------------------------------------------------
 
-/// The timeouts under test, in seconds. A close may not come before it, less a little for the
-/// clock of the system; it must come well within `EVENT`.
-const SMALL: f64 = 0.5;
+/// A close may not come before the timeout under test (0.5 s), less a little for the clock of
+/// the system; it must come well within `EVENT`.
 const NOT_BEFORE: Duration = Duration::from_millis(450);
 
 #[test]
@@ -1147,4 +1148,45 @@ fn a_client_that_sends_half_a_head_does_not_hold_up_another_one() {
     drop(slow);
     drop(fast);
     assert_eq!(server.finish().seen.len(), 11);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The capabilities the module needs
+// ---------------------------------------------------------------------------------------------
+
+/// What loading a program that calls `httpd.listen` says when the host grants only `caps`.
+fn load_error_with(caps: &[colibri::Cap]) -> String {
+    let mut builder = colibri::Vm::builder().stdout(Box::new(std::io::sink()));
+    for cap in caps {
+        builder = builder.allow(*cap);
+    }
+    let mut vm = builder.build();
+    colibri_std::install(&mut vm).expect("installs");
+    let source = "import httpd\n\nfn main() {\n    let _ = httpd.listen(\"127.0.0.1:0\")\n}\n";
+    match vm.load_source("app/main.colibri", source) {
+        Ok(()) => panic!("the program loaded although the host grants only {caps:?}"),
+        Err(e) => e.render(false),
+    }
+}
+
+// The golden files can only mark an error in the program's own file, and these are inside the
+// module (`<std>/httpd.colibri`, gap G6), so the text is read here.
+#[test]
+fn a_host_that_grants_no_net_gets_a_compile_error_that_names_the_capability_and_the_module() {
+    let text = load_error_with(&[colibri::Cap::Os]);
+    assert!(
+        text.contains("`net.listen` needs the `net` capability"),
+        "{text}"
+    );
+    assert!(text.contains("httpd.colibri"), "{text}");
+}
+
+#[test]
+fn a_host_that_grants_no_os_gets_a_compile_error_for_the_clock_of_the_date_header() {
+    let text = load_error_with(&[colibri::Cap::Net]);
+    assert!(
+        text.contains("`time.unix` needs the `os` capability"),
+        "{text}"
+    );
+    assert!(!text.contains("`net.listen`"), "{text}");
 }

@@ -114,11 +114,6 @@ impl Wire {
         assert!(self.try_send(data.as_ref()), "the write failed");
     }
 
-    /// Ends the sending side only.
-    pub fn shutdown_write(&mut self) {
-        let _ = self.stream.shutdown(std::net::Shutdown::Write);
-    }
-
     /// Sets a reset on close (`SO_LINGER` 0) and drops the connection.
     pub fn reset(self) {
         let sock = socket2::SockRef::from(&self.stream);
@@ -308,23 +303,6 @@ impl Wire {
                 Fill::Data => {}
                 Fill::Closed => return std::mem::take(&mut self.buf),
                 Fill::Timeout => panic!("the connection did not end within {EVENT:?}"),
-            }
-        }
-    }
-
-    /// Whether the connection ends within `wait`, reading whatever arrives meanwhile. Returns
-    /// `Some(bytes read)` if it ended and `None` if it did not.
-    pub fn ends_within(&mut self, wait: Duration) -> Option<Vec<u8>> {
-        let deadline = std::time::Instant::now() + wait;
-        loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if left.is_zero() {
-                return None;
-            }
-            match self.fill(left) {
-                Fill::Data => {}
-                Fill::Closed => return Some(std::mem::take(&mut self.buf)),
-                Fill::Timeout => return None,
             }
         }
     }
