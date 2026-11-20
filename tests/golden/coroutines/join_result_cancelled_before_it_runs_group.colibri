@@ -1,0 +1,30 @@
+// The same when the waiter is a member of a group that a sibling cancels.
+let gate = Signal()
+let group = CoGroup()
+
+fn boom() {
+    wait_for(gate)
+    panic("not lost via group")
+}
+
+fn waiter(c: Coroutine[()]) {
+    defer print("member unwound")
+    let r = c.join_result()
+    print("not reached {r.is_err()}")
+}
+
+fn killer() {
+    wait_for(gate)
+    group.cancel()
+}
+
+fn main() {
+    let b = go boom()
+    go killer()
+    group.go(waiter(b))
+    gate.emit()
+    task.tick(0.0)
+}
+
+// expect: member unwound
+// panic: not lost via group

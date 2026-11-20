@@ -1,0 +1,30 @@
+// A panic after a pause, while a `join_result` waits: the waiter gets `err`, the program
+// does not fail, and the other coroutines of the tick are not disturbed.
+fn boom() {
+    wait(1.0)
+    panic("late")
+}
+
+fn bystander() {
+    wait(1.0)
+    print("bystander runs")
+}
+
+fn parent(c: Coroutine[()]) {
+    let r = c.join_result()
+    print("is_err {r.is_err()}")
+    match r {
+        ok(_)  => print("ok?")
+        err(e) => print("err: {e.message()}")
+    }
+}
+
+fn main() {
+    let c = go boom()
+    go parent(c)
+    go bystander()
+}
+
+// expect: bystander runs
+// expect: is_err true
+// expect: err: the coroutine `boom` panicked: late

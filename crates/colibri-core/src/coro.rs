@@ -3,8 +3,11 @@
 //!
 //! None of it pauses: a coroutine pauses itself in engine code, and the scheduler resumes it
 //! through [`Engine::resume_stack`]. The data is in [`crate::sched`]. Ticks run in a fixed
-//! order: the coroutines whose signal was emitted come first, in emission order, then every
-//! other due coroutine in start order. Each resumption from a tick gets an instruction budget
+//! order: the coroutines that were woken by an event and queued (a signal's waiters, and the
+//! waiters of a `join_result` whose target ended) come first, in the order they were woken, then
+//! every other due coroutine in start order (which includes the waiters of a `join` or
+//! `join_all` that ended, see [`Wake::Woken`]). Nothing is polled for a join: waiters are kept
+//! in lists with what they wait for. Each resumption from a tick gets an instruction budget
 //! of its own; a coroutine's first run shares its starter's.
 
 use colibri_check::hir::Builtin;
@@ -15,6 +18,7 @@ use crate::ctl::{Ctl, Eval, PanicInfo};
 use crate::engine::{Engine, Resumed};
 use crate::fiber::FiberState;
 use crate::heap::ClassObj;
+use crate::host::{err_variant, error_value, ok_variant};
 use crate::prelude::*;
 use crate::sched::*;
 use crate::value::Value;
@@ -76,16 +80,10 @@ pub trait Sched: Engine {
         }
         e.state = State::Running;
         let slot = e.slot;
-        if cancel && let Wake::Signal(sig) = e.wake {
-            // A cancelled waiter leaves the signal's list.
-            if let Some(list) = s.signals.get_mut(&sig) {
-                if let Some(pos) = list.iter().rposition(|w| *w == id) {
-                    list.remove(pos);
-                }
-                if list.is_empty() {
-                    s.signals.remove(&sig);
-                }
-            }
+        if cancel {
+            // A cancelled waiter leaves the list of what it waited for.
+            let wake = std::mem::replace(&mut e.wake, Wake::Ready);
+            s.forget_waiter(id, &wake);
         }
         s.resumptions += 1;
         s.running.push(id);
@@ -159,6 +157,8 @@ pub trait Sched: Engine {
         s.entries.clear();
         s.finished = 0;
         s.signals.clear();
+        s.joiners.clear();
+        s.group_waiters.clear();
         s.signaled.clear();
         s.groups.clear();
         s.ext.clear_completed();
@@ -247,6 +247,50 @@ pub trait Sched: Engine {
     fn wait_on_main(&mut self, fiber: &mut Self::Fiber, seconds: f64, span: Span) -> Eval<()> {
         let deadline = self.core_mut().sched.clock_now() + seconds;
         self.drive_main(fiber, span, "wait", Some(deadline), &mut |_| false)
+    }
+
+    // ---- joining ----
+
+    /// What `join` (`as_result` false) or `join_result` (true) gives for a coroutine that has
+    /// ended. `join` returns the value and panics for a panic or a cancel of the target.
+    /// `join_result` returns `ok(value)`, or `err(e)` for either of those. A panic that the
+    /// target left in the failure queue is taken out of it: whoever joins it reports it
+    /// instead. `status` is the handle's status, which is not `RUNNING`. The pausing is the
+    /// engine's; this is what both do afterwards.
+    fn joined_outcome(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        h: &ClassObj,
+        status: i64,
+        span: Span,
+        as_result: bool,
+    ) -> Eval {
+        let message = match status {
+            DONE => {
+                let v = h.field(H_RESULT).unwrap_or(Value::Unit);
+                return Ok(if as_result { ok_variant(v) } else { v });
+            }
+            PANICKED => {
+                let name = handle_name(h);
+                self.core_mut().sched.forget_failure_of(handle_id(h));
+                let msg = match h.field(H_RESULT) {
+                    Some(Value::Str(s)) => s.to_string(),
+                    _ => String::new(),
+                };
+                if as_result {
+                    format!("the coroutine `{name}` panicked: {msg}")
+                } else {
+                    format!("the joined coroutine `{name}` panicked: {msg}")
+                }
+            }
+            _ if as_result => format!("the coroutine `{}` was cancelled", handle_name(h)),
+            _ => format!("the joined coroutine `{}` was cancelled", handle_name(h)),
+        };
+        if as_result {
+            Ok(err_variant(error_value(&message)))
+        } else {
+            Err(self.panic(fiber, span, message))
+        }
     }
 
     // ---- handle methods that never pause ----
@@ -364,7 +408,7 @@ pub(crate) trait SchedInternal: Engine {
                 continue;
             };
             let e = &mut s.entries[idx];
-            if e.state == State::Suspended && matches!(e.wake, Wake::Signaled) {
+            if e.state == State::Suspended && matches!(e.wake, Wake::Signaled | Wake::Joined(_)) {
                 e.ticked = frame;
                 self.resume_coro(id, false, true);
             }
@@ -376,12 +420,16 @@ pub(crate) trait SchedInternal: Engine {
                 continue;
             }
             let due = match &e.wake {
-                Wake::Signal(_) | Wake::Signaled => false,
-                Wake::Group(g) => s.groups.get(g).is_none_or(|m| m.iter().all(|c| *c == e.id)),
-                Wake::Ready => true,
+                // Woken by an event, never found due by looking.
+                Wake::Signal(_)
+                | Wake::Signaled
+                | Wake::Joined(_)
+                | Wake::Join(_)
+                | Wake::JoinResult(_)
+                | Wake::Group(_) => false,
+                Wake::Ready | Wake::Woken => true,
                 Wake::Time(d) => s.time + TIME_EPSILON >= *d,
                 Wake::Real(d) => *real_now.get_or_insert_with(|| s.clock.now()) >= *d,
-                Wake::Join(w) => w.upgrade().is_none_or(|h| handle_status(&h) != RUNNING),
                 Wake::External(op) => s.ext.is_completed(*op),
             };
             if due {
@@ -403,6 +451,9 @@ pub(crate) trait SchedInternal: Engine {
         if let Some(g) = s.entries[idx].group {
             s.leave_group(g, id);
         }
+        // Whoever waits for this coroutine in `join` or `join_result` is woken, in the order they
+        // began waiting.
+        s.wake_joiners(id);
         let finish = match finish {
             Finish::Panicked(info) => Finish::Panicked(info),
             other if exhausted => {
@@ -441,6 +492,8 @@ pub(crate) trait SchedInternal: Engine {
                         self.release(old);
                     }
                 }
+                // Always queued: a report holds it back only while a woken `join_result`
+                // waiter has not run (`take_failures`); a budget panic is never held.
                 self.core_mut().sched.failures.push((id, info));
             }
         }

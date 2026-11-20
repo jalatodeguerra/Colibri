@@ -1,0 +1,42 @@
+// Two `join_result` waiters: one is cancelled before it runs, the other runs and takes the
+// panic, so the program does not fail.
+class Slot { co: Coroutine[()]? = none }
+
+let gate = Signal()
+
+fn boom() {
+    wait_for(gate)
+    panic("taken by the second")
+}
+
+fn first(c: Coroutine[()]) {
+    defer print("first unwound")
+    let _ = c.join_result()
+    print("first not reached")
+}
+
+fn second(c: Coroutine[()]) {
+    match c.join_result() {
+        ok(_)  => print("ok?")
+        err(e) => print("second: {e.message()}")
+    }
+}
+
+fn killer(slot: Slot) {
+    wait_for(gate)
+    slot.co.expect("handle").cancel()
+}
+
+fn main() {
+    let b = go boom()
+    let slot = Slot {}
+    go killer(slot)
+    slot.co = some(go first(b))
+    go second(b)
+    gate.emit()
+    task.tick(0.0)
+    task.tick(0.0)
+}
+
+// expect: first unwound
+// expect: second: the coroutine `boom` panicked: taken by the second

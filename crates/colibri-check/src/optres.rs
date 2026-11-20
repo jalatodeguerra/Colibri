@@ -111,7 +111,7 @@ pub(crate) fn error_sig(name: &str) -> Option<Sig> {
     })
 }
 
-pub(crate) const COROUTINE_METHODS: &[&str] = &["cancel", "done", "join", "clone"];
+pub(crate) const COROUTINE_METHODS: &[&str] = &["cancel", "done", "join", "join_result", "clone"];
 
 /// The signature of a method of `Coroutine[T]`.
 pub(crate) fn coroutine_sig(t: &Ty, name: &str) -> Option<Sig> {
@@ -119,6 +119,11 @@ pub(crate) fn coroutine_sig(t: &Ty, name: &str) -> Option<Sig> {
         "cancel" => sig(Builtin::CoroutineCancel, vec![], Ty::Unit),
         "done" => sig(Builtin::CoroutineDone, vec![], Ty::Bool),
         "join" => sig(Builtin::CoroutineJoin, vec![], t.clone()),
+        "join_result" => sig(
+            Builtin::CoroutineJoinResult,
+            vec![],
+            result_ty(t.clone(), error_ty()),
+        ),
         _ => return None,
     })
 }

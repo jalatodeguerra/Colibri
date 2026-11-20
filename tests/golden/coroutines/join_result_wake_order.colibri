@@ -1,0 +1,59 @@
+// Where a woken `join_result` waiter runs. When its target ends, the waiter is queued the way
+// a signal's waiters are: it resumes at the start of the next tick, in the order things were
+// woken (joiners in the order they began waiting), before the coroutines that are merely due.
+let gate = Signal()
+let other = Signal()
+
+fn target(name: str) {
+    wait_for(gate)
+    print("{name} ends")
+}
+
+fn joiner(name: str, c: Coroutine[()]) {
+    let _ = c.join_result()
+    print("{name} joined")
+}
+
+fn listener() {
+    wait_for(other)
+    print("listener woke")
+}
+
+fn emitter() {
+    wait_for(gate)
+    other.emit()
+    print("emitter emitted")
+}
+
+fn timer() {
+    wait(1.0)
+    print("timer due")
+}
+
+fn main() {
+    let t1 = go target("t1")
+    let t2 = go target("t2")
+    go timer()
+    go joiner("b", t2)
+    go joiner("a", t1)
+    go joiner("c", t2)
+    go listener()
+    go emitter()
+    gate.emit()
+    task.tick(0.0)
+    print("-- tick 2")
+    task.tick(1.0)
+}
+
+// Tick 1: the gate's waiters in wait order (t1, t2, emitter). t1 ends and queues `a`, t2 ends
+// and queues `b` then `c` (their wait order), the emitter emits `other` (queues `listener`).
+// expect: t1 ends
+// expect: t2 ends
+// expect: emitter emitted
+// expect: -- tick 2
+// Tick 2: the queue in the order it was filled, then the timer, which was due all along.
+// expect: a joined
+// expect: b joined
+// expect: c joined
+// expect: listener woke
+// expect: timer due

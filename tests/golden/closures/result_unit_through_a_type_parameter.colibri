@@ -1,0 +1,14 @@
+// The `()` of a closure's `Result[()]` may be known only through a type parameter: the closure
+// still gets the implicit `ok(())`.
+fn run[T](v: T, f: fn() -> Result[T]) -> Result[T] {
+    return f()
+}
+
+fn main() {
+    print(run((), fn() {
+        print("generic")
+    }))
+}
+
+// expect: generic
+// expect: ok(())

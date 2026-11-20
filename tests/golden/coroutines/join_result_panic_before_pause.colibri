@@ -1,0 +1,21 @@
+// A panic before the coroutine's first pause happens inside `go`: it is handed to a
+// `join_result` that comes before the end of the tick, and is not a failure of the program.
+fn boom() {
+    panic("early")
+}
+
+fn parent() {
+    let c = go boom()
+    match c.join_result() {
+        ok(_)  => print("ok?")
+        err(e) => print("err: {e.message()}")
+    }
+    print("parent goes on")
+}
+
+fn main() {
+    go parent()
+}
+
+// expect: err: the coroutine `boom` panicked: early
+// expect: parent goes on

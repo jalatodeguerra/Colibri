@@ -233,7 +233,8 @@ impl FnCtx<'_, '_> {
     }
 
     /// The body of the closure, in the scope that holds its parameters. A `{ }` body follows
-    /// the rule of function bodies (DESIGN §6.1): it must `return` a value if it has one.
+    /// the rule of function bodies (DESIGN §6.1): it must `return` a value if it has one, except
+    /// that a body that reaches its end in a closure that returns `Result[()]` returns `ok(())`.
     fn closure_body(&mut self, body: &FnBody, ret: &Ty) -> Block {
         match body {
             FnBody::Expr(e) => {
@@ -249,10 +250,20 @@ impl FnCtx<'_, '_> {
                 }
             }
             FnBody::Block(b) => {
-                let (stmts, tail, ty) = self.block_in_scope(b, BlockMode::Stmts);
+                let (stmts, mut tail, mut ty) = self.block_in_scope(b, BlockMode::Stmts);
                 let locals = self.pop_scope();
                 if self.infer.shallow(&ty) != Ty::Never {
-                    self.close_falling_body(ret, b.span);
+                    let declared = self.infer.resolve(ret);
+                    if crate::body::is_unit_result(&declared) {
+                        // DESIGN §6.1, as for a function: a `Result[()]` body that reaches its
+                        // end returns `ok(())`.
+                        let close =
+                            Span::new(b.span.file, b.span.end.saturating_sub(1), b.span.end);
+                        tail = Some(Box::new(self.ok_unit(&declared, close)));
+                        ty = declared;
+                    } else {
+                        self.close_falling_body(ret, b.span);
+                    }
                 }
                 Block {
                     locals,

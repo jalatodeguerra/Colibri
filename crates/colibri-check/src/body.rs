@@ -211,7 +211,7 @@ pub(crate) fn numeric_hint(expected: &str, found: &str) -> Option<String> {
     })
 }
 
-fn is_unit_result(ty: &Ty) -> bool {
+pub(crate) fn is_unit_result(ty: &Ty) -> bool {
     matches!(ty, Ty::Adt(crate::types::RESULT_TYPE, args) if args.first() == Some(&Ty::Unit))
 }
 

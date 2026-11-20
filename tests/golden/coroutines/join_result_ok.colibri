@@ -1,0 +1,20 @@
+// `join_result` on a coroutine that finishes gives `ok(value)`, again and again.
+fn compute(n: int) -> int {
+    wait(1.0)
+    return n * 2
+}
+
+fn parent() {
+    let c: Coroutine[int] = go compute(21)
+    let r: Result[int] = c.join_result()
+    print("first {r.is_ok()} {r.expect("value")}")
+    let again = c.join_result()
+    print("again {again.expect("value")}")
+}
+
+fn main() {
+    go parent()
+}
+
+// expect: first true 42
+// expect: again 42

@@ -1,0 +1,65 @@
+// When the coroutine a `join` waits for (or the last other member of a group a `join_all`
+// waits for) ends, the waiter is due in the ordinary pass of the tick, in start order: in the
+// same tick if it started after the one that ended, in the next tick if it started before it.
+class Slot { co: Coroutine[()]? = none }
+
+fn target() {
+    wait(1.0)
+    print("target ends")
+}
+
+fn early_joiner(slot: Slot) {
+    wait(0.5)
+    slot.co.expect("handle").join()
+    print("early joiner resumed")
+}
+
+fn late_joiner(slot: Slot) {
+    slot.co.expect("handle").join()
+    print("late joiner resumed")
+}
+
+fn member() {
+    wait(1.0)
+    print("member ends")
+}
+
+fn early_all(g: CoGroup) {
+    wait(0.5)
+    g.join_all()
+    print("early join_all resumed")
+}
+
+fn late_all(g: CoGroup) {
+    g.join_all()
+    print("late join_all resumed")
+}
+
+fn main() {
+    let slot = Slot {}
+    go early_joiner(slot)
+    slot.co = some(go target())
+    go late_joiner(slot)
+
+    let g = CoGroup()
+    go early_all(g)
+    g.go(member())
+    go late_all(g)
+
+    task.tick(0.5)
+    print("-- tick 2")
+    task.tick(0.5)
+    print("-- tick 3")
+    task.tick(0.0)
+}
+
+// expect: -- tick 2
+// Tick 2 runs in start order: the early joiners were started before their targets, so they
+// are due in the next tick; the late ones are due in this one.
+// expect: target ends
+// expect: late joiner resumed
+// expect: member ends
+// expect: late join_all resumed
+// expect: -- tick 3
+// expect: early joiner resumed
+// expect: early join_all resumed
