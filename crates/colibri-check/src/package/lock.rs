@@ -122,8 +122,13 @@ pub struct Lock {
 
 impl Lock {
     pub fn parse(file: FileId, text: &str) -> Result<Lock, Diagnostic> {
-        Self::parse_unmasked(file, text)
-            .map_err(|d| git::hide_secrets_in(d, &git::secrets_in(text)))
+        // Refused as a whole when a credential is written in it (see `manifest::parse`).
+        let (_, credentials) = git::credential_ranges(text);
+        if credentials.is_empty() {
+            return Self::parse_unmasked(file, text);
+        }
+        let first = git::credential_diagnostics(file, LOCK_FILE, &credentials).swap_remove(0);
+        Err(first)
     }
 
     fn parse_unmasked(file: FileId, text: &str) -> Result<Lock, Diagnostic> {

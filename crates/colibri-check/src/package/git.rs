@@ -1100,17 +1100,106 @@ fn credential_range(line: &str, bare_url: bool) -> Option<(usize, usize)> {
     (start < at).then_some((start, at))
 }
 
-/// `line` with everything before its last `@` hidden by `*`, if it has one.
-fn mask_line_before_at(line: &str) -> String {
-    match credential_range(line, false) {
-        Some((start, end)) => format!(
-            "{}{}{}",
-            &line[..start],
-            mask_str(&line[start..end]),
-            &line[end..]
-        ),
-        None => line.to_string(),
+/// Whether `text` (not a url with a scheme) is shaped like `user:password@host` or
+/// `user@host:path` whose user information is more than a plain user name: what the scp form
+/// of a git url looks like, and what no other value of a manifest has.
+fn scp_credential_like(text: &str) -> bool {
+    if text.contains("://") || super::manifest::is_absolute_path(text) {
+        return false;
     }
+    let Some(at) = text.rfind('@') else {
+        return false;
+    };
+    (text[..at].contains(':') || text[at..].contains(':')) && userinfo_problem(text).is_some()
+}
+
+/// Whether the string `value`, found in a manifest or a lock file, has a credential in it. A
+/// `git` or `url` value (`url`) is judged as a url is (`userinfo_problem`); another value only
+/// if it is shaped like one (`scheme://user:password@host`, or the scp form), so a path such
+/// as `../@scope/lib` or a name with an `@` in it is no credential.
+fn credential_like(value: &str, url: bool) -> bool {
+    if !value.contains('@') {
+        return false;
+    }
+    if url {
+        return userinfo_problem(value).is_some();
+    }
+    if value.contains("://") {
+        userinfo_problem(value).is_some()
+    } else {
+        scp_credential_like(value)
+    }
+}
+
+/// Whether the part of a line before its first scheme is searched for the scp shape, and how.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scp {
+    No,
+    /// A line of a file that does not parse: from the first quote of the value.
+    Value,
+    /// A comment.
+    Comment,
+}
+
+/// `line` with the user information of every url in it hidden, for text that is not
+/// understood (a file that does not parse, a comment): each `scheme://userinfo@` runs from the
+/// scheme to the last `@` before the next scheme, whatever quotes and spaces the password has,
+/// and a plain user name of an `ssh` url stays. With `scp`, the scheme-less part before the
+/// first scheme is searched for the scp shape (`user:password@host`, `user@host:path` with
+/// more than a plain user) as well. One pass over the line: the time is linear.
+fn mask_credentials_in_line(line: &str, scp: Scp) -> String {
+    let mut out = String::with_capacity(line.len());
+    let first = line.find("://");
+    let head_end = first.map_or(line.len(), |i| scheme_start(&line[..i]));
+    let head = &line[..head_end];
+    match last_at_like(head) {
+        Some((at, at_end)) if scp != Scp::No => {
+            let start = if scp == Scp::Comment {
+                // The word the `@` ends: a comment is prose, a password with a space in it
+                // is not looked for.
+                head[..at].rfind(char::is_whitespace).map_or(0, |i| i + 1)
+            } else {
+                let from = head.find('=').map_or(0, |e| e + 1);
+                head[from..].find(['"', '\'']).map_or(from, |q| from + q)
+            };
+            let user = head[start..at].trim_start_matches(['"', '\'']);
+            let legit = is_plain_user(user) && head[at_end..].contains(':');
+            let credential = start < at
+                && !legit
+                && (head[start..at].contains(':') || head[at_end..].contains(':'));
+            if credential {
+                out.push_str(&head[..start]);
+                out.push_str(&mask_str(&head[start..at]));
+                out.push_str(&head[at..]);
+            } else {
+                out.push_str(head);
+            }
+        }
+        _ => out.push_str(head),
+    }
+    let mut pos = head_end;
+    while pos < line.len() {
+        let Some(found) = line[pos..].find("://") else {
+            out.push_str(&line[pos..]);
+            break;
+        };
+        let scheme = line[pos..pos + found].to_ascii_lowercase();
+        let user_at = pos + found + 3;
+        let next = line[user_at..].find("://").map_or(line.len(), |j| {
+            user_at + scheme_start(&line[user_at..user_at + j])
+        });
+        out.push_str(&line[pos..user_at]);
+        let seg = &line[user_at..next];
+        match last_at_like(seg) {
+            Some((at, _)) if !(scheme == "ssh" && is_plain_user(&seg[..at])) => {
+                out.push_str(&mask_str(&seg[..at]));
+                out.push_str(&seg[at..]);
+            }
+            _ => out.push_str(seg),
+        }
+        pos = next;
+    }
+    out
 }
 
 /// `line` with the comment at its end (outside any string) masked like an unparsed line.
@@ -1130,7 +1219,11 @@ fn mask_comment(line: &str) -> String {
             }
             None if c == '"' || c == '\'' => quote = Some(c),
             None if c == '#' => {
-                return format!("{}{}", &line[..i], mask_line_before_at(&line[i..]));
+                return format!(
+                    "{}{}",
+                    &line[..i],
+                    mask_credentials_in_line(&line[i..], Scp::Comment)
+                );
             }
             None => {}
         }
@@ -1155,59 +1248,63 @@ pub fn redact_url(url: &str) -> String {
     }
 }
 
-/// The url values (`git` in a manifest, `url` in a lock file) of `tables`, as the spans of
-/// their literals, when the value has a problem before its `@`.
-fn spans_with_credentials(entries: &[super::toml::Entry], out: &mut Vec<(usize, usize)>) {
-    for e in entries {
-        value_spans(&e.value, matches!(e.key.as_str(), "git" | "url"), out);
+/// The literals (values, keys and table names) of `tables` that have a credential in them,
+/// as spans, at any depth. Under a `git` or `url` key every string is judged as a url.
+fn credential_spans(tables: &[super::toml::Table], out: &mut Vec<(usize, usize)>) {
+    for t in tables {
+        if t.path.iter().any(|segment| credential_like(segment, false)) {
+            out.push((t.span.start as usize, t.span.end as usize));
+        }
+        entry_spans(&t.entries, false, out);
     }
 }
 
-/// [`spans_with_credentials`] for one value. `url` is whether the value stands under a `git` or
-/// `url` key: a wrong value there (`git = ["https://u:pass@h/r"]`, `git = { u = "..." }`) is
-/// quoted in the error about its type, so every string in it is masked, at any depth.
+fn entry_spans(entries: &[super::toml::Entry], url: bool, out: &mut Vec<(usize, usize)>) {
+    for e in entries {
+        let is_url = url || matches!(e.key.as_str(), "git" | "url");
+        if credential_like(&e.key, false) {
+            out.push((e.key_span.start as usize, e.key_span.end as usize));
+        }
+        value_spans(&e.value, is_url, out);
+    }
+}
+
 fn value_spans(value: &super::toml::Value, url: bool, out: &mut Vec<(usize, usize)>) {
     use super::toml::ValueKind;
     match &value.kind {
-        ValueKind::Str(s) if url => {
-            if userinfo_problem(s).is_some() {
-                out.push((value.span.start as usize, value.span.end as usize));
-            }
+        ValueKind::Str(s) if credential_like(s, url) => {
+            out.push((value.span.start as usize, value.span.end as usize));
         }
         ValueKind::Array(items) => {
             for item in items {
                 value_spans(item, url, out);
             }
         }
-        ValueKind::Table(inner) => {
-            for e in inner {
-                value_spans(
-                    &e.value,
-                    url || matches!(e.key.as_str(), "git" | "url"),
-                    out,
-                );
-            }
-        }
+        ValueKind::Table(inner) => entry_spans(inner, url, out),
         _ => {}
     }
 }
 
-/// `text` (a `colibri.toml` or `colibri.lock`) as it may be put in the source map, and so in
-/// any message that quotes a line of it: the same length, with the credentials hidden by `*`.
+/// `text` (a `colibri.toml` or `colibri.lock`) with its credentials hidden, in the same
+/// length in UTF-8 and in UTF-16: what every reader of such a file works on, so that nothing
+/// that is made from it (a message, a path, a key) holds a secret. A text without credentials
+/// comes back as it is; see [`credential_ranges`] for what was hidden.
 ///
-/// When the text parses, the whole literal of every `git` or `url` value that has credentials
-/// in it is overwritten, by its span, whatever the password holds. When it does not parse
-/// (it is still quoted in the error), every line with an `@` in it (or an escape for one) is
-/// masked from the url scheme, or the opening quote of the value, to the last `@`, ignoring
-/// quotes and spaces in between: it may hide too much, and never shows a secret.
+/// When the text parses, the whole literal of every string, key and table name that has a
+/// credential in it is overwritten, by its span, whatever the password holds. When it does
+/// not parse, every url on every line is masked from its scheme to its own last `@` (see
+/// [`mask_credentials_in_line`]), and the scp shape too: that may hide too much, and never
+/// shows a secret. A plain user name of an `ssh` url or the scp form (`ssh://git@host/r`,
+/// `git@host:r`) is no credential.
 pub fn mask_source_text(text: &str) -> String {
     use colibri_syntax::FileId;
+    if !text.contains(['@', '\\']) {
+        return text.to_string();
+    }
     let masked = match super::toml::parse(FileId(0), text) {
         Ok(tables) => {
             let mut spans = Vec::new();
-            for t in &tables {
-                spans_with_credentials(&t.entries, &mut spans);
-            }
+            credential_spans(&tables, &mut spans);
             let mut masked = String::with_capacity(text.len());
             let mut done = 0;
             spans.sort_unstable();
@@ -1229,104 +1326,64 @@ pub fn mask_source_text(text: &str) -> String {
         }
         Err(_) => text
             .split_inclusive('\n')
-            .map(mask_line_before_at)
+            .map(|line| mask_credentials_in_line(line, Scp::Value))
             .collect(),
     };
     mask_credentials(&masked)
 }
 
-/// The user information (everything between the scheme and the last `@`) of every string in
-/// `text` (a `colibri.toml` or `colibri.lock`) that has credentials in it, whatever key or
-/// table it stands under: the values as written, before a message about them is made (a path
-/// is normalised, a name is quoted, a branch is checked). [`hide_secrets`] takes them out of
-/// such a message.
-///
-/// When the text does not parse, every line with an `@` in it is looked at as
-/// [`mask_source_text`] does.
-pub fn secrets_in(text: &str) -> Vec<String> {
-    fn of(candidate: &str, out: &mut Vec<String>) {
-        if userinfo_problem(candidate).is_none() {
-            return;
-        }
-        let Some((start, at)) = credential_range(candidate, true) else {
-            return;
-        };
-        let found = &candidate[start..at];
-        let found = found.find("://").map_or(found, |i| &found[i + 3..]);
-        if !found.is_empty() && !out.iter().any(|f| f == found) {
-            out.push(found.to_string());
-        }
-    }
-    fn value(v: &super::toml::Value, out: &mut Vec<String>) {
-        use super::toml::ValueKind;
-        match &v.kind {
-            ValueKind::Str(s) => of(s, out),
-            ValueKind::Array(items) => items.iter().for_each(|i| value(i, out)),
-            ValueKind::Table(entries) => {
-                for e in entries {
-                    of(&e.key, out);
-                    value(&e.value, out);
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut out = Vec::new();
-    match super::toml::parse(colibri_syntax::FileId(0), text) {
-        Ok(tables) => {
-            for t in &tables {
-                t.path.iter().for_each(|segment| of(segment, &mut out));
-                for e in &t.entries {
-                    of(&e.key, &mut out);
-                    value(&e.value, &mut out);
-                }
-            }
-        }
-        Err(_) => {
-            for line in text.lines() {
-                if let Some((start, at)) = credential_range(line, false) {
-                    let found = line[start..at].trim_start_matches(['"', '\'', ' ', '\t']);
-                    let found = found.find("://").map_or(found, |i| &found[i + 3..]);
-                    if !found.is_empty() && !out.iter().any(|f| f == found) {
-                        out.push(found.to_string());
-                    }
+/// Where `text` has a credential written in it: the byte ranges that [`mask_source_text`]
+/// hides, merged where they touch. Empty when the file has none, and then it is used as it is;
+/// otherwise the file is refused as a whole and every reader works on the masked text.
+pub fn credential_ranges(text: &str) -> (String, Vec<(usize, usize)>) {
+    let masked = mask_source_text(text);
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    if masked != text {
+        // By character: a mask character of four bytes shares its first bytes with the
+        // character it hides.
+        for ((i, a), b) in text.char_indices().zip(masked.chars()) {
+            if a != b {
+                let end = i + a.len_utf8();
+                match ranges.last_mut() {
+                    Some(r) if r.1 == i => r.1 = end,
+                    _ => ranges.push((i, end)),
                 }
             }
         }
     }
-    out
+    (masked, ranges)
 }
 
-/// `message` with each of `secrets` (see [`secrets_in`]) that stands before an `@` replaced by
-/// `***`. The secret is also looked for with its `//` written `/` (a path that was normalised
-/// before it was quoted).
-pub fn hide_secrets(message: &str, secrets: &[String]) -> String {
-    let mut out = message.to_string();
-    for secret in secrets {
-        let forms = [secret.clone(), secret.replace("//", "/")];
-        for form in forms {
-            if !form.is_empty() && out.contains(&format!("{form}@")) {
-                out = out.replace(&format!("{form}@"), "***@");
-            }
-        }
+/// The errors for the credentials of the file `file` (called `name`), at most a few at once.
+pub fn credential_diagnostics(
+    file: colibri_syntax::FileId,
+    name: &str,
+    ranges: &[(usize, usize)],
+) -> Vec<colibri_syntax::Diagnostic> {
+    const SHOWN: usize = 20;
+    let mut out: Vec<colibri_syntax::Diagnostic> = ranges
+        .iter()
+        .take(SHOWN)
+        .map(|&(s, e)| {
+            colibri_syntax::Diagnostic::error(
+                format!("a credential is written in `{name}` (hidden here): credentials are not allowed in it, and the file is refused"),
+                colibri_syntax::Span::new(file, s as u32, e as u32),
+            )
+            .with_hint(
+                "a url may not hold a user name and password; use a git credential helper or an ssh key",
+            )
+        })
+        .collect();
+    if ranges.len() > SHOWN
+        && let Some(last) = out.last_mut()
+    {
+        last.message = format!(
+            "{} (and {} more places in the file)",
+            last.message,
+            ranges.len() - SHOWN
+        );
     }
     out
-}
-
-/// `diagnostic` with [`hide_secrets`] applied to its message, labels and hint.
-pub fn hide_secrets_in(
-    mut diagnostic: colibri_syntax::Diagnostic,
-    secrets: &[String],
-) -> colibri_syntax::Diagnostic {
-    if secrets.is_empty() {
-        return diagnostic;
-    }
-    diagnostic.message = hide_secrets(&diagnostic.message, secrets);
-    for (_, text) in &mut diagnostic.labels {
-        *text = hide_secrets(text, secrets);
-    }
-    diagnostic.hint = diagnostic.hint.map(|h| hide_secrets(&h, secrets));
-    diagnostic
 }
 
 /// What is wrong with the user information of `url`, if anything, without repeating it. An
@@ -1890,39 +1947,78 @@ mod tests {
     }
 
     #[test]
-    fn a_secret_is_found_in_any_value_and_hidden_in_a_message_made_from_it() {
-        for (text, message) in [
-            (
-                "[dependencies]\nx = { path = \"https://u:SeCrEt@h/r\" }\n",
-                "not at `a/https:/u:SeCrEt@h/r`",
-            ),
-            (
-                "[dependencies]\nx = { tag = [\"git:SeCrEt@h:r\"] }\n",
-                "`git:SeCrEt@h:r` is not valid",
-            ),
-            (
-                "[dependencies]\n\"https://u:SeCrEt@h\" = 1\n",
-                "`https://u:SeCrEt@h` is no name",
-            ),
-            (
-                "[dependencies.\"https://u:SeCrEt@h\"]\n",
-                "`https://u:SeCrEt@h` is no name",
-            ),
-            // Not a manifest at all.
-            (
-                "x = { path = \"https://u:SeCrEt@h/r\" \n",
-                "not at `a/https:/u:SeCrEt@h/r`",
-            ),
+    fn a_file_is_masked_when_it_has_a_credential_and_never_otherwise() {
+        // Nothing here is a credential: a plain user name of ssh or the scp form, a path with
+        // an `@` in it, a name with one, comments with urls, in files that parse and in files
+        // that do not.
+        for text in [
+            "[dependencies]\na = { git = \"ssh://git@host/r\" }\n",
+            "[dependencies]\na = { git = \"git@host:r.git\" }\n",
+            "[dependencies]\na = { path = \"../@scope/lib\" }\n",
+            "[package]\nname = \"me@example.com\"\n",
+            "# clone git@github.com:me/x.git or ssh://git@h/r\n[package]\nname = \"a\"\n",
+            "[dependencies]\na = { git = \"ssh://git@host/r\" \n",
+            "a = { git = \"git@host:r\" \n",
+            "[git.a]\nurl = \"ssh://git@host/r\"\ncommit = \"abc\"\n",
         ] {
-            let shown = hide_secrets(message, &secrets_in(text));
-            assert!(
-                shown.contains("***@") && !shown.contains("SeCrEt"),
-                "{text}: {shown}"
+            let (masked, ranges) = credential_ranges(text);
+            assert!(ranges.is_empty() && masked == text, "{text}: {masked}");
+        }
+        // These are.
+        for text in [
+            "a = { path = \"https://u:SeCrEt@h/r\" }\n",
+            "a = { path = \"git:SeCrEt@h:r\" }\n",
+            "a = { path = \"user:SeCrEt@h\" }\n",
+            "a = { \"https://v:SeCrEt@h\" = \"1\", \"https://v:SeCrEt@h\" = \"2\" }\n",
+            "a = { \"https://v:SeCrEt@h\" = \"1\", \"https://v:SeCrEt@h\" = \"2\" \n",
+            "a = { \"git:SeCrEt@h:r\" = \"1\" \n",
+            "# https://u:pa ss SeCrEt@h/r\n",
+            "[dependencies.\"https://u:SeCrEt@h\"]\n",
+        ] {
+            let (masked, ranges) = credential_ranges(text);
+            assert!(!ranges.is_empty(), "{text}");
+            assert!(!masked.contains("SeCrEt"), "{text}: {masked}");
+            assert_eq!(masked.len(), text.len());
+            assert_eq!(
+                masked.encode_utf16().count(),
+                text.encode_utf16().count(),
+                "{text}"
             );
         }
-        // A plain user name and an ordinary string are nothing to hide.
-        assert!(secrets_in("x = \"git@host:r\"\nz = \"plain\"\n").is_empty());
-        assert_eq!(hide_secrets("a@b", &[]), "a@b");
+        // Many on one line, in a file that does not parse.
+        let many: String = (0..300)
+            .map(|i| format!("\"https://u{i}:SeCrEt{i}@h{i}\" = \"{i}\", "))
+            .collect();
+        let masked = mask_source_text(&format!("a = {{ {many}\n"));
+        assert!(!masked.contains("SeCrEt"), "{masked}");
+        assert!(masked.contains("@h299"), "the hosts stay");
+    }
+
+    #[test]
+    fn masking_a_file_takes_time_in_proportion_to_its_size() {
+        let line = |n: usize, parses: bool| -> String {
+            let body: String = (0..n)
+                .map(|i| format!("\"https://u{i}:SeCrEt@h{i}\" = \"x\", "))
+                .collect();
+            if parses {
+                format!("a = {{ {body}z = \"1\" }}\n")
+            } else {
+                format!("a = {{ {body}\n")
+            }
+        };
+        for parses in [true, false] {
+            let time = |n: usize| {
+                let text = line(n, parses);
+                let t = std::time::Instant::now();
+                let masked = mask_source_text(&text);
+                assert!(!masked.contains("SeCrEt"));
+                t.elapsed().as_secs_f64()
+            };
+            time(100);
+            let (small, big) = (time(1000), time(8000));
+            // Eight times the text: about eight times the time, not sixty-four.
+            assert!(big < 30.0 * small.max(0.002), "{parses}: {small} {big}");
+        }
     }
 
     #[test]

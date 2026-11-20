@@ -1849,7 +1849,7 @@ fn credentials_in_a_url_are_refused_and_never_printed_or_written() {
             let all = format!("{}{}", out.stdout, out.stderr);
             assert!(!all.contains("s3cret"), "{url}: {cmd}: {all}");
             assert!(
-                all.contains("`greet`") && all.contains("credential helper"),
+                all.contains("a credential is written") && all.contains("credential helper"),
                 "{url}: {cmd}: {all}"
             );
             assert!(!app.join("colibri.lock").exists(), "{url}: {cmd}");
@@ -2403,8 +2403,31 @@ fn a_damaged_database_says_where_to_delete_it() {
     );
 }
 
+/// Runs every command that reads the package in `app` and checks that each fails and that
+/// nothing it printed has the secret in it.
+fn refused_without_the_secret(sb: &Sandbox, app: &Path, what: &str) {
+    for args in [
+        vec!["check"],
+        vec!["run"],
+        vec!["update"],
+        vec!["check", "--offline"],
+    ] {
+        let mut args = args;
+        let target = app.to_str().unwrap().to_string();
+        args.push(&target);
+        let out = sb.colibri(&args);
+        assert_eq!(out.code, 1, "{what} {args:?}: {}", out.stderr);
+        assert!(
+            !format!("{}{}", out.stdout, out.stderr).contains("SeCrEt"),
+            "{what} {args:?}: {}{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+}
+
 /// What a manifest can hold in a value that is not a url: a credential in it is in no message
-/// about it, whatever the key and whatever the command.
+/// about it, whatever the key and whatever the command, and the file is refused.
 #[test]
 fn a_credential_in_any_value_of_a_manifest_is_in_no_message_about_it() {
     let sb = Sandbox::new("secret_messages");
@@ -2417,27 +2440,19 @@ fn a_credential_in_any_value_of_a_manifest_is_in_no_message_about_it() {
         "x = { version = \"https://u:SeCrEt@h\" }",
         "\"https://u:SeCrEt@h\" = { path = \"p\" }",
         "x = { git = \"https://h.invalid/r\", features = [\"https://u:SeCrEt@h\"] }",
+        // What a message makes of a path: dots and slashes taken out of it.
+        "x = { path = \"https://u:a/./SeCrEt@h/r\" }",
+        "x = { path = \"https://u:a/b/../SeCrEt@h/r\" }",
+        "x = { path = \"https://u:a///SeCrEt@h/r\" }",
+        "x = { path = \"https://u:a\\\\SeCrEt@h/r\" }",
+        // Two on a line, in a file that does not parse (a key defined twice).
+        "x = { \"https://v:SeCrEt@h\" = \"1\", \"https://v:SeCrEt@h\" = \"2\" }",
+        "x = { \"https://v:SeCrEt@h\" = \"1\", \"https://w:SeCrEt@h\" = \"2\"",
+        "a = \"git:SeCrEt@h:r\", b = \"https://u:SeCrEt@h/r\", c = \"u:SeCrEt@h\"",
     ];
     for (i, dep) in cases.iter().enumerate() {
         let app = sb.app(&format!("secret{i}"), dep, &[]);
-        for args in [
-            vec!["check"],
-            vec!["run"],
-            vec!["update"],
-            vec!["check", "--offline"],
-        ] {
-            let mut args = args;
-            let target = app.to_str().unwrap().to_string();
-            args.push(&target);
-            let out = sb.colibri(&args);
-            assert_eq!(out.code, 1, "{dep}: {}", out.stderr);
-            assert!(
-                !format!("{}{}", out.stdout, out.stderr).contains("SeCrEt"),
-                "{dep} {args:?}: {}{}",
-                out.stdout,
-                out.stderr
-            );
-        }
+        refused_without_the_secret(&sb, &app, dep);
     }
     // The package name is a value too.
     sb.write(
@@ -2445,9 +2460,138 @@ fn a_credential_in_any_value_of_a_manifest_is_in_no_message_about_it() {
         "[package]\nname = \"https://u:SeCrEt@h\"\n",
     );
     sb.write("apps/named/main.colibri", "fn main() {}\n");
-    let out = sb.colibri(&["check", sb.path("apps/named").to_str().unwrap()]);
+    refused_without_the_secret(&sb, &sb.path("apps/named"), "name");
+    // Many on one line.
+    let many: String = (0..200)
+        .map(|i| format!("\"https://u{i}:SeCrEt@h{i}\" = \"{i}\", "))
+        .collect();
+    let app = sb.app("many", &format!("x = {{ {many}"), &[]);
+    refused_without_the_secret(&sb, &app, "many");
+}
+
+#[test]
+fn a_credential_in_the_manifest_of_a_dependency_or_in_the_lock_is_refused_through_the_root() {
+    let sb = Sandbox::new("secret_dependencies");
+    // A path dependency.
+    sb.write(
+        "libs/inner/colibri.toml",
+        "[package]\nname = \"inner\"\n\n[dependencies]\ny = { path = \"https://u:a/./SeCrEt@h/r\" }\n",
+    );
+    sb.write(
+        "libs/inner/lib.colibri",
+        "pub fn version() -> str => \"i\"\n",
+    );
+    let app = sb.app(
+        "dep_path",
+        &format!(
+            "inner = {{ path = \"{}\" }}",
+            slashes(&sb.path("libs/inner"))
+        ),
+        &["inner"],
+    );
+    refused_without_the_secret(&sb, &app, "path dependency");
+    // A git dependency from a local repository.
+    let repo = sb.repo("holder");
+    repo.commit(
+        &[
+            (
+                "colibri.toml".to_string(),
+                "[package]\nname = \"holder\"\n\n[dependencies]\nz = { git = \"https://h.invalid/r\", branch = \"https://u:SeCrEt@h\" }\n"
+                    .to_string(),
+            ),
+            (
+                "lib.colibri".to_string(),
+                "pub fn version() -> str => \"h\"\n".to_string(),
+            ),
+        ],
+        "holder",
+    );
+    let app = sb.app(
+        "dep_git",
+        &format!("holder = {{ git = \"{}\" }}", repo.url()),
+        &["holder"],
+    );
+    refused_without_the_secret(&sb, &app, "git dependency");
+    // A lock file.
+    let (lib, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "lock",
+        &format!("greet = {{ git = \"{}\" }}", lib.url()),
+        &["greet"],
+    );
+    assert_eq!(sb.run(&app).stdout, "one\n");
+    let lock = fs::read_to_string(app.join("colibri.lock")).unwrap();
+    let broken = lock.replacen("url = \"", "url = \"https://u:SeCrEt@h.invalid/", 1);
+    assert_ne!(broken, lock);
+    fs::write(app.join("colibri.lock"), &broken).unwrap();
+    refused_without_the_secret(&sb, &app, "lock");
+    assert_eq!(
+        fs::read_to_string(app.join("colibri.lock")).unwrap(),
+        broken,
+        "a lock with a credential is not rewritten"
+    );
+    // Many on a line of a lock that does not parse.
+    let many: String = (0..50)
+        .map(|i| format!("\"https://u{i}:SeCrEt@h{i}\" = \"{i}\", "))
+        .collect();
+    fs::write(
+        app.join("colibri.lock"),
+        format!("[git.greet]\nurl = {{ {many}\n"),
+    )
+    .unwrap();
+    refused_without_the_secret(&sb, &app, "lock, many");
+}
+
+#[test]
+fn a_plain_ssh_user_is_no_credential_and_no_other_message_is_changed() {
+    let sb = Sandbox::new("secret_innocent");
+    // The url is judged by git later (the host is not there); the manifest, the lock step and
+    // the message are not refused for the user name.
+    let app = sb.app(
+        "ssh_plain",
+        "greet = { git = \"ssh://git@example.invalid:9/r.git\" }\nother = { git = \"git@example.invalid:r.git\" }",
+        &[],
+    );
+    let out = sb.colibri(&["check", "--offline", app.to_str().unwrap()]);
     assert_eq!(out.code, 1, "{}", out.stderr);
-    assert!(!out.stderr.contains("SeCrEt"), "{}", out.stderr);
+    assert!(
+        !out.stderr.contains("a credential is written"),
+        "{}",
+        out.stderr
+    );
+    // A path or a name with an `@` in it: its message says it as written.
+    let app = sb.app("at_path", "x = { path = \"data@host\" }", &[]);
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.contains("data@host"), "{}", out.stderr);
+    assert!(
+        !out.stderr.contains("a credential is written"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn refusing_the_credentials_of_a_big_manifest_costs_about_what_the_same_manifest_without_costs() {
+    let sb = Sandbox::new("secret_cost");
+    let n = 2000;
+    let with: String = (0..n)
+        .map(|i| format!("d{i} = {{ path = \"https://u{i}:SeCrEt@h{i}/r\" }}\n"))
+        .collect();
+    let without: String = (0..n)
+        .map(|i| format!("d{i} = {{ path = \"libs/d{i}\" }}\n"))
+        .collect();
+    let time = |name: &str, deps: &str| {
+        let app = sb.app(name, deps, &[]);
+        let t = std::time::Instant::now();
+        let out = sb.colibri(&["check", "--offline", app.to_str().unwrap()]);
+        assert_eq!(out.code, 1, "{}", &out.stderr[..out.stderr.len().min(300)]);
+        t.elapsed().as_secs_f64()
+    };
+    let (a, b) = (time("cost_without", &without), time("cost_with", &with));
+    // A generous ratio: it was minutes against seconds when each message was searched for
+    // each secret.
+    assert!(b < 20.0 * a + 5.0, "{b} s with credentials, {a} s without");
 }
 
 #[test]

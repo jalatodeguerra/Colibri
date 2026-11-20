@@ -236,7 +236,7 @@ fn plain_form(text: &str) -> Option<String> {
         }
     }
     let plain = format!("{plain_prefix}{rest}");
-    (plain.chars().count() < 260).then_some(plain)
+    (plain.encode_utf16().count() < 260).then_some(plain)
 }
 
 /// Whether Windows takes the file name `name` for a device, whatever its extension.
@@ -306,6 +306,11 @@ mod tests {
                 "{plain}"
             );
         }
+        // The limit is in UTF-16 units: 130 characters outside the BMP are 260 units.
+        let wide = format!(r"\\?\C:\{}", "\u{1f600}".repeat(130));
+        assert_eq!(without_verbatim(Path::new(&wide)), Path::new(&wide));
+        let ok = format!(r"\\?\C:\{}", "\u{1f600}".repeat(100));
+        assert_ne!(without_verbatim(Path::new(&ok)), Path::new(&ok));
         // The limit of the plain form: 259 characters are fine, 260 are not.
         let long = |n: usize| format!(r"\\?\C:\{}", "a".repeat(n - 3));
         assert_eq!(

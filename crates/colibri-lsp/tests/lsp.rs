@@ -3367,7 +3367,7 @@ fn a_masked_non_ascii_credential_keeps_the_columns_after_it() {
 
 /// Values of a manifest that are not urls and have a credential written in them: the messages
 /// about them quote them, and must not show it.
-const CREDENTIAL_VALUES: [&str; 9] = [
+const CREDENTIAL_VALUES: [&str; 15] = [
     "x = { path = \"https://u:SeCrEt@h.invalid/r\" }",
     "x = { path = \"git:SeCrEt@h.invalid:r\" }",
     "x = { git = \"https://h.invalid/r\", branch = \"https://u:SeCrEt@h\" }",
@@ -3377,6 +3377,12 @@ const CREDENTIAL_VALUES: [&str; 9] = [
     "\"https://u:SeCrEt@h\" = { path = \"p\" }",
     "x = { git = \"https://h.invalid/r\", features = [\"https://u:SeCrEt@h\"] }",
     "x = { path = \"p\", name = \"https://u:SeCrEt@h\" }",
+    "x = { path = \"https://u:a/./SeCrEt@h/r\" }",
+    "x = { path = \"https://u:a/b/../SeCrEt@h/r\" }",
+    "x = { path = \"https://u:a///SeCrEt@h/r\" }",
+    "x = { \"https://v:SeCrEt@h\" = \"1\", \"https://v:SeCrEt@h\" = \"2\" }",
+    "x = { \"https://v:SeCrEt@h\" = \"1\", \"https://w:SeCrEt@h\" = \"2\"",
+    "a = \"git:SeCrEt@h:r\", b = \"https://u:SeCrEt@h/r\", c = \"u:SeCrEt@h\"",
 ];
 
 #[test]

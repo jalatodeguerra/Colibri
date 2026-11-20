@@ -80,15 +80,20 @@ pub struct Manifest {
 
 /// Parses a manifest; every problem is a diagnostic in file `file`.
 pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
-    parse_unmasked(file, text).map_err(|errors| {
-        // A message quotes a value as it was written (a branch name, a package name, a path
-        // that went through `normalize`): not with a credential in it, whatever the key.
-        let secrets = git::secrets_in(text);
-        errors
-            .into_iter()
-            .map(|d| git::hide_secrets_in(d, &secrets))
-            .collect()
-    })
+    // A file with a credential in it is refused as a whole: what is read from here on is the
+    // masked text, so no message (or path, or key) made from it can show the secret.
+    let (masked, credentials) = git::credential_ranges(text);
+    if credentials.is_empty() {
+        return parse_unmasked(file, text);
+    }
+    // The file is not read any further (its other errors can wait until the credentials are
+    // out of it); the text is the masked one wherever it is shown.
+    let _ = masked;
+    Err(git::credential_diagnostics(
+        file,
+        "colibri.toml",
+        &credentials,
+    ))
 }
 
 fn parse_unmasked(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
@@ -943,11 +948,7 @@ mod tests {
         ] {
             let e = dep_errs(&format!("foo = {{ git = \"{url}\" }}"));
             assert_eq!(e.len(), 1, "{url}: {e:?}");
-            assert!(
-                e[0].contains("`foo`") && e[0].contains("credentials"),
-                "{}",
-                e[0]
-            );
+            assert!(e[0].contains("credential"), "{}", e[0]);
             assert!(!e[0].contains("s3cret"), "{}", e[0]);
         }
         let d = parse(
