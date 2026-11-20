@@ -345,17 +345,25 @@ impl<'c> Server<'c> {
     /// publish. A document of a dependency is a member of its own package: it is analysed on
     /// its own, with its own features.
     fn flush(&mut self) {
-        self.due = None;
-        let mut pending = std::mem::take(&mut self.dirty);
-        pending.retain(|p| self.docs.contains_key(p));
-        while !pending.is_empty() {
-            let path = pending.remove(0);
-            let analysis = self.check(&path);
-            let (covered, rest): (Vec<PathBuf>, Vec<PathBuf>) =
-                pending.into_iter().partition(|p| analysis.owns(p));
-            pending = rest;
-            for other in covered {
-                self.adopt(&other, &analysis);
+        // An analysis can leave a file out that another document's analysis still loads; that
+        // document is then scheduled (see `clear_unheld`), and goes round again here. Each
+        // round replaces the `latest` of the file that was left out, so the rounds end.
+        loop {
+            self.due = None;
+            let mut pending = std::mem::take(&mut self.dirty);
+            pending.retain(|p| self.docs.contains_key(p));
+            if pending.is_empty() {
+                return;
+            }
+            while !pending.is_empty() {
+                let path = pending.remove(0);
+                let analysis = self.check(&path);
+                let (covered, rest): (Vec<PathBuf>, Vec<PathBuf>) =
+                    pending.into_iter().partition(|p| analysis.owns(p));
+                pending = rest;
+                for other in covered {
+                    self.adopt(&other, &analysis);
+                }
             }
         }
     }
@@ -433,6 +441,27 @@ impl<'c> Server<'c> {
             if !still.contains(&gone) {
                 self.publish(&gone, Vec::new());
                 self.latest.remove(&gone);
+                // An open document whose analysis loaded the file may still load it: it was
+                // analysed before the one that dropped it, and left the file out because the
+                // other package owned it then. Its next analysis publishes the file, or drops
+                // it too. Each such analysis replaces the `latest` that made the document a
+                // holder, so a document is scheduled for a file at most once.
+                // A file that is open itself needs none: no analysis but its own publishes it.
+                let holders: Vec<PathBuf> = self
+                    .docs
+                    .keys()
+                    .filter(|d| {
+                        !self.docs.contains_key(&gone)
+                            && self
+                                .latest
+                                .get(*d)
+                                .is_some_and(|a| a.file_of(&gone).is_some())
+                    })
+                    .cloned()
+                    .collect();
+                for holder in holders {
+                    self.schedule(holder);
+                }
             }
         }
     }

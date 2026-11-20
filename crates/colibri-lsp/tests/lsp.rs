@@ -3783,6 +3783,78 @@ fn closing_a_manifest_analyses_the_open_documents_of_one_package_once() {
     c.shutdown();
 }
 
+/// The app turns the feature `x` of `lib` on. `lib` loads `inner` always, then (after the
+/// edit the tests make) only with `x`, which its own analysis has off and the app's has on;
+/// `inner` has a type error.
+fn app_with_a_library_that_drops_a_file(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    let dir = temp_dir(name);
+    write(
+        &dir,
+        "app/colibri.toml",
+        "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\", features = [\"x\"] }\n",
+    );
+    write(
+        &dir,
+        "lib/colibri.toml",
+        "[package]\nname = \"lib\"\n\n[features]\nx = []\n",
+    );
+    write(
+        &dir,
+        "lib/inner.colibri",
+        "pub fn h() -> int {\n    return \"s\"\n}\n",
+    );
+    let lib = write(&dir, "lib/lib.colibri", LIB_LOADING_INNER);
+    let main = write(&dir, "app/main.colibri", APP_USING_LIB);
+    let inner = dir.join("lib/inner.colibri");
+    (dir, main, lib, inner)
+}
+
+const LIB_LOADING_INNER: &str = "import inner\npub fn f() -> int => 2\n";
+const LIB_LOADING_INNER_WITH_X: &str = "@when(x)\nimport inner\npub fn f() -> int => 2\n";
+const APP_EDITED: &str = "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n";
+
+fn a_library_drops_a_file_the_app_still_loads(main_first: Option<bool>) {
+    let (dir, main, lib, inner) = app_with_a_library_that_drops_a_file("drops_a_file");
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, APP_USING_LIB);
+    c.open(&lib, LIB_LOADING_INNER);
+    match main_first {
+        Some(true) => {
+            c.change_without_sync(&main, APP_EDITED);
+            c.change_without_sync(&lib, LIB_LOADING_INNER_WITH_X);
+        }
+        Some(false) => {
+            c.change_without_sync(&lib, LIB_LOADING_INNER_WITH_X);
+            c.change_without_sync(&main, APP_EDITED);
+        }
+        // The library alone: the app was not edited, and its analysis still loads `inner`
+        // with `x` on, so the file shows the app's error once the library lets go of it.
+        None => c.change_without_sync(&lib, LIB_LOADING_INNER_WITH_X),
+    }
+    c.sync();
+    let shown = messages(&c, &inner);
+    assert!(
+        shown.iter().any(|m| m.contains("expected `int`")),
+        "{main_first:?}: {shown:?}"
+    );
+    c.shutdown();
+}
+
+#[test]
+fn a_file_dropped_by_the_library_still_shows_the_apps_error_when_the_app_is_analysed_first() {
+    a_library_drops_a_file_the_app_still_loads(Some(true));
+}
+
+#[test]
+fn a_file_dropped_by_the_library_still_shows_the_apps_error_when_the_library_is_analysed_first() {
+    a_library_drops_a_file_the_app_still_loads(Some(false));
+}
+
+#[test]
+fn a_file_dropped_by_the_library_alone_still_shows_the_apps_error() {
+    a_library_drops_a_file_the_app_still_loads(None);
+}
+
 // ---- the fourth review: conflicts, one skip rule, links, speed, scope ----
 
 const PKG: &str = "[package]\nname = \"demo\"\n";
