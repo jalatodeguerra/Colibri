@@ -2831,7 +2831,7 @@ fn a_manifest_or_a_lock_is_never_taken_for_a_script() {
                     all.contains(file) && all.contains("not a script") && all.contains("folder"),
                     "{args:?}: {all}"
                 );
-                assert_eq!(&fs::read_to_string(&target).unwrap(), text, "{args:?}");
+                assert_eq!(&fs::read_to_string(target).unwrap(), text, "{args:?}");
             }
         }
         // A folder walk takes `.colibri` files only: the manifest is left alone.
