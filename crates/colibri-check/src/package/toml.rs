@@ -7,6 +7,8 @@
 //! strings) is an error that says what was found, with its line and column. Duplicate keys and
 //! tables are errors.
 
+use std::collections::{HashMap, HashSet};
+
 use colibri_syntax::{Diagnostic, FileId, Span};
 
 /// A value, with the span of its text.
@@ -134,6 +136,10 @@ impl Parser<'_> {
             span: self.span(0, 0),
             entries: Vec::new(),
         }];
+        // What was seen, by hash: a file with many tables or many keys is read in time
+        // proportional to its size.
+        let mut paths: HashSet<Vec<String>> = HashSet::from([Vec::new()]);
+        let mut keys: HashMap<String, Span> = HashMap::new();
         loop {
             self.blanks();
             match self.peek() {
@@ -143,7 +149,7 @@ impl Parser<'_> {
                 Some('#') => self.end_of_line()?,
                 Some('[') => {
                     let table = self.header()?;
-                    if tables.iter().any(|t| t.path == table.path) {
+                    if !paths.insert(table.path.clone()) {
                         return Err(Diagnostic::error(
                             format!(
                                 "the table `[{}]` is defined more than once",
@@ -153,18 +159,20 @@ impl Parser<'_> {
                         ));
                     }
                     tables.push(table);
+                    keys.clear();
                     self.end_of_line()?;
                 }
                 Some(_) => {
                     let entry = self.entry()?;
                     let current = tables.last_mut().expect("the root table exists");
-                    if let Some(prev) = current.entries.iter().find(|e| e.key == entry.key) {
+                    if let Some(&first) = keys.get(&entry.key) {
                         return Err(Diagnostic::error(
                             format!("the key `{}` is defined more than once", entry.key),
                             entry.key_span,
                         )
-                        .with_label(prev.key_span, "first defined here"));
+                        .with_label(first, "first defined here"));
                     }
+                    keys.insert(entry.key.clone(), entry.key_span);
                     current.entries.push(entry);
                     self.end_of_line()?;
                 }
@@ -331,6 +339,7 @@ impl Parser<'_> {
         let start = self.pos;
         self.bump(); // `{`
         let mut entries: Vec<Entry> = Vec::new();
+        let mut keys: HashMap<String, Span> = HashMap::new();
         self.blanks();
         if self.peek() == Some('}') {
             self.pos += 1;
@@ -338,13 +347,14 @@ impl Parser<'_> {
             loop {
                 self.blanks();
                 let entry = self.entry()?;
-                if let Some(prev) = entries.iter().find(|e| e.key == entry.key) {
+                if let Some(&first) = keys.get(&entry.key) {
                     return Err(Diagnostic::error(
                         format!("the key `{}` is defined more than once", entry.key),
                         entry.key_span,
                     )
-                    .with_label(prev.key_span, "first defined here"));
+                    .with_label(first, "first defined here"));
                 }
+                keys.insert(entry.key.clone(), entry.key_span);
                 entries.push(entry);
                 self.blanks();
                 match self.peek() {

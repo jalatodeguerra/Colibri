@@ -2015,9 +2015,11 @@ mod tests {
                 t.elapsed().as_secs_f64()
             };
             time(100);
-            let (small, big) = (time(1000), time(8000));
+            // The best of a few runs: a busy machine slows one run, not all of them.
+            let best = |n: usize| (0..5).map(|_| time(n)).fold(f64::INFINITY, f64::min);
+            let (small, big) = (best(1000), best(8000));
             // Eight times the text: about eight times the time, not sixty-four.
-            assert!(big < 30.0 * small.max(0.002), "{parses}: {small} {big}");
+            assert!(big < 20.0 * small.max(0.002), "{parses}: {small} {big}");
         }
     }
 
