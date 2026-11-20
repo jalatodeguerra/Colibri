@@ -964,7 +964,17 @@ mod tests {
     /// Nothing is registered and nobody waits, and the table holds no reference to `socket`.
     fn assert_clean<S>(poller: &Poller, socket: &Arc<S>) {
         assert_eq!(poller.counts(), (0, 0));
-        assert_eq!(Arc::strong_count(socket), 1);
+        // The table lets go of the reference after it has released its lock (a socket is never
+        // closed under the lock), which can be a moment after the callback that ended the wait
+        // has run on another thread: wait for it, with a ceiling.
+        let began = Instant::now();
+        while Arc::strong_count(socket) != 1 {
+            assert!(
+                began.elapsed() < CEILING,
+                "the table still holds a reference to the socket"
+            );
+            std::thread::yield_now();
+        }
     }
 
     #[test]
@@ -1441,9 +1451,8 @@ mod tests {
         let (late, _late_rx) = self::cell();
         assert!(p.arm(&c, Dir::Read, None, &late).is_err());
         assert!(!late.is_resolved());
-        assert_eq!(p.counts(), (0, 0));
-        assert_eq!(Arc::strong_count(&b), 1);
-        assert_eq!(Arc::strong_count(&c), 1);
+        assert_clean(&p, &b);
+        assert_clean(&p, &c);
     }
 
     /// A clean-up that panics does not keep the callback from running.
