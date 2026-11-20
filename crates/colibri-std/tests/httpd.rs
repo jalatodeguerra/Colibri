@@ -31,6 +31,7 @@ import str
 class Seen {
     items: List[str] = []
     release: Signal = Signal()
+    writer: httpd.BodyWriter? = none
 }
 
 @APP@
@@ -178,6 +179,20 @@ fn app(r: httpd.Request, seen: Seen, server: httpd.Server) -> Result[httpd.Respo
             }
             return ok(())
         }))
+    }
+    if r.path == "/keep" {
+        return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
+            seen.writer = some(w)
+            w.write_str("kept")?
+            return ok(())
+        }))
+    }
+    if r.path == "/inject" {
+        if let some(w) = seen.writer {
+            let r = w.write_str("HTTP/1.1 200 OK\r\nX-Injected: yes\r\nContent-Length: 0\r\n\r\n")
+            seen.items.push(if r.is_err() { "inject refused" } else { "injected" })
+        }
+        return ok(httpd.text(200, "done\n"))
     }
     if r.path == "/sum" {
         let b = r.body()?
@@ -1549,6 +1564,28 @@ fn a_client_that_never_reads_a_stream_is_cut_off_by_the_write_timeout() {
         server.finish()
     };
     assert_eq!(outcome.seen, ["GET /endless", "write failed", "deferred"]);
+}
+
+#[test]
+fn a_writer_kept_after_its_response_cannot_write_into_the_next_one() {
+    let server = Server::app("httpd.Options { log_errors: false }");
+    let mut a = server.connect();
+    let r = a.call(get("/keep"));
+    assert_eq!(r.text(), "kept");
+    assert!(!r.says_close());
+    // Another connection's handler writes through the writer the closure kept.
+    let mut b = server.connect();
+    assert_eq!(b.call(get("/inject")).text(), "done\n");
+    // The kept-alive connection's next response is clean: no bytes between the two.
+    let next = a.call(get("/"));
+    assert_eq!(next.status, 200);
+    assert_eq!(next.text(), "hello\n");
+    assert_eq!(next.header("x-injected"), None);
+    assert_eq!(next.chunk_sizes, Vec::<usize>::new());
+    drop(a);
+    drop(b);
+    let seen = server.finish().seen;
+    assert!(seen.contains(&"inject refused".to_string()), "{seen:?}");
 }
 
 #[test]

@@ -209,6 +209,8 @@ impl Response {
     }
 }
 
+fn no_note(message: str) {}
+
 /// The most a write puts in one piece on the connection (and in one chunk): a larger write is
 /// split, each piece under its own `write_timeout`.
 const WRITE_PIECE: int = 262144
@@ -228,6 +230,11 @@ pub class BodyWriter {
     failed: Error? = none
     /// The failure was a write past `length`, which is a mistake of the program.
     over: bool = false
+    /// The closure has returned and the response is over: the connection carries the next
+    /// response, so a late write (from a writer the closure kept) must not reach it.
+    done: bool = false
+    /// Where a misuse is logged.
+    note: fn(str) = no_note
 }
 
 impl BodyWriter {
@@ -236,6 +243,10 @@ impl BodyWriter {
     /// closure that writes again after an error is cancelled at that write: it stops there and
     /// its `defer`s run, so a stream that ignores errors cannot spin.
     pub fn write(self, data: Bytes) -> Result[()] {
+        if self.done {
+            (self.note)("a write to a stream whose response has ended")
+            return err(error("httpd: the stream's response has ended"))
+        }
         if let some(e) = self.failed {
             if let some(co) = self.co {
                 co.cancel()
@@ -2068,11 +2079,11 @@ fn connection_task(server: Server, state: ConnState, id: int, handler: Handler) 
     // The first run of a coroutine goes on until it pauses, and `state.co` is set after that
     // first run: the pause makes sure it is set before anything (a stream that writes after an
     // error) needs it.
-    wait(0.0)
     defer {
         state.conn.close()
         let _ = server.conns.remove(id)
     }
+    wait(0.0)
     server.connection(state, handler)
 }
 
@@ -2316,8 +2327,18 @@ impl Server {
             conn.set_timeout(timeout)
             return conn.write_bytes(data)
         }
-        let writer = BodyWriter { send: send, chunked: chunked, length: length, co: state.co }
+        let note = fn(message: str) {
+            self.log("{what}: {message}")
+        }
+        let writer = BodyWriter {
+            send: send,
+            chunked: chunked,
+            length: length,
+            co: state.co,
+            note: note,
+        }
         let outcome = write(writer)
+        writer.done = true
         if let some(e) = writer.failed {
             if writer.over {
                 self.log("{what}: {e}")

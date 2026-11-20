@@ -162,3 +162,17 @@ test "a closure that writes again after an error is cancelled at that write, and
     assert_eq(state.deferred, true)
     assert_eq(state.reached_end, false)
 }
+
+test "a write after the closure has returned reaches nothing and is noted" {
+    let sink = Sink {}
+    let w = writer_over(sink, true, none)
+    let notes: List[str] = []
+    w.note = fn(m: str) {
+        notes.push(m)
+    }
+    assert(is_ok(w.write_str("a")))
+    w.done = true
+    assert(!is_ok(w.write_str("b")))
+    assert_eq(sink.pieces.len(), 1)
+    assert_eq(notes.len(), 1)
+}
