@@ -30,6 +30,36 @@ pub enum HostFault {
     Cancel,
 }
 
+/// Which customisation of a host class is meant: how its objects are shown, compared (`==`) or
+/// hashed (`hash()`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostHook {
+    Show,
+    Eq,
+    Hash,
+}
+
+/// Which of the customisations a host class has. The hooks themselves are host functions and
+/// belong to the engine; this is only the fact that they exist, which the deep operations ask
+/// before they decide how to compare, hash or show a value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HookSet {
+    pub show: bool,
+    pub eq: bool,
+    pub hash: bool,
+}
+
+impl HookSet {
+    /// Whether the class has `hook`.
+    pub fn has(self, hook: HostHook) -> bool {
+        match hook {
+            HostHook::Show => self.show,
+            HostHook::Eq => self.eq,
+            HostHook::Hash => self.hash,
+        }
+    }
+}
+
 /// A handle to a root: slot, generation of the slot, epoch of the slab.
 pub type RootHandle = (u32, u32, u32);
 
@@ -83,6 +113,8 @@ pub struct HostSide {
     /// engine's: they are host functions).
     pub any_show_hook: bool,
     pub any_eq_hook: bool,
+    /// Which hooks each class that has one has.
+    pub hook_sets: HashMap<TypeId, HookSet>,
     /// Which `Vm` this engine belongs to.
     pub vm_id: u64,
     pub drop_queue: RootDropQueue,
@@ -104,6 +136,7 @@ impl Core {
         self.host.class_types.clear();
         self.host.any_show_hook = false;
         self.host.any_eq_hook = false;
+        self.host.hook_sets.clear();
         let first = colibri_check::types::FIRST_USER_TYPE as usize;
         // By bare name, for the host types of the default module only. A named module's types
         // (`process.Child`, `fs.Error`) are never here: two modules each declare a `Child` or
@@ -207,6 +240,19 @@ impl Core {
     /// Records which Rust type implements which host class of the loaded program.
     pub fn set_host_classes(&mut self, classes: HashMap<AnyTypeId, TypeId>) {
         self.host.class_types = classes;
+    }
+
+    /// Records which customisations the host class `ty` has (the engine keeps the hooks).
+    pub fn set_host_hook_set(&mut self, ty: TypeId, hooks: HookSet) {
+        self.host.any_show_hook |= hooks.show;
+        self.host.any_eq_hook |= hooks.eq;
+        self.host.hook_sets.insert(ty, hooks);
+    }
+
+    /// Which customisations the host class `ty` has.
+    #[inline]
+    pub fn host_hook_set(&self, ty: TypeId) -> Option<HookSet> {
+        self.host.hook_sets.get(&ty).copied()
     }
 
     /// The type id of the host class that the Rust type `any` implements.

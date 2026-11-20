@@ -368,6 +368,7 @@ impl Core {
     /// The last script reference to an object was released: if the script owns the object,
     /// it is freed here and its Rust `Drop` runs.
     #[doc(hidden)]
+    #[inline]
     pub fn free_host_object(&mut self, reference: &HostRef) {
         let Some(slot) = self.host.heap.slot(reference.index, reference.generation) else {
             return;
@@ -491,14 +492,15 @@ mod tests {
         let guard = core
             .host_borrow(Some(Rc::clone(&holder)), i, g, any(), true)
             .unwrap();
+        let in_use = HostBorrowError::InUse {
+            name: "Noisy".into(),
+            holder: Some(holder.name.clone()),
+        };
         let busy = core.host_borrow(None, i, g, any(), false).err().unwrap();
-        assert_eq!(
-            busy,
-            HostBorrowError::InUse {
-                name: "Noisy".into(),
-                holder: Some(holder.name.clone()),
-            }
-        );
+        assert_eq!(busy, in_use);
+        // Reporting the holder must not take it away: a second refusal names it too.
+        let again = core.host_borrow(None, i, g, any(), true).err().unwrap();
+        assert_eq!(again, in_use);
         drop(guard);
         assert!(core.host_borrow(None, i, g, any(), false).is_ok());
     }

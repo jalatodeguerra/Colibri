@@ -153,6 +153,7 @@ impl From<OutOfBounds> for ListError {
     }
 }
 
+#[inline]
 fn in_bounds(index: i64, len: usize) -> Result<usize, OutOfBounds> {
     usize::try_from(index)
         .ok()

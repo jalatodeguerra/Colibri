@@ -11,10 +11,10 @@ use colibri_check::types::{BYTES_BUILDER_TYPE, STR_BUILDER_TYPE};
 use colibri_syntax::Span;
 
 use crate::ctl::{Ctl, Eval};
-use crate::eval::Interp;
-use crate::fiber::Fiber;
+use crate::engine::Engine;
 use crate::heap::{ClassObj, ListError, ListObj, MapObj, OutOfBounds, SetObj, Violation};
 use crate::ordered::OrderedMap;
+use crate::prelude::*;
 use crate::show::show;
 use crate::value::Value;
 
@@ -156,13 +156,14 @@ fn take(args: &mut [Value], i: usize) -> Value {
         .map_or(Value::Unit, |a| std::mem::replace(a, Value::Unit))
 }
 
-impl Interp {
+#[doc(hidden)]
+pub trait Builtins: Engine {
     /// Runs one built-in operation. `args[0]` is the receiver, if the operation has one. The
     /// arguments are references to values the caller still owns on its temporaries, so
     /// releasing what is left of them here only drops a reference.
-    pub(crate) fn builtin(
+    fn builtin(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         mut args: Vec<Value>,
         span: Span,
@@ -181,13 +182,14 @@ impl Interp {
 
     fn builtin_inner(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         args: &mut [Value],
         span: Span,
     ) -> Eval {
-        let bad =
-            |this: &Self, fiber: &mut Fiber| this.internal(fiber, span, "ill-typed built-in call");
+        let bad = |this: &Self, fiber: &mut Self::Fiber| {
+            this.internal(fiber, span, "ill-typed built-in call")
+        };
         let recv = args.first().cloned().unwrap_or(Value::Unit);
         Ok(match op {
             Builtin::Clone => return self.clone_deep(fiber, &recv, span),
@@ -215,13 +217,13 @@ impl Interp {
             | Builtin::ErrorMessage
             | Builtin::ErrorContext
             | Builtin::ErrorCause => return self.optres_op(fiber, op, args, span),
-            Builtin::CoroutineCancel | Builtin::CoroutineDone | Builtin::CoroutineJoin => {
-                return self.coroutine_builtin(fiber, op, &recv, span);
-            }
-            Builtin::CoGroupCancel | Builtin::CoGroupCount | Builtin::CoGroupJoinAll => {
-                return self.cogroup_builtin(fiber, op, &recv, span);
-            }
-            Builtin::SignalEmit => return self.signal_builtin(fiber, &recv, span),
+            Builtin::CoroutineCancel
+            | Builtin::CoroutineDone
+            | Builtin::CoroutineJoin
+            | Builtin::CoGroupCancel
+            | Builtin::CoGroupCount
+            | Builtin::CoGroupJoinAll
+            | Builtin::SignalEmit => return self.pausing_builtin(fiber, op, &recv, span),
             Builtin::StrBuilderNew => Value::Obj(ClassObj::new(
                 STR_BUILDER_TYPE,
                 vec![Value::list(Vec::new()), Value::Int(0)],
@@ -382,33 +384,11 @@ impl Interp {
         })
     }
 
-    /// Takes a half-made copy apart without tracing its objects as destroyed.
-    pub(crate) fn abandon_copies(&mut self, copies: Vec<Value>) {
-        let mut pending = Vec::new();
-        for copy in &copies {
-            match copy {
-                Value::Obj(o) => pending.extend(o.take_fields()),
-                Value::List(l) => pending.extend(l.take_all()),
-                Value::Map(m) => pending.extend(m.take_all().into_iter().flat_map(|(k, v)| [k, v])),
-                Value::Set(s) => pending.extend(s.take_all()),
-                _ => {}
-            }
-        }
-        drop(copies);
-        self.release_all(pending);
-    }
-
-    pub(crate) fn violation(&self, fiber: &mut Fiber, span: Span, v: Violation) -> Ctl {
+    fn violation(&self, fiber: &mut Self::Fiber, span: Span, v: Violation) -> Ctl {
         self.panic(fiber, span, v.0)
     }
 
-    pub(crate) fn bounds_panic(
-        &self,
-        fiber: &mut Fiber,
-        span: Span,
-        what: &str,
-        e: OutOfBounds,
-    ) -> Ctl {
+    fn bounds_panic(&self, fiber: &mut Self::Fiber, span: Span, what: &str, e: OutOfBounds) -> Ctl {
         self.panic(
             fiber,
             span,
@@ -419,13 +399,7 @@ impl Interp {
         )
     }
 
-    pub(crate) fn list_error(
-        &self,
-        fiber: &mut Fiber,
-        span: Span,
-        what: &str,
-        e: ListError,
-    ) -> Ctl {
+    fn list_error(&self, fiber: &mut Self::Fiber, span: Span, what: &str, e: ListError) -> Ctl {
         match e {
             ListError::Guard(v) => self.violation(fiber, span, v),
             ListError::Bounds(b) => self.bounds_panic(fiber, span, what, b),
@@ -434,7 +408,7 @@ impl Interp {
 
     fn list_op(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         list: &Rc<ListObj>,
         args: &mut [Value],
@@ -523,7 +497,7 @@ impl Interp {
 
     fn map_op(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         map: &Rc<MapObj>,
         args: &mut [Value],
@@ -610,7 +584,7 @@ impl Interp {
 
     fn set_op(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         set: &Rc<SetObj>,
         args: &mut [Value],
@@ -683,7 +657,7 @@ impl Interp {
     /// the element type when `scan` (some element may have one), else by structure.
     fn set_has(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         set: &SetObj,
         items: &[Value],
         item: &Value,
@@ -693,7 +667,7 @@ impl Interp {
         if !scan {
             return Ok(set.contains(item));
         }
-        self.core.key_scans += 1;
+        self.core_mut().key_scans += 1;
         for x in items {
             // One step per comparison actually made: a user `Eq` may do anything.
             self.charge(fiber, span, 1)?;
@@ -709,7 +683,7 @@ impl Interp {
     /// `is_disjoint`. Both sets are held while a user `Eq` may run.
     fn set_algebra(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         set: &Rc<SetObj>,
         args: &mut [Value],
@@ -732,7 +706,7 @@ impl Interp {
 
     fn set_algebra_inner(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         (lset, left): (&SetObj, &[Value]),
         (rset, right): (&SetObj, &[Value]),
@@ -742,7 +716,7 @@ impl Interp {
         let scan = left.iter().chain(right).any(|x| self.key_needs_scan(x));
         // Which elements of `side` are (not) in `other`.
         let pick = |this: &mut Self,
-                    fiber: &mut Fiber,
+                    fiber: &mut Self::Fiber,
                     side: &[Value],
                     other: (&SetObj, &[Value]),
                     wanted: bool|
@@ -791,7 +765,9 @@ impl Interp {
     }
 
     /// The `Show` text of a value, for panic messages.
-    pub(crate) fn shown(&self, v: &Value) -> String {
-        show(&self.core.types, v).into_owned()
+    fn shown(&self, v: &Value) -> String {
+        show(&self.core().types, v).into_owned()
     }
 }
+
+impl<E: Engine> Builtins for E {}

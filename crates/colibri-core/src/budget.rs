@@ -92,8 +92,7 @@ impl Budget {
     }
 
     /// The first exhaustion starts the grace; the second ends it.
-    #[doc(hidden)]
-    pub fn exhaust(&mut self) {
+    pub(crate) fn exhaust(&mut self) {
         match self.state {
             BudgetState::Normal => {
                 self.banked += u64::try_from(self.phase_start).unwrap_or(0);

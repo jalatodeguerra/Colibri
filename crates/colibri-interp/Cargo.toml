@@ -12,7 +12,6 @@ colibri-check = { path = "../colibri-check" }
 colibri-core = { path = "../colibri-core" }
 colibri-ffi = { path = "../colibri-ffi", optional = true }
 corosensei = "0.3.4"
-memchr = "2.8.3"
 
 [features]
 # Calls into C libraries (`extern` blocks, `ptr[T]`): libffi and dlopen. Without it, a program

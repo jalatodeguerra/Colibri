@@ -17,6 +17,7 @@ use crate::ctl::Eval;
 use crate::eval::Interp;
 use crate::fiber::Fiber;
 use crate::value::Value;
+use colibri_core::prelude::*;
 
 /// What the interpreter keeps for C: the layouts of the loaded program, and the libraries.
 #[derive(Default)]

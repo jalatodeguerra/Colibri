@@ -1,11 +1,11 @@
 //! `Option`, `Result` and `Error` (DESIGN §10): their methods and the `Error` value.
 //!
-//! The layout of the `Error` object, and how one is made and read, is `colibri_core::error`.
+//! The layout of the `Error` object, and how one is made and read, is `crate::error`.
 //!
 //! An error is a chain from the outermost `context` down to the root, which holds the
 //! value. `{e}` shows the messages joined by `: `, `message()` the outermost one, `cause()`
 //! the next link, and `is`/`as` look at the value of the root. Objects die through
-//! `Interp::release` like every class object, which releases the kept value.
+//! the engine's `release` like every class object, which releases the kept value.
 
 use std::rc::Rc;
 
@@ -16,12 +16,12 @@ use colibri_check::types::{
 use colibri_syntax::Span;
 
 use crate::ctl::Eval;
-use crate::eval::Interp;
-use crate::fiber::Fiber;
+use crate::engine::Engine;
 use crate::heap::ClassObj;
+use crate::prelude::*;
 use crate::value::Value;
 
-use colibri_core::error::{Link, link, new_context_error, new_error};
+use crate::error::{Link, link, new_context_error, new_error};
 
 /// The `Error` object a value is, if it is one.
 pub(crate) fn error_obj(v: &Value) -> Option<&Rc<ClassObj>> {
@@ -62,11 +62,12 @@ fn err_value(v: Value) -> Value {
     Value::variant(RESULT_TYPE, VARIANT_ERR, vec![v])
 }
 
-impl Interp {
+#[doc(hidden)]
+pub trait ResultOps: Engine {
     // ---- making errors ----
 
     /// A value converted to an `Error` (an `Error` stays as it is).
-    pub(crate) fn convert_to_error(&mut self, value: Value, conv: ErrorConv) -> Value {
+    fn convert_to_error(&mut self, value: Value, conv: ErrorConv) -> Value {
         if error_obj(&value).is_some() {
             return value;
         }
@@ -80,40 +81,27 @@ impl Interp {
     }
 
     /// `Result[T, E]` to `Result[T, Error]`.
-    pub(crate) fn result_into_error(&mut self, value: Value, conv: ErrorConv) -> Value {
+    fn result_into_error(&mut self, value: Value, conv: ErrorConv) -> Value {
         match payload_of(&value, VARIANT_ERR) {
             Some(e) => err_value(self.convert_to_error(e, conv)),
             None => value,
         }
     }
 
-    /// The user-written `message` method of an `IntoError` implementation, if it has one.
-    pub(crate) fn error_message_fn(&self, impl_id: i64) -> Option<colibri_check::hir::FnId> {
-        let imp = self
-            .core
-            .dispatch
-            .impls
-            .get(usize::try_from(impl_id).ok()?)?;
-        if imp.derived {
-            return None;
-        }
-        imp.methods.first().copied().flatten()
-    }
-
     /// The message of the root of an error: its `IntoError` `message`, or the `Show` of the
     /// value.
     fn root_message(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         value: &Value,
         impl_id: i64,
         span: Span,
     ) -> Eval<String> {
         if let Some(f) = self.error_message_fn(impl_id) {
-            let Some(body) = self.fns.get(f.0 as usize).cloned() else {
+            if self.fn_body(f).is_none() {
                 return Err(self.internal(fiber, span, "unknown function"));
-            };
-            return match self.call_body(fiber, body, vec![value.clone()])? {
+            }
+            return match self.call_fn(fiber, f, vec![value.clone()])? {
                 Value::Str(s) => Ok(s.to_string()),
                 other => {
                     self.release(other);
@@ -125,7 +113,12 @@ impl Interp {
     }
 
     /// The message of the outermost link (`e.message()`).
-    fn outer_message(&mut self, fiber: &mut Fiber, e: &Rc<ClassObj>, span: Span) -> Eval<String> {
+    fn outer_message(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        e: &Rc<ClassObj>,
+        span: Span,
+    ) -> Eval<String> {
         match link(e) {
             Link::Context(message, _) => Ok(message.to_string()),
             Link::Root(_, _, Some(message)) => Ok(message.to_string()),
@@ -136,17 +129,18 @@ impl Interp {
     // ---- Option, Result and Error methods ----
 
     /// The methods of `Option`, `Result` and `Error`; `args[0]` is the receiver.
-    pub(crate) fn optres_op(
+    fn optres_op(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         args: &mut [Value],
         span: Span,
     ) -> Eval {
         let arg = |args: &[Value], i: usize| args.get(i).cloned().unwrap_or(Value::Unit);
         let recv = arg(args, 0);
-        let bad =
-            |this: &Self, fiber: &mut Fiber| this.internal(fiber, span, "ill-typed built-in call");
+        let bad = |this: &Self, fiber: &mut Self::Fiber| {
+            this.internal(fiber, span, "ill-typed built-in call")
+        };
         Ok(match op {
             Builtin::OptionIsSome => Value::Bool(is_variant(&recv, VARIANT_SOME).is_some()),
             Builtin::OptionIsNone => Value::Bool(is_variant(&recv, VARIANT_SOME).is_none()),
@@ -175,24 +169,24 @@ impl Interp {
             },
             Builtin::OptionMap => match payload_of(&recv, VARIANT_SOME) {
                 Some(v) => {
-                    let mapped = self.call_value(fiber, &arg(args, 1), vec![v], span)?;
+                    let mapped = self.call_value_at(fiber, &arg(args, 1), vec![v], span)?;
                     Value::option(Some(mapped))
                 }
                 None => recv,
             },
             Builtin::OptionAndThen => match payload_of(&recv, VARIANT_SOME) {
-                Some(v) => self.call_value(fiber, &arg(args, 1), vec![v], span)?,
+                Some(v) => self.call_value_at(fiber, &arg(args, 1), vec![v], span)?,
                 None => recv,
             },
             Builtin::ResultMap => match payload_of(&recv, VARIANT_OK) {
                 Some(v) => {
-                    let mapped = self.call_value(fiber, &arg(args, 1), vec![v], span)?;
+                    let mapped = self.call_value_at(fiber, &arg(args, 1), vec![v], span)?;
                     ok_value(mapped)
                 }
                 None => recv,
             },
             Builtin::ResultAndThen => match payload_of(&recv, VARIANT_OK) {
-                Some(v) => self.call_value(fiber, &arg(args, 1), vec![v], span)?,
+                Some(v) => self.call_value_at(fiber, &arg(args, 1), vec![v], span)?,
                 None => recv,
             },
             Builtin::ResultContext => match payload_of(&recv, VARIANT_ERR) {
@@ -221,14 +215,6 @@ impl Interp {
         })
     }
 
-    /// Calls the function value `f` with `args` (which the callee owns).
-    fn call_value(&mut self, fiber: &mut Fiber, f: &Value, args: Vec<Value>, span: Span) -> Eval {
-        if let Some(frame) = fiber.frames.last_mut() {
-            frame.span = span;
-        }
-        self.call_function_value(fiber, f, args, span)
-    }
-
     fn message_arg(&self, args: &[Value], i: usize) -> Rc<str> {
         match args.get(i) {
             Some(Value::Str(s)) => Rc::clone(s),
@@ -243,9 +229,9 @@ impl Interp {
     // ---- is, as and panic ----
 
     /// `e.is[T]()`, `e.as[T]()` and `panic(msg)`.
-    pub(crate) fn error_intrinsic(
+    fn error_intrinsic(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         intrinsic: &Intrinsic,
         arg: &Value,
         span: Span,
@@ -254,7 +240,7 @@ impl Interp {
             Intrinsic::Panic => {
                 let msg = match arg {
                     Value::Str(s) => s.to_string(),
-                    other => crate::show::show(&self.core.types, other).into_owned(),
+                    other => crate::show::show(&self.core().types, other).into_owned(),
                 };
                 Err(self.panic(fiber, span, msg))
             }
@@ -276,9 +262,9 @@ impl Interp {
     /// `assert(cond, msg)` and `assert_eq(a, b)`: a panic at the call when the assertion fails
     /// (ARCHITECTURE §15). Equality honours a user-written `impl Eq`, the shown values a
     /// user-written `impl Show`.
-    pub(crate) fn assertion(
+    fn assertion(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         intrinsic: &Intrinsic,
         args: Vec<Value>,
         span: Span,
@@ -302,12 +288,7 @@ impl Interp {
     }
 
     /// `compare(a, b)`: -1, 0 or 1, honouring a user-written `impl Ord`. A `nan` panics.
-    pub(crate) fn compare_values(
-        &mut self,
-        fiber: &mut Fiber,
-        args: Vec<Value>,
-        span: Span,
-    ) -> Eval {
+    fn compare_values(&mut self, fiber: &mut Self::Fiber, args: Vec<Value>, span: Span) -> Eval {
         let result = match args.as_slice() {
             [a, b] => self.cmp_deep(fiber, a, b, span).and_then(|o| match o {
                 Some(o) => Ok(Value::Int(o as i64)),
@@ -320,7 +301,13 @@ impl Interp {
     }
 
     /// The message of a failed `assert_eq`: both values, strings quoted so that spaces show.
-    fn show_both(&mut self, fiber: &mut Fiber, a: &Value, b: &Value, span: Span) -> Eval<String> {
+    fn show_both(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        a: &Value,
+        b: &Value,
+        span: Span,
+    ) -> Eval<String> {
         let mut shown = Vec::new();
         for v in [a, b] {
             shown.push(match v {
@@ -335,9 +322,11 @@ impl Interp {
     }
 
     /// What `main` returning `err(e)` reports: the whole chain of `e`.
-    pub fn error_report(&mut self, fiber: &mut Fiber, v: &Value) -> String {
+    fn error_report(&mut self, fiber: &mut Self::Fiber, v: &Value) -> String {
         let span = Span::new(colibri_syntax::FileId(0), 0, 0);
         self.show_deep(fiber, v, span)
             .unwrap_or_else(|_| "an error whose message could not be shown".to_string())
     }
 }
+
+impl<E: Engine> ResultOps for E {}

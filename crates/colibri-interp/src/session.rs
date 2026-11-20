@@ -16,6 +16,7 @@ use crate::ctl::PanicInfo;
 use crate::eval::Interp;
 use crate::fiber::Fiber;
 use crate::value::{ClosureObj, Value};
+use colibri_core::prelude::*;
 
 /// What [`Interp::session_extend`] replaced, so that [`Interp::session_rollback`] can put it
 /// back when the entry fails.

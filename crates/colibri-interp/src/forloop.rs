@@ -14,6 +14,7 @@ use crate::eval::Interp;
 use crate::fiber::Fiber;
 use crate::heap::ListObj;
 use crate::value::Value;
+use colibri_core::prelude::*;
 
 /// Whether two values are the very same shared object (or string), so a write-back would
 /// change nothing. Scalars are never reported as unchanged.

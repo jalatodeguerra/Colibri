@@ -9,22 +9,23 @@ use colibri_check::hir::Builtin;
 use colibri_syntax::Span;
 
 use crate::ctl::Eval;
-use crate::eval::Interp;
-use crate::fiber::Fiber;
+use crate::engine::Engine;
 use crate::heap::ClassObj;
 use crate::iter::IterObj;
+use crate::prelude::*;
 use crate::value::Value;
 
-pub(crate) use colibri_core::builders::builder_text;
+pub(crate) use crate::builders::builder_text;
 
 /// The most integers `range.to_list()` builds.
 pub(crate) const MAX_RANGE_LIST: u64 = 1 << 27;
 
-impl Interp {
+#[doc(hidden)]
+pub trait StrOps: Engine {
     /// A `StrBuilder` method; `args[0]` is the builder.
-    pub(crate) fn str_builder_op(
+    fn str_builder_op(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         args: &[Value],
         span: Span,
@@ -85,13 +86,7 @@ impl Interp {
     }
 
     /// A `str` method; `args[0]` is the receiver.
-    pub(crate) fn str_op(
-        &mut self,
-        fiber: &mut Fiber,
-        op: Builtin,
-        args: &[Value],
-        span: Span,
-    ) -> Eval {
+    fn str_op(&mut self, fiber: &mut Self::Fiber, op: Builtin, args: &[Value], span: Span) -> Eval {
         let Some(Value::Str(s)) = args.first() else {
             return Err(self.internal(fiber, span, "a string method on a non-string"));
         };
@@ -100,7 +95,7 @@ impl Interp {
             Some(Value::Str(o)) => Some(Rc::clone(o)),
             _ => None,
         };
-        let need = |this: &Self, fiber: &mut Fiber| match &other {
+        let need = |this: &Self, fiber: &mut Self::Fiber| match &other {
             Some(o) => Ok(Rc::clone(o)),
             None => Err(this.internal(fiber, span, "ill-typed string method")),
         };
@@ -204,9 +199,9 @@ impl Interp {
     }
 
     /// `Range` methods and the iterator constructors; `args[0]` is the receiver.
-    pub(crate) fn range_op(
+    fn range_op(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         args: &[Value],
         span: Span,
@@ -250,3 +245,5 @@ impl Interp {
         }
     }
 }
+
+impl<E: Engine> StrOps for E {}

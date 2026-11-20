@@ -28,6 +28,7 @@ use crate::eval::{Interp, stack_position};
 use crate::fiber::Fiber;
 use crate::heap::ClassObj;
 use crate::value::Value;
+use colibri_core::prelude::*;
 
 /// The default size of the native stack of one coroutine.
 pub const DEFAULT_COROUTINE_STACK: usize = 16 * 1024 * 1024;
