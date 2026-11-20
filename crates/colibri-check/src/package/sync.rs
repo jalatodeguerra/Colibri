@@ -107,11 +107,15 @@ fn sync_in(
     }
     s.visit(root, None, None)?;
     if s.incomplete {
-        // The loader reports the manifest; the lock keeps what it pinned until the manifest
-        // can be read again (never written, whatever the mode).
-        s.report.notes.push(format!(
-            "`{LOCK_FILE}` was left as it is: a `{MANIFEST_FILE}` of the package or of a dependency could not be read"
-        ));
+        // The loader reports the manifest. What the walk locked or fetched before it met
+        // the manifest is not announced (nothing was locked: the lock is never written
+        // from an incomplete walk, whatever the mode).
+        s.report.notes.clear();
+        if old_text.is_some() {
+            s.report.notes.push(format!(
+                "`{LOCK_FILE}` was left as it is: a `{MANIFEST_FILE}` of the package or of a dependency could not be read (a dependency fetched before it is in the cache, but not locked)"
+            ));
+        }
         return Ok(s.report);
     }
     if let Update::Names(names) = &options.update {
@@ -230,7 +234,16 @@ impl Sync<'_> {
             Err(e) => {
                 // No manifest has no dependencies to lose (a script; the loader reports a
                 // path dependency without one); one that is there and cannot be read has.
-                self.incomplete |= e.kind() != std::io::ErrorKind::NotFound;
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(());
+                }
+                if self.options.update != Update::Nothing {
+                    return Err(format!(
+                        "cannot read `{}`: {e}, so no dependency was resolved and `{LOCK_FILE}` was not written",
+                        dir.join(MANIFEST_FILE).display()
+                    ));
+                }
+                self.incomplete = true;
                 return Ok(());
             }
         };
@@ -248,6 +261,11 @@ impl Sync<'_> {
             }
         };
         for dep in &manifest.dependencies {
+            // A manifest that could not be read makes the sync incomplete: nothing more is
+            // resolved or fetched.
+            if self.incomplete {
+                return Ok(());
+            }
             match &dep.source {
                 Source::Path { path, .. } => {
                     let target = normalize(&dir.join(path));

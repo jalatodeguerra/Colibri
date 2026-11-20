@@ -2893,3 +2893,108 @@ fn a_manifest_that_cannot_be_read_never_empties_or_rewrites_the_lock() {
         }
     }
 }
+
+#[test]
+fn update_with_a_manifest_that_cannot_be_read_fails_and_leaves_the_lock() {
+    let sb = Sandbox::new("update_unreadable");
+    let lock = "# colibri.lock\n\n[git.lib]\nurl = \"https://example.invalid/lib.git\"\ntag = \"v1\"\ncommit = \"0123456789abcdef0123456789abcdef01234567\"\n";
+    // An invalid UTF-8 byte: the file is there and cannot be read as text.
+    let bad: &[u8] = b"[package]\nname = \"p\"\n# \xff\n";
+    // The package's own manifest, then a path dependency's.
+    sb.write("apps/q1/main.colibri", "fn main() {}\n");
+    fs::write(sb.path("apps/q1/colibri.toml"), bad).unwrap();
+    sb.write("apps/q2/main.colibri", "fn main() {}\n");
+    sb.write(
+        "apps/q2/colibri.toml",
+        "[package]\nname = \"q2\"\n[dependencies]\nsub = { path = \"../sub2\" }\n",
+    );
+    sb.write("apps/sub2/lib.colibri", "pub fn f() {}\n");
+    fs::write(sb.path("apps/sub2/colibri.toml"), bad).unwrap();
+    for (dir, file) in [("apps/q1", "q1"), ("apps/q2", "sub2")] {
+        let dir = sb.path(dir);
+        fs::write(dir.join("colibri.lock"), lock).unwrap();
+        for names in [vec![], vec!["lib"]] {
+            let mut args = vec!["update", "--path", dir.to_str().unwrap()];
+            args.extend(names.iter());
+            let out = sb.colibri(&args);
+            assert_ne!(out.code, 0, "{args:?}: {}", out.stderr);
+            assert!(
+                out.stderr.contains("cannot read") && out.stderr.contains("colibri.toml"),
+                "{file}: {args:?}: {}",
+                out.stderr
+            );
+            assert_eq!(fs::read_to_string(dir.join("colibri.lock")).unwrap(), lock);
+        }
+    }
+}
+
+/// The names of what is in the cache's git folder, at any depth.
+fn cache_names(sb: &Sandbox) -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<String>) {
+        if let Ok(read) = fs::read_dir(dir) {
+            for e in read.flatten() {
+                out.push(e.file_name().to_string_lossy().into_owned());
+                walk(&e.path(), out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&sb.home().join("git"), &mut out);
+    out
+}
+
+#[test]
+fn nothing_is_fetched_or_announced_after_a_manifest_that_cannot_be_read() {
+    let sb = Sandbox::new("incomplete_walk");
+    let (repo, _) = sb.lib_repo("lib", "one");
+    let git_dep = format!("lib = {{ git = \"{}\" }}\n", repo.file_url());
+    sb.write(
+        "apps/sub/colibri.toml",
+        "[package]\nname = \"sub\"\nbogus = \"x\"\n",
+    );
+    sb.write("apps/sub/lib.colibri", "pub fn f() {}\n");
+    // The broken path dependency comes first (`asub` before `lib`), then after (`zsub`).
+    for (order, deps) in [
+        (
+            "first",
+            format!("asub = {{ path = \"../sub\" }}\n{git_dep}"),
+        ),
+        ("last", format!("{git_dep}zsub = {{ path = \"../sub\" }}\n")),
+    ] {
+        let app = sb.app(&format!("walk_{order}"), &deps, &[]);
+        for args in [vec!["check"], vec!["run"], vec!["test"]] {
+            let mut args = args;
+            args.push(app.to_str().unwrap());
+            let out = sb.colibri(&args);
+            let all = format!("{}{}", out.stdout, out.stderr);
+            assert_eq!(out.code, 1, "{order} {args:?}: {all}");
+            assert!(
+                !all.contains("locking") && !all.contains("updating"),
+                "{order} {args:?}: {all}"
+            );
+            assert!(!app.join("colibri.lock").exists(), "{order} {args:?}");
+            if order == "first" {
+                assert!(
+                    !cache_names(&sb).iter().any(|n| n.starts_with("lib-")),
+                    "{order} {args:?}: {:?}",
+                    cache_names(&sb)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_note_that_the_lock_was_left_is_only_said_when_there_is_a_lock() {
+    let sb = Sandbox::new("left_note");
+    let broken = "[package]\nname = \"p\"\nbad = 1\n";
+    let app = package_with(&sb, "noted", broken);
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(!out.stderr.contains("was left as it is"), "{}", out.stderr);
+    assert!(!app.join("colibri.lock").exists());
+    fs::write(app.join("colibri.lock"), "# colibri.lock\n").unwrap();
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(out.stderr.contains("was left as it is"), "{}", out.stderr);
+}
