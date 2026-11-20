@@ -197,6 +197,34 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// As [`Ctx::try_run_async_cancellable`], for an operation that some other thread
+    /// completes (a thread that watches for events, say) instead of a job on the pool. `start`
+    /// runs at once on this thread and gives the [`colibri_interp::Completer`] to whoever will
+    /// complete it, from any thread, once; the call then waits as `run_async` does (other
+    /// coroutines run meanwhile, the main fiber runs the event loop, and where neither is
+    /// possible the thread blocks).
+    ///
+    /// `Err` is the reason when `start` failed (nothing waits then) or when the completer was
+    /// dropped without a result. A cancel of the caller unwinds the host function as for the
+    /// other waits, after the hooks of the completer's token have run on the cancelling
+    /// thread; a `complete` after that is dropped. Not part of the embedding API yet.
+    #[doc(hidden)]
+    pub fn try_await_completion<R: Send + 'static>(
+        &mut self,
+        start: impl FnOnce(colibri_interp::Completer<R>) -> Result<(), String>,
+    ) -> Result<R, String> {
+        match self.interp.await_completion(self.fiber, start) {
+            Ok(r) => Ok(r),
+            Err(colibri_interp::ExternalError::Cancelled) => {
+                std::panic::resume_unwind(Box::new(RaisedCancel))
+            }
+            Err(
+                colibri_interp::ExternalError::Failed(message)
+                | colibri_interp::ExternalError::CannotStart(message),
+            ) => Err(message),
+        }
+    }
+
     /// The type arguments of the call this host function is running for, in the order of the
     /// function's type parameters (`fn decode[T](..)` gets one). Empty for a function that is
     /// not generic. Only a function registered with [`crate::Registration::typed`] can count

@@ -395,6 +395,63 @@ impl Drop for Notify {
     }
 }
 
+/// The end of a background operation that its owner holds: whoever has it (any thread) gives
+/// the waiting call its result with [`Completer::complete`], once. Made by
+/// [`Interp::await_completion`], which waits for it. The pool's own jobs
+/// ([`Interp::await_external_with`]) are one kind of owner; a thread that watches for events
+/// (a poller of sockets) is another.
+///
+/// What it promises:
+///
+/// - The result is sent before the waiter is told, so a waiter that wakes always finds it.
+/// - If the waiting coroutine was cancelled, [`CancelToken::cancel`] has run the token's hooks
+///   on the cancelling thread before the host function unwound, and a later `complete` is a
+///   no-op for the waiter: the value is dropped on the completing thread. A value whose loss
+///   matters must therefore not be the result.
+/// - When the `Vm` ends, the token of every pending operation is cancelled (running its hooks)
+///   and completers that are still held become inert: completing them is ignored.
+/// - Dropping a completer without completing it wakes the waiter with an error
+///   ([`ExternalError::Failed`], "the operation ended without a result"), never a hang.
+#[doc(hidden)]
+pub struct Completer<R> {
+    result: Option<mpsc::Sender<Result<R, String>>>,
+    /// Posts the operation's id on the scheduler when this is dropped, after the result is sent.
+    _notify: Notify,
+    token: Arc<CancelToken>,
+}
+
+impl<R> Completer<R> {
+    /// The token of the waiting call: cancelled when its coroutine is cancelled or the `Vm`
+    /// ends. Register a hook with [`CancelToken::on_cancel`] to release what the operation
+    /// holds (a registration with a poller, say).
+    pub fn token(&self) -> &Arc<CancelToken> {
+        &self.token
+    }
+
+    /// Gives the waiter `value` and wakes it. Callable from any thread; consuming `self` makes
+    /// it once. Ignored if the waiter is gone (cancelled, or the `Vm` has ended).
+    pub fn complete(mut self, value: R) {
+        self.send(Ok(value));
+    }
+
+    /// As [`Completer::complete`] for work that panicked: the waiter gets the panic's message
+    /// as a failure.
+    fn fail(mut self, message: String) {
+        self.send(Err(message));
+    }
+
+    fn send(&mut self, outcome: Result<R, String>) {
+        // A closed channel means the waiter is gone; the value is dropped here, as it is when
+        // the waiter was cancelled.
+        if let Some(tx) = self.result.take()
+            && !self.token.is_cancelled()
+        {
+            let _ = tx.send(outcome);
+        }
+        // `_notify` drops after this, so the id is posted after the result was sent.
+    }
+}
+
 /// What a resumption tells the coroutine.
 pub(crate) struct Resume {
     pub interp: *mut Interp,
@@ -574,7 +631,7 @@ fn signal_id(v: &Value) -> Option<u64> {
     }
 }
 
-const PANICKED_THREAD: &str = "the background operation failed (its thread panicked)";
+const NO_RESULT: &str = "the operation ended without a result";
 
 /// The text of a panic payload (`panic!("..")` gives a `&str` or a `String`).
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -592,7 +649,7 @@ fn unwrap_outcome<R>(outcome: Result<Result<R, String>, ()>) -> Result<R, Extern
         Ok(Err(message)) => Err(ExternalError::Failed(format!(
             "the background operation panicked: {message}"
         ))),
-        Err(_) => Err(ExternalError::Failed(PANICKED_THREAD.to_string())),
+        Err(_) => Err(ExternalError::Failed(NO_RESULT.to_string())),
     }
 }
 
@@ -1413,28 +1470,78 @@ impl Interp {
         fiber: &mut Fiber,
         work: impl FnOnce(&CancelToken) -> R + Send + 'static,
     ) -> Result<R, ExternalError> {
-        let op = self.sched.next_id;
-        self.sched.next_id += 1;
-        let (result_tx, result_rx) = mpsc::channel::<Result<R, String>>();
-        let notify = Notify(self.sched.ext.tx.clone(), op);
-        // Set when the waiter gives up, so an operation still in the queue is not run.
-        let token = Arc::new(CancelToken::default());
-        let skip = Arc::clone(&token);
-        self.sched.ext.pending.insert(op);
-        self.sched.ext.tokens.insert(op, Arc::clone(&token));
+        let (completer, result_rx) = self.begin_completion::<R>();
+        let op = completer._notify.1;
+        let token = Arc::clone(&completer.token);
         let queued = self.sched.ext.pool.submit(Box::new(move || {
-            let _notify = notify;
-            if skip.is_cancelled() {
+            // Set when the waiter gives up, so an operation still in the queue is not run.
+            if completer.token.is_cancelled() {
                 return;
             }
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&skip)))
-                .map_err(|payload| panic_message(payload.as_ref()));
-            let _ = result_tx.send(outcome);
+            let token = Arc::clone(&completer.token);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&token)));
+            match outcome {
+                Ok(value) => completer.complete(value),
+                Err(payload) => completer.fail(panic_message(payload.as_ref())),
+            }
         }));
         if let Err(message) = queued {
             self.sched.ext.forget(op);
             return Err(ExternalError::CannotStart(message));
         }
+        self.wait_completion(fiber, op, &token, result_rx)
+    }
+
+    /// Waits for an operation that some other thread completes. `start` runs at once on the
+    /// calling thread and is given the [`Completer`] to hand to whoever will finish the
+    /// operation; an `Err` from it (the reason it could not begin) is
+    /// [`ExternalError::CannotStart`] and nothing waits. Then the call waits exactly as
+    /// [`Interp::await_external_with`] does: the coroutine suspends with `Wake::External` and
+    /// the event loop (or the host's `tick`) resumes it after `complete`; the main fiber runs
+    /// the event loop instead; where neither is possible the thread blocks. The same rules
+    /// hold: the host function must not hold a borrow of host objects across the call, and
+    /// `Err(Cancelled)` means the host function must unwind, the token's hooks having run
+    /// already. A completer dropped without a result is `Err(Failed)`.
+    #[doc(hidden)]
+    pub fn await_completion<R: Send + 'static>(
+        &mut self,
+        fiber: &mut Fiber,
+        start: impl FnOnce(Completer<R>) -> Result<(), String>,
+    ) -> Result<R, ExternalError> {
+        let (completer, result_rx) = self.begin_completion::<R>();
+        let op = completer._notify.1;
+        let token = Arc::clone(&completer.token);
+        if let Err(message) = start(completer) {
+            self.sched.ext.forget(op);
+            return Err(ExternalError::CannotStart(message));
+        }
+        self.wait_completion(fiber, op, &token, result_rx)
+    }
+
+    /// Registers a new operation with the scheduler and makes the end that completes it.
+    fn begin_completion<R>(&mut self) -> (Completer<R>, mpsc::Receiver<Result<R, String>>) {
+        let op = self.sched.next_id;
+        self.sched.next_id += 1;
+        let (result_tx, result_rx) = mpsc::channel::<Result<R, String>>();
+        let token = Arc::new(CancelToken::default());
+        self.sched.ext.pending.insert(op);
+        self.sched.ext.tokens.insert(op, Arc::clone(&token));
+        let completer = Completer {
+            result: Some(result_tx),
+            _notify: Notify(self.sched.ext.tx.clone(), op),
+            token,
+        };
+        (completer, result_rx)
+    }
+
+    /// The one wait loop of every background operation (suspend, drive the loop, or block).
+    fn wait_completion<R>(
+        &mut self,
+        fiber: &mut Fiber,
+        op: u64,
+        token: &CancelToken,
+        result_rx: mpsc::Receiver<Result<R, String>>,
+    ) -> Result<R, ExternalError> {
         let coro = fiber.coro.as_ref().map(|c| c.id);
         let waited = if let (Some(id), true) = (coro, self.can_suspend_for_external(fiber)) {
             let mut outcome = Ok(());
@@ -1450,7 +1557,8 @@ impl Interp {
             self.drive(None, false, &mut |me| me.sched.ext.completed.contains(&op));
             Ok(())
         } else {
-            // Nothing can run meanwhile: block this thread until the result is there.
+            // Nothing can run meanwhile: block this thread until the result is there. Every
+            // end of a completer sends or drops the result's sender, so this does not hang.
             let blocked = result_rx.recv();
             self.sched.ext.forget(op);
             return unwrap_outcome(blocked.map_err(|_| ()));
@@ -1674,9 +1782,9 @@ impl Interp {
 
 #[cfg(test)]
 mod tests {
-    use super::CancelToken;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use super::{CancelToken, Completer, Notify};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
 
     type Hook = Box<dyn FnOnce() + Send>;
 
@@ -1735,5 +1843,116 @@ mod tests {
         let failed = token.start(|| -> Result<((), Hook), &str> { Err("no") });
         assert_eq!(failed.err(), Some("no"));
         assert!(token.hooks.lock().unwrap().is_empty());
+    }
+
+    /// A value counted when it is dropped, to tell "delivered" from "dropped by the completer".
+    struct Probe(Arc<AtomicUsize>);
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Completing races cancelling, from two threads. Whichever order the threads take: a hook
+    /// ran exactly once, the value is either with the waiter or was dropped (never both, never
+    /// neither), the id was posted exactly once, a `complete` that began after `cancel` had
+    /// returned delivered nothing, and one that had returned before `cancel` began delivered.
+    #[test]
+    fn completing_racing_a_cancel_delivers_exactly_when_the_cancel_lost() {
+        let (mut delivered_runs, mut dropped_runs) = (0, 0);
+        for _ in 0..3000 {
+            let (ids_tx, ids_rx) = mpsc::channel::<u64>();
+            let (result_tx, result_rx) = mpsc::channel::<Result<Probe, String>>();
+            let token = Arc::new(CancelToken::default());
+            let hooks = Arc::new(AtomicUsize::new(0));
+            let drops = Arc::new(AtomicUsize::new(0));
+            {
+                let hooks = Arc::clone(&hooks);
+                token.on_cancel(move || {
+                    hooks.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+            let completer = Completer {
+                result: Some(result_tx),
+                _notify: Notify(ids_tx, 7),
+                token: Arc::clone(&token),
+            };
+            let cancel_returned = Arc::new(AtomicBool::new(false));
+            let complete_returned = Arc::new(AtomicBool::new(false));
+            let completing = {
+                let (cancel_returned, complete_returned) =
+                    (Arc::clone(&cancel_returned), Arc::clone(&complete_returned));
+                let probe = Probe(Arc::clone(&drops));
+                std::thread::spawn(move || {
+                    let after_cancel = cancel_returned.load(Ordering::SeqCst);
+                    completer.complete(probe);
+                    complete_returned.store(true, Ordering::SeqCst);
+                    after_cancel
+                })
+            };
+            let cancelling = {
+                let (token, complete_returned) =
+                    (Arc::clone(&token), Arc::clone(&complete_returned));
+                let cancel_returned = Arc::clone(&cancel_returned);
+                std::thread::spawn(move || {
+                    let after_complete = complete_returned.load(Ordering::SeqCst);
+                    token.cancel();
+                    cancel_returned.store(true, Ordering::SeqCst);
+                    after_complete
+                })
+            };
+            let complete_after_cancel = completing.join().unwrap();
+            let cancel_after_complete = cancelling.join().unwrap();
+            assert_eq!(hooks.load(Ordering::SeqCst), 1, "the hook runs once");
+            assert_eq!(ids_rx.try_iter().collect::<Vec<_>>(), vec![7], "one id");
+            let delivered = match result_rx.try_recv() {
+                Ok(Ok(value)) => {
+                    // With the waiter: not dropped yet.
+                    assert_eq!(drops.load(Ordering::SeqCst), 0);
+                    drop(value);
+                    true
+                }
+                _ => false,
+            };
+            assert_eq!(
+                drops.load(Ordering::SeqCst),
+                1,
+                "the value was dropped once"
+            );
+            assert!(
+                !(complete_after_cancel && delivered),
+                "a complete after the cancel returned delivered a value"
+            );
+            assert!(
+                !cancel_after_complete || delivered,
+                "a complete that returned before the cancel began lost its value"
+            );
+            if delivered {
+                delivered_runs += 1;
+            } else {
+                dropped_runs += 1;
+            }
+        }
+        // Both outcomes are legal and the invariants held for every run.
+        assert_eq!(delivered_runs + dropped_runs, 3000);
+    }
+
+    #[test]
+    fn a_dropped_completer_posts_its_id_and_leaves_no_result() {
+        let (ids_tx, ids_rx) = mpsc::channel::<u64>();
+        let (result_tx, result_rx) = mpsc::channel::<Result<u8, String>>();
+        let completer = Completer {
+            result: Some(result_tx),
+            _notify: Notify(ids_tx, 3),
+            token: Arc::new(CancelToken::default()),
+        };
+        drop(completer);
+        assert_eq!(ids_rx.try_recv().unwrap(), 3);
+        // The sender is gone too: a blocking waiter would see the end, not hang.
+        assert!(matches!(
+            result_rx.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
     }
 }
