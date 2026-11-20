@@ -110,6 +110,9 @@ pub enum ExternalError {
     Cancelled,
     /// The operation could not run or its thread panicked.
     Failed(String),
+    /// The operation never started: the system would not give the pool another thread (or
+    /// the pool is closed). Nothing of it ran.
+    CannotStart(String),
 }
 
 /// Tells a background operation that nobody waits for its result any more. Cancelling is
@@ -1282,6 +1285,19 @@ impl Interp {
             && !self.sched.shutting_down
     }
 
+    /// Whether an external operation that `fiber` waits for lets the rest of the program run
+    /// meanwhile: a coroutine outside a `Drop` hook and a callback is suspended, and the main
+    /// fiber drives the event loop where it may. When this is `false` the wait blocks the
+    /// interpreter thread, and nothing that another coroutine still has to do can happen until
+    /// the operation is done (see [`Interp::await_external_with`]).
+    pub fn external_wait_runs_others(&self, fiber: &Fiber) -> bool {
+        self.can_suspend_for_external(fiber) || self.can_drive(fiber, 1)
+    }
+
+    fn can_suspend_for_external(&self, fiber: &Fiber) -> bool {
+        fiber.coro.is_some() && fiber.host_depth <= 1 && self.hook_depth == 0
+    }
+
     /// The checks of a wait on the main fiber, as panics with a message that says why.
     fn check_drive(&mut self, fiber: &mut Fiber, span: Span, what: &str) -> Eval<()> {
         let why = if fiber.host_depth > 0 {
@@ -1417,11 +1433,10 @@ impl Interp {
         }));
         if let Err(message) = queued {
             self.sched.ext.forget(op);
-            return Err(ExternalError::Failed(message));
+            return Err(ExternalError::CannotStart(message));
         }
         let coro = fiber.coro.as_ref().map(|c| c.id);
-        let suspendable = fiber.host_depth <= 1 && self.hook_depth == 0;
-        let waited = if let (Some(id), true) = (coro, suspendable) {
+        let waited = if let (Some(id), true) = (coro, self.can_suspend_for_external(fiber)) {
             let mut outcome = Ok(());
             while !self.sched.ext.completed.contains(&op) {
                 if self.suspend(fiber, id, Wake::External(op)).is_err() {
