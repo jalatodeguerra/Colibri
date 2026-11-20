@@ -1730,7 +1730,8 @@ impl Vm {
     /// Runs the event loop until no coroutine is alive: what `colibri run` does after `main`.
     /// It ticks the scheduler with the time elapsed on the [`VmBuilder::clock`], then sleeps on
     /// that clock until the next timed wake (`wait`, `wait_real`); coroutines that poll at
-    /// every tick (`wait_until`, `join`) are checked every `poll` seconds,
+    /// every tick (`wait_until`) are checked every `poll` seconds (coroutines waiting for a
+    /// signal, a `join` or a `join_all` are woken by the event and not polled),
     /// 1 ms by default ([`Vm::run_event_loop_polling`]). A panic in a coroutine ends the loop
     /// with that error; the remaining coroutines stay alive (and are cancelled at shutdown).
     pub fn run_event_loop(&mut self) -> Result<(), Error> {

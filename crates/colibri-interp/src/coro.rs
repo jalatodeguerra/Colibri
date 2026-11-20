@@ -155,8 +155,10 @@ impl Interp {
     }
 
     /// How long until the next coroutine needs a tick, for an event loop: `None` when nothing
-    /// is alive or every live coroutine waits for a signal (nothing but an emit can wake it), `Some(0.0)`-ish small polling interval when something is checked at every tick
-    /// (`wait_until`, `join`), else the time to the earliest timed wake.
+    /// is alive or every live coroutine waits for an event (a signal, a `join`, a `join_all`:
+    /// nothing but code that runs at a tick or before it can wake it), a small polling
+    /// interval when something is checked at every tick (`wait_until`), else the time to the
+    /// earliest timed wake.
     pub fn next_wake(&mut self, poll: f64) -> Option<f64> {
         self.core.sched.next_wake(poll)
     }
@@ -740,11 +742,12 @@ impl Interp {
                 return Err(self.panic(fiber, span, "a coroutine cannot join itself"));
             }
             while handle_status(h) == RUNNING {
+                // Registered with the target: woken when it ends, never polled.
+                let target = handle_id(h);
                 let wake = if as_result {
-                    // Registered with the target: woken when it ends, never polled.
-                    Wake::JoinResult(handle_id(h))
+                    Wake::JoinResult(target)
                 } else {
-                    Wake::Join(Rc::downgrade(h))
+                    Wake::Join(target)
                 };
                 self.suspend(fiber, id, wake)?;
             }

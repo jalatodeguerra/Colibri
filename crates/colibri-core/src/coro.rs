@@ -3,8 +3,11 @@
 //!
 //! None of it pauses: a coroutine pauses itself in engine code, and the scheduler resumes it
 //! through [`Engine::resume_stack`]. The data is in [`crate::sched`]. Ticks run in a fixed
-//! order: the coroutines whose signal was emitted come first, in emission order, then every
-//! other due coroutine in start order. Each resumption from a tick gets an instruction budget
+//! order: the coroutines that were woken by an event and queued (a signal's waiters, and the
+//! waiters of a `join_result` whose target ended) come first, in the order they were woken, then
+//! every other due coroutine in start order (which includes the waiters of a `join` or
+//! `join_all` that ended, see [`Wake::Woken`]). Nothing is polled for a join: waiters are kept
+//! in lists with what they wait for. Each resumption from a tick gets an instruction budget
 //! of its own; a coroutine's first run shares its starter's.
 
 use colibri_check::hir::Builtin;
@@ -155,6 +158,7 @@ pub trait Sched: Engine {
         s.finished = 0;
         s.signals.clear();
         s.joiners.clear();
+        s.group_waiters.clear();
         s.signaled.clear();
         s.groups.clear();
         s.ext.clear_completed();
@@ -414,12 +418,15 @@ pub(crate) trait SchedInternal: Engine {
                 continue;
             }
             let due = match &e.wake {
-                Wake::Signal(_) | Wake::Signaled | Wake::JoinResult(_) => false,
-                Wake::Group(g) => s.groups.get(g).is_none_or(|m| m.iter().all(|c| *c == e.id)),
-                Wake::Ready => true,
+                // Woken by an event, never found due by looking.
+                Wake::Signal(_)
+                | Wake::Signaled
+                | Wake::Join(_)
+                | Wake::JoinResult(_)
+                | Wake::Group(_) => false,
+                Wake::Ready | Wake::Woken => true,
                 Wake::Time(d) => s.time + TIME_EPSILON >= *d,
                 Wake::Real(d) => *real_now.get_or_insert_with(|| s.clock.now()) >= *d,
-                Wake::Join(w) => w.upgrade().is_none_or(|h| handle_status(&h) != RUNNING),
                 Wake::External(op) => s.ext.is_completed(*op),
             };
             if due {
@@ -441,8 +448,9 @@ pub(crate) trait SchedInternal: Engine {
         if let Some(g) = s.entries[idx].group {
             s.leave_group(g, id);
         }
-        // Whoever waits for this coroutine in `join_result` is woken, in the order they began
-        // waiting; a panic one of them will receive is theirs, not a failure of the program.
+        // Whoever waits for this coroutine in `join` or `join_result` is woken, in the order they
+        // began waiting; a panic a `join_result` waiter will receive is theirs, not a failure of
+        // the program.
         let received = s.wake_joiners(id);
         let finish = match finish {
             Finish::Panicked(info) => Finish::Panicked(info),
