@@ -177,5 +177,6 @@ fn install_vec_registers_vec_only_not_the_other_source_modules() {
         .load_source("h.colibri", "import httpd\nfn main() {}\n")
         .expect_err("`httpd` is not part of what install_vec gives")
         .render(false);
-    assert!(error.contains("httpd"), "{error}");
+    // not "found, but its own imports are missing": the module is not registered at all
+    assert!(error.contains("no module `httpd`"), "{error}");
 }
