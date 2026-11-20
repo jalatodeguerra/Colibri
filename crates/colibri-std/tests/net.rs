@@ -4070,3 +4070,71 @@ fn main() -> Result[()] {{
     peer.join().unwrap();
     assert_eq!(out, "Other\ntrue\n4\n4\n");
 }
+
+/// The `httpd` shape that stopped the interpreter: a closure hands a big write to a child
+/// (`go fn() {..}()`) and returns while the write is in flight, so the child is the last holder
+/// of the object it captured (here a `Guard` around the connection). When the child's write
+/// ends, the closure it ran is dropped and the guard must be released, so its `Drop` hook runs.
+#[test]
+fn a_child_writing_through_a_captured_object_releases_it_when_it_ends() {
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        // Reads late, so the child's write is still in flight when the starter has returned.
+        thread::sleep(Duration::from_millis(300));
+        let mut total = 0;
+        let mut buf = [0u8; 65536];
+        while total < 8 * 1024 * 1024 {
+            match s.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => total += n,
+            }
+        }
+        total
+    });
+    let out = output(&format!(
+        r#"import net
+
+class Guard {{
+    conn: net.Conn
+}}
+
+impl Drop for Guard {{
+    fn drop(self) {{
+        print("guard dropped")
+    }}
+}}
+
+fn start(conn: net.Conn, data: Bytes) -> Result[()] {{
+    let g = Guard {{ conn: conn }}
+    let _child = go fn() {{
+        let res = g.conn.write_bytes(data)
+        print("write {{res.is_ok()}}")
+    }}()
+    wait(0.05)
+    print("start returns")
+    return ok(())
+}}
+
+fn main() -> Result[()] {{
+    let seed = BytesBuilder()
+    for _ in 0..65536 {{
+        seed.push(u8(7))
+    }}
+    let piece = seed.to_bytes()
+    let b = BytesBuilder()
+    for _ in 0..128 {{
+        b.push_bytes(piece)
+    }}
+    let c = net.connect("{addr}")?
+    start(c, b.to_bytes())?
+    wait(1.5)
+    c.close()
+    return ok(())
+}}
+"#
+    ));
+    assert_eq!(out, "start returns\nwrite true\nguard dropped\n");
+    assert_eq!(peer.join().unwrap(), 8 * 1024 * 1024);
+}
