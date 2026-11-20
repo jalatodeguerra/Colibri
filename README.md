@@ -378,7 +378,11 @@ while it waits, so `net` suits tens or hundreds of connections at once, not tens
 - A read or an accept that is called where nothing else can run (a `Drop` hook, a callback of a
   host function) while another coroutine already waits in a read of the same connection (or an
   accept of the same listener) is a `net.Error.Other` at once: that coroutine cannot resume while
-  the hook waits, so the two would wait for each other for ever.
+  the hook waits, so the two would wait for each other for ever. That is the one case `net` can
+  see. A `write` or `close_write` from such a place can still wait for room that only another
+  coroutine of the same program would make by reading what was written (a write is not
+  finished until the peer takes it, and `close_write` waits for the writes before it), and that
+  coroutine cannot run while the hook waits: a program must not do that.
 - A port can be listened on again as soon as its listener is closed, also when connections of it
   are still closing. On Linux and Windows a second `listen` on a port that is in use fails with
   `AddrInUse` even when it names a specific address (`127.0.0.1:P` while `0.0.0.0:P` is held); on

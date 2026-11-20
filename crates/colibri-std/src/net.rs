@@ -52,8 +52,13 @@
 //! interpreter thread (`Ctx::can_suspend` is `false`). A read (or accept) holds its turn until
 //! its coroutine has resumed and taken the result, so one that is called there while an earlier
 //! read (accept) is outstanding would wait for a coroutine that can never resume. It returns a
-//! `net.Error.Other` at once instead. A write takes no turn that outlives its worker, and
-//! `close_write` waits only for writes, so neither has the problem.
+//! `net.Error.Other` at once instead: that is the one case the module can see. A write takes no
+//! turn that outlives its worker, so it does not have that problem, but it, and `close_write`
+//! (which waits for the writes called before it), can still wait in a hook for room that only
+//! another coroutine of the same program would make (the one that reads what is written), and
+//! that coroutine cannot run while the hook waits. A program must not do that: from a `Drop`
+//! hook or a callback, write only what the peer takes without help from this program (as `fs`
+//! has the same limit with a pipe that this program reads itself).
 //!
 //! # A write that stops part way breaks the write side
 //!
