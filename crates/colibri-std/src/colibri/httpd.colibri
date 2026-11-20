@@ -66,10 +66,14 @@ pub struct Options {
     pub body_timeout: float = 30.0
     /// Each write of a response (a piece of at most 256 KiB).
     pub write_timeout: float = 30.0
-    /// From the call of the handler to its `Response`; 0 is none. **Not enforced yet** (step 7
-    /// of the plan): the field is validated and kept, and nothing reads it. Until then a handler
-    /// that never returns holds its connection until `stop`'s grace ends it, and a body that
-    /// trickles is bounded by `body_timeout` for each piece only.
+    /// From the call of the handler to its `Response`; 0 is none. A handler that is out of time
+    /// is cancelled (its `defer`s run) and the client gets `503 Service Unavailable` with
+    /// `Connection: close`; the event is logged. A sweeper looks at most every quarter of a
+    /// second while some handler runs, so the precision is that, and a server with no handler
+    /// running has nothing on a timer. A handler that computes without ever suspending cannot be
+    /// bounded: nothing else runs while it does. The closure of a streamed response is not
+    /// counted (a stream may be long): each of its writes has `write_timeout`, and it ends at
+    /// `stop` after the grace period.
     pub handler_timeout: float = 60.0
     /// Open connections. At the cap the server stops accepting until one ends. What a
     /// connection costs (measured with the defaults): about 100 KiB for the connection itself
@@ -231,8 +235,8 @@ pub class BodyWriter {
     chunked: bool
     /// The length the response promised, when it did.
     length: int?
-    /// What the connection's coroutine is, so that a write after an error can cancel it.
-    co: Coroutine[()]?
+    /// The coroutine the closure runs in, so that a write after an error can cancel it.
+    co: Coroutine[Result[()]]?
     written: int = 0
     /// The first error of a write: after it the peer has half a body, and nothing more is sent.
     failed: Error? = none
@@ -355,7 +359,12 @@ pub fn redirect(status: int, location: str) -> Response => bare(status).header(
 )
 
 /// A response whose body is written by `write` while it is sent: chunked when `length` is `none`,
-/// and exactly `length` bytes otherwise.
+/// and exactly `length` bytes otherwise. `write` runs in a coroutine of its own, and a panic or an
+/// error of it ends the response where it is: the connection is closed without a last chunk, so
+/// that a client sees a body that was cut. For an HTTP/1.0 request with no `length` the body
+/// ends with the connection, so a stream that fails ends with an ordinary close, and the client
+/// cannot tell that the body was cut (`net` has no way to reset a connection): give such a
+/// stream a `length` if the client may be HTTP/1.0 and needs to know.
 pub fn stream(
     status: int,
     content_type: str,
@@ -1987,9 +1996,26 @@ enum Phase {
 
 class ConnState {
     conn: net.Conn
+    id: int
     phase: Phase = .Idle
-    /// The coroutine of the connection, for a stream that goes on writing after an error.
-    co: Coroutine[()]? = none
+    /// The coroutines of the connection's user code: the handler of a request, then the closure
+    /// of a stream. The connection's coroutine keeps the protocol and waits for them with
+    /// `join_result`, so a panic or a timeout of user code is a value it answers, and it ends
+    /// them when it ends.
+    group: CoGroup = CoGroup()
+    /// The running handler and when it is out of time (0: no limit), for the sweeper.
+    handler: Coroutine[Result[Response]]? = none
+    deadline: float = 0.0
+    timed_out: bool = false
+}
+
+/// How a handler ended, seen from its connection.
+enum Outcome {
+    Done(Result[Response])
+    /// A panic (or, in `Server.connection`, any end that is not a result): the message.
+    Panicked(str)
+    /// Cancelled by the sweeper after `handler_timeout`.
+    TimedOut
 }
 
 /// The result of reading one line of a head.
@@ -2063,6 +2089,14 @@ pub class Server {
     conns: Map[int, ConnState] = {:}
     group: CoGroup = CoGroup()
     timer: Coroutine[()]? = none
+    /// The connections with a handler that is under `handler_timeout`, and what wakes the
+    /// sweeper when the first one comes. A server with no such handler has nothing waiting on a
+    /// timer.
+    busy: Map[int, ConnState] = {:}
+    sweep_wake: Signal = Signal()
+    /// Emitted when a connection ends or the server stops: what the accept loop waits on at the
+    /// cap.
+    slot_freed: Signal = Signal()
     next_id: int = 0
     serving: bool = false
     stopping: bool = false
@@ -2146,20 +2180,94 @@ fn grace_timer(server: Server, grace: float) {
 
 /// A connection's coroutine: what runs `Server.connection` and always lets the connection go.
 fn connection_task(server: Server, state: ConnState, id: int, handler: Handler) {
-    // The first run of a coroutine goes on until it pauses, and `state.co` is set after that
-    // first run: the pause makes sure it is set before anything (a stream that writes after an
-    // error) needs it.
     defer {
+        // The user code of the connection ends first (its own `defer`s run), then the socket
+        // goes and the slot is free.
+        state.group.cancel()
         state.conn.close()
         let _ = server.conns.remove(id)
+        let _ = server.busy.remove(id)
+        server.slot_freed.emit()
     }
-    wait(0.0)
     server.connection(state, handler)
 }
 
-/// Calls a handler. It is the one place a handler runs, so that it can be wrapped (to contain a
-/// panic, to bound its time) without touching the connection loop.
+/// Calls a handler. It is the one place a handler runs: in a coroutine of its own, so that a
+/// panic or a timeout of it is a value for the connection.
 fn call_handler(handler: Handler, request: Request) -> Result[Response] => handler(request)
+
+/// The closure of a stream, in a coroutine of its own. It pauses once first, so that the writer
+/// has the handle of this coroutine (which a write after an error cancels) before the closure
+/// runs.
+fn call_stream(write: fn(BodyWriter) -> Result[()], writer: BodyWriter) -> Result[()] {
+    wait(0.0)
+    return write(writer)
+}
+
+/// The sweeper: one coroutine for each serving server. It waits on a signal while no handler is
+/// under `handler_timeout`, which costs nothing, and looks at most every quarter of a second
+/// while some are, cancelling each handler that is out of time. A handler that never suspends
+/// cannot be bounded: nothing else runs while it does.
+fn sweep(server: Server) {
+    while true {
+        if server.busy.is_empty() {
+            wait_for(server.sweep_wake)
+            continue
+        }
+        let now = time.now()
+        var next = 0.25
+        let expired: List[ConnState] = []
+        for state in server.busy.values() {
+            let left = state.deadline - now
+            if left <= 0.0 {
+                expired.push(state)
+            } else if left < next {
+                next = left
+            }
+        }
+        for state in expired {
+            let _ = server.busy.remove(state.id)
+            state.timed_out = true
+            if let some(co) = state.handler {
+                co.cancel()
+            }
+        }
+        wait(next.max(0.005))
+    }
+}
+
+/// The accept loop: a connection for each accepted socket, until `stop` closes the listener.
+fn accept_loop(server: Server, handler: Handler) {
+    while !server.stopping {
+        // At the cap the server stops accepting: the backlog holds the connections that wait,
+        // and a connection that ends (or `stop`) wakes this loop.
+        while server.conns.len() >= server.options.max_connections && !server.stopping {
+            wait_for(server.slot_freed)
+        }
+        if server.stopping {
+            break
+        }
+        let conn = server.listener.accept() or |e| {
+            if server.stopping || is_closed(e) {
+                break
+            }
+            // Out of descriptors, a connection reset in the backlog: logged, and tried again
+            // after a moment, so that it never ends `serve`.
+            server.log("accept failed: {e}")
+            wait(0.1)
+            continue
+        }
+        if server.stopping {
+            conn.close()
+            break
+        }
+        let id = server.next_id
+        server.next_id += 1
+        let state = ConnState { conn: conn, id: id }
+        server.conns[id] = state
+        server.group.go(connection_task(server, state, id, handler))
+    }
+}
 
 impl Server {
     /// The address the server listens on, with the port the system picked.
@@ -2179,42 +2287,18 @@ impl Server {
             return err(error("httpd: the server was stopped"))
         }
         self.serving = true
-        while !self.stopping {
-            // At the cap the server stops accepting: the backlog holds the connections that
-            // wait. It looks again every few milliseconds (an event wait is not allowed on the
-            // main fiber). Step 7: when `serve` can wait on a signal in a coroutine, this poll
-            // (about 200 wakeups a second while at the cap) goes away.
-            while self.conns.len() >= self.options.max_connections && !self.stopping {
-                wait(0.005)
-            }
-            if self.stopping {
-                break
-            }
-            let conn = self.listener.accept() or |e| {
-                if self.stopping || is_closed(e) {
-                    break
-                }
-                // Out of descriptors, a connection reset in the backlog: logged, and tried
-                // again after a moment, so that it never ends `serve`.
-                self.log("accept failed: {e}")
-                wait(0.1)
-                continue
-            }
-            if self.stopping {
-                conn.close()
-                break
-            }
-            let id = self.next_id
-            self.next_id += 1
-            let state = ConnState { conn: conn }
-            self.conns[id] = state
-            state.co = some(self.group.go(connection_task(self, state, id, handler)))
-        }
-        // Waits for the connections to end. This is polled (an event wait is not allowed on the
-        // main fiber), but only while the server shuts down.
+        let sweeper = go sweep(self)
+        let acceptor = go accept_loop(self, handler)
+        let ended = acceptor.join_result()
+        // Waits for the connections to end, which an event wakes (`join_all` on the main fiber
+        // sleeps to the next event too).
         self.group.join_all()
         if let some(timer) = self.timer {
             timer.cancel()
+        }
+        sweeper.cancel()
+        if let err(e) = ended {
+            return err(e)
         }
         return ok(())
     }
@@ -2238,6 +2322,7 @@ impl Server {
                 state.conn.close()
             }
         }
+        self.slot_freed.emit()
         if self.serving {
             self.timer = some(go grace_timer(self, grace.max(0.0)))
         }
@@ -2246,6 +2331,35 @@ impl Server {
     fn log(self, message: str) {
         if self.options.log_errors {
             io.eprintln("httpd: {message}")
+        }
+    }
+
+    /// Runs a handler in a child coroutine of the connection and waits for it with
+    /// `join_result`: its result, or what ended it. While it runs it is under `handler_timeout`
+    /// (0 is none), which the sweeper enforces.
+    fn run_handler(self, state: ConnState, handler: Handler, request: Request) -> Outcome {
+        let timeout = self.options.handler_timeout
+        let co = state.group.go(call_handler(handler, request))
+        state.handler = some(co)
+        if timeout > 0.0 && !co.done() {
+            state.deadline = time.now() + timeout
+            self.busy[state.id] = state
+            if self.busy.len() == 1 {
+                self.sweep_wake.emit()
+            }
+        }
+        let joined = co.join_result()
+        let _ = self.busy.remove(state.id)
+        state.handler = none
+        state.deadline = 0.0
+        return match joined {
+            ok(result) => .Done(result)
+            err(e) => if state.timed_out {
+                state.timed_out = false
+                .TimedOut
+            } else {
+                .Panicked(e.message())
+            }
         }
     }
 
@@ -2404,10 +2518,20 @@ impl Server {
             send: send,
             chunked: chunked,
             length: length,
-            co: state.co,
+            co: none,
             note: note,
         }
-        let outcome = write(writer)
+        // The closure runs in a coroutine of its own: a panic of it is a value here, and
+        // cancelling it (a write after an error) does not end the connection's coroutine.
+        // A stream is not under `handler_timeout`: it may be long, and each write has the
+        // `write_timeout`.
+        let child = state.group.go(call_stream(write, writer))
+        writer.co = some(child)
+        let joined = child.join_result()
+        let outcome = match joined {
+            ok(r)  => r
+            err(e) => err(e)
+        }
         writer.done = true
         if writer.busy > 0 {
             // A write is still waiting on the connection (the closure gave the writer to
@@ -2679,11 +2803,27 @@ impl Server {
             state.phase = .Handler
             let reader = self.body_for(conn, head)
             let request = request(head, reader, peer)
-            let result = call_handler(handler, request)
+            let what = "{request.method} {request.target}"
+            // A panic or a timeout of the handler leaves its state and the body unknown: the
+            // answer says so, and the connection closes after it.
+            var broken = false
+            let result = match self.run_handler(state, handler, request) {
+                Done(r) => r
+                Panicked(message) => {
+                    self.log("{what}: 500: the handler panicked: {message}")
+                    broken = true
+                    ok(error_response(500, "the handler failed"))
+                }
+                TimedOut => {
+                    self.log("{what}: 503: the handler did not answer within the handler_timeout")
+                    broken = true
+                    ok(error_response(503, "the handler did not answer in time"))
+                }
+            }
             state.phase = .Writing
             let response = self.answer(request, result)
             // Whether the connection stays open after the response (3.8, 3.10).
-            var closing = !head.keep_alive || self.stopping
+            var closing = !head.keep_alive || self.stopping || broken
             if response.headers.get("connection") != none {
                 closing = true
             }
@@ -2714,7 +2854,7 @@ impl Server {
             let keep_alive_word = !closing && head.version == "HTTP/1.0"
             let sent = self.write_response(
                 state,
-                "{request.method} {request.target}",
+                what,
                 head.version,
                 response,
                 head.method == "HEAD",

@@ -154,6 +154,26 @@ fn app(r: httpd.Request, seen: Seen, server: httpd.Server) -> Result[httpd.Respo
             return ok(())
         }))
     }
+    if r.path == "/panic" {
+        let small = [1]
+        seen.items.push("{small[5]}")
+        return ok(httpd.text(200, "not reached\n"))
+    }
+    if r.path == "/hang" {
+        defer {
+            seen.items.push("hang deferred")
+        }
+        wait_for(seen.release)
+        return ok(httpd.text(200, "released\n"))
+    }
+    if r.path == "/slow_stream" {
+        return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
+            w.write_str("a")?
+            wait(0.6)
+            w.write_str("b")?
+            return ok(())
+        }))
+    }
     if r.path == "/bg" {
         // The closure hands a big write to a child coroutine and returns while it is in flight.
         return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
@@ -1680,7 +1700,7 @@ fn a_write_in_flight_when_the_closure_returns_never_follows_the_end_of_the_respo
 
 #[test]
 fn a_panic_in_a_stream_closure_cuts_that_connection_and_the_server_goes_on() {
-    let server = Server::app("httpd.Options {}");
+    let server = Server::app("httpd.Options { log_errors: false }");
     let mut w = server.connect();
     w.send(get("/stream_panic"));
     // The head and the first chunk may arrive; the response is never completed.
@@ -1688,19 +1708,110 @@ fn a_panic_in_a_stream_closure_cuts_that_connection_and_the_server_goes_on() {
     // Another connection is served as before.
     let mut other = server.connect();
     assert_eq!(other.call(get("/")).text(), "hello\n");
-    // How a panic should be reported (a 500 for a handler, a log line) is for step 7, with
-    // `join_result`. Until then the panic of a coroutine ends the run, which the harness
-    // sees because it runs the event loop after `main` as `colibri run` does. Whether `serve`
-    // returns before the panic surfaces is scheduler timing, and either way the run ends in it.
-    let mut stop = server.connect();
-    let r = stop.call(request("POST", "/__stop", &["Content-Length: 0"], b""));
-    assert_eq!(r.status, 200);
-    drop(stop);
-    match server.done.recv_timeout(CEILING) {
-        Ok(Err(e)) => assert!(e.contains("index 5 out of bounds"), "{e}"),
-        Ok(Ok(printed)) => panic!("the run ended without the panic: {printed:?}"),
-        Err(_) => panic!("the server did not end within {CEILING:?}"),
+    // The panic is a value for the connection, which is cut: the run ends normally, with the
+    // requests it saw.
+    assert_eq!(server.finish().seen, ["GET /stream_panic", "GET /"]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Handlers in child coroutines: panics, handler_timeout
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_panicking_handler_is_a_500_and_a_close_and_the_server_goes_on_and_ends_normally() {
+    let server = Server::app("httpd.Options { log_errors: false }");
+    let mut w = server.connect();
+    w.send(get("/panic"));
+    let r = w.read();
+    assert_eq!(r.status, 500, "{r:?}");
+    assert!(r.says_close());
+    // The text does not tell the client what went wrong.
+    assert!(!r.text().contains("index"), "{}", r.text());
+    w.expect_closed();
+    // The next connection is served, and a handler on a kept-alive one still works after a
+    // panic on another.
+    let mut other = server.connect();
+    assert_eq!(other.call(get("/")).text(), "hello\n");
+    assert_eq!(other.call(get("/")).text(), "hello\n");
+    drop(other);
+    // The run ends with `Ok`: the panic was a value, not a failure of the program.
+    assert_eq!(server.finish().seen, ["GET /panic", "GET /", "GET /"]);
+}
+
+#[test]
+fn a_handler_out_of_time_is_cancelled_with_a_503_and_a_close_and_its_defer_ran() {
+    let server = Server::app("httpd.Options { handler_timeout: 0.5, log_errors: false }");
+    let mut w = server.connect();
+    let started = Instant::now();
+    w.send(get("/hang"));
+    let r = w.read();
+    assert_eq!(r.status, 503, "{r:?}");
+    assert!(r.says_close());
+    assert!(
+        started.elapsed() >= Duration::from_millis(450),
+        "answered after {:?}",
+        started.elapsed()
+    );
+    w.expect_closed();
+    // A handler that is within its time is untouched, and the server goes on.
+    let mut other = server.connect();
+    assert_eq!(other.call(get("/")).text(), "hello\n");
+    drop(other);
+    assert_eq!(
+        server.finish().seen,
+        ["GET /hang", "hang deferred", "GET /"]
+    );
+}
+
+#[test]
+fn a_stream_is_not_under_the_handler_timeout() {
+    let server = Server::app("httpd.Options { handler_timeout: 0.3, log_errors: false }");
+    let mut w = server.connect();
+    let r = w.call(get("/slow_stream"));
+    assert_eq!((r.status, r.text()), (200, "ab".to_string()));
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn a_handler_timeout_of_zero_is_none() {
+    let server = Server::app("httpd.Options { handler_timeout: 0.0 }");
+    let mut w = server.connect();
+    w.send(get("/hang"));
+    assert!(w.stays_quiet(Duration::from_millis(1200)));
+    // `finish` stops with a grace of 1 s: the handler is cancelled then, and its defer runs.
+    drop(w);
+    let seen = server.finish().seen;
+    assert_eq!(seen, ["GET /hang", "hang deferred"]);
+}
+
+#[test]
+fn two_hundred_keep_alive_clients_of_twenty_requests_in_waves_of_fifty_are_all_answered_once() {
+    let server = Server::app("httpd.Options {}");
+    let addr = server.addr.clone();
+    for wave in 0..4 {
+        let clients: Vec<_> = (0..50)
+            .map(|i| {
+                let addr = addr.clone();
+                let client = wave * 50 + i;
+                thread::spawn(move || {
+                    let mut w = Wire::connect(&addr);
+                    for n in 0..20 {
+                        let r = w.call(get(&format!("/?c={client}&n={n}")));
+                        assert_eq!((r.status, r.text()), (200, "hello\n".to_string()));
+                    }
+                })
+            })
+            .collect();
+        for c in clients {
+            c.join().expect("a client");
+        }
     }
+    let mut seen = server.finish().seen;
+    assert_eq!(seen.len(), 4000);
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), 4000, "a request was seen twice");
 }
 
 // ---------------------------------------------------------------------------------------------

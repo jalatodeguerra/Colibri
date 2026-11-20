@@ -129,13 +129,13 @@ test "a failed write is the error of the writer, which sends nothing more" {
 }
 
 class Spin {
-    co: Coroutine[()]? = none
+    co: Coroutine[Result[()]]? = none
     writes: int = 0
     deferred: bool = false
     reached_end: bool = false
 }
 
-fn spin(w: httpd_impl.BodyWriter, state: Spin) {
+fn spin(w: httpd_impl.BodyWriter, state: Spin) -> Result[()] {
     defer {
         state.deferred = true
     }
@@ -146,6 +146,7 @@ fn spin(w: httpd_impl.BodyWriter, state: Spin) {
         let _ = w.write_str("x")
     }
     state.reached_end = true
+    return ok(())
 }
 
 test "a closure that writes again after an error is cancelled at that write, and its defers run" {
