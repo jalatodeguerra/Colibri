@@ -416,8 +416,13 @@ fn dns_error(host: &str) -> TypedError {
 /// Whether `host` cannot be a name in the DNS, whatever the resolver says: a label of more than
 /// 63 bytes, or a name of more than 253 (a trailing dot, the root, is not counted). The lookup is
 /// not made for such a name, so it costs no round trip to a resolver, and the answer is the
-/// same on every system.
+/// same on every system. Only for an ASCII host: the length of a Unicode label in UTF-8 is not
+/// its length in the DNS (a label of 32 letters `ü` is 64 bytes and about 37 characters as
+/// punycode), and a system that converts such names itself must be left to do it.
 fn cannot_be_a_name(host: &str) -> bool {
+    if !host.is_ascii() {
+        return false;
+    }
     let name = host.strip_suffix('.').unwrap_or(host);
     name.len() > 253 || name.split('.').any(|label| label.len() > 63)
 }
@@ -2273,6 +2278,11 @@ mod tests {
         // 63 bytes in a label, 253 in a name, and a trailing dot are the limits, not beyond them.
         assert!(!cannot_be_a_name(&format!("{}.com", "x".repeat(63))));
         assert!(!cannot_be_a_name("localhost"));
+        // A Unicode name is not judged by its bytes: 32 `ü` are 64 bytes but one short label.
+        assert!(!cannot_be_a_name(&"ü".repeat(32)));
+        assert!(!cannot_be_a_name(&format!("{}.de", "ü".repeat(100))));
+        // An ASCII one still is.
+        assert!(cannot_be_a_name(&"u".repeat(64)));
         assert!(!cannot_be_a_name("example.com."));
         assert!(!cannot_be_a_name("1.2.3"));
         let max = format!("{0}.{0}.{0}.{1}", "a".repeat(63), "b".repeat(61));
