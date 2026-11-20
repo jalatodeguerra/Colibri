@@ -55,8 +55,20 @@ test "whitespace before the extension is allowed, and the extension is ignored" 
     assert_eq(size("1;ext=v") or -1, 1)
     assert_eq(size("a;name=\"quoted value\";other") or -1, 10)
     assert_eq(size("1;") or -1, 1)
-    assert_eq(size("1 ") or -1, 1)
     assert_eq(size("10 ;a;b=c\td") or -1, 16)
+}
+
+test "whitespace after the size is only allowed before a semicolon" {
+    assert_eq(size_status("1 "), 400)
+    assert_eq(size_status("1\t"), 400)
+    assert_eq(size_status("1  \t "), 400)
+}
+
+test "a no-break space, or another space that is not SP or HTAB, is not whitespace here" {
+    assert_eq(size_status("1\u{a0};x"), 400)
+    assert_eq(size_status("1\u{a0}"), 400)
+    assert_eq(size_status("1\u{2003};x"), 400)
+    assert_eq(size_status("\u{a0}1"), 400)
 }
 
 test "an extension with a control character is 400" {

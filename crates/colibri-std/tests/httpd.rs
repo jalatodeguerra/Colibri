@@ -1215,3 +1215,34 @@ fn a_host_that_grants_no_os_gets_a_compile_error_for_the_clock_of_the_date_heade
     );
     assert!(!text.contains("`net.listen`"), "{text}");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Empty lines before the request line
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn empty_lines_before_a_request_line_are_skipped() {
+    let server = Server::hello();
+    let mut w = server.connect();
+    let mut data = b"\r\n\r\n\r\n".to_vec();
+    data.extend(get("/"));
+    let r = w.call(data);
+    assert_eq!(r.status, 200);
+    drop(w);
+    assert_eq!(server.finish().seen, ["GET /"]);
+}
+
+#[test]
+fn endless_empty_lines_are_cut_off_by_the_header_byte_limit() {
+    let server = Server::hello();
+    let mut w = server.connect();
+    // 40,000 lines of 2 bytes are over the 64 KiB of `max_header_bytes`.
+    let mut data = "\r\n".repeat(40_000).into_bytes();
+    data.extend_from_slice(SMUGGLED);
+    w.send(&data);
+    let r = w.read();
+    assert_eq!(r.status, 431);
+    assert!(r.says_close());
+    w.expect_closed();
+    assert_eq!(server.finish().seen, Vec::<String>::new());
+}

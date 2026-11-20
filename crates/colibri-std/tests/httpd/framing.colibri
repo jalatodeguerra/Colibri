@@ -1,5 +1,6 @@
 import common
 import httpd_impl
+import str
 
 fn with(fields: List[str]) -> Result[httpd_impl.Head, httpd_impl.Reject] {
     return common.head_of("POST /x HTTP/1.1", fields)
@@ -108,11 +109,52 @@ test "chunked is accepted, in any case" {
     assert(is_chunked(with(["transfer-encoding: CHUNKED"])))
 }
 
-test "chunked with optional whitespace and empty list elements is accepted" {
-    assert(is_chunked(with(["Transfer-Encoding: , chunked,"])))
-    assert(is_chunked(with(["Transfer-Encoding: ,,chunked"])))
+test "chunked with SP and HTAB around it is accepted" {
     assert(is_chunked(with(["Transfer-Encoding:  chunked \t"])))
-    assert(is_chunked(with(["Transfer-Encoding: chunked , "])))
+    assert(is_chunked(with(["Transfer-Encoding:\tchunked"])))
+}
+
+test "an empty element of the list is 400, wherever it is" {
+    assert_eq(common.status_of(with(["Transfer-Encoding: chunked,"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: , chunked"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: , , chunked , ,"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: ,,chunked"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: chunked , "])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: gzip,,chunked"])), 400)
+}
+
+test "a second Transfer-Encoding line, empty or not, is 400" {
+    assert_eq(common.status_of(with(["Transfer-Encoding:", "Transfer-Encoding: chunked"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: chunked", "Transfer-Encoding:"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: chunked", "Transfer-Encoding: chunked"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: gzip", "Transfer-Encoding: chunked"])), 400)
+}
+
+test "parameters, quotes, and a coding that is not a token are 400" {
+    assert_eq(common.status_of(with(["Transfer-Encoding: chunked;q=1"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: chunked; x"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: \"chunked\""])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: xchunked"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: chunked x"])), 400)
+}
+
+test "Unicode white space around chunked is not white space: 400" {
+    assert_eq(common.status_of(with(["Transfer-Encoding: chunked\u{a0}"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: \u{a0}chunked"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: \u{2003}chunked"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: chunked\u{2003}"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: gzip,\u{a0}chunked"])), 400)
+}
+
+test "a letter that only lower-cases to one of the letters of chunked is not chunked" {
+    // KELVIN SIGN lower-cases to `k`.
+    assert_eq(common.status_of(with(["Transfer-Encoding: chun\u{212a}ed"])), 400)
+}
+
+test "more than eight codings is 400, however long the list" {
+    assert_eq(common.status_of(with(["Transfer-Encoding: a,b,c,d,e,f,g,chunked"])), 501)
+    assert_eq(common.status_of(with(["Transfer-Encoding: a,b,c,d,e,f,g,h,chunked"])), 400)
+    assert_eq(common.status_of(with(["Transfer-Encoding: " + str.repeat(",", 60000)])), 400)
 }
 
 test "chunked given on two lines is chunked twice and is 400" {
@@ -124,7 +166,6 @@ test "chunked given on two lines is chunked twice and is 400" {
 
 test "a coding before chunked is not supported: 501" {
     assert_eq(common.status_of(with(["Transfer-Encoding: gzip, chunked"])), 501)
-    assert_eq(common.status_of(with(["Transfer-Encoding: gzip", "Transfer-Encoding: chunked"])), 501)
     assert_eq(common.status_of(with(["Transfer-Encoding: identity, chunked"])), 501)
     assert_eq(common.status_of(with(["Transfer-Encoding: deflate, gzip, chunked"])), 501)
 }
@@ -232,4 +273,13 @@ test "HTTP/1.0 closes unless it asks to keep alive, and close wins" {
     assert(common.accepted(common.head(["GET / HTTP/1.0", "Connection: Keep-Alive"])).keep_alive)
     assert(!common.accepted(common.head(["GET / HTTP/1.0", "Connection: keep-alive, close"])).keep_alive)
     assert(!common.accepted(common.head(["GET / HTTP/1.0", "Connection: close"])).keep_alive)
+}
+
+test "a Content-Length that is not plain ASCII digits is 400, whatever the digits look like" {
+    // The outcome is what counts: it must not depend on how a number is parsed.
+    assert_eq(common.status_of(with(["Content-Length: 5 5"])), 400)
+    assert_eq(common.status_of(with(["Content-Length: \u{a0}5"])), 400)
+    assert_eq(common.status_of(with(["Content-Length: 5\u{a0}"])), 400)
+    assert_eq(common.status_of(with(["Content-Length: \u{663}"])), 400)
+    assert_eq(common.status_of(with(["Content-Length: \u{ff15}"])), 400)
 }

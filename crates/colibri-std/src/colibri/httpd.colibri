@@ -372,11 +372,13 @@ class Grammar {
     /// (group 2), with the optional whitespace around the value left out (RFC 9112 5, RFC 9110
     /// 5.5 and 5.6.2).
     field_line: regex.Regex
-    /// `uri-host [":" port]` (RFC 9112 3.2, RFC 3986 3.2.2).
+    /// `uri-host [":" port]` (RFC 9112 3.2, RFC 3986 3.2.2): a name (empty allowed, no comma and
+    /// no escape), an IPv4 address (which is a name) or a bracketed IPv6 literal, and a port of 1
+    /// to 5 digits.
     host: regex.Regex
     /// `uri-host ":" port`, the target of a CONNECT (RFC 9112 3.2.3).
     authority: regex.Regex
-    /// `scheme "://" authority path-abempty ["?" query]`, with the three parts as groups
+    /// `scheme "://" authority path-abempty ["?" query]`, with the four parts as groups
     /// (RFC 9112 3.2.2).
     absolute: regex.Regex
     /// One element of a list: optional whitespace, a token, optional whitespace, as group 1.
@@ -387,8 +389,9 @@ class Grammar {
     value_chars: regex.Regex
     /// A `Content-Length` value: 1 to 18 digits, which cannot overflow an `int` (RFC 9110 8.6).
     digits: regex.Regex
-    /// A chunk-size line: at most 15 hex digits (they cannot overflow an `int`), optional
-    /// whitespace, and extensions with no control character (RFC 9112 7.1.1).
+    /// A chunk-size line: at most 15 hex digits (they cannot overflow an `int`), and extensions
+    /// with no control character, after optional whitespace and a `;` (RFC 9112 7.1.1: the
+    /// whitespace is only allowed before the `;`).
     chunk: regex.Regex
 }
 
@@ -402,16 +405,18 @@ fn grammar() -> Grammar {
         field_line: pattern(
             r"^([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*([\t\x20-\x7e\x{80}-\x{10FFFF}]*?)[ \t]*$",
         ),
-        host: pattern(r"^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._~!$&'()*+,;=%-]*)(:[0-9]*)?$"),
+        host: pattern(r"^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._~!$&'()*+;=-]*)(:[0-9]{1,5})?$"),
         authority: pattern(
-            r"^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._~!$&'()*+,;=%-]+):[0-9]+$",
+            r"^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._~!$&'()*+;=-]+):[0-9]{1,5}$",
         ),
-        absolute: pattern(r"^[A-Za-z][A-Za-z0-9+.-]*://([^/?#]*)([^?#]*)(?:\?([^#]*))?$"),
+        absolute: pattern(
+            r"^([A-Za-z][A-Za-z0-9+.-]*)://([^/?#]*)([^?#]*)(?:\?([^#]*))?$",
+        ),
         element: pattern(r"^[ \t]*([!#$%&'*+.^_`|~0-9A-Za-z-]*)[ \t]*$"),
         tokens: pattern(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"),
         value_chars: pattern(r"^[\t\x20-\x7e\x{80}-\x{10FFFF}]*$"),
         digits: pattern(r"^[0-9]{1,18}$"),
-        chunk: pattern(r"^([0-9A-Fa-f]{1,15})[ \t]*(?:;[\t\x20-\x7e]*)?$"),
+        chunk: pattern(r"^([0-9A-Fa-f]{1,15})(?:[ \t]*;[\t\x20-\x7e]*)?$"),
     }
 }
 
@@ -561,14 +566,22 @@ impl HeadParser {
             }
             self.path = "*"
         } else if let some(c) = g.absolute.captures(target) {
-            let authority = c.get(1) or ""
-            if !g.host.is_match(authority) {
+            // Only the schemes of this server (RFC 9112 3.2.2 allows any, and a proxy may
+            // forward the others; this server is none).
+            let scheme = (c.get(1) or "").to_lower()
+            if scheme != "http" && scheme != "https" {
+                return err(reject(400, "the scheme of the request target is not http or https"))
+            }
+            // A recipient must reject an http URI with an empty host (RFC 9110 4.2.1): `Host`
+            // must not stand in for it.
+            let authority = c.get(2) or ""
+            if authority.is_empty() || !g.host.is_match(authority) {
                 return err(reject(400, "the authority of the request target is not valid"))
             }
             self.authority = authority
-            let path = c.get(2) or ""
+            let path = c.get(3) or ""
             self.path = if path.is_empty() { "/" } else { path }
-            self.query = c.get(3) or ""
+            self.query = c.get(4) or ""
         } else if g.authority.is_match(target) {
             if method != "CONNECT" {
                 return err(reject(400, "a target of the form host:port is only for CONNECT"))
@@ -580,6 +593,25 @@ impl HeadParser {
         if method == "CONNECT" && self.path != "" {
             return err(reject(400, "CONNECT needs a target of the form host:port"))
         }
+        return ok(())
+    }
+
+    /// An empty line before the request line, which a server skips (RFC 9112 2.2). It counts
+    /// against `max_header_bytes` like the field lines, with its line end, so that a client
+    /// cannot send empty lines for ever. A line that is not empty is not for this entry.
+    fn leading_line(self, line: str) -> Result[(), Reject] {
+        if !line.is_empty() {
+            return err(reject(400, "a line before the request line is not empty"))
+        }
+        if self.field_bytes + 2 > self.options.max_header_bytes {
+            return err(
+                reject(
+                    431,
+                    "the empty lines and header fields are longer than {self.options.max_header_bytes} bytes",
+                ),
+            )
+        }
+        self.field_bytes += 2
         return ok(())
     }
 
@@ -638,6 +670,17 @@ impl HeadParser {
             }
             if host.is_empty() {
                 host = value
+            } else if value.to_lower() != host.to_lower() {
+                // RFC 9112 3.2.2 says to ignore `Host` when the target has an authority. This
+                // server is stricter: a front end that routes by `Host` and one that routes by
+                // the target would otherwise disagree about the request, so a difference (as
+                // text, in lower case, a default port written on one side only counts) is 400.
+                return err(
+                    reject(
+                        400,
+                        "the Host header field differs from the authority of the request target",
+                    ),
+                )
             }
         }
         // This server is no proxy: a 2xx for CONNECT would mean a tunnel.
@@ -706,27 +749,34 @@ fn framing_of(g: Grammar, headers: Headers, http10: bool) -> Result[Framing, Rej
     return ok(.NoBody)
 }
 
-/// The value of the `Transfer-Encoding` lines of a request: `true` when the body is chunked and
-/// the list is exactly `chunked`. Every other list is refused: 400 when the framing cannot be
-/// told (`chunked` not last or twice, no `chunked`, a coding that is not a token), 501 for a
-/// coding before `chunked` that this server does not know (RFC 9112 6.1, 6.3).
+/// The `Transfer-Encoding` of a request: `true` when the body is chunked. There must be one
+/// field line, and its list must be exactly `chunked` (ASCII case aside): a second line, an empty
+/// element (`chunked,` or `, chunked`), parameters, or anything that is not a token is 400, as
+/// is a list of more than 8 codings, so that a front end that reads a different line or ignores a
+/// different element cannot be made to disagree about where the body ends (RFC 9112 6.3, 11.2;
+/// RFC 9110 5.6.1 would allow the empty elements). A list of real codings that ends in `chunked`
+/// (`gzip, chunked`) is 501, because this server knows no other coding.
 fn parse_te(g: Grammar, values: List[str]) -> Result[bool, Reject] {
     if values.is_empty() {
         return ok(false)
     }
+    if values.len() > 1 {
+        return err(reject(400, "Transfer-Encoding is given more than once"))
+    }
+    let elements = values[0].split(",")
+    if elements.len() > 8 {
+        return err(reject(400, "Transfer-Encoding lists more than 8 codings"))
+    }
     let codings: List[str] = []
-    for element in values.join(",").split(",") {
+    for element in elements {
         let c = g.element.captures(element) or {
             return err(reject(400, "Transfer-Encoding has a coding that is not a token"))
         }
-        // Empty elements of a list are dropped (RFC 9110 5.6.1).
         let coding = (c.get(1) or "").to_lower()
-        if !coding.is_empty() {
-            codings.push(coding)
+        if coding.is_empty() {
+            return err(reject(400, "Transfer-Encoding has an empty coding"))
         }
-    }
-    if codings.is_empty() {
-        return err(reject(400, "Transfer-Encoding names no coding"))
+        codings.push(coding)
     }
     var chunked = 0
     for coding in codings {
@@ -1900,10 +1950,9 @@ impl Server {
         return reader
     }
 
-    /// Reads the request line, which may follow some empty lines (RFC 9112 2.2); they count
-    /// against `max_header_bytes`.
-    fn request_line(self, conn: net.Conn) -> Line {
-        var skipped = 0
+    /// Reads the request line, which may follow some empty lines (RFC 9112 2.2); the parser
+    /// counts them against `max_header_bytes`.
+    fn request_line(self, conn: net.Conn, parser: HeadParser) -> Line {
         while true {
             let line = read_head_line(conn, false)
             match line {
@@ -1911,9 +1960,8 @@ impl Server {
                     if !t.is_empty() {
                         return line
                     }
-                    skipped += 2
-                    if skipped > self.options.max_header_bytes {
-                        return .Refuse(reject(431, "too many empty lines before the request"))
+                    parser.leading_line(t) or |r| {
+                        return .Refuse(r)
                     }
                 }
                 _ => return line
@@ -1936,7 +1984,8 @@ impl Server {
             // not buffered before it is refused. Until then a line is read whole (at most 1 MiB)
             // and the parser refuses it.
             first = false
-            let started = self.request_line(conn)
+            let parser = head_parser(self.grammar, o)
+            let started = self.request_line(conn, parser)
             let first_line = match started {
                 Text(t) => t
                 Gone    => return
@@ -1946,7 +1995,6 @@ impl Server {
                 }
             }
             state.phase = .Head
-            let parser = head_parser(self.grammar, o)
             parser.request_line(first_line) or |r| {
                 self.refuse(conn, r)
                 return

@@ -42,7 +42,7 @@ test "the method is kept as sent, and any token is a method" {
 }
 
 test "an absolute-form target gives the authority as the host" {
-    let h = common.accepted(common.head(["GET http://other.example:8080/a/b?x=1 HTTP/1.1", "Host: example.com"]))
+    let h = common.accepted(common.head(["GET http://other.example:8080/a/b?x=1 HTTP/1.1", "Host: other.example:8080"]))
     assert_eq(h.path, "/a/b")
     assert_eq(h.query, "x=1")
     assert_eq(h.host, "other.example:8080")
@@ -50,10 +50,10 @@ test "an absolute-form target gives the authority as the host" {
 }
 
 test "an absolute-form target with no path is the path /" {
-    let h = common.accepted(common.head(["GET http://other.example HTTP/1.1", "Host: example.com"]))
+    let h = common.accepted(common.head(["GET http://other.example HTTP/1.1", "Host: other.example"]))
     assert_eq(h.path, "/")
     assert_eq(h.query, "")
-    let q = common.accepted(common.head(["GET http://other.example?x=1 HTTP/1.1", "Host: example.com"]))
+    let q = common.accepted(common.head(["GET http://other.example?x=1 HTTP/1.1", "Host: other.example"]))
     assert_eq(q.path, "/")
     assert_eq(q.query, "x=1")
 }
@@ -172,4 +172,50 @@ test "a refusal says what was wrong" {
     assert(common.why_of(parse("GET  / HTTP/1.1")).contains("single space"))
     assert(common.why_of(parse("GET / HTTP/2.0")).contains("HTTP/2.0"))
     assert(common.why_of(parse("GET / http/1.1")).contains("version"))
+}
+
+// ---- empty lines before the request line (RFC 9112 2.2) ----
+
+fn leading_status(p: httpd_impl.HeadParser, line: str) -> int {
+    return match p.leading_line(line) {
+        ok(_) => 0
+        err(r) => r.status
+    }
+}
+
+test "an empty line before the request line is skipped, and the head is then parsed as usual" {
+    let p = httpd_impl.head_parser(httpd_impl.grammar(), common.options())
+    assert_eq(leading_status(p, ""), 0)
+    assert_eq(leading_status(p, ""), 0)
+    p.request_line("GET /x HTTP/1.1").expect("the request line")
+    assert(!p.field_line("Host: a").expect("a field"))
+    assert(p.field_line("").expect("the end"))
+    assert_eq(p.finish().expect("a head").path, "/x")
+}
+
+test "empty lines count 2 bytes each against max_header_bytes, before the request line too" {
+    let o = httpd_impl.Options { max_header_bytes: 10 }
+    let p = httpd_impl.head_parser(httpd_impl.grammar(), o)
+    for i in 0..5 {
+        assert_eq(leading_status(p, ""), 0)
+    }
+    assert_eq(leading_status(p, ""), 431)
+}
+
+test "empty lines and field lines share the one count" {
+    let o = httpd_impl.Options { max_header_bytes: 20 }
+    let p = httpd_impl.head_parser(httpd_impl.grammar(), o)
+    for i in 0..4 {
+        assert_eq(leading_status(p, ""), 0)
+    }
+    p.request_line("GET / HTTP/1.1").expect("the request line")
+    // 8 bytes of empty lines, so a field line of 10 bytes (with its CRLF 12) is the last that fits.
+    assert(!p.field_line("Host: a.b").expect("fits"))
+    let late = p.field_line("X-A: b")
+    assert(late.is_err())
+}
+
+test "a leading line that is not empty is not for this entry" {
+    let p = httpd_impl.head_parser(httpd_impl.grammar(), common.options())
+    assert_eq(leading_status(p, "GET / HTTP/1.1"), 400)
 }
