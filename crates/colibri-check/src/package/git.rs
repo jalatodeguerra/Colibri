@@ -89,6 +89,33 @@ pub fn checkout_dir(cache: &Path, url: &str, commit: &str) -> PathBuf {
         .join(commit)
 }
 
+/// `std::fs::remove_dir_all`, and when that is refused, once more after the read-only marks
+/// are taken off: Windows will not delete a read-only file, and git writes its pack files
+/// read-only.
+fn remove_tree(dir: &Path) -> std::io::Result<()> {
+    fn writable(path: &Path) {
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            return;
+        };
+        if meta.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    writable(&entry.path());
+                }
+            }
+        } else if meta.permissions().readonly() {
+            let mut perm = meta.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perm.set_readonly(false);
+            let _ = std::fs::set_permissions(path, perm);
+        }
+    }
+    std::fs::remove_dir_all(dir).or_else(|first| {
+        writable(dir);
+        std::fs::remove_dir_all(dir).map_err(|_| first)
+    })
+}
+
 /// The file inside a database folder that says which url it holds.
 const URL_FILE: &str = "colibri-url";
 
@@ -144,17 +171,17 @@ fn claim_db(dbs: &Path, key: &str, url: &str) -> Result<PathBuf, String> {
         Slot::Ours(p) | Slot::Free(p) => p,
     };
     if db.exists() {
-        std::fs::remove_dir_all(&db)
+        remove_tree(&db)
             .map_err(|e| format!("cannot remove the damaged `{}`: {e}", db.display()))?;
     }
     let name = db.file_name().unwrap_or_default().to_string_lossy();
     let tmp = db.with_file_name(format!(".{name}.tmp{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
+    let _ = remove_tree(&tmp);
     run(git_command().args(["init", "--bare", "--quiet"]).arg(&tmp))?;
     std::fs::write(tmp.join(URL_FILE), redact_url(url))
         .map_err(|e| format!("cannot write in `{}`: {e}", tmp.display()))?;
     std::fs::rename(&tmp, &db).map_err(|e| {
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = remove_tree(&tmp);
         format!("cannot create `{}`: {e}", db.display())
     })?;
     Ok(db)
@@ -198,7 +225,7 @@ fn remove_stale_tmp(dir: &Path) {
         if old {
             let path = entry.path();
             let _ = if path.is_dir() {
-                std::fs::remove_dir_all(&path)
+                remove_tree(&path)
             } else {
                 std::fs::remove_file(&path)
             };
@@ -475,12 +502,12 @@ impl Git {
             .map_err(|e| format!("cannot create `{}`: {e}", parent.display()))?;
         // A folder without the marker is what an interrupted run left: it is never trusted.
         if dir.exists() {
-            std::fs::remove_dir_all(&dir)
+            remove_tree(&dir)
                 .map_err(|e| format!("cannot remove the incomplete `{}`: {e}", dir.display()))?;
         }
         // Written beside the final place, marked complete, and moved into it.
         let tmp = parent.join(format!(".{commit}.tmp{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = remove_tree(&tmp);
         std::fs::create_dir_all(&tmp)
             .map_err(|e| format!("cannot create `{}`: {e}", tmp.display()))?;
         let written = write_tree(&db, commit, &tmp).and_then(|()| {
@@ -488,7 +515,7 @@ impl Git {
                 .map_err(|e| format!("cannot write in `{}`: {e}", tmp.display()))
         });
         if let Err(e) = written {
-            let _ = std::fs::remove_dir_all(&tmp);
+            let _ = remove_tree(&tmp);
             return Err(add_damage_hint(
                 format!("cannot check out {commit} of `{}`: {e}", redact_url(url)),
                 &e,
@@ -496,7 +523,7 @@ impl Git {
             ));
         }
         if let Err(e) = std::fs::rename(&tmp, &dir) {
-            let _ = std::fs::remove_dir_all(&tmp);
+            let _ = remove_tree(&tmp);
             return Err(format!("cannot create `{}`: {e}", dir.display()));
         }
         Ok(dir)
@@ -1636,7 +1663,7 @@ mod tests {
     #[test]
     fn a_lock_that_is_held_is_waited_for_and_said_so() {
         let cache = std::env::temp_dir().join(format!("colibri-lock-wait-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&cache);
+        let _ = remove_tree(&cache);
         let url = "https://example.com/me/wait.git";
         let mut said = Vec::new();
         // Free: no message.
@@ -1661,7 +1688,7 @@ mod tests {
             said[0]
         );
         assert!(said[0].contains(".lock"), "{}", said[0]);
-        let _ = std::fs::remove_dir_all(&cache);
+        let _ = remove_tree(&cache);
     }
 
     #[test]
@@ -1718,9 +1745,28 @@ mod tests {
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("colibri-gitrs-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = remove_tree(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Sets the modification time of a folder (Windows opens a folder only with backup
+    /// semantics, and for writing only the attributes).
+    fn set_modified(dir: &Path, time: std::time::SystemTime) {
+        #[cfg(windows)]
+        let file = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            std::fs::OpenOptions::new()
+                .access_mode(FILE_WRITE_ATTRIBUTES)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(dir)
+                .unwrap()
+        };
+        #[cfg(not(windows))]
+        let file = std::fs::File::open(dir).unwrap();
+        file.set_modified(time).unwrap();
     }
 
     #[test]
@@ -1733,14 +1779,8 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
         let two_days = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86400);
-        std::fs::File::open(&old)
-            .unwrap()
-            .set_modified(two_days)
-            .unwrap();
-        std::fs::File::open(&real)
-            .unwrap()
-            .set_modified(two_days)
-            .unwrap();
+        set_modified(&old, two_days);
+        set_modified(&real, two_days);
         remove_stale_tmp(&dir);
         assert!(!old.exists() && new.exists() && real.exists());
     }

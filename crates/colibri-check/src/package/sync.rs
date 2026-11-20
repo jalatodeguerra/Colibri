@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use colibri_syntax::FileId;
 
-use super::fs::normalize;
+use super::fs::{canonical_path, normalize};
 use super::git::{self, Git};
 use super::loader::MANIFEST_FILE;
 use super::lock::{self, LOCK_FILE, Lock, LockEntry};
@@ -113,7 +113,9 @@ fn sync_in(
     }
     let text = s.new.render();
     let unchanged = match &old_text {
-        Some(t) => *t == text,
+        // A checkout that turned the lines into `\r\n` (git's `autocrlf` on Windows) is the
+        // same file.
+        Some(t) => t.replace("\r\n", "\n") == text,
         None => s.new.entries.is_empty(),
     };
     if !unchanged {
@@ -202,7 +204,7 @@ impl Sync<'_> {
         git_root: Option<&Path>,
         origin: Option<&Origin>,
     ) -> Result<(), String> {
-        let key = std::fs::canonicalize(dir).unwrap_or_else(|_| normalize(dir));
+        let key = canonical_path(dir);
         if !self.visited.insert(key) {
             return Ok(());
         }
@@ -446,7 +448,5 @@ fn short(commit: &str) -> &str {
 
 /// Whether `path` is inside `root`, links resolved where they exist.
 pub(super) fn inside(path: &Path, root: &Path) -> bool {
-    let p = std::fs::canonicalize(path).unwrap_or_else(|_| normalize(path));
-    let r = std::fs::canonicalize(root).unwrap_or_else(|_| normalize(root));
-    p.starts_with(r)
+    canonical_path(path).starts_with(canonical_path(root))
 }

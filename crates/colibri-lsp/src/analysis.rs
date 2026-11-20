@@ -10,7 +10,7 @@ use colibri_check::HostEnv;
 use colibri_check::insight::Insight;
 use colibri_check::package::{
     DiskFs, Entry, LoadError, LoadOptions, Loaded, MAIN_FILE, SourceFs, is_hidden_or_cache,
-    load_with, normalize, skipped_folder,
+    load_with, normalize, skipped_folder, try_canonical_path,
 };
 use colibri_syntax::{Diagnostic, FileId, SourceMap, Span};
 
@@ -27,7 +27,7 @@ pub fn canon(path: &Path) -> PathBuf {
             p.to_path_buf()
         }
     };
-    if let Ok(p) = std::fs::canonicalize(dot(path)) {
+    if let Ok(p) = try_canonical_path(&dot(path)) {
         return p;
     }
     let norm = normalize(path);
@@ -36,7 +36,7 @@ pub fn canon(path: &Path) -> PathBuf {
     while let Some(parent) = cur.parent() {
         let Some(name) = cur.file_name() else { break };
         rest.push(name.to_os_string());
-        if let Ok(base) = std::fs::canonicalize(dot(parent)) {
+        if let Ok(base) = try_canonical_path(&dot(parent)) {
             return rest.iter().rev().fold(base, |acc, n| acc.join(n));
         }
         cur = parent;

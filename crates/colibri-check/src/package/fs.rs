@@ -51,7 +51,7 @@ impl SourceFs for DiskFs {
     }
 
     fn canonical(&self, path: &Path) -> PathBuf {
-        std::fs::canonicalize(or_dot(path)).unwrap_or_else(|_| normalize(path))
+        canonical_path(path)
     }
 
     fn list(&self, dir: &Path) -> Vec<String> {
@@ -173,9 +173,47 @@ pub fn normalize(path: &Path) -> PathBuf {
     out.iter().collect()
 }
 
+/// `path` with its links resolved where it exists, else only [`normalize`]d. On Windows
+/// `canonicalize` gives the verbatim form (`\\?\C:\dir`), which would not compare equal to
+/// the plain form of a path that is not there (yet), and which no message should show: the
+/// plain one is returned.
+pub fn canonical_path(path: &Path) -> PathBuf {
+    try_canonical_path(path).unwrap_or_else(|_| normalize(path))
+}
+
+/// [`canonical_path`] for a path that must be on disk.
+pub fn try_canonical_path(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(or_dot(path)).map(|p| without_verbatim(&p))
+}
+
+/// `\\?\C:\dir` as `C:\dir` and `\\?\UNC\server\share` as `\\server\share`; any other path
+/// as it is.
+fn without_verbatim(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        let b = rest.as_bytes();
+        if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+            return PathBuf::from(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_verbatim_form_of_a_windows_path_is_made_plain() {
+        let plain = |p: &str| without_verbatim(Path::new(p)).to_string_lossy().into_owned();
+        assert_eq!(plain(r"\\?\C:\repos\x"), r"C:\repos\x");
+        assert_eq!(plain(r"\\?\UNC\server\share\x"), r"\\server\share\x");
+        assert_eq!(plain(r"\\?\Volume{1}\x"), r"\\?\Volume{1}\x");
+        assert_eq!(plain("/home/me/x"), "/home/me/x");
+    }
 
     #[test]
     fn normalising_paths() {
