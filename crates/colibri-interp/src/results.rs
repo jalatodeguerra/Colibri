@@ -20,6 +20,7 @@ use crate::eval::Interp;
 use crate::fiber::Fiber;
 use crate::heap::ClassObj;
 use crate::value::Value;
+use colibri_core::prelude::*;
 
 use colibri_core::error::{Link, link, new_context_error, new_error};
 
@@ -85,19 +86,6 @@ impl Interp {
             Some(e) => err_value(self.convert_to_error(e, conv)),
             None => value,
         }
-    }
-
-    /// The user-written `message` method of an `IntoError` implementation, if it has one.
-    pub(crate) fn error_message_fn(&self, impl_id: i64) -> Option<colibri_check::hir::FnId> {
-        let imp = self
-            .core
-            .dispatch
-            .impls
-            .get(usize::try_from(impl_id).ok()?)?;
-        if imp.derived {
-            return None;
-        }
-        imp.methods.first().copied().flatten()
     }
 
     /// The message of the root of an error: its `IntoError` `message`, or the `Show` of the

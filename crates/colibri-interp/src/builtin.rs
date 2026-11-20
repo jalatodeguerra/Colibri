@@ -17,6 +17,7 @@ use crate::heap::{ClassObj, ListError, ListObj, MapObj, OutOfBounds, SetObj, Vio
 use crate::ordered::OrderedMap;
 use crate::show::show;
 use crate::value::Value;
+use colibri_core::prelude::*;
 
 /// The receiver of a list method.
 fn list_of(v: &Value) -> Option<Rc<ListObj>> {
@@ -380,22 +381,6 @@ impl Interp {
                 return self.set_op(fiber, op, &set, args, span);
             }
         })
-    }
-
-    /// Takes a half-made copy apart without tracing its objects as destroyed.
-    pub(crate) fn abandon_copies(&mut self, copies: Vec<Value>) {
-        let mut pending = Vec::new();
-        for copy in &copies {
-            match copy {
-                Value::Obj(o) => pending.extend(o.take_fields()),
-                Value::List(l) => pending.extend(l.take_all()),
-                Value::Map(m) => pending.extend(m.take_all().into_iter().flat_map(|(k, v)| [k, v])),
-                Value::Set(s) => pending.extend(s.take_all()),
-                _ => {}
-            }
-        }
-        drop(copies);
-        self.release_all(pending);
     }
 
     pub(crate) fn violation(&self, fiber: &mut Fiber, span: Span, v: Violation) -> Ctl {

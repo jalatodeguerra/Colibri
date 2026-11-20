@@ -16,6 +16,7 @@ use crate::ctl::{Eval, PanicInfo};
 use crate::eval::Interp;
 use crate::fiber::{Fiber, Frame};
 use crate::value::Value;
+use colibri_core::prelude::*;
 
 /// A host function as the interpreter calls it: the arguments are the caller's references,
 /// which the function must release (or hand on).
@@ -60,8 +61,14 @@ impl Interp {
 
     /// Installs how the objects of the host class `ty` are shown and compared.
     pub fn set_host_class_hooks(&mut self, ty: TypeId, hooks: HostClassHooks) {
-        self.core.host.any_show_hook |= hooks.show.is_some();
-        self.core.host.any_eq_hook |= hooks.eq.is_some();
+        self.core.set_host_hook_set(
+            ty,
+            colibri_core::host::HookSet {
+                show: hooks.show.is_some(),
+                eq: hooks.eq.is_some(),
+                hash: hooks.hash.is_some(),
+            },
+        );
         self.host_impls.class_hooks.insert(ty, hooks);
     }
 
@@ -197,40 +204,9 @@ impl Interp {
         self.core.rooted(handle)
     }
 
-    /// Lets go of a root; the value is released (a `Drop` hook may run). A stale handle is
-    /// ignored.
-    pub fn unroot(&mut self, handle: RootHandle) {
-        if let Some(value) = self.core.take_root(handle) {
-            self.release_in_entry(value);
-        }
-    }
-
-    /// Releases the roots whose last holder let go. Called at every entry from the host.
-    pub(crate) fn drain_root_drops(&mut self) {
-        let pending = self.core.host.drop_queue.take();
-        for handle in pending {
-            self.unroot(handle);
-        }
-    }
-
-    /// Every root dies at once; the handles made so far become stale.
-    pub(crate) fn clear_roots(&mut self) {
-        for value in self.core.take_all_roots() {
-            self.release(value);
-        }
-    }
-
     /// The current root epoch (for the handles of a program not yet running).
     pub fn root_epoch(&self) -> u32 {
         self.core.root_epoch()
-    }
-
-    /// Releases a value outside any call, with a budget of its own for the `Drop` hooks it
-    /// may run.
-    pub fn release_in_entry(&mut self, value: Value) {
-        let outer = self.core.begin_entry();
-        self.release(value);
-        self.core.end_entry(outer, false);
     }
 
     // ---- values ----
@@ -278,30 +254,6 @@ impl Interp {
     }
 
     /// A call of the host function `id` from Colibri code.
-    /// The control flow a failed `show` or `eq` hook of a host class ends the running
-    /// operation with: a panic at the span of the innermost frame.
-    pub(crate) fn host_fault_ctl(
-        &mut self,
-        fiber: &mut Fiber,
-        fault: HostFault,
-    ) -> crate::ctl::Ctl {
-        match fault {
-            HostFault::Panic(message) | HostFault::Message(message) => {
-                let span = fiber
-                    .frames
-                    .last()
-                    .map_or(Span::new(colibri_syntax::FileId(0), 0, 0), |frame| {
-                        frame.span
-                    });
-                self.panic(fiber, span, message)
-            }
-            HostFault::Cancel => {
-                fiber.cancelling = true;
-                crate::ctl::Ctl::Cancel
-            }
-        }
-    }
-
     pub(crate) fn call_host(
         &mut self,
         fiber: &mut Fiber,

@@ -368,6 +368,7 @@ impl Core {
     /// The last script reference to an object was released: if the script owns the object,
     /// it is freed here and its Rust `Drop` runs.
     #[doc(hidden)]
+    #[inline]
     pub fn free_host_object(&mut self, reference: &HostRef) {
         let Some(slot) = self.host.heap.slot(reference.index, reference.generation) else {
             return;

@@ -12,6 +12,7 @@ mod cffi;
 mod closure;
 mod coro;
 mod dispatch;
+mod engine;
 mod eval;
 mod fiber;
 mod forloop;
@@ -28,9 +29,7 @@ mod scope;
 mod session;
 mod strfn;
 
-pub(crate) use colibri_core::{
-    clone, compare, ctl, format, heap, hooks, num, ordered, show, value,
-};
+pub(crate) use colibri_core::{compare, ctl, format, heap, num, ordered, show, value};
 
 pub use budget::GRACE_STEPS;
 pub use colibri_core::leaks::Leak;

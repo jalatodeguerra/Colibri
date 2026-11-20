@@ -21,6 +21,7 @@ use crate::eval::Interp;
 use crate::fiber::Fiber;
 use crate::heap::ListObj;
 use crate::value::Value;
+use colibri_core::prelude::*;
 
 /// The most elements `chunks` and `windows` build in one call.
 const MAX_PIECES: usize = 1 << 27;

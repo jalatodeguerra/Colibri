@@ -14,7 +14,7 @@ use colibri_syntax::Span;
 use colibri_core::Core;
 
 use crate::compare::values_identical;
-use crate::ctl::{Ctl, Eval, PanicInfo, TraceEntry, into_panic};
+use crate::ctl::{Ctl, Eval, PanicInfo, into_panic};
 use crate::fiber::{Fiber, Frame};
 use crate::format::format_value;
 use crate::heap::ClassObj;
@@ -22,6 +22,7 @@ use crate::num;
 use crate::ordered::OrderedMap;
 use crate::place::project;
 use crate::value::{CellObj, Value};
+use colibri_core::prelude::*;
 
 pub(crate) use colibri_core::stack_position;
 pub(crate) use colibri_core::value::{unwrap_cell, unwrap_cell_ref};
@@ -101,10 +102,6 @@ impl Interp {
     /// stack of the thread that runs the interpreter.
     pub fn set_native_stack_budget(&mut self, bytes: usize) {
         self.native_stack_budget = bytes;
-    }
-
-    pub(crate) fn native_stack_budget(&self) -> usize {
-        self.native_stack_budget
     }
 
     /// Installs a checked program, replacing any earlier one and resetting module state (the
@@ -338,35 +335,6 @@ impl Interp {
             notes: Vec::new(),
             budget: false,
         })
-    }
-
-    // ---- panics ----
-
-    /// Creates a panic at `span`, capturing the Colibri stack as it is now.
-    pub(crate) fn panic(&self, fiber: &mut Fiber, span: Span, message: impl Into<String>) -> Ctl {
-        if let Some(top) = fiber.frames.last_mut() {
-            top.span = span;
-        }
-        let stack = fiber
-            .frames
-            .iter()
-            .rev()
-            .map(|fr| TraceEntry {
-                function: fr.body.name.clone(),
-                span: fr.span,
-            })
-            .collect();
-        Ctl::Panic(Box::new(PanicInfo {
-            message: message.into(),
-            span,
-            stack,
-            notes: Vec::new(),
-            budget: false,
-        }))
-    }
-
-    pub(crate) fn internal(&self, fiber: &mut Fiber, span: Span, what: &str) -> Ctl {
-        self.panic(fiber, span, format!("internal error: {what}"))
     }
 
     // ---- calls and scopes ----

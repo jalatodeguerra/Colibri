@@ -15,6 +15,7 @@ use crate::ctl::{Ctl, Eval, PanicInfo};
 use crate::eval::Interp;
 use crate::fiber::{Cleanup, Fiber};
 use crate::value::{CellObj, Value};
+use colibri_core::prelude::*;
 
 impl Interp {
     /// Where the current scope's cleanups start.
@@ -168,13 +169,5 @@ impl Interp {
             result = self.merge_failure(result, Box::new(failure), "a `Drop` hook also panicked");
         }
         result
-    }
-
-    /// Releases the value an evaluation produced, when it produced one.
-    pub(crate) fn release_outcome(&mut self, result: Eval) {
-        match result {
-            Ok(v) | Err(Ctl::Return(v) | Ctl::Break(_, v)) => self.release(v),
-            Err(_) => {}
-        }
     }
 }

@@ -6,12 +6,9 @@
 //! value) read it from the value. A type that has no explicit implementation of a built-in
 //! interface gets the derived one, which this module runs structurally.
 
-use std::cmp::Ordering;
 use std::rc::Rc;
 
-use colibri_check::hir::{
-    ArithOp, BinOp, CmpOp, Coercion, FnId, ImplDef, Num, Place, TypeKey, UnOp,
-};
+use colibri_check::hir::{ArithOp, BinOp, Coercion, FnId, ImplDef, Num, Place, TypeKey, UnOp};
 use colibri_check::types::{
     ADD, CLONE, DIV, DROP, EQ, HASH, ITER, ITERABLE, IntTy, MUL, NEG, ORD, SHOW, SUB, Ty, TypeId,
 };
@@ -19,17 +16,12 @@ use colibri_syntax::{FileId, Span};
 
 pub(crate) use colibri_core::dispatch::Tables;
 
-use crate::clone::Cloner;
-use crate::compare::{Guard, cmp_with, equal_with};
 use crate::ctl::{Ctl, Eval};
+use crate::eval::Interp;
 use crate::fiber::Fiber;
-use crate::hooks::{Answer, Overrides, Stop};
 use crate::ordered::{hash_value, hash_value_with};
-use crate::show::show_with;
 use crate::value::{DynVal, Value};
-
-/// Hooks may nest this deep (a hook that drops an object whose hook drops another, ...).
-pub(crate) const MAX_HOOK_DEPTH: u32 = 64;
+use colibri_core::prelude::*;
 
 /// The head of a value's type, which interface dispatch works on.
 pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
@@ -64,170 +56,11 @@ pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
     })
 }
 
-/// The type a user-defined value belongs to.
-fn adt_of(v: &Value) -> Option<TypeId> {
-    match v {
-        Value::Struct(s) => Some(s.ty),
-        Value::Enum(e) => Some(e.ty),
-        Value::Obj(o) => Some(o.ty()),
-        Value::Host(r) => Some(r.ty),
-        _ => None,
-    }
-}
-
-/// The interpreter and a fiber, answering [`Overrides`] by running user methods.
-pub(crate) struct Hooks<'a> {
-    pub interp: &'a mut Interp,
-    pub fiber: &'a mut Fiber,
-    /// Where the operation that runs the hooks stands, for the steps they cost.
-    pub span: Span,
-}
-
-use crate::eval::Interp;
-
-impl Hooks<'_> {
-    /// Runs the `show` or `eq` hook of the host class of `v` (picked by `pick`), if it has one.
-    fn host_hook(
-        &mut self,
-        v: &Value,
-        pick: impl Fn(&crate::host::HostClassHooks) -> Option<crate::host::HostImpl>,
-        args: Vec<Value>,
-    ) -> Option<Result<Value, Stop>> {
-        let Value::Host(r) = v else {
-            return None;
-        };
-        let hook = pick(self.interp.host_impls.class_hooks.get(&r.ty)?)?;
-        // A host hook is a call like any other: one step (EMBEDDING §5).
-        if let Err(ctl) = self.interp.step(self.fiber, self.span) {
-            return Some(Err(Stop::Ctl(Box::new(ctl))));
-        }
-        Some(match hook(self.interp, self.fiber, args) {
-            Ok(value) => Ok(value),
-            Err(fault) => Err(Stop::Ctl(Box::new(
-                self.interp.host_fault_ctl(self.fiber, fault),
-            ))),
-        })
-    }
-
-    /// Runs the user method `f` on `args`; its result as a value.
-    fn run(&mut self, f: FnId, args: Vec<Value>) -> Result<Value, Stop> {
-        let Some(body) = self.interp.fns.get(f.0 as usize).cloned() else {
-            return Err(Stop::TooDeep);
-        };
-        self.interp
-            .call_body(self.fiber, body, args)
-            .map_err(|c| Stop::Ctl(Box::new(c)))
-    }
-}
-
-impl Overrides for Hooks<'_> {
-    fn eq(&mut self, a: &Value, b: &Value) -> Answer<bool> {
-        if let Some(answer) = self.host_hook(a, |h| h.eq.clone(), vec![a.clone(), b.clone()]) {
-            return Some(answer.map(|v| matches!(v, Value::Bool(true))));
-        }
-        let f = *self.interp.core.dispatch.eq.get(&adt_of(a)?)?;
-        Some(
-            self.run(f, vec![a.clone(), b.clone()])
-                .map(|v| matches!(v, Value::Bool(true))),
-        )
-    }
-
-    fn cmp(&mut self, a: &Value, b: &Value) -> Answer<Option<Ordering>> {
-        let f = *self.interp.core.dispatch.ord.get(&adt_of(a)?)?;
-        Some(self.run(f, vec![a.clone(), b.clone()]).map(|v| match v {
-            Value::Int(i) => Some(i.cmp(&0)),
-            _ => None,
-        }))
-    }
-
-    fn show(&mut self, v: &Value) -> Answer<String> {
-        if let Some(answer) = self.host_hook(v, |h| h.show.clone(), vec![v.clone()]) {
-            return Some(answer.map(|s| match s {
-                Value::Str(s) => s.to_string(),
-                _ => String::new(),
-            }));
-        }
-        let f = *self.interp.core.dispatch.show.get(&adt_of(v)?)?;
-        Some(self.run(f, vec![v.clone()]).map(|s| match s {
-            Value::Str(s) => s.to_string(),
-            _ => String::new(),
-        }))
-    }
-
-    fn clone_value(&mut self, v: &Value) -> Answer<Value> {
-        let f = *self.interp.core.dispatch.clone.get(&adt_of(v)?)?;
-        Some(self.run(f, vec![v.clone()]))
-    }
-
-    fn error_message(&mut self, value: &Value, impl_id: i64) -> Answer<String> {
-        let f = self.interp.error_message_fn(impl_id)?;
-        Some(self.run(f, vec![value.clone()]).map(|s| match s {
-            Value::Str(s) => s.to_string(),
-            _ => String::new(),
-        }))
-    }
-}
-
 impl Interp {
     /// How many map or set key lookups scanned the stored keys for a user-written `Eq` (a
     /// test hook: keys that cannot reach one never scan).
     pub fn key_scans(&self) -> u64 {
         self.core.key_scans
-    }
-
-    /// Whether any user-written method replaces a derived one (else the plain functions run).
-    fn has_overrides(&self) -> bool {
-        let t = &self.core.dispatch;
-        !(t.eq.is_empty()
-            && t.ord.is_empty()
-            && t.show.is_empty()
-            && t.clone.is_empty()
-            && !t.error_messages
-            && !self.core.host.any_show_hook
-            && !self.core.host.any_eq_hook)
-    }
-
-    /// Whether a key like `v` may be compared by an `Eq` that structure and identity do not
-    /// give: it holds (at any depth, also inside a list, an interface value, ...) a value
-    /// whose type has a user-written `impl Eq`, or an object of a host class that customises
-    /// `==`. Such keys are found by scanning, see [`Interp::canonicalise_key`]; every other
-    /// key takes the plain hashed path.
-    ///
-    /// The answer comes from the key's own values, so generics are exact (`Pair { a: 1 }` is
-    /// plain even if a `Pair[Q]` with `impl Eq for Q` exists) and a later `impl Eq` (hot
-    /// reload, the REPL) is seen at once: the tables it reads are rebuilt on load.
-    pub(crate) fn key_needs_scan(&self, v: &Value) -> bool {
-        (!self.core.dispatch.eq.is_empty() || self.core.host.any_eq_hook) && self.reaches_eq(v, 0)
-    }
-
-    fn reaches_eq(&self, v: &Value, depth: u32) -> bool {
-        if depth > 64 {
-            return true;
-        }
-        let d = depth + 1;
-        let user_eq = |ty: &TypeId| self.core.dispatch.eq.contains_key(ty);
-        match v {
-            Value::Host(r) => {
-                user_eq(&r.ty)
-                    || self
-                        .host_impls
-                        .class_hooks
-                        .get(&r.ty)
-                        .is_some_and(|hooks| hooks.eq.is_some())
-            }
-            Value::Obj(o) => user_eq(&o.ty()),
-            Value::Struct(s) => user_eq(&s.ty) || s.fields.iter().any(|x| self.reaches_eq(x, d)),
-            Value::Enum(e) => user_eq(&e.ty) || e.payload.iter().any(|x| self.reaches_eq(x, d)),
-            Value::Tuple(items) => items.iter().any(|x| self.reaches_eq(x, d)),
-            Value::Dyn(dv) => self.reaches_eq(&dv.val, d),
-            Value::List(l) => l.snapshot().iter().any(|x| self.reaches_eq(x, d)),
-            Value::Set(set) => set.snapshot().iter().any(|x| self.reaches_eq(x, d)),
-            Value::Map(m) => m
-                .snapshot()
-                .iter()
-                .any(|(k, x)| self.reaches_eq(k, d) || self.reaches_eq(x, d)),
-            _ => false,
-        }
     }
 
     /// A `Map` key or `Set` element is looked up by the user-written `Eq` of its type: the
@@ -280,148 +113,6 @@ impl Interp {
             }
         }
         Ok(key)
-    }
-
-    /// Turns a stop of a structural operation into a panic.
-    fn stop_to_ctl(&self, fiber: &mut Fiber, stop: Stop, span: Span, what: &str) -> Ctl {
-        match stop {
-            Stop::Ctl(ctl) => *ctl,
-            Stop::TooDeep => self.panic(
-                fiber,
-                span,
-                format!("these values nest too deeply to {what}"),
-            ),
-        }
-    }
-
-    /// `==` and the ordering operators on values of user-defined or generic type.
-    pub(crate) fn structural_cmp(
-        &mut self,
-        fiber: &mut Fiber,
-        op: CmpOp,
-        l: &Value,
-        r: &Value,
-        span: Span,
-    ) -> Eval<bool> {
-        use Ordering::{Equal, Greater, Less};
-        match op {
-            CmpOp::Eq | CmpOp::Ne => {
-                let eq = self.eq_deep(fiber, l, r, span)?;
-                Ok(eq == (op == CmpOp::Eq))
-            }
-            _ => {
-                let ord = self.cmp_deep(fiber, l, r, span)?;
-                Ok(match op {
-                    CmpOp::Lt => ord == Some(Less),
-                    CmpOp::Le => matches!(ord, Some(Less | Equal)),
-                    CmpOp::Gt => ord == Some(Greater),
-                    _ => matches!(ord, Some(Greater | Equal)),
-                })
-            }
-        }
-    }
-
-    /// Equality that honours a user-written `impl Eq` at every level.
-    pub(crate) fn eq_deep(
-        &mut self,
-        fiber: &mut Fiber,
-        a: &Value,
-        b: &Value,
-        span: Span,
-    ) -> Eval<bool> {
-        let guard = Guard::new(fiber.stack_base, self.native_stack_budget());
-        let result = if self.has_overrides() {
-            equal_with(
-                a,
-                b,
-                &guard,
-                &mut Hooks {
-                    interp: self,
-                    fiber,
-                    span,
-                },
-            )
-        } else {
-            equal_with(a, b, &guard, &mut crate::hooks::Plain)
-        };
-        result.map_err(|stop| self.stop_to_ctl(fiber, stop, span, "compare"))
-    }
-
-    /// Ordering that honours a user-written `impl Ord` at every level.
-    pub(crate) fn cmp_deep(
-        &mut self,
-        fiber: &mut Fiber,
-        a: &Value,
-        b: &Value,
-        span: Span,
-    ) -> Eval<Option<Ordering>> {
-        let guard = Guard::new(fiber.stack_base, self.native_stack_budget());
-        let result = if self.has_overrides() {
-            cmp_with(
-                a,
-                b,
-                &guard,
-                &mut Hooks {
-                    interp: self,
-                    fiber,
-                    span,
-                },
-            )
-        } else {
-            cmp_with(a, b, &guard, &mut crate::hooks::Plain)
-        };
-        result.map_err(|stop| self.stop_to_ctl(fiber, stop, span, "compare"))
-    }
-
-    /// The `Show` text of a value, honouring a user-written `impl Show` at every level.
-    pub(crate) fn show_deep(&mut self, fiber: &mut Fiber, v: &Value, span: Span) -> Eval<String> {
-        if !self.has_overrides() {
-            return Ok(crate::show::show(&self.core.types, v).into_owned());
-        }
-        let types = Rc::clone(&self.core.types);
-        let result = show_with(
-            &types,
-            v,
-            &mut Hooks {
-                interp: self,
-                fiber,
-                span,
-            },
-        );
-        result.map_err(|stop| self.stop_to_ctl(fiber, stop, span, "show"))
-    }
-
-    /// A deep copy honouring a user-written `impl Clone` at every level.
-    pub(crate) fn clone_deep(&mut self, fiber: &mut Fiber, v: &Value, span: Span) -> Eval {
-        let mut cloner = Cloner::new(fiber.stack_base, self.native_stack_budget());
-        let result = if self.has_overrides() {
-            cloner.clone_value(
-                v,
-                &mut Hooks {
-                    interp: self,
-                    fiber,
-                    span,
-                },
-            )
-        } else {
-            cloner.clone_value(v, &mut crate::hooks::Plain)
-        };
-        match result {
-            Ok(copy) => {
-                if self.core.leaks.is_some() {
-                    for made in cloner.into_copies() {
-                        if let Value::Obj(obj) = &made {
-                            self.core.track_object(obj, Some(span));
-                        }
-                    }
-                }
-                Ok(copy)
-            }
-            Err(stop) => {
-                self.abandon_copies(cloner.into_copies());
-                Err(self.stop_to_ctl(fiber, stop, span, "clone"))
-            }
-        }
     }
 
     // ---- interface values ----
@@ -775,49 +466,6 @@ impl Interp {
         };
         self.release_all(values);
         result
-    }
-
-    // ---- Drop hooks ----
-
-    /// Runs the `Drop` hook of a class object that is about to die. Returns whether the hook
-    /// kept the object alive (resurrection): then it is not destroyed, and its hook never runs
-    /// again (ARCHITECTURE §6).
-    pub(crate) fn run_drop_hook(&mut self, obj: &Rc<crate::heap::ClassObj>) -> bool {
-        let Some(f) = self.core.dispatch.drop_hook(obj.ty()) else {
-            return false;
-        };
-        if obj.mark_hooked() {
-            return false;
-        }
-        let Some(body) = self.fns.get(f.0 as usize).cloned() else {
-            return false;
-        };
-        if self.core.hook_depth >= MAX_HOOK_DEPTH {
-            self.core.hook_panics.push(crate::ctl::PanicInfo {
-                message: "Drop hooks are nested too deeply".to_string(),
-                span: body.span,
-                stack: Vec::new(),
-                notes: Vec::new(),
-                budget: false,
-            });
-            return false;
-        }
-        // Past the grace of an exhausted budget, hooks no longer run (the object is released
-        // plainly).
-        if self.core.budget_is_dead() {
-            return false;
-        }
-        self.core.hook_depth += 1;
-        let mut hook_fiber = Fiber::new();
-        hook_fiber.stack_base = crate::eval::stack_position();
-        let result = self.call_body(&mut hook_fiber, body, vec![Value::Obj(Rc::clone(obj))]);
-        self.core.hook_depth -= 1;
-        match result {
-            Ok(v) | Err(Ctl::Return(v)) => self.release(v),
-            Err(Ctl::Panic(info)) => self.core.hook_panics.push(*info),
-            Err(_) => {}
-        }
-        Rc::strong_count(obj) > 1
     }
 }
 

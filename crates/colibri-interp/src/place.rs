@@ -25,6 +25,7 @@ use crate::eval::Interp;
 use crate::fiber::Fiber;
 use crate::heap::{ClassObj, GuardToken, ListObj, MapObj};
 use crate::value::{CellObj, Value};
+use colibri_core::prelude::*;
 
 /// The part of `v` a projection selects.
 ///

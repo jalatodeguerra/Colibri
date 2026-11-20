@@ -18,19 +18,13 @@ pub struct Tables {
     /// The impls of `Add`, `Sub`, `Mul`, `Div` and `Neg`, by left type, interface and the head
     /// of the right-hand type (`None` when it is a type parameter, or for `Neg`).
     operators: HashMap<(TypeKey, TypeId, Option<TypeKey>), u32>,
-    #[doc(hidden)]
-    pub eq: HashMap<TypeId, FnId>,
-    #[doc(hidden)]
-    pub ord: HashMap<TypeId, FnId>,
-    #[doc(hidden)]
-    pub show: HashMap<TypeId, FnId>,
-    #[doc(hidden)]
-    pub clone: HashMap<TypeId, FnId>,
-    #[doc(hidden)]
-    pub drop: HashMap<TypeId, FnId>,
+    pub(crate) eq: HashMap<TypeId, FnId>,
+    pub(crate) ord: HashMap<TypeId, FnId>,
+    pub(crate) show: HashMap<TypeId, FnId>,
+    pub(crate) clone: HashMap<TypeId, FnId>,
+    pub(crate) drop: HashMap<TypeId, FnId>,
     /// Some `IntoError` implementation has a `message` method that must run to show an error.
-    #[doc(hidden)]
-    pub error_messages: bool,
+    pub(crate) error_messages: bool,
 }
 
 impl Tables {

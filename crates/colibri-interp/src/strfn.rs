@@ -14,6 +14,7 @@ use crate::fiber::Fiber;
 use crate::heap::ClassObj;
 use crate::iter::IterObj;
 use crate::value::Value;
+use colibri_core::prelude::*;
 
 pub(crate) use colibri_core::builders::builder_text;
 

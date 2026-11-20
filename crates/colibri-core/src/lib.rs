@@ -11,7 +11,9 @@ pub mod clone;
 pub mod closure;
 pub mod compare;
 pub mod ctl;
+pub mod deep;
 pub mod dispatch;
+pub mod engine;
 pub mod error;
 pub mod format;
 pub mod heap;
@@ -22,11 +24,23 @@ pub mod iter;
 pub mod leaks;
 pub mod num;
 pub mod ordered;
+pub mod protocol;
+pub mod release;
 pub mod show;
 pub mod state;
 pub mod value;
 
 pub use state::Core;
+
+/// The extension traits of the engine-neutral code, for `use colibri_core::prelude::*;` in an
+/// engine. Their methods read as methods of the engine (`self.release(v)`).
+#[doc(hidden)]
+pub mod prelude {
+    pub use crate::deep::Deep as _;
+    pub use crate::engine::Engine as _;
+    pub use crate::protocol::Protocol as _;
+    pub use crate::release::Release as _;
+}
 
 /// The current position on the native stack (it only has to be comparable with another one).
 #[doc(hidden)]

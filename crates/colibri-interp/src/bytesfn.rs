@@ -14,6 +14,7 @@ use crate::ctl::Eval;
 use crate::eval::Interp;
 use crate::fiber::Fiber;
 use crate::value::Value;
+use colibri_core::prelude::*;
 
 /// The error text for bytes that are not UTF-8: where the first bad byte is.
 pub(crate) fn utf8_message(e: &std::str::Utf8Error) -> String {

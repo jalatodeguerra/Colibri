@@ -11,6 +11,7 @@ use crate::ctl::Eval;
 use crate::eval::Interp;
 use crate::fiber::Fiber;
 use crate::value::Value;
+use colibri_core::prelude::*;
 
 pub(crate) use colibri_core::iter::IterObj;
 use colibri_core::iter::Step;

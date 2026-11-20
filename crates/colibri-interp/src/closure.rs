@@ -13,6 +13,7 @@ use crate::ctl::Eval;
 use crate::eval::Interp;
 use crate::fiber::Fiber;
 use crate::value::Value;
+use colibri_core::prelude::*;
 
 impl Interp {
     /// Builds the closure value for `c`: each capture reads its variable in the running frame.
