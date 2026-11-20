@@ -287,6 +287,9 @@ mod pipe {
         pub path: String,
         #[cfg(windows)]
         server: isize,
+        /// Whether `serve` took the server end (which then closes it).
+        #[cfg(windows)]
+        served: std::cell::Cell<bool>,
     }
 
     #[cfg(unix)]
@@ -340,6 +343,7 @@ mod pipe {
         }
 
         pub const PIPE_ACCESS_OUTBOUND: u32 = 2;
+        pub const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x0008_0000;
         pub const INVALID_HANDLE_VALUE: isize = -1;
     }
 
@@ -394,9 +398,26 @@ mod pipe {
     }
 
     #[cfg(windows)]
+    impl Drop for Pipe {
+        fn drop(&mut self) {
+            if !self.served.get() {
+                // SAFETY: the handle is ours; nobody took it, so it is closed once, here.
+                unsafe { sys::CloseHandle(self.server) };
+            }
+        }
+    }
+
+    #[cfg(windows)]
     impl Pipe {
-        pub fn new(_scratch: &Scratch, name: &str) -> Pipe {
-            let name = format!("colibri-file-{name}-{}", std::process::id());
+        pub fn new(scratch: &Scratch, name: &str) -> Pipe {
+            // The tests of one process run in parallel and a pipe name is global to the
+            // machine: the scratch folder's name is already unique to the test and the process.
+            let unique = scratch
+                .0
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let name = format!("{unique}-{name}");
             let wide: Vec<u16> = format!(r"\\.\pipe\{name}")
                 .encode_utf16()
                 .chain(Some(0))
@@ -405,7 +426,8 @@ mod pipe {
             let server = unsafe {
                 sys::CreateNamedPipeW(
                     wide.as_ptr(),
-                    sys::PIPE_ACCESS_OUTBOUND,
+                    // The name must be new: a clash is a loud failure, not a shared pipe.
+                    sys::PIPE_ACCESS_OUTBOUND | sys::FILE_FLAG_FIRST_PIPE_INSTANCE,
                     0, // a byte pipe that waits
                     1,
                     64 * 1024,
@@ -423,6 +445,7 @@ mod pipe {
             Pipe {
                 path: format!("//./pipe/{name}"),
                 server,
+                served: std::cell::Cell::new(false),
             }
         }
 
@@ -430,6 +453,7 @@ mod pipe {
         /// server end, and ends the pipe.
         pub fn serve(&self, body: impl FnOnce(&mut End) + Send + 'static) -> JoinHandle<()> {
             let server = self.server;
+            self.served.set(true);
             std::thread::spawn(move || {
                 // Fails with "already connected" when the client was first: also fine.
                 // SAFETY: the handle is the server end made by `new`, not overlapped.
@@ -497,7 +521,7 @@ fn main() {{
         let writer = pipe.serve(move |_end| {
             let _ = hold.recv();
         });
-        let pipe = pipe.path;
+        let pipe = pipe.path.clone();
         let started = Instant::now();
         run(
             &mut vm,
@@ -550,7 +574,7 @@ fn main() -> Result[()] {{
             std::thread::sleep(Duration::from_millis(300));
             end.write_all(b"first\nsecond\n").unwrap();
         });
-        let pipe = pipe.path;
+        let pipe = pipe.path.clone();
         run(
             &mut vm,
             &format!(
@@ -604,7 +628,7 @@ fn main() -> Result[()] {{
             std::thread::sleep(Duration::from_millis(400));
             end.write_all(b"first\nsecond\nthird\n").unwrap();
         });
-        let pipe = pipe.path;
+        let pipe = pipe.path.clone();
         run(
             &mut vm,
             &format!(
@@ -654,7 +678,7 @@ fn main() -> Result[()] {{
         let writer = pipe.serve(move |_end| {
             let _ = hold.recv();
         });
-        let pipe = pipe.path;
+        let pipe = pipe.path.clone();
         let started = Instant::now();
         {
             let (mut vm, out) = vm();
