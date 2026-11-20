@@ -94,7 +94,6 @@ pub(crate) fn key_of(ty: &Ty) -> Option<TypeKey> {
         Ty::Set(_) => TypeKey::Set,
         Ty::Range(_) => TypeKey::Range,
         Ty::Ptr(_) => TypeKey::Ptr,
-        Ty::Vec(v) => TypeKey::Vec(*v),
         Ty::Option(_) => TypeKey::Adt(OPTION_TYPE),
         Ty::Adt(id, _) => TypeKey::Adt(*id),
         _ => return None,
@@ -408,7 +407,6 @@ impl Env<'_> {
             | Ty::Bytes
             | Ty::Unit
             | Ty::Ptr(_)
-            | Ty::Vec(_)
             | Ty::Range(_) => Part::Ok,
             Ty::Tuple(items) => Part::Inside(items.clone()),
             Ty::List(t) | Ty::Set(t) | Ty::Option(t) => Part::Inside(vec![(**t).clone()]),
@@ -457,7 +455,6 @@ impl Env<'_> {
             Ty::Int(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Bytes | Ty::Unit | Ty::Ptr(_) => {
                 Part::Ok
             }
-            Ty::Vec(v) if v.int => Part::Ok,
             Ty::Tuple(items) => Part::Inside(items.clone()),
             Ty::Option(t) => Part::Inside(vec![(**t).clone()]),
             Ty::Adt(id, _) if self.is_class(*id) => Part::Ok,

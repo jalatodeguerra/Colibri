@@ -529,7 +529,6 @@ impl FnCtx<'_, '_> {
                 | Ty::Fn(..)
                 | Ty::Range(_)
                 | Ty::Ptr(_)
-                | Ty::Vec(_)
         ) {
             let shown = self.show(&ty);
             self.ck.report(Diagnostic::error(

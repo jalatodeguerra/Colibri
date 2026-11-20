@@ -30,13 +30,12 @@ fn scalar_size_align(ty: CTy) -> Option<(usize, usize)> {
         CTy::F32 => (4, 4),
         CTy::F64 => (8, 8),
         CTy::Ptr { .. } | CTy::CStr { .. } => (word, word),
-        CTy::Vec(v) => (4 * v.n as usize, 4),
         CTy::Struct(_) => return None,
     })
 }
 
 /// What a C type may be, for messages.
-const C_TYPES: &str = "`i8`..`i64`, `u8`..`u64`, `int`, `f32`, `f64`, `float`, `bool`, `vec2`..`ivec4`, `ptr[T]`, and other `@repr(C)` structs";
+const C_TYPES: &str = "`i8`..`i64`, `u8`..`u64`, `int`, `f32`, `f64`, `float`, `bool`, `ptr[T]`, and other `@repr(C)` structs";
 
 /// The text of a `@link("name")` or `@repr(C)` argument.
 pub(crate) fn plain_string(e: &ast::Expr) -> Option<String> {
@@ -159,7 +158,6 @@ impl<'a> Checker<'a> {
             Ty::Int(i) => CTy::Int(*i),
             Ty::Float => CTy::F64,
             Ty::F32 => CTy::F32,
-            Ty::Vec(v) => CTy::Vec(*v),
             Ty::Bool => CTy::Bool,
             Ty::Ptr(_) => CTy::Ptr { nullable: false },
             Ty::Option(inner) if matches!(**inner, Ty::Ptr(_)) => CTy::Ptr { nullable: true },

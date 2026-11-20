@@ -185,7 +185,6 @@ impl Checker<'_> {
                 };
                 let hint = match blame {
                     Ty::Float | Ty::F32 => "floats are not hashable (`nan` is not equal to itself); use an integer or a string instead".to_string(),
-                    Ty::Vec(_) => "a float vector is not hashable (`nan` is not equal to itself); use an `ivec` as the key, or a tuple of integers".to_string(),
                     Ty::List(_) | Ty::Map(..) | Ty::Set(_) => "mutable collections are not hashable; use a tuple, a struct or a frozen copy as the key".to_string(),
                     Ty::Param(_, name) => format!("add the bounds `{name}: Hash + Eq` to the type parameter"),
                     Ty::Adt(..) => format!("implement `Hash` and `Eq` for `{blamed}`, or key on one of its fields"),
@@ -294,10 +293,6 @@ impl Checker<'_> {
         match blame {
             Ty::Param(_, name) => {
                 format!("add the bound to the type parameter: `{name}: {iface}`")
-            }
-            Ty::Vec(_) if ob.iface == HASH => {
-                "float vectors are not hashable (`nan` is not equal to itself); `ivec2` is"
-                    .to_string()
             }
             Ty::Float | Ty::F32 if ob.iface == HASH => {
                 "floats are not hashable (`nan` is not equal to itself)".to_string()

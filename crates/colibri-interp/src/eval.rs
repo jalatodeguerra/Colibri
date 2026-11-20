@@ -3,11 +3,11 @@
 use std::io::Write;
 use std::rc::{Rc, Weak};
 
+use colibri_check::hir::Storage;
 use colibri_check::hir::{
     Arg, ArithOp, Arm, BinOp, Block, Body, Callee, CmpOp, Expr, ExprKind, FnId, GlobalId,
     Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, TypeDef, UnOp, UserOp,
 };
-use colibri_check::hir::{Storage, ValueProj};
 use colibri_check::types::{IntTy, Ty};
 use colibri_syntax::Span;
 
@@ -20,7 +20,6 @@ use crate::num;
 use crate::ordered::OrderedMap;
 use crate::place::project;
 use crate::value::{CellObj, Value};
-use crate::vecmath;
 
 /// The value of a variable slot, looking through a cell.
 pub(crate) fn unwrap_cell_ref(v: &Value) -> Value {
@@ -746,10 +745,7 @@ impl Interp {
             ExprKind::Project(base, proj) => {
                 // The projected-from value is a temporary: it dies at the end of the statement.
                 let value = self.eval_twin(fiber, base)?;
-                let part = match proj {
-                    ValueProj::Comp(i) => vecmath::component(&value, *i),
-                    _ => project(&value, *proj).cloned(),
-                };
+                let part = project(&value, *proj).cloned();
                 drop(value);
                 match part {
                     Some(part) => Ok(part),
@@ -1184,12 +1180,6 @@ impl Interp {
         let numeric = match intrinsic {
             Intrinsic::Convert { from, to } => args.first().map(|v| num::convert(*from, *to, v)),
             Intrinsic::NumMethod(m, n) => Some(num::method(*m, *n, &args)),
-            Intrinsic::VecNew(ty) => Some(vecmath::construct(*ty, &args)),
-            Intrinsic::VecSwizzle { lanes, len, .. } => Some(args.first().map_or_else(
-                || Err("a swizzle without an argument".to_string()),
-                |v| vecmath::swizzle(v, lanes, *len),
-            )),
-            Intrinsic::VecMethod(m, _) => Some(vecmath::method(*m, &args)),
             _ => None,
         };
         if let Some(result) = numeric {
@@ -1239,9 +1229,6 @@ impl Interp {
             | Intrinsic::Compare
             | Intrinsic::Convert { .. }
             | Intrinsic::NumMethod(..)
-            | Intrinsic::VecNew(_)
-            | Intrinsic::VecSwizzle { .. }
-            | Intrinsic::VecMethod(..)
             | Intrinsic::Wait
             | Intrinsic::WaitUntil
             | Intrinsic::WaitReal
@@ -1284,7 +1271,6 @@ impl Interp {
             },
             (UnOp::Neg(Num::Float), Value::Float(x)) => Ok(Value::Float(-x)),
             (UnOp::Neg(Num::F32), Value::F32(x)) => Ok(Value::F32(-x)),
-            (UnOp::VecNeg(_), v) => vecmath::neg(&v).map_err(|msg| self.panic(fiber, span, msg)),
             (UnOp::BitNot(ty), v) => match num::int_of(&v) {
                 Some(a) => Ok(num::make_int(ty, num::int_not(ty, a))),
                 None => Err(self.internal(fiber, span, "ill-typed bitwise not")),
@@ -1338,9 +1324,6 @@ impl Interp {
             }
             (BinOp::Arith(op, Num::F32), Value::F32(a), Value::F32(b)) => {
                 Ok(Value::F32(num::f32_arith(op, *a, *b)))
-            }
-            (BinOp::Vec(op, _, shape), l, r) => {
-                vecmath::arith(op, shape, l, r).map_err(|msg| self.panic(fiber, span, msg))
             }
             (BinOp::Bit(op, ty), l, r) => match (num::int_of(l), num::int_of(r)) {
                 (Some(a), Some(b)) => match num::int_bit(op, ty, a, b) {

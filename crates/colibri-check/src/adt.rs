@@ -189,9 +189,6 @@ impl FnCtx<'_, '_> {
         name: &ast::Ident,
         span: Span,
     ) -> Expr {
-        if let Ty::Vec(v) = self.infer.shallow(&value.ty) {
-            return self.vec_field_value(v, value, name, span);
-        }
         let Some((idx, ty)) = self.field_of(&value.ty, name, base.span) else {
             return self.error_expr(span);
         };

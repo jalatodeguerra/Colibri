@@ -1342,7 +1342,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         };
         if let Some(iface) = user_iface {
             let left = self.infer.shallow(&place_ty);
-            if !matches!(left, Ty::Vec(_)) && self.left_uses_operator(&left, iface) {
+            if self.left_uses_operator(&left, iface) {
                 return self.check_user_assign(span, op, place, target.span, iface, value);
             }
         }
@@ -1369,26 +1369,6 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             AssignOp::Shr => Some((BitOp::Shr, ">>=")),
             _ => None,
         };
-        if let Ty::Vec(v) = self.infer.shallow(&place_ty)
-            && let Some(arith) = arith
-        {
-            let sym = match arith {
-                ArithOp::Add => "+=",
-                ArithOp::Sub => "-=",
-                ArithOp::Mul => "*=",
-                ArithOp::Div => "/=",
-                ArithOp::Rem => "%=",
-            };
-            let (bop, rhs) = self.check_vec_assign_op(v, arith, sym, rhs, span)?;
-            return Some(Stmt {
-                span,
-                kind: hir::StmtKind::Assign {
-                    place,
-                    op: Some(bop),
-                    rhs,
-                },
-            });
-        }
         let reason = Some((target.span, format!("this is `{}`", self.show(&place_ty))));
         let stored = if weak && op == AssignOp::Assign {
             rhs = self.coerce_to_weak(rhs, &place_ty, reason.clone())?;
@@ -1457,13 +1437,6 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         let mut diag = Diagnostic::error(format!("unknown name `{name}`"), span);
         if let Some(hint) = self.ck.excluded_hint(self.ck.cur_mod, name) {
             self.ck.report(diag.with_hint(hint));
-            return;
-        }
-        if crate::types::VecTy::from_name(name).is_some() {
-            diag = diag.with_hint(format!(
-                "the vector types are in the `vec` module: write `import vec` and then `vec.{name}(..)`, or `import vec.{{{name}}}`"
-            ));
-            self.ck.report(diag);
             return;
         }
         if name == "wait_frames" {

@@ -24,7 +24,7 @@ use crate::package::{ModuleMeta, PackageNode};
 use crate::prelude;
 use crate::suggest;
 use crate::traits::{BoundRef, GenericParamInfo, ImplInfo};
-use crate::types::{ERROR_TYPE, FnSig, ParamId, RESULT_TYPE, Ty, TypeId, VecTy};
+use crate::types::{ERROR_TYPE, FnSig, ParamId, RESULT_TYPE, Ty, TypeId};
 
 /// What a module-level name refers to.
 #[derive(Clone, Copy, Debug)]
@@ -209,9 +209,6 @@ pub(crate) struct Checker<'a> {
     pub type_extra: Vec<TypeExtra<'a>>,
     pub type_ids: HashMap<String, TypeId>,
     pub aliases: HashMap<String, AliasId>,
-    /// The vector types in scope (`vec.vec2`, or `vec2` after `import vec.{vec2}`), which are
-    /// built in but only nameable after `import vec`.
-    pub vec_types: HashMap<String, VecTy>,
     /// Every type alias, indexed by [`AliasId`].
     pub alias_infos: Vec<AliasInfo<'a>>,
     /// How many types have been checked for infinite size.
@@ -481,7 +478,6 @@ impl<'a> Checker<'a> {
             type_extra: vec![TypeExtra::default(), TypeExtra::default()],
             type_ids: HashMap::new(),
             aliases: HashMap::new(),
-            vec_types: HashMap::new(),
             methods: HashMap::new(),
             collected: false,
             pending: Vec::new(),
@@ -1197,17 +1193,6 @@ impl<'a> Checker<'a> {
             self.note_deprecated_use(DeprKey::Alias(alias), span);
             return self.alias_instance(alias, args, span);
         }
-        let vec = self.vec_types.get(name).copied();
-        if let Some(v) = vec {
-            if !args.is_empty() {
-                self.report(Diagnostic::error(
-                    format!("`{name}` takes no type arguments"),
-                    span,
-                ));
-                return Ty::Error;
-            }
-            return Ty::Vec(v);
-        }
         if !args.is_empty() && !self.poisoned_types.contains(name) {
             let known = Ty::numeric_by_name(name).is_some()
                 || matches!(name, "int" | "bool" | "str" | "char" | "Bytes");
@@ -1456,13 +1441,6 @@ impl<'a> Checker<'a> {
         let mut diag = Diagnostic::error(format!("unknown type `{name}`"), span);
         if let Some(hint) = self.excluded_hint(self.cur_mod, name) {
             self.report(diag.with_hint(hint));
-            return;
-        }
-        if VecTy::from_name(name).is_some() {
-            diag = diag.with_hint(format!(
-                "the vector types are in the `vec` module: write `import vec` and then `vec.{name}`, or `import vec.{{{name}}}`"
-            ));
-            self.report(diag);
             return;
         }
         let known = ["int", "float", "bool", "str", "char", "i64", "f64"];

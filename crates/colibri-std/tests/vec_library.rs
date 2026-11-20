@@ -73,10 +73,10 @@ fn main() {
 #[test]
 fn a_vector_reaches_the_host_as_a_struct_value() {
     let (mut vm, _) = vm();
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = seen.clone();
     // A host function that works on any type: the script's `vec.vec2` arrives as a `Value`.
-    vm.register_fn("record", move |v: Value| sink.lock().unwrap().push(v))
+    vm.register_fn("record", move |v: Value| sink.borrow_mut().push(v))
         .unwrap();
     vm.load_source(
         "game.colibri",
@@ -84,7 +84,7 @@ fn a_vector_reaches_the_host_as_a_struct_value() {
     )
     .unwrap();
     vm.run_main().unwrap();
-    let seen = seen.lock().unwrap();
+    let seen = seen.borrow();
     assert_eq!(f32s(&seen[0]), vec![2.0, 3.0]);
     let ValueKind::Struct { fields, .. } = seen[1].kind() else {
         panic!("not a struct");

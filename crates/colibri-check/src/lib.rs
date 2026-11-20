@@ -50,7 +50,6 @@ pub mod traits;
 mod tryop;
 pub mod types;
 mod unused;
-mod vector;
 mod zonk;
 
 pub use checker::Checked;

@@ -273,7 +273,6 @@ impl FnCtx<'_, '_> {
                     | Ty::Fn(..)
                     | Ty::Range(_)
                     | Ty::Ptr(_)
-                    | Ty::Vec(_)
                     | Ty::Bytes
             ) {
                 self.ck.report(Diagnostic::error(
@@ -357,9 +356,6 @@ impl FnCtx<'_, '_> {
                     return self.literal(Lit::Int(value), VarKind::IntLit, expected, span);
                 }
                 let value = self.check_expr(operand, expected);
-                if let Ty::Vec(v) = self.infer.shallow(&value.ty) {
-                    return self.check_vec_neg(v, value, span);
-                }
                 let operand_ty = self.infer.shallow(&value.ty);
                 if self.left_uses_operator(&operand_ty, NEG) {
                     return self.check_user_neg(value, span);
@@ -657,16 +653,11 @@ impl FnCtx<'_, '_> {
         // checked with what that impl takes as a hint.
         if let Some(iface) = iface {
             let left = self.infer.shallow(&l.ty);
-            if !matches!(left, Ty::Vec(_)) && self.left_uses_operator(&left, iface) {
+            if self.left_uses_operator(&left, iface) {
                 return self.check_user_arith(op, iface, l, rhs, span);
             }
         }
         let mut r = self.check_expr(rhs, Some(&l.ty));
-        if matches!(self.infer.shallow(&l.ty), Ty::Vec(_))
-            || matches!(self.infer.shallow(&r.ty), Ty::Vec(_))
-        {
-            return self.check_vec_arith(op, arith, l, r, span);
-        }
         // A number on the left and a user type on the right: `2 * v`.
         if let Some(iface) = iface
             && let Some(done) = self.check_scalar_left(op, iface, &mut l, &mut r, span)

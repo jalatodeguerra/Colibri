@@ -103,7 +103,6 @@ impl Checker<'_> {
             Ty::Int(_) | Ty::Float | Ty::F32 => {
                 out.extend(crate::numeric::num_methods(ty).into_iter().map(builtin));
             }
-            Ty::Vec(v) => out.extend(crate::vector::vec_methods(*v).into_iter().map(builtin)),
             Ty::Error | Ty::Infer(_) | Ty::Never | Ty::Unit | Ty::Fn(..) => return Vec::new(),
             _ => out.extend(
                 crate::builtins::builtin_methods(ty)
