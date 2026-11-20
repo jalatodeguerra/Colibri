@@ -1989,6 +1989,73 @@ fn main() -> Result[()] {{
     }
 }
 
+/// A coroutine in a loop of reads and writes against a peer that is always ready never has to
+/// wait, so none of its calls suspends; the connection's burst budget makes it give the thread
+/// to the others now and then anyway (`MAX_BURST_CALLS`). One coroutine echoes a hundred
+/// thousand lines that an eager Rust peer has sent (every read is served from what is buffered
+/// or from the socket, every write is taken at once), another counts how often it gets to run;
+/// the count must have moved a good deal before the echo is done. No timing is involved: the
+/// bound is on how many times the echo gave way, and a read or write that does suspend only adds
+/// to it.
+#[test]
+fn a_loop_of_calls_that_never_wait_still_lets_the_other_coroutines_run() {
+    const LINES: usize = 40_000;
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        let mut sending = s.try_clone().unwrap();
+        let sender = thread::spawn(move || {
+            sending.write_all("x\n".repeat(LINES).as_bytes()).unwrap();
+        });
+        // Takes the echoes as they come, so that the script's writes never find the socket full.
+        let echoed = read_n(&mut s, LINES * 2).len();
+        sender.join().unwrap();
+        echoed
+    });
+    let out = output_within(
+        format!(
+            r#"import net
+
+var ticks = 0
+var finished = false
+
+fn counter() {{
+    while !finished {{
+        ticks += 1
+        wait(0.0)
+    }}
+}}
+
+fn echo(c: net.Conn) {{
+    for _ in 0..{LINES} {{
+        match c.read_line().expect("a line") {{
+            some(text) => c.write("{{text}}\n").expect("echoed")
+            none => return
+        }}
+    }}
+    finished = true
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let k = go counter()
+    let e = go echo(c)
+    e.join()
+    k.join()
+    // 80,000 calls in all: one yield for every 64 of them is over 1,200 turns of the counter.
+    print(ticks >= 500)
+    c.close()
+    return ok(())
+}}
+"#
+        ),
+        LIMIT,
+    );
+    assert_eq!(out, "true\n");
+    assert_eq!(peer.join().unwrap(), LINES * 2);
+}
+
 /// A `Drop` hook that writes or closes the writing end while a coroutine is in the middle of a
 /// write on the same connection is refused at once, as a hook's read behind a read is: the hook
 /// blocks the interpreter thread and the rest of the write can only be sent by the coroutine, so

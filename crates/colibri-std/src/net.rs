@@ -1044,10 +1044,10 @@ impl Burst {
         self.calls.store(0, Ordering::Relaxed);
     }
 
-    /// A call begins: `true` (and the count starts over) when the budget is used up.
+    /// A call begins: `true` (and the count starts over) when the calls of the budget are used up.
     fn begin_call(&self) -> bool {
         let before = self.calls.fetch_add(1, Ordering::Relaxed);
-        if before >= MAX_BURST_CALLS || self.bytes.load(Ordering::Relaxed) >= MAX_BURST {
+        if before >= MAX_BURST_CALLS {
             self.reset();
             return true;
         }
@@ -3598,5 +3598,167 @@ mod tests {
         assert_eq!(sh.reader.lock().unwrap().stage.capacity(), 0);
         // The half line is still there for the next read.
         assert_eq!(sh.reader.lock().unwrap().available(), b"three");
+    }
+
+    /// A wait that ends because the poller stopped (or broke) is an error of `net` that says so,
+    /// never the runtime's own text for a completer that was dropped, and the connection can be
+    /// read again afterwards (the next wait starts a poller).
+    #[test]
+    fn a_wait_whose_poller_stops_is_a_net_error_and_the_connection_goes_on() {
+        let (c, mut peer) = conn_pair();
+        let sh = Arc::clone(&c.sh);
+        let (first, second) = with_cx(move |cx| {
+            let poller = cx
+                .state_mut::<poll::NetState>()
+                .unwrap()
+                .poller()
+                .expect("the poller starts");
+            let stopper = std::thread::spawn(move || {
+                // Stops it when the read has armed its wait (nothing else waits on it).
+                let began = Instant::now();
+                while poller.counts() != (1, 1) {
+                    assert!(
+                        began.elapsed() < Duration::from_secs(30),
+                        "the read never waited"
+                    );
+                    std::thread::yield_now();
+                }
+                poller.stop();
+            });
+            let read = |cx: &mut Ctx| {
+                let ticket = sh.reads.ticket();
+                sh.read_call(
+                    cx,
+                    ticket,
+                    Limit::NONE,
+                    |r| line_probe(r, "p"),
+                    |r| take_line(r, "p"),
+                )
+            };
+            let first = read(cx).map_err(|e| format!("{e:?}"));
+            stopper.join().unwrap();
+            peer.write_all(b"again\n").unwrap();
+            let second = read(cx).map_err(|e| format!("{e:?}"));
+            (first, second)
+        });
+        let text = first.expect_err("the wait was cut off");
+        assert!(text.contains("Other"), "{text}");
+        assert!(
+            text.contains("cannot read from") && text.contains("the thread that waits for sockets"),
+            "{text}"
+        );
+        assert!(!text.contains("ended without a result"), "{text}");
+        assert_eq!(second.unwrap().as_deref(), Some("again"));
+    }
+
+    /// The ways a wait can end without a socket being ready are `net` errors in `net`'s words.
+    #[test]
+    fn the_ends_of_a_wait_that_are_not_readiness_have_net_wording() {
+        let (c, _peer) = conn_pair();
+        let sh = &c.sh;
+        let text = |end| match sh.ended(end, "write to", Some((3, 10))) {
+            Err(e) => format!("{e:?}"),
+            Ok(_) => panic!("not an error"),
+        };
+        let dropped = text(Err(Incomplete::Dropped(
+            "the operation ended without a result".into(),
+        )));
+        assert!(!dropped.contains("without a result"), "{dropped}");
+        assert!(
+            dropped.contains("the wait for the socket ended without an answer"),
+            "{dropped}"
+        );
+        assert!(dropped.contains("3 of 10 bytes were sent"), "{dropped}");
+        let refused = text(Err(Incomplete::NotStarted("the poller has stopped".into())));
+        assert!(
+            refused.contains("cannot wait for the socket: the poller has stopped"),
+            "{refused}"
+        );
+        let failed = text(Ok(poll::Why::Failed));
+        assert!(
+            failed.contains("the thread that waits for sockets has stopped"),
+            "{failed}"
+        );
+        for e in [dropped, refused, failed] {
+            assert_eq!(
+                e.split("variant: \"").nth(1).unwrap().split('"').next(),
+                Some("Other")
+            );
+        }
+    }
+
+    /// The accounting of the burst budget: calls and bytes, each ending the burst once, and the
+    /// count starting over afterwards (and whenever a call suspends).
+    #[test]
+    fn a_burst_is_cut_after_its_calls_or_its_bytes() {
+        let burst = Burst::default();
+        for _ in 0..MAX_BURST_CALLS {
+            assert!(!burst.begin_call());
+        }
+        assert!(
+            burst.begin_call(),
+            "the call after the last one in the budget"
+        );
+        for _ in 0..MAX_BURST_CALLS {
+            assert!(!burst.begin_call(), "the count started over");
+        }
+        burst.reset();
+        assert!(!burst.spend(MAX_BURST - 1));
+        assert!(burst.spend(1), "the bytes are used up");
+        assert!(!burst.spend(1), "and start over");
+        // A suspension starts the count over.
+        for _ in 0..MAX_BURST_CALLS - 1 {
+            burst.begin_call();
+        }
+        burst.reset();
+        assert!(!burst.begin_call());
+    }
+
+    /// `close` of a connection that a read waits on with the poller ends the wait with `Closed`,
+    /// and the descriptor is released by the time `close` returns: nothing holds the socket
+    /// while a coroutine is suspended, and the poller's hold goes under its lock.
+    #[test]
+    fn close_releases_the_socket_of_a_connection_that_a_read_waits_on() {
+        for _ in 0..20 {
+            let (c, _peer) = conn_pair();
+            let sh = Arc::clone(&c.sh);
+            let weak = Arc::downgrade(&sh.sock.get().expect("open"));
+            let (error, released) = with_cx(move |cx| {
+                let poller = cx
+                    .state_mut::<poll::NetState>()
+                    .unwrap()
+                    .poller()
+                    .expect("the poller starts");
+                let closer = {
+                    let sh = Arc::clone(&sh);
+                    std::thread::spawn(move || {
+                        let began = Instant::now();
+                        while poller.counts() != (1, 1) {
+                            assert!(
+                                began.elapsed() < Duration::from_secs(30),
+                                "the read never waited"
+                            );
+                            std::thread::yield_now();
+                        }
+                        sh.close();
+                        weak.upgrade().is_none()
+                    })
+                };
+                let ticket = sh.reads.ticket();
+                let error = sh
+                    .read_call(
+                        cx,
+                        ticket,
+                        Limit::NONE,
+                        |r| line_probe(r, "p"),
+                        |r| take_line(r, "p"),
+                    )
+                    .map(|_| ())
+                    .map_err(|e| variant(&e));
+                (error, closer.join().unwrap())
+            });
+            assert_eq!(error, Err("Closed".to_string()));
+            assert!(released, "the socket was still held when close returned");
+        }
     }
 }
