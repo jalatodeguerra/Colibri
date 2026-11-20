@@ -46,7 +46,7 @@ impl Guard {
 
 /// A comparison gave up because the values nest too deeply.
 #[derive(Debug, PartialEq, Eq)]
-pub struct TooDeep;
+pub(crate) struct TooDeep;
 
 thread_local! {
     /// Set when a comparison that has no way to report an error gave up: the lookup of a
@@ -76,13 +76,12 @@ pub fn take_gave_up() -> bool {
 /// Structural equality. Floats compare as IEEE numbers, so a value containing `nan` is not
 /// equal to itself, exactly as `nan == nan` is false.
 #[inline]
-pub fn values_equal(a: &Value, b: &Value) -> Result<bool, TooDeep> {
+pub(crate) fn values_equal(a: &Value, b: &Value) -> Result<bool, TooDeep> {
     equal(a, b, 0, &Guard::here(), &mut Plain).map_err(|_| TooDeep)
 }
 
 /// Equality that consults `ov` first for every user-defined value (a user `impl Eq`).
-#[doc(hidden)]
-pub fn equal_with(
+pub(crate) fn equal_with(
     a: &Value,
     b: &Value,
     guard: &Guard,
@@ -252,7 +251,7 @@ fn equal_collections(
 
 /// `a is b`: whether two reference values are the same object.
 #[inline]
-pub fn values_identical(a: &Value, b: &Value) -> bool {
+pub(crate) fn values_identical(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::List(x), Value::List(y)) => Rc::ptr_eq(x, y),
         (Value::Map(x), Value::Map(y)) => Rc::ptr_eq(x, y),
@@ -265,13 +264,13 @@ pub fn values_identical(a: &Value, b: &Value) -> bool {
 
 /// Structural ordering: enums by variant (then payload), tuples and structs field by field.
 /// `None` when a float `nan` makes two values unordered.
-pub fn values_cmp(a: &Value, b: &Value) -> Result<Option<Ordering>, TooDeep> {
+#[cfg(test)]
+pub(crate) fn values_cmp(a: &Value, b: &Value) -> Result<Option<Ordering>, TooDeep> {
     cmp(a, b, 0, &Guard::here(), &mut Plain).map_err(|_| TooDeep)
 }
 
 /// Ordering that consults `ov` first for every user-defined value (a user `impl Ord`).
-#[doc(hidden)]
-pub fn cmp_with(
+pub(crate) fn cmp_with(
     a: &Value,
     b: &Value,
     guard: &Guard,

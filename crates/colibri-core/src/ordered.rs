@@ -27,14 +27,14 @@ const COMPACT_MIN: usize = 32;
 /// parts, class objects by identity. (The checker only lets hashable types be keys; anything
 /// else still hashes without panicking.)
 #[inline]
-pub fn hash_value(v: &Value) -> u64 {
+pub(crate) fn hash_value(v: &Value) -> u64 {
     hash_value_with(v, &mut |_| None)
 }
 
 /// [`hash_value`], where `host` may give the hash of an object of a host class (at any depth)
 /// in place of its handle. Used for the `hash()` that scripts see: an object that a host class
 /// compares by its own `==` must hash by what that `==` looks at.
-pub fn hash_value_with(v: &Value, host: &mut dyn FnMut(&Value) -> Option<u64>) -> u64 {
+pub(crate) fn hash_value_with(v: &Value, host: &mut dyn FnMut(&Value) -> Option<u64>) -> u64 {
     let mut h = KeyHasher::default();
     feed(v, &mut h, 0, host);
     h.finish()
@@ -273,7 +273,7 @@ impl OrderedMap {
 
     /// The entry at a position, if it is live.
     #[inline]
-    pub fn entry_at(&self, slot: usize) -> Option<&(Value, Value)> {
+    pub(crate) fn entry_at(&self, slot: usize) -> Option<&(Value, Value)> {
         self.entries.get(slot).and_then(Option::as_ref)
     }
 
@@ -390,7 +390,7 @@ impl OrderedMap {
     }
 
     /// Removes and returns every entry in insertion order.
-    pub fn take_all(&mut self) -> Vec<(Value, Value)> {
+    pub(crate) fn take_all(&mut self) -> Vec<(Value, Value)> {
         self.index.clear();
         self.live = 0;
         std::mem::take(&mut self.entries)

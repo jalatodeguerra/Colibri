@@ -11,11 +11,11 @@
 use crate::state::Core;
 
 /// How many more steps cleanups get after the budget is exhausted.
-pub const GRACE_STEPS: i64 = 10_000;
+pub(crate) const GRACE_STEPS: i64 = 10_000;
 
 /// Where an entry stands with its budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BudgetState {
+pub(crate) enum BudgetState {
     Normal,
     /// Exhausted: unwinding, with [`GRACE_STEPS`] left for cleanups.
     Grace,

@@ -22,12 +22,10 @@ pub enum Stop {
 }
 
 /// An answer from a user-written method: `None` means "no implementation, use the default".
-#[doc(hidden)]
-pub type Answer<T> = Option<Result<T, Stop>>;
+pub(crate) type Answer<T> = Option<Result<T, Stop>>;
 
 /// The user-written implementations that replace structural defaults.
-#[doc(hidden)]
-pub trait Overrides {
+pub(crate) trait Overrides {
     fn eq(&mut self, _a: &Value, _b: &Value) -> Answer<bool> {
         None
     }

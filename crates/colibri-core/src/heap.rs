@@ -72,12 +72,6 @@ impl Guard {
         }
         Ok(())
     }
-
-    /// Whether anything holds the collection.
-    #[inline]
-    pub fn is_held(&self) -> bool {
-        self.places.get() + self.iterations.get() > 0
-    }
 }
 
 /// How a token holds a collection.
@@ -234,7 +228,7 @@ impl ListObj {
     }
 
     #[inline]
-    pub fn check_guard(&self) -> Result<(), Violation> {
+    pub(crate) fn check_guard(&self) -> Result<(), Violation> {
         self.guard.check()
     }
 
@@ -357,7 +351,7 @@ impl ListObj {
 
     /// Takes every element out, for destruction. Unguarded.
     #[inline]
-    pub fn take_all(&self) -> Vec<Value> {
+    pub(crate) fn take_all(&self) -> Vec<Value> {
         std::mem::take(&mut *self.items.borrow_mut())
     }
 
@@ -517,7 +511,7 @@ impl MapObj {
     }
 
     #[inline]
-    pub fn take_all(&self) -> Vec<(Value, Value)> {
+    pub(crate) fn take_all(&self) -> Vec<(Value, Value)> {
         self.map.borrow_mut().take_all()
     }
 }
@@ -618,7 +612,7 @@ impl SetObj {
     }
 
     #[inline]
-    pub fn take_all(&self) -> Vec<Value> {
+    pub(crate) fn take_all(&self) -> Vec<Value> {
         self.map
             .borrow_mut()
             .take_all()
@@ -661,8 +655,7 @@ impl ClassObj {
 
     /// Marks the `Drop` hook as run; `true` if it had run before.
     #[inline]
-    #[doc(hidden)]
-    pub fn mark_hooked(&self) -> bool {
+    pub(crate) fn mark_hooked(&self) -> bool {
         self.hooked.replace(true)
     }
 
@@ -677,7 +670,7 @@ impl ClassObj {
     }
 
     /// Reads the fields in place, without touching their reference counts.
-    pub fn with_fields<R>(&self, f: impl FnOnce(&[Value]) -> R) -> R {
+    pub(crate) fn with_fields<R>(&self, f: impl FnOnce(&[Value]) -> R) -> R {
         f(&self.fields.borrow())
     }
 
@@ -690,7 +683,7 @@ impl ClassObj {
     /// Stores a field and returns the old value, or hands the value back when there is no
     /// such field.
     #[inline]
-    pub fn set_field(&self, idx: usize, v: Value) -> Result<Value, Value> {
+    pub(crate) fn set_field(&self, idx: usize, v: Value) -> Result<Value, Value> {
         let mut fields = self.fields.borrow_mut();
         match fields.get_mut(idx) {
             Some(slot) => Ok(std::mem::replace(slot, v)),
@@ -705,7 +698,7 @@ impl ClassObj {
 
     /// Takes the fields out and marks the object destroyed. Only `release` calls this.
     #[inline]
-    pub fn take_fields(&self) -> Vec<Value> {
+    pub(crate) fn take_fields(&self) -> Vec<Value> {
         self.released.set(true);
         std::mem::take(&mut *self.fields.borrow_mut()).into_vec()
     }

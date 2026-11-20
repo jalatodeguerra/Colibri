@@ -78,7 +78,7 @@ impl Tables {
     /// The index of the user impl of operator interface `iface` for the left type `left` and
     /// the right-hand type head `right` (`None` for a type parameter, or for `Neg`).
     #[inline]
-    pub fn operator_impl(
+    pub(crate) fn operator_impl(
         &self,
         left: TypeKey,
         iface: TypeId,
@@ -95,7 +95,7 @@ impl Tables {
 
     /// The user-written `Drop` hook of a class.
     #[inline]
-    pub fn drop_hook(&self, class: TypeId) -> Option<FnId> {
+    pub(crate) fn drop_hook(&self, class: TypeId) -> Option<FnId> {
         self.drop.get(&class).copied()
     }
 }

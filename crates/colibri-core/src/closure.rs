@@ -83,7 +83,7 @@ pub struct ClosureObj {
 
 impl ClosureObj {
     /// Moves the captured values out, for destruction. Only `release` calls this.
-    pub fn take_values(&mut self) -> Vec<Value> {
+    pub(crate) fn take_values(&mut self) -> Vec<Value> {
         self.captures
             .iter_mut()
             .map(|c| std::mem::replace(&mut c.value, Value::Unit))
