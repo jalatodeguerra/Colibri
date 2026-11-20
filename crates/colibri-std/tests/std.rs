@@ -749,10 +749,11 @@ fn main() {{
 /// Two children started by two coroutines run at the same time.
 #[test]
 fn child_processes_of_different_coroutines_overlap() {
-    // Each child sleeps `nap` seconds (`ping -n 3` is the two seconds a Windows console-less
-    // `cmd` can sleep for); run one after the other they would take twice that.
+    // Each child sleeps `nap` seconds (`ping -n 5` is the four seconds a Windows console-less
+    // `cmd` can sleep for, long enough that starting two `cmd`s on a busy machine does not
+    // eat the margin); run one after the other they would take twice that.
     let (line, nap) = if cfg!(windows) {
-        ("ping -n 3 127.0.0.1 >nul & echo {n}", 2.0)
+        ("ping -n 5 127.0.0.1 >nul & echo {n}", 4.0)
     } else {
         ("sleep 0.4; echo {n}", 0.4)
     };
