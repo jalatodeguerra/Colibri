@@ -737,6 +737,33 @@ mod give_way_probe {
     }
 }
 
+/// A test-build hook that runs once in `wait_ready`, on the interpreter thread, right after the
+/// wait was armed with the poller and before the coroutine suspends: the other side of a test
+/// does what it needs to there (and waits for the cell to be resolved, with a ceiling).
+#[cfg(test)]
+mod arm_probe {
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    use super::poll::Cell;
+
+    type Hook = Box<dyn FnOnce(&Arc<Cell>)>;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn armed(cell: &Arc<Cell>) {
+        if let Some(hook) = HOOK.with(|h| h.borrow_mut().take()) {
+            hook(cell);
+        }
+    }
+
+    pub(super) fn set_hook(hook: impl FnOnce(&Arc<Cell>) + 'static) {
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    }
+}
+
 fn closed_error(name: &str, action: &str) -> TypedError {
     Kind::Closed.error(format!(
         "cannot {action} `{name}`: it was closed (do not use a connection or listener after `close()`)"
@@ -1489,6 +1516,10 @@ struct Shared {
     /// `schedule_shutdown`): a write that a hook makes after that must fail as one after
     /// `close_write` does, and cannot wait behind the shutdown for the write ahead of it.
     shutdown_scheduled: AtomicBool,
+    /// Test builds: how many sends the write loop has begun (a test that closes from another
+    /// thread asks whether the writer was in a send).
+    #[cfg(test)]
+    send_attempts: AtomicUsize,
     /// Nanoseconds; 0 means no timeout.
     timeout_ns: AtomicU64,
     reader: Mutex<Reader>,
@@ -1534,6 +1565,8 @@ impl Conn {
                 closed: AtomicBool::new(false),
                 write_broken: AtomicBool::new(false),
                 shutdown_scheduled: AtomicBool::new(false),
+                #[cfg(test)]
+                send_attempts: AtomicUsize::new(0),
                 timeout_ns: AtomicU64::new(0),
                 reader: Mutex::new(Reader::new()),
                 reads: Turns::new(),
@@ -1729,7 +1762,10 @@ impl Shared {
                 cell.fire(poll::Why::Closed);
                 return Ok(());
             }
-            poller.arm(&sock, dir, limit.deadline, cell)
+            let armed = poller.arm(&sock, dir, limit.deadline, cell);
+            #[cfg(test)]
+            arm_probe::armed(cell);
+            armed
         });
         self.ended(end, action, sent)
     }
@@ -1889,6 +1925,8 @@ impl Shared {
                 let (kind, message) = write_failure(action, &self.peer, e);
                 kind.error(format!("{message}{}", sent_note(Some((*done, total)))))
             };
+            #[cfg(test)]
+            self.send_attempts.fetch_add(1, Ordering::SeqCst);
             match (&*sock).write(&data[*done..end]) {
                 Ok(0) => {
                     return Err(Kind::BrokenPipe.error(format!(
@@ -3355,6 +3393,39 @@ mod tests {
         (Conn::new(s), peer)
     }
 
+    /// The size of the buffers of `conn_pair_fixed`.
+    const BUFFER: usize = 64 * 1024;
+
+    /// `conn_pair` with buffers of a fixed size, so that the system's automatic sizing cannot
+    /// make room in a full pipe later on (macOS does, on loopback): the peer's receive buffer is
+    /// set before the connection, the connection's send buffer after it.
+    fn conn_pair_fixed() -> (Conn, TcpStream) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        peer.set_recv_buffer_size(BUFFER).unwrap();
+        peer.connect(&SockAddr::from(l.local_addr().unwrap()))
+            .unwrap();
+        let peer = TcpStream::from(peer);
+        let (s, _) = l.accept().unwrap();
+        SockRef::from(&s).set_send_buffer_size(BUFFER).unwrap();
+        prepare(&s).unwrap();
+        (Conn::new(s), peer)
+    }
+
+    /// Writes raw into `sock` until it would block.
+    fn fill_raw(sock: &TcpStream) {
+        let chunk = vec![0u8; 64 * 1024];
+        let mut total = 0usize;
+        loop {
+            match (&*sock).write(&chunk) {
+                Ok(n) => total += n,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => return,
+                Err(e) => panic!("filling the send buffer: {e}"),
+            }
+            assert!(total < 1 << 30, "the send buffer never filled");
+        }
+    }
+
     /// Runs `f` inside a host function of a `Vm` that has the net module, on the main fiber (where
     /// a wait drives the event loop), and gives what it returns: the way the unit tests get a
     /// `Ctx` to call the interpreter-thread read and write loops with.
@@ -3890,15 +3961,28 @@ mod tests {
     /// nothing, so the write fills the buffers and waits for room) releases the descriptor by the
     /// time it returns. This needs the write slot's wake in `close`: the poller's hold on the
     /// socket goes with the resolved cell, and without that nothing resolves it before `close`
-    /// returns. (A write wait may end `Ready` on its own on some systems, and arm again: the
-    /// closer waits for a moment when the write is armed, and does not need it to stay quiet.)
+    /// returns.
+    ///
+    /// The closer runs on another thread, which the product never does (`close` runs on the
+    /// interpreter thread, where the writer is suspended). Where a write wait can end `Ready` on
+    /// its own while the pipe fills (macOS, Windows), the writer may be in its next send when the
+    /// closer's `close` returns, and that round says nothing: the writer's send attempts are
+    /// counted, and a round in which one was made after the closer had looked is void and is
+    /// done again. Twenty valid rounds are required, within a ceiling.
     #[test]
     fn close_releases_the_socket_of_a_connection_that_a_write_waits_on() {
-        for _ in 0..20 {
-            let (c, peer) = conn_pair();
+        let (mut valid, mut rounds) = (0, 0);
+        while valid < 20 {
+            rounds += 1;
+            assert!(
+                rounds <= 200,
+                "{valid} valid rounds in {} rounds",
+                rounds - 1
+            );
+            let (c, peer) = conn_pair_fixed();
             let sh = Arc::clone(&c.sh);
             let weak = Arc::downgrade(&sh.sock.get().expect("open"));
-            let (error, released) = with_cx(move |cx| {
+            let (error, closed, attempts_after) = with_cx(move |cx| {
                 let poller = cx
                     .state_mut::<poll::NetState>()
                     .unwrap()
@@ -3908,27 +3992,126 @@ mod tests {
                     let sh = Arc::clone(&sh);
                     std::thread::spawn(move || {
                         let began = Instant::now();
-                        while poller.counts() != (1, 1) || weak.strong_count() != 2 {
-                            assert!(
-                                began.elapsed() < Duration::from_secs(30),
-                                "the write never waited"
-                            );
-                            std::thread::yield_now();
+                        let armed = || poller.counts() == (1, 1) && weak.strong_count() == 2;
+                        loop {
+                            while !armed() {
+                                assert!(
+                                    began.elapsed() < Duration::from_secs(30),
+                                    "the write never waited"
+                                );
+                                std::thread::yield_now();
+                            }
+                            // Read, and then the state looked at once more: a send that began
+                            // before the read holds a reference, and one after it counts.
+                            let before = sh.send_attempts.load(Ordering::SeqCst);
+                            if armed() {
+                                sh.close();
+                                return (before, weak.strong_count() == 0);
+                            }
                         }
-                        sh.close();
-                        weak.strong_count() == 0
                     })
                 };
                 let ticket = sh.writes.ticket();
                 let error = sh
                     .write_call(cx, ticket, Limit::NONE, &vec![1u8; 64 << 20])
                     .map_err(|e| variant(&e));
-                (error, closer.join().unwrap())
+                let (before, released) = closer.join().unwrap();
+                let after = sh.send_attempts.load(Ordering::SeqCst);
+                (error, (before, released), after)
             });
             drop(peer);
             assert_eq!(error, Err("Closed".to_string()));
+            let (before, released) = closed;
+            if before != attempts_after {
+                // The writer began a send after the closer looked: not what is tested.
+                continue;
+            }
+            valid += 1;
             assert!(released, "the socket was still held when close returned");
         }
+    }
+
+    /// A deadline in the past by the time the coroutine runs again does not take away the try that
+    /// a `Ready` wake is owed, for a write: the socket is full, so a write of one byte waits at
+    /// once; the hook (it runs where the wait was just armed) has the peer read, waits for the
+    /// poller to say "ready", and then keeps the thread busy past the deadline. With the try
+    /// owed the byte is written; without it the call times out. The hook waits for conditions,
+    /// not for a guessed time, so being slow cannot fail the test (a poller that was starved past
+    /// the deadline makes it a timeout wake, which has its own final try).
+    #[test]
+    fn a_ready_wake_that_resumes_after_the_deadline_still_gets_its_write() {
+        let (c, mut peer) = conn_pair_fixed();
+        let sh = Arc::clone(&c.sh);
+        let sock = sh.sock.get().expect("open");
+        fill_raw(&sock);
+        drop(sock);
+        // The hook owns `peer` and drops it when it has run: this one keeps the connection open.
+        let _keep = peer.try_clone().unwrap();
+        let result = with_cx(move |cx| {
+            let limit = Limit {
+                deadline: Some(Instant::now() + Duration::from_millis(1500)),
+                timeout: Duration::from_millis(1500),
+            };
+            let deadline = limit.deadline.unwrap();
+            arm_probe::set_hook(move |cell| {
+                // Room for far more than a byte.
+                peer.set_read_timeout(Some(Duration::from_secs(20)))
+                    .unwrap();
+                let mut got = 0;
+                let mut buf = [0u8; 16 * 1024];
+                while got < 64 * 1024 {
+                    got += peer.read(&mut buf).unwrap();
+                }
+                let began = Instant::now();
+                while !cell.is_resolved() {
+                    assert!(began.elapsed() < Duration::from_secs(20), "no wake");
+                    std::thread::yield_now();
+                }
+                while Instant::now() < deadline + Duration::from_millis(100) {
+                    std::hint::spin_loop();
+                }
+            });
+            let ticket = sh.writes.ticket();
+            sh.write_call(cx, ticket, limit, b"x")
+                .map_err(|e| variant(&e))
+        });
+        assert_eq!(result, Ok(()));
+    }
+
+    /// The same for a read.
+    #[test]
+    fn a_ready_wake_that_resumes_after_the_deadline_still_gets_its_read_unit() {
+        let (c, mut peer) = conn_pair_fixed();
+        let sh = Arc::clone(&c.sh);
+        let _keep = peer.try_clone().unwrap();
+        let result = with_cx(move |cx| {
+            let limit = Limit {
+                deadline: Some(Instant::now() + Duration::from_millis(1500)),
+                timeout: Duration::from_millis(1500),
+            };
+            let deadline = limit.deadline.unwrap();
+            arm_probe::set_hook(move |cell| {
+                peer.write_all(b"line\n").unwrap();
+                let began = Instant::now();
+                while !cell.is_resolved() {
+                    assert!(began.elapsed() < Duration::from_secs(20), "no wake");
+                    std::thread::yield_now();
+                }
+                while Instant::now() < deadline + Duration::from_millis(100) {
+                    std::hint::spin_loop();
+                }
+            });
+            let ticket = sh.reads.ticket();
+            sh.read_call(
+                cx,
+                ticket,
+                limit,
+                |r| line_probe(r, "p"),
+                |r| take_line(r, "p"),
+            )
+            .map_err(|e| variant(&e))
+        });
+        assert_eq!(result, Ok(Some("line".to_string())));
     }
 
     /// Makes the next successful read or write of `sh` use the burst budget up.
