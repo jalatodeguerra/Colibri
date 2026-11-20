@@ -26,6 +26,16 @@ pub struct Ctx<'a> {
 /// panic with exactly this message.
 pub(crate) struct RaisedPanic(pub String);
 
+/// Why [`Ctx::try_await_completion`] gave no value.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Incomplete {
+    /// `start` returned this error: the operation never began and nothing waited.
+    NotStarted(String),
+    /// The completer was dropped without a result (the text says so).
+    Dropped(String),
+}
+
 /// The payload of the Rust panic [`Ctx::run_async`] starts when its coroutine is cancelled.
 pub(crate) struct RaisedCancel;
 
@@ -204,24 +214,29 @@ impl<'a> Ctx<'a> {
     /// coroutines run meanwhile, the main fiber runs the event loop, and where neither is
     /// possible the thread blocks).
     ///
-    /// `Err` is the reason when `start` failed (nothing waits then) or when the completer was
-    /// dropped without a result. A cancel of the caller unwinds the host function as for the
-    /// other waits, after the hooks of the completer's token have run on the cancelling
-    /// thread; a `complete` after that is dropped. Not part of the embedding API yet.
+    /// The two ways it can fail are different results: [`Incomplete::NotStarted`] when `start`
+    /// returned an error (nothing waited), and [`Incomplete::Dropped`] when the completer was
+    /// dropped without a result, which is a bug of whoever held it or a holder that went away
+    /// (a poller that stopped), never a text to show a program. A cancel of the caller unwinds
+    /// the host function as for the other waits, after the hooks of the completer's token have
+    /// run on the cancelling thread; a `complete` after that is dropped. If `start` panics the
+    /// operation leaves nothing behind and the panic goes on. Not part of the embedding API yet.
     #[doc(hidden)]
     pub fn try_await_completion<R: Send + 'static>(
         &mut self,
         start: impl FnOnce(colibri_interp::Completer<R>) -> Result<(), String>,
-    ) -> Result<R, String> {
+    ) -> Result<R, Incomplete> {
         match self.interp.await_completion(self.fiber, start) {
             Ok(r) => Ok(r),
             Err(colibri_interp::ExternalError::Cancelled) => {
                 std::panic::resume_unwind(Box::new(RaisedCancel))
             }
-            Err(
-                colibri_interp::ExternalError::Failed(message)
-                | colibri_interp::ExternalError::CannotStart(message),
-            ) => Err(message),
+            Err(colibri_interp::ExternalError::CannotStart(message)) => {
+                Err(Incomplete::NotStarted(message))
+            }
+            Err(colibri_interp::ExternalError::Failed(message)) => {
+                Err(Incomplete::Dropped(message))
+            }
         }
     }
 

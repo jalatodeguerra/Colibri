@@ -406,8 +406,9 @@ impl Drop for Notify {
 /// - The result is sent before the waiter is told, so a waiter that wakes always finds it.
 /// - If the waiting coroutine was cancelled, [`CancelToken::cancel`] has run the token's hooks
 ///   on the cancelling thread before the host function unwound, and a later `complete` is a
-///   no-op for the waiter: the value is dropped on the completing thread. A value whose loss
-///   matters must therefore not be the result.
+///   no-op for the waiter: the value is dropped, never delivered (usually on the completing
+///   thread; one that lands in the channel just as the cancel happens is dropped by the waiter's
+///   thread when the channel goes). A value whose loss matters must therefore not be the result.
 /// - When the `Vm` ends, the token of every pending operation is cancelled (running its hooks)
 ///   and completers that are still held become inert: completing them is ignored.
 /// - Dropping a completer without completing it wakes the waiter with an error
@@ -1511,9 +1512,22 @@ impl Interp {
         let (completer, result_rx) = self.begin_completion::<R>();
         let op = completer._notify.1;
         let token = Arc::clone(&completer.token);
-        if let Err(message) = start(completer) {
-            self.sched.ext.forget(op);
-            return Err(ExternalError::CannotStart(message));
+        // A `start` that fails or panics leaves nothing of the operation behind: its entries in
+        // the scheduler go, and the hooks it registered on the token run.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| start(completer))) {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => {
+                self.sched.ext.forget(op);
+                token.cancel();
+                return Err(ExternalError::CannotStart(message));
+            }
+            Err(payload) => {
+                self.sched.ext.forget(op);
+                // The dropped completer has posted its id; nobody will collect it.
+                self.sched.ext.completed.remove(&op);
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| token.cancel()));
+                std::panic::resume_unwind(payload);
+            }
         }
         self.wait_completion(fiber, op, &token, result_rx)
     }
@@ -1547,7 +1561,14 @@ impl Interp {
             let mut outcome = Ok(());
             while !self.sched.ext.completed.contains(&op) {
                 if self.suspend(fiber, id, Wake::External(op)).is_err() {
-                    token.cancel();
+                    // A hook that panics must not leave the operation's entries behind.
+                    if let Err(payload) =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| token.cancel()))
+                    {
+                        self.sched.ext.forget(op);
+                        self.sched.ext.completed.remove(&op);
+                        std::panic::resume_unwind(payload);
+                    }
                     outcome = Err(ExternalError::Cancelled);
                     break;
                 }
@@ -1954,5 +1975,42 @@ mod tests {
             result_rx.try_recv(),
             Err(mpsc::TryRecvError::Disconnected)
         ));
+    }
+
+    /// A `start` that panics or fails leaves nothing of the operation in the scheduler, and the
+    /// hook it had registered has run; a panic is passed on.
+    #[test]
+    fn a_start_that_panics_or_fails_leaves_nothing_behind() {
+        use crate::{Fiber, Interp};
+        let mut interp = Interp::new(Box::new(std::io::sink()), 100);
+        let mut fiber = Fiber::new();
+        let hooks = Arc::new(AtomicUsize::new(0));
+        for panics in [true, false] {
+            let hooks_here = Arc::clone(&hooks);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                interp.await_completion::<u8>(&mut fiber, |completer| {
+                    let hooks = Arc::clone(&hooks_here);
+                    completer.token().on_cancel(move || {
+                        hooks.fetch_add(1, Ordering::SeqCst);
+                    });
+                    if panics {
+                        panic!("start panics");
+                    }
+                    Err("cannot start".to_string())
+                })
+            }));
+            assert_eq!(outcome.is_err(), panics);
+            if !panics {
+                assert!(matches!(
+                    outcome.unwrap(),
+                    Err(crate::ExternalError::CannotStart(_))
+                ));
+            }
+            // The id that the dropped completer posted is ignored when it is collected.
+            interp.sched.ext.drain();
+            let ext = &interp.sched.ext;
+            assert!(ext.pending.is_empty() && ext.tokens.is_empty() && ext.completed.is_empty());
+        }
+        assert_eq!(hooks.load(Ordering::SeqCst), 2, "the hooks ran");
     }
 }

@@ -537,10 +537,11 @@ struct Parked {
 /// A bound for every wait for another thread: a ceiling, never the thing measured.
 const CEILING: Duration = Duration::from_secs(30);
 
-fn describe(outcome: Result<i64, String>) -> String {
+fn describe(outcome: Result<i64, colibri::Incomplete>) -> String {
     match outcome {
         Ok(v) => format!("ok {v}"),
-        Err(message) => format!("err {message}"),
+        Err(colibri::Incomplete::NotStarted(message)) => format!("not started: {message}"),
+        Err(colibri::Incomplete::Dropped(message)) => format!("dropped: {message}"),
     }
 }
 
@@ -742,7 +743,7 @@ fn main() {
 }
 "#,
     );
-    let none = "err the operation ended without a result";
+    let none = "dropped: the operation ended without a result";
     assert_eq!(
         text,
         format!("main {none}\ncoroutine {none}\nhook {none}\n")
@@ -758,7 +759,10 @@ fn a_start_that_fails_is_an_error_and_nothing_waits() {
     )
     .unwrap();
     vm.run_main().unwrap();
-    assert_eq!(out.contents(), "err no thread\nerr no thread\n");
+    assert_eq!(
+        out.contents(),
+        "not started: no thread\nnot started: no thread\n"
+    );
     assert_eq!(vm.coroutine_count(), 0);
     assert!(shared.slots.lock().unwrap().is_empty());
 }
@@ -814,7 +818,7 @@ fn main() {
     );
     assert_eq!(
         text,
-        "dropped 1\nerr the operation ended without a result\n"
+        "dropped 1\ndropped: the operation ended without a result\n"
     );
 }
 
@@ -921,4 +925,43 @@ fn main() {
 "#,
     );
     assert_eq!(text, "drop r ok 8\n");
+}
+
+/// A `start` that panics is a panic of the host function (the program sees it), leaves nothing of
+/// the operation behind (its hook has run, not at the end of the `Vm`), and the `Vm` goes on.
+#[test]
+fn a_start_that_panics_is_a_panic_of_the_call_and_the_vm_goes_on() {
+    let (mut vm, out, shared) = completion_vm();
+    let hooks = Arc::clone(&shared.hooks);
+    vm.register_fn("bad_start", move |cx: &mut colibri::Ctx| -> String {
+        let hooks = Arc::clone(&hooks);
+        describe(
+            cx.try_await_completion(move |completer: colibri::Completer<i64>| {
+                completer.token().on_cancel(move || {
+                    hooks.fetch_add(1, Ordering::SeqCst);
+                });
+                panic!("start blew up")
+            }),
+        )
+    })
+    .unwrap();
+    vm.load_source(
+        "a.colibri",
+        "fn main() { print(bad_start()) }\nfn again() { print(now(4)) }\n",
+    )
+    .unwrap();
+    let again = vm.get_fn::<(), ()>("again").unwrap();
+    let Err(colibri::Error::Panic { message, .. }) = vm.run_main() else {
+        panic!("expected a panic");
+    };
+    assert!(message.contains("start blew up"), "{message}");
+    assert_eq!(
+        shared.hooks.load(Ordering::SeqCst),
+        1,
+        "the hook ran at once"
+    );
+    // `again` is called through the same `Vm` after the panic: the wait works.
+    again.call(&mut vm, ()).unwrap();
+    assert_eq!(out.contents(), "ok 4\n");
+    assert_eq!(vm.coroutine_count(), 0);
 }
