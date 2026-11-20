@@ -835,9 +835,29 @@ fn kvserver_turns_away_connections_over_its_cap() {
     let started = std::time::Instant::now();
     loop {
         let mut d = kv.client();
+        // The wait in `is_turned_away` only saves time: whatever it says, the answer to `COUNT`
+        // decides. The refusal line may come late on a slow machine, and then it is the answer
+        // (or, where closing with unread input resets the connection, the read fails: that is
+        // the documented case of a client that was turned away).
         if !is_turned_away(&mut d) {
-            assert_eq!(ask(&mut d, "COUNT\n"), "1");
-            break;
+            let asked = d.0.write_all(b"COUNT\n").and_then(|()| {
+                use std::io::BufRead;
+                let mut line = String::new();
+                d.1.read_line(&mut line).map(|_| line)
+            });
+            match asked {
+                Ok(line) if line.trim_end() == "1" => break,
+                Ok(line) => assert_eq!(line.trim_end(), "ERR too many connections"),
+                Err(e) => assert!(
+                    matches!(
+                        e.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::BrokenPipe
+                    ),
+                    "{e}"
+                ),
+            }
         }
         assert!(
             started.elapsed() < Duration::from_secs(20),
