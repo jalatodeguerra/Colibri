@@ -3814,7 +3814,14 @@ const LIB_LOADING_INNER_WITH_X: &str = "@when(x)\nimport inner\npub fn f() -> in
 const APP_EDITED: &str = "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n";
 
 fn a_library_drops_a_file_the_app_still_loads(main_first: Option<bool>) {
-    let (dir, main, lib, inner) = app_with_a_library_that_drops_a_file("drops_a_file");
+    // A folder for each of the three tests: they run at the same time, and `temp_dir` empties
+    // the folder it is given.
+    let name = match main_first {
+        Some(true) => "drops_a_file_app_first",
+        Some(false) => "drops_a_file_library_first",
+        None => "drops_a_file_library_alone",
+    };
+    let (dir, main, lib, inner) = app_with_a_library_that_drops_a_file(name);
     let mut c = Client::start_debounced(Some(&dir), NEVER);
     c.open(&main, APP_USING_LIB);
     c.open(&lib, LIB_LOADING_INNER);
