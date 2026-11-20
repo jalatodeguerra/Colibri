@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use colibri_syntax::ast::{self, ItemKind, NodeId, TopLevel};
 use colibri_syntax::{Diagnostic, FileId, SourceMap, Span, parse_file};
 
-use super::fs::{SourceFs, normalize};
+use super::fs::{SourceFs, leaves_repository, normalize};
 use super::git;
 use super::lock::{self, LOCK_FILE, Lock};
 use super::manifest::{self, GitSource, Manifest, Source};
@@ -181,26 +181,7 @@ pub fn load_with(
     host_modules: &[String],
     options: LoadOptions,
 ) -> Result<Loaded, LoadError> {
-    let mut loader = Loader {
-        fs,
-        sources,
-        host_modules,
-        trees: Vec::new(),
-        trees_by_dir: HashMap::new(),
-        discs: Vec::new(),
-        by_path: HashMap::new(),
-        pending: VecDeque::new(),
-        packages: Vec::new(),
-        package_keys: HashMap::new(),
-        diags: Vec::new(),
-        secrets: Vec::new(),
-        config_files: HashSet::new(),
-        dropped: Vec::new(),
-        lock: None,
-        lock_read: false,
-        clashes: HashSet::new(),
-        ffi_reported: HashSet::new(),
-    };
+    let mut loader = Loader::new(fs, sources, host_modules);
     let (root, file, require_manifest) = match entry {
         Entry::File(path) => {
             let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -256,7 +237,30 @@ pub fn load_with(
     Ok(loader.finish(entry_id))
 }
 
-impl Loader<'_> {
+impl<'a> Loader<'a> {
+    fn new(fs: &'a dyn SourceFs, sources: &'a mut SourceMap, host_modules: &'a [String]) -> Self {
+        Loader {
+            fs,
+            sources,
+            host_modules,
+            trees: Vec::new(),
+            trees_by_dir: HashMap::new(),
+            discs: Vec::new(),
+            by_path: HashMap::new(),
+            pending: VecDeque::new(),
+            packages: Vec::new(),
+            package_keys: HashMap::new(),
+            diags: Vec::new(),
+            secrets: Vec::new(),
+            config_files: HashSet::new(),
+            dropped: Vec::new(),
+            lock: None,
+            lock_read: false,
+            clashes: HashSet::new(),
+            ffi_reported: HashSet::new(),
+        }
+    }
+
     /// Reads the manifest of the tree rooted at `dir` (and, recursively, its dependencies).
     /// `Err` is a message about the folder itself.
     /// Puts a manifest or a lock file in the source map with its credentials hidden, and
@@ -336,6 +340,17 @@ impl Loader<'_> {
                 let (dep_dir, dep_root, span) = match &dep.source {
                     Source::Path { path, path_span } => {
                         let dep_dir = normalize(&dir.join(path));
+                        // A package from git is judged by the text of its path first: no
+                        // folder outside the repository is looked at (not even to see
+                        // whether it is there) when its manifest names one.
+                        if let Some(root) = &git_root
+                            && leaves_repository(root, dir, path)
+                        {
+                            self.diags.push(leaves_repository_diagnostic(
+                                self.fs, &dep.name, &dep_dir, *path_span,
+                            ));
+                            continue;
+                        }
                         if !self.fs.is_dir(&dep_dir) {
                             self.diags.push(
                                 Diagnostic::error(
@@ -355,17 +370,9 @@ impl Loader<'_> {
                         if let Some(root) = &git_root
                             && !inside(&dep_dir, root)
                         {
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "the path dependency `{}` leaves the git repository it is in (`{}`)",
-                                        dep.name,
-                                        display_dir(self.fs, &dep_dir)
-                                    ),
-                                    *path_span,
-                                )
-                                .with_hint("a package from git may only use folders of its own repository"),
-                            );
+                            self.diags.push(leaves_repository_diagnostic(
+                                self.fs, &dep.name, &dep_dir, *path_span,
+                            ));
                             continue;
                         }
                         (dep_dir, git_root.clone(), *path_span)
@@ -1152,6 +1159,23 @@ fn dotted(path: &Path) -> String {
         .join(".")
 }
 
+/// The error for a path dependency of a package from git that is not inside its repository.
+fn leaves_repository_diagnostic(
+    fs: &dyn SourceFs,
+    name: &str,
+    dep_dir: &Path,
+    span: Span,
+) -> Diagnostic {
+    Diagnostic::error(
+        format!(
+            "the path dependency `{name}` leaves the git repository it is in (`{}`)",
+            display_dir(fs, dep_dir)
+        ),
+        span,
+    )
+    .with_hint("a package from git may only use folders of its own repository")
+}
+
 fn display_dir(fs: &dyn SourceFs, dir: &Path) -> String {
     if dir.as_os_str().is_empty() {
         ".".to_string()
@@ -1194,6 +1218,95 @@ mod tests {
         let mut names: Vec<String> = loaded.metas.iter().map(|m| m.name.clone()).collect();
         names.sort();
         names
+    }
+
+    /// Files in memory that fail the test when asked about a path with `FORBIDDEN` in it: what
+    /// the loader must not look at.
+    struct Watching(MemoryFs);
+
+    const FORBIDDEN: &str = "FORBIDDEN";
+
+    impl Watching {
+        fn guard(&self, path: &Path) {
+            assert!(
+                !path.to_string_lossy().contains(FORBIDDEN),
+                "the loader looked at {path:?}"
+            );
+        }
+    }
+
+    impl SourceFs for Watching {
+        fn read(&self, path: &Path) -> Result<String, String> {
+            self.guard(path);
+            self.0.read(path)
+        }
+        fn read_prefix(&self, path: &Path, n: usize) -> Option<Vec<u8>> {
+            self.guard(path);
+            self.0.read_prefix(path, n)
+        }
+        fn is_file(&self, path: &Path) -> bool {
+            self.guard(path);
+            self.0.is_file(path)
+        }
+        fn is_dir(&self, path: &Path) -> bool {
+            self.guard(path);
+            self.0.is_dir(path)
+        }
+        fn list(&self, dir: &Path) -> Vec<String> {
+            self.guard(dir);
+            self.0.list(dir)
+        }
+        fn is_symlink(&self, path: &Path) -> bool {
+            self.guard(path);
+            self.0.is_symlink(path)
+        }
+        fn canonical(&self, path: &Path) -> PathBuf {
+            self.guard(path);
+            self.0.canonical(path)
+        }
+        fn display_name(&self, path: &Path) -> String {
+            self.0.display_name(path)
+        }
+    }
+
+    #[test]
+    fn a_path_of_a_git_package_that_leaves_its_repository_is_refused_before_any_folder_is_looked_at()
+     {
+        for rel in [
+            "/FORBIDDEN/x",
+            "\\FORBIDDEN\\x",
+            "//FORBIDDEN/share/x",
+            "\\\\FORBIDDEN\\share\\x",
+            "\\\\?\\C:\\FORBIDDEN",
+            "\\\\?\\UNC\\FORBIDDEN\\share",
+            "C:/FORBIDDEN",
+            "C:\\FORBIDDEN",
+            "c:FORBIDDEN",
+            "../../FORBIDDEN",
+            "..\\..\\FORBIDDEN",
+            "x/../../../FORBIDDEN",
+            "x\\..\\..\\..\\FORBIDDEN",
+            "./../../FORBIDDEN/./y",
+        ] {
+            let mut mem = MemoryFs::new();
+            mem.insert(
+                "/cache/repo/pkg/colibri.toml",
+                format!("[package]\nname = \"pkg\"\n\n[dependencies]\nd = {{ path = '{rel}' }}\n"),
+            );
+            let fs = Watching(mem);
+            let mut sources = SourceMap::new();
+            let mut loader = Loader::new(&fs, &mut sources, &[]);
+            let root = PathBuf::from("/cache/repo");
+            loader
+                .load_tree(Path::new("/cache/repo/pkg"), true, true, Some(root))
+                .unwrap();
+            let said: Vec<String> = loader.diags.iter().map(|d| d.message.clone()).collect();
+            assert_eq!(said.len(), 1, "{rel}: {said:?}");
+            assert!(
+                said[0].contains("leaves the git repository"),
+                "{rel}: {said:?}"
+            );
+        }
     }
 
     #[test]

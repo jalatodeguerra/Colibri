@@ -595,6 +595,54 @@ fn transitive_git_and_path_dependencies_are_locked_and_work() {
 }
 
 #[test]
+fn a_path_of_a_git_dependency_is_refused_by_its_text_with_either_separator() {
+    // Whatever system it is on: a manifest from git that names a folder outside its repository
+    // is refused on what it says, `/` or `\`, absolute, a drive, a UNC or verbatim prefix, or
+    // a climb out of the repository.
+    let sb = Sandbox::new("escape_text");
+    for (i, rel) in [
+        r"..\..\..\outside",
+        "../../../outside",
+        r"\\?\C:\outside",
+        r"\\host\share\outside",
+        r"C:\outside",
+        "/outside",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let repo = sb.repo(&format!("evil{i}"));
+        repo.commit(
+            &[
+                (
+                    "colibri.toml".to_string(),
+                    format!(
+                        "[package]\nname = \"evil\"\n[dependencies]\noutside = {{ path = '{rel}' }}\n"
+                    ),
+                ),
+                (
+                    "lib.colibri".to_string(),
+                    "pub fn version() -> str => \"e\"\n".to_string(),
+                ),
+            ],
+            "evil",
+        );
+        let app = sb.app(
+            &format!("app_text{i}"),
+            &format!("evil = {{ git = \"{}\" }}", repo.url()),
+            &["evil"],
+        );
+        let out = sb.run(&app);
+        assert_eq!(out.code, 1, "{rel}: {}", out.stderr);
+        assert!(
+            out.stderr.contains("leaves the git repository"),
+            "{rel}: {}",
+            out.stderr
+        );
+    }
+}
+
+#[test]
 fn a_path_dependency_of_a_git_dependency_cannot_leave_its_repository() {
     let sb = Sandbox::new("escape");
     sb.write("outside/colibri.toml", "[package]\nname = \"outside\"\n");

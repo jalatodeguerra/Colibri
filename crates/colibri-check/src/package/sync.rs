@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use colibri_syntax::FileId;
 
-use super::fs::{canonical_path, normalize};
+use super::fs::{canonical_path, leaves_repository, normalize};
 use super::git::{self, Git};
 use super::loader::MANIFEST_FILE;
 use super::lock::{self, LOCK_FILE, Lock, LockEntry};
@@ -245,8 +245,9 @@ impl Sync<'_> {
             match &dep.source {
                 Source::Path { path, .. } => {
                     let target = normalize(&dir.join(path));
+                    // By the text first: `inside` resolves links, which looks at the disk.
                     if let Some(root) = git_root
-                        && !inside(&target, root)
+                        && (leaves_repository(root, dir, path) || !inside(&target, root))
                     {
                         continue; // the loader says why
                     }

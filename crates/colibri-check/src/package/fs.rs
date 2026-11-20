@@ -275,3 +275,93 @@ mod tests {
         );
     }
 }
+
+/// Whether the dependency path `rel`, written in the manifest of the folder `dir`, certainly
+/// leaves the repository whose root is `root`, judged from the text of the paths alone: no
+/// folder is looked at, so nothing outside the repository is touched to find out. A path from
+/// a package that came from git is judged this way before anything else is done with it.
+///
+/// It leaves when it is absolute in any system's way (a rooted `/x` or `\x`, a drive `C:` with
+/// or without a slash, a UNC `\\host\share` or verbatim `\\?\` prefix, whatever system the
+/// tool runs on), or when its `..` climb above `root`. `/` and `\` both separate its pieces.
+/// Where `dir` is not under `root` as written, only the first rule applies: [`inside`] (which
+/// resolves links) still has the last word.
+///
+/// [`inside`]: super::sync::inside
+pub(super) fn leaves_repository(root: &Path, dir: &Path, rel: &str) -> bool {
+    let b = rel.as_bytes();
+    if rel.starts_with(['/', '\\'])
+        || (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
+        || Path::new(rel).has_root()
+        || Path::new(rel)
+            .components()
+            .next()
+            .is_some_and(|c| matches!(c, std::path::Component::Prefix(_)))
+    {
+        return true;
+    }
+    let Ok(below) = normalize(dir)
+        .strip_prefix(normalize(root))
+        .map(Path::to_path_buf)
+    else {
+        return false;
+    };
+    let mut depth = below.components().count() as i64;
+    for piece in rel.split(['/', '\\']) {
+        match piece {
+            "" | "." => {}
+            ".." => {
+                depth -= 1;
+                if depth < 0 {
+                    return true;
+                }
+            }
+            _ => depth += 1,
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod leaves_repository_tests {
+    use super::*;
+
+    #[test]
+    fn a_path_leaves_a_repository_by_its_text() {
+        let root = Path::new("/c/repo");
+        let dir = Path::new("/c/repo/pkg/inner");
+        for rel in [
+            "/etc",
+            "\\etc",
+            "\\\\host\\share\\x",
+            "//host/share/x",
+            "\\\\?\\C:\\x",
+            "C:/x",
+            "C:\\x",
+            "c:x",
+            "../../..",
+            "..\\..\\..",
+            "../../../x",
+            "a/../../../../x",
+            "a\\..\\..\\..\\..\\x",
+            "./../../../y",
+        ] {
+            assert!(leaves_repository(root, dir, rel), "{rel}");
+        }
+        for rel in [
+            ".",
+            "..",
+            "../..",
+            "../../pkg",
+            "x/../y",
+            "a/b/c",
+            "..\\..\\pkg\\x",
+            "./z",
+        ] {
+            assert!(!leaves_repository(root, dir, rel), "{rel}");
+        }
+        // A folder that is not under the root as written is for the resolving check.
+        assert!(!leaves_repository(root, Path::new("/d/x"), "../.."));
+        assert!(leaves_repository(root, Path::new("/d/x"), "/etc"));
+    }
+}
