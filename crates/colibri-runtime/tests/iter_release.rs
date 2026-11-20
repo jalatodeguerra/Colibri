@@ -60,3 +60,32 @@ fn main() {
 "#);
     assert_eq!(out, "got m\ndrop m\nend\n");
 }
+
+#[test]
+fn enumerate_releases_its_inner_iterator_when_that_ends() {
+    let out = run(r#"
+struct Counter {
+    n: int,
+    g: Guard,
+}
+impl Iter[int] for Counter {
+    fn next(var self) -> int? {
+        if self.n >= 2 {
+            self.g = Guard { name: "fresh" }
+            return none
+        }
+        self.n += 1
+        return some(self.n)
+    }
+}
+fn main() {
+    let c = Counter { n: 0, g: Guard { name: "first" } }
+    for p in c.enumerate() {
+        print("got {p.0} {p.1}")
+    }
+    print("end")
+}
+"#);
+    // The loop's copy of the counter ends with "fresh"; `c` itself still has "first".
+    assert_eq!(out, "got 0 1\ngot 1 2\ndrop fresh\nend\ndrop first\n");
+}

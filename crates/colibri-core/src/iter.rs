@@ -199,15 +199,14 @@ impl IterObj {
     }
 
     /// Puts an enumerating iterator's inner iterator back after a step; `produced` says
-    /// whether it gave an item (otherwise this iterator is finished).
+    /// whether it gave an item. When it did not, the iterator is finished: the caller then
+    /// takes the inner iterator out again with `take_inner` and releases it.
     pub fn resume(&self, inner: Value, produced: bool) {
         let mut state = self.state.borrow_mut();
         if let State::Enumerate { inner: slot, index } = &mut *state {
             *slot = inner;
             if produced {
                 *index += 1;
-            } else {
-                *state = State::Done;
             }
         }
     }
@@ -320,6 +319,8 @@ pub trait IterOps: Engine {
                     }
                     Ok(None) => {
                         obj.resume(inner, false);
+                        // Finished: the inner iterator may hold the last reference to objects.
+                        self.release_all(obj.take_inner());
                         Ok(None)
                     }
                     Err(ctl) => {
