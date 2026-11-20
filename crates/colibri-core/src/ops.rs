@@ -238,4 +238,36 @@ mod tests {
             Some(false)
         );
     }
+
+    #[test]
+    fn nan_orders_nothing_in_either_width() {
+        let ops = [
+            CmpOp::Eq,
+            CmpOp::Ne,
+            CmpOp::Lt,
+            CmpOp::Le,
+            CmpOp::Gt,
+            CmpOp::Ge,
+        ];
+        let expect = [false, true, false, false, false, false];
+        let nan = Value::Float(f64::NAN);
+        let nan32 = Value::F32(f32::NAN);
+        for (op, want) in ops.into_iter().zip(expect) {
+            assert_eq!(
+                compare(op, Operand::Float, &nan, &nan),
+                Some(want),
+                "{op:?}"
+            );
+            assert_eq!(
+                compare(op, Operand::Float, &nan, &Value::Float(1.0)),
+                Some(want),
+                "{op:?}"
+            );
+            assert_eq!(
+                compare(op, Operand::F32, &nan32, &Value::F32(1.0)),
+                Some(want),
+                "{op:?}"
+            );
+        }
+    }
 }
