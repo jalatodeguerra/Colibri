@@ -227,7 +227,7 @@ impl Session {
             eprintln!("usage: :load <file>");
             return;
         }
-        if let Some(message) = colibri_runtime::not_a_script(Path::new(path)) {
+        if let Some(message) = colibri_runtime::not_a_script_plainly(Path::new(path)) {
             eprintln!("error: {path}: {message}");
             return;
         }

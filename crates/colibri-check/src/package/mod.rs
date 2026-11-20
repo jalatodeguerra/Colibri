@@ -21,7 +21,7 @@ pub use fs::{DiskFs, MemoryFs, SourceFs, canonical_path, normalize, try_canonica
 pub use git::{HOME_VAR, cache_root, redact, redact_url};
 pub use loader::{
     CACHE_TAG_FILE, Entry, LoadError, LoadOptions, MANIFEST_FILE, is_hidden_or_cache, load,
-    load_with, not_a_script, skipped_folder,
+    load_with, not_a_script, not_a_script_plainly, skipped_folder,
 };
 pub use lock::{LOCK_FILE, Lock, LockEntry};
 pub use manifest::parse as parse_manifest;

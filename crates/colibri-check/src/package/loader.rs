@@ -197,6 +197,13 @@ pub fn load(
 /// (`x.colibri -> colibri.toml`) is its owner's own statement that the file is a script, and
 /// the path is not resolved.
 pub fn not_a_script(path: &Path) -> Option<String> {
+    not_a_script_plainly(path)
+        .map(|message| format!("{message}: pass the folder that holds it instead"))
+}
+
+/// What [`not_a_script`] says without the advice to pass the folder, for a place where a
+/// folder cannot be given (the REPL's `:load`, which reads one script).
+pub fn not_a_script_plainly(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     let (file, what) = if name.eq_ignore_ascii_case(MANIFEST_FILE) {
         (MANIFEST_FILE, "manifest")
@@ -205,9 +212,7 @@ pub fn not_a_script(path: &Path) -> Option<String> {
     } else {
         return None;
     };
-    Some(format!(
-        "`{file}` is the {what} of a package, not a script: pass the folder that holds it instead"
-    ))
+    Some(format!("`{file}` is the {what} of a package, not a script"))
 }
 
 /// [`load`] with options.

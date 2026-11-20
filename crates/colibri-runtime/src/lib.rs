@@ -169,7 +169,7 @@ pub use colibri_check::package::{
     HOME_VAR as COLIBRI_HOME_VAR, LOCK_FILE, MANIFEST_FILE, SyncOptions, SyncReport, Update,
     sync as sync_dependencies,
 };
-pub use colibri_check::package::{is_package_name, not_a_script};
+pub use colibri_check::package::{is_package_name, not_a_script, not_a_script_plainly};
 pub use colibri_interp::Leak;
 pub use colibri_interp::{CancelToken, Clock, DEFAULT_NATIVE_STACK_BUDGET, SystemClock};
 pub use colibri_syntax::{Diagnostic, Severity, SourceMap, Span};
