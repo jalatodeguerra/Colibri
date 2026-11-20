@@ -1,0 +1,12 @@
+fn add_all[T](a: T, b: T) -> T => a + b // error: `+` cannot be applied to `T`
+fn flip[T](a: T) -> T => -a // error: cannot negate a value of type `T`
+fn only_add[T: Add](a: T, b: T) -> T => a * b // error: `*` cannot be applied to `T`
+fn rem[T: Add](a: T, b: T) -> T => a % b // error: `%` cannot be applied to values of type `T`
+fn wrong[T: Mul[float]](a: T, n: int) -> T => a * n // error: cannot apply `*` to `T` and `int`
+fn grow[T](a: T, b: T) -> T {
+    var x = a
+    x += b // error: `+` cannot be applied to `T`
+    return x
+}
+
+fn main() {}

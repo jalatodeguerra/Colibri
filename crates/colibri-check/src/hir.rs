@@ -1278,6 +1278,11 @@ pub enum UserOp {
     /// The checker knew both operand types and chose the impl: this is its method, called
     /// directly with the operands.
     Fn(FnId),
+    /// The left operand is a type parameter bounded by the interface (`T: Add`): the impl is
+    /// found when the operator runs, from the runtime types of the operands. `rhs` is the head
+    /// of the bound's right-hand type when it is known statically (`T: Mul[float]`), and `None`
+    /// when it is a type parameter (`T: Add`), which the runtime type of the right operand tells.
+    Bound { iface: TypeId, rhs: Option<TypeKey> },
 }
 
 /// The operands of vector arithmetic.

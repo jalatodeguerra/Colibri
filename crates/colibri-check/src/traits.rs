@@ -13,8 +13,8 @@ use colibri_syntax::Span;
 
 use crate::hir::{ImplId, TypeDef, TypeDefKind, TypeKey};
 use crate::types::{
-    CLONE, EQ, ERROR_TYPE, HASH, INTO_ERROR, ITER, ITERABLE, OPTION_TYPE, ORD, ParamId, SHOW, Ty,
-    TypeId,
+    ADD, CLONE, EQ, ERROR_TYPE, HASH, INTO_ERROR, ITER, ITERABLE, IntTy, NEG, OPTION_TYPE, ORD,
+    ParamId, SHOW, Ty, TypeId, is_binary_operator, is_operator,
 };
 
 /// `T: Hash + Eq`, one bound: an interface and its type arguments.
@@ -107,6 +107,9 @@ pub(crate) struct Env<'a> {
     pub impls: &'a [ImplInfo],
     /// The explicit implementations, by implementing type head and interface.
     pub by_key: &'a HashMap<(TypeKey, TypeId), ImplId>,
+    /// The implementations of `Add`, `Sub`, `Mul` and `Div`: several for one type, one for each
+    /// right-hand type.
+    pub op_impls: &'a HashMap<(TypeKey, TypeId), Vec<(Option<TypeKey>, ImplId)>>,
     /// The bounds of every type parameter.
     pub bounds: &'a HashMap<ParamId, Vec<BoundRef>>,
 }
@@ -185,6 +188,9 @@ impl Env<'_> {
                 Ok(Source::Derived)
             };
         }
+        if is_operator(iface) {
+            return self.operator_implements(ty, iface, args);
+        }
         if self.user_impl_for(ty, iface).is_some() {
             return self.user(ty, iface, args);
         }
@@ -262,6 +268,45 @@ impl Env<'_> {
         let Some(id) = self.user_impl_for(ty, iface) else {
             return Err(ty.clone());
         };
+        self.user_with(id, ty, args)
+    }
+
+    /// Whether `ty` implements an operator interface: by one of the impls written for its head
+    /// (the one whose arguments agree), or because it is a number (or, for `Add`, a string):
+    /// those are derived, so `T: Add` accepts `int`, `float`, `f32`, `u64` and `str`. The
+    /// narrow integer types are not: generic code reaches the operator through the runtime type
+    /// of the values, which for them carries no width.
+    fn operator_implements(&self, ty: &Ty, iface: TypeId, args: &[Ty]) -> Result<Source, Ty> {
+        let ids: Vec<ImplId> = match key_of(ty) {
+            Some(k) if is_binary_operator(iface) => self
+                .op_impls
+                .get(&(k, iface))
+                .map(|l| l.iter().map(|(_, id)| *id).collect())
+                .unwrap_or_default(),
+            Some(k) => self.by_key.get(&(k, iface)).copied().into_iter().collect(),
+            None => Vec::new(),
+        };
+        for id in ids {
+            if let Ok(source) = self.user_with(id, ty, args) {
+                return Ok(source);
+            }
+        }
+        let same = |a: &Ty| matches!(a, Ty::Infer(_) | Ty::Error) || a == ty;
+        let numeric = match ty {
+            Ty::Int(IntTy::I64) | Ty::Float | Ty::F32 => true,
+            Ty::Int(IntTy::U64) => iface != NEG,
+            Ty::Str => iface == ADD,
+            _ => false,
+        };
+        if numeric && args.iter().all(same) {
+            Ok(Source::Derived)
+        } else {
+            Err(ty.clone())
+        }
+    }
+
+    /// [`Env::user`] for one particular impl.
+    fn user_with(&self, id: ImplId, ty: &Ty, args: &[Ty]) -> Result<Source, Ty> {
         let info = &self.impls[id.0 as usize];
         let params: Vec<ParamId> = info.generics.iter().map(|g| g.id).collect();
         let mut subst = Vec::new();

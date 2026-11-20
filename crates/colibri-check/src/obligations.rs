@@ -61,6 +61,7 @@ impl Checker<'_> {
             types: &self.types,
             impls: &self.impls,
             by_key: &self.impl_by_key,
+            op_impls: &self.op_impls,
             bounds: &self.param_bounds,
         }
     }
@@ -249,6 +250,23 @@ impl Checker<'_> {
                 func,
                 bound_span,
             } => {
+                if crate::types::is_operator(ob.iface)
+                    && blame == &ob.ty
+                    && matches!(blame, Ty::Int(t) if !matches!(t, crate::types::IntTy::I64 | crate::types::IntTy::U64))
+                {
+                    return Diagnostic::error(
+                        format!(
+                            "`{shown}` cannot be used for `{param}: {}` yet",
+                            self.types[ob.iface.0 as usize].name
+                        ),
+                        ob.span,
+                    )
+                    .with_label(
+                        *bound_span,
+                        format!("the bound `{param}: {iface_name}` of `{func}` is declared here"),
+                    )
+                    .with_hint("generic code cannot tell integer widths apart yet (its overflow would trap at 64 bits); use `int`, or write the function for `i32` alone");
+                }
                 let message = if blame == &ob.ty {
                     format!("`{shown}` does not implement `{iface_name}`")
                 } else if ob.iface == HASH {

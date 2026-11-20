@@ -1267,10 +1267,11 @@ impl Interp {
     ) -> Eval {
         match op {
             UserOp::Fn(f) => self.call_values(fiber, &Callee::Fn(f), &[], values, span),
+            UserOp::Bound { iface, rhs } => self.call_operator(fiber, iface, rhs, values, span),
         }
     }
 
-    fn unary(&mut self, fiber: &mut Fiber, op: UnOp, v: Value, span: Span) -> Eval {
+    pub(crate) fn unary(&mut self, fiber: &mut Fiber, op: UnOp, v: Value, span: Span) -> Eval {
         match (op, v) {
             (UnOp::Neg(Num::Int(IntTy::I64)), Value::Int(i)) => match i.checked_neg() {
                 Some(n) => Ok(Value::Int(n)),
@@ -1294,7 +1295,14 @@ impl Interp {
     }
 
     /// Applies a binary operator and releases both operands.
-    fn binary(&mut self, fiber: &mut Fiber, op: BinOp, l: Value, r: Value, span: Span) -> Eval {
+    pub(crate) fn binary(
+        &mut self,
+        fiber: &mut Fiber,
+        op: BinOp,
+        l: Value,
+        r: Value,
+        span: Span,
+    ) -> Eval {
         let result = self.binary_of(fiber, op, &l, &r, span);
         self.release(l);
         self.release(r);

@@ -1,0 +1,22 @@
+// The operators of numbers reached through a bound trap exactly as the plain ones do.
+fn sum[T: Add](a: T, b: T) -> T => a + b
+fn product[T: Mul](a: T, b: T) -> T => a * b
+fn quotient[T: Div](a: T, b: T) -> T => a / b
+fn negate[T: Neg](a: T) -> T => -a
+
+fn main() {
+    print(sum(1, 2))
+    print(product(3, 4))
+    print(quotient(7, 2))
+    print(quotient(7.0, 2.0))
+    print(sum(9223372036854775806, 1))
+    print(negate(-9223372036854775807))
+    print(sum(9223372036854775807, 1)) // panic: integer overflow
+}
+
+// expect: 3
+// expect: 12
+// expect: 3
+// expect: 3.5
+// expect: 9223372036854775807
+// expect: 9223372036854775807

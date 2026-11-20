@@ -83,6 +83,7 @@ impl FnCtx<'_, '_> {
     pub(crate) fn left_uses_operator(&self, left: &Ty, iface: TypeId) -> bool {
         match left {
             Ty::Adt(id, _) => id.0 >= FIRST_USER_TYPE,
+            Ty::Param(..) => true,
             Ty::Int(_) | Ty::Float | Ty::F32 | Ty::Str | Ty::Bytes => false,
             other => key_of(other).is_some_and(|k| self.ck.op_impls.contains_key(&(k, iface))),
         }
@@ -193,6 +194,9 @@ impl FnCtx<'_, '_> {
         span: Span,
     ) -> Expr {
         let lt = self.infer.shallow(&l.ty);
+        if matches!(lt, Ty::Param(..)) {
+            return self.check_bound_arith(op, iface, l, rhs, span);
+        }
         let cands = self.operator_candidates(&lt, iface);
         let hint = self.rhs_hint(&cands);
         let mut r = self.check_expr(rhs, hint.as_ref());
@@ -206,6 +210,168 @@ impl FnCtx<'_, '_> {
             r = self.widen_f32(r);
         }
         self.build_binary(imp, l, r, op, span)
+    }
+
+    /// The bounds of the type parameter `ty` that are `iface`, as (right-hand head, right-hand
+    /// type, result type).
+    fn operator_bounds(&self, ty: &Ty, iface: TypeId) -> Vec<(Option<TypeKey>, Ty, Ty)> {
+        let Ty::Param(p, _) = ty else {
+            return Vec::new();
+        };
+        self.ck
+            .param_bounds
+            .get(p)
+            .into_iter()
+            .flatten()
+            .filter(|b| b.iface == iface)
+            .map(|b| {
+                let r = b.args.first().cloned().unwrap_or_else(|| ty.clone());
+                let o = b.args.get(1).cloned().unwrap_or_else(|| ty.clone());
+                (key_of(&r), r, o)
+            })
+            .collect()
+    }
+
+    /// Picks among the bounds of a type parameter by the right operand, like [`Self::pick_by_rhs`]
+    /// does among impls. The flag says an `f32` operand widens to the bound's `float`.
+    fn pick_bound(
+        &mut self,
+        bounds: &[(Option<TypeKey>, Ty, Ty)],
+        rhs: &Expr,
+    ) -> Result<(usize, bool), bool> {
+        let rt = self.infer.shallow(&rhs.ty);
+        if let Ty::Infer(_) = rt {
+            let kind = self.infer.unbound_kind(&rt).unwrap_or(VarKind::General);
+            let fits: Vec<usize> = bounds
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, r, _))| match kind {
+                    VarKind::General => true,
+                    k => !matches!(r, Ty::Param(..)) && literal_accepts(k, r),
+                })
+                .map(|(i, _)| i)
+                .collect();
+            return match fits.as_slice() {
+                [one] => Ok((*one, false)),
+                [] => Err(false),
+                _ => Err(true),
+            };
+        }
+        let rk = key_of(&rt);
+        if let Some(i) = bounds
+            .iter()
+            .position(|(k, r, _)| k.is_some() && *k == rk || *r == rt)
+        {
+            return Ok((i, false));
+        }
+        if rt == Ty::F32
+            && let Some(i) = bounds.iter().position(|(k, ..)| *k == Some(TypeKey::Float))
+        {
+            return Ok((i, true));
+        }
+        if let [_] = bounds {
+            return Ok((0, false));
+        }
+        Err(false)
+    }
+
+    /// Resolves `l op r` where `l` has the type parameter `lt`: through its bound. Returns the
+    /// operator, the type it gives, and whether the right operand must widen from `f32`.
+    fn resolve_bound_op(
+        &mut self,
+        op: AstBin,
+        iface: TypeId,
+        lt: &Ty,
+        l_span: Span,
+        r: &Expr,
+        span: Span,
+    ) -> Option<(UserOp, Ty, bool)> {
+        let bounds = self.operator_bounds(lt, iface);
+        let shown = self.show(lt);
+        let iface_name = self.ck.types[iface.0 as usize].name.clone();
+        if bounds.is_empty() {
+            self.ck.report(
+                Diagnostic::error(
+                    format!("`{}` cannot be applied to `{shown}`", op_symbol(op)),
+                    span,
+                )
+                .with_label(l_span, format!("this is `{shown}`"))
+                .with_hint(format!("add the bound `{shown}: {iface_name}`")),
+            );
+            return None;
+        }
+        let (i, widen) = match self.pick_bound(&bounds, r) {
+            Ok(p) => p,
+            Err(ambiguous) => {
+                let rt = self.show(&r.ty);
+                let message = if ambiguous {
+                    format!(
+                        "cannot tell which `{}` this means: `{shown}` has several `{iface_name}` bounds",
+                        op_symbol(op)
+                    )
+                } else {
+                    format!("cannot apply `{}` to `{shown}` and `{rt}`", op_symbol(op))
+                };
+                self.ck.report(
+                    Diagnostic::error(message, span)
+                        .with_label(l_span, format!("this is `{shown}`"))
+                        .with_label(r.span, format!("this is `{rt}`")),
+                );
+                return None;
+            }
+        };
+        let (rk, rhs_ty, out) = bounds[i].clone();
+        let right = if widen { Ty::Float } else { r.ty.clone() };
+        if self.infer.unify(&right, &rhs_ty).is_err() {
+            let rt = self.show(&r.ty);
+            let want = self.show(&rhs_ty);
+            self.ck.report(
+                Diagnostic::error(
+                    format!("cannot apply `{}` to `{shown}` and `{rt}`", op_symbol(op)),
+                    span,
+                )
+                .with_label(l_span, format!("this is `{shown}`"))
+                .with_label(r.span, format!("this is `{rt}`"))
+                .with_hint(format!(
+                    "the bound `{shown}: {iface_name}` takes `{want}` on the right"
+                )),
+            );
+            return None;
+        }
+        Some((UserOp::Bound { iface, rhs: rk }, out, widen))
+    }
+
+    /// `l op rhs` where `l` is a type parameter.
+    fn check_bound_arith(
+        &mut self,
+        op: AstBin,
+        iface: TypeId,
+        l: Expr,
+        rhs: &ast::Expr,
+        span: Span,
+    ) -> Expr {
+        let lt = self.infer.shallow(&l.ty);
+        let bounds = self.operator_bounds(&lt, iface);
+        let hint = match bounds.as_slice() {
+            [(_, r, _)] => Some(r.clone()),
+            _ => None,
+        };
+        let mut r = self.check_expr(rhs, hint.as_ref());
+        if self.infer.shallow(&r.ty).is_error() {
+            return self.error_expr(span);
+        }
+        let Some((user, out, widen)) = self.resolve_bound_op(op, iface, &lt, l.span, &r, span)
+        else {
+            return self.error_expr(span);
+        };
+        if widen {
+            r = self.widen_f32(r);
+        }
+        self.mk(
+            hir::ExprKind::Binary(BinOp::User(user), Box::new(l), Box::new(r)),
+            out,
+            span,
+        )
     }
 
     /// `l op r` where `l` is a number (or an untyped literal) and `r` a user type, if some impl
@@ -450,6 +616,34 @@ impl FnCtx<'_, '_> {
     /// `-x` where `x` is a user type: its `Neg` impl.
     pub(crate) fn check_user_neg(&mut self, value: Expr, span: Span) -> Expr {
         let ty = self.infer.shallow(&value.ty);
+        if let Ty::Param(p, _) = &ty {
+            let bounded = self
+                .ck
+                .param_bounds
+                .get(p)
+                .is_some_and(|bs| bs.iter().any(|b| b.iface == NEG));
+            if !bounded {
+                let shown = self.show(&ty);
+                self.ck.report(
+                    Diagnostic::error(format!("cannot negate a value of type `{shown}`"), span)
+                        .with_label(value.span, format!("this is `{shown}`"))
+                        .with_hint(format!("add the bound `{shown}: Neg`")),
+                );
+                return self.error_expr(span);
+            }
+            let result = ty.clone();
+            return self.mk(
+                hir::ExprKind::Unary(
+                    UnOp::User(UserOp::Bound {
+                        iface: NEG,
+                        rhs: None,
+                    }),
+                    Box::new(value),
+                ),
+                result,
+                span,
+            );
+        }
         let imp = key_of(&ty).and_then(|k| self.ck.impl_by_key.get(&(k, NEG)).copied());
         let Some(imp) = imp else {
             let shown = self.show(&ty);
@@ -503,6 +697,38 @@ impl FnCtx<'_, '_> {
             _ => "/=",
         };
         let lt = self.infer.shallow(&place_ty);
+        if matches!(lt, Ty::Param(..)) {
+            let bounds = self.operator_bounds(&lt, iface);
+            let hint = match bounds.as_slice() {
+                [(_, r, _)] => Some(r.clone()),
+                _ => None,
+            };
+            let mut rhs = self.check_expr(value, hint.as_ref());
+            if self.infer.shallow(&rhs.ty).is_error() {
+                return None;
+            }
+            let (user, out, widen) =
+                self.resolve_bound_op(ast_op, iface, &lt, target_span, &rhs, span)?;
+            if widen {
+                rhs = self.widen_f32(rhs);
+            }
+            if self.infer.unify(&out, &place_ty).is_err() {
+                let (target, got) = (self.show(&place_ty), self.show(&out));
+                self.ck.report(Diagnostic::error(
+                    format!("`{sym}` needs the operator to give a `{target}`; it gives `{got}`"),
+                    span,
+                ));
+                return None;
+            }
+            return Some(hir::Stmt {
+                span,
+                kind: hir::StmtKind::Assign {
+                    place,
+                    op: Some(BinOp::User(user)),
+                    rhs,
+                },
+            });
+        }
         let cands = self.operator_candidates(&lt, iface);
         let hint = self.rhs_hint(&cands);
         let mut rhs = self.check_expr(value, hint.as_ref());
