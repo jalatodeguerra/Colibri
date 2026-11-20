@@ -30,6 +30,7 @@ pub mod iter;
 pub mod leaks;
 pub mod listfn;
 pub mod num;
+pub mod ops;
 pub mod ordered;
 pub mod protocol;
 pub mod release;
@@ -54,6 +55,7 @@ pub mod prelude {
     pub use crate::engine::Engine as _;
     pub use crate::iter::IterOps as _;
     pub use crate::listfn::ListFnOps as _;
+    pub use crate::ops::Operators as _;
     pub use crate::protocol::Protocol as _;
     pub use crate::release::Release as _;
     pub use crate::results::ResultOps as _;
