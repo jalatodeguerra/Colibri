@@ -3512,3 +3512,524 @@ fn main() -> Result[()] {
         "listening again: ok\nsome(\"hi\")\nstep 1, the waiting accept ended with: Closed\n"
     );
 }
+
+// ---- `read_until` and `set_line_limit` ----
+
+/// A script's name for what a call gave: the kind of an error, or the value.
+const SHOW: &str = r#"
+fn kind(e: Error) -> str {
+    match e.as[net.Error]() {
+        some(k) => return "{k}"
+        none => return "other error"
+    }
+}
+
+fn show(r: Result[Bytes?]) -> str {
+    match r {
+        ok(some(b)) => return "{b.len()} bytes"
+        ok(none) => return "none"
+        err(e) => return kind(e)
+    }
+}
+"#;
+
+/// A Rust peer sends `a\nb\r\n` and `read_until("\r\n")` gives `a\nb` (a bare `\n` is not the
+/// end), an empty piece is `some` of empty bytes, a piece over `max` is `LineTooLong` with its
+/// bytes still in the stream, and the end of the stream is told from a limit: `none` with nothing
+/// pending, `UnexpectedEnd` with bytes pending (which stay readable).
+#[test]
+fn read_until_takes_the_bytes_before_a_delimiter_and_tells_a_limit_from_the_end() {
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        s.write_all(b"a\nb\r\n").unwrap();
+        s.write_all(b"\r\n").unwrap();
+        s.write_all(b"0123456789abcdefg\r\n").unwrap();
+        s.write_all(b"tail").unwrap();
+        // The end of the stream, once the script has read all of it.
+        s.shutdown(std::net::Shutdown::Write).unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output(&format!(
+        r#"import net
+{SHOW}
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let crlf = "\r\n".to_bytes()
+    let first = c.read_until(crlf, 64)?.expect("a piece")
+    print(first.len())
+    print(first == "a\nb".to_bytes())
+    print(c.read_until(crlf, 64)?.expect("a piece").len())
+    // 17 bytes before the delimiter: over a `max` of 16, under one of 17.
+    let over = c.read_until(crlf, 16)
+    print(show(over))
+    print(over.err().expect("too long").message().contains("16"))
+    // The bytes are still there, delimiter included.
+    print(c.read_until(crlf, 17)?.expect("the piece").len())
+    // The end of the stream with `tail` pending.
+    print(show(c.read_until(crlf, 64)))
+    print(c.read(10)?.len())
+    print(show(c.read_until(crlf, 64)))
+    print(show(c.read_until(crlf, 64)))
+    c.close()
+    return ok(())
+}}
+"#
+    ));
+    peer.join().unwrap();
+    assert_eq!(
+        out,
+        "3\ntrue\n0\nLineTooLong\ntrue\n17\nUnexpectedEnd\n4\nnone\nnone\n"
+    );
+}
+
+/// The limit of `read_line` set to 16 gives `LineTooLong` at 17 bytes and not at 16, with `\r\n`
+/// and with `\n`, and `read_until` has its own `max`, which `set_line_limit` does not change.
+#[test]
+fn the_line_limit_is_at_one_byte_more_than_it_says_and_read_until_has_its_own() {
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        let x = |n: usize, end: &[u8]| {
+            let mut v = vec![b'x'; n];
+            v.extend_from_slice(end);
+            v
+        };
+        for piece in [
+            x(16, b"\r\n"),
+            x(16, b"\n"),
+            x(17, b"\r\n"),
+            // What `read_until` gets: its own limit, 40, over the line limit of 16.
+            x(30, b"\r\n"),
+            x(41, b"\r\n"),
+        ] {
+            s.write_all(&piece).unwrap();
+        }
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output(&format!(
+        r#"import net
+{SHOW}
+fn line(r: Result[str?]) -> str {{
+    match r {{
+        ok(some(text)) => return "{{text.len()}} chars"
+        ok(none) => return "none"
+        err(e) => return kind(e)
+    }}
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    c.set_line_limit(16)
+    print(line(c.read_line()))
+    print(line(c.read_line()))
+    // 17 bytes without a line end: too long, and the bytes stay (this is what `read_exact` finds).
+    let long = c.read_line()
+    print(line(long))
+    print(c.read_exact(19)?.len())
+    // `read_until` is not bound by `set_line_limit`.
+    let crlf = "\r\n".to_bytes()
+    print(show(c.read_until(crlf, 40)))
+    print(show(c.read_until(crlf, 40)))
+    c.close()
+    return ok(())
+}}
+"#
+    ));
+    peer.join().unwrap();
+    assert_eq!(
+        out,
+        "16 chars\n16 chars\nLineTooLong\n19\n30 bytes\nLineTooLong\n"
+    );
+}
+
+/// `set_line_limit` made while a `read_line` waits counts at that call's next look (the limit is
+/// read where the call looks, not where it began): lowered, a line that was fine when the call
+/// began is too long when more of it arrives; raised, a line that would have been too long is
+/// taken. The peer sends the second part only when the script has changed the limit, so the order
+/// is fixed and no wait decides it.
+#[test]
+fn a_changed_line_limit_applies_to_a_waiting_read_line_at_its_next_look() {
+    for (before, after, second, expected) in [
+        // Lowered to 16 with 10 bytes buffered: 10 more bytes make it 20 without a line end.
+        (1000, 16, 10, "LineTooLong"),
+        // Raised to 100 with 10 bytes buffered: 30 more and an end make a line of 40.
+        (16, 100, 30, "40 chars"),
+    ] {
+        let (listener, addr) = rust_listener();
+        let (go_on, told) = mpsc::channel::<()>();
+        let peer = thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            with_timeouts(&s);
+            s.write_all(&[b'x'; 10]).unwrap();
+            told.recv_timeout(LIMIT).unwrap();
+            let mut more = vec![b'x'; second];
+            if second > 10 {
+                more.push(b'\n');
+            }
+            s.write_all(&more).unwrap();
+            s.shutdown(std::net::Shutdown::Write).unwrap();
+            let _ = s.read(&mut [0u8; 1]);
+        });
+        let out = output_within_setup(
+            move |vm| {
+                vm.register_fn("go_on", move || go_on.send(()).unwrap())
+                    .unwrap();
+            },
+            format!(
+                r#"import net
+{SHOW}
+fn reading(c: net.Conn) -> str {{
+    match c.read_line() {{
+        ok(some(text)) => return "{{text.len()}} chars"
+        ok(none) => return "none"
+        err(e) => return kind(e)
+    }}
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    c.set_line_limit({before})
+    let r = go reading(c)
+    task.tick(0.0)
+    c.set_line_limit({after})
+    go_on()
+    print(r.join())
+    c.close()
+    return ok(())
+}}
+"#
+            ),
+            LIMIT,
+        );
+        peer.join().unwrap();
+        assert_eq!(out, format!("{expected}\n"), "{before} to {after}");
+    }
+}
+
+/// What the arguments may be: `read_until` takes a delimiter of at least one byte and a `max` of 0
+/// to a gibibyte (`net.Error.Other`, with words of Colibri's own); `set_line_limit` takes 1 to a
+/// gibibyte (a script error otherwise, as `set_timeout` has for a bad number).
+#[test]
+fn read_until_and_set_line_limit_check_their_arguments() {
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        s.write_all(b"ok\n").unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output(&format!(
+        r#"import net
+{SHOW}
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let nl = "\n".to_bytes()
+    print(show(c.read_until(Bytes(), 10)))
+    print(c.read_until(Bytes(), 10).err().expect("an error").message().contains("delimiter is empty"))
+    print(show(c.read_until(nl, -1)))
+    print(show(c.read_until(nl, 1073741825)))
+    c.set_line_limit(1)
+    c.set_line_limit(1073741824)
+    c.set_line_limit(1048576)
+    // A `max` of a gibibyte and of 0 are fine; nothing was taken by the refusals.
+    print(show(c.read_until(nl, 0)))
+    print(show(c.read_until(nl, 1073741824)))
+    c.close()
+    return ok(())
+}}
+"#
+    ));
+    peer.join().unwrap();
+    // `ok` is two bytes before `\n`: over a `max` of 0, then taken with a gibibyte.
+    assert_eq!(out, "Other\ntrue\nOther\nOther\nLineTooLong\n2 bytes\n");
+    for bad in [0i64, -1, 1_073_741_825] {
+        let (listener, addr) = rust_listener();
+        let peer = thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let _ = s.read(&mut [0u8; 1]);
+        });
+        let (mut vm, _out) = vm();
+        let result = run(
+            &mut vm,
+            &format!(
+                r#"import net
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    defer c.close()
+    c.set_line_limit({bad})
+    return ok(())
+}}
+"#
+            ),
+        );
+        let e = result.expect_err("a bad limit is an error").to_string();
+        assert!(
+            e.contains("set_line_limit") && e.contains(&bad.to_string()),
+            "{bad}: {e}"
+        );
+        peer.join().unwrap();
+    }
+}
+
+/// A `read_until` called behind another coroutine's `read_until` or `read_line` is served after
+/// it, with the bytes after it: the first gets a piece that holds a line end of the other kind
+/// (`\n` inside a `\r\n` piece), and the `read_line` called after it gets the line after that
+/// piece, not the `\n` inside it. Both are parked when the data comes.
+#[test]
+fn a_read_until_is_served_in_call_order_with_the_other_reads() {
+    let (listener, addr) = rust_listener();
+    let (send_now, told) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        told.recv_timeout(LIMIT).unwrap();
+        s.write_all(b"xy\nzz\r\ntail\nefgh").unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output_within_setup(
+        move |vm| {
+            vm.register_fn("send_now", move || send_now.send(()).unwrap())
+                .unwrap();
+        },
+        format!(
+            r#"import net
+
+fn until(c: net.Conn) -> str {{
+    return "until: {{c.read_until("\r\n".to_bytes(), 64).expect("bytes").expect("a piece")}}"
+}}
+
+fn line(c: net.Conn) -> str {{
+    return "line: {{c.read_line().expect("a line").expect("a line")}}"
+}}
+
+fn exact(c: net.Conn) -> str {{
+    return "exact: {{c.read_exact(4).expect("four bytes")}}"
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let a = go until(c)
+    let b = go line(c)
+    let d = go exact(c)
+    task.tick(0.0)
+    send_now()
+    print(a.join())
+    print(b.join())
+    print(d.join())
+    c.close()
+    return ok(())
+}}
+"#
+        ),
+        LIMIT,
+    );
+    peer.join().unwrap();
+    assert_eq!(out, "until: b\"xy\\nzz\"\nline: tail\nexact: b\"efgh\"\n");
+}
+
+/// A `read_until` that was cancelled while the start of a match was in the buffer loses nothing:
+/// the next call gets the bytes of the first and the rest. (The half match is read into the
+/// buffer by a `read_exact` that takes one byte, so that it is there, whatever the timing of the
+/// peer's packets.)
+#[test]
+fn a_cancelled_read_until_loses_no_data() {
+    let (listener, addr) = rust_listener();
+    let (more_now, told) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        s.write_all(b"xab\r").unwrap();
+        told.recv_timeout(LIMIT).unwrap();
+        s.write_all(b"\ncd\r\n").unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output_within_setup(
+        move |vm| {
+            vm.register_fn("more_now", move || more_now.send(()).unwrap())
+                .unwrap();
+        },
+        format!(
+            r#"import net
+
+fn until(c: net.Conn) -> str {{
+    return "never: {{c.read_until("\r\n".to_bytes(), 64)}}"
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    print(c.read_exact(1)?)
+    let r = go until(c)
+    task.tick(0.0)
+    r.cancel()
+    print(r.done())
+    more_now()
+    print(c.read_until("\r\n".to_bytes(), 64)?.expect("a piece"))
+    print(c.read_until("\r\n".to_bytes(), 64)?.expect("a piece"))
+    c.close()
+    return ok(())
+}}
+"#
+        ),
+        LIMIT,
+    );
+    peer.join().unwrap();
+    assert_eq!(out, "b\"x\"\ntrue\nb\"ab\"\nb\"cd\"\n");
+}
+
+/// The timeout counts for the whole call, and a call that times out with a half match buffered
+/// leaves the connection usable with the bytes still there.
+#[test]
+fn a_read_until_that_times_out_leaves_the_half_match_for_the_next_call() {
+    let (listener, addr) = rust_listener();
+    let (more_now, told) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        s.write_all(b"ab\r").unwrap();
+        // Only when the call has timed out.
+        told.recv_timeout(LIMIT).unwrap();
+        s.write_all(b"\nrest\r\n").unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output_within_setup(
+        move |vm| {
+            vm.register_fn("more_now", move || more_now.send(()).unwrap())
+                .unwrap();
+        },
+        format!(
+            r#"import net
+{SHOW}
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    c.set_timeout(0.3)
+    let crlf = "\r\n".to_bytes()
+    print(show(c.read_until(crlf, 64)))
+    more_now()
+    c.set_timeout(0.0)
+    print(c.read_until(crlf, 64)?.expect("a piece"))
+    print(c.read_until(crlf, 64)?.expect("a piece"))
+    c.close()
+    return ok(())
+}}
+"#
+        ),
+        LIMIT,
+    );
+    peer.join().unwrap();
+    assert_eq!(out, "Timeout\nb\"ab\"\nb\"rest\"\n");
+}
+
+/// A `Drop` hook that calls `read_until` while a coroutine waits in a read of the same connection
+/// gets `net.Error.Other` at once and not a hang, as `read_line` does; the coroutine keeps its
+/// bytes.
+#[test]
+fn a_drop_hook_that_calls_read_until_while_a_coroutine_reads_gets_an_error_not_a_hang() {
+    let (addr, release, peer) = hook_peer();
+    let out = output_within_released(
+        format!(
+            r#"import net
+
+class Guard {{ conn: net.Conn }}
+
+impl Drop for Guard {{
+    fn drop(self) {{
+        match self.conn.read_until("\n".to_bytes(), 64) {{
+            ok(piece) => print("drop hook read: {{piece}}")
+            err(e) => {{
+                print("drop hook: {{e.as[net.Error]().expect("a net error")}}")
+                print(e.message().contains("already waiting in another coroutine"))
+            }}
+        }}
+    }}
+}}
+
+fn reader(c: net.Conn) {{
+    print("coroutine read: {{c.read_until("\n".to_bytes(), 64)}}")
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let r = go reader(c)
+    task.tick(0.0)
+    release()
+    var g: Option[Guard] = some(Guard {{ conn: c }})
+    g = none
+    r.join()
+    print("then: {{c.read_until("\n".to_bytes(), 64)}}")
+    return ok(())
+}}
+"#
+        ),
+        release,
+    );
+    peer.join().unwrap();
+    assert_eq!(
+        out,
+        "drop hook: Other\ntrue\ncoroutine read: ok(some(b\"one\"))\nthen: ok(some(b\"two\"))\n"
+    );
+}
+
+/// A loop of `read_until` calls that never wait still lets the other coroutines run, as a loop of
+/// `read_line` calls does (the burst budget counts calls, whatever kind they are).
+#[test]
+fn a_loop_of_read_until_calls_that_never_wait_still_lets_the_other_coroutines_run() {
+    const LINES: usize = 40_000;
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        let mut sending = s.try_clone().unwrap();
+        let sender = thread::spawn(move || {
+            sending.write_all("x\r\n".repeat(LINES).as_bytes()).unwrap();
+        });
+        let echoed = read_n(&mut s, LINES * 3).len();
+        sender.join().unwrap();
+        echoed
+    });
+    let out = output_within(
+        format!(
+            r#"import net
+
+var ticks = 0
+var finished = false
+
+fn counter() {{
+    while !finished {{
+        ticks += 1
+        wait(0.0)
+    }}
+}}
+
+fn echo(c: net.Conn) {{
+    let crlf = "\r\n".to_bytes()
+    for _ in 0..{LINES} {{
+        match c.read_until(crlf, 64).expect("a piece") {{
+            some(piece) => c.write_bytes(piece).expect("echoed")
+            none => return
+        }}
+        c.write("\r\n").expect("echoed")
+    }}
+    finished = true
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let k = go counter()
+    let e = go echo(c)
+    e.join()
+    k.join()
+    print(ticks >= 500)
+    c.close()
+    return ok(())
+}}
+"#
+        ),
+        LIMIT,
+    );
+    assert_eq!(out, "true\n");
+    assert_eq!(peer.join().unwrap(), LINES * 3);
+}
