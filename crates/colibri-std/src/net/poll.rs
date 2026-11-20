@@ -880,6 +880,23 @@ mod tests {
         b.write_all(b"y").unwrap();
         assert_eq!(expect(&read_rx), Why::Ready);
         assert_clean(&p, &a);
+        // And with the read armed first and the write blocked: arming the write must not take
+        // the read out of the system's interest, or the data that comes next is never seen.
+        while let Ok(n) = (&*a).read(&mut left) {
+            if n == 0 {
+                break;
+            }
+        }
+        fill(&a);
+        let (write_cell, write_rx) = self::cell();
+        let (read_cell, read_rx) = self::cell();
+        p.arm(&a, Dir::Read, None, &read_cell).unwrap();
+        p.arm(&a, Dir::Write, None, &write_cell).unwrap();
+        assert_quiet(&read_rx);
+        b.write_all(b"z").unwrap();
+        assert_eq!(expect(&read_rx), Why::Ready);
+        assert_eq!(drain_until(&b, &write_rx), Why::Ready);
+        assert_clean(&p, &a);
     }
 
     #[test]
