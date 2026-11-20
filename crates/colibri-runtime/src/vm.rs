@@ -12,9 +12,10 @@ use colibri_check::hir::{HostFnId, Program, TestDef};
 use colibri_check::host::{DEFAULT_MODULE, float_literal, is_module_name, is_std_module_name};
 use colibri_check::package::{BuildCfg, DiskFs, Entry, MemoryFs, SourceFs};
 use colibri_check::types::{RESULT_TYPE, Ty, VARIANT_ERR};
-use colibri_interp::{
-    Clock, DEFAULT_NATIVE_STACK_BUDGET, Fiber, HostFault, HostImpl, Interp, Value as InterpValue,
-};
+use colibri_core::clock::Clock;
+use colibri_core::host::HostFault;
+use colibri_core::value::Value as InterpValue;
+use colibri_interp::{DEFAULT_NATIVE_STACK_BUDGET, Fiber, HostImpl, Interp};
 use colibri_syntax::{Diagnostic, SourceMap};
 
 use crate::cap::{Cap, CapSet};
@@ -28,7 +29,7 @@ use crate::reload::{
     Fingerprint, OwnedEntry, RecordingFs, ReloadOptions, ReloadOutcome, ReloadState,
 };
 use crate::types::{TypeDesc, TypeRegistry};
-use colibri_interp::Leak;
+use colibri_core::leaks::Leak;
 
 /// The default limit on nested Colibri calls (DESIGN §10.4 leaves the number open).
 pub const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;

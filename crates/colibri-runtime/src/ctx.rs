@@ -3,7 +3,8 @@
 
 use colibri_check::hir::{FnId, TypeDef};
 use colibri_check::types::{Ty, TypeId};
-use colibri_interp::{Fiber, Interp, PanicInfo};
+use colibri_core::ctl::PanicInfo;
+use colibri_interp::{Fiber, Interp};
 use colibri_syntax::Span;
 
 use crate::convert::Value;
@@ -148,12 +149,12 @@ impl<'a> Ctx<'a> {
     pub fn run_async<R: Send + 'static>(&mut self, work: impl FnOnce() -> R + Send + 'static) -> R {
         match self.interp.await_external(self.fiber, work) {
             Ok(r) => r,
-            Err(colibri_interp::ExternalError::Cancelled) => {
+            Err(colibri_core::external::ExternalError::Cancelled) => {
                 std::panic::resume_unwind(Box::new(RaisedCancel))
             }
             Err(
-                colibri_interp::ExternalError::Failed(message)
-                | colibri_interp::ExternalError::CannotStart(message),
+                colibri_core::external::ExternalError::Failed(message)
+                | colibri_core::external::ExternalError::CannotStart(message),
             ) => self.raise(message),
         }
     }
@@ -175,16 +176,16 @@ impl<'a> Ctx<'a> {
     /// does), so nothing is left running and no pool thread waits for a result nobody wants.
     pub fn run_async_cancellable<R: Send + 'static>(
         &mut self,
-        work: impl FnOnce(&colibri_interp::CancelToken) -> R + Send + 'static,
+        work: impl FnOnce(&colibri_core::external::CancelToken) -> R + Send + 'static,
     ) -> R {
         match self.interp.await_external_with(self.fiber, work) {
             Ok(r) => r,
-            Err(colibri_interp::ExternalError::Cancelled) => {
+            Err(colibri_core::external::ExternalError::Cancelled) => {
                 std::panic::resume_unwind(Box::new(RaisedCancel))
             }
             Err(
-                colibri_interp::ExternalError::Failed(message)
-                | colibri_interp::ExternalError::CannotStart(message),
+                colibri_core::external::ExternalError::Failed(message)
+                | colibri_core::external::ExternalError::CannotStart(message),
             ) => self.raise(message),
         }
     }
@@ -195,21 +196,21 @@ impl<'a> Ctx<'a> {
     /// panic of `work`, and a cancel of the caller, are handled as for `run_async_cancellable`.
     pub fn try_run_async_cancellable<R: Send + 'static>(
         &mut self,
-        work: impl FnOnce(&colibri_interp::CancelToken) -> R + Send + 'static,
+        work: impl FnOnce(&colibri_core::external::CancelToken) -> R + Send + 'static,
     ) -> Result<R, String> {
         match self.interp.await_external_with(self.fiber, work) {
             Ok(r) => Ok(r),
-            Err(colibri_interp::ExternalError::Cancelled) => {
+            Err(colibri_core::external::ExternalError::Cancelled) => {
                 std::panic::resume_unwind(Box::new(RaisedCancel))
             }
-            Err(colibri_interp::ExternalError::CannotStart(message)) => Err(message),
-            Err(colibri_interp::ExternalError::Failed(message)) => self.raise(message),
+            Err(colibri_core::external::ExternalError::CannotStart(message)) => Err(message),
+            Err(colibri_core::external::ExternalError::Failed(message)) => self.raise(message),
         }
     }
 
     /// As [`Ctx::try_run_async_cancellable`], for an operation that some other thread
     /// completes (a thread that watches for events, say) instead of a job on the pool. `start`
-    /// runs at once on this thread and gives the [`colibri_interp::Completer`] to whoever will
+    /// runs at once on this thread and gives the [`colibri_core::external::Completer`] to whoever will
     /// complete it, from any thread, once; the call then waits as `run_async` does (other
     /// coroutines run meanwhile, the main fiber runs the event loop, and where neither is
     /// possible the thread blocks).
@@ -224,17 +225,17 @@ impl<'a> Ctx<'a> {
     #[doc(hidden)]
     pub fn try_await_completion<R: Send + 'static>(
         &mut self,
-        start: impl FnOnce(colibri_interp::Completer<R>) -> Result<(), String>,
+        start: impl FnOnce(colibri_core::external::Completer<R>) -> Result<(), String>,
     ) -> Result<R, Incomplete> {
         match self.interp.await_completion(self.fiber, start) {
             Ok(r) => Ok(r),
-            Err(colibri_interp::ExternalError::Cancelled) => {
+            Err(colibri_core::external::ExternalError::Cancelled) => {
                 std::panic::resume_unwind(Box::new(RaisedCancel))
             }
-            Err(colibri_interp::ExternalError::CannotStart(message)) => {
+            Err(colibri_core::external::ExternalError::CannotStart(message)) => {
                 Err(Incomplete::NotStarted(message))
             }
-            Err(colibri_interp::ExternalError::Failed(message)) => {
+            Err(colibri_core::external::ExternalError::Failed(message)) => {
                 Err(Incomplete::Dropped(message))
             }
         }
@@ -335,7 +336,7 @@ impl<'a> Ctx<'a> {
     /// `IntoColibri` implementation).
     pub fn new_struct(&self, name: &str, fields: Vec<Value>) -> Value {
         let ty = self.host_type(name);
-        Value(colibri_interp::Value::strukt(
+        Value(colibri_core::value::Value::strukt(
             ty,
             fields.into_iter().map(|v| v.0).collect(),
         ))
@@ -349,7 +350,7 @@ impl<'a> Ctx<'a> {
             Some(id) => id,
             None => self.host_type(name),
         };
-        Value(colibri_interp::Value::strukt(
+        Value(colibri_core::value::Value::strukt(
             ty,
             fields.into_iter().map(|v| v.0).collect(),
         ))
@@ -361,7 +362,7 @@ impl<'a> Ctx<'a> {
             Some(id) => id,
             None => self.host_type(name),
         };
-        Value(colibri_interp::Value::variant(ty, variant, Vec::new()))
+        Value(colibri_core::value::Value::variant(ty, variant, Vec::new()))
     }
 
     /// A struct value of the type `name` that the host module `module` (`std.http`, `jobs`;
@@ -376,7 +377,7 @@ impl<'a> Ctx<'a> {
                 "the type `{name}` of the module `{module}` is not part of the loaded host interface (register it before loading)"
             ),
         };
-        Value(colibri_interp::Value::strukt(
+        Value(colibri_core::value::Value::strukt(
             ty,
             fields.into_iter().map(|v| v.0).collect(),
         ))
@@ -388,7 +389,7 @@ impl<'a> Ctx<'a> {
     /// As [`Ctx::new_struct`].
     pub fn new_variant(&self, name: &str, variant: u32) -> Value {
         let ty = self.host_type(name);
-        Value(colibri_interp::Value::variant(ty, variant, Vec::new()))
+        Value(colibri_core::value::Value::variant(ty, variant, Vec::new()))
     }
 
     /// Lets go of a value the host owns, so a `Drop` hook it was the last owner of can run.

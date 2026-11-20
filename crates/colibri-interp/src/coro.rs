@@ -846,7 +846,7 @@ mod tests {
             if !panics {
                 assert!(matches!(
                     outcome.unwrap(),
-                    Err(crate::ExternalError::CannotStart(_))
+                    Err(colibri_core::external::ExternalError::CannotStart(_))
                 ));
             }
             // The id that the dropped completer posted is ignored when it is collected.

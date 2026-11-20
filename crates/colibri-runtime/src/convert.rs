@@ -12,7 +12,8 @@ use std::fmt::Display;
 use std::hash::Hash;
 
 use colibri_check::types::{TypeId, VARIANT_NONE, VARIANT_OK, VARIANT_SOME};
-use colibri_interp::{Interp, Value as Inner};
+use colibri_core::value::Value as Inner;
+use colibri_interp::Interp;
 
 use crate::ctx::Cx;
 use crate::error::Error;
@@ -124,7 +125,7 @@ impl Value {
 
     /// A `Map` with these entries in order (a repeated key keeps the last value).
     pub fn map(entries: Vec<(Value, Value)>) -> Value {
-        Value(colibri_interp::map_value(
+        Value(colibri_core::host::map_value(
             entries.into_iter().map(|(k, v)| (k.0, v.0)).collect(),
         ))
     }
@@ -701,7 +702,7 @@ impl<K: IntoColibri, V: IntoColibri> IntoColibri for BTreeMap<K, V> {
         TypeDesc::Map(Box::new(K::ty(reg)), Box::new(V::ty(reg)))
     }
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
-        Value(colibri_interp::map_value(
+        Value(colibri_core::host::map_value(
             self.into_iter()
                 .map(|(k, v)| (k.into_colibri(cx).0, v.into_colibri(cx).0))
                 .collect(),

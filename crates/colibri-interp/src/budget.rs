@@ -4,8 +4,6 @@
 
 use crate::eval::Interp;
 
-pub use colibri_core::budget::GRACE_STEPS;
-
 impl Interp {
     /// Sets the allotment of each outermost entry from the host; `None` is unlimited.
     pub fn set_instruction_budget(&mut self, steps: Option<u64>) {

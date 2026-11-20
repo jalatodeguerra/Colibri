@@ -13,7 +13,10 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
-use colibri_interp::{Fiber, HostBorrowError, HostFault, HostGuard, Interp, Value as Inner};
+use colibri_core::host::HostFault;
+use colibri_core::hostheap::{HostBorrowError, HostGuard};
+use colibri_core::value::Value as Inner;
+use colibri_interp::{Fiber, Interp};
 
 use crate::class::HostType;
 use crate::convert::{FromColibri, IntoColibri, Value, wrong};

@@ -10,7 +10,7 @@ use colibri_check::hir::{HostFnId, Program, TypeDef};
 use colibri_check::types::{Ty, TypeId};
 use colibri_syntax::{SourceMap, Span};
 
-pub use colibri_core::host::{HostFault, RootDropQueue, RootHandle, map_value};
+pub use colibri_core::host::{HostFault, RootDropQueue, RootHandle};
 
 use crate::ctl::{Eval, PanicInfo};
 use crate::eval::Interp;

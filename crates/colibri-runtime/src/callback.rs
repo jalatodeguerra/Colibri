@@ -10,7 +10,7 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use colibri_interp::Value as Inner;
+use colibri_core::value::Value as Inner;
 
 use crate::convert::{Args, FromColibri, IntoColibri, Value, wrong};
 use crate::ctx::{Caller, Cx};
@@ -18,10 +18,10 @@ use crate::error::Error;
 use crate::types::{TypeDesc, TypeRegistry};
 
 /// A root handle: slot, generation of the slot, epoch of the slab.
-pub(crate) use colibri_interp::RootHandle;
+pub(crate) use colibri_core::host::RootHandle;
 
 /// The roots whose last callback was dropped, waiting for the `Vm` to release them.
-pub(crate) use colibri_interp::RootDropQueue as DropQueue;
+pub(crate) use colibri_core::host::RootDropQueue as DropQueue;
 
 struct Shared {
     handle: RootHandle,

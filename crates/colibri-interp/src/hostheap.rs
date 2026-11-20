@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use colibri_check::types::TypeId;
 
-pub use colibri_core::hostheap::{HostBorrowError, HostGuard, HostRef};
+pub use colibri_core::hostheap::{HostBorrowError, HostGuard};
 
 use crate::eval::Interp;
 use crate::fiber::Fiber;
