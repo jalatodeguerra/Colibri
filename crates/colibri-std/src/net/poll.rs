@@ -1230,14 +1230,14 @@ mod tests {
     #[test]
     fn a_connect_to_a_closed_port_ends_the_writable_wait() {
         let p = poller();
-        // A socket that is bound and does not listen: nothing can accept there, and its port is
-        // not given to another test meanwhile.
-        let held = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
-        held.bind(&SockAddr::from(
-            "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
-        ))
-        .unwrap();
-        let target = held.local_addr().unwrap();
+        // A port that is closed now: a listener that was bound and dropped, as `tests/net.rs`
+        // does (its refusal is real on every system). A socket that is only bound would not do:
+        // macOS drops a SYN that reaches a bound socket in the closed state without a reset, so
+        // that connect is never refused there, it only times out.
+        let target = {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            SockAddr::from(listener.local_addr().unwrap())
+        };
         let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
         socket.set_nonblocking(true).unwrap();
         // Some systems refuse a loopback connect inside the call itself (the answer comes back
@@ -1253,12 +1253,16 @@ mod tests {
             Err(e) => panic!("connect: {e}"),
         };
         let socket = Arc::new(socket);
+        if !in_progress {
+            eprintln!("poller test: the connect was refused inside the call");
+        }
         if in_progress {
             let (cell, rx) = cell();
             p.arm(&socket, Dir::Write, None, &cell).unwrap();
+            eprintln!("poller test: the connect was in progress; waiting for the refusal");
             let why = rx.recv_timeout(CEILING).expect(
-                "the connect was in progress and was refused, but the writable wait on its \
-                 socket never ended: the system did not report a failed connect",
+                "the connect was in progress and the writable wait on its socket did not end \
+                 within the ceiling",
             );
             assert_eq!(why, Why::Ready);
             let error = socket.take_error().unwrap();
@@ -1268,7 +1272,6 @@ mod tests {
             );
         }
         assert_clean(&p, &socket);
-        drop(held);
     }
 
     /// A peer that resets the connection wakes a write wait whose socket is full (so it was
@@ -1604,7 +1607,6 @@ mod tests {
         let (late, _late_rx) = self::cell();
         assert!(held.timer(Instant::now(), &late).is_err());
         assert!(!gone());
-        drop(held);
         assert!(gone());
     }
 
