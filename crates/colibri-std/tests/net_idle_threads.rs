@@ -270,8 +270,8 @@ fn main() -> Result[()] {{
 
 /// A thousand listeners, each with a coroutine in `accept` and no connection coming: one poller
 /// thread and no CPU. Before the poller each of them held a pool thread that woke every slice.
-/// (A thousand listeners are a thousand descriptors; the other test of this file has a thousand
-/// connections, two thousand descriptors, and runs at another time.)
+/// (A thousand listeners are a thousand descriptors; the other scenario of this file has a
+/// thousand connections, two thousand descriptors, and has ended before this one starts.)
 fn a_thousand_idle_accepts() {
     let before = threads();
     let marks = Arc::new(Mutex::new(Vec::<(Instant, f64, usize)>::new()));
