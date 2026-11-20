@@ -43,7 +43,7 @@ fn main() {
 // expect: C:/x
 // expect: C:/b/c
 // expect: //server/share/f
-// expect: //server/x
+// expect: //server/share/x
 // expect: C:/
 // expect: none
 // expect: //server/share/
