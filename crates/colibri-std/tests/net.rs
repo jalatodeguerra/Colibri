@@ -1000,8 +1000,9 @@ fn main() -> Result[()] {{
     assert_eq!(out.contents(), "some(\"hello\")\nsome(\"world\")\n");
 }
 
-/// A connection accepted for a coroutine that was cancelled before it resumed is not lost: the
-/// next `accept` returns it.
+/// A connection that arrived for a coroutine that was cancelled before it resumed is not lost:
+/// the accept makes its system call only when its coroutine runs, so the cancelled one never
+/// made it, and the connection is still in the listener's backlog for the next `accept`.
 #[test]
 fn an_accept_that_finished_before_its_coroutine_was_cancelled_loses_no_connection() {
     let (tx, rx) = mpsc::channel::<String>();
@@ -1037,8 +1038,8 @@ fn main() -> Result[()] {
     task.tick(0.0)
     publish(l.addr())
     wait_client()
-    // The interpreter thread is busy: the accept finishes on its worker, and the coroutine
-    // that asked for it is cancelled before it resumes.
+    // The interpreter thread is busy: the listener is ready, and the coroutine that waits for
+    // it is cancelled before it resumes.
     block(0.5)
     a.cancel()
     let c = l.accept()?
@@ -1054,18 +1055,14 @@ fn main() -> Result[()] {
     assert_eq!(client.join().unwrap(), "to the second");
 }
 
-/// Connections that wait in the queue of a listener are closed with it. The listener value
-/// stays alive after `close()` until the client has said what it saw, so the end of the stream
-/// comes from `close` and not from the listener being dropped when the program ends.
+/// A connection that waits in the backlog of a listener (its accept was cancelled before it
+/// made its system call) is closed with it. The listener value stays alive after `close()` until
+/// the client has said what it saw, so the end of the stream comes from `close` and not from the
+/// listener being dropped when the program ends.
 ///
-/// Whether the connection is already in the listener's own queue when `close()` runs depends on
-/// whether the accept worker was quicker than the cancel (a few hundred microseconds against
-/// the half second this waits): when it was not, the connection is still in the kernel's
-/// backlog, and closing a listening socket resets such a connection (on Linux and macOS), which
-/// is acceptable and is the one other thing the client may see. What must never happen is a
-/// connection that stays open: the client's read would then time out. The exact case, a
-/// connection that is in the queue, is pinned without any timing by the unit test
-/// `an_accepted_connection_that_was_not_taken_is_kept_and_closed_with_the_listener` in `net.rs`.
+/// Closing a listening socket resets the connections that wait in its backlog (on Linux and
+/// macOS), so the client sees a reset or an end of the stream. What must never happen is a
+/// connection that stays open: the client's read would then time out.
 #[test]
 fn closing_a_listener_closes_the_connections_it_kept() {
     let (tx, rx) = mpsc::channel::<String>();
@@ -1111,7 +1108,7 @@ fn main() -> Result[()] {
     wait_client()
     block(0.5)
     a.cancel()
-    // The connection is in the queue of `l`; closing `l` closes it.
+    // The connection is in the backlog of `l`; closing `l` closes it.
     l.close()
     client_has_seen()
     // `l` is used after the close (it is closed: an error), so it was alive all along.
@@ -1124,7 +1121,7 @@ fn main() -> Result[()] {
     client.join().unwrap();
     match seen.take().expect("the client reported") {
         Ok(0) => {}
-        // The slow path, see above: the connection was still in the kernel's backlog.
+        // The usual one: the connection was in the kernel's backlog, and a close resets it.
         Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
         other => panic!("the client of a kept connection saw {other:?}, not an end or a reset"),
     }
@@ -2143,6 +2140,73 @@ fn main() -> Result[()] {{
     );
     assert_eq!(out, "true\n");
     assert_eq!(peer.join().unwrap(), LINES * 2);
+}
+
+/// A loop of accepts that never wait (the backlog is full of connections that arrived before)
+/// lets the other coroutines run, as a loop of reads does: the listener has a budget of calls of
+/// its own. No timing is involved; an accept that does wait only adds turns of the counter.
+#[test]
+fn a_loop_of_accepts_that_never_wait_still_lets_the_other_coroutines_run() {
+    const CONNECTIONS: usize = 400;
+    let (addr_tx, addr_rx) = mpsc::channel::<String>();
+    let (ready_tx, ready_rx) = mpsc::channel::<()>();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let clients = thread::spawn(move || {
+        let addr = addr_rx.recv_timeout(LIMIT).unwrap();
+        let mut held = Vec::new();
+        for _ in 0..CONNECTIONS {
+            held.push(TcpStream::connect(&addr).unwrap());
+        }
+        ready_tx.send(()).unwrap();
+        // Kept open until the script is done.
+        let _ = done_rx.recv_timeout(LIMIT);
+        drop(held);
+    });
+    let (mut vm, out) = vm();
+    vm.register_fn("publish", move |a: String| addr_tx.send(a).unwrap())
+        .unwrap();
+    vm.register_fn("clients_are_connected", move || {
+        ready_rx.recv_timeout(LIMIT).unwrap()
+    })
+    .unwrap();
+    run(
+        &mut vm,
+        &format!(
+            r#"import net
+
+var ticks = 0
+var finished = false
+
+fn counter() {{
+    while !finished {{
+        ticks += 1
+        wait(0.0)
+    }}
+}}
+
+fn main() -> Result[()] {{
+    let l = net.listen("127.0.0.1:0")?
+    publish(l.addr())
+    clients_are_connected()
+    let k = go counter()
+    for _ in 0..{CONNECTIONS} {{
+        let c = l.accept()?
+        c.close()
+    }}
+    finished = true
+    k.join()
+    // 400 accepts: one turn of the counter for every 64 of them is six turns at least.
+    print(ticks >= 4)
+    l.close()
+    return ok(())
+}}
+"#
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    done_tx.send(()).unwrap();
+    clients.join().unwrap();
+    assert_eq!(out.contents(), "true\n");
 }
 
 /// A `Drop` hook that writes while a coroutine is in the middle of a write on the same connection
