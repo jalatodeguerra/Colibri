@@ -165,6 +165,7 @@ suite!(
     host,
     framing,
     chunk,
+    chunked,
     percent,
     headers,
     router,

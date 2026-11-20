@@ -23,7 +23,8 @@ use wire::{EVENT, Read1, Wire, get, request};
 const CEILING: Duration = Duration::from_secs(30);
 
 /// The Colibri program around a test's `app` function and options.
-const PROGRAM: &str = r#"import httpd
+const PROGRAM: &str = r#"import hash
+import httpd
 import str
 @IMPORTS@
 
@@ -98,6 +99,10 @@ fn app(r: httpd.Request, seen: Seen, server: httpd.Server) -> Result[httpd.Respo
                 err(e)
             }
         }
+    }
+    if r.path == "/sum" {
+        let b = r.body()?
+        return ok(httpd.text(200, "{b.len()} {hash.sha256_hex(b)}\n"))
     }
     if r.path == "/ignore" {
         return ok(httpd.text(200, "ignored\n"))
@@ -1020,6 +1025,285 @@ fn an_http_1_0_request_with_expect_gets_no_100() {
     let r = w.read();
     assert_eq!(r.status, 200, "the first response is the final one: {r:?}");
     assert_eq!(r.text(), "hello");
+    drop(w);
+    server.finish();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Chunked request bodies
+// ---------------------------------------------------------------------------------------------
+
+/// A chunked body of `parts`, each its own chunk, and the last chunk.
+fn chunked(parts: &[&[u8]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for p in parts {
+        out.extend_from_slice(format!("{:x}\r\n", p.len()).as_bytes());
+        out.extend_from_slice(p);
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"0\r\n\r\n");
+    out
+}
+
+/// A POST of `body` to `path` with chunked framing.
+fn chunked_post(path: &str, body: &[u8]) -> Vec<u8> {
+    let mut out = head(
+        &format!("POST {path} HTTP/1.1"),
+        &["Host: test", "Transfer-Encoding: chunked"],
+    );
+    out.extend_from_slice(body);
+    out
+}
+
+/// The same bytes every time: a body of `n` bytes that is not periodic with a chunk size.
+fn pattern(n: usize) -> Vec<u8> {
+    let mut x: u32 = 12345;
+    (0..n)
+        .map(|_| {
+            x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+#[test]
+fn a_chunked_body_of_three_megabytes_in_chunks_of_random_sizes_arrives_whole() {
+    let server = Server::app("httpd.Options { max_body_bytes: 4194304 }");
+    let data = pattern(3 * 1024 * 1024);
+    // Sizes from 1 to 70,000 bytes, from the same generator: some cross the 64 KiB of one read.
+    let mut sizes = Vec::new();
+    let mut x: u32 = 7;
+    let mut at = 0;
+    while at < data.len() {
+        x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+        let n = ((x >> 8) as usize % 70_000 + 1).min(data.len() - at);
+        sizes.push(n);
+        at += n;
+    }
+    assert!(sizes.len() > 40, "{} chunks", sizes.len());
+    let mut body = Vec::new();
+    let mut at = 0;
+    for n in &sizes {
+        // Every tenth chunk has an extension, which is ignored.
+        let ext = if n % 10 == 3 { ";name=value" } else { "" };
+        body.extend_from_slice(format!("{n:X}{ext}\r\n").as_bytes());
+        body.extend_from_slice(&data[at..at + n]);
+        body.extend_from_slice(b"\r\n");
+        at += n;
+    }
+    body.extend_from_slice(b"0\r\n\r\n");
+    let mut w = server.connect();
+    // The echo is the body, byte for byte; the digest is the one of the same bytes sent with a
+    // length (the framing of that is tested elsewhere), and a request after the body is answered.
+    w.send(chunked_post("/echo", &body));
+    let r = w.read();
+    assert_eq!(r.status, 200);
+    assert!(
+        r.body == data,
+        "the echoed body differs ({} bytes)",
+        r.body.len()
+    );
+    let by_length = {
+        let mut req = request("POST", "/sum", &[], &data);
+        req.extend(get("/"));
+        w.send(&req);
+        w.read().text()
+    };
+    assert_eq!(w.read().text(), "hello\n");
+    w.send(chunked_post("/sum", &body));
+    let chunked_sum = w.read().text();
+    assert_eq!(chunked_sum, by_length);
+    assert!(
+        chunked_sum.starts_with(&format!("{} ", data.len())),
+        "{chunked_sum}"
+    );
+    assert_eq!(w.call(get("/")).text(), "hello\n", "the connection is kept");
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn chunk_extensions_and_trailers_are_ignored_and_the_next_request_is_answered() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    let mut data = chunked_post(
+        "/echo",
+        b"5;a=b\r\nhello\r\n1 ; c\r\n,\r\n0;done\r\nX-Sum: 1\r\nX-Other: two\r\n\r\n",
+    );
+    data.extend(get("/"));
+    w.send(&data);
+    let r = w.read();
+    assert_eq!((r.status, r.text()), (200, "hello,".to_string()));
+    assert!(!r.says_close());
+    assert_eq!(w.read().text(), "hello\n");
+    drop(w);
+    assert_eq!(server.finish().seen, ["POST /echo", "GET /"]);
+}
+
+/// A POST with a chunked `body` and a request behind it in the same write: the answer must be
+/// `status` with `Connection: close`, then a close with nothing more, and the second request is
+/// never handled.
+#[track_caller]
+fn chunk_rejects(server: &Server, name: &str, body: &[u8], status: u16) {
+    let mut w = server.connect();
+    let mut data = chunked_post("/echo", body);
+    data.extend_from_slice(SMUGGLED);
+    w.send(&data);
+    let r = w.read();
+    assert_eq!(r.status, status, "{name}: {r:?}");
+    assert!(
+        r.says_close(),
+        "{name}: no Connection: close in {:?}",
+        r.head
+    );
+    w.expect_silent_close();
+}
+
+#[test]
+fn a_chunked_body_that_is_wrong_is_refused_and_nothing_after_it_is_handled() {
+    let server = Server::app("httpd.Options { max_header_bytes: 256, max_headers: 3 }");
+    let long_ext = format!("1;{}\r\nx\r\n0\r\n\r\n", "a".repeat(5000));
+    let long_trailer = format!("0\r\nX-T: {}\r\n\r\n", "a".repeat(300));
+    let cases: Vec<(&str, &[u8], u16)> = vec![
+        ("data not followed by CRLF", b"5\r\nhelloXX0\r\n\r\n", 400),
+        ("data followed by a bare LF", b"5\r\nhello\n0\r\n\r\n", 400),
+        (
+            "sixteen hex digits",
+            b"0000000000000001\r\nx\r\n0\r\n\r\n",
+            400,
+        ),
+        ("no digits", b"\r\n0\r\n\r\n", 400),
+        ("not hex", b"xyz\r\n0\r\n\r\n", 400),
+        ("an extension over 4 KiB", long_ext.as_bytes(), 400),
+        ("a bare LF after the size", b"5\nhello\r\n0\r\n\r\n", 400),
+        ("a bare LF after the last size", b"0\nX-A: 1\r\n\r\n", 400),
+        (
+            "a bare LF in the extension",
+            b"1;a\nb\r\nx\r\n0\r\n\r\n",
+            400,
+        ),
+        (
+            "a trailer that is not a field",
+            b"0\r\nno colon\r\n\r\n",
+            400,
+        ),
+        (
+            "a trailer over max_header_bytes",
+            long_trailer.as_bytes(),
+            431,
+        ),
+        (
+            "too many trailers",
+            b"0\r\nA: 1\r\nB: 2\r\nC: 3\r\nD: 4\r\n\r\n",
+            431,
+        ),
+    ];
+    for (name, body, status) in &cases {
+        chunk_rejects(&server, name, body, *status);
+    }
+    let seen = server.finish().seen;
+    assert!(seen.iter().all(|s| !s.contains("smuggled")), "{seen:?}");
+    assert_eq!(
+        seen.iter().filter(|s| *s == "POST /echo").count(),
+        cases.len()
+    );
+}
+
+#[test]
+fn a_chunked_body_that_ends_early_is_a_400_not_the_end_of_the_body() {
+    let server = Server::app("httpd.Options {}");
+    let cases: [(&str, &[u8]); 4] = [
+        ("at a size line", b"5\r\nhello\r\n"),
+        ("inside a size line", b"5\r\nhello\r\n3"),
+        ("inside a chunk", b"5\r\nhel"),
+        // The trap of `read_until`: the end of the stream right after the last chunk is not an
+        // empty line, which would end the trailers.
+        ("inside the trailers", b"5\r\nhello\r\n0\r\n"),
+    ];
+    for (name, body) in cases {
+        let mut w = server.connect();
+        w.send(chunked_post("/echo", body));
+        w.close_write();
+        let r = w.read();
+        assert_eq!(r.status, 400, "{name}: {r:?}");
+        w.expect_closed();
+    }
+    let seen = server.finish().seen;
+    assert_eq!(
+        seen.iter().filter(|s| *s == "body failed").count(),
+        4,
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn a_chunked_body_over_the_limit_is_a_413_before_the_bytes_past_it_are_sent() {
+    let server = Server::app("httpd.Options { max_body_bytes: 10 }");
+    // 6 + 6 bytes: the second chunk's size says the total is over, and its data is never sent.
+    let mut w = server.connect();
+    w.send(chunked_post("/echo", b"6\r\nabcdef\r\n6\r\n"));
+    let r = w.read();
+    assert_eq!(r.status, 413, "{r:?}");
+    assert!(r.says_close());
+    w.expect_closed();
+    // One chunk that says it is far over the limit: no data of it is sent.
+    let mut w = server.connect();
+    w.send(chunked_post("/echo", b"FFFFFFFFFFFFFFF\r\n"));
+    assert_eq!(w.read().status, 413);
+    w.expect_closed();
+    // Exactly the limit is fine.
+    let mut w = server.connect();
+    w.send(chunked_post("/echo", &chunked(&[b"abcde", b"fghij"])));
+    let r = w.read();
+    assert_eq!((r.status, r.text()), (200, "abcdefghij".to_string()));
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn a_chunked_body_the_handler_does_not_read_closes_the_connection() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    w.send(chunked_post("/ignore", &chunked(&[b"hello"])));
+    let r = w.read();
+    assert_eq!(r.status, 200);
+    assert!(r.says_close(), "{r:?}");
+    w.expect_closed();
+    server.finish();
+}
+
+#[test]
+fn expect_100_continue_with_a_chunked_body_is_sent_when_the_handler_reads() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    w.send(head(
+        "POST /echo HTTP/1.1",
+        &[
+            "Host: test",
+            "Expect: 100-continue",
+            "Transfer-Encoding: chunked",
+        ],
+    ));
+    let interim = w.read_within(EVENT, false).response();
+    assert_eq!(interim.status, 100);
+    w.send(chunked(&[b"hel", b"lo"]));
+    let last = w.read();
+    assert_eq!((last.status, last.text()), (200, "hello".to_string()));
+    assert!(!last.says_close());
+    // A handler that answers without reading sends no 100.
+    let mut w2 = server.connect();
+    w2.send(head(
+        "POST /401 HTTP/1.1",
+        &[
+            "Host: test",
+            "Expect: 100-continue",
+            "Transfer-Encoding: chunked",
+        ],
+    ));
+    let r = w2.read();
+    assert_eq!(r.status, 401, "{r:?}");
+    assert!(r.says_close());
+    w2.expect_closed();
     drop(w);
     server.finish();
 }

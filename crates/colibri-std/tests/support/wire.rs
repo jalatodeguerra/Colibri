@@ -54,6 +54,10 @@ pub struct Response {
     pub head: String,
     /// Whether the body ended with the connection (no length, no chunks).
     pub until_close: bool,
+    /// The sizes of the chunks of a chunked body, in order, and the trailer lines after the
+    /// last one: a bare `0\r\n\r\n` end has none.
+    pub chunk_sizes: Vec<usize>,
+    pub trailer_lines: usize,
 }
 
 impl Response {
@@ -122,6 +126,11 @@ impl Wire {
     #[track_caller]
     pub fn send(&mut self, data: impl AsRef<[u8]>) {
         assert!(self.try_send(data.as_ref()), "the write failed");
+    }
+
+    /// Closes the sending side only: the server sees the end of its input and may still answer.
+    pub fn close_write(&mut self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Write);
     }
 
     /// Sets a reset on close (`SO_LINGER` 0) and drops the connection.
@@ -211,6 +220,8 @@ impl Wire {
             body: Vec::new(),
             head,
             until_close: false,
+            chunk_sizes: Vec::new(),
+            trailer_lines: 0,
         };
         let no_body = head_only || status / 100 == 1 || status == 204 || status == 304;
         if no_body {
@@ -252,6 +263,7 @@ impl Wire {
                         if empty {
                             break;
                         }
+                        r.trailer_lines += 1;
                     }
                     return Read1::Response(r);
                 }
@@ -263,6 +275,12 @@ impl Wire {
                     }
                 }
                 r.body.extend_from_slice(&self.buf[..size]);
+                assert_eq!(
+                    &self.buf[size..size + 2],
+                    b"\r\n",
+                    "a chunk of {size} bytes is not followed by CRLF"
+                );
+                r.chunk_sizes.push(size);
                 self.buf.drain(..size + 2);
             }
         }

@@ -942,6 +942,21 @@ fn chunk_size(g: Grammar, line: Bytes) -> Result[int, Reject] {
 
 fn no_hook() -> Result[()] => ok(())
 
+/// What a read of a line of a chunked body gave (`read_until` with CRLF). `End` and an empty
+/// `Line` must never be merged: the end of the stream is a truncated body, an empty line is the
+/// end of the trailers (plan 3.5).
+enum ChunkLine {
+    Line(Bytes)
+    /// The stream ended, with or without bytes of a line pending.
+    End
+    /// More than the allowed bytes before the CRLF.
+    TooLong
+}
+
+fn no_line(max: int) -> Result[ChunkLine] {
+    return err(fail(500, "a chunked request body has no source of lines"))
+}
+
 /// Reads the body of one request. It owns the framing, the body limit and what has been handed
 /// out; the bytes come from `pull`, which reads at most `n` bytes from wherever the body is
 /// (a connection) and gives empty `Bytes` when that has ended. The errors of `pull` are the
@@ -960,10 +975,44 @@ class BodyReader {
     /// A read failed or the body was refused: where the next request starts is unknown, so
     /// the connection must close (`unread` is then `none`).
     broken: bool = false
+    /// The first error of a chunked body: a read after it gives it again, and reads nothing.
+    fault: Error? = none
+    /// Chunked bodies: the next line ending in CRLF, of at most `n` bytes before it.
+    line: fn(int) -> Result[ChunkLine] = no_line
+    grammar: Grammar? = none
+    /// The limits of the trailers: `max_headers` lines and `max_header_bytes` bytes with their
+    /// CRLFs, as for the fields of a head.
+    max_headers: int = 100
+    max_header_bytes: int = 65536
+    /// The bytes of the current chunk not handed out yet.
+    chunk_left: int = 0
+    /// The CRLF after the data of a chunk is read at the next read.
+    crlf_pending: bool = false
+    /// The last chunk and the trailers have been read.
+    finished: bool = false
 }
 
 fn body_reader(framing: Framing, limit: int, pull: fn(int) -> Result[Bytes]) -> BodyReader {
     return BodyReader { framing: framing, pull: pull, limit: limit }
+}
+
+/// The reader of a chunked body: `pull` reads exactly `n` bytes, `line` reads up to the next
+/// CRLF (see `ChunkLine`), and the trailers are held to `o.max_headers` and `o.max_header_bytes`.
+fn chunked_reader(
+    g: Grammar,
+    o: Options,
+    pull: fn(int) -> Result[Bytes],
+    line: fn(int) -> Result[ChunkLine],
+) -> BodyReader {
+    return BodyReader {
+        framing: .Chunked,
+        pull: pull,
+        line: line,
+        limit: o.max_body_bytes,
+        grammar: some(g),
+        max_headers: o.max_headers,
+        max_header_bytes: o.max_header_bytes,
+    }
 }
 
 impl BodyReader {
@@ -978,10 +1027,142 @@ impl BodyReader {
         return match self.framing {
             NoBody    => ok(Bytes())
             Length(n) => self.read_length(n, max)
-            // The chunked reader is the part of the body that needs a connection: it reads the
-            // chunk-size lines with `read_until`, so that only CRLF ends a line, and it checks
-            // `chunk_size` on each. Until it is attached the body is refused plainly.
-            Chunked => err(fail(501, "a chunked request body cannot be read yet"))
+            Chunked   => self.read_chunked(max)
+        }
+    }
+
+    /// Ends a chunked body in error: it is remembered, and the connection must close.
+    fn halt(self, e: Error) -> Error {
+        self.broken = true
+        if self.fault.is_none() {
+            self.fault = some(e)
+        }
+        return e
+    }
+
+    /// The next piece of a chunked body. The size lines and the trailers are read with `line`,
+    /// where only CRLF ends a line (a bare LF in a size line is no line end and is 400, as in
+    /// CVE-2025-22871), the data with `pull`. The running total is held to the limit when a
+    /// chunk's size is known, before its bytes are read.
+    fn read_chunked(self, max: int) -> Result[Bytes] {
+        if let some(e) = self.fault {
+            return err(e)
+        }
+        if self.finished {
+            return ok(Bytes())
+        }
+        let g = self.grammar or {
+            return err(self.halt(fail(500, "a chunked body has no grammar")))
+        }
+        if !self.started {
+            self.started = true
+            (self.first_read)() or |e| {
+                return err(self.halt(e))
+            }
+        }
+        if self.chunk_left == 0 {
+            if self.crlf_pending {
+                let end = (self.pull)(2) or |e| {
+                    return err(self.halt(e))
+                }
+                if end != "\r\n".to_bytes() {
+                    return err(self.halt(fail(400, "the data of a chunk is not followed by CRLF")))
+                }
+                self.crlf_pending = false
+            }
+            let got = (self.line)(4096) or |e| {
+                return err(self.halt(e))
+            }
+            let size = match got {
+                Line(b) => chunk_size(g, b) or |r| {
+                    return err(self.halt(fail(r.status, r.why)))
+                }
+                End => return err(
+                    self.halt(fail(400, "the request body ended inside a chunked body")),
+                )
+                TooLong => return err(
+                    self.halt(fail(400, "a chunk-size line is longer than 4096 bytes")),
+                )
+            }
+            if size == 0 {
+                self.trailers(g)?
+                self.finished = true
+                return ok(Bytes())
+            }
+            if size > self.limit - self.delivered {
+                return err(
+                    self.halt(fail(413, "the request body is larger than {self.limit} bytes")),
+                )
+            }
+            self.chunk_left = size
+        }
+        let want = max.min(self.chunk_left).min(65536)
+        let piece = (self.pull)(want) or |e| {
+            return err(self.halt(e))
+        }
+        if piece.is_empty() {
+            return err(self.halt(fail(400, "the request body ended inside a chunk")))
+        }
+        if piece.len() > want {
+            return err(self.halt(fail(500, "the body source gave more bytes than were asked for")))
+        }
+        self.delivered += piece.len()
+        self.chunk_left -= piece.len()
+        if self.chunk_left == 0 {
+            self.crlf_pending = true
+        }
+        return ok(piece)
+    }
+
+    /// The trailer fields after the last chunk, up to the empty line: each is checked like a
+    /// field line, they count against `max_headers` and `max_header_bytes`, and they are
+    /// discarded (RFC 9112 7.1.2).
+    fn trailers(self, g: Grammar) -> Result[()] {
+        var lines = 0
+        var used = 0
+        while true {
+            // `max` leaves out the CRLF, which is counted with the line.
+            let room = (self.max_header_bytes - used - 2).max(0)
+            let got = (self.line)(room) or |e| {
+                return err(self.halt(e))
+            }
+            match got {
+                End => {
+                    return err(
+                        self.halt(fail(400, "the request body ended inside the trailer fields")),
+                    )
+                }
+                TooLong => {
+                    return err(
+                        self.halt(
+                            fail(
+                                431,
+                                "the trailer fields are longer than {self.max_header_bytes} bytes",
+                            ),
+                        ),
+                    )
+                }
+                Line(b) => {
+                    if b.is_empty() {
+                        return ok(())
+                    }
+                    lines += 1
+                    if lines > self.max_headers {
+                        return err(
+                            self.halt(fail(431, "more than {self.max_headers} trailer fields")),
+                        )
+                    }
+                    used += b.len() + 2
+                    let text = b.to_str() or {
+                        return err(self.halt(fail(400, "a trailer field is not text")))
+                    }
+                    if text.starts_with(" ")
+                        || text.starts_with("\t")
+                        || !g.field_line.is_match(text) {
+                        return err(self.halt(fail(400, "a trailer field is not a header field")))
+                    }
+                }
+            }
         }
     }
 
@@ -1052,7 +1233,7 @@ impl BodyReader {
         return match self.framing {
             NoBody    => some(0)
             Length(n) => some((n - self.delivered).max(0))
-            Chunked   => none
+            Chunked   => if self.finished { some(0) } else { none }
         }
     }
 }
@@ -2109,7 +2290,33 @@ impl Server {
                 err(e)   => err(body_failure(e))
             }
         }
-        let reader = body_reader(head.framing, self.options.max_body_bytes, pull)
+        let reader = match head.framing {
+            Chunked => {
+                // Only CRLF ends a line of a chunked body: `read_until` is used, not
+                // `read_line`, which also takes a bare LF (CVE-2025-22871). `max` leaves out the
+                // CRLF. The whole call has `body_timeout`, as a piece of data has.
+                let line = fn(max: int) -> Result[ChunkLine] {
+                    conn.set_timeout(timeout)
+                    return match conn.read_until("\r\n".to_bytes(), max) {
+                        ok(got) => match got {
+                            some(b) => ok(.Line(b))
+                            none    => ok(.End)
+                        }
+                        err(e) => if let some(ne) = e.as[net.Error]() {
+                            match ne {
+                                LineTooLong   => ok(.TooLong)
+                                UnexpectedEnd => ok(.End)
+                                _             => err(body_failure(e))
+                            }
+                        } else {
+                            err(body_failure(e))
+                        }
+                    }
+                }
+                chunked_reader(self.grammar, self.options, pull, line)
+            }
+            _ => body_reader(head.framing, self.options.max_body_bytes, pull)
+        }
         if head.expect_continue {
             let write_timeout = self.options.write_timeout
             reader.first_read = fn() -> Result[()] {

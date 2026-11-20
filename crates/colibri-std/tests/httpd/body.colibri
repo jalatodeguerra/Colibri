@@ -324,14 +324,14 @@ test "unread is what the body still has, when that is known" {
     assert_eq(c.unread(), none)
 }
 
-test "a chunked body is not read yet: an honest 501, and no byte is pulled" {
+test "a chunked reader made without its line source is a plain 500, and no byte is pulled" {
     let calls: List[int] = []
     let chunked: httpd_impl.Framing = .Chunked
     let reader = httpd_impl.body_reader(chunked, 100, fn(n: int) -> Result[Bytes] {
         calls.push(n)
         return ok(Bytes())
     })
-    assert_eq(status_of(reader.read(10)), 501)
+    assert_eq(status_of(reader.read(10)), 500)
     assert_eq(calls.len(), 0)
 }
 

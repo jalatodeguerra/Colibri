@@ -1,0 +1,262 @@
+import common
+import httpd_impl
+
+/// What a connection gives a chunked body, in memory: `pull` is `read_exact`, `line` is
+/// `read_until` with CRLF (a bare LF is part of a line, as on the wire). `log` records the calls.
+class Feed {
+    data: Bytes
+    at: int = 0
+    log: List[str] = []
+}
+
+fn feed(text: str) -> Feed => Feed { data: text.to_bytes() }
+
+fn pull_of(f: Feed) -> fn(int) -> Result[Bytes] {
+    return fn(n: int) -> Result[Bytes] {
+        f.log.push("pull {n}")
+        if f.at + n > f.data.len() {
+            f.at = f.data.len()
+            return err(httpd_impl.fail(400, "the body ended"))
+        }
+        let piece = f.data.slice(f.at, f.at + n)
+        f.at += n
+        return ok(piece)
+    }
+}
+
+fn line_of(f: Feed) -> fn(int) -> Result[httpd_impl.ChunkLine] {
+    return fn(max: int) -> Result[httpd_impl.ChunkLine] {
+        f.log.push("line {max}")
+        let rest = f.data.slice(f.at, f.data.len())
+        match rest.find("\r\n".to_bytes()) {
+            some(i) => {
+                if i > max {
+                    return ok(.TooLong)
+                }
+                f.at += i + 2
+                return ok(.Line(rest.slice(0, i)))
+            }
+            none => {
+                if rest.len() > max + 1 {
+                    return ok(.TooLong)
+                }
+                f.at = f.data.len()
+                return ok(.End)
+            }
+        }
+    }
+}
+
+fn reader_with(o: httpd_impl.Options, f: Feed) -> httpd_impl.BodyReader {
+    return httpd_impl.chunked_reader(httpd_impl.grammar(), o, pull_of(f), line_of(f))
+}
+
+fn reader_over(text: str) -> httpd_impl.BodyReader => reader_with(
+    httpd_impl.Options {},
+    feed(text),
+)
+
+fn status_of(r: Result[Bytes]) -> int {
+    return match r {
+        ok(_) => 0
+        err(e) => common.fail_status(e)
+    }
+}
+
+fn text_of(r: Result[Bytes]) -> str {
+    return match r {
+        ok(b) => b.to_str().expect("text")
+        err(e) => "error"
+    }
+}
+
+test "chunks are handed out as one body, extensions and sizes in any case ignored" {
+    let reader = reader_over("5\r\nhello\r\n1;ext=1\r\n,\r\nA\r\n 012345678\r\n0\r\n\r\n")
+    assert_eq(text_of(reader.all()), "hello, 012345678")
+    assert_eq(reader.unread(), some(0))
+}
+
+test "a body of one empty chunk is empty" {
+    let reader = reader_over("0\r\n\r\n")
+    assert_eq(text_of(reader.all()), "")
+    assert_eq(reader.unread(), some(0))
+}
+
+test "a read is at most max bytes and does not pass the end of its chunk" {
+    let reader = reader_over("5\r\nhello\r\n3\r\nabc\r\n0\r\n\r\n")
+    assert_eq(text_of(reader.read(3)), "hel")
+    assert_eq(text_of(reader.read(100)), "lo")
+    assert_eq(text_of(reader.read(2)), "ab")
+    assert_eq(text_of(reader.read(2)), "c")
+    assert_eq(text_of(reader.read(2)), "")
+    assert_eq(text_of(reader.read(2)), "")
+}
+
+test "unread is none until the last chunk and its trailers are read" {
+    let reader = reader_over("5\r\nhello\r\n0\r\n\r\n")
+    assert_eq(reader.unread(), none)
+    let _ = reader.read(5)
+    assert_eq(reader.unread(), none)
+    let _ = reader.read(5)
+    assert_eq(reader.unread(), some(0))
+}
+
+test "the end of the stream is not an empty line: a body that stops at a size line is 400" {
+    assert_eq(status_of(reader_over("5\r\nhello\r\n").all()), 400)
+    assert_eq(status_of(reader_over("5\r\nhello\r\n3").all()), 400)
+    assert_eq(status_of(reader_over("").all()), 400)
+}
+
+test "the end of the stream inside the trailers is 400, not the end of the body" {
+    assert_eq(status_of(reader_over("0\r\n").all()), 400)
+    assert_eq(status_of(reader_over("0\r\nX-A: 1\r\n").all()), 400)
+    assert_eq(status_of(reader_over("3\r\nabc\r\n0\r\nX-A: 1").all()), 400)
+}
+
+test "a chunk that stops short is 400" {
+    assert_eq(status_of(reader_over("5\r\nhel").all()), 400)
+}
+
+test "data not followed by CRLF is 400" {
+    assert_eq(status_of(reader_over("5\r\nhelloXX0\r\n\r\n").all()), 400)
+    assert_eq(status_of(reader_over("5\r\nhello\n\n0\r\n\r\n").all()), 400)
+    assert_eq(status_of(reader_over("5\r\nhello\r").all()), 400)
+}
+
+test "a bare LF in a size line is no line end: 400, and nothing after it is read as a line" {
+    let f = feed("0\nGET /smuggled HTTP/1.1\r\nHost: x\r\n\r\n")
+    let reader = reader_with(httpd_impl.Options {}, f)
+    assert_eq(status_of(reader.all()), 400)
+    // One line was asked for, and the bytes after the bare LF were not read as a request.
+    assert_eq(f.log, ["line 4096"])
+    let g = feed("5\r\nhello\r\n0\nX-A: 1\r\n\r\n")
+    assert_eq(status_of(reader_with(httpd_impl.Options {}, g).all()), 400)
+}
+
+test "a size of sixteen hex digits, no digits or an extension over the line limit is 400" {
+    assert_eq(status_of(reader_over("0000000000000001\r\nx\r\n0\r\n\r\n").all()), 400)
+    assert_eq(status_of(reader_over("\r\n0\r\n\r\n").all()), 400)
+    assert_eq(status_of(reader_over("zz\r\n0\r\n\r\n").all()), 400)
+    let long = "1;" + str_of("a", 4100)
+    assert_eq(status_of(reader_over(long + "\r\nx\r\n0\r\n\r\n").all()), 400)
+}
+
+fn str_of(s: str, n: int) -> str {
+    let out = StrBuilder()
+    for i in 0..n {
+        out.push(s)
+    }
+    return out.to_str()
+}
+
+test "trailer fields are read and discarded" {
+    let reader = reader_over("3\r\nabc\r\n0\r\nX-Sum: 1\r\nX-Other: two\r\n\r\n")
+    assert_eq(text_of(reader.all()), "abc")
+    assert_eq(reader.unread(), some(0))
+}
+
+test "a trailer that is not a header field is 400" {
+    assert_eq(status_of(reader_over("0\r\nno colon\r\n\r\n").all()), 400)
+    assert_eq(status_of(reader_over("0\r\nX A: 1\r\n\r\n").all()), 400)
+    assert_eq(status_of(reader_over("0\r\nX-A: 1\r\n folded\r\n\r\n").all()), 400)
+    assert_eq(status_of(reader_over("0\r\n X-A: 1\r\n\r\n").all()), 400)
+    assert_eq(status_of(reader_over("0\r\nX-A: a\nb\r\n\r\n").all()), 400)
+    assert_eq(status_of(reader_over("0\r\nX-A: a\u{0}b\r\n\r\n").all()), 400)
+}
+
+test "trailers are held to max_headers and max_header_bytes, as 431" {
+    let few = httpd_impl.Options { max_headers: 2 }
+    assert_eq(
+        status_of(reader_with(few, feed("0\r\nA: 1\r\nB: 2\r\n\r\n")).all()),
+        0,
+    )
+    assert_eq(
+        status_of(reader_with(few, feed("0\r\nA: 1\r\nB: 2\r\nC: 3\r\n\r\n")).all()),
+        431,
+    )
+    // "A: 1" is 4 bytes and 6 with its CRLF: three of them are 18.
+    let small = httpd_impl.Options { max_header_bytes: 18 }
+    assert_eq(
+        status_of(reader_with(small, feed("0\r\nA: 1\r\nB: 2\r\nC: 3\r\n\r\n")).all()),
+        0,
+    )
+    assert_eq(
+        status_of(reader_with(small, feed("0\r\nA: 1\r\nB: 2\r\nC: 33\r\n\r\n")).all()),
+        431,
+    )
+    assert_eq(
+        status_of(reader_with(small, feed("0\r\nA: 1\r\nB: 2\r\nC: 3\r\nD: 4\r\n\r\n")).all()),
+        431,
+    )
+}
+
+test "the running total is held to the limit before the bytes past it are read" {
+    let limit = httpd_impl.Options { max_body_bytes: 8 }
+    let f = feed("5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n")
+    let reader = reader_with(limit, f)
+    assert_eq(text_of(reader.read(100)), "hello")
+    f.log.clear()
+    assert_eq(status_of(reader.read(100)), 413)
+    // The size line was read and the data of the chunk was not.
+    assert_eq(f.log, ["pull 2", "line 4096"])
+}
+
+test "a body of exactly the limit is fine, and one chunk over it is 413 without a data read" {
+    let limit = httpd_impl.Options { max_body_bytes: 10 }
+    assert_eq(text_of(reader_with(limit, feed("5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n")).all()), "helloworld")
+    let f = feed("B\r\nhello world\r\n0\r\n\r\n")
+    assert_eq(status_of(reader_with(limit, f).all()), 413)
+    assert_eq(f.log, ["line 4096"])
+    let huge = feed("FFFFFFFFFFFFFFF\r\n")
+    assert_eq(status_of(reader_with(limit, huge).all()), 413)
+}
+
+test "after an error the same error comes again and nothing more is read" {
+    let f = feed("5\r\nhelloXX0\r\n\r\n")
+    let reader = reader_with(httpd_impl.Options {}, f)
+    assert_eq(text_of(reader.read(5)), "hello")
+    assert_eq(status_of(reader.read(5)), 400)
+    let before = f.log.len()
+    assert_eq(status_of(reader.read(5)), 400)
+    assert_eq(status_of(reader.all()), 400)
+    assert_eq(f.log.len(), before)
+    assert_eq(reader.unread(), none)
+}
+
+test "first_read runs once, before the first bytes, and its error stops the body" {
+    let f = feed("3\r\nabc\r\n0\r\n\r\n")
+    let reader = reader_with(httpd_impl.Options {}, f)
+    var runs = 0
+    reader.first_read = fn() -> Result[()] {
+        runs += 1
+        f.log.push("hook")
+        return ok(())
+    }
+    assert_eq(text_of(reader.all()), "abc")
+    assert_eq(runs, 1)
+    assert_eq(f.log[0], "hook")
+    let g = feed("3\r\nabc\r\n0\r\n\r\n")
+    let refused = reader_with(httpd_impl.Options {}, g)
+    refused.first_read = fn() -> Result[()] => err(httpd_impl.fail(408, "slow"))
+    assert_eq(status_of(refused.all()), 408)
+    assert_eq(g.log.len(), 0)
+    assert_eq(refused.unread(), none)
+}
+
+test "a request reads a chunked body through its reader" {
+    let h = common.accepted(common.head(["POST /up HTTP/1.1", "Host: x", "Transfer-Encoding: chunked"]))
+    let reader = reader_over("5\r\nhello\r\n0\r\n\r\n")
+    let req = httpd_impl.request(h, reader, "127.0.0.1:1")
+    assert_eq(req.text().expect("reads"), "hello")
+}
+
+test "an error of a source is the error of the read" {
+    let timeout = httpd_impl.chunked_reader(
+        httpd_impl.grammar(),
+        httpd_impl.Options {},
+        fn(n: int) -> Result[Bytes] => ok(Bytes()),
+        fn(max: int) -> Result[httpd_impl.ChunkLine] => err(httpd_impl.fail(408, "slow")),
+    )
+    assert_eq(status_of(timeout.all()), 408)
+    assert_eq(timeout.unread(), none)
+}
