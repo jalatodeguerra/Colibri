@@ -1,10 +1,10 @@
 //! Where user-written implementations take over from the structural defaults.
 //!
 //! Equality, ordering, `Show` and `clone` are implemented structurally (DESIGN §7.4), over
-//! plain values, by functions that know nothing of the interpreter. A user `impl Eq for T`
+//! plain values, by functions that know nothing of the engine. A user `impl Eq for T`
 //! (or `Ord`, `Show`, `Clone`) replaces the default for `T` wherever `T` appears, also nested
 //! inside a list or a struct. Those functions therefore ask an [`Overrides`] first; the
-//! interpreter answers by running the user's method, and [`Plain`] never overrides anything.
+//! engine answers by running the user's method, and [`Plain`] never overrides anything.
 
 use std::cmp::Ordering;
 
@@ -13,7 +13,8 @@ use crate::value::Value;
 
 /// Why a structural operation stopped early.
 #[derive(Debug)]
-pub(crate) enum Stop {
+#[doc(hidden)]
+pub enum Stop {
     /// The values nest too deeply for the native stack.
     TooDeep,
     /// A user-written method panicked.
@@ -21,10 +22,12 @@ pub(crate) enum Stop {
 }
 
 /// An answer from a user-written method: `None` means "no implementation, use the default".
-pub(crate) type Answer<T> = Option<Result<T, Stop>>;
+#[doc(hidden)]
+pub type Answer<T> = Option<Result<T, Stop>>;
 
 /// The user-written implementations that replace structural defaults.
-pub(crate) trait Overrides {
+#[doc(hidden)]
+pub trait Overrides {
     fn eq(&mut self, _a: &Value, _b: &Value) -> Answer<bool> {
         None
     }
@@ -45,6 +48,7 @@ pub(crate) trait Overrides {
 }
 
 /// No user-written implementations.
-pub(crate) struct Plain;
+#[doc(hidden)]
+pub struct Plain;
 
 impl Overrides for Plain {}

@@ -42,8 +42,9 @@ pub struct PanicInfo {
     pub budget: bool,
 }
 
-/// Evaluation outcomes the host can see: only panics and cancellation leave the interpreter.
-pub(crate) fn into_panic(ctl: Ctl, fallback: Span) -> Box<PanicInfo> {
+/// Evaluation outcomes the host can see: only panics and cancellation leave the engine.
+#[doc(hidden)]
+pub fn into_panic(ctl: Ctl, fallback: Span) -> Box<PanicInfo> {
     match ctl {
         Ctl::Panic(info) => info,
         Ctl::Cancel => Box::new(PanicInfo {

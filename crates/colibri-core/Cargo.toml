@@ -1,0 +1,12 @@
+[package]
+name = "colibri-core"
+description = "Colibri runtime pieces shared by the engines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+colibri-syntax = { path = "../colibri-syntax" }
+colibri-check = { path = "../colibri-check" }

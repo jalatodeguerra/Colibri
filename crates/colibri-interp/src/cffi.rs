@@ -87,7 +87,7 @@ mod enabled {
 
     impl Interp {
         pub(crate) fn c_type(&self, cty: CTy) -> CType {
-            ctype(&self.cffi.layouts, &self.types, cty)
+            ctype(&self.cffi.layouts, &self.core.types, cty)
         }
 
         /// A Colibri value as a C value of type `cty`.

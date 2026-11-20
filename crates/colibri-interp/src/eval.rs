@@ -6,10 +6,12 @@ use std::rc::{Rc, Weak};
 use colibri_check::hir::Storage;
 use colibri_check::hir::{
     Arg, ArithOp, Arm, BinOp, Block, Body, Callee, CmpOp, Expr, ExprKind, FnId, GlobalId,
-    Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, TypeDef, UnOp, UserOp,
+    Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, UnOp, UserOp,
 };
 use colibri_check::types::{IntTy, Ty};
 use colibri_syntax::Span;
+
+use colibri_core::Core;
 
 use crate::compare::values_identical;
 use crate::ctl::{Ctl, Eval, PanicInfo, TraceEntry, into_panic};
@@ -21,31 +23,20 @@ use crate::ordered::OrderedMap;
 use crate::place::project;
 use crate::value::{CellObj, Value};
 
-/// The value of a variable slot, looking through a cell.
-pub(crate) fn unwrap_cell_ref(v: &Value) -> Value {
-    match v {
-        Value::Cell(c) => c.get(),
-        other => other.clone(),
-    }
-}
+pub(crate) use colibri_core::stack_position;
+pub(crate) use colibri_core::value::{unwrap_cell, unwrap_cell_ref};
 
-/// The value a cell holds, for a variable that is handed back to its owner.
-pub(crate) fn unwrap_cell(v: Value) -> Value {
-    match v {
-        Value::Cell(c) if Rc::strong_count(&c) == 1 => c.take(),
-        Value::Cell(c) => c.get(),
-        other => other,
-    }
-}
-
-/// The interpreter: the loaded code, the module-level state and the output writer. Everything
+/// The interpreter: the loaded code, the module-level state and the [`Core`] it shares with the engine-neutral runtime code. Everything
 /// about a running computation is in the [`Fiber`] passed to each method.
 pub struct Interp {
     /// Looked up at call time, so a patched function takes effect at its next call.
     pub(crate) fns: Vec<Rc<Body>>,
     pub(crate) globals: Vec<Value>,
-    /// The user-defined types, which `Show` and drop tracing need for names.
-    pub(crate) types: Rc<[TypeDef]>,
+    /// The state shared with the engine-neutral runtime code (`colibri-core`).
+    /// Fields drop in declaration order, so `core` (the host state and the host heap) goes
+    /// before `host_impls` (the host function closures). Nothing observable depends on it
+    /// today, because the `Vm` keeps its own reference to every host function.
+    pub(crate) core: Core,
     /// Every global's initialiser, in initialisation order (`Program::init_order`).
     pub(crate) inits: Vec<(GlobalId, Rc<Body>)>,
     /// Where the globals the script initialises itself start in `inits`.
@@ -59,42 +50,18 @@ pub struct Interp {
     pub(crate) global_names: Vec<Rc<str>>,
     pub(crate) released: bool,
     script: Option<Rc<Body>>,
-    out: Box<dyn Write>,
     max_depth: usize,
     pub(crate) native_stack_budget: usize,
-    /// The labels of destroyed class objects, when tracing is on (`set_trace_drops`).
-    pub(crate) trace: Option<Vec<String>>,
-    /// Interface implementations and the user-written methods that replace derived behaviour.
-    pub(crate) dispatch: crate::dispatch::Tables,
-    /// Panics in `Drop` hooks that no running statement has picked up yet.
-    pub(crate) hook_panics: Vec<PanicInfo>,
-    /// How many `Drop` hooks are running, one inside another.
-    pub(crate) hook_depth: u32,
-    /// The instruction budget (EMBEDDING §5).
-    pub(crate) budget: crate::budget::Budget,
-    /// How many times a map or set key was looked up by scanning the stored keys.
-    pub(crate) key_scans: u64,
-    /// What the embedding program attached: host functions, state and roots.
-    pub(crate) host: crate::host::HostSide,
+    /// The host functions and class hooks the embedding program installed.
+    pub(crate) host_impls: crate::host::HostImpls,
     /// The coroutine scheduler (ARCHITECTURE §16).
     pub(crate) sched: crate::coro::Scheduler,
-    /// The registry of the leak detector, when it is on (ARCHITECTURE §18).
-    pub(crate) leaks: Option<Box<crate::leaks::LeakTracker>>,
     /// The C layout of every `@repr(C)` struct of the loaded program, and the open libraries.
     pub(crate) cffi: crate::cffi::CffiState,
-    /// For each extension of the program (`session_extend`), how the function ids of the
-    /// generation before map to the one after (`u32::MAX`: the function is gone).
-    pub(crate) closure_maps: Vec<Vec<u32>>,
 }
 
 /// The default for [`Interp::set_native_stack_budget`]: small enough for a default test thread.
 pub const DEFAULT_NATIVE_STACK_BUDGET: usize = 1 << 20;
-
-/// The current position on the native stack (it only has to be comparable with another one).
-pub(crate) fn stack_position() -> usize {
-    let marker = 0u8;
-    std::hint::black_box(&marker) as *const u8 as usize
-}
 
 /// A fault in integer arithmetic.
 enum Fault {
@@ -108,27 +75,18 @@ impl Interp {
         Interp {
             fns: Vec::new(),
             globals: Vec::new(),
-            types: Rc::from(Vec::new()),
+            core: Core::new(out),
             inits: Vec::new(),
             script_from: 0,
             uninit: Vec::new(),
             global_names: Vec::new(),
             released: false,
             script: None,
-            out,
             max_depth: max_call_depth,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
-            trace: None,
-            dispatch: crate::dispatch::Tables::default(),
-            hook_panics: Vec::new(),
-            hook_depth: 0,
-            budget: crate::budget::Budget::new(),
-            key_scans: 0,
-            host: crate::host::HostSide::default(),
+            host_impls: crate::host::HostImpls::default(),
             sched: crate::coro::Scheduler::new(),
-            leaks: None,
             cffi: crate::cffi::CffiState::default(),
-            closure_maps: Vec::new(),
         }
     }
 
@@ -152,12 +110,12 @@ impl Interp {
     /// old module-level values die first).
     pub fn load(&mut self, program: &Program) {
         self.shutdown();
-        self.closure_maps.clear();
+        self.core.closure_maps.clear();
         self.load_host(program);
         self.fns = program.fns.iter().map(|f| Rc::clone(&f.body)).collect();
         self.globals = vec![Value::Unit; program.globals.len()];
-        self.types = Rc::from(program.types.clone());
-        self.dispatch = crate::dispatch::Tables::new(program);
+        self.core.types = Rc::from(program.types.clone());
+        self.core.dispatch = crate::dispatch::Tables::new(program);
         self.inits = program
             .init_order
             .iter()
@@ -196,8 +154,8 @@ impl Interp {
     /// Replaces every table that comes from the checked program (not the module-level values).
     pub(crate) fn swap_program(&mut self, program: &Program) {
         self.fns = program.fns.iter().map(|f| Rc::clone(&f.body)).collect();
-        self.types = Rc::from(program.types.clone());
-        self.dispatch = crate::dispatch::Tables::new(program);
+        self.core.types = Rc::from(program.types.clone());
+        self.core.dispatch = crate::dispatch::Tables::new(program);
         self.inits = program
             .init_order
             .iter()
@@ -207,7 +165,7 @@ impl Interp {
         self.set_script(program);
         self.cffi.load(program);
         // The host's view of the host functions' (empty) bodies.
-        self.host.bodies = program
+        self.core.host.bodies = program
             .host_fns
             .iter()
             .map(|h| Rc::clone(&program.fns[h.f.0 as usize].body))
@@ -234,12 +192,12 @@ impl Interp {
     /// which initialise the script's own `let`/`var` on their lines (DESIGN §4.2).
     pub fn run_module(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
         // The initialisers and the top-level statements share one allotment.
-        let outermost = self.begin_entry();
+        let outermost = self.core.begin_entry();
         if outermost {
             self.drain_root_drops();
         }
         let result = self.run_module_parts(fiber);
-        self.end_entry(outermost, true);
+        self.core.end_entry(outermost, true);
         result
     }
 
@@ -247,7 +205,7 @@ impl Interp {
     /// in dependency order, then the script's `let`/`var` in source order. The state a test
     /// starts from (ARCHITECTURE §15).
     pub fn run_initialisers(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
-        let outermost = self.begin_entry();
+        let outermost = self.core.begin_entry();
         if outermost {
             self.drain_root_drops();
         }
@@ -269,7 +227,7 @@ impl Interp {
             }
         }
         self.released = false;
-        self.end_entry(outermost, true);
+        self.core.end_entry(outermost, true);
         result
     }
 
@@ -303,12 +261,12 @@ impl Interp {
 
     /// Writes text to the program's standard output, where `print` writes (without a newline).
     pub fn write_stdout(&mut self, text: &str) {
-        let _ = self.out.write_all(text.as_bytes());
+        let _ = self.core.out.write_all(text.as_bytes());
     }
 
     /// Writes buffered output through to the writer.
     pub fn flush(&mut self) {
-        let _ = self.out.flush();
+        let _ = self.core.out.flush();
     }
 
     /// The module-level value `g` (for hosts and tests).
@@ -338,7 +296,7 @@ impl Interp {
         if frames == 0 {
             fiber.stack_base = stack_position();
         }
-        let outermost = self.begin_entry();
+        let outermost = self.core.begin_entry();
         if outermost {
             self.drain_root_drops();
             // What the host compared before this entry is not this script's failure.
@@ -349,8 +307,8 @@ impl Interp {
         self.release_temps(fiber, temps);
         // A script that swallowed the exhaustion (through a host function that returned
         // normally) still ran out of budget.
-        let swallowed = outermost && self.budget_was_exhausted();
-        self.end_entry(outermost, record);
+        let swallowed = outermost && self.core.budget_was_exhausted();
+        self.core.end_entry(outermost, record);
         let result = match result {
             Ok(v) | Err(Ctl::Return(v)) if swallowed => {
                 self.release(v);
@@ -446,8 +404,8 @@ impl Interp {
         captures: Vec<(colibri_check::hir::LocalId, Value)>,
     ) -> (Eval, Option<Value>) {
         let overflow = fiber.frames.len() >= self.max_depth;
-        self.budget.left -= 1;
-        if overflow || self.budget.left < 0 {
+        self.core.budget.left -= 1;
+        if overflow || self.core.budget.left < 0 {
             let span = fiber.frames.last().map_or(body.span, |f| f.span);
             let ctl = if overflow {
                 let message = format!("stack overflow: more than {} nested calls", self.max_depth);
@@ -574,7 +532,7 @@ impl Interp {
             Err(ctl) => Err(ctl),
         };
         self.release_temps(fiber, mark);
-        if self.hook_panics.is_empty() {
+        if self.core.hook_panics.is_empty() {
             return result;
         }
         self.fold_hook_panics(result.map(|()| Value::Unit))
@@ -724,7 +682,7 @@ impl Interp {
             ExprKind::Object { ty, fields } => {
                 let values = self.eval_values(fiber, fields)?;
                 let obj = ClassObj::new(*ty, values);
-                self.track_object(&obj, Some(e.span));
+                self.core.track_object(&obj, Some(e.span));
                 Ok(Value::Obj(obj))
             }
             ExprKind::Variant { ty, variant, args } => {
@@ -1198,7 +1156,7 @@ impl Interp {
                     }
                 };
                 // A closed pipe is not a Colibri error; output is best effort.
-                let _ = writeln!(self.out, "{text}");
+                let _ = writeln!(self.core.out, "{text}");
                 Value::Unit
             }
             Intrinsic::Show => match self.show_deep(fiber, &arg, span) {

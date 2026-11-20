@@ -15,28 +15,10 @@ use crate::heap::ClassObj;
 use crate::iter::IterObj;
 use crate::value::Value;
 
+pub(crate) use colibri_core::builders::builder_text;
+
 /// The most integers `range.to_list()` builds.
 pub(crate) const MAX_RANGE_LIST: u64 = 1 << 27;
-
-/// The text a `StrBuilder` holds. Its object has two fields: the chunks appended so far (a
-/// list of strings, so an append is O(1)) and the total byte length.
-pub(crate) fn builder_text(obj: &ClassObj) -> String {
-    obj.with_fields(|fields| match fields.first() {
-        Some(Value::List(chunks)) => chunks.with(|items| {
-            let mut out = String::with_capacity(match fields.get(1) {
-                Some(Value::Int(n)) => usize::try_from(*n).unwrap_or(0),
-                _ => 0,
-            });
-            for item in items {
-                if let Value::Str(s) = item {
-                    out.push_str(s);
-                }
-            }
-            out
-        }),
-        _ => String::new(),
-    })
-}
 
 impl Interp {
     /// A `StrBuilder` method; `args[0]` is the builder.

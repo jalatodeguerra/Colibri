@@ -12,10 +12,12 @@ use crate::show::{show_f32, show_float};
 use crate::value::Value;
 
 /// A numeric failure: the panic message.
-pub(crate) type Trap = String;
+#[doc(hidden)]
+pub type Trap = String;
 
 /// The integer in `v` (of any integer type), exactly.
-pub(crate) fn int_of(v: &Value) -> Option<i128> {
+#[doc(hidden)]
+pub fn int_of(v: &Value) -> Option<i128> {
     match v {
         Value::Int(i) => Some(i128::from(*i)),
         Value::U64(u) => Some(i128::from(*u)),
@@ -24,7 +26,8 @@ pub(crate) fn int_of(v: &Value) -> Option<i128> {
 }
 
 /// The value of integer type `ty` that is `v`; `v` must be in range.
-pub(crate) fn make_int(ty: IntTy, v: i128) -> Value {
+#[doc(hidden)]
+pub fn make_int(ty: IntTy, v: i128) -> Value {
     debug_assert!(ty.fits(v));
     if ty == IntTy::U64 {
         Value::U64(v as u64)
@@ -54,7 +57,8 @@ fn wrap(ty: IntTy, v: i128) -> i128 {
 
 /// `a op b` on integers of type `ty`: traps on overflow and on division by zero; `/`
 /// truncates toward zero and `%` takes the sign of the dividend.
-pub(crate) fn int_arith(op: ArithOp, ty: IntTy, a: i128, b: i128) -> Result<i128, Trap> {
+#[doc(hidden)]
+pub fn int_arith(op: ArithOp, ty: IntTy, a: i128, b: i128) -> Result<i128, Trap> {
     match op {
         ArithOp::Add => checked(ty, a.checked_add(b)),
         ArithOp::Sub => checked(ty, a.checked_sub(b)),
@@ -69,19 +73,22 @@ pub(crate) fn int_arith(op: ArithOp, ty: IntTy, a: i128, b: i128) -> Result<i128
 }
 
 /// `-a` on an integer of type `ty`.
-pub(crate) fn int_neg(ty: IntTy, a: i128) -> Result<i128, Trap> {
+#[doc(hidden)]
+pub fn int_neg(ty: IntTy, a: i128) -> Result<i128, Trap> {
     checked(ty, a.checked_neg())
 }
 
 /// `~a` on an integer of type `ty`.
-pub(crate) fn int_not(ty: IntTy, a: i128) -> i128 {
+#[doc(hidden)]
+pub fn int_not(ty: IntTy, a: i128) -> i128 {
     wrap(ty, !a)
 }
 
 /// `a op b` for the bitwise operators on integers of type `ty`. A shift count outside
 /// `0..bits` traps; bits shifted out of `<<` are lost without a trap (a shift is a bit
 /// operation, not arithmetic), and `>>` is arithmetic on signed types, logical on unsigned.
-pub(crate) fn int_bit(op: BitOp, ty: IntTy, a: i128, b: i128) -> Result<i128, Trap> {
+#[doc(hidden)]
+pub fn int_bit(op: BitOp, ty: IntTy, a: i128, b: i128) -> Result<i128, Trap> {
     Ok(match op {
         BitOp::And => a & b,
         BitOp::Or => a | b,
@@ -100,7 +107,8 @@ pub(crate) fn int_bit(op: BitOp, ty: IntTy, a: i128, b: i128) -> Result<i128, Tr
 }
 
 /// `a op b` on `f64`s (IEEE).
-pub(crate) fn float_arith(op: ArithOp, a: f64, b: f64) -> f64 {
+#[doc(hidden)]
+pub fn float_arith(op: ArithOp, a: f64, b: f64) -> f64 {
     match op {
         ArithOp::Add => a + b,
         ArithOp::Sub => a - b,
@@ -111,7 +119,8 @@ pub(crate) fn float_arith(op: ArithOp, a: f64, b: f64) -> f64 {
 }
 
 /// `a op b` on `f32`s: computed in single precision, so every result is rounded to `f32`.
-pub(crate) fn f32_arith(op: ArithOp, a: f32, b: f32) -> f32 {
+#[doc(hidden)]
+pub fn f32_arith(op: ArithOp, a: f32, b: f32) -> f32 {
     match op {
         ArithOp::Add => a + b,
         ArithOp::Sub => a - b,
@@ -122,7 +131,8 @@ pub(crate) fn f32_arith(op: ArithOp, a: f32, b: f32) -> f32 {
 }
 
 /// The conversion call `to(x)` for `x` of type `from` (DESIGN §5.1).
-pub(crate) fn convert(from: Num, to: Num, v: &Value) -> Result<Value, Trap> {
+#[doc(hidden)]
+pub fn convert(from: Num, to: Num, v: &Value) -> Result<Value, Trap> {
     let fits = |ty: IntTy, n: i128| -> Result<Value, Trap> {
         if ty.fits(n) {
             Ok(make_int(ty, n))
@@ -166,7 +176,8 @@ fn float_to_int(x: f64, shown: &str, ty: IntTy) -> Result<Value, Trap> {
 }
 
 /// `x.method(args)` on a number of type `num`; `args[0]` is the receiver.
-pub(crate) fn method(m: NumMethod, num: Num, args: &[Value]) -> Result<Value, Trap> {
+#[doc(hidden)]
+pub fn method(m: NumMethod, num: Num, args: &[Value]) -> Result<Value, Trap> {
     match num {
         Num::Int(ty) => int_method(m, ty, args),
         Num::Float => {

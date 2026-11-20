@@ -19,26 +19,28 @@ const STACK_BUDGET: usize = 1 << 20;
 
 /// Where a comparison has to give up to stay on the native stack: once the recursion is
 /// `budget` bytes away from `base`.
-pub(crate) struct Guard {
+#[doc(hidden)]
+pub struct Guard {
     base: usize,
     budget: usize,
 }
 
 impl Guard {
-    /// A guard measuring from `base` (a [`crate::eval::stack_position`]).
-    pub(crate) fn new(base: usize, budget: usize) -> Self {
+    /// A guard measuring from `base` (a [`crate::stack_position`]).
+    #[doc(hidden)]
+    pub fn new(base: usize, budget: usize) -> Self {
         Guard { base, budget }
     }
 
     /// A guard measuring from here, with the default budget.
     fn here() -> Self {
-        Guard::new(crate::eval::stack_position(), STACK_BUDGET)
+        Guard::new(crate::stack_position(), STACK_BUDGET)
     }
 
     /// Whether a recursion `depth` levels in has to stop.
     #[inline]
     fn spent(&self, depth: u32) -> bool {
-        depth > MAX_DEPTH || crate::eval::stack_position().abs_diff(self.base) > self.budget
+        depth > MAX_DEPTH || crate::stack_position().abs_diff(self.base) > self.budget
     }
 }
 
@@ -55,7 +57,9 @@ thread_local! {
 
 /// [`values_equal`] for callers that cannot report an error: when the comparison gives up the
 /// answer is `false` and [`take_gave_up`] says so until the evaluator has turned it into a panic.
-pub(crate) fn equal_or_give_up(a: &Value, b: &Value) -> bool {
+#[inline]
+#[doc(hidden)]
+pub fn equal_or_give_up(a: &Value, b: &Value) -> bool {
     values_equal(a, b).unwrap_or_else(|TooDeep| {
         GAVE_UP.set(true);
         false
@@ -64,18 +68,21 @@ pub(crate) fn equal_or_give_up(a: &Value, b: &Value) -> bool {
 
 /// Whether a comparison gave up since the last call; asking clears it.
 #[inline]
-pub(crate) fn take_gave_up() -> bool {
+#[doc(hidden)]
+pub fn take_gave_up() -> bool {
     GAVE_UP.get() && GAVE_UP.replace(false)
 }
 
 /// Structural equality. Floats compare as IEEE numbers, so a value containing `nan` is not
 /// equal to itself, exactly as `nan == nan` is false.
+#[inline]
 pub fn values_equal(a: &Value, b: &Value) -> Result<bool, TooDeep> {
     equal(a, b, 0, &Guard::here(), &mut Plain).map_err(|_| TooDeep)
 }
 
 /// Equality that consults `ov` first for every user-defined value (a user `impl Eq`).
-pub(crate) fn equal_with(
+#[doc(hidden)]
+pub fn equal_with(
     a: &Value,
     b: &Value,
     guard: &Guard,
@@ -244,6 +251,7 @@ fn equal_collections(
 }
 
 /// `a is b`: whether two reference values are the same object.
+#[inline]
 pub fn values_identical(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::List(x), Value::List(y)) => Rc::ptr_eq(x, y),
@@ -262,7 +270,8 @@ pub fn values_cmp(a: &Value, b: &Value) -> Result<Option<Ordering>, TooDeep> {
 }
 
 /// Ordering that consults `ov` first for every user-defined value (a user `impl Ord`).
-pub(crate) fn cmp_with(
+#[doc(hidden)]
+pub fn cmp_with(
     a: &Value,
     b: &Value,
     guard: &Guard,
@@ -401,9 +410,9 @@ mod tests {
             a = Value::tuple(vec![a]);
             b = Value::tuple(vec![b]);
         }
-        let roomy = Guard::new(crate::eval::stack_position(), STACK_BUDGET);
+        let roomy = Guard::new(crate::stack_position(), STACK_BUDGET);
         assert!(matches!(equal_with(&a, &b, &roomy, &mut Plain), Ok(true)));
-        let used_up = Guard::new(crate::eval::stack_position(), 64);
+        let used_up = Guard::new(crate::stack_position(), 64);
         assert!(matches!(
             equal_with(&a, &b, &used_up, &mut Plain),
             Err(Stop::TooDeep)

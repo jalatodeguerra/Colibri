@@ -761,12 +761,12 @@ impl Interp {
     /// is not resumed in it. Each resumption gets its own instruction budget.
     pub fn tick(&mut self, fiber: &mut Fiber, dt: f64) -> Result<(), Box<PanicInfo>> {
         let _ = fiber;
-        let outermost = self.begin_entry();
+        let outermost = self.core.begin_entry();
         if outermost {
             self.drain_root_drops();
         }
         let result = self.tick_core(dt);
-        self.end_entry(outermost, false);
+        self.core.end_entry(outermost, false);
         match result {
             Ok(()) => Ok(()),
             Err(TickError::Failure(info)) => Err(info),
@@ -915,7 +915,12 @@ impl Interp {
         }
         let name = match &c.callee {
             Callee::Fn(id) => self.fns.get(id.0 as usize).map(|b| b.name.clone()),
-            Callee::Host(id) => self.host.bodies.get(id.0 as usize).map(|b| b.name.clone()),
+            Callee::Host(id) => self
+                .core
+                .host
+                .bodies
+                .get(id.0 as usize)
+                .map(|b| b.name.clone()),
             Callee::Value => match values.first() {
                 Some(Value::Fn(_, name)) => Some(name.to_string()),
                 _ => Some("<closure>".to_string()),
@@ -1062,8 +1067,8 @@ impl Interp {
         self.sched.running.push(id);
         let saved_stack = std::mem::replace(&mut self.native_stack_budget, stack_budget);
         let saved_budget = fresh.then(|| {
-            let allotment = self.budget.allotment;
-            std::mem::replace(&mut self.budget, Budget::fresh(allotment))
+            let allotment = self.core.budget.allotment;
+            std::mem::replace(&mut self.core.budget, Budget::fresh(allotment))
         });
         let ptr: *mut Interp = self;
         let outcome = co.resume(Resume {
@@ -1071,9 +1076,9 @@ impl Interp {
             cancel,
         });
         std::hint::black_box(ptr);
-        let exhausted = fresh && self.budget_was_exhausted();
+        let exhausted = fresh && self.core.budget_was_exhausted();
         if let Some(b) = saved_budget {
-            self.budget = b;
+            self.core.budget = b;
         }
         self.native_stack_budget = saved_stack;
         self.sched.running.pop();
@@ -1181,7 +1186,7 @@ impl Interp {
             );
             return Err(self.panic(fiber, span, message));
         }
-        if self.hook_depth > 0 {
+        if self.core.hook_depth > 0 {
             let message = format!("`{what}` cannot pause inside a `Drop` hook");
             return Err(self.panic(fiber, span, message));
         }
@@ -1337,7 +1342,7 @@ impl Interp {
     fn can_drive(&self, fiber: &Fiber, depth: u32) -> bool {
         fiber.coro.is_none()
             && fiber.host_depth <= depth
-            && self.hook_depth == 0
+            && self.core.hook_depth == 0
             && !self.sched.in_tick
             && self.sched.running.is_empty()
             && !self.sched.shutting_down
@@ -1353,14 +1358,14 @@ impl Interp {
     }
 
     fn can_suspend_for_external(&self, fiber: &Fiber) -> bool {
-        fiber.coro.is_some() && fiber.host_depth <= 1 && self.hook_depth == 0
+        fiber.coro.is_some() && fiber.host_depth <= 1 && self.core.hook_depth == 0
     }
 
     /// The checks of a wait on the main fiber, as panics with a message that says why.
     fn check_drive(&mut self, fiber: &mut Fiber, span: Span, what: &str) -> Eval<()> {
         let why = if fiber.host_depth > 0 {
             "inside a host function's callback"
-        } else if self.hook_depth > 0 {
+        } else if self.core.hook_depth > 0 {
             "inside a `Drop` hook"
         } else if self.sched.in_tick || !self.sched.running.is_empty() {
             "inside a tick"
@@ -1779,7 +1784,7 @@ impl Interp {
         if self.sched.entries.is_empty() || !self.sched.running.is_empty() {
             return;
         }
-        let outermost = self.begin_entry();
+        let outermost = self.core.begin_entry();
         self.sched.shutting_down = true;
         loop {
             let next = self
@@ -1805,7 +1810,7 @@ impl Interp {
         self.sched.signaled.clear();
         self.sched.groups.clear();
         self.sched.ext.completed.clear();
-        self.end_entry(outermost, false);
+        self.core.end_entry(outermost, false);
     }
 }
 

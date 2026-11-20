@@ -3,7 +3,7 @@
 //!
 //! This is the only module that touches a `RefCell`. Every function here borrows, does its
 //! work and releases the borrow before returning, and none of them evaluates Colibri code or
-//! calls back into the interpreter, so a borrow can never be held across evaluation and a
+//! calls back into the engine, so a borrow can never be held across evaluation and a
 //! borrow panic is impossible. Values that leave a collection (removed, replaced, cleared) are
 //! handed back to the caller, which releases them after the borrow has ended, because a
 //! release can run `Drop` hooks.
@@ -74,6 +74,7 @@ impl Guard {
     }
 
     /// Whether anything holds the collection.
+    #[inline]
     pub fn is_held(&self) -> bool {
         self.places.get() + self.iterations.get() > 0
     }
@@ -168,6 +169,7 @@ pub struct ListObj {
 }
 
 impl ListObj {
+    #[inline]
     pub fn new(items: Vec<Value>) -> Rc<ListObj> {
         Rc::new(ListObj {
             items: RefCell::new(items),
@@ -175,20 +177,24 @@ impl ListObj {
         })
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.items.borrow().len()
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// A copy of the element list (each element is a reference bump).
+    #[inline]
     pub fn snapshot(&self) -> Vec<Value> {
         self.items.borrow().clone()
     }
 
     /// The element at `index`, or why there is none.
+    #[inline]
     pub fn get(&self, index: i64) -> Result<Value, OutOfBounds> {
         let items = self.items.borrow();
         let i = in_bounds(index, items.len())?;
@@ -196,14 +202,17 @@ impl ListObj {
     }
 
     /// The element at a position, `None` past the end (for iteration).
+    #[inline]
     pub fn at(&self, i: usize) -> Option<Value> {
         self.items.borrow().get(i).cloned()
     }
 
+    #[inline]
     pub fn first(&self) -> Option<Value> {
         self.items.borrow().first().cloned()
     }
 
+    #[inline]
     pub fn last(&self) -> Option<Value> {
         self.items.borrow().last().cloned()
     }
@@ -213,22 +222,27 @@ impl ListObj {
         f(&self.items.borrow())
     }
 
+    #[inline]
     pub fn iter_hold(&self) -> GuardToken {
         GuardToken::new(&self.guard, Hold::Iteration, None)
     }
 
+    #[inline]
     pub fn place_hold(&self, name: &str) -> GuardToken {
         GuardToken::new(&self.guard, Hold::Place, Some(name))
     }
 
+    #[inline]
     pub fn check_guard(&self) -> Result<(), Violation> {
         self.guard.check()
     }
 
+    #[inline]
     pub fn guard(&self) -> &Guard {
         &self.guard
     }
 
+    #[inline]
     pub fn push(&self, v: Value) -> Result<(), Rejected<Value>> {
         match self.guard.check() {
             Ok(()) => {
@@ -239,12 +253,14 @@ impl ListObj {
         }
     }
 
+    #[inline]
     pub fn pop(&self) -> Result<Option<Value>, Violation> {
         self.guard.check()?;
         Ok(self.items.borrow_mut().pop())
     }
 
     /// Inserts before `index` (`index == len` appends). On failure the value comes back.
+    #[inline]
     pub fn insert(&self, index: i64, v: Value) -> Result<(), (ListError, Value)> {
         if let Err(violation) = self.guard.check() {
             return Err((violation.into(), v));
@@ -260,6 +276,7 @@ impl ListObj {
         }
     }
 
+    #[inline]
     pub fn remove(&self, index: i64) -> Result<Value, ListError> {
         self.guard.check()?;
         let mut items = self.items.borrow_mut();
@@ -268,17 +285,20 @@ impl ListObj {
     }
 
     /// Removes every element and returns them (to be released).
+    #[inline]
     pub fn clear(&self) -> Result<Vec<Value>, Violation> {
         self.guard.check()?;
         Ok(std::mem::take(&mut *self.items.borrow_mut()))
     }
 
+    #[inline]
     pub fn reverse(&self) -> Result<(), Violation> {
         self.guard.check()?;
         self.items.borrow_mut().reverse();
         Ok(())
     }
 
+    #[inline]
     pub fn extend(&self, more: Vec<Value>) -> Result<(), Rejected<Vec<Value>>> {
         match self.guard.check() {
             Ok(()) => {
@@ -294,6 +314,7 @@ impl ListObj {
 
     /// `xs[i] = v` from user code: refused while the list is held. Returns the old element,
     /// or the value back on failure.
+    #[inline]
     pub fn assign(&self, index: i64, v: Value) -> Result<Value, (ListError, Value)> {
         if let Err(violation) = self.guard.check() {
             return Err((violation.into(), v));
@@ -303,10 +324,12 @@ impl ListObj {
 
     /// Stores an element and returns the old one. Unguarded: the write-back of a place that
     /// holds the guard itself.
+    #[inline]
     pub fn write_back(&self, index: i64, v: Value) -> Result<Value, (ListError, Value)> {
         self.replace_at(index, v)
     }
 
+    #[inline]
     fn replace_at(&self, index: i64, v: Value) -> Result<Value, (ListError, Value)> {
         let mut items = self.items.borrow_mut();
         match in_bounds(index, items.len()) {
@@ -332,12 +355,14 @@ impl ListObj {
     }
 
     /// Takes every element out, for destruction. Unguarded.
+    #[inline]
     pub fn take_all(&self) -> Vec<Value> {
         std::mem::take(&mut *self.items.borrow_mut())
     }
 
     /// Replaces all elements and returns the old ones (to be released). Unguarded: the caller
     /// has checked the guard, since it held the guard itself while it worked.
+    #[inline]
     pub fn replace_all(&self, items: Vec<Value>) -> Vec<Value> {
         std::mem::replace(&mut *self.items.borrow_mut(), items)
     }
@@ -366,6 +391,7 @@ pub struct Replaced {
 }
 
 impl MapObj {
+    #[inline]
     pub fn new(entries: OrderedMap) -> Rc<MapObj> {
         Rc::new(MapObj {
             map: RefCell::new(entries),
@@ -373,18 +399,22 @@ impl MapObj {
         })
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.map.borrow().len()
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    #[inline]
     pub fn get(&self, key: &Value) -> Option<Value> {
         self.map.borrow().get(key).cloned()
     }
 
+    #[inline]
     pub fn contains_key(&self, key: &Value) -> bool {
         self.map.borrow().contains(key)
     }
@@ -395,38 +425,46 @@ impl MapObj {
     }
 
     /// Entries in insertion order (each a reference bump).
+    #[inline]
     pub fn snapshot(&self) -> Vec<(Value, Value)> {
         self.map.borrow().iter().cloned().collect()
     }
 
+    #[inline]
     pub fn keys(&self) -> Vec<Value> {
         self.map.borrow().iter().map(|(k, _)| k.clone()).collect()
     }
 
+    #[inline]
     pub fn values(&self) -> Vec<Value> {
         self.map.borrow().iter().map(|(_, v)| v.clone()).collect()
     }
 
     /// The first live entry at or after a position, with the position after it (for
     /// iteration, which holds the guard so positions stay valid).
+    #[inline]
     pub fn next_entry(&self, from: usize) -> Option<(Value, Value, usize)> {
         let map = self.map.borrow();
         (from..map.slots())
             .find_map(|p| map.entry_at(p).map(|(k, v)| (k.clone(), v.clone(), p + 1)))
     }
 
+    #[inline]
     pub fn iter_hold(&self) -> GuardToken {
         GuardToken::new(&self.guard, Hold::Iteration, None)
     }
 
+    #[inline]
     pub fn place_hold(&self, name: &str) -> GuardToken {
         GuardToken::new(&self.guard, Hold::Place, Some(name))
     }
 
+    #[inline]
     pub fn guard(&self) -> &Guard {
         &self.guard
     }
 
+    #[inline]
     pub fn insert(&self, key: Value, value: Value) -> Result<Replaced, Rejected<(Value, Value)>> {
         if let Err(violation) = self.guard.check() {
             return Err(Rejected {
@@ -438,11 +476,13 @@ impl MapObj {
         Ok(Replaced { old, spare_key })
     }
 
+    #[inline]
     pub fn remove(&self, key: &Value) -> Result<Option<(Value, Value)>, Violation> {
         self.guard.check()?;
         Ok(self.map.borrow_mut().remove(key))
     }
 
+    #[inline]
     pub fn clear(&self) -> Result<Vec<(Value, Value)>, Violation> {
         self.guard.check()?;
         Ok(self.map.borrow_mut().take_all())
@@ -463,16 +503,19 @@ impl MapObj {
     }
 
     /// `m[k] = v` from user code: refused while the map is held; adds the key if missing.
+    #[inline]
     pub fn assign(&self, key: Value, value: Value) -> Result<Replaced, Rejected<(Value, Value)>> {
         self.insert(key, value)
     }
 
     /// Replaces the value of a key that exists. Unguarded write-back of a place.
+    #[inline]
     pub fn write_back(&self, key: &Value, value: Value) -> Option<Value> {
         let mut map = self.map.borrow_mut();
         map.get_mut(key).map(|slot| std::mem::replace(slot, value))
     }
 
+    #[inline]
     pub fn take_all(&self) -> Vec<(Value, Value)> {
         self.map.borrow_mut().take_all()
     }
@@ -491,6 +534,7 @@ pub struct SetObj {
 }
 
 impl SetObj {
+    #[inline]
     pub fn new(items: OrderedMap) -> Rc<SetObj> {
         Rc::new(SetObj {
             map: RefCell::new(items),
@@ -498,14 +542,17 @@ impl SetObj {
         })
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.map.borrow().len()
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    #[inline]
     pub fn contains(&self, item: &Value) -> bool {
         self.map.borrow().contains(item)
     }
@@ -515,26 +562,31 @@ impl SetObj {
         f(&self.map.borrow())
     }
 
+    #[inline]
     pub fn snapshot(&self) -> Vec<Value> {
         self.map.borrow().iter().map(|(k, _)| k.clone()).collect()
     }
 
     /// The first live element at or after a position, with the position after it.
+    #[inline]
     pub fn next_item(&self, from: usize) -> Option<(Value, usize)> {
         let map = self.map.borrow();
         (from..map.slots()).find_map(|p| map.entry_at(p).map(|(k, _)| (k.clone(), p + 1)))
     }
 
+    #[inline]
     pub fn iter_hold(&self) -> GuardToken {
         GuardToken::new(&self.guard, Hold::Iteration, None)
     }
 
+    #[inline]
     pub fn guard(&self) -> &Guard {
         &self.guard
     }
 
     /// Adds an element; returns whether it was new, and the argument back if it was not
     /// (the caller releases it).
+    #[inline]
     pub fn add(&self, item: Value) -> Result<(bool, Option<Value>), Rejected<Value>> {
         if let Err(violation) = self.guard.check() {
             return Err(Rejected {
@@ -546,11 +598,13 @@ impl SetObj {
         Ok((old.is_none(), spare))
     }
 
+    #[inline]
     pub fn remove(&self, item: &Value) -> Result<Option<Value>, Violation> {
         self.guard.check()?;
         Ok(self.map.borrow_mut().remove(item).map(|(k, _)| k))
     }
 
+    #[inline]
     pub fn clear(&self) -> Result<Vec<Value>, Violation> {
         self.guard.check()?;
         Ok(self
@@ -562,6 +616,7 @@ impl SetObj {
             .collect())
     }
 
+    #[inline]
     pub fn take_all(&self) -> Vec<Value> {
         self.map
             .borrow_mut()
@@ -582,7 +637,7 @@ impl fmt::Debug for SetObj {
 
 /// A class object: its type and its fields in declaration order.
 ///
-/// Objects die only through the interpreter's `release` (ARCHITECTURE §3), which takes the
+/// Objects die only through the engine's `release` (ARCHITECTURE §3), which takes the
 /// fields out first. A debug build asserts that an object is never dropped any other way.
 pub struct ClassObj {
     ty: TypeId,
@@ -593,6 +648,7 @@ pub struct ClassObj {
 }
 
 impl ClassObj {
+    #[inline]
     pub fn new(ty: TypeId, fields: Vec<Value>) -> Rc<ClassObj> {
         Rc::new(ClassObj {
             ty,
@@ -603,14 +659,18 @@ impl ClassObj {
     }
 
     /// Marks the `Drop` hook as run; `true` if it had run before.
-    pub(crate) fn mark_hooked(&self) -> bool {
+    #[inline]
+    #[doc(hidden)]
+    pub fn mark_hooked(&self) -> bool {
         self.hooked.replace(true)
     }
 
+    #[inline]
     pub fn ty(&self) -> TypeId {
         self.ty
     }
 
+    #[inline]
     pub fn field(&self, idx: usize) -> Option<Value> {
         self.fields.borrow().get(idx).cloned()
     }
@@ -621,12 +681,14 @@ impl ClassObj {
     }
 
     /// A copy of every field (each a reference bump).
+    #[inline]
     pub fn snapshot(&self) -> Vec<Value> {
         self.fields.borrow().to_vec()
     }
 
     /// Stores a field and returns the old value, or hands the value back when there is no
     /// such field.
+    #[inline]
     pub fn set_field(&self, idx: usize, v: Value) -> Result<Value, Value> {
         let mut fields = self.fields.borrow_mut();
         match fields.get_mut(idx) {
@@ -641,6 +703,7 @@ impl ClassObj {
     }
 
     /// Takes the fields out and marks the object destroyed. Only `release` calls this.
+    #[inline]
     pub fn take_fields(&self) -> Vec<Value> {
         self.released.set(true);
         std::mem::take(&mut *self.fields.borrow_mut()).into_vec()

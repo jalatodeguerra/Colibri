@@ -1,15 +1,8 @@
 //! `Option`, `Result` and `Error` (DESIGN §10): their methods and the `Error` value.
 //!
-//! An `Error` is a class object of the prelude type [`ERROR_TYPE`] with four fields:
+//! The layout of the `Error` object, and how one is made and read, is `colibri_core::error`.
 //!
-//! | field | root error | error made by `context` |
-//! |-------|-----------|--------------------------|
-//! | 0 value | the original typed value (kept as it was, so `as[T]` returns it intact) | `()` |
-//! | 1 impl | the index of its `IntoError` implementation, or `-1` | `-1` |
-//! | 2 context | `()` | the context message |
-//! | 3 cause | `()` | the wrapped `Error` |
-//!
-//! So an error is a chain from the outermost `context` down to the root, which holds the
+//! An error is a chain from the outermost `context` down to the root, which holds the
 //! value. `{e}` shows the messages joined by `: `, `message()` the outermost one, `cause()`
 //! the next link, and `is`/`as` look at the value of the root. Objects die through
 //! `Interp::release` like every class object, which releases the kept value.
@@ -28,42 +21,13 @@ use crate::fiber::Fiber;
 use crate::heap::ClassObj;
 use crate::value::Value;
 
-const VALUE: usize = 0;
-const IMPL: usize = 1;
-const CONTEXT: usize = 2;
-const CAUSE: usize = 3;
+use colibri_core::error::{Link, link, new_context_error, new_error};
 
 /// The `Error` object a value is, if it is one.
 pub(crate) fn error_obj(v: &Value) -> Option<&Rc<ClassObj>> {
     match v {
         Value::Obj(o) if o.ty() == ERROR_TYPE => Some(o),
         _ => None,
-    }
-}
-
-/// What one link of an error chain contributes.
-pub(crate) enum Link {
-    /// A message added by `context`, and the error it wraps.
-    Context(Rc<str>, Rc<ClassObj>),
-    /// The root: the kept value, the index of its `IntoError` implementation (`-1`: none) and
-    /// the message the host gave it, if any (a host error keeps a typed value, an enum, and
-    /// says what happened in words: the message wins over the `Show` of the value).
-    Root(Value, i64, Option<Rc<str>>),
-}
-
-/// Reads one link of an error object.
-pub(crate) fn link(obj: &ClassObj) -> Link {
-    let field = |i| obj.field(i).unwrap_or(Value::Unit);
-    match (field(CONTEXT), field(CAUSE)) {
-        (Value::Str(message), Value::Obj(cause)) => Link::Context(message, cause),
-        (Value::Str(message), Value::Unit) => Link::Root(field(VALUE), -1, Some(message)),
-        _ => {
-            let imp = match field(IMPL) {
-                Value::Int(i) => i,
-                _ => -1,
-            };
-            Link::Root(field(VALUE), imp, None)
-        }
     }
 }
 
@@ -101,31 +65,6 @@ fn err_value(v: Value) -> Value {
 impl Interp {
     // ---- making errors ----
 
-    /// A new root error that keeps `value`, converted through the implementation `impl_id`.
-    pub(crate) fn new_error(value: Value, impl_id: i64) -> Value {
-        Value::Obj(ClassObj::new(
-            ERROR_TYPE,
-            vec![value, Value::Int(impl_id), Value::Unit, Value::Unit],
-        ))
-    }
-
-    /// A new root error that keeps the typed `value` (so `e.is[T]()` and `e.as[T]()` see it)
-    /// and shows as `message`.
-    pub(crate) fn new_typed_error(value: Value, message: &str) -> Value {
-        Value::Obj(ClassObj::new(
-            ERROR_TYPE,
-            vec![value, Value::Int(-1), Value::str(message), Value::Unit],
-        ))
-    }
-
-    /// `context`: a new error with the message `message` around `cause`.
-    fn wrap_error(cause: Value, message: Rc<str>) -> Value {
-        Value::Obj(ClassObj::new(
-            ERROR_TYPE,
-            vec![Value::Unit, Value::Int(-1), Value::Str(message), cause],
-        ))
-    }
-
     /// A value converted to an `Error` (an `Error` stays as it is).
     pub(crate) fn convert_to_error(&mut self, value: Value, conv: ErrorConv) -> Value {
         if error_obj(&value).is_some() {
@@ -137,7 +76,7 @@ impl Interp {
             // No implementation: the message is the `Show` of the variant.
             ErrorConv::OpenEnum => -1,
         };
-        Self::new_error(value, impl_id)
+        new_error(value, impl_id)
     }
 
     /// `Result[T, E]` to `Result[T, Error]`.
@@ -150,7 +89,11 @@ impl Interp {
 
     /// The user-written `message` method of an `IntoError` implementation, if it has one.
     pub(crate) fn error_message_fn(&self, impl_id: i64) -> Option<colibri_check::hir::FnId> {
-        let imp = self.dispatch.impls.get(usize::try_from(impl_id).ok()?)?;
+        let imp = self
+            .core
+            .dispatch
+            .impls
+            .get(usize::try_from(impl_id).ok()?)?;
         if imp.derived {
             return None;
         }
@@ -253,7 +196,7 @@ impl Interp {
                 None => recv,
             },
             Builtin::ResultContext => match payload_of(&recv, VARIANT_ERR) {
-                Some(e) => err_value(Self::wrap_error(e, self.message_arg(args, 1))),
+                Some(e) => err_value(new_context_error(e, self.message_arg(args, 1))),
                 None => recv,
             },
             Builtin::ErrorMessage => {
@@ -267,7 +210,7 @@ impl Interp {
                 if error_obj(&recv).is_none() {
                     return Err(bad(self, fiber));
                 }
-                Self::wrap_error(recv, self.message_arg(args, 1))
+                new_context_error(recv, self.message_arg(args, 1))
             }
             Builtin::ErrorCause => match error_obj(&recv).map(|e| link(e)) {
                 Some(Link::Context(_, cause)) => Value::option(Some(Value::Obj(cause))),
@@ -311,7 +254,7 @@ impl Interp {
             Intrinsic::Panic => {
                 let msg = match arg {
                     Value::Str(s) => s.to_string(),
-                    other => crate::show::show(&self.types, other).into_owned(),
+                    other => crate::show::show(&self.core.types, other).into_owned(),
                 };
                 Err(self.panic(fiber, span, msg))
             }

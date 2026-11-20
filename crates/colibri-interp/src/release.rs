@@ -47,13 +47,17 @@ fn push_children(work: &mut Vec<Value>, items: &mut [Value]) {
 impl Interp {
     /// Turns drop tracing on or off (for the test harness); a trace starts empty.
     pub fn set_trace_drops(&mut self, on: bool) {
-        self.trace = on.then(Vec::new);
+        self.core.trace = on.then(Vec::new);
     }
 
     /// The labels of the objects destroyed since tracing was turned on or last taken, in
     /// destruction order.
     pub fn take_trace(&mut self) -> Vec<String> {
-        self.trace.as_mut().map(std::mem::take).unwrap_or_default()
+        self.core
+            .trace
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 
     /// An owned value dies here. If this was the last reference to a class object, the object
@@ -93,7 +97,7 @@ impl Interp {
                 let mut fields = rc.take_fields();
                 push_children(work, &mut fields);
             }
-            Value::Host(rc) if Rc::strong_count(&rc) == 1 => self.free_host_object(&rc),
+            Value::Host(rc) if Rc::strong_count(&rc) == 1 => self.core.free_host_object(&rc),
             Value::List(rc) if Rc::strong_count(&rc) == 1 => {
                 let mut items = rc.take_all();
                 push_children(work, &mut items);
@@ -156,7 +160,7 @@ impl Interp {
     /// else its class name.
     fn trace_destroy(&mut self, obj: &ClassObj) {
         // An `Error` is plumbing, not a user object: its kept value is traced when it dies.
-        if self.trace.is_none()
+        if self.core.trace.is_none()
             || obj.ty() == colibri_check::types::ERROR_TYPE
             || obj.ty() == colibri_check::types::COROUTINE_TYPE
             || obj.ty() == colibri_check::types::COGROUP_TYPE
@@ -165,7 +169,7 @@ impl Interp {
         {
             return;
         }
-        let label = self.types.get(obj.ty().0 as usize).map(|def| {
+        let label = self.core.types.get(obj.ty().0 as usize).map(|def| {
             let named = def
                 .fields()
                 .iter()
@@ -176,7 +180,7 @@ impl Interp {
                 _ => def.name.clone(),
             }
         });
-        if let (Some(trace), Some(label)) = (self.trace.as_mut(), label) {
+        if let (Some(trace), Some(label)) = (self.core.trace.as_mut(), label) {
             trace.push(label);
         }
     }
@@ -187,7 +191,7 @@ impl Interp {
     pub fn release_globals(&mut self) {
         self.cancel_all_coroutines();
         self.sched_forget_failures();
-        let outermost = self.begin_entry();
+        let outermost = self.core.begin_entry();
         let order: Vec<usize> = self.inits.iter().map(|(g, _)| g.0 as usize).collect();
         for g in order.into_iter().rev() {
             if let Some(slot) = self.globals.get_mut(g) {
@@ -195,7 +199,7 @@ impl Interp {
                 self.release(v);
             }
         }
-        self.hook_panics.clear();
+        self.core.hook_panics.clear();
         // Until the initialisers run again, a use of a module value is an error that says so.
         self.uninit = self.inits.iter().map(|(g, _)| g.0 as usize).fold(
             vec![None; self.globals.len()],
@@ -205,7 +209,7 @@ impl Interp {
             },
         );
         self.released = true;
-        self.end_entry(outermost, false);
+        self.core.end_entry(outermost, false);
     }
 
     /// Ends the program's life: module-level values die in reverse initialisation order
@@ -213,7 +217,7 @@ impl Interp {
     pub fn shutdown(&mut self) {
         // Coroutines unwind first: their locals may use module-level values.
         self.cancel_all_coroutines();
-        let outermost = self.begin_entry();
+        let outermost = self.core.begin_entry();
         // Roots die first, then the module's values (EMBEDDING §3).
         self.clear_roots();
         let order: Vec<usize> = self.inits.iter().map(|(g, _)| g.0 as usize).collect();
@@ -224,8 +228,8 @@ impl Interp {
             }
         }
         // A `Drop` hook that panics while the program is shutting down has nobody to tell.
-        self.hook_panics.clear();
-        self.end_entry(outermost, false);
+        self.core.hook_panics.clear();
+        self.core.end_entry(outermost, false);
     }
 }
 
@@ -234,6 +238,6 @@ impl Drop for Interp {
         self.shutdown();
         // Roots and module values are gone; what is left in the host heap dies last, in
         // index order (EMBEDDING §3).
-        self.drop_host_heap();
+        self.core.drop_host_heap();
     }
 }
