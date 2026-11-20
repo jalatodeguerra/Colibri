@@ -62,7 +62,9 @@ impl Interp {
     }
 
     /// Calls a function value (`Fn` or `Closure`) with `args`, which the callee owns. The
-    /// caller keeps `f` alive (it sits on its temporaries) for the whole call.
+    /// caller keeps `f` alive for the whole call, and releases it afterwards: it is a twin on
+    /// its temporaries, except for the closure of a `go` child, which the child's coroutine
+    /// owns alone (`call_values` releases it when the call is over).
     pub(crate) fn call_function_value(
         &mut self,
         fiber: &mut Fiber,
