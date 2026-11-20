@@ -48,6 +48,32 @@ pub(crate) struct Resume {
     pub cancel: bool,
 }
 
+/// A cheap hasher for the coroutine ids that key `Interp::stacks`: ids are small and
+/// sequential, and every resumption looks one up twice, so the default hasher's cost showed.
+/// The multiplication spreads the low bits into the high ones, which the table's tags use.
+#[derive(Default)]
+pub(crate) struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.write_u64(self.0.rotate_left(8) ^ u64::from(*b));
+        }
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+/// The native stacks of the coroutines that have not ended, by id.
+pub(crate) type Stacks =
+    std::collections::HashMap<u64, Box<Co>, std::hash::BuildHasherDefault<IdHasher>>;
+
 pub(crate) type Y = Yielder<Resume, *mut Interp>;
 pub(crate) type Co = Coroutine<Resume, *mut Interp, Finish, DefaultStack>;
 

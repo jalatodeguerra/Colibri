@@ -1,6 +1,5 @@
 //! The recursive evaluator (ARCHITECTURE §2).
 
-use std::collections::HashMap;
 use std::io::Write;
 use std::rc::{Rc, Weak};
 
@@ -41,7 +40,7 @@ pub struct Interp {
     /// a cancel, so this map is empty by the time fields drop. It is declared before `core` so
     /// that if one were ever left, it would drop (a forced unwind of its frames) while the
     /// state those frames point into is still alive.
-    pub(crate) stacks: HashMap<u64, Box<crate::coro::Co>>,
+    pub(crate) stacks: crate::coro::Stacks,
     /// The state shared with the engine-neutral runtime code (`colibri-core`).
     /// Fields drop in declaration order, so `core` (the host state and the host heap) goes
     /// before `host_impls` (the host function closures). Nothing observable depends on it
@@ -93,7 +92,7 @@ impl Interp {
             max_depth: max_call_depth,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
             host_impls: crate::host::HostImpls::default(),
-            stacks: HashMap::new(),
+            stacks: Default::default(),
             cffi: crate::cffi::CffiState::default(),
         }
     }
