@@ -308,6 +308,42 @@ impl Env<'_> {
         }
     }
 
+    /// The methods of the impls that run when `ty` is used through the operator interface
+    /// `iface`: the impl that satisfies it, and the impls its own operator bounds pick
+    /// (`impl[T: Add] Add for W[T]` runs `T`'s `add`), recursively. Only operator interfaces
+    /// are followed: each has one method, so every method listed is reached by the call.
+    pub fn operator_impl_methods(
+        &self,
+        ty: &Ty,
+        iface: TypeId,
+        args: &[Ty],
+        out: &mut Vec<crate::hir::FnId>,
+        depth: usize,
+    ) {
+        if depth > 16 || !crate::types::is_operator(iface) {
+            return;
+        }
+        let Ok(Source::User(id)) = self.implements(ty, iface, args) else {
+            return;
+        };
+        let info = &self.impls[id.0 as usize];
+        out.extend(info.methods.iter().flatten().copied());
+        let params: Vec<ParamId> = info.generics.iter().map(|g| g.id).collect();
+        let mut subst = Vec::new();
+        if !match_ty(&info.target, ty, &params, &mut subst) {
+            return;
+        }
+        for g in &info.generics {
+            let Some((_, arg)) = subst.iter().find(|(q, _)| *q == g.id) else {
+                continue;
+            };
+            for b in &g.bounds {
+                let bargs: Vec<Ty> = b.args.iter().map(|a| a.subst(&subst)).collect();
+                self.operator_impl_methods(arg, b.iface, &bargs, out, depth + 1);
+            }
+        }
+    }
+
     /// [`Env::user`] for one particular impl.
     fn user_with(&self, id: ImplId, ty: &Ty, args: &[Ty]) -> Result<Source, Ty> {
         let info = &self.impls[id.0 as usize];

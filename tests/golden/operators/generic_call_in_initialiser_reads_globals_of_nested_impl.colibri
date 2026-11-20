@@ -1,0 +1,17 @@
+// The impl a generic call picks may have operator bounds of its own: the impls those pick run
+// too, so the globals they read are initialised first.
+struct V { x: int }
+impl Add for V {
+    fn add(self, o: V) -> V => V { x: self.x + o.x + bias }
+}
+struct W[T] { v: T }
+impl[T: Add] Add for W[T] {
+    fn add(self, o: W[T]) -> W[T] => W { v: self.v + o.v }
+}
+fn twice[T: Add](a: T) -> T => a + a
+let s = twice(W { v: V { x: 1 } })
+let bias = 1000
+
+fn main() {
+    print(s.v.x) // expect: 1002
+}
