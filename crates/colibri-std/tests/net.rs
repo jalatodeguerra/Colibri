@@ -4077,9 +4077,10 @@ fn main() -> Result[()] {{
 /// ends, the closure it ran is dropped and the guard must be released, so its `Drop` hook runs.
 ///
 /// The write must still be in flight when the starter returns, whatever the kernel's buffers
-/// are: the peer does not read until a while after the starter has returned, its receive buffer is pinned small
-/// (on Unix, which also stops its autotuning), and the payload is 64 MiB, far above any send
-/// buffer a loopback socket autotunes to (`tcp_wmem` tops out at a few MiB by default).
+/// are: the peer does not read until a while after the starter has returned, its receive
+/// buffer is pinned small (on Unix, which also stops its autotuning), and the payload is
+/// 64 MiB, far above any send buffer a loopback socket autotunes to (`tcp_wmem` tops out at a
+/// few MiB by default).
 #[test]
 fn a_child_writing_through_a_captured_object_releases_it_when_it_ends() {
     const PAYLOAD: usize = 64 * 1024 * 1024;
