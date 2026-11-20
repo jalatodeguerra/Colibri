@@ -173,11 +173,17 @@ pub fn parse_directives(source: &str) -> Directives {
                     Err(problem) => d.malformed.push(format!("line {}: {problem}", i + 1)),
                 }
             } else if let Some(v) = comment.strip_prefix("features:") {
-                d.features.extend(
-                    v.split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty()),
-                );
+                // Names are separated by commas or spaces; each is a feature name as in
+                // `colibri.toml`, so `// features: a b` is two features and a name that is not
+                // one is a failure of the test.
+                for name in v.split([',', ' ', '\t']).filter(|s| !s.is_empty()) {
+                    match colibri::feature_name_problem(name) {
+                        Some((problem, _)) => d
+                            .malformed
+                            .push(format!("line {}: `// features:` {problem}", i + 1)),
+                        None => d.features.push(name.to_string()),
+                    }
+                }
             } else if let Some(v) = comment.strip_prefix("caps:") {
                 d.caps.extend(
                     v.split(',')
@@ -449,7 +455,7 @@ impl PackageDirectives {
     }
 
     /// The directives that apply to the run as a whole. `expect` lines of every file in order;
-    /// `drops`, `panic`, `main-err` and `skip` come from `main.colibri` alone.
+    /// `drops`, `panic`, `main-err`, `skip`, `only`, `caps` and `features` come from `main.colibri` alone.
     fn whole(&self) -> Directives {
         let mut d = Directives::default();
         for (path, files) in &self.files {
@@ -462,10 +468,23 @@ impl PackageDirectives {
                 d.skip = files.skip.clone();
                 d.only = files.only.clone();
             }
-            if !(path == "main.colibri" || path.is_empty()) && files.only.is_some() {
-                d.malformed.push(format!(
-                    "{path}: `// only:` counts in main.colibri alone; it would be ignored here"
-                ));
+            if path == "main.colibri" || path.is_empty() {
+                d.caps = files.caps.clone();
+                d.features = files.features.clone();
+            } else {
+                // Every directive that is about the run as a whole counts in main.colibri
+                // alone: say so instead of ignoring it.
+                for (name, present) in [
+                    ("only", files.only.is_some()),
+                    ("caps", !files.caps.is_empty()),
+                    ("features", !files.features.is_empty()),
+                ] {
+                    if present {
+                        d.malformed.push(format!(
+                            "{path}: `// {name}:` counts in main.colibri alone; it would be ignored here"
+                        ));
+                    }
+                }
             }
             d.malformed.extend(files.malformed.iter().map(|m| {
                 if path.is_empty() {
@@ -812,6 +831,46 @@ mod tests {
                 .malformed
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn caps_and_features_outside_main_colibri_are_a_failure_like_only() {
+        for directive in ["// caps: fs", "// features: fast"] {
+            let files = vec![
+                ("main.colibri".to_string(), "fn main() {}\n".to_string()),
+                ("m.colibri".to_string(), format!("{directive}\n")),
+            ];
+            let malformed = PackageDirectives::parse(&files).whole().malformed;
+            assert_eq!(malformed.len(), 1, "{directive}: {malformed:?}");
+            assert!(
+                malformed[0].starts_with("m.colibri:") && malformed[0].contains("main.colibri"),
+                "{malformed:?}"
+            );
+        }
+        // In main.colibri they count, and reach the run.
+        let files = vec![(
+            "main.colibri".to_string(),
+            "// caps: fs\n// features: fast\nfn main() {}\n".to_string(),
+        )];
+        let d = PackageDirectives::parse(&files).whole();
+        assert!(d.malformed.is_empty(), "{:?}", d.malformed);
+        assert_eq!(
+            (d.caps, d.features),
+            (vec!["fs".into()], vec!["fast".into()])
+        );
+    }
+
+    #[test]
+    fn feature_names_are_split_on_commas_or_spaces_and_checked() {
+        let d = parse_directives("// features: a b, c,d\n");
+        assert_eq!(d.features, ["a", "b", "c", "d"]);
+        assert!(d.malformed.is_empty());
+        for bad in ["a-b", "debug", "os", "1x!"] {
+            let d = parse_directives(&format!("// features: fast {bad}\n"));
+            assert_eq!(d.features, ["fast"], "{bad}");
+            assert_eq!(d.malformed.len(), 1, "{bad}: {:?}", d.malformed);
+            assert!(d.malformed[0].starts_with("line 1:"), "{:?}", d.malformed);
+        }
     }
 
     #[test]
