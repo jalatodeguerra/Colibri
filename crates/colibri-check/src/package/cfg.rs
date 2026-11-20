@@ -124,11 +124,12 @@ pub(crate) fn apply(
             .and_then(|a| a.args.first())
             .and_then(|e| text.get(e.span.start as usize..e.span.end as usize))
             .map(|c| c.split_whitespace().collect::<Vec<_>>().join(" "));
-        let dropped = item.clone();
         if !keep(item, env, diags) {
+            // `keep` took the `@when` off the item; its names and its span are still the
+            // dropped item's, so nothing needs a copy.
             // An item that brings no name (an `impl`, a `test`, `let _ = ..`) is kept with an
             // empty name: no use asks for it, but a tool that reads what was left out finds it.
-            let mut names = names_of(&dropped);
+            let mut names = names_of(item);
             if names.is_empty() {
                 names.push(String::new());
             }
@@ -136,7 +137,7 @@ pub(crate) fn apply(
                 excluded.push(Excluded {
                     name,
                     cond: cond.clone().unwrap_or_default(),
-                    span: dropped.span,
+                    span: item.span,
                 });
             }
             return false;
@@ -295,7 +296,7 @@ fn name(n: &str, span: Span, env: &Env<'_>, diags: &mut Vec<Diagnostic>) -> Opti
         )
     } else if env.known.is_empty() {
         format!(
-            "the names are {}; declare a feature in `colibri.toml` (`[features]` then `{n} = []`) or turn it on with `--feature {n}`",
+            "the names are {}; declare the feature in `colibri.toml` (`[features]` then `{n} = []`), then turn it on with `--feature {n}`",
             known.join(", ")
         )
     } else {

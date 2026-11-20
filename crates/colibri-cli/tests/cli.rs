@@ -964,6 +964,45 @@ fn when_follows_release_and_feature_flags() {
 }
 
 #[test]
+fn the_hint_for_an_unknown_when_name_in_a_package_can_be_followed() {
+    let dir = std::env::temp_dir().join(format!("colibri-cli-when-hint-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("colibri.toml"), "[package]\nname = \"w\"\n").unwrap();
+    std::fs::write(
+        dir.join("main.colibri"),
+        "@when(fast)\nfn speed() -> int => 1\nfn main() {\n    print(1)\n}\n",
+    )
+    .unwrap();
+    let d = dir.to_str().unwrap();
+    let out = colibri(&["check", d]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unknown name `fast` in `@when`"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("declare the feature in `colibri.toml`")
+            && stderr.contains("then turn it on with `--feature fast`"),
+        "{stderr}"
+    );
+    // The flag alone is refused, as the hint says it must come after the declaration.
+    let out = colibri(&["check", d, "--feature", "fast"]);
+    assert_eq!(out.status.code(), Some(1));
+    // Following the hint: declare it, then turn it on.
+    std::fs::write(
+        dir.join("colibri.toml"),
+        "[package]\nname = \"w\"\n\n[features]\nfast = []\n",
+    )
+    .unwrap();
+    let out = colibri(&["check", d, "--feature", "fast"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn feature_names_on_the_command_line_follow_the_manifest_rules() {
     let script = temp_file("feature_names.colibri", "fn main() { print(1) }\n");
     let s = script.to_str().unwrap();
