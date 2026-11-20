@@ -95,9 +95,27 @@ impl FnCtx<'_, '_> {
                                 name.name
                             ));
                         } else if swizzle {
+                            // The example is made of the letters written, kept when the type has
+                            // them, and filled up to the type's own number of components.
+                            let n = tname
+                                .chars()
+                                .last()
+                                .and_then(|c| c.to_digit(10))
+                                .unwrap_or(2) as usize;
+                            let own = &"xyzw"[..n];
+                            let mut letters: Vec<char> =
+                                name.name.chars().filter(|c| own.contains(*c)).collect();
+                            letters.truncate(n);
+                            for c in own.chars() {
+                                if letters.len() < n && !letters.contains(&c) {
+                                    letters.push(c);
+                                }
+                            }
+                            let parts: Vec<String> =
+                                letters.iter().map(|c| format!("v.{c}")).collect();
                             diag = diag.with_hint(format!(
-                                "there are no swizzles: `xy()` and `xyz()` cut a longer vector short, and any other order is written with the constructor, for example `{}(v.z, v.y, v.x)`",
-                                tname.trim_start_matches('i')
+                                "there are no swizzles: `xy()` and `xyz()` cut a longer vector short, and any other order is written with the constructor, for example `vec.{tname}({})`",
+                                parts.join(", ")
                             ));
                         }
                         self.ck.report(diag);

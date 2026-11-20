@@ -1,0 +1,19 @@
+// A type of the standard library is the library's, wherever the library is written: a program
+// cannot implement a built-in interface for it, and it does not count as a type of the program
+// for the operator rule, because the library may add that impl later.
+import vec
+
+impl Add[float] for vec.vec2 { // error: cannot implement the built-in `Add` for `vec2`, which belongs to the standard library
+    fn add(self, k: float) -> vec.vec2 => self
+}
+impl Add for vec.vec3 { // error: cannot implement the built-in `Add` for `vec3`, which belongs to the standard library
+    fn add(self, o: vec.vec3) -> vec.vec3 => self
+}
+impl Ord for vec.vec2 { // error: cannot implement the built-in `Ord` for `vec2`, which belongs to the standard library
+    fn cmp(self, o: vec.vec2) -> int => 0
+}
+impl Mul[vec.vec2, vec.vec2] for int { // error: cannot implement the built-in `Mul` for the built-in type `int`
+    fn mul(self, v: vec.vec2) -> vec.vec2 => v
+}
+
+fn main() {}

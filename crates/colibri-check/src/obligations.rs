@@ -61,6 +61,18 @@ fn is_narrow(ty: &Ty) -> bool {
     matches!(ty, Ty::Int(t) if !matches!(t, crate::types::IntTy::I64 | crate::types::IntTy::U64))
 }
 
+/// A narrow integer type in `ty`, at its top or among the type arguments inside it.
+fn find_narrow(ty: &Ty) -> Option<Ty> {
+    if is_narrow(ty) {
+        return Some(ty.clone());
+    }
+    match ty {
+        Ty::Adt(_, args) => args.iter().find_map(find_narrow),
+        Ty::Tuple(items) => items.iter().find_map(find_narrow),
+        _ => None,
+    }
+}
+
 /// The narrow integer an operator bound would hand to run-time dispatch: the bounded type
 /// itself, or the right-hand type when the bound leaves it to a type parameter.
 fn narrow_operand(ob: &Obligation) -> Option<Ty> {
@@ -193,6 +205,19 @@ impl Checker<'_> {
             },
             Err(blame) => blame,
         };
+        // An operator bound failing because of a narrow integer in the type (`W[i32]`) or in the
+        // right-hand type: say so, instead of "does not implement" with a hint to add an impl.
+        let blame = if crate::types::is_operator(ob.iface)
+            && matches!(ob.origin, Origin::Bound { .. })
+            && !is_narrow(&blame)
+        {
+            std::iter::once(&ob.ty)
+                .chain(ob.args.iter())
+                .find_map(find_narrow)
+                .unwrap_or(blame)
+        } else {
+            blame
+        };
         let diag = self.explain(ob, &blame);
         self.report(diag);
         false
@@ -286,9 +311,13 @@ impl Checker<'_> {
                     let name = &self.types[ob.iface.0 as usize].name;
                     let message = if blame == &ob.ty {
                         format!("`{blamed}` cannot be used for `{param}: {name}` yet")
-                    } else {
+                    } else if ob.args.first() == Some(blame) {
                         format!(
                             "`{blamed}` cannot be used as the right-hand type of `{param}: {name}` yet"
+                        )
+                    } else {
+                        format!(
+                            "`{blamed}`, the type argument of `{shown}`, cannot be used for `{param}: {name}` yet"
                         )
                     };
                     return Diagnostic::error(
@@ -299,7 +328,7 @@ impl Checker<'_> {
                         *bound_span,
                         format!("the bound `{param}: {iface_name}` of `{func}` is declared here"),
                     )
-                    .with_hint("generic code cannot tell integer widths apart yet (its overflow would trap at 64 bits); use `int`, or write the function for `i32` alone");
+                    .with_hint(format!("generic code cannot tell integer widths apart yet; the narrow type here is `{blamed}`: convert that operand to `int` (`int(x)`), or write the function for `{blamed}` alone"));
                 }
                 let message = if blame == &ob.ty {
                     format!("`{shown}` does not implement `{iface_name}`")

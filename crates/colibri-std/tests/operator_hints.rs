@@ -37,7 +37,24 @@ fn another_swizzle_says_to_use_the_constructor() {
     let (message, hint) = with_vec3("print(v.zyx)\n");
     assert_eq!(message, "the struct `vec3` has no field `zyx`");
     assert!(hint.contains("there are no swizzles"), "{hint}");
-    assert!(hint.contains("`vec3(v.z, v.y, v.x)`"), "{hint}");
+    assert!(hint.contains("`vec.vec3(v.z, v.y, v.x)`"), "{hint}");
+}
+
+#[test]
+fn the_swizzle_example_fits_the_type_it_is_about() {
+    for (make, field, example) in [
+        ("vec.vec2(1.0, 2.0)", "zyx", "`vec.vec2(v.y, v.x)`"),
+        ("vec.ivec3(1, 2, 3)", "zyx", "`vec.ivec3(v.z, v.y, v.x)`"),
+        (
+            "vec.vec4(1.0, 2.0, 3.0, 4.0)",
+            "zyx",
+            "`vec.vec4(v.z, v.y, v.x, v.w)`",
+        ),
+        ("vec.ivec2(1, 2)", "yx", "`vec.ivec2(v.y, v.x)`"),
+    ] {
+        let (_, hint) = first_error(&format!("import vec\nlet v = {make}\nprint(v.{field})\n"));
+        assert!(hint.contains(example), "{make}.{field}: {hint}");
+    }
 }
 
 #[test]
@@ -130,4 +147,30 @@ fn a_missing_impl_for_a_user_type_is_suggested() {
         first_error("fn f[T: Add](a: T, b: T) -> T => a + b\nstruct S {}\nlet x = f(S {}, S {})\n");
     assert_eq!(message, "`S` does not implement `Add[S, S]`");
     assert_eq!(hint, "add `impl Add[S, S] for S { ... }`");
+}
+
+#[test]
+fn a_narrow_integer_inside_a_generic_impl_gets_the_cannot_be_used_message() {
+    let (message, hint) = first_error(
+        "struct W[T] { v: T }\nimpl[T: Add] Add for W[T] {\n    fn add(self, o: W[T]) -> W[T] => W { v: self.v + o.v }\n}\nfn twice[T: Add](a: T) -> T => a + a\nlet w = twice(W { v: i32(2) })\n",
+    );
+    assert_eq!(
+        message,
+        "`i32`, the type argument of `W[i32]`, cannot be used for `T: Add` yet"
+    );
+    assert!(hint.contains("the narrow type here is `i32`"), "{hint}");
+    assert!(!hint.contains("impl Add"), "{hint}");
+}
+
+#[test]
+fn a_narrow_right_operand_with_a_wide_left_one_points_at_the_narrow_operand() {
+    let (message, hint) = first_error(
+        "fn named[T: Mul[i32, T]](a: T, k: i32) -> T => a * k\nlet x = named(int(2), i32(3))\n",
+    );
+    assert_eq!(
+        message,
+        "`i32` cannot be used as the right-hand type of `T: Mul` yet"
+    );
+    assert!(hint.contains("convert that operand to `int`"), "{hint}");
+    assert!(!hint.contains("use a type of your own"), "{hint}");
 }

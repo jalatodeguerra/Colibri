@@ -28,9 +28,11 @@ fn sum[T: Add](xs: List[T], zero: T) -> T {
 
 fn flip[T: Neg](x: T) -> T => -x
 
-// the program can add its own impls to the library's types
-impl Sub[float, vec2] for vec2 {
-    fn sub(self, k: float) -> vec2 => self - vec2(k, k)
+// the program can add an operator to the library's types when the right-hand type is its own
+// (a library type on the right would let the library add the same impl later)
+struct Offset { k: float }
+impl Sub[Offset] for vec2 {
+    fn sub(self, o: Offset) -> vec2 => self - vec2(o.k, o.k)
 }
 
 fn main() {
@@ -40,7 +42,7 @@ fn main() {
     print(sum([ivec2(1, 2), ivec2(3, 4)], ivec2(0, 0)))
     print(flip(vec2(1, -2)))
     print(flip(ivec2(1, -2)))
-    print(vec2(5, 5) - 1.5)
+    print(vec2(5, 5) - Offset { k: 1.5 })
     var seen: Map[ivec2, int] = {:}
     seen[ivec2(1, 1)] = 7
     seen[ivec2(1, 1)] += 1

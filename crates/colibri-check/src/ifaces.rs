@@ -282,16 +282,46 @@ impl<'a> Checker<'a> {
         // output type does not count, and neither does a type parameter `R`: either could be a
         // built-in type, and a built-in operator must never be replaceable. Only numbers can be
         // the left operand of a user type, so no other built-in type qualifies.
+        // A type of a standard library module written in Colibri (`vec.vec2`) is the library's,
+        // like the types of a host module: the library may add impls for it later, so a program
+        // cannot write one of the built-in interfaces for it, and a type of the library is not
+        // "a type of the program" for the rule above. (The library's own sources are exempt.)
+        let in_std = self.std_files.contains(&iface_expr.span.file);
+        let of_std = |ck: &Self, t: &Ty| {
+            matches!(t, Ty::Adt(id, _) if id.0 >= FIRST_USER_TYPE
+                && ck.std_files.contains(&ck.types[id.0 as usize].span.file))
+        };
+        let program_ty = |ck: &Self, t: &Ty| {
+            matches!(t, Ty::Adt(id, _) if id.0 >= FIRST_USER_TYPE) && (in_std || !of_std(ck, t))
+        };
+        let std_target = !in_std && of_std(self, &target);
         let theirs = is_binary_operator(iface)
-            && matches!(&target, Ty::Int(_) | Ty::Float | Ty::F32)
-            && matches!(iface_args.first(), Some(Ty::Adt(id, _)) if id.0 >= FIRST_USER_TYPE);
+            && (std_target || matches!(&target, Ty::Int(_) | Ty::Float | Ty::F32))
+            && iface_args.first().is_some_and(|a| program_ty(self, a));
+        if iface.0 < FIRST_USER_TYPE && std_target && !theirs {
+            self.report(
+                Diagnostic::error(
+                    format!("cannot implement the built-in `{iface_name}` for `{target_shown}`, which belongs to the standard library"),
+                    iface_expr.span,
+                )
+                .with_hint(if is_binary_operator(iface) {
+                    format!("the orphan rule: the standard library may add impls for its own types, so `{target_shown}` gets an operator impl only when its right-hand type is yours (`impl {iface_name}[YourType] for {target_shown}`); wrap it in your own struct, or declare your own interface")
+                } else {
+                    format!("the orphan rule: `impl I for T` must be written in the package that defines `I` or `T`, and `{target_shown}` belongs to the standard library; wrap it in your own struct, or declare your own interface")
+                }),
+            );
+            return;
+        }
         if iface.0 < FIRST_USER_TYPE && target_builtin && !theirs {
+            let std_rhs = iface_args.first().is_some_and(|a| of_std(self, a)) && !in_std;
             self.report(
                 Diagnostic::error(
                     format!("cannot implement the built-in `{iface_name}` for the built-in type `{target_shown}`"),
                     iface_expr.span,
                 )
-                .with_hint(if is_binary_operator(iface) {
+                .with_hint(if std_rhs && is_binary_operator(iface) {
+                    format!("the orphan rule: the right-hand type of `impl {iface_name}[..] for {target_shown}` must be a type of your own; a type of the standard library does not count, because the library may add that impl later")
+                } else if is_binary_operator(iface) {
                     format!("the orphan rule: `impl I for T` must be written in the package that defines `I` or `T`; an operator interface may also be implemented for a number type when its right-hand type is yours (`impl {iface_name}[YourType, YourType] for float`); the output type and a type parameter do not count")
                 } else {
                     "the orphan rule: `impl I for T` must be written in the package that defines `I` or `T`; wrap the type in your own struct, or declare your own interface".to_string()
