@@ -3265,6 +3265,239 @@ mod tests {
         assert!(line_of(&mut r).is_err());
     }
 
+    // ---- `read_until` and the line limit ----
+
+    /// What a `read_until` look gives on `r`: the bytes before the delimiter (`Some`, or `None`
+    /// at the end), or the name of the error, or "pending".
+    fn until(r: &mut Reader, delim: &[u8], max: usize) -> Result<Option<Vec<u8>>, String> {
+        match delim_probe(r, delim, max, "peer") {
+            Probe::Failed(e) => Err(variant(&e)),
+            Probe::Pending(_) => Err("pending".to_string()),
+            Probe::Ready => Ok(take_until(r, delim, max, "peer").unwrap().map(|b| b.0)),
+        }
+    }
+
+    /// A delimiter of one or more bytes is found wherever the stream is cut into arrivals: the
+    /// pieces come one, two, three bytes at a time and whole, and the bytes after a delimiter are
+    /// the start of the next call. The cases have delimiters that begin inside themselves and
+    /// inside the data (`aab` in `xaaab`), a `\r` before `\r\n`, and a `\n` inside the data.
+    #[test]
+    fn a_delimiter_is_found_however_the_stream_is_cut_into_reads() {
+        let cases: [(&[u8], &[u8], &[&[u8]]); 8] = [
+            (b"\r\n", b"a\nb\r\n\r\nc", &[b"a\nb", b""]),
+            (b"\r\n", b"a\r\r\nbb\r\n", &[b"a\r", b"bb"]),
+            (b"\n", b"ab\ncd\n", &[b"ab", b"cd"]),
+            (b"--==", b"x-y--=-=--==z--==", &[b"x-y--=-=", b"z"]),
+            (b"aab", b"xaaabaab", &[b"xa", b""]),
+            (b"ab", b"aab", &[b"a"]),
+            (b"\x00", b"\x00\x00a\x00", &[b"", b"", b"a"]),
+            (b"abcabd", b"abcabcabdz", &[b"abc"]),
+        ];
+        for (delim, stream, expected) in cases {
+            for piece in [1, 2, 3, stream.len()] {
+                let mut r = reader(b"", false);
+                let mut got = Vec::new();
+                for chunk in stream.chunks(piece) {
+                    r.data.extend_from_slice(chunk);
+                    // Every call that can end does, before the next bytes arrive.
+                    while got.len() < expected.len() {
+                        match until(&mut r, delim, 100) {
+                            Ok(Some(v)) => got.push(v),
+                            Err(e) if e == "pending" => break,
+                            other => panic!("{delim:?} {stream:?} {piece}: {other:?}"),
+                        }
+                    }
+                }
+                let expected: Vec<Vec<u8>> = expected.iter().map(|e| e.to_vec()).collect();
+                assert_eq!(got, expected, "{delim:?} in {stream:?}, {piece} at a time");
+            }
+        }
+    }
+
+    /// A look scans the bytes that came since the last one, backing up by the length of the
+    /// delimiter less one: the part already searched is not searched again, so a stream that
+    /// arrives a byte at a time costs a linear amount and not a quadratic one. What the last look
+    /// covered is `delim_clear` (the number of bytes after the first unread one that hold no
+    /// start of the delimiter), and the next look begins there.
+    #[test]
+    fn a_look_for_a_delimiter_covers_only_the_new_bytes() {
+        for delim in [&b"\n"[..], b"\r\n", b"abcd"] {
+            let mut r = reader(b"", false);
+            for n in 1..=3000usize {
+                r.data.push(b'x');
+                assert!(until(&mut r, delim, 1 << 20).is_err());
+                assert_eq!(
+                    r.delim_clear,
+                    n.saturating_sub(delim.len() - 1),
+                    "{delim:?} after {n} bytes: the next look would start earlier"
+                );
+            }
+            // Taking bytes starts the count again (the positions are relative to the first unread
+            // byte), and so does another delimiter (the bytes were searched for the first).
+            r.take(10);
+            assert_eq!(r.delim_clear, 0);
+            r.data.push(b'x');
+            assert!(until(&mut r, delim, 1 << 20).is_err());
+            assert!(r.delim_clear > 0);
+            r.delim_clear = 5;
+            let _ = until(&mut r, b"zz", 1 << 20);
+            assert_eq!(r.delim, b"zz");
+            assert_eq!(r.delim_clear, r.available().len() - 1);
+        }
+    }
+
+    /// What one look for a delimiter covered says nothing to a look for another delimiter, nor to
+    /// a `read_line` (its `scanned` is for `\n` alone): a `read_until` that is cancelled and
+    /// followed by a `read_until` of another delimiter, or by a `read_line`, or the other way
+    /// round, finds what is there.
+    #[test]
+    fn what_one_look_covered_says_nothing_to_another_kind_of_call() {
+        let mut r = reader(b"aaaaaab", false);
+        assert!(until(&mut r, b"zz", 100).is_err());
+        // `ab` starts at 5: a look that took the cleared bytes of the search for `zz` (6 of them)
+        // as its own would start after it.
+        assert_eq!(until(&mut r, b"ab", 100), Ok(Some(b"aaaaa".to_vec())));
+        let mut r = reader(b"abc\r", false);
+        assert!(matches!(
+            line_probe(&mut r, "p", MAX_LINE),
+            Probe::Pending(_)
+        ));
+        assert_eq!(r.scanned, 4);
+        assert_eq!(until(&mut r, b"c", 100), Ok(Some(b"ab".to_vec())));
+        let mut r = reader(b"abc\r\nd", false);
+        assert!(until(&mut r, b"zz", 100).is_err());
+        assert_eq!(line_of(&mut r).unwrap(), Some("abc".to_string()));
+    }
+
+    /// `max` counts the bytes before the delimiter. With a delimiter of one byte the call fails
+    /// when the byte after `max` bytes is not the delimiter (`max + 1` bytes and no delimiter),
+    /// not at `max`; a delimiter of two bytes whose first byte is the byte after `max` waits for
+    /// its second (the delimiter straddles the limit and the content is `max` bytes).
+    #[test]
+    fn read_until_fails_at_one_byte_more_than_max_and_not_at_max() {
+        const MAX: usize = 16;
+        let x = |n: usize, tail: &[u8]| {
+            let mut v = vec![b'x'; n];
+            v.extend_from_slice(tail);
+            v
+        };
+        let look = |data: &[u8], delim: &[u8], eof: bool| {
+            let mut r = reader(data, eof);
+            let got = until(&mut r, delim, MAX);
+            let kept = r.available().len();
+            (got, kept)
+        };
+        let content = Ok(Some(vec![b'x'; MAX]));
+        let pending = Err("pending".to_string());
+        let long = Err("LineTooLong".to_string());
+        for delim in [&b"\n"[..], b"\r\n", b"--"] {
+            // The delimiter right after `max` bytes: fine. (`max - 1` too.)
+            assert_eq!(look(&x(MAX, delim), delim, false).0, content, "{delim:?}");
+            assert_eq!(
+                look(&x(MAX - 1, delim), delim, false).0,
+                Ok(Some(vec![b'x'; MAX - 1]))
+            );
+            // `max` bytes and nothing more yet: it may still come.
+            assert_eq!(look(&x(MAX, b""), delim, false).0, pending, "{delim:?}");
+            // One byte more, and it is not the delimiter (nor the start of one): too long, and the
+            // bytes stay.
+            assert_eq!(
+                look(&x(MAX + 1, b""), delim, false),
+                (long.clone(), MAX + 1)
+            );
+            // The delimiter after `max + 1` bytes starts too late.
+            assert_eq!(look(&x(MAX + 1, delim), delim, false).0, long, "{delim:?}");
+        }
+        // A delimiter that straddles the limit: its first byte is the byte after `max` bytes. It
+        // waits for the rest, completes, and the content is `max` bytes.
+        assert_eq!(look(&x(MAX, b"\r"), b"\r\n", false).0, pending);
+        assert_eq!(look(&x(MAX, b"\r\n"), b"\r\n", false).0, content);
+        assert_eq!(look(&x(MAX, b"-"), b"--", false).0, pending);
+        // ... and fails when what follows is not the rest of it.
+        assert_eq!(
+            look(&x(MAX, b"\rx"), b"\r\n", false),
+            (long.clone(), MAX + 2)
+        );
+        assert_eq!(look(&x(MAX, b"-x"), b"--", false).0, long);
+        // A delimiter of three bytes, cut after one and after two.
+        assert_eq!(look(&x(MAX, b"ab"), b"abc", false).0, pending);
+        assert_eq!(look(&x(MAX - 1, b"xab"), b"abc", false).0, pending);
+        assert_eq!(look(&x(MAX, b"abx"), b"abc", false).0, long);
+        // A start that is not at the end of the bytes (`xab` ... a start at `max`) and one past it.
+        assert_eq!(look(&x(MAX, b"abc"), b"abc", false).0, content);
+        assert_eq!(look(&x(MAX + 1, b"abc"), b"abc", false).0, long);
+        // Nothing before the delimiter, and a `max` of 0.
+        let mut r = reader(b"\r\n", false);
+        assert_eq!(until(&mut r, b"\r\n", 0), Ok(Some(vec![])));
+        let mut r = reader(b"x", false);
+        assert_eq!(until(&mut r, b"\r\n", 0).unwrap_err(), "LineTooLong");
+        let mut r = reader(b"\r", false);
+        assert_eq!(until(&mut r, b"\r\n", 0).unwrap_err(), "pending");
+        // The bytes that arrive later are looked at again from the start of the unread part:
+        // too long when a later arrival shows it.
+        let mut r = reader(&x(MAX, b"\r"), false);
+        assert_eq!(until(&mut r, b"\r\n", MAX).unwrap_err(), "pending");
+        r.data.push(b'y');
+        assert_eq!(until(&mut r, b"\r\n", MAX).unwrap_err(), "LineTooLong");
+        assert_eq!(r.available().len(), MAX + 2);
+    }
+
+    /// At the end of the stream: nothing pending is `None`; bytes pending are `UnexpectedEnd` (and
+    /// stay, for `read`), unless there are more than `max` of them, which is `LineTooLong` as it
+    /// is before the end.
+    #[test]
+    fn read_until_at_the_end_of_the_stream() {
+        let mut r = reader(b"", true);
+        assert_eq!(until(&mut r, b"\r\n", 16), Ok(None));
+        let mut r = reader(b"abc\r", true);
+        assert_eq!(until(&mut r, b"\r\n", 16).unwrap_err(), "UnexpectedEnd");
+        assert_eq!(r.available(), b"abc\r");
+        // Again: the same, the bytes are still there.
+        assert_eq!(until(&mut r, b"\r\n", 16).unwrap_err(), "UnexpectedEnd");
+        // Exactly `max` bytes pending: not too long. One more: too long.
+        let mut r = reader(&[b'x'; 16], true);
+        assert_eq!(until(&mut r, b"\r\n", 16).unwrap_err(), "UnexpectedEnd");
+        let mut r = reader(&[b'x'; 17], true);
+        assert_eq!(until(&mut r, b"\r\n", 16).unwrap_err(), "LineTooLong");
+        assert_eq!(r.available().len(), 17);
+        // A delimiter that was there comes before the end.
+        let mut r = reader(b"ab\r\ncd", true);
+        assert_eq!(until(&mut r, b"\r\n", 16), Ok(Some(b"ab".to_vec())));
+        assert_eq!(until(&mut r, b"\r\n", 16).unwrap_err(), "UnexpectedEnd");
+        assert_eq!(r.available(), b"cd");
+    }
+
+    /// The limit of `read_line` is a parameter of the look: a line of `limit` bytes is fine with
+    /// either end of line, one more byte is too long, and a limit that is changed between two
+    /// looks of one read counts at the second look.
+    #[test]
+    fn the_line_limit_is_the_one_given_at_each_look() {
+        let line = |n: usize, end: &[u8]| {
+            let mut v = vec![b'x'; n];
+            v.extend_from_slice(end);
+            v
+        };
+        for end in [&b"\n"[..], b"\r\n"] {
+            let mut r = reader(&line(16, end), false);
+            assert_eq!(
+                take_line(&mut r, "p", 16).unwrap().unwrap().len(),
+                16,
+                "{end:?}"
+            );
+            let mut r = reader(&line(17, end), false);
+            assert!(matches!(line_probe(&mut r, "p", 16), Probe::Failed(_)));
+            assert_eq!(r.available().len(), 17 + end.len());
+        }
+        let mut r = reader(&line(16, b""), false);
+        assert!(matches!(line_probe(&mut r, "p", 16), Probe::Pending(_)));
+        assert!(matches!(line_probe(&mut r, "p", 15), Probe::Failed(_)));
+        let mut r = reader(&line(16, b""), false);
+        assert!(matches!(line_probe(&mut r, "p", 16), Probe::Pending(_)));
+        r.data.extend_from_slice(&line(30, b"\n"));
+        assert!(matches!(line_probe(&mut r, "p", 100), Probe::Ready));
+        assert!(matches!(line_probe(&mut r, "p", 16), Probe::Failed(_)));
+    }
+
     /// `read_line` of a line that is not text takes the line off the stream, and the line after
     /// it is still there.
     #[test]
@@ -4337,6 +4570,156 @@ mod tests {
         });
         assert_eq!(held, Some(0), "the read kept a buffer across its wait");
         assert_eq!(ran, 0);
+    }
+
+    /// A `read_until` call on `sh`, behind its turn, with the probe and take of the module.
+    fn until_call(
+        cx: &mut Ctx,
+        sh: &Arc<Shared>,
+        delim: &'static [u8],
+        max: usize,
+        limit: Limit,
+    ) -> Result<Option<Bytes>, TypedError> {
+        let ticket = sh.reads.ticket();
+        sh.read_call(
+            cx,
+            ticket,
+            limit,
+            move |r| delim_probe(r, delim, max, "p"),
+            move |r| take_until(r, delim, max, "p"),
+        )
+    }
+
+    /// A `read_until` that waits with nothing buffered holds no buffer (like `read_line`); one
+    /// that waits with the start of a match buffered keeps its bytes, and with them the room they
+    /// have, and a cancel of that wait leaves them for the next call: the call after it, with the
+    /// rest of the delimiter, gives all of it. (The hook runs where the wait was just armed and
+    /// cancels it.)
+    #[test]
+    fn a_read_until_that_waits_keeps_what_it_holds_and_a_cancel_loses_nothing() {
+        let (c, mut peer) = conn_pair();
+        let sh = Arc::clone(&c.sh);
+        let (empty, partial, left, after) = with_cx(move |cx| {
+            let seen = Arc::new(Mutex::new(None));
+            let probe = Arc::clone(&seen);
+            let shared = Arc::clone(&sh);
+            arm_probe::set_hook(move |cell| {
+                *probe.lock().unwrap() = Some(shared.reader.lock().unwrap().data.capacity());
+                cell.fire(poll::Why::Cancelled);
+            });
+            let first = until_call(cx, &sh, b"\r\n", 100, Limit::NONE);
+            assert!(first.is_err(), "the wait was cancelled");
+            let empty = seen.lock().unwrap().take();
+            // Half a delimiter arrives; the read waits again with it buffered.
+            peer.write_all(b"ab\r").unwrap();
+            let shared = Arc::clone(&sh);
+            let probe = Arc::clone(&seen);
+            arm_probe::set_hook(move |cell| {
+                let r = shared.reader.lock().unwrap();
+                *probe.lock().unwrap() = Some(r.data.capacity());
+                assert_eq!(r.available(), b"ab\r", "the bytes were let go of");
+                drop(r);
+                cell.fire(poll::Why::Cancelled);
+            });
+            let second = until_call(cx, &sh, b"\r\n", 100, Limit::NONE);
+            assert!(second.is_err(), "the wait was cancelled");
+            let partial = seen.lock().unwrap().take();
+            let left = sh.reader.lock().unwrap().available().to_vec();
+            peer.write_all(b"\nrest").unwrap();
+            let after = until_call(cx, &sh, b"\r\n", 100, Limit::NONE)
+                .map_err(|e| variant(&e))
+                .map(|b| b.map(|b| b.0));
+            (empty, partial, left, after)
+        });
+        assert_eq!(empty, Some(0), "the read kept a buffer across its wait");
+        assert!(partial.unwrap() > 0, "the half match has no room");
+        assert_eq!(left, b"ab\r");
+        assert_eq!(after, Ok(Some(b"ab".to_vec())));
+        assert_eq!(c.sh.reader.lock().unwrap().available(), b"rest");
+    }
+
+    /// A delimiter that is buffered is taken without a wait: the call arms nothing (the hook for
+    /// every arm counts them), and the bytes after it are for the next call.
+    #[test]
+    fn a_buffered_delimiter_is_taken_without_a_wait() {
+        let (c, mut peer) = conn_pair();
+        peer.write_all(b"one\r\ntwo\r\nthree").unwrap();
+        let (armed, got) = with_cx(move |cx| {
+            let armed = Arc::new(Mutex::new(0usize));
+            let count = Arc::clone(&armed);
+            arm_probe::set_hook_for_every_arm(move |cell| {
+                *count.lock().unwrap() += 1;
+                cell.fire(poll::Why::Cancelled);
+            });
+            let mut got = Vec::new();
+            for _ in 0..2 {
+                let line = on_read(
+                    cx,
+                    &c,
+                    |r| delim_probe(r, b"\r\n", 100, "p"),
+                    |r| take_until(r, b"\r\n", 100, "p"),
+                );
+                got.push(line.map(|b| b.map(|b| b.0)).map_err(|e| variant(&e)));
+            }
+            let armed = *armed.lock().unwrap();
+            arm_probe::set_hook_for_every_arm(|_| {});
+            (armed, got)
+        });
+        assert_eq!(got, [Ok(Some(b"one".to_vec())), Ok(Some(b"two".to_vec()))]);
+        assert_eq!(armed, 0);
+    }
+
+    /// The deadline of a call counts from the call and the call ends with `Timeout`, with the
+    /// half match still readable.
+    #[test]
+    fn a_read_until_that_times_out_keeps_the_bytes() {
+        let (c, mut peer) = conn_pair();
+        let sh = Arc::clone(&c.sh);
+        peer.write_all(b"half\r").unwrap();
+        let shared = Arc::clone(&sh);
+        let failed = with_cx(move |cx| {
+            let limit = Limit {
+                deadline: Some(Instant::now() + Duration::from_millis(150)),
+                timeout: Duration::from_millis(150),
+            };
+            until_call(cx, &shared, b"\r\n", 100, limit)
+                .map(|_| ())
+                .map_err(|e| variant(&e))
+        });
+        assert_eq!(failed, Err("Timeout".to_string()));
+        assert_eq!(sh.reader.lock().unwrap().available(), b"half\r");
+    }
+
+    /// A wake that said "ready" is owed its try for a `read_until` as for a `read_line` (see
+    /// `a_ready_wake_that_resumes_after_the_deadline_still_gets_its_read_unit`): the data arrives
+    /// before the deadline, the thread is held until after it, and the call gets its bytes.
+    #[test]
+    fn a_ready_wake_that_resumes_after_the_deadline_still_gets_its_read_until() {
+        let (c, mut peer) = conn_pair_fixed();
+        let sh = Arc::clone(&c.sh);
+        let _keep = peer.try_clone().unwrap();
+        let result = with_cx(move |cx| {
+            let limit = Limit {
+                deadline: Some(Instant::now() + Duration::from_millis(1500)),
+                timeout: Duration::from_millis(1500),
+            };
+            let deadline = limit.deadline.unwrap();
+            arm_probe::set_hook(move |cell| {
+                peer.write_all(b"line\r\n").unwrap();
+                let began = Instant::now();
+                while !cell.is_resolved() {
+                    assert!(began.elapsed() < Duration::from_secs(20), "no wake");
+                    std::thread::yield_now();
+                }
+                while Instant::now() < deadline + Duration::from_millis(100) {
+                    std::hint::spin_loop();
+                }
+            });
+            until_call(cx, &sh, b"\r\n", 100, limit)
+                .map(|b| b.map(|b| b.0))
+                .map_err(|e| variant(&e))
+        });
+        assert_eq!(result, Ok(Some(b"line".to_vec())));
     }
 
     /// A wait that ends because the poller stopped (or broke) is an error of `net` that says so,
