@@ -3268,3 +3268,35 @@ fn rename_in_a_big_tree_takes_seconds_not_minutes() {
         assert!(took < std::time::Duration::from_secs(5), "{name}: {took:?}");
     }
 }
+
+#[test]
+fn a_masked_non_ascii_credential_keeps_the_columns_after_it() {
+    // The manifest text the loader keeps for the error printer has the credential masked; the
+    // masks must be as long as the characters in UTF-16, or the end column of a diagnostic on
+    // the value is wrong (`éé` is two units, a 4-byte character two for itself).
+    let dir = temp_dir("masked_columns");
+    let manifest =
+        "[package]\nname = \"demo\"\n\n[dependencies]\nfoo = { git = \"https://éé😀:p@h/r\" }\n";
+    let toml = write(&dir, "colibri.toml", manifest);
+    let main_text = "fn main() {}\n";
+    let main = write(&dir, "main.colibri", main_text);
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, main_text);
+    let d = c.diags(&toml);
+    assert_eq!(d.len(), 1, "{d:?}");
+    let value = "\"https://éé😀:p@h/r\"";
+    let (line, col) = pos_of(manifest, value);
+    let units: u32 = value.encode_utf16().count() as u32;
+    assert_eq!(
+        d[0]["range"]["start"],
+        json!({"line": line, "character": col})
+    );
+    assert_eq!(
+        d[0]["range"]["end"],
+        json!({"line": line, "character": col + units}),
+        "{d:?}"
+    );
+    let shown = d[0].to_string();
+    assert!(!shown.contains(":p@"), "{shown}");
+    c.shutdown();
+}

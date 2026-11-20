@@ -1020,6 +1020,20 @@ pub fn redact(text: &str) -> String {
     })
 }
 
+/// `text` with each character replaced by a mask character of the same length in UTF-8 and in
+/// UTF-16 (`*`, or a stand-in of two, three or four bytes), so that the spans into the text, and
+/// the columns an editor computes from them, stay right whatever the credential held.
+pub(super) fn mask_str(text: &str) -> String {
+    text.chars()
+        .map(|c| match c.len_utf8() {
+            1 => '*',
+            2 => '\u{a4}',
+            3 => '\u{2022}',
+            _ => '\u{1f512}',
+        })
+        .collect()
+}
+
 /// [`redact`] with every hidden byte replaced by a `*`, so the text keeps its length and the
 /// spans into it stay right: what the loader hands to the error printer in place of a
 /// manifest or lock file, which show the line an error is on.
@@ -1028,7 +1042,7 @@ pub fn mask_credentials(text: &str) -> String {
         if may_stay && is_plain_user(userinfo) {
             userinfo.to_string()
         } else {
-            "*".repeat(userinfo.len())
+            mask_str(userinfo)
         }
     })
 }
@@ -1092,7 +1106,7 @@ fn mask_line_before_at(line: &str) -> String {
         Some((start, end)) => format!(
             "{}{}{}",
             &line[..start],
-            "*".repeat(end - start),
+            mask_str(&line[start..end]),
             &line[end..]
         ),
         None => line.to_string(),
@@ -1144,17 +1158,37 @@ pub fn redact_url(url: &str) -> String {
 /// The url values (`git` in a manifest, `url` in a lock file) of `tables`, as the spans of
 /// their literals, when the value has a problem before its `@`.
 fn spans_with_credentials(entries: &[super::toml::Entry], out: &mut Vec<(usize, usize)>) {
-    use super::toml::ValueKind;
     for e in entries {
-        match &e.value.kind {
-            ValueKind::Str(s) if matches!(e.key.as_str(), "git" | "url") => {
-                if userinfo_problem(s).is_some() {
-                    out.push((e.value.span.start as usize, e.value.span.end as usize));
-                }
+        value_spans(&e.value, matches!(e.key.as_str(), "git" | "url"), out);
+    }
+}
+
+/// [`spans_with_credentials`] for one value. `url` is whether the value stands under a `git` or
+/// `url` key: a wrong value there (`git = ["https://u:pass@h/r"]`, `git = { u = "..." }`) is
+/// quoted in the error about its type, so every string in it is masked, at any depth.
+fn value_spans(value: &super::toml::Value, url: bool, out: &mut Vec<(usize, usize)>) {
+    use super::toml::ValueKind;
+    match &value.kind {
+        ValueKind::Str(s) if url => {
+            if userinfo_problem(s).is_some() {
+                out.push((value.span.start as usize, value.span.end as usize));
             }
-            ValueKind::Table(inner) => spans_with_credentials(inner, out),
-            _ => {}
         }
+        ValueKind::Array(items) => {
+            for item in items {
+                value_spans(item, url, out);
+            }
+        }
+        ValueKind::Table(inner) => {
+            for e in inner {
+                value_spans(
+                    &e.value,
+                    url || matches!(e.key.as_str(), "git" | "url"),
+                    out,
+                );
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1174,15 +1208,19 @@ pub fn mask_source_text(text: &str) -> String {
             for t in &tables {
                 spans_with_credentials(&t.entries, &mut spans);
             }
-            let mut bytes = text.as_bytes().to_vec();
+            let mut masked = String::with_capacity(text.len());
+            let mut done = 0;
+            spans.sort_unstable();
             for (s, e) in spans {
-                let e = e.min(bytes.len());
-                for b in &mut bytes[s.min(e)..e] {
-                    *b = b'*';
+                let e = e.min(text.len());
+                if s < done || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
+                    continue;
                 }
+                masked.push_str(&text[done..s]);
+                masked.push_str(&mask_str(&text[s..e]));
+                done = e;
             }
-            // Only whole literals were overwritten with ASCII.
-            let masked = String::from_utf8(bytes).unwrap_or_else(|_| "*".repeat(text.len()));
+            masked.push_str(&text[done..]);
             // A comment may hold a url too.
             masked
                 .split_inclusive('\n')
@@ -1605,6 +1643,45 @@ mod tests {
             assert_eq!(masked.len(), broken.len());
             assert!(!masked.contains("s3cret"), "{masked}");
         }
+    }
+
+    #[test]
+    fn a_wrong_value_of_a_git_key_is_masked_at_any_depth() {
+        for text in [
+            "[dependencies]\nj = { git = [\"https://u:pa ss3cret@h/r\"] }\n",
+            "[dependencies]\nj = { git = { u = \"https://u:pa ss3cret@h/r\" } }\n",
+            "[dependencies]\nj = { git = [[\"x\"], [\"https://u:pa ss3cret@h/r\"]] }\n",
+            "[git.j]\nurl = [\"https://u:pa ss3cret@h/r\"]\ncommit = \"abc\"\n",
+        ] {
+            let masked = mask_source_text(text);
+            assert_eq!(masked.len(), text.len(), "{text}");
+            assert!(!masked.contains("s3cret"), "{text}: {masked}");
+        }
+        // A string that is not under a url key is not touched.
+        let other = "[package]\nname = \"x\"\nnote = \"me@home\"\n";
+        assert_eq!(mask_source_text(other), other);
+    }
+
+    #[test]
+    fn masks_have_the_length_of_what_they_hide_in_utf8_and_utf16() {
+        for text in ["abc", "éé", "日本", "😀😀", "a é 日 😀"] {
+            let masked = mask_str(text);
+            assert_eq!(masked.len(), text.len(), "{text}");
+            assert_eq!(
+                masked.encode_utf16().count(),
+                text.encode_utf16().count(),
+                "{text}"
+            );
+            assert_eq!(masked.chars().count(), text.chars().count());
+            assert!(!masked.contains(|c: char| text.contains(c) && c != '*'));
+            // Masking what is masked changes nothing.
+            assert_eq!(mask_str(&masked), masked);
+        }
+        let text = "[dependencies]\nj = { git = \"https://éé😀:p@h/r\" }\n";
+        let masked = mask_source_text(text);
+        assert_eq!(masked.len(), text.len());
+        assert_eq!(masked.encode_utf16().count(), text.encode_utf16().count());
+        assert!(!masked.contains("éé"), "{masked}");
     }
 
     #[test]
