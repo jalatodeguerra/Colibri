@@ -71,11 +71,15 @@ pub struct Options {
     /// that never returns holds its connection until `stop`'s grace ends it, and a body that
     /// trickles is bounded by `body_timeout` for each piece only.
     pub handler_timeout: float = 60.0
-    /// Open connections. At the cap the server stops accepting until one ends. A connection
-    /// holds no more than one line of its head (`max_request_line`, then `max_header_bytes`
-    /// for a field line) plus the header fields kept so far (at most `max_header_bytes`), about
-    /// 130 KiB with the defaults and less than 1 KiB when idle; bodies are never held whole. So
-    /// 1,024 connections hold at most about 130 MiB of requests.
+    /// Open connections. At the cap the server stops accepting until one ends. What a
+    /// connection costs (measured with the defaults): about 100 KiB for the connection itself
+    /// (its coroutine, stack and socket objects), about 107 KiB with a request line of 8,000
+    /// bytes pending, and about 143 KiB at worst, with fields kept up to `max_header_bytes`
+    /// and a field line of that size pending; plus 64 KiB while it lingers or drains. A
+    /// handler that calls `Request.body` or `Request.text` holds up to `max_body_bytes` more for
+    /// its request (10 MiB by default), which is the application's choice: the server itself
+    /// never holds a body. So 1,024 connections take about 100 MiB idle and about 145 MiB with
+    /// requests in flight, and more when handlers hold bodies.
     pub max_connections: int = 1024
     /// The `Server` header of every response; "" sends none.
     pub server_name: str = ""

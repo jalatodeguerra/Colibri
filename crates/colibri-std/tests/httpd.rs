@@ -2137,6 +2137,24 @@ fn a_request_line_of_exactly_its_limit_is_served() {
 }
 
 #[test]
+fn a_field_line_between_8_and_64_kib_is_served() {
+    let server = Server::hello_with(SLOW_HEAD);
+    let mut w = server.connect();
+    // A large cookie: 10 KiB, over `max_request_line` and well under `max_header_bytes`.
+    let cookie = "a".repeat(10 * 1024);
+    w.send(format!(
+        "GET / HTTP/1.1\r\nHost: test\r\nCookie: {cookie}\r\n\r\n"
+    ));
+    assert_eq!(w.read().status, 200);
+    // And on the same connection, a request line over its limit is still refused before its
+    // end arrives: the line limits are set again for each request.
+    w.send(format!("GET /{}", "a".repeat(9000)));
+    assert_eq!(w.read().status, 414);
+    w.expect_closed();
+    server.finish();
+}
+
+#[test]
 fn a_field_line_over_its_limit_is_a_431_before_its_end_arrives() {
     let server = Server::hello_with(SLOW_HEAD);
     let mut w = server.connect();
