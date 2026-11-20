@@ -4101,3 +4101,24 @@ fn a_rename_never_edits_a_file_outside_the_open_folder_even_through_a_link() {
     assert_eq!(std::fs::read_to_string(&x).unwrap(), x_text);
     c.shutdown();
 }
+
+#[test]
+fn the_refusal_for_left_out_code_names_the_file_by_its_path_in_the_folder() {
+    // A workspace can have two files with one name: the message gives the path in the folder.
+    let dir = temp_dir("left_out_path");
+    write(&dir, "colibri.toml", "[package]\nname = \"demo\"\n");
+    write(&dir, "util.colibri", "pub fn other() -> int => 0\n");
+    let sub = "pub fn helper(x: int) -> int => x + 1\n@when(os == \"linux\" && os == \"macos\")\npub fn helper(x: int) -> int => x + 2\n";
+    write(&dir, "sub/util.colibri", sub);
+    let main_text = "import sub.util\nfn main() {\n    print(util.helper(1))\n}\n";
+    let main = write(&dir, "main.colibri", main_text);
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, main_text);
+    let err = c
+        .prepare_rename(&main, pos_of(main_text, "helper(1)"))
+        .unwrap_err();
+    let message = err["message"].as_str().unwrap();
+    assert!(message.contains("`sub/util.colibri` (line 2)"), "{message}");
+    assert!(!message.contains('\\'), "{message}");
+    c.shutdown();
+}

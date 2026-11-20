@@ -877,7 +877,7 @@ impl<'c> Server<'c> {
             self.settings.root.as_deref(),
         )?;
         pkg.refuse_if_incomplete(plan.info)?;
-        pkg.refuse_if_left_out(plan.info)?;
+        pkg.refuse_if_left_out(plan.info, self.settings.root.as_deref())?;
         for (a, r) in &pkg.parts[1..] {
             if let Some(o) = rename::occ_of_meaning(a, r, what) {
                 rename::plan(a, r, o, &pkg.editable, self.settings.root.as_deref())?;
@@ -912,7 +912,7 @@ impl<'c> Server<'c> {
             self.settings.root.as_deref(),
         )?;
         pkg.refuse_if_incomplete(plan.info)?;
-        pkg.refuse_if_left_out(plan.info)?;
+        pkg.refuse_if_left_out(plan.info, self.settings.root.as_deref())?;
         rename::check_new_name(plan.info, &p.new_name)?;
         let old_name = plan.info.name.clone();
         if p.new_name == old_name {
@@ -1353,16 +1353,16 @@ impl Package {
     /// Refuses a rename while an item that a false `@when` left out of the program mentions the
     /// name: the program does not read that item, so its uses would not be renamed and the
     /// other configuration would break. A local variable cannot be used by such an item.
-    fn refuse_if_left_out(&self, info: &DefInfo) -> Result<(), String> {
+    fn refuse_if_left_out(&self, info: &DefInfo, root: Option<&Path>) -> Result<(), String> {
         if self.local {
             return Ok(());
         }
         for (analysis, _) in &self.parts {
-            refuse_if_left_out(&analysis.sources, &analysis.program, &info.name)?;
+            refuse_if_left_out(&analysis.sources, &analysis.program, &info.name, root)?;
         }
         for pending in &self.rest {
             let (sources, loaded) = pending.program();
-            refuse_if_left_out(sources, loaded, &info.name)?;
+            refuse_if_left_out(sources, loaded, &info.name, root)?;
         }
         Ok(())
     }
@@ -1443,7 +1443,12 @@ fn mentions_word(text: &str, name: &str) -> bool {
 
 /// Whether a rename of `name` is refused because an item that a false `@when` left out of a
 /// module of the package mentions it.
-fn refuse_if_left_out(sources: &SourceMap, program: &Loaded, name: &str) -> Result<(), String> {
+fn refuse_if_left_out(
+    sources: &SourceMap,
+    program: &Loaded,
+    name: &str,
+    root: Option<&Path>,
+) -> Result<(), String> {
     for (module, meta) in program.metas.iter().enumerate() {
         if meta.dependency {
             continue;
@@ -1466,10 +1471,8 @@ fn refuse_if_left_out(sources: &SourceMap, program: &Loaded, name: &str) -> Resu
                 continue;
             }
             let path = canon(Path::new(sources.name(span.file)));
-            let shown = path.file_name().map_or_else(
-                || path.display().to_string(),
-                |n| n.to_string_lossy().into_owned(),
-            );
+            // Relative to the open folder with `/`: a workspace can have two `main.colibri`.
+            let shown = rename::shown(root, &path);
             let line = LineIndex::new(sources.text(span.file))
                 .range(span.start as usize, span.end as usize)
                 .start
