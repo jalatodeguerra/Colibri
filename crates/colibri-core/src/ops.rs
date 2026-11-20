@@ -68,6 +68,7 @@ pub trait Operators: Engine {
 
 impl<E: Engine> Operators for E {}
 
+#[inline(always)]
 fn binary_of<E: Engine>(
     engine: &mut E,
     fiber: &mut E::Fiber,
@@ -131,6 +132,7 @@ fn binary_of<E: Engine>(
 
 /// The value of a literal.
 #[doc(hidden)]
+#[inline]
 pub fn literal(lit: &Lit) -> Value {
     match lit {
         Lit::Unit => Value::Unit,
@@ -146,6 +148,7 @@ pub fn literal(lit: &Lit) -> Value {
 
 /// Checked 64-bit integer arithmetic: overflow and division by zero are faults, `/` truncates
 /// toward zero and `%` takes the sign of the dividend.
+#[inline]
 fn int_arith(op: ArithOp, a: i64, b: i64) -> Result<i64, Fault> {
     match op {
         ArithOp::Add => a.checked_add(b).ok_or(Fault::Overflow),
@@ -159,6 +162,7 @@ fn int_arith(op: ArithOp, a: i64, b: i64) -> Result<i64, Fault> {
 }
 
 /// Compares two values of the same type; `None` if they are not what the operand kind says.
+#[inline]
 fn compare(op: CmpOp, operand: Operand, l: &Value, r: &Value) -> Option<bool> {
     fn by_ord<T: PartialOrd + ?Sized>(op: CmpOp, a: &T, b: &T) -> bool {
         match op {
