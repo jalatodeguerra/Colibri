@@ -295,7 +295,7 @@ fn sleep_for(planned: Option<Instant>, now: Instant) -> Option<Duration> {
 
 /// Resolves the cells that a locked operation collected, after the lock is gone: every one of
 /// them, also when a callback panics; the first panic is given back for the caller to deal with.
-fn fire_all(to_fire: Vec<(Arc<Cell>, Why)>) -> Option<Box<dyn std::any::Any + Send>> {
+pub(super) fn fire_all(to_fire: Vec<(Arc<Cell>, Why)>) -> Option<Box<dyn std::any::Any + Send>> {
     let mut panic = None;
     for (cell, why) in to_fire {
         if let Err(p) = catch_unwind(AssertUnwindSafe(|| cell.fire(why))) {

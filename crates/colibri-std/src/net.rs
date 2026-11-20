@@ -755,13 +755,18 @@ impl Turns {
     /// the notification.
     ///
     /// The parked cells are resolved with `Why::Closed` (each looks at the flag and at its
-    /// deadline to find out whether that is what happened).
+    /// deadline to find out whether that is what happened). Every cell is resolved even if the
+    /// callback of one of them panics; the first such panic is then passed on to the caller.
     #[cfg_attr(not(test), allow(dead_code))]
     fn wake(&self) {
         let parked = std::mem::take(&mut self.lock().parked);
         self.advanced.notify_all();
-        for cell in parked.into_values() {
-            cell.fire(poll::Why::Closed);
+        let cells = parked
+            .into_values()
+            .map(|cell| (cell, poll::Why::Closed))
+            .collect();
+        if let Some(panic) = poll::fire_all(cells) {
+            std::panic::resume_unwind(panic);
         }
     }
 
@@ -870,7 +875,16 @@ impl Drop for Ticket {
             drop(st);
             self.turns.advanced.notify_all();
             if let Some(cell) = next {
-                cell.fire(poll::Why::Turn);
+                // A callback that panics is the dropper's panic, unless the dropper is already
+                // unwinding: a second panic then would abort the process.
+                let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    cell.fire(poll::Why::Turn)
+                }));
+                if let Err(panic) = fired {
+                    if !std::thread::panicking() {
+                        std::panic::resume_unwind(panic);
+                    }
+                }
             }
         } else {
             st.skipped.insert(self.id);
@@ -2752,6 +2766,64 @@ mod tests {
         // Nothing of the dropped ticket is left in the queue.
         assert_eq!(parked(&turns), 0);
         drop(c2);
+    }
+
+    /// A callback that panics does not keep the other parked cells from being resolved when a
+    /// close wakes them, and does not abort the process when the ticket that hands on the turn is
+    /// dropped by an unwinding thread.
+    #[test]
+    fn a_panicking_callback_of_a_parked_cell_is_contained() {
+        use poll::{Cell, Why};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use std::sync::mpsc;
+        let ceiling = Duration::from_secs(30);
+        let panicking = || Cell::new(|_| panic!("the callback panics"));
+        let quiet = || {
+            let (tx, rx) = mpsc::channel();
+            (
+                Cell::new(move |why| {
+                    let _ = tx.send(why);
+                }),
+                rx,
+            )
+        };
+
+        // A close: the first cell panics, the other two are resolved all the same, and the
+        // panic reaches the caller of `wake`.
+        let turns = Turns::new();
+        let _first = turns.ticket();
+        let (second, third, fourth) = (turns.ticket(), turns.ticket(), turns.ticket());
+        let (c3, rx3) = quiet();
+        let (c4, rx4) = quiet();
+        second.park(&panicking());
+        third.park(&c3);
+        fourth.park(&c4);
+        assert!(catch_unwind(AssertUnwindSafe(|| turns.wake())).is_err());
+        assert_eq!(rx3.recv_timeout(ceiling).unwrap(), Why::Closed);
+        assert_eq!(rx4.recv_timeout(ceiling).unwrap(), Why::Closed);
+
+        // A turn handed on to a callback that panics: a panic of the dropper when it is not
+        // unwinding already...
+        let turns = Turns::new();
+        let first = turns.ticket();
+        let second = turns.ticket();
+        let bomb = panicking();
+        second.park(&bomb);
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(first))).is_err());
+        drop(second);
+
+        // ...and nothing but the first panic when it is (a second one would abort here).
+        let turns = Turns::new();
+        let first = turns.ticket();
+        let second = turns.ticket();
+        let bomb = panicking();
+        second.park(&bomb);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            let _held = first;
+            panic!("the thread is unwinding");
+        }));
+        assert!(outcome.is_err());
+        drop(second);
     }
 
     /// A poller that cannot be made is the system's error (the text for running out of
