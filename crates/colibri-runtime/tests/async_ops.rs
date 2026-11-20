@@ -120,6 +120,12 @@ fn on_the_main_fiber_the_wait_runs_the_loop() {
         counter.fetch_add(1, Ordering::SeqCst) + 1
     })
     .unwrap();
+    // A monotonic clock for the script, in microseconds since the test began.
+    let began = Instant::now();
+    vm.register_fn("micros", move |_cx: &mut colibri::Ctx| -> i64 {
+        i64::try_from(began.elapsed().as_micros()).unwrap_or(i64::MAX)
+    })
+    .unwrap();
     let watched = Arc::clone(&ticks);
     vm.register_fn("until_ticks", move |cx: &mut colibri::Ctx, want: i64| {
         let watched = Arc::clone(&watched);
@@ -145,16 +151,25 @@ fn main() {
     go ticker()
     let seen = until_ticks(6)
     print("seen {seen >= 6}")
+    let v = slow(210, 3)
+    print("got {v}")
     let before = ticked()
+    let started = micros()
     wait(0.2)
+    let waited = micros() - started
     let after = ticked()
     print("kept going {after - before >= 3}")
+    // A lower bound only: a slow machine may wait longer, never less.
+    print("waited long enough {waited >= 200000}")
 }
 "#,
     )
     .unwrap();
     vm.run_main().unwrap();
-    assert_eq!(out.contents(), "seen true\nkept going true\n");
+    assert_eq!(
+        out.contents(),
+        "seen true\ngot 3\nkept going true\nwaited long enough true\n"
+    );
     vm.cancel_coroutines();
 }
 
