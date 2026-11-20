@@ -44,7 +44,7 @@ use std::collections::{BinaryHeap, HashMap};
 use std::io;
 use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
@@ -231,14 +231,6 @@ enum Halt {
     Failed(String),
 }
 
-/// What a locked operation takes out of the table and must not drop under the lock: dropping
-/// it can run arbitrary code (a callback's captures, the close of a socket).
-#[allow(dead_code)] // the fields are held only to be dropped
-enum Trash {
-    Socket(Arc<dyn Source>),
-    Cell(Arc<Cell>),
-}
-
 struct Table {
     halt: Option<Halt>,
     /// The next key of a registration or a waiter (one counter, never reused; a `usize` because
@@ -257,8 +249,13 @@ struct Table {
     planned: Option<Instant>,
     /// Cells to resolve once the lock is released.
     to_fire: Vec<(Arc<Cell>, Why)>,
-    /// To drop once the lock is released.
-    trash: Vec<Trash>,
+    /// What is dropped once the lock is released. The rule: a socket is dropped under the lock
+    /// (right after its registration is deleted), so that whoever resolved a wait can rely on
+    /// the descriptor being released when its `fire` has returned (`close()` promises that a
+    /// listener's port is free when it returns); closing a plain socket cannot call back into
+    /// the poller. Everything that can run arbitrary code when it drops (a cell, with its
+    /// callback and clean-ups) goes here and is dropped after the lock.
+    trash: Vec<Arc<Cell>>,
 }
 
 struct Shared {
@@ -267,6 +264,9 @@ struct Shared {
     /// How many times the thread went round its loop. A poller that sleeps without a timeout
     /// does not move it while nothing happens; one that ticks does (a test looks).
     loops: AtomicU64,
+    /// Whether the thread caught a panic (a test looks: the halt reason does not say when the
+    /// poller was stopped first).
+    panicked: AtomicBool,
 }
 
 impl Drop for Shared {
@@ -345,7 +345,7 @@ impl Shared {
         let reg = waiter.reg;
         let dir = waiter.dir;
         self.ended(t, &waiter);
-        t.trash.push(Trash::Cell(waiter.cell));
+        t.trash.push(waiter.cell);
         if let Some(reg) = reg {
             if let Some(r) = t.regs.get_mut(&reg) {
                 match dir {
@@ -386,7 +386,7 @@ impl Shared {
             // Failing here means the system has dropped the registration already; there is
             // nothing left to undo. The reference is released after the call, never before.
             let _ = self.os.delete(borrowed(&*reg.socket));
-            t.trash.push(Trash::Socket(reg.socket));
+            drop(reg.socket);
             return;
         }
         let event = polling::Event::new(key, reg.read.is_some(), reg.write.is_some());
@@ -403,7 +403,7 @@ impl Shared {
             let reg = t.regs.remove(&key).expect("looked up above");
             t.by_raw.remove(&reg.raw);
             let _ = self.os.delete(borrowed(&*reg.socket));
-            t.trash.push(Trash::Socket(reg.socket));
+            drop(reg.socket);
         }
     }
 
@@ -515,16 +515,19 @@ impl Shared {
         let cells = to_fire
             .into_iter()
             .chain(waiters.into_values().map(|w| (w.cell, Why::Failed)));
-        // A callback that panics here is lost with the thread; the others still run.
+        // The sockets go before any callback runs, as in `rearm`: a waiter that wakes finds its
+        // descriptor released. A callback that panics here is lost with the thread; the others
+        // still run.
+        drop(regs);
         let _ = fire_all(cells.collect());
         drop(trash);
-        drop(regs);
     }
 }
 
 /// The thread's body.
 fn run(shared: &Shared) {
     if let Err(panic) = catch_unwind(AssertUnwindSafe(|| shared.run_loop())) {
+        shared.panicked.store(true, Ordering::SeqCst);
         let mut t = shared.lock();
         if t.halt.is_none() {
             let why = panic
@@ -575,6 +578,7 @@ impl Poller {
                 trash: Vec::new(),
             }),
             loops: AtomicU64::new(0),
+            panicked: AtomicBool::new(false),
         });
         let thread = {
             let shared = Arc::clone(&shared);
@@ -806,6 +810,12 @@ impl Poller {
         self.shared.lock().heap.len()
     }
 
+    /// The shared state itself, so that a test can look at it after the poller is gone.
+    #[cfg(test)]
+    fn shared_for_test(&self) -> Arc<Shared> {
+        Arc::clone(&self.shared)
+    }
+
     /// A probe that says whether the poller's shared state is gone, which it is once the thread
     /// has left and the poller has been dropped.
     #[cfg(test)]
@@ -915,18 +925,32 @@ mod tests {
         );
     }
 
+    /// The size of the buffers of the pair: fixed, so that the system's automatic sizing does not
+    /// open the peer's window later on (macOS does, on loopback). Setup, not what is tested.
+    const BUFFER: usize = 64 * 1024;
+
     /// A connected loopback pair, both ends non-blocking: the end that waits (shared, as the
-    /// poller holds a reference to it) and its peer.
+    /// poller holds a reference to it) and its peer. The writer's send buffer and the peer's
+    /// receive buffer have a fixed size (set before the connection, as the system wants for the
+    /// receive buffer).
     fn pair() -> (Arc<TcpStream>, TcpStream) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let peer = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        peer.set_recv_buffer_size(BUFFER).unwrap();
+        peer.connect(&SockAddr::from(listener.local_addr().unwrap()))
+            .unwrap();
+        let peer = TcpStream::from(peer);
         let (server, _) = listener.accept().unwrap();
+        SockRef::from(&server).set_send_buffer_size(BUFFER).unwrap();
         server.set_nonblocking(true).unwrap();
         peer.set_nonblocking(true).unwrap();
         (Arc::new(server), peer)
     }
 
-    /// Writes until the socket takes no more; how many bytes that was.
+    /// Writes until the first `WouldBlock`; how many bytes it took. Setup, not what is tested:
+    /// the buffers have a fixed size (see `BUFFER`), and a test that follows must not rely on the
+    /// socket staying unwritable (a window update can still make room), so each says how it can
+    /// still fail.
     fn fill(socket: &TcpStream) -> usize {
         let chunk = vec![0u8; 64 * 1024];
         let mut total = 0;
@@ -937,6 +961,34 @@ mod tests {
                 Err(e) => panic!("filling the send buffer: {e}"),
             }
             assert!(total < 1 << 30, "the send buffer never filled");
+        }
+    }
+
+    /// What the product code does with a write wait: write until the socket would block or fails,
+    /// and on `WouldBlock` arm again and wait again (a `Ready` only means "try again": room for
+    /// some bytes, a reset, or nothing at all). The kind of the error that ends it, within the
+    /// ceiling.
+    fn write_until_it_fails(p: &Poller, socket: &Arc<TcpStream>) -> ErrorKind {
+        let began = Instant::now();
+        let chunk = vec![0u8; 16 * 1024];
+        loop {
+            assert!(
+                began.elapsed() < CEILING,
+                "the write never failed: the reset did not end the write wait"
+            );
+            match (&**socket).write(&chunk) {
+                Ok(_) => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    let (cell, rx) = cell();
+                    p.arm(socket, Dir::Write, Some(began + CEILING), &cell)
+                        .unwrap();
+                    match rx.recv_timeout(CEILING) {
+                        Ok(Why::Ready | Why::TimedOut) => {}
+                        other => panic!("the write wait ended with {other:?}"),
+                    }
+                }
+                Err(e) => return e.kind(),
+            }
         }
     }
 
@@ -961,20 +1013,32 @@ mod tests {
         }
     }
 
-    /// Nothing is registered and nobody waits, and the table holds no reference to `socket`.
+    /// Right after a read and a write wait were armed on one socket: either the table holds one
+    /// registration with two waiters (the thing under test), or the write wait has already ended
+    /// (a system may report a socket as writable from a low-water mark, so an early `Ready` on a
+    /// write wait is honest), and then the read wait still holds the registration and the reason
+    /// of the write is given back. The test can still fail: two registrations, a lost read, or
+    /// anything but those two shapes.
+    fn both_or_write_already_ended(p: &Poller, write_rx: &mpsc::Receiver<Why>) -> Option<Why> {
+        match p.counts() {
+            (1, 2) => None,
+            (1, 1) => Some(expect(write_rx)),
+            other => {
+                panic!("neither one registration with two waiters nor the read alone: {other:?}")
+            }
+        }
+    }
+
+    /// Nothing is registered and nobody waits, and the table holds no reference to `socket`. The
+    /// count is checked at once, with no waiting: a socket is released under the table lock, so
+    /// when the call that ended the wait has returned, the reference is gone.
     fn assert_clean<S>(poller: &Poller, socket: &Arc<S>) {
         assert_eq!(poller.counts(), (0, 0));
-        // The table lets go of the reference after it has released its lock (a socket is never
-        // closed under the lock), which can be a moment after the callback that ended the wait
-        // has run on another thread: wait for it, with a ceiling.
-        let began = Instant::now();
-        while Arc::strong_count(socket) != 1 {
-            assert!(
-                began.elapsed() < CEILING,
-                "the table still holds a reference to the socket"
-            );
-            std::thread::yield_now();
-        }
+        assert_eq!(
+            Arc::strong_count(socket),
+            1,
+            "the table still holds a reference to the socket"
+        );
     }
 
     #[test]
@@ -1017,7 +1081,8 @@ mod tests {
         fill(&a);
         let (cell, rx) = cell();
         p.arm(&a, Dir::Write, None, &cell).unwrap();
-        assert_quiet(&rx);
+        // (No claim that it is quiet before the peer reads: an honest early `Ready` would only
+        // mean "try again".)
         assert_eq!(drain_until(&b, &rx), Why::Ready);
         assert_clean(&p, &a);
     }
@@ -1033,14 +1098,16 @@ mod tests {
         let (read_cell, read_rx) = self::cell();
         p.arm(&a, Dir::Write, None, &write_cell).unwrap();
         p.arm(&a, Dir::Read, None, &read_cell).unwrap();
-        assert_eq!(p.counts(), (1, 2), "one registration, two waiters");
-        assert_quiet(&write_rx);
+        let early = both_or_write_already_ended(&p, &write_rx);
         assert_quiet(&read_rx);
         // Data for the read: the read ends. The write may or may not be told too (a wake-up
         // may be spurious); either way it ends when the peer has made room.
         b.write_all(b"x").unwrap();
         assert_eq!(expect(&read_rx), Why::Ready);
-        assert_eq!(drain_until(&b, &write_rx), Why::Ready);
+        assert_eq!(
+            early.unwrap_or_else(|| drain_until(&b, &write_rx)),
+            Why::Ready
+        );
         assert_clean(&p, &a);
         // And the other way round: the write ends first, the read stays armed.
         let (write_cell, write_rx) = self::cell();
@@ -1070,10 +1137,14 @@ mod tests {
         let (read_cell, read_rx) = self::cell();
         p.arm(&a, Dir::Read, None, &read_cell).unwrap();
         p.arm(&a, Dir::Write, None, &write_cell).unwrap();
+        let early = both_or_write_already_ended(&p, &write_rx);
         assert_quiet(&read_rx);
         b.write_all(b"z").unwrap();
         assert_eq!(expect(&read_rx), Why::Ready);
-        assert_eq!(drain_until(&b, &write_rx), Why::Ready);
+        assert_eq!(
+            early.unwrap_or_else(|| drain_until(&b, &write_rx)),
+            Why::Ready
+        );
         assert_clean(&p, &a);
     }
 
@@ -1244,11 +1315,22 @@ mod tests {
         // does (its refusal is real on every system). A socket that is only bound would not do:
         // macOS drops a SYN that reaches a bound socket in the closed state without a reset, so
         // that connect is never refused there, it only times out.
+        //
+        // The connecting socket is bound first, to a port of its own, and the listener is bound
+        // after it: the two ports differ, so the connect cannot be a TCP self-connect (a socket
+        // whose source port equals the destination port connects to itself when nothing
+        // listens). Another process could in principle take the freed port before the connect;
+        // then the connect succeeds and the test says so instead of passing.
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        socket
+            .bind(&SockAddr::from(
+                "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .unwrap();
         let target = {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             SockAddr::from(listener.local_addr().unwrap())
         };
-        let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
         socket.set_nonblocking(true).unwrap();
         // Some systems refuse a loopback connect inside the call itself (the answer comes back
         // before `connect` returns); others return "in progress" and report the refusal on the
@@ -1284,23 +1366,30 @@ mod tests {
         assert_clean(&p, &socket);
     }
 
-    /// A peer that resets the connection wakes a write wait whose socket is full (so it was
-    /// not ready for writing before): the system reports the reset to a write interest too.
+    /// A peer that resets the connection ends the write waits of a socket that was full, in the
+    /// way the product code uses them: write until it would block, wait for readiness, write
+    /// again, until a write fails because the peer is gone. (A wait can also end for an honest
+    /// early reason, room for a few bytes, so a `Ready` alone proves nothing: the loop goes on to
+    /// the failure, and a reset that never woke a write wait would end it at the ceiling.)
     #[test]
     fn a_peer_reset_ends_a_write_wait() {
         let p = poller();
         let (a, b) = pair();
         fill(&a);
+        // The wait is armed before the reset comes, so that the reset is what has to wake it.
         let (cell, rx) = cell();
         p.arm(&a, Dir::Write, None, &cell).unwrap();
-        assert_quiet(&rx);
         // Closing with a zero linger time sends a reset instead of an orderly end.
         SockRef::from(&b).set_linger(Some(Duration::ZERO)).unwrap();
         drop(b);
         assert_eq!(expect(&rx), Why::Ready);
+        let kind = write_until_it_fails(&p, &a);
         assert!(
-            (&*a).write(b"x").is_err(),
-            "the write should fail after a reset"
+            matches!(
+                kind,
+                ErrorKind::ConnectionReset | ErrorKind::BrokenPipe | ErrorKind::ConnectionAborted
+            ),
+            "the write failed with {kind:?}, which does not mean the peer is gone"
         );
         assert_clean(&p, &a);
     }
@@ -1495,12 +1584,15 @@ mod tests {
         let (second, second_rx) = self::cell();
         assert!(p.arm(&a, Dir::Read, None, &second).is_err());
         assert_eq!(lock(&second.state).cleanups.len(), 0);
-        assert!(p.arm(&a, Dir::Write, None, &second).is_ok());
+        // A read on a second idle pair: it cannot end by itself, so the counts are certain.
+        let (c, _d) = pair();
+        assert!(p.arm(&c, Dir::Read, None, &second).is_ok());
         assert_eq!(lock(&second.state).cleanups.len(), 1);
+        assert_eq!(p.counts(), (2, 2));
         assert!(second.fire(Why::Cancelled));
         assert_eq!(expect(&second_rx), Why::Cancelled);
         assert!(
-            p.arm(&a, Dir::Read, None, &second).is_ok(),
+            p.arm(&c, Dir::Read, None, &second).is_ok(),
             "resolved: does nothing"
         );
         assert_eq!(p.counts(), (1, 1));
@@ -1620,6 +1712,36 @@ mod tests {
         assert!(gone());
     }
 
+    /// The last reference to a poller dropped on the poller's own thread (by a callback that owns
+    /// it, against the rule) must not try to join that thread: the stop is a stop, not a failure.
+    #[test]
+    fn the_last_reference_dropped_on_the_poller_thread_stops_it_without_a_failure() {
+        let p = Arc::new(poller());
+        let shared = p.shared_for_test();
+        let (a, mut b) = pair();
+        let (tx, rx) = mpsc::channel();
+        let owner = Arc::clone(&p);
+        let cell = Cell::new(move |why| {
+            let _ = tx.send(why);
+            drop(owner);
+        });
+        p.arm(&a, Dir::Read, None, &cell).unwrap();
+        drop((cell, p));
+        b.write_all(b"x").unwrap();
+        assert_eq!(expect(&rx), Why::Ready);
+        // The thread is done when nothing but this test holds the shared state.
+        let began = Instant::now();
+        while Arc::strong_count(&shared) != 1 {
+            assert!(began.elapsed() < CEILING, "the poller thread never left");
+            std::thread::yield_now();
+        }
+        assert!(
+            !shared.panicked.load(Ordering::SeqCst),
+            "the poller failed instead of stopping"
+        );
+        assert!(matches!(shared.lock().halt, Some(Halt::Stopped)));
+    }
+
     /// A read and a write waiting together on a socket whose peer resets it: both are told.
     #[test]
     fn a_peer_reset_ends_a_read_and_a_write_waiting_together() {
@@ -1630,11 +1752,11 @@ mod tests {
         let (read_cell, read_rx) = self::cell();
         p.arm(&a, Dir::Write, None, &write_cell).unwrap();
         p.arm(&a, Dir::Read, None, &read_cell).unwrap();
-        assert_eq!(p.counts(), (1, 2));
+        let early = both_or_write_already_ended(&p, &write_rx);
         SockRef::from(&b).set_linger(Some(Duration::ZERO)).unwrap();
         drop(b);
         assert_eq!(expect(&read_rx), Why::Ready);
-        assert_eq!(expect(&write_rx), Why::Ready);
+        assert_eq!(early.unwrap_or_else(|| expect(&write_rx)), Why::Ready);
         assert_clean(&p, &a);
     }
 
@@ -1793,5 +1915,63 @@ mod tests {
         // Every kind of winner is legal; the invariants above held for each of them.
         assert_eq!(seen.iter().sum::<usize>(), 2000);
         drop(b);
+    }
+
+    /// The rule of the table: a socket is released under the table lock, so that when the call
+    /// that ended a wait (a close, here) has returned, the table no longer holds the socket, also
+    /// when the poller thread is handling an event on it at the same time.
+    #[test]
+    fn a_closer_racing_an_event_finds_the_socket_released_when_it_returns() {
+        let p = poller();
+        let mut closed = 0;
+        for round in 0..2000 {
+            let (a, mut b) = pair();
+            let (cell, rx) = cell();
+            p.arm(&a, Dir::Read, None, &cell).unwrap();
+            let start = Arc::new(Barrier::new(2));
+            let writer = {
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    let _ = b.write(b"x");
+                    b
+                })
+            };
+            start.wait();
+            if cell.fire(Why::Closed) {
+                closed += 1;
+                assert_eq!(
+                    Arc::strong_count(&a),
+                    1,
+                    "round {round}: the table held the socket after the close returned"
+                );
+                assert_eq!(p.counts(), (0, 0), "round {round}");
+                assert_eq!(expect(&rx), Why::Closed);
+            } else {
+                // The event won: the callback runs on the poller thread; the table's hold was
+                // released before it was called.
+                assert_eq!(expect(&rx), Why::Ready);
+                assert_clean(&p, &a);
+            }
+            let _b = writer.join().unwrap();
+        }
+        eprintln!("poller test: the closer won {closed} of 2000 rounds");
+    }
+
+    /// A listener that the table was the last holder of is closed when the close returns: its
+    /// port can be bound again at once.
+    #[test]
+    fn a_listener_the_table_held_is_closed_when_the_close_returns() {
+        let p = poller();
+        for round in 0..1000 {
+            let listener = Arc::new(TcpListener::bind("127.0.0.1:0").unwrap());
+            let addr = listener.local_addr().unwrap();
+            let (cell, _rx) = cell();
+            p.arm(&listener, Dir::Read, None, &cell).unwrap();
+            drop(listener);
+            assert!(cell.fire(Why::Closed), "round {round}");
+            TcpListener::bind(addr)
+                .unwrap_or_else(|e| panic!("round {round}: the port is still held: {e}"));
+        }
     }
 }
