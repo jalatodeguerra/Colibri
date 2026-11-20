@@ -43,6 +43,9 @@ fn main() -> Result[()] {
             server.stop(1.0)
             return ok(httpd.text(200, "stopping\n"))
         }
+        if r.path == "/__seen" {
+            return ok(httpd.text(200, "{seen.items.len()}\n"))
+        }
         if r.path == "/__stats" {
             return ok(httpd.text(200, "{server.connections()}\n"))
         }
@@ -124,6 +127,7 @@ fn app(r: httpd.Request, seen: Seen, server: httpd.Server) -> Result[httpd.Respo
         return ok(httpd.text(200, "released\n"))
     }
     if r.path == "/release" {
+        let _ = r.body()
         seen.release.emit()
         return ok(httpd.text(200, "ok\n"))
     }
@@ -193,6 +197,10 @@ impl Server {
         Server::start(HELLO, "httpd.Options {}")
     }
 
+    fn hello_with(options: &str) -> Server {
+        Server::start(HELLO, options)
+    }
+
     /// The server of `APP`, with `options` as the Colibri text of its options.
     fn app(options: &str) -> Server {
         Server::start(APP, options)
@@ -223,6 +231,31 @@ impl Server {
             assert!(
                 start.elapsed() < EVENT,
                 "the server still has {now} connections open"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Waits until the server has handled `n` requests (the ones it records), by asking on a
+    /// fresh connection. A request is recorded when its head is complete, before its handler
+    /// reads anything.
+    #[track_caller]
+    fn wait_seen(&self, n: i64) {
+        let start = Instant::now();
+        loop {
+            let mut w = self.connect();
+            let now: i64 = w
+                .call(get("/__seen"))
+                .text()
+                .trim()
+                .parse()
+                .expect("a number");
+            if now >= n {
+                return;
+            }
+            assert!(
+                start.elapsed() < EVENT,
+                "the server has seen only {now} requests"
             );
             thread::sleep(Duration::from_millis(5));
         }
@@ -686,4 +719,432 @@ fn an_unread_body_declared_a_megabyte_long_ends_the_connection() {
     assert!(r.says_close());
     drop(w);
     server.finish();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Timeouts: small options, a lower bound that the close did not come before, and a ceiling
+// ---------------------------------------------------------------------------------------------
+
+/// The timeouts under test, in seconds. A close may not come before it, less a little for the
+/// clock of the system; it must come well within `EVENT`.
+const SMALL: f64 = 0.5;
+const NOT_BEFORE: Duration = Duration::from_millis(450);
+
+#[test]
+fn a_head_that_stops_halfway_is_answered_408_after_the_header_timeout() {
+    let server = Server::app("httpd.Options { header_timeout: 0.5 }");
+    let mut w = server.connect();
+    let started = Instant::now();
+    w.send("GET / HTTP/1.1\r\nHost: test\r\n");
+    let r = w.read();
+    let waited = started.elapsed();
+    assert_eq!(r.status, 408);
+    assert!(r.says_close());
+    assert!(waited >= NOT_BEFORE, "the 408 came after only {waited:?}");
+    assert!(waited < EVENT, "the 408 came after {waited:?}");
+    w.expect_silent_close();
+    assert_eq!(server.finish().seen, Vec::<String>::new());
+}
+
+#[test]
+fn a_head_trickled_a_line_at_a_time_is_cut_off_by_the_time_of_the_whole_head() {
+    // A line every 0.3 s never lets one line wait for 0.5 s, so a timeout that starts again at
+    // each line never fires. The whole head has the time of `header_timeout`, checked after each
+    // line.
+    let server = Server::app("httpd.Options { header_timeout: 0.5 }");
+    let mut w = server.connect();
+    let started = Instant::now();
+    w.send("GET / HTTP/1.1\r\nHost: test\r\n");
+    let mut answer = None;
+    for i in 0..40 {
+        if !w.try_send(format!("X-Trickle-{i}: 1\r\n").as_bytes()) {
+            break;
+        }
+        // Waiting for the answer is the pace: nothing within 0.3 s means "not yet".
+        if let Read1::Response(r) = w.read_within(Duration::from_millis(300), false) {
+            answer = Some(r);
+            break;
+        }
+    }
+    let waited = started.elapsed();
+    let r = answer.expect("a 408 within forty lines");
+    assert_eq!(r.status, 408);
+    assert!(waited >= NOT_BEFORE, "the 408 came after only {waited:?}");
+    assert!(waited < EVENT, "the 408 came after {waited:?}");
+    assert_eq!(server.finish().seen, Vec::<String>::new());
+}
+
+#[test]
+fn a_connection_that_sends_nothing_is_closed_without_a_word_after_the_header_timeout() {
+    let server = Server::app("httpd.Options { header_timeout: 0.5 }");
+    let mut w = server.connect();
+    let started = Instant::now();
+    w.expect_silent_close();
+    let waited = started.elapsed();
+    assert!(waited >= NOT_BEFORE, "the close came after only {waited:?}");
+    assert!(waited < EVENT);
+    server.finish();
+}
+
+#[test]
+fn a_connection_that_waits_too_long_for_its_next_request_is_closed_without_a_word() {
+    let server = Server::app("httpd.Options { idle_timeout: 0.5 }");
+    let mut w = server.connect();
+    let r = w.call(get("/"));
+    assert_eq!(r.status, 200);
+    let started = Instant::now();
+    w.expect_silent_close();
+    let waited = started.elapsed();
+    assert!(waited >= NOT_BEFORE, "the close came after only {waited:?}");
+    assert!(waited < EVENT);
+    server.finish();
+}
+
+#[test]
+fn half_a_body_ends_in_a_408_for_the_handler_that_reads_it_and_the_connection_closes() {
+    let server = Server::app("httpd.Options { body_timeout: 0.5 }");
+    let mut w = server.connect();
+    let started = Instant::now();
+    w.send(request("POST", "/echo", &["Content-Length: 10"], b""));
+    w.send("12345");
+    let r = w.read();
+    let waited = started.elapsed();
+    assert_eq!(r.status, 408);
+    assert!(r.says_close());
+    assert!(waited >= NOT_BEFORE, "the 408 came after only {waited:?}");
+    assert!(waited < EVENT);
+    drop(w);
+    // The handler saw the error, so it was the read that failed and not the head.
+    assert_eq!(server.finish().seen, ["POST /echo", "body failed"]);
+}
+
+#[test]
+fn a_client_that_never_reads_a_large_answer_is_cut_off_by_the_write_timeout() {
+    let server = Server::app("httpd.Options { write_timeout: 0.5 }");
+    let mut a = server.connect();
+    // 32 MiB is more than the buffers of both ends can hold, so the write blocks. The client
+    // never reads, and the server closes after the write timeout.
+    a.send(get("/big"));
+    // The second connection's `/__stats` shows when the first is gone (it counts itself).
+    server.wait_connections_at_most(1);
+    drop(a);
+    server.finish();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Peers that leave
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_client_that_leaves_in_the_middle_of_a_head_is_forgotten_and_the_server_goes_on() {
+    let server = Server::hello();
+    let mut w = server.connect();
+    w.send("GET / HT");
+    drop(w);
+    server.wait_connections_at_most(1);
+    let mut w = server.connect();
+    assert_eq!(w.call(get("/")).status, 200);
+    drop(w);
+    assert_eq!(server.finish().seen, ["GET /"]);
+}
+
+#[test]
+fn a_reset_during_a_body_read_fails_the_handlers_read_and_the_server_goes_on() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    w.send(request("POST", "/echo", &["Content-Length: 100"], b""));
+    w.send("0123456789");
+    // The handler is reading by now or will be: the reset is what ends its read.
+    w.reset();
+    // The handler's coroutine has seen the error once the connection is gone from the count.
+    server.wait_connections_at_most(1);
+    let mut w = server.connect();
+    assert_eq!(w.call(get("/ignore")).status, 200);
+    drop(w);
+    assert_eq!(
+        server.finish().seen,
+        ["POST /echo", "body failed", "GET /ignore"]
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// What handlers return
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_handler_that_fails_with_a_plain_error_gets_a_500_with_a_generic_body_and_keeps_the_connection()
+{
+    let server = Server::app("httpd.Options { log_errors: false }");
+    let mut w = server.connect();
+    let r = w.call(get("/boom"));
+    assert_eq!(r.status, 500);
+    assert!(
+        !r.text().contains("boom"),
+        "the body gave the error away: {:?}",
+        r.text()
+    );
+    assert!(!r.says_close());
+    // The same connection carries the next request.
+    assert_eq!(w.call(get("/")).status, 200);
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn a_failure_with_a_status_is_answered_with_that_status_and_its_message() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    let r = w.call(get("/missing"));
+    assert_eq!(r.status, 404);
+    assert!(r.text().contains("no item"), "{:?}", r.text());
+    assert!(!r.says_close());
+    assert_eq!(w.call(get("/")).status, 200);
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn a_response_header_with_a_cr_is_a_500_and_never_goes_out_as_written() {
+    let server = Server::app("httpd.Options { log_errors: false }");
+    let mut w = server.connect();
+    let r = w.call(get("/cr"));
+    assert_eq!(r.status, 500);
+    assert_eq!(r.header("x-a"), None);
+    assert!(
+        !r.head.contains('\r') || r.head.matches('\r').count() == r.head.matches("\r\n").count()
+    );
+    assert_eq!(w.call(get("/")).status, 200);
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn a_handler_that_sets_the_content_length_gets_a_500() {
+    let server = Server::app("httpd.Options { log_errors: false }");
+    let mut w = server.connect();
+    let r = w.call(get("/length"));
+    assert_eq!(r.status, 500);
+    assert_eq!(r.count("content-length"), 1);
+    drop(w);
+    server.finish();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Expect: 100-continue (the cases that need no stream)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_handler_that_reads_the_body_makes_the_server_send_100_continue_first() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    w.send(request(
+        "POST",
+        "/echo",
+        &["Expect: 100-continue", "Content-Length: 5"],
+        b"",
+    ));
+    // The client holds the body back until it is told to go on.
+    let interim = w.read_within(EVENT, false).response();
+    assert_eq!(interim.status, 100);
+    w.send("hello");
+    let last = w.read();
+    assert_eq!(last.status, 200);
+    assert_eq!(last.text(), "hello");
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn a_handler_that_answers_without_reading_sends_no_100_and_the_connection_closes() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    w.send(request(
+        "POST",
+        "/401",
+        &["Expect: 100-continue", "Content-Length: 5"],
+        b"",
+    ));
+    let r = w.read();
+    assert_eq!(r.status, 401, "{r:?}");
+    assert!(r.says_close());
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn an_expectation_that_is_not_100_continue_is_a_417() {
+    let server = Server::app("httpd.Options {}");
+    rejects(
+        &server,
+        "Expect: foo",
+        &head(
+            "POST / HTTP/1.1",
+            &["Host: test", "Expect: foo", "Content-Length: 0"],
+        ),
+        417,
+    );
+    assert_eq!(server.finish().seen, Vec::<String>::new());
+}
+
+#[test]
+fn an_http_1_0_request_with_expect_gets_no_100() {
+    let server = Server::app("httpd.Options {}");
+    let mut w = server.connect();
+    w.send("POST /echo HTTP/1.0\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\nhello");
+    let r = w.read();
+    assert_eq!(r.status, 200, "the first response is the final one: {r:?}");
+    assert_eq!(r.text(), "hello");
+    drop(w);
+    server.finish();
+}
+
+// ---------------------------------------------------------------------------------------------
+// max_connections and stop
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn at_the_cap_a_new_connection_waits_until_one_ends() {
+    let server = Server::hello_with("httpd.Options { max_connections: 4 }");
+    let mut open: Vec<Wire> = (0..4).map(|_| server.connect()).collect();
+    for w in &mut open {
+        assert_eq!(w.call(get("/")).status, 200);
+    }
+    let mut fifth = server.connect();
+    fifth.send(get("/"));
+    // Not answered while four are open. This is a lower bound only: the test never depends on
+    // the server being slow, it asserts that it is not served while the cap is full.
+    assert!(fifth.stays_quiet(Duration::from_millis(500)));
+    drop(open.pop());
+    let r = fifth.read();
+    assert_eq!(r.status, 200);
+    drop(fifth);
+    drop(open);
+    server.finish();
+}
+
+#[test]
+fn stopping_closes_the_idle_connections_and_ends_serve_and_the_address_is_free_again() {
+    let server = Server::start_with(
+        HELLO,
+        "httpd.Options {}",
+        "import net",
+        r#"    let again = net.listen(server.addr())
+    if again.is_ok() {
+        seen.items.push("listens again")
+    }"#,
+    );
+    let mut idle: Vec<Wire> = (0..3).map(|_| server.connect()).collect();
+    for w in &mut idle {
+        assert_eq!(w.call(get("/")).status, 200);
+    }
+    let seen = server.finish().seen;
+    for w in &mut idle {
+        w.expect_silent_close();
+    }
+    assert_eq!(seen, ["GET /", "GET /", "GET /", "listens again"]);
+}
+
+#[test]
+fn a_stop_during_a_request_lets_it_finish_and_the_answer_says_close() {
+    let server = Server::app("httpd.Options {}");
+    let mut waiting = server.connect();
+    waiting.send(get("/wait"));
+    // A second request, whose body is yet to come, is the one that will release the first. It
+    // must be under way when the server stops, or the stop would close it as an idle connection.
+    let mut releaser = server.connect();
+    releaser.send(request("POST", "/release", &["Content-Length: 4"], b""));
+    server.wait_seen(2);
+    let mut stopper = server.connect();
+    let r = stopper.call(request("POST", "/__stop", &["Content-Length: 0"], b""));
+    assert_eq!(r.status, 200);
+    drop(stopper);
+    // The stop does not end the waiting request, and nothing new is accepted.
+    assert!(waiting.stays_quiet(Duration::from_millis(300)));
+    releaser.send("done");
+    let answer = waiting.read();
+    assert_eq!(answer.status, 200);
+    assert_eq!(answer.text(), "released\n");
+    assert!(answer.says_close());
+    let last = releaser.read();
+    assert_eq!(last.status, 200);
+    assert!(last.says_close());
+    drop(waiting);
+    drop(releaser);
+    assert_eq!(server.wait().seen, ["GET /wait", "POST /release"]);
+}
+
+#[test]
+fn a_stop_from_a_handler_still_delivers_that_handlers_response() {
+    let server = Server::hello();
+    let mut w = server.connect();
+    let r = w.call(request("POST", "/__stop", &["Content-Length: 0"], b""));
+    assert_eq!(r.status, 200);
+    assert_eq!(r.text(), "stopping\n");
+    assert!(r.says_close());
+    drop(w);
+    server.wait();
+}
+
+// ---------------------------------------------------------------------------------------------
+// The lingering close, limits, and a slow client
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_answer_to_a_refused_request_arrives_although_the_client_goes_on_sending() {
+    // The client has sent 200 KiB the server will never use. A server that closed at once with
+    // that unread could reset the connection, and a reset can take the answer with it; the
+    // lingering close reads the rest and then closes in order. What the client reads is what is
+    // tested, and a system may show an end or a reset after the answer (Windows resets where
+    // Unix ends in order), which `Wire` counts alike.
+    let server = Server::hello();
+    let mut w = server.connect();
+    let mut data = head("GET * HTTP/1.1", &["Host: test"]);
+    data.extend(vec![b'x'; 200 * 1024]);
+    w.send(&data);
+    let r = w.read();
+    assert_eq!(r.status, 400);
+    assert!(r.says_close());
+    w.expect_closed();
+    assert_eq!(server.finish().seen, Vec::<String>::new());
+}
+
+#[test]
+fn a_body_over_the_limit_is_a_413_for_the_handler_that_reads_it() {
+    let server = Server::app("httpd.Options { max_body_bytes: 10 }");
+    let mut w = server.connect();
+    w.send(request("POST", "/echo", &[], &[b'y'; 100]));
+    let r = w.read();
+    assert_eq!(r.status, 413);
+    assert!(r.says_close());
+    drop(w);
+    assert_eq!(server.finish().seen, ["POST /echo", "body failed"]);
+}
+
+#[test]
+fn a_body_within_the_limit_is_read_whole() {
+    let server = Server::app("httpd.Options { max_body_bytes: 100 }");
+    let mut w = server.connect();
+    let r = w.call(request("POST", "/echo", &[], &[b'y'; 100]));
+    assert_eq!(r.status, 200);
+    assert_eq!(r.body.len(), 100);
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn a_client_that_sends_half_a_head_does_not_hold_up_another_one() {
+    let server = Server::hello();
+    let mut slow = server.connect();
+    slow.send("GET / HTTP/1.1\r\nHost: te");
+    let mut fast = server.connect();
+    for i in 0..10 {
+        let r = fast.call(get(&format!("/?n={i}")));
+        assert_eq!(r.status, 200, "request {i}");
+    }
+    // The slow one is still connected, and can finish its request.
+    slow.send("st\r\n\r\n");
+    assert_eq!(slow.read().status, 200);
+    drop(slow);
+    drop(fast);
+    assert_eq!(server.finish().seen.len(), 11);
 }
