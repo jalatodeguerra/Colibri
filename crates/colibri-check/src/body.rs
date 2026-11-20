@@ -260,9 +260,32 @@ impl<'c, 'a> FnCtx<'c, 'a> {
 
     /// The module-level items this body refers to, each once with the span of its first use.
     pub fn take_deps(&mut self) -> Vec<(Dep, Span)> {
+        self.add_bound_impl_deps();
         let deps = self.deps_since(0);
         self.deps.clear();
         deps
+    }
+
+    /// A generic call runs the impl that satisfies its bound, so what that impl's methods read
+    /// must be initialised before this body's initialiser runs: the methods are used here too.
+    fn add_bound_impl_deps(&mut self) {
+        let pending = std::mem::take(&mut self.obligations);
+        for ob in &pending {
+            if !matches!(ob.origin, crate::obligations::Origin::Bound { .. }) {
+                continue;
+            }
+            let ty = self.infer.finalize(&ob.ty).0;
+            let args: Vec<Ty> = ob.args.iter().map(|a| self.infer.finalize(a).0).collect();
+            if let Ok(crate::traits::Source::User(id)) =
+                self.ck.env().implements(&ty, ob.iface, &args)
+            {
+                let methods = self.ck.impls[id.0 as usize].methods.clone();
+                for f in methods.into_iter().flatten() {
+                    self.add_dep(Dep::Fn(f), ob.span);
+                }
+            }
+        }
+        self.obligations = pending;
     }
 
     /// Records a use of a module-level item at `span`.
