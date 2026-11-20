@@ -414,7 +414,7 @@ impl<'a> Loader<'a> {
                 Span::new(*file, 0, 0),
                 format!("the features of `{}` are declared here", self.trees[t].name),
             )
-            .with_hint(format!("{hint} (in `{}`)", manifest.display())),
+            .with_hint(format!("{hint} (in `{}`)", self.fs.display_name(&manifest))),
         };
         self.diags.push(diag);
     }

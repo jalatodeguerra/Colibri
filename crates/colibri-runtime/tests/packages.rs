@@ -952,6 +952,8 @@ fn a_feature_the_dependency_does_not_declare_names_both_manifests() {
         ),
         "{text}"
     );
+    // Files are named the system's way (`\` on Windows).
+    let text = text.replace('\\', "/");
     assert!(text.contains("app/colibri.toml"), "{text}");
     assert!(text.contains("lib/colibri.toml"), "{text}");
     assert!(

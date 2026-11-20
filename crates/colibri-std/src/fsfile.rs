@@ -443,8 +443,8 @@ fn open_with(
     let shown = path.clone();
     let opened = cx.run_async(move || {
         let file = options().open(&path).map_err(|e| fail(action, &path, &e))?;
-        let meta = file.metadata().map_err(|e| fail(action, &path, &e))?;
-        if meta.is_dir() {
+        // A file whose metadata cannot be had (a pipe on some systems) is not a folder either.
+        if file.metadata().is_ok_and(|m| m.is_dir()) {
             return Err(
                 Kind::IsADirectory.error(format!("cannot {action} `{path}`: is a directory"))
             );

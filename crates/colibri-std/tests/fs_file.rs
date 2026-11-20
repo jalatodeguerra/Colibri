@@ -39,7 +39,14 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        // Windows refuses to remove a folder with a file that is still open; a handle that was
+        // dropped a moment ago may still be closing on another thread. Try again briefly.
+        for _ in 0..50 {
+            if std::fs::remove_dir_all(&self.0).is_ok() || !self.0.exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
@@ -247,29 +254,209 @@ fn main() -> Result[()] {{
     assert_eq!((a, b), (4000, 4000));
 }
 
-// ---- a handle that blocks, and cancellation (Unix: a named pipe blocks like a slow disk) ----
+// ---- a handle that blocks, and cancellation ----
+//
+// A read that has to wait is held pending by a pipe that the test writes to later: a FIFO on
+// Unix, a named pipe on Windows. Opening one end of a FIFO blocks until the other end is open,
+// a named pipe opens at once: only the test of a stuck `fs.open` is for Unix alone.
 
-#[cfg(unix)]
-mod blocking {
-    use super::*;
-    use std::ffi::CString;
-    use std::fs::OpenOptions;
+mod pipe {
+    use super::Scratch;
+    use std::io::Write;
+    use std::thread::JoinHandle;
 
-    fn fifo(scratch: &Scratch, name: &str) -> String {
-        let path = scratch.file(name);
-        let c = CString::new(path.clone()).unwrap();
-        // SAFETY: `c` is a valid NUL-terminated path.
-        let rc = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
-        assert_eq!(rc, 0, "mkfifo: {}", std::io::Error::last_os_error());
-        path
+    /// The end of the pipe the test writes to. Dropping it ends the pipe: a reader that waits
+    /// gets the end of the file.
+    #[cfg(unix)]
+    pub struct End(std::fs::File);
+
+    #[cfg(unix)]
+    impl Write for End {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.write(buf)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.flush()
+        }
     }
+
+    /// A file system object that a script opens with `fs.open` and whose reads wait for the
+    /// test.
+    pub struct Pipe {
+        /// The path as a script writes it: `/` separated, valid inside a Colibri string.
+        pub path: String,
+        #[cfg(windows)]
+        server: isize,
+    }
+
+    #[cfg(unix)]
+    impl Pipe {
+        pub fn new(scratch: &Scratch, name: &str) -> Pipe {
+            let path = scratch.file(name);
+            let c = std::ffi::CString::new(path.clone()).unwrap();
+            // SAFETY: `c` is a valid NUL-terminated path.
+            let rc = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+            assert_eq!(rc, 0, "mkfifo: {}", std::io::Error::last_os_error());
+            Pipe { path }
+        }
+
+        /// Opens the writing end on a thread of its own (this waits until the script has opened
+        /// the pipe), runs `body` with it, and ends the pipe.
+        pub fn serve(&self, body: impl FnOnce(&mut End) + Send + 'static) -> JoinHandle<()> {
+            let path = self.path.clone();
+            std::thread::spawn(move || {
+                let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+                body(&mut End(file));
+            })
+        }
+    }
+
+    #[cfg(windows)]
+    mod sys {
+        use std::ffi::c_void;
+
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            pub fn CreateNamedPipeW(
+                name: *const u16,
+                open_mode: u32,
+                pipe_mode: u32,
+                max_instances: u32,
+                out_buffer: u32,
+                in_buffer: u32,
+                default_timeout: u32,
+                security: *const c_void,
+            ) -> isize;
+            pub fn ConnectNamedPipe(pipe: isize, overlapped: *mut c_void) -> i32;
+            pub fn WriteFile(
+                file: isize,
+                buffer: *const u8,
+                len: u32,
+                written: *mut u32,
+                overlapped: *mut c_void,
+            ) -> i32;
+            pub fn FlushFileBuffers(file: isize) -> i32;
+            pub fn CloseHandle(handle: isize) -> i32;
+        }
+
+        pub const PIPE_ACCESS_OUTBOUND: u32 = 2;
+        pub const INVALID_HANDLE_VALUE: isize = -1;
+    }
+
+    /// The server end of a named pipe that only the test writes to.
+    #[cfg(windows)]
+    pub struct End {
+        handle: isize,
+        wrote: bool,
+    }
+
+    #[cfg(windows)]
+    impl Write for End {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let len = u32::try_from(buf.len().min(1 << 20)).unwrap();
+            let mut written = 0u32;
+            // SAFETY: `buf` is valid for `len` bytes and `written` for one `u32`; the handle is
+            // the open server end of a pipe, not overlapped.
+            let ok = unsafe {
+                sys::WriteFile(
+                    self.handle,
+                    buf.as_ptr(),
+                    len,
+                    &mut written,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            self.wrote = true;
+            Ok(written as usize)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for End {
+        fn drop(&mut self) {
+            // SAFETY: the handle is ours and is closed once. Closing the server end can drop
+            // what the reader has not read yet, so wait until it has (`FlushFileBuffers` on a
+            // pipe returns when the client has read everything; the tests that write read it
+            // all).
+            unsafe {
+                if self.wrote {
+                    sys::FlushFileBuffers(self.handle);
+                }
+                sys::CloseHandle(self.handle);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Pipe {
+        pub fn new(_scratch: &Scratch, name: &str) -> Pipe {
+            let name = format!("colibri-file-{name}-{}", std::process::id());
+            let wide: Vec<u16> = format!(r"\\.\pipe\{name}")
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            // SAFETY: `wide` is a NUL-terminated name; the other arguments are plain values.
+            let server = unsafe {
+                sys::CreateNamedPipeW(
+                    wide.as_ptr(),
+                    sys::PIPE_ACCESS_OUTBOUND,
+                    0, // a byte pipe that waits
+                    1,
+                    64 * 1024,
+                    64 * 1024,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            assert_ne!(
+                server,
+                sys::INVALID_HANDLE_VALUE,
+                "CreateNamedPipeW: {}",
+                std::io::Error::last_os_error()
+            );
+            Pipe {
+                path: format!("//./pipe/{name}"),
+                server,
+            }
+        }
+
+        /// Waits on a thread of its own for the script to open the pipe, runs `body` with the
+        /// server end, and ends the pipe.
+        pub fn serve(&self, body: impl FnOnce(&mut End) + Send + 'static) -> JoinHandle<()> {
+            let server = self.server;
+            std::thread::spawn(move || {
+                // Fails with "already connected" when the client was first: also fine.
+                // SAFETY: the handle is the server end made by `new`, not overlapped.
+                unsafe { sys::ConnectNamedPipe(server, std::ptr::null_mut()) };
+                body(&mut End {
+                    handle: server,
+                    wrote: false,
+                });
+            })
+        }
+    }
+}
+
+mod blocking {
+    use super::pipe::Pipe;
+    use super::*;
+    use std::io::Write;
 
     /// Cancelling the coroutine that waits for `fs.open` of a pipe nobody writes to ends the
     /// wait at once; the program goes on and ends while the background thread is still stuck.
+    /// Unix only: opening a FIFO waits for the other end, opening a Windows named pipe does
+    /// not wait for anything (the stuck reads below are the Windows counterpart).
+    #[cfg(unix)]
     #[test]
     fn cancelling_a_coroutine_stuck_in_open_returns_at_once() {
         let scratch = Scratch::new("cancel-open");
-        let pipe = fifo(&scratch, "pipe");
+        let pipe = Pipe::new(&scratch, "pipe").path;
         let (mut vm, out) = vm();
         let started = Instant::now();
         run(
@@ -295,7 +482,7 @@ fn main() {{
         assert_eq!(out.contents(), "cancelled true\n");
         assert!(started.elapsed() < Duration::from_secs(5));
         // Let the stuck thread go: a writer opens the other end.
-        drop(OpenOptions::new().write(true).open(&pipe).unwrap());
+        drop(std::fs::OpenOptions::new().write(true).open(&pipe).unwrap());
     }
 
     /// A read that blocks does not stop the other coroutines, and cancelling it unwinds the
@@ -303,16 +490,14 @@ fn main() {{
     #[test]
     fn a_blocked_read_lets_other_coroutines_run_and_can_be_cancelled() {
         let scratch = Scratch::new("cancel-read");
-        let pipe = fifo(&scratch, "pipe");
+        let pipe = Pipe::new(&scratch, "pipe");
         let (mut vm, out) = vm();
         // Keeps the write end open (so the read blocks instead of ending), until told.
         let (release, hold) = std::sync::mpsc::channel::<()>();
-        let writer_path = pipe.clone();
-        let writer = std::thread::spawn(move || {
-            let w = OpenOptions::new().write(true).open(&writer_path).unwrap();
+        let writer = pipe.serve(move |_end| {
             let _ = hold.recv();
-            drop(w);
         });
+        let pipe = pipe.path;
         let started = Instant::now();
         run(
             &mut vm,
@@ -359,15 +544,13 @@ fn main() -> Result[()] {{
     #[test]
     fn a_second_coroutine_on_a_busy_handle_waits_its_turn() {
         let scratch = Scratch::new("turns");
-        let pipe = fifo(&scratch, "pipe");
+        let pipe = Pipe::new(&scratch, "pipe");
         let (mut vm, out) = vm();
-        let writer_path = pipe.clone();
-        let writer = std::thread::spawn(move || {
-            use std::io::Write;
-            let mut w = OpenOptions::new().write(true).open(&writer_path).unwrap();
+        let writer = pipe.serve(|end| {
             std::thread::sleep(Duration::from_millis(300));
-            w.write_all(b"first\nsecond\n").unwrap();
+            end.write_all(b"first\nsecond\n").unwrap();
         });
+        let pipe = pipe.path;
         run(
             &mut vm,
             &format!(
@@ -415,15 +598,13 @@ fn main() -> Result[()] {{
     #[test]
     fn a_cancelled_queued_read_never_runs_and_the_ones_behind_it_do() {
         let scratch = Scratch::new("cancel-queued");
-        let pipe = fifo(&scratch, "pipe");
+        let pipe = Pipe::new(&scratch, "pipe");
         let (mut vm, out) = vm();
-        let writer_path = pipe.clone();
-        let writer = std::thread::spawn(move || {
-            use std::io::Write;
-            let mut w = OpenOptions::new().write(true).open(&writer_path).unwrap();
+        let writer = pipe.serve(|end| {
             std::thread::sleep(Duration::from_millis(400));
-            w.write_all(b"first\nsecond\nthird\n").unwrap();
+            end.write_all(b"first\nsecond\nthird\n").unwrap();
         });
+        let pipe = pipe.path;
         run(
             &mut vm,
             &format!(
@@ -467,15 +648,13 @@ fn main() -> Result[()] {{
     #[test]
     fn ending_the_program_with_queued_operations_does_not_hang() {
         let scratch = Scratch::new("end-queued");
-        let pipe = fifo(&scratch, "pipe");
+        let pipe = Pipe::new(&scratch, "pipe");
         // Keeps the write end open, so the reads block instead of ending, until told.
         let (release, hold) = std::sync::mpsc::channel::<()>();
-        let writer_path = pipe.clone();
-        let writer = std::thread::spawn(move || {
-            let w = OpenOptions::new().write(true).open(&writer_path).unwrap();
+        let writer = pipe.serve(move |_end| {
             let _ = hold.recv();
-            drop(w);
         });
+        let pipe = pipe.path;
         let started = Instant::now();
         {
             let (mut vm, out) = vm();
