@@ -85,6 +85,7 @@ pub fn check_with_host(file: &colibri_syntax::ast::File, host: &HostEnv, budget:
         script: false,
         dependency: false,
         ffi: true,
+        std: false,
         imports: std::collections::HashMap::new(),
         excluded: Vec::new(),
     };

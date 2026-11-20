@@ -79,6 +79,8 @@ struct Disc {
     tree: usize,
     package: usize,
     entry: bool,
+    /// A standard library module written in Colibri.
+    std: bool,
     imports: Vec<(NodeId, ImportTarget)>,
     excluded: Vec<cfg::Excluded>,
 }
@@ -98,6 +100,9 @@ enum Candidate {
     },
     Host(String),
     Std(String),
+    /// A standard library module written in Colibri and embedded in the toolchain
+    /// ([`LoadOptions::std_sources`]), by its full name (`std.vec`).
+    StdSource(String),
 }
 
 impl Candidate {
@@ -108,7 +113,9 @@ impl Candidate {
                 format!("the dependency `{name}` (`{}`)", fs.display_name(file))
             }
             Candidate::Host(name) => format!("the host module `{name}`"),
-            Candidate::Std(name) => format!("the standard library module `{name}`"),
+            Candidate::Std(name) | Candidate::StdSource(name) => {
+                format!("the standard library module `{name}`")
+            }
         }
     }
 }
@@ -117,6 +124,10 @@ struct Loader<'a> {
     fs: &'a dyn SourceFs,
     sources: &'a mut SourceMap,
     host_modules: &'a [String],
+    /// The standard modules written in Colibri: (full name, text).
+    std_sources: Vec<(String, &'static str)>,
+    /// The synthetic tree that holds them, made when one is first imported.
+    std_tree: Option<usize>,
     trees: Vec<Tree>,
     trees_by_dir: HashMap<PathBuf, usize>,
     discs: Vec<Option<Disc>>,
@@ -176,7 +187,16 @@ pub struct LoadOptions {
     pub all_modules: bool,
     /// What `@when` conditions are decided with (DESIGN §3.6).
     pub cfg: BuildCfg,
+    /// The standard library modules that are Colibri source embedded in the toolchain, as
+    /// (full name such as `std.vec`, text). `import vec` and `import std.vec` mean one when no
+    /// file or dependency has that name (like a host module). The text is parsed only when an
+    /// import resolves to it, as the module `std.vec` of the package `std`, with the virtual
+    /// file name `<std>/vec.colibri`.
+    pub std_sources: Vec<(String, &'static str)>,
 }
+
+/// The folder name of the synthetic tree of the standard modules written in Colibri.
+pub const STD_SOURCE_ROOT: &str = "<std>";
 
 /// Loads the program that starts at `entry`, reading through `fs` and adding every file it
 /// reads to `sources` (so spans name their files). `host_modules` are the named host modules
@@ -224,6 +244,7 @@ pub fn load_with(
     options: LoadOptions,
 ) -> Result<Loaded, LoadError> {
     let mut loader = Loader::new(fs, sources, host_modules, options.cfg.clone());
+    loader.std_sources = options.std_sources.clone();
     // Flags are checked like the names in a manifest. A bad one is reported once, and left out
     // so that it does not also come back as "not declared".
     let mut flag_problems = Vec::new();
@@ -318,6 +339,8 @@ impl<'a> Loader<'a> {
             fs,
             sources,
             host_modules,
+            std_sources: Vec::new(),
+            std_tree: None,
             trees: Vec::new(),
             trees_by_dir: HashMap::new(),
             discs: Vec::new(),
@@ -789,9 +812,25 @@ impl<'a> Loader<'a> {
         rel: &Path,
         entry: bool,
     ) -> usize {
-        let file_id = self
-            .sources
-            .add_file(self.fs.display_name(path), text.clone());
+        let display = self.fs.display_name(path);
+        let key = self.fs.canonical(path);
+        self.add_module_named(display, key, text, tree, rel, entry, false)
+    }
+
+    /// [`Loader::add_module`] for a file known by `display` and registered under `key`.
+    /// `std` marks a module of the standard library written in Colibri.
+    #[allow(clippy::too_many_arguments)]
+    fn add_module_named(
+        &mut self,
+        display: String,
+        key: PathBuf,
+        text: String,
+        tree: usize,
+        rel: &Path,
+        entry: bool,
+        std: bool,
+    ) -> usize {
+        let file_id = self.sources.add_file(display, text.clone());
         let (mut file, diags) = parse_file(file_id, &text);
         for d in diags.iter().filter(|d| d.is_error()) {
             self.dropped.push(Dropped {
@@ -817,10 +856,11 @@ impl<'a> Loader<'a> {
             tree,
             package,
             entry,
+            std,
             imports: Vec::new(),
             excluded,
         }));
-        self.by_path.insert(self.fs.canonical(path), id);
+        self.by_path.insert(key, id);
         id
     }
 
@@ -898,6 +938,9 @@ impl<'a> Loader<'a> {
             if let Some(name) = std_module(path, self.host_modules) {
                 out.push(Candidate::Std(name));
             }
+            if let Some(name) = self.std_source_name(path) {
+                out.push(Candidate::StdSource(name));
+            }
             return out;
         }
         // 1. A file of this tree.
@@ -934,7 +977,62 @@ impl<'a> Loader<'a> {
         if let Some(name) = std_module(path, self.host_modules) {
             out.push(Candidate::Std(name));
         }
+        if let Some(name) = self.std_source_name(path) {
+            out.push(Candidate::StdSource(name));
+        }
         out
+    }
+
+    /// The full name of the standard module written in Colibri that `path` names (`vec` and
+    /// `std.vec` are `std.vec`), if there is one.
+    fn std_source_name(&self, path: &[&str]) -> Option<String> {
+        let provided: Vec<String> = self.std_sources.iter().map(|(n, _)| n.clone()).collect();
+        std_module(path, &provided)
+    }
+
+    /// The module of the embedded standard source `name`, parsed on the first import.
+    fn load_std_source(&mut self, name: &str) -> ImportTarget {
+        let short = name.strip_prefix(crate::host::STD_PREFIX).unwrap_or(name);
+        let rel = PathBuf::from(format!("{short}.{SOURCE_EXT}"));
+        let key = Path::new(STD_SOURCE_ROOT).join(&rel);
+        if let Some(&id) = self.by_path.get(&key) {
+            return ImportTarget::Module(id);
+        }
+        let Some(text) = self
+            .std_sources
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, t)| *t)
+        else {
+            return ImportTarget::Failed;
+        };
+        let tree = match self.std_tree {
+            Some(t) => t,
+            None => {
+                let t = self.trees.len();
+                self.trees.push(Tree {
+                    root: PathBuf::from(STD_SOURCE_ROOT),
+                    name: "std".to_string(),
+                    is_dep: true,
+                    manifest_name: None,
+                    ffi: false,
+                    from_git: false,
+                    allow_ffi: Vec::new(),
+                    allow_ffi_spans: Vec::new(),
+                    deps: Vec::new(),
+                    known_features: HashSet::new(),
+                    enabled_features: HashSet::new(),
+                    declared: None,
+                    requests: Vec::new(),
+                });
+                self.std_tree = Some(t);
+                t
+            }
+        };
+        let display = format!("{STD_SOURCE_ROOT}/{short}.{SOURCE_EXT}");
+        let id = self.add_module_named(display, key, text.to_string(), tree, &rel, false, true);
+        self.pending.push_back(id);
+        ImportTarget::Module(id)
     }
 
     fn resolve_import(&mut self, tree: usize, imp: &ast::Import, item_span: Span) -> ImportTarget {
@@ -953,6 +1051,7 @@ impl<'a> Loader<'a> {
             1 => match candidates.remove(0) {
                 // The standard library is a host module (ARCHITECTURE §13).
                 Candidate::Host(name) | Candidate::Std(name) => ImportTarget::Host(name),
+                Candidate::StdSource(name) => self.load_std_source(&name),
                 Candidate::Local { file, tree, rel }
                 | Candidate::Dependency {
                     file, tree, rel, ..
@@ -983,7 +1082,10 @@ impl<'a> Loader<'a> {
             },
             _ => {
                 let list: Vec<String> = candidates.iter().map(|c| c.describe(self.fs)).collect();
-                let hint = if candidates.iter().any(|c| matches!(c, Candidate::Std(_))) {
+                let hint = if candidates
+                    .iter()
+                    .any(|c| matches!(c, Candidate::Std(_) | Candidate::StdSource(_)))
+                {
                     format!(
                         "rename the file or the dependency, or write `import std.{dotted_path}` for the standard library"
                     )
@@ -1048,6 +1150,11 @@ impl<'a> Loader<'a> {
                 .host_modules
                 .iter()
                 .filter_map(|m| m.strip_prefix(crate::host::STD_PREFIX))
+                .chain(
+                    self.std_sources
+                        .iter()
+                        .filter_map(|(m, _)| m.strip_prefix(crate::host::STD_PREFIX)),
+                )
                 .collect();
             let hint = if available.is_empty() {
                 "this program was checked without the standard library".to_string()
@@ -1199,6 +1306,7 @@ impl<'a> Loader<'a> {
                 script: !disc.entry && !imported[old],
                 dependency: self.trees[disc.tree].is_dep,
                 ffi: self.trees[disc.tree].ffi,
+                std: disc.std,
                 imports,
                 excluded: disc.excluded,
             });

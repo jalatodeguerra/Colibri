@@ -235,6 +235,8 @@ pub(crate) struct Checker<'a> {
     /// named: the bounded parameter in `T: Add`, the implementing type in `impl Add for V`.
     /// Taken by the next interface named, so it never reaches a nested one.
     pub default_self: Option<Ty>,
+    /// The files of the standard modules written in Colibri: no warning points into them.
+    pub std_files: HashSet<colibri_syntax::FileId>,
     /// The interfaces, by type id.
     pub ifaces: HashMap<TypeId, IfaceInfo<'a>>,
     /// Explicit `impl Interface for Type` blocks and the derived implementations that were
@@ -497,6 +499,11 @@ impl<'a> Checker<'a> {
             type_scope: Vec::new(),
             self_ty: None,
             default_self: None,
+            std_files: inputs
+                .iter()
+                .filter(|i| i.meta.std)
+                .map(|i| i.file.span.file)
+                .collect(),
             ifaces: HashMap::new(),
             impls: Vec::new(),
             impl_by_key: HashMap::new(),
@@ -615,6 +622,10 @@ impl<'a> Checker<'a> {
         if diag.span.file == HOST_FILE {
             diag.span = Span::new(self.file.span.file, 0, 0);
             diag.message = format!("in the host interface: {}", diag.message);
+        }
+        // A standard module is the toolchain's own: its warnings are not the program's.
+        if !diag.is_error() && self.std_files.contains(&diag.span.file) {
+            return;
         }
         if self.muted == 0 {
             self.diags.push(diag);

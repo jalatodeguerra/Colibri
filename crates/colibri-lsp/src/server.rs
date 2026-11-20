@@ -688,7 +688,7 @@ impl<'c> Server<'c> {
     ) -> Vec<Diagnostic> {
         let sources = &analysis.sources;
         let location = |span: colibri_syntax::Span| -> Option<Location> {
-            if !sources.contains(span.file) {
+            if !sources.contains(span.file) || analysis.is_std_file(span.file) {
                 return None;
             }
             let path = analysis.path_of(span.file);
@@ -923,7 +923,7 @@ impl<'c> Server<'c> {
     }
 
     fn location(&self, analysis: &Analysis, span: colibri_syntax::Span) -> Option<Location> {
-        if !analysis.sources.contains(span.file) {
+        if !analysis.sources.contains(span.file) || analysis.is_std_file(span.file) {
             return None;
         }
         let path = analysis.path_of(span.file);
@@ -1351,7 +1351,8 @@ impl<'c> Server<'c> {
     fn definition(&self, p: lsp_types::GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
         let (analysis, _, fact) = self.fact_at(&p.text_document_position_params)?;
         let def = fact.def?;
-        if !analysis.sources.contains(def.file) {
+        // A standard module written in Colibri is not a file the client can open.
+        if !analysis.sources.contains(def.file) || analysis.is_std_file(def.file) {
             return None;
         }
         let path = analysis.path_of(def.file);

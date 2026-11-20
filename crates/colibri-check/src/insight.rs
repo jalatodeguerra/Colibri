@@ -650,6 +650,7 @@ mod tests {
             script: false,
             dependency: false,
             ffi: true,
+            std: false,
             imports: HashMap::new(),
             excluded: Vec::new(),
         };

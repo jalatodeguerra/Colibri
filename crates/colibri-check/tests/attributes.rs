@@ -81,6 +81,7 @@ fn run(src: &str) -> Run {
         LoadOptions {
             all_modules: false,
             cfg: BuildCfg::default(),
+            std_sources: Vec::new(),
         },
     )
     .expect("loads");
@@ -487,6 +488,7 @@ fn a_script_does_not_guess_what_a_feature_name_means() {
         LoadOptions {
             all_modules: false,
             cfg: BuildCfg::default().with_feature("fast"),
+            std_sources: Vec::new(),
         },
     )
     .unwrap();

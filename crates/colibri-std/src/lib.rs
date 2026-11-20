@@ -66,6 +66,13 @@ pub const MODULES: &[&str] = &[
     "process", "net", "datetime", "vec", "base64", "hex", "hash", "csv", "toml",
 ];
 
+/// The standard library modules that are written in Colibri and embedded in the toolchain, for
+/// the tools that check a program without a [`Vm`] (`colibri check`, the language server). A
+/// [`Vm`] gets them from [`install`]. None yet.
+pub fn sources() -> Vec<colibri_runtime::SourceModule> {
+    Vec::new()
+}
+
 /// Registers the standard library into `vm` with the default [`StdConfig`]. It must happen
 /// before a program is loaded; calling it twice is an error (a module cannot be registered
 /// twice). The modules are registered lazily, see [`Vm::lazy_std_module`].
@@ -76,6 +83,9 @@ pub fn install(vm: &mut Vm) -> Result<(), Error> {
 /// Like [`install`], with a [`StdConfig`] that decides what the world looks like to scripts.
 pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
     vm.insert_state(config::State::new(config));
+    for source in sources() {
+        vm.std_source_module(source.name, source.text);
+    }
     // Only the names are declared now: a module is registered (its interface generated,
     // parsed and checked) when a program imports it or something asks for it by name.
     type Register = fn(&mut Vm) -> Result<(), Error>;

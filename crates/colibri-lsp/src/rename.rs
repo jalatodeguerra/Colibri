@@ -115,6 +115,17 @@ pub fn plan<'a>(
     if let Some(reason) = info.fixed {
         return Err(format!("`{}` cannot be renamed: {reason}", info.name));
     }
+    if analysis
+        .program
+        .metas
+        .get(info.module)
+        .is_some_and(|m| m.std)
+    {
+        return Err(format!(
+            "`{}` is declared in the standard library, which is not part of this package",
+            info.name
+        ));
+    }
     let dependency = analysis
         .program
         .metas

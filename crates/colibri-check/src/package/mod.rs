@@ -66,6 +66,10 @@ pub struct ModuleMeta {
     /// The package may contain `extern` blocks (DESIGN §15.3): its `colibri.toml` says
     /// `ffi = true`, or it is a script without a manifest (the host's `Cap::Ffi` still decides).
     pub ffi: bool,
+    /// The module is a standard library module written in Colibri (`std.vec`), embedded in the
+    /// toolchain: its file is virtual (`<std>/vec.colibri`), and the checker reports no
+    /// warnings in it.
+    pub std: bool,
     /// Each `import` item of the file, by its node id.
     pub imports: HashMap<NodeId, ImportTarget>,
     /// The top-level names a false `@when` left out of the module, for "left out here" hints.
