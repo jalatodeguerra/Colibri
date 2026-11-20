@@ -98,7 +98,7 @@ pub trait ResultOps: Engine {
         span: Span,
     ) -> Eval<String> {
         if let Some(f) = self.error_message_fn(impl_id) {
-            if self.fn_body(f).is_none() {
+            if self.fn_span(f).is_none() {
                 return Err(self.internal(fiber, span, "unknown function"));
             }
             return match self.call_fn(fiber, f, vec![value.clone()])? {

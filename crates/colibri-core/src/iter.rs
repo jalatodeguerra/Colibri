@@ -358,7 +358,7 @@ pub trait IterOps: Engine {
         }
         let target = self
             .target_of(Some(impl_id), 0)
-            .filter(|f| self.fn_body(*f).is_some());
+            .filter(|f| self.fn_span(*f).is_some());
         let Some(f) = target else {
             *it = Value::Dyn(Rc::new(DynVal {
                 impl_id,
@@ -366,7 +366,7 @@ pub trait IterOps: Engine {
             }));
             return Err(self.internal(fiber, span, "an iterator without a `next`"));
         };
-        let mutates = self.fn_body(f).is_some_and(|b| b.mutates_self);
+        let mutates = self.fn_mutates_self(f);
         let unchanged = (!mutates).then(|| inner.clone());
         let (result, out) = self.call_fn_inout(fiber, f, vec![inner]);
         if let Some(updated) = out.or(unchanged) {

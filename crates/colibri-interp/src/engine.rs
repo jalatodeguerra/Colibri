@@ -1,22 +1,21 @@
 //! The interpreter as an [`Engine`]: what `colibri-core` asks of it, and the wrappers that keep
 //! the methods `colibri-runtime` calls on [`Interp`].
 
-use std::rc::Rc;
-
-use colibri_check::hir::{Body, Builtin, FnId};
+use colibri_check::hir::{Builtin, FnId};
 use colibri_check::types::TypeId;
-use colibri_core::engine::Engine;
+use colibri_core::engine::{Engine, Resumed};
+use colibri_core::fiber::FiberState;
 use colibri_core::host::HostHook;
 use colibri_core::prelude::*;
 use colibri_core::release::Release;
 use colibri_core::results::ResultOps;
+use colibri_core::sched::EngineSlot;
 use colibri_core::{Core, stack_position};
 use colibri_syntax::{FileId, Span};
 
 use crate::ctl::{Ctl, Eval, PanicInfo, TraceEntry};
 use crate::eval::Interp;
 use crate::fiber::Fiber;
-use crate::heap::ClassObj;
 use crate::host::HostFault;
 use crate::value::Value;
 
@@ -31,6 +30,21 @@ impl Engine for Interp {
     #[inline]
     fn core_mut(&mut self) -> &mut Core {
         &mut self.core
+    }
+
+    #[inline]
+    fn fiber_state(fiber: &Fiber) -> &FiberState {
+        &fiber.state
+    }
+
+    #[inline]
+    fn fiber_state_mut(fiber: &mut Fiber) -> &mut FiberState {
+        &mut fiber.state
+    }
+
+    #[inline]
+    fn position(fiber: &Fiber) -> Option<Span> {
+        fiber.frames.last().map(|frame| frame.span)
     }
 
     #[inline]
@@ -96,8 +110,15 @@ impl Engine for Interp {
     }
 
     #[inline]
-    fn fn_body(&self, f: FnId) -> Option<&Rc<Body>> {
-        self.fns.get(f.0 as usize)
+    fn fn_span(&self, f: FnId) -> Option<Span> {
+        self.fns.get(f.0 as usize).map(|body| body.span)
+    }
+
+    #[inline]
+    fn fn_mutates_self(&self, f: FnId) -> bool {
+        self.fns
+            .get(f.0 as usize)
+            .is_some_and(|body| body.mutates_self)
     }
 
     fn call_host_hook(
@@ -146,34 +167,12 @@ impl Engine for Interp {
         recv: &Value,
         span: Span,
     ) -> Eval {
-        match op {
-            Builtin::CoroutineCancel | Builtin::CoroutineDone | Builtin::CoroutineJoin => {
-                self.coroutine_builtin(fiber, op, recv, span)
-            }
-            Builtin::SignalEmit => self.signal_builtin(fiber, recv, span),
-            _ => self.cogroup_builtin(fiber, op, recv, span),
-        }
+        self.pausing_op(fiber, op, recv, span)
     }
 
-    fn host_fault_ctl(&mut self, fiber: &mut Fiber, fault: HostFault) -> Ctl {
-        match fault {
-            HostFault::Panic(message) | HostFault::Message(message) => {
-                let span = fiber
-                    .frames
-                    .last()
-                    .map_or(Span::new(FileId(0), 0, 0), |frame| frame.span);
-                self.panic(fiber, span, message)
-            }
-            HostFault::Cancel => {
-                fiber.cancelling = true;
-                Ctl::Cancel
-            }
-        }
-    }
-
-    fn group_died(&mut self, obj: &ClassObj) {
-        // The inherent method of `coro.rs` (it wins over this one in a path).
-        Interp::group_died(self, obj);
+    #[inline]
+    fn resume_stack(&mut self, _id: u64, slot: EngineSlot, cancel: bool) -> Resumed {
+        self.resume_native_stack(slot, cancel)
     }
 }
 

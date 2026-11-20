@@ -49,6 +49,7 @@ fn int_of(v: &Value) -> Option<i64> {
 
 /// How many elements a built-in looks at, for the instruction budget: the length of the
 /// receiver for every operation that walks it. Constant-time operations cost nothing extra.
+#[inline]
 fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
     use Builtin as B;
     let walks = matches!(
@@ -151,6 +152,7 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
 }
 
 /// Moves argument `i` out, leaving `()` behind.
+#[inline]
 fn take(args: &mut [Value], i: usize) -> Value {
     args.get_mut(i)
         .map_or(Value::Unit, |a| std::mem::replace(a, Value::Unit))
@@ -217,13 +219,16 @@ pub trait Builtins: Engine {
             | Builtin::ErrorMessage
             | Builtin::ErrorContext
             | Builtin::ErrorCause => return self.optres_op(fiber, op, args, span),
-            Builtin::CoroutineCancel
-            | Builtin::CoroutineDone
-            | Builtin::CoroutineJoin
-            | Builtin::CoGroupCancel
-            | Builtin::CoGroupCount
-            | Builtin::CoGroupJoinAll
-            | Builtin::SignalEmit => return self.pausing_builtin(fiber, op, &recv, span),
+            Builtin::CoroutineCancel | Builtin::CoroutineDone => {
+                return self.coroutine_builtin(fiber, op, &recv, span);
+            }
+            Builtin::CoGroupCancel | Builtin::CoGroupCount => {
+                return self.cogroup_builtin(fiber, op, &recv, span);
+            }
+            Builtin::SignalEmit => return self.signal_builtin(fiber, &recv, span),
+            Builtin::CoroutineJoin | Builtin::CoGroupJoinAll => {
+                return self.pausing_builtin(fiber, op, &recv, span);
+            }
             Builtin::StrBuilderNew => Value::Obj(ClassObj::new(
                 STR_BUILDER_TYPE,
                 vec![Value::list(Vec::new()), Value::Int(0)],

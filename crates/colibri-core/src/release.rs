@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use colibri_check::types::Ty;
 
+use crate::coro::SchedInternal;
 use crate::ctl::{Ctl, Eval, PanicInfo};
 use crate::engine::Engine;
 use crate::heap::ClassObj;
@@ -263,7 +264,7 @@ pub trait Release: Engine {
         if obj.mark_hooked() {
             return false;
         }
-        let Some(span) = self.fn_body(f).map(|body| body.span) else {
+        let Some(span) = self.fn_span(f) else {
             return false;
         };
         let core = self.core_mut();

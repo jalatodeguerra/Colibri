@@ -1,0 +1,24 @@
+// Two coroutines that wake each other through signals, many times.
+fn ping(a: Signal, b: Signal, n: int) {
+    for i in 0..n {
+        wait_for(a)
+        b.emit()
+    }
+}
+
+fn pong(a: Signal, b: Signal, n: int) {
+    for i in 0..n {
+        a.emit()
+        wait_for(b)
+    }
+}
+
+fn main() {
+    let a = Signal()
+    let b = Signal()
+    let p = go ping(a, b, 60000)
+    let q = go pong(a, b, 60000)
+    p.join()
+    q.join()
+    print("done")
+}

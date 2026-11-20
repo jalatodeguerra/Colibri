@@ -114,7 +114,7 @@ pub struct HostSide {
     pub any_show_hook: bool,
     pub any_eq_hook: bool,
     /// Which hooks each class that has one has.
-    pub hook_sets: HashMap<TypeId, HookSet>,
+    pub(crate) hook_sets: HashMap<TypeId, HookSet>,
     /// Which `Vm` this engine belongs to.
     pub vm_id: u64,
     pub drop_queue: RootDropQueue,

@@ -7,6 +7,8 @@ use std::rc::Rc;
 use colibri_check::hir::{Body, LocalId, Stmt};
 use colibri_syntax::Span;
 
+use colibri_core::fiber::FiberState;
+
 use crate::value::Value;
 
 /// One call: the body being run, its local slots, and the source position it is at (updated at
@@ -38,13 +40,12 @@ pub struct Fiber {
     pub(crate) temps: Vec<Value>,
     /// The address of a local at the point the host called in, to measure native stack use.
     pub(crate) stack_base: usize,
-    /// How many host functions are running, one inside another (they may call back into
-    /// Colibri). A coroutine switch is not allowed across one (DESIGN §14.2).
-    pub(crate) host_depth: u32,
-    /// Set on the fiber of a coroutine (ARCHITECTURE §16): which one, and how to suspend it.
-    pub(crate) coro: Option<crate::coro::CoroCtx>,
-    /// This coroutine is being cancelled: every further pause returns `Ctl::Cancel` at once.
-    pub(crate) cancelling: bool,
+    /// What the engine-neutral code reads of the computation: the host depth, which coroutine
+    /// it is, whether it is being cancelled.
+    pub(crate) state: FiberState,
+    /// How to suspend this coroutine's native stack (ARCHITECTURE §16). Set on the fiber of a
+    /// coroutine only; it points into the stack of the coroutine body that owns this fiber.
+    pub(crate) yielder: Option<*const crate::coro::Y>,
 }
 
 impl Fiber {
@@ -59,7 +60,7 @@ impl Fiber {
 
     /// How many host functions are active on this fiber.
     pub fn host_depth(&self) -> u32 {
-        self.host_depth
+        self.state.host_depth
     }
 
     /// How many temporaries are alive; zero whenever no code is running.

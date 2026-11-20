@@ -10,17 +10,27 @@
 //! The trait is generic, not `dyn`: built-ins are hot, an associated `Fiber` avoids downcasts,
 //! and every instantiation is in the engine's crate, where it inlines.
 
-use std::rc::Rc;
-
-use colibri_check::hir::{Body, Builtin, FnId};
+use colibri_check::hir::{Builtin, FnId};
 use colibri_check::types::TypeId;
 use colibri_syntax::Span;
 
-use crate::ctl::{Ctl, Eval, TraceEntry};
-use crate::heap::ClassObj;
+use crate::ctl::{Eval, TraceEntry};
+use crate::fiber::FiberState;
 use crate::host::{HostFault, HostHook};
+use crate::sched::{EngineSlot, Finish};
 use crate::state::Core;
 use crate::value::Value;
+
+/// How a resumed coroutine stopped.
+#[doc(hidden)]
+pub enum Resumed {
+    /// It paused (it waits for something).
+    Suspended,
+    /// It ran to its end.
+    Finished(Finish),
+    /// The engine has no stack for it.
+    Gone,
+}
 
 /// An engine: the owner of a [`Core`] and of the computations that run against it.
 #[doc(hidden)]
@@ -32,11 +42,19 @@ pub trait Engine: Sized {
     fn core(&self) -> &Core;
     fn core_mut(&mut self) -> &mut Core;
 
+    /// What the shared code reads and writes of a running computation.
+    fn fiber_state(fiber: &Self::Fiber) -> &FiberState;
+    fn fiber_state_mut(fiber: &mut Self::Fiber) -> &mut FiberState;
+
     // ---- positions and panics ----
 
     /// Records `span` as where the running call is: the position of its frame in the stack
     /// trace of a panic made now.
     fn note_position(fiber: &mut Self::Fiber, span: Span);
+
+    /// Where the running call is, as last recorded by [`Engine::note_position`] or by the call
+    /// itself; `None` when no call is active.
+    fn position(fiber: &Self::Fiber) -> Option<Span>;
 
     /// The Colibri stack, innermost call first.
     fn stack_trace(&self, fiber: &Self::Fiber) -> Vec<TraceEntry>;
@@ -94,8 +112,14 @@ pub trait Engine: Sized {
     /// anywhere a value dies.
     fn call_detached(&mut self, f: FnId, args: Vec<Value>) -> Eval;
 
-    /// The checked body of `f`, or `None` for an id the engine does not have.
-    fn fn_body(&self, f: FnId) -> Option<&Rc<Body>>;
+    /// Where `f` is declared, or `None` for an id the engine does not have. Callers that must
+    /// know whether an id exists ask this; the engine's own `call_fn` reports an unknown id
+    /// as an internal error at its own position.
+    fn fn_span(&self, f: FnId) -> Option<Span>;
+
+    /// Whether `f` is a `var self` method, which hands the final `self` back to its caller.
+    /// `false` for an id the engine does not have.
+    fn fn_mutates_self(&self, f: FnId) -> bool;
 
     /// Runs the `hook` of the host class `ty` on `args`. The class has that hook (the caller
     /// asked [`Core::host_hook_set`] first).
@@ -106,13 +130,6 @@ pub trait Engine: Sized {
         hook: HostHook,
         args: Vec<Value>,
     ) -> Result<Value, HostFault>;
-
-    /// The control flow a failed host function or host hook ends the running operation with:
-    /// a panic at the position of the innermost frame, or cancellation.
-    ///
-    /// Temporary: step 7 of the core split moves the cancellation flag into the shared fiber
-    /// state, and this becomes ordinary shared code.
-    fn host_fault_ctl(&mut self, fiber: &mut Self::Fiber, fault: HostFault) -> Ctl;
 
     // ---- temporaries ----
 
@@ -128,13 +145,28 @@ pub trait Engine: Sized {
     /// Releases the temporaries above `mark`, newest first.
     fn release_temps(&mut self, fiber: &mut Self::Fiber, mark: usize);
 
-    // ---- temporary scaffolding ----
+    // ---- coroutines ----
 
-    /// The built-ins that may pause the running coroutine (`join`, `cancel`, `emit` and the
-    /// like on a `Coroutine`, `CoGroup` or `Signal`); `recv` is the receiver.
+    /// Runs the coroutine `id`, which the scheduler has marked running, until it pauses or
+    /// ends. `cancel` resumes it with a cancel signal, so its pause returns `Ctl::Cancel` and it
+    /// unwinds. The scheduler's bookkeeping (state, signals, budget) is done by the caller.
     ///
-    /// Temporary: step 8 of the core split moves the scheduler policy into core and this
-    /// method is deleted.
+    /// For the tree-walker this switches to the coroutine's native stack and back. For an
+    /// engine with heap frames it is the same contract with no stack: run the coroutine's
+    /// frames from where it paused until it waits again or ends. The engine must not hold a
+    /// reference into [`Core`] across the call (the coroutine uses it meanwhile). `slot` is what the
+    /// engine gave to `Scheduler::register` for this coroutine. `Gone` means the engine has
+    /// nothing to run for `id` (it is already running, or has ended). The scheduler only resumes
+    /// suspended coroutines, so this is a broken invariant: the coroutine ends as a failure with
+    /// an internal error.
+    fn resume_stack(&mut self, id: u64, slot: EngineSlot, cancel: bool) -> Resumed;
+
+    // ---- built-ins that pause ----
+
+    /// The built-ins that pause the running coroutine: `join` on a `Coroutine` and `join_all`
+    /// on a `CoGroup` (`op` says which; `recv` is the receiver). Pausing is stackful in the
+    /// tree-walker, so these stay with the engine; the other handle methods are in
+    /// [`crate::coro::Sched`].
     fn pausing_builtin(
         &mut self,
         fiber: &mut Self::Fiber,
@@ -142,10 +174,4 @@ pub trait Engine: Sized {
         recv: &Value,
         span: Span,
     ) -> Eval;
-
-    /// A `CoGroup` object is dying: its coroutines are cancelled, newest first.
-    ///
-    /// Temporary: step 8 of the core split moves the scheduler policy into core and this
-    /// method is deleted.
-    fn group_died(&mut self, obj: &ClassObj);
 }

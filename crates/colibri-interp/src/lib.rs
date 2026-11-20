@@ -26,9 +26,10 @@ mod session;
 pub(crate) use colibri_core::{compare, ctl, format, heap, num, ordered, show, value};
 
 pub use budget::GRACE_STEPS;
+pub use colibri_core::clock::{Clock, SystemClock};
+pub use colibri_core::external::{CancelToken, Completer, ExternalError};
 pub use colibri_core::leaks::Leak;
 pub use compare::{TooDeep, values_cmp, values_equal};
-pub use coro::{CancelToken, Clock, Completer, ExternalError, SystemClock};
 pub use ctl::{Ctl, Eval, PanicInfo, TraceEntry};
 pub use eval::{DEFAULT_NATIVE_STACK_BUDGET, Interp};
 pub use fiber::Fiber;
