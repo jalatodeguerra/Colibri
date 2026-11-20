@@ -31,15 +31,16 @@ fn root_len(path: &str, windows: bool) -> usize {
         }
         if let Some(rest) = path.strip_prefix("//") {
             let mut parts = rest.splitn(3, '/');
-            if let (Some(host), Some(share)) = (parts.next(), parts.next()) {
-                if !host.is_empty() && !share.is_empty() {
-                    let len = 2 + host.len() + 1 + share.len();
-                    return if path[len..].starts_with('/') {
-                        len + 1
-                    } else {
-                        len
-                    };
-                }
+            if let (Some(host), Some(share)) = (parts.next(), parts.next())
+                && !host.is_empty()
+                && !share.is_empty()
+            {
+                let len = 2 + host.len() + 1 + share.len();
+                return if path[len..].starts_with('/') {
+                    len + 1
+                } else {
+                    len
+                };
             }
         }
     }
