@@ -369,19 +369,60 @@ impl<'c> Server<'c> {
             .into_iter()
             .map(|(_, p)| p)
             .collect();
+        self.take_over(doc, analysis, &now);
         let before = self.published.insert(doc.to_path_buf(), now.clone());
         self.clear_unheld(before, &now);
     }
 
-    /// The files of `analysis` that the analysis of `doc` publishes diagnostics for. A file of
-    /// a dependency that is open in the editor is left out: it is a member of its own package,
-    /// the analysis of that document publishes it, and this analysis has none of its lints.
+    /// The files of `analysis` that the analysis of `doc` publishes diagnostics for: the ones
+    /// it owns, and the files of other packages (the dependencies) that no open document
+    /// holds. A file of a dependency is a member of its own package, with its own features and
+    /// its own lints, which only the analysis of a document of that package has: when such a
+    /// document is open, this analysis leaves the file to it.
     fn published_by(&self, doc: &Path, analysis: &Analysis) -> Vec<(FileId, PathBuf)> {
         analysis
             .files()
             .into_iter()
-            .filter(|(_, path)| path == doc || analysis.owns(path) || !self.docs.contains_key(path))
+            .filter(|(_, path)| {
+                path == doc || analysis.owns(path) || !self.held_by_own_package(doc, path)
+            })
             .collect()
+    }
+
+    /// Whether the analysis of an open document other than `doc` owns `path`, or `path` is open
+    /// itself.
+    fn held_by_own_package(&self, doc: &Path, path: &Path) -> bool {
+        self.docs.contains_key(path)
+            || self.docs.keys().any(|d| {
+                d != doc
+                    && self
+                        .latest
+                        .get(d)
+                        .is_some_and(|a| a.owns(d) && a.owns(path))
+            })
+    }
+
+    /// The analysis of `doc` owns the files in `now` that it owns: the sets of the other
+    /// documents, made by analyses that do not own them, stop holding them.
+    fn take_over(&mut self, doc: &Path, analysis: &Analysis, now: &HashSet<PathBuf>) {
+        let owned: Vec<&PathBuf> = now.iter().filter(|p| analysis.owns(p)).collect();
+        let others: Vec<PathBuf> = self
+            .published
+            .keys()
+            .filter(|d| *d != doc)
+            .cloned()
+            .collect();
+        for other in others {
+            let theirs = self.latest.get(&other).cloned();
+            let Some(set) = self.published.get_mut(&other) else {
+                continue;
+            };
+            for file in &owned {
+                if !theirs.as_ref().is_some_and(|a| a.owns(file)) {
+                    set.remove(*file);
+                }
+            }
+        }
     }
 
     /// Publishes no diagnostics for the files that an analysis `before` held and the one that
@@ -522,25 +563,43 @@ impl<'c> Server<'c> {
         self.docs.remove(path);
         self.buffers.remove(path);
         self.good.remove(path);
+        let closing = self.latest.get(path).cloned();
         let files = self.published.remove(path).unwrap_or_default();
         let still: HashSet<&PathBuf> = self.published.values().flatten().collect();
+        let mut taken_over = Vec::new();
         for file in files {
             if !still.contains(&file) {
                 self.publish(&file, Vec::new());
                 self.latest.remove(&file);
+            } else if let (Some(closing), Some(now)) = (&closing, self.latest.get(&file))
+                && Rc::ptr_eq(closing, now)
+            {
+                // Another document's analysis holds the file too, but what is shown is the
+                // closed document's: one of the holders shows its own.
+                if let Some(holder) = self.docs.keys().find(|d| {
+                    self.published
+                        .get(*d)
+                        .is_some_and(|set| set.contains(&file))
+                }) {
+                    taken_over.push(holder.clone());
+                }
             }
         }
         // Other open documents may have imported this one: they see the file on disk now.
-        let others: Vec<PathBuf> = self.docs.keys().cloned().collect();
-        for other in others {
-            if self
-                .latest
-                .get(&other)
-                .is_some_and(|a| a.file_of(path).is_some())
-            {
-                self.check_now(&other);
-            }
-        }
+        let mut again = taken_over;
+        again.extend(
+            self.docs
+                .keys()
+                .filter(|other| {
+                    self.latest
+                        .get(*other)
+                        .is_some_and(|a| a.file_of(path).is_some())
+                })
+                .cloned(),
+        );
+        again.sort();
+        again.dedup();
+        self.analyse_now(again);
     }
 
     /// Checks the package of `doc` and publishes what it found.
@@ -564,6 +623,7 @@ impl<'c> Server<'c> {
             self.latest.insert(path.clone(), analysis.clone());
             now.insert(path);
         }
+        self.take_over(doc, &analysis, &now);
         let before = self.published.insert(doc.to_path_buf(), now.clone());
         self.clear_unheld(before, &now);
         analysis

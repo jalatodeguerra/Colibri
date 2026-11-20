@@ -3543,6 +3543,246 @@ fn opening_a_manifest_analyses_the_open_documents_of_one_package_once() {
     c.shutdown();
 }
 
+/// `app` and `app2` both depend on `lib`, which has a second file, `inner`. `app` turns the
+/// feature `x` on, which adds a function with a type error to `inner`; `app2` does not. `inner`
+/// also has a lint of its own, which only the analysis of `lib` itself reports.
+struct Shared {
+    dir: PathBuf,
+    main: PathBuf,
+    main2: PathBuf,
+    lib: PathBuf,
+    inner: PathBuf,
+}
+
+const MAIN_USING_LIB: &str = "import lib\nfn main() {\n    print(lib.f())\n}\n";
+const SHARED_LIB: &str = "import inner\npub fn f() -> int => inner.h()\n";
+const SHARED_INNER: &str = "pub fn h() -> int {\n    let spare = 1\n    return 2\n}\n\n@when(x)\npub fn g() -> int {\n    return true\n}\n";
+
+fn shared(name: &str) -> Shared {
+    let dir = temp_dir(name);
+    write(
+        &dir,
+        "app/colibri.toml",
+        "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\", features = [\"x\"] }\n",
+    );
+    write(
+        &dir,
+        "app2/colibri.toml",
+        "[package]\nname = \"app2\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n",
+    );
+    write(
+        &dir,
+        "lib/colibri.toml",
+        "[package]\nname = \"lib\"\n\n[features]\nx = []\n",
+    );
+    let main = write(&dir, "app/main.colibri", MAIN_USING_LIB);
+    let main2 = write(&dir, "app2/main.colibri", MAIN_USING_LIB);
+    let lib = write(&dir, "lib/lib.colibri", SHARED_LIB);
+    let inner = write(&dir, "lib/inner.colibri", SHARED_INNER);
+    Shared {
+        dir,
+        main,
+        main2,
+        lib,
+        inner,
+    }
+}
+
+fn has(c: &Client, path: &Path, what: &str) -> bool {
+    messages(c, path).iter().any(|m| m.contains(what))
+}
+
+const INNER_LINT: &str = "unused variable `spare`";
+const INNER_ERROR: &str = "expected `int`";
+
+fn close(c: &mut Client, path: &Path) {
+    c.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": uri(path)}}),
+    );
+    c.sync();
+}
+
+#[test]
+fn a_file_of_an_open_dependency_package_keeps_its_own_lints_while_the_app_opens_and_closes() {
+    let w = shared("shared_open_close");
+    let mut c = Client::start_debounced(Some(&w.dir), NEVER);
+    c.open(&w.lib, SHARED_LIB);
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(!has(&c, &w.inner, INNER_ERROR));
+    // The app, which has the feature on, is analysed after the library: `inner` is not open,
+    // but the package of the open `lib.colibri` owns it, and its analysis speaks for it.
+    c.open(&w.main, MAIN_USING_LIB);
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    close(&mut c, &w.main);
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    c.shutdown();
+}
+
+#[test]
+fn a_library_opened_after_its_app_takes_over_the_files_of_its_package_and_gives_them_back() {
+    let w = shared("shared_open_order");
+    let mut c = Client::start_debounced(Some(&w.dir), NEVER);
+    // Nothing of the library is open: the app's analysis shows its view of `inner`.
+    c.open(&w.main, MAIN_USING_LIB);
+    assert!(
+        has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(!has(&c, &w.inner, INNER_LINT));
+    // The library is opened: its analysis shows `inner` as the library's own file.
+    c.open(&w.lib, SHARED_LIB);
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    // An edit of the app does not take it back.
+    c.change(
+        &w.main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n",
+    );
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    // The library closes: nothing of it is open, and the app shows `inner` again.
+    close(&mut c, &w.lib);
+    assert!(
+        has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    // And with the app closed too, nothing is left on it.
+    close(&mut c, &w.main);
+    assert!(c.diags(&w.inner).is_empty(), "{:?}", messages(&c, &w.inner));
+    c.shutdown();
+}
+
+#[test]
+fn a_dependency_changed_before_its_app_keeps_the_lints_of_its_other_files() {
+    let w = shared("shared_changed_together");
+    let mut c = Client::start_debounced(Some(&w.dir), NEVER);
+    c.open(&w.main, MAIN_USING_LIB);
+    c.open(&w.lib, SHARED_LIB);
+    c.change_without_sync(&w.lib, "import inner\npub fn f() -> int => inner.h() + 0\n");
+    c.change_without_sync(
+        &w.main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n",
+    );
+    c.sync();
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    // The app alone.
+    c.change(
+        &w.main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(2)\n}\n",
+    );
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    c.shutdown();
+}
+
+#[test]
+fn closing_one_of_two_apps_gives_the_shared_dependency_back_to_the_other() {
+    let w = shared("shared_two_apps");
+    let mut c = Client::start_debounced(Some(&w.dir), NEVER);
+    c.open(&w.main2, MAIN_USING_LIB);
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    c.open(&w.main, MAIN_USING_LIB);
+    assert!(
+        has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    close(&mut c, &w.main);
+    // What the closed app found for the feature it turned on is gone.
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    c.shutdown();
+}
+
+#[test]
+fn closing_a_manifest_analyses_the_open_documents_of_one_package_once() {
+    let dir = temp_dir("manifest_close_once");
+    let manifest = write(&dir, "colibri.toml", PKG);
+    let util_text = "pub fn f() -> int => 1\n";
+    let util = write(&dir, "util.colibri", util_text);
+    let main_text = "import util\nfn main() {\n    print(util.f())\n}\n";
+    let main = write(&dir, "main.colibri", main_text);
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, main_text);
+    c.open(&util, util_text);
+    c.open(&manifest, PKG);
+    let before = c.counters();
+    close(&mut c, &manifest);
+    let after = c.counters();
+    assert_eq!(after.1 - before.1, 1, "one analysis for the package");
+    c.shutdown();
+}
+
 // ---- the fourth review: conflicts, one skip rule, links, speed, scope ----
 
 const PKG: &str = "[package]\nname = \"demo\"\n";
