@@ -82,6 +82,11 @@ impl Directives {
     /// Why this file is not run on this system (`// skip:` on every system, `// only:` on
     /// the others), if it is not.
     pub fn not_run_here(&self) -> Option<String> {
+        // A file with a malformed directive is run, so that the failure is reported (it would
+        // otherwise be ignored for good, here or on the other system).
+        if !self.malformed.is_empty() {
+            return None;
+        }
         if let Some(reason) = &self.skip {
             return Some(reason.clone());
         }
@@ -432,6 +437,11 @@ impl PackageDirectives {
                 d.skip = files.skip.clone();
                 d.only = files.only.clone();
             }
+            if !(path == "main.colibri" || path.is_empty()) && files.only.is_some() {
+                d.malformed.push(format!(
+                    "{path}: `// only:` counts in main.colibri alone; it would be ignored here"
+                ));
+            }
             d.malformed.extend(files.malformed.iter().map(|m| {
                 if path.is_empty() {
                     m.clone()
@@ -738,6 +748,42 @@ mod tests {
             let outcome = compiled("", None);
             assert!(check(&d, &outcome).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_malformed_only_is_never_hidden_by_a_skip() {
+        let d = parse_directives("// skip: later\n// only: unix\nfn main() {}\n");
+        assert_eq!(d.malformed.len(), 1);
+        // Run, not ignored, so that the check reports it.
+        assert_eq!(d.not_run_here(), None);
+        let outcome = Outcome::CompileErrors {
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        };
+        assert!(check(&d, &outcome).is_err_and(|e| e.contains("needs a reason")));
+    }
+
+    #[test]
+    fn an_only_outside_main_colibri_is_a_failure_not_silence() {
+        let files = vec![
+            ("main.colibri".to_string(), "fn main() {}\n".to_string()),
+            ("m.colibri".to_string(), "// only: unix - sh\n".to_string()),
+        ];
+        let p = PackageDirectives::parse(&files);
+        assert_eq!(p.not_run_here(), None);
+        let malformed = p.whole().malformed;
+        assert_eq!(malformed.len(), 1, "{malformed:?}");
+        assert!(malformed[0].starts_with("m.colibri:") && malformed[0].contains("main.colibri"));
+        let files = vec![(
+            "main.colibri".to_string(),
+            "// only: unix - sh\nfn main() {}\n".to_string(),
+        )];
+        assert!(
+            PackageDirectives::parse(&files)
+                .whole()
+                .malformed
+                .is_empty()
+        );
     }
 
     #[test]
