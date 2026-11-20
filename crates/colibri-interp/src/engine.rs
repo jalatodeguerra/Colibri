@@ -4,6 +4,7 @@
 use colibri_check::hir::{Builtin, FnId};
 use colibri_check::types::TypeId;
 use colibri_core::engine::Engine;
+use colibri_core::fiber::FiberState;
 use colibri_core::host::HostHook;
 use colibri_core::prelude::*;
 use colibri_core::release::Release;
@@ -29,6 +30,21 @@ impl Engine for Interp {
     #[inline]
     fn core_mut(&mut self) -> &mut Core {
         &mut self.core
+    }
+
+    #[inline]
+    fn fiber_state(fiber: &Fiber) -> &FiberState {
+        &fiber.state
+    }
+
+    #[inline]
+    fn fiber_state_mut(fiber: &mut Fiber) -> &mut FiberState {
+        &mut fiber.state
+    }
+
+    #[inline]
+    fn position(fiber: &Fiber) -> Option<Span> {
+        fiber.frames.last().map(|frame| frame.span)
     }
 
     #[inline]
@@ -157,22 +173,6 @@ impl Engine for Interp {
             }
             Builtin::SignalEmit => self.signal_builtin(fiber, recv, span),
             _ => self.cogroup_builtin(fiber, op, recv, span),
-        }
-    }
-
-    fn host_fault_ctl(&mut self, fiber: &mut Fiber, fault: HostFault) -> Ctl {
-        match fault {
-            HostFault::Panic(message) | HostFault::Message(message) => {
-                let span = fiber
-                    .frames
-                    .last()
-                    .map_or(Span::new(FileId(0), 0, 0), |frame| frame.span);
-                self.panic(fiber, span, message)
-            }
-            HostFault::Cancel => {
-                fiber.cancelling = true;
-                Ctl::Cancel
-            }
         }
     }
 

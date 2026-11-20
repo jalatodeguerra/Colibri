@@ -11,6 +11,7 @@ use crate::ctl::PanicInfo;
 use crate::dispatch::Tables;
 use crate::host::HostSide;
 use crate::leaks::LeakTracker;
+use crate::sched::Scheduler;
 
 /// What an engine and the engine-neutral runtime code share: the output writer, the drop trace,
 /// the `Drop` hooks' panics, the instruction budget, and the tables of the loaded program.
@@ -43,6 +44,10 @@ pub struct Core {
     pub host: HostSide,
     /// The registry of the leak detector, when it is on (ARCHITECTURE §18).
     pub leaks: Option<Box<LeakTracker>>,
+    /// The coroutine scheduler (ARCHITECTURE §16). Last, so it drops last: dropping it cancels
+    /// the background operations that are still pending, which is the last thing that happens
+    /// to an engine.
+    pub sched: Scheduler,
 }
 
 impl Core {
@@ -60,6 +65,7 @@ impl Core {
             closure_maps: Vec::new(),
             host: HostSide::default(),
             leaks: None,
+            sched: Scheduler::new(),
         }
     }
 

@@ -296,19 +296,19 @@ impl Interp {
             span,
             cleanups: Vec::new(),
         });
-        fiber.host_depth += 1;
+        fiber.state.host_depth += 1;
         // The type arguments of the call, for a function that reads them (`json.decode[T]`).
         let outer_type_args = std::mem::replace(&mut self.core.host.type_args, type_args.to_vec());
         let result = imp(self, fiber, args);
         self.core.host.type_args = outer_type_args;
-        fiber.host_depth -= 1;
+        fiber.state.host_depth -= 1;
         let outcome = match result {
             Ok(v) => Ok(v),
             Err(HostFault::Panic(message) | HostFault::Message(message)) => {
                 Err(self.panic(fiber, span, message))
             }
             Err(HostFault::Cancel) => {
-                fiber.cancelling = true;
+                fiber.state.cancelling = true;
                 Err(crate::ctl::Ctl::Cancel)
             }
         };

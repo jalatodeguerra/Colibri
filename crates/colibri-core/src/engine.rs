@@ -14,7 +14,8 @@ use colibri_check::hir::{Builtin, FnId};
 use colibri_check::types::TypeId;
 use colibri_syntax::Span;
 
-use crate::ctl::{Ctl, Eval, TraceEntry};
+use crate::ctl::{Eval, TraceEntry};
+use crate::fiber::FiberState;
 use crate::heap::ClassObj;
 use crate::host::{HostFault, HostHook};
 use crate::state::Core;
@@ -30,11 +31,19 @@ pub trait Engine: Sized {
     fn core(&self) -> &Core;
     fn core_mut(&mut self) -> &mut Core;
 
+    /// What the shared code reads and writes of a running computation.
+    fn fiber_state(fiber: &Self::Fiber) -> &FiberState;
+    fn fiber_state_mut(fiber: &mut Self::Fiber) -> &mut FiberState;
+
     // ---- positions and panics ----
 
     /// Records `span` as where the running call is: the position of its frame in the stack
     /// trace of a panic made now.
     fn note_position(fiber: &mut Self::Fiber, span: Span);
+
+    /// Where the running call is, as last recorded by [`Engine::note_position`] or by the call
+    /// itself; `None` when no call is active.
+    fn position(fiber: &Self::Fiber) -> Option<Span>;
 
     /// The Colibri stack, innermost call first.
     fn stack_trace(&self, fiber: &Self::Fiber) -> Vec<TraceEntry>;
@@ -110,13 +119,6 @@ pub trait Engine: Sized {
         hook: HostHook,
         args: Vec<Value>,
     ) -> Result<Value, HostFault>;
-
-    /// The control flow a failed host function or host hook ends the running operation with:
-    /// a panic at the position of the innermost frame, or cancellation.
-    ///
-    /// Temporary: step 7 of the core split moves the cancellation flag into the shared fiber
-    /// state, and this becomes ordinary shared code.
-    fn host_fault_ctl(&mut self, fiber: &mut Self::Fiber, fault: HostFault) -> Ctl;
 
     // ---- temporaries ----
 
