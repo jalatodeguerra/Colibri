@@ -27,6 +27,10 @@ use crate::heap::{ClassObj, GuardToken, ListObj, MapObj};
 use crate::value::{CellObj, Value};
 
 /// The part of `v` a projection selects.
+///
+/// `#[inline(never)]`: inlined into the evaluator's hot loop it made the loop's frame larger and
+/// cost 5 to 10 percent on the benchmarks (measured), for a path that is not the common one.
+#[inline(never)]
 pub(crate) fn project(v: &Value, proj: ValueProj) -> Option<&Value> {
     match (v, proj) {
         (Value::Struct(s), ValueProj::Field(i)) => s.fields.get(i.0 as usize),
@@ -36,6 +40,9 @@ pub(crate) fn project(v: &Value, proj: ValueProj) -> Option<&Value> {
 }
 
 /// The part of `v` a projection selects, made uniquely owned so it can be changed.
+///
+/// `#[inline(never)]` for the same reason as [`project`].
+#[inline(never)]
 fn project_mut(v: &mut Value, proj: ValueProj) -> Option<&mut Value> {
     match (v, proj) {
         (Value::Struct(s), ValueProj::Field(i)) => Rc::make_mut(s).fields.get_mut(i.0 as usize),
@@ -53,6 +60,9 @@ fn replace_at(root: &mut Value, path: &[ValueProj], new: &mut Option<Value>) -> 
 }
 
 /// The part of `root` at `path`, cloned.
+///
+/// `#[inline(never)]` for the same reason as [`project`].
+#[inline(never)]
 fn read_at(root: &Value, path: &[ValueProj]) -> Option<Value> {
     path.iter().try_fold(root, |v, &p| project(v, p)).cloned()
 }
