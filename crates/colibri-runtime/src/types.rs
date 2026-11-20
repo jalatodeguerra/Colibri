@@ -287,6 +287,11 @@ pub struct TypeRegistry {
     /// registrations are one Colibri type only when this is the same `TypeId`. `None` for a
     /// declaration made from interface text (`define_struct`), which is never shared.
     pub(crate) decl_rust: Vec<Option<AnyTypeId>>,
+    /// The names of the Rust types in `decl_rust` that were told (`std::any::type_name`), for
+    /// the messages that say which two types collided.
+    pub(crate) rust_names: std::collections::HashMap<AnyTypeId, String>,
+    /// The class that the last [`TypeRegistry::define_host_type`] described or found.
+    pub(crate) last_class: Option<usize>,
     /// Names a module has for a type another module owns: `(module, name, declaration, via)`.
     /// The module registered the same Rust type, so `module.Name` is that type too; `via` is
     /// the module that owned it then (its signatures may have written `via.Name`), and the
@@ -310,6 +315,21 @@ pub struct TypeRegistry {
 impl TypeRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Tells the name of the Rust type `id` (`std::any::type_name`), so that a message about
+    /// two different Rust types with one Colibri name can name both. What
+    /// `#[colibri::export(value)]` does before it describes the type.
+    pub fn name_rust_type(&mut self, id: AnyTypeId, name: &str) {
+        self.rust_names
+            .entry(id)
+            .or_insert_with(|| name.to_string());
+    }
+
+    /// How a message names the Rust type `id`.
+    fn rust_type(&self, id: Option<AnyTypeId>) -> String {
+        id.and_then(|id| self.rust_names.get(&id))
+            .map_or_else(|| "another Rust type".to_string(), |n| format!("`{n}`"))
     }
 
     /// The name of the module being described into (`host` is the default).
@@ -473,6 +493,19 @@ impl TypeRegistry {
             return current;
         }
         if let Some(i) = self.find_decl(&current, decl.name()) {
+            // The same shape is not the same type: two Rust types of one name in one module
+            // are two types for one name, whichever came first and whoever owns the name.
+            if let (Some(had), Some(now)) = (self.decl_rust[i], rust)
+                && had != now
+            {
+                self.conflicts.push(format!(
+                    "the module `{current}` names two different Rust types `{}`: {} and {}",
+                    decl.name(),
+                    self.rust_type(Some(had)),
+                    self.rust_type(Some(now))
+                ));
+                return current;
+            }
             if !self.same_declaration(i, &decl, &current) {
                 self.conflicts.push(format!(
                     "the type `{}` is described in two different ways",
@@ -493,9 +526,11 @@ impl TypeRegistry {
             {
                 if self.decl_rust[j] != Some(r) {
                     self.conflicts.push(format!(
-                            "the module `{current}` names two different types `{}`: the one of module `{}` and another Rust type",
+                            "the module `{current}` names two different types `{}`: the one of module `{}` ({}) and {}",
                             decl.name(),
-                            self.owner_of(j)
+                            self.owner_of(j),
+                            self.rust_type(self.decl_rust[j]),
+                            self.rust_type(Some(r))
                         ));
                 }
                 return self.owner_of(j).to_string();
@@ -881,7 +916,9 @@ impl TypeRegistry {
     pub fn define_host_type<T: HostType>(&mut self) -> TypeDesc {
         let name = T::NAME;
         let any = AnyTypeId::of::<T>();
-        if let Some(existing) = self.classes.iter().find(|c| c.any == any) {
+        if let Some(at) = self.classes.iter().position(|c| c.any == any) {
+            self.last_class = Some(at);
+            let existing = &self.classes[at];
             let home = Self::module_key(&existing.module).to_string();
             return TypeDesc::Host(self.written(&home, name));
         }
@@ -919,6 +956,8 @@ impl TypeRegistry {
         let (methods, hooks) = builder.finish();
         self.classes[index].methods = methods;
         self.classes[index].hooks = hooks;
+        // Set last: the classes its methods mention were described (and noted) on the way.
+        self.last_class = Some(index);
         TypeDesc::Host(name.to_string())
     }
 }

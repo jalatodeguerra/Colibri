@@ -177,6 +177,7 @@ fn export_struct(options: &Options, paths: &Paths, item: ItemStruct) -> Result<T
                 let fields = ::std::vec![
                     #((#field_texts, <#types as #private::IntoColibri>::ty(reg))),*
                 ];
+                reg.name_rust_type(::core::any::TypeId::of::<#name>(), ::core::any::type_name::<#name>());
                 reg.define_struct_of(::core::any::TypeId::of::<#name>(), #text, fields)
             }
             fn into_colibri(self, cx: &mut #private::Cx<'_>) -> #private::Value {
@@ -248,6 +249,7 @@ fn export_enum(options: &Options, paths: &Paths, item: ItemEnum) -> Result<Token
         #item
         impl #private::IntoColibri for #name {
             fn ty(reg: &mut #private::TypeRegistry) -> #private::TypeDesc {
+                reg.name_rust_type(::core::any::TypeId::of::<#name>(), ::core::any::type_name::<#name>());
                 reg.define_enum_of(::core::any::TypeId::of::<#name>(), #text, &[#(#variant_texts),*])
             }
             fn into_colibri(self, cx: &mut #private::Cx<'_>) -> #private::Value {

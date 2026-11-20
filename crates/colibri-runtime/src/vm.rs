@@ -680,18 +680,28 @@ impl Vm {
             // module's signatures is what `uses` is for, not registering it again. A value
             // type is shared by every module that registers it, in whatever order, so it is
             // not refused here: describing it goes through the sharing path.
-            if let TypeDesc::Host(written) = T::ty(reg)
-                && let Some((alias, name)) = written.split_once('.')
+            reg.last_class = None;
+            if let TypeDesc::Host(_) = T::ty(reg)
+                && let Some(at) = reg.last_class
             {
-                let home = reg
-                    .classes
-                    .iter()
-                    .find(|c| c.name == name && crate::types::short_module_name(c.module.as_deref().unwrap_or(DEFAULT_MODULE)) == alias)
-                    .and_then(|c| c.module.clone())
-                    .unwrap_or_else(|| alias.to_string());
-                reg.conflicts.push(format!(
-                    "the type `{name}` belongs to the module `{home}`, which described it first: it cannot be registered into `{module}` too (name it in this module's signatures after `uses(\"{home}\")`)"
-                ));
+                let class = &reg.classes[at];
+                let home = class.module.as_deref().unwrap_or(DEFAULT_MODULE);
+                if home != module {
+                    let name = &class.name;
+                    let how = if home == DEFAULT_MODULE {
+                        "the default module".to_string()
+                    } else {
+                        format!("the module `{home}`")
+                    };
+                    reg.conflicts.push(format!(
+                        "the class `{name}` belongs to {how}, which described it first: it cannot be registered into the module `{module}` too (name it in this module's signatures{})",
+                        if home == DEFAULT_MODULE {
+                            String::new()
+                        } else {
+                            format!(" after `uses(\"{home}\")`")
+                        }
+                    ));
+                }
             }
         })
     }
