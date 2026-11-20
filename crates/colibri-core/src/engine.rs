@@ -155,8 +155,8 @@ pub trait Engine: Sized {
     /// For the tree-walker this switches to the coroutine's native stack and back. For an
     /// engine with heap frames it is the same contract with no stack: run the coroutine's
     /// frames from where it paused until it waits again or ends. The engine must not hold a
-    /// reference into [`Core`] across the call (the coroutine uses it meanwhile). `slot` is what the
-    /// engine gave to `Scheduler::register` for this coroutine. `Gone` means the engine has
+    /// reference into [`Core`] across the call (the coroutine uses it meanwhile). `slot` is what
+    /// the engine gave to `Scheduler::register` for this coroutine. `Gone` means the engine has
     /// nothing to run for `id` (it is already running, or has ended). The scheduler only resumes
     /// suspended coroutines, so this is a broken invariant: the coroutine ends as a failure with
     /// an internal error.
@@ -166,8 +166,8 @@ pub trait Engine: Sized {
 
     /// The built-ins that pause the running coroutine: `join` and `join_result` on a
     /// `Coroutine` and `join_all` on a `CoGroup` (`op` says which; `recv` is the receiver).
-    /// Pausing is stackful in the tree-walker, so these stay with the engine; the other handle methods are in
-    /// [`crate::coro::Sched`].
+    /// Pausing is stackful in the tree-walker, so these stay with the engine; the other handle
+    /// methods are in [`crate::coro::Sched`].
     fn pausing_builtin(
         &mut self,
         fiber: &mut Self::Fiber,

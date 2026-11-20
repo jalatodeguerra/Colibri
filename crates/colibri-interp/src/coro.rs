@@ -145,14 +145,7 @@ impl Interp {
     // `next_wake`, `tick` and `take_coroutine_failure` forward to `Core`/`Sched` on purpose: the
     // runtime's event loop and many tests call them as methods of the engine (`tick` takes the
     // fiber that a heap-frame engine will need, and the tree-walker ignores), so they are the
-    // engine's own API, not accessors of the shared state. Removing them would also make the
-    // `local/r6-join` branch, which adds to this block, harder to rebase.
-
-    /// How many coroutines are registered as waiting for a signal or for another coroutine.
-    #[doc(hidden)]
-    pub fn coroutine_waiters(&self) -> usize {
-        self.core.sched.waiter_count()
-    }
+    // engine's own API, not accessors of the shared state.
 
     /// How long until the next coroutine needs a tick, for an event loop: `None` when nothing
     /// is alive or every live coroutine waits for an event (a signal, a `join`, a `join_all`:

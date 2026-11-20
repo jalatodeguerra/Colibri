@@ -6,7 +6,9 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
-use colibri_interp::{Fiber, Interp, Value};
+use colibri_core::prelude::*;
+use colibri_core::value::Value;
+use colibri_interp::{Fiber, Interp};
 use colibri_syntax::{FileId, parse_file};
 
 #[derive(Clone, Default)]
@@ -96,13 +98,13 @@ fn pairs(how: &str) -> String {
 fn waiters_cost_nothing(how: &str, queued: bool) {
     let mut m = machine(&pairs(how));
     m.call("main");
-    assert_eq!(m.interp.coroutine_count(), 2 * N);
-    let after_start = m.interp.coroutine_resumptions();
+    assert_eq!(m.interp.core().sched.coroutine_count(), 2 * N);
+    let after_start = m.interp.core().sched.resumptions();
     for _ in 0..100 {
         m.tick(0.01);
     }
     assert_eq!(
-        m.interp.coroutine_resumptions(),
+        m.interp.core().sched.resumptions(),
         after_start,
         "a waiter was resumed without its target having ended"
     );
@@ -115,7 +117,7 @@ fn waiters_cost_nothing(how: &str, queued: bool) {
     m.tick(0.0);
     if queued {
         // The targets end in this tick; their waiters were queued for the next one.
-        assert_eq!(m.interp.coroutine_resumptions(), after_start + N as u64);
+        assert_eq!(m.interp.core().sched.resumptions(), after_start + N as u64);
         assert_eq!(
             m.interp.next_wake(0.001),
             Some(0.0),
@@ -123,8 +125,11 @@ fn waiters_cost_nothing(how: &str, queued: bool) {
         );
         m.tick(0.0);
     }
-    assert_eq!(m.interp.coroutine_resumptions(), after_start + 2 * N as u64);
-    assert_eq!(m.interp.coroutine_count(), 0);
+    assert_eq!(
+        m.interp.core().sched.resumptions(),
+        after_start + 2 * N as u64
+    );
+    assert_eq!(m.interp.core().sched.coroutine_count(), 0);
     let expected: String = (0..N).map(|i| format!("{i}\n")).collect();
     assert_eq!(m.printed(), expected, "woken in the order they waited");
 }
@@ -148,19 +153,23 @@ fn a_cancelled_join_result_waiter_leaves_no_entry_behind() {
     let mut m = machine(src);
     m.call("main");
     // The target waits for the gate; waiters 1 and 3 wait for the target; 2 is gone.
-    assert_eq!(m.interp.coroutine_waiters(), 3, "gate + two joiners");
+    assert_eq!(
+        m.interp.core().sched.waiter_count(),
+        3,
+        "gate + two joiners"
+    );
     assert_eq!(m.printed(), "unwound 2\n");
     m.call("fire");
     m.tick(0.0);
-    assert_eq!(m.interp.coroutine_waiters(), 0);
-    let before = m.interp.coroutine_resumptions();
+    assert_eq!(m.interp.core().sched.waiter_count(), 0);
+    let before = m.interp.core().sched.resumptions();
     m.tick(0.0);
-    assert_eq!(m.interp.coroutine_resumptions(), before + 2);
+    assert_eq!(m.interp.core().sched.resumptions(), before + 2);
     assert_eq!(
         m.printed(),
         "unwound 2\nwoke 1\nunwound 1\nwoke 3\nunwound 3\n"
     );
-    assert_eq!(m.interp.coroutine_count(), 0);
+    assert_eq!(m.interp.core().sched.coroutine_count(), 0);
 }
 
 /// A coroutine that joins one that has already ended does not suspend: it runs to its end in
@@ -173,10 +182,10 @@ fn join_result_on_a_finished_coroutine_does_not_suspend() {
     let mut m = machine(src);
     m.call("main");
     assert_eq!(m.printed(), "5\n");
-    assert_eq!(m.interp.coroutine_count(), 0);
-    assert_eq!(m.interp.coroutine_waiters(), 0);
+    assert_eq!(m.interp.core().sched.coroutine_count(), 0);
+    assert_eq!(m.interp.core().sched.waiter_count(), 0);
     assert_eq!(
-        m.interp.coroutine_resumptions(),
+        m.interp.core().sched.resumptions(),
         2,
         "the two starts, nothing else"
     );
@@ -194,12 +203,12 @@ fn one_target_many_waiters(how: &str, queued: bool) {
     );
     let mut m = machine(&src);
     m.call("main");
-    assert_eq!(m.interp.coroutine_waiters(), N + 1);
-    let after_start = m.interp.coroutine_resumptions();
+    assert_eq!(m.interp.core().sched.waiter_count(), N + 1);
+    let after_start = m.interp.core().sched.resumptions();
     for _ in 0..100 {
         m.tick(0.01);
     }
-    assert_eq!(m.interp.coroutine_resumptions(), after_start);
+    assert_eq!(m.interp.core().sched.resumptions(), after_start);
     assert_eq!(m.interp.next_wake(0.001), None);
     m.call("fire");
     m.tick(0.0);
@@ -209,8 +218,8 @@ fn one_target_many_waiters(how: &str, queued: bool) {
     }
     let expected: String = (0..N).map(|i| format!("{i}\n")).collect();
     assert_eq!(m.printed(), expected, "woken in the order they waited");
-    assert_eq!(m.interp.coroutine_waiters(), 0);
-    assert_eq!(m.interp.coroutine_count(), 0);
+    assert_eq!(m.interp.core().sched.waiter_count(), 0);
+    assert_eq!(m.interp.core().sched.coroutine_count(), 0);
 }
 
 #[test]
@@ -242,14 +251,14 @@ fn a_thousand_join_all_waiters_cost_no_resumptions_and_no_polling() {
     );
     let mut m = machine(&src);
     m.call("main");
-    let after_start = m.interp.coroutine_resumptions();
+    let after_start = m.interp.core().sched.resumptions();
     for _ in 0..100 {
         m.tick(0.01);
     }
-    assert_eq!(m.interp.coroutine_resumptions(), after_start);
+    assert_eq!(m.interp.core().sched.resumptions(), after_start);
     assert_eq!(m.interp.next_wake(0.001), None);
     assert_eq!(
-        m.interp.coroutine_waiters(),
+        m.interp.core().sched.waiter_count(),
         N + 2,
         "the two members on the gate, the waiters on the group"
     );
@@ -259,8 +268,8 @@ fn a_thousand_join_all_waiters_cost_no_resumptions_and_no_polling() {
     // ordinary pass, in start order.
     let expected: String = (0..N).map(|i| format!("{i}\n")).collect();
     assert_eq!(m.printed(), expected);
-    assert_eq!(m.interp.coroutine_waiters(), 0);
-    assert_eq!(m.interp.coroutine_count(), 0);
+    assert_eq!(m.interp.core().sched.waiter_count(), 0);
+    assert_eq!(m.interp.core().sched.coroutine_count(), 0);
 }
 
 /// A waiter in `join` or `join_all` that is cancelled while it waits leaves the list at once.
@@ -276,21 +285,21 @@ fn a_cancelled_join_or_join_all_waiter_leaves_no_entry_behind() {
     m.call("main");
     assert_eq!(m.printed(), "joiner unwound\nall unwound\n");
     assert_eq!(
-        m.interp.coroutine_waiters(),
+        m.interp.core().sched.waiter_count(),
         1,
         "only the member's wait for the gate"
     );
-    assert_eq!(m.interp.coroutine_count(), 1);
+    assert_eq!(m.interp.core().sched.coroutine_count(), 1);
     m.call("fire");
-    let before = m.interp.coroutine_resumptions();
+    let before = m.interp.core().sched.resumptions();
     m.tick(0.0);
     assert_eq!(
-        m.interp.coroutine_resumptions(),
+        m.interp.core().sched.resumptions(),
         before + 1,
         "only the member"
     );
-    assert_eq!(m.interp.coroutine_waiters(), 0);
-    assert_eq!(m.interp.coroutine_count(), 0);
+    assert_eq!(m.interp.core().sched.waiter_count(), 0);
+    assert_eq!(m.interp.core().sched.coroutine_count(), 0);
 }
 
 /// `join` on a finished coroutine and `join_all` on a group with no other member do not
@@ -303,9 +312,9 @@ fn join_and_join_all_with_nothing_to_wait_for_do_not_suspend() {
     let mut m = machine(src);
     m.call("main");
     assert_eq!(m.printed(), "5\ndone\n");
-    assert_eq!(m.interp.coroutine_count(), 0);
-    assert_eq!(m.interp.coroutine_waiters(), 0);
-    assert_eq!(m.interp.coroutine_resumptions(), 2);
+    assert_eq!(m.interp.core().sched.coroutine_count(), 0);
+    assert_eq!(m.interp.core().sched.waiter_count(), 0);
+    assert_eq!(m.interp.core().sched.resumptions(), 2);
 }
 
 /// A member of a group that joins its own group waits for the others only.
@@ -318,7 +327,7 @@ fn a_member_joining_its_own_group_waits_for_the_others() {
         fn fire() {\n    gate.emit()\n}\n";
     let mut m = machine(src);
     m.call("main");
-    assert_eq!(m.interp.coroutine_count(), 2);
+    assert_eq!(m.interp.core().sched.coroutine_count(), 2);
     for _ in 0..10 {
         m.tick(0.1);
     }
@@ -327,7 +336,7 @@ fn a_member_joining_its_own_group_waits_for_the_others() {
     m.call("fire");
     m.tick(0.0);
     assert_eq!(m.printed(), "other ends\nme resumed\n");
-    assert_eq!(m.interp.coroutine_count(), 0);
+    assert_eq!(m.interp.core().sched.coroutine_count(), 0);
 }
 
 /// Cancelling the target wakes its joiners with the cancel outcome (`join` panics in the
@@ -342,5 +351,5 @@ fn cancelling_the_target_wakes_a_join_waiter() {
     m.call("main");
     m.tick(0.0);
     assert_eq!(m.printed(), "true\n");
-    assert_eq!(m.interp.coroutine_count(), 0);
+    assert_eq!(m.interp.core().sched.coroutine_count(), 0);
 }

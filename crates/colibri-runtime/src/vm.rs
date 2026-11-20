@@ -1724,7 +1724,7 @@ impl Vm {
     /// (for tests).
     #[doc(hidden)]
     pub fn coroutine_waiters(&self) -> usize {
-        self.interp.coroutine_waiters()
+        self.interp.core().sched.waiter_count()
     }
 
     /// Cancels every live coroutine, newest first, running their `defer`s and drops. Done
