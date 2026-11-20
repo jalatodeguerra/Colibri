@@ -189,3 +189,23 @@ fn a_missing_impl_is_not_blamed_on_a_narrow_integer() {
     );
     assert_eq!(message, "`W[i32]` does not implement `Add[W[i32], W[i32]]`");
 }
+
+#[test]
+fn a_swizzle_letter_the_type_lacks_is_named() {
+    let (_, hint) = first_error("import vec\nlet v = vec.vec2(1.0, 2.0)\nprint(v.xyz)\n");
+    assert!(
+        hint.starts_with("`vec2` has no `z` component (its components are `x`, `y`); "),
+        "{hint}"
+    );
+    assert!(hint.contains("`vec.vec2(v.x, v.y)`"), "{hint}");
+}
+
+#[test]
+fn a_program_struct_named_vec3_gets_no_vec_hint() {
+    let (message, hint) = first_error(
+        "struct vec3 { x: float, y: float, z: float }\nlet v = vec3 { x: 1.0, y: 2.0, z: 3.0 }\nprint(v.zyx)\n",
+    );
+    assert_eq!(message, "the struct `vec3` has no field `zyx`");
+    assert!(!hint.contains("swizzle"), "{hint}");
+    assert!(!hint.contains("vec.vec3"), "{hint}");
+}

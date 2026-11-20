@@ -184,7 +184,7 @@ fn main() {
 `impl Add for Money` means `Add[Money, Money]`. A type can implement an operator once for each
 right-hand type, told apart by the type's head only (`Add[Box[int]]` and `Add[Box[str]]` count as
 one). A number can be the left operand of your type when the right-hand type is yours (comparison
-stays on `Eq` and `Ord`). A type of the standard library (`vec.vec2`) is the library's: you
+stays on `Eq` and `Ord`). A type of the standard library (`vec.vec2`, `datetime.DateTime`) is the library's: you
 can give it an operator only with a right-hand type of your own, and no other built-in interface.
 A narrow integer type (`i8` to `u32`) cannot yet stand for a type
 parameter that has an operator bound:
