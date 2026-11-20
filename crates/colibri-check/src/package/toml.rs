@@ -127,8 +127,9 @@ fn mask_spans(text: &str, mut spans: Vec<(usize, usize)>) -> String {
     let mut out = String::with_capacity(text.len());
     let mut done = 0;
     for (s, e) in spans {
-        let e = e.min(text.len());
-        if s < done || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
+        // Two spans that overlap hide what either covers: none is skipped for the other.
+        let (s, e) = (s.max(done), e.min(text.len()));
+        if s >= e || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
             continue;
         }
         out.push_str(&text[done..s]);
@@ -143,7 +144,7 @@ fn mask_spans(text: &str, mut spans: Vec<(usize, usize)>) -> String {
 /// of the line), for the ones that have an `@` in them. A comment starts at the first `#` of a
 /// line that is outside the table headers, keys and values the parser found.
 fn comments_with_at(text: &str, tables: &[Table], out: &mut Vec<(usize, usize)>) {
-    if !text.contains('@') || !text.contains('#') {
+    if !text.contains(['@', '\\']) || !text.contains('#') {
         return;
     }
     let mut regions: Vec<(usize, usize)> = Vec::new();
@@ -171,7 +172,8 @@ fn comments_with_at(text: &str, tables: &[Table], out: &mut Vec<(usize, usize)>)
             line_end
         };
         resume = line_end;
-        if text[p + 1..end].contains('@') {
+        // An escape for an `@` counts, as in a line that does not parse: a reader sees one.
+        if super::git::last_at_like(&text[p + 1..end]).is_some() {
             out.push((p + 1, end));
         }
     }
@@ -655,6 +657,29 @@ mod tests {
             text.encode_utf16().count(),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_comment_with_an_escaped_at_sign_is_hidden_and_overlapping_spans_hide_both() {
+        let text = "[package]\nname = \"app\" # was https://u:SeCrEt\\u0040h/r\nffi = true # é\n";
+        let config = read_config(FileId(0), text, "colibri.toml");
+        assert!(config.tables.is_ok() && config.credentials.is_empty());
+        assert!(!config.display.contains("SeCrEt"), "{}", config.display);
+        assert!(
+            config.display.contains("name = \"app\" #"),
+            "{}",
+            config.display
+        );
+        assert!(
+            config.display.ends_with("ffi = true # é\n"),
+            "{}",
+            config.display
+        );
+        assert_eq!(config.display.len(), text.len());
+        // A span that starts inside another one still hides its own tail.
+        let masked = mask_spans("abcdefgh", vec![(1, 4), (2, 6)]);
+        assert_eq!((&masked[..1], &masked[6..]), ("a", "gh"));
+        assert!(!masked.contains(['b', 'c', 'd', 'e', 'f']), "{masked}");
     }
 
     #[test]
