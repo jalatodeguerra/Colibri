@@ -345,3 +345,20 @@ test "a request built from a parsed head reads its body through the source" {
     assert_eq(req.host(), "x")
     assert_eq(req.text().expect("reads"), "hello")
 }
+
+test "content_length is none for a chunked body" {
+    let h = common.accepted(common.head(["POST /up HTTP/1.1", "Host: x", "Transfer-Encoding: chunked"]))
+    let reader = httpd_impl.body_reader(h.framing, 100, fn(n: int) -> Result[Bytes] {
+        return ok(Bytes())
+    })
+    let req = httpd_impl.request(h, reader, "127.0.0.1:1")
+    assert_eq(req.content_length(), none)
+}
+
+test "content_length is 0 for a request with no body framing" {
+    let h = common.accepted(common.head(["GET / HTTP/1.1", "Host: x"]))
+    let reader = httpd_impl.body_reader(h.framing, 100, fn(n: int) -> Result[Bytes] {
+        return ok(Bytes())
+    })
+    assert_eq(httpd_impl.request(h, reader, "127.0.0.1:1").content_length(), some(0))
+}
