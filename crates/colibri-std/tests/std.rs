@@ -666,36 +666,52 @@ fn an_unfinished_child_is_killed_when_it_is_dropped() {
 #[cfg(unix)]
 #[test]
 fn coroutines_make_progress_while_a_child_process_runs() {
-    let (mut vm, out) = vm(&[colibri::Cap::Os]);
+    // The child ends when the ticker has written a marker after its tenth tick, so the test
+    // waits for a condition and not for a duration (timers on a loaded macOS runner sleep far
+    // longer than asked). A blocked `Vm` never writes the marker: the child gives up after
+    // twenty seconds and the count stays at one.
+    let scratch = Scratch::new("progress");
+    let marker = scratch
+        .0
+        .join("marker")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let (mut vm, out) = vm(&[colibri::Cap::Os, colibri::Cap::Fs]);
     run(
         &mut vm,
-        r#"import process
+        &format!(
+            r#"import process
+import fs
 
 var ticks = 0
 var finished_at = 0
 
-fn ticker() {
-    while true {
+fn ticker() {{
+    while true {{
         ticks += 1
-        wait(0.01)
-    }
-}
+        if ticks == 10 {{
+            let _ = fs.write("{marker}", "x")
+        }}
+        wait(0.001)
+    }}
+}}
 
-fn runner() -> int {
-    let r = process.run("sh", ["-c", "sleep 0.4; echo done"]) or |e| { panic(e.message()) }
+fn runner() -> int {{
+    let script = "i=0; while [ ! -f \"$1\" ] && [ $i -lt 1000 ]; do sleep 0.02; i=$((i+1)); done; echo done"
+    let r = process.run("sh", ["-c", script, "sh", "{marker}"]) or |e| {{ panic(e.message()) }}
     finished_at = ticks
     return r.status
-}
+}}
 
-fn main() {
+fn main() {{
     let t = go ticker()
     let r = go runner()
     print(r.join())
     t.cancel()
-    // About forty ticks happened while the child slept; with a blocked `Vm` there would be one.
-    print(finished_at > 10)
-}
-"#,
+    print(finished_at >= 10)
+}}
+"#
+        ),
     )
     .unwrap();
     assert_eq!(out.contents(), "0\ntrue\n");
