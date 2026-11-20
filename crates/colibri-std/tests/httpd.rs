@@ -43,6 +43,10 @@ fn main() -> Result[()] {
             server.stop(1.0)
             return ok(httpd.text(200, "stopping\n"))
         }
+        if r.path == "/__stop_slowly" {
+            server.stop(120.0)
+            return ok(httpd.text(200, "stopping\n"))
+        }
         if r.path == "/__seen" {
             return ok(httpd.text(200, "{seen.items.len()}\n"))
         }
@@ -269,6 +273,23 @@ impl Server {
         assert_eq!(r.status, 200);
         // A client that has read `Connection: close` closes its end; the server's lingering
         // close waits for that.
+        drop(w);
+        self.wait()
+    }
+
+    /// Like `finish`, but the grace of the stop is 120 s: the connections that are left are not
+    /// cancelled by the grace timer before the ceiling, so one that closes did so because the
+    /// stop closed it.
+    #[track_caller]
+    fn finish_slowly(self) -> Outcome {
+        let mut w = self.connect();
+        let r = w.call(request(
+            "POST",
+            "/__stop_slowly",
+            &["Content-Length: 0"],
+            b"",
+        ));
+        assert_eq!(r.status, 200);
         drop(w);
         self.wait()
     }
@@ -1038,7 +1059,7 @@ fn stopping_closes_the_idle_connections_and_ends_serve_and_the_address_is_free_a
     for w in &mut idle {
         assert_eq!(w.call(get("/")).status, 200);
     }
-    let seen = server.finish().seen;
+    let seen = server.finish_slowly().seen;
     for w in &mut idle {
         w.expect_silent_close();
     }
