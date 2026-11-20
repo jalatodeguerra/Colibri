@@ -223,22 +223,59 @@ impl Interp {
     }
 }
 
-/// The offset of the first occurrence of `needle` in `hay`.
+/// The offset of the first occurrence of `needle` in `hay`. The time is linear in the two
+/// lengths together, whatever they hold: a scan that tries the needle at every offset takes
+/// the product of them on a text of one repeated byte.
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
+    memchr::memmem::find(hay, needle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find;
+
+    #[test]
+    fn find_gives_the_first_offset_or_nothing() {
+        assert_eq!(find(b"abcabc", b"c"), Some(2));
+        assert_eq!(find(b"abcabc", b"cab"), Some(2));
+        assert_eq!(find(b"abcabc", b"abcabc"), Some(0));
+        assert_eq!(find(b"abcabc", b"abcabcd"), None);
+        assert_eq!(find(b"abcabc", b"x"), None);
+        assert_eq!(find(b"abc", b""), Some(0));
+        assert_eq!(find(b"", b""), Some(0));
+        assert_eq!(find(b"", b"a"), None);
+        assert_eq!(find(&[0, 255, 0, 255, 7], &[255, 7]), Some(3));
     }
-    let first = needle[0];
-    let last_start = hay.len().checked_sub(needle.len())?;
-    let mut at = 0;
-    while at <= last_start {
-        let rest = &hay[at..=last_start];
-        let i = rest.iter().position(|&b| b == first)?;
-        at += i;
-        if hay[at..].starts_with(needle) {
-            return Some(at);
-        }
-        at += 1;
+
+    #[test]
+    fn finding_takes_time_in_proportion_to_the_size() {
+        // The worst shape for a scan that tries every offset: a text of one repeated byte and
+        // a needle that is the same byte up to its last one, which differs.
+        let shape = |n: usize| {
+            let hay = vec![b'a'; n * 10];
+            let mut needle = vec![b'a'; n - 1];
+            needle.push(b'b');
+            (hay, needle)
+        };
+        let time = |n: usize| {
+            let (hay, needle) = shape(n);
+            let t = std::time::Instant::now();
+            assert_eq!(find(&hay, &needle), None);
+            t.elapsed().as_secs_f64()
+        };
+        time(1000);
+        // The best of a few runs: a busy machine slows one run, not all of them.
+        let best = |n: usize| (0..5).map(|_| time(n)).fold(f64::INFINITY, f64::min);
+        // A 2 MB text with a 200 KB needle, and one eighth of that.
+        let (small, big) = (best(25_000), best(200_000));
+        // Eight times the size: about eight times the time, not sixty-four.
+        assert!(big < 20.0 * small.max(0.002), "{small} {big}");
+        // And a bound so generous that only a quadratic scan (minutes) goes over it.
+        assert!(big < 10.0, "{big}");
+        // A needle that is there is found at its offset.
+        let (mut hay, needle) = shape(200_000);
+        let at = hay.len() - needle.len();
+        hay[at..].copy_from_slice(&needle);
+        assert_eq!(find(&hay, &needle), Some(at));
     }
-    None
 }

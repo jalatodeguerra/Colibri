@@ -219,6 +219,7 @@ dependencies = [
  "colibri-ffi",
  "colibri-syntax",
  "corosensei",
+ "memchr",
 ]
 
 [[package]]
