@@ -448,12 +448,16 @@ pub fn shown(root: Option<&Path>, path: &Path) -> String {
     if rel.as_os_str().is_empty() {
         ".".to_string()
     } else {
-        let text = rel.to_string_lossy();
-        if cfg!(windows) {
-            text.replace('\\', "/")
-        } else {
-            text.into_owned()
-        }
+        with_slashes(&rel.to_string_lossy(), cfg!(windows))
+    }
+}
+
+/// `text` with `/` for the separators of a Windows path (on Unix a `\\` is part of a name).
+fn with_slashes(text: &str, windows: bool) -> String {
+    if windows {
+        text.replace('\\', "/")
+    } else {
+        text.to_string()
     }
 }
 
@@ -550,7 +554,23 @@ pub fn conflicting_reading(
 
 #[cfg(test)]
 mod tests {
-    use super::replace_ident;
+    use super::{replace_ident, shown, with_slashes};
+    use std::path::Path;
+
+    #[test]
+    fn messages_show_paths_with_slashes_on_windows_too() {
+        assert_eq!(with_slashes(r"tools\t.colibri", true), "tools/t.colibri");
+        assert_eq!(
+            with_slashes(r"C:\ws\tools\t.colibri", true),
+            "C:/ws/tools/t.colibri"
+        );
+        assert_eq!(with_slashes("tools/t.colibri", false), "tools/t.colibri");
+        let root = Path::new("/ws");
+        assert_eq!(
+            shown(Some(root), &root.join("tools").join("t.colibri")),
+            "tools/t.colibri"
+        );
+    }
 
     #[test]
     fn identifiers_are_replaced_whole() {

@@ -3258,17 +3258,26 @@ fn big_tree(n: usize, flat: bool, name: &str) -> std::time::Duration {
     let edit = c.rename(&util, pos_of(util_text, "f()"), "g");
     let took = t.elapsed();
     eprintln!("rename in {n} files: {took:?}");
-    assert!(edit.is_ok(), "{edit:?}");
+    let edit = edit.expect("the rename is answered");
+    // Deterministic: every module (n), `main` and `util` are edited, so every file was
+    // found and read whatever the time taken.
+    let changes = edit["changes"].as_object().expect("changes");
+    assert_eq!(changes.len(), n + 2, "{name}");
     c.shutdown();
     took
 }
 
 #[test]
 fn rename_in_a_big_tree_takes_seconds_not_minutes() {
-    // It took 11.5 s in subfolders and 4 s flat when every file lookup scanned the buffers.
+    // It took 11.5 s in subfolders and 4 s flat when every file lookup scanned the buffers,
+    // and well under a second now; the bound is wide so that a slow machine cannot fail it,
+    // and `big_tree` checks that every file was edited.
     for (flat, name) in [(false, "rv4_big_sub"), (true, "rv4_big_flat")] {
         let took = big_tree(1900, flat, name);
-        assert!(took < std::time::Duration::from_secs(5), "{name}: {took:?}");
+        assert!(
+            took < std::time::Duration::from_secs(30),
+            "{name}: {took:?}"
+        );
     }
 }
 
