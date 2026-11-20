@@ -2,15 +2,14 @@
 //! between them and Colibri code (EMBEDDING §1, §6). The state that is not tied to this engine
 //! (host types, host state, the root slab) is in [`colibri_core::host`].
 
-use std::any::TypeId as AnyTypeId;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use colibri_check::hir::{HostFnId, Program, TypeDef};
+use colibri_check::hir::{HostFnId, Program};
 use colibri_check::types::{Ty, TypeId};
-use colibri_syntax::{SourceMap, Span};
+use colibri_syntax::Span;
 
-pub use colibri_core::host::{HostFault, RootDropQueue, RootHandle, map_value};
+pub use colibri_core::host::HostFault;
 
 use crate::ctl::{Eval, PanicInfo};
 use crate::eval::Interp;
@@ -72,164 +71,10 @@ impl Interp {
         self.host_impls.class_hooks.insert(ty, hooks);
     }
 
-    // ---- the host side, which lives in `Core` ----
-
-    /// The type id of a struct, enum or class declared by the default `host` module of the
-    /// host interface. Another module's types are found with [`Interp::host_type_in`].
-    pub fn host_type(&self, name: &str) -> Option<TypeId> {
-        self.core.host_type(name)
-    }
-
-    /// The type id of a struct, enum or class that the host module `module` declares (`host`
-    /// for the default module).
-    pub fn host_type_in(&self, module: &str, name: &str) -> Option<TypeId> {
-        self.core.host_type_in(module, name)
-    }
-
-    /// Records the types a module's bare names mean that another module declares (see
-    /// [`Interp::host_type_here`]).
-    pub fn set_host_type_aliases(&mut self, aliases: HashMap<(String, String), TypeId>) {
-        self.core.set_host_type_aliases(aliases);
-    }
-
-    /// The type a host function of `module` means by the bare `name`, or the reason there is
-    /// none (no such type, or several modules declare one).
-    pub fn host_type_here(&self, module: Option<&str>, name: &str) -> Result<TypeId, String> {
-        self.core.host_type_here(module, name)
-    }
-
-    /// Records which Rust type implements which host class of the loaded program.
-    pub fn set_host_classes(&mut self, classes: HashMap<AnyTypeId, TypeId>) {
-        self.core.set_host_classes(classes);
-    }
-
-    /// The type id of the host class that the Rust type `any` implements.
-    pub fn host_class(&self, any: AnyTypeId) -> Option<TypeId> {
-        self.core.host_class(any)
-    }
-
-    /// The type id and the index of the variant `variant` of the enum `enum_name` that the host
-    /// module `module` declared as its own, or the reason there is none.
-    pub fn module_enum_variant(
-        &self,
-        module: &str,
-        enum_name: &str,
-        variant: &str,
-    ) -> Result<(TypeId, u32), String> {
-        self.core.module_enum_variant(module, enum_name, variant)
-    }
-
-    /// The name of a type of the loaded program.
-    pub fn type_name(&self, id: TypeId) -> Option<&str> {
-        self.core.type_name(id)
-    }
-
-    /// Says which program of which `Vm` this is, whether it is loaded, and what shows the
-    /// locations of its panics.
-    pub fn set_owner(&mut self, owner: (u64, u32), loaded: bool, sources: Rc<SourceMap>) {
-        self.core.set_owner(owner, loaded, sources);
-    }
-
-    pub fn is_loaded(&self) -> bool {
-        self.core.is_loaded()
-    }
-
-    /// Tells the interpreter which `Vm` it belongs to (for handles).
-    pub fn set_vm_id(&mut self, id: u64) {
-        self.core.set_vm_id(id);
-    }
-
-    pub fn vm_id(&self) -> u64 {
-        self.core.vm_id()
-    }
-
-    /// Where dropped callbacks leave the roots they held.
-    pub fn root_drop_queue(&self) -> RootDropQueue {
-        self.core.root_drop_queue()
-    }
-
-    pub fn owner(&self) -> (u64, u32) {
-        self.core.owner()
-    }
-
-    pub fn sources(&self) -> &Rc<SourceMap> {
-        self.core.sources()
-    }
-
-    /// The type arguments written (or inferred) at the host function call that is running, in
-    /// the order of the function's type parameters. Empty outside a host function.
-    pub fn host_type_args(&self) -> &[Ty] {
-        self.core.host_type_args()
-    }
-
-    /// Every struct, enum and class of the loaded program, indexed by type id.
-    pub fn type_defs(&self) -> &[TypeDef] {
-        self.core.type_defs()
-    }
-
-    /// The same descriptors, shared: a host function can keep them while it calls back into
-    /// the program.
-    pub fn type_defs_shared(&self) -> Rc<[TypeDef]> {
-        self.core.type_defs_shared()
-    }
-
     /// How many parameters function `f` takes; `None` if there is no such function in the
     /// loaded program.
     pub fn fn_param_count(&self, f: colibri_check::hir::FnId) -> Option<u32> {
         self.fns.get(f.0 as usize).map(|body| body.param_count)
-    }
-
-    /// Stores a value of type `T` for the host functions (replacing any earlier one).
-    pub fn insert_state<T: 'static>(&mut self, value: T) -> Option<T> {
-        self.core.insert_state(value)
-    }
-
-    pub fn state_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        self.core.state_mut::<T>()
-    }
-
-    pub fn remove_state<T: 'static>(&mut self) -> Option<T> {
-        self.core.remove_state::<T>()
-    }
-
-    // ---- roots ----
-
-    /// Keeps `value` alive; the handle is `(index, generation, epoch)`.
-    pub fn root(&mut self, value: Value) -> RootHandle {
-        self.core.root(value)
-    }
-
-    /// The rooted value, if the handle is still current.
-    pub fn rooted(&self, handle: RootHandle) -> Option<&Value> {
-        self.core.rooted(handle)
-    }
-
-    /// The current root epoch (for the handles of a program not yet running).
-    pub fn root_epoch(&self) -> u32 {
-        self.core.root_epoch()
-    }
-
-    // ---- values ----
-
-    /// An `Error` made from a message, as `ok`/`err` payloads need it.
-    pub fn error_value(message: &str) -> Value {
-        colibri_core::host::error_value(message)
-    }
-
-    /// An `Error` that keeps the typed `value` (an enum of a host module, say) and shows as
-    /// `message`: `e.is[T]()` and `e.as[T]()` find the value, `{e}` prints the message.
-    pub fn typed_error_value(value: Value, message: &str) -> Value {
-        colibri_core::host::typed_error_value(value, message)
-    }
-
-    /// `err(e)` of the prelude `Result`.
-    pub fn err_variant(error: Value) -> Value {
-        colibri_core::host::err_variant(error)
-    }
-
-    /// `ok(v)` of the prelude `Result`.
-    pub fn ok_variant(v: Value) -> Value {
-        colibri_core::host::ok_variant(v)
     }
 
     // ---- calls ----

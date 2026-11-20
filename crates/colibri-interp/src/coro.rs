@@ -19,7 +19,6 @@ use std::sync::mpsc;
 
 use colibri_check::hir::{Builtin, Callee, Expr, ExprKind, Intrinsic};
 use colibri_check::types::{COGROUP_TYPE, COROUTINE_TYPE, SIGNAL_TYPE, Ty};
-use colibri_core::clock::Clock;
 use colibri_core::coro::Sched;
 use colibri_core::engine::Resumed;
 use colibri_core::external::{
@@ -141,37 +140,13 @@ pub(crate) type Y = Yielder<Resume, *mut Interp>;
 pub(crate) type Co = Coroutine<Resume, *mut Interp, Finish, DefaultStack>;
 
 impl Interp {
-    // ---- configuration and inspection (the scheduler's own, for the host) ----
-
-    /// The size of the native stack given to each coroutine (default 16 MiB).
-    pub fn set_coroutine_stack_size(&mut self, bytes: usize) {
-        self.core.sched.set_stack_size(bytes);
-    }
-
-    /// Replaces the clock behind `wait_real` and the event loop.
-    pub fn set_clock(&mut self, clock: Box<dyn Clock>) {
-        self.core.sched.set_clock(clock);
-    }
-
-    /// The reading of the clock, in seconds.
-    pub fn clock_now(&mut self) -> f64 {
-        self.core.sched.clock_now()
-    }
-
-    /// Sleeps on the clock.
-    pub fn clock_sleep(&mut self, seconds: f64) {
-        self.core.sched.clock_sleep(seconds);
-    }
-
-    /// How many coroutines are alive (started and not yet finished).
-    pub fn coroutine_count(&self) -> usize {
-        self.core.sched.coroutine_count()
-    }
-
-    /// How many coroutine resumptions have happened (starts, ticks and cancellations).
-    pub fn coroutine_resumptions(&self) -> u64 {
-        self.core.sched.resumptions()
-    }
+    // ---- the scheduler's calls for the host ----
+    //
+    // `next_wake`, `tick` and `take_coroutine_failure` forward to `Core`/`Sched` on purpose: the
+    // runtime's event loop and many tests call them as methods of the engine (`tick` takes the
+    // fiber that a heap-frame engine will need, and the tree-walker ignores), so they are the
+    // engine's own API, not accessors of the shared state. Removing them would also make the
+    // `local/r6-join` branch, which adds to this block, harder to rebase.
 
     /// How long until the next coroutine needs a tick, for an event loop: `None` when nothing
     /// is alive or every live coroutine waits for a signal (nothing but an emit can wake it), `Some(0.0)`-ish small polling interval when something is checked at every tick
@@ -801,14 +776,14 @@ impl Interp {
     /// module-level values die. Nothing can start meanwhile. While a coroutine runs this does
     /// nothing (see [`Sched::cancel_all_coroutines`]).
     pub fn cancel_all_coroutines(&mut self) {
-        let was_busy = self.core.sched.is_busy();
+        let was_running = self.core.sched.coroutine_running();
         Sched::cancel_all_coroutines(self);
         // Every suspended coroutine was resumed with a cancel and ran to its end, which frees
         // its stack, so none is left. This guards the rule that a stack is freed only after
         // its coroutine ended: a stack left here would later be unwound by force. (When this
         // call did nothing because a coroutine is running, the slab is in use and untouched.)
         debug_assert!(
-            was_busy || self.stacks.is_empty(),
+            was_running || self.stacks.is_empty(),
             "a coroutine stack outlived `cancel_all_coroutines`"
         );
     }
@@ -816,6 +791,7 @@ impl Interp {
 
 #[cfg(test)]
 mod tests {
+    use colibri_core::coro::Sched;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -845,7 +821,7 @@ mod tests {
             if !panics {
                 assert!(matches!(
                     outcome.unwrap(),
-                    Err(crate::ExternalError::CannotStart(_))
+                    Err(colibri_core::external::ExternalError::CannotStart(_))
                 ));
             }
             // The id that the dropped completer posted is ignored when it is collected.
@@ -1008,9 +984,25 @@ mod tests {
         interp
             .call(&mut fiber, program.fn_by_name("main").unwrap(), vec![])
             .expect("main");
-        assert_eq!(interp.coroutine_count(), 1);
+        assert_eq!(interp.core.sched.coroutine_count(), 1);
         let lost = interp.stacks.take(0).expect("the worker's stack").0;
         std::mem::forget(lost);
+        // If the lost coroutine stayed suspended, the cancel below would never end: a watchdog
+        // turns that hang into a failure.
+        let done = Arc::new(AtomicUsize::new(0));
+        let flag = Arc::clone(&done);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(20));
+            if flag.load(Ordering::SeqCst) == 0 {
+                // Written to the real stderr: the harness captures `eprintln!` and the exit
+                // below would discard it.
+                let _ = std::io::Write::write_all(
+                    &mut std::io::stderr(),
+                    b"a_lost_stack_ends_its_coroutine_as_an_internal_error: the lost stack kept its coroutine alive, so cancel_all_coroutines hangs\n",
+                );
+                std::process::exit(1);
+            }
+        });
         let failure = interp
             .tick(&mut fiber, 2.0)
             .expect_err("the tick reports it");
@@ -1019,8 +1011,36 @@ mod tests {
             "{}",
             failure.message
         );
-        assert_eq!(interp.coroutine_count(), 0, "the coroutine is over");
+        assert_eq!(
+            interp.core.sched.coroutine_count(),
+            0,
+            "the coroutine is over"
+        );
         assert_eq!(out.text(), "");
         interp.cancel_all_coroutines();
+        done.store(1, Ordering::SeqCst);
+    }
+
+    /// Asking the scheduler to resume a coroutine that already finished (its entry is not yet
+    /// compacted away) changes nothing: it does not reach the engine, which would report the
+    /// stack as lost and turn the finished coroutine into a failure.
+    #[test]
+    fn resuming_a_finished_entry_does_nothing() {
+        use crate::Fiber;
+        let src =
+            "fn quick() {\n    print(\"quick\")\n}\nfn main() {\n    let _a = go quick()\n}\n";
+        let (mut interp, program) = loaded(src, Box::new(std::io::sink()));
+        let mut fiber = Fiber::new();
+        interp
+            .call(&mut fiber, program.fn_by_name("main").unwrap(), vec![])
+            .expect("main");
+        // It ran to its end at its start, and the next tick has not removed its entry yet.
+        assert_eq!(interp.stacks.live(), 0, "the coroutine finished");
+        // The first coroutine has id 1.
+        Sched::resume_coro(&mut interp, 1, false, true);
+        assert!(interp.take_coroutine_failure().is_none());
+        interp
+            .tick(&mut fiber, 1.0)
+            .expect("a later tick still works");
     }
 }

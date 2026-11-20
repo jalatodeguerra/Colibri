@@ -15,8 +15,7 @@ use crate::ordered::OrderedMap;
 use crate::value::Value;
 
 /// One deep copy in progress.
-#[doc(hidden)]
-pub struct Cloner {
+pub(crate) struct Cloner {
     /// Copies by the address of the original reference object.
     memo: HashMap<usize, Value>,
     stack_base: usize,
@@ -36,13 +35,11 @@ impl Cloner {
     }
 
     /// The objects made so far, to be taken apart when the copy is abandoned.
-    #[doc(hidden)]
-    pub fn into_copies(self) -> Vec<Value> {
+    pub(crate) fn into_copies(self) -> Vec<Value> {
         self.memo.into_values().collect()
     }
 
-    #[doc(hidden)]
-    pub fn clone_value(&mut self, v: &Value, ov: &mut dyn Overrides) -> Result<Value, Stop> {
+    pub(crate) fn clone_value(&mut self, v: &Value, ov: &mut dyn Overrides) -> Result<Value, Stop> {
         if crate::stack_position().abs_diff(self.stack_base) > self.budget {
             return Err(Stop::TooDeep);
         }

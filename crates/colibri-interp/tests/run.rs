@@ -1,10 +1,13 @@
 //! The interpreter on small checked programs: unwinding, state between calls, limits.
 
+use colibri_core::prelude::*;
 use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
-use colibri_interp::{Fiber, Interp, PanicInfo, Value};
+use colibri_core::ctl::PanicInfo;
+use colibri_core::value::Value;
+use colibri_interp::{Fiber, Interp};
 use colibri_syntax::{FileId, parse_file};
 
 #[derive(Clone, Default)]
@@ -169,26 +172,26 @@ fn panics_carry_the_call_site_of_each_frame() {
 fn a_panic_with_live_objects_releases_everything_and_traces_the_drops() {
     let src = "class T { name: str }\nfn f(z: int) -> int {\n    let a = T { name: \"a\" }\n    let b = T { name: \"b\" }\n    return 1 / z\n}\n";
     let mut m = machine(src, 100);
-    m.interp.set_trace_drops(true);
+    m.interp.core_mut().set_trace_drops(true);
     let err = m.call("f", vec![Value::Int(0)]).unwrap_err();
     assert_eq!(err.message, "division by zero");
     assert_eq!((m.fiber.depth(), m.fiber.pending_temps()), (0, 0));
-    assert_eq!(m.interp.take_trace(), ["b", "a"]);
+    assert_eq!(m.interp.core_mut().take_trace(), ["b", "a"]);
     // Taking the trace empties it.
-    assert!(m.interp.take_trace().is_empty());
+    assert!(m.interp.core_mut().take_trace().is_empty());
 }
 
 #[test]
 fn module_values_die_once_at_shutdown_in_reverse_order() {
     let src = "class T { name: str }\nlet a = T { name: \"a\" }\nlet b = T { name: \"b\" }\n";
     let mut m = machine(src, 100);
-    m.interp.set_trace_drops(true);
+    m.interp.core_mut().set_trace_drops(true);
     m.interp.run_module(&mut m.fiber).unwrap();
-    assert!(m.interp.take_trace().is_empty());
+    assert!(m.interp.core_mut().take_trace().is_empty());
     m.interp.shutdown();
-    assert_eq!(m.interp.take_trace(), ["b", "a"]);
+    assert_eq!(m.interp.core_mut().take_trace(), ["b", "a"]);
     m.interp.shutdown();
-    assert!(m.interp.take_trace().is_empty());
+    assert!(m.interp.core_mut().take_trace().is_empty());
 }
 
 #[test]
@@ -235,26 +238,35 @@ fn module_enums_are_found_by_module_and_never_by_bare_name() {
     let mut interp = Interp::new(Box::new(Out::default()), 64);
     interp.load(&program);
     // Each module's `Error` has its own id and its own variants.
-    let fs = interp.host_type_in("std.fs", "Error").expect("fs.Error");
+    let fs = interp
+        .core()
+        .host_type_in("std.fs", "Error")
+        .expect("fs.Error");
     let http = interp
+        .core()
         .host_type_in("std.http", "Error")
         .expect("http.Error");
     assert_ne!(fs, http);
     assert_eq!(
-        interp.module_enum_variant("std.http", "Error", "Dns"),
+        interp
+            .core()
+            .module_enum_variant("std.http", "Error", "Dns"),
         Ok((http, 2))
     );
     assert_eq!(
-        interp.module_enum_variant("std.fs", "Error", "Other"),
+        interp
+            .core()
+            .module_enum_variant("std.fs", "Error", "Other"),
         Ok((fs, 1))
     );
     // The bare name would silently keep one of them: it is not in the map at all.
-    assert_eq!(interp.host_type("Error"), None);
+    assert_eq!(interp.core().host_type("Error"), None);
     // A struct of the module is its module's too: found with the module, not by its bare
     // name, and it is not a module enum.
-    assert_eq!(interp.host_type("Stat"), None);
-    assert!(interp.host_type_in("std.fs", "Stat").is_some());
+    assert_eq!(interp.core().host_type("Stat"), None);
+    assert!(interp.core().host_type_in("std.fs", "Stat").is_some());
     let message = interp
+        .core()
         .module_enum_variant("std.fs", "Stat", "NotFound")
         .unwrap_err();
     assert!(
@@ -262,6 +274,7 @@ fn module_enums_are_found_by_module_and_never_by_bare_name() {
         "{message}"
     );
     let message = interp
+        .core()
         .module_enum_variant("std.fs", "Error", "Gone")
         .unwrap_err();
     assert!(
@@ -300,10 +313,18 @@ fn only_keys_that_reach_a_user_eq_are_scanned() {
         m.call("plain", vec![]).unwrap(),
         Value::Int(300 + 300 + 301 + 1)
     );
-    assert_eq!(m.interp.key_scans(), 0, "no key of these types may scan");
+    assert_eq!(
+        m.interp.core().key_scans,
+        0,
+        "no key of these types may scan"
+    );
     assert_eq!(
         m.call("user", vec![]).unwrap(),
         Value::Int(10 * 10000 + 10 * 100 + 10)
     );
-    assert!(m.interp.key_scans() >= 90, "{}", m.interp.key_scans());
+    assert!(
+        m.interp.core().key_scans >= 90,
+        "{}",
+        m.interp.core().key_scans
+    );
 }

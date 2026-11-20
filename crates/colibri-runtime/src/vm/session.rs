@@ -110,11 +110,12 @@ impl Vm {
         let undo = self.interp.session_extend(&program, map, &reinit_ids);
         self.sources = Rc::new(sources);
         self.interp
+            .core_mut()
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
         let outcome = self
             .interp
             .session_run(&mut self.fiber, &program, new_from, &reinit_ids);
-        self.interp.flush();
+        self.interp.core_mut().flush();
         match outcome {
             Ok(()) => {
                 self.interp.session_commit(undo);
@@ -125,8 +126,11 @@ impl Vm {
                 let error = panic_error(&self.interp, *info);
                 self.interp.session_rollback(undo, &old);
                 self.sources = old_sources;
-                self.interp
-                    .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
+                self.interp.core_mut().set_owner(
+                    (self.id, self.epoch),
+                    true,
+                    Rc::clone(&self.sources),
+                );
                 Err(SessionError::Failed(error))
             }
         }

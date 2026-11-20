@@ -286,7 +286,7 @@ impl Externals {
     }
 
     /// Whether any operation is started and not yet finished or abandoned.
-    pub fn has_pending(&self) -> bool {
+    pub(crate) fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
 
@@ -302,7 +302,7 @@ impl Externals {
     }
 
     /// Forgets every finished operation nobody collected (the scheduler is being cleared).
-    pub fn clear_completed(&mut self) {
+    pub(crate) fn clear_completed(&mut self) {
         self.completed.clear();
     }
 
@@ -433,8 +433,7 @@ impl<R> Completer<R> {
     }
 }
 
-#[doc(hidden)]
-pub const NO_RESULT: &str = "the operation ended without a result";
+pub(crate) const NO_RESULT: &str = "the operation ended without a result";
 
 /// The text of a panic payload (`panic!("..")` gives a `&str` or a `String`).
 #[doc(hidden)]

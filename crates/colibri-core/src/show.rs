@@ -71,8 +71,11 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
 
 /// The `Show` form of a value, where a user-written `Show` (found through `ov`) replaces the
 /// structural form of the values it covers, also nested inside others.
-#[doc(hidden)]
-pub fn show_with(types: &[TypeDef], v: &Value, ov: &mut dyn Overrides) -> Result<String, Stop> {
+pub(crate) fn show_with(
+    types: &[TypeDef],
+    v: &Value,
+    ov: &mut dyn Overrides,
+) -> Result<String, Stop> {
     if let Value::Dyn(d) = v {
         return show_with(types, &d.val, ov);
     }
@@ -109,7 +112,7 @@ pub fn show_with(types: &[TypeDef], v: &Value, ov: &mut dyn Overrides) -> Result
 /// Floats print in the shortest form that reads back as the same number, and always look like
 /// floats: `1.5`, `2.0`, `-0.0`, `1e-7`, `1e16` (Rust's `{:?}` rules: exponent form below
 /// `1e-4` and from `1e16` up), plus `inf`, `-inf` and `nan`.
-pub fn show_float(x: f64) -> String {
+pub(crate) fn show_float(x: f64) -> String {
     if x.is_nan() {
         "nan".to_string()
     } else if x.is_infinite() {
@@ -121,7 +124,7 @@ pub fn show_float(x: f64) -> String {
 
 /// An `f32` shows as the shortest text that reads back as the same `f32` (`0.1`, not
 /// `0.10000000149011612`), in the same style as [`show_float`].
-pub fn show_f32(x: f32) -> String {
+pub(crate) fn show_f32(x: f32) -> String {
     if x.is_nan() {
         "nan".to_string()
     } else if x.is_infinite() {

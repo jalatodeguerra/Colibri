@@ -8,7 +8,7 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-pub use colibri_interp::HostFault;
+pub use colibri_core::host::HostFault;
 
 use crate::Error;
 use crate::cap::Cap;

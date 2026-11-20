@@ -7,10 +7,11 @@
 //! release; the queue is drained at the next entry into the `Vm`, because releasing can run a
 //! `Drop` hook, which must not happen at an arbitrary point of the host's code.
 
+use colibri_core::prelude::*;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use colibri_interp::Value as Inner;
+use colibri_core::value::Value as Inner;
 
 use crate::convert::{Args, FromColibri, IntoColibri, Value, wrong};
 use crate::ctx::{Caller, Cx};
@@ -18,10 +19,10 @@ use crate::error::Error;
 use crate::types::{TypeDesc, TypeRegistry};
 
 /// A root handle: slot, generation of the slot, epoch of the slab.
-pub(crate) use colibri_interp::RootHandle;
+pub(crate) use colibri_core::host::RootHandle;
 
 /// The roots whose last callback was dropped, waiting for the `Vm` to release them.
-pub(crate) use colibri_interp::RootDropQueue as DropQueue;
+pub(crate) use colibri_core::host::RootDropQueue as DropQueue;
 
 struct Shared {
     handle: RootHandle,
@@ -70,10 +71,10 @@ impl<A: Args, R: FromColibri> Callback<A, R> {
     /// reentrant call shares its instruction budget).
     pub fn call(&self, caller: &mut impl Caller, args: A) -> Result<R, Error> {
         let mut cx = caller.ctx();
-        if cx.interp.vm_id() != self.shared.vm {
+        if cx.interp.core().vm_id() != self.shared.vm {
             return Err(Error::StaleHandle);
         }
-        let Some(f) = cx.interp.rooted(self.shared.handle).cloned() else {
+        let Some(f) = cx.interp.core().rooted(self.shared.handle).cloned() else {
             return Err(Error::StaleHandle);
         };
         if self.shared.module.is_some() {
@@ -103,12 +104,12 @@ impl<A: Args, R: FromColibri> FromColibri for Callback<A, R> {
                 &value.0,
             ));
         }
-        let handle = cx.interp.root(value.0.clone());
+        let handle = cx.interp.core_mut().root(value.0.clone());
         Ok(Callback {
             shared: Rc::new(Shared {
                 handle,
-                vm: cx.interp.vm_id(),
-                queue: cx.interp.root_drop_queue(),
+                vm: cx.interp.core().vm_id(),
+                queue: cx.interp.core().root_drop_queue(),
                 module: cx.module.clone(),
             }),
             _signature: PhantomData,
@@ -124,8 +125,8 @@ impl<A: Args, R: FromColibri> IntoColibri for Callback<A, R> {
     /// # Panics
     /// If the callback is stale (its program was replaced).
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
-        match cx.interp.rooted(self.shared.handle) {
-            Some(v) if cx.interp.vm_id() == self.shared.vm => Value(v.clone()),
+        match cx.interp.core().rooted(self.shared.handle) {
+            Some(v) if cx.interp.core().vm_id() == self.shared.vm => Value(v.clone()),
             _ => panic!("a stale callback cannot be passed to a script"),
         }
     }

@@ -4,18 +4,18 @@
 //! The budget is an allotment for each outermost entry from the host (`call`, `load`, `run_main`):
 //! reentrant calls from a host function share it. The hot path is one decrement and one branch.
 //! When the allotment runs out, evaluation unwinds like a panic, so `defer` statements and `Drop`
-//! hooks run, but only for a grace of [`GRACE_STEPS`] steps; after that remaining `defer`
+//! hooks run, but only for a grace of `GRACE_STEPS` steps; after that remaining `defer`
 //! statements and hooks are skipped (plain releases still happen), so a script cannot extend its
 //! life with an infinite cleanup.
 
 use crate::state::Core;
 
 /// How many more steps cleanups get after the budget is exhausted.
-pub const GRACE_STEPS: i64 = 10_000;
+pub(crate) const GRACE_STEPS: i64 = 10_000;
 
 /// Where an entry stands with its budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BudgetState {
+pub(crate) enum BudgetState {
     Normal,
     /// Exhausted: unwinding, with [`GRACE_STEPS`] left for cleanups.
     Grace,

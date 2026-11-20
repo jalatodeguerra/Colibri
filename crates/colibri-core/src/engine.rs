@@ -4,11 +4,12 @@
 //! type for one running computation (`Fiber`). Everything in this crate that has to run
 //! Colibri code, build a panic with a stack, or reach a temporary of the running computation
 //! asks the engine through this trait. The shared code is written as extension traits with
-//! blanket impls over `E: Engine` (see [`crate::protocol`], [`crate::release`],
-//! [`crate::deep`]), so a call site still reads `self.release(v)` or `self.panic(fiber, ..)`.
+//! blanket impls over `E: Engine` (see `protocol`, [`crate::release`],
+//! `deep`), so a call site still reads `self.release(v)` or `self.panic(fiber, ..)`.
 //!
 //! The trait is generic, not `dyn`: built-ins are hot, an associated `Fiber` avoids downcasts,
-//! and every instantiation is in the engine's crate, where it inlines.
+//! and the instantiations are in the engine's crate (and in the runtime, for the few
+//! shared methods it calls), where they inline.
 
 use colibri_check::hir::{Builtin, FnId};
 use colibri_check::types::TypeId;
@@ -122,7 +123,7 @@ pub trait Engine: Sized {
     fn fn_mutates_self(&self, f: FnId) -> bool;
 
     /// Runs the `hook` of the host class `ty` on `args`. The class has that hook (the caller
-    /// asked [`Core::host_hook_set`] first).
+    /// asked `Core::host_hook_set` first).
     fn call_host_hook(
         &mut self,
         fiber: &mut Self::Fiber,

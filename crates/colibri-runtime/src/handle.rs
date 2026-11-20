@@ -7,13 +7,17 @@
 //! stale one is an error on the host side and a panic (```Job` was destroyed by the host``)
 //! in a script.
 
+use colibri_core::prelude::*;
 use std::any::TypeId as AnyTypeId;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
-use colibri_interp::{Fiber, HostBorrowError, HostFault, HostGuard, Interp, Value as Inner};
+use colibri_core::host::HostFault;
+use colibri_core::hostheap::{HostBorrowError, HostGuard};
+use colibri_core::value::Value as Inner;
+use colibri_interp::{Fiber, Interp};
 
 use crate::class::HostType;
 use crate::convert::{FromColibri, IntoColibri, Value, wrong};
@@ -172,7 +176,7 @@ fn borrow<T: HostType>(
     h: Handle<T>,
     exclusive: bool,
 ) -> Result<HostGuard, Error> {
-    if h.vm != interp.vm_id() {
+    if h.vm != interp.core().vm_id() {
         return Err(Error::StaleHandle);
     }
     interp
@@ -187,15 +191,21 @@ fn borrow<T: HostType>(
 }
 
 fn insert<T: HostType>(interp: &mut Interp, obj: T) -> Handle<T> {
-    let (index, generation) = interp.host_insert(AnyTypeId::of::<T>(), T::NAME, Box::new(obj));
-    Handle::new(index, generation, interp.vm_id())
+    let (index, generation) =
+        interp
+            .core_mut()
+            .host_insert(AnyTypeId::of::<T>(), T::NAME, Box::new(obj));
+    Handle::new(index, generation, interp.core().vm_id())
 }
 
 fn remove<T: HostType>(interp: &mut Interp, h: Handle<T>) -> Result<Option<T>, Error> {
-    if h.vm != interp.vm_id() {
+    if h.vm != interp.core().vm_id() {
         return Err(Error::StaleHandle);
     }
-    match interp.host_remove(h.index, h.generation, AnyTypeId::of::<T>()) {
+    match interp
+        .core_mut()
+        .host_remove(h.index, h.generation, AnyTypeId::of::<T>())
+    {
         Ok(None) => Ok(None),
         Ok(Some(obj)) => match obj.downcast::<T>().map(std::rc::Rc::try_unwrap) {
             Ok(Ok(value)) => Ok(Some(value)),
@@ -214,7 +224,7 @@ fn remove<T: HostType>(interp: &mut Interp, h: Handle<T>) -> Result<Option<T>, E
 }
 
 fn is_alive<T>(interp: &Interp, h: Handle<T>) -> bool {
-    h.vm == interp.vm_id() && interp.host_alive(h.index, h.generation)
+    h.vm == interp.core().vm_id() && interp.core().host_alive(h.index, h.generation)
 }
 
 impl crate::Vm {
@@ -257,7 +267,7 @@ impl crate::Vm {
     /// How many host objects exist (script-owned and host-owned): a diagnostic for tests and
     /// leak hunts.
     pub fn host_object_count(&self) -> usize {
-        self.interp().host_object_count()
+        self.interp().core().host_object_count()
     }
 }
 
@@ -304,10 +314,12 @@ impl<T: HostType> IntoColibri for T {
     }
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
         let ty = cx.host_class::<T>();
-        Value(
-            cx.interp
-                .host_new_object(ty, AnyTypeId::of::<T>(), T::NAME, Box::new(self)),
-        )
+        Value(cx.interp.core_mut().host_new_object(
+            ty,
+            AnyTypeId::of::<T>(),
+            T::NAME,
+            Box::new(self),
+        ))
     }
 }
 
@@ -320,12 +332,12 @@ impl<T: HostType> IntoColibri for Handle<T> {
     /// If the handle belongs to another `Vm`.
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
         assert!(
-            self.vm == cx.interp.vm_id(),
+            self.vm == cx.interp.core().vm_id(),
             "a `Handle<{}>` of another Vm cannot be passed to this one",
             T::NAME
         );
         let ty = cx.host_class::<T>();
-        Value(cx.interp.host_value(ty, self.index, self.generation))
+        Value(cx.interp.core().host_value(ty, self.index, self.generation))
     }
 
     fn is_live(&self, cx: &Cx<'_>) -> bool {
@@ -339,7 +351,7 @@ impl<T: HostType> FromColibri for Handle<T> {
     }
     fn from_colibri(value: &Value, cx: &mut Cx<'_>) -> Result<Self, Error> {
         match &value.0 {
-            Inner::Host(r) => Ok(Handle::new(r.index, r.generation, cx.interp.vm_id())),
+            Inner::Host(r) => Ok(Handle::new(r.index, r.generation, cx.interp.core().vm_id())),
             other => Err(wrong(&TypeDesc::Host(T::NAME.to_string()), other)),
         }
     }

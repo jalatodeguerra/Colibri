@@ -11,7 +11,7 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use colibri_interp::HostFault;
+use colibri_core::host::HostFault;
 
 use crate::convert::{FromColibri, IntoColibri, Value};
 use crate::ctx::Ctx;

@@ -23,12 +23,6 @@ use crate::value::{DynVal, Value};
 use colibri_core::prelude::*;
 
 impl Interp {
-    /// How many map or set key lookups scanned the stored keys for a user-written `Eq` (a
-    /// test hook: keys that cannot reach one never scan).
-    pub fn key_scans(&self) -> u64 {
-        self.core.key_scans
-    }
-
     // ---- interface values ----
 
     /// A value converted to an interface value.

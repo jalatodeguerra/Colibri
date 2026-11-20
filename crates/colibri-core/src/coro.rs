@@ -137,7 +137,7 @@ pub trait Sched: Engine {
     /// kept for it.
     fn cancel_all_coroutines(&mut self) {
         let s = &self.core().sched;
-        if s.entries.is_empty() || !s.running.is_empty() {
+        if s.entries.is_empty() || s.coroutine_running() {
             return;
         }
         let outermost = self.core_mut().begin_entry();

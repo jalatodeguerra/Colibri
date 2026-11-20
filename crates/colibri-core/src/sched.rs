@@ -16,11 +16,11 @@ use crate::heap::ClassObj;
 use crate::value::Value;
 
 /// The default size of the native stack of one coroutine.
-pub const DEFAULT_COROUTINE_STACK: usize = 16 * 1024 * 1024;
+pub(crate) const DEFAULT_COROUTINE_STACK: usize = 16 * 1024 * 1024;
 
 /// Slack when comparing times, so `wait(0.1)` five times in a row lands on the same tick as
 /// `wait(0.5)` despite rounding.
-pub const TIME_EPSILON: f64 = 1e-9;
+pub(crate) const TIME_EPSILON: f64 = 1e-9;
 
 /// How a coroutine ended.
 #[doc(hidden)]
@@ -68,7 +68,6 @@ pub enum State {
 pub struct EngineSlot(pub u32);
 
 /// What the scheduler knows of one coroutine.
-#[doc(hidden)]
 pub(crate) struct Entry {
     pub(crate) id: u64,
     pub(crate) state: State,
@@ -255,9 +254,14 @@ impl Scheduler {
         self.resumptions
     }
 
+    /// Whether a coroutine is running now (on any level of a resume chain).
+    pub fn coroutine_running(&self) -> bool {
+        !self.running.is_empty()
+    }
+
     /// Whether a tick is running or a coroutine is: the scheduler cannot be ticked or driven.
     pub fn is_busy(&self) -> bool {
-        self.in_tick || !self.running.is_empty()
+        self.in_tick || self.coroutine_running()
     }
 
     /// Whether the program is being torn down: nothing new may start.
@@ -359,7 +363,7 @@ impl Scheduler {
     }
 
     /// The coroutine `id` is no longer a member of `group`.
-    pub fn leave_group(&mut self, group: u64, id: u64) {
+    pub(crate) fn leave_group(&mut self, group: u64, id: u64) {
         if let Some(members) = self.groups.get_mut(&group) {
             if let Some(pos) = members.iter().rposition(|m| *m == id) {
                 members.remove(pos);
@@ -383,10 +387,10 @@ impl Default for Scheduler {
 }
 
 /// Handle layout: `[id, status, result, name]`.
-pub const H_ID: usize = 0;
+pub(crate) const H_ID: usize = 0;
 pub const H_STATUS: usize = 1;
 pub const H_RESULT: usize = 2;
-pub const H_NAME: usize = 3;
+pub(crate) const H_NAME: usize = 3;
 pub const RUNNING: i64 = 0;
 pub const DONE: i64 = 1;
 pub const PANICKED: i64 = 2;

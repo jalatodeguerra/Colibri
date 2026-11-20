@@ -7,12 +7,13 @@
 //! is how a function signature becomes interface text and how `get_fn` checks a Rust signature
 //! against a script's.
 
+use colibri_core::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use std::hash::Hash;
 
 use colibri_check::types::{TypeId, VARIANT_NONE, VARIANT_OK, VARIANT_SOME};
-use colibri_interp::{Interp, Value as Inner};
+use colibri_core::value::Value as Inner;
 
 use crate::ctx::Cx;
 use crate::error::Error;
@@ -124,7 +125,7 @@ impl Value {
 
     /// A `Map` with these entries in order (a repeated key keeps the last value).
     pub fn map(entries: Vec<(Value, Value)>) -> Value {
-        Value(colibri_interp::map_value(
+        Value(colibri_core::host::map_value(
             entries.into_iter().map(|(k, v)| (k.0, v.0)).collect(),
         ))
     }
@@ -154,12 +155,14 @@ impl Value {
 
     /// `ok(v)` of `Result[T]`.
     pub fn ok(v: Value) -> Value {
-        Value(Interp::ok_variant(v.0))
+        Value(colibri_core::host::ok_variant(v.0))
     }
 
     /// `err(e)` of `Result[T]`, with an `Error` made from the message.
     pub fn err(message: &str) -> Value {
-        Value(Interp::err_variant(Interp::error_value(message)))
+        Value(colibri_core::host::err_variant(
+            colibri_core::host::error_value(message),
+        ))
     }
 
     /// What the value holds. Collections are copied out (the elements are shared).
@@ -570,8 +573,10 @@ impl<T: IntoColibri, E: Display> IntoColibri for Result<T, E> {
     }
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
         Value(match self {
-            Ok(v) => Interp::ok_variant(v.into_colibri(cx).0),
-            Err(e) => Interp::err_variant(Interp::error_value(&e.to_string())),
+            Ok(v) => colibri_core::host::ok_variant(v.into_colibri(cx).0),
+            Err(e) => {
+                colibri_core::host::err_variant(colibri_core::host::error_value(&e.to_string()))
+            }
         })
     }
 }
@@ -623,7 +628,7 @@ impl TypedError {
     pub(crate) fn into_error_value(self, cx: &mut Cx<'_>) -> Inner {
         let (ty, index) = cx.module_enum_variant(&self.module, &self.enum_name, &self.variant);
         let kept = Inner::variant(ty, index, Vec::new());
-        Interp::typed_error_value(kept, &self.message)
+        colibri_core::host::typed_error_value(kept, &self.message)
     }
 }
 
@@ -634,8 +639,8 @@ impl<T: IntoColibri> IntoColibri for Result<T, TypedError> {
     }
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
         Value(match self {
-            Ok(v) => Interp::ok_variant(v.into_colibri(cx).0),
-            Err(e) => Interp::err_variant(e.into_error_value(cx)),
+            Ok(v) => colibri_core::host::ok_variant(v.into_colibri(cx).0),
+            Err(e) => colibri_core::host::err_variant(e.into_error_value(cx)),
         })
     }
 }
@@ -701,7 +706,7 @@ impl<K: IntoColibri, V: IntoColibri> IntoColibri for BTreeMap<K, V> {
         TypeDesc::Map(Box::new(K::ty(reg)), Box::new(V::ty(reg)))
     }
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
-        Value(colibri_interp::map_value(
+        Value(colibri_core::host::map_value(
             self.into_iter()
                 .map(|(k, v)| (k.into_colibri(cx).0, v.into_colibri(cx).0))
                 .collect(),

@@ -251,7 +251,7 @@ impl Core {
 
     /// Which customisations the host class `ty` has.
     #[inline]
-    pub fn host_hook_set(&self, ty: TypeId) -> Option<HookSet> {
+    pub(crate) fn host_hook_set(&self, ty: TypeId) -> Option<HookSet> {
         self.host.hook_sets.get(&ty).copied()
     }
 
@@ -416,7 +416,7 @@ impl Core {
     /// Lets go of a root and hands back its value, for the engine to release (a `Drop` hook
     /// may run). `None` for a stale handle.
     #[must_use = "the value must be released by the engine"]
-    pub fn take_root(&mut self, handle: RootHandle) -> Option<Value> {
+    pub(crate) fn take_root(&mut self, handle: RootHandle) -> Option<Value> {
         let roots = &mut self.host.roots;
         if roots.epoch != handle.2 {
             return None;
@@ -434,16 +434,11 @@ impl Core {
     /// Every root dies at once; the handles made so far become stale. The values come back
     /// in slot order, for the engine to release.
     #[must_use = "the values must be released by the engine"]
-    pub fn take_all_roots(&mut self) -> Vec<Value> {
+    pub(crate) fn take_all_roots(&mut self) -> Vec<Value> {
         let slots = std::mem::take(&mut self.host.roots.slots);
         self.host.roots.free.clear();
         self.host.roots.epoch = self.host.roots.epoch.wrapping_add(1);
         slots.into_iter().filter_map(|slot| slot.value).collect()
-    }
-
-    /// The current root epoch (for the handles of a program not yet running).
-    pub fn root_epoch(&self) -> u32 {
-        self.host.roots.epoch
     }
 }
 

@@ -122,10 +122,6 @@ impl Core {
         self.leaks = on.then(|| Box::new(LeakTracker::new()));
     }
 
-    pub fn tracks_leaks(&self) -> bool {
-        self.leaks.is_some()
-    }
-
     #[inline]
     pub fn track_object(&mut self, obj: &Rc<ClassObj>, span: Option<Span>) {
         if let Some(t) = &mut self.leaks {

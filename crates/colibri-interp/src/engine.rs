@@ -1,5 +1,4 @@
-//! The interpreter as an [`Engine`]: what `colibri-core` asks of it, and the wrappers that keep
-//! the methods `colibri-runtime` calls on [`Interp`].
+//! The interpreter as an [`Engine`]: what `colibri-core` asks of it.
 
 use colibri_check::hir::{Builtin, FnId};
 use colibri_check::types::TypeId;
@@ -8,7 +7,6 @@ use colibri_core::fiber::FiberState;
 use colibri_core::host::HostHook;
 use colibri_core::prelude::*;
 use colibri_core::release::Release;
-use colibri_core::results::ResultOps;
 use colibri_core::sched::EngineSlot;
 use colibri_core::{Core, stack_position};
 use colibri_syntax::{FileId, Span};
@@ -173,42 +171,5 @@ impl Engine for Interp {
     #[inline]
     fn resume_stack(&mut self, _id: u64, slot: EngineSlot, cancel: bool) -> Resumed {
         self.resume_native_stack(slot, cancel)
-    }
-}
-
-impl Interp {
-    /// What `main` returning `err(e)` reports: the whole chain of `e`.
-    pub fn error_report(&mut self, fiber: &mut Fiber, v: &Value) -> String {
-        ResultOps::error_report(self, fiber, v)
-    }
-
-    /// Turns drop tracing on or off (for the test harness); a trace starts empty.
-    pub fn set_trace_drops(&mut self, on: bool) {
-        self.core.set_trace_drops(on);
-    }
-
-    /// The labels of the objects destroyed since tracing was turned on or last taken, in
-    /// destruction order.
-    pub fn take_trace(&mut self) -> Vec<String> {
-        self.core.take_trace()
-    }
-
-    /// An owned value dies here. If this was the last reference to a class object, the object
-    /// is destroyed and everything only it owned dies with it.
-    #[inline]
-    pub fn release(&mut self, value: Value) {
-        Release::release(self, value);
-    }
-
-    /// Lets go of a root; the value is released (a `Drop` hook may run). A stale handle is
-    /// ignored.
-    pub fn unroot(&mut self, handle: colibri_core::host::RootHandle) {
-        Release::unroot(self, handle);
-    }
-
-    /// Releases a value outside any call, with a budget of its own for the `Drop` hooks it
-    /// may run.
-    pub fn release_in_entry(&mut self, value: Value) {
-        Release::release_in_entry(self, value);
     }
 }

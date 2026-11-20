@@ -369,7 +369,7 @@ impl Core {
     /// it is freed here and its Rust `Drop` runs.
     #[doc(hidden)]
     #[inline]
-    pub fn free_host_object(&mut self, reference: &HostRef) {
+    pub(crate) fn free_host_object(&mut self, reference: &HostRef) {
         let Some(slot) = self.host.heap.slot(reference.index, reference.generation) else {
             return;
         };

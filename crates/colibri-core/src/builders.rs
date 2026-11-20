@@ -9,8 +9,7 @@ use crate::value::Value;
 
 /// The text a `StrBuilder` holds. Its object has two fields: the chunks appended so far (a
 /// list of strings, so an append is O(1)) and the total byte length.
-#[doc(hidden)]
-pub fn builder_text(obj: &ClassObj) -> String {
+pub(crate) fn builder_text(obj: &ClassObj) -> String {
     obj.with_fields(|fields| match fields.first() {
         Some(Value::List(chunks)) => chunks.with(|items| {
             let mut out = String::with_capacity(match fields.get(1) {

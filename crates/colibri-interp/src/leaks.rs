@@ -6,16 +6,6 @@ use crate::eval::Interp;
 use colibri_core::leaks::Leak;
 
 impl Interp {
-    /// Turns the registry on or off. Only objects made while it is on are known to the
-    /// detector, so turn it on before the program loads.
-    pub fn set_track_leaks(&mut self, on: bool) {
-        self.core.set_track_leaks(on);
-    }
-
-    pub fn tracks_leaks(&self) -> bool {
-        self.core.tracks_leaks()
-    }
-
     /// The cycles that nothing reaches (see [`colibri_core::leaks`]). Empty when tracking is
     /// off. Leaks come in allocation order of their oldest object.
     pub fn find_leaks(&self) -> Vec<Leak> {

@@ -89,23 +89,23 @@ impl IterObj {
         })
     }
 
-    pub fn over_list(list: Rc<ListObj>) -> Rc<IterObj> {
+    pub(crate) fn over_list(list: Rc<ListObj>) -> Rc<IterObj> {
         let hold = Some(list.iter_hold());
         Self::new(State::List { list, pos: 0, hold })
     }
 
-    pub fn over_map(map: Rc<MapObj>) -> Rc<IterObj> {
+    pub(crate) fn over_map(map: Rc<MapObj>) -> Rc<IterObj> {
         let hold = Some(map.iter_hold());
         Self::new(State::Map { map, pos: 0, hold })
     }
 
-    pub fn over_set(set: Rc<SetObj>) -> Rc<IterObj> {
+    pub(crate) fn over_set(set: Rc<SetObj>) -> Rc<IterObj> {
         let hold = Some(set.iter_hold());
         Self::new(State::Set { set, pos: 0, hold })
     }
 
     /// The integers of `r`, counting up or (`rev`) down.
-    pub fn over_range(r: RangeVal, rev: bool) -> Rc<IterObj> {
+    pub(crate) fn over_range(r: RangeVal, rev: bool) -> Rc<IterObj> {
         if r.is_empty() {
             return Self::new(State::Done);
         }
@@ -125,7 +125,7 @@ impl IterObj {
         Self::new(State::Bytes { text, pos: 0 })
     }
 
-    pub fn over_bytes(data: Rc<[u8]>) -> Rc<IterObj> {
+    pub(crate) fn over_bytes(data: Rc<[u8]>) -> Rc<IterObj> {
         Self::new(State::Octets { data, pos: 0 })
     }
 
@@ -230,7 +230,7 @@ impl IterObj {
 
     /// Takes the values the iterator keeps alive (its collection, its inner iterator), for
     /// destruction. Only `release` calls this.
-    pub fn take_inner(&self) -> Vec<Value> {
+    pub(crate) fn take_inner(&self) -> Vec<Value> {
         let state = std::mem::replace(&mut *self.state.borrow_mut(), State::Done);
         match state {
             State::List { list, hold, .. } => {

@@ -193,7 +193,7 @@ mod enabled {
                     }
                     interp.release_all(args);
                     // What the program printed so far comes before anything C writes.
-                    interp.flush();
+                    interp.core.flush();
                     let out = func.call(&vals).map_err(fault)?;
                     interp.value_from_c(rty, out).map_err(fault)
                 },

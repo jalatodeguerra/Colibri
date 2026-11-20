@@ -55,8 +55,7 @@ pub fn link(obj: &ClassObj) -> Link {
 }
 
 /// A new root error that keeps `value`, converted through the implementation `impl_id`.
-#[doc(hidden)]
-pub fn new_error(value: Value, impl_id: i64) -> Value {
+pub(crate) fn new_error(value: Value, impl_id: i64) -> Value {
     Value::Obj(ClassObj::new(
         ERROR_TYPE,
         vec![value, Value::Int(impl_id), Value::Unit, Value::Unit],
@@ -73,8 +72,7 @@ pub(crate) fn new_typed_error(value: Value, message: &str) -> Value {
 }
 
 /// `context`: a new error with the message `message` around `cause`.
-#[doc(hidden)]
-pub fn new_context_error(cause: Value, message: Rc<str>) -> Value {
+pub(crate) fn new_context_error(cause: Value, message: Rc<str>) -> Value {
     Value::Obj(ClassObj::new(
         ERROR_TYPE,
         vec![Value::Unit, Value::Int(-1), Value::Str(message), cause],
