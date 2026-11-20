@@ -193,6 +193,10 @@ pub struct ImplDef {
     pub target: Ty,
     /// The head of `target`, which the engine dispatches on.
     pub key: TypeKey,
+    /// For `Add`, `Sub`, `Mul` and `Div`: the head of the right-hand type `R`, which an operator
+    /// impl is chosen by together with `key` (`None` when `R` is a type parameter, and for every
+    /// other interface).
+    pub rhs: Option<TypeKey>,
     /// One entry per interface method, in the interface's declaration order: the function
     /// that runs (the impl's own, or the interface's default). `None` for the methods of a
     /// derived built-in implementation, which the engine provides itself.
@@ -1262,8 +1266,18 @@ pub enum BinOp {
     /// Component-wise arithmetic on vectors of this type (`+ - * /`); the shape says where the
     /// scalar is, if there is one.
     Vec(ArithOp, VecTy, VecShape),
+    /// `a + b` (and `-`, `*`, `/`) on a type that implements the operator interface.
+    User(UserOp),
     /// `a is b`: whether two references are the same object (DESIGN §5.3).
     Is,
+}
+
+/// An operator that runs a user-written implementation of `Add`, `Sub`, `Mul`, `Div` or `Neg`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserOp {
+    /// The checker knew both operand types and chose the impl: this is its method, called
+    /// directly with the operands.
+    Fn(FnId),
 }
 
 /// The operands of vector arithmetic.
@@ -1282,6 +1296,8 @@ pub enum UnOp {
     Neg(Num),
     /// `-v` on a vector of this type.
     VecNeg(VecTy),
+    /// `-a` on a type that implements `Neg`.
+    User(UserOp),
     Not,
     /// `~x` on an integer of this type.
     BitNot(IntTy),

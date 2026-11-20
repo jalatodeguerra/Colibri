@@ -1,0 +1,36 @@
+// An operator is an ordinary call: it may `wait`, and the coroutine that runs it resumes there.
+struct Slow { n: int }
+
+impl Add for Slow {
+    fn add(self, o: Slow) -> Slow {
+        wait(1.0)
+        return Slow { n: self.n + o.n }
+    }
+}
+impl Neg for Slow {
+    fn neg(self) -> Slow {
+        wait(0.5)
+        return Slow { n: -self.n }
+    }
+}
+
+fn work(name: str, start: Slow) {
+    var acc = start
+    for i in 0..2 {
+        acc += Slow { n: 10 }
+        print("{name} {acc.n}")
+    }
+    print("{name} {(-acc).n}")
+}
+
+fn main() {
+    go work("a", Slow { n: 1 })
+    go work("b", Slow { n: 100 })
+}
+
+// expect: a 11
+// expect: b 110
+// expect: a 21
+// expect: b 120
+// expect: a -21
+// expect: b -120

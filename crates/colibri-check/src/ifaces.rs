@@ -15,7 +15,9 @@ use crate::generics::SigCtx;
 use crate::hir::{FnId, IfaceMethod, ImplId, TypeDefKind};
 use crate::prelude;
 use crate::traits::{BoundRef, GenericParamInfo, ImplInfo, key_of};
-use crate::types::{DROP, FIRST_USER_TYPE, INTO_ERROR, IntTy, ParamId, Ty, TypeId};
+use crate::types::{
+    DROP, FIRST_USER_TYPE, INTO_ERROR, IntTy, ParamId, Ty, TypeId, is_binary_operator, is_operator,
+};
 
 /// An interface as the checker keeps it.
 pub(crate) struct IfaceInfo<'a> {
@@ -252,8 +254,11 @@ impl<'a> Checker<'a> {
         let target_shown = self.render(&target);
         // Dispatch on a generic receiver reads the type from the value, and a `Value::Int` of
         // the narrow widths carries none (ARCHITECTURE §6).
+        // An operator impl is reached from the checker's own choice of impl, never by the
+        // runtime type, so it may be written for the narrow widths too.
         if let Ty::Int(t) = &target
             && !matches!(t, IntTy::I64 | IntTy::U64)
+            && !is_operator(iface)
         {
             self.unsupported(&format!("`impl` for `{target_shown}`"), decl.target.span);
             return;
@@ -271,13 +276,24 @@ impl<'a> Checker<'a> {
         // The orphan rule (DESIGN §9.2): the interface or the type must be ours. Everything
         // user-written is one package for now, so only built-in against built-in is refused.
         let target_builtin = !matches!(&target, Ty::Adt(id, _) if id.0 >= FIRST_USER_TYPE);
-        if iface.0 < FIRST_USER_TYPE && target_builtin {
+        // An operator interface may also be implemented for a built-in type when one of its
+        // type arguments is not built in: `impl Mul[Vec3, Vec3] for float` is the `float` side of
+        // `2.0 * v`, and cannot change what `2.0 * 3.0` means.
+        let theirs = is_binary_operator(iface)
+            && iface_args
+                .iter()
+                .any(|a| matches!(a, Ty::Adt(id, _) if id.0 >= FIRST_USER_TYPE));
+        if iface.0 < FIRST_USER_TYPE && target_builtin && !theirs {
             self.report(
                 Diagnostic::error(
                     format!("cannot implement the built-in `{iface_name}` for the built-in type `{target_shown}`"),
                     iface_expr.span,
                 )
-                .with_hint("the orphan rule: `impl I for T` must be written in the package that defines `I` or `T`; wrap the type in your own struct, or declare your own interface"),
+                .with_hint(if is_binary_operator(iface) {
+                    format!("the orphan rule: `impl I for T` must be written in the package that defines `I` or `T`; an operator interface may also be implemented for a built-in type when one of its type arguments is yours (`impl {iface_name}[YourType, YourType] for {target_shown}`)")
+                } else {
+                    "the orphan rule: `impl I for T` must be written in the package that defines `I` or `T`; wrap the type in your own struct, or declare your own interface".to_string()
+                }),
             );
             return;
         }
@@ -324,7 +340,20 @@ impl<'a> Checker<'a> {
             );
             return;
         }
-        if let Some(&prev) = self.impl_by_key.get(&(key, iface)) {
+        // An operator interface is implemented once for each right-hand type; the others once.
+        let rhs = is_binary_operator(iface)
+            .then(|| iface_args.first().and_then(key_of))
+            .flatten();
+        let taken = if is_binary_operator(iface) {
+            self.op_impls.get(&(key, iface)).and_then(|list| {
+                list.iter()
+                    .find(|(r, _)| r.is_none() || rhs.is_none() || *r == rhs)
+                    .map(|(_, id)| *id)
+            })
+        } else {
+            self.impl_by_key.get(&(key, iface)).copied()
+        };
+        if let Some(prev) = taken {
             let prev_span = self.impls[prev.0 as usize].span;
             self.report(
                 Diagnostic::error(
@@ -332,7 +361,11 @@ impl<'a> Checker<'a> {
                     iface_expr.span,
                 )
                 .with_label(prev_span, "the first implementation")
-                .with_hint("one type has at most one implementation of an interface, whatever its type arguments"),
+                .with_hint(if is_binary_operator(iface) {
+                    "a type has at most one implementation of an operator for each right-hand type (and a right-hand type that is a type parameter is the only one)"
+                } else {
+                    "one type has at most one implementation of an interface, whatever its type arguments"
+                }),
             );
             return;
         }
@@ -352,7 +385,13 @@ impl<'a> Checker<'a> {
             span: item.span,
             derived: false,
         });
-        self.impl_by_key.insert((key, iface), id);
+        self.impl_by_key.entry((key, iface)).or_insert(id);
+        if is_binary_operator(iface) {
+            self.op_impls
+                .entry((key, iface))
+                .or_default()
+                .push((rhs, id));
+        }
 
         let owner = match &target {
             Ty::Adt(t, _) => self.types[t.0 as usize].name.clone(),

@@ -37,6 +37,7 @@ mod methods;
 mod modules;
 mod numeric;
 mod obligations;
+mod operators;
 mod option;
 mod optres;
 pub mod package;

@@ -1,0 +1,19 @@
+struct Money { cents: int }
+struct Price { cents: int }
+
+impl Add[Price, Price] for Money {
+    fn add(self, p: Price) -> Price => Price { cents: self.cents + p.cents }
+}
+impl Mul[int] for Money {
+    fn mul(self, k: int) -> Money => Money { cents: self.cents * k }
+}
+
+fn main() {
+    var m = Money { cents: 1 }
+    let p = Price { cents: 2 }
+    let total = m + p // fine: a Money plus a Price is a Price
+    print(total.cents)
+    m += p // error: `+=` needs `Money + Price` to give a `Money`; it gives `Price`
+    m *= 2
+    print(m.cents)
+}

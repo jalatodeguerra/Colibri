@@ -15,7 +15,8 @@ use crate::hir::{
     Stmt, UnOp,
 };
 use crate::infer::VarKind;
-use crate::types::{IntTy, Ty};
+use crate::operators::operator_iface;
+use crate::types::{IntTy, NEG, Ty};
 
 impl FnCtx<'_, '_> {
     /// Checks `e`. `expected` is a hint that lets literals pick their type; the caller still
@@ -359,6 +360,10 @@ impl FnCtx<'_, '_> {
                 if let Ty::Vec(v) = self.infer.shallow(&value.ty) {
                     return self.check_vec_neg(v, value, span);
                 }
+                let operand_ty = self.infer.shallow(&value.ty);
+                if self.left_uses_operator(&operand_ty, NEG) {
+                    return self.check_user_neg(value, span);
+                }
                 if !self.is_numeric(&value.ty) && !self.infer.shallow(&value.ty).is_error() {
                     let shown = self.show(&value.ty);
                     self.ck.report(Diagnostic::error(
@@ -647,11 +652,26 @@ impl FnCtx<'_, '_> {
         // later anyway.
         let hint = expected.filter(|t| matches!(t, Ty::Int(_) | Ty::F32 | Ty::Str));
         let mut l = self.check_expr(lhs, hint);
+        let iface = operator_iface(arith);
+        // A user type on the left chooses its operator impl by the right operand, which is
+        // checked with what that impl takes as a hint.
+        if let Some(iface) = iface {
+            let left = self.infer.shallow(&l.ty);
+            if !matches!(left, Ty::Vec(_)) && self.left_uses_operator(&left, iface) {
+                return self.check_user_arith(op, iface, l, rhs, span);
+            }
+        }
         let mut r = self.check_expr(rhs, Some(&l.ty));
         if matches!(self.infer.shallow(&l.ty), Ty::Vec(_))
             || matches!(self.infer.shallow(&r.ty), Ty::Vec(_))
         {
             return self.check_vec_arith(op, arith, l, r, span);
+        }
+        // A number on the left and a user type on the right: `2 * v`.
+        if let Some(iface) = iface
+            && let Some(done) = self.check_scalar_left(op, iface, &mut l, &mut r, span)
+        {
+            return done;
         }
         if !self.unify_operands(op, &mut l, &mut r, span) {
             return self.error_expr(span);

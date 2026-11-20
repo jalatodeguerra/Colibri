@@ -1,0 +1,43 @@
+struct Money { cents: int }
+
+impl Mul[Money, Money] for int {
+    fn mul(self, m: Money) -> Money => Money { cents: self * m.cents }
+}
+impl Mul[Money, Money] for float {
+    fn mul(self, m: Money) -> Money => Money { cents: int(self * float(m.cents)) }
+}
+impl Mul[int] for Money {
+    fn mul(self, k: int) -> Money => Money { cents: self.cents * k }
+}
+impl Mul[float] for Money {
+    fn mul(self, k: float) -> Money => Money { cents: int(float(self.cents) * k) }
+}
+
+fn main() {
+    let m = Money { cents: 10 }
+    print((m * 2).cents) // error: cannot tell which `*` this means: `Money` implements it with `int` and `float` on the right
+    print((2 * m).cents) // error: cannot tell which `*` this means: `Money` implements it with `int` and `float` on the left
+    // A typed operand is not ambiguous.
+    let i: int = 2
+    let f: float = 2.0
+    print((m * i).cents)
+    print((m * f).cents)
+    print((i * m).cents)
+    print((f * m).cents)
+    print((m * int(2)).cents)
+    print((m * 2.0).cents)
+}
+
+struct Level { n: int }
+impl Mul[Level, Level] for i32 {
+    fn mul(self, l: Level) -> Level => l
+}
+impl Mul[Level, Level] for u8 {
+    fn mul(self, l: Level) -> Level => l
+}
+fn levels() {
+    let l = Level { n: 1 }
+    print((3 * l).n) // error: cannot tell which `*` this means: `Level` implements it with `i32` and `u8` on the left
+    let w: i32 = 3
+    print((w * l).n)
+}

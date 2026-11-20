@@ -5,7 +5,7 @@ use std::rc::{Rc, Weak};
 
 use colibri_check::hir::{
     Arg, ArithOp, Arm, BinOp, Block, Body, Callee, CmpOp, Expr, ExprKind, FnId, GlobalId,
-    Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, TypeDef, UnOp,
+    Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, TypeDef, UnOp, UserOp,
 };
 use colibri_check::hir::{Storage, ValueProj};
 use colibri_check::types::{IntTy, Ty};
@@ -647,6 +647,20 @@ impl Interp {
         let rhs_value = self.eval(fiber, rhs)?;
         let new = match op {
             None => rhs_value,
+            Some(BinOp::User(user)) => {
+                // The operator of a user type runs script code, which must not change the shape
+                // of the collection the place is an element of (DESIGN §11.6), like a `var self`
+                // method.
+                let _hold = self.hold_place(&anchor, place);
+                let old = match self.get_resolved(fiber, &anchor, &place.path, span) {
+                    Ok(old) => old,
+                    Err(ctl) => {
+                        self.release(rhs_value);
+                        return Err(ctl);
+                    }
+                };
+                self.call_user_op(fiber, user, vec![old, rhs_value], span)?
+            }
             Some(op) => {
                 let old = match self.get_resolved(fiber, &anchor, &place.path, span) {
                     Ok(old) => old,
@@ -786,6 +800,10 @@ impl Interp {
 
     #[inline(never)]
     fn eval_unary(&mut self, fiber: &mut Fiber, op: UnOp, operand: &Expr, span: Span) -> Eval {
+        if let UnOp::User(user) = op {
+            let v = self.eval_twin(fiber, operand)?;
+            return self.call_user_op(fiber, user, vec![v], span);
+        }
         let v = self.eval(fiber, operand)?;
         self.unary(fiber, op, v, span)
     }
@@ -801,6 +819,9 @@ impl Interp {
     ) -> Eval {
         let l = self.eval_twin(fiber, lhs)?;
         let r = self.eval_twin(fiber, rhs)?;
+        if let BinOp::User(user) = op {
+            return self.call_user_op(fiber, user, vec![l, r], span);
+        }
         self.binary(fiber, op, l, r, span)
     }
 
@@ -1234,6 +1255,20 @@ impl Interp {
     }
 
     // ---- operators ----
+
+    /// Runs the impl of an operator interface on its operands, which the call then owns.
+    #[inline(never)]
+    fn call_user_op(
+        &mut self,
+        fiber: &mut Fiber,
+        op: UserOp,
+        values: Vec<Value>,
+        span: Span,
+    ) -> Eval {
+        match op {
+            UserOp::Fn(f) => self.call_values(fiber, &Callee::Fn(f), &[], values, span),
+        }
+    }
 
     fn unary(&mut self, fiber: &mut Fiber, op: UnOp, v: Value, span: Span) -> Eval {
         match (op, v) {

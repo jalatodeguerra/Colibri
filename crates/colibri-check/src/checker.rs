@@ -242,6 +242,11 @@ pub(crate) struct Checker<'a> {
     pub impls: Vec<ImplInfo>,
     /// The explicit implementations, by implementing type head and interface.
     pub impl_by_key: HashMap<(TypeKey, TypeId), ImplId>,
+    /// The explicit implementations of `Add`, `Sub`, `Mul` and `Div`, by implementing type head
+    /// and interface: one per right-hand type head (`None` when the right-hand type is a type
+    /// parameter, which then stands for any). `impl_by_key` holds the first of them, for the
+    /// queries that do not choose by right-hand type.
+    pub op_impls: HashMap<(TypeKey, TypeId), Vec<(Option<TypeKey>, ImplId)>>,
     /// The derived implementations made so far (built-in interfaces only).
     pub derived_impls: HashMap<(TypeKey, TypeId), ImplId>,
     /// The entry file's top-level statements and `let`/`var` bindings, in source order.
@@ -495,6 +500,7 @@ impl<'a> Checker<'a> {
             ifaces: HashMap::new(),
             impls: Vec::new(),
             impl_by_key: HashMap::new(),
+            op_impls: HashMap::new(),
             derived_impls: HashMap::new(),
             script: Vec::new(),
             module_scripts: Vec::new(),
@@ -1331,12 +1337,7 @@ impl<'a> Checker<'a> {
 
     /// The type arguments of interface `id` once the trailing ones that `given` leaves out take
     /// their defaults, or `None` when a default needs a `Self` that nothing here gives.
-    fn fill_defaults(
-        &self,
-        id: TypeId,
-        given: &[Ty],
-        default_self: Option<Ty>,
-    ) -> Option<Vec<Ty>> {
+    fn fill_defaults(&self, id: TypeId, given: &[Ty], default_self: Option<Ty>) -> Option<Vec<Ty>> {
         let generics = &self.type_extra[id.0 as usize].generics;
         let self_id = self.ifaces.get(&id)?.self_param.id;
         let mut map: Vec<(ParamId, Ty)> = generics
@@ -2103,6 +2104,9 @@ impl<'a> Checker<'a> {
                 iface_args: i.iface_args.clone(),
                 target: i.target.clone(),
                 key: i.key,
+                rhs: crate::types::is_binary_operator(i.iface)
+                    .then(|| i.iface_args.first().and_then(crate::traits::key_of))
+                    .flatten(),
                 methods: i
                     .methods
                     .iter()

@@ -1,0 +1,39 @@
+// features: fast
+// An operator impl is an item like any other: `@when` keeps or drops it, and `@deprecated`
+// makes a use of the operator warn.
+struct V { x: int }
+
+@when(fast)
+impl Add for V {
+    fn add(self, o: V) -> V => V { x: self.x + o.x }
+}
+
+@when(!fast)
+impl Add for V {
+    fn add(self, o: V) -> V => V { x: 0 }
+}
+
+impl Sub for V {
+    @deprecated("use minus")
+    fn sub(self, o: V) -> V => V { x: self.x - o.x }
+}
+
+impl V {
+    fn minus(self, o: V) -> V => V { x: self.x - o.x }
+}
+
+@when(!fast)
+impl Mul[int] for V {
+    fn mul(self, k: int) -> V => V { x: self.x * k }
+}
+
+fn main() {
+    let a = V { x: 5 }
+    print((a + a).x)
+    print((a - a).x) // warning: `V.sub` is deprecated: use minus
+    print(a.minus(a).x)
+}
+
+// expect: 10
+// expect: 0
+// expect: 0

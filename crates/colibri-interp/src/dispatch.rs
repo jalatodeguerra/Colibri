@@ -495,6 +495,7 @@ impl Interp {
             iface_args: Vec::new(),
             target: Ty::Unit,
             key,
+            rhs: None,
             methods: vec![None; methods],
             derived: true,
             span: Span::new(FileId(0), 0, 0),

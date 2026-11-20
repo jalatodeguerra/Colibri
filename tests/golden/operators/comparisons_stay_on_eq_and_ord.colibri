@@ -1,0 +1,23 @@
+// Operators do not change comparisons: `==` and `<` use `Eq` and `Ord`, derived from the
+// fields or written by hand, whatever operators the type has.
+struct V { x: int, y: int }
+
+impl Add for V {
+    fn add(self, o: V) -> V => V { x: self.x + o.x, y: self.y + o.y }
+}
+
+fn main() {
+    let a = V { x: 1, y: 2 }
+    let b = V { x: 1, y: 3 }
+    print(a == a + V { x: 0, y: 0 })
+    print(a != b)
+    print(a < b)
+    print(b <= a)
+    print(a + a == V { x: 2, y: 4 })
+}
+
+// expect: true
+// expect: true
+// expect: true
+// expect: false
+// expect: true

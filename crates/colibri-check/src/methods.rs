@@ -42,6 +42,8 @@ pub(crate) enum Via {
     },
     /// `eq`, `cmp` or `hash` derived from the structure of the receiver.
     Derived { iface: TypeId },
+    /// `a.mul(b)` on a type with several `Mul` impls: chosen by the argument, as `a * b` is.
+    Operator { iface: TypeId },
 }
 
 impl FnCtx<'_, '_> {
@@ -266,6 +268,17 @@ impl FnCtx<'_, '_> {
                         continue;
                     };
                     if let Some(key) = key_of(ty)
+                        && crate::types::is_binary_operator(iface)
+                        && self
+                            .ck
+                            .op_impls
+                            .get(&(key, iface))
+                            .is_some_and(|list| list.len() > 1)
+                    {
+                        out.push((iface, Via::Operator { iface }));
+                        continue;
+                    }
+                    if let Some(key) = key_of(ty)
                         && let Some(&imp) = self.ck.impl_by_key.get(&(key, iface))
                     {
                         let info = &self.ck.impls[imp.0 as usize];
@@ -348,6 +361,7 @@ impl FnCtx<'_, '_> {
                     span,
                 )
             }
+            Via::Operator { iface } => self.call_operator_method(iface, recv, name, args, span),
             Via::Bound {
                 iface,
                 index,

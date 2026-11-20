@@ -1332,6 +1332,20 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         let place = place?;
         let weak = self.is_weak_place(&place);
         let place_ty = place.ty.clone();
+        // `p += v` on a user type is `p = p + v` through its operator impl.
+        let user_iface = match op {
+            AssignOp::Add => Some(crate::types::ADD),
+            AssignOp::Sub => Some(crate::types::SUB),
+            AssignOp::Mul => Some(crate::types::MUL),
+            AssignOp::Div => Some(crate::types::DIV),
+            _ => None,
+        };
+        if let Some(iface) = user_iface {
+            let left = self.infer.shallow(&place_ty);
+            if !matches!(left, Ty::Vec(_)) && self.left_uses_operator(&left, iface) {
+                return self.check_user_assign(span, op, place, target.span, iface, value);
+            }
+        }
         // A shift count may have any integer type; every other right-hand side has the type
         // of the place.
         let shift = matches!(op, AssignOp::Shl | AssignOp::Shr);

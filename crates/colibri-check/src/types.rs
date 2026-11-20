@@ -50,6 +50,25 @@ pub const SIGNAL_TYPE: TypeId = TypeId(14);
 pub const STR_BUILDER_TYPE: TypeId = TypeId(15);
 /// The built-in `BytesBuilder` (DESIGN §12): a reference type that builds a `Bytes` by appending.
 pub const BYTES_BUILDER_TYPE: TypeId = TypeId(16);
+/// The operator interfaces (DESIGN §9.2): `a + b` is `Add`, `a - b` is `Sub`, `a * b` is `Mul`,
+/// `a / b` is `Div` and `-a` is `Neg`. They follow `BytesBuilder` in the prelude source.
+pub const ADD: TypeId = TypeId(17);
+pub const SUB: TypeId = TypeId(18);
+pub const MUL: TypeId = TypeId(19);
+pub const DIV: TypeId = TypeId(20);
+pub const NEG: TypeId = TypeId(21);
+
+/// Whether `id` is `Add`, `Sub`, `Mul` or `Div`: an operator interface with a right-hand type
+/// (`R`), which a type may implement once for each right-hand type.
+pub fn is_binary_operator(id: TypeId) -> bool {
+    (ADD.0..=DIV.0).contains(&id.0)
+}
+
+/// Whether `id` is one of the five operator interfaces.
+pub fn is_operator(id: TypeId) -> bool {
+    (ADD.0..=NEG.0).contains(&id.0)
+}
+
 /// The prelude classes that only built-in functions create: how to make one, if it can be made.
 pub fn prelude_class_maker(id: TypeId) -> Option<&'static str> {
     match id {
@@ -63,7 +82,7 @@ pub fn prelude_class_maker(id: TypeId) -> Option<&'static str> {
 }
 
 /// The first id a user-defined type can have.
-pub const FIRST_USER_TYPE: u32 = 17;
+pub const FIRST_USER_TYPE: u32 = 22;
 /// The index of `ok` in the prelude `Result`.
 pub const VARIANT_OK: u32 = 0;
 /// The index of `err` in the prelude `Result`.

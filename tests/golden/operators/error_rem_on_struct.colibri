@@ -1,0 +1,15 @@
+struct V { x: float }
+
+impl Add for V {
+    fn add(self, o: V) -> V => V { x: self.x + o.x }
+}
+
+fn main() {
+    let a = V { x: 1.0 }
+    print(a % a) // error: `%` cannot be applied to values of type `V`
+    print(a & a) // error: `&` cannot be applied to a value of type `V`
+    print(a << 1) // error: `<<` cannot be applied to a value of type `V`
+    print(~a) // error: `~` cannot be applied to a value of type `V`
+    var b = a
+    b %= a // error: `%=` cannot be applied to `V`
+}

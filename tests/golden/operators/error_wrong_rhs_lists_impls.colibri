@@ -1,0 +1,21 @@
+struct V { x: float }
+
+impl Add for V {
+    fn add(self, o: V) -> V => V { x: self.x + o.x }
+}
+impl Mul for V {
+    fn mul(self, o: V) -> V => V { x: self.x * o.x }
+}
+impl Mul[float] for V {
+    fn mul(self, k: float) -> V => V { x: self.x * k }
+}
+
+fn main() {
+    let a = V { x: 1.0 }
+    let n = 3
+    print((a * n).x) // error: cannot apply `*` to `V` and `int`
+    print((a * "s").x) // error: cannot apply `*` to `V` and `str`
+    print((a + 1.0).x) // error: cannot apply `+` to `V` and `{float}`
+    print((1.0 + a).x) // error: cannot apply `+` to `{float}` and `V`
+    print((a * true).x) // error: cannot apply `*` to `V` and `bool`
+}

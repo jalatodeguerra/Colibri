@@ -1,0 +1,23 @@
+// An operator that runs on a list element may not change the shape of that list while it
+// runs, like a `var self` method (the element is written back afterwards).
+var shared: List[Tally] = []
+
+struct Tally { n: int }
+
+impl Add for Tally {
+    fn add(self, o: Tally) -> Tally {
+        shared.push(Tally { n: 0 })
+        return Tally { n: self.n + o.n }
+    }
+}
+
+fn main() {
+    shared = [Tally { n: 1 }]
+    let t = Tally { n: 2 } + Tally { n: 3 }   // not an element: pushing is fine
+    print(t.n)
+    print(shared.len())
+    shared[0] += Tally { n: 4 } // panic: `shared` modified while an element is being updated
+}
+
+// expect: 5
+// expect: 2

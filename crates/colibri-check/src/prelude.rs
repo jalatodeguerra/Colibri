@@ -4,6 +4,10 @@
 //! type ids are the constants of [`crate::types`] (`EQ`, `ORD`, ...). Their implementations
 //! for built-in types are derived by the checker (§7.4), not written here.
 //!
+//! `Add`, `Sub`, `Mul` and `Div` take the right-hand type `R` and give `O`, both defaulting to
+//! `Self`; `Neg` is `Self` to `Self`. The checker resolves `a + b` to the impl itself when it
+//! can, see `crate::operators`.
+//!
 //! `Ord.cmp` returns an `int`: negative, zero or positive (ARCHITECTURE §6). `IntoError` is
 //! the interface of types that convert to `Error` (DESIGN §10.1); its default `message` is the
 //! type's `Show`. `Error` itself is declared as an empty class so that the checker treats it
@@ -53,6 +57,21 @@ class CoGroup {}
 class Signal {}
 class StrBuilder {}
 class BytesBuilder {}
+interface Add[R = Self, O = Self] {
+    fn add(self, other: R) -> O
+}
+interface Sub[R = Self, O = Self] {
+    fn sub(self, other: R) -> O
+}
+interface Mul[R = Self, O = Self] {
+    fn mul(self, other: R) -> O
+}
+interface Div[R = Self, O = Self] {
+    fn div(self, other: R) -> O
+}
+interface Neg {
+    fn neg(self) -> Self
+}
 "#;
 
 /// The parsed prelude.

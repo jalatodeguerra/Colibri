@@ -1,0 +1,13 @@
+struct Money { cents: int }
+struct Plain { n: int }
+
+fn main() {
+    let a = Money { cents: 1 }
+    let b = Money { cents: 2 }
+    print(a + b) // error: cannot apply `+` to `Money` and `Money`
+    print(-a) // error: cannot negate a value of type `Money`
+    var c = a
+    c += b // error: cannot apply `+` to `Money` and `Money`
+    print(c.cents)
+    print(2 * a) // error: cannot apply `*` to `{integer}` and `Money`
+}
