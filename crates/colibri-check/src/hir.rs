@@ -170,6 +170,7 @@ pub enum TypeKey {
     Bool,
     Char,
     Str,
+    Bytes,
     Unit,
     Tuple,
     List,
@@ -219,10 +220,7 @@ pub struct TypeDef {
     /// The type parameters, in order; `Ty::Adt(id, args)` gives one argument for each.
     pub params: Vec<ParamId>,
     pub kind: TypeDefKind,
-    /// Whether values of the type may move to another thread (`task.run`, DESIGN §14.1). Only
-    /// the host's classes say no for now: the flag is recorded and nothing reads it yet.
-    pub sendable: bool,
-    /// The named host module (`std.fs`, `game`) that declared this type; `None` for a type of
+    /// The named host module (`std.fs`, `jobs`) that declared this type; `None` for a type of
     /// the program's own modules, the prelude or the default `host` module. A type of a named
     /// module is that module's own: two modules may each declare a `Child` or an `Error`, and
     /// it is shown as `module.Name`, the name a script writes (`process.Child`, `fs.Error`).
@@ -1075,6 +1073,39 @@ pub enum Builtin {
     StrPadRight,
     /// `s[lo..hi]`, with the arguments of [`Builtin::ListSlice`].
     StrSlice,
+    /// `s.to_bytes()`: the UTF-8 bytes of a string.
+    StrToBytes,
+    // ---- Bytes and BytesBuilder (DESIGN §5.1, §12) ----
+    /// `Bytes(list)`: the bytes of a `List[u8]`.
+    BytesFromList,
+    /// `Bytes()`: no bytes.
+    BytesEmpty,
+    BytesLen,
+    BytesIsEmpty,
+    /// `b[i]`: the byte at `i`, or a panic.
+    BytesAt,
+    /// `b.get(i) -> u8?`
+    BytesGet,
+    /// `b[lo..hi]`, with the arguments of [`Builtin::ListSlice`].
+    BytesSlice,
+    /// `b.slice(start, end)`: the same with two plain positions.
+    BytesSliceOf,
+    BytesToList,
+    BytesToStr,
+    BytesToStrLossy,
+    BytesStartsWith,
+    BytesEndsWith,
+    BytesFind,
+    BytesContains,
+    /// `BytesBuilder()`
+    BytesBuilderNew,
+    BytesBuilderPush,
+    BytesBuilderPushBytes,
+    BytesBuilderPushStr,
+    BytesBuilderLen,
+    BytesBuilderIsEmpty,
+    BytesBuilderClear,
+    BytesBuilderToBytes,
     // ---- ranges and iterators ----
     RangeContains,
     RangeLen,

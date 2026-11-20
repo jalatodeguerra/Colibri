@@ -2998,3 +2998,66 @@ fn the_note_that_the_lock_was_left_is_only_said_when_there_is_a_lock() {
     assert_eq!(out.code, 1, "{}", out.stderr);
     assert!(out.stderr.contains("was left as it is"), "{}", out.stderr);
 }
+
+#[test]
+fn a_git_dependency_takes_features_and_the_lock_does_not_know_them() {
+    let sb = Sandbox::new("features");
+    let repo = sb.repo("speedy");
+    repo.commit(
+        &[
+            (
+                "colibri.toml".to_string(),
+                "[package]\nname = \"speedy\"\n\n[features]\ndefault = []\nfast = []\n".to_string(),
+            ),
+            (
+                "lib.colibri".to_string(),
+                "@when(fast)\npub fn version() -> str => \"fast\"\n@when(!fast)\npub fn version() -> str => \"slow\"\n".to_string(),
+            ),
+        ],
+        "first",
+    );
+    let url = repo.url();
+    // No features asked: the dependency's own default (nothing).
+    let app = sb.app(
+        "app",
+        &format!("speedy = {{ git = \"{url}\" }}"),
+        &["speedy"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "slow\n"),
+        "{}",
+        out.stderr
+    );
+    let lock = sb.lock(&app);
+    // Asking for the feature changes the program, not the lock, so `--locked` still works.
+    let app = sb.app(
+        "app",
+        &format!("speedy = {{ git = \"{url}\", features = [\"fast\"] }}"),
+        &["speedy"],
+    );
+    let out = sb.colibri(&["run", "--locked", app.to_str().unwrap()]);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "fast\n"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(sb.lock(&app), lock);
+    // A feature the repository does not declare names both manifests.
+    let app = sb.app(
+        "app",
+        &format!("speedy = {{ git = \"{url}\", features = [\"turbo\"] }}"),
+        &["speedy"],
+    );
+    let out = sb.colibri(&["check", "--locked", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("asks for the feature `turbo` of `speedy`, which `speedy` does not declare"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stderr.contains("colibri.toml"), "{}", out.stderr);
+}

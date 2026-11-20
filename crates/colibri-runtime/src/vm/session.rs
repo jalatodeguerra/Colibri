@@ -24,6 +24,16 @@ impl SessionCheck {
             .any(|f| f.name == "<closure in <script>>")
     }
 
+    /// Whether the checked program has a function called `name`.
+    pub fn has_fn(&self, name: &str) -> bool {
+        self.checked.program.fn_by_name(name).is_some()
+    }
+
+    /// The warnings of the checked program (lints such as a use of a deprecated function).
+    pub fn warnings(&self) -> &[Diagnostic] {
+        &self.checked.warnings
+    }
+
     /// The sources the diagnostics of this check point into (for a failed check, see
     /// [`Error::Compile`]).
     pub fn sources(&self) -> &SourceMap {

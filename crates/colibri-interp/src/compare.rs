@@ -99,6 +99,7 @@ fn scalar_eq(a: &Value, b: &Value) -> Option<bool> {
         (Value::IVec(x), Value::IVec(y)) => x == y,
         (Value::Char(x), Value::Char(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
+        (Value::Bytes(x), Value::Bytes(y)) => x == y,
         _ => return None,
     })
 }
@@ -114,6 +115,7 @@ fn scalar_cmp(a: &Value, b: &Value) -> Option<Option<Ordering>> {
         (Value::F32(x), Value::F32(y)) => x.partial_cmp(y),
         (Value::Char(x), Value::Char(y)) => x.partial_cmp(y),
         (Value::Str(x), Value::Str(y)) => x.partial_cmp(y),
+        (Value::Bytes(x), Value::Bytes(y)) => x.partial_cmp(y),
         _ => return None,
     })
 }

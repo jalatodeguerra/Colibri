@@ -1,0 +1,4 @@
+fn main() {
+    let b = Bytes()
+    b.push(1) // error: `Bytes` has no method `push`
+}

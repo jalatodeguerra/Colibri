@@ -593,11 +593,11 @@ mod tests {
 
     #[test]
     fn a_function_gets_a_registering_module_of_its_name() {
-        let out = run("", "pub fn spawn_enemy(x: f32, y: f32) -> i64 { 0 }");
-        assert!(out.contains("mod spawn_enemy"), "{out}");
+        let out = run("", "pub fn submit_job(x: f32, y: f32) -> i64 { 0 }");
+        assert!(out.contains("mod submit_job"), "{out}");
         assert!(
             out.contains(
-                "register_exported (vm , \"spawn_enemy\" , [\"x\" , \"y\"] , super :: spawn_enemy)"
+                "register_exported (vm , \"submit_job\" , [\"x\" , \"y\"] , super :: submit_job)"
             ),
             "{out}"
         );

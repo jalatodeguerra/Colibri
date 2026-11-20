@@ -1,12 +1,12 @@
 //! Runtime values (ARCHITECTURE §3).
 //!
-//! Closures and host handles are variants of this enum too. Strings, structs, tuples and enums
+//! Closures and host handles are variants of this enum, like the scalars. Strings, structs, tuples and enums
 //! are reference counted, so copying a value is a pointer bump; a write goes through `Rc::make_mut`, which copies only
 //! when the value is shared. That is exact value semantics (DESIGN §7.1), not an accidental
 //! copy. Lists, maps, sets and class objects are reference types (DESIGN §5.3, §7.2): copying
 //! the value shares the object, and equality of the `Rc` is identity.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use colibri_check::hir::FnId;
@@ -39,6 +39,10 @@ pub enum Value {
     IVec(crate::vecmath::IVec),
     Char(char),
     Str(Rc<str>),
+    /// A `Bytes`: immutable, one byte per byte.
+    Bytes(Rc<[u8]>),
+    /// The buffer of a `BytesBuilder`: the field of its object, never visible to Colibri code.
+    ByteBuf(Rc<RefCell<Vec<u8>>>),
     Struct(Rc<StructVal>),
     Tuple(Rc<[Value]>),
     /// Enums are immutable (a payload is not a place), so sharing is unobservable.
@@ -69,6 +73,8 @@ pub enum Value {
     /// for the program (reference semantics).
     Iter(Rc<IterObj>),
 }
+
+const _: () = assert!(std::mem::size_of::<Value>() == 24);
 
 /// The ends of a range value (`Range[int]`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +125,8 @@ impl PartialEq for Value {
             (Value::IVec(a), Value::IVec(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::Bytes(a), Value::Bytes(b)) => a == b,
+            (Value::ByteBuf(a), Value::ByteBuf(b)) => Rc::ptr_eq(a, b),
             (Value::Struct(a), Value::Struct(b)) => a == b,
             (Value::Tuple(a), Value::Tuple(b)) => a == b,
             (Value::Enum(a), Value::Enum(b)) => a == b,
@@ -157,6 +165,10 @@ pub struct EnumVal {
 impl Value {
     pub fn str(s: &str) -> Value {
         Value::Str(Rc::from(s))
+    }
+
+    pub fn bytes(b: &[u8]) -> Value {
+        Value::Bytes(Rc::from(b))
     }
 
     pub fn range(start: i64, end: i64, inclusive: bool) -> Value {

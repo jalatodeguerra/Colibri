@@ -1,0 +1,29 @@
+// Inside a type's own `impl`, using its deprecated field warns (as in Rust); `impl OldType`
+// is exempt for a deprecated type, because its methods are the type's own code.
+@deprecated("use Fresh")
+struct Old {
+    n: int
+}
+
+impl Old {
+    fn get(self) -> int => self.n
+}
+
+struct New {
+    @deprecated("use b")
+    a: int
+    b: int
+}
+
+impl New {
+    fn get(self) -> int => self.a // warning: `a` is deprecated: use b
+}
+
+fn main() {
+    let n = New { a: 1, b: 2 } // warning: `a` is deprecated: use b
+    print(n.get())
+    let o = Old { n: 3 } // warning: `Old` is deprecated: use Fresh
+    print(o.get())
+}
+// expect: 1
+// expect: 3

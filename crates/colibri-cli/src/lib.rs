@@ -24,9 +24,24 @@ pub const STACK_SIZE: usize = 256 * 1024 * 1024;
 /// program.
 pub const NATIVE_STACK_BUDGET: usize = STACK_SIZE - 16 * 1024 * 1024;
 
+static BUILD_CFG: std::sync::OnceLock<colibri_runtime::BuildCfg> = std::sync::OnceLock::new();
+
+/// Sets what `@when` conditions are decided with for this process (`--feature`, `--release`,
+/// `--no-default-features`); `main` calls it once, before anything is loaded.
+pub fn set_build_cfg(cfg: colibri_runtime::BuildCfg) {
+    let _ = BUILD_CFG.set(cfg);
+}
+
+/// What `@when` conditions are decided with: the command line's flags, or the defaults (this
+/// platform, a debug build, the manifest's default features).
+pub fn build_cfg() -> colibri_runtime::BuildCfg {
+    BUILD_CFG.get().cloned().unwrap_or_default()
+}
+
 /// A `Vm` builder set up for a thread made by [`on_big_stack`].
 pub fn vm_builder() -> colibri_runtime::VmBuilder {
     colibri_runtime::Vm::builder()
+        .build_cfg(build_cfg())
         .max_call_depth(colibri_runtime::DEFAULT_MAX_CALL_DEPTH)
         .native_stack_budget(NATIVE_STACK_BUDGET)
 }

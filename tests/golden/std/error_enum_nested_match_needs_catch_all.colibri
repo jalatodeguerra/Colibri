@@ -1,35 +1,35 @@
 // The explanation for a module enum that can gain variants is given wherever the enum sits in
 // the value that is matched (in an option, a tuple, a result or a struct field), when every
 // variant the module has today is listed and the match is still not exhaustive.
-import hash
+import hex
 import io
 
-struct Holder { e: hash.Error }
+struct Holder { e: hex.Error }
 
-fn in_option(x: hash.Error?) {
-    match x { // error: non-exhaustive `match`: missing case: some(_) (the enum `hash.Error` can gain variants)
-        some(OutOfRange) => print("oor")
+fn in_option(x: hex.Error?) {
+    match x { // error: non-exhaustive `match`: missing case: some(_) (the enum `hex.Error` can gain variants)
+        some(Invalid) => print("invalid")
         none => print("none")
     }
 }
 
-fn in_tuple(x: (hash.Error, io.Error)) {
-    match x { // error: (the enums `hash.Error` and `io.Error` can gain variants)
-        (OutOfRange, InvalidData) => print("1")
-        (OutOfRange, Other) => print("2")
+fn in_tuple(x: (hex.Error, io.Error)) {
+    match x { // error: (the enums `hex.Error` and `io.Error` can gain variants)
+        (Invalid, InvalidData) => print("1")
+        (Invalid, Other) => print("2")
     }
 }
 
-fn in_result(x: Result[int, hash.Error]) {
-    match x { // error: non-exhaustive `match`: missing case: err(_) (the enum `hash.Error` can gain variants)
+fn in_result(x: Result[int, hex.Error]) {
+    match x { // error: non-exhaustive `match`: missing case: err(_) (the enum `hex.Error` can gain variants)
         ok(n) => print(n)
-        err(OutOfRange) => print("oor")
+        err(Invalid) => print("invalid")
     }
 }
 
 fn in_field(h: Holder) {
-    match h { // error: non-exhaustive `match`: missing case: Holder { .. } (the enum `hash.Error` can gain variants)
-        Holder { e: OutOfRange } => print("oor")
+    match h { // error: non-exhaustive `match`: missing case: Holder { .. } (the enum `hex.Error` can gain variants)
+        Holder { e: Invalid } => print("invalid")
     }
 }
 

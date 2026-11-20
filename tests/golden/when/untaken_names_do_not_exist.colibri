@@ -1,0 +1,10 @@
+@when(os == "linux" && os == "macos")
+fn never() -> int => 1
+
+@when(false)
+struct Gone { x: int }
+
+fn main() {
+    print(never()) // error: unknown name `never`
+    let _g = Gone { x: 1 } // error: unknown type `Gone`
+}

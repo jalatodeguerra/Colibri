@@ -21,7 +21,7 @@ use crate::compare::{Guard, cmp_with, equal_with};
 use crate::ctl::{Ctl, Eval};
 use crate::fiber::Fiber;
 use crate::hooks::{Answer, Overrides, Stop};
-use crate::ordered::hash_value;
+use crate::ordered::{hash_value, hash_value_with};
 use crate::show::show_with;
 use crate::value::{DynVal, Value};
 
@@ -96,6 +96,7 @@ pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
         Value::IVec(v) => TypeKey::Vec(colibri_check::types::VecTy { int: true, n: v.n }),
         Value::Char(_) => TypeKey::Char,
         Value::Str(_) => TypeKey::Str,
+        Value::Bytes(_) => TypeKey::Bytes,
         Value::Struct(s) => TypeKey::Adt(s.ty),
         Value::Tuple(_) => TypeKey::Tuple,
         Value::Enum(e) => TypeKey::Adt(e.ty),
@@ -110,6 +111,7 @@ pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
         | Value::Fn(..)
         | Value::Closure(_)
         | Value::Cell(_)
+        | Value::ByteBuf(_)
         | Value::Iter(_) => return None,
     })
 }
@@ -670,6 +672,53 @@ impl Interp {
         result
     }
 
+    /// The `hash()` of a value. Equal values hash equally, which for an object of a host class
+    /// that customises `==` means its own hash: without one there is no hash that agrees with
+    /// `==`, so asking for it is a panic, not a wrong answer. (Map and set lookups of such
+    /// keys scan with `==` and never use this.)
+    fn hash_deep(&mut self, fiber: &mut Fiber, v: &Value, span: Span) -> Eval<u64> {
+        if !self.host.any_eq_hook || !self.key_needs_scan(v) {
+            return Ok(hash_value(v));
+        }
+        let mut failed: Option<Ctl> = None;
+        let h = hash_value_with(v, &mut |object| {
+            if failed.is_some() {
+                return None;
+            }
+            let Value::Host(r) = object else {
+                return None;
+            };
+            let hooks = self.host.class_hooks.get(&r.ty)?;
+            hooks.eq.as_ref()?;
+            let Some(hook) = hooks.hash.clone() else {
+                let name = self.types[r.ty.0 as usize].name.clone();
+                failed = Some(self.panic(
+                    fiber,
+                    span,
+                    format!(
+                        "`{name}` compares with its own `==` but gives no hash, so `hash()` cannot agree with `==`"
+                    ),
+                ));
+                return None;
+            };
+            let outcome = self.step(fiber, span).and_then(|()| {
+                hook(self, fiber, vec![object.clone()]).map_err(|f| self.host_fault_ctl(fiber, f))
+            });
+            match outcome {
+                Ok(Value::Int(n)) => Some(n as u64),
+                Ok(_) => None,
+                Err(ctl) => {
+                    failed = Some(ctl);
+                    None
+                }
+            }
+        });
+        match failed {
+            Some(ctl) => Err(ctl),
+            None => Ok(h),
+        }
+    }
+
     /// A method of a built-in interface on a type that has no implementation of its own.
     fn derived_call(
         &mut self,
@@ -685,7 +734,7 @@ impl Interp {
                 Ok(None) => Err(self.panic(fiber, span, "these values are not ordered (a `nan`)")),
                 Err(ctl) => Err(ctl),
             },
-            (HASH, [a]) => Ok(Value::Int(hash_value(a) as i64)),
+            (HASH, [a]) => self.hash_deep(fiber, a, span).map(|h| Value::Int(h as i64)),
             (SHOW, [a]) => self
                 .show_deep(fiber, a, span)
                 .map(|s| Value::Str(Rc::from(s))),

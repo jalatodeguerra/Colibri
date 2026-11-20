@@ -605,7 +605,6 @@ mod tests {
                 name: "Shape".into(),
                 span: SP,
                 params: Vec::new(),
-                sendable: true,
                 module: None,
                 open: false,
                 kind: TypeDefKind::Enum {
@@ -620,7 +619,6 @@ mod tests {
                 name: "P".into(),
                 span: SP,
                 params: Vec::new(),
-                sendable: true,
                 module: None,
                 open: false,
                 kind: TypeDefKind::Struct {
@@ -631,7 +629,6 @@ mod tests {
                 name: "Dir".into(),
                 span: SP,
                 params: Vec::new(),
-                sendable: true,
                 module: None,
                 open: false,
                 kind: TypeDefKind::Enum {
@@ -830,7 +827,6 @@ mod tests {
             name: "Never".into(),
             span: SP,
             params: Vec::new(),
-            sendable: true,
             module: None,
             open: false,
             kind: TypeDefKind::Enum { variants: vec![] },
@@ -880,7 +876,6 @@ mod tests {
             name: "Host".into(),
             span: SP,
             params: Vec::new(),
-            sendable: true,
             module: Some("host".into()),
             open: true,
             kind: TypeDefKind::Enum {

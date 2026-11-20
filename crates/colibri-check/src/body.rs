@@ -472,6 +472,12 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         }
         if let Some(hint) = numeric_hint(&exp, &got) {
             diag = diag.with_hint(hint);
+        } else if exp == "Bytes" && got == "str" {
+            diag = diag.with_hint("use `s.to_bytes()` to get the bytes of a string");
+        } else if exp == "str" && got == "Bytes" {
+            diag = diag.with_hint(
+                "use `b.to_str()` (an error when the bytes are not UTF-8) or `b.to_str_lossy()`",
+            );
         } else if exp == "()" {
             diag = diag.with_hint("this position has no value; if a value is wanted, declare a return type with `-> T`");
         } else if got == "()" {
@@ -851,8 +857,19 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     ) -> (Vec<Stmt>, Option<Box<Expr>>, Ty) {
         let mut stmts = Vec::new();
         let mut diverges = false;
+        let mut warned = false;
         for s in &b.stmts {
+            if diverges && !warned {
+                self.warn_unreachable(s.span);
+                warned = true;
+            }
             diverges |= self.check_stmt(s, &mut stmts);
+        }
+        if diverges
+            && !warned
+            && let Some(tail) = &b.tail
+        {
+            self.warn_unreachable(tail.span);
         }
         match (&b.tail, mode) {
             (Some(tail), BlockMode::Value(expected)) => {
@@ -877,15 +894,24 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         }
     }
 
+    /// The lint for code after `return`, `break`, `continue` or a call that never returns: one
+    /// warning per block, at the first statement that cannot run. Dependencies are not linted.
+    fn warn_unreachable(&mut self, span: Span) {
+        if !self.ck.mods[self.ck.cur_mod.0 as usize].root {
+            return;
+        }
+        let diag = Diagnostic::warning("unreachable code", span).with_hint(
+            "nothing before this point lets the block continue; remove the code or the early exit",
+        );
+        self.ck.report_lint(diag);
+    }
+
     // ---- statements ----
 
     /// Checks a statement into `out`; returns whether control cannot continue past it.
     pub(crate) fn check_stmt(&mut self, s: &ast::Stmt, out: &mut Vec<Stmt>) -> bool {
         match &s.kind {
-            StmtKind::Let(l) => {
-                self.check_let(s, l, out);
-                false
-            }
+            StmtKind::Let(l) => self.check_let(s, l, out),
             StmtKind::Assign { op, target, value } => {
                 if let Some(stmt) = self.check_assign(s.span, *op, target, value) {
                     out.push(stmt);
@@ -1052,9 +1078,12 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         )
     }
 
-    fn check_let(&mut self, s: &ast::Stmt, l: &ast::LetStmt, out: &mut Vec<Stmt>) {
+    /// Checks a `let`; whether its initialiser never finishes (`let x: int = die()`), so that
+    /// control cannot continue past the statement.
+    fn check_let(&mut self, s: &ast::Stmt, l: &ast::LetStmt, out: &mut Vec<Stmt>) -> bool {
         let annotated = l.ty.as_ref().map(|t| (self.ck.resolve_type(t), t.span));
         let value = self.check_expr(&l.init, annotated.as_ref().map(|(t, _)| t));
+        let never = self.infer.shallow(&value.ty) == Ty::Never;
         let ty = match &annotated {
             Some((t, span)) => {
                 let reason = Some((
@@ -1097,6 +1126,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 });
             }
         }
+        never
     }
 
     /// A `let` pattern must match every value of its type.
@@ -1357,7 +1387,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         if stored && let Some(arith) = arith {
             let ok = match self.infer.shallow(&place_ty) {
                 Ty::Error => true,
-                Ty::Str => arith == ArithOp::Add,
+                Ty::Str | Ty::Bytes => arith == ArithOp::Add,
                 t => self.is_numeric(&t),
             };
             if !ok {
@@ -1383,7 +1413,9 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             }
         }
         let op = match (arith, bit) {
-            (Some(_), _) if self.infer.shallow(&place_ty) == Ty::Str => Some(BinOp::Concat),
+            (Some(_), _) if matches!(self.infer.shallow(&place_ty), Ty::Str | Ty::Bytes) => {
+                Some(BinOp::Concat)
+            }
             (Some(a), _) => Some(BinOp::Arith(a, Num::Int(IntTy::I64))),
             (None, Some((b, _))) => Some(BinOp::Bit(b, IntTy::I64)),
             (None, None) => None,
@@ -1409,6 +1441,10 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             return;
         }
         let mut diag = Diagnostic::error(format!("unknown name `{name}`"), span);
+        if let Some(hint) = self.ck.excluded_hint(self.ck.cur_mod, name) {
+            self.ck.report(diag.with_hint(hint));
+            return;
+        }
         if crate::types::VecTy::from_name(name).is_some() {
             diag = diag.with_hint(format!(
                 "the vector types are in the `vec` module: write `import vec` and then `vec.{name}(..)`, or `import vec.{{{name}}}`"

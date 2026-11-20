@@ -1,0 +1,8 @@
+fn shout(s: str) -> str {
+    return s + "!"
+}
+
+fn main() {
+    let b = Bytes([104, 105])
+    print(shout(b)) // error: expected `str`, found `Bytes`
+}

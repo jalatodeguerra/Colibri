@@ -29,21 +29,21 @@
 //! ```
 //! use colibri_runtime as colibri;
 //!
-//! struct Score(i64);
+//! struct Total(i64);
 //!
 //! # fn main() -> Result<(), colibri::Error> {
 //! let out = colibri::SharedBuffer::new();
 //! let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
-//! vm.insert_state(Score(0));
-//! vm.register_fn("add_score", |cx: &mut colibri::Ctx, points: i64| {
-//!     let score = cx.state_mut::<Score>().expect("the score was inserted");
-//!     score.0 += points;
-//!     score.0
+//! vm.insert_state(Total(0));
+//! vm.register_fn("add", |cx: &mut colibri::Ctx, points: i64| {
+//!     let total = cx.state_mut::<Total>().expect("the total was inserted");
+//!     total.0 += points;
+//!     total.0
 //! })?;
-//! vm.load_source("game.colibri", "fn main() {\n    add_score(3)\n    print(add_score(4))\n}\n")?;
+//! vm.load_source("tally.colibri", "fn main() {\n    add(3)\n    print(add(4))\n}\n")?;
 //! vm.run_main()?;
 //! assert_eq!(out.contents(), "7\n");
-//! assert_eq!(vm.state_mut::<Score>().map(|s| s.0), Some(7));
+//! assert_eq!(vm.state_mut::<Total>().map(|t| t.0), Some(7));
 //! # Ok(())
 //! # }
 //! ```
@@ -162,6 +162,7 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 /// }
 /// ```
 pub use colibri_bind::export;
+pub use colibri_check::package::{BuildCfg, feature_name_problem};
 /// Git dependencies and `colibri.lock`: what the command line tool does before it loads a
 /// program (the loader itself never uses the network).
 pub use colibri_check::package::{
@@ -172,7 +173,7 @@ pub use colibri_check::package::{is_package_name, not_a_script};
 pub use colibri_interp::Leak;
 pub use colibri_interp::{CancelToken, Clock, DEFAULT_NATIVE_STACK_BUDGET, SystemClock};
 pub use colibri_syntax::{Diagnostic, Severity, SourceMap, Span};
-pub use convert::{Args, FromColibri, IntoColibri, Never, TypedError, Value, ValueKind};
+pub use convert::{Args, Bytes, FromColibri, IntoColibri, Never, TypedError, Value, ValueKind};
 pub use ctx::{Caller, Ctx, Cx};
 pub use error::{Error, Location, Report, StackFrame};
 pub use func::Fn;
@@ -246,6 +247,8 @@ pub struct CheckConfig {
     /// --interface engine.cbi` reads them.
     pub interfaces: Vec<Interface>,
     pub caps: CapSet,
+    /// What `@when` conditions are decided with (see [`VmBuilder::build_cfg`]).
+    pub cfg: BuildCfg,
 }
 
 impl Default for CheckConfig {
@@ -254,6 +257,7 @@ impl Default for CheckConfig {
             stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
             interfaces: Vec::new(),
             caps: CapSet::none(),
+            cfg: BuildCfg::default(),
         }
     }
 }
@@ -377,7 +381,10 @@ fn check_entry_lazy(
     let mut names = env.named_modules();
     names.extend(lazy_names.iter().cloned());
     let mut sources = SourceMap::new();
-    let options = colibri_check::package::LoadOptions { all_modules };
+    let options = colibri_check::package::LoadOptions {
+        all_modules,
+        cfg: config.cfg.clone(),
+    };
     let loaded = colibri_check::package::load_with(fs, &mut sources, entry, &names, options)
         .map_err(|e| Error::Io {
             path: e.path,

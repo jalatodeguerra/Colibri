@@ -1,4 +1,4 @@
-struct P { x: int }
+class P { x: int }
 
 fn main() {
     let a = P { x: 1 }

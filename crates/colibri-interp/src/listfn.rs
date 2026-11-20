@@ -558,6 +558,19 @@ impl Interp {
         };
         let (lo, hi) = (end_of(args.get(1)), end_of(args.get(2)));
         let inclusive = matches!(args.get(3), Some(Value::Bool(true)));
+        self.slice_positions(fiber, (lo, hi), inclusive, len, what, span)
+    }
+
+    /// The `lo..hi` positions of a slice with these (optional) ends, or a panic.
+    pub(crate) fn slice_positions(
+        &mut self,
+        fiber: &mut Fiber,
+        (lo, hi): (Option<i64>, Option<i64>),
+        inclusive: bool,
+        len: usize,
+        what: &str,
+        span: Span,
+    ) -> Eval<(usize, usize)> {
         let shown = format!(
             "{}..{}{}",
             lo.map_or(String::new(), |x| x.to_string()),

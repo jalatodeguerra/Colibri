@@ -41,5 +41,16 @@ The tree-walking interpreter on 2026-11-19 (Linux x86-64, CPython 3.13), in mill
 | `closures` | 917 | 169 | 5.4× |
 | `strings` | 238 | 63 | 3.8× |
 
+### Map hashing
+
+`map` after the keys of `Map` and `Set` got a cheap hash (an FxHash-style fold with a full
+finalizer, and an inner table that uses it as it is instead of hashing it again with SipHash;
+`colibri-interp/src/ordered.rs`): about 490 to 510 ms against 520 to 530 ms for the same
+program before the change, best of three, three runs each, in one session. Both binaries were
+built with the release profile but `lto = off` and 16 codegen units (to keep the build short on
+a shared machine), so they are comparable with each other and not with the table above, whose
+`map` row (572 ms) is the fat-LTO build on another day. The program spends most of its time in
+the interpreter loop and in building the `"key{i}"` strings, so the hash is a small share of it.
+
 The profile of the tree-walker is flat, so these numbers are not worth tuning: the VM replaces it.
 The programs are micro-benchmarks, so read the ratios as a rough guide.

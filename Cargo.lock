@@ -189,7 +189,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "colibri-example-host-game"
+name = "colibri-example-host-jobs"
 version = "0.1.0"
 dependencies = [
  "colibri-runtime",

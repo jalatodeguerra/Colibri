@@ -76,9 +76,11 @@ fn handle(mut stream: TcpStream) {
             );
             ("200 OK", "", text.into_bytes())
         }
+        "/raw" => ("200 OK", "", body.to_vec()),
         "/headers" => ("200 OK", "", header("x-token").into_bytes()),
         "/missing" => ("404 Not Found", "", b"nothing here".to_vec()),
         "/binary" => ("200 OK", "", vec![b'a', 0xff, b'b']),
+        "/all256" => ("200 OK", "", (0..=255u8).collect()),
         "/redirect" => ("302 Found", "Location: /hello\r\n", Vec::new()),
         "/slow" => {
             thread::sleep(Duration::from_millis(1500));
@@ -416,4 +418,87 @@ fn speaking_tls_to_a_server_that_does_not_is_a_tls_error() {
         ),
     );
     assert!(out.starts_with("some(Tls)\nhttp: GET https://"), "{out}");
+}
+
+/// `Response` keeps its three fields: a response encodes as JSON, prints once, and holds the
+/// body once.
+#[test]
+fn a_response_encodes_as_json_and_has_only_status_headers_and_body() {
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
+    let r = http.get("{base}/missing") or panic("request failed")
+    print(json.encode(r) or panic("encode"))
+    print(r)
+"#,
+    );
+    let mut lines = out.lines();
+    let encoded = lines.next().unwrap();
+    assert!(
+        encoded.starts_with(r#"{"status":404,"headers":{"#)
+            && encoded.ends_with(r#""body":"nothing here"}"#),
+        "{encoded}"
+    );
+    let shown = lines.next().unwrap();
+    assert_eq!(shown.matches("nothing here").count(), 1, "{shown}");
+}
+
+#[test]
+fn a_binary_body_comes_back_as_bytes_without_loss() {
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
+    let r = http.get_bytes("{base}/all256") or panic("request failed")
+    print(r.status)
+    var same = r.body.len() == 256
+    var i = 0
+    while i < 256 {
+        if int(r.body[i]) != i {
+            same = false
+        }
+        i += 1
+    }
+    print(same)
+    let b = http.get_bytes("{base}/binary") or panic("request failed")
+    print(b.body)
+    print(b.body.to_str().is_err())
+    print(b.headers["content-length"])
+    // The text call on the same URL decodes lossily.
+    let t = http.get("{base}/binary") or panic("request failed")
+    print(t.body.len())
+"#,
+    );
+    assert_eq!(out, "200\ntrue\nb\"a\\xffb\"\ntrue\n3\n5\n");
+}
+
+#[test]
+fn bytes_are_sent_as_they_are() {
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
+    let data = Bytes([0, 255, 128, 10, 13, 0])
+    let a = http.request_bytes("post", "{base}/raw", {"content-type": "application/octet-stream"}, data) or panic("a")
+    print(a.body == data)
+    let b = http.request_bytes("PUT", "{base}/raw", {"x-id": "1"}, data) or panic("b")
+    print(b.body)
+    let c = http.request_bytes("PATCH", "{base}/raw", {:}, Bytes()) or panic("c")
+    print(c.body.len())
+    // A text answer to a Bytes upload.
+    let d = http.to_text(http.request_bytes("POST", "{base}/echo", {"content-type": "text/x-bytes"}, "hi".to_bytes()) or panic("d"))
+    print(d.body)
+    let encoded = json.encode(d) or panic("encode")
+    print(encoded[0..10])
+    match http.request_bytes("no way", "{base}/raw", {:}, data) {
+        ok(_) => print("sent?")
+        err(e) => print(e.message())
+    }
+"#,
+    );
+    assert_eq!(
+        out,
+        "true\nb\"\\x00\\xff\\x80\\n\\r\\x00\"\n0\nPOST text/x-bytes|hi\n{\"status\":\nhttp: `no way` is not an HTTP method\n"
+    );
 }

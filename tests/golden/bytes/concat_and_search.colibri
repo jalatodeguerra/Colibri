@@ -1,0 +1,31 @@
+fn main() {
+    let a = "foo".to_bytes()
+    let b = "bar".to_bytes()
+    var c = a + b
+    print(c)
+    c += Bytes([33])
+    print(c)
+    print(a)
+    print(c.starts_with(a))
+    print(c.starts_with(b))
+    print(c.ends_with(Bytes([33])))
+    print(c.find(b))
+    print(c.find(Bytes([122])))
+    print(c.find(Bytes()))
+    print(c.contains("ob".to_bytes()))
+    print(c.contains("bo".to_bytes()))
+    print(Bytes().find(a))
+}
+
+// expect: b"foobar"
+// expect: b"foobar!"
+// expect: b"foo"
+// expect: true
+// expect: false
+// expect: true
+// expect: some(3)
+// expect: none
+// expect: some(0)
+// expect: true
+// expect: false
+// expect: none

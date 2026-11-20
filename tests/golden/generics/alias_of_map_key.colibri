@@ -1,0 +1,22 @@
+// An alias takes the key bound of `Map` and `Set`: `T` of `M[T]` must be `Hash + Eq`, as it is
+// for `Map[T, int]` itself.
+type M[T] = Map[T, int]
+type Bag[T] = Set[T]
+
+fn count[T: Hash + Eq](m: M[T], k: T) -> int {
+    return m.len() + k.hash() * 0
+}
+
+fn size[T: Hash + Eq](b: Bag[T]) -> int => b.len()
+
+fn main() {
+    let m: M[str] = {"a": 1}
+    print(count(m, "a"))
+    print(count(m, "b"))
+    let b: Bag[int] = Set([1, 2, 2])
+    print(size(b))
+}
+
+// expect: 1
+// expect: 1
+// expect: 2

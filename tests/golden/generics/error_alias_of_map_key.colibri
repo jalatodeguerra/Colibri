@@ -1,0 +1,8 @@
+// The key bound of `Map` reaches a use of the alias.
+type M[T] = Map[T, int]
+
+fn loose[T: Eq](m: M[T]) -> int => 0 // error: `T` does not implement `Hash`, which the alias `M` needs of its type parameter `T` because `Map` does
+
+fn take(m: M[float]) {} // error: `float` does not implement `Hash`, which the alias `M` needs of its type parameter `T` because `Map` does
+
+fn main() {}

@@ -1,0 +1,8 @@
+struct S { x: int }
+
+impl S {
+    @when(debug) // error: `@when` applies to top-level items only
+    fn m(self) {}
+}
+
+fn main() {}

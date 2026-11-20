@@ -95,6 +95,8 @@ struct ListSpec {
     pad: bool,
     /// The trailing comma is part of the syntax (one-element tuples).
     force_comma: bool,
+    /// A broken list ends with a comma (the default). A condition in `@when(..)` takes none.
+    trailing_comma: bool,
 }
 
 const PAREN: ListSpec = ListSpec {
@@ -102,24 +104,28 @@ const PAREN: ListSpec = ListSpec {
     close: ")",
     pad: false,
     force_comma: false,
+    trailing_comma: true,
 };
 const BRACKET: ListSpec = ListSpec {
     open: "[",
     close: "]",
     pad: false,
     force_comma: false,
+    trailing_comma: true,
 };
 const BRACE: ListSpec = ListSpec {
     open: "{",
     close: "}",
     pad: false,
     force_comma: false,
+    trailing_comma: true,
 };
 const PADDED_BRACE: ListSpec = ListSpec {
     open: "{",
     close: "}",
     pad: true,
     force_comma: false,
+    trailing_comma: true,
 };
 
 struct ListParts {
@@ -690,6 +696,8 @@ impl<'a> Fmt<'a> {
             Doc::Nil
         } else if spec.force_comma {
             text(",")
+        } else if !spec.trailing_comma {
+            Doc::Nil
         } else {
             if_break(text(","), Doc::Nil)
         };
@@ -810,7 +818,12 @@ impl<'a> Fmt<'a> {
                     })
                 })
                 .collect();
-            parts.push(self.list(PAREN, close, items, open_c));
+            // A condition takes no trailing comma, even when a comment breaks the list.
+            let spec = ListSpec {
+                trailing_comma: attr.name.name != "when",
+                ..PAREN
+            };
+            parts.push(self.list(spec, close, items, open_c));
         }
         concat(parts)
     }

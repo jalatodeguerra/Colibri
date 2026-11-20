@@ -1,0 +1,6 @@
+[package]
+name = "feat"
+
+[features]
+default = ["fast"]
+fast = []

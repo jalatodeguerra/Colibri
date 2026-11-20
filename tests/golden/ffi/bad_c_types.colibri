@@ -15,6 +15,7 @@ extern "C" {
     fn takes_str(s: str) // error: write `cstr`
     fn takes_plain(p: Plain) // error: not a `@repr(C)` struct
     fn takes_char(c: char) // error: `char` is not a C type
+    fn takes_bytes(b: Bytes) // error: `Bytes` is not a C type
     fn has_body(x: int) -> int { return x } // error: has no body
 }
 

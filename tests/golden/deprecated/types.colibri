@@ -1,0 +1,48 @@
+// Deprecated structs, enums, interfaces and aliases: every mention outside the type's own
+// `impl` blocks and other deprecated items warns.
+@deprecated("use Point instead")
+struct OldPoint { x: int, y: int }
+
+impl OldPoint {
+    fn sum(self) -> int => self.x + self.y
+    fn copy(self) -> OldPoint => OldPoint { x: self.x, y: self.y }
+}
+
+@deprecated("use Mode instead")
+enum OldMode { A, B }
+
+@deprecated
+interface Named { fn name(self) -> str }
+
+@deprecated("use int")
+type Count = int
+
+@deprecated("shadowed by use of OldPoint above")
+fn takes_old(p: OldPoint) -> int => p.sum()
+
+struct Point { x: int, y: int }
+
+impl Named for Point { // warning: `Named` is deprecated
+    fn name(self) -> str => "point"
+}
+
+fn count(n: Count) -> int => n // warning: `Count` is deprecated: use int
+
+fn main() {
+    let p = OldPoint { x: 1, y: 2 } // warning: `OldPoint` is deprecated: use Point instead
+    print(p.sum())
+    let q: OldPoint = p.copy() // warning: `OldPoint` is deprecated: use Point instead
+    print(q.x)
+    let m = OldMode.A // warning: `OldMode` is deprecated: use Mode instead
+    match m {
+        OldMode.A => print("a"), // warning: `OldMode` is deprecated: use Mode instead
+        OldMode.B => print("b"), // warning: `OldMode` is deprecated: use Mode instead
+    }
+    print(count(4))
+    print(Point { x: 1, y: 1 }.x)
+}
+// expect: 3
+// expect: 1
+// expect: a
+// expect: 4
+// expect: 1

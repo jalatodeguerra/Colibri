@@ -1,0 +1,58 @@
+// A deprecated interface method warns when it is called through an interface value or through
+// a type parameter's bound, with or without a body. A deprecated `impl` method that satisfies
+// a method that is not deprecated warns only when it is called on the concrete type.
+struct S {}
+
+interface Shape {
+    @deprecated("use area2")
+    fn area(self) -> int
+
+    @deprecated("gone")
+    fn old(self) -> int => 42
+
+    fn area2(self) -> int
+}
+
+impl Shape for S {
+    fn area(self) -> int => 1
+    fn area2(self) -> int => 2
+}
+
+interface Plain {
+    fn size(self) -> int
+}
+
+struct T {}
+
+impl Plain for T {
+    @deprecated("use len")
+    fn size(self) -> int => 7
+}
+
+fn through_bound[X: Shape](x: X) -> int {
+    let a = x.area() // warning: `Shape.area` is deprecated: use area2
+    let b = x.old() // warning: `Shape.old` is deprecated: gone
+    return a + b
+}
+
+fn plain_through_value(p: Plain) -> int => p.size()
+
+fn main() {
+    let s = S {}
+    let v: Shape = S {}
+    print(v.area()) // warning: `Shape.area` is deprecated: use area2
+    print(v.old()) // warning: `Shape.old` is deprecated: gone
+    print(v.area2())
+    print(through_bound(s))
+    print(s.area()) // the impl's own method is not deprecated: only calls through `Shape` warn
+    let t = T {}
+    print(t.size()) // warning: `T.size` is deprecated: use len
+    print(plain_through_value(t))
+}
+// expect: 1
+// expect: 42
+// expect: 2
+// expect: 43
+// expect: 1
+// expect: 7
+// expect: 7

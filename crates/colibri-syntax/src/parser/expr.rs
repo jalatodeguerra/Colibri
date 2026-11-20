@@ -65,7 +65,7 @@ fn is_comparison(kind: &TokenKind) -> bool {
 }
 
 /// Whether `expr` looks like a type name, so `expr {` can be a struct
-/// literal: `Player`, `game.Thing`, `Pair[int, str]`.
+/// literal: `Worker`, `jobs.Thing`, `Pair[int, str]`.
 fn is_path_like(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Ident(_) => true,

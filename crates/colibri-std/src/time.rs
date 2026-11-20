@@ -1,4 +1,4 @@
-//! `time`: a monotonic clock for frames and timers, the wall clock, and sleeping.
+//! `time`: a monotonic clock for timers and measuring intervals, the wall clock, and sleeping.
 
 use colibri_runtime::{Cap, Ctx, Error, Vm};
 

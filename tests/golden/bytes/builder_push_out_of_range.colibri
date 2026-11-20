@@ -1,0 +1,4 @@
+fn main() {
+    let b = BytesBuilder()
+    b.push(256) // error: 256
+}

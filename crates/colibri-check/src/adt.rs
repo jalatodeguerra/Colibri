@@ -7,6 +7,7 @@ use colibri_syntax::{Diagnostic, Span};
 use crate::body::FnCtx;
 use crate::call::Bound;
 use crate::checker::{Checker, ParamInfo};
+use crate::deprecated::DeprKey;
 use crate::hir::{self, Expr, FieldDef, FieldIdx, TypeDef, TypeDefKind, ValueProj};
 use crate::infer::VarKind;
 use crate::modules::BASE;
@@ -56,6 +57,8 @@ impl FnCtx<'_, '_> {
                                 return None;
                             }
                             self.ck.note_ref(name.span, decl);
+                            self.ck
+                                .note_deprecated_use(DeprKey::Field(*id, i as u32), name.span);
                             return Some(found);
                         }
                         let names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
@@ -288,7 +291,10 @@ impl FnCtx<'_, '_> {
             return None;
         }
         match self.ck.type_by_name(name)? {
-            Ty::Adt(id, _) => Some(id),
+            Ty::Adt(ty, _) => {
+                self.ck.note_deprecated_use(DeprKey::Type(ty), id.span);
+                Some(ty)
+            }
             _ => None,
         }
     }
@@ -319,6 +325,7 @@ impl FnCtx<'_, '_> {
                     }
                     None => vec![Ty::Error; wanted],
                 };
+                self.require_type_bounds(ty, &given, e.span);
                 Some((ty, Some(given)))
             }
             _ => None,
@@ -326,9 +333,19 @@ impl FnCtx<'_, '_> {
     }
 
     /// The type arguments of a type named without any: one fresh variable per parameter.
-    pub(crate) fn fresh_args(&mut self, ty: TypeId) -> Vec<Ty> {
+    pub(crate) fn fresh_args(&mut self, ty: TypeId, span: Span) -> Vec<Ty> {
         let n = self.ck.types[ty.0 as usize].params.len();
-        (0..n).map(|_| self.fresh_var(VarKind::General)).collect()
+        let args: Vec<Ty> = (0..n).map(|_| self.fresh_var(VarKind::General)).collect();
+        self.require_type_bounds(ty, &args, span);
+        args
+    }
+
+    /// Requires what the type `ty` declares of its type parameters (`struct Sorted[T: Ord]`)
+    /// of `args`, which may still be inference variables: decided at the end of the body.
+    pub(crate) fn require_type_bounds(&mut self, ty: TypeId, args: &[Ty], span: Span) {
+        if let Some(obligations) = self.ck.type_bound_obligations(ty, args, |_| span) {
+            self.obligations.extend(obligations);
+        }
     }
 
     /// `Type.name` or `Type.name(args)`: an enum variant or a static function.
@@ -345,8 +362,11 @@ impl FnCtx<'_, '_> {
         }
         let owner_args = match owner_args {
             Some(a) => a,
-            None => self.fresh_args(ty),
+            None => self.fresh_args(ty, span),
         };
+        if let Some(&f) = self.ck.methods.get(&(ty, name.name.clone())) {
+            self.ck.note_deprecated_use(DeprKey::Fn(f), name.span);
+        }
         let def = &self.ck.types[ty.0 as usize];
         if let Some(v) = def.variants().iter().position(|v| v.name == name.name) {
             return self.construct_variant(ty, owner_args, v as u32, args, span);
@@ -757,6 +777,8 @@ impl FnCtx<'_, '_> {
                 continue;
             };
             let field = &decls[i];
+            self.ck
+                .note_deprecated_use(DeprKey::Field(id, i as u32), init.name.span);
             let mut value = self.check_expr(&init.value, Some(&field.ty));
             let reason = Some((
                 field.span,

@@ -3,7 +3,7 @@ interface Describe {
 }
 
 struct Box[T] { value: T }
-struct Plain { n: int }
+class Plain { n: int }
 
 impl[T: Ord] Describe for Box[T] {
     fn describe(self) -> str => "box"

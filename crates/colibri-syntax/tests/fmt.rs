@@ -519,6 +519,10 @@ fn attributes_go_on_their_own_lines() {
         "@when(os == \"windows\")\n@link(\"user32\")\nextern \"C\" {}\n",
     );
     check(
+        "@when(!debug&&(os==\"linux\"||fast)) fn f(){}",
+        "@when(!debug && (os == \"linux\" || fast))\nfn f() {}\n",
+    );
+    check(
         "@repr(C)\npub struct S { a: i32 }",
         "@repr(C)\npub struct S { a: i32 }\n",
     );
@@ -914,4 +918,23 @@ fn a_block_holding_only_a_block_comment_is_stable() {
     );
     let out = fmt("fn f() { /* x */ }");
     check(&out, &out);
+}
+
+#[test]
+fn a_when_condition_keeps_its_comments_and_gets_no_trailing_comma() {
+    check(
+        "@when(\n    debug // why\n    && os == \"linux\" // second\n)\nfn b() {}\n",
+        "@when(\n    debug // why\n        && os == \"linux\" // second\n)\nfn b() {}\n",
+    );
+    check(
+        "@when(debug && /* c */ os == \"linux\")\nfn c() {}\n",
+        "@when(debug && /* c */ os == \"linux\")\nfn c() {}\n",
+    );
+    check(
+        "@when(\n    // why\n    debug\n)\nfn d() {}\n",
+        "@when(\n    // why\n    debug\n)\nfn d() {}\n",
+    );
+    // The output parses again: no comma crept in.
+    let out = fmt("@when(\n    debug // x\n)\nfn e() {}\n");
+    assert!(!out.contains(",\n"), "{out}");
 }

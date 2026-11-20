@@ -47,8 +47,11 @@ pub struct Directives {
     /// `// caps: fs, os`: the capabilities the test's `Vm` grants (the default is none). Read
     /// from the file that starts the program.
     pub caps: Vec<String>,
-    /// `// allow: unused` in the comment lines at the top of the file: unused-variable and
-    /// unused-import warnings in this file need not be listed. Every other file must list them
+    /// `// features: net, audio`: the feature flags the test's `Vm` turns on for `@when`.
+    /// Read from the file that starts the program.
+    pub features: Vec<String>,
+    /// `// allow: unused` in the comment lines at the top of the file: unused-variable,
+    /// unused-import and unreachable-code warnings in this file need not be listed. Every other file must list them
     /// as `// warning:` or have none.
     pub allow_unused: bool,
 }
@@ -169,6 +172,12 @@ pub fn parse_directives(source: &str) -> Directives {
                     Ok(only) => d.only = Some(only),
                     Err(problem) => d.malformed.push(format!("line {}: {problem}", i + 1)),
                 }
+            } else if let Some(v) = comment.strip_prefix("features:") {
+                d.features.extend(
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                );
             } else if let Some(v) = comment.strip_prefix("caps:") {
                 d.caps.extend(
                     v.split(',')
@@ -235,18 +244,30 @@ pub enum Outcome {
 /// [`crate::on_big_stack`]) so deep recursion reaches the call-depth limit.
 pub fn run_golden(path: &Path, source: &str) -> Outcome {
     let name = path.display().to_string();
-    let caps = parse_directives(source).caps;
-    run_with(|vm| vm.load_source(&name, source), None, &name, &caps)
+    let d = parse_directives(source);
+    run_with(
+        |vm| vm.load_source(&name, source),
+        None,
+        &name,
+        &d.caps,
+        &d.features,
+    )
 }
 
 /// Runs a golden test that is a folder: the files in it are one program, started from
 /// `main.colibri` (see `Vm::load_file`, which makes the folder its implicit package).
 pub fn run_golden_package(dir: &Path) -> Outcome {
     let main = dir.join("main.colibri");
-    let caps = std::fs::read_to_string(&main)
-        .map(|text| parse_directives(&text).caps)
+    let d = std::fs::read_to_string(&main)
+        .map(|text| parse_directives(&text))
         .unwrap_or_default();
-    run_with(|vm| vm.load_file(&main), Some(dir), "", &caps)
+    run_with(
+        |vm| vm.load_file(&main),
+        Some(dir),
+        "",
+        &d.caps,
+        &d.features,
+    )
 }
 
 /// The standard library's view of the world in a golden test: a clock that only moves when the
@@ -326,12 +347,16 @@ fn run_with(
     dir: Option<&Path>,
     blank: &str,
     caps: &[String],
+    features: &[String],
 ) -> Outcome {
     let out = colibri::SharedBuffer::new();
     let mut builder = crate::vm_builder()
         .trace_drops(true)
         .track_leaks(true)
         .stdout(Box::new(out.clone()));
+    for feature in features {
+        builder = builder.feature(feature);
+    }
     for cap in caps {
         match colibri::Cap::ALL.into_iter().find(|c| c.name() == cap) {
             Some(cap) => builder = builder.allow(cap),
@@ -475,6 +500,7 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
         only: d.only.clone(),
         malformed: d.malformed.clone(),
         caps: d.caps.clone(),
+        features: d.features.clone(),
         allow_unused: d.allow_unused,
     };
     check_package(
@@ -630,7 +656,9 @@ pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), Str
 /// warnings (`unused variable`, `unused import`) of a file with `// allow: unused` are
 /// tolerated when unlisted; a `// warning: unused variable` directive there must still match.
 fn is_unused_code_lint(message: &str) -> bool {
-    message.starts_with("unused variable") || message.starts_with("unused import")
+    message.starts_with("unused variable")
+        || message.starts_with("unused import")
+        || message.starts_with("unreachable code")
 }
 
 fn compare_warnings(

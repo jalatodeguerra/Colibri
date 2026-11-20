@@ -1,0 +1,8 @@
+struct Packet {
+    body: Bytes
+}
+
+fn main() {
+    var p = Packet { body: Bytes([1, 2]) }
+    p.body[0] = 1 // error: cannot assign to an element of a `Bytes`: it is immutable
+}

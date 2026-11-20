@@ -476,8 +476,8 @@ in v1.
 
 - [`examples/scripts`](examples/scripts/README.md): two real automation programs, a file
   organiser and a JSON/HTTP report generator.
-- [`examples/host_game`](examples/host_game/README.md): a Rust host program driven by Colibri
-  scripts.
+- [`examples/host_jobs`](examples/host_jobs/README.md): a Rust job runner that takes its job
+  logic from Colibri scripts (host classes, handles, callbacks and the scheduler).
 - [`benchmarks`](benchmarks/README.md): eight small programs in Colibri and Python, with the
   current timings.
 

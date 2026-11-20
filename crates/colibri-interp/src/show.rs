@@ -38,6 +38,8 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
         }
         Value::Char(c) => Cow::Owned(c.to_string()),
         Value::Str(s) => Cow::Borrowed(s),
+        Value::Bytes(b) => Cow::Owned(crate::bytesfn::show_bytes(b)),
+        Value::ByteBuf(_) => Cow::Borrowed("<buffer>"),
         Value::Struct(_)
         | Value::Tuple(_)
         | Value::Enum(_)
@@ -199,6 +201,7 @@ impl Writer<'_> {
                 s.chars().for_each(|c| escape(&mut self.out, c, '"'));
                 self.out.push('"');
             }
+            Value::Bytes(b) => self.out.push_str(&crate::bytesfn::show_bytes(b)),
             Value::Char(c) => {
                 self.out.push('\'');
                 escape(&mut self.out, *c, '\'');
@@ -288,6 +291,12 @@ impl Writer<'_> {
             }
             Value::Obj(obj) if obj.ty() == colibri_check::types::STR_BUILDER_TYPE => {
                 self.out.push_str(&crate::strfn::builder_text(obj));
+            }
+            Value::Obj(obj) if obj.ty() == colibri_check::types::BYTES_BUILDER_TYPE => {
+                self.out
+                    .push_str(&crate::bytesfn::show_bytes(&crate::bytesfn::builder_bytes(
+                        obj,
+                    )));
             }
             Value::Obj(obj) if obj.ty() == colibri_check::types::SIGNAL_TYPE => {
                 self.out.push_str("<Signal>");
@@ -430,7 +439,6 @@ mod tests {
                 name: "Player".into(),
                 span: SP,
                 params: Vec::new(),
-                sendable: true,
                 module: None,
                 open: false,
                 kind: TypeDefKind::Struct {
@@ -441,7 +449,6 @@ mod tests {
                 name: "Shape".into(),
                 span: SP,
                 params: Vec::new(),
-                sendable: true,
                 module: None,
                 open: false,
                 kind: TypeDefKind::Enum {

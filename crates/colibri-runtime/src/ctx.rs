@@ -287,7 +287,7 @@ impl<'a> Ctx<'a> {
         Value(colibri_interp::Value::variant(ty, variant, Vec::new()))
     }
 
-    /// A struct value of the type `name` that the host module `module` (`std.http`, `game`;
+    /// A struct value of the type `name` that the host module `module` (`std.http`, `jobs`;
     /// `host` is the default one) declares.
     ///
     /// # Panics

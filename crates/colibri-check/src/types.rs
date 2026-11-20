@@ -48,6 +48,8 @@ pub const COGROUP_TYPE: TypeId = TypeId(13);
 pub const SIGNAL_TYPE: TypeId = TypeId(14);
 /// The built-in `StrBuilder` (DESIGN §12): a reference type that builds a string by appending.
 pub const STR_BUILDER_TYPE: TypeId = TypeId(15);
+/// The built-in `BytesBuilder` (DESIGN §12): a reference type that builds a `Bytes` by appending.
+pub const BYTES_BUILDER_TYPE: TypeId = TypeId(16);
 /// The prelude classes that only built-in functions create: how to make one, if it can be made.
 pub fn prelude_class_maker(id: TypeId) -> Option<&'static str> {
     match id {
@@ -55,12 +57,13 @@ pub fn prelude_class_maker(id: TypeId) -> Option<&'static str> {
         COGROUP_TYPE => Some("`CoGroup()`"),
         SIGNAL_TYPE => Some("`Signal()`"),
         STR_BUILDER_TYPE => Some("`StrBuilder()`"),
+        BYTES_BUILDER_TYPE => Some("`BytesBuilder()`"),
         _ => None,
     }
 }
 
 /// The first id a user-defined type can have.
-pub const FIRST_USER_TYPE: u32 = 16;
+pub const FIRST_USER_TYPE: u32 = 17;
 /// The index of `ok` in the prelude `Result`.
 pub const VARIANT_OK: u32 = 0;
 /// The index of `err` in the prelude `Result`.
@@ -248,6 +251,8 @@ pub enum Ty {
     Bool,
     Char,
     Str,
+    /// `Bytes`: an immutable string of bytes (DESIGN §5.1), a value like `str`.
+    Bytes,
     /// `()`
     Unit,
     /// The type of `return`, `break` and `continue`; converts to every type.
@@ -393,6 +398,7 @@ impl fmt::Display for Shown<'_> {
             Ty::Bool => f.write_str("bool"),
             Ty::Char => f.write_str("char"),
             Ty::Str => f.write_str("str"),
+            Ty::Bytes => f.write_str("Bytes"),
             Ty::Unit => f.write_str("()"),
             Ty::Never => f.write_str("!"),
             Ty::Tuple(tys) => {

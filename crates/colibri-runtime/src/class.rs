@@ -86,6 +86,7 @@ pub struct TypeBuilder<'r, T: HostType> {
 pub(crate) struct ClassHooks {
     pub show: Option<RawHostFn>,
     pub eq: Option<RawHostFn>,
+    pub hash: Option<RawHostFn>,
 }
 
 impl std::fmt::Debug for ClassHooks {
@@ -93,6 +94,7 @@ impl std::fmt::Debug for ClassHooks {
         f.debug_struct("ClassHooks")
             .field("show", &self.show.is_some())
             .field("eq", &self.eq.is_some())
+            .field("hash", &self.hash.is_some())
             .finish()
     }
 }
@@ -167,6 +169,34 @@ impl<'r, T: HostType> TypeBuilder<'r, T> {
             drop(left);
             drop(right);
             Ok(same.into_colibri(cx))
+        }));
+        self
+    }
+
+    /// What `x.hash()` gives for an object of the class. A class that customises `==` with
+    /// [`TypeBuilder::eq`] must give this too, and it must agree with the `==`: objects that
+    /// are equal give the same number (so hash what `eq` looks at, nothing else). Without it
+    /// `hash()` of such an object (also nested in a tuple or a struct) is a panic in the
+    /// script, because the default (the identity of the object) would disagree with `==`. A
+    /// `Map` key or `Set` element never uses it (those are found by `==`). Has no effect on a
+    /// class without [`TypeBuilder::eq`]. The closure must not run script code.
+    pub fn hash<F: Fn(&T) -> u64 + 'static>(&mut self, f: F) -> &mut Self {
+        if self.hooks.hash.is_some() {
+            self.problems
+                .push(format!("`{}` customises its `hash` twice", T::NAME));
+            return self;
+        }
+        self.hooks.hash = Some(Rc::new(move |cx: &mut Ctx<'_>, args: &[Value]| {
+            let [object] = args else {
+                return Err(arity_fault(1, args.len()));
+            };
+            let guard = borrow_receiver::<T>(cx, object, false)?;
+            let this = guard
+                .downcast_ref::<T>()
+                .ok_or_else(|| missing_object(T::NAME))?;
+            let number = f(this) as i64;
+            drop(guard);
+            Ok(number.into_colibri(cx))
         }));
         self
     }

@@ -34,6 +34,8 @@ pub struct Member {
     /// The package (an index into the program's packages) that declares it, when it is one of
     /// the program's source modules. Something not `pub` is visible only inside that package.
     pub package: Option<usize>,
+    /// Marked `@deprecated`.
+    pub deprecated: bool,
 }
 
 impl Checker<'_> {
@@ -69,6 +71,9 @@ impl Checker<'_> {
             detail: self.signature_of(f, name, true, &bound),
             public: info.public,
             package: self.mods[info.module.0 as usize].package,
+            deprecated: self
+                .deprecated
+                .contains_key(&crate::deprecated::DeprKey::Fn(f)),
         }
     }
 
@@ -82,6 +87,7 @@ impl Checker<'_> {
             kind: MemberKind::Method,
             public: true,
             package: None,
+            deprecated: false,
         };
         match ty {
             Ty::Adt(id, args) if id.0 >= FIRST_USER_TYPE => {
@@ -112,6 +118,7 @@ impl Checker<'_> {
                 detail: format!("fn clone() -> {}", self.show_ty(ty)),
                 public: true,
                 package: None,
+                deprecated: false,
             });
         }
         out.sort_by(|a, b| {
@@ -127,7 +134,7 @@ impl Checker<'_> {
         let Some(info) = self.ifaces.get(&iface) else {
             return;
         };
-        for m in &info.methods {
+        for (index, m) in info.methods.iter().enumerate() {
             if m.receiver.is_none() {
                 continue;
             }
@@ -143,6 +150,12 @@ impl Checker<'_> {
                 detail: self.sig_detail(&m.name, &params, &m.ret),
                 public: true,
                 package: None,
+                deprecated: self
+                    .deprecated
+                    .contains_key(&crate::deprecated::DeprKey::IfaceMethod(
+                        iface,
+                        index as u32,
+                    )),
             });
         }
     }
@@ -163,6 +176,9 @@ impl Checker<'_> {
                     detail: format!("{}: {}", f.name, self.show_ty(&f.ty.subst(&map))),
                     public: extra.field_public.get(i).copied().unwrap_or(true),
                     package,
+                    deprecated: self
+                        .deprecated
+                        .contains_key(&crate::deprecated::DeprKey::Field(id, i as u32)),
                 });
             }
         }
@@ -218,6 +234,7 @@ impl Checker<'_> {
                     detail: self.sig_detail(name, &params, &m.ret),
                     public: true,
                     package: None,
+                    deprecated: false,
                 });
             }
         }

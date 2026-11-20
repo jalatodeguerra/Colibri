@@ -29,6 +29,8 @@ pub(crate) struct HostFnEntry {
     pub names: Option<Vec<String>>,
     /// The function reads the type arguments of its calls (`@typed`).
     pub typed: bool,
+    /// `@deprecated("message")`: scripts that use the function get a warning.
+    pub deprecated: Option<String>,
 }
 
 /// A registered constant of a module (`math.PI`).
@@ -173,6 +175,16 @@ pub(crate) fn render(
             line.push_str(&format!("@requires({cap}) "));
             if !caps.contains(&cap) {
                 caps.push(cap);
+            }
+        }
+        if let Some(message) = &f.deprecated {
+            if message.is_empty() {
+                line.push_str("@deprecated ");
+            } else {
+                line.push_str(&format!(
+                    "@deprecated(\"{}\") ",
+                    colibri_check::host::escape_text(message)
+                ));
             }
         }
         if f.positional {
@@ -324,6 +336,7 @@ mod tests {
             positional: true,
             names: None,
             typed: false,
+            deprecated: None,
         }
     }
 

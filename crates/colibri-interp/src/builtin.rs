@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use colibri_check::hir::Builtin;
-use colibri_check::types::STR_BUILDER_TYPE;
+use colibri_check::types::{BYTES_BUILDER_TYPE, STR_BUILDER_TYPE};
 use colibri_syntax::Span;
 
 use crate::ctl::{Ctl, Eval};
@@ -111,6 +111,14 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
             | B::StrPadRight
             | B::StrSlice
             | B::StrBuilderToStr
+            | B::BytesToList
+            | B::BytesToStr
+            | B::BytesToStrLossy
+            | B::BytesFind
+            | B::BytesContains
+            | B::BytesSlice
+            | B::BytesSliceOf
+            | B::StrToBytes
     );
     if !walks {
         return None;
@@ -118,6 +126,7 @@ fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
     Some(match recv? {
         Value::List(l) => l.len(),
         Value::Str(s) => s.len(),
+        Value::Bytes(b) => b.len(),
         Value::Map(m) => m.len(),
         Value::Set(s) => s.len(),
         // A range too long for `to_list` panics there, so the charge stops at the limit
@@ -223,6 +232,33 @@ impl Interp {
             | Builtin::StrBuilderIsEmpty
             | Builtin::StrBuilderClear
             | Builtin::StrBuilderToStr => return self.str_builder_op(fiber, op, args, span),
+            Builtin::BytesBuilderNew => Value::Obj(ClassObj::new(
+                BYTES_BUILDER_TYPE,
+                vec![Value::ByteBuf(Default::default())],
+            )),
+            Builtin::StrToBytes
+            | Builtin::BytesFromList
+            | Builtin::BytesEmpty
+            | Builtin::BytesLen
+            | Builtin::BytesIsEmpty
+            | Builtin::BytesAt
+            | Builtin::BytesGet
+            | Builtin::BytesSlice
+            | Builtin::BytesSliceOf
+            | Builtin::BytesToList
+            | Builtin::BytesToStr
+            | Builtin::BytesToStrLossy
+            | Builtin::BytesStartsWith
+            | Builtin::BytesEndsWith
+            | Builtin::BytesFind
+            | Builtin::BytesContains => return self.bytes_op(fiber, op, args, span),
+            Builtin::BytesBuilderPush
+            | Builtin::BytesBuilderPushBytes
+            | Builtin::BytesBuilderPushStr
+            | Builtin::BytesBuilderLen
+            | Builtin::BytesBuilderIsEmpty
+            | Builtin::BytesBuilderClear
+            | Builtin::BytesBuilderToBytes => return self.bytes_builder_op(fiber, op, args, span),
             Builtin::SetNew => Value::Set(SetObj::new(OrderedMap::new())),
             Builtin::SetFromList => {
                 let Some(list) = list_of(&recv) else {

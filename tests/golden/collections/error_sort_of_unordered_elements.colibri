@@ -1,4 +1,4 @@
-struct Opaque { n: int }
+class Opaque { n: int }
 
 fn main() {
     var xs = [Opaque { n: 1 }]

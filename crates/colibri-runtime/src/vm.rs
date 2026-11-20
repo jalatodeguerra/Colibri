@@ -8,9 +8,9 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use colibri_check::HostEnv;
-use colibri_check::hir::{HostFnId, Program};
+use colibri_check::hir::{HostFnId, Program, TestDef};
 use colibri_check::host::{DEFAULT_MODULE, float_literal, is_module_name, is_std_module_name};
-use colibri_check::package::{DiskFs, Entry, MemoryFs, SourceFs};
+use colibri_check::package::{BuildCfg, DiskFs, Entry, MemoryFs, SourceFs};
 use colibri_check::types::{RESULT_TYPE, Ty, VARIANT_ERR};
 use colibri_interp::{
     Clock, DEFAULT_NATIVE_STACK_BUDGET, Fiber, HostFault, HostImpl, Interp, Value as InterpValue,
@@ -52,6 +52,8 @@ pub use session::{SessionCheck, SessionError};
 
 /// See [`Vm::on_warnings`].
 type WarningHook = Box<dyn FnMut(&Report)>;
+/// Called before each test of [`Vm::run_test`] ([`Vm::on_test_start`]).
+type TestStartHook = Box<dyn FnMut(&mut Vm, &TestInfo)>;
 
 /// A program that was read and checked, not yet loaded.
 struct Checked {
@@ -103,9 +105,31 @@ pub struct VmBuilder {
     instruction_budget: Option<u64>,
     coroutine_stack_size: Option<usize>,
     clock: Option<Box<dyn Clock>>,
+    cfg: BuildCfg,
 }
 
 impl VmBuilder {
+    /// Turns the feature flag `name` on for the program's `@when(name)` items (DESIGN §3.6).
+    /// With a `colibri.toml` the name must be declared in its `[features]` table.
+    pub fn feature(mut self, name: &str) -> Self {
+        self.cfg = self.cfg.with_feature(name);
+        self
+    }
+
+    /// A release build: `@when(debug)` items are left out. The default is a debug build.
+    pub fn release(mut self) -> Self {
+        self.cfg = self.cfg.release();
+        self
+    }
+
+    /// Sets every value `@when` conditions are decided with: the operating system, the
+    /// architecture, `debug` and the feature flags ([`BuildCfg`]). The default is the platform
+    /// the host runs on, a debug build and no flags beyond a manifest's `default` features.
+    pub fn build_cfg(mut self, cfg: BuildCfg) -> Self {
+        self.cfg = cfg;
+        self
+    }
+
     /// The size of the native stack of each coroutine (`go`), in bytes. The default is 16 MiB
     /// (DESIGN §14.3); the memory is reserved lazily and committed as the coroutine uses it.
     /// The evaluator panics with "stack overflow" before a coroutine uses more than three
@@ -208,6 +232,7 @@ impl VmBuilder {
             program: None,
             warnings: Vec::new(),
             warning_hook: None,
+            test_start_hook: None,
             id,
             epoch: 0,
             native_stack_budget: self.native_stack_budget,
@@ -221,6 +246,7 @@ impl VmBuilder {
             failed: Vec::new(),
             registering: Vec::new(),
             reload: None,
+            cfg: self.cfg,
         }
     }
 }
@@ -234,11 +260,15 @@ pub struct Vm {
     warnings: Vec<Diagnostic>,
     /// Called by a load with the warnings of a program that checked, before any of its code runs.
     warning_hook: Option<WarningHook>,
+    /// Called before each test, so the host can reset what it keeps in the `Vm`.
+    test_start_hook: Option<TestStartHook>,
     /// Distinguishes this `Vm` from every other, so a handle cannot be used on the wrong one.
     id: u64,
     /// Bumped whenever the loaded program changes, which invalidates function handles.
     epoch: u32,
     native_stack_budget: usize,
+    /// What `@when` conditions are decided with.
+    cfg: BuildCfg,
     caps: CapSet,
     /// The structs and enums the host's functions mention.
     registry: TypeRegistry,
@@ -328,6 +358,7 @@ impl Vm {
             instruction_budget: None,
             coroutine_stack_size: None,
             clock: None,
+            cfg: BuildCfg::default(),
         }
     }
 
@@ -366,7 +397,7 @@ impl Vm {
     }
 
     /// Like [`Vm::register_fn`], with real parameter names, so a script may pass arguments by
-    /// name (`spawn_enemy(x: 1.0, y: 2.0)`). One name per Rust parameter (not counting a leading
+    /// name (`submit(units: 1, priority: 2)`). One name per Rust parameter (not counting a leading
     /// `&mut Ctx`). `#[colibri::export] fn` generates a call to this.
     ///
     /// ```
@@ -653,6 +684,7 @@ impl Vm {
             positional: names.is_none(),
             names,
             typed: false,
+            deprecated: None,
         });
         let before = std::mem::replace(&mut self.registry, registry);
         let added = self.note_module(module);
@@ -1003,6 +1035,12 @@ impl Vm {
         Ok(())
     }
 
+    pub(crate) fn set_deprecated(&mut self, index: usize, message: &str) {
+        if let Some(entry) = self.host_fns.get_mut(index) {
+            entry.deprecated = Some(message.to_string());
+        }
+    }
+
     pub(crate) fn set_requires(&mut self, index: usize, cap: Cap) {
         if let Some(entry) = self.host_fns.get_mut(index) {
             entry.requires = Some(cap);
@@ -1149,7 +1187,7 @@ impl Vm {
         }
         self.interp.set_host_type_aliases(aliases);
         for c in &self.registry.classes {
-            if c.hooks.show.is_none() && c.hooks.eq.is_none() {
+            if c.hooks.show.is_none() && c.hooks.eq.is_none() && c.hooks.hash.is_none() {
                 continue;
             }
             let module = c.module.as_deref().unwrap_or(DEFAULT_MODULE);
@@ -1165,6 +1203,7 @@ impl Vm {
                 colibri_interp::HostClassHooks {
                     show: wrap("show", &c.hooks.show),
                     eq: wrap("eq", &c.hooks.eq),
+                    hash: wrap("hash", &c.hooks.hash),
                 },
             );
         }
@@ -1283,8 +1322,8 @@ impl Vm {
 
     /// Loads a program given as text: `(path, text)` pairs, as if the files were on disk. The
     /// first is the entry, and the folder it is in is the root that `import` paths start from,
-    /// so `[("app/main.colibri", ..), ("app/game/player.colibri", ..)]` lets `main.colibri`
-    /// `import game.player`. Paths are what diagnostics and stack traces call the files. For
+    /// so `[("app/main.colibri", ..), ("app/jobs/worker.colibri", ..)]` lets `main.colibri`
+    /// `import jobs.worker`. Paths are what diagnostics and stack traces call the files. For
     /// tests and hosts that keep their scripts in memory.
     pub fn load_sources(&mut self, files: &[(&str, &str)]) -> Result<(), Error> {
         let Some((entry, _)) = files.first() else {
@@ -1356,6 +1395,7 @@ impl Vm {
         let mut sources = SourceMap::new();
         let options = colibri_check::package::LoadOptions {
             all_modules: mode == LoadMode::Tests,
+            cfg: self.cfg.clone(),
         };
         let names: Vec<String> = self.modules.clone();
         let loaded = colibri_check::package::load_with(fs, &mut sources, entry, &names, options)
@@ -1453,7 +1493,7 @@ impl Vm {
     /// re-checks the whole program and puts the new code to work (DESIGN §16.3, ARCHITECTURE
     /// §17). Only programs loaded with [`Vm::load_file`], [`Vm::load_package`] or
     /// [`Vm::load_path`] have files to watch; for any other this returns
-    /// [`ReloadOutcome::Unchanged`]. Call it at a safe point: between ticks, between frames or
+    /// [`ReloadOutcome::Unchanged`]. Call it at a safe point: between ticks or
     /// requests, never from inside a script call.
     ///
     /// * [`ReloadOutcome::Patched`]: only function bodies changed (same functions and
@@ -1728,7 +1768,8 @@ impl Vm {
     /// The `test "name" { .. }` blocks of the loaded program, in source order (the entry
     /// module's first). They include the ones in dependencies (`TestInfo::root` is false for
     /// those). Empty before a program is loaded. The index in the list is the id
-    /// [`Vm::run_test`] takes.
+    /// [`Vm::run_test`] takes. The ids are valid only until the program is loaded again (by a
+    /// reload or a hook that reloads): list the tests again after that, or go by name.
     pub fn tests(&self) -> Vec<TestInfo> {
         self.test_infos(false)
     }
@@ -1752,27 +1793,58 @@ impl Vm {
         };
         list.iter()
             .enumerate()
-            .map(|(id, t)| {
-                let sources = &self.sources;
-                let known = sources.contains(t.span.file);
-                TestInfo {
-                    id,
-                    name: t.name.clone(),
-                    module: t.module.clone(),
-                    root: t.root,
-                    file: if known {
-                        sources.name(t.span.file).to_string()
-                    } else {
-                        String::new()
-                    },
-                    line: if known {
-                        sources.line_col(t.span.file, t.span.start).0
-                    } else {
-                        0
-                    },
-                }
-            })
+            .map(|(id, t)| self.test_info(id, t))
             .collect()
+    }
+
+    fn test_info(&self, id: usize, t: &TestDef) -> TestInfo {
+        let sources = &self.sources;
+        let known = sources.contains(t.span.file);
+        TestInfo {
+            id,
+            name: t.name.clone(),
+            module: t.module.clone(),
+            root: t.root,
+            file: if known {
+                sources.name(t.span.file).to_string()
+            } else {
+                String::new()
+            },
+            line: if known {
+                sources.line_col(t.span.file, t.span.start).0
+            } else {
+                0
+            },
+        }
+    }
+
+    /// Sets a function that [`Vm::run_test`] calls before each test, after the previous test's
+    /// module values are released and before the test's own are initialised. A test gets fresh
+    /// module state, but what the host keeps in the `Vm` (handles from [`Vm::insert`], state from
+    /// [`Vm::insert_state`], host-side counters) carries over from test to test; this is where
+    /// the host puts that back the way a test expects it. The function gets the `Vm` and the
+    /// test about to run. It replaces an earlier one. It runs for tests only, not for `load_*`,
+    /// `run_main` or calls of ordinary functions.
+    ///
+    /// The script's module values do not exist while the hook runs (they were just released), so
+    /// a script function that reads one panics with "used before it is initialised". A
+    /// [`Vm::run_test`] called from inside the hook runs without the hook. A hook that panics
+    /// stays registered. A hook that reloads the program ([`Vm::reload_changed`]) makes
+    /// `run_test` run the test with the same name (and module) in the new program, wherever it is
+    /// listed now, or fail with [`Error::FnNotFound`] when it has no such test. The ids you took
+    /// from [`Vm::tests`] before that are stale (the new program may list the tests in another
+    /// order): with a hook that reloads, go through the tests by name, or list them again after
+    /// each one:
+    ///
+    /// ```ignore
+    /// let names: Vec<String> = vm.tests().into_iter().map(|t| t.name).collect();
+    /// for name in names {
+    ///     let id = vm.tests().iter().find(|t| t.name == name).map(|t| t.id);
+    ///     if let Some(id) = id { vm.run_test(id)?; }
+    /// }
+    /// ```
+    pub fn on_test_start(&mut self, hook: impl FnMut(&mut Vm, &TestInfo) + 'static) {
+        self.test_start_hook = Some(Box::new(hook));
     }
 
     /// Runs one test (an id from [`Vm::tests`]) from a fresh state: the module-level values are
@@ -1795,10 +1867,45 @@ impl Vm {
         let def = program.tests.get(id).ok_or_else(|| Error::FnNotFound {
             name: format!("test #{id}"),
         })?;
+        let mut f = def.f;
         self.interp.release_globals();
+        if let Some(mut hook) = self.test_start_hook.take() {
+            let info = self.test_info(id, def);
+            // The hook goes back even when it panics (the panic then goes on), so later tests
+            // still run with it.
+            let called =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook(self, &info)));
+            // The hook may have set a new one; that one wins.
+            if self.test_start_hook.is_none() {
+                self.test_start_hook = Some(hook);
+            }
+            if let Err(payload) = called {
+                std::panic::resume_unwind(payload);
+            }
+            // The hook may have reloaded the program: look the test up again in the program that
+            // is loaded now, by its name (an id counts positions, and the reload may have
+            // added or removed a test before this one).
+            let now = self.program.clone().ok_or(Error::NotLoaded)?;
+            if !Rc::ptr_eq(&now, &program) {
+                // A test name is unique within its module (a repeat is a load error).
+                f = now
+                    .tests
+                    .iter()
+                    .find(|t| t.name == info.name && t.module == info.module)
+                    .ok_or_else(|| Error::FnNotFound {
+                        name: format!(
+                            "test #{id} `{}` (the `on_test_start` hook reloaded the program, which no longer has that test)",
+                            info.name
+                        ),
+                    })?
+                    .f;
+                // A restart initialised the new program's module values; a test starts fresh.
+                self.interp.release_globals();
+            }
+        }
         let outcome = match self.interp.run_initialisers(&mut self.fiber) {
             Err(info) => Err(panic_error(&self.interp, *info)),
-            Ok(()) => match self.interp.call(&mut self.fiber, def.f, Vec::new()) {
+            Ok(()) => match self.interp.call(&mut self.fiber, f, Vec::new()) {
                 Err(info) => Err(panic_error(&self.interp, *info)),
                 Ok(value) => {
                     let failed = match &value {

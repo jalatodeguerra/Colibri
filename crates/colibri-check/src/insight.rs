@@ -51,6 +51,9 @@ pub struct Insight {
     /// two generic declarations, have separate lists.
     members: Vec<Vec<Member>>,
     pub(crate) refs: Vec<(Span, Span)>,
+    /// The deprecated declarations of the program (`@deprecated`), by the span of the name, with
+    /// their messages (empty when there is none).
+    pub(crate) deprecated: HashMap<Span, String>,
     /// The type of every expression, by its span, as written, and its entry in `members`.
     types: HashMap<(FileId, u32, u32), (String, usize)>,
     /// The type of every local and global at the span of its name, likewise.
@@ -68,6 +71,12 @@ impl Insight {
     /// variants written `.Circle` or matched by a bare name. Only names that resolved are here.
     pub fn references(&self) -> &[(Span, Span)] {
         &self.refs
+    }
+
+    /// The message of `@deprecated` on the declaration whose name is at `def` (empty when it
+    /// has none), if the declaration is deprecated.
+    pub fn deprecation(&self, def: Span) -> Option<&str> {
+        self.deprecated.get(&def).map(String::as_str)
     }
 
     /// The type of the expression that spans exactly `span`, as written.
@@ -543,6 +552,7 @@ impl Checker<'_> {
             types,
             bindings,
             refs: Vec::new(),
+            deprecated: HashMap::new(),
         }
     }
 
@@ -641,6 +651,7 @@ mod tests {
             dependency: false,
             ffi: true,
             imports: HashMap::new(),
+            excluded: Vec::new(),
         };
         let packages = [PackageNode {
             name: String::new(),
@@ -715,6 +726,7 @@ mod tests {
             [
                 "fn area() -> float",
                 "fn clone() -> P",
+                "fn cmp(other: P) -> int",
                 "fn eq(other: P) -> bool",
                 "fn scaled(k: float) -> P",
                 "x: float",
@@ -726,7 +738,7 @@ mod tests {
             .iter()
             .map(|m| m.name.as_str())
             .collect();
-        assert_eq!(names, ["area", "clone", "eq", "scaled", "x", "y"]);
+        assert_eq!(names, ["area", "clone", "cmp", "eq", "scaled", "x", "y"]);
         let xs = member_details(&insight, "List[int]");
         assert!(
             xs.contains(&"fn push(item: int)".to_string())

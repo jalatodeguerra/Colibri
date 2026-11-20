@@ -196,6 +196,15 @@ impl Interp {
             }
         }
         self.hook_panics.clear();
+        // Until the initialisers run again, a use of a module value is an error that says so.
+        self.uninit = self.inits.iter().map(|(g, _)| g.0 as usize).fold(
+            vec![None; self.globals.len()],
+            |mut v, g| {
+                v[g] = self.global_names.get(g).cloned();
+                v
+            },
+        );
+        self.released = true;
         self.end_entry(outermost, false);
     }
 

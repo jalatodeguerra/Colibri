@@ -267,7 +267,7 @@ pub struct TypeExpr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TypeKind {
-    /// `List[T]`, `game.Player`, `ptr[T]`: a path with optional generic
+    /// `List[T]`, `jobs.Worker`, `ptr[T]`: a path with optional generic
     /// arguments on the last segment.
     Named {
         path: Vec<Ident>,

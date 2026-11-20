@@ -56,6 +56,8 @@ pub enum ValueKind {
     F32(f32),
     Char(char),
     Str(String),
+    /// A `Bytes` value.
+    Bytes(Vec<u8>),
     /// A `struct` value: its type and its fields in declaration order.
     Struct {
         ty: TypeId,
@@ -109,6 +111,11 @@ impl Value {
 
     pub fn str(v: &str) -> Value {
         Value(Inner::str(v))
+    }
+
+    /// A `Bytes` with these bytes.
+    pub fn bytes(v: &[u8]) -> Value {
+        Value(Inner::bytes(v))
     }
 
     pub fn list(items: Vec<Value>) -> Value {
@@ -167,6 +174,7 @@ impl Value {
             Inner::F32(v) => ValueKind::F32(*v),
             Inner::Char(v) => ValueKind::Char(*v),
             Inner::Str(s) => ValueKind::Str(s.to_string()),
+            Inner::Bytes(b) => ValueKind::Bytes(b.to_vec()),
             Inner::Struct(s) => ValueKind::Struct {
                 ty: s.ty,
                 fields: wrap(s.fields.to_vec()),
@@ -455,6 +463,74 @@ impl FromColibri for String {
         match &value.0 {
             Inner::Str(s) => Ok(s.to_string()),
             other => Err(wrong(&TypeDesc::Str, other)),
+        }
+    }
+}
+
+/// A byte string, which scripts see as `Bytes`: one byte per byte, not a `List[u8]` (that is
+/// what a plain `Vec<u8>` is). A host function that takes or returns `Bytes` is declared with
+/// `bytes: Bytes` in its interface text and in Rust:
+///
+/// ```
+/// use colibri_runtime as colibri;
+///
+/// # fn main() -> Result<(), colibri::Error> {
+/// let out = colibri::SharedBuffer::new();
+/// let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+/// vm.register_fn("checksum", |data: colibri::Bytes| {
+///     data.0.iter().map(|&b| u32::from(b)).sum::<u32>() as i64
+/// })?;
+/// vm.load_source("a.colibri", "print(checksum(\"abc\".to_bytes()))\n")?;
+/// vm.run_main()?;
+/// assert_eq!(out.contents(), "294\n");
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Bytes(pub Vec<u8>);
+
+impl From<Vec<u8>> for Bytes {
+    fn from(v: Vec<u8>) -> Self {
+        Bytes(v)
+    }
+}
+
+impl From<&[u8]> for Bytes {
+    fn from(v: &[u8]) -> Self {
+        Bytes(v.to_vec())
+    }
+}
+
+impl From<Bytes> for Vec<u8> {
+    fn from(b: Bytes) -> Self {
+        b.0
+    }
+}
+
+impl std::ops::Deref for Bytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl IntoColibri for Bytes {
+    fn ty(_: &mut TypeRegistry) -> TypeDesc {
+        TypeDesc::Bytes
+    }
+    fn into_colibri(self, _: &mut Cx<'_>) -> Value {
+        Value(Inner::Bytes(self.0.into()))
+    }
+}
+
+impl FromColibri for Bytes {
+    fn ty(_: &mut TypeRegistry) -> TypeDesc {
+        TypeDesc::Bytes
+    }
+    fn from_colibri(value: &Value, _: &mut Cx<'_>) -> Result<Self, Error> {
+        match &value.0 {
+            Inner::Bytes(b) => Ok(Bytes(b.to_vec())),
+            other => Err(wrong(&TypeDesc::Bytes, other)),
         }
     }
 }

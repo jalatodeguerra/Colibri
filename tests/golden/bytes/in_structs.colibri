@@ -1,0 +1,34 @@
+fn checksum(data: Bytes) -> u8 {
+    var sum: int = 0
+    for x in data {
+        sum = (sum + int(x)) % 256
+    }
+    return u8(sum)
+}
+
+fn double(data: Bytes) -> Bytes => data + data
+
+struct Packet {
+    id: u16
+    body: Bytes
+}
+
+fn main() {
+    let p = Packet { id: 7, body: "abc".to_bytes() }
+    print(checksum(p.body))
+    print(double(p.body))
+    print(p)
+    let q = p
+    print(p == q)
+    let opt: Bytes? = some(p.body)
+    match opt {
+        some(x) => print(x.len())
+        none => print("none")
+    }
+}
+
+// expect: 38
+// expect: b"abcabc"
+// expect: Packet { id: 7, body: b"abc" }
+// expect: true
+// expect: 3

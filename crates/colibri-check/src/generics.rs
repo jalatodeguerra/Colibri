@@ -122,6 +122,7 @@ impl Checker<'_> {
                 iface,
                 args,
                 span: t.span,
+                implied: false,
             }),
             Ty::Error => None,
             other => {

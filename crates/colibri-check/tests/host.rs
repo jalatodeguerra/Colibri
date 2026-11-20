@@ -5,6 +5,9 @@ use colibri_check::host::{body_hash, header_line};
 use colibri_check::{HostEnv, Ty};
 use colibri_syntax::{FileId, parse_file};
 
+/// The id of the first host type: the ids below it are the prelude's.
+const FIRST: usize = colibri_check::types::FIRST_USER_TYPE as usize;
+
 fn interface(body: &str) -> String {
     let caps: Vec<String> = ["fs"].iter().map(|s| s.to_string()).collect();
     format!("{}\n{body}", header_line("host", &body_hash(body), &caps))
@@ -44,7 +47,7 @@ fn host_calls_lower_to_host_callees_in_interface_order() {
     assert_eq!(p.host_fns[0].name, "spawn");
     assert_eq!(p.host_fns[2].requires.as_deref(), Some("fs"));
     assert_eq!(p.host_types, 1);
-    assert_eq!(p.types[16].name, "Vec3");
+    assert_eq!(p.types[FIRST].name, "Vec3");
     // `fn_by_name` finds scripts' functions, not host stubs.
     assert!(p.fn_by_name("spawn").is_none());
     let f = p.fn_by_name("f").unwrap();
@@ -56,7 +59,7 @@ fn host_calls_lower_to_host_callees_in_interface_order() {
         panic!("a call");
     };
     assert_eq!(call.callee, Callee::Host(HostFnId(0)));
-    assert!(matches!(&init.ty, Ty::Adt(id, _) if id.0 == 16));
+    assert!(matches!(&init.ty, Ty::Adt(id, _) if id.0 == FIRST as u32));
 }
 
 #[test]
@@ -155,7 +158,7 @@ fn classes() -> HostEnv {
 }
 
 #[test]
-fn host_classes_are_declared_before_user_types_with_stable_ids_and_are_not_sendable() {
+fn host_classes_are_declared_before_user_types_with_stable_ids() {
     use colibri_check::hir::TypeDefKind;
     let (program, errors) = check(
         "class Mine { n: int }\nstruct Plain { n: int }\n",
@@ -165,14 +168,11 @@ fn host_classes_are_declared_before_user_types_with_stable_ids_and_are_not_senda
     let p = program.expect("checks");
     // Vec3, World, Body come from the host, then the script's own.
     assert_eq!(p.host_types, 3);
-    let names: Vec<&str> = p.types[16..].iter().map(|t| t.name.as_str()).collect();
+    let names: Vec<&str> = p.types[FIRST..].iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, ["Vec3", "World", "Body", "Mine", "Plain"]);
-    assert!(matches!(p.types[17].kind, TypeDefKind::HostClass));
-    assert!(matches!(p.types[18].kind, TypeDefKind::HostClass));
-    assert!(matches!(p.types[19].kind, TypeDefKind::Class { .. }));
-    // Only the host's classes record that they stay on their thread.
-    let sendable: Vec<bool> = p.types[16..].iter().map(|t| t.sendable).collect();
-    assert_eq!(sendable, [true, false, false, true, true]);
+    assert!(matches!(p.types[FIRST + 1].kind, TypeDefKind::HostClass));
+    assert!(matches!(p.types[FIRST + 2].kind, TypeDefKind::HostClass));
+    assert!(matches!(p.types[FIRST + 3].kind, TypeDefKind::Class { .. }));
 }
 
 #[test]
@@ -263,4 +263,103 @@ fn host_classes_compare_by_identity_and_key_maps() {
         &classes(),
     );
     assert!(errors.is_empty() && program.is_some(), "{errors:?}");
+}
+
+#[test]
+fn interface_text_can_name_bytes_and_bytes_builder() {
+    let body =
+        "fn fill(out: BytesBuilder, data: Bytes) -> Result[Bytes]\nfn size(data: Bytes) -> int\n";
+    let env = HostEnv::from_text(&interface(body)).expect("the interface parses");
+    let (program, errors) = check(
+        "fn f() -> int {\n    let b = BytesBuilder()\n    let r = fill(b, Bytes([1, 2]))\n    return size(b.to_bytes()) + r.expect(\"filled\").len()\n}\n",
+        &env,
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(program.is_some());
+}
+
+/// Attributes in interface text, at every position: the known ones where they apply, and a
+/// clear refusal anywhere else (never silently ignored).
+#[test]
+fn host_interface_attributes_are_accepted_or_refused_at_every_position() {
+    // (attribute, program with `{A}`, accepted)
+    let cases: &[(&str, &str, bool)] = &[
+        ("deprecated(\"old\")", "{A} fn f() -> int", true),
+        ("requires(fs)", "{A} fn f() -> int", true),
+        ("positional", "{A} fn f(a: int) -> int", true),
+        ("when(true)", "{A} fn f() -> int", false),
+        ("foo", "{A} fn f() -> int", false),
+        ("deprecated(\"old\")", "{A} struct S { x: int }", true),
+        ("host", "{A} struct S { x: int }", false),
+        ("deprecated(\"old\")", "struct S { {A} x: int }", true),
+        ("when(true)", "struct S { {A} x: int }", false),
+        ("foo", "struct S { {A} x: int }", false),
+        ("rename(\"k\")", "struct S { {A} x: int }", false),
+        ("host", "{A} class C {}", true),
+        ("deprecated(\"old\")", "@host {A} class C {}", true),
+        ("foo", "@host class C {}\nimpl C { {A} fn m(self) }", false),
+        (
+            "requires(fs)",
+            "@host class C {}\nimpl C { {A} fn m(self) }",
+            true,
+        ),
+        (
+            "deprecated(\"old\")",
+            "@host class C {}\nimpl C { {A} fn m(self) }",
+            true,
+        ),
+        (
+            "when(true)",
+            "@host class C {}\nimpl C { {A} fn m(self) }",
+            false,
+        ),
+        (
+            "deprecated(\"old\")",
+            "@host class C {}\n{A} impl C { fn m(self) }",
+            false,
+        ),
+        ("module", "{A} enum E { A, B }", true),
+        ("deprecated(\"old\")", "{A} enum E { A, B }", true),
+        ("foo", "{A} enum E { A, B }", false),
+        ("deprecated(\"old\")", "{A} const K: int = 1", true),
+        (
+            "deprecated(\"old\")",
+            "struct P { x: int }\n{A} type Q = P",
+            true,
+        ),
+        ("foo", "struct P { x: int }\n{A} type Q = P", false),
+        ("foo", "{A} const K: int = 1", false),
+    ];
+    for (attr, body, accepted) in cases {
+        let body = body.replace("{A}", &format!("@{attr}"));
+        let parsed = HostEnv::from_text(&interface(&format!("{body}\n")));
+        assert_eq!(
+            parsed.is_ok(),
+            *accepted,
+            "@{attr} in `{body}`: {:?}",
+            parsed.err()
+        );
+    }
+}
+
+#[test]
+fn a_deprecated_alias_in_an_interface_warns_where_it_is_used() {
+    let env = HostEnv::from_text(&interface(
+        "struct P { x: int }\n@deprecated(\"use P\") type Q = P\nfn make() -> P\n",
+    ))
+    .expect("the interface parses");
+    let (ast, diags) = parse_file(FileId(0), "fn f(q: Q) -> int => q.x\n");
+    assert!(diags.is_empty(), "{diags:?}");
+    let checked = colibri_check::check_with_host(&ast, &env, 1 << 20);
+    let warnings: Vec<String> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| !d.is_error())
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(checked.program.is_some(), "{:?}", checked.diagnostics);
+    assert!(
+        warnings.iter().any(|w| w == "`Q` is deprecated: use P"),
+        "{warnings:?}"
+    );
 }

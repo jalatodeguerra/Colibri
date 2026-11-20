@@ -2,6 +2,7 @@
 //! (ARCHITECTURE §11). Nothing here type-checks; the result is what [`crate::check_modules`]
 //! takes.
 
+mod cfg;
 mod fs;
 mod git;
 mod loader;
@@ -15,6 +16,7 @@ use std::collections::HashMap;
 use colibri_syntax::Diagnostic;
 use colibri_syntax::ast::{self, NodeId};
 
+pub use cfg::{BuildCfg, Excluded, KNOWN_ARCH, KNOWN_OS};
 pub use fs::{DiskFs, MemoryFs, SourceFs, canonical_path, normalize, try_canonical_path};
 pub use git::{HOME_VAR, cache_root, redact, redact_url};
 pub use loader::{
@@ -23,7 +25,10 @@ pub use loader::{
 };
 pub use lock::{LOCK_FILE, Lock, LockEntry};
 pub use manifest::parse as parse_manifest;
-pub use manifest::{Dependency, GitSource, GitSpec, Manifest, Source, is_name as is_package_name};
+pub use manifest::{
+    Dependency, Features, GitSource, GitSpec, Manifest, Source, feature_name_problem,
+    is_name as is_package_name,
+};
 pub use sync::{SyncOptions, SyncReport, Update, sync};
 
 /// The extension of source files.
@@ -47,7 +52,7 @@ pub enum ImportTarget {
 /// What the checker needs to know about a module besides its syntax tree.
 #[derive(Clone, Debug)]
 pub struct ModuleMeta {
-    /// The dotted path of the module in its tree (`game.player`; a dependency's name comes
+    /// The dotted path of the module in its tree (`jobs.worker`; a dependency's name comes
     /// first). The entry module's name is the file stem.
     pub name: String,
     /// The package (folder) the module belongs to: an index into [`Loaded::packages`].
@@ -63,12 +68,14 @@ pub struct ModuleMeta {
     pub ffi: bool,
     /// Each `import` item of the file, by its node id.
     pub imports: HashMap<NodeId, ImportTarget>,
+    /// The top-level names a false `@when` left out of the module, for "left out here" hints.
+    pub excluded: Vec<Excluded>,
 }
 
 /// A folder of modules: the unit of visibility.
 #[derive(Clone, Debug)]
 pub struct PackageNode {
-    /// How messages call it: `game`, `foo.physics` (a dependency's folder), the package name
+    /// How messages call it: `jobs`, `foo.physics` (a dependency's folder), the package name
     /// for a tree's root folder.
     pub name: String,
 }
@@ -127,15 +134,14 @@ impl Loaded {
 /// Standard library modules that do not exist yet, with the end of the sentence "the standard
 /// library module `x` ..." that says why (DESIGN §13.1). Importing one says so instead of
 /// a bare "no module". (`import test` cannot be written at all: `test` is a keyword.)
-pub const LATER_STD_MODULES: &[(&str, &str)] = &[
-    ("task", "does not exist yet"),
-    ("reflect", "does not exist yet"),
-    ("mem", "does not exist yet"),
-    (
-        "collections",
-        "does not exist: `List`, `Map` and `Set` are built in",
-    ),
-];
+pub const LATER_STD_MODULES: &[(&str, &str)] = &[("task", "does not exist yet")];
+
+/// Names of modules people expect from other languages, with what to do instead. `import
+/// collections` is "no module", and the hint says why there is none.
+pub const MISSING_STD_HINTS: &[(&str, &str)] = &[(
+    "collections",
+    "`List`, `Map` and `Set` are built in: use them without an import",
+)];
 
 /// The standard library module an import path names: `import math` and `import std.math` both
 /// mean the module `std.math`, if the host provides it (`provided` are the interface names of

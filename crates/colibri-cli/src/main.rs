@@ -7,6 +7,41 @@ use clap::{Parser, Subcommand};
 use colibri_lang::depscmd::{self, DepFlags};
 use colibri_lang::on_big_stack;
 
+/// The flags that decide `@when` conditions (DESIGN §3.6).
+#[derive(clap::Args, Clone, Debug, Default)]
+struct BuildFlags {
+    /// Turn on a feature flag: `@when(name)` items are kept. With a `colibri.toml` the feature
+    /// must be declared in its `[features]` table. May be given more than once
+    #[arg(long = "feature", value_name = "NAME", value_parser = feature_name)]
+    features: Vec<String>,
+    /// Do not turn on the features of the `default` list in `[features]`
+    #[arg(long)]
+    no_default_features: bool,
+    /// A release build: `@when(debug)` is false
+    #[arg(long)]
+    release: bool,
+}
+
+/// A feature name, checked as in `colibri.toml` (`--feature debug` would mean nothing).
+fn feature_name(name: &str) -> Result<String, String> {
+    match colibri_runtime::feature_name_problem(name) {
+        Some((message, hint)) => Err(format!("{message} ({hint})")),
+        None => Ok(name.to_string()),
+    }
+}
+
+impl BuildFlags {
+    fn cfg(&self) -> colibri_runtime::BuildCfg {
+        let mut cfg = colibri_runtime::BuildCfg::default();
+        for name in &self.features {
+            cfg = cfg.with_feature(name);
+        }
+        cfg.no_default_features = self.no_default_features;
+        cfg.debug = !self.release;
+        cfg
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "colibri", version, about = "The Colibri programming language")]
 struct Cli {
@@ -34,6 +69,8 @@ enum Command {
         #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
         #[command(flatten)]
+        build: BuildFlags,
+        #[command(flatten)]
         deps: DepFlags,
     },
     /// Type-check a Colibri script or package without running it
@@ -43,6 +80,8 @@ enum Command {
         /// given more than once
         #[arg(long = "interface", value_name = "FILE")]
         interfaces: Vec<PathBuf>,
+        #[command(flatten)]
+        build: BuildFlags,
         #[command(flatten)]
         deps: DepFlags,
     },
@@ -70,6 +109,8 @@ enum Command {
         /// Report the reference cycles each test leaks; `--leaks=error` fails the test
         #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
+        #[command(flatten)]
+        build: BuildFlags,
         #[command(flatten)]
         deps: DepFlags,
     },
@@ -102,6 +143,7 @@ enum Command {
 fn lsp() -> ExitCode {
     let config = colibri_lsp::Config {
         stack_budget: colibri_lang::NATIVE_STACK_BUDGET,
+        ..colibri_lsp::Config::default()
     };
     match colibri_lsp::run_stdio(config) {
         Ok(()) => ExitCode::SUCCESS,
@@ -118,8 +160,10 @@ fn main() -> ExitCode {
         Command::Check {
             file,
             interfaces,
+            build,
             deps,
         } => {
+            colibri_lang::set_build_cfg(build.cfg());
             match colibri_lang::checkcmd::check(
                 &file.unwrap_or_else(|| PathBuf::from(".")),
                 &interfaces,
@@ -135,8 +179,10 @@ fn main() -> ExitCode {
             watch,
             args,
             leaks,
+            build,
             deps,
         } => {
+            colibri_lang::set_build_cfg(build.cfg());
             let file = file.unwrap_or_else(|| PathBuf::from("."));
             if watch {
                 match depscmd::prepare(&file, deps) {
@@ -153,15 +199,19 @@ fn main() -> ExitCode {
             budget,
             nocapture,
             leaks,
+            build,
             deps,
-        } => colibri_lang::testcmd::run(&colibri_lang::testcmd::Options {
-            path: file.unwrap_or_else(|| PathBuf::from(".")),
-            filter,
-            budget,
-            nocapture,
-            leaks,
-            deps,
-        }),
+        } => {
+            colibri_lang::set_build_cfg(build.cfg());
+            colibri_lang::testcmd::run(&colibri_lang::testcmd::Options {
+                path: file.unwrap_or_else(|| PathBuf::from(".")),
+                filter,
+                budget,
+                nocapture,
+                leaks,
+                deps,
+            })
+        }
         Command::Update { names, path, deps } => depscmd::update(&path, names, deps),
         Command::Fmt { paths, check } => colibri_lang::fmt::run(&paths, check),
         Command::New { name } => colibri_lang::newcmd::run(&name),

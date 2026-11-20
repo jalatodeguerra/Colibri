@@ -36,6 +36,22 @@ pub(crate) enum Origin {
     SetElem,
     /// The key of `sort_by_key`: it must be orderable.
     SortKey,
+    /// A bound the right-hand side of an alias puts on the alias's parameter, met by the
+    /// argument of a use: `type S[T] = Sorted[T]`, `S[NotOrd]`.
+    AliasBound {
+        alias: String,
+        /// The type the alias names, as written without arguments.
+        underlying: String,
+        param: String,
+        bound_span: Span,
+    },
+    /// The bound a type declares on its own type parameter: `struct Sorted[T: Ord]`.
+    TypeBound {
+        /// The type, as written without arguments.
+        ty: String,
+        param: String,
+        bound_span: Span,
+    },
 }
 
 impl Checker<'_> {
@@ -51,11 +67,58 @@ impl Checker<'_> {
 
     /// Requires a bound now, or once every declaration is collected.
     pub fn require(&mut self, ob: Obligation) -> bool {
+        if self.imply_alias_bound(&ob) {
+            return true;
+        }
         if !self.collected {
             self.pending.push(ob);
             return true;
         }
         self.check_obligation(&ob)
+    }
+
+    /// While the right-hand side of `type S[T] = Sorted[T]` is resolved, `Sorted` needing
+    /// `T: Ord` makes `Ord` a bound of the alias's `T`: the alias is valid, and a use of it
+    /// (`S[NotOrd]`) is checked against the bound (`alias_instance`). The same goes for the key
+    /// of a `Map` and the element of a `Set` (`type M[T] = Map[T, int]` takes `T: Hash + Eq`).
+    /// Whether `true` was taken.
+    fn imply_alias_bound(&mut self, ob: &Obligation) -> bool {
+        let (Some(alias), Ty::Param(p, _)) = (self.implying, &ob.ty) else {
+            return false;
+        };
+        let (wanted, bound_span) = match &ob.origin {
+            Origin::TypeBound { bound_span, .. } | Origin::AliasBound { bound_span, .. } => {
+                (vec![(ob.iface, ob.args.clone())], *bound_span)
+            }
+            Origin::MapKey | Origin::SetElem => {
+                (vec![(HASH, Vec::new()), (EQ, Vec::new())], ob.span)
+            }
+            _ => return false,
+        };
+        let Some(g) = self.alias_infos[alias.0 as usize]
+            .generics
+            .iter_mut()
+            .find(|g| g.id == *p)
+        else {
+            return false;
+        };
+        for (iface, args) in wanted {
+            let bound = crate::traits::BoundRef {
+                iface,
+                args,
+                span: bound_span,
+                implied: true,
+            };
+            if !g
+                .bounds
+                .iter()
+                .any(|b| b.iface == bound.iface && b.args == bound.args)
+            {
+                g.bounds.push(bound.clone());
+                self.param_bounds.entry(*p).or_default().push(bound);
+            }
+        }
+        true
     }
 
     /// Decides the requirements made while collecting declarations.
@@ -90,7 +153,10 @@ impl Checker<'_> {
                     Ok(_) => return true,
                     Err(blame) => blame,
                 },
-                Origin::Bound { .. } | Origin::SortKey => return true,
+                Origin::Bound { .. }
+                | Origin::SortKey
+                | Origin::TypeBound { .. }
+                | Origin::AliasBound { .. } => return true,
             },
             Err(blame) => blame,
         };
@@ -131,6 +197,53 @@ impl Checker<'_> {
                 ob.span,
             )
             .with_hint(self.bound_hint(ob, blame)),
+            Origin::AliasBound {
+                alias,
+                underlying,
+                param,
+                bound_span,
+            } => {
+                let message = if blame == &ob.ty {
+                    format!(
+                        "`{shown}` does not implement `{iface_name}`, which the alias `{alias}` needs of its type parameter `{param}` because `{underlying}` does"
+                    )
+                } else {
+                    format!(
+                        "`{shown}` does not implement `{iface_name}` because `{blamed}` does not, and the alias `{alias}` needs it of its type parameter `{param}` because `{underlying}` does"
+                    )
+                };
+                let hint = self.bound_hint(ob, blame);
+                Diagnostic::error(message, ob.span)
+                    .with_label(
+                        *bound_span,
+                        format!(
+                            "the bound `{param}: {iface_name}` of `{underlying}` is declared here"
+                        ),
+                    )
+                    .with_hint(hint)
+            }
+            Origin::TypeBound {
+                ty,
+                param,
+                bound_span,
+            } => {
+                let message = if blame == &ob.ty {
+                    format!(
+                        "`{shown}` does not implement `{iface_name}`, which `{ty}` needs of its type parameter `{param}`"
+                    )
+                } else {
+                    format!(
+                        "`{shown}` does not implement `{iface_name}` because `{blamed}` does not, and `{ty}` needs it of its type parameter `{param}`"
+                    )
+                };
+                let hint = self.bound_hint(ob, blame);
+                Diagnostic::error(message, ob.span)
+                    .with_label(
+                        *bound_span,
+                        format!("the bound `{param}: {iface_name}` of `{ty}` is declared here"),
+                    )
+                    .with_hint(hint)
+            }
             Origin::Bound {
                 param,
                 func,
@@ -177,14 +290,22 @@ impl Checker<'_> {
             Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Option(_) if ob.iface == ORD => {
                 "collections and options compare for equality only".to_string()
             }
-            Ty::Adt(id, _) if ob.iface == ORD && self.types[id.0 as usize].is_enum() => {
+            Ty::Adt(id, _) if ob.iface == ORD && self.types[id.0 as usize].is_class() => {
                 format!(
-                    "only enums without data derive `Ord`; implement it: `impl Ord for {blamed} {{ fn cmp(self, other: {blamed}) -> int {{ ... }} }}`"
+                    "a class has no derived order; implement it: `impl Ord for {blamed} {{ fn cmp(self, other: {blamed}) -> int {{ ... }} }}`"
                 )
             }
-            Ty::Adt(id, _) if ob.iface == ORD && !self.types[id.0 as usize].is_enum() => {
+            Ty::Adt(..) if ob.iface == ORD && self.env().user_eq_blocks_ord(blame) => {
+                crate::derive::user_eq_hint(&blamed)
+            }
+            Ty::Adt(id, _) if ob.iface == ORD => {
+                let kind = if self.types[id.0 as usize].is_enum() {
+                    "an enum"
+                } else {
+                    "a struct"
+                };
                 format!(
-                    "structs do not derive `Ord`; implement it: `impl Ord for {blamed} {{ fn cmp(self, other: {blamed}) -> int {{ ... }} }}`"
+                    "{kind} is ordered by its parts, and this one has a part that cannot be ordered; implement `Ord` for it: `impl Ord for {blamed} {{ fn cmp(self, other: {blamed}) -> int {{ ... }} }}`"
                 )
             }
             _ => format!("add `impl {iface} for {blamed} {{ ... }}`"),

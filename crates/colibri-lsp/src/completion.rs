@@ -23,7 +23,7 @@ use std::path::Path;
 use colibri_check::insight::{Member, MemberKind, PreludeKind, prelude_names};
 use colibri_syntax::ast::{Ident as ast_ident, ItemKind, TopLevel};
 use colibri_syntax::{FileId, Span, TokenKind, lex};
-use lsp_types::{CompletionItem, CompletionItemKind};
+use lsp_types::{CompletionItem, CompletionItemKind, CompletionItemTag};
 
 use crate::analysis::Analysis;
 use crate::resolve::{DefKind, ModRef, Target, resolve};
@@ -583,6 +583,22 @@ fn item(
     }
 }
 
+/// Marks `item` as deprecated (editors strike its name through).
+fn tagged(mut item: CompletionItem, deprecated: bool) -> CompletionItem {
+    if deprecated {
+        item.tags = Some(vec![CompletionItemTag::DEPRECATED]);
+    }
+    item
+}
+
+/// Marks `item` as deprecated when the declaration at `def` is (editors strike its name through).
+fn deprecated_if(mut item: CompletionItem, analysis: &Analysis, def: Span) -> CompletionItem {
+    if analysis.insight.deprecation(def).is_some() {
+        item.tags = Some(vec![CompletionItemTag::DEPRECATED]);
+    }
+    item
+}
+
 /// Completion after a dot.
 pub fn member_items(
     env: &Env<'_>,
@@ -647,7 +663,13 @@ fn member_items_of(env: &Env<'_>, receiver: (usize, usize)) -> Vec<CompletionIte
                             DefKind::Method => !m.receiver,
                             _ => false,
                         })
-                        .map(|m| item(&m.name, def_kind(m.kind), detail.get(&m.span).cloned(), "0"))
+                        .map(|m| {
+                            deprecated_if(
+                                item(&m.name, def_kind(m.kind), detail.get(&m.span).cloned(), "0"),
+                                env.analysis,
+                                m.span,
+                            )
+                        })
                         .collect();
                 }
                 _ => {}
@@ -669,8 +691,14 @@ fn member_items_of(env: &Env<'_>, receiver: (usize, usize)) -> Vec<CompletionIte
         .into_iter()
         .filter(|m| m.public || m.package.is_none() || m.package == package)
         .map(|m| match m.kind {
-            MemberKind::Field => item(&m.name, CompletionItemKind::FIELD, Some(m.detail), "0"),
-            MemberKind::Method => item(&m.name, CompletionItemKind::METHOD, Some(m.detail), "1"),
+            MemberKind::Field => tagged(
+                item(&m.name, CompletionItemKind::FIELD, Some(m.detail), "0"),
+                m.deprecated,
+            ),
+            MemberKind::Method => tagged(
+                item(&m.name, CompletionItemKind::METHOD, Some(m.detail), "1"),
+                m.deprecated,
+            ),
         })
         .collect()
 }
@@ -695,7 +723,11 @@ fn module_items(env: &Env<'_>, target: &ModRef, types_only: bool) -> Vec<Complet
                     continue;
                 }
                 let one = |name: &ast_ident, kind: CompletionItemKind| {
-                    item(&name.name, kind, detail.get(&name.span).cloned(), "0")
+                    deprecated_if(
+                        item(&name.name, kind, detail.get(&name.span).cloned(), "0"),
+                        a,
+                        name.span,
+                    )
                 };
                 match &it.kind {
                     ItemKind::Fn(f) => out.push(one(&f.name, CompletionItemKind::FUNCTION)),
@@ -1087,7 +1119,11 @@ pub fn ident_items(env: &Env<'_>, offset: usize, ctx: &Ctx) -> Vec<CompletionIte
     }
     for (name, kind, span) in &res.module_scope {
         if seen.insert(name.clone()) {
-            out.push(item(name, def_kind(*kind), detail.get(span).cloned(), "2"));
+            out.push(deprecated_if(
+                item(name, def_kind(*kind), detail.get(span).cloned(), "2"),
+                env.analysis,
+                *span,
+            ));
         }
     }
     let prelude = prelude_names();

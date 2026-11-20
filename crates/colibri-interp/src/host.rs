@@ -39,6 +39,8 @@ pub type HostImpl = Rc<dyn Fn(&mut Interp, &mut Fiber, Vec<Value>) -> Result<Val
 pub struct HostClassHooks {
     pub show: Option<HostImpl>,
     pub eq: Option<HostImpl>,
+    /// The hash of one object, as an `int`, consistent with `eq` (what `hash()` gives).
+    pub hash: Option<HostImpl>,
 }
 
 /// A handle to a root: slot, generation of the slot, epoch of the slab.

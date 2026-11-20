@@ -1369,3 +1369,15 @@ fn match_arms_with_leading_dot_variants() {
     );
     assert!(diags.is_empty(), "{diags:?}");
 }
+
+#[test]
+fn when_refuses_a_trailing_comma() {
+    let d = one_error("@when(debug,)\nfn f() {}\n");
+    assert_eq!(
+        d.message,
+        "`@when` takes one condition, without a trailing comma"
+    );
+    assert_eq!(pointed_at("@when(debug,)\nfn f() {}\n", &d), ",");
+    // Other attributes are not affected.
+    assert!(parse_dump("@deprecated(\"x\",)\nfn f() {}\n").1.is_empty());
+}

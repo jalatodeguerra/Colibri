@@ -7,6 +7,7 @@
 //! [`types::Ty::Error`] to avoid cascades, and never panics on any input.
 
 mod adt;
+mod attrs;
 mod body;
 mod builtins;
 mod call;
@@ -15,6 +16,7 @@ mod closure;
 mod coerce;
 mod collections;
 mod decls;
+mod deprecated;
 mod derive;
 pub mod exhaust;
 mod expr;
@@ -83,6 +85,7 @@ pub fn check_with_host(file: &colibri_syntax::ast::File, host: &HostEnv, budget:
         dependency: false,
         ffi: true,
         imports: std::collections::HashMap::new(),
+        excluded: Vec::new(),
     };
     let packages = [package::PackageNode {
         name: String::new(),

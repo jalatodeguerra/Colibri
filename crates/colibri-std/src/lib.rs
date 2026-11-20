@@ -37,6 +37,7 @@ mod csv;
 mod datetime;
 mod errors;
 mod fs;
+mod fsfile;
 mod hash;
 mod hex;
 mod http;

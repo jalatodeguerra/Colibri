@@ -1,0 +1,34 @@
+import json
+
+fn parse(text: str) -> json.Value => json.parse(text).expect("parses")
+
+// `a == b` implies `a.hash() == b.hash()`: json.Value hashes by structure, as it compares.
+fn main() {
+    let a = parse(r"""{"x": [1, 2.5, "s", null, true], "y": {"p": 1, "q": 2}}""")
+    let b = parse(r"""{"y": {"q": 2, "p": 1}, "x": [1, 2.5, "s", null, true]}""")
+    print(a == b)
+    print(a.hash() == b.hash())
+    print(parse("[1]") == parse("[1]"))
+    print(parse("[1]").hash() == parse("[1]").hash())
+    // 0.0 and -0.0 are equal, and so are two nan.
+    print(parse("0.0") == parse("-0.0"))
+    print(parse("0.0").hash() == parse("-0.0").hash())
+    let nan = json.Value.float(0.0 / 0.0)
+    print(nan.hash() == json.Value.float(0.0 / 0.0).hash())
+    // Different values mostly hash differently.
+    print(parse("[1]").hash() == parse("[2]").hash())
+    print(parse("[1, 2]").hash() == parse("[2, 1]").hash())
+    // Nested in a tuple.
+    print((a, 1).hash() == (b, 1).hash())
+}
+
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: false
+// expect: false
+// expect: true

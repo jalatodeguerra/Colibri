@@ -1,0 +1,40 @@
+// A user `impl Ord` with a derived `Eq` is allowed; its `cmp` should give 0 exactly when the
+// values are `==`. A type with both of its own works too.
+struct Job {
+    priority: int
+    name: str
+}
+
+impl Ord for Job {
+    fn cmp(self, other: Job) -> int => compare(other.priority, self.priority)
+}
+
+struct Point {
+    x: int
+    y: int
+}
+
+impl Eq for Point {
+    fn eq(self, other: Point) -> bool => self.x == other.x
+}
+
+impl Ord for Point {
+    fn cmp(self, other: Point) -> int => compare(self.x, other.x)
+}
+
+fn main() {
+    let a = Job { priority: 1, name: "a" }
+    let b = Job { priority: 1, name: "a" }
+    print(a == b)
+    print(a < Job { priority: 0, name: "a" })
+    let p = Point { x: 1, y: 5 }
+    let q = Point { x: 1, y: 9 }
+    print(p == q)
+    print(p < q)
+    print(p <= q)
+}
+// expect: true
+// expect: true
+// expect: true
+// expect: false
+// expect: true

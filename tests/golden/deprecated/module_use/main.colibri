@@ -1,0 +1,11 @@
+import lib.util
+import lib.util.{old_name as legacy}
+
+fn main() {
+    print(util.old_name()) // warning: `old_name` is deprecated: moved to util.new_name
+    print(util.new_name())
+    print(legacy()) // warning: `old_name` is deprecated: moved to util.new_name
+}
+// expect: 1
+// expect: 1
+// expect: 1

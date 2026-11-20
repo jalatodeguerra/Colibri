@@ -1,0 +1,4 @@
+fn main() {
+    let b = Bytes([1]) + "a" // error: cannot apply `+` to `Bytes` and `str`
+    print(b)
+}

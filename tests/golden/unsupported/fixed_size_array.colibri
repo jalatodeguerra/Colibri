@@ -1,0 +1,4 @@
+fn sum(xs: [int; 3]) -> int { // error: fixed-size array type is not supported yet
+    return 0
+}
+let grid: [int; 4] = [1, 2, 3, 4] // error: fixed-size array type is not supported yet

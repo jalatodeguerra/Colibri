@@ -642,3 +642,353 @@ fn the_folder_walk_does_not_follow_links() {
         1
     );
 }
+
+#[test]
+fn deprecation_warnings_are_for_the_apps_code_not_a_dependencys() {
+    let dir = tree(
+        "depdeprecated",
+        &[
+            (
+                "app/colibri.toml",
+                "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n",
+            ),
+            (
+                "app/main.colibri",
+                "import lib\nfn main() {\n    print(\"{lib.old()}\")\n}\n",
+            ),
+            ("lib/colibri.toml", "[package]\nname = \"lib\"\n"),
+            (
+                "lib/lib.colibri",
+                "@deprecated(\"use fresh\")\npub fn old() -> int => 1\npub fn fresh() -> int => 2\nfn inside() -> int => old()\n",
+            ),
+        ],
+    );
+    let (mut vm, _) = vm();
+    vm.load_package(dir.join("app")).unwrap();
+    let warnings = vm.render_warnings(false);
+    // The app's use warns once; the library's own use of its function does not.
+    assert_eq!(
+        warnings.matches("`old` is deprecated: use fresh").count() / 2,
+        1,
+        "{warnings}"
+    );
+    assert!(warnings.contains("app/main.colibri") || warnings.contains("main.colibri"));
+    assert!(!warnings.contains("lib.colibri"), "{warnings}");
+}
+
+const WHEN_SOURCE: &str = "@when(debug)\nfn mode() -> str => \"debug\"\n@when(!debug)\nfn mode() -> str => \"release\"\n@when(gpu)\nfn device() -> str => \"gpu\"\n@when(!gpu)\nfn device() -> str => \"cpu\"\nfn main() {\n    print(\"{mode()} {device()}\")\n}\n";
+
+#[test]
+fn an_embedder_sets_the_when_flags_on_the_vm_and_in_the_check_config() {
+    let run = |builder: colibri::VmBuilder| {
+        let out = colibri::SharedBuffer::new();
+        let mut vm = builder.stdout(Box::new(out.clone())).build();
+        vm.load_source("main.colibri", WHEN_SOURCE).unwrap();
+        vm.run_main().unwrap();
+        out.contents()
+    };
+    assert_eq!(run(colibri::Vm::builder().feature("gpu")), "debug gpu\n");
+    assert_eq!(
+        run(colibri::Vm::builder().feature("gpu").release()),
+        "release gpu\n"
+    );
+    assert_eq!(
+        run(colibri::Vm::builder()
+            .build_cfg(colibri::BuildCfg::default().with_feature("gpu").release())),
+        "release gpu\n"
+    );
+    // Checking without a `Vm` reads the same settings from the config.
+    // A script has no manifest to declare features in: the flag is unknown until it is given.
+    let report = colibri::check_source("main.colibri", WHEN_SOURCE);
+    assert!(report.render(false).contains("unknown name `gpu`"));
+    let config = colibri::CheckConfig {
+        cfg: colibri::BuildCfg::default().with_feature("gpu"),
+        ..colibri::CheckConfig::default()
+    };
+    let ok = colibri::check_source_with("main.colibri", WHEN_SOURCE, &config);
+    assert!(!ok.has_errors(), "{}", ok.render(false));
+    // A condition naming an unknown flag is an error in both.
+    let bad = colibri::check_source_with(
+        "main.colibri",
+        "@when(nope)\nfn f() {}\nfn main() {}\n",
+        &config,
+    );
+    assert!(bad.render(false).contains("unknown name `nope`"));
+}
+
+#[test]
+fn a_dependency_has_its_own_features_and_the_apps_flags_do_not_reach_it() {
+    let dir = tree(
+        "depfeatures",
+        &[
+            (
+                "app/colibri.toml",
+                "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n\n[features]\nfancy = []\n",
+            ),
+            (
+                "app/main.colibri",
+                "import lib\n@when(fancy)\nfn extra() -> str => \"fancy\"\n@when(!fancy)\nfn extra() -> str => \"plain\"\nfn main() {\n    print(\"{lib.name()} {extra()}\")\n}\n",
+            ),
+            (
+                "lib/colibri.toml",
+                "[package]\nname = \"lib\"\n\n[features]\ndefault = [\"std_names\"]\nstd_names = []\nrare = []\n",
+            ),
+            (
+                "lib/lib.colibri",
+                "@when(std_names)\npub fn name() -> str => \"lib-default\"\n@when(!std_names)\npub fn name() -> str => \"lib-other\"\n@when(rare)\nfn never_here() -> int => nowhere\n",
+            ),
+        ],
+    );
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .feature("fancy")
+        .build();
+    vm.load_package(dir.join("app")).unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "lib-default fancy\n");
+    // The app's flag is not a feature of the library: it is the library's own default list
+    // that decides, so `rare` stays off and `never_here` is not even checked.
+}
+
+#[test]
+fn feature_flags_follow_the_manifest_name_rules() {
+    for (name, why) in [
+        ("debug", "it has a meaning of its own"),
+        ("os", "it has a meaning of its own"),
+        ("true", "it has a meaning of its own"),
+        ("", "cannot be empty"),
+        ("a b", "is not a valid feature name"),
+        ("fn", "it is a keyword"),
+    ] {
+        let mut vm = colibri::Vm::builder().feature(name).build();
+        let err = vm
+            .load_source("main.colibri", "fn main() {}\n")
+            .expect_err(name);
+        let text = errors(err);
+        assert!(text.contains("feature name"), "[{name}] {text}");
+        assert!(text.contains(why), "[{name}] {text}");
+    }
+    // The same rule for a check without a `Vm`.
+    let config = colibri::CheckConfig {
+        cfg: colibri::BuildCfg::default().with_feature("debug"),
+        ..colibri::CheckConfig::default()
+    };
+    let report = colibri::check_source_with("main.colibri", "fn main() {}\n", &config);
+    assert!(report.has_errors(), "{}", report.render(false));
+    // A good name still works.
+    let mut vm = colibri::Vm::builder().feature("fast_2").build();
+    vm.load_source("main.colibri", "fn main() {}\n").unwrap();
+}
+
+#[test]
+fn a_member_left_out_by_when_says_so_through_its_module() {
+    let dir = tree(
+        "leftout",
+        &[
+            (
+                "run.colibri",
+                "import util\nfn main() { print(\"{util.twice(2)}\") }\n",
+            ),
+            (
+                "util.colibri",
+                "@when(os == \"linux\" && os == \"macos\")\npub fn twice(n: int) -> int => n * 2\n",
+            ),
+        ],
+    );
+    let (mut vm, _) = vm();
+    let text = load_err(&mut vm, |vm| vm.load_file(dir.join("run.colibri")));
+    assert!(text.contains("has no `twice`"), "{text}");
+    assert!(
+        text.contains("`twice` exists but is left out here by `@when("),
+        "{text}"
+    );
+}
+
+// ---- features of dependencies (DESIGN §3.6) ----
+
+const LIB_MANIFEST: &str = "[package]\nname = \"lib\"\n\n[features]\ndefault = [\"z\"]\nx = []\ny = []\nz = []\nboth = [\"x\", \"y\"]\n";
+const LIB_SOURCE: &str = "@when(x)\nfn has_x() -> bool => true\n@when(!x)\nfn has_x() -> bool => false\n@when(y)\nfn has_y() -> bool => true\n@when(!y)\nfn has_y() -> bool => false\n@when(z)\nfn has_z() -> bool => true\n@when(!z)\nfn has_z() -> bool => false\npub fn flags() -> str => \"x={has_x()} y={has_y()} z={has_z()}\"\n";
+
+fn run_app(dir: &Path) -> Result<String, String> {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    match vm.load_package(dir) {
+        Ok(()) => {
+            vm.run_main().unwrap();
+            Ok(out.contents())
+        }
+        Err(e) => Err(errors(e)),
+    }
+}
+
+#[test]
+fn a_dependency_entry_turns_on_features_of_the_dependency() {
+    let dir = tree(
+        "depfeat_on",
+        &[
+            (
+                "app/colibri.toml",
+                "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\", features = [\"x\"] }\n",
+            ),
+            (
+                "app/main.colibri",
+                "import lib\nfn main() { print(lib.flags()) }\n",
+            ),
+            ("lib/colibri.toml", LIB_MANIFEST),
+            ("lib/lib.colibri", LIB_SOURCE),
+        ],
+    );
+    // `x` as asked, `z` from the dependency's own default list.
+    assert_eq!(
+        run_app(&dir.join("app")).unwrap(),
+        "x=true y=false z=true\n"
+    );
+}
+
+#[test]
+fn default_features_false_leaves_the_default_list_off() {
+    let dir = tree(
+        "depfeat_nodefault",
+        &[
+            (
+                "app/colibri.toml",
+                "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\", features = [\"both\"], default-features = false }\n",
+            ),
+            (
+                "app/main.colibri",
+                "import lib\nfn main() { print(lib.flags()) }\n",
+            ),
+            ("lib/colibri.toml", LIB_MANIFEST),
+            ("lib/lib.colibri", LIB_SOURCE),
+        ],
+    );
+    // `both` turns on `x` and `y` (a feature may list features); `z` is a default and is off.
+    assert_eq!(
+        run_app(&dir.join("app")).unwrap(),
+        "x=true y=true z=false\n"
+    );
+    // Nothing asked and no defaults: everything is off.
+    fs::write(
+        dir.join("app/colibri.toml"),
+        "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\", default-features = false }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        run_app(&dir.join("app")).unwrap(),
+        "x=false y=false z=false\n"
+    );
+}
+
+#[test]
+fn features_of_a_dependency_are_the_union_over_everything_that_depends_on_it() {
+    // app -> a -> lib (x), app -> b -> lib (y, default-features = false), app -> lib (nothing).
+    let dir = tree(
+        "depfeat_diamond",
+        &[
+            (
+                "app/colibri.toml",
+                "[package]\nname = \"app\"\n\n[dependencies]\na = { path = \"../a\" }\nb = { path = \"../b\" }\n",
+            ),
+            (
+                "app/main.colibri",
+                "import lib\nimport a\nimport b\nfn main() { print(lib.flags()) }\n",
+            ),
+            (
+                "a/colibri.toml",
+                "[package]\nname = \"a\"\n\n[dependencies]\nlib = { path = \"../lib\", features = [\"x\"], default-features = false }\n",
+            ),
+            ("a/lib.colibri", "pub fn id() -> int => 1\n"),
+            (
+                "b/colibri.toml",
+                "[package]\nname = \"b\"\n\n[dependencies]\nlib = { path = \"../lib\", features = [\"y\"], default-features = false }\n",
+            ),
+            ("b/lib.colibri", "pub fn id() -> int => 2\n"),
+            ("lib/colibri.toml", LIB_MANIFEST),
+            ("lib/lib.colibri", LIB_SOURCE),
+        ],
+    );
+    // The app has to list lib itself to import it: add it with no features.
+    fs::write(
+        dir.join("app/colibri.toml"),
+        "[package]\nname = \"app\"\n\n[dependencies]\na = { path = \"../a\" }\nb = { path = \"../b\" }\nlib = { path = \"../lib\", default-features = false }\n",
+    )
+    .unwrap();
+    // x (from a) and y (from b); every dependent turned the defaults off, so `z` is off.
+    assert_eq!(
+        run_app(&dir.join("app")).unwrap(),
+        "x=true y=true z=false\n"
+    );
+    // One dependent that does not turn them off brings `z` back.
+    fs::write(
+        dir.join("app/colibri.toml"),
+        "[package]\nname = \"app\"\n\n[dependencies]\na = { path = \"../a\" }\nb = { path = \"../b\" }\nlib = { path = \"../lib\" }\n",
+    )
+    .unwrap();
+    assert_eq!(run_app(&dir.join("app")).unwrap(), "x=true y=true z=true\n");
+}
+
+#[test]
+fn a_feature_the_dependency_does_not_declare_names_both_manifests() {
+    let dir = tree(
+        "depfeat_unknown",
+        &[
+            (
+                "app/colibri.toml",
+                "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\", features = [\"turbo\"] }\n",
+            ),
+            (
+                "app/main.colibri",
+                "import lib\nfn main() { print(lib.flags()) }\n",
+            ),
+            ("lib/colibri.toml", LIB_MANIFEST),
+            ("lib/lib.colibri", LIB_SOURCE),
+        ],
+    );
+    let text = run_app(&dir.join("app")).unwrap_err();
+    assert!(
+        text.contains(
+            "the package `app` asks for the feature `turbo` of `lib`, which `lib` does not declare"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("app/colibri.toml"), "{text}");
+    assert!(text.contains("lib/colibri.toml"), "{text}");
+    assert!(
+        text.contains("the declared features are: default, x, y, z, both")
+            || text.contains("the declared features are:"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_apps_flags_reach_only_the_root_package() {
+    let dir = tree(
+        "depfeat_root_only",
+        &[
+            (
+                "app/colibri.toml",
+                "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n\n[features]\nx = []\n",
+            ),
+            (
+                "app/main.colibri",
+                "import lib\nfn main() { print(lib.flags()) }\n",
+            ),
+            ("lib/colibri.toml", LIB_MANIFEST),
+            ("lib/lib.colibri", LIB_SOURCE),
+        ],
+    );
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .feature("x")
+        .build_cfg(colibri::BuildCfg {
+            no_default_features: true,
+            ..colibri::BuildCfg::default().with_feature("x")
+        })
+        .build();
+    vm.load_package(dir.join("app")).unwrap();
+    vm.run_main().unwrap();
+    // `--feature x` and `--no-default-features` are the app's; the library keeps its defaults.
+    assert_eq!(out.contents(), "x=false y=false z=true\n");
+}

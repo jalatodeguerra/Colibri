@@ -478,7 +478,10 @@ impl<'a> Reader<'a> {
             &mut sources,
             entry,
             &modules,
-            LoadOptions { all_modules },
+            LoadOptions {
+                all_modules,
+                ..LoadOptions::default()
+            },
         )?;
         Ok(Pending::new(spec.clone(), sources, loaded, env))
     }

@@ -1,0 +1,49 @@
+// caps: fs, os
+// Two coroutines read lines from one handle: each line goes to exactly one of them.
+import fs
+import os
+import path
+
+fn reader(f: fs.File, lines: List[str]) -> int {
+    var n = 0
+    while true {
+        match f.read_line() {
+            ok(some(line)) => {
+                lines.push(line)
+                n += 1
+            }
+            ok(none) => break
+            err(_) => break
+        }
+    }
+    return n
+}
+
+fn main() -> Result[()] {
+    let file = path.join(os.temp_dir(), "shared.txt")
+    let w = fs.create(file)?
+    for i in 0..30000 {
+        w.write("{i}\n")?
+    }
+    w.close()?
+
+    let f = fs.open(file)?
+    let seen_a: List[str] = []
+    let seen_b: List[str] = []
+    let a = go reader(f, seen_a)
+    let b = go reader(f, seen_b)
+    let total = a.join() + b.join()
+    print(total)
+    seen_a.extend(seen_b)
+    let all = Set(seen_a)
+    print(all.len())
+    print(all.contains("0"))
+    print(all.contains("29999"))
+    f.close()?
+    return ok(())
+}
+
+// expect: 30000
+// expect: 30000
+// expect: true
+// expect: true

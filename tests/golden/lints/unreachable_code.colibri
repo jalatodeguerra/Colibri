@@ -1,0 +1,60 @@
+fn after_return() -> int {
+    return 1
+    print("never") // warning: unreachable code
+    print("also never")
+}
+
+fn after_break() {
+    for i in 0..3 {
+        if i == 1 {
+            break
+            print(i) // warning: unreachable code
+        }
+        print(i)
+    }
+}
+
+fn after_continue() {
+    var i = 0
+    while i < 3 {
+        i += 1
+        continue
+        print(i) // warning: unreachable code
+    }
+}
+
+fn stop() -> ! {
+    panic("stop")
+}
+
+fn after_never_call() {
+    stop()
+    print("never") // warning: unreachable code
+}
+
+fn only_the_tail() -> int {
+    return 2
+    3 // warning: unreachable code
+}
+
+fn fine(x: int) -> int {
+    if x > 0 {
+        return 1
+    }
+    return 0
+}
+
+fn main() {
+    print(after_return())
+    after_break()
+    after_continue()
+    print(only_the_tail())
+    print(fine(2))
+    if false {
+        after_never_call()
+    }
+}
+// expect: 1
+// expect: 0
+// expect: 2
+// expect: 1

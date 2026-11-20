@@ -10,6 +10,7 @@ use colibri_syntax::ast::{self, ItemKind};
 use colibri_syntax::{Diagnostic, Span};
 
 use crate::checker::{Checker, ParamInfo};
+use crate::deprecated::DeprKey;
 use crate::generics::SigCtx;
 use crate::hir::{FnId, IfaceMethod, ImplId, TypeDefKind};
 use crate::prelude;
@@ -72,6 +73,7 @@ impl<'a> Checker<'a> {
                 iface: id,
                 args: generics.iter().map(GenericParamInfo::ty).collect(),
                 span: decl.name.span,
+                implied: false,
             }],
         };
         self.param_bounds
@@ -133,8 +135,14 @@ impl<'a> Checker<'a> {
                 );
                 continue;
             }
+            let index = methods.len() as u32;
             let method = if f.body.is_some() {
                 let fid = self.add_fn(member, f, &ctx);
+                // A call through an interface value or a bound finds the method by its place
+                // in the interface, so the deprecation is kept under that key too.
+                if let Some(dep) = self.deprecated.get(&DeprKey::Fn(fid)).cloned() {
+                    self.deprecated.insert(DeprKey::IfaceMethod(id, index), dep);
+                }
                 let info = &self.fns[fid.0 as usize];
                 IfaceMethodInfo {
                     name: f.name.name.clone(),
@@ -146,8 +154,15 @@ impl<'a> Checker<'a> {
                     default: Some(fid),
                 }
             } else {
+                let key = DeprKey::IfaceMethod(id, index);
+                self.check_member_attrs(member);
+                self.declare_deprecation(
+                    key,
+                    &format!("{}.{}", decl.name.name, f.name.name),
+                    &member.attrs,
+                );
                 let saved = std::mem::replace(&mut self.self_ty, ctx.self_ty.clone());
-                let sig = self.resolve_sig(f, &ctx);
+                let sig = self.with_depr_ctx(&[key], |ck| ck.resolve_sig(f, &ctx));
                 self.self_ty = saved;
                 IfaceMethodInfo {
                     name: f.name.name.clone(),

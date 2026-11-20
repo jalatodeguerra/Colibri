@@ -1,0 +1,76 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn kind(r: Result[()]) -> str {
+    match r {
+        ok(_) => return "ok"
+        err(e) => return "{e.as[fs.Error]().expect("an fs error")}"
+    }
+}
+
+fn write_and_forget(file: str) {
+    let f = fs.create(file).expect("created")
+    f.write("kept\n").expect("written")
+    // No `close()`: the last reference goes away here.
+}
+
+fn main() -> Result[()] {
+    let file = path.join(os.temp_dir(), "close.txt")
+    let f = fs.create(file)?
+    f.write("abc")?
+    // Nothing was flushed yet, but `flush` makes it visible to others.
+    f.flush()?
+    print(fs.read(file)?)
+    f.write("def")?
+    f.close()?
+    print(fs.read(file)?)
+    // Closing twice is fine.
+    print(kind(f.close()))
+    // Everything else on a closed file is an error.
+    print(kind(f.write("x")))
+    print(kind(f.write_bytes(Bytes([1]))))
+    print(kind(f.flush()))
+    print(kind(f.seek(0)))
+    print(f.position().is_err())
+    print(f.write("x").err().expect("closed").message().replace(os.temp_dir(), "<dir>"))
+
+    let r = fs.open(file)?
+    print(r.read_line()?)
+    r.close()?
+    print(r.read_line().is_err())
+    print(r.read(1).is_err())
+    print(r.read_all().is_err())
+    print(r.close().is_ok())
+
+    // Dropping the handle flushes and closes it.
+    write_and_forget(file)
+    print(fs.read(file)?)
+    {
+        let g = fs.open_append(file)?
+        g.write("more\n")?
+    }
+    print(fs.read(file)?)
+    return ok(())
+}
+
+// expect: abc
+// expect: abcdef
+// expect: ok
+// expect: Closed
+// expect: Closed
+// expect: Closed
+// expect: Closed
+// expect: true
+// expect: cannot write to `<dir>/close.txt`: the file is closed
+// expect: some("abcdef")
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: kept
+// expect:
+// expect: kept
+// expect: more
+// expect:

@@ -1,0 +1,16 @@
+// features: fast
+@when(fast)
+fn mode() -> str => "fast"
+
+@when(!fast)
+fn mode() -> str => "slow"
+
+@when(fast && debug)
+fn extra() -> str => "fast and debug"
+
+fn main() {
+    print(mode())
+    print(extra())
+}
+// expect: fast
+// expect: fast and debug

@@ -43,6 +43,11 @@ enum State {
         text: Rc<str>,
         pos: usize,
     },
+    /// The bytes of a `Bytes`.
+    Octets {
+        data: Rc<[u8]>,
+        pos: usize,
+    },
     Bytes {
         text: Rc<str>,
         pos: usize,
@@ -112,6 +117,10 @@ impl IterObj {
         Self::new(State::Bytes { text, pos: 0 })
     }
 
+    pub fn over_bytes(data: Rc<[u8]>) -> Rc<IterObj> {
+        Self::new(State::Octets { data, pos: 0 })
+    }
+
     pub fn enumerate(inner: Value) -> Rc<IterObj> {
         Self::new(State::Enumerate { inner, index: 0 })
     }
@@ -160,6 +169,13 @@ impl IterObj {
                 None => Step::End,
             },
             State::Bytes { text, pos } => match text.as_bytes().get(*pos) {
+                Some(&b) => {
+                    *pos += 1;
+                    Step::Item(Value::Int(i64::from(b)))
+                }
+                None => Step::End,
+            },
+            State::Octets { data, pos } => match data.get(*pos) {
                 Some(&b) => {
                     *pos += 1;
                     Step::Item(Value::Int(i64::from(b)))
@@ -369,6 +385,7 @@ impl Interp {
             Value::Map(m) => IterObj::over_map(Rc::clone(m)),
             Value::Set(s) => IterObj::over_set(Rc::clone(s)),
             Value::Range(r) => IterObj::over_range(**r, false),
+            Value::Bytes(b) => IterObj::over_bytes(Rc::clone(b)),
             Value::Iter(i) => Rc::clone(i),
             _ => return None,
         }))

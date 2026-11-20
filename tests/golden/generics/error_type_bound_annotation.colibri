@@ -1,0 +1,12 @@
+struct Sorted[T: Ord] { items: List[T] }
+class Opaque { v: int }
+
+struct Holder {
+    inner: Sorted[Opaque] // error: `Opaque` does not implement `Ord`, which `Sorted` needs of its type parameter `T`
+}
+
+fn takes(s: Sorted[Opaque]) {} // error: `Opaque` does not implement `Ord`
+
+fn main() {
+    let _s: Option[Sorted[Opaque]] = none // error: `Opaque` does not implement `Ord`
+}

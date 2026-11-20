@@ -1,25 +1,24 @@
-//! Bytes as scripts have them today: a `List[int]` of values 0..=255 (there is no `Bytes` type
-//! yet). `base64`, `hex` and `hash` read and write them through these two functions, so a
-//! later `Bytes` type changes one place.
+//! Helpers on bytes that more than one module needs. `Bytes` itself is a built-in type of the
+//! language; a host function takes and returns it as [`colibri_runtime::Bytes`].
 
-/// The bytes of a list of ints, or the position of the first one that is not in `0..=255`.
-pub(crate) fn from_ints(items: &[i64]) -> Result<Vec<u8>, usize> {
-    items
-        .iter()
-        .enumerate()
-        .map(|(i, &n)| u8::try_from(n).map_err(|_| i))
-        .collect()
+/// Lowercase hex digits for `bytes` (`hex.encode`, `hash.sha256_hex`).
+pub(crate) fn hex_lower(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(DIGITS[usize::from(b >> 4)] as char);
+        out.push(DIGITS[usize::from(b & 15)] as char);
+    }
+    out
 }
 
-/// A list of ints for bytes.
-pub(crate) fn to_ints(bytes: &[u8]) -> Vec<i64> {
-    bytes.iter().map(|&b| i64::from(b)).collect()
-}
-
-/// The message of a byte list that holds a value outside `0..=255`.
-pub(crate) fn out_of_range(module: &str, items: &[i64], at: usize) -> String {
-    format!(
-        "{module}: a byte must be between 0 and 255, but item {at} of the list is {}",
-        items[at]
-    )
+/// Why `bytes` are not UTF-8 text, naming the byte where they stop being valid.
+pub(crate) fn utf8_problem(e: &std::str::Utf8Error) -> String {
+    let at = e.valid_up_to();
+    match e.error_len() {
+        Some(_) => format!("byte {at} is not part of a valid UTF-8 character"),
+        None => {
+            format!("the data ends in the middle of a UTF-8 character that starts at byte {at}")
+        }
+    }
 }

@@ -1,0 +1,46 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let file = path.join(os.temp_dir(), "mode.txt")
+    let w = fs.create(file)?
+    w.write("data\n")?
+    let e = w.read_line().err().expect("a write handle cannot read")
+    print(e.as[fs.Error]().expect("an fs error"))
+    print(e.message().replace(os.temp_dir(), "<dir>"))
+    print(w.read(1).is_err())
+    print(w.read_all().is_err())
+    w.close()?
+
+    let r = fs.open(file)?
+    let e2 = r.write("x").err().expect("a read handle cannot write")
+    print(e2.as[fs.Error]().expect("an fs error"))
+    print(e2.message().replace(os.temp_dir(), "<dir>"))
+    print(r.write_bytes(Bytes([1])).is_err())
+    // Nothing is buffered for writing in a read handle: flush has nothing to do.
+    print(r.flush().is_err())
+    r.close()?
+
+    let a = fs.open_append(file)?
+    let e3 = a.seek(0).err().expect("append handles do not seek")
+    print(e3.message().replace(os.temp_dir(), "<dir>"))
+    print(a.position()?)
+    a.write("x")?
+    print(a.position()?)
+    a.close()?
+    return ok(())
+}
+
+// expect: WrongMode
+// expect: cannot read `<dir>/mode.txt`: the file was opened for writing, not for reading (open it with `fs.open` to read it)
+// expect: true
+// expect: true
+// expect: WrongMode
+// expect: cannot write to `<dir>/mode.txt`: the file was opened for reading, not for writing (open it with `fs.create` or `fs.open_append` to write)
+// expect: true
+// expect: false
+// expect: cannot seek in `<dir>/mode.txt`: it was opened for appending, so every write goes to the end
+// expect: 5
+// expect: 6

@@ -1,26 +1,28 @@
 import hash
 
 fn main() {
-    print(hash.sha256(""))
-    print(hash.sha256("abc"))
-    print(hash.sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))
-    print(hash.sha256("héllo"))
-    print(hash.sha256_bytes([97, 98, 99]))
-    print(hash.sha256_bytes([]))
-    match hash.sha256_bytes([300]) {
-        ok(_) => print("hashed?")
-        err(e) => {
-            print(e.as[hash.Error]() == some(hash.Error.OutOfRange))
-            print(e.message())
-        }
-    }
+    print(hash.sha256_hex("".to_bytes()))
+    print(hash.sha256_hex("abc".to_bytes()))
+    print(hash.sha256_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".to_bytes()))
+    print(hash.sha256_hex("héllo".to_bytes()))
+    print(hash.sha256_hex(Bytes([97, 98, 99])))
+    // The digest itself is 32 bytes.
+    let digest = hash.sha256("abc".to_bytes())
+    print(digest.len())
+    print(digest[0])
+    print(digest[31])
+    print(digest[0..4])
+    // Binary input is hashed as it is.
+    print(hash.sha256_hex(Bytes([0, 255, 128])))
 }
 
 // expect: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 // expect: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
 // expect: 248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1
 // expect: 3c48591d8d098a4538f5e013dfcf406e948eac4d3277b10bf614e295d6068179
-// expect: ok("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
-// expect: ok("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
-// expect: true
-// expect: hash: a byte must be between 0 and 255, but item 0 of the list is 300
+// expect: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+// expect: 32
+// expect: 186
+// expect: 173
+// expect: b"\xbax\x16\xbf"
+// expect: f742b965f156c10374bc23aea96e3a8aff8facd6fc079defeaa30219ad86f211

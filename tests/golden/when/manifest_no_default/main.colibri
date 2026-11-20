@@ -1,0 +1,5 @@
+// A name the manifest does not declare is not a feature.
+@when(turbo) // error: unknown name `turbo` in `@when`
+fn speed() -> str => "turbo"
+
+fn main() {}

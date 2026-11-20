@@ -106,10 +106,18 @@ fn deep_recursion_is_a_stack_overflow_panic_not_a_crash() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("more calls ..."),
+        stderr.contains("more calls (set COLIBRI_FULL_TRACE=1 to show them all) ..."),
         "long traces are elided: {stderr}"
     );
     assert!(stderr.lines().count() < 40, "{stderr}");
+    let full = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
+        .args(["run", path.to_str().unwrap()])
+        .env("COLIBRI_FULL_TRACE", "1")
+        .output()
+        .unwrap();
+    let full = String::from_utf8_lossy(&full.stderr);
+    assert!(!full.contains("more calls"), "{full}");
+    assert!(full.lines().count() > 5000, "{}", full.lines().count());
 }
 
 #[test]
@@ -164,10 +172,7 @@ fn check_prints_warnings_and_exits_zero() {
 
 #[test]
 fn unsupported_features_are_clean_errors() {
-    let path = temp_file(
-        "unsupported.colibri",
-        "@inline\nfn id(x: int) -> int => x\n",
-    );
+    let path = temp_file("unsupported.colibri", "fn id(x: [int; 3]) {}\n");
     let out = colibri(&["run", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("is not supported yet"));
@@ -912,4 +917,68 @@ fn a_manifest_is_not_an_interface_file() {
         assert!(!stderr.contains("SeCrEt"), "{stderr}");
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+const WHEN_PROGRAM: &str = "@when(debug)\nfn mode() -> str => \"debug\"\n@when(!debug)\nfn mode() -> str => \"release\"\n@when(fast)\nfn speed() -> str => \"fast\"\n@when(!fast)\nfn speed() -> str => \"slow\"\nfn main() {\n    print(\"{mode()} {speed()}\")\n}\n";
+
+#[test]
+fn when_follows_release_and_feature_flags() {
+    let dir = std::env::temp_dir().join(format!("colibri-cli-when-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("colibri.toml"),
+        "[package]\nname = \"w\"\n\n[features]\ndefault = []\nfast = []\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.colibri"), WHEN_PROGRAM).unwrap();
+    let d = dir.to_str().unwrap();
+    let run = |extra: &[&str]| -> (Option<i32>, String, String) {
+        let mut args = vec!["run", d];
+        args.extend_from_slice(extra);
+        let out = colibri(&args);
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(run(&[]).1, "debug slow\n");
+    assert_eq!(run(&["--release"]).1, "release slow\n");
+    assert_eq!(run(&["--feature", "fast"]).1, "debug fast\n");
+    assert_eq!(run(&["--release", "--feature=fast"]).1, "release fast\n");
+    // A feature the manifest does not declare is refused at the manifest.
+    let (code, _, stderr) = run(&["--feature", "turbo"]);
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.contains("the feature `turbo` is not declared in `colibri.toml`"),
+        "{stderr}"
+    );
+    // `check` and `test` take the same flags.
+    let check = colibri(&["check", d, "--feature", "fast", "--release"]);
+    assert_eq!(check.status.code(), Some(0));
+    // A script has no manifest: any flag is a feature.
+    let script = temp_file("when_script.colibri", WHEN_PROGRAM);
+    let out = colibri(&["run", script.to_str().unwrap(), "--feature", "fast"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "debug fast\n");
+}
+
+#[test]
+fn feature_names_on_the_command_line_follow_the_manifest_rules() {
+    let script = temp_file("feature_names.colibri", "fn main() { print(1) }\n");
+    let s = script.to_str().unwrap();
+    for (name, why) in [
+        ("debug", "meaning of its own"),
+        ("os", "meaning of its own"),
+        ("true", "meaning of its own"),
+        ("", "cannot be empty"),
+        ("a b", "is not a valid feature name"),
+    ] {
+        let out = colibri(&["run", s, "--feature", name]);
+        assert_eq!(out.status.code(), Some(2), "[{name}]");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(why), "[{name}] {stderr}");
+    }
+    let out = colibri(&["run", s, "--feature", "fast_2"]);
+    assert_eq!(out.status.code(), Some(0));
 }

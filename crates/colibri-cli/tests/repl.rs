@@ -194,3 +194,135 @@ fn load_refuses_a_manifest_and_prints_nothing_of_it() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn an_attribute_on_its_own_line_waits_for_the_declaration() {
+    // The formatter writes the attribute above the item; the item must not run without it.
+    let (out, err) =
+        repl("@when(false)\nfn z() -> int => 2\nz()\n@when(true)\nfn y() -> int => 3\ny()\n");
+    assert!(!err.contains("expected an item"), "{err}");
+    assert!(err.contains("unknown name `z`"), "{err}");
+    assert!(
+        err.contains("`z` exists but is left out here by `@when(false)`"),
+        "{err}"
+    );
+    assert!(out.contains("= 3 : int"), "{out}");
+}
+
+#[test]
+fn a_deprecated_use_warns_in_the_repl() {
+    let (out, err) = repl("@deprecated(\"use g\")\nfn f() -> int => 1\nf()\nf()\n");
+    assert_eq!(out.matches("= 1 : int").count(), 2, "{out}");
+    // Each use warns once, in its own entry; the definition does not warn.
+    assert_eq!(err.matches("`f` is deprecated: use g").count(), 4, "{err}"); // message + label
+    // An import that nothing uses yet is not reported.
+    let (_, err) = repl("import math\n");
+    assert!(!err.contains("unused import"), "{err}");
+}
+
+#[test]
+fn two_when_variants_of_one_name_keep_both() {
+    // The documented pattern: one name, two conditions. Typed one after the other, each stays.
+    let (out, err) = repl(
+        "@when(debug)\nfn mode() -> str => \"debug\"\n@when(!debug)\nfn mode() -> str => \"release\"\nmode()\n",
+    );
+    assert_eq!(err, "");
+    assert!(
+        out.contains("= \"debug\" : str") || out.contains("= \"release\" : str"),
+        "{out}"
+    );
+    // Typed as one entry.
+    let (out, err) = repl(
+        "@when(debug)\nfn mode() -> str => \"debug\"\n@when(!debug)\nfn mode() -> str => \"release\"\n\nmode()\n",
+    );
+    assert_eq!(err, "");
+    assert!(
+        out.contains("= \"debug\" : str") || out.contains("= \"release\" : str"),
+        "{out}"
+    );
+    // An ordinary function can still be redefined, and so can one variant.
+    let (out, err) = repl(
+        "fn g() -> int => 1\nfn g() -> int => 2\ng()\n@when(false)\nfn h() -> int => 1\n@when(true)\nfn h() -> int => 5\n@when(true)\nfn h() -> int => 6\nh()\n",
+    );
+    assert_eq!(err, "");
+    assert!(
+        out.contains("= 2 : int") && out.contains("= 6 : int"),
+        "{out}"
+    );
+}
+
+#[test]
+fn loading_a_file_with_two_when_variants_keeps_both() {
+    let dir = std::env::temp_dir().join(format!("colibri_repl_when_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("modes.colibri");
+    std::fs::write(
+        &file,
+        "@when(debug)\nfn mode() -> str => \"debug\"\n@when(!debug)\nfn mode() -> str => \"release\"\n",
+    )
+    .unwrap();
+    // The path is handed to the REPL command, not pasted into Colibri source.
+    let (out, err) = repl(&format!(":load {}\nmode()\n", file.display()));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(err, "");
+    assert!(
+        out.contains("= \"debug\" : str") || out.contains("= \"release\" : str"),
+        "{out}"
+    );
+}
+
+#[test]
+fn attributes_without_an_item_are_an_error_and_attach_to_nothing() {
+    let (out, err) = repl("fn f() -> int => 1\n@deprecated(\"q\")\n\nf()\n");
+    assert!(
+        err.contains("expected an item after the attributes"),
+        "{err}"
+    );
+    // `f` was not marked deprecated by the dangling attribute.
+    assert!(!err.contains("is deprecated"), "{err}");
+    assert!(out.contains("= 1 : int"), "{out}");
+}
+
+#[test]
+fn a_redefinition_with_the_same_condition_replaces_whatever_the_spacing() {
+    let (out, err) = repl(
+        "@when(debug)\nfn mode() -> int => 1\n@when( debug )\nfn mode() -> int => 2\n@when((debug))\nfn mode() -> int => 3\nmode()\n",
+    );
+    assert_eq!(err, "");
+    assert!(out.contains("= 3 : int"), "{out}");
+}
+
+#[test]
+fn a_definition_without_when_replaces_every_variant_and_the_other_way_round() {
+    // A plain function, then a conditional one: replaced, as before.
+    let (out, err) = repl("fn mode() -> int => 1\n@when(debug)\nfn mode() -> int => 2\nmode()\n");
+    assert_eq!(err, "");
+    assert!(out.contains("= 2 : int"), "{out}");
+    // Two variants, then a plain one: only the plain one is left.
+    let (out, err) = repl(
+        "@when(debug)\nfn mode() -> int => 1\n@when(!debug)\nfn mode() -> int => 2\nfn mode() -> int => 3\nmode()\n",
+    );
+    assert_eq!(err, "");
+    assert!(out.contains("= 3 : int"), "{out}");
+    // And a variant can be added again afterwards.
+    let (out, err) = repl(
+        "fn mode() -> int => 3\n@when(debug)\nfn mode() -> int => 4\nmode()\n@when(!debug)\nfn mode() -> int => 5\nmode()\n",
+    );
+    assert_eq!(err, "");
+    assert!(out.contains("= 4 : int"), "{out}");
+}
+
+#[test]
+fn redefining_the_left_out_variant_leaves_the_active_one_alone() {
+    let (out, err) = repl(
+        "@when(debug)\nvar counter = 0\n@when(!debug)\nvar counter = 100\ncounter += 5\ncounter\n@when(!debug)\nvar counter = 200\ncounter\n",
+    );
+    assert_eq!(err, "");
+    assert_eq!(out, "= 5 : int\n= 5 : int\n", "{out}");
+    // The same for a function.
+    let (out, err) = repl(
+        "@when(debug)\nfn f() -> int => 1\n@when(!debug)\nfn f() -> int => 2\n@when(!debug)\nfn f() -> int => 3\nf()\n",
+    );
+    assert_eq!(err, "");
+    assert!(out.contains("= 1 : int"), "{out}");
+}

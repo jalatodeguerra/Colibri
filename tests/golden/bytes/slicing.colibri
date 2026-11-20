@@ -1,0 +1,19 @@
+fn main() {
+    let b = "hello world".to_bytes()
+    print(b[0..5])
+    print(b[6..])
+    print(b[..=4])
+    print(b[..])
+    print(b.slice(2, 4))
+    print(b.slice(3, 3).is_empty())
+    let part = b[6..11]
+    print(part.to_str())
+}
+
+// expect: b"hello"
+// expect: b"world"
+// expect: b"hello"
+// expect: b"hello world"
+// expect: b"ll"
+// expect: true
+// expect: ok("world")

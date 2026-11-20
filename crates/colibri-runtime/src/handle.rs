@@ -4,7 +4,7 @@
 //!
 //! A [`Handle`] is `(index, generation, vm)`: it names a slot of the host heap and which life of
 //! that slot, so it never keeps an object alive and never reaches a different object. Using a
-//! stale one is an error on the host side and a panic (```Enemy` was destroyed by the host``)
+//! stale one is an error on the host side and a panic (```Job` was destroyed by the host``)
 //! in a script.
 
 use std::any::TypeId as AnyTypeId;

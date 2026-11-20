@@ -1,0 +1,49 @@
+// caps: fs, os
+import fs
+import os
+import path
+import str
+
+fn add_lines(file: str, from: int, to: int) -> Result[()] {
+    let f = fs.open_append(file)?
+    defer f.close()
+    for i in from..to {
+        f.write("line {i}\n")?
+    }
+    return ok(())
+}
+
+fn main() -> Result[()] {
+    let file = path.join(os.temp_dir(), "log.txt")
+    print(fs.exists(file))
+    add_lines(file, 0, 3)?
+    print(fs.exists(file))
+    print(fs.read(file)?)
+    // A second open adds to what is there.
+    add_lines(file, 3, 5)?
+    print(str.lines(fs.read(file)?).len())
+    // `fs.create` empties it.
+    let f = fs.create(file)?
+    f.write("fresh\n")?
+    f.close()?
+    print(fs.read(file)?)
+    // Mixed with the whole-file functions.
+    fs.append(file, "tail\n")?
+    add_lines(file, 9, 10)?
+    print(fs.read(file)?)
+    return ok(())
+}
+
+// expect: false
+// expect: true
+// expect: line 0
+// expect: line 1
+// expect: line 2
+// expect:
+// expect: 5
+// expect: fresh
+// expect:
+// expect: fresh
+// expect: tail
+// expect: line 9
+// expect:

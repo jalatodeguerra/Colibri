@@ -1,0 +1,13 @@
+struct Sorted[T: Ord] { items: List[T] }
+class Opaque { v: int }
+
+impl[T] Sorted[T] {
+    fn new() -> Sorted[T] => Sorted { items: [] }
+}
+
+fn main() {
+    let _a = Sorted { items: [Opaque { v: 1 }] } // error: `Opaque` does not implement `Ord`, which `Sorted` needs
+    let _b = Sorted[Opaque].new() // error: `Opaque` does not implement `Ord`
+    let c: Sorted[int] = Sorted.new()
+    print(c.items.len())
+}

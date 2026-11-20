@@ -747,3 +747,50 @@ fn modules_that_use_each_other_are_a_cycle_with_its_own_message() {
         .to_string();
     assert!(!err.contains("panicked"), "{err}");
 }
+
+// ---- deprecated host functions ----
+
+#[test]
+fn a_deprecated_host_function_warns_where_it_is_used() {
+    let (mut vm, out) = vm();
+    vm.register_fn("old_add", |a: i64, b: i64| a + b)
+        .unwrap()
+        .deprecated("use add instead \"now\" {x}");
+    vm.register_fn("bare_old", || 1_i64).unwrap().deprecated("");
+    vm.register_fn("add", |a: i64, b: i64| a + b).unwrap();
+    // The text carries the attribute, and reads back.
+    let text = vm.interface_text();
+    assert!(
+        text.contains("@deprecated(\"use add instead \\\"now\\\" \\{x\\}\")"),
+        "{text}"
+    );
+    assert!(
+        text.contains("@deprecated @positional fn bare_old"),
+        "{text}"
+    );
+    let parsed = Interface::from_text("engine.cbi", &text).unwrap();
+    assert_eq!(parsed.canonical_text(), text);
+    // A program checked against the file (no `Vm`) gets the warning too.
+    let config = colibri::CheckConfig {
+        interfaces: vec![parsed],
+        ..colibri::CheckConfig::default()
+    };
+    let src = "fn main() {\n    print(old_add(1, 2) + bare_old() + add(1, 1))\n}\n";
+    let report = colibri::check_source_with("main.colibri", src, &config);
+    assert!(!report.has_errors(), "{}", report.render(false));
+    let shown = report.render(false);
+    assert!(
+        shown.contains("`old_add` is deprecated: use add instead \"now\" {x}"),
+        "{shown}"
+    );
+    assert!(shown.contains("`bare_old` is deprecated"), "{shown}");
+    assert!(!shown.contains("`add` is deprecated"), "{shown}");
+    // The program still loads and runs; the warnings are the `Vm`'s.
+    vm.load_source("main.colibri", src).unwrap();
+    assert!(
+        vm.render_warnings(false)
+            .contains("`old_add` is deprecated")
+    );
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "6\n");
+}

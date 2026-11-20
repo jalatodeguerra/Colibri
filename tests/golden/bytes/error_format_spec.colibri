@@ -1,0 +1,4 @@
+fn main() {
+    let b = Bytes([1])
+    print("{b:>8}") // error: a value of type `Bytes` cannot take a format spec
+}

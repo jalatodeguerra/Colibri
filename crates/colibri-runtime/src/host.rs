@@ -134,6 +134,14 @@ impl Registration<'_> {
         self
     }
 
+    /// The function is deprecated: a script that calls it gets the warning "`name` is
+    /// deprecated: message" (an empty `message` leaves the colon out). The interface file
+    /// carries it as `@deprecated("message")`.
+    pub fn deprecated(self, message: &str) -> Self {
+        self.vm.set_deprecated(self.index, message);
+        self
+    }
+
     /// The function reads the type arguments of each call ([`Ctx::type_args`]), so a call has
     /// to name a concrete type: `fn decode[T](..)` is checked not to be called with a type
     /// parameter of the caller, whose type is not known at runtime. It must be generic (take

@@ -175,6 +175,12 @@ impl<'a> Checker<'a> {
                 ));
             }
             Ty::Str => return Err("`str` is not a C type; in a signature write `cstr`".into()),
+            Ty::Bytes => {
+                return Err(
+                    "`Bytes` is not a C type (passing `Bytes` to C is not built yet); pass a `ptr[u8]` and a length"
+                        .into(),
+                );
+            }
             Ty::Char => return Err("`char` is not a C type; use `u8` or `u32`".into()),
             Ty::Unit => return Err("`()` is not a value type in C".into()),
             other => {
@@ -328,7 +334,7 @@ impl<'a> Checker<'a> {
         let mut lib: Option<String> = None;
         for attr in &item.attrs {
             if attr.name.name != "link" {
-                self.unsupported(&format!("the attribute `@{}`", attr.name.name), attr.span);
+                // Reported with the other items (`collect_item`).
                 continue;
             }
             match attr.args.as_slice() {
@@ -362,8 +368,8 @@ impl<'a> Checker<'a> {
         decl: &'a ast::FnDecl,
         lib: Option<String>,
     ) {
-        for attr in &item.attrs {
-            self.unsupported(&format!("the attribute `@{}`", attr.name.name), attr.span);
+        for attr in item.attrs.iter().filter(|a| a.name.name != "deprecated") {
+            self.unknown_attribute(attr, crate::attrs::AttrSite::ExternFn);
         }
         if decl.body.is_some() {
             self.report(

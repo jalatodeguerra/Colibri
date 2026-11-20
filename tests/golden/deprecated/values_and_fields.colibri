@@ -1,0 +1,29 @@
+// Deprecated constants, module-level values and fields.
+@deprecated("use LIMIT")
+const MAX_ITEMS = 10
+
+const LIMIT = 10
+
+@deprecated("use state")
+var legacy = 0
+
+var state = 0
+
+struct Config {
+    @deprecated("use size") width: int,
+    size: int,
+}
+
+fn main() {
+    print(MAX_ITEMS) // warning: `MAX_ITEMS` is deprecated: use LIMIT
+    print(LIMIT)
+    legacy = 5 // warning: `legacy` is deprecated: use state
+    state = legacy + 1 // warning: `legacy` is deprecated: use state
+    print(state)
+    let c = Config { width: 3, size: 4 } // warning: `width` is deprecated: use size
+    print(c.width + c.size) // warning: `width` is deprecated: use size
+}
+// expect: 10
+// expect: 10
+// expect: 6
+// expect: 7

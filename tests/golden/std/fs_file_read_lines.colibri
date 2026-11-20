@@ -1,0 +1,50 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let file = path.join(os.temp_dir(), "lines.txt")
+    // Unix and Windows line endings, an empty line, and no ending on the last line.
+    fs.write(file, "one\ntwo\r\n\nthree é\nlast")?
+    let f = fs.open(file)?
+    defer f.close()
+    while true {
+        match f.read_line()? {
+            some(line) => print("[{line}] {line.len()}")
+            none => break
+        }
+    }
+    // The end of the file stays the end.
+    print(f.read_line()?)
+    print(f.read_line()?)
+    // A file that ends with a line ending has no empty last line.
+    fs.write(file, "a\n")?
+    let g = fs.open(file)?
+    print(g.read_line()?)
+    print(g.read_line()?)
+    g.close()?
+    // An empty file has no line at all.
+    fs.write(file, "")?
+    let h = fs.open(file)?
+    print(h.read_line()?)
+    h.close()?
+    // A bare `\r` that is not part of `\r\n` is kept.
+    fs.write(file, "a\rb\r")?
+    let i = fs.open(file)?
+    print(i.read_line()?.expect("a line").len())
+    i.close()?
+    return ok(())
+}
+
+// expect: [one] 3
+// expect: [two] 3
+// expect: [] 0
+// expect: [three é] 8
+// expect: [last] 4
+// expect: none
+// expect: none
+// expect: some("a")
+// expect: none
+// expect: none
+// expect: 4

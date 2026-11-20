@@ -1,0 +1,10 @@
+@deprecated(1) // error: `@deprecated` takes its message as a plain string
+fn a() {}
+
+@deprecated("x", "y") // error: `@deprecated` takes at most one argument
+fn b() {}
+
+@deprecated("x") // error: `@deprecated` does not apply to an `import`
+import math
+
+fn main() {}

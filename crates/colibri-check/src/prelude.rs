@@ -52,6 +52,7 @@ class Coroutine[T] {}
 class CoGroup {}
 class Signal {}
 class StrBuilder {}
+class BytesBuilder {}
 "#;
 
 /// The parsed prelude.

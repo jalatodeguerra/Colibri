@@ -16,7 +16,7 @@ fn main() -> Result[()] {
     fs.create_dir(path.join(root, "full"))?
     fs.write(path.join(root, "full/x.txt"), "x")?
     fs.write(path.join(root, "file.txt"), "text")?
-    fs.write_bytes(path.join(root, "bad.bin"), [255, 254, 253])?
+    fs.write_bytes(path.join(root, "bad.bin"), Bytes([255, 254, 253]))?
 
     let removed = fs.remove_dir(path.join(root, "full")).err().expect("not empty")
     print(kind(removed))

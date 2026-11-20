@@ -1,0 +1,10 @@
+@deprecated("moved to util.new_name")
+pub fn old_name() -> int => 1
+
+pub fn new_name() -> int => 1
+
+// The module's own code is linted like any other: only deprecated items are exempt.
+fn helper() -> int => old_name() // warning: `old_name` is deprecated: moved to util.new_name
+
+@deprecated
+fn old_helper() -> int => old_name()

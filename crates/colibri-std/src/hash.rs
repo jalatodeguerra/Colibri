@@ -1,23 +1,14 @@
 //! `hash`: SHA-256, written in this file (about 60 lines, checked against the FIPS 180-2 and
 //! NIST test vectors below) so the standard library takes no crate for it.
 //!
-//! `sha256(text) -> str` and `sha256_bytes(bytes) -> Result[str]` give the digest as 64
-//! lowercase hex digits. Bytes are a `List[int]` of 0..=255 until there is a `Bytes` type.
+//! `sha256(data: Bytes) -> Bytes` gives the 32 bytes of the digest, `sha256_hex(data: Bytes) ->
+//! str` the same as 64 lowercase hex digits. Hash text with `s.to_bytes()`. Nothing here can
+//! fail, so the module has no `Error`.
 
-use colibri_runtime::{Error, TypedError, Vm};
+use colibri_runtime::{Bytes, Error, Vm};
 
-use crate::bytes::{from_ints, out_of_range};
-use crate::errors::error_kind;
+use crate::bytes::hex_lower;
 use crate::plain;
-
-error_kind!(
-    "hash",
-    /// Why a hash call failed (`hash.Error.OutOfRange`).
-    Kind {
-        /// A byte list holds a value outside 0..=255.
-        OutOfRange,
-    }
-);
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -88,23 +79,14 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     out
 }
 
-fn hex(digest: &[u8; 32]) -> String {
-    digest.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
-    Kind::declare(vm)?;
     let mut m = vm.std_module("hash");
-    plain(m.register_fn_named("sha256", ["text"], |text: String| {
-        hex(&sha256(text.as_bytes()))
+    plain(m.register_fn_named("sha256", ["data"], |data: Bytes| {
+        Bytes(sha256(&data).to_vec())
     }))?;
-    plain(
-        m.register_fn_named("sha256_bytes", ["bytes"], |items: Vec<i64>| {
-            let bytes = from_ints(&items)
-                .map_err(|at| Kind::OutOfRange.error(out_of_range("hash", &items, at)))?;
-            Ok::<_, TypedError>(hex(&sha256(&bytes)))
-        }),
-    )?;
+    plain(m.register_fn_named("sha256_hex", ["data"], |data: Bytes| {
+        hex_lower(&sha256(&data))
+    }))?;
     Ok(())
 }
 
@@ -113,7 +95,7 @@ mod tests {
     use super::*;
 
     fn digest(data: &[u8]) -> String {
-        hex(&sha256(data))
+        hex_lower(&sha256(data))
     }
 
     #[test]

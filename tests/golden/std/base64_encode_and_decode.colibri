@@ -1,33 +1,42 @@
 import base64
 
 fn main() {
-    print(base64.encode("foobar"))
-    print(base64.encode("fo"))
-    print(base64.encode(""))
-    print(base64.encode("héllo ✓"))
+    print(base64.encode("foobar".to_bytes()))
+    print(base64.encode("fo".to_bytes()))
+    print(base64.encode(Bytes()))
+    print(base64.encode("héllo ✓".to_bytes()))
     print(base64.decode("Zm9vYmFy"))
-    print(base64.decode("aMOpbGxvIOKckw=="))
-    // Bytes are a list of ints for now.
-    print(base64.encode_bytes([0, 255, 128, 10]))
-    print(base64.decode_bytes("AP+ACg=="))
+    print(base64.decode("aMOpbGxvIOKckw==").expect("valid").to_str())
+    print(base64.encode(Bytes([0, 255, 128, 10])))
+    print(base64.decode("AP+ACg=="))
     // The URL form uses - and _ and has no padding.
-    print(base64.encode_bytes([251, 255, 254]))
-    print(base64.encode_url_bytes([251, 255, 254]))
-    print(base64.encode_url("fo"))
+    print(base64.encode(Bytes([251, 255, 254])))
+    print(base64.encode_url(Bytes([251, 255, 254])))
+    print(base64.encode_url("fo".to_bytes()))
     print(base64.decode_url("Zm8"))
-    print(base64.decode_url_bytes("-__-"))
+    print(base64.decode_url("-__-"))
+    // A round trip of every byte value.
+    let all = BytesBuilder()
+    for i in 0..256 {
+        all.push(u8(i))
+    }
+    let data = all.to_bytes()
+    print(base64.decode(base64.encode(data)) == ok(data))
+    print(base64.decode_url(base64.encode_url(data)) == ok(data))
 }
 
 // expect: Zm9vYmFy
 // expect: Zm8=
 // expect: 
 // expect: aMOpbGxvIOKckw==
-// expect: ok("foobar")
+// expect: ok(b"foobar")
 // expect: ok("héllo ✓")
-// expect: ok("AP+ACg==")
-// expect: ok([0, 255, 128, 10])
-// expect: ok("+//+")
-// expect: ok("-__-")
+// expect: AP+ACg==
+// expect: ok(b"\x00\xff\x80\n")
+// expect: +//+
+// expect: -__-
 // expect: Zm8
-// expect: ok("fo")
-// expect: ok([251, 255, 254])
+// expect: ok(b"fo")
+// expect: ok(b"\xfb\xff\xfe")
+// expect: true
+// expect: true

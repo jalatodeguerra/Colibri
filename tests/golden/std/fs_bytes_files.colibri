@@ -1,0 +1,42 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let file = path.join(os.temp_dir(), "data.bin")
+    // Every byte value, not just text.
+    let all = BytesBuilder()
+    for i in 0..256 {
+        all.push(u8(i))
+    }
+    let data = all.to_bytes()
+    fs.write_bytes(file, data)?
+    print(fs.stat(file)?.size)
+    let back = fs.read_bytes(file)?
+    print(back == data)
+    print(back[255])
+    print(fs.read(file).is_err())
+
+    fs.append_bytes(file, Bytes([1, 2, 3]))?
+    print(fs.read_bytes(file)?.len())
+    print(fs.read_bytes(file)?[256..])
+    // Bytes written with `write_bytes` are what `read` gives back, when they are UTF-8.
+    fs.write_bytes(file, "héllo".to_bytes())?
+    print(fs.read(file)?)
+    fs.append_bytes(path.join(os.temp_dir(), "fresh.bin"), Bytes([9]))?
+    print(fs.read_bytes(path.join(os.temp_dir(), "fresh.bin"))?)
+    fs.write_bytes(file, Bytes())?
+    print(fs.read_bytes(file)?.is_empty())
+    return ok(())
+}
+
+// expect: 256
+// expect: true
+// expect: 255
+// expect: true
+// expect: 259
+// expect: b"\x01\x02\x03"
+// expect: héllo
+// expect: b"\t"
+// expect: true

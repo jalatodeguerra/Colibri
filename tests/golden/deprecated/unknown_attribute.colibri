@@ -1,0 +1,13 @@
+@fast // error: unknown attribute `@fast`
+fn f() {}
+
+struct S {
+    @bogus x: int, // error: unknown attribute `@bogus` on a field
+}
+
+impl S {
+    @bogus // error: unknown attribute `@bogus` on a method
+    fn m(self) {}
+}
+
+fn main() {}
