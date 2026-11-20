@@ -22,6 +22,9 @@ rustls = { version = "0.23", default-features = false }
 # TCP sockets for `net`: creating them with close-on-exec set at once, the non-blocking
 # `connect`, `SO_REUSEADDR`, `IPV6_V6ONLY` and the listen backlog behave the same on every system.
 socket2 = { version = "0.6", features = ["all"] }
+# One poller thread per `Vm` for `net`: waits for the readiness of many sockets at once (epoll,
+# kqueue, or the AFD driver interface on Windows) and is woken from other threads.
+polling = "3"
 toml = { version = "1.2.1", default-features = false, features = ["parse", "preserve_order"] }
 # The machine's time zone for `datetime.now_local` (`localtime_r`), on Unix only.
 [target.'cfg(unix)'.dependencies]
