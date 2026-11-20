@@ -3732,8 +3732,13 @@ mod tests {
                 let closer = {
                     let sh = Arc::clone(&sh);
                     std::thread::spawn(move || {
+                        // Armed, and the reader's own reference (it is given to the poller
+                        // and let go when the call suspends) gone: the connection's and the
+                        // poller's are the two left. A close from another thread before that
+                        // would meet the reader's reference, which is not what is tested (on
+                        // the interpreter thread a close always comes after the suspension).
                         let began = Instant::now();
-                        while poller.counts() != (1, 1) {
+                        while poller.counts() != (1, 1) || weak.strong_count() != 2 {
                             assert!(
                                 began.elapsed() < Duration::from_secs(30),
                                 "the read never waited"
@@ -3741,7 +3746,7 @@ mod tests {
                             std::thread::yield_now();
                         }
                         sh.close();
-                        weak.upgrade().is_none()
+                        weak.strong_count() == 0
                     })
                 };
                 let ticket = sh.reads.ticket();
