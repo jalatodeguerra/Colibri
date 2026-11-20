@@ -34,9 +34,11 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", default-features = false, features = ["Win32_Networking_WinSock"] }
 
-# `GetProcessTimes`, for the idle-CPU test of `net` (`getrusage` is the call on Unix).
+# `GetProcessTimes`, for the idle-CPU test of `net` (`getrusage` is the call on Unix), and a
+# snapshot of the process's threads, for the idle-threads test (`/proc/self/task` is the way on
+# Linux).
 [target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
 
 [dev-dependencies]
 colibri-syntax = { path = "../colibri-syntax" }

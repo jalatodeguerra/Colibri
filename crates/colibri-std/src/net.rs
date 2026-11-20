@@ -7,60 +7,85 @@
 //!
 //! # How waiting works (the same on Linux, macOS and Windows)
 //!
-//! Everything that can wait runs on a background thread (`Ctx::try_run_async_cancellable`), so other
-//! coroutines keep running meanwhile. Every socket (listener, accepted and connected streams) is
-//! non-blocking. A worker waits for readiness with `poll(2)` (Unix) or `WSAPoll` (Windows) for
-//! at most one slice (`SLICE`, 50 ms), and only when the socket is ready does it touch a buffer
-//! and make its system call (a write and an accept try theirs first and wait on `WouldBlock`),
-//! so an idle wait costs one `poll` per slice. Between slices it looks at three things: whether its
-//! coroutine was cancelled (or the `Vm` ended), whether the object was closed, and whether the
-//! deadline has passed. So a cancelled operation stops within a slice, a `close()` on another
-//! coroutine's object ends that coroutine's wait, and no thread outlives its `Vm` by more than
-//! a slice. No socket is ever left in a state where a timed-out call made it unusable (Windows
-//! documents that for `SO_RCVTIMEO`, which is why the sockets carry no kernel timeouts).
+//! Every socket (listener, accepted and connected streams) is non-blocking.
+//!
+//! *Reads and writes of a connection* run on the interpreter thread, in the coroutine that calls
+//! them. A call makes its system call at once; only when the socket would block does it wait: it
+//! registers a wait cell with the `Vm`'s poller (one thread per `Vm`, started by the first wait
+//! that needs it and joined when the `Vm` is dropped; it waits for the readiness of every such
+//! socket with `epoll`, `kqueue` or the Windows AFD driver, and for deadlines, and sleeps for as
+//! long as nothing is due) and suspends the coroutine. The poller only says that a socket is
+//! ready (or that the deadline came, or that the connection was closed); the coroutine makes its
+//! system call itself when it resumes and waits again if the socket would still block. So an
+//! idle connection costs no thread and no wake-up, a cancelled call has taken nothing (what it
+//! had read is in the connection's buffer for the next read, and what it had not read is still
+//! in the kernel), and the interpreter thread holds neither the buffer nor a reference to the
+//! socket while a coroutine is suspended or has given the thread away. A call that does not have to wait does not suspend; so
+//! that a coroutine in a loop of reads and writes against a peer that is always ready cannot
+//! keep the others from running, a connection counts what its calls do without any of them
+//! suspending and, when `MAX_BURST_CALLS` calls are used up, the next call gives the thread to the
+//! other coroutines once; when `MAX_BURST` bytes are used up, the call that used them up does
+//! (after it released its reference to the socket). The budget is per connection, so a loop over
+//! N connections that are all ready yields every 64 x N calls, not every 64.
+//!
+//! *Accept and connect* (and `listen`) still run on a background thread (`Ctx::try_run_async_cancellable`)
+//! which waits for readiness with `poll(2)` (Unix) or `WSAPoll` (Windows) for at most one slice
+//! (`SLICE`, 50 ms) and only when the socket is ready makes its system call. Between slices it
+//! looks at three things: whether its coroutine was cancelled (or the `Vm` ended), whether the
+//! object was closed, and whether the deadline has passed, so a cancelled operation stops within
+//! a slice and no such thread outlives its `Vm` by more than a slice. No socket is ever left in a
+//! state where a timed-out call made it unusable (Windows documents that for `SO_RCVTIMEO`,
+//! which is why the sockets carry no kernel timeouts).
 //!
 //! Timeouts (`set_timeout`, `connect_timeout`) are deadlines that start when the script calls
-//! the method, on the interpreter thread, not when a worker gets round to it.
+//! the method, on the interpreter thread.
 //!
 //! # Cancelling never loses data
 //!
-//! A read only fills the connection's buffer on its worker; the bytes are handed out by the
-//! interpreter thread after the coroutine has resumed, while it still holds the read turn. A
-//! coroutine that is cancelled after its worker finished takes nothing, so the bytes stay for
-//! the next read. An accept that finished for a coroutine that was cancelled meanwhile puts the
-//! connection into a queue on the listener, and the next `accept` returns it first.
+//! A read takes bytes out of the buffer only when it returns, and reads the socket only while its
+//! coroutine runs, so a coroutine that is cancelled while it waits has taken nothing: the bytes
+//! stay for the next read. An accept that finished for a coroutine that was cancelled meanwhile
+//! puts the connection into a queue on the listener, and the next `accept` returns it first.
 //!
 //! # `close()` never suspends and never fails
 //!
-//! It sets the closed flag, takes the object's reference to the socket, shuts the socket down
-//! (a blocked read wakes at once), wakes everything that waits for a turn, and returns. The
-//! socket is reference counted: every operation holds a reference while it works, and the
-//! descriptor is released when the last one is gone (at once, or within one slice for a worker
-//! whose `poll` the shutdown did not wake), so a `poll` never sees a closed or reused descriptor
-//! and `close` waits for nobody. (The connection that a listener makes to itself to wake an
-//! accept is started and not waited for either; its socket is kept in the listener's shared
-//! state, which every waiting accept holds, so it is not closed before the accept has left.)
+//! It sets the closed flag, takes the object's reference to the socket, shuts the socket down,
+//! ends the waits that the object has armed with the poller (they resume with `Closed`, and the
+//! poller's hold on the socket is gone when `close` returns), wakes everything that waits for a
+//! turn, and returns. The socket is reference counted: every operation holds a reference while it
+//! makes one system call and lets it go before it suspends, and the descriptor is released when
+//! the last one is gone, so a wait never sees a closed or reused descriptor and `close` waits
+//! for nobody. (An accept still holds one for up to one slice, and the connection that a listener
+//! makes to itself to wake an accept is started and not waited for either; its socket is kept in
+//! the listener's shared state, which every waiting accept holds, so it is not closed before the
+//! accept has left.)
 //!
 //! A `Conn` is full duplex. Reads wait for one turn queue, writes (and `close_write`, which
 //! must not cut a write that is still queued) for another, and `close` takes neither: two
 //! operations of one kind are never interleaved, and they are served in the order they were
-//! called. An operation that waits for its turn sleeps on a
-//! condition variable until the turn comes, the object is closed, its coroutine is cancelled
-//! (a hook of the cancel token wakes it) or its deadline passes: it does not tick.
+//! called. A read or write that waits for its turn is parked in its queue without a thread until
+//! the turn comes, the object is closed, its coroutine is cancelled or its deadline passes: it
+//! does not tick. (An accept still sleeps on a condition variable for its turn.)
 //!
 //! # Where nothing else can run
 //!
 //! A call made from a `Drop` hook or a callback of a host function cannot suspend: it blocks the
-//! interpreter thread (`Ctx::can_suspend` is `false`). A read (or accept) holds its turn until
-//! its coroutine has resumed and taken the result, so one that is called there while an earlier
-//! read (accept) is outstanding would wait for a coroutine that can never resume. It returns a
-//! `net.Error.Other` at once instead: that is the one case the module can see. A write takes no
-//! turn that outlives its worker, so it does not have that problem, but it, and `close_write`
-//! (which waits for the writes called before it), can still wait in a hook for room that only
-//! another coroutine of the same program would make (the one that reads what is written), and
-//! that coroutine cannot run while the hook waits. A program must not do that: from a `Drop`
-//! hook or a callback, write only what the peer takes without help from this program (as `fs`
-//! has the same limit with a pipe that this program reads itself).
+//! interpreter thread (`Ctx::can_suspend` is `false`), and the poller wakes it. A read (or
+//! accept) holds its turn until its coroutine has taken the result, and a write is sent by the
+//! coroutine that called it, so one that is called there while an earlier read, write or accept
+//! of the same object is outstanding in another coroutine would wait for a coroutine that can
+//! never resume. It returns a `net.Error.Other` at once instead: that is the one case the module
+//! can see. `close_write` is the exception, because it has nothing to wait for: behind another
+//! coroutine's unfinished write it takes a place in the write order (a ticket and a parked cell
+//! whose callback shuts the writing end, run by the drop of the ticket ahead on the interpreter
+//! thread), returns `Ok` at once, and the write ahead is never cut. `Ok` from such a place means
+//! "scheduled": a shutdown that then fails has nobody to tell, a connection that is closed
+//! before its turn skips it, and a write called after it fails as a write after `close_write`
+//! does. A write that finds no other write outstanding can still wait in a hook for room that
+//! only another coroutine of the same program would make (the one that reads what is written),
+//! and that coroutine cannot run while the hook waits. A program must not do that: from a `Drop` hook or a callback, write only
+//! what the peer takes without help from this program (as `fs` has the same limit with a pipe
+//! that this program reads itself).
 //!
 //! # A write that stops part way breaks the write side
 //!
@@ -77,13 +102,15 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use socket2::{Domain, Protocol, SockAddr, SockRef, Socket, Type};
 
-use colibri_runtime::{Bytes, CancelToken, Cap, Ctx, Error, HostType, TypeBuilder, TypedError, Vm};
+use colibri_runtime::{
+    Bytes, CancelToken, Cap, Ctx, Error, HostType, Incomplete, TypeBuilder, TypedError, Vm,
+};
 
 use crate::bytes::utf8_problem;
 use crate::errors::error_kind;
@@ -136,10 +163,8 @@ error_kind!(
     }
 );
 
-// The poller and its wait cells (step 2 of the change that replaces the thread per waiting
-// socket). Only the tests use them until the operations move over, so the compiler is told not
-// to complain about code that nothing calls yet; the step that moves the reads removes this.
-#[cfg_attr(not(test), allow(dead_code))]
+// The poller and its wait cells, which the reads and writes of a connection wait with. (Accept
+// and connect still wait on threads of their own until their steps.)
 mod poll;
 
 /// How long a worker waits for readiness before it looks at its stop conditions again.
@@ -151,8 +176,22 @@ pub(crate) const MAX_LINE: usize = 1 << 20;
 /// The most bytes one `read_exact` buffers.
 const MAX_EXACT: usize = 1 << 30;
 
-/// The most one `send` is given, so that a cancel or a deadline is noticed between sends.
+/// The most one `send` is given, so that a deadline is noticed between sends. (A cancel is seen
+/// only where the call suspends, a give-way included: a send that makes progress does not.)
 const SEND_CHUNK: usize = 256 * 1024;
+
+/// How many bytes of reads and writes a connection does on the interpreter thread without any
+/// call on it having suspended, before the next call gives the thread to the other coroutines
+/// once (see `Burst`). A read or write that never has to wait (a peer that is always ready, a
+/// buffer that always has the bytes) would otherwise keep every other coroutine from running.
+/// One mebibyte is a few copies at memory speed, well under a millisecond.
+const MAX_BURST: usize = 1 << 20;
+
+/// How many calls on a connection may follow one another without any of them suspending before
+/// the next one gives the thread to the other coroutines once. The bytes cap does not bound a
+/// loop of tiny reads and writes, and a call costs a few microseconds, so sixty-four of them are
+/// still far below a millisecond.
+const MAX_BURST_CALLS: usize = 64;
 
 /// What `listen` asks the system for: connections that wait to be accepted.
 const BACKLOG: i32 = 1024;
@@ -568,6 +607,11 @@ impl Limit {
         deadline: None,
         timeout: Duration::ZERO,
     };
+
+    /// Whether the deadline has passed.
+    fn late(&self) -> bool {
+        self.deadline.is_some_and(|d| Instant::now() >= d)
+    }
 }
 
 /// What a worker looks at between slices.
@@ -587,18 +631,109 @@ fn no_thread(action: &str, name: &str, reason: &str) -> TypedError {
 /// The error of a wait that needed the poller and could not get one. A poller that the system
 /// would not make is an error of the system (out of descriptors gets the text that `describe`
 /// gives it); a thread that cannot be started is `Other`, as for the helper threads.
-#[cfg_attr(not(test), allow(dead_code))]
-fn poller_error(action: &str, name: &str, e: &poll::StartError) -> TypedError {
+/// `note` is what a write adds when some of its data is out already (see `sent_note`).
+fn poller_error(action: &str, name: &str, e: &poll::StartError, note: &str) -> TypedError {
     match e {
-        poll::StartError::System(e) => fail(action, name, e),
+        poll::StartError::System(e) => {
+            let (kind, message) = failure(action, name, e);
+            kind.error(format!("{message}{note}"))
+        }
         poll::StartError::Thread(e) => no_thread(
             action,
             name,
             &format!(
-                "cannot start the thread that waits for sockets: {}",
+                "cannot start the thread that waits for sockets: {}{note}",
                 reason(e)
             ),
         ),
+    }
+}
+
+/// The poller of this `Vm`, started if it is not running.
+fn poller_of(
+    cx: &mut Ctx,
+    action: &str,
+    name: &str,
+    note: &str,
+) -> Result<Arc<poll::Poller>, TypedError> {
+    match cx.state_mut::<poll::NetState>() {
+        Some(state) => state
+            .poller()
+            .map_err(|e| poller_error(action, name, &e, note)),
+        None => Err(Kind::Other.error(format!(
+            "cannot {action} `{name}`: the net module is not set up in this Vm{note}"
+        ))),
+    }
+}
+
+/// Suspends the calling coroutine until the wait cell that `arrange` is given is resolved, and
+/// gives the reason. `arrange` registers the cell wherever it is to be resolved from (the poller,
+/// a queue of turns, the object's slot); it runs before the coroutine suspends and must register
+/// what it can, or resolve the cell itself. A cancel of the coroutine resolves the cell too (its
+/// registrations go with it), and a cell that is registered nowhere and never resolved is
+/// reported by the runtime as a wait that ended without an answer, not as a hang.
+fn suspend(
+    cx: &mut Ctx,
+    arrange: impl FnOnce(&Arc<poll::Cell>) -> io::Result<()>,
+) -> Result<poll::Why, Incomplete> {
+    cx.try_await_completion::<poll::Why>(move |completer| {
+        let token = Arc::clone(completer.token());
+        let cell = poll::Cell::new(move |why| completer.complete(why));
+        let weak = Arc::downgrade(&cell);
+        // At once if the token is cancelled already; `arrange` then finds a resolved cell and
+        // registers nothing.
+        token.on_cancel(move || {
+            if let Some(cell) = weak.upgrade() {
+                cell.fire(poll::Why::Cancelled);
+            }
+        });
+        arrange(&cell).map_err(|e| e.to_string())
+    })
+}
+
+/// Gives the interpreter thread to the other coroutines once: a call that is only a scheduling
+/// point (the completion is made inside `start`). Where nothing else can run it does nothing.
+fn give_way(cx: &mut Ctx) {
+    #[cfg(test)]
+    give_way_probe::called();
+    if cx.can_suspend() {
+        let _ = cx.try_await_completion::<()>(|completer| {
+            completer.complete(());
+            Ok(())
+        });
+    }
+}
+
+/// What the unit tests see of `give_way`: how many times this thread has called it, and a hook
+/// that runs at the moment it is called (before the coroutine gives the thread away).
+#[cfg(test)]
+mod give_way_probe {
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        static CALLS: Cell<usize> = const { Cell::new(0) };
+        static HOOK: RefCell<Option<Box<dyn FnMut()>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn called() {
+        CALLS.with(|c| c.set(c.get() + 1));
+        // Taken out while it runs, so that a hook may itself call things that give way.
+        if let Some(mut hook) = HOOK.with(|h| h.borrow_mut().take()) {
+            hook();
+            HOOK.with(|h| *h.borrow_mut() = Some(hook));
+        }
+    }
+
+    pub(super) fn calls() -> usize {
+        CALLS.with(Cell::get)
+    }
+
+    pub(super) fn set_hook(hook: impl FnMut() + 'static) {
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn clear_hook() {
+        HOOK.with(|h| *h.borrow_mut() = None);
     }
 }
 
@@ -683,22 +818,12 @@ impl Wait<'_> {
             .deadline
             .map(|d| d.saturating_duration_since(Instant::now()))
     }
-
-    /// How long the next wait for readiness may take.
-    fn slice(&self) -> Duration {
-        match self.limit.deadline {
-            None => SLICE,
-            Some(d) => d
-                .saturating_duration_since(Instant::now())
-                .clamp(Duration::from_millis(1), SLICE),
-        }
-    }
 }
 
 /// The order in which operations of one kind (reads, writes, accepts) on one object are served:
 /// the order their calls were made. A ticket is taken on the interpreter thread when the method
-/// is called, and the operation waits on its worker for its turn, so which pool thread happens
-/// to start first decides nothing. A ticket that is dropped without having had its turn (the
+/// is called, and the operation waits (suspended, or on its worker) for its turn, so which
+/// thread happens to start first decides nothing. A ticket that is dropped without having had its turn (the
 /// coroutine was cancelled, the operation stopped while it waited, its job never started) is
 /// skipped, so it neither runs later nor holds up the ones behind it.
 struct Turns {
@@ -757,7 +882,6 @@ impl Turns {
     /// The parked cells are resolved with `Why::Closed` (each looks at the flag and at its
     /// deadline to find out whether that is what happened). Every cell is resolved even if the
     /// callback of one of them panics; the first such panic is then passed on to the caller.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn wake(&self) {
         let parked = std::mem::take(&mut self.lock().parked);
         self.advanced.notify_all();
@@ -831,21 +955,32 @@ impl Ticket {
 }
 
 impl Ticket {
+    /// Whether it is this ticket's turn now.
+    fn has_turn(&self) -> bool {
+        self.turns.lock().serving == self.id
+    }
+
     /// Waits for this ticket's turn without a thread: `cell` is resolved with `Why::Turn` when
     /// the turn comes (at once if it is here), or with whatever else ends the wait first (a
     /// close through `Turns::wake`, a deadline given to the poller with the same cell, a cancel).
     /// A cell that ends another way is taken out of the queue. Does nothing if the cell is
     /// resolved already.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn park(&self, cell: &Arc<poll::Cell>) {
-        let mut st = self.turns.lock();
-        if st.serving == self.id {
+        self.turns.park_at(self.id, cell);
+    }
+}
+
+impl Turns {
+    /// `Ticket::park` for the ticket `id`, which a callback of `cell` may own (see
+    /// `Shared::schedule_shutdown`): only the queue and the id are used here.
+    fn park_at(self: &Arc<Self>, id: u64, cell: &Arc<poll::Cell>) {
+        let mut st = self.lock();
+        if st.serving == id {
             drop(st);
             cell.fire(poll::Why::Turn);
             return;
         }
-        let turns = Arc::downgrade(&self.turns);
-        let id = self.id;
+        let turns = Arc::downgrade(self);
         let leave = move || {
             if let Some(turns) = turns.upgrade() {
                 turns.lock().parked.remove(&id);
@@ -916,6 +1051,67 @@ impl<T> Handle<T> {
     /// Takes the object's own reference away (what `close` does).
     fn take(&self) -> Option<Arc<T>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+}
+
+// ---- the waits of an object ----
+
+/// The wait cells that are armed with the poller for an object: at most one per direction, as
+/// the queues of turns allow one read and one write at a time. `close` resolves them.
+#[derive(Default)]
+struct Slots {
+    read: Option<Arc<poll::Cell>>,
+    write: Option<Arc<poll::Cell>>,
+}
+
+impl Slots {
+    fn of(&mut self, dir: poll::Dir) -> &mut Option<Arc<poll::Cell>> {
+        match dir {
+            poll::Dir::Read => &mut self.read,
+            poll::Dir::Write => &mut self.write,
+        }
+    }
+}
+
+fn lock_slots(slots: &Mutex<Slots>) -> MutexGuard<'_, Slots> {
+    slots.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// How much a connection has done on the interpreter thread since one of its calls last
+/// suspended. A call that never has to wait does not suspend, so a coroutine in a loop of reads
+/// and writes against a peer that is always ready would never give the thread back: when the
+/// bytes (`MAX_BURST`) or the calls (`MAX_BURST_CALLS`) are used up, the next call gives the
+/// thread to the others once (`give_way`). Anything that really suspends starts the count over.
+#[derive(Default)]
+struct Burst {
+    bytes: AtomicUsize,
+    calls: AtomicUsize,
+}
+
+impl Burst {
+    fn reset(&self) {
+        self.bytes.store(0, Ordering::Relaxed);
+        self.calls.store(0, Ordering::Relaxed);
+    }
+
+    /// A call begins: `true` (and the count starts over) when the calls of the budget are used up.
+    fn begin_call(&self) -> bool {
+        let before = self.calls.fetch_add(1, Ordering::Relaxed);
+        if before >= MAX_BURST_CALLS {
+            self.reset();
+            return true;
+        }
+        false
+    }
+
+    /// `n` bytes were read or written: `true` (and the count starts over) when that used the
+    /// bytes up.
+    fn spend(&self, n: usize) -> bool {
+        if self.bytes.fetch_add(n, Ordering::Relaxed).saturating_add(n) >= MAX_BURST {
+            self.reset();
+            return true;
+        }
+        false
     }
 }
 
@@ -1289,13 +1485,31 @@ struct Shared {
     /// A write stopped with some of its data sent and some not: the stream is out of step, and
     /// every later write fails (`BrokenPipe`). Reads are not affected.
     write_broken: AtomicBool,
+    /// Set when a shutdown of the writing end was scheduled behind a write (see
+    /// `schedule_shutdown`): a write that a hook makes after that must fail as one after
+    /// `close_write` does, and cannot wait behind the shutdown for the write ahead of it.
+    shutdown_scheduled: AtomicBool,
     /// Nanoseconds; 0 means no timeout.
     timeout_ns: AtomicU64,
     reader: Mutex<Reader>,
     reads: Arc<Turns>,
     writes: Arc<Turns>,
+    /// The waits that are armed with the poller for this connection, so that `close` can end them.
+    slots: Arc<Mutex<Slots>>,
+    /// How much the connection has done on the interpreter thread since a call on it suspended.
+    burst: Burst,
     local: String,
     peer: String,
+}
+
+impl Drop for Shared {
+    /// The parked cells of the queues (a shutdown scheduled by `close_write` owns a ticket, which
+    /// owns its queue) are let go of when the connection goes away, so that nothing keeps a
+    /// queue alive in a cycle with itself.
+    fn drop(&mut self) {
+        self.reads.wake();
+        self.writes.wake();
+    }
 }
 
 /// A connection, from `net.connect` or `listener.accept()`. When the last reference to it goes
@@ -1319,10 +1533,13 @@ impl Conn {
                 sock: Handle::new(stream),
                 closed: AtomicBool::new(false),
                 write_broken: AtomicBool::new(false),
+                shutdown_scheduled: AtomicBool::new(false),
                 timeout_ns: AtomicU64::new(0),
                 reader: Mutex::new(Reader::new()),
                 reads: Turns::new(),
                 writes: Turns::new(),
+                slots: Arc::new(Mutex::new(Slots::default())),
+                burst: Burst::default(),
                 local,
                 peer,
             }),
@@ -1332,7 +1549,7 @@ impl Conn {
 
 impl Shared {
     /// The deadline a call made now has. Taken on the interpreter thread, when the method is
-    /// called, so waiting for a worker or for earlier calls counts against it.
+    /// called, so waiting for earlier calls counts against it.
     fn limit(&self) -> Limit {
         let ns = self.timeout_ns.load(Ordering::SeqCst);
         let timeout = Duration::from_nanos(ns);
@@ -1353,121 +1570,296 @@ impl Shared {
         }
     }
 
-    /// One step of reading more into the buffer: waits for the socket to be readable for up to
-    /// one slice and, when it is, reads what is there. The buffer is not touched (not grown, not
-    /// zero-filled) while nothing can be read, so an idle read costs one `poll` per slice.
-    /// `want` is as for [`Reader::make_room`].
-    fn fill(
-        &self,
-        r: &mut Reader,
-        wait: &Wait<'_>,
-        action: &str,
-        want: usize,
-    ) -> Result<(), TypedError> {
-        let Some(sock) = self.sock.get() else {
-            return Err(wait.closed_error(action));
-        };
-        match sys::wait_ready(&*sock, false, wait.slice()) {
-            Ok(true) => {}
-            Ok(false) => return Ok(()),
-            Err(e) => {
-                wait.check_open(action)?;
-                return Err(fail(action, &self.peer, &e));
-            }
+    fn lock_reader(&self) -> MutexGuard<'_, Reader> {
+        self.reader.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// A call on this connection begins. When the connection has done a burst without any call
+    /// suspending (`MAX_BURST` bytes, `MAX_BURST_CALLS` calls), this one first gives the thread to
+    /// the other coroutines once.
+    fn begin_call(&self, cx: &mut Ctx) {
+        if self.burst.begin_call() {
+            give_way(cx);
         }
-        match r.read_from(&mut &*sock, want) {
-            Err(asked) => {
-                return Err(Kind::Other.error(format!(
-                    "cannot {action} `{}`: not enough memory for {asked} more bytes",
-                    self.peer
-                )));
-            }
-            Ok(Ok(n)) => r.eof |= n == 0,
-            // Not readable after all (the readiness was an error that went away, or another
-            // wake-up): the next step waits again.
-            Ok(Err(e)) => {
-                if !matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) {
-                    wait.check_open(action)?;
-                    return Err(fail(action, &self.peer, &e));
-                }
-            }
+    }
+
+    /// A write that cannot suspend (a `Drop` hook, a callback) blocks the interpreter thread, and
+    /// a write that another coroutine has begun is sent by that coroutine when it runs again: it
+    /// would wait for something that cannot happen while the thread is blocked. It is refused at
+    /// once instead, as a read is. (`close_write` is not refused: it is scheduled.)
+    fn refuse_behind_a_write(&self, cx: &mut Ctx, action: &str) -> Result<(), TypedError> {
+        if !cx.can_suspend()
+            && !self.closed.load(Ordering::SeqCst)
+            && self.shutdown_scheduled.load(Ordering::SeqCst)
+        {
+            // Behind a scheduled shutdown the write would fail anyway: it fails now, with the
+            // error of a write after `close_write`.
+            let (kind, message) =
+                write_failure(action, &self.peer, &io::Error::from(ErrorKind::BrokenPipe));
+            return Err(kind.error(message));
+        }
+        if !cx.can_suspend() && !self.closed.load(Ordering::SeqCst) && self.writes.busy() {
+            return Err(Kind::Other.error(format!(
+                "cannot {action} `{}`: a write of this connection is already waiting in another coroutine, and it cannot finish while a `Drop` hook or a callback waits (write in the coroutine, or before that write starts)",
+                self.peer
+            )));
         }
         Ok(())
     }
 
-    /// Waits, on a worker, until `probe` says the buffer has what the read needs, reading
-    /// from the socket in between. It takes nothing out of the buffer: that is done by the
-    /// interpreter thread, once the coroutine has resumed (see the module comment).
-    fn read_wait(
+    /// The error of a timeout, for a call that had sent `sent` (`(done, total)`) if it is a write.
+    fn timeout_error(
         &self,
-        ticket: &Ticket,
-        wait: &Wait<'_>,
+        limit: Limit,
         action: &str,
-        probe: impl Fn(&mut Reader) -> Probe,
-    ) -> Result<(), TypedError> {
-        wait.check_open(action)?;
-        ticket.wait_turn(wait, action)?;
-        // Only the holder of the turn gets here, so this never waits.
-        let mut r = self.reader.lock().unwrap_or_else(PoisonError::into_inner);
-        let result = self.read_loop(&mut r, wait, action, probe);
-        // The buffer the socket is read into is for the length of one call: a connection that
-        // is idle holds none (1,000 of them would hold 64 MB), and one call over a trickle of
-        // single bytes still zero-fills it only once.
-        r.end_call();
-        result
+        sent: Option<(usize, usize)>,
+    ) -> TypedError {
+        self.wait(None, limit)
+            .stop_error(Stop::Timeout, action, sent)
     }
 
-    fn read_loop(
+    fn closed_error(&self, action: &str, sent: Option<(usize, usize)>) -> TypedError {
+        self.wait(None, Limit::NONE)
+            .stop_error(Stop::Closed, action, sent)
+    }
+
+    /// What the end of a suspension means for the call that suspended.
+    fn ended(
         &self,
-        r: &mut Reader,
-        wait: &Wait<'_>,
+        end: Result<poll::Why, Incomplete>,
         action: &str,
-        probe: impl Fn(&mut Reader) -> Probe,
+        sent: Option<(usize, usize)>,
+    ) -> Result<Ended, TypedError> {
+        self.burst.reset();
+        let note = sent_note(sent);
+        let other = |what: &str| {
+            Kind::Other.error(format!("cannot {action} `{}`: {what}{note}", self.peer))
+        };
+        match end {
+            Ok(poll::Why::Ready | poll::Why::Turn) => Ok(Ended::Ready),
+            Ok(poll::Why::TimedOut) => Ok(Ended::TimedOut),
+            Ok(poll::Why::Closed) => Ok(Ended::Closed),
+            Ok(poll::Why::Cancelled) => Err(other("its caller was cancelled")),
+            Ok(poll::Why::Failed) => Err(other(
+                "the thread that waits for sockets has stopped, so the wait cannot go on",
+            )),
+            Err(Incomplete::NotStarted(why)) => {
+                Err(other(&format!("cannot wait for the socket: {why}")))
+            }
+            Err(Incomplete::Dropped(_)) => Err(other(
+                "the wait for the socket ended without an answer (the thread that waits for sockets is gone)",
+            )),
+        }
+    }
+
+    /// Waits for the turn of `ticket` without a thread: the coroutine suspends, and the queue, a
+    /// close or the deadline resumes it. Does not suspend when the turn is here.
+    fn await_turn(
+        &self,
+        cx: &mut Ctx,
+        ticket: &Ticket,
+        limit: Limit,
+        action: &str,
     ) -> Result<(), TypedError> {
-        let mut tried = false;
-        loop {
-            // Cancelled first: bytes that arrive after a cancel stay in the buffer for the
-            // next read instead of going to a coroutine that is gone.
-            if let Some(stop) = wait.stop_unless_late() {
-                return Err(wait.stop_error(stop, action, None));
+        self.wait(None, limit).check_open(action)?;
+        if ticket.has_turn() {
+            return Ok(());
+        }
+        let poller = poller_of(cx, action, &self.peer, "")?;
+        let end = suspend(cx, |cell| {
+            ticket.park(cell);
+            if let Some(deadline) = limit.deadline {
+                poller.timer(deadline, cell)?;
             }
-            let want = match probe(r) {
-                Probe::Ready => return Ok(()),
-                Probe::Failed(e) => return Err(e),
-                Probe::Pending(want) => want,
+            // Stored, then looked at: a close that came before the cell was parked has woken
+            // nobody (`Turns::wake` took an empty queue).
+            if self.closed.load(Ordering::SeqCst) {
+                cell.fire(poll::Why::Closed);
+            }
+            Ok(())
+        });
+        match self.ended(end, action, None)? {
+            Ended::Ready => Ok(()),
+            Ended::TimedOut => Err(self.timeout_error(limit, action, None)),
+            Ended::Closed => Err(self.closed_error(action, None)),
+        }
+    }
+
+    /// Suspends until `sock` is ready in direction `dir` (spuriously too), the deadline of `limit`
+    /// comes, or the connection is closed. `sock` is a reference of this call's own and is given
+    /// to the poller: nothing of it is held here while the coroutine is suspended.
+    fn wait_ready(
+        &self,
+        cx: &mut Ctx,
+        sock: Arc<TcpStream>,
+        dir: poll::Dir,
+        limit: Limit,
+        action: &str,
+        sent: Option<(usize, usize)>,
+    ) -> Result<Ended, TypedError> {
+        let poller = poller_of(cx, action, &self.peer, &sent_note(sent))?;
+        let end = suspend(cx, move |cell| {
+            // So that a close finds the wait: stored, then the flag is looked at.
+            let leave = {
+                let slots = Arc::downgrade(&self.slots);
+                let me = Arc::downgrade(cell);
+                move || {
+                    if let Some(slots) = slots.upgrade() {
+                        let mut slots = lock_slots(&slots);
+                        let slot = slots.of(dir);
+                        if slot
+                            .as_ref()
+                            .is_some_and(|c| std::ptr::eq(Arc::as_ptr(c), me.as_ptr()))
+                        {
+                            *slot = None;
+                        }
+                    }
+                }
             };
-            if tried && wait.late() {
-                return Err(wait.stop_error(Stop::Timeout, action, None));
+            if !cell.on_resolve(leave) {
+                return Ok(());
             }
-            self.fill(r, wait, action, want)?;
+            *lock_slots(&self.slots).of(dir) = Some(Arc::clone(cell));
+            if cell.is_resolved() {
+                // Resolved between the two lines above: the clean-up ran before the store.
+                *lock_slots(&self.slots).of(dir) = None;
+                return Ok(());
+            }
+            if self.closed.load(Ordering::SeqCst) {
+                cell.fire(poll::Why::Closed);
+                return Ok(());
+            }
+            poller.arm(&sock, dir, limit.deadline, cell)
+        });
+        self.ended(end, action, sent)
+    }
+
+    /// Waits for the turn of `ticket`, then reads on the interpreter thread until `probe` says
+    /// the buffer has what the call needs, and `take`s it. The socket is read where the call runs,
+    /// so a coroutine that is cancelled while it waits has taken nothing: what has arrived stays
+    /// in the buffer (and in the kernel) for the next read. `reader` and a reference to the
+    /// socket are never held across a suspension, and the buffer that the socket is read into is
+    /// let go on every way out, an unwinding cancel included.
+    fn read_call<R>(
+        &self,
+        cx: &mut Ctx,
+        ticket: Ticket,
+        limit: Limit,
+        probe: impl Fn(&mut Reader) -> Probe,
+        take: impl Fn(&mut Reader) -> Result<R, TypedError>,
+    ) -> Result<R, TypedError> {
+        let action = "read from";
+        let _end = EndCall(self);
+        self.await_turn(cx, &ticket, limit, action)?;
+        let mut tried = false;
+        // After the deadline came one more try is made (data that arrived at the last moment is
+        // not a timeout), and only then does the call time out.
+        let mut final_try = false;
+        // A wake that said "ready" is owed its try, whatever the clock says by the time this
+        // coroutine runs again (the thread may have been busy past the deadline meanwhile).
+        let mut owed = false;
+        loop {
+            // Closed first: what is buffered of a connection that was closed is not for anyone.
+            if self.closed.load(Ordering::SeqCst) {
+                return Err(self.closed_error(action, None));
+            }
+            let want = {
+                let mut r = self.lock_reader();
+                match probe(&mut r) {
+                    Probe::Ready => return take(&mut r),
+                    Probe::Failed(e) => return Err(e),
+                    Probe::Pending(want) => want,
+                }
+            };
+            if tried && !final_try && !owed && limit.late() {
+                return Err(self.timeout_error(limit, action, None));
+            }
+            owed = false;
+            let Some(sock) = self.sock.get() else {
+                return Err(self.closed_error(action, None));
+            };
+            let read = {
+                let mut r = self.lock_reader();
+                let read = r.read_from(&mut &*sock, want);
+                if let Ok(Ok(0)) = read {
+                    r.eof = true;
+                }
+                read
+            };
             tried = true;
+            match read {
+                Err(asked) => {
+                    return Err(Kind::Other.error(format!(
+                        "cannot {action} `{}`: not enough memory for {asked} more bytes",
+                        self.peer
+                    )));
+                }
+                Ok(Ok(n)) => {
+                    final_try = false;
+                    if self.burst.spend(n) {
+                        // No reference to the socket while the coroutine is away: a close that
+                        // runs meanwhile must release the descriptor.
+                        drop(sock);
+                        give_way(cx);
+                    }
+                }
+                Ok(Err(e)) if e.kind() == ErrorKind::Interrupted => {}
+                Ok(Err(e)) if e.kind() == ErrorKind::WouldBlock => {
+                    if final_try || limit.late() {
+                        return Err(self.timeout_error(limit, action, None));
+                    }
+                    match self.wait_ready(cx, sock, poll::Dir::Read, limit, action, None)? {
+                        Ended::Ready => owed = true,
+                        Ended::TimedOut => final_try = true,
+                        Ended::Closed => return Err(self.closed_error(action, None)),
+                    }
+                }
+                Ok(Err(e)) => {
+                    // A closed connection reports the shutdown as an error of the socket.
+                    if self.closed.load(Ordering::SeqCst) {
+                        return Err(self.closed_error(action, None));
+                    }
+                    return Err(fail(action, &self.peer, &e));
+                }
+            }
         }
     }
 
     /// Sends `data`, behind the writes called before it. A write that stops with some of its
     /// data sent and some not (cancelled, out of time, failed) leaves the stream out of step,
     /// so it marks the write side broken: later writes fail with `BrokenPipe` and say why. A
-    /// write that stopped before it sent anything changes nothing.
-    fn write_op(&self, ticket: &Ticket, wait: &Wait<'_>, data: &[u8]) -> Result<(), TypedError> {
-        let mut done = 0;
-        let result = self.send_all(ticket, wait, data, &mut done);
-        if result.is_err() && done > 0 && done < data.len() {
-            self.write_broken.store(true, Ordering::SeqCst);
-        }
+    /// write that stopped before it sent anything changes nothing. The mark is made by a guard,
+    /// so a cancel that unwinds the call makes it too.
+    fn write_call(
+        &self,
+        cx: &mut Ctx,
+        ticket: Ticket,
+        limit: Limit,
+        data: &[u8],
+    ) -> Result<(), TypedError> {
+        let mut sent = SentGuard {
+            broken: &self.write_broken,
+            done: 0,
+            total: data.len(),
+            ok: false,
+        };
+        let result = self.send_all(cx, &ticket, limit, data, &mut sent.done);
+        sent.ok = result.is_ok();
         result
     }
 
     fn send_all(
         &self,
+        cx: &mut Ctx,
         ticket: &Ticket,
-        wait: &Wait<'_>,
+        limit: Limit,
         data: &[u8],
         done: &mut usize,
     ) -> Result<(), TypedError> {
         let action = "write to";
         let total = data.len();
-        wait.check_open(action)?;
-        ticket.wait_turn(wait, action)?;
+        self.wait(None, limit).check_open(action)?;
+        self.await_turn(cx, ticket, limit, action)?;
         if self.write_broken.load(Ordering::SeqCst) {
             return Err(Kind::BrokenPipe.error(format!(
                 "cannot write to `{}`: an earlier write stopped part way, so the stream is out of step (close the connection; reading still works)",
@@ -1475,20 +1867,22 @@ impl Shared {
             )));
         }
         let mut tried = false;
+        let mut final_try = false;
+        // As in `read_call`: a wake that said "ready" is owed its try.
+        let mut owed = false;
         while *done < total {
-            // Between every two sends, so a cancel or a deadline does not wait for the end of
-            // a big write. The first send is tried whatever the deadline says.
-            let stop = if tried {
-                wait.stop()
-            } else {
-                wait.stop_unless_late()
-            };
-            if let Some(stop) = stop {
-                return Err(wait.stop_error(stop, action, Some((*done, total))));
+            if self.closed.load(Ordering::SeqCst) {
+                return Err(self.closed_error(action, Some((*done, total))));
             }
+            // Between every two sends, so a deadline does not wait for the end of a big write.
+            // The first send is tried whatever the deadline says.
+            if tried && !final_try && !owed && limit.late() {
+                return Err(self.timeout_error(limit, action, Some((*done, total))));
+            }
+            owed = false;
             tried = true;
             let Some(sock) = self.sock.get() else {
-                return Err(wait.stop_error(Stop::Closed, action, Some((*done, total))));
+                return Err(self.closed_error(action, Some((*done, total))));
             };
             let end = total.min(*done + SEND_CHUNK);
             let failed = |e: &io::Error| {
@@ -1503,21 +1897,70 @@ impl Shared {
                         sent_note(Some((*done, total)))
                     )));
                 }
-                Ok(n) => *done += n,
+                Ok(n) => {
+                    *done += n;
+                    final_try = false;
+                    if self.burst.spend(n) {
+                        drop(sock);
+                        give_way(cx);
+                    }
+                }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    if let Err(e) = sys::wait_ready(&*sock, true, wait.slice()) {
-                        return Err(failed(&e));
+                    if final_try || limit.late() {
+                        return Err(self.timeout_error(limit, action, Some((*done, total))));
+                    }
+                    // Room for no byte at all, or for fewer than were wanted: the wait ends when
+                    // the socket says "try again", which is not a promise of room for the rest.
+                    match self.wait_ready(
+                        cx,
+                        sock,
+                        poll::Dir::Write,
+                        limit,
+                        action,
+                        Some((*done, total)),
+                    )? {
+                        Ended::Ready => owed = true,
+                        Ended::TimedOut => final_try = true,
+                        Ended::Closed => {
+                            return Err(self.closed_error(action, Some((*done, total))));
+                        }
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
                 Err(e) => {
-                    wait.check_open(action)
-                        .map_err(|_| wait.stop_error(Stop::Closed, action, Some((*done, total))))?;
+                    if self.closed.load(Ordering::SeqCst) {
+                        return Err(self.closed_error(action, Some((*done, total))));
+                    }
                     return Err(failed(&e));
                 }
             }
         }
         Ok(())
+    }
+
+    /// Takes a place in the write order for the shutdown of the writing end, and returns: the
+    /// shutdown is made when the turn comes, by whoever passes the turn on (the drop of the
+    /// ticket ahead, on the interpreter thread), and a closed connection skips it. This is what
+    /// `close_write` does where it cannot wait for the writes ahead; a shutdown that fails then
+    /// has nobody to tell (`NotConnected` is ignored anyway). The queue is the one thing the
+    /// parked cell keeps alive; the connection is only reached through a weak reference, so a
+    /// connection that goes away with the shutdown still scheduled is not kept alive by it.
+    fn schedule_shutdown(self: &Arc<Self>) {
+        self.shutdown_scheduled.store(true, Ordering::SeqCst);
+        let ticket = self.writes.ticket();
+        let (turns, id) = (Arc::clone(&self.writes), ticket.id);
+        let sh = Arc::downgrade(self);
+        let cell = poll::Cell::new(move |why| {
+            // Dropped at the end: the turn goes on to the next write, after the shutdown.
+            let _ticket = ticket;
+            if why == poll::Why::Turn
+                && let Some(sh) = sh.upgrade()
+                && !sh.closed.load(Ordering::SeqCst)
+            {
+                let _ = sh.shut_write();
+            }
+        });
+        turns.park_at(id, &cell);
     }
 
     /// Shuts the writing end down, whoever is ahead of it in the queue having finished.
@@ -1535,11 +1978,12 @@ impl Shared {
         Ok(())
     }
 
-    /// Closes the connection: marks it closed, shuts the socket down (which ends a read or a
-    /// write that waits on it, on every system we know of), wakes everything that waits for its
-    /// turn, and lets go of the socket. It returns at once and never fails. The descriptor is
-    /// released when the last operation that is still using it leaves; that is within one
-    /// slice at the latest, and a readiness wait never sees it closed.
+    /// Closes the connection: marks it closed, shuts the socket down, lets go of the socket,
+    /// ends the waits that are armed with the poller (their cells are resolved with `Closed`, and
+    /// the poller's hold on the socket goes under its lock before this returns) and wakes everything
+    /// that waits for a turn. It returns at once and never fails. The descriptor is released by the
+    /// time it returns, because no operation holds a reference to the socket while it is
+    /// suspended.
     fn close(&self) {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
@@ -1547,26 +1991,75 @@ impl Shared {
         if let Some(sock) = self.sock.take() {
             let _ = sock.shutdown(Shutdown::Both);
         }
+        let cells = {
+            let mut slots = lock_slots(&self.slots);
+            [slots.read.take(), slots.write.take()]
+        };
+        let cells = cells
+            .into_iter()
+            .flatten()
+            .map(|cell| (cell, poll::Why::Closed))
+            .collect();
+        let panic = poll::fire_all(cells);
         self.reads.wake();
         self.writes.wake();
+        if let Some(panic) = panic {
+            std::panic::resume_unwind(panic);
+        }
     }
 }
 
-/// Runs a read of `this`: at once on the interpreter thread when the buffer has what it needs
-/// and no earlier read waits; otherwise on a worker, behind the reads called before it. `probe`
-/// says whether the buffer is enough, `take` takes the result out of it (`take` runs on the
-/// interpreter thread, after the coroutine has resumed and while it still holds its turn).
+/// How a suspension of a call ended, as the call sees it.
+enum Ended {
+    Ready,
+    TimedOut,
+    Closed,
+}
+
+/// Lets go of the buffer the socket is read into, when a read call is over, however it is over
+/// (the buffer is for the length of one call: a connection that is idle holds none, 1,000 of them
+/// would hold 64 MB, and one call over a trickle of single bytes still zero-fills it only once).
+struct EndCall<'a>(&'a Shared);
+
+impl Drop for EndCall<'_> {
+    fn drop(&mut self) {
+        self.0.lock_reader().end_call();
+    }
+}
+
+/// Marks the write side broken when a write ends with some of its data sent and some not,
+/// whether it returned an error or was unwound by a cancel.
+struct SentGuard<'a> {
+    broken: &'a AtomicBool,
+    done: usize,
+    total: usize,
+    ok: bool,
+}
+
+impl Drop for SentGuard<'_> {
+    fn drop(&mut self) {
+        if !self.ok && self.done > 0 && self.done < self.total {
+            self.broken.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Runs a read of `this` on the interpreter thread: at once when the buffer has what it needs
+/// and no earlier read waits; otherwise behind the reads called before it, suspending whenever
+/// the socket has nothing to read. `probe` says whether the buffer is enough, `take` takes the
+/// result out of it.
 fn on_read<R>(
     cx: &mut Ctx,
     this: &Conn,
-    probe: impl Fn(&mut Reader) -> Probe + Send + 'static,
+    probe: impl Fn(&mut Reader) -> Probe,
     take: impl Fn(&mut Reader) -> Result<R, TypedError>,
 ) -> Result<R, TypedError> {
     let sh = Arc::clone(&this.sh);
+    sh.begin_call(cx);
     if !sh.closed.load(Ordering::SeqCst)
         && let Some(_turn) = sh.reads.immediate()
     {
-        let mut r = sh.reader.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut r = sh.lock_reader();
         match probe(&mut r) {
             Probe::Ready => return take(&mut r),
             Probe::Failed(e) => return Err(e),
@@ -1584,37 +2077,18 @@ fn on_read<R>(
     }
     let ticket = sh.reads.ticket();
     let limit = sh.limit();
-    let worker = Arc::clone(&sh);
-    let ticket = cx
-        .try_run_async_cancellable(move |token| {
-            let wait = worker.wait(Some(token), limit);
-            worker.read_wait(&ticket, &wait, "read from", probe)?;
-            Ok::<Ticket, TypedError>(ticket)
-        })
-        .map_err(|why| no_thread("read from", &sh.peer, &why))??;
-    // The coroutine has resumed and holds the turn: nothing else touches the buffer.
-    let mut r = sh.reader.lock().unwrap_or_else(PoisonError::into_inner);
-    let out = if sh.closed.load(Ordering::SeqCst) {
-        Err(closed_error(&sh.peer, "read from"))
-    } else {
-        take(&mut r)
-    };
-    drop(r);
-    drop(ticket);
-    out
+    sh.read_call(cx, ticket, limit, probe, take)
 }
 
-/// Runs a write of `this` on a background thread, behind the writes called before it.
+/// Runs a write of `this` on the interpreter thread, behind the writes called before it,
+/// suspending whenever the socket takes no more.
 fn on_write(cx: &mut Ctx, this: &Conn, data: Bytes) -> Result<(), TypedError> {
     let sh = Arc::clone(&this.sh);
+    sh.begin_call(cx);
+    sh.refuse_behind_a_write(cx, "write to")?;
     let ticket = sh.writes.ticket();
     let limit = sh.limit();
-    let peer = sh.peer.clone();
-    cx.try_run_async_cancellable(move |token| {
-        let wait = sh.wait(Some(token), limit);
-        sh.write_op(&ticket, &wait, &data)
-    })
-    .map_err(|why| no_thread("write to", &peer, &why))?
+    sh.write_call(cx, ticket, limit, &data)
 }
 
 /// "1 byte", "2 bytes".
@@ -1804,32 +2278,36 @@ impl HostType for Conn {
             |cx: &mut Ctx, this: &Conn, data: Bytes| on_write(cx, this, data),
         );
         // Closes both directions and releases the socket. Anything waiting on this
-        // connection ends with `Closed`. Closing twice is fine. Never waits for anything but
-        // a worker that is in the middle of one system call, and never fails.
+        // connection ends with `Closed`. Closing twice is fine. Never waits for anything and
+        // never fails.
         d.method("close", [], |this: &Conn| this.sh.close());
         // Tells the peer that nothing more comes (it reads the end of the stream) and keeps
         // reading possible. It takes its turn behind the writes called before it, so a write
-        // that is still on its way is sent whole first; with none queued it is done at once.
+        // that is still on its way is sent whole first; with none queued it is done at once. From
+        // a hook or callback behind another coroutine's write it is scheduled and returns `Ok` at
+        // once ("scheduled": a shutdown error then has nowhere to go).
         d.method("close_write", [], |cx: &mut Ctx, this: &Conn| {
             let sh = Arc::clone(&this.sh);
             let action = "close the writing end of";
+            sh.begin_call(cx);
             sh.wait(None, Limit::NONE).check_open(action)?;
             if let Some(_turn) = sh.writes.immediate() {
                 return sh.shut_write();
             }
+            if !cx.can_suspend() {
+                // A hook or callback cannot wait for the writes ahead (they are sent by the
+                // coroutines that began them): the shutdown takes its place in the order and
+                // happens when its turn comes.
+                sh.schedule_shutdown();
+                return Ok(());
+            }
             let ticket = sh.writes.ticket();
             let limit = sh.limit();
-            let peer = sh.peer.clone();
-            cx.try_run_async_cancellable(move |token| {
-                let wait = sh.wait(Some(token), limit);
-                wait.check_open(action)?;
-                ticket.wait_turn(&wait, action)?;
-                // Whether the writes before it were sent whole, cut short or failed, the
-                // writing end is shut: it is the one way left to tell the peer that no more
-                // comes (a cut write left a half message, which the peer should not wait on).
-                sh.shut_write()
-            })
-            .map_err(|why| no_thread(action, &peer, &why))?
+            sh.await_turn(cx, &ticket, limit, action)?;
+            // Whether the writes before it were sent whole, cut short or failed, the writing end
+            // is shut: it is the one way left to tell the peer that no more comes (a cut write
+            // left a half message, which the peer should not wait on).
+            sh.shut_write()
         });
         d.method("local_addr", [], |this: &Conn| this.sh.local.clone());
         d.method("peer_addr", [], |this: &Conn| this.sh.peer.clone());
@@ -2853,11 +3331,11 @@ mod tests {
         #[cfg(windows)]
         let emfile = 10024;
         let e = poll::StartError::System(io::Error::from_raw_os_error(emfile));
-        let text = format!("{:?}", poller_error("read from", "peer", &e));
+        let text = format!("{:?}", poller_error("read from", "peer", &e, ""));
         assert!(text.contains("too many open files"), "{text}");
-        assert_eq!(variant(&poller_error("read from", "peer", &e)), "Other");
+        assert_eq!(variant(&poller_error("read from", "peer", &e, "")), "Other");
         let e = poll::StartError::Thread(io::Error::other("no more threads"));
-        let error = poller_error("read from", "peer", &e);
+        let error = poller_error("read from", "peer", &e, "");
         assert_eq!(variant(&error), "Other");
         let text = format!("{error:?}");
         assert!(
@@ -2877,33 +3355,64 @@ mod tests {
         (Conn::new(s), peer)
     }
 
-    /// A read whose worker has finished (the bytes are in the buffer) and whose coroutine is
-    /// then cancelled before it resumes takes nothing: the bytes stay for the next read, in
-    /// order. This is the path that `a_read_that_finished_before_its_coroutine_was_cancelled`
-    /// in `tests/net.rs` is named for, reached here without any timing.
+    /// Runs `f` inside a host function of a `Vm` that has the net module, on the main fiber (where
+    /// a wait drives the event loop), and gives what it returns: the way the unit tests get a
+    /// `Ctx` to call the interpreter-thread read and write loops with.
+    fn with_cx<T: Send + 'static>(f: impl FnOnce(&mut Ctx) -> T + Send + 'static) -> T {
+        type Job = Box<dyn FnOnce(&mut Ctx) + Send>;
+        let job: Arc<Mutex<Option<Job>>> = Arc::new(Mutex::new(None));
+        let (tx, rx) = mpsc::channel();
+        *job.lock().unwrap() = Some(Box::new(move |cx| {
+            let _ = tx.send(f(cx));
+        }));
+        let out = colibri_runtime::SharedBuffer::new();
+        let mut vm = Vm::builder().stdout(Box::new(out)).allow(Cap::Net).build();
+        register(&mut vm).unwrap();
+        vm.std_module("probe")
+            .register_fn_named("run", [], move |cx: &mut Ctx| {
+                let job = job.lock().unwrap().take().expect("run once");
+                job(cx);
+            })
+            .unwrap();
+        vm.load_source(
+            "app/main.colibri",
+            "import probe\nfn main() { probe.run() }\n",
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        rx.recv().expect("the probe ran")
+    }
+
+    /// A read that stops at the first line leaves the rest in the buffer: the next read finds it
+    /// there, in order, whatever the socket does meanwhile. (That a cancelled read takes nothing
+    /// is `a_read_that_finished_before_its_coroutine_was_cancelled_loses_no_data` in
+    /// `tests/net.rs`; the read happens where the call runs, so there is no window to test here.)
     #[test]
-    fn a_read_that_finished_but_was_never_taken_leaves_its_bytes_for_the_next_read() {
+    fn a_read_leaves_the_bytes_it_did_not_take_for_the_next_read() {
         let (c, mut peer) = conn_pair();
         peer.write_all(b"hello\nworld\n").unwrap();
-        let sh = &c.sh;
-        let live = test_token();
-        let limit = Limit {
-            deadline: Some(Instant::now() + Duration::from_secs(20)),
-            timeout: Duration::from_secs(20),
-        };
-        let wait = sh.wait(Some(&live), limit);
-        let ticket = sh.reads.ticket();
-        sh.read_wait(&ticket, &wait, "read from", |r| line_probe(r, "p"))
-            .unwrap();
-        // The worker is done and holds the turn; the coroutine is cancelled, `take` never runs.
-        drop(ticket);
-        for expected in ["hello", "world"] {
-            let ticket = sh.reads.ticket();
-            sh.read_wait(&ticket, &wait, "read from", |r| line_probe(r, "p"))
-                .unwrap();
-            let mut r = sh.reader.lock().unwrap();
-            assert_eq!(take_line(&mut r, "p").unwrap().as_deref(), Some(expected));
-        }
+        let sh = Arc::clone(&c.sh);
+        let lines = with_cx(move |cx| {
+            let mut lines = Vec::new();
+            for _ in 0..2 {
+                let ticket = sh.reads.ticket();
+                let line = sh
+                    .read_call(
+                        cx,
+                        ticket,
+                        Limit::NONE,
+                        |r| line_probe(r, "p"),
+                        |r| take_line(r, "p"),
+                    )
+                    .unwrap();
+                lines.push(line);
+            }
+            lines
+        });
+        assert_eq!(
+            lines,
+            [Some("hello".to_string()), Some("world".to_string())]
+        );
     }
 
     /// What `close` of a listener does to wake an `accept`: a connection to the listener, on
@@ -3154,43 +3663,468 @@ mod tests {
     }
 
     /// A connection that has read holds no buffer for reading while it is idle: after a read has
-    /// returned (here a line, with the worker's call over) the `Reader` has none, and a second
-    /// read makes it again and lets it go again.
+    /// returned (here a line) the `Reader` has none, and a second read makes it again and lets
+    /// it go again; a call that fails or is unwound lets go too.
     #[test]
     fn a_reader_holds_no_stage_buffer_after_a_read_has_returned() {
         let (c, mut peer) = conn_pair();
-        let sh = &c.sh;
-        let live = test_token();
-        let limit = Limit {
-            deadline: Some(Instant::now() + Duration::from_secs(20)),
-            timeout: Duration::from_secs(20),
-        };
-        let wait = sh.wait(Some(&live), limit);
+        let sh = Arc::clone(&c.sh);
         for expected in ["one", "two"] {
             peer.write_all(format!("{expected}\n").as_bytes()).unwrap();
-            let ticket = sh.reads.ticket();
-            sh.read_wait(&ticket, &wait, "read from", |r| line_probe(r, "p"))
-                .unwrap();
-            let mut r = sh.reader.lock().unwrap();
-            assert_eq!(r.stage.capacity(), 0, "after reading {expected}");
-            assert_eq!(take_line(&mut r, "p").unwrap().as_deref(), Some(expected));
+            let shared = Arc::clone(&sh);
+            let line = with_cx(move |cx| {
+                let ticket = shared.reads.ticket();
+                shared
+                    .read_call(
+                        cx,
+                        ticket,
+                        Limit::NONE,
+                        |r| line_probe(r, "p"),
+                        |r| take_line(r, "p"),
+                    )
+                    .unwrap()
+            });
+            assert_eq!(line.as_deref(), Some(expected));
+            assert_eq!(
+                sh.reader.lock().unwrap().stage.capacity(),
+                0,
+                "after {expected}"
+            );
         }
         // It was made for each of the two calls.
         assert_eq!(sh.reader.lock().unwrap().zero_filled, 2 * READ_STEP);
         // And a call that fails (here: a read that times out half way through a line) lets go too.
         peer.write_all(b"three").unwrap();
-        let ticket = sh.reads.ticket();
-        let late = sh.wait(
-            Some(&live),
-            Limit {
+        let shared = Arc::clone(&sh);
+        let failed = with_cx(move |cx| {
+            let ticket = shared.reads.ticket();
+            let limit = Limit {
                 deadline: Some(Instant::now() + Duration::from_millis(150)),
                 timeout: Duration::from_millis(150),
-            },
-        );
-        assert!(
-            sh.read_wait(&ticket, &late, "read from", |r| line_probe(r, "p"))
-                .is_err()
-        );
+            };
+            shared
+                .read_call(
+                    cx,
+                    ticket,
+                    limit,
+                    |r| line_probe(r, "p"),
+                    |r| take_line(r, "p"),
+                )
+                .map(|_| ())
+                .map_err(|e| variant(&e))
+        });
+        assert_eq!(failed, Err("Timeout".to_string()));
         assert_eq!(sh.reader.lock().unwrap().stage.capacity(), 0);
+        // The half line is still there for the next read.
+        assert_eq!(sh.reader.lock().unwrap().available(), b"three");
+    }
+
+    /// A wait that ends because the poller stopped (or broke) is an error of `net` that says so,
+    /// never the runtime's own text for a completer that was dropped, and the connection can be
+    /// read again afterwards (the next wait starts a poller).
+    #[test]
+    fn a_wait_whose_poller_stops_is_a_net_error_and_the_connection_goes_on() {
+        let (c, mut peer) = conn_pair();
+        let sh = Arc::clone(&c.sh);
+        let (first, second) = with_cx(move |cx| {
+            let poller = cx
+                .state_mut::<poll::NetState>()
+                .unwrap()
+                .poller()
+                .expect("the poller starts");
+            let stopper = std::thread::spawn(move || {
+                // Stops it when the read has armed its wait (nothing else waits on it).
+                let began = Instant::now();
+                while poller.counts() != (1, 1) {
+                    assert!(
+                        began.elapsed() < Duration::from_secs(30),
+                        "the read never waited"
+                    );
+                    std::thread::yield_now();
+                }
+                poller.stop();
+            });
+            let read = |cx: &mut Ctx| {
+                let ticket = sh.reads.ticket();
+                sh.read_call(
+                    cx,
+                    ticket,
+                    Limit::NONE,
+                    |r| line_probe(r, "p"),
+                    |r| take_line(r, "p"),
+                )
+            };
+            let first = read(cx).map_err(|e| format!("{e:?}"));
+            stopper.join().unwrap();
+            peer.write_all(b"again\n").unwrap();
+            let second = read(cx).map_err(|e| format!("{e:?}"));
+            (first, second)
+        });
+        let text = first.expect_err("the wait was cut off");
+        assert!(text.contains("Other"), "{text}");
+        assert!(
+            text.contains("cannot read from") && text.contains("the thread that waits for sockets"),
+            "{text}"
+        );
+        assert!(!text.contains("ended without a result"), "{text}");
+        assert_eq!(second.unwrap().as_deref(), Some("again"));
+    }
+
+    /// The ways a wait can end without a socket being ready are `net` errors in `net`'s words.
+    #[test]
+    fn the_ends_of_a_wait_that_are_not_readiness_have_net_wording() {
+        let (c, _peer) = conn_pair();
+        let sh = &c.sh;
+        let text = |end| match sh.ended(end, "write to", Some((3, 10))) {
+            Err(e) => format!("{e:?}"),
+            Ok(_) => panic!("not an error"),
+        };
+        let dropped = text(Err(Incomplete::Dropped(
+            "the operation ended without a result".into(),
+        )));
+        assert!(!dropped.contains("without a result"), "{dropped}");
+        assert!(
+            dropped.contains("the wait for the socket ended without an answer"),
+            "{dropped}"
+        );
+        assert!(dropped.contains("3 of 10 bytes were sent"), "{dropped}");
+        let refused = text(Err(Incomplete::NotStarted("the poller has stopped".into())));
+        assert!(
+            refused.contains("cannot wait for the socket: the poller has stopped"),
+            "{refused}"
+        );
+        let failed = text(Ok(poll::Why::Failed));
+        assert!(
+            failed.contains("the thread that waits for sockets has stopped"),
+            "{failed}"
+        );
+        for e in [dropped, refused, failed] {
+            assert_eq!(
+                e.split("variant: \"").nth(1).unwrap().split('"').next(),
+                Some("Other")
+            );
+        }
+    }
+
+    /// The accounting of the burst budget: calls and bytes, each ending the burst once, and the
+    /// count starting over afterwards (and whenever a call suspends).
+    #[test]
+    fn a_burst_is_cut_after_its_calls_or_its_bytes() {
+        let burst = Burst::default();
+        for _ in 0..MAX_BURST_CALLS {
+            assert!(!burst.begin_call());
+        }
+        assert!(
+            burst.begin_call(),
+            "the call after the last one in the budget"
+        );
+        for _ in 0..MAX_BURST_CALLS {
+            assert!(!burst.begin_call(), "the count started over");
+        }
+        burst.reset();
+        assert!(!burst.spend(MAX_BURST - 1));
+        assert!(burst.spend(1), "the bytes are used up");
+        assert!(!burst.spend(1), "and start over");
+        // A suspension starts the count over.
+        for _ in 0..MAX_BURST_CALLS - 1 {
+            burst.begin_call();
+        }
+        burst.reset();
+        assert!(!burst.begin_call());
+    }
+
+    /// `close` of a connection that a read waits on with the poller ends the wait with `Closed`,
+    /// and the descriptor is released by the time `close` returns: nothing holds the socket
+    /// while a coroutine is suspended, and the poller's hold goes under its lock.
+    #[test]
+    fn close_releases_the_socket_of_a_connection_that_a_read_waits_on() {
+        for _ in 0..20 {
+            let (c, _peer) = conn_pair();
+            let sh = Arc::clone(&c.sh);
+            let weak = Arc::downgrade(&sh.sock.get().expect("open"));
+            let (error, released) = with_cx(move |cx| {
+                let poller = cx
+                    .state_mut::<poll::NetState>()
+                    .unwrap()
+                    .poller()
+                    .expect("the poller starts");
+                let closer = {
+                    let sh = Arc::clone(&sh);
+                    std::thread::spawn(move || {
+                        // Armed, and the reader's own reference (it is given to the poller
+                        // and let go when the call suspends) gone: the connection's and the
+                        // poller's are the two left. A close from another thread before that
+                        // would meet the reader's reference, which is not what is tested (on
+                        // the interpreter thread a close always comes after the suspension).
+                        let began = Instant::now();
+                        while poller.counts() != (1, 1) || weak.strong_count() != 2 {
+                            assert!(
+                                began.elapsed() < Duration::from_secs(30),
+                                "the read never waited"
+                            );
+                            std::thread::yield_now();
+                        }
+                        sh.close();
+                        weak.strong_count() == 0
+                    })
+                };
+                let ticket = sh.reads.ticket();
+                let error = sh
+                    .read_call(
+                        cx,
+                        ticket,
+                        Limit::NONE,
+                        |r| line_probe(r, "p"),
+                        |r| take_line(r, "p"),
+                    )
+                    .map(|_| ())
+                    .map_err(|e| variant(&e));
+                (error, closer.join().unwrap())
+            });
+            assert_eq!(error, Err("Closed".to_string()));
+            assert!(released, "the socket was still held when close returned");
+        }
+    }
+
+    /// The same for a write: `close` of a connection that a write waits on (the peer reads
+    /// nothing, so the write fills the buffers and waits for room) releases the descriptor by the
+    /// time it returns. This needs the write slot's wake in `close`: the poller's hold on the
+    /// socket goes with the resolved cell, and without that nothing resolves it before `close`
+    /// returns. (A write wait may end `Ready` on its own on some systems, and arm again: the
+    /// closer waits for a moment when the write is armed, and does not need it to stay quiet.)
+    #[test]
+    fn close_releases_the_socket_of_a_connection_that_a_write_waits_on() {
+        for _ in 0..20 {
+            let (c, peer) = conn_pair();
+            let sh = Arc::clone(&c.sh);
+            let weak = Arc::downgrade(&sh.sock.get().expect("open"));
+            let (error, released) = with_cx(move |cx| {
+                let poller = cx
+                    .state_mut::<poll::NetState>()
+                    .unwrap()
+                    .poller()
+                    .expect("the poller starts");
+                let closer = {
+                    let sh = Arc::clone(&sh);
+                    std::thread::spawn(move || {
+                        let began = Instant::now();
+                        while poller.counts() != (1, 1) || weak.strong_count() != 2 {
+                            assert!(
+                                began.elapsed() < Duration::from_secs(30),
+                                "the write never waited"
+                            );
+                            std::thread::yield_now();
+                        }
+                        sh.close();
+                        weak.strong_count() == 0
+                    })
+                };
+                let ticket = sh.writes.ticket();
+                let error = sh
+                    .write_call(cx, ticket, Limit::NONE, &vec![1u8; 64 << 20])
+                    .map_err(|e| variant(&e));
+                (error, closer.join().unwrap())
+            });
+            drop(peer);
+            assert_eq!(error, Err("Closed".to_string()));
+            assert!(released, "the socket was still held when close returned");
+        }
+    }
+
+    /// Makes the next successful read or write of `sh` use the burst budget up.
+    fn nearly_spent(sh: &Shared) {
+        sh.burst.reset();
+        assert!(!sh.burst.spend(MAX_BURST - 1));
+    }
+
+    /// The byte half of the burst budget yields at its call sites: a read and a write that use
+    /// the bytes up give the thread away once, inside the call. (The counter is the test build's
+    /// `give_way_probe`; the budget is made nearly spent by hand, so that no timing or buffer size
+    /// decides whether a burst of a mebibyte happened.)
+    #[test]
+    fn the_byte_budget_gives_way_inside_a_read_and_inside_a_write() {
+        let (c, mut peer) = conn_pair();
+        peer.write_all(&vec![7u8; 100_000]).unwrap();
+        let sh = Arc::clone(&c.sh);
+        let (read, written) = with_cx(move |cx| {
+            let before = give_way_probe::calls();
+            nearly_spent(&sh);
+            let ticket = sh.reads.ticket();
+            let got = sh
+                .read_call(
+                    cx,
+                    ticket,
+                    Limit::NONE,
+                    |r| {
+                        if r.available().len() >= 100_000 {
+                            Probe::Ready
+                        } else {
+                            Probe::Pending(100_000 - r.available().len())
+                        }
+                    },
+                    |r| Ok(r.take(100_000)),
+                )
+                .unwrap();
+            let read = (got.len(), give_way_probe::calls() - before);
+            let before = give_way_probe::calls();
+            nearly_spent(&sh);
+            let ticket = sh.writes.ticket();
+            sh.write_call(cx, ticket, Limit::NONE, &vec![9u8; 100_000])
+                .unwrap();
+            (read, give_way_probe::calls() - before)
+        });
+        assert_eq!(read, (100_000, 1), "the read gave way once");
+        assert_eq!(written, 1, "the write gave way once");
+        let mut got = vec![0u8; 100_000];
+        peer.read_exact(&mut got).unwrap();
+        assert!(got.iter().all(|&b| b == 9));
+    }
+
+    /// A close that runs while a read or a write has given the thread away after its burst
+    /// releases the descriptor before `close` returns: the call holds no reference to the socket
+    /// while it is away. The hook of `give_way_probe` is the other coroutine: it closes at the
+    /// moment of the yield, on this thread, and looks at who still holds the socket.
+    #[test]
+    fn a_close_during_a_give_way_releases_the_socket_of_a_read_and_of_a_write() {
+        for writing in [false, true] {
+            let (c, mut peer) = conn_pair();
+            let sh = Arc::clone(&c.sh);
+            let weak = Arc::downgrade(&sh.sock.get().expect("open"));
+            let drain = writing.then(|| {
+                let mut peer = peer.try_clone().unwrap();
+                std::thread::spawn(move || {
+                    let mut all = Vec::new();
+                    peer.read_to_end(&mut all).unwrap();
+                    all.len()
+                })
+            });
+            if !writing {
+                peer.write_all(&vec![7u8; 100_000]).unwrap();
+            }
+            let (outcome, released) = with_cx(move |cx| {
+                let released = Arc::new(Mutex::new(None));
+                {
+                    let (sh, weak, released) =
+                        (Arc::clone(&sh), weak.clone(), Arc::clone(&released));
+                    give_way_probe::set_hook(move || {
+                        sh.close();
+                        *released.lock().unwrap() = Some(weak.strong_count() == 0);
+                    });
+                }
+                nearly_spent(&sh);
+                let outcome = if writing {
+                    let ticket = sh.writes.ticket();
+                    // More than one chunk, so that the loop is still going at the yield.
+                    sh.write_call(cx, ticket, Limit::NONE, &vec![9u8; SEND_CHUNK + 1000])
+                } else {
+                    let ticket = sh.reads.ticket();
+                    sh.read_call(
+                        cx,
+                        ticket,
+                        Limit::NONE,
+                        |r| {
+                            if r.available().len() >= 100_000 {
+                                Probe::Ready
+                            } else {
+                                Probe::Pending(100_000 - r.available().len())
+                            }
+                        },
+                        |r| Ok(r.take(100_000).len()).map(|_| ()),
+                    )
+                }
+                .map_err(|e| format!("{e:?}"));
+                give_way_probe::clear_hook();
+                let released = *released.lock().unwrap();
+                (outcome, released)
+            });
+            let text = outcome.expect_err("the call ends: the connection was closed");
+            assert!(text.contains("Closed"), "writing {writing}: {text}");
+            if writing {
+                assert!(
+                    text.contains("bytes were sent"),
+                    "the writer says how much it had sent: {text}"
+                );
+            }
+            assert_eq!(
+                released,
+                Some(true),
+                "writing {writing}: the socket was held while the call was away"
+            );
+            if let Some(drain) = drain {
+                drop(c);
+                // The peer got what was sent, cut short, and then the end.
+                let got = drain.join().unwrap();
+                assert!(got > 0 && got < SEND_CHUNK + 1000, "{got}");
+            }
+        }
+    }
+
+    /// A peer that has seen the end of the stream: the read returns 0 (and does not wait for it
+    /// longer than the test's patience), or has not yet: a non-blocking read would block.
+    fn peer_sees_the_end(peer: &mut TcpStream) -> bool {
+        peer.set_nonblocking(false).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        matches!(peer.read(&mut [0u8; 1]), Ok(0))
+    }
+
+    fn peer_has_not_seen_the_end(peer: &mut TcpStream) -> bool {
+        peer.set_nonblocking(true).unwrap();
+        let blocked =
+            matches!(peer.read(&mut [0u8; 1]), Err(e) if e.kind() == ErrorKind::WouldBlock);
+        peer.set_nonblocking(false).unwrap();
+        blocked
+    }
+
+    /// Shutdowns that are scheduled behind a ticket wait for it, run in the order they were
+    /// scheduled once it is dropped, and leave the queue empty.
+    #[test]
+    fn scheduled_shutdowns_wait_for_the_ticket_ahead_and_leave_the_queue_empty() {
+        let (c, mut peer) = conn_pair();
+        let sh = Arc::clone(&c.sh);
+        let ahead = sh.writes.ticket();
+        sh.schedule_shutdown();
+        sh.schedule_shutdown();
+        assert!(peer_has_not_seen_the_end(&mut peer), "shut before its turn");
+        assert!(sh.writes.busy());
+        drop(ahead);
+        assert!(
+            !sh.writes.busy(),
+            "both shutdowns ran and passed the turn on"
+        );
+        assert!(peer_sees_the_end(&mut peer));
+    }
+
+    /// A shutdown that is scheduled on a connection that is closed before its turn comes does
+    /// nothing, and still passes the turn on.
+    #[test]
+    fn a_scheduled_shutdown_on_a_closed_connection_passes_the_turn_on() {
+        let (c, _peer) = conn_pair();
+        let sh = Arc::clone(&c.sh);
+        let ahead = sh.writes.ticket();
+        sh.schedule_shutdown();
+        sh.close();
+        drop(ahead);
+        assert!(!sh.writes.busy());
+    }
+
+    /// A connection that goes away with a shutdown scheduled does not leave the queue's cell and
+    /// the ticket in it to keep each other alive: the cell's ticket holds the queue, and the queue
+    /// holds the cell. The queue is held by the ticket ahead and by this test, and by no one else
+    /// once the connection is gone.
+    #[test]
+    fn a_connection_dropped_with_a_scheduled_shutdown_leaves_nothing_behind() {
+        let (c, _peer) = conn_pair();
+        let sh = Arc::clone(&c.sh);
+        let turns = Arc::clone(&sh.writes);
+        let ahead = sh.writes.ticket();
+        sh.schedule_shutdown();
+        drop(sh);
+        drop(c);
+        // `turns` and `ahead`; the scheduled ticket is gone with its cell.
+        assert_eq!(Arc::strong_count(&turns), 2);
+        drop(ahead);
+        assert!(!turns.busy());
+        assert_eq!(Arc::strong_count(&turns), 1);
     }
 }

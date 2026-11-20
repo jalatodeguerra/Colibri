@@ -497,9 +497,18 @@ fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
     let one = BytesBuilder()
     let two = BytesBuilder()
-    for _ in 0..3_000_000 {{
-        one.push(u8(1))
-        two.push(u8(2))
+    // In blocks: byte by byte takes seconds in a debug build, while the peer's read timeout runs.
+    let block_one = BytesBuilder()
+    let block_two = BytesBuilder()
+    for _ in 0..1000 {{
+        block_one.push(u8(1))
+        block_two.push(u8(2))
+    }}
+    let bytes_one = block_one.to_bytes()
+    let bytes_two = block_two.to_bytes()
+    for _ in 0..3000 {{
+        one.push_bytes(bytes_one)
+        two.push_bytes(bytes_two)
     }}
     let r1 = go reader(c)
     let r2 = go reader(c)
@@ -1982,6 +1991,492 @@ fn main() -> Result[()] {{
     }
 }
 
+/// `output_within`, with a `Vm` that `setup` has put host functions into.
+fn output_within_setup(
+    setup: impl FnOnce(&mut colibri::Vm) + Send + 'static,
+    source: String,
+    limit: Duration,
+) -> String {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut vm, out) = vm();
+        setup(&mut vm);
+        let result = run(&mut vm, &source).map(|()| out.contents());
+        let _ = tx.send(result.map_err(|e| e.to_string()));
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Ok(text)) => text,
+        Ok(Err(e)) => panic!("{e}"),
+        Err(_) => panic!("the program did not finish within {limit:?}: it hangs"),
+    }
+}
+
+/// A wake that said "ready" is owed its try even when the coroutine runs again after the
+/// deadline: the poller reports the data before the deadline, the interpreter thread is held
+/// (by a host function) until after it, and the read must still give the line, not a timeout.
+///
+/// Nothing here beats a fixed sleep. The host function first tells the peer to write and waits
+/// until the peer says it has (so the data is there), then holds the thread until the clock is
+/// past the deadline: the deadline is the read's call time plus the timeout, and the call came
+/// before the host function began, so `began + timeout` is after it, measured and not assumed.
+/// If a very slow machine delivered the wake only after the deadline, the call still gets its
+/// line (the timeout wake is owed a try too), so the test cannot fail for being slow; it can
+/// only stop testing the ready-then-late order.
+#[test]
+fn a_ready_wake_that_resumes_after_the_deadline_still_gets_its_read() {
+    const TIMEOUT: f64 = 1.5;
+    let (listener, addr) = rust_listener();
+    let (write_now, told) = mpsc::channel::<()>();
+    let (written, confirmed) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        told.recv_timeout(LIMIT).unwrap();
+        s.write_all(b"hi\n").unwrap();
+        written.send(()).unwrap();
+        // Until the script closes.
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output_within_setup(
+        move |vm| {
+            vm.register_fn("hold", move || {
+                let began = Instant::now();
+                write_now.send(()).unwrap();
+                confirmed.recv_timeout(LIMIT).unwrap();
+                let past = began + Duration::from_secs_f64(TIMEOUT) + Duration::from_millis(100);
+                while Instant::now() < past {
+                    std::hint::spin_loop();
+                }
+            })
+            .unwrap();
+        },
+        format!(
+            r#"import net
+
+fn reader(c: net.Conn) -> str {{
+    match c.read_line() {{
+        ok(_) => return "line"
+        err(e) => return "{{e.as[net.Error]().expect("a net error")}}"
+    }}
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    c.set_timeout({TIMEOUT})
+    let r = go reader(c)
+    task.tick(0.0)
+    hold()
+    print(r.join())
+    c.close()
+    return ok(())
+}}
+"#
+        ),
+        LIMIT,
+    );
+    peer.join().unwrap();
+    assert_eq!(out, "line\n");
+}
+
+/// A coroutine in a loop of reads and writes against a peer that is always ready never has to
+/// wait, so none of its calls suspends; the connection's burst budget makes it give the thread
+/// to the others now and then anyway (`MAX_BURST_CALLS`). One coroutine echoes a hundred
+/// thousand lines that an eager Rust peer has sent (every read is served from what is buffered
+/// or from the socket, every write is taken at once), another counts how often it gets to run;
+/// the count must have moved a good deal before the echo is done. No timing is involved: the
+/// bound is on how many times the echo gave way, and a read or write that does suspend only adds
+/// to it.
+#[test]
+fn a_loop_of_calls_that_never_wait_still_lets_the_other_coroutines_run() {
+    const LINES: usize = 40_000;
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        let mut sending = s.try_clone().unwrap();
+        let sender = thread::spawn(move || {
+            sending.write_all("x\n".repeat(LINES).as_bytes()).unwrap();
+        });
+        // Takes the echoes as they come, so that the script's writes never find the socket full.
+        let echoed = read_n(&mut s, LINES * 2).len();
+        sender.join().unwrap();
+        echoed
+    });
+    let out = output_within(
+        format!(
+            r#"import net
+
+var ticks = 0
+var finished = false
+
+fn counter() {{
+    while !finished {{
+        ticks += 1
+        wait(0.0)
+    }}
+}}
+
+fn echo(c: net.Conn) {{
+    for _ in 0..{LINES} {{
+        match c.read_line().expect("a line") {{
+            some(text) => c.write("{{text}}\n").expect("echoed")
+            none => return
+        }}
+    }}
+    finished = true
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let k = go counter()
+    let e = go echo(c)
+    e.join()
+    k.join()
+    // 80,000 calls in all: one yield for every 64 of them is over 1,200 turns of the counter.
+    print(ticks >= 500)
+    c.close()
+    return ok(())
+}}
+"#
+        ),
+        LIMIT,
+    );
+    assert_eq!(out, "true\n");
+    assert_eq!(peer.join().unwrap(), LINES * 2);
+}
+
+/// A `Drop` hook that writes while a coroutine is in the middle of a write on the same connection
+/// is refused at once, as a hook's read behind a read is: the hook blocks the interpreter thread
+/// and the rest of the write can only be sent by the coroutine, so waiting would be for ever. A
+/// `close_write` from the hook is not refused: it takes its place behind the write and returns at
+/// once, and the writing end is shut when the write is done. Nothing is lost: the peer gets the
+/// write whole and then the end of the stream (which it answers, so that the script cannot have
+/// ended the stream by closing the connection).
+#[test]
+fn a_drop_hook_gets_an_error_for_a_write_and_a_scheduled_end_for_close_write() {
+    // More than a connection's buffers hold and more than one burst, so that the writer is
+    // still in the middle of its write when the hook runs.
+    const SIZE: usize = 64 * 1024 * 1024;
+    let (listener, addr) = rust_listener();
+    let (go_on, hold) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        // Reads nothing until the script has made its two calls.
+        hold.recv_timeout(LIMIT).unwrap();
+        let mut all = Vec::new();
+        s.read_to_end(&mut all).unwrap();
+        // Only the shutdown can have ended the stream: the script is waiting for this byte.
+        s.write_all(b"k").unwrap();
+        all
+    });
+    let out = output_within_released(
+        format!(
+            r#"import net
+
+class Guard {{ conn: net.Conn, close_end: bool }}
+
+impl Drop for Guard {{
+    fn drop(self) {{
+        if self.close_end {{
+            print("hook close_write: {{self.conn.close_write().is_ok()}}")
+        }} else {{
+            match self.conn.write("x") {{
+                ok(_) => print("hook write: done")
+                err(e) => {{
+                    print("hook write: {{e.as[net.Error]().expect("a net error")}}")
+                    print(e.message().contains("already waiting in another coroutine"))
+                }}
+            }}
+        }}
+    }}
+}}
+
+fn sender(c: net.Conn, data: Bytes) {{
+    c.write_bytes(data).expect("the write is not cut")
+    print("written")
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let seed = BytesBuilder()
+    for _ in 0..65536 {{
+        seed.push(u8(120))
+    }}
+    let piece = seed.to_bytes()
+    let b = BytesBuilder()
+    for _ in 0..{blocks} {{
+        b.push_bytes(piece)
+    }}
+    let w = go sender(c, b.to_bytes())
+    task.tick(0.0)
+    var g: Option[Guard] = some(Guard {{ conn: c, close_end: false }})
+    g = none
+    g = some(Guard {{ conn: c, close_end: true }})
+    g = none
+    release()
+    w.join()
+    print(c.read_exact(1)?.to_str_lossy())
+    c.close()
+    return ok(())
+}}
+"#,
+            blocks = SIZE / 65536
+        ),
+        go_on,
+    );
+    assert_eq!(
+        out,
+        "hook write: Other\ntrue\nhook close_write: true\nwritten\nk\n"
+    );
+    let got = peer.join().unwrap();
+    assert_eq!(got.len(), SIZE);
+    assert!(got.iter().all(|&b| b == 120));
+}
+
+/// The script of the tests that follow: a coroutine `w` writes 64 MiB of `x` on `c` (more than
+/// the connection's buffers hold, so that it is in the middle of its write while the peer reads
+/// nothing), and `Guard` is a `Drop` hook that does `what` to the connection (`write`,
+/// `close_write` or `close`) and prints the outcome. `main_body` runs after `w` was started.
+fn hook_script(addr: &str, sender: &str, main_body: &str) -> String {
+    format!(
+        r#"import net
+
+class Guard {{ conn: net.Conn, what: str }}
+
+fn hook(c: net.Conn, what: str) {{
+    var g: Option[Guard] = some(Guard {{ conn: c, what: what }})
+    g = none
+}}
+
+impl Drop for Guard {{
+    fn drop(self) {{
+        if self.what == "close_write" {{
+            print("hook close_write: {{self.conn.close_write().is_ok()}}")
+        }} else if self.what == "close" {{
+            self.conn.close()
+            print("hook close")
+        }} else {{
+            match self.conn.write("x") {{
+                ok(_) => print("hook write: done")
+                err(e) => print("hook write: {{e.as[net.Error]().expect("a net error")}}")
+            }}
+        }}
+    }}
+}}
+
+{sender}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let seed = BytesBuilder()
+    for _ in 0..65536 {{
+        seed.push(u8(120))
+    }}
+    let piece = seed.to_bytes()
+    let b = BytesBuilder()
+    for _ in 0..{blocks} {{
+        b.push_bytes(piece)
+    }}
+    let w = go sender(c, b.to_bytes())
+    task.tick(0.0)
+{main_body}
+    return ok(())
+}}
+"#,
+        blocks = HOOK_SIZE / 65536
+    )
+}
+
+const HOOK_SIZE: usize = 64 * 1024 * 1024;
+
+/// What the peer of a `hook_script` does once it is let go: reads to the end (and answers with
+/// one byte, so that the script can wait for the end of the stream without closing), or drops the
+/// connection at once.
+fn hook_peer_big(
+    listener: TcpListener,
+    hold: mpsc::Receiver<()>,
+    read: bool,
+) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        hold.recv_timeout(LIMIT).unwrap();
+        if !read {
+            return Vec::new();
+        }
+        let mut all = Vec::new();
+        s.read_to_end(&mut all).unwrap();
+        // Lost when the script closed the connection without waiting for it.
+        let _ = s.write_all(b"k");
+        all
+    })
+}
+
+const COUNTING_SENDER: &str = r#"fn sender(c: net.Conn, data: Bytes) {
+    match c.write_bytes(data) {
+        ok(_) => print("written")
+        err(e) => print("write: {e.as[net.Error]().expect("a net error")}")
+    }
+}"#;
+
+/// Two `close_write`s from hooks behind one unfinished write are two places in the write order,
+/// and a coroutine's write called after them is behind both: it gets the error a write after a
+/// `close_write` gets, and none of its bytes reach the peer. The write ahead is whole and the
+/// peer gets the end of the stream after it.
+#[test]
+fn two_scheduled_close_writes_and_a_write_called_after_them() {
+    let (listener, addr) = rust_listener();
+    let (go_on, hold) = mpsc::channel::<()>();
+    let peer = hook_peer_big(listener, hold, true);
+    let sender = format!(
+        r#"{COUNTING_SENDER}
+
+fn late(c: net.Conn) {{
+    match c.write("late") {{
+        ok(_) => print("late write: done")
+        err(e) => print("late write: {{e.as[net.Error]().expect("a net error")}}")
+    }}
+}}"#
+    );
+    let main_body = r#"    hook(c, "close_write")
+    hook(c, "close_write")
+    hook(c, "write")
+    let l = go late(c)
+    task.tick(0.0)
+    release()
+    w.join()
+    l.join()
+    print(c.read_exact(1)?.to_str_lossy())
+    c.close()"#;
+    let out = output_within_released(hook_script(&addr, &sender, main_body), go_on);
+    assert_eq!(
+        out,
+        "hook close_write: true\nhook close_write: true\nhook write: BrokenPipe\nwritten\nlate write: BrokenPipe\nk\n"
+    );
+    let got = peer.join().unwrap();
+    assert_eq!(got.len(), HOOK_SIZE, "no byte of the late write");
+    assert!(got.iter().all(|&b| b == 120));
+}
+
+/// The write ahead of a scheduled shutdown ends early, and the shutdown still happens: the writer
+/// is cancelled (the peer gets a cut stream and then the end), or fails (the peer is gone, the
+/// shutdown has nobody to tell and the script goes on).
+#[test]
+fn a_scheduled_close_write_runs_when_the_write_ahead_is_cancelled_or_fails() {
+    // Cancelled.
+    let (listener, addr) = rust_listener();
+    let (go_on, hold) = mpsc::channel::<()>();
+    let peer = hook_peer_big(listener, hold, true);
+    let main_body = r#"    hook(c, "close_write")
+    w.cancel()
+    release()
+    print(c.read_exact(1)?.to_str_lossy())
+    c.close()"#;
+    let out = output_within_released(hook_script(&addr, COUNTING_SENDER, main_body), go_on);
+    assert_eq!(out, "hook close_write: true\nk\n");
+    let got = peer.join().unwrap();
+    assert!(got.len() < HOOK_SIZE, "the cancelled write was cut");
+    // Failing: the peer lets go of the connection without reading.
+    let (listener, addr) = rust_listener();
+    let (go_on, hold) = mpsc::channel::<()>();
+    let peer = hook_peer_big(listener, hold, false);
+    let main_body = r#"    hook(c, "close_write")
+    release()
+    w.join()
+    c.close()"#;
+    let out = output_within_released(hook_script(&addr, COUNTING_SENDER, main_body), go_on);
+    assert!(out.starts_with("hook close_write: true\nwrite: "), "{out}");
+    assert!(out.ends_with('\n') && out.lines().count() == 2, "{out}");
+    peer.join().unwrap();
+}
+
+/// `close()` while a shutdown is scheduled: the writer ahead gets `Closed`, the scheduled shutdown
+/// finds the connection closed and does nothing, and nothing hangs.
+#[test]
+fn close_before_a_scheduled_close_write_runs_skips_it() {
+    let (listener, addr) = rust_listener();
+    let (go_on, hold) = mpsc::channel::<()>();
+    let peer = hook_peer_big(listener, hold, true);
+    let main_body = r#"    hook(c, "close_write")
+    c.close()
+    w.join()
+    release()"#;
+    let out = output_within_released(hook_script(&addr, COUNTING_SENDER, main_body), go_on);
+    assert_eq!(out, "hook close_write: true\nwrite: Closed\n");
+    // The close cut the stream and ended it (the connection is closed, so the answer is lost).
+    let got = peer.join().unwrap();
+    assert!(got.len() < HOOK_SIZE, "the stream was cut");
+}
+
+/// The `Vm` goes away with a shutdown scheduled behind an unfinished write: the program ends and
+/// the peer gets the end of the stream, cut where the write was.
+#[test]
+fn a_vm_that_ends_with_a_scheduled_close_write_does_not_hang() {
+    let (listener, addr) = rust_listener();
+    let (go_on, hold) = mpsc::channel::<()>();
+    let peer = hook_peer_big(listener, hold, true);
+    let main_body = r#"    hook(c, "close_write")
+    release()"#;
+    let out = output_within_released(hook_script(&addr, COUNTING_SENDER, main_body), go_on);
+    assert!(out.starts_with("hook close_write: true\n"), "{out}");
+    // Whether the answer of the peer arrived does not matter: the end of the stream came.
+    let got = peer.join().unwrap();
+    assert!(got.len() <= HOOK_SIZE);
+}
+
+/// `close()` from a `Drop` hook while another coroutine is in the middle of a write: the writer
+/// gets `Closed` and is told how much it had sent, and the peer gets that much, cut, and then the
+/// end of the stream. (The writer that is in `give_way` is the unit test
+/// `a_close_during_a_give_way_releases_the_socket_of_a_read_and_of_a_write`.)
+#[test]
+fn a_close_from_a_hook_while_another_coroutine_is_writing_cuts_its_write() {
+    let (listener, addr) = rust_listener();
+    let (go_on, hold) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        hold.recv_timeout(LIMIT).unwrap();
+        let mut all = Vec::new();
+        // The end of the stream: the connection was closed under the write.
+        s.read_to_end(&mut all).unwrap();
+        all.len()
+    });
+    let sender = r#"fn sender(c: net.Conn, data: Bytes) {
+    match c.write_bytes(data) {
+        ok(_) => print("written")
+        err(e) => {
+            print("write: {e.as[net.Error]().expect("a net error")}")
+            print(e.message())
+        }
+    }
+}"#;
+    let main_body = r#"    hook(c, "close")
+    w.join()
+    release()"#;
+    let out = output_within_released(hook_script(&addr, sender, main_body), go_on);
+    let got = peer.join().unwrap();
+    let mut lines = out.lines();
+    assert_eq!(lines.next(), Some("hook close"), "{out}");
+    assert_eq!(lines.next(), Some("write: Closed"), "{out}");
+    let message = lines.next().unwrap_or_default();
+    let sent: usize = message
+        .rsplit('(')
+        .next()
+        .and_then(|tail| tail.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("the writer is told how much was sent: {message}"));
+    assert!(
+        message.contains(&format!("of {HOOK_SIZE} bytes were sent")),
+        "{message}"
+    );
+    assert!(sent > 0 && sent < HOOK_SIZE, "{sent}");
+    assert!(
+        got > 0 && got <= sent,
+        "the peer got {got} of the {sent} sent"
+    );
+}
+
 /// A write that stopped part way (here: cancelled) breaks the write side, and `close_write` behind
 /// it still shuts the writing end: it is the only way left to tell the peer that nothing more
 /// comes, and it does not fail for what an earlier write did. Writes after it fail as before.
@@ -2212,8 +2707,8 @@ fn main() -> Result[()] {
 /// port must still be listenable again after the listener is closed: `kvserver` does this on
 /// SHUTDOWN and `--idle`. On Linux and macOS `SO_REUSEADDR` allows it; on Windows `listen` sets
 /// `SO_EXCLUSIVEADDRUSE`, whose rule for a port with connections of its own still around is
-/// what this test checks (it has not been run on Windows by the author of this change). No
-/// retry: the restart must work at once.
+/// what this test checks (it runs on Windows in CI and passes). No retry: the restart must work
+/// at once.
 #[test]
 fn a_port_can_be_listened_on_again_after_the_server_closed_a_connection_first() {
     let out = output_within(

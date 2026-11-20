@@ -1,0 +1,259 @@
+//! What a thousand idle blocked reads cost in threads and in CPU time: the point of waiting for
+//! sockets with one poller thread per `Vm`. This is a test file of its own because it counts the
+//! threads and measures the CPU time of the whole process, which the other tests of `net` (they
+//! run in threads of one process) would pollute. The thread count is read from `/proc/self/task`
+//! on Linux, with `proc_pidinfo` on macOS and with a toolhelp snapshot on Windows, and the CPU
+//! time with `getrusage` on Unix and `GetProcessTimes` on Windows: no portable call gives them.
+//!
+//! The file is gated to the three systems the count is written for (the project builds on no
+//! other).
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
+
+use std::io::Read;
+use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use colibri_runtime as colibri;
+
+const READERS: usize = 1000;
+const IDLE_SECONDS: f64 = 3.0;
+const LIMIT: Duration = Duration::from_secs(30);
+
+/// How many threads the process may have more than before the test, while a thousand reads
+/// wait: the poller, the peer's thread, and the few threads of the pool that the connects used.
+/// Before the poller it was one for every waiting read.
+const MAY_GROW_BY: usize = 8;
+
+/// How many threads the process has now.
+#[cfg(target_os = "linux")]
+fn threads() -> usize {
+    std::fs::read_dir("/proc/self/task")
+        .expect("lists the threads")
+        .count()
+}
+
+/// How many threads the process has now.
+#[cfg(target_os = "macos")]
+fn threads() -> usize {
+    let mut info = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+    // SAFETY: `info` is a valid `proc_taskinfo` of `size` bytes for the call to fill in, and the
+    // process asks about itself.
+    let (got, info) = unsafe {
+        let got = libc::proc_pidinfo(
+            libc::getpid(),
+            libc::PROC_PIDTASKINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        );
+        (got, info.assume_init())
+    };
+    assert_eq!(got, size, "proc_pidinfo failed");
+    usize::try_from(info.pti_threadnum).expect("a thread count")
+}
+
+/// How many threads the process has now.
+#[cfg(windows)]
+fn threads() -> usize {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    // SAFETY: plain calls of the system; the snapshot handle is checked and closed, and the
+    // entry is a valid `THREADENTRY32` with its size set, as `Thread32First` asks.
+    unsafe {
+        let pid = GetCurrentProcessId();
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        assert_ne!(snapshot, INVALID_HANDLE_VALUE, "no thread snapshot");
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut count = 0;
+        let mut more = Thread32First(snapshot, &mut entry);
+        while more != 0 {
+            if entry.th32OwnerProcessID == pid {
+                count += 1;
+            }
+            more = Thread32Next(snapshot, &mut entry);
+        }
+        CloseHandle(snapshot);
+        count
+    }
+}
+
+/// CPU seconds (user and system) the process has used so far.
+#[cfg(windows)]
+fn cpu_seconds() -> f64 {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: the four `FILETIME`s are valid for the call to fill in, and the pseudo handle of
+    // the current process needs no closing.
+    let ok = unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    assert_ne!(ok, 0, "GetProcessTimes failed");
+    // Units of 100 ns.
+    let secs = |t: FILETIME| {
+        ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) as f64 / 1e7
+    };
+    secs(kernel) + secs(user)
+}
+
+/// CPU seconds (user and system) the process has used so far.
+#[cfg(unix)]
+fn cpu_seconds() -> f64 {
+    let mut ru = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: `ru` is a valid `rusage` for the call to fill in.
+    let ru = unsafe {
+        assert_eq!(libc::getrusage(libc::RUSAGE_SELF, ru.as_mut_ptr()), 0);
+        ru.assume_init()
+    };
+    let secs = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
+    secs(ru.ru_utime) + secs(ru.ru_stime)
+}
+
+/// Unix only: a Windows process has no soft descriptor limit to raise (sockets are not
+/// descriptors there).
+#[cfg(windows)]
+fn raise_descriptor_limit() {}
+
+#[cfg(unix)]
+fn raise_descriptor_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `lim` is a valid `rlimit` that lives through both calls.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 {
+            return;
+        }
+        let want = lim.rlim_max.min(10240);
+        if want > lim.rlim_cur {
+            lim.rlim_cur = want;
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+        }
+    }
+}
+
+#[test]
+fn a_thousand_idle_blocked_reads_use_a_few_threads_and_no_cpu() {
+    raise_descriptor_limit();
+    let before = threads();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    // The peer holds every connection open and silent until the script has closed its ends.
+    let peer = thread::spawn(move || {
+        let mut held = Vec::new();
+        for _ in 0..READERS {
+            held.push(listener.accept().unwrap().0);
+        }
+        for s in &mut held {
+            s.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+            assert_eq!(s.read(&mut [0u8; 1]).unwrap(), 0);
+        }
+    });
+
+    let marks = Arc::new(Mutex::new(Vec::<(Instant, f64, usize)>::new()));
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .allow(colibri::Cap::Net)
+        .build();
+    colibri_std::install(&mut vm).unwrap();
+    let m = Arc::clone(&marks);
+    vm.register_fn("mark", move || {
+        m.lock()
+            .unwrap()
+            .push((Instant::now(), cpu_seconds(), threads()));
+    })
+    .unwrap();
+    vm.load_source(
+        "app/main.colibri",
+        &format!(
+            r#"import net
+
+fn reading(c: net.Conn) -> str {{
+    match c.read(1) {{
+        ok(_) => return "data"
+        err(e) => return "{{e.as[net.Error]().expect("a net error")}}"
+    }}
+}}
+
+fn main() -> Result[()] {{
+    var conns: List[net.Conn] = []
+    var readers: List[Coroutine[str]] = []
+    for i in 0..{READERS} {{
+        let c = net.connect("{addr}")?
+        conns.push(c)
+        readers.push(go reading(c))
+    }}
+    // Every reader is waiting by now, and has been for a moment.
+    wait(0.5)
+    mark()
+    wait({IDLE_SECONDS})
+    mark()
+    for c in conns {{
+        c.close()
+    }}
+    var closed = 0
+    for r in readers {{
+        if r.join() == "Closed" {{
+            closed += 1
+        }}
+    }}
+    print("closed {{closed}}")
+    return ok(())
+}}
+"#
+        ),
+    )
+    .unwrap();
+    vm.run_main().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(out.contents(), format!("closed {READERS}\n"));
+    peer.join().unwrap();
+
+    let marks = marks.lock().unwrap().clone();
+    let ((t0, c0, n0), (t1, c1, n1)) = (marks[0], marks[1]);
+    let cores = (c1 - c0) / t1.duration_since(t0).as_secs_f64();
+    println!(
+        "{READERS} idle blocked reads: {cores:.3} cores, {before} threads before, {n0} then, {n1} later"
+    );
+    assert!(
+        n0 <= before + MAY_GROW_BY && n1 <= before + MAY_GROW_BY,
+        "{READERS} idle blocked reads: {n0} and {n1} threads, from {before}"
+    );
+    // The reads before the poller used 0.23 of a core in a release build and more in a debug
+    // build, in wake-ups alone; now nothing wakes at all while nothing happens.
+    assert!(
+        cores < 0.05,
+        "{READERS} idle blocked reads used {cores:.3} cores"
+    );
+
+    // Dropping the `Vm` ends the poller (joined) and the threads of the pool (they end by
+    // themselves, so wait for them, with a ceiling).
+    drop(vm);
+    let began = Instant::now();
+    while threads() > before {
+        assert!(
+            began.elapsed() < LIMIT,
+            "{} threads are left from {before} after the Vm was dropped",
+            threads()
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
