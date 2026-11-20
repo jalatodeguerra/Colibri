@@ -464,11 +464,12 @@ call that waits on that object with `net.Error.Closed`.
   is `none` at the end of the stream with nothing pending, `UnexpectedEnd` at the end with bytes
   pending, and `LineTooLong` as soon as `max + 1` bytes have arrived without a delimiter (not at
   `max`: a delimiter right after `max` bytes is fine, also one whose first byte is the byte after
-  them and whose rest has not come yet). A call that fails with `LineTooLong` has read no more
-  than `max` plus the delimiter's length (and a `read_line`, no more than its limit plus 2), so a
-  small `max` or `set_line_limit` bounds the memory a peer can make a connection hold. The bytes
-  of a `LineTooLong` or an `UnexpectedEnd` stay in the stream. It scans only the bytes that are
-  new, takes its turn like the other reads, and a cancel or a timeout keeps what had arrived.
+  them and whose rest has not come yet). A call that fails with `LineTooLong` reads at most what
+  is left to the larger of 32 KiB and `max` plus the delimiter's length (`read_line`: its limit
+  plus 2) beyond what an earlier call had already buffered, so it never reads a whole extra read
+  past a large `max` or limit; the buffer's capacity may be up to twice that while it grows. The
+  bytes of a `LineTooLong` or an `UnexpectedEnd` stay in the stream. It scans only the bytes that
+  are new, takes its turn like the other reads, and a cancel or a timeout keeps what had arrived.
   `set_line_limit(bytes)` sets what `read_line` takes before its line end (1 to 1 GiB, 1 MiB when
   not set; `read_until` has its own `max`), and counts at the next look of a `read_line` that
   already waits.
