@@ -1045,23 +1045,47 @@ fn main() -> Result[()] {
     assert_eq!(client.join().unwrap(), "to the second");
 }
 
-/// Connections that wait in the queue of a listener are closed with it.
+/// Connections that wait in the queue of a listener are closed with it. The listener value
+/// stays alive after `close()` until the client has said what it saw, so the end of the stream
+/// comes from `close` and not from the listener being dropped when the program ends.
+///
+/// Whether the connection is already in the listener's own queue when `close()` runs depends on
+/// whether the accept worker was quicker than the cancel (a few hundred microseconds against
+/// the half second this waits): when it was not, the connection is still in the kernel's
+/// backlog, and closing a listening socket resets such a connection (on Linux and macOS), which
+/// is acceptable and is the one other thing the client may see. What must never happen is a
+/// connection that stays open: the client's read would then time out. The exact case, a
+/// connection that is in the queue, is pinned without any timing by the unit test
+/// `an_accepted_connection_that_was_not_taken_is_kept_and_closed_with_the_listener` in `net.rs`.
 #[test]
 fn closing_a_listener_closes_the_connections_it_kept() {
     let (tx, rx) = mpsc::channel::<String>();
     let (back_tx, back_rx) = mpsc::channel::<()>();
+    let (seen_tx, seen_rx) = mpsc::channel::<std::io::Result<usize>>();
     let client = thread::spawn(move || {
         let addr = rx.recv_timeout(LIMIT).unwrap();
         let mut s = TcpStream::connect(addr).unwrap();
-        with_timeouts(&s);
+        // Only a bound for a failure: the end of the stream comes at once when `close` works.
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         back_tx.send(()).unwrap();
-        s.read(&mut [0u8; 1]).unwrap()
+        // Waits for the end of the stream, or for a reset, or for the bound.
+        let seen = s.read(&mut [0u8; 1]);
+        seen_tx.send(seen).unwrap();
     });
     let (mut vm, _out) = vm();
     vm.register_fn("publish", move |a: String| tx.send(a).unwrap())
         .unwrap();
     vm.register_fn("wait_client", move || back_rx.recv_timeout(LIMIT).unwrap())
         .unwrap();
+    // Waits until the client has read what it reads: the listener is alive until then.
+    let seen = Rc::new(Cell::new(None));
+    let seen_in = Rc::clone(&seen);
+    vm.register_fn("client_has_seen", move || {
+        seen_in.set(Some(
+            seen_rx.recv_timeout(LIMIT).expect("the client reported"),
+        ));
+    })
+    .unwrap();
     vm.register_fn("block", |s: f64| thread::sleep(Duration::from_secs_f64(s)))
         .unwrap();
     run(
@@ -1080,17 +1104,21 @@ fn main() -> Result[()] {
     a.cancel()
     // The connection is in the queue of `l`; closing `l` closes it.
     l.close()
+    client_has_seen()
+    // `l` is used after the close (it is closed: an error), so it was alive all along.
+    print(l.accept().is_err())
     return ok(())
 }
 "#,
     )
     .unwrap_or_else(|e| panic!("{e}"));
-    // The client sees the end of the stream (or, if the close raced the connection, a reset).
-    let seen = client.join();
-    assert!(
-        seen.is_ok(),
-        "the client of a kept connection hung or panicked"
-    );
+    client.join().unwrap();
+    match seen.take().expect("the client reported") {
+        Ok(0) => {}
+        // The slow path, see above: the connection was still in the kernel's backlog.
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+        other => panic!("the client of a kept connection saw {other:?}, not an end or a reset"),
+    }
 }
 
 /// `defer c.close()` in a coroutine that is cancelled while its read waits: `close()` must not

@@ -2330,6 +2330,44 @@ mod tests {
         assert_eq!(waiter.join().unwrap(), "Closed");
     }
 
+    /// A connected pair: the `Conn` of the server side and the peer's stream.
+    fn conn_pair() -> (Conn, TcpStream) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = TcpStream::connect(l.local_addr().unwrap()).unwrap();
+        let (s, _) = l.accept().unwrap();
+        prepare(&s).unwrap();
+        (Conn::new(s), peer)
+    }
+
+    /// A read whose worker has finished (the bytes are in the buffer) and whose coroutine is
+    /// then cancelled before it resumes takes nothing: the bytes stay for the next read, in
+    /// order. This is the path that `a_read_that_finished_before_its_coroutine_was_cancelled`
+    /// in `tests/net.rs` is named for, reached here without any timing.
+    #[test]
+    fn a_read_that_finished_but_was_never_taken_leaves_its_bytes_for_the_next_read() {
+        let (c, mut peer) = conn_pair();
+        peer.write_all(b"hello\nworld\n").unwrap();
+        let sh = &c.sh;
+        let live = test_token();
+        let limit = Limit {
+            deadline: Some(Instant::now() + Duration::from_secs(20)),
+            timeout: Duration::from_secs(20),
+        };
+        let wait = sh.wait(Some(&live), limit);
+        let ticket = sh.reads.ticket();
+        sh.read_wait(&ticket, &wait, "read from", |r| line_probe(r, "p"))
+            .unwrap();
+        // The worker is done and holds the turn; the coroutine is cancelled, `take` never runs.
+        drop(ticket);
+        for expected in ["hello", "world"] {
+            let ticket = sh.reads.ticket();
+            sh.read_wait(&ticket, &wait, "read from", |r| line_probe(r, "p"))
+                .unwrap();
+            let mut r = sh.reader.lock().unwrap();
+            assert_eq!(take_line(&mut r, "p").unwrap().as_deref(), Some(expected));
+        }
+    }
+
     /// What `close` of a listener does to wake an `accept`: a connection to the listener, on
     /// every system, makes its readiness wait return.
     #[test]
@@ -2341,6 +2379,82 @@ mod tests {
         wake_listener(&addr);
         assert!(sys::wait_ready(&l, false, Duration::from_secs(20)).unwrap());
         assert!(started.elapsed() < Duration::from_secs(15));
+    }
+
+    /// The listener of a test, and its address.
+    fn listen_shared() -> (Arc<ListenShared>, SocketAddr) {
+        let l = bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let addr = l.local_addr().unwrap();
+        (ListenShared::new(l, addr.to_string()), addr)
+    }
+
+    /// A connection that was accepted for a coroutine that was cancelled before it took it is in
+    /// the listener's own queue, the next accept returns it first, and `close` closes the ones
+    /// that are still queued: the client sees the end of the stream while the listener object
+    /// is still alive (so it is `close`, and not the drop of the listener, that did it).
+    #[test]
+    fn an_accepted_connection_that_was_not_taken_is_kept_and_closed_with_the_listener() {
+        let (sh, addr) = listen_shared();
+        let live = test_token();
+        let queued = |sh: &Arc<ListenShared>| sh.pending.lock().unwrap().len();
+
+        // Kept: the accept finished (here, on this thread, so there is no race), its caller
+        // never took the connection, and the next accept gets it before any new one.
+        let first = TcpStream::connect(addr).unwrap();
+        let accepted = sh.accept(sh.accepts.ticket(), &live).ok().unwrap();
+        drop(accepted);
+        assert_eq!(queued(&sh), 1);
+        let second = TcpStream::connect(addr).unwrap();
+        let again = sh.accept(sh.accepts.ticket(), &live).ok().unwrap();
+        assert_eq!(queued(&sh), 0, "the kept one is served first");
+        assert_eq!(
+            again.stream.as_ref().unwrap().peer_addr().unwrap(),
+            first.local_addr().unwrap()
+        );
+        let kept = again.into_stream();
+        // The second connection is accepted, too, so that the next one is the third.
+        let taken = sh
+            .accept(sh.accepts.ticket(), &live)
+            .ok()
+            .unwrap()
+            .into_stream();
+        assert_eq!(taken.peer_addr().unwrap(), second.local_addr().unwrap());
+        drop((kept, taken, first, second));
+
+        // Closed with the listener: queue a connection, then close.
+        let client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        drop(sh.accept(sh.accepts.ticket(), &live).ok().unwrap());
+        assert_eq!(queued(&sh), 1);
+        // Alive in the queue: nothing to read, and not an end of the stream.
+        client.set_nonblocking(true).unwrap();
+        let e = (&client).read(&mut [0u8; 1]).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::WouldBlock);
+        client.set_nonblocking(false).unwrap();
+        sh.close();
+        assert_eq!(queued(&sh), 0, "close does not clear the queue");
+        // `sh` is alive still: the end of the stream comes from `close`.
+        assert_eq!((&client).read(&mut [0u8; 1]).unwrap(), 0);
+        drop(sh);
+    }
+
+    /// A connection of a closed listener is not queued either: a caller that was cancelled
+    /// after `close` leaves nothing behind.
+    #[test]
+    fn a_connection_accepted_for_a_gone_caller_is_not_kept_by_a_closed_listener() {
+        let (sh, addr) = listen_shared();
+        let live = test_token();
+        let client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        let accepted = sh.accept(sh.accepts.ticket(), &live).ok().unwrap();
+        sh.close();
+        drop(accepted);
+        assert_eq!(sh.pending.lock().unwrap().len(), 0);
+        assert_eq!((&client).read(&mut [0u8; 1]).unwrap(), 0);
     }
 
     /// A big take hands out the buffer itself: same allocation, nothing copied.
