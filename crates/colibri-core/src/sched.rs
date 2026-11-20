@@ -63,45 +63,45 @@ pub enum State {
 /// What the scheduler knows of one coroutine.
 #[doc(hidden)]
 pub struct Entry {
-    pub id: u64,
-    pub state: State,
-    pub wake: Wake,
-    pub handle: Weak<ClassObj>,
-    pub cancel_requested: bool,
+    pub(crate) id: u64,
+    pub(crate) state: State,
+    pub(crate) wake: Wake,
+    pub(crate) handle: Weak<ClassObj>,
+    pub(crate) cancel_requested: bool,
     /// How much of the coroutine's native stack the evaluator may use (the engine's measure).
-    pub stack_budget: usize,
+    pub(crate) stack_budget: usize,
     /// The `CoGroup` that owns this coroutine.
-    pub group: Option<u64>,
+    pub(crate) group: Option<u64>,
     /// The tick in which this coroutine was already resumed (as a signal waiter).
-    pub ticked: u64,
+    pub(crate) ticked: u64,
 }
 
 /// The per-`Interp` coroutine scheduler.
 #[doc(hidden)]
 pub struct Scheduler {
-    pub entries: Vec<Entry>,
-    pub next_id: u64,
+    pub(crate) entries: Vec<Entry>,
+    pub(crate) next_id: u64,
     /// Scheduler time: the sum of the `dt` of the ticks so far.
-    pub time: f64,
+    pub(crate) time: f64,
     /// How many ticks have run.
-    pub frame: u64,
-    pub in_tick: bool,
+    pub(crate) frame: u64,
+    pub(crate) in_tick: bool,
     /// The coroutines whose stacks are active, outermost first.
-    pub running: Vec<u64>,
-    pub failures: Vec<(u64, Box<PanicInfo>)>,
-    pub finished: usize,
-    pub shutting_down: bool,
-    pub stack_size: usize,
-    pub clock: Box<dyn Clock>,
+    pub(crate) running: Vec<u64>,
+    pub(crate) failures: Vec<(u64, Box<PanicInfo>)>,
+    pub(crate) finished: usize,
+    pub(crate) shutting_down: bool,
+    pub(crate) stack_size: usize,
+    pub(crate) clock: Box<dyn Clock>,
     /// The coroutines waiting for each signal, in wait order.
-    pub signals: HashMap<u64, Vec<u64>>,
+    pub(crate) signals: HashMap<u64, Vec<u64>>,
     /// Coroutines whose signal was emitted, in the order they will resume next tick.
-    pub signaled: Vec<u64>,
+    pub(crate) signaled: Vec<u64>,
     /// The live coroutines of each `CoGroup`, in start order.
-    pub groups: HashMap<u64, Vec<u64>>,
+    pub(crate) groups: HashMap<u64, Vec<u64>>,
     /// How many times any coroutine was resumed (for tests and tuning).
-    pub resumptions: u64,
-    pub ext: Externals,
+    pub(crate) resumptions: u64,
+    pub(crate) ext: Externals,
 }
 
 impl Scheduler {
@@ -198,6 +198,180 @@ impl Scheduler {
         }
         self.entries[idx].wake = wake;
         Ok(())
+    }
+}
+
+impl Scheduler {
+    // ---- configuration and inspection ----
+
+    /// The size of the native stack given to each coroutine (the engine's, if it uses one).
+    pub fn stack_size(&self) -> usize {
+        self.stack_size
+    }
+
+    /// Sets the size of the native stack given to each coroutine (at least 16 KiB).
+    pub fn set_stack_size(&mut self, bytes: usize) {
+        self.stack_size = bytes.max(16 * 1024);
+    }
+
+    /// Replaces the clock behind `wait_real` and the event loop.
+    pub fn set_clock(&mut self, clock: Box<dyn Clock>) {
+        self.clock = clock;
+    }
+
+    /// The reading of the clock, in seconds.
+    pub fn clock_now(&mut self) -> f64 {
+        self.clock.now()
+    }
+
+    /// Sleeps on the clock; a background operation that finishes ends the sleep early.
+    pub fn clock_sleep(&mut self, seconds: f64) {
+        if !self.ext.has_pending() {
+            self.clock.sleep(seconds);
+        } else {
+            // Background operations are running: a completion ends the sleep early.
+            let ext = &mut self.ext;
+            self.clock
+                .sleep_interruptible(seconds, &mut |d| ext.wait(d));
+        }
+    }
+
+    /// The background operations: the pool, the tokens and the completions.
+    pub fn ext(&mut self) -> &mut Externals {
+        &mut self.ext
+    }
+
+    /// Scheduler time: the sum of the `dt` of the ticks so far.
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+
+    /// How many coroutines are alive (started and not yet finished).
+    pub fn coroutine_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| e.state != State::Finished)
+            .count()
+    }
+
+    /// How many coroutine resumptions have happened (starts, ticks and cancellations).
+    pub fn resumptions(&self) -> u64 {
+        self.resumptions
+    }
+
+    /// Whether a tick is running or a coroutine is: the scheduler cannot be ticked or driven.
+    pub fn is_busy(&self) -> bool {
+        self.in_tick || !self.running.is_empty()
+    }
+
+    /// Whether the program is being torn down: nothing new may start.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down
+    }
+
+    /// Whether the `CoGroup` `group` has a live member other than `me`.
+    pub fn group_has_others(&self, group: u64, me: Option<u64>) -> bool {
+        self.groups
+            .get(&group)
+            .is_some_and(|m| m.iter().any(|c| Some(*c) != me))
+    }
+
+    /// How long until the next coroutine needs a tick, for an event loop: `None` when nothing
+    /// is alive or every live coroutine waits for a signal (nothing but an emit can wake it),
+    /// a small polling interval (`poll`) when something is checked at every tick (`wait_until`,
+    /// `join`), else the time to the earliest timed wake.
+    pub fn next_wake(&mut self, poll: f64) -> Option<f64> {
+        let mut best: Option<f64> = None;
+        let mut real_now: Option<f64> = None;
+        let time = self.time;
+        let mut any = false;
+        for e in &self.entries {
+            if e.state == State::Finished {
+                continue;
+            }
+            // A coroutine waiting for a signal needs no tick of its own: only an emit (from
+            // code that runs at a tick or before it) can wake it.
+            if e.state == State::Suspended && matches!(e.wake, Wake::Signal(_)) {
+                continue;
+            }
+            any = true;
+            let delay = match &e.wake {
+                Wake::Signaled => 0.0,
+                Wake::Time(d) => (d - time).max(0.0),
+                Wake::Real(d) => {
+                    let now = *real_now.get_or_insert_with(|| self.clock.now());
+                    (d - now).max(0.0)
+                }
+                // Only a completion (which ends the sleep) can wake it.
+                Wake::External(_) => f64::INFINITY,
+                Wake::Ready | Wake::Join(_) | Wake::Group(_) | Wake::Signal(_) => poll,
+            };
+            best = Some(best.map_or(delay, |b| b.min(delay)));
+        }
+        if any {
+            best
+        } else if !self.ext.has_pending() {
+            None
+        } else {
+            // The main fiber waits for a background operation: only its completion helps.
+            Some(f64::INFINITY)
+        }
+    }
+
+    // ---- bookkeeping ----
+
+    /// Drops the entries of finished coroutines.
+    pub fn compact(&mut self) {
+        if self.finished > 0 {
+            self.entries.retain(|e| e.state != State::Finished);
+            self.finished = 0;
+        }
+    }
+
+    /// After a start: compacts when many finished entries make up most of the list (and no
+    /// tick is running, whose loop indexes the entries).
+    pub fn compact_if_crowded(&mut self) {
+        if !self.in_tick && self.finished > 32 && self.finished * 2 > self.entries.len() {
+            self.compact();
+        }
+    }
+
+    /// The panics of coroutines that nobody has collected, as one failure (the first, the
+    /// others as notes); `Ok` when there are none.
+    pub fn take_failures(&mut self) -> Result<(), TickError> {
+        let mut failures = std::mem::take(&mut self.failures).into_iter();
+        let Some((_, mut first)) = failures.next() else {
+            return Ok(());
+        };
+        for (_, other) in failures {
+            first.notes.push(format!(
+                "another coroutine also panicked: {}",
+                other.message
+            ));
+        }
+        Err(TickError::Failure(first))
+    }
+
+    /// Forgets coroutine panics nobody collected (between tests).
+    pub fn forget_failures(&mut self) {
+        self.failures.clear();
+    }
+
+    /// Forgets the panic of the coroutine `id`: whoever joined it reports it instead.
+    pub fn forget_failure_of(&mut self, id: u64) {
+        self.failures.retain(|(f, _)| *f != id);
+    }
+
+    /// The coroutine `id` is no longer a member of `group`.
+    pub fn leave_group(&mut self, group: u64, id: u64) {
+        if let Some(members) = self.groups.get_mut(&group) {
+            if let Some(pos) = members.iter().rposition(|m| *m == id) {
+                members.remove(pos);
+            }
+            if members.is_empty() {
+                self.groups.remove(&group);
+            }
+        }
     }
 }
 

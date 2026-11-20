@@ -219,13 +219,16 @@ pub trait Builtins: Engine {
             | Builtin::ErrorMessage
             | Builtin::ErrorContext
             | Builtin::ErrorCause => return self.optres_op(fiber, op, args, span),
-            Builtin::CoroutineCancel
-            | Builtin::CoroutineDone
-            | Builtin::CoroutineJoin
-            | Builtin::CoGroupCancel
-            | Builtin::CoGroupCount
-            | Builtin::CoGroupJoinAll
-            | Builtin::SignalEmit => return self.pausing_builtin(fiber, op, &recv, span),
+            Builtin::CoroutineCancel | Builtin::CoroutineDone => {
+                return self.coroutine_builtin(fiber, op, &recv, span);
+            }
+            Builtin::CoGroupCancel | Builtin::CoGroupCount => {
+                return self.cogroup_builtin(fiber, op, &recv, span);
+            }
+            Builtin::SignalEmit => return self.signal_builtin(fiber, &recv, span),
+            Builtin::CoroutineJoin | Builtin::CoGroupJoinAll => {
+                return self.pausing_builtin(fiber, op, &recv, span);
+            }
             Builtin::StrBuilderNew => Value::Obj(ClassObj::new(
                 STR_BUILDER_TYPE,
                 vec![Value::list(Vec::new()), Value::Int(0)],

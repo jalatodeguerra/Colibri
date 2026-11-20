@@ -16,10 +16,21 @@ use colibri_syntax::Span;
 
 use crate::ctl::{Eval, TraceEntry};
 use crate::fiber::FiberState;
-use crate::heap::ClassObj;
 use crate::host::{HostFault, HostHook};
+use crate::sched::Finish;
 use crate::state::Core;
 use crate::value::Value;
+
+/// How a resumed coroutine stopped.
+#[doc(hidden)]
+pub enum Resumed {
+    /// It paused (it waits for something).
+    Suspended,
+    /// It ran to its end.
+    Finished(Finish),
+    /// The engine has no stack for it.
+    Gone,
+}
 
 /// An engine: the owner of a [`Core`] and of the computations that run against it.
 #[doc(hidden)]
@@ -134,13 +145,25 @@ pub trait Engine: Sized {
     /// Releases the temporaries above `mark`, newest first.
     fn release_temps(&mut self, fiber: &mut Self::Fiber, mark: usize);
 
-    // ---- temporary scaffolding ----
+    // ---- coroutines ----
 
-    /// The built-ins that may pause the running coroutine (`join`, `cancel`, `emit` and the
-    /// like on a `Coroutine`, `CoGroup` or `Signal`); `recv` is the receiver.
+    /// Runs the coroutine `id`, which the scheduler has marked running, until it pauses or
+    /// ends. `cancel` resumes it with a cancel signal, so its pause returns `Ctl::Cancel` and it
+    /// unwinds. The scheduler's bookkeeping (state, signals, budget) is done by the caller.
     ///
-    /// Temporary: step 8 of the core split moves the scheduler policy into core and this
-    /// method is deleted.
+    /// For the tree-walker this switches to the coroutine's native stack and back. For an
+    /// engine with heap frames it is the same contract with no stack: run the coroutine's
+    /// frames from where it paused until it waits again or ends. The engine must not hold a
+    /// reference into [`Core`] across the call (the coroutine uses it meanwhile). `Gone` means
+    /// the engine has nothing to run for `id`.
+    fn resume_stack(&mut self, id: u64, cancel: bool) -> Resumed;
+
+    // ---- built-ins that pause ----
+
+    /// The built-ins that pause the running coroutine: `join` on a `Coroutine` and `join_all`
+    /// on a `CoGroup` (`op` says which; `recv` is the receiver). Pausing is stackful in the
+    /// tree-walker, so these stay with the engine; the other handle methods are in
+    /// [`crate::coro::Sched`].
     fn pausing_builtin(
         &mut self,
         fiber: &mut Self::Fiber,
@@ -148,10 +171,4 @@ pub trait Engine: Sized {
         recv: &Value,
         span: Span,
     ) -> Eval;
-
-    /// A `CoGroup` object is dying: its coroutines are cancelled, newest first.
-    ///
-    /// Temporary: step 8 of the core split moves the scheduler policy into core and this
-    /// method is deleted.
-    fn group_died(&mut self, obj: &ClassObj);
 }

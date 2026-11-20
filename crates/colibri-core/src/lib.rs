@@ -13,6 +13,7 @@ pub mod clock;
 pub mod clone;
 pub mod closure;
 pub mod compare;
+pub mod coro;
 pub mod ctl;
 pub mod deep;
 pub mod dispatch;
@@ -47,6 +48,7 @@ pub use state::Core;
 pub mod prelude {
     pub use crate::builtin::Builtins as _;
     pub use crate::bytesfn::BytesOps as _;
+    pub use crate::coro::Sched as _;
     pub use crate::deep::Deep as _;
     pub use crate::dispatch::Dispatch as _;
     pub use crate::engine::Engine as _;

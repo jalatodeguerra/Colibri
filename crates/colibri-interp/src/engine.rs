@@ -3,7 +3,7 @@
 
 use colibri_check::hir::{Builtin, FnId};
 use colibri_check::types::TypeId;
-use colibri_core::engine::Engine;
+use colibri_core::engine::{Engine, Resumed};
 use colibri_core::fiber::FiberState;
 use colibri_core::host::HostHook;
 use colibri_core::prelude::*;
@@ -15,7 +15,6 @@ use colibri_syntax::{FileId, Span};
 use crate::ctl::{Ctl, Eval, PanicInfo, TraceEntry};
 use crate::eval::Interp;
 use crate::fiber::Fiber;
-use crate::heap::ClassObj;
 use crate::host::HostFault;
 use crate::value::Value;
 
@@ -167,21 +166,11 @@ impl Engine for Interp {
         recv: &Value,
         span: Span,
     ) -> Eval {
-        match op {
-            Builtin::CoroutineCancel | Builtin::CoroutineDone | Builtin::CoroutineJoin => {
-                self.coroutine_builtin(fiber, op, recv, span)
-            }
-            Builtin::SignalEmit => self.signal_builtin(fiber, recv, span),
-            _ => self.cogroup_builtin(fiber, op, recv, span),
-        }
+        self.pausing_op(fiber, op, recv, span)
     }
 
-    fn group_died(&mut self, obj: &ClassObj) {
-        // Recursion hazard: `Interp::group_died` must resolve to the inherent method of
-        // `coro.rs`. If that method is renamed or removed first, this path resolves to this
-        // trait method and recurses forever. Step 8 deletes the trait method and this
-        // delegation together.
-        Interp::group_died(self, obj);
+    fn resume_stack(&mut self, id: u64, cancel: bool) -> Resumed {
+        self.resume_native_stack(id, cancel)
     }
 }
 

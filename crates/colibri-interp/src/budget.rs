@@ -4,7 +4,6 @@
 
 use crate::eval::Interp;
 
-pub(crate) use colibri_core::budget::Budget;
 pub use colibri_core::budget::GRACE_STEPS;
 
 impl Interp {
