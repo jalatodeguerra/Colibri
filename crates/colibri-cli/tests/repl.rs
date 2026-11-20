@@ -190,8 +190,10 @@ fn load_refuses_a_manifest_and_prints_nothing_of_it() {
         let (out, err) = repl(&format!(":load {}\n1 + 1\n", file.display()));
         assert_eq!(out, "= 2 : int\n", "{err}");
         assert!(err.contains("not a script") && err.contains(name), "{err}");
-        // `:load` reads one script: there is no folder to pass instead.
-        assert!(!err.contains("folder"), "{err}");
+        // `:load` reads one script: there is no folder to pass instead. The path in the message
+        // can hold any word, so the message itself is what is checked.
+        assert!(!err.contains("pass the folder"), "{err}");
+        assert!(err.trim_end().ends_with("not a script"), "{err}");
         assert!(!err.contains("SeCrEt") && !out.contains("SeCrEt"), "{err}");
     }
     let _ = std::fs::remove_dir_all(dir);
