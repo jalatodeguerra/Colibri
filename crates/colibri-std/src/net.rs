@@ -372,6 +372,15 @@ fn dns_error(host: &str) -> TypedError {
     ))
 }
 
+/// Whether `host` cannot be a name in the DNS, whatever the resolver says: a label of more than
+/// 63 bytes, or a name of more than 253 (a trailing dot, the root, is not counted). The lookup is
+/// not made for such a name, so it costs no round trip to a resolver, and the answer is the
+/// same on every system.
+fn cannot_be_a_name(host: &str) -> bool {
+    let name = host.strip_suffix('.').unwrap_or(host);
+    name.len() > 253 || name.split('.').any(|label| label.len() > 63)
+}
+
 fn no_address(host: &str) -> TypedError {
     Kind::Dns.error(format!("cannot find the address of `{host}`: it has none"))
 }
@@ -380,6 +389,9 @@ fn no_address(host: &str) -> TypedError {
 /// interrupted: `connect` uses [`resolve_cancellable`]).
 fn resolve(addr: &str) -> Result<Vec<SocketAddr>, TypedError> {
     let (host, port) = split_addr(addr)?;
+    if cannot_be_a_name(host) {
+        return Err(dns_error(host));
+    }
     let found: Vec<SocketAddr> = (host, port)
         .to_socket_addrs()
         .map_err(|_| dns_error(host))?
@@ -430,6 +442,9 @@ fn resolve_cancellable(addr: &str, patience: Patience<'_>) -> Result<Vec<SocketA
     let (host, port) = split_addr(addr).map_err(Resolved::Failed)?;
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    if cannot_be_a_name(host) {
+        return Err(Resolved::Failed(dns_error(host)));
     }
     let (tx, rx) = mpsc::channel();
     let name = host.to_string();
@@ -1919,10 +1934,20 @@ fn connect(cx: &mut Ctx, addr: String, timeout: Option<Duration>) -> Result<Conn
             Resolved::Halted(h) => halted(h),
         })?;
         let mut first = None;
-        for a in addrs {
+        let count = addrs.len();
+        for (i, a) in addrs.into_iter().enumerate() {
             patience.check().map_err(&halted)?;
-            match connect_one(a, patience) {
+            // Each address gets a fair share of what is left, so that one that does not answer
+            // cannot use the whole budget while the next one would have connected at once.
+            let attempt = Patience {
+                token,
+                deadline: attempt_deadline(Instant::now(), deadline, count - i),
+            };
+            match connect_one(a, attempt) {
                 Ok(s) => return Ok(s),
+                Err(Attempt::Halt(Halt::TimedOut)) if patience.check().is_ok() => {
+                    first = first.or(Some(io::Error::from(ErrorKind::TimedOut)));
+                }
                 Err(Attempt::Halt(h)) => return Err(halted(h)),
                 Err(Attempt::Io(e)) => first = first.or(Some(e)),
             }
@@ -2108,6 +2133,39 @@ mod tests {
         assert!(resolve("[::1]:0").unwrap()[0].is_ipv6());
     }
 
+    /// A name that cannot exist is a `Dns` failure without a lookup: the resolver is not asked
+    /// (the check comes before `to_socket_addrs`), so this test needs no network and takes no time.
+    #[test]
+    fn a_name_that_cannot_exist_is_not_looked_up() {
+        let label = "x".repeat(64);
+        let long = format!("{}.com", "a.".repeat(130));
+        for host in [format!("{label}.invalid"), format!("{label}."), long] {
+            assert!(cannot_be_a_name(&host), "{host}");
+            let started = Instant::now();
+            let e = resolve(&format!("{host}:80")).unwrap_err();
+            assert_eq!(variant(&e), "Dns", "{}", e.message());
+            assert!(started.elapsed() < Duration::from_secs(5));
+            let token = CancelToken::default();
+            let patience = Patience {
+                token: &token,
+                deadline: None,
+            };
+            match resolve_cancellable(&format!("{host}:80"), patience) {
+                Err(Resolved::Failed(e)) => assert_eq!(variant(&e), "Dns"),
+                _ => panic!("{host} was not refused"),
+            }
+        }
+        // 63 bytes in a label, 253 in a name, and a trailing dot are the limits, not beyond them.
+        assert!(!cannot_be_a_name(&format!("{}.com", "x".repeat(63))));
+        assert!(!cannot_be_a_name("localhost"));
+        assert!(!cannot_be_a_name("example.com."));
+        assert!(!cannot_be_a_name("1.2.3"));
+        let max = format!("{0}.{0}.{0}.{1}", "a".repeat(63), "b".repeat(61));
+        assert_eq!(max.len(), 253);
+        assert!(!cannot_be_a_name(&max));
+        assert!(cannot_be_a_name(&format!("{max}c")));
+    }
+
     fn reader(bytes: &[u8], eof: bool) -> Reader {
         Reader {
             data: bytes.to_vec(),
@@ -2208,6 +2266,29 @@ mod tests {
         );
         assert!(r.is_ok());
         assert!(listener.accept().is_ok());
+    }
+
+    /// Each address left to try gets its share of the time left, the last one all of it.
+    #[test]
+    fn each_address_gets_a_fair_share_of_the_time_left() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(12);
+        let share = |remaining| attempt_deadline(now, Some(deadline), remaining).unwrap() - now;
+        assert_eq!(share(1), Duration::from_secs(12));
+        assert_eq!(share(2), Duration::from_secs(6));
+        assert_eq!(share(3), Duration::from_secs(4));
+        // After the first of three took its 4 seconds, 8 are left for two: 4 each.
+        let later = now + Duration::from_secs(4);
+        assert_eq!(
+            attempt_deadline(later, Some(deadline), 2).unwrap() - later,
+            Duration::from_secs(4)
+        );
+        // No deadline, no share; a deadline that has passed leaves nothing, and no count of
+        // zero divides by zero.
+        assert!(attempt_deadline(now, None, 3).is_none());
+        let past = attempt_deadline(deadline + Duration::from_secs(1), Some(deadline), 2);
+        assert_eq!(past, Some(deadline + Duration::from_secs(1)));
+        assert_eq!(share(0), Duration::from_secs(12));
     }
 
     /// A token that is not cancelled.

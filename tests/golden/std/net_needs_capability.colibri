@@ -3,4 +3,5 @@ import net
 fn main() {
     let _ = net.listen("127.0.0.1:0") // error: `net.listen` needs the `net` capability, which this host did not grant
     let _ = net.connect("127.0.0.1:1") // error: `net.connect` needs the `net` capability
+    let _ = net.connect_timeout("127.0.0.1:1", 1.0) // error: `net.connect_timeout` needs the `net` capability
 }

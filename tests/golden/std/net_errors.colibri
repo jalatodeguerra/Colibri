@@ -1,6 +1,7 @@
 // caps: net
 // What goes wrong on the way to a connection, as `net.Error` variants.
 import net
+import str
 
 fn kind[T](r: Result[T]) -> str {
     match r {
@@ -33,13 +34,16 @@ fn main() -> Result[()] {
     print(net.listen("[::1:80").err().expect("invalid").message())
     print(net.listen(":8080").err().expect("invalid").message())
 
-    // A name that does not resolve (`.invalid` never does).
-    print(kind(net.connect("no-such-host.invalid:80")))
-    print(kind(net.listen("no-such-host.invalid:80")))
+    // A name that cannot be resolved. This one has a label of 64 bytes, which no DNS name can
+    // have, so `net` fails it before it asks any resolver: the test needs no network and gives
+    // the same answer on every machine.
+    let name = "{str.repeat("x", 64)}.invalid"
+    print(kind(net.connect("{name}:80")))
+    print(kind(net.listen("{name}:80")))
     // The text is Colibri's own and the same everywhere: the system's resolver words differ
     // between systems and are translated on Windows, so they are not shown.
-    print(net.connect("no-such-host.invalid:80").err().expect("dns").message())
-    print(net.listen("no-such-host.invalid:80").err().expect("dns").message())
+    print(net.connect("{name}:80").err().expect("dns").message().replace(name, "<name>"))
+    print(net.listen("{name}:80").err().expect("dns").message().replace(name, "<name>"))
 
     // An address that is not one of this machine's.
     print(kind(net.listen("203.0.113.1:0")))
@@ -64,6 +68,6 @@ fn main() -> Result[()] {
 // expect: `:8080` is not an address: the host is missing (write `127.0.0.1:8080` for this machine only, `0.0.0.0:8080` for every interface)
 // expect: Dns
 // expect: Dns
-// expect: cannot find the address of `no-such-host.invalid` (check the spelling, or use an IP address)
-// expect: cannot find the address of `no-such-host.invalid` (check the spelling, or use an IP address)
+// expect: cannot find the address of `<name>` (check the spelling, or use an IP address)
+// expect: cannot find the address of `<name>` (check the spelling, or use an IP address)
 // expect: AddrNotAvailable
