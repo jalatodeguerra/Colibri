@@ -274,8 +274,10 @@ test "chunk extensions count against the limit with the data" {
     let h = feed("0;" + str_of("b", 150) + "\r\n\r\n")
     assert_eq(status_of(reader_with(limit, h).all()), 413)
     // Data and extensions are one total: 40 + 61 is over.
+    // The refusal comes before the data of that chunk is read.
     let i = feed("28;" + ext + "\r\n" + str_of("d", 40) + "\r\n0\r\n\r\n")
     assert_eq(status_of(reader_with(limit, i).all()), 413)
+    assert_eq(i.log, ["line 4096"])
 }
 
 test "ordinary extensions and whitespace still pass under a small limit" {
