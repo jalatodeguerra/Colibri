@@ -408,7 +408,7 @@ pub(crate) trait SchedInternal: Engine {
                 continue;
             };
             let e = &mut s.entries[idx];
-            if e.state == State::Suspended && matches!(e.wake, Wake::Signaled) {
+            if e.state == State::Suspended && matches!(e.wake, Wake::Signaled | Wake::Joined(_)) {
                 e.ticked = frame;
                 self.resume_coro(id, false, true);
             }
@@ -423,6 +423,7 @@ pub(crate) trait SchedInternal: Engine {
                 // Woken by an event, never found due by looking.
                 Wake::Signal(_)
                 | Wake::Signaled
+                | Wake::Joined(_)
                 | Wake::Join(_)
                 | Wake::JoinResult(_)
                 | Wake::Group(_) => false,
@@ -451,9 +452,8 @@ pub(crate) trait SchedInternal: Engine {
             s.leave_group(g, id);
         }
         // Whoever waits for this coroutine in `join` or `join_result` is woken, in the order they
-        // began waiting; a panic a `join_result` waiter will receive is theirs, not a failure of
-        // the program.
-        let received = s.wake_joiners(id);
+        // began waiting.
+        s.wake_joiners(id);
         let finish = match finish {
             Finish::Panicked(info) => Finish::Panicked(info),
             other if exhausted => {
@@ -492,10 +492,9 @@ pub(crate) trait SchedInternal: Engine {
                         self.release(old);
                     }
                 }
-                // A budget panic is the host's limit, never the program's to swallow.
-                if !received || info.budget {
-                    self.core_mut().sched.failures.push((id, info));
-                }
+                // Always queued: a report holds it back only while a woken `join_result`
+                // waiter has not run (`take_failures`); a budget panic is never held.
+                self.core_mut().sched.failures.push((id, info));
             }
         }
     }

@@ -40,23 +40,27 @@ pub enum Wake {
     /// When the real clock reaches this.
     Real(f64),
     /// `join` on the coroutine with this id (no polling: the coroutine is in the target's
-    /// joiner list and is woken, as `Signaled`, when the target ends).
+    /// joiner list and is woken, as `Woken`, when the target ends).
     Join(u64),
-    /// `join_result` on the coroutine with this id: the same, and a panic of the target is
-    /// handed to the waiter instead of being a failure of the program.
+    /// `join_result` on the coroutine with this id: woken, as `Joined`, when the target ends,
+    /// and the waiter takes over the target's panic.
     JoinResult(u64),
     /// Waiting for this signal (no polling: the coroutine is in the signal's waiter list).
     Signal(u64),
-    /// The signal was emitted, or the coroutine a `join_result` waited for ended; the
-    /// coroutine resumes at the next tick, in the order it was woken.
+    /// The signal was emitted; the coroutine resumes at the next tick, in the order it was
+    /// woken (a `join_result` waiter is queued the same way, as `Joined`).
     Signaled,
     /// The coroutine a `join` waited for ended, or the group a `join_all` waited for is
     /// empty of others: due in the ordinary pass of a tick, in start order, so in the tick
     /// that is running if the coroutine starts after the one that woke it, else in the next.
     /// (Exactly when the polling check used to find it due.)
     Woken,
+    /// A `join_result` waiter woken by the end of this coroutine, queued like `Signaled`.
+    /// While it has not run, a panic of that coroutine stays in the failure queue (a report
+    /// skips it), so a waiter that is cancelled before it runs does not lose the panic.
+    Joined(u64),
     /// `join_all` on this group (no polling: the coroutine is in the group's waiter list and
-    /// is woken, as `Signaled`, when no other coroutine of the group is alive).
+    /// is woken, as `Woken`, when no other coroutine of the group is alive).
     Group(u64),
     /// A background operation (`Interp::await_external`): when its thread has finished. Needs
     /// no polling: the event loop sleeps until the thread posts its completion.
@@ -333,7 +337,7 @@ impl Scheduler {
             }
             any = true;
             let delay = match &e.wake {
-                Wake::Signaled | Wake::Woken => 0.0,
+                Wake::Signaled | Wake::Woken | Wake::Joined(_) => 0.0,
                 Wake::Time(d) => (d - time).max(0.0),
                 Wake::Real(d) => {
                     let now = *real_now.get_or_insert_with(|| self.clock.now());
@@ -380,7 +384,21 @@ impl Scheduler {
     /// The panics of coroutines that nobody has collected, as one failure (the first, the
     /// others as notes); `Ok` when there are none.
     pub fn take_failures(&mut self) -> Result<(), TickError> {
-        let mut failures = std::mem::take(&mut self.failures).into_iter();
+        if self.failures.is_empty() {
+            return Ok(());
+        }
+        // A panic is held back while a `join_result` waiter woken by that coroutine's end has
+        // not run yet: the waiter takes it (`forget_failure_of`), or, cancelled first, releases
+        // it for the next report. A budget panic is never held.
+        let all = std::mem::take(&mut self.failures);
+        let (held, report): (Vec<_>, Vec<_>) = all.into_iter().partition(|(id, info)| {
+            !info.budget
+                && self.entries.iter().any(|e| {
+                    e.state == State::Suspended && matches!(e.wake, Wake::Joined(t) if t == *id)
+                })
+        });
+        self.failures = held;
+        let mut failures = report.into_iter();
         let Some((_, mut first)) = failures.next() else {
             return Ok(());
         };
@@ -398,26 +416,27 @@ impl Scheduler {
         self.failures.clear();
     }
 
-    /// Forgets the panic of the coroutine `id`: whoever joined it reports it instead.
+    /// Forgets the panic of the coroutine `id` (not a budget panic): whoever joined it reports
+    /// it instead.
     pub fn forget_failure_of(&mut self, id: u64) {
-        self.failures.retain(|(f, _)| *f != id);
+        // A budget panic is the host's limit: nobody can take it over.
+        self.failures.retain(|(f, info)| *f != id || info.budget);
     }
 
     /// The coroutine `target` has ended, and its waiters are woken, in the order they began
     /// waiting. A `join_result` waiter is woken the way a signal's waiters are (queued: it
     /// resumes at the start of the next tick, before the other due coroutines). A `join`
     /// waiter becomes due in the ordinary pass of a tick ([`Wake::Woken`]), where the polling
-    /// check found it. Returns whether a `join_result` waiter will receive the target's
-    /// outcome, which is what makes a panic "handed over".
-    pub(crate) fn wake_joiners(&mut self, target: u64) -> bool {
+    /// check found it. A panic of the target stays queued while a woken `join_result` waiter
+    /// has not run ([`Wake::Joined`], see `take_failures`).
+    pub(crate) fn wake_joiners(&mut self, target: u64) {
         // Most coroutines end with nobody waiting for them: no hashing then.
         if self.joiners.is_empty() {
-            return false;
+            return;
         }
         let Some(waiters) = self.joiners.remove(&target) else {
-            return false;
+            return;
         };
-        let mut received = false;
         for id in waiters {
             if let Some(idx) = self.find(id) {
                 let e = &mut self.entries[idx];
@@ -426,15 +445,13 @@ impl Scheduler {
                     continue;
                 }
                 if result {
-                    e.wake = Wake::Signaled;
+                    e.wake = Wake::Joined(target);
                     self.signaled.push(id);
-                    received = true;
                 } else if matches!(e.wake, Wake::Join(t) if t == target) {
                     e.wake = Wake::Woken;
                 }
             }
         }
-        received
     }
 
     /// A waiter that is cancelled leaves the list of what it waited for: no stale entry

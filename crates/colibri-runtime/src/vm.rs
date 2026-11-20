@@ -1720,6 +1720,13 @@ impl Vm {
         self.interp.core().sched.resumptions()
     }
 
+    /// How many coroutines are registered as waiting for a signal, a coroutine or a group
+    /// (for tests).
+    #[doc(hidden)]
+    pub fn coroutine_waiters(&self) -> usize {
+        self.interp.coroutine_waiters()
+    }
+
     /// Cancels every live coroutine, newest first, running their `defer`s and drops. Done
     /// automatically by [`Vm::shutdown`] and when the `Vm` is dropped.
     pub fn cancel_coroutines(&mut self) {
@@ -1727,7 +1734,12 @@ impl Vm {
         self.interp.core_mut().flush();
     }
 
-    /// Runs the event loop until no coroutine is alive: what `colibri run` does after `main`.
+    /// Runs the event loop until no coroutine is alive, or until every live one waits for an
+    /// event that nothing in the loop can cause: what `colibri run` does after `main`. In the
+    /// second case (every live coroutine waits for a signal nobody emits, or in `join`,
+    /// `join_result` or `join_all` for a coroutine or group that cannot end) it returns `Ok`
+    /// with those coroutines still alive; they are cancelled at shutdown. Such waiters are
+    /// never polled.
     /// It ticks the scheduler with the time elapsed on the [`VmBuilder::clock`], then sleeps on
     /// that clock until the next timed wake (`wait`, `wait_real`); coroutines that poll at
     /// every tick (`wait_until`) are checked every `poll` seconds (coroutines waiting for a

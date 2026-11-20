@@ -165,8 +165,8 @@ pub trait Engine: Sized {
     // ---- built-ins that pause ----
 
     /// The built-ins that pause the running coroutine: `join` and `join_result` on a
-    /// `Coroutine` and `join_all` on a `CoGroup` (`op` says which; `recv` is the receiver). Pausing is stackful in the
-    /// tree-walker, so these stay with the engine; the other handle methods are in
+    /// `Coroutine` and `join_all` on a `CoGroup` (`op` says which; `recv` is the receiver).
+    /// Pausing is stackful in the tree-walker, so these stay with the engine; the other handle methods are in
     /// [`crate::coro::Sched`].
     fn pausing_builtin(
         &mut self,
