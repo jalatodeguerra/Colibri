@@ -1414,6 +1414,16 @@ fn on_write(cx: &mut Ctx, this: &Conn, data: Bytes) -> Result<(), TypedError> {
         let wait = sh.wait(Some(token), limit);
         sh.write_op(&ticket, &wait, &data)
     })
+    .map_err(|why| no_thread("write to", &peer, &why))?
+}
+
+/// "1 byte", "2 bytes".
+fn count_of_bytes(n: usize) -> String {
+    if n == 1 {
+        "1 byte".to_string()
+    } else {
+        format!("{n} bytes")
+    }
 }
 
 fn bad_count(this: &str, what: &str, n: i64) -> TypedError {
@@ -1429,16 +1439,6 @@ fn text_of(line: Vec<u8>, peer: &str) -> Result<String, TypedError> {
             utf8_problem(&e.utf8_error())
         ))
     })
-    .map_err(|why| no_thread("write to", &peer, &why))?
-}
-
-/// "1 byte", "2 bytes".
-fn count_of_bytes(n: usize) -> String {
-    if n == 1 {
-        "1 byte".to_string()
-    } else {
-        format!("{n} bytes")
-    }
 }
 
 /// Where the next line is in the buffer.
