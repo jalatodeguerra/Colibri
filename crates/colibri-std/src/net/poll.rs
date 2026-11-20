@@ -1607,6 +1607,7 @@ mod tests {
         let (late, _late_rx) = self::cell();
         assert!(held.timer(Instant::now(), &late).is_err());
         assert!(!gone());
+        drop(held);
         assert!(gone());
     }
 
