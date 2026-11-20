@@ -1482,6 +1482,10 @@ struct Reader {
     pos: usize,
     /// Bytes after `pos` known to hold no `\n`.
     scanned: usize,
+    /// What `read_until` scans for: the delimiter of the last such call, and how many bytes after
+    /// `pos` hold no start of it (so the next look begins there, not at `pos`).
+    delim: Vec<u8>,
+    delim_clear: usize,
     eof: bool,
 }
 
@@ -1513,6 +1517,8 @@ impl Reader {
             data: Vec::new(),
             pos: 0,
             scanned: 0,
+            delim: Vec::new(),
+            delim_clear: 0,
             eof: false,
         }
     }
@@ -1525,6 +1531,7 @@ impl Reader {
     /// is the buffer itself, so that a big `read_exact` never holds the data twice.
     fn take(&mut self, n: usize) -> Vec<u8> {
         self.scanned = 0;
+        self.delim_clear = 0;
         if n >= HAND_OUT {
             if self.pos > 0 {
                 self.data.drain(..self.pos);
@@ -1655,6 +1662,8 @@ struct Shared {
     send_attempts: AtomicUsize,
     /// Nanoseconds; 0 means no timeout.
     timeout_ns: AtomicU64,
+    /// The longest line `read_line` takes (`set_line_limit`), read at each look of a call.
+    line_limit: AtomicUsize,
     reader: Mutex<Reader>,
     reads: Arc<Turns>,
     writes: Arc<Turns>,
@@ -1701,6 +1710,7 @@ impl Conn {
                 #[cfg(test)]
                 send_attempts: AtomicUsize::new(0),
                 timeout_ns: AtomicU64::new(0),
+                line_limit: AtomicUsize::new(MAX_LINE),
                 reader: Mutex::new(Reader::new()),
                 reads: Turns::new(),
                 writes: Turns::new(),
@@ -2334,9 +2344,9 @@ enum Line {
     Full { content: usize, consumed: usize },
 }
 
-/// Looks for the next line in the buffer. A line may be `MAX_LINE` bytes long, not counting
-/// its `\n` or `\r\n`.
-fn find_line(r: &mut Reader, peer: &str) -> Result<Line, TypedError> {
+/// Looks for the next line in the buffer. A line may be `limit` bytes long, not counting its
+/// `\n` or `\r\n`.
+fn find_line(r: &mut Reader, peer: &str, limit: usize) -> Result<Line, TypedError> {
     let start = r.pos;
     let from = start + r.scanned;
     if let Some(at) = r.data[from..].iter().position(|&b| b == b'\n') {
@@ -2345,8 +2355,8 @@ fn find_line(r: &mut Reader, peer: &str) -> Result<Line, TypedError> {
         if content > 0 && r.data[end - 1] == b'\r' {
             content -= 1;
         }
-        if content > MAX_LINE {
-            return Err(too_long(peer));
+        if content > limit {
+            return Err(too_long(peer, limit));
         }
         return Ok(Line::Full {
             content,
@@ -2359,34 +2369,34 @@ fn find_line(r: &mut Reader, peer: &str) -> Result<Line, TypedError> {
         if pending == 0 {
             return Ok(Line::End);
         }
-        if pending > MAX_LINE {
-            return Err(too_long(peer));
+        if pending > limit {
+            return Err(too_long(peer, limit));
         }
         return Ok(Line::Tail(pending));
     }
-    // A line of exactly `MAX_LINE` bytes may be waiting for its `\n` behind a `\r`.
-    if pending > MAX_LINE + 1 || (pending == MAX_LINE + 1 && r.data.last() != Some(&b'\r')) {
-        return Err(too_long(peer));
+    // A line of exactly `limit` bytes may be waiting for its `\n` behind a `\r`.
+    if pending > limit + 1 || (pending == limit + 1 && r.data.last() != Some(&b'\r')) {
+        return Err(too_long(peer, limit));
     }
     Ok(Line::More)
 }
 
-fn too_long(peer: &str) -> TypedError {
+fn too_long(peer: &str, limit: usize) -> TypedError {
     Kind::LineTooLong.error(format!(
-        "cannot read a line from `{peer}`: it is longer than {MAX_LINE} bytes without an end of line (close the connection, or read the data with `read`)"
+        "cannot read a line from `{peer}`: it is longer than {limit} bytes without an end of line (close the connection, raise the limit with `set_line_limit`, or read the data with `read`)"
     ))
 }
 
-fn line_probe(r: &mut Reader, peer: &str) -> Probe {
-    match find_line(r, peer) {
+fn line_probe(r: &mut Reader, peer: &str, limit: usize) -> Probe {
+    match find_line(r, peer, limit) {
         Ok(Line::More) => Probe::Pending(0),
         Ok(_) => Probe::Ready,
         Err(e) => Probe::Failed(e),
     }
 }
 
-fn take_line(r: &mut Reader, peer: &str) -> Result<Option<String>, TypedError> {
-    match find_line(r, peer)? {
+fn take_line(r: &mut Reader, peer: &str, limit: usize) -> Result<Option<String>, TypedError> {
+    match find_line(r, peer, limit)? {
         Line::Full { content, consumed } => {
             let mut line = r.take(consumed);
             line.truncate(content);
@@ -2396,6 +2406,113 @@ fn take_line(r: &mut Reader, peer: &str) -> Result<Option<String>, TypedError> {
         Line::Tail(n) => text_of(r.take(n), peer).map(Some),
         Line::More => Err(Kind::Other.error(format!(
             "cannot read a line from `{peer}`: the buffered line is gone (a bug in `net`)"
+        ))),
+    }
+}
+
+/// Where the next `delim` is in the buffer (see `find_delim`).
+enum Found {
+    /// Its end is not there yet.
+    More,
+    /// The stream ended with nothing pending.
+    End,
+    /// The stream ended after this many bytes without the delimiter.
+    Tail(usize),
+    /// `content` bytes before the delimiter; `consumed` bytes with it.
+    Full { content: usize, consumed: usize },
+}
+
+/// Looks for the next `delim` in the buffer, at a start no later than `max` bytes after the
+/// first unread byte (`max` counts the bytes before the delimiter). Only the bytes that arrived
+/// since the last look are scanned, backing up by the length of the delimiter less one (`r.delim`
+/// and `r.delim_clear` say what the last look covered).
+///
+/// It is `LineTooLong` as soon as the bytes can no longer be followed by a delimiter that starts
+/// within `max`: a match that starts after it, or `max + 1` bytes of which no tail is the
+/// beginning of the delimiter (a delimiter of one byte: the first byte past `max`). A tail that
+/// still is the beginning of the delimiter waits for the rest of it, which is how a delimiter
+/// that straddles the limit is found.
+fn find_delim(r: &mut Reader, delim: &[u8], max: usize, peer: &str) -> Result<Found, TypedError> {
+    if r.delim != delim {
+        r.delim = delim.to_vec();
+        r.delim_clear = 0;
+    }
+    let dl = delim.len();
+    let start = r.pos;
+    let from = start + r.delim_clear;
+    if let Some(at) = memchr::memmem::find(&r.data[from..], delim) {
+        let content = r.delim_clear + at;
+        if content > max {
+            return Err(too_long_until(peer, max));
+        }
+        return Ok(Found::Full {
+            content,
+            consumed: content + dl,
+        });
+    }
+    let pending = r.data.len() - start;
+    r.delim_clear = r.delim_clear.max(pending.saturating_sub(dl - 1));
+    if r.eof {
+        if pending == 0 {
+            return Ok(Found::End);
+        }
+        if pending > max {
+            return Err(too_long_until(peer, max));
+        }
+        return Ok(Found::Tail(pending));
+    }
+    if pending > max {
+        // A start in `pending - dl + 1 ..= max` whose bytes so far are the beginning of `delim`
+        // may still be completed.
+        let lowest = (pending + 1).saturating_sub(dl);
+        let open = (lowest..=max).any(|s| {
+            let tail = &r.data[start + s..start + pending];
+            delim.starts_with(tail)
+        });
+        if !open {
+            return Err(too_long_until(peer, max));
+        }
+    }
+    Ok(Found::More)
+}
+
+fn too_long_until(peer: &str, max: usize) -> TypedError {
+    Kind::LineTooLong.error(format!(
+        "cannot read from `{peer}`: more than {max} bytes without the delimiter (close the connection, or raise the limit given to `read_until`)"
+    ))
+}
+
+fn delim_probe(r: &mut Reader, delim: &[u8], max: usize, peer: &str) -> Probe {
+    match find_delim(r, delim, max, peer) {
+        Ok(Found::More) => Probe::Pending(0),
+        Ok(Found::Tail(have)) => Probe::Failed(Kind::UnexpectedEnd.error(format!(
+            "cannot read from `{peer}`: the stream ended after {have} bytes without the delimiter ({})",
+            if have == 1 {
+                "the 1 byte stays readable with `read`".to_string()
+            } else {
+                format!("the {have} bytes stay readable with `read`")
+            }
+        ))),
+        Ok(_) => Probe::Ready,
+        Err(e) => Probe::Failed(e),
+    }
+}
+
+fn take_until(
+    r: &mut Reader,
+    delim: &[u8],
+    max: usize,
+    peer: &str,
+) -> Result<Option<Bytes>, TypedError> {
+    match find_delim(r, delim, max, peer)? {
+        Found::Full { content, consumed } => {
+            let mut piece = r.take(consumed);
+            piece.truncate(content);
+            Ok(Some(Bytes(piece)))
+        }
+        Found::End => Ok(None),
+        Found::Tail(_) | Found::More => Err(Kind::Other.error(format!(
+            "cannot read from `{peer}`: the buffered data is gone (a bug in `net`)"
         ))),
     }
 }
@@ -2465,14 +2582,49 @@ impl HostType for Conn {
         });
         // The next line without its `\n` or `\r\n`, or `none` at the end of the stream.
         d.method("read_line", [], |cx: &mut Ctx, this: &Conn| {
-            let (a, b) = (this.sh.peer.clone(), this.sh.peer.clone());
+            // The limit is read at each look, so a `set_line_limit` made while this call waits
+            // applies from its next look.
+            let (a, b) = (Arc::clone(&this.sh), Arc::clone(&this.sh));
             on_read(
                 cx,
                 this,
-                move |r| line_probe(r, &a),
-                move |r| take_line(r, &b),
+                move |r| line_probe(r, &a.peer, a.line_limit.load(Ordering::SeqCst)),
+                move |r| take_line(r, &b.peer, b.line_limit.load(Ordering::SeqCst)),
             )
         });
+        // The bytes before the next `delim`, which is taken off the stream with them; `none`
+        // at the end of the stream with nothing pending; `LineTooLong` when `max` bytes
+        // (counted before the delimiter) are passed without it.
+        d.method(
+            "read_until",
+            ["delim", "max"],
+            |cx: &mut Ctx, this: &Conn, delim: Bytes, max: i64| {
+                if delim.0.is_empty() {
+                    return Err(Kind::Other.error(format!(
+                        "cannot read from `{}`: the delimiter is empty (give at least one byte)",
+                        this.sh.peer
+                    )));
+                }
+                let max = match usize::try_from(max) {
+                    Ok(m) if m <= MAX_EXACT => m,
+                    _ => {
+                        return Err(Kind::Other.error(format!(
+                            "cannot read from `{}`: {max} is not a limit for the bytes before the delimiter (use 0 to {MAX_EXACT})",
+                            this.sh.peer
+                        )));
+                    }
+                };
+                let a = Arc::new(delim.0);
+                let (p1, p2) = (this.sh.peer.clone(), this.sh.peer.clone());
+                let a2 = Arc::clone(&a);
+                on_read(
+                    cx,
+                    this,
+                    move |r| delim_probe(r, &a, max, &p1),
+                    move |r| take_until(r, &a2, max, &p2),
+                )
+            },
+        );
         // Writes all of `text`, or fails (a failure may leave part of it written).
         d.method(
             "write",
@@ -2515,6 +2667,17 @@ impl HostType for Conn {
             // is shut: it is the one way left to tell the peer that no more comes (a cut write
             // left a half message, which the peer should not wait on).
             sh.shut_write()
+        });
+        // The most bytes `read_line` takes before its end of line; read at each look of a call.
+        d.method("set_line_limit", ["bytes"], |cx: &mut Ctx, this: &Conn, bytes: i64| {
+            match usize::try_from(bytes) {
+                Ok(n) if (1..=MAX_EXACT).contains(&n) => {
+                    this.sh.line_limit.store(n, Ordering::SeqCst);
+                }
+                _ => cx.raise(format!(
+                    "net.Conn.set_line_limit: {bytes} is not a line limit (use 1 to {MAX_EXACT} bytes)"
+                )),
+            }
         });
         d.method("local_addr", [], |this: &Conn| this.sh.local.clone());
         d.method("peer_addr", [], |this: &Conn| this.sh.peer.clone());
@@ -3057,10 +3220,10 @@ mod tests {
     }
 
     fn line_of(r: &mut Reader) -> Result<Option<String>, TypedError> {
-        match line_probe(r, "peer") {
+        match line_probe(r, "peer", MAX_LINE) {
             Probe::Failed(e) => Err(e),
             Probe::Pending(_) => panic!("not ready"),
-            Probe::Ready => take_line(r, "peer"),
+            Probe::Ready => take_line(r, "peer", MAX_LINE),
         }
     }
 
@@ -3081,11 +3244,20 @@ mod tests {
         }
         // The `\n` has not come: the `\r` after a full line may be its end of line.
         let mut r = reader(&line(MAX_LINE, b"\r"), false);
-        assert!(matches!(line_probe(&mut r, "p"), Probe::Pending(_)));
+        assert!(matches!(
+            line_probe(&mut r, "p", MAX_LINE),
+            Probe::Pending(_)
+        ));
         let mut r = reader(&line(MAX_LINE, b"y"), false);
-        assert!(matches!(line_probe(&mut r, "p"), Probe::Failed(_)));
+        assert!(matches!(
+            line_probe(&mut r, "p", MAX_LINE),
+            Probe::Failed(_)
+        ));
         let mut r = reader(&line(MAX_LINE + 1, b""), false);
-        assert!(matches!(line_probe(&mut r, "p"), Probe::Failed(_)));
+        assert!(matches!(
+            line_probe(&mut r, "p", MAX_LINE),
+            Probe::Failed(_)
+        ));
         // A last line without an end of line.
         let mut r = reader(&line(MAX_LINE, b""), true);
         assert_eq!(line_of(&mut r).unwrap().unwrap().len(), MAX_LINE);
@@ -3098,14 +3270,17 @@ mod tests {
     #[test]
     fn a_line_that_is_not_text_is_taken_off_the_stream() {
         let mut r = reader(b"\xff\xfe\nok\n", false);
-        let e = take_line(&mut r, "peer").unwrap_err();
+        let e = take_line(&mut r, "peer", MAX_LINE).unwrap_err();
         assert_eq!(variant(&e), "InvalidData");
         assert!(
             e.message().contains("taken off the stream"),
             "{}",
             e.message()
         );
-        assert_eq!(take_line(&mut r, "peer").unwrap().as_deref(), Some("ok"));
+        assert_eq!(
+            take_line(&mut r, "peer", MAX_LINE).unwrap().as_deref(),
+            Some("ok")
+        );
     }
 
     /// A connect whose deadline has passed ends at once with the right reason and does not touch
@@ -3782,8 +3957,8 @@ mod tests {
                         cx,
                         ticket,
                         Limit::NONE,
-                        |r| line_probe(r, "p"),
-                        |r| take_line(r, "p"),
+                        |r| line_probe(r, "p", MAX_LINE),
+                        |r| take_line(r, "p", MAX_LINE),
                     )
                     .unwrap();
                 lines.push(line);
@@ -4096,8 +4271,8 @@ mod tests {
                         cx,
                         ticket,
                         Limit::NONE,
-                        |r| line_probe(r, "p"),
-                        |r| take_line(r, "p"),
+                        |r| line_probe(r, "p", MAX_LINE),
+                        |r| take_line(r, "p", MAX_LINE),
                     )
                     .unwrap()
             });
@@ -4123,8 +4298,8 @@ mod tests {
                     cx,
                     ticket,
                     limit,
-                    |r| line_probe(r, "p"),
-                    |r| take_line(r, "p"),
+                    |r| line_probe(r, "p", MAX_LINE),
+                    |r| take_line(r, "p", MAX_LINE),
                 )
                 .map(|_| ())
                 .map_err(|e| variant(&e))
@@ -4154,8 +4329,8 @@ mod tests {
                 cx,
                 ticket,
                 Limit::NONE,
-                |r| line_probe(r, "p"),
-                |r| take_line(r, "p"),
+                |r| line_probe(r, "p", MAX_LINE),
+                |r| take_line(r, "p", MAX_LINE),
             );
             let seen = *seen.lock().unwrap();
             (seen, sh.reader.lock().unwrap().data.capacity())
@@ -4195,8 +4370,8 @@ mod tests {
                     cx,
                     ticket,
                     Limit::NONE,
-                    |r| line_probe(r, "p"),
-                    |r| take_line(r, "p"),
+                    |r| line_probe(r, "p", MAX_LINE),
+                    |r| take_line(r, "p", MAX_LINE),
                 )
             };
             let first = read(cx).map_err(|e| format!("{e:?}"));
@@ -4319,8 +4494,8 @@ mod tests {
                         cx,
                         ticket,
                         Limit::NONE,
-                        |r| line_probe(r, "p"),
-                        |r| take_line(r, "p"),
+                        |r| line_probe(r, "p", MAX_LINE),
+                        |r| take_line(r, "p", MAX_LINE),
                     )
                     .map(|_| ())
                     .map_err(|e| variant(&e));
@@ -4480,8 +4655,8 @@ mod tests {
                 cx,
                 ticket,
                 limit,
-                |r| line_probe(r, "p"),
-                |r| take_line(r, "p"),
+                |r| line_probe(r, "p", MAX_LINE),
+                |r| take_line(r, "p", MAX_LINE),
             )
             .map_err(|e| variant(&e))
         });
