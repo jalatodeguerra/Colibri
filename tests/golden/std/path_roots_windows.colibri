@@ -28,8 +28,9 @@ fn main() {
     print(path.split("C:/a/b"))
     print(path.split("//server/share/a"))
     // What `os.cwd()` gives is a path of this form.
-    print(path.is_absolute(os.cwd()))
-    print(path.normalize(os.cwd()) == os.cwd())
+    let cwd = os.cwd() or |e| { panic(e.message()) }
+    print(path.is_absolute(cwd))
+    print(path.normalize(cwd) == cwd)
     print(path.is_absolute(path.from_native("\\\\server\\share\\f")))
 }
 // expect: true
