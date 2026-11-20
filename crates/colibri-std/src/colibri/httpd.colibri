@@ -67,9 +67,11 @@ pub struct Options {
     /// that never returns holds its connection until `stop`'s grace ends it, and a body that
     /// trickles is bounded by `body_timeout` for each piece only.
     pub handler_timeout: float = 60.0
-    /// Open connections. At the cap the server stops accepting until one ends. Until
-    /// `net.Conn.set_line_limit` is used, a connection may hold up to 1 MiB of a line before it
-    /// is refused, so size this with that in mind (1,024 connections: about 1 GiB).
+    /// Open connections. At the cap the server stops accepting until one ends. A connection
+    /// holds no more than one line of its head (`max_request_line`, then `max_header_bytes`
+    /// for a field line) plus the header fields kept so far (at most `max_header_bytes`), about
+    /// 130 KiB with the defaults and less than 1 KiB when idle; bodies are never held whole. So
+    /// 1,024 connections hold at most about 130 MiB of requests.
     pub max_connections: int = 1024
     /// The `Server` header of every response; "" sends none.
     pub server_name: str = ""
@@ -1686,16 +1688,23 @@ enum Line {
 }
 
 /// What a read of a line gave: its text, the end of the connection, or why the request is
-/// refused. A timeout is `Gone` unless `timeout_answers`, a line over 1 MiB is 414 (431 for a
-/// field line, `field`) and a line that is not UTF-8 is 400.
-fn read_head_line(conn: net.Conn, timeout_answers: bool, field: bool) -> Line {
+/// refused. A timeout is `Gone` unless `timeout_answers`, a line over the limit set on the
+/// connection is 414 (431 for a field line, `field`) and a line that is not UTF-8 is 400.
+fn read_head_line(conn: net.Conn, o: Options, timeout_answers: bool, field: bool) -> Line {
     let got = conn.read_line() or |e| {
         if let some(ne) = e.as[net.Error]() {
             return match ne {
                 LineTooLong => if field {
-                    .Refuse(reject(431, "a header field line is longer than 1 MiB"))
+                    .Refuse(
+                        reject(
+                            431,
+                            "a header field line is longer than {o.max_header_bytes} bytes",
+                        ),
+                    )
                 } else {
-                    .Refuse(reject(414, "the request line is longer than 1 MiB"))
+                    .Refuse(
+                        reject(414, "the request line is longer than {o.max_request_line} bytes"),
+                    )
                 }
                 InvalidData => .Refuse(reject(400, "a line is not UTF-8 text"))
                 Timeout => if timeout_answers {
@@ -2129,7 +2138,7 @@ impl Server {
                 }
                 conn.set_timeout(left)
             }
-            let line = read_head_line(conn, false, false)
+            let line = read_head_line(conn, self.options, false, false)
             match line {
                 Text(t) => {
                     if !t.is_empty() {
@@ -2155,10 +2164,10 @@ impl Server {
             state.phase = .Idle
             let wait_limit = if first { o.header_timeout } else { o.idle_timeout }
             conn.set_timeout(wait_limit)
-            // TODO(set_line_limit): once `net.Conn.set_line_limit` exists, set it here, to the
-            // larger of `max_request_line` and the longest field line, so that a huge line is
-            // not buffered before it is refused. Until then a line is read whole (at most 1 MiB)
-            // and the parser refuses it.
+            // A line longer than the limit is refused (414) as soon as the bytes show it, and is
+            // not buffered further: the request line has `max_request_line`, a field line
+            // (below) has `max_header_bytes`.
+            conn.set_line_limit(o.max_request_line)
             first = false
             let parser = head_parser(self.grammar, o)
             let started = self.request_line(conn, parser, wait_limit)
@@ -2179,10 +2188,11 @@ impl Server {
             // checked after each line, so a client that trickles lines is cut off at the latest
             // after two such periods.
             conn.set_timeout(o.header_timeout)
+            conn.set_line_limit(o.max_header_bytes)
             let head_started = time.now()
             var ended = false
             while !ended {
-                let line = read_head_line(conn, true, true)
+                let line = read_head_line(conn, o, true, true)
                 match line {
                     Text(t) => {
                         ended = parser.field_line(t) or |r| {

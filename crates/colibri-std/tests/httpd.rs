@@ -1485,24 +1485,60 @@ fn a_refusal_of_a_head_request_has_no_body() {
     assert_eq!(server.finish().seen, Vec::<String>::new());
 }
 
+/// A line over its limit is refused as soon as the bytes show it, so a client that sends the
+/// beginning of a huge line and then waits is answered without the rest. The deadlines are
+/// larger than what a test waits for: without the line limit the server would wait for the end
+/// of the line, and the answer would be a 408 or none.
+const SLOW_HEAD: &str = "httpd.Options { header_timeout: 60.0, idle_timeout: 60.0 }";
+
 #[test]
-fn a_header_field_line_over_a_megabyte_is_a_431_and_a_request_line_over_it_a_414() {
-    let server = Server::hello();
-    // A little over `MAX_LINE` (1 MiB) of `net`, so that what is left to send after the server
-    // gave up is small enough for the lingering close to read.
-    let long = "a".repeat(1_048_576 + 1000);
+fn a_request_line_over_its_limit_is_a_414_before_its_end_arrives() {
+    let server = Server::hello_with(SLOW_HEAD);
     let mut w = server.connect();
+    // 8,193 bytes and no end of line: one over the default `max_request_line`.
+    w.send(format!("GET /{}", "a".repeat(8193 - 5)));
+    let r = w.read();
+    assert_eq!(r.status, 414);
+    assert!(r.says_close());
+    w.expect_closed();
+    assert_eq!(server.finish().seen, Vec::<String>::new());
+}
+
+#[test]
+fn a_request_line_of_exactly_its_limit_is_served() {
+    let server = Server::hello_with(SLOW_HEAD);
+    let mut w = server.connect();
+    // "GET " + path + " HTTP/1.1" is 8,192 bytes, the default `max_request_line`.
+    let path = format!("/{}", "a".repeat(8192 - 13 - 1));
+    w.send(format!("GET {path} HTTP/1.1\r\nHost: test\r\n\r\n"));
+    assert_eq!(w.read().status, 404);
+    let mut w = server.connect();
+    let path = format!("/{}", "a".repeat(8192 - 13));
+    w.send(format!("GET {path} HTTP/1.1\r\nHost: test\r\n\r\n"));
+    assert_eq!(w.read().status, 414);
+    server.finish();
+}
+
+#[test]
+fn a_field_line_over_its_limit_is_a_431_before_its_end_arrives() {
+    let server = Server::hello_with(SLOW_HEAD);
+    let mut w = server.connect();
+    // The default `max_header_bytes` is 65,536: a field line of 65,537 bytes without its end.
     w.send(format!(
-        "GET / HTTP/1.1\r\nHost: test\r\nX-Long: {long}\r\n\r\n"
+        "GET / HTTP/1.1\r\nHost: test\r\nX-Long: {}",
+        "a".repeat(65_537)
     ));
     let r = w.read();
     assert_eq!(r.status, 431);
     assert!(r.says_close());
     w.expect_closed();
+    // A request line over the limit with its end is a 414 as well, and a field line over it
+    // with its end a 431: the answer does not depend on whether the end has arrived.
     let mut w = server.connect();
-    w.send(format!("GET /{long} HTTP/1.1\r\nHost: test\r\n\r\n"));
-    let r = w.read();
-    assert_eq!(r.status, 414);
-    w.expect_closed();
+    w.send(format!(
+        "GET /{} HTTP/1.1\r\nHost: test\r\n\r\n",
+        "a".repeat(9000)
+    ));
+    assert_eq!(w.read().status, 414);
     assert_eq!(server.finish().seen, Vec::<String>::new());
 }
