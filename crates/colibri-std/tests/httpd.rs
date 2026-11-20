@@ -166,6 +166,13 @@ fn app(r: httpd.Request, seen: Seen, server: httpd.Server) -> Result[httpd.Respo
         wait_for(seen.release)
         return ok(httpd.text(200, "released\n"))
     }
+    if r.path == "/sleep30" {
+        defer {
+            seen.items.push("sleep deferred")
+        }
+        wait(30.0)
+        return ok(httpd.text(200, "woke\n"))
+    }
     if r.path == "/slow_stream" {
         return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
             w.write_str("a")?
@@ -1761,6 +1768,26 @@ fn a_handler_out_of_time_is_cancelled_with_a_503_and_a_close_and_its_defer_ran()
         server.finish().seen,
         ["GET /hang", "hang deferred", "GET /"]
     );
+}
+
+#[test]
+fn the_end_of_the_grace_cancels_a_handler_that_is_asleep_and_serve_ends_with_it() {
+    let server = Server::app("httpd.Options { handler_timeout: 0.0 }");
+    let mut w = server.connect();
+    w.send(get("/sleep30"));
+    server.wait_seen(1);
+    // `finish` stops with a grace of 1 s. The handler would sleep for 30 s: unless the
+    // connection's end cancels the user code it started, `serve` returns while it goes on, and
+    // the program stays alive until it wakes.
+    let stopped = Instant::now();
+    let seen = server.finish().seen;
+    assert!(
+        stopped.elapsed() < Duration::from_secs(10),
+        "the run took {:?} to end after the stop",
+        stopped.elapsed()
+    );
+    assert_eq!(seen, ["GET /sleep30", "sleep deferred"]);
+    w.expect_closed();
 }
 
 #[test]
