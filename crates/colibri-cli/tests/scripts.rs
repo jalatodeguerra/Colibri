@@ -71,7 +71,7 @@ fn tree(root: &Path) -> Vec<String> {
                 .strip_prefix(root)
                 .unwrap()
                 .to_string_lossy()
-                .into_owned();
+                .replace('\\', "/");
             if path.is_dir() {
                 out.push(format!("{rel}/"));
                 walk(&path, root, out);

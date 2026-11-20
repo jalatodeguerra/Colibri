@@ -1,5 +1,9 @@
 //! `path`: text operations on paths. They never touch the file system, and they are the same
-//! on every platform: `/` is the separator everywhere (Windows accepts it too).
+//! on every platform: `/` is the separator everywhere (Windows accepts it too). Paths the
+//! standard library hands to a script (`os.temp_dir`, `os.cwd`, `fs.walk`) use `/` as well.
+//! A path that comes from outside (a command-line argument, a file's content) may be spelled
+//! the system's way; `path.from_native` turns it into the `/` form (on Unix it changes
+//! nothing, since `\` is an ordinary character in a Unix name).
 
 use colibri_runtime::{Error, Vm};
 
@@ -105,6 +109,18 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     plain(
         m.register_fn_named("is_absolute", ["path"], |path: String| {
             path.starts_with('/')
+        }),
+    )?;
+    // A path as the system spells it, in the form the other functions understand: on Windows
+    // `C:\data\a.json` becomes `C:/data/a.json` (and `\\?\C:\x` becomes `C:/x`), elsewhere
+    // the text is unchanged.
+    plain(
+        m.register_fn_named("from_native", ["path"], |path: String| {
+            if cfg!(windows) {
+                crate::fs::windows_script_path(&path)
+            } else {
+                path
+            }
         }),
     )?;
     plain(m.register_fn_named("normalize", ["path"], |path: String| normalize(&path)))?;

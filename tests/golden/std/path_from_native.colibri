@@ -1,0 +1,13 @@
+// A path that is already in the `/` form is unchanged on every system.
+import path
+
+fn main() {
+    print(path.from_native("a/b/c.txt"))
+    print(path.from_native("/usr/lib"))
+    print(path.from_native("C:/Users/me"))
+    print(path.from_native(""))
+}
+// expect: a/b/c.txt
+// expect: /usr/lib
+// expect: C:/Users/me
+// expect:

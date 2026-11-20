@@ -1,0 +1,20 @@
+// only: windows - the backslash is the separator only there; path_from_native_unix.colibri is the Unix counterpart
+// A path spelled the Windows way (a command-line argument) becomes the `/` form that the other
+// functions of `path` understand.
+import path
+
+fn main() {
+    let native = path.from_native("C:\\Users\\me\\data\\index.json")
+    print(native)
+    print(path.parent(native) or "none")
+    print(path.file_name(native) or "none")
+    print(path.from_native("C:\\mixed/forms\\ok"))
+    print(path.from_native("\\\\?\\C:\\x\\y"))
+    print(path.from_native("\\\\server\\share\\f"))
+}
+// expect: C:/Users/me/data/index.json
+// expect: C:/Users/me/data
+// expect: index.json
+// expect: C:/mixed/forms/ok
+// expect: C:/x/y
+// expect: //server/share/f
