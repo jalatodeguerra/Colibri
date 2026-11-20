@@ -33,6 +33,7 @@ pub(crate) use colibri_core::{
 };
 
 pub use budget::GRACE_STEPS;
+pub use colibri_core::leaks::Leak;
 pub use compare::{TooDeep, values_cmp, values_equal};
 pub use coro::{CancelToken, Clock, Completer, ExternalError, SystemClock};
 pub use ctl::{Ctl, Eval, PanicInfo, TraceEntry};
@@ -42,7 +43,6 @@ pub use format::format_value;
 pub use heap::{ClassObj, GuardToken, ListObj, MapObj, SetObj};
 pub use host::{HostClassHooks, HostFault, HostImpl, RootDropQueue, RootHandle, map_value};
 pub use hostheap::{HostBorrowError, HostGuard, HostRef};
-pub use leaks::Leak;
 pub use session::SessionUndo;
 pub use show::{show, show_float};
 pub use value::{DynVal, EnumVal, RangeVal, StructVal, Value};

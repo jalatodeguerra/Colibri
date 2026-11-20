@@ -90,7 +90,7 @@ impl Interp {
                 }
                 Some(Cleanup::Defer(stmt)) => {
                     // Past the grace of an exhausted budget, deferred statements are skipped.
-                    if self.budget_is_dead() {
+                    if self.core.budget_is_dead() {
                         continue;
                     }
                     if let Err(ctl) = self.exec_stmt(fiber, &stmt) {

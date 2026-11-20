@@ -49,12 +49,10 @@ pub struct Interp {
     script: Option<Rc<Body>>,
     max_depth: usize,
     pub(crate) native_stack_budget: usize,
-    /// What the embedding program attached: host functions, state and roots.
-    pub(crate) host: crate::host::HostSide,
+    /// The host functions and class hooks the embedding program installed.
+    pub(crate) host_impls: crate::host::HostImpls,
     /// The coroutine scheduler (ARCHITECTURE §16).
     pub(crate) sched: crate::coro::Scheduler,
-    /// The registry of the leak detector, when it is on (ARCHITECTURE §18).
-    pub(crate) leaks: Option<Box<crate::leaks::LeakTracker>>,
     /// The C layout of every `@repr(C)` struct of the loaded program, and the open libraries.
     pub(crate) cffi: crate::cffi::CffiState,
 }
@@ -83,9 +81,8 @@ impl Interp {
             script: None,
             max_depth: max_call_depth,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
-            host: crate::host::HostSide::default(),
+            host_impls: crate::host::HostImpls::default(),
             sched: crate::coro::Scheduler::new(),
-            leaks: None,
             cffi: crate::cffi::CffiState::default(),
         }
     }
@@ -165,7 +162,7 @@ impl Interp {
         self.set_script(program);
         self.cffi.load(program);
         // The host's view of the host functions' (empty) bodies.
-        self.host.bodies = program
+        self.core.host.bodies = program
             .host_fns
             .iter()
             .map(|h| Rc::clone(&program.fns[h.f.0 as usize].body))
@@ -192,12 +189,12 @@ impl Interp {
     /// which initialise the script's own `let`/`var` on their lines (DESIGN §4.2).
     pub fn run_module(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
         // The initialisers and the top-level statements share one allotment.
-        let outermost = self.begin_entry();
+        let outermost = self.core.begin_entry();
         if outermost {
             self.drain_root_drops();
         }
         let result = self.run_module_parts(fiber);
-        self.end_entry(outermost, true);
+        self.core.end_entry(outermost, true);
         result
     }
 
@@ -205,7 +202,7 @@ impl Interp {
     /// in dependency order, then the script's `let`/`var` in source order. The state a test
     /// starts from (ARCHITECTURE §15).
     pub fn run_initialisers(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
-        let outermost = self.begin_entry();
+        let outermost = self.core.begin_entry();
         if outermost {
             self.drain_root_drops();
         }
@@ -227,7 +224,7 @@ impl Interp {
             }
         }
         self.released = false;
-        self.end_entry(outermost, true);
+        self.core.end_entry(outermost, true);
         result
     }
 
@@ -296,7 +293,7 @@ impl Interp {
         if frames == 0 {
             fiber.stack_base = stack_position();
         }
-        let outermost = self.begin_entry();
+        let outermost = self.core.begin_entry();
         if outermost {
             self.drain_root_drops();
             // What the host compared before this entry is not this script's failure.
@@ -307,8 +304,8 @@ impl Interp {
         self.release_temps(fiber, temps);
         // A script that swallowed the exhaustion (through a host function that returned
         // normally) still ran out of budget.
-        let swallowed = outermost && self.budget_was_exhausted();
-        self.end_entry(outermost, record);
+        let swallowed = outermost && self.core.budget_was_exhausted();
+        self.core.end_entry(outermost, record);
         let result = match result {
             Ok(v) | Err(Ctl::Return(v)) if swallowed => {
                 self.release(v);
@@ -682,7 +679,7 @@ impl Interp {
             ExprKind::Object { ty, fields } => {
                 let values = self.eval_values(fiber, fields)?;
                 let obj = ClassObj::new(*ty, values);
-                self.track_object(&obj, Some(e.span));
+                self.core.track_object(&obj, Some(e.span));
                 Ok(Value::Obj(obj))
             }
             ExprKind::Variant { ty, variant, args } => {

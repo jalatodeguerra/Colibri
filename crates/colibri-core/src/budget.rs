@@ -8,6 +8,8 @@
 //! statements and hooks are skipped (plain releases still happen), so a script cannot extend its
 //! life with an infinite cleanup.
 
+use crate::state::Core;
+
 /// How many more steps cleanups get after the budget is exhausted.
 pub const GRACE_STEPS: i64 = 10_000;
 
@@ -29,11 +31,9 @@ pub struct Budget {
     /// Steps left; the budget is exhausted when it goes below zero.
     pub left: i64,
     /// What `left` was when the current phase (normal or grace) began.
-    #[doc(hidden)]
-    pub phase_start: i64,
+    phase_start: i64,
     /// Steps used in earlier phases of this entry.
-    #[doc(hidden)]
-    pub banked: u64,
+    banked: u64,
     pub state: BudgetState,
     /// How many entries from the host are active, one inside another.
     pub depth: u32,
@@ -69,8 +69,7 @@ impl Budget {
         b
     }
 
-    #[doc(hidden)]
-    pub fn arm(&mut self) {
+    fn arm(&mut self) {
         let start = self
             .allotment
             .map_or(i64::MAX, |a| i64::try_from(a).unwrap_or(i64::MAX));
@@ -81,16 +80,14 @@ impl Budget {
     }
 
     /// Between entries nothing is counted (and nothing limited).
-    #[doc(hidden)]
-    pub fn idle(&mut self) {
+    fn idle(&mut self) {
         self.left = i64::MAX;
         self.phase_start = i64::MAX;
         self.banked = 0;
         self.state = BudgetState::Normal;
     }
 
-    #[doc(hidden)]
-    pub fn used(&self) -> u64 {
+    fn used(&self) -> u64 {
         self.banked + u64::try_from(self.phase_start.saturating_sub(self.left)).unwrap_or(0)
     }
 
@@ -111,6 +108,54 @@ impl Budget {
                 self.state = BudgetState::Dead;
             }
             BudgetState::Dead => {}
+        }
+    }
+}
+
+impl Core {
+    /// Whether the grace of an exhausted budget is used up: cleanups are skipped.
+    pub fn budget_is_dead(&self) -> bool {
+        self.budget.state == BudgetState::Dead
+    }
+
+    /// Whether the current entry ran out of budget (even if the program swallowed the panic).
+    pub fn budget_was_exhausted(&self) -> bool {
+        self.budget.state != BudgetState::Normal
+    }
+
+    /// Sets the allotment of each outermost entry from the host; `None` is unlimited.
+    pub fn set_instruction_budget(&mut self, steps: Option<u64>) {
+        self.budget.allotment = steps;
+    }
+
+    /// The steps the current outermost entry has used so far, or the last one's total when
+    /// none is running. Includes the grace after an exhaustion.
+    pub fn steps_used(&self) -> u64 {
+        if self.budget.depth > 0 {
+            self.budget.used()
+        } else {
+            self.budget.last_used
+        }
+    }
+
+    /// Begins an entry from the host: the outermost one gets a fresh allotment.
+    pub fn begin_entry(&mut self) -> bool {
+        let outermost = self.budget.depth == 0;
+        if outermost {
+            self.budget.arm();
+        }
+        self.budget.depth += 1;
+        outermost
+    }
+
+    /// Ends the entry `begin_entry` began. `record` keeps its step count for `steps_used`.
+    pub fn end_entry(&mut self, outermost: bool, record: bool) {
+        self.budget.depth -= 1;
+        if outermost {
+            if record {
+                self.budget.last_used = self.budget.used();
+            }
+            self.budget.idle();
         }
     }
 }

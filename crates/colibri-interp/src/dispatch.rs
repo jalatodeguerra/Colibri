@@ -96,7 +96,7 @@ impl Hooks<'_> {
         let Value::Host(r) = v else {
             return None;
         };
-        let hook = pick(self.interp.host.class_hooks.get(&r.ty)?)?;
+        let hook = pick(self.interp.host_impls.class_hooks.get(&r.ty)?)?;
         // A host hook is a call like any other: one step (EMBEDDING §5).
         if let Err(ctl) = self.interp.step(self.fiber, self.span) {
             return Some(Err(Stop::Ctl(Box::new(ctl))));
@@ -183,8 +183,8 @@ impl Interp {
             && t.show.is_empty()
             && t.clone.is_empty()
             && !t.error_messages
-            && !self.host.any_show_hook
-            && !self.host.any_eq_hook)
+            && !self.core.host.any_show_hook
+            && !self.core.host.any_eq_hook)
     }
 
     /// Whether a key like `v` may be compared by an `Eq` that structure and identity do not
@@ -197,7 +197,7 @@ impl Interp {
     /// plain even if a `Pair[Q]` with `impl Eq for Q` exists) and a later `impl Eq` (hot
     /// reload, the REPL) is seen at once: the tables it reads are rebuilt on load.
     pub(crate) fn key_needs_scan(&self, v: &Value) -> bool {
-        (!self.core.dispatch.eq.is_empty() || self.host.any_eq_hook) && self.reaches_eq(v, 0)
+        (!self.core.dispatch.eq.is_empty() || self.core.host.any_eq_hook) && self.reaches_eq(v, 0)
     }
 
     fn reaches_eq(&self, v: &Value, depth: u32) -> bool {
@@ -210,7 +210,7 @@ impl Interp {
             Value::Host(r) => {
                 user_eq(&r.ty)
                     || self
-                        .host
+                        .host_impls
                         .class_hooks
                         .get(&r.ty)
                         .is_some_and(|hooks| hooks.eq.is_some())
@@ -408,10 +408,10 @@ impl Interp {
         };
         match result {
             Ok(copy) => {
-                if self.leaks.is_some() {
+                if self.core.leaks.is_some() {
                     for made in cloner.into_copies() {
                         if let Value::Obj(obj) = &made {
-                            self.track_object(obj, Some(span));
+                            self.core.track_object(obj, Some(span));
                         }
                     }
                 }
@@ -704,7 +704,7 @@ impl Interp {
     /// `==`, so asking for it is a panic, not a wrong answer. (Map and set lookups of such
     /// keys scan with `==` and never use this.)
     fn hash_deep(&mut self, fiber: &mut Fiber, v: &Value, span: Span) -> Eval<u64> {
-        if !self.host.any_eq_hook || !self.key_needs_scan(v) {
+        if !self.core.host.any_eq_hook || !self.key_needs_scan(v) {
             return Ok(hash_value(v));
         }
         let mut failed: Option<Ctl> = None;
@@ -715,7 +715,7 @@ impl Interp {
             let Value::Host(r) = object else {
                 return None;
             };
-            let hooks = self.host.class_hooks.get(&r.ty)?;
+            let hooks = self.host_impls.class_hooks.get(&r.ty)?;
             hooks.eq.as_ref()?;
             let Some(hook) = hooks.hash.clone() else {
                 let name = self.core.types[r.ty.0 as usize].name.clone();
@@ -804,7 +804,7 @@ impl Interp {
         }
         // Past the grace of an exhausted budget, hooks no longer run (the object is released
         // plainly).
-        if self.budget_is_dead() {
+        if self.core.budget_is_dead() {
             return false;
         }
         self.core.hook_depth += 1;

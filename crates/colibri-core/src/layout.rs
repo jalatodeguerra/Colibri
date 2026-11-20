@@ -7,6 +7,8 @@
 
 use std::rc::Rc;
 
+use colibri_check::types::ERROR_TYPE;
+
 use crate::heap::ClassObj;
 use crate::value::Value;
 
@@ -97,4 +99,23 @@ pub fn link(obj: &ClassObj) -> Link {
             Link::Root(field(VALUE), imp, None)
         }
     }
+}
+
+/// A new root error that keeps `value`, converted through the implementation `impl_id`.
+#[doc(hidden)]
+pub fn new_error(value: Value, impl_id: i64) -> Value {
+    Value::Obj(ClassObj::new(
+        ERROR_TYPE,
+        vec![value, Value::Int(impl_id), Value::Unit, Value::Unit],
+    ))
+}
+
+/// A new root error that keeps the typed `value` (so `e.is[T]()` and `e.as[T]()` see it)
+/// and shows as `message`.
+#[doc(hidden)]
+pub fn new_typed_error(value: Value, message: &str) -> Value {
+    Value::Obj(ClassObj::new(
+        ERROR_TYPE,
+        vec![value, Value::Int(-1), Value::str(message), Value::Unit],
+    ))
 }

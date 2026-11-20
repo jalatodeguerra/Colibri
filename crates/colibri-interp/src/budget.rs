@@ -8,8 +8,8 @@ use crate::ctl::{Ctl, Eval};
 use crate::eval::Interp;
 use crate::fiber::Fiber;
 
+pub(crate) use colibri_core::budget::Budget;
 pub use colibri_core::budget::GRACE_STEPS;
-pub(crate) use colibri_core::budget::{Budget, BudgetState};
 
 impl Interp {
     /// Counts one step; `Err` when the budget is used up.
@@ -56,49 +56,14 @@ impl Interp {
         }
     }
 
-    /// Whether the grace of an exhausted budget is used up: cleanups are skipped.
-    pub(crate) fn budget_is_dead(&self) -> bool {
-        self.core.budget.state == BudgetState::Dead
-    }
-
-    /// Whether the current entry ran out of budget (even if the program swallowed the panic).
-    pub(crate) fn budget_was_exhausted(&self) -> bool {
-        self.core.budget.state != BudgetState::Normal
-    }
-
     /// Sets the allotment of each outermost entry from the host; `None` is unlimited.
     pub fn set_instruction_budget(&mut self, steps: Option<u64>) {
-        self.core.budget.allotment = steps;
+        self.core.set_instruction_budget(steps);
     }
 
     /// The steps the current outermost entry has used so far, or the last one's total when
     /// none is running. Includes the grace after an exhaustion.
     pub fn steps_used(&self) -> u64 {
-        if self.core.budget.depth > 0 {
-            self.core.budget.used()
-        } else {
-            self.core.budget.last_used
-        }
-    }
-
-    /// Begins an entry from the host: the outermost one gets a fresh allotment.
-    pub(crate) fn begin_entry(&mut self) -> bool {
-        let outermost = self.core.budget.depth == 0;
-        if outermost {
-            self.core.budget.arm();
-        }
-        self.core.budget.depth += 1;
-        outermost
-    }
-
-    /// Ends the entry `begin_entry` began. `record` keeps its step count for `steps_used`.
-    pub(crate) fn end_entry(&mut self, outermost: bool, record: bool) {
-        self.core.budget.depth -= 1;
-        if outermost {
-            if record {
-                self.core.budget.last_used = self.core.budget.used();
-            }
-            self.core.budget.idle();
-        }
+        self.core.steps_used()
     }
 }

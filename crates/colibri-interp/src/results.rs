@@ -28,7 +28,7 @@ use crate::fiber::Fiber;
 use crate::heap::ClassObj;
 use crate::value::Value;
 
-pub(crate) use colibri_core::layout::{Link, link};
+use colibri_core::layout::{Link, link, new_error};
 
 /// The `Error` object a value is, if it is one.
 pub(crate) fn error_obj(v: &Value) -> Option<&Rc<ClassObj>> {
@@ -72,23 +72,6 @@ fn err_value(v: Value) -> Value {
 impl Interp {
     // ---- making errors ----
 
-    /// A new root error that keeps `value`, converted through the implementation `impl_id`.
-    pub(crate) fn new_error(value: Value, impl_id: i64) -> Value {
-        Value::Obj(ClassObj::new(
-            ERROR_TYPE,
-            vec![value, Value::Int(impl_id), Value::Unit, Value::Unit],
-        ))
-    }
-
-    /// A new root error that keeps the typed `value` (so `e.is[T]()` and `e.as[T]()` see it)
-    /// and shows as `message`.
-    pub(crate) fn new_typed_error(value: Value, message: &str) -> Value {
-        Value::Obj(ClassObj::new(
-            ERROR_TYPE,
-            vec![value, Value::Int(-1), Value::str(message), Value::Unit],
-        ))
-    }
-
     /// `context`: a new error with the message `message` around `cause`.
     fn wrap_error(cause: Value, message: Rc<str>) -> Value {
         Value::Obj(ClassObj::new(
@@ -108,7 +91,7 @@ impl Interp {
             // No implementation: the message is the `Show` of the variant.
             ErrorConv::OpenEnum => -1,
         };
-        Self::new_error(value, impl_id)
+        new_error(value, impl_id)
     }
 
     /// `Result[T, E]` to `Result[T, Error]`.

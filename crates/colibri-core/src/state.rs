@@ -3,11 +3,14 @@
 use std::io::Write;
 use std::rc::Rc;
 
-use colibri_check::hir::TypeDef;
+use colibri_check::hir::{FnId, TypeDef};
 
 use crate::budget::Budget;
+use crate::closure::ClosureObj;
 use crate::ctl::PanicInfo;
 use crate::dispatch::Tables;
+use crate::host::HostSide;
+use crate::leaks::LeakTracker;
 
 /// What an engine and the engine-neutral runtime code share: the output writer, the drop trace,
 /// the `Drop` hooks' panics, the instruction budget, and the tables of the loaded program.
@@ -36,6 +39,10 @@ pub struct Core {
     /// For each extension of the program (`session_extend`), how the function ids of the
     /// generation before map to the one after (`u32::MAX`: the function is gone).
     pub closure_maps: Vec<Vec<u32>>,
+    /// What the embedding program attached: state, roots, host types and the host heap.
+    pub host: HostSide,
+    /// The registry of the leak detector, when it is on (ARCHITECTURE §18).
+    pub leaks: Option<Box<LeakTracker>>,
 }
 
 impl Core {
@@ -51,6 +58,30 @@ impl Core {
             types: Rc::from(Vec::new()),
             dispatch: Tables::default(),
             closure_maps: Vec::new(),
+            host: HostSide::default(),
+            leaks: None,
         }
+    }
+
+    /// How many times the program was extended since it was loaded.
+    #[inline]
+    pub fn generation(&self) -> u32 {
+        self.closure_maps.len() as u32
+    }
+
+    /// The function id a closure made in an earlier generation has now.
+    pub fn closure_fn(&self, c: &ClosureObj) -> Option<FnId> {
+        let mut id = c.f.0;
+        for map in self
+            .closure_maps
+            .get(c.generation as usize..)
+            .unwrap_or(&[])
+        {
+            id = *map.get(id as usize)?;
+            if id == u32::MAX {
+                return None;
+            }
+        }
+        Some(FnId(id))
     }
 }

@@ -53,10 +53,10 @@ impl Interp {
         }
         let closure = Rc::new(ClosureObj {
             f: c.f,
-            generation: self.generation(),
+            generation: self.core.generation(),
             captures,
         });
-        self.track_closure(&closure, Some(span));
+        self.core.track_closure(&closure, Some(span));
         Ok(Value::Closure(closure))
     }
 

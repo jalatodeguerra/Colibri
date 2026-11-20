@@ -761,12 +761,12 @@ impl Interp {
     /// is not resumed in it. Each resumption gets its own instruction budget.
     pub fn tick(&mut self, fiber: &mut Fiber, dt: f64) -> Result<(), Box<PanicInfo>> {
         let _ = fiber;
-        let outermost = self.begin_entry();
+        let outermost = self.core.begin_entry();
         if outermost {
             self.drain_root_drops();
         }
         let result = self.tick_core(dt);
-        self.end_entry(outermost, false);
+        self.core.end_entry(outermost, false);
         match result {
             Ok(()) => Ok(()),
             Err(TickError::Failure(info)) => Err(info),
@@ -915,7 +915,12 @@ impl Interp {
         }
         let name = match &c.callee {
             Callee::Fn(id) => self.fns.get(id.0 as usize).map(|b| b.name.clone()),
-            Callee::Host(id) => self.host.bodies.get(id.0 as usize).map(|b| b.name.clone()),
+            Callee::Host(id) => self
+                .core
+                .host
+                .bodies
+                .get(id.0 as usize)
+                .map(|b| b.name.clone()),
             Callee::Value => match values.first() {
                 Some(Value::Fn(_, name)) => Some(name.to_string()),
                 _ => Some("<closure>".to_string()),
@@ -1071,7 +1076,7 @@ impl Interp {
             cancel,
         });
         std::hint::black_box(ptr);
-        let exhausted = fresh && self.budget_was_exhausted();
+        let exhausted = fresh && self.core.budget_was_exhausted();
         if let Some(b) = saved_budget {
             self.core.budget = b;
         }
@@ -1779,7 +1784,7 @@ impl Interp {
         if self.sched.entries.is_empty() || !self.sched.running.is_empty() {
             return;
         }
-        let outermost = self.begin_entry();
+        let outermost = self.core.begin_entry();
         self.sched.shutting_down = true;
         loop {
             let next = self
@@ -1805,7 +1810,7 @@ impl Interp {
         self.sched.signaled.clear();
         self.sched.groups.clear();
         self.sched.ext.completed.clear();
-        self.end_entry(outermost, false);
+        self.core.end_entry(outermost, false);
     }
 }
 
