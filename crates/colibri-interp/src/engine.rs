@@ -3,12 +3,13 @@
 
 use std::rc::Rc;
 
-use colibri_check::hir::{Body, FnId};
+use colibri_check::hir::{Body, Builtin, FnId};
 use colibri_check::types::TypeId;
 use colibri_core::engine::Engine;
 use colibri_core::host::HostHook;
 use colibri_core::prelude::*;
 use colibri_core::release::Release;
+use colibri_core::results::ResultOps;
 use colibri_core::{Core, stack_position};
 use colibri_syntax::{FileId, Span};
 
@@ -61,11 +62,22 @@ impl Engine for Interp {
         self.native_stack_budget
     }
 
-    fn call_fn(&mut self, fiber: &mut Fiber, f: FnId, args: Vec<Value>) -> Eval {
+    fn call_fn_inout(
+        &mut self,
+        fiber: &mut Fiber,
+        f: FnId,
+        args: Vec<Value>,
+    ) -> (Eval, Option<Value>) {
         let Some(body) = self.fns.get(f.0 as usize).cloned() else {
-            return Err(self.internal(fiber, Span::new(FileId(0), 0, 0), "unknown function"));
+            let ctl = self.internal(fiber, Span::new(FileId(0), 0, 0), "unknown function");
+            return (Err(ctl), None);
         };
-        self.call_body(fiber, body, args)
+        self.call_body_inout(fiber, body, args)
+    }
+
+    #[inline]
+    fn call_value(&mut self, fiber: &mut Fiber, f: &Value, args: Vec<Value>, span: Span) -> Eval {
+        self.call_function_value(fiber, f, args, span)
     }
 
     fn call_detached(&mut self, f: FnId, args: Vec<Value>) -> Eval {
@@ -109,6 +121,40 @@ impl Engine for Interp {
         }
     }
 
+    #[inline]
+    fn temp_mark(fiber: &Fiber) -> usize {
+        fiber.temps.len()
+    }
+
+    #[inline]
+    fn hold_temp(fiber: &mut Fiber, v: Value) {
+        fiber.temps.push(v);
+    }
+
+    fn release_temps(&mut self, fiber: &mut Fiber, mark: usize) {
+        while fiber.temps.len() > mark {
+            if let Some(v) = fiber.temps.pop() {
+                self.release(v);
+            }
+        }
+    }
+
+    fn pausing_builtin(
+        &mut self,
+        fiber: &mut Fiber,
+        op: Builtin,
+        recv: &Value,
+        span: Span,
+    ) -> Eval {
+        match op {
+            Builtin::CoroutineCancel | Builtin::CoroutineDone | Builtin::CoroutineJoin => {
+                self.coroutine_builtin(fiber, op, recv, span)
+            }
+            Builtin::SignalEmit => self.signal_builtin(fiber, recv, span),
+            _ => self.cogroup_builtin(fiber, op, recv, span),
+        }
+    }
+
     fn host_fault_ctl(&mut self, fiber: &mut Fiber, fault: HostFault) -> Ctl {
         match fault {
             HostFault::Panic(message) | HostFault::Message(message) => {
@@ -132,6 +178,11 @@ impl Engine for Interp {
 }
 
 impl Interp {
+    /// What `main` returning `err(e)` reports: the whole chain of `e`.
+    pub fn error_report(&mut self, fiber: &mut Fiber, v: &Value) -> String {
+        ResultOps::error_report(self, fiber, v)
+    }
+
     /// Turns drop tracing on or off (for the test harness); a trace starts empty.
     pub fn set_trace_drops(&mut self, on: bool) {
         self.core.set_trace_drops(on);

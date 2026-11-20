@@ -464,14 +464,6 @@ impl Interp {
         }
     }
 
-    pub(crate) fn release_temps(&mut self, fiber: &mut Fiber, mark: usize) {
-        while fiber.temps.len() > mark {
-            if let Some(v) = fiber.temps.pop() {
-                self.release(v);
-            }
-        }
-    }
-
     /// Evaluates an operand onto the temporaries stack and returns where its value sits (the
     /// operand's own leftover temporaries lie below it).
     pub(crate) fn eval_temp(&mut self, fiber: &mut Fiber, e: &Expr) -> Eval<usize> {

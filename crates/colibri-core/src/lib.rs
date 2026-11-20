@@ -7,6 +7,8 @@
 
 pub mod budget;
 pub mod builders;
+pub mod builtin;
+pub mod bytesfn;
 pub mod clone;
 pub mod closure;
 pub mod compare;
@@ -22,12 +24,15 @@ pub mod host;
 pub mod hostheap;
 pub mod iter;
 pub mod leaks;
+pub mod listfn;
 pub mod num;
 pub mod ordered;
 pub mod protocol;
 pub mod release;
+pub mod results;
 pub mod show;
 pub mod state;
+pub mod strfn;
 pub mod value;
 
 pub use state::Core;
@@ -36,10 +41,17 @@ pub use state::Core;
 /// engine. Their methods read as methods of the engine (`self.release(v)`).
 #[doc(hidden)]
 pub mod prelude {
+    pub use crate::builtin::Builtins as _;
+    pub use crate::bytesfn::BytesOps as _;
     pub use crate::deep::Deep as _;
+    pub use crate::dispatch::Dispatch as _;
     pub use crate::engine::Engine as _;
+    pub use crate::iter::IterOps as _;
+    pub use crate::listfn::ListFnOps as _;
     pub use crate::protocol::Protocol as _;
     pub use crate::release::Release as _;
+    pub use crate::results::ResultOps as _;
+    pub use crate::strfn::StrOps as _;
 }
 
 /// The current position on the native stack (it only has to be comparable with another one).

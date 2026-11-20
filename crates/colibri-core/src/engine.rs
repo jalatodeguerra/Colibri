@@ -12,7 +12,7 @@
 
 use std::rc::Rc;
 
-use colibri_check::hir::{Body, FnId};
+use colibri_check::hir::{Body, Builtin, FnId};
 use colibri_check::types::TypeId;
 use colibri_syntax::Span;
 
@@ -50,8 +50,45 @@ pub trait Engine: Sized {
 
     // ---- calling Colibri code ----
 
+    /// Calls the function `f`; the callee owns `args`. For a `var self` method the second
+    /// result is the final value of `self`, taken out of the frame after every other cleanup
+    /// ran, for the caller to write back; it is present on every path, including a panic.
+    fn call_fn_inout(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        f: FnId,
+        args: Vec<Value>,
+    ) -> (Eval, Option<Value>);
+
     /// Calls the function `f`; the callee owns `args`.
-    fn call_fn(&mut self, fiber: &mut Self::Fiber, f: FnId, args: Vec<Value>) -> Eval;
+    #[inline]
+    fn call_fn(&mut self, fiber: &mut Self::Fiber, f: FnId, args: Vec<Value>) -> Eval {
+        self.call_fn_inout(fiber, f, args).0
+    }
+
+    /// Calls the function value `f` (a function, a closure or a bound method) with `args`,
+    /// which the callee owns.
+    fn call_value(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        f: &Value,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Eval;
+
+    /// [`Engine::call_value`] from a call at `span`: the position of the running call is
+    /// `span` while the callee runs, so a panic in it shows where it was called from.
+    #[inline]
+    fn call_value_at(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        f: &Value,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Eval {
+        Self::note_position(fiber, span);
+        self.call_value(fiber, f, args, span)
+    }
 
     /// Runs `f` on a fresh computation that belongs to no fiber: a `Drop` hook, which can run
     /// anywhere a value dies.
@@ -77,7 +114,34 @@ pub trait Engine: Sized {
     /// state, and this becomes ordinary shared code.
     fn host_fault_ctl(&mut self, fiber: &mut Self::Fiber, fault: HostFault) -> Ctl;
 
+    // ---- temporaries ----
+
+    /// Where the temporaries of the running computation stand now, to be passed to
+    /// [`Engine::release_temps`] later.
+    fn temp_mark(fiber: &Self::Fiber) -> usize;
+
+    /// Keeps `v` alive until [`Engine::release_temps`] reaches below it: a value a Rust local
+    /// holds across a call that can run user code has such a twin, so an early exit never
+    /// loses the last reference to it.
+    fn hold_temp(fiber: &mut Self::Fiber, v: Value);
+
+    /// Releases the temporaries above `mark`, newest first.
+    fn release_temps(&mut self, fiber: &mut Self::Fiber, mark: usize);
+
     // ---- temporary scaffolding ----
+
+    /// The built-ins that may pause the running coroutine (`join`, `cancel`, `emit` and the
+    /// like on a `Coroutine`, `CoGroup` or `Signal`); `recv` is the receiver.
+    ///
+    /// Temporary: step 8 of the core split moves the scheduler policy into core and this
+    /// method is deleted.
+    fn pausing_builtin(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        op: Builtin,
+        recv: &Value,
+        span: Span,
+    ) -> Eval;
 
     /// A `CoGroup` object is dying: its coroutines are cancelled, newest first.
     ///

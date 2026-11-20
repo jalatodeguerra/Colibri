@@ -11,10 +11,10 @@ use colibri_check::hir::Builtin;
 use colibri_syntax::Span;
 
 use crate::ctl::Eval;
-use crate::eval::Interp;
-use crate::fiber::Fiber;
+use crate::engine::Engine;
+use crate::host::{err_variant, error_value, ok_variant};
+use crate::prelude::*;
 use crate::value::Value;
-use colibri_core::prelude::*;
 
 /// The error text for bytes that are not UTF-8: where the first bad byte is.
 pub(crate) fn utf8_message(e: &std::str::Utf8Error) -> String {
@@ -29,12 +29,13 @@ pub(crate) fn utf8_message(e: &std::str::Utf8Error) -> String {
     }
 }
 
-impl Interp {
+#[doc(hidden)]
+pub trait BytesOps: Engine {
     /// A `Bytes` method or constructor; `args[0]` is the receiver (the string or list for the
     /// constructors).
-    pub(crate) fn bytes_op(
+    fn bytes_op(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         args: &[Value],
         span: Span,
@@ -124,8 +125,8 @@ impl Interp {
                 Value::list(b.iter().map(|&x| Value::Int(i64::from(x))).collect())
             }
             Builtin::BytesToStr => match std::str::from_utf8(b) {
-                Ok(s) => Interp::ok_variant(Value::str(s)),
-                Err(e) => Interp::err_variant(Interp::error_value(&utf8_message(&e))),
+                Ok(s) => ok_variant(Value::str(s)),
+                Err(e) => err_variant(error_value(&utf8_message(&e))),
             },
             Builtin::BytesToStrLossy => Value::str(&String::from_utf8_lossy(b)),
             Builtin::BytesStartsWith
@@ -153,9 +154,9 @@ impl Interp {
     }
 
     /// A `BytesBuilder` method; `args[0]` is the builder.
-    pub(crate) fn bytes_builder_op(
+    fn bytes_builder_op(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         args: &[Value],
         span: Span,
@@ -194,6 +195,8 @@ impl Interp {
         })
     }
 }
+
+impl<E: Engine> BytesOps for E {}
 
 /// The offset of the first occurrence of `needle` in `hay`. The time is linear in the two
 /// lengths together, whatever they hold: a scan that tries the needle at every offset takes

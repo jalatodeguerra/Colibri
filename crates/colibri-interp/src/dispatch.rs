@@ -4,57 +4,23 @@
 //! `Callee::Bound` calls find their implementation from the runtime type of the receiver, in
 //! `impls[(runtime type, interface)]`; `Callee::Dyn` calls (and `Bound` calls on an interface
 //! value) read it from the value. A type that has no explicit implementation of a built-in
-//! interface gets the derived one, which this module runs structurally.
+//! interface gets the derived one, which `colibri_core::dispatch` runs structurally. This module
+//! runs the implementations that are found: the calling convention and the places a `var self`
+//! receiver lives in are the engine's.
 
 use std::rc::Rc;
 
-use colibri_check::hir::{ArithOp, BinOp, Coercion, FnId, ImplDef, Num, Place, TypeKey, UnOp};
-use colibri_check::types::{
-    ADD, CLONE, DIV, DROP, EQ, HASH, ITER, ITERABLE, IntTy, MUL, NEG, ORD, SHOW, SUB, Ty, TypeId,
-};
-use colibri_syntax::{FileId, Span};
+use colibri_check::hir::{ArithOp, BinOp, Coercion, Num, Place, TypeKey, UnOp};
+use colibri_check::types::{ADD, DIV, ITER, IntTy, MUL, NEG, SUB, TypeId};
+use colibri_syntax::Span;
 
 pub(crate) use colibri_core::dispatch::Tables;
 
-use crate::ctl::{Ctl, Eval};
+use crate::ctl::Eval;
 use crate::eval::Interp;
 use crate::fiber::Fiber;
-use crate::ordered::{hash_value, hash_value_with};
 use crate::value::{DynVal, Value};
 use colibri_core::prelude::*;
-
-/// The head of a value's type, which interface dispatch works on.
-pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
-    Some(match v {
-        Value::Unit => TypeKey::Unit,
-        Value::Bool(_) => TypeKey::Bool,
-        // Narrow integers carry no width; `impl` for them is not accepted (check/ifaces.rs).
-        Value::Int(_) => TypeKey::Int(IntTy::I64),
-        Value::U64(_) => TypeKey::Int(IntTy::U64),
-        Value::Ptr(_) => TypeKey::Ptr,
-        Value::Float(_) => TypeKey::Float,
-        Value::F32(_) => TypeKey::F32,
-        Value::Char(_) => TypeKey::Char,
-        Value::Str(_) => TypeKey::Str,
-        Value::Bytes(_) => TypeKey::Bytes,
-        Value::Struct(s) => TypeKey::Adt(s.ty),
-        Value::Tuple(_) => TypeKey::Tuple,
-        Value::Enum(e) => TypeKey::Adt(e.ty),
-        Value::List(_) => TypeKey::List,
-        Value::Map(_) => TypeKey::Map,
-        Value::Set(_) => TypeKey::Set,
-        Value::Obj(o) => TypeKey::Adt(o.ty()),
-        Value::Host(r) => TypeKey::Adt(r.ty),
-        Value::Range(_) => TypeKey::Range,
-        Value::Weak(_)
-        | Value::Dyn(_)
-        | Value::Fn(..)
-        | Value::Closure(_)
-        | Value::Cell(_)
-        | Value::ByteBuf(_)
-        | Value::Iter(_) => return None,
-    })
-}
 
 impl Interp {
     /// How many map or set key lookups scanned the stored keys for a user-written `Eq` (a
@@ -63,86 +29,7 @@ impl Interp {
         self.core.key_scans
     }
 
-    /// A `Map` key or `Set` element is looked up by the user-written `Eq` of its type: the
-    /// key in `args[1]` is replaced by the stored key that `eq` says is equal to it, so the
-    /// structural lookup finds it. This scans the keys; a user `Hash` is not consulted (it
-    /// cannot be observed, ARCHITECTURE §6).
-    pub(crate) fn canonicalise_key(
-        &mut self,
-        fiber: &mut Fiber,
-        keys: &[Value],
-        args: &mut [Value],
-        span: Span,
-    ) -> Eval<()> {
-        let Some(key) = args.get(1).cloned() else {
-            return Ok(());
-        };
-        if keys.is_empty() {
-            return Ok(());
-        }
-        self.core.key_scans += 1;
-        for stored in keys {
-            // Each comparison costs a step, so a budget stops a quadratic scan.
-            self.step(fiber, span)?;
-            if self.eq_deep(fiber, stored, &key, span)? {
-                args[1] = stored.clone();
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    /// `key` as a `Map` or `Set` stores it: the stored key that a user-written (or host
-    /// class) `Eq` says is equal to it, else `key` itself. For the places that add keys
-    /// without a method call (`m[k] = v`, a map literal, `Set(list)`, set algebra).
-    pub(crate) fn canonical_key(
-        &mut self,
-        fiber: &mut Fiber,
-        stored: impl FnOnce() -> Vec<Value>,
-        key: Value,
-        span: Span,
-    ) -> Eval<Value> {
-        if !self.key_needs_scan(&key) {
-            return Ok(key);
-        }
-        self.core.key_scans += 1;
-        for candidate in stored() {
-            self.step(fiber, span)?;
-            if self.eq_deep(fiber, &candidate, &key, span)? {
-                return Ok(candidate);
-            }
-        }
-        Ok(key)
-    }
-
     // ---- interface values ----
-
-    /// The implementation of `iface` for the runtime type of `v`, made up (as a derived one)
-    /// when the program has none.
-    pub(crate) fn impl_for(&mut self, v: &Value, iface: TypeId) -> Option<u32> {
-        let key = runtime_key(v)?;
-        if let Some(&i) = self.core.dispatch.index.get(&(key, iface)) {
-            return Some(i);
-        }
-        let methods = self
-            .core
-            .types
-            .get(iface.0 as usize)
-            .map_or(0, |t| t.iface_methods().len());
-        let id = self.core.dispatch.impls.len() as u32;
-        self.core.dispatch.impls.push(ImplDef {
-            iface,
-            iface_args: Vec::new(),
-            target: Ty::Unit,
-            key,
-            rhs: None,
-            methods: vec![None; methods],
-            derived: true,
-            span: Span::new(FileId(0), 0, 0),
-        });
-        self.core.dispatch.index.insert((key, iface), id);
-        Some(id)
-    }
 
     /// A value converted to an interface value.
     pub(crate) fn coerce(&mut self, value: Value, how: &Coercion) -> Value {
@@ -161,8 +48,7 @@ impl Interp {
                     && self
                         .core
                         .dispatch
-                        .impls
-                        .get(d.impl_id as usize)
+                        .impl_def(d.impl_id)
                         .is_some_and(|i| i.iface == *iface)
                 {
                     return value;
@@ -228,25 +114,7 @@ impl Interp {
         values: Vec<Value>,
         span: Span,
     ) -> Eval {
-        let left = values.first().and_then(runtime_key);
-        let right = rhs.or_else(|| values.get(1).and_then(runtime_key));
-        // Two primitives of one kind always run the built-in operation: no impl can replace it
-        // (the orphan rule), and none is looked up.
-        let primitives = matches!(
-            (values.first(), values.get(1)),
-            (Some(Value::Int(_)), Some(Value::Int(_)))
-                | (Some(Value::U64(_)), Some(Value::U64(_)))
-                | (Some(Value::Float(_)), Some(Value::Float(_)))
-                | (Some(Value::F32(_)), Some(Value::F32(_)))
-                | (Some(Value::Str(_)), Some(Value::Str(_)))
-        );
-        let found = left.filter(|_| !primitives).and_then(|k| {
-            let tables = &self.core.dispatch;
-            tables
-                .operator_impl(k, iface, right)
-                .or_else(|| tables.operator_impl(k, iface, None))
-        });
-        if let Some(f) = self.target_of(found, 0) {
+        if let Some(f) = self.operator_target(iface, rhs, &values) {
             let Some(body) = self.fns.get(f.0 as usize).cloned() else {
                 return Err(self.internal(fiber, span, "unknown function"));
             };
@@ -295,18 +163,6 @@ impl Interp {
             return Err(self.internal(fiber, span, "an operator without operands"));
         };
         self.binary(fiber, op, l, r, span)
-    }
-
-    /// The function an implementation runs for `method`, if it has one of its own.
-    pub(crate) fn target_of(&self, impl_id: Option<u32>, method: u32) -> Option<FnId> {
-        self.core
-            .dispatch
-            .impls
-            .get(impl_id? as usize)?
-            .methods
-            .get(method as usize)
-            .copied()
-            .flatten()
     }
 
     /// A `var self` interface call: the receiver is taken out of its place, changed by the
@@ -387,84 +243,6 @@ impl Interp {
                 }
             }
         }
-        result
-    }
-
-    /// The `hash()` of a value. Equal values hash equally, which for an object of a host class
-    /// that customises `==` means its own hash: without one there is no hash that agrees with
-    /// `==`, so asking for it is a panic, not a wrong answer. (Map and set lookups of such
-    /// keys scan with `==` and never use this.)
-    fn hash_deep(&mut self, fiber: &mut Fiber, v: &Value, span: Span) -> Eval<u64> {
-        if !self.core.host.any_eq_hook || !self.key_needs_scan(v) {
-            return Ok(hash_value(v));
-        }
-        let mut failed: Option<Ctl> = None;
-        let h = hash_value_with(v, &mut |object| {
-            if failed.is_some() {
-                return None;
-            }
-            let Value::Host(r) = object else {
-                return None;
-            };
-            let hooks = self.host_impls.class_hooks.get(&r.ty)?;
-            hooks.eq.as_ref()?;
-            let Some(hook) = hooks.hash.clone() else {
-                let name = self.core.types[r.ty.0 as usize].name.clone();
-                failed = Some(self.panic(
-                    fiber,
-                    span,
-                    format!(
-                        "`{name}` compares with its own `==` but gives no hash, so `hash()` cannot agree with `==`"
-                    ),
-                ));
-                return None;
-            };
-            let outcome = self.step(fiber, span).and_then(|()| {
-                hook(self, fiber, vec![object.clone()]).map_err(|f| self.host_fault_ctl(fiber, f))
-            });
-            match outcome {
-                Ok(Value::Int(n)) => Some(n as u64),
-                Ok(_) => None,
-                Err(ctl) => {
-                    failed = Some(ctl);
-                    None
-                }
-            }
-        });
-        match failed {
-            Some(ctl) => Err(ctl),
-            None => Ok(h),
-        }
-    }
-
-    /// A method of a built-in interface on a type that has no implementation of its own.
-    fn derived_call(
-        &mut self,
-        fiber: &mut Fiber,
-        iface: TypeId,
-        values: Vec<Value>,
-        span: Span,
-    ) -> Eval {
-        let result = match (iface, values.as_slice()) {
-            (EQ, [a, b]) => self.eq_deep(fiber, a, b, span).map(Value::Bool),
-            (ORD, [a, b]) => match self.cmp_deep(fiber, a, b, span) {
-                Ok(Some(o)) => Ok(Value::Int(o as i64)),
-                Ok(None) => Err(self.panic(fiber, span, "these values are not ordered (a `nan`)")),
-                Err(ctl) => Err(ctl),
-            },
-            (HASH, [a]) => self.hash_deep(fiber, a, span).map(|h| Value::Int(h as i64)),
-            (SHOW, [a]) => self
-                .show_deep(fiber, a, span)
-                .map(|s| Value::Str(Rc::from(s))),
-            (CLONE, [a]) => self.clone_deep(fiber, a, span),
-            (DROP, [_]) => Ok(Value::Unit),
-            (ITERABLE, [v]) => match self.iterator_of(v) {
-                Some(it) => Ok(it),
-                None => Err(self.internal(fiber, span, "`iter` of something not iterable")),
-            },
-            _ => Err(self.internal(fiber, span, "a method without an implementation")),
-        };
-        self.release_all(values);
         result
     }
 }

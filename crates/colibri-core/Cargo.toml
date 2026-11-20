@@ -10,3 +10,4 @@ publish = false
 [dependencies]
 colibri-syntax = { path = "../colibri-syntax" }
 colibri-check = { path = "../colibri-check" }
+memchr = "2.8.3"

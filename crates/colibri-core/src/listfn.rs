@@ -17,24 +17,24 @@ use colibri_check::hir::Builtin;
 use colibri_syntax::Span;
 
 use crate::ctl::Eval;
-use crate::eval::Interp;
-use crate::fiber::Fiber;
+use crate::engine::Engine;
 use crate::heap::ListObj;
+use crate::prelude::*;
 use crate::value::Value;
-use colibri_core::prelude::*;
 
 /// The most elements `chunks` and `windows` build in one call.
 const MAX_PIECES: usize = 1 << 27;
 
 /// The position-wise comparison of a sort.
-type Compare<'a> = dyn FnMut(&mut Interp, &mut Fiber, usize, usize) -> Eval<Ordering> + 'a;
+type Compare<'a, E> =
+    dyn FnMut(&mut E, &mut <E as Engine>::Fiber, usize, usize) -> Eval<Ordering> + 'a;
 
 /// Orders `0..n` stably with `cmp`, which may fail.
-fn merge_order(
-    this: &mut Interp,
-    fiber: &mut Fiber,
+fn merge_order<E: Engine>(
+    this: &mut E,
+    fiber: &mut E::Fiber,
     n: usize,
-    cmp: &mut Compare<'_>,
+    cmp: &mut Compare<'_, E>,
 ) -> Eval<Vec<usize>> {
     let mut src: Vec<usize> = (0..n).collect();
     let mut dst = src.clone();
@@ -86,25 +86,18 @@ fn is_true(v: &Value) -> bool {
     matches!(v, Value::Bool(true))
 }
 
-impl Interp {
-    /// Calls the function value `f` with `args`.
-    fn call_fn(&mut self, fiber: &mut Fiber, f: &Value, args: Vec<Value>, span: Span) -> Eval {
-        if let Some(frame) = fiber.frames.last_mut() {
-            frame.span = span;
-        }
-        self.call_function_value(fiber, f, args, span)
-    }
-
+#[doc(hidden)]
+pub trait ListFnOps: Engine {
     /// Calls the predicate `f` on `item` and reads its answer.
-    fn test(&mut self, fiber: &mut Fiber, f: &Value, item: Value, span: Span) -> Eval<bool> {
-        let answer = self.call_fn(fiber, f, vec![item], span)?;
+    fn test(&mut self, fiber: &mut Self::Fiber, f: &Value, item: Value, span: Span) -> Eval<bool> {
+        let answer = self.call_value_at(fiber, f, vec![item], span)?;
         Ok(is_true(&answer))
     }
 
     /// The list methods with a closure, ordering or sum; `args[0]` is the list.
-    pub(crate) fn list_fn_op(
+    fn list_fn_op(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         list: &Rc<ListObj>,
         args: &mut [Value],
@@ -118,7 +111,7 @@ impl Interp {
                 let mut out = Vec::new();
                 let mut i = 0;
                 while let Some(item) = list.at(i) {
-                    match self.call_fn(fiber, &f, vec![item], span) {
+                    match self.call_value_at(fiber, &f, vec![item], span) {
                         Ok(v) => out.push(v),
                         Err(ctl) => {
                             self.release_all(out);
@@ -210,7 +203,7 @@ impl Interp {
                 let _hold = list.iter_hold();
                 let mut i = 0;
                 while let Some(item) = list.at(i) {
-                    acc = self.call_fn(fiber, &f, vec![acc, item], span)?;
+                    acc = self.call_value_at(fiber, &f, vec![acc, item], span)?;
                     i += 1;
                 }
                 Ok(acc)
@@ -220,7 +213,7 @@ impl Interp {
                 let _hold = list.iter_hold();
                 let mut i = 0;
                 while let Some(item) = list.at(i) {
-                    let v = self.call_fn(fiber, &f, vec![item], span)?;
+                    let v = self.call_value_at(fiber, &f, vec![item], span)?;
                     self.release(v);
                     i += 1;
                 }
@@ -255,7 +248,7 @@ impl Interp {
                 let mut out = Vec::new();
                 let mut i = 0;
                 while let Some(item) = list.at(i) {
-                    match self.call_fn(fiber, &f, vec![item], span) {
+                    match self.call_value_at(fiber, &f, vec![item], span) {
                         Ok(Value::List(inner)) => {
                             let more = inner.snapshot();
                             out.extend(more);
@@ -419,7 +412,7 @@ impl Interp {
         }
     }
 
-    pub(crate) fn not_ordered(&self, fiber: &mut Fiber, span: Span) -> crate::ctl::Ctl {
+    fn not_ordered(&self, fiber: &mut Self::Fiber, span: Span) -> crate::ctl::Ctl {
         self.panic(fiber, span, "these values are not ordered (a `nan`)")
     }
 
@@ -428,7 +421,7 @@ impl Interp {
     /// the result.
     fn sort_list(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         list: &Rc<ListObj>,
         f: Value,
@@ -467,7 +460,7 @@ impl Interp {
     /// The sorted order of `items` as positions.
     fn order_items(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         op: Builtin,
         items: &[Value],
         f: &Value,
@@ -489,8 +482,12 @@ impl Interp {
             }
             Builtin::ListSortBy => {
                 merge_order(self, fiber, items.len(), &mut |this, fiber, a, b| {
-                    let v =
-                        this.call_fn(fiber, f, vec![items[a].clone(), items[b].clone()], span)?;
+                    let v = this.call_value_at(
+                        fiber,
+                        f,
+                        vec![items[a].clone(), items[b].clone()],
+                        span,
+                    )?;
                     let o = order_of_int(&v);
                     this.release(v);
                     Ok(o)
@@ -500,7 +497,7 @@ impl Interp {
                 // The key of each element is computed once, in order.
                 let mut keys: Vec<Value> = Vec::with_capacity(items.len());
                 for item in items {
-                    match self.call_fn(fiber, f, vec![item.clone()], span) {
+                    match self.call_value_at(fiber, f, vec![item.clone()], span) {
                         Ok(k) => keys.push(k),
                         Err(ctl) => {
                             self.release_all(keys);
@@ -529,7 +526,7 @@ impl Interp {
     /// `xs[lo..hi]`: a copy of part of the list.
     fn list_slice(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         list: &Rc<ListObj>,
         args: &[Value],
         span: Span,
@@ -542,9 +539,9 @@ impl Interp {
 
     /// The `lo..hi` positions a slice expression selects out of `len`, or a panic. `args` are
     /// `[value, lo: int?, hi: int?, inclusive: bool]`.
-    pub(crate) fn slice_bounds(
+    fn slice_bounds(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         args: &[Value],
         len: usize,
         what: &str,
@@ -563,9 +560,9 @@ impl Interp {
     }
 
     /// The `lo..hi` positions of a slice with these (optional) ends, or a panic.
-    pub(crate) fn slice_positions(
+    fn slice_positions(
         &mut self,
-        fiber: &mut Fiber,
+        fiber: &mut Self::Fiber,
         (lo, hi): (Option<i64>, Option<i64>),
         inclusive: bool,
         len: usize,
@@ -602,3 +599,5 @@ impl Interp {
         Ok((start as usize, end as usize))
     }
 }
+
+impl<E: Engine> ListFnOps for E {}

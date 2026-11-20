@@ -6,8 +6,6 @@
 //! `colibri-runtime`, not directly.
 
 mod budget;
-mod builtin;
-mod bytesfn;
 mod cffi;
 mod closure;
 mod coro;
@@ -18,16 +16,12 @@ mod fiber;
 mod forloop;
 mod host;
 mod hostheap;
-mod iter;
 mod leaks;
-mod listfn;
 mod pattern;
 mod place;
 mod release;
-mod results;
 mod scope;
 mod session;
-mod strfn;
 
 pub(crate) use colibri_core::{compare, ctl, format, heap, num, ordered, show, value};
 
