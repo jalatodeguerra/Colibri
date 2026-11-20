@@ -170,6 +170,8 @@ suite!(
     router,
     response,
     body,
+    writer,
+    options,
 );
 
 macro_rules! failing {

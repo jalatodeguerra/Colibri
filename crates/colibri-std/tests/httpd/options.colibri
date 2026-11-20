@@ -1,0 +1,64 @@
+import httpd_impl
+
+fn fault(o: httpd_impl.Options) -> str {
+    return httpd_impl.options_fault(o) or ""
+}
+
+test "the default options are valid" {
+    assert_eq(httpd_impl.options_fault(httpd_impl.Options {}), none)
+}
+
+test "zero is valid for every limit and every timeout, and 1 is the least for max_connections" {
+    let o = httpd_impl.Options {
+        max_request_line: 0,
+        max_header_bytes: 0,
+        max_headers: 0,
+        max_body_bytes: 0,
+        header_timeout: 0.0,
+        idle_timeout: 0.0,
+        body_timeout: 0.0,
+        write_timeout: 0.0,
+        handler_timeout: 0.0,
+        max_connections: 1,
+    }
+    assert_eq(httpd_impl.options_fault(o), none)
+}
+
+test "a negative limit is refused, and the message names the field" {
+    assert(fault(httpd_impl.Options { max_request_line: -1 }).contains("max_request_line"))
+    assert(fault(httpd_impl.Options { max_header_bytes: -1 }).contains("max_header_bytes"))
+    assert(fault(httpd_impl.Options { max_headers: -1 }).contains("max_headers"))
+    assert(fault(httpd_impl.Options { max_body_bytes: -1 }).contains("max_body_bytes"))
+}
+
+test "a negative timeout is refused, and the message names the field" {
+    assert(fault(httpd_impl.Options { header_timeout: -0.1 }).contains("header_timeout"))
+    assert(fault(httpd_impl.Options { idle_timeout: -1.0 }).contains("idle_timeout"))
+    assert(fault(httpd_impl.Options { body_timeout: -1.0 }).contains("body_timeout"))
+    assert(fault(httpd_impl.Options { write_timeout: -1.0 }).contains("write_timeout"))
+    assert(fault(httpd_impl.Options { handler_timeout: -1.0 }).contains("handler_timeout"))
+}
+
+test "a timeout that is not a number or that is too large is refused" {
+    let inf = 1.0e308 * 1.0e308
+    let nan = inf - inf
+    assert(nan.is_nan())
+    assert(fault(httpd_impl.Options { header_timeout: nan }).contains("header_timeout"))
+    assert(fault(httpd_impl.Options { idle_timeout: 1.0e9 }).contains("idle_timeout"))
+    assert(fault(httpd_impl.Options { idle_timeout: 1.0e300 }).contains("idle_timeout"))
+    assert_eq(httpd_impl.options_fault(httpd_impl.Options { idle_timeout: 999999999.0 }), none)
+}
+
+test "max_connections under 1 is refused" {
+    assert(fault(httpd_impl.Options { max_connections: 0 }).contains("max_connections"))
+    assert(fault(httpd_impl.Options { max_connections: -5 }).contains("max_connections"))
+}
+
+test "listen refuses a bad option before it listens, and a good one gives a server" {
+    let bad = httpd_impl.listen("127.0.0.1:0", httpd_impl.Options { max_headers: -1 })
+    assert(bad.is_err())
+    let good = httpd_impl.listen("127.0.0.1:0").expect("listens")
+    assert(good.addr().starts_with("127.0.0.1:"))
+    assert_eq(good.connections(), 0)
+    good.stop(0.0)
+}

@@ -362,3 +362,54 @@ test "content_length is 0 for a request with no body framing" {
     })
     assert_eq(httpd_impl.request(h, reader, "127.0.0.1:1").content_length(), some(0))
 }
+
+test "after a failed read the body cannot say what is left, so the connection must close" {
+    let framing: httpd_impl.Framing = .Length(10)
+    let reader = httpd_impl.body_reader(framing, 100, fn(n: int) -> Result[Bytes] {
+        return err(httpd_impl.fail(408, "the body did not arrive in time"))
+    })
+    assert_eq(reader.unread(), some(10))
+    assert_eq(status_of(reader.read(10)), 408)
+    assert_eq(reader.unread(), none)
+}
+
+test "a body over the limit is refused without a pull, and the connection must close" {
+    let calls: List[int] = []
+    let reader = reader_over(some_bytes(10), 5, calls)
+    assert_eq(status_of(reader.read(10)), 413)
+    assert_eq(calls.len(), 0)
+    assert_eq(reader.unread(), none)
+}
+
+test "a source that ends early is a 400, and the connection must close" {
+    let framing: httpd_impl.Framing = .Length(10)
+    let reader = httpd_impl.body_reader(framing, 100, fn(n: int) -> Result[Bytes] {
+        return ok(Bytes())
+    })
+    assert_eq(status_of(reader.read(10)), 400)
+    assert_eq(reader.unread(), none)
+}
+
+test "first_read runs once, before the first bytes, and a failure of it is the read's error" {
+    let hooked: List[int] = []
+    let framing: httpd_impl.Framing = .Length(4)
+    let reader = httpd_impl.body_reader(framing, 100, fn(n: int) -> Result[Bytes] {
+        hooked.push(-n)
+        return ok("ab".to_bytes())
+    })
+    reader.first_read = fn() -> Result[()] {
+        hooked.push(0)
+        return ok(())
+    }
+    let _ = reader.read(2)
+    let _ = reader.read(2)
+    assert_eq(hooked, [0, -2, -2])
+    let failing = httpd_impl.body_reader(framing, 100, fn(n: int) -> Result[Bytes] {
+        return ok("ab".to_bytes())
+    })
+    failing.first_read = fn() -> Result[()] {
+        return err(httpd_impl.fail(499, "the client went away"))
+    }
+    assert_eq(status_of(failing.read(2)), 499)
+    assert_eq(failing.unread(), none)
+}
