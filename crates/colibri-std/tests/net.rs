@@ -1651,16 +1651,24 @@ fn main() -> Result[()] {{
 }
 
 /// A connect that cannot finish ends at its timeout, and one that is cancelled ends at once.
-/// Linux and macOS only: a listener whose backlog is full leaves further connects waiting there
-/// (the SYN is dropped; BSD, and so macOS, does the same as Linux), while Windows answers an
-/// overflowing backlog with a reset, so a connect cannot be kept pending on loopback there. For
-/// Windows (and for every system) the cancel and the deadline of a connect are covered by the
-/// unit test `a_connect_that_is_cancelled_or_late_stops_before_it_connects` in `net.rs`, which
-/// does not need a connect to stay pending.
+/// Linux and macOS only: a listener whose accept queue is full leaves further connects waiting
+/// there (the SYN is dropped; BSD, and so macOS, does the same as Linux), while Windows answers
+/// an overflowing backlog with a reset, so a connect cannot be kept pending on loopback there.
+/// For Windows (and for every system) the cancel and the deadline of a connect are covered by
+/// the unit test `a_connect_that_is_cancelled_or_late_stops_before_it_connects` in `net.rs`,
+/// which does not need a connect to stay pending.
+///
+/// How many connections fill the queue is not the same on every system (Linux: one more than the
+/// backlog; macOS lets in more than the backlog says), so the test connects until one does not
+/// finish, up to a generous limit, and keeps what it made open.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_connect_that_does_not_finish_is_bounded_and_cancellable() {
-    // A listener nobody accepts from, with a backlog of one, and enough connections to fill it.
+    /// More than any queue of these systems takes (their default maximum is 128, and BSD lets in
+    /// half as much again).
+    const FILL_LIMIT: usize = 400;
+    raise_descriptor_limit();
+    // A listener nobody accepts from, with the smallest backlog there is.
     let sock = socket2::Socket::new(
         socket2::Domain::IPV4,
         socket2::Type::STREAM,
@@ -1677,15 +1685,27 @@ fn a_connect_that_does_not_finish_is_bounded_and_cancellable() {
     sock.listen(0).unwrap();
     let addr = sock.local_addr().unwrap().as_socket().unwrap();
     let mut filling = Vec::new();
-    for _ in 0..8 {
+    let full = loop {
         match TcpStream::connect_timeout(&addr, Duration::from_millis(300)) {
             Ok(s) => filling.push(s),
-            Err(_) => break,
+            Err(e) => break e,
         }
-    }
-    assert!(
-        TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_err(),
-        "the backlog does not fill up on this machine"
+        assert!(
+            filling.len() < FILL_LIMIT,
+            "the accept queue does not fill up on this machine after {FILL_LIMIT} connections"
+        );
+    };
+    assert_eq!(
+        full.kind(),
+        std::io::ErrorKind::TimedOut,
+        "a connect to a full queue should wait, but ended with `{full}` after {} connections",
+        filling.len()
+    );
+    assert_eq!(
+        TcpStream::connect_timeout(&addr, Duration::from_millis(300))
+            .expect_err("the queue is still full")
+            .kind(),
+        std::io::ErrorKind::TimedOut
     );
     let started = Instant::now();
     let out = output(&format!(
