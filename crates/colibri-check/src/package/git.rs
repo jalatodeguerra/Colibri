@@ -1802,6 +1802,9 @@ mod tests {
             "error: object file /c/x/objects/ab/cd is empty; fatal: loose object abcd is corrupt",
             "fatal: bad object HEAD",
             "error: inflate: data stream error",
+            // Git for Windows words an emptied object file this way.
+            "error: object file C:\\c\\git\\db\\x-1.git/objects/d1/11f5 is empty; fatal: loose object d111f5 (stored in C:\\c\\git\\db\\x-1.git/objects/d1/11f5) is corrupt",
+            "fatal: loose object d111f594e5f060bb3806248afa907bc479b4ea1c (stored in x) is corrupt",
         ] {
             let m = add_damage_hint("cannot fetch `u`: x".into(), said, db);
             assert!(

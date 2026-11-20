@@ -259,23 +259,35 @@ fn make_link(target: &Path, link: &Path) {
     #[cfg(unix)]
     std::os::unix::fs::symlink(target, link).unwrap();
     #[cfg(windows)]
-    if target.is_dir() {
-        let made = std::process::Command::new("cmd")
-            .arg("/C")
-            .arg("mklink")
-            .arg("/J")
-            .arg(link)
-            .arg(target)
-            .output()
-            .unwrap();
-        assert!(
-            made.status.success(),
-            "mklink /J failed: {}",
-            String::from_utf8_lossy(&made.stdout)
-        );
-    } else {
-        std::os::windows::fs::symlink_file(target, link)
-            .expect("a symbolic link needs Developer Mode or an elevated shell");
+    {
+        use std::os::windows::{fs::symlink_dir, fs::symlink_file, process::CommandExt};
+        if target.is_dir() {
+            // A symbolic link for a folder when the account may make one, else a junction
+            // (which needs no privilege). The command line is passed as written, with
+            // native `\` paths in quotes: `cmd` has its own rules for quotes, so the usual
+            // escaping of an argument would break it.
+            if symlink_dir(target, link).is_err() {
+                let command = format!(
+                    "mklink /J \"{}\" \"{}\"",
+                    link.display(),
+                    target.display()
+                );
+                let made = std::process::Command::new("cmd")
+                    .arg("/C")
+                    .raw_arg(format!("\"{command}\""))
+                    .output()
+                    .unwrap();
+                assert!(
+                    made.status.success(),
+                    "{command} failed: {}{}",
+                    String::from_utf8_lossy(&made.stdout),
+                    String::from_utf8_lossy(&made.stderr)
+                );
+            }
+        } else {
+            symlink_file(target, link)
+                .expect("a symbolic link needs Developer Mode or an elevated shell");
+        }
     }
 }
 

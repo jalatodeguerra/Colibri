@@ -187,7 +187,12 @@ impl Repo {
         fs::remove_file(&blob).unwrap();
         git(
             &self.dir,
+            // `core.protectNTFS=false`: Git for Windows refuses to stage a name such as
+            // `docs/aux.md` otherwise, and the tests that stage one are about what the tool
+            // does with such a repository, not about what git lets a Windows user add.
             &[
+                "-c",
+                "core.protectNTFS=false",
                 "update-index",
                 "--add",
                 "--cacheinfo",
@@ -727,7 +732,8 @@ fn a_path_and_a_git_package_of_one_name_are_an_error_naming_both() {
         out.stderr
     );
     assert!(
-        out.stderr.contains("local/shared") && out.stderr.contains("git/checkouts"),
+        out.stderr.contains(&native(&shared_path))
+            && out.stderr.contains(&native(&sb.home().join("git/checkouts"))),
         "{}",
         out.stderr
     );
@@ -1293,6 +1299,35 @@ fn parallel_processes_on_a_fresh_cache_all_succeed() {
     }
 }
 
+/// Sets the modification time of a folder. Windows refuses to open a folder as a file
+/// unless asked for backup semantics, and needs the right to write attributes (not data).
+fn set_modified(dir: &Path, when: std::time::SystemTime) {
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(dir)
+            .unwrap()
+    };
+    #[cfg(not(windows))]
+    let file = fs::File::open(dir).unwrap();
+    file.set_modified(when).unwrap();
+}
+
+/// `path` with the separators of the system, as the tool prints a path it built from the
+/// pieces (`home\git\db\x.git` on Windows) whatever way the test joined it
+/// (`home\git/db\x.git`).
+fn native(path: &Path) -> String {
+    path.components()
+        .collect::<PathBuf>()
+        .display()
+        .to_string()
+}
+
 /// The single folder under `dir` whose name ends in `suffix`.
 fn only_entry(dir: &Path, suffix: &str) -> PathBuf {
     let found: Vec<PathBuf> = fs::read_dir(dir)
@@ -1348,10 +1383,7 @@ fn a_damaged_or_interrupted_cache_is_made_again() {
     fs::create_dir_all(old.join("x")).unwrap();
     fs::create_dir_all(&fresh).unwrap();
     let two_days = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86400);
-    fs::File::open(&old)
-        .unwrap()
-        .set_modified(two_days)
-        .unwrap();
+    set_modified(&old, two_days);
     new_version(&repo, "greet", "two");
     let out = sb.colibri(&["update", "--path", app.to_str().unwrap()]);
     assert_eq!(out.code, 0, "{}", out.stderr);
@@ -2269,7 +2301,7 @@ fn a_second_process_says_it_is_waiting_for_the_lock() {
     assert_eq!(stdout, "one\n");
     assert!(
         stderr.contains("waiting for another colibri process to finish with `greet-")
-            && stderr.contains(&lock_path.display().to_string()),
+            && stderr.contains(&native(&lock_path)),
         "{stderr}"
     );
 }
@@ -2309,7 +2341,7 @@ fn a_damaged_database_says_where_to_delete_it() {
     assert_eq!(out.code, 1, "{}{}", out.stdout, out.stderr);
     assert!(
         out.stderr.contains("the cached copy may be damaged")
-            && out.stderr.contains(&format!("delete `{}`", db.display())),
+            && out.stderr.contains(&format!("delete `{}`", native(&db))),
         "{}",
         out.stderr
     );
