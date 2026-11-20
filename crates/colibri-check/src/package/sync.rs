@@ -429,7 +429,7 @@ fn read_manifest(
             + 1;
         let places = config.credentials.len();
         return Err(format!(
-            "{}:{line}: a credential is written in `{MANIFEST_FILE}` ({places} place{}): the file is refused, nothing was fetched and `{LOCK_FILE}` was not written; a url may not hold a user name and password, use a git credential helper or an ssh key",
+            "{}:{line}: `{MANIFEST_FILE}` is refused: a url or address in it has something before an `@` that is read as a user name and password ({places} place{}); nothing was fetched and `{LOCK_FILE}` was not written; a plain ssh user (`git@host:path`, `ssh://git@host/path`) is fine, for a user name and password use a git credential helper or an ssh key",
             dir.join(MANIFEST_FILE).display(),
             if places == 1 { "" } else { "s" }
         ));

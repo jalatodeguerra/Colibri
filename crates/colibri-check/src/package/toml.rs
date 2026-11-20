@@ -93,9 +93,12 @@ pub fn read_config(file: FileId, text: &str, name: &str) -> Config {
                 credentials,
             }
         }
-        Err(mut error) => {
+        Err(PErr {
+            diag: mut error,
+            fixed,
+        }) => {
             let has_at = |at: usize| {
-                let at = at.min(text.len());
+                let at = floor_boundary(text, at);
                 let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
                 let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
                 super::git::last_at_like(&text[start..end]).is_some()
@@ -103,10 +106,13 @@ pub fn read_config(file: FileId, text: &str, name: &str) -> Config {
             if has_at(error.span.start as usize)
                 || error.labels.iter().any(|(s, _)| has_at(s.start as usize))
             {
+                // Only the part of the message that does not depend on the text is kept (a
+                // hint is fixed text too: the parser writes none that quotes); the labels
+                // quote the text, and are dropped.
+                let what = fixed.unwrap_or_else(|| format!("this line of `{name}` cannot be read"));
                 error.message = format!(
-                    "this line of `{name}` cannot be read (it is not shown: the file does not parse and the line has an `@` in it, so it may hold a credential)"
+                    "{what} (the text of this line is not shown: the file does not parse and the line has an `@` in it, so it may hold a credential)"
                 );
-                error.hint = None;
                 error.labels.clear();
             }
             Config {
@@ -116,6 +122,25 @@ pub fn read_config(file: FileId, text: &str, name: &str) -> Config {
             }
         }
     }
+}
+
+/// The largest byte index at or before `at` (clamped to the text) that is on a character
+/// boundary: a span is never trusted to be on one.
+fn floor_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+/// The smallest byte index at or after `at` (clamped to the text) on a character boundary.
+fn ceil_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while !text.is_char_boundary(at) {
+        at += 1;
+    }
+    at
 }
 
 /// `text` with each of `spans` (byte ranges) replaced by a mask of the same length.
@@ -128,8 +153,9 @@ fn mask_spans(text: &str, mut spans: Vec<(usize, usize)>) -> String {
     let mut done = 0;
     for (s, e) in spans {
         // Two spans that overlap hide what either covers: none is skipped for the other.
-        let (s, e) = (s.max(done), e.min(text.len()));
-        if s >= e || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
+        // A span off a character boundary hides the whole characters it touches.
+        let (s, e) = (floor_boundary(text, s).max(done), ceil_boundary(text, e));
+        if s >= e {
             continue;
         }
         out.push_str(&text[done..s]);
@@ -198,21 +224,35 @@ fn mask_lines_with_at(text: &str) -> String {
     mask_spans(text, spans)
 }
 
+/// The deepest nesting of inline tables and arrays that is read.
+const MAX_DEPTH: usize = 64;
+
+/// A parse error. Its message is made of a part that does not depend on the text of the file
+/// (`fixed`, made with [`Parser::fixed`] or [`Parser::quoting`]) and perhaps a detail quoted from it (the character found, a key, a table path).
+/// When the line of the error cannot be shown, only `fixed` is said.
+struct PErr {
+    diag: Diagnostic,
+    /// The message without what it quotes. `None` is a message not built apart (a
+    /// `Diagnostic` made some other way): it is taken to quote, and not said.
+    fixed: Option<String>,
+}
+
 /// The text parsed, for the file called `name` (`colibri.lock` is read with the same parser),
 /// which the messages that name the file use.
-fn parse_named(file: FileId, text: &str, name: &str) -> Result<Vec<Table>, Diagnostic> {
+fn parse_named(file: FileId, text: &str, name: &str) -> Result<Vec<Table>, PErr> {
     let mut p = Parser {
         file,
         name,
         text,
         pos: 0,
+        depth: 0,
     };
     p.document()
 }
 
 #[cfg(test)]
 fn parse(file: FileId, text: &str) -> Result<Vec<Table>, Diagnostic> {
-    parse_named(file, text, "colibri.toml")
+    parse_named(file, text, "colibri.toml").map_err(|e| e.diag)
 }
 
 struct Parser<'a> {
@@ -221,6 +261,8 @@ struct Parser<'a> {
     name: &'a str,
     text: &'a str,
     pos: usize,
+    /// How many inline tables and arrays are open.
+    depth: usize,
 }
 
 impl Parser<'_> {
@@ -251,8 +293,25 @@ impl Parser<'_> {
         Some(c)
     }
 
-    fn error(&self, message: impl Into<String>) -> Diagnostic {
-        Diagnostic::error(message, self.here())
+    /// An error here whose message does not depend on the text.
+    fn fixed(&self, message: &str) -> PErr {
+        self.fixed_at(message, self.here())
+    }
+
+    fn fixed_at(&self, message: &str, span: Span) -> PErr {
+        PErr {
+            diag: Diagnostic::error(message, span),
+            fixed: Some(message.to_string()),
+        }
+    }
+
+    /// An error here whose `message` quotes the text, with the part of it that does not:
+    /// `fixed`.
+    fn quoting(&self, message: impl Into<String>, fixed: &str) -> PErr {
+        PErr {
+            diag: Diagnostic::error(message, self.here()),
+            fixed: Some(fixed.to_string()),
+        }
     }
 
     /// Skips spaces and tabs.
@@ -263,7 +322,7 @@ impl Parser<'_> {
     }
 
     /// Skips blanks and a trailing comment; the line must then end.
-    fn end_of_line(&mut self) -> Result<(), Diagnostic> {
+    fn end_of_line(&mut self) -> Result<(), PErr> {
         self.blanks();
         if self.peek() == Some('#') {
             while !matches!(self.peek(), None | Some('\n')) {
@@ -280,11 +339,14 @@ impl Parser<'_> {
                 self.pos += 2;
                 Ok(())
             }
-            Some(c) => Err(self.error(format!("expected the end of the line, found `{c}`"))),
+            Some(c) => Err(self.quoting(
+                format!("expected the end of the line, found `{c}`"),
+                "expected the end of the line",
+            )),
         }
     }
 
-    fn document(&mut self) -> Result<Vec<Table>, Diagnostic> {
+    fn document(&mut self) -> Result<Vec<Table>, PErr> {
         let mut tables = vec![Table {
             path: Vec::new(),
             span: self.span(0, 0),
@@ -304,13 +366,16 @@ impl Parser<'_> {
                 Some('[') => {
                     let table = self.header()?;
                     if !paths.insert(table.path.clone()) {
-                        return Err(Diagnostic::error(
-                            format!(
-                                "the table `[{}]` is defined more than once",
-                                table.path.join(".")
+                        return Err(PErr {
+                            diag: Diagnostic::error(
+                                format!(
+                                    "the table `[{}]` is defined more than once",
+                                    table.path.join(".")
+                                ),
+                                table.span,
                             ),
-                            table.span,
-                        ));
+                            fixed: Some("a table is defined more than once".to_string()),
+                        });
                     }
                     tables.push(table);
                     keys.clear();
@@ -320,11 +385,7 @@ impl Parser<'_> {
                     let entry = self.entry()?;
                     let current = tables.last_mut().expect("the root table exists");
                     if let Some(&first) = keys.get(&entry.key) {
-                        return Err(Diagnostic::error(
-                            format!("the key `{}` is defined more than once", entry.key),
-                            entry.key_span,
-                        )
-                        .with_label(first, "first defined here"));
+                        return Err(duplicate_key(&entry, first));
                     }
                     keys.insert(entry.key.clone(), entry.key_span);
                     current.entries.push(entry);
@@ -335,11 +396,11 @@ impl Parser<'_> {
         Ok(tables)
     }
 
-    fn header(&mut self) -> Result<Table, Diagnostic> {
+    fn header(&mut self) -> Result<Table, PErr> {
         let start = self.pos;
         self.bump(); // `[`
         if self.peek() == Some('[') {
-            return Err(self.error("arrays of tables (`[[..]]`) are not supported"));
+            return Err(self.fixed("arrays of tables (`[[..]]`) are not supported"));
         }
         let mut path = Vec::new();
         loop {
@@ -354,7 +415,7 @@ impl Parser<'_> {
                     self.pos += 1;
                     break;
                 }
-                _ => return Err(self.error("expected `.` or `]` in a table header")),
+                _ => return Err(self.fixed("expected `.` or `]` in a table header")),
             }
         }
         Ok(Table {
@@ -365,7 +426,7 @@ impl Parser<'_> {
     }
 
     /// A bare key (`name`, `my-dep`, `a_b`) or a quoted one.
-    fn key(&mut self) -> Result<(String, Span), Diagnostic> {
+    fn key(&mut self) -> Result<(String, Span), PErr> {
         let start = self.pos;
         match self.peek() {
             Some('"' | '\'') => {
@@ -384,21 +445,27 @@ impl Parser<'_> {
                     self.span(start, self.pos),
                 ))
             }
-            Some(c) => Err(self.error(format!("expected a key, found `{c}`"))),
-            None => Err(self.error("expected a key, found the end of the file")),
+            Some(c) => Err(self.quoting(format!("expected a key, found `{c}`"), "expected a key")),
+            None => Err(self.fixed("expected a key, found the end of the file")),
         }
     }
 
-    fn entry(&mut self) -> Result<Entry, Diagnostic> {
+    fn entry(&mut self) -> Result<Entry, PErr> {
         let (key, key_span) = self.key()?;
         self.blanks();
         if self.peek() == Some('.') {
-            return Err(self.error(format!(
-                "dotted keys are not supported: write a `[{key}]` table or an inline table `{key} = {{ .. }}`"
-            )));
+            return Err(self.quoting(
+                format!(
+                    "dotted keys are not supported: write a `[{key}]` table or an inline table `{key} = {{ .. }}`"
+                ),
+                "dotted keys are not supported: write a table or an inline table",
+            ));
         }
         if self.peek() != Some('=') {
-            return Err(self.error(format!("expected `=` after the key `{key}`")));
+            return Err(self.quoting(
+                format!("expected `=` after the key `{key}`"),
+                "expected `=` after a key",
+            ));
         }
         self.pos += 1;
         self.blanks();
@@ -410,7 +477,7 @@ impl Parser<'_> {
         })
     }
 
-    fn value(&mut self) -> Result<Value, Diagnostic> {
+    fn value(&mut self) -> Result<Value, PErr> {
         let start = self.pos;
         match self.peek() {
             Some('"' | '\'') => {
@@ -420,9 +487,22 @@ impl Parser<'_> {
                     kind: ValueKind::Str(s),
                 })
             }
-            Some('{') => self.inline_table(),
-            Some('[') => self.array(),
-            Some(c) if c.is_ascii_digit() || c == '+' || c == '-' => Err(self.error(format!(
+            Some('{' | '[') => {
+                if self.depth >= MAX_DEPTH {
+                    return Err(self.fixed(&format!(
+                        "inline tables nest too deeply (more than {MAX_DEPTH})"
+                    )));
+                }
+                self.depth += 1;
+                let value = if self.peek() == Some('{') {
+                    self.inline_table()
+                } else {
+                    self.array()
+                };
+                self.depth -= 1;
+                value
+            }
+            Some(c) if c.is_ascii_digit() || c == '+' || c == '-' => Err(self.fixed(&format!(
                 "numbers are not supported in `{}`: use a string",
                 self.name
             ))),
@@ -438,15 +518,18 @@ impl Parser<'_> {
                         });
                     }
                 }
-                Err(self.error("expected a string, `true`, `false` or `{`"))
+                Err(self.fixed("expected a string, `true`, `false` or `{`"))
             }
-            Some(c) => Err(self.error(format!("expected a string or `{{`, found `{c}`"))),
-            None => Err(self.error("expected a value, found the end of the file")),
+            Some(c) => Err(self.quoting(
+                format!("expected a string or `{{`, found `{c}`"),
+                "expected a string or `{`",
+            )),
+            None => Err(self.fixed("expected a value, found the end of the file")),
         }
     }
 
     /// `["a", "b"]` on one line; the elements are strings.
-    fn array(&mut self) -> Result<Value, Diagnostic> {
+    fn array(&mut self) -> Result<Value, PErr> {
         let start = self.pos;
         self.bump(); // `[`
         let mut items = Vec::new();
@@ -469,14 +552,14 @@ impl Parser<'_> {
                         Some(',') => self.pos += 1,
                         Some(']') => {}
                         _ => {
-                            return Err(self.error(
+                            return Err(self.fixed(
                                 "expected `,` or `]` in an array (it must be on one line)",
                             ));
                         }
                     }
                 }
                 _ => {
-                    return Err(self.error(format!(
+                    return Err(self.fixed(&format!(
                         "an array in `{}` holds strings, on one line: `[\"a\", \"b\"]`",
                         self.name
                     )));
@@ -489,7 +572,7 @@ impl Parser<'_> {
         })
     }
 
-    fn inline_table(&mut self) -> Result<Value, Diagnostic> {
+    fn inline_table(&mut self) -> Result<Value, PErr> {
         let start = self.pos;
         self.bump(); // `{`
         let mut entries: Vec<Entry> = Vec::new();
@@ -502,11 +585,7 @@ impl Parser<'_> {
                 self.blanks();
                 let entry = self.entry()?;
                 if let Some(&first) = keys.get(&entry.key) {
-                    return Err(Diagnostic::error(
-                        format!("the key `{}` is defined more than once", entry.key),
-                        entry.key_span,
-                    )
-                    .with_label(first, "first defined here"));
+                    return Err(duplicate_key(&entry, first));
                 }
                 keys.insert(entry.key.clone(), entry.key_span);
                 entries.push(entry);
@@ -518,7 +597,7 @@ impl Parser<'_> {
                         break;
                     }
                     _ => {
-                        return Err(self.error(
+                        return Err(self.fixed(
                             "expected `,` or `}` in an inline table (it must be on one line)",
                         ));
                     }
@@ -531,17 +610,20 @@ impl Parser<'_> {
         })
     }
 
-    fn string(&mut self) -> Result<String, Diagnostic> {
+    fn string(&mut self) -> Result<String, PErr> {
         let quote = self.bump().expect("the caller saw a quote");
         if self.rest().starts_with(quote) && self.rest()[1..].starts_with(quote) {
-            return Err(self.error("multi-line strings are not supported"));
+            return Err(self.fixed("multi-line strings are not supported"));
         }
         let mut out = String::new();
         loop {
             let at = self.here();
+            // Where the character about to be read starts: a span is made from this, never
+            // from `pos - 1`, which is inside a character when that one is not ASCII.
+            let from = self.pos;
             match self.bump() {
                 None | Some('\n') => {
-                    return Err(Diagnostic::error("this string is not closed", at));
+                    return Err(self.fixed_at("this string is not closed", at));
                 }
                 Some(c) if c == quote => return Ok(out),
                 Some('\\') if quote == '"' => match self.bump() {
@@ -551,15 +633,27 @@ impl Parser<'_> {
                     Some('"') => out.push('"'),
                     Some('\\') => out.push('\\'),
                     _ => {
-                        return Err(Diagnostic::error(
+                        return Err(self.fixed_at(
                             "an unknown escape (use `\\n`, `\\t`, `\\r`, `\\\"` or `\\\\`)",
-                            self.span(self.pos - 1, self.pos),
+                            self.span(from, self.pos),
                         ));
                     }
                 },
                 Some(c) => out.push(c),
             }
         }
+    }
+}
+
+/// The error for `entry`, whose key was defined before at `first`.
+fn duplicate_key(entry: &Entry, first: Span) -> PErr {
+    PErr {
+        diag: Diagnostic::error(
+            format!("the key `{}` is defined more than once", entry.key),
+            entry.key_span,
+        )
+        .with_label(first, "first defined here"),
+        fixed: Some("a key is defined more than once".to_string()),
     }
 }
 
@@ -760,7 +854,8 @@ mod tests {
         let c = read(text);
         let errors = c.tables.expect_err("does not parse");
         assert!(
-            errors[0].message.contains("cannot be read"),
+            errors[0].message.contains("expected `,` or `}`")
+                && errors[0].message.contains("not shown"),
             "{}",
             errors[0].message
         );
@@ -796,7 +891,7 @@ mod tests {
         assert!(
             !c.tables.expect_err("bad escape")[0]
                 .message
-                .contains("cannot be read")
+                .contains("not shown")
         );
     }
 
@@ -840,5 +935,139 @@ mod tests {
             // Eight times the text: about eight times the time, not sixty-four.
             assert!(big < 20.0 * small.max(0.002), "{parses}: {small} {big}");
         }
+    }
+
+    #[test]
+    fn odd_text_never_panics_and_keeps_its_length() {
+        for text in [
+            "[package]\nname = \"p1\"\nx = \"\\é\"\n",
+            "x = \"\\😀\"\n",
+            "x = \"\\é@\"\n",
+            "x = \"abc\\",
+            "x = \"\\",
+            "é = \"x\"\n",
+            "[é]\n",
+            "[a é]\n",
+            "x é\n",
+            "x = é\n",
+            "x = { a = \"b\" é }\n",
+            "x = { a = \"b\", é }\n",
+            "x = [\"b\" é]\n",
+            "x = [é]\n",
+            "x = \"é\" é\n",
+            "x = {\"é\\😀\n",
+            "# é\nx = '\\é😀' # @\n",
+            "x = \"\\é\" # u:SeCrEt@h\r\n",
+        ] {
+            let c = read(text);
+            same_lengths(text, &c.display);
+            if let Err(errors) = &c.tables {
+                for e in errors {
+                    assert!(
+                        text.is_char_boundary(e.span.start as usize)
+                            && text.is_char_boundary(e.span.end as usize),
+                        "{text:?}: {:?}",
+                        e.span
+                    );
+                }
+            }
+        }
+        // The unknown escape is reported where the backslash is.
+        let text = "x = \"\\é\"\n";
+        let errors = read(text).tables.expect_err("does not parse");
+        assert!(errors[0].message.contains("unknown escape"));
+        assert_eq!(
+            &text[errors[0].span.start as usize..errors[0].span.end as usize],
+            "\\é"
+        );
+        // Spans off a character boundary are moved onto one.
+        let masked = mask_spans("aé😀b", vec![(2, 3), (4, 5)]);
+        assert_eq!(masked.len(), "aé😀b".len());
+        assert!(masked.starts_with('a') && masked.ends_with('b'), "{masked}");
+        assert!(!masked.contains(['é', '😀']), "{masked}");
+    }
+
+    #[test]
+    fn inline_tables_nest_to_a_limit() {
+        let nested = |n: usize| format!("x = {}\"v\"{}\n", "{a = ".repeat(n), "}".repeat(n));
+        assert!(read(&nested(64)).tables.is_ok());
+        let errors = read(&nested(65)).tables.expect_err("too deep");
+        assert!(
+            errors[0].message.contains("nest too deeply (more than 64)"),
+            "{}",
+            errors[0].message
+        );
+        let big = nested(200_000);
+        let c = read(&big);
+        assert!(c.tables.is_err());
+        same_lengths(&big, &c.display);
+        let arrays = format!("x = {}\n", "[".repeat(200_000));
+        assert!(read(&arrays).tables.is_err());
+    }
+
+    #[test]
+    fn an_error_on_a_line_with_an_at_says_its_fixed_part_only() {
+        let say = |text: &str| {
+            let c = read(text);
+            let e = c.tables.expect_err("does not parse").remove(0);
+            assert!(!c.display.contains("github") && !c.display.contains("SeCrEt"));
+            (e, c.display)
+        };
+        let text = "[dependencies]\nlib = { git = \"git@github.com:me/lib.git\", tag = v1 }\n";
+        let (e, display) = say(text);
+        assert!(
+            e.message
+                .starts_with("expected a string or `{` (the text of this line is not shown"),
+            "{}",
+            e.message
+        );
+        assert!(!e.message.contains("v1") && !e.message.contains('`') || e.message.contains("`{`"));
+        assert_eq!(text[e.span.start as usize..].chars().next(), Some('v'));
+        assert!(display.contains("[dependencies]") && !display.contains("tag = v1"));
+        // A duplicate key: the key is not quoted, the label is dropped.
+        let text = "ghp_SeCrEtKey = \"git@github.com:a\"\nghp_SeCrEtKey = \"x@y\"\n";
+        let (e, _) = say(text);
+        assert!(
+            e.message
+                .starts_with("a key is defined more than once (the text")
+        );
+        assert!(!e.message.contains("ghp") && e.labels.is_empty());
+        // No at-sign on the line: the whole message.
+        let c = read("a = 1\nb = \"x@y\"\n");
+        let e = &c.tables.expect_err("does not parse")[0];
+        assert!(
+            e.message
+                .contains("numbers are not supported in `colibri.toml`")
+        );
+        assert!(!e.message.contains("not shown"));
+        let c = read("[a]\n[a]\nb = \"x@y\"\n");
+        let e = &c.tables.expect_err("does not parse")[0];
+        assert!(
+            e.message
+                .contains("the table `[a]` is defined more than once")
+        );
+        assert_eq!(e.labels.len(), 0);
+    }
+
+    #[test]
+    fn an_at_escape_the_string_does_not_decode_counts_as_an_at_sign() {
+        for text in [
+            "a = { git = 'https://u:SeCrEt\\x40h/r' }\n",
+            "a = { git = 'https://u:SeCrEt\\u0040h/r' }\n",
+            "a = { git = 'https://u:SeCrEt\\U00000040h/r' }\n",
+            "a = { path = 'https://u:SeCrEt\\x40h/r' }\n",
+            "a = { git = \"https://u:SeCrEt\\\\x40h/r\" }\n",
+        ] {
+            let c = read(text);
+            assert!(!c.credentials.is_empty(), "{text}");
+            assert!(c.tables.is_err(), "{text}");
+            assert!(!c.display.contains("SeCrEt"), "{text}: {}", c.display);
+            same_lengths(text, &c.display);
+        }
+        // A plain ssh user written with an escape is still fine; so is a comment (hidden).
+        let c = read("a = { git = 'ssh://git\\x40h/r.git' }\n");
+        assert!(c.tables.is_ok(), "{:?}", c.tables.err());
+        let c = read("a = \"x\" # https://u:SeCrEt\\x40h\n");
+        assert!(c.tables.is_ok() && !c.display.contains("SeCrEt"));
     }
 }

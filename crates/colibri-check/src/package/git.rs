@@ -1105,6 +1105,30 @@ fn scp_credential_like(text: &str) -> bool {
 /// if it is shaped like one (`scheme://user:password@host`, or the scp form), so a path such
 /// as `../@scope/lib` or a name with an `@` in it is no credential.
 pub(super) fn credential_like(value: &str, url: bool) -> bool {
+    if credential_like_as_is(value, url) {
+        return true;
+    }
+    // An escape for an `@` that the string did not decode (a literal string keeps it as
+    // text) is read as an `@` by whoever reads the value: it is judged as one too.
+    value.contains('\\') && {
+        let replaced = at_escapes_to_at(value);
+        replaced != value && credential_like_as_is(&replaced, url)
+    }
+}
+
+/// `value` with each escape for an `@` (`\u0040`, `\U00000040`, `\x40`) written as an `@`.
+fn at_escapes_to_at(value: &str) -> String {
+    // `last_at_like` finds the last one: put an `@` there, and go on with what is before it.
+    let mut out = value.to_string();
+    let mut end = out.len();
+    while let Some((s, e)) = last_at_like(&out[..end]) {
+        out.replace_range(s..e, "@");
+        end = s;
+    }
+    out
+}
+
+fn credential_like_as_is(value: &str, url: bool) -> bool {
     if !value.contains('@') {
         return false;
     }
@@ -1184,11 +1208,11 @@ pub(super) fn credential_diagnostics(
         .take(SHOWN)
         .map(|&(s, e)| {
             colibri_syntax::Diagnostic::error(
-                format!("a credential is written in `{name}` (hidden here): credentials are not allowed in it, and the file is refused"),
+                format!("`{name}` is refused: a url or address in it has something before an `@` that is read as a user name and password (hidden here)"),
                 colibri_syntax::Span::new(file, s as u32, e as u32),
             )
             .with_hint(
-                "a url may not hold a user name and password; use a git credential helper or an ssh key",
+                "a plain ssh user is fine (`git@host:path`, `ssh://git@host/path`); for a user name and password use a git credential helper or an ssh key",
             )
         })
         .collect();

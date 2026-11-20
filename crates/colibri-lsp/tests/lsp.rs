@@ -3457,16 +3457,16 @@ fn a_manifest_the_editor_opened_is_not_colibri_source_and_the_server_survives_od
     assert!(!shown.contains("SeCrEt"), "{shown}");
     for d in c.diags(&toml) {
         let m = d["message"].as_str().unwrap();
-        assert!(
-            !m.contains("expected") || m.contains("cannot be read"),
-            "{m}"
-        );
+        assert!(!m.contains("expected") || m.contains("not shown"), "{m}");
     }
     // Odd text in a manifest does not stop the server: it answers the next request.
     for odd in [
         "[package]\nname = \"app\"\nffi = 1\n# owner: me@example.com = Jane\n",
         "[package]\nname = \"app\"\n# contact jane@example.com: thanks\n",
         "v = 1\n# me@x = y\n",
+        "[package]\nname = \"p1\"\nx = \"\\é\"\n",
+        "x = \"\\😀\" # a@b\n",
+        "x = \"\\",
     ] {
         c.change(&toml, odd);
         let _ = c.hover(&main, 0, 3);

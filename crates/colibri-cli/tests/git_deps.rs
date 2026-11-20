@@ -1849,7 +1849,8 @@ fn credentials_in_a_url_are_refused_and_never_printed_or_written() {
             let all = format!("{}{}", out.stdout, out.stderr);
             assert!(!all.contains("s3cret"), "{url}: {cmd}: {all}");
             assert!(
-                all.contains("a credential is written") && all.contains("credential helper"),
+                all.contains("read as a user name and password")
+                    && all.contains("credential helper"),
                 "{url}: {cmd}: {all}"
             );
             assert!(!app.join("colibri.lock").exists(), "{url}: {cmd}");
@@ -1981,7 +1982,10 @@ fn a_secret_in_a_dependencys_own_manifest_is_refused_and_never_stored() {
         assert_eq!(out.code, 1, "{args:?}: {all}");
         assert!(!all.contains("s3cret"), "{args:?}: {all}");
         assert!(all.contains("credential helper"), "{args:?}: {all}");
-        assert!(all.contains("a credential is written"), "{args:?}: {all}");
+        assert!(
+            all.contains("read as a user name and password"),
+            "{args:?}: {all}"
+        );
     }
     // `update` refused the dependency instead of writing a lock that leaves it out.
     let _ = fs::remove_file(app.join("colibri.lock"));
@@ -2592,6 +2596,9 @@ fn odd_text_around_an_at_sign_is_an_error_not_a_panic() {
         "[package]\nname = \"app\"\nffi = 1\n# owner: me@example.com = Jane\n",
         "v = 1\n# me@x = y\n",
         "[package]\nname = \"app\"\n\n\nu:SeCrEt@host:r = 1\n",
+        "[package]\nname = \"p1\"\nx = \"\\é\"\n",
+        "[package]\nname = \"p1\"\nx = \"\\😀\" # u:SeCrEt@h\n",
+        "[package]\nname = \"p1\"\nx = \"\\",
     ]
     .iter()
     .enumerate()
@@ -2635,7 +2642,11 @@ fn a_file_that_does_not_parse_reports_its_true_error_and_shows_no_line_with_an_a
     );
     let out = sb.colibri(&["check", "--offline", app.to_str().unwrap()]);
     assert_eq!(out.code, 1, "{}", out.stderr);
-    assert!(out.stderr.contains("cannot be read"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("the text of this line is not shown"),
+        "{}",
+        out.stderr
+    );
     assert!(out.stderr.contains("colibri.toml:4:"), "{}", out.stderr);
     assert!(!out.stderr.contains("github"), "{}", out.stderr);
     // A credential in a comment only, on a line with an unrelated manifest error.
@@ -2649,7 +2660,7 @@ fn a_file_that_does_not_parse_reports_its_true_error_and_shows_no_line_with_an_a
     assert!(out.stderr.contains("unknown key `bogus`"), "{}", out.stderr);
     assert!(!out.stderr.contains("SeCrEt"), "{}", out.stderr);
     assert!(
-        !out.stderr.contains("a credential is written"),
+        !out.stderr.contains("read as a user name and password"),
         "{}",
         out.stderr
     );
@@ -2668,7 +2679,7 @@ fn a_plain_ssh_user_is_no_credential_and_no_other_message_is_changed() {
     let out = sb.colibri(&["check", "--offline", app.to_str().unwrap()]);
     assert_eq!(out.code, 1, "{}", out.stderr);
     assert!(
-        !out.stderr.contains("a credential is written"),
+        !out.stderr.contains("read as a user name and password"),
         "{}",
         out.stderr
     );
@@ -2678,7 +2689,7 @@ fn a_plain_ssh_user_is_no_credential_and_no_other_message_is_changed() {
     assert_eq!(out.code, 1);
     assert!(out.stderr.contains("data@host"), "{}", out.stderr);
     assert!(
-        !out.stderr.contains("a credential is written"),
+        !out.stderr.contains("read as a user name and password"),
         "{}",
         out.stderr
     );
