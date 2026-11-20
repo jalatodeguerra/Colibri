@@ -1,0 +1,22 @@
+// only: unix - runs `sh`; process_error_failed_windows.colibri is the Windows counterpart
+// caps: os
+// A non-zero status is data for `run`, and a `Failed` error for `output`.
+import process
+
+fn kind(e: Error) -> str {
+    match e.as[process.Error]() {
+        some(k) => return "{k}"
+        none => return "not a process.Error"
+    }
+}
+
+fn main() {
+    print(process.run("sh", ["-c", "exit 3"]).expect("runs").status)
+    let failed = process.output("sh", ["-c", "echo oops >&2; exit 3"]).err().expect("fails")
+    print(kind(failed))
+    print(failed.message())
+}
+
+// expect: 3
+// expect: Failed
+// expect: `sh` failed with status 3: oops

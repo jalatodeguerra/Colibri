@@ -1,7 +1,10 @@
-// caps: os
-// A program that cannot be started is a `process.Error`; one that fails is still `Output` data
-// (except for `process.output`).
+// caps: os, fs
+// A program that cannot be started is a `process.Error`, whatever the system; one that fails
+// is still `Output` data (except for `process.output`, see process_error_failed.colibri).
+// Nothing here depends on a shell, so the text is the same everywhere.
 import process
+import os
+import fs
 
 fn kind(e: Error) -> str {
     match e.as[process.Error]() {
@@ -15,7 +18,7 @@ fn start(program: str) -> Result[str] {
     return ok(out.stdout)
 }
 
-fn main() {
+fn main() -> Result[()] {
     match start("colibri-no-such-program-xyz") {
         ok(_) => print("started")
         err(e) if e.is[process.Error]() => match e.as[process.Error]().expect("checked") {
@@ -27,30 +30,27 @@ fn main() {
     print(kind(process.spawn("colibri-no-such-program-xyz", []).err().expect("missing")))
     var o = process.options()
     o.cwd = some("/colibri/no/such/folder")
-    print(kind(process.run_with("sh", ["-c", "true"], o).err().expect("no folder")))
-    // A working folder that is missing, or is not a folder, is not "program not found".
-    print(process.run_with("sh", ["-c", "true"], o).err().expect("no folder").message())
-    o.cwd = some("/dev/null")
-    let file = process.run_with("sh", ["-c", "true"], o).err().expect("a file")
-    print(kind(file))
-    print(file.message())
-    print(kind(process.spawn_with("sh", ["-c", "true"], o).err().expect("a file")))
-    // A non-zero status is data for `run`, a `Failed` error for `output`.
-    print(process.run("sh", ["-c", "exit 3"]).expect("runs").status)
-    let failed = process.output("sh", ["-c", "echo oops >&2; exit 3"]).err().expect("fails")
-    print(kind(failed))
-    print(failed.message())
+    print(kind(process.run_with("colibri-no-such-program-xyz", [], o).err().expect("no folder")))
+    // A working folder that is missing, or is not a folder, is not "program not found": the
+    // folder is looked at first, so the program does not matter.
+    print(process.run_with("colibri-no-such-program-xyz", [], o).err().expect("no folder").message())
+    let file = os.temp_dir() + "/colibri-process-error-a-file"
+    fs.write(file, "x")?
+    o.cwd = some(file)
+    let bad = process.run_with("colibri-no-such-program-xyz", [], o).err().expect("a file")
+    print(kind(bad))
+    print(bad.message().replace(file, "<file>"))
+    print(kind(process.spawn_with("colibri-no-such-program-xyz", [], o).err().expect("a file")))
+    fs.remove(file)?
     print(kind(error("plain")))
+    return ok(())
 }
 
 // expect: missing program: starting colibri-no-such-program-xyz: cannot run `colibri-no-such-program-xyz`: no such file or directory
 // expect: NotFound
 // expect: InvalidDirectory
-// expect: cannot run `sh`: the folder `/colibri/no/such/folder` does not exist
+// expect: cannot run `colibri-no-such-program-xyz`: the folder `/colibri/no/such/folder` does not exist
 // expect: InvalidDirectory
-// expect: cannot run `sh`: the folder `/dev/null` is not a directory
+// expect: cannot run `colibri-no-such-program-xyz`: `<file>` is not a folder
 // expect: InvalidDirectory
-// expect: 3
-// expect: Failed
-// expect: `sh` failed with status 3: oops
 // expect: not a process.Error

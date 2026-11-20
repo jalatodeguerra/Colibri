@@ -220,6 +220,65 @@ fn uri(path: &Path) -> String {
     out
 }
 
+/// `path` for a TOML basic string or a Colibri string: `/` separators, which Windows reads as
+/// it reads `\\` (which would start an escape). Never paste `path.display()` into source text.
+fn slashes(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// The path a `file:` URI of this server names (the reverse of [`uri`]).
+fn uri_path(uri: &str) -> PathBuf {
+    let rest = uri.strip_prefix("file://").expect("a file: URI");
+    let mut bytes = Vec::new();
+    let raw = rest.as_bytes();
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'%' {
+            bytes.push(u8::from_str_radix(&rest[i + 1..i + 3], 16).unwrap());
+            i += 3;
+        } else {
+            bytes.push(raw[i]);
+            i += 1;
+        }
+    }
+    let text = String::from_utf8(bytes).unwrap();
+    // `/C:/dir` is the Windows path `C:/dir`.
+    let b = text.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        PathBuf::from(&text[1..])
+    } else {
+        PathBuf::from(text)
+    }
+}
+
+/// Makes `link` a link to `target`: a symbolic link on Unix; on Windows a junction for a folder
+/// (no privilege needed) and a symbolic link for a file (which needs Developer Mode or an
+/// elevated shell, as the CI machines have). A test that needs a link fails if it cannot be
+/// made, it is never skipped.
+fn make_link(target: &Path, link: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    if target.is_dir() {
+        let made = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(
+            made.status.success(),
+            "mklink /J failed: {}",
+            String::from_utf8_lossy(&made.stdout)
+        );
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+            .expect("a symbolic link needs Developer Mode or an elevated shell");
+    }
+}
+
 /// A fresh folder for a test.
 fn temp_dir(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("lsp-{name}"));
@@ -2348,7 +2407,7 @@ fn an_import_that_matches_two_modules_refuses_a_rename() {
         "colibri.toml",
         &format!(
             "[package]\nname = \"demo\"\n\n[dependencies]\nfoo = {{ path = \"{}\" }}\n",
-            dep.display()
+            slashes(&dep)
         ),
     );
     write(&dir, "foo.colibri", "pub fn mine() -> int => 1\n");
@@ -2688,7 +2747,7 @@ fn apply_to_disk(edit: &Value) {
         return;
     };
     for (uri, _) in changes {
-        let path = PathBuf::from(uri.strip_prefix("file://").unwrap());
+        let path = uri_path(uri);
         let text = std::fs::read_to_string(&path).unwrap();
         let new = apply_edits(edit, &path, &text);
         std::fs::write(&path, new).unwrap();
@@ -2795,7 +2854,6 @@ fn a_script_in_a_subfolder_of_a_package_with_a_main_reads_its_own_folder() {
     c.shutdown();
 }
 
-#[cfg(unix)]
 #[test]
 fn a_folder_reached_through_a_link_is_one_file_with_two_names() {
     let w = temp_dir("rename_symlink");
@@ -2803,7 +2861,7 @@ fn a_folder_reached_through_a_link_is_one_file_with_two_names() {
     let m = write(&w, "shared/m.colibri", m_text);
     let a_text = "import link.m\nfn main() {\n    print(m.f())\n}\n";
     let a = write(&w, "proj/a.colibri", a_text);
-    std::os::unix::fs::symlink(w.join("shared"), w.join("proj/link")).unwrap();
+    make_link(&w.join("shared"), &w.join("proj/link"));
     assert_eq!(check_reading(&a), Ok(()));
     // The folder opened is the project, the one beside it, or both; the file is opened by
     // either of its names.
@@ -3058,7 +3116,6 @@ fn a_folder_with_a_cache_tag_is_not_source() {
     c.shutdown();
 }
 
-#[cfg(unix)]
 #[test]
 fn a_file_reached_by_a_link_with_another_name_reads_the_unsaved_buffer() {
     let dir = temp_dir("rv4_symfile");
@@ -3066,7 +3123,7 @@ fn a_file_reached_by_a_link_with_another_name_reads_the_unsaved_buffer() {
     let main_text = "import alias\nprint(alias.f())\n";
     let main = write(&dir, "main.colibri", main_text);
     let util = write(&dir, "util.colibri", "pub fn f() -> int => 1\n");
-    std::os::unix::fs::symlink(&util, dir.join("alias.colibri")).unwrap();
+    make_link(&util, &dir.join("alias.colibri"));
     let mut c = Client::start(Some(&dir), Value::Null);
     // The buffer has two lines more than the file and a second use.
     let buffer = "// a new comment line\n// another\npub fn f() -> int => 1\npub fn k() -> int => f() + f()\n";
@@ -3084,7 +3141,6 @@ fn a_file_reached_by_a_link_with_another_name_reads_the_unsaved_buffer() {
     c.shutdown();
 }
 
-#[cfg(unix)]
 #[test]
 fn nested_and_dependent_packages_are_edited_within_the_workspace_only() {
     let ws = temp_dir("rv4_deps");
@@ -3103,7 +3159,7 @@ fn nested_and_dependent_packages_are_edited_within_the_workspace_only() {
     write(&ws, "app2/colibri.toml", &dep("vendor/lib"));
     let app2 = write(&ws, "app2/main.colibri", use_text);
     std::fs::create_dir_all(ws.join("app2/vendor")).unwrap();
-    std::os::unix::fs::symlink(ws.join("lib"), ws.join("app2/vendor/lib")).unwrap();
+    make_link(&ws.join("lib"), &ws.join("app2/vendor/lib"));
     write(&ws, "mid/colibri.toml", &dep("../lib"));
     let mid = write(&ws, "mid/s.colibri", use_text);
     write(&ws, "lib/ex/colibri.toml", &dep(".."));

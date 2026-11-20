@@ -208,7 +208,11 @@ mod tests {
 
     #[test]
     fn the_verbatim_form_of_a_windows_path_is_made_plain() {
-        let plain = |p: &str| without_verbatim(Path::new(p)).to_string_lossy().into_owned();
+        let plain = |p: &str| {
+            without_verbatim(Path::new(p))
+                .to_string_lossy()
+                .into_owned()
+        };
         assert_eq!(plain(r"\\?\C:\repos\x"), r"C:\repos\x");
         assert_eq!(plain(r"\\?\UNC\server\share\x"), r"\\server\share\x");
         assert_eq!(plain(r"\\?\Volume{1}\x"), r"\\?\Volume{1}\x");

@@ -497,8 +497,11 @@ impl Loader<'_> {
                         }
                     }
                     Err(e) => self.diags.push(
-                        Diagnostic::error(format!("cannot read `{}`: {e}", self.fs.display_name(&path)), span)
-                            .with_hint(lock::RECREATE_HINT),
+                        Diagnostic::error(
+                            format!("cannot read `{}`: {e}", self.fs.display_name(&path)),
+                            span,
+                        )
+                        .with_hint(lock::RECREATE_HINT),
                     ),
                 }
             }
@@ -746,7 +749,8 @@ impl Loader<'_> {
                             ImportTarget::Module(id)
                         }
                         Err(e) => {
-                            let message = format!("cannot read `{}`: {e}", self.fs.display_name(&file));
+                            let message =
+                                format!("cannot read `{}`: {e}", self.fs.display_name(&file));
                             self.dropped.push(Dropped {
                                 kind: DroppedKind::Unreadable,
                                 span,

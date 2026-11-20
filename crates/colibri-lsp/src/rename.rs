@@ -438,13 +438,20 @@ pub fn added_error(
     None
 }
 
-/// A path for a message: relative to `root` when it is under it.
+/// A path for a message: relative to `root` when it is under it, written with `/` on every
+/// system (the messages tell the user to run `colibri run tools/t.colibri`, which Windows
+/// takes as well as `\`).
 pub fn shown(root: Option<&Path>, path: &Path) -> String {
     let rel = root.and_then(|r| path.strip_prefix(r).ok()).unwrap_or(path);
     if rel.as_os_str().is_empty() {
         ".".to_string()
     } else {
-        rel.display().to_string()
+        let text = rel.to_string_lossy();
+        if cfg!(windows) {
+            text.replace('\\', "/")
+        } else {
+            text.into_owned()
+        }
     }
 }
 

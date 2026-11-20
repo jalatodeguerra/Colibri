@@ -602,13 +602,19 @@ fn relative_to(from: &std::path::Path, to: &std::path::Path) -> PathBuf {
 fn a_relative_entry_path_does_not_look_changed_right_after_the_load() {
     // The entry is given relative to the working directory (as `colibri run --watch a.colibri`
     // does); the files the load read are recorded absolute, and the two must be one file. The
-    // folder is under the system's temporary folder, reached by a relative path.
-    let dir = std::env::temp_dir().join(format!("colibri-reload-rel-{}", std::process::id()));
+    // folder is in the target folder, reached by a relative path that goes up and down again.
+    // A relative path cannot lead to another drive (Windows), so the folder is kept on the
+    // working folder's own drive.
+    let cwd = std::env::current_dir().unwrap();
+    let mut base = std::path::absolute(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    if base.components().next() != cwd.components().next() {
+        base = cwd.clone();
+    }
+    let dir = base.join(format!("colibri-reload-rel-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     let _cleanup = RemoveOnDrop(dir.clone());
     write(&dir, "a.colibri", "fn greet() -> str => \"v1\"\n");
-    let cwd = std::env::current_dir().unwrap();
-    let relative = relative_to(&cwd, &fs::canonicalize(&dir).unwrap()).join("a.colibri");
+    let relative = relative_to(&cwd, &dir).join("a.colibri");
     assert!(relative.is_relative(), "{relative:?}");
     let (mut vm, _) = vm();
     vm.load_file(&relative).unwrap();

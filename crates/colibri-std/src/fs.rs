@@ -157,6 +157,18 @@ pub(crate) fn kind_of(e: &std::io::Error) -> Kind {
 }
 
 fn fail(action: &str, path: &str, e: &std::io::Error) -> TypedError {
+    // Windows says "access denied" where Unix says "is a directory" when a folder is opened
+    // as a file: say what is meant, so a script branches on the same variant everywhere.
+    if cfg!(windows)
+        && e.kind() == ErrorKind::PermissionDenied
+        && matches!(action, "read" | "write" | "append to")
+        && Path::new(path).is_dir()
+    {
+        return Kind::IsADirectory.error(format!(
+            "cannot {action} `{path}`: {}",
+            reason(&std::io::Error::from(ErrorKind::IsADirectory))
+        ));
+    }
     kind_of(e).error(format!("cannot {action} `{path}`: {}", reason(e)))
 }
 

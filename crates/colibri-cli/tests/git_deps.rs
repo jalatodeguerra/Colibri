@@ -18,12 +18,22 @@ struct Sandbox {
     root: PathBuf,
 }
 
+/// The file that reads as empty: git is told to use it for its global settings.
+const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
+/// `path` written with `/` on every system: Windows takes it as it takes `\`, it is valid
+/// inside a TOML basic string and a Colibri string (`\` is not), and it is what a git url
+/// or a manifest path should say. Never paste `path.display()` into a manifest.
+fn slashes(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn git_env(cmd: &mut Command) -> &mut Command {
     cmd.env("GIT_AUTHOR_NAME", "Test")
         .env("GIT_AUTHOR_EMAIL", "test@example.com")
         .env("GIT_COMMITTER_NAME", "Test")
         .env("GIT_COMMITTER_EMAIL", "test@example.com")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_GLOBAL", NULL_DEVICE)
         .env("GIT_CONFIG_NOSYSTEM", "1")
 }
 
@@ -131,8 +141,19 @@ struct Repo {
 }
 
 impl Repo {
+    /// The url of this repository as a plain path (`/` separated, `C:/..` on Windows).
     fn url(&self) -> String {
-        self.dir.display().to_string()
+        slashes(&self.dir)
+    }
+
+    /// The same as a `file://` url: `file:///tmp/..`, `file:///C:/..` on Windows.
+    fn file_url(&self) -> String {
+        let path = self.url();
+        if path.starts_with('/') {
+            format!("file://{path}")
+        } else {
+            format!("file:///{path}")
+        }
     }
 
     /// Writes `files`, commits all and returns the commit.
@@ -145,6 +166,34 @@ impl Repo {
         git(&self.dir, &["add", "--all"]);
         git(&self.dir, &["commit", "--quiet", "-m", message]);
         git(&self.dir, &["rev-parse", "HEAD"])
+    }
+
+    /// Adds `path` to the index with the content `text` (a regular file) without touching the
+    /// working folder: Windows cannot write every name git can store.
+    fn stage_file(&self, path: &str, text: &str) {
+        self.stage(path, text, "100644");
+    }
+
+    /// Adds a symbolic link `path` pointing at `target` to the index, written with git's own
+    /// commands: no link is made on disk, so this works where links need a privilege.
+    fn stage_link(&self, path: &str, target: &str) {
+        self.stage(path, target, "120000");
+    }
+
+    fn stage(&self, path: &str, content: &str, mode: &str) {
+        let blob = self.dir.join(".colibri-test-blob");
+        fs::write(&blob, content).unwrap();
+        let oid = git(&self.dir, &["hash-object", "-w", &slashes(&blob)]);
+        fs::remove_file(&blob).unwrap();
+        git(
+            &self.dir,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("{mode},{oid},{path}"),
+            ],
+        );
     }
 
     fn tag(&self, tag: &str) {
@@ -289,7 +338,7 @@ fn a_file_url_works_like_a_path() {
     let (repo, c1) = sb.lib_repo("greet", "one");
     let app = sb.app(
         "app",
-        &format!("greet = {{ git = \"file://{}\" }}", repo.url()),
+        &format!("greet = {{ git = \"{}\" }}", repo.file_url()),
         &["greet"],
     );
     let out = sb.run(&app);
@@ -552,7 +601,7 @@ fn a_path_dependency_of_a_git_dependency_cannot_leave_its_repository() {
             "colibri.toml".to_string(),
             format!(
                 "[package]\nname = \"evil\"\n[dependencies]\noutside = {{ path = \"{}\" }}\n",
-                outside.display()
+                slashes(&outside)
             ),
         ),
         (
@@ -665,7 +714,7 @@ fn a_path_and_a_git_package_of_one_name_are_an_error_naming_both() {
         &format!(
             "holder = {{ git = \"{}\" }}\nshared = {{ path = \"{}\" }}",
             repo.url(),
-            shared_path.display()
+            slashes(&shared_path)
         ),
         &["holder"],
     );
@@ -781,7 +830,7 @@ fn each_failure_to_fetch_has_its_own_message() {
         "unreachable",
         &format!(
             "greet = {{ git = \"{}\" }}",
-            sb.path("repos/missing").display()
+            slashes(&sb.path("repos/missing"))
         ),
         &["greet"],
     );
@@ -1001,10 +1050,9 @@ fn loading_never_fetches_it_says_to_run_the_tool() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn symlinks_in_a_dependency_are_ignored_and_never_followed() {
-    use std::os::unix::fs::symlink;
+    // The links are put into the repository with git's plumbing, so no link is made on disk.
     let sb = Sandbox::new("symlinks");
     let secret = sb.path("outside/secret");
     sb.write("outside/secret", "TOP-SECRET-LINE\nmore\n");
@@ -1014,13 +1062,11 @@ fn symlinks_in_a_dependency_are_ignored_and_never_followed() {
     );
     let repo = sb.repo("linky");
     repo.commit(&lib_files("linky", "ok", ""), "lib");
-    symlink(&secret, repo.dir.join("leak.colibri")).unwrap();
-    symlink(
-        sb.path("outside/sneaky.colibri"),
-        repo.dir.join("sneaky.colibri"),
-    )
-    .unwrap();
-    git(&repo.dir, &["add", "--all"]);
+    repo.stage_link("leak.colibri", &slashes(&secret));
+    repo.stage_link(
+        "sneaky.colibri",
+        &slashes(&sb.path("outside/sneaky.colibri")),
+    );
     git(&repo.dir, &["commit", "--quiet", "-m", "links"]);
     let mode = git(&repo.dir, &["ls-files", "-s", "leak.colibri"]);
     assert!(mode.starts_with("120000"), "{mode}");
@@ -1077,7 +1123,7 @@ fn gitattributes_filters_and_ident_do_not_run_on_a_dependency() {
     files.push((".gitattributes".into(), "* filter=demo ident\n".into()));
     repo.commit(&files, "attributes");
     let ran = sb.path("filter-ran");
-    let smudge = format!("echo ran >> {} && cat", ran.display());
+    let smudge = format!("echo ran >> {} && cat", slashes(&ran));
     let app = sb.app(
         "app",
         &format!("attr = {{ git = \"{}\" }}", repo.url()),
@@ -1319,7 +1365,7 @@ fn a_failed_fetch_keeps_only_the_end_of_gits_complaint() {
         "app",
         &format!(
             "greet = {{ git = \"{}\" }}",
-            sb.path("repos/missing").display()
+            slashes(&sb.path("repos/missing"))
         ),
         &["greet"],
     );
@@ -1335,7 +1381,7 @@ fn remote_helpers_and_other_transports_are_refused_not_run() {
     for (name, url, want) in [
         (
             "ext",
-            format!("ext::sh -c touch$IFS{}", proof.display()),
+            format!("ext::sh -c touch$IFS{}", slashes(&proof)),
             "remote helper",
         ),
         ("fd", "fd::17".to_string(), "remote helper"),
@@ -1441,8 +1487,8 @@ fn a_remote_package_cannot_name_a_local_repository() {
         "outer",
         "o",
         &format!(
-            "\n[dependencies]\nprivate = {{ git = \"file://{}\" }}\n",
-            private.url()
+            "\n[dependencies]\nprivate = {{ git = \"{}\" }}\n",
+            private.file_url()
         ),
     );
     files[1].1 = "pub fn version() -> str => \"o\"\n".into();
@@ -2068,33 +2114,43 @@ fn update_says_when_a_manifest_does_not_parse_and_writes_no_lock() {
     assert!(!app.join("colibri.lock").exists());
 }
 
-#[cfg(not(windows))]
 #[test]
-fn names_only_windows_dislikes_do_not_stop_a_checkout_elsewhere() {
+fn names_only_windows_dislikes_stop_a_checkout_there_and_nowhere_else() {
     let sb = Sandbox::new("windows_names");
     let repo = sb.repo("greet");
-    let mut files = lib_files("greet", "one", "");
+    repo.commit(&lib_files("greet", "one", ""), "first");
+    // Git stores these names everywhere; Windows cannot write them. They are put in the index
+    // directly, since the working folder of this test may be on Windows too.
     for name in [
         "docs/aux.md",
         "src/con.c",
         "notes/2021-01-01T10:00.md",
         "a.b.",
     ] {
-        files.push((name.into(), "x\n".into()));
+        repo.stage_file(name, "x\n");
     }
-    repo.commit(&files, "first");
+    git(&repo.dir, &["commit", "--quiet", "-m", "names"]);
     let app = sb.app(
         "app",
         &format!("greet = {{ git = \"{}\" }}", repo.url()),
         &["greet"],
     );
     let out = sb.run(&app);
-    assert_eq!(
-        (out.code, out.stdout.as_str()),
-        (0, "one\n"),
-        "{}",
-        out.stderr
-    );
+    if cfg!(windows) {
+        assert_eq!(out.code, 1, "{}{}", out.stdout, out.stderr);
+        assert!(
+            out.stderr.contains("cannot be checked out on Windows"),
+            "{}",
+            out.stderr
+        );
+    } else {
+        assert_eq!(
+            (out.code, out.stdout.as_str()),
+            (0, "one\n"),
+            "{}",
+            out.stderr
+        );
+    }
 }
 
 #[test]
@@ -2129,7 +2185,10 @@ fn an_upper_case_scheme_is_normalised_in_the_lock_and_works() {
     let (repo, c1) = sb.lib_repo("greet", "one");
     let app = sb.app(
         "app",
-        &format!("greet = {{ git = \"FILE://{}\" }}", repo.url()),
+        &format!(
+            "greet = {{ git = \"FILE{}\" }}",
+            &repo.file_url()["file".len()..]
+        ),
         &["greet"],
     );
     let out = sb.run(&app);
@@ -2142,14 +2201,14 @@ fn an_upper_case_scheme_is_normalised_in_the_lock_and_works() {
     let lock = sb.lock(&app);
     assert!(lock.contains(&c1));
     assert!(
-        lock.contains(&format!("url = \"file://{}\"", repo.url())),
+        lock.contains(&format!("url = \"{}\"", repo.file_url())),
         "{lock}"
     );
     assert!(!lock.contains("FILE://"), "{lock}");
     // The lower-case spelling of the same url is the same dependency.
     sb.app(
         "app",
-        &format!("greet = {{ git = \"file://{}\" }}", repo.url()),
+        &format!("greet = {{ git = \"{}\" }}", repo.file_url()),
         &["greet"],
     );
     let out = sb.colibri(&["check", "--locked", app.to_str().unwrap()]);
@@ -2310,10 +2369,8 @@ fn an_allow_ffi_name_that_matches_no_dependency_is_a_warning() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_manifest_that_is_a_symbolic_link_is_named_as_one() {
-    use std::os::unix::fs::symlink;
     let sb = Sandbox::new("manifest_link");
     let repo = sb.repo("linked");
     repo.commit(
@@ -2326,8 +2383,7 @@ fn a_manifest_that_is_a_symbolic_link_is_named_as_one() {
         ],
         "files",
     );
-    symlink("real.toml", repo.dir.join("colibri.toml")).unwrap();
-    git(&repo.dir, &["add", "--all"]);
+    repo.stage_link("colibri.toml", "real.toml");
     git(&repo.dir, &["commit", "--quiet", "-m", "link"]);
     let app = sb.app(
         "app",
