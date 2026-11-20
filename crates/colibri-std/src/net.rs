@@ -958,14 +958,21 @@ impl Ticket {
     /// A cell that ends another way is taken out of the queue. Does nothing if the cell is
     /// resolved already.
     fn park(&self, cell: &Arc<poll::Cell>) {
-        let mut st = self.turns.lock();
-        if st.serving == self.id {
+        self.turns.park_at(self.id, cell);
+    }
+}
+
+impl Turns {
+    /// `Ticket::park` for the ticket `id`, which a callback of `cell` may own (see
+    /// `Shared::schedule_shutdown`): only the queue and the id are used here.
+    fn park_at(self: &Arc<Self>, id: u64, cell: &Arc<poll::Cell>) {
+        let mut st = self.lock();
+        if st.serving == id {
             drop(st);
             cell.fire(poll::Why::Turn);
             return;
         }
-        let turns = Arc::downgrade(&self.turns);
-        let id = self.id;
+        let turns = Arc::downgrade(self);
         let leave = move || {
             if let Some(turns) = turns.upgrade() {
                 turns.lock().parked.remove(&id);
@@ -1483,6 +1490,16 @@ struct Shared {
     peer: String,
 }
 
+impl Drop for Shared {
+    /// The parked cells of the queues (a shutdown scheduled by `close_write` owns a ticket, which
+    /// owns its queue) are let go of when the connection goes away, so that nothing keeps a
+    /// queue alive in a cycle with itself.
+    fn drop(&mut self) {
+        self.reads.wake();
+        self.writes.wake();
+    }
+}
+
 /// A connection, from `net.connect` or `listener.accept()`. When the last reference to it goes
 /// away the socket is closed.
 pub(crate) struct Conn {
@@ -1898,6 +1915,30 @@ impl Shared {
         Ok(())
     }
 
+    /// Takes a place in the write order for the shutdown of the writing end, and returns: the
+    /// shutdown is made when the turn comes, by whoever passes the turn on (the drop of the
+    /// ticket ahead, on the interpreter thread), and a closed connection skips it. This is what
+    /// `close_write` does where it cannot wait for the writes ahead; a shutdown that fails then
+    /// has nobody to tell (`NotConnected` is ignored anyway). The queue is the one thing the
+    /// parked cell keeps alive; the connection is only reached through a weak reference, so a
+    /// connection that goes away with the shutdown still scheduled is not kept alive by it.
+    fn schedule_shutdown(self: &Arc<Self>) {
+        let ticket = self.writes.ticket();
+        let (turns, id) = (Arc::clone(&self.writes), ticket.id);
+        let sh = Arc::downgrade(self);
+        let cell = poll::Cell::new(move |why| {
+            // Dropped at the end: the turn goes on to the next write, after the shutdown.
+            let _ticket = ticket;
+            if why == poll::Why::Turn
+                && let Some(sh) = sh.upgrade()
+                && !sh.closed.load(Ordering::SeqCst)
+            {
+                let _ = sh.shut_write();
+            }
+        });
+        turns.park_at(id, &cell);
+    }
+
     /// Shuts the writing end down, whoever is ahead of it in the queue having finished.
     fn shut_write(&self) -> Result<(), TypedError> {
         let action = "close the writing end of";
@@ -2227,7 +2268,13 @@ impl HostType for Conn {
             if let Some(_turn) = sh.writes.immediate() {
                 return sh.shut_write();
             }
-            sh.refuse_behind_a_write(cx, action)?;
+            if !cx.can_suspend() {
+                // A hook or callback cannot wait for the writes ahead (they are sent by the
+                // coroutines that began them): the shutdown takes its place in the order and
+                // happens when its turn comes.
+                sh.schedule_shutdown();
+                return Ok(());
+            }
             let ticket = sh.writes.ticket();
             let limit = sh.limit();
             sh.await_turn(cx, &ticket, limit, action)?;
@@ -3939,5 +3986,74 @@ mod tests {
                 assert!(got > 0 && got < SEND_CHUNK + 1000, "{got}");
             }
         }
+    }
+
+    /// A peer that has seen the end of the stream: the read returns 0 (and does not wait for it
+    /// longer than the test's patience), or has not yet: a non-blocking read would block.
+    fn peer_sees_the_end(peer: &mut TcpStream) -> bool {
+        peer.set_nonblocking(false).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        matches!(peer.read(&mut [0u8; 1]), Ok(0))
+    }
+
+    fn peer_has_not_seen_the_end(peer: &mut TcpStream) -> bool {
+        peer.set_nonblocking(true).unwrap();
+        let blocked =
+            matches!(peer.read(&mut [0u8; 1]), Err(e) if e.kind() == ErrorKind::WouldBlock);
+        peer.set_nonblocking(false).unwrap();
+        blocked
+    }
+
+    /// Shutdowns that are scheduled behind a ticket wait for it, run in the order they were
+    /// scheduled once it is dropped, and leave the queue empty.
+    #[test]
+    fn scheduled_shutdowns_wait_for_the_ticket_ahead_and_leave_the_queue_empty() {
+        let (c, mut peer) = conn_pair();
+        let sh = Arc::clone(&c.sh);
+        let ahead = sh.writes.ticket();
+        sh.schedule_shutdown();
+        sh.schedule_shutdown();
+        assert!(peer_has_not_seen_the_end(&mut peer), "shut before its turn");
+        assert!(sh.writes.busy());
+        drop(ahead);
+        assert!(
+            !sh.writes.busy(),
+            "both shutdowns ran and passed the turn on"
+        );
+        assert!(peer_sees_the_end(&mut peer));
+    }
+
+    /// A shutdown that is scheduled on a connection that is closed before its turn comes does
+    /// nothing, and still passes the turn on.
+    #[test]
+    fn a_scheduled_shutdown_on_a_closed_connection_passes_the_turn_on() {
+        let (c, _peer) = conn_pair();
+        let sh = Arc::clone(&c.sh);
+        let ahead = sh.writes.ticket();
+        sh.schedule_shutdown();
+        sh.close();
+        drop(ahead);
+        assert!(!sh.writes.busy());
+    }
+
+    /// A connection that goes away with a shutdown scheduled does not leave the queue's cell and
+    /// the ticket in it to keep each other alive: the cell's ticket holds the queue, and the queue
+    /// holds the cell. The queue is held by the ticket ahead and by this test, and by no one else
+    /// once the connection is gone.
+    #[test]
+    fn a_connection_dropped_with_a_scheduled_shutdown_leaves_nothing_behind() {
+        let (c, _peer) = conn_pair();
+        let sh = Arc::clone(&c.sh);
+        let turns = Arc::clone(&sh.writes);
+        let ahead = sh.writes.ticket();
+        sh.schedule_shutdown();
+        drop(sh);
+        drop(c);
+        // `turns` and `ahead`; the scheduled ticket is gone with its cell.
+        assert_eq!(Arc::strong_count(&turns), 2);
+        drop(ahead);
+        assert!(!turns.busy());
+        assert_eq!(Arc::strong_count(&turns), 1);
     }
 }
