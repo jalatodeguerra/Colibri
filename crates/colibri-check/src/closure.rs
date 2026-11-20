@@ -253,7 +253,7 @@ impl FnCtx<'_, '_> {
                 let (stmts, mut tail, mut ty) = self.block_in_scope(b, BlockMode::Stmts);
                 let locals = self.pop_scope();
                 if self.infer.shallow(&ty) != Ty::Never {
-                    let declared = self.infer.shallow(ret);
+                    let declared = self.infer.resolve(ret);
                     if crate::body::is_unit_result(&declared) {
                         // DESIGN §6.1, as for a function: a `Result[()]` body that reaches its
                         // end returns `ok(())`.
