@@ -1735,6 +1735,137 @@ fn main() -> Result[()] {{
     assert_eq!(&got[SIZE..], b"THIRD");
 }
 
+/// `close_write` takes its turn behind the writes called before it: `go c.write(big)` then
+/// `c.close_write()` sends all of `big` and then the end of the stream (it used to cut the write
+/// with a broken pipe). Also from a `Drop` hook, which blocks until the writes ahead are done.
+#[test]
+fn close_write_waits_for_the_writes_called_before_it() {
+    // A whole number of 64 KiB blocks, built the way the other tests build a big value.
+    const SIZE: usize = 128 * 65536;
+    for from_hook in [false, true] {
+        let (listener, addr) = rust_listener();
+        let peer = thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            with_timeouts(&s);
+            let mut all = Vec::new();
+            s.read_to_end(&mut all).unwrap();
+            all.len()
+        });
+        let call = if from_hook {
+            "var g: Option[Guard] = some(Guard { conn: c })\n    g = none"
+        } else {
+            "c.close_write()?"
+        };
+        let out = output_within(
+            format!(
+                r#"import net
+
+class Guard {{ conn: net.Conn }}
+
+impl Drop for Guard {{
+    fn drop(self) {{
+        print("close_write in a hook: {{self.conn.close_write().is_ok()}}")
+    }}
+}}
+
+fn sender(c: net.Conn, data: Bytes) {{
+    c.write_bytes(data).expect("the write is not cut")
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let seed = BytesBuilder()
+    for _ in 0..65536 {{
+        seed.push(u8(120))
+    }}
+    let piece = seed.to_bytes()
+    let b = BytesBuilder()
+    for _ in 0..{blocks} {{
+        b.push_bytes(piece)
+    }}
+    let w = go sender(c, b.to_bytes())
+    task.tick(0.0)
+    {call}
+    w.join()
+    print("sent")
+    c.close()
+    return ok(())
+}}
+"#,
+                blocks = SIZE / 65536
+            ),
+            LIMIT,
+        );
+        assert_eq!(
+            out,
+            if from_hook {
+                "close_write in a hook: true\nsent\n"
+            } else {
+                "sent\n"
+            }
+        );
+        assert_eq!(peer.join().unwrap(), SIZE, "from_hook = {from_hook}");
+    }
+}
+
+/// A write that stopped part way (here: cancelled) breaks the write side, and `close_write` behind
+/// it still shuts the writing end: it is the only way left to tell the peer that nothing more
+/// comes, and it does not fail for what an earlier write did. Writes after it fail as before.
+#[test]
+fn close_write_after_a_cut_write_still_ends_the_stream() {
+    const SIZE: usize = 64 * 1024 * 1024;
+    let (listener, addr) = rust_listener();
+    let (tx, rx) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        rx.recv_timeout(LIMIT).unwrap();
+        let mut all = Vec::new();
+        s.read_to_end(&mut all).unwrap();
+        all.len()
+    });
+    let (mut vm, out) = vm();
+    vm.register_fn("signal", move || tx.send(()).unwrap())
+        .unwrap();
+    run(
+        &mut vm,
+        &format!(
+            r#"import net
+
+fn sender(c: net.Conn, data: Bytes) {{
+    let _ = c.write_bytes(data)
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let seed = BytesBuilder()
+    for _ in 0..65536 {{
+        seed.push(u8(7))
+    }}
+    let piece = seed.to_bytes()
+    let b = BytesBuilder()
+    for _ in 0..{blocks} {{
+        b.push_bytes(piece)
+    }}
+    let w = go sender(c, b.to_bytes())
+    wait(0.3)
+    w.cancel()
+    print(c.close_write().is_ok())
+    print(c.write("more").is_err())
+    signal()
+    c.close()
+    return ok(())
+}}
+"#,
+            blocks = SIZE / 65536
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let got = peer.join().unwrap();
+    assert_eq!(out.contents(), "true\ntrue\n");
+    assert!(got < SIZE, "{got}");
+}
+
 /// `close()` does not wait for anyone: two hundred sockets with a blocked acceptor, reader or
 /// writer on each close together in far less than the 50 ms a poller's slice would cost each
 /// (ten seconds for all of them), and every waiter ends with `Closed`.

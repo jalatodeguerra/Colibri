@@ -39,9 +39,10 @@
 //! whose `poll` the shutdown did not wake), so a `poll` never sees a closed or reused descriptor
 //! and `close` waits for nobody.
 //!
-//! A `Conn` is full duplex. Reads wait for one turn queue, writes for another, and `close` and
-//! `close_write` take neither: two operations of one kind are never interleaved, and they are
-//! served in the order they were called. An operation that waits for its turn sleeps on a
+//! A `Conn` is full duplex. Reads wait for one turn queue, writes (and `close_write`, which
+//! must not cut a write that is still queued) for another, and `close` takes neither: two
+//! operations of one kind are never interleaved, and they are served in the order they were
+//! called. An operation that waits for its turn sleeps on a
 //! condition variable until the turn comes, the object is closed, its coroutine is cancelled
 //! (a hook of the cancel token wakes it) or its deadline passes: it does not tick.
 //!
@@ -1285,6 +1286,21 @@ impl Shared {
         Ok(())
     }
 
+    /// Shuts the writing end down, whoever is ahead of it in the queue having finished.
+    fn shut_write(&self) -> Result<(), TypedError> {
+        let action = "close the writing end of";
+        self.wait(None, Limit::NONE).check_open(action)?;
+        if let Some(sock) = self.sock.get() {
+            match sock.shutdown(Shutdown::Write) {
+                Ok(()) => {}
+                // The peer is gone already: there is nothing left to tell it.
+                Err(e) if e.kind() == ErrorKind::NotConnected => {}
+                Err(e) => return Err(fail(action, &self.peer, &e)),
+            }
+        }
+        Ok(())
+    }
+
     /// Closes the connection: marks it closed, shuts the socket down (which ends a read or a
     /// write that waits on it, on every system we know of), wakes everything that waits for its
     /// turn, and lets go of the socket. It returns at once and never fails. The descriptor is
@@ -1539,19 +1555,28 @@ impl HostType for Conn {
         // a worker that is in the middle of one system call, and never fails.
         d.method("close", [], |this: &Conn| this.sh.close());
         // Tells the peer that nothing more comes (it reads the end of the stream) and keeps
-        // reading possible.
-        d.method("close_write", [], |this: &Conn| {
-            let wait = this.sh.wait(None, Limit::NONE);
-            wait.check_open("close the writing end of")?;
-            if let Some(sock) = this.sh.sock.get() {
-                match sock.shutdown(Shutdown::Write) {
-                    Ok(()) => {}
-                    // The peer is gone already: there is nothing left to tell it.
-                    Err(e) if e.kind() == ErrorKind::NotConnected => {}
-                    Err(e) => return Err(fail("close the writing end of", &this.sh.peer, &e)),
-                }
+        // reading possible. It takes its turn behind the writes called before it, so a write
+        // that is still on its way is sent whole first; with none queued it is done at once.
+        d.method("close_write", [], |cx: &mut Ctx, this: &Conn| {
+            let sh = Arc::clone(&this.sh);
+            let action = "close the writing end of";
+            sh.wait(None, Limit::NONE).check_open(action)?;
+            if let Some(_turn) = sh.writes.immediate() {
+                return sh.shut_write();
             }
-            Ok(())
+            let ticket = sh.writes.ticket();
+            let limit = sh.limit();
+            let peer = sh.peer.clone();
+            cx.try_run_async_cancellable(move |token| {
+                let wait = sh.wait(Some(token), limit);
+                wait.check_open(action)?;
+                ticket.wait_turn(&wait, action)?;
+                // Whether the writes before it were sent whole, cut short or failed, the
+                // writing end is shut: it is the one way left to tell the peer that no more
+                // comes (a cut write left a half message, which the peer should not wait on).
+                sh.shut_write()
+            })
+            .map_err(|why| no_thread(action, &peer, &why))?
         });
         d.method("local_addr", [], |this: &Conn| this.sh.local.clone());
         d.method("peer_addr", [], |this: &Conn| this.sh.peer.clone());
