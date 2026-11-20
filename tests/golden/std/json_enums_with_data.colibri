@@ -1,0 +1,99 @@
+import json
+
+enum Shape {
+    Circle(float)
+    Rect(float, float)
+    Named(w: int, h: int)
+    Label(text: str, tag: str?)
+    Point
+}
+
+enum Expr {
+    Num(int)
+    Add(Expr, Expr)
+    Neg(Expr)
+}
+
+struct Scene {
+    shapes: List[Shape]
+    main: Shape?
+}
+
+fn enc[T](x: T) -> str {
+    return json.encode(x).expect("encodes")
+}
+
+fn show[T: Show](r: Result[T]) {
+    match r {
+        ok(v)  => print("ok {v}")
+        err(e) => print(e.message())
+    }
+}
+
+fn main() {
+    // A variant without data is its name; one with data is an object with one key.
+    print(enc(Shape.Point))
+    print(enc(Shape.Circle(1.5)))
+    print(enc(Shape.Rect(2.0, 3.0)))
+    print(enc(Shape.Named(w: 1, h: 2)))
+    print(enc(Shape.Label(text: "a", tag: none)))
+    print(enc(Scene { shapes: [.Point, .Circle(1.0)], main: some(.Rect(1.0, 2.0)) }))
+    print(enc(Expr.Add(.Num(1), .Neg(.Num(2)))))
+    print(json.pretty(Shape.Rect(2.0, 3.0)).expect("pretty"))
+
+    // Decoding reads the same forms.
+    show(json.decode[Shape]("\"Point\""))
+    show(json.decode[Shape](r"""{"Circle": 2.5}"""))
+    show(json.decode[Shape](r"""{"Rect": [1.0, 2.0]}"""))
+    show(json.decode[Shape](r"""{"Named": {"w": 1, "h": 2}}"""))
+    show(json.decode[Shape](r"""{"Label": {"text": "x"}}"""))
+    show(json.decode[Expr](r"""{"Add": [{"Num": 1}, {"Neg": {"Num": 2}}]}"""))
+    show(json.decode[Scene](r"""{"shapes": ["Point", {"Circle": 1.0}], "main": null}"""))
+
+    // Errors name the allowed variants and the place.
+    show(json.decode[Shape](r"""{"Hexagon": 1}"""))
+    show(json.decode[Shape]("\"Hexagon\""))
+    show(json.decode[Shape]("\"Circle\""))
+    show(json.decode[Shape](r"""{"Point": null}"""))
+    show(json.decode[Shape](r"""{"Circle": 1.0, "Rect": [1.0, 2.0]}"""))
+    show(json.decode[Shape](r"""{}"""))
+    show(json.decode[Shape](r"""3"""))
+    show(json.decode[Shape](r"""{"Circle": "big"}"""))
+    show(json.decode[Shape](r"""{"Rect": [1.0]}"""))
+    show(json.decode[Shape](r"""{"Rect": 1.0}"""))
+    show(json.decode[Shape](r"""{"Named": {"w": 1}}"""))
+    show(json.decode[Expr](r"""{"Add": [{"Num": 1}, {"Num": true}]}"""))
+}
+
+// expect: "Point"
+// expect: {"Circle":1.5}
+// expect: {"Rect":[2.0,3.0]}
+// expect: {"Named":{"w":1,"h":2}}
+// expect: {"Label":{"text":"a","tag":null}}
+// expect: {"shapes":["Point",{"Circle":1.0}],"main":{"Rect":[1.0,2.0]}}
+// expect: {"Add":[{"Num":1},{"Neg":{"Num":2}}]}
+// expect: {
+// expect:   "Rect": [
+// expect:     2.0,
+// expect:     3.0
+// expect:   ]
+// expect: }
+// expect: ok Point
+// expect: ok Circle(2.5)
+// expect: ok Rect(1.0, 2.0)
+// expect: ok Named(w: 1, h: 2)
+// expect: ok Label(text: "x", tag: none)
+// expect: ok Add(Num(1), Neg(Num(2)))
+// expect: ok Scene { shapes: [Point, Circle(1.0)], main: none }
+// expect: json: at `$`: `Hexagon` is not a variant of `Shape` (expected one of: Circle (with data), Rect (with data), Named (with data), Label (with data), Point)
+// expect: json: at `$`: `Hexagon` is not a variant of `Shape` (expected one of: Circle (with data), Rect (with data), Named (with data), Label (with data), Point)
+// expect: json: at `$`: the variant `Circle` of `Shape` carries data, write it as {"Circle": ..}
+// expect: json: at `$`: the variant `Point` of `Shape` carries no data, write it as the string "Point"
+// expect: json: at `$`: expected an object with one key naming a variant of `Shape` (one of: Circle (with data), Rect (with data), Named (with data), Label (with data), Point), found an object with 2 keys
+// expect: json: at `$`: expected an object with one key naming a variant of `Shape` (one of: Circle (with data), Rect (with data), Named (with data), Label (with data), Point), found an object with 0 keys
+// expect: json: at `$`: expected a string or an object naming a variant of `Shape` (one of: Circle (with data), Rect (with data), Named (with data), Label (with data), Point), found the number 3
+// expect: json: at `$.Circle`: expected a number, found the string "big"
+// expect: json: at `$.Rect`: expected an array of 2 items, found 1
+// expect: json: at `$.Rect`: expected an array of 2 items, found the number 1.0
+// expect: json: at `$.Named`: the object has no field `h` (the variant `Named` needs it)
+// expect: json: at `$.Add[1].Num`: expected an int, found the boolean true

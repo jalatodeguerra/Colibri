@@ -1,0 +1,29 @@
+// A `_` is explained as "the enum can gain variants" only when that is why the match is not
+// exhaustive. A variant of a closed enum that no arm covers gets the ordinary message, even
+// when an open enum is in the same value.
+import hash
+import io
+
+enum Mine { A, B }
+
+fn closed_part_missing(x: (Mine, hash.Error)) {
+    match x { // error: non-exhaustive `match`: missing case: (B, _)
+        (A, _) => print("a")
+    }
+}
+
+fn open_part_only(x: (Mine, hash.Error)) {
+    match x { // error: non-exhaustive `match`: missing case: (A, _) (the enum `hash.Error` can gain variants)
+        (A, OutOfRange) => print("a")
+        (B, _) => print("b")
+    }
+}
+
+fn open_enum_alone_with_a_closed_gap(x: (Mine, io.Error)) {
+    match x { // error: non-exhaustive `match`: missing case: (B, _)
+        (A, InvalidData) => print("1")
+        (A, Other) => print("2")
+    }
+}
+
+fn main() {}

@@ -525,6 +525,43 @@ fn attributes_go_on_their_own_lines() {
 }
 
 #[test]
+fn field_attributes_stay_on_the_field_line() {
+    check(
+        "struct S { @rename(\"x\")  a:int, @skip b:int=1, @skip @rename(\"c\") pub c:int=2 }",
+        "struct S { @rename(\"x\") a: int, @skip b: int = 1, @skip @rename(\"c\") pub c: int = 2 }\n",
+    );
+    // Attributes on their own line are joined to the field.
+    check(
+        "struct S {\n    @rename(\"x\")\n    a: int\n    /// doc\n    @skip\n    b: int = 1\n}",
+        "struct S {\n    @rename(\"x\") a: int\n    /// doc\n    @skip b: int = 1\n}\n",
+    );
+}
+
+#[test]
+fn comments_around_field_attributes_stay_where_they_were_written() {
+    // Inside the attribute's parentheses, and between the attribute and the field.
+    for src in [
+        "struct S {\n    @rename(\"y\" /* c */) c: int\n}\n",
+        "struct S {\n    @rename(/* c */ \"y\") c: int\n}\n",
+        "struct S {\n    @rename(\"y\") /* c */ c: int\n}\n",
+        "struct S {\n    /* c */ @rename(\"y\") c: int\n}\n",
+        // A comment that ends the attribute's line keeps attribute and field on two lines.
+        "struct S {\n    @rename(\"y\") // why\n    c: int\n}\n",
+        "struct S {\n    @skip // a\n    @rename(\"y\") // b\n    c: int = 1\n}\n",
+        "struct S {\n    // lead\n    @rename(\"y\")\n    // between\n    c: int\n}\n",
+        "struct S {\n    @rename(\"y\") /* c */\n    c: int\n}\n",
+        "struct S {\n    @rename(\"y\")\n    /* c */\n    pub c: int\n}\n",
+    ] {
+        check(src, src);
+    }
+    // Still joined to the field when there is no comment, and the comments are not lost.
+    check(
+        "struct S {\n    @rename(\"y\")\n    c: int // after\n}",
+        "struct S {\n    @rename(\"y\") c: int // after\n}\n",
+    );
+}
+
+#[test]
 fn types_keep_their_meaning() {
     check(
         "let a: (fn(int) -> int)? = none",

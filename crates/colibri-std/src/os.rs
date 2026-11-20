@@ -5,7 +5,18 @@ use std::collections::BTreeMap;
 use colibri_runtime::{Cap, Ctx, Error, Vm};
 
 use crate::config::{EnvSource, State};
+use crate::errors::error_kind;
 use crate::{needs, plain};
+
+error_kind!(
+    "os",
+    /// Why a question to the operating system failed (`os.Error.NotFound`).
+    Kind {
+        NotFound,
+        PermissionDenied,
+        Other,
+    }
+);
 
 fn lookup(state: &State, name: &str) -> Option<String> {
     if let Some(v) = state.env_overrides.get(name) {
@@ -28,6 +39,7 @@ fn exit(cx: &mut Ctx, code: i64) -> colibri_runtime::Never {
 }
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
+    Kind::declare(vm)?;
     let mut m = vm.std_module("os");
     needs(
         Cap::Os,
@@ -88,7 +100,17 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
         m.register_fn_named("cwd", [], || {
             std::env::current_dir()
                 .map(|p| crate::fs::script_path(&p))
-                .map_err(|e| format!("cannot find the current folder: {}", crate::fs::reason(&e)))
+                .map_err(|e| {
+                    let kind = match e.kind() {
+                        std::io::ErrorKind::NotFound => Kind::NotFound,
+                        std::io::ErrorKind::PermissionDenied => Kind::PermissionDenied,
+                        _ => Kind::Other,
+                    };
+                    kind.error(format!(
+                        "cannot find the current folder: {}",
+                        crate::fs::reason(&e)
+                    ))
+                })
         }),
     )?;
     // "linux", "macos", "windows", ...

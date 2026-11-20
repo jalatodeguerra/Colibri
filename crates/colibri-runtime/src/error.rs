@@ -4,7 +4,7 @@ use std::fmt;
 
 use colibri_syntax::{Diagnostic, SourceMap};
 
-use crate::render::render_diagnostic;
+use crate::render::render_diagnostics;
 
 /// Diagnostics together with the sources they point into.
 #[derive(Clone, Debug)]
@@ -21,10 +21,7 @@ impl Report {
 
     /// Every diagnostic rendered with source snippets (plain text when `color` is false).
     pub fn render(&self, color: bool) -> String {
-        self.diagnostics
-            .iter()
-            .map(|d| render_diagnostic(d, &self.sources, color))
-            .collect()
+        render_diagnostics(&self.diagnostics, &self.sources, color)
     }
 }
 
@@ -251,7 +248,7 @@ impl fmt::Display for Error {
                     "the interface file `{path}` does not match the host's interface (hash {expected})"
                 ),
             },
-            Error::Interface { path, message } => write!(f, "{path}:{message}"),
+            Error::Interface { path, message } => write!(f, "{path}: {message}"),
             Error::HostObject(message) => f.write_str(message),
             Error::Ffi(message) => write!(f, "cannot link C: {message}"),
         }

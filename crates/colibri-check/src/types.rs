@@ -410,7 +410,7 @@ impl fmt::Display for Shown<'_> {
             }
             Ty::Adt(id, args) | Ty::Dyn(id, args) => {
                 match types.get(id.0 as usize) {
-                    Some(def) => f.write_str(&def.name)?,
+                    Some(def) => f.write_str(&def.display_name())?,
                     None => write!(f, "type#{}", id.0)?,
                 }
                 if !args.is_empty() {

@@ -1,0 +1,45 @@
+// A module's `Error` converts to `Error` without an `impl IntoError`: a test double or a
+// wrapper can say `err(fs.Error.NotFound)`, and `?` works on a `Result[T, fs.Error]`. The
+// message is the variant's name, and `is`/`as` still find the enum.
+import fs
+
+fn fake_read(path: str) -> Result[str] {
+    if path == "gone" {
+        return err(fs.Error.NotFound)
+    }
+    return ok("contents of {path}")
+}
+
+fn typed(path: str) -> Result[str, fs.Error] {
+    if path == "locked" {
+        return err(fs.Error.PermissionDenied)
+    }
+    return ok(path)
+}
+
+fn wrapper(path: str) -> Result[str] {
+    let p = typed(path)?
+    return ok(p)
+}
+
+fn main() {
+    match fake_read("gone") {
+        ok(v) => print(v)
+        err(e) => {
+            print("{e}")
+            print(e.is[fs.Error]())
+            print(e.as[fs.Error]() == some(fs.Error.NotFound))
+        }
+    }
+    print(fake_read("here").expect("present"))
+    let e = wrapper("locked").err().expect("locked")
+    print("{e} {e.is[fs.Error]()}")
+    print(Error.from(fs.Error.Other).message())
+}
+
+// expect: NotFound
+// expect: true
+// expect: true
+// expect: contents of here
+// expect: PermissionDenied true
+// expect: Other

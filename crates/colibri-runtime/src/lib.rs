@@ -162,11 +162,17 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 /// }
 /// ```
 pub use colibri_bind::export;
-pub use colibri_check::package::is_package_name;
+/// Git dependencies and `colibri.lock`: what the command line tool does before it loads a
+/// program (the loader itself never uses the network).
+pub use colibri_check::package::{
+    HOME_VAR as COLIBRI_HOME_VAR, LOCK_FILE, MANIFEST_FILE, SyncOptions, SyncReport, Update,
+    sync as sync_dependencies,
+};
+pub use colibri_check::package::{is_package_name, not_a_script};
 pub use colibri_interp::Leak;
 pub use colibri_interp::{CancelToken, Clock, DEFAULT_NATIVE_STACK_BUDGET, SystemClock};
 pub use colibri_syntax::{Diagnostic, Severity, SourceMap, Span};
-pub use convert::{Args, FromColibri, IntoColibri, Never, Value, ValueKind};
+pub use convert::{Args, FromColibri, IntoColibri, Never, TypedError, Value, ValueKind};
 pub use ctx::{Caller, Ctx, Cx};
 pub use error::{Error, Location, Report, StackFrame};
 pub use func::Fn;
@@ -177,7 +183,7 @@ pub use handle::{Handle, Ref, RefMut};
 pub use host::{HostFault, HostFn, Plain, RawHostFn, Registration, WithCtx};
 pub use iface::Interface;
 pub use reload::{ReloadOptions, ReloadOutcome};
-pub use render::render_diagnostic;
+pub use render::{render_diagnostic, render_diagnostics};
 pub use types::{SigDesc, TypeDesc, TypeRegistry};
 pub use vecmod::install_vec;
 pub use vm::{
@@ -303,36 +309,135 @@ fn check_entry(
     config: &CheckConfig,
     all_modules: bool,
 ) -> Result<Report, Error> {
+    check_entry_lazy(fs, entry, config, all_modules, &[], &mut |_| None)
+}
+
+/// Asks for the interface of every lazy module that an interface in `env` says it uses and
+/// that is not there yet.
+fn ask_lazy_uses<'a>(
+    env: &mut colibri_check::HostEnv,
+    lazy_names: &'a [String],
+    asked: &mut Vec<&'a str>,
+    interface: &mut dyn FnMut(&str) -> Option<Interface>,
+) {
+    while let Some(name) = env
+        .missing_uses()
+        .into_iter()
+        .map(|(_, used)| used)
+        .find_map(|used| {
+            lazy_names
+                .iter()
+                .find(|n| **n == used && !asked.contains(&n.as_str()))
+        })
+    {
+        asked.push(name);
+        match interface(name) {
+            Some(found) => env.merge(found.env),
+            None => break,
+        }
+    }
+}
+
+/// [`check_entry`] where the standard modules `lazy_names` are known by name only: the
+/// interface of one is asked from `interface` when the program imports it.
+fn check_entry_lazy(
+    fs: &dyn SourceFs,
+    entry: Entry<'_>,
+    config: &CheckConfig,
+    all_modules: bool,
+    lazy_names: &[String],
+    interface: &mut dyn FnMut(&str) -> Option<Interface>,
+) -> Result<Report, Error> {
     let mut env = colibri_check::HostEnv::new();
     for interface in &config.interfaces {
         env.merge(interface.env.clone());
     }
+    // An interface that names the types of a lazy standard module (`uses = ["std.json"]`)
+    // gets that module's interface asked for here: the host has it, the user cannot pass it.
+    let mut asked: Vec<&str> = Vec::new();
+    ask_lazy_uses(&mut env, lazy_names, &mut asked, interface);
+    // An interface that names the types of another module is checked with that module's
+    // interface, which has to be given too.
+    if let Some((module, used)) = env.missing_uses().into_iter().next() {
+        let path = config
+            .interfaces
+            .iter()
+            .find(|i| i.env.module_names().contains(&module))
+            .map_or(module.clone(), |i| i.path().to_string());
+        return Err(Error::Interface {
+            path,
+            message: format!(
+                "the module `{module}` names types of the module `{used}`, whose interface file was not given: pass it too (`--interface`)"
+            ),
+        });
+    }
     for cap in config.caps.iter() {
         env.grant(cap.name());
     }
+    let mut names = env.named_modules();
+    names.extend(lazy_names.iter().cloned());
     let mut sources = SourceMap::new();
     let options = colibri_check::package::LoadOptions { all_modules };
-    let loaded =
-        colibri_check::package::load_with(fs, &mut sources, entry, &env.named_modules(), options)
-            .map_err(|e| Error::Io {
+    let loaded = colibri_check::package::load_with(fs, &mut sources, entry, &names, options)
+        .map_err(|e| Error::Io {
             path: e.path,
             message: e.message,
         })?;
+    for meta in &loaded.metas {
+        for target in meta.imports.values() {
+            if let colibri_check::package::ImportTarget::Host(name) = target
+                && lazy_names.contains(name)
+                && !asked.contains(&name.as_str())
+            {
+                asked.push(name);
+                if let Some(found) = interface(name) {
+                    env.merge(found.env);
+                }
+            }
+        }
+    }
+    // An interface just asked for may name the types of another lazy module (`toml` names
+    // `json.Value`): that one is asked for too, though the program does not import it.
+    ask_lazy_uses(&mut env, lazy_names, &mut asked, interface);
     let mut diagnostics = loaded.diagnostics.clone();
     // A tree with syntax errors would only produce follow-on errors.
     if !loaded.has_errors() {
-        diagnostics = colibri_check::check_modules(
-            &loaded.inputs(),
-            &loaded.packages,
-            &env,
-            config.stack_budget,
-        )
-        .diagnostics;
+        // The loader's own warnings (an unknown `allow-ffi` name) stay.
+        diagnostics.extend(
+            colibri_check::check_modules(
+                &loaded.inputs(),
+                &loaded.packages,
+                &env,
+                config.stack_budget,
+            )
+            .diagnostics,
+        );
     }
     Ok(Report {
         sources,
         diagnostics,
     })
+}
+
+/// Like [`check_path_with`] (and with `all_modules`, [`check_package_all_with`]) for a host
+/// whose interfaces are many and mostly unused, such as the standard library: `lazy_names`
+/// (`std.math`, ...) are known by name, and `interface(name)` is called, once, only for those
+/// the program imports. The diagnostics are the same as with all the interfaces in `config`.
+pub fn check_path_lazy(
+    path: impl AsRef<Path>,
+    config: &CheckConfig,
+    all_modules: bool,
+    lazy_names: &[String],
+    interface: &mut dyn FnMut(&str) -> Option<Interface>,
+) -> Result<Report, Error> {
+    let path = path.as_ref();
+    let entry = if path.is_dir() {
+        Entry::Package(path)
+    } else {
+        Entry::File(path)
+    };
+    let all_modules = all_modules && path.is_dir();
+    check_entry_lazy(&DiskFs, entry, config, all_modules, lazy_names, interface)
 }
 
 /// Like [`check_source`], reading the source from a file. The file's folder is its implicit

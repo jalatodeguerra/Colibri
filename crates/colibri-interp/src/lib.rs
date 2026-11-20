@@ -47,7 +47,7 @@ pub use eval::{DEFAULT_NATIVE_STACK_BUDGET, Interp};
 pub use fiber::Fiber;
 pub use format::format_value;
 pub use heap::{ClassObj, GuardToken, ListObj, MapObj, SetObj};
-pub use host::{HostFault, HostImpl, RootDropQueue, RootHandle, map_value};
+pub use host::{HostClassHooks, HostFault, HostImpl, RootDropQueue, RootHandle, map_value};
 pub use hostheap::{HostBorrowError, HostGuard, HostRef};
 pub use leaks::Leak;
 pub use session::SessionUndo;

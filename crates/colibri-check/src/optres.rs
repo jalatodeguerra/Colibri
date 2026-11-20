@@ -255,6 +255,11 @@ impl FnCtx<'_, '_> {
 
     /// How a value of type `ty` converts to `Error`, if it implements `IntoError`.
     fn error_conv(&mut self, ty: &Ty) -> Option<ErrorConv> {
+        if let Ty::Adt(id, _) = ty
+            && self.ck.types[id.0 as usize].is_open_enum()
+        {
+            return Some(ErrorConv::OpenEnum);
+        }
         match self.ck.env().implements(ty, INTO_ERROR, &[]) {
             Ok(Source::User(id)) => Some(ErrorConv::Impl(id)),
             Ok(Source::Derived) => {

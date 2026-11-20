@@ -873,3 +873,128 @@ fn stat_follow_looks_through_a_symlink_and_stat_does_not() {
     .unwrap();
     assert_eq!(out.contents(), "symlink file 12\ntrue\nsymlink\n");
 }
+
+// ---- typed errors (DESIGN §10.2) ----
+
+#[test]
+fn every_failing_module_declares_its_error_enum_and_keeps_the_erased_signatures() {
+    let (mut vm, _) = vm(&[]);
+    let expected = [
+        (
+            "fs",
+            "enum Error { NotFound, PermissionDenied, AlreadyExists, NotADirectory, IsADirectory, DirectoryNotEmpty, InvalidData, Other }",
+        ),
+        (
+            "http",
+            "enum Error { Timeout, Connect, Dns, Tls, InvalidUrl, TooLarge, Other }",
+        ),
+        (
+            "process",
+            "enum Error { NotFound, PermissionDenied, Failed, Cancelled, InvalidDirectory, Other }",
+        ),
+        ("os", "enum Error { NotFound, PermissionDenied, Other }"),
+        ("io", "enum Error { InvalidData, Other }"),
+        ("regex", "enum Error { Syntax, TooBig }"),
+        ("json", "enum Error { Syntax, Mismatch, Unsupported }"),
+        (
+            "datetime",
+            "enum Error { OutOfRange, Syntax, InvalidPattern }",
+        ),
+        ("str", "enum Error { Empty, Invalid, OutOfRange }"),
+        ("base64", "enum Error { Invalid, NotText, OutOfRange }"),
+        ("hex", "enum Error { Invalid, NotText, OutOfRange }"),
+        ("hash", "enum Error { OutOfRange }"),
+        ("csv", "enum Error { Syntax, Shape, Separator }"),
+        ("toml", "enum Error { Syntax, Mismatch, Unsupported }"),
+    ];
+    for (module, decl) in expected {
+        let text = vm.std_module(module).interface_text();
+        assert!(text.contains(decl), "{module}: {text}");
+        // The functions still return the erased `Error`; the enum is recovered with `as`.
+        assert!(!text.contains("-> Result[Error"), "{module}: {text}");
+    }
+    // `args` has nothing that fails, so it has no `Error`.
+    assert!(
+        !vm.std_module("args")
+            .interface_text()
+            .contains("enum Error")
+    );
+}
+
+#[test]
+fn the_error_enums_check_without_a_vm() {
+    let config = colibri::CheckConfig {
+        interfaces: colibri_std::interfaces(),
+        caps: colibri::CapSet::all(),
+        ..colibri::CheckConfig::default()
+    };
+    let source = "import fs\nimport http\nfn kind(e: Error) -> str {\n    if e.is[fs.Error]() { return \"fs\" }\n    match e.as[http.Error]() {\n        some(k) => return \"{k}\"\n        none => return \"other\"\n    }\n}\nfn main() {\n    print(kind(error(\"x\")))\n    print(fs.Error.NotFound == fs.Error.NotFound)\n}\n";
+    let report = colibri::check_source_with("a.colibri", source, &config);
+    assert!(!report.has_errors(), "{}", report.render(false));
+}
+
+#[test]
+fn modules_with_the_same_error_name_are_different_types() {
+    let (mut vm, out) = vm(&[colibri::Cap::Fs, colibri::Cap::Os]);
+    run(
+        &mut vm,
+        r#"import fs
+import os
+import process
+
+fn main() {
+    let a = fs.read("/colibri/no/such/file").err().expect("fails")
+    let b = process.run("colibri-no-such-program", []).err().expect("fails")
+    print("{a.is[fs.Error]()} {a.is[process.Error]()} {a.is[os.Error]()}")
+    print("{b.is[fs.Error]()} {b.is[process.Error]()} {b.is[os.Error]()}")
+    // Both are `NotFound`, but not the same value.
+    print("{a.as[fs.Error]()} {b.as[process.Error]()}")
+}
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        out.contents(),
+        "true false false\nfalse true false\nsome(NotFound) some(NotFound)\n"
+    );
+}
+
+#[test]
+fn a_typed_error_survives_context_and_main_prints_the_message() {
+    let (mut vm, _) = vm(&[colibri::Cap::Fs]);
+    let err = run(
+        &mut vm,
+        "import fs\nfn main() -> Result[()] {\n    let t = fs.read(\"/colibri/no/such/file\").context(\"loading\")?\n    print(t)\n    return ok(())\n}\n",
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.render(false),
+        "error: loading: cannot read `/colibri/no/such/file`: no such file or directory\n"
+    );
+}
+
+#[test]
+fn reading_input_that_is_not_text_is_an_io_invalid_data_error() {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .allow(colibri::Cap::Os)
+        .build();
+    colibri_std::install_with(
+        &mut vm,
+        StdConfig {
+            stdin: Some(Box::new(Cursor::new(vec![0xff, 0xfe, b'\n']))),
+            ..StdConfig::default()
+        },
+    )
+    .unwrap();
+    run(
+        &mut vm,
+        "import io\nfn main() {\n    let e = io.read_line().err().expect(\"not text\")\n    print(e.as[io.Error]().expect(\"an io error\") == io.Error.InvalidData)\n    print(e.message())\n}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        out.contents(),
+        "true\ncannot read standard input: the data is not valid UTF-8 text\n"
+    );
+}

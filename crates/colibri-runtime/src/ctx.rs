@@ -16,6 +16,10 @@ use crate::error::{Error, Location, StackFrame};
 pub struct Ctx<'a> {
     pub(crate) interp: &'a mut Interp,
     pub(crate) fiber: &'a mut Fiber,
+    /// The host module of the function this context was made for: what a bare type name
+    /// (`new_struct("Response", ..)`) means is that module's own type. `None` for the host
+    /// calling into the script, where it means the default module's.
+    pub(crate) module: Option<std::rc::Rc<str>>,
 }
 
 /// The payload of the Rust panic [`Ctx::raise`] starts: the trampoline turns it into a Colibri
@@ -41,13 +45,31 @@ impl Caller for Ctx<'_> {
         Ctx {
             interp: &mut *self.interp,
             fiber: &mut *self.fiber,
+            module: self.module.clone(),
         }
     }
 }
 
 impl<'a> Ctx<'a> {
     pub(crate) fn new(interp: &'a mut Interp, fiber: &'a mut Fiber) -> Self {
-        Ctx { interp, fiber }
+        Ctx {
+            interp,
+            fiber,
+            module: None,
+        }
+    }
+
+    /// The context of a function of host module `module`.
+    pub(crate) fn in_module(
+        interp: &'a mut Interp,
+        fiber: &'a mut Fiber,
+        module: std::rc::Rc<str>,
+    ) -> Self {
+        Ctx {
+            interp,
+            fiber,
+            module: Some(module),
+        }
     }
 
     /// The host state of type `T` (see [`crate::Vm::insert_state`]), if there is one.
@@ -189,23 +211,94 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// The type id of a struct, enum or class the host declared.
+    /// The type id of a struct or enum the host declared, by the bare name a host function
+    /// uses: its own module's type of that name, else the default module's.
     pub(crate) fn host_type(&self, name: &str) -> TypeId {
-        match self.interp.host_type(name) {
+        match self.interp.host_type_here(self.module.as_deref(), name) {
+            Ok(id) => id,
+            Err(message) => panic!("{message}"),
+        }
+    }
+
+    /// The type id of the host class that the Rust type `T` implements.
+    pub(crate) fn host_class<T: crate::HostType>(&self) -> TypeId {
+        match self.interp.host_class(std::any::TypeId::of::<T>()) {
             Some(id) => id,
             None => panic!(
-                "the type `{name}` is not part of the loaded host interface (register it with `Vm::register_type` before loading)"
+                "the host class `{}` is not part of the loaded host interface (register it with `Vm::register_type` before loading)",
+                T::NAME
             ),
         }
     }
 
-    /// A struct value of the host type `name`, with its fields in declaration order.
+    /// The type id and variant index of the module enum variant a [`crate::TypedError`] names.
+    ///
+    /// # Panics
+    /// With a message that names the host's mistake, when the module has no such enum, the type
+    /// is not a module enum, or it has no such variant.
+    pub(crate) fn module_enum_variant(
+        &self,
+        module: &str,
+        enum_name: &str,
+        variant: &str,
+    ) -> (TypeId, u32) {
+        match self.interp.module_enum_variant(module, enum_name, variant) {
+            Ok(found) => found,
+            Err(message) => panic!("{message}"),
+        }
+    }
+
+    /// A struct value of the host type `name`, with its fields in declaration order. A bare
+    /// name means the type of the module whose host function is running (`Response` inside
+    /// `http` is `http.Response`), else the default module's; [`Ctx::new_struct_in`] names the
+    /// module.
     ///
     /// # Panics
     /// If `name` is not a type declared through the `TypeRegistry` (a bug in the
     /// `IntoColibri` implementation).
     pub fn new_struct(&self, name: &str, fields: Vec<Value>) -> Value {
         let ty = self.host_type(name);
+        Value(colibri_interp::Value::strukt(
+            ty,
+            fields.into_iter().map(|v| v.0).collect(),
+        ))
+    }
+
+    /// [`Ctx::new_struct`] for the struct that the Rust type `rust` converts to
+    /// (`#[colibri::export(value)]`): found by the Rust type, so it does not depend on which
+    /// module's function is running; `name` is used when the Rust type is not registered.
+    pub fn new_struct_of(&self, rust: std::any::TypeId, name: &str, fields: Vec<Value>) -> Value {
+        let ty = match self.interp.host_class(rust) {
+            Some(id) => id,
+            None => self.host_type(name),
+        };
+        Value(colibri_interp::Value::strukt(
+            ty,
+            fields.into_iter().map(|v| v.0).collect(),
+        ))
+    }
+
+    /// [`Ctx::new_variant`] for the enum that the Rust type `rust` converts to.
+    pub fn new_variant_of(&self, rust: std::any::TypeId, name: &str, variant: u32) -> Value {
+        let ty = match self.interp.host_class(rust) {
+            Some(id) => id,
+            None => self.host_type(name),
+        };
+        Value(colibri_interp::Value::variant(ty, variant, Vec::new()))
+    }
+
+    /// A struct value of the type `name` that the host module `module` (`std.http`, `game`;
+    /// `host` is the default one) declares.
+    ///
+    /// # Panics
+    /// As [`Ctx::new_struct`].
+    pub fn new_struct_in(&self, module: &str, name: &str, fields: Vec<Value>) -> Value {
+        let ty = match self.interp.host_type_in(module, name) {
+            Some(id) => id,
+            None => panic!(
+                "the type `{name}` of the module `{module}` is not part of the loaded host interface (register it before loading)"
+            ),
+        };
         Value(colibri_interp::Value::strukt(
             ty,
             fields.into_iter().map(|v| v.0).collect(),

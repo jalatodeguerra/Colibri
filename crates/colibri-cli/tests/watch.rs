@@ -158,3 +158,22 @@ fn a_program_that_does_not_check_at_start_runs_once_it_does() {
     std::fs::write(&path, "fn main() {\n    print(\"hello\")\n}\n").unwrap();
     w.wait_for(false, "hello");
 }
+
+#[test]
+fn warnings_are_printed_before_the_top_level_code_runs() {
+    // The top level ends the process: the warnings must already be out by then.
+    let path = temp_file(
+        "warnfirst",
+        "import os\nfn main() {\n    let x = 1\n    let x = 2\n    print(x)\n}\nos.exit(3)\n",
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_colibri"))
+        .args(["run", "--watch", path.to_str().unwrap()])
+        .output()
+        .expect("the colibri binary runs");
+    assert_eq!(out.status.code(), Some(3));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Warning"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

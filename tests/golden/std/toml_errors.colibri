@@ -1,0 +1,40 @@
+import toml
+
+class Handle { n: int }
+
+fn main() {
+    match toml.parse("a = ") {
+        ok(_) => print("parsed?")
+        err(e) => {
+            print(e.is[toml.Error]())
+            print(e.as[toml.Error]() == some(toml.Error.Syntax))
+        }
+    }
+    match toml.parse("a = 1\na = 2") {
+        ok(_) => print("parsed?")
+        err(e) => print(e.as[toml.Error]() == some(toml.Error.Syntax))
+    }
+    match toml.parse("a = 99999999999999999999") {
+        ok(_) => print("parsed?")
+        err(e) => print(e.as[toml.Error]().is_some())
+    }
+    match toml.decode[int]("a = 1") {
+        ok(_) => print("decoded?")
+        err(e) => print(e.as[toml.Error]() == some(toml.Error.Mismatch))
+    }
+    match toml.decode[Handle]("n = 1") {
+        ok(_) => print("decoded?")
+        err(e) => {
+            print(e.as[toml.Error]() == some(toml.Error.Unsupported))
+            print(e.message())
+        }
+    }
+}
+
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: toml: at `$`: `Handle` is a class, and toml works on structs and enums

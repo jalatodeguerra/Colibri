@@ -40,26 +40,6 @@ fn set_of(v: &Value) -> Option<Rc<SetObj>> {
     }
 }
 
-/// Whether a value can never be compared by a user-written `Eq`: the primitives (a user
-/// cannot implement `Eq` for them) and tuples of them. Everything else might be.
-pub(crate) fn never_user_eq(v: &Value) -> bool {
-    match v {
-        Value::Unit
-        | Value::Bool(_)
-        | Value::Int(_)
-        | Value::U64(_)
-        | Value::Ptr(_)
-        | Value::Float(_)
-        | Value::F32(_)
-        | Value::Vec(_)
-        | Value::IVec(_)
-        | Value::Char(_)
-        | Value::Str(_) => true,
-        Value::Tuple(items) => items.iter().all(never_user_eq),
-        _ => false,
-    }
-}
-
 fn int_of(v: &Value) -> Option<i64> {
     match v {
         Value::Int(i) => Some(*i),
@@ -250,6 +230,7 @@ impl Interp {
                 };
                 let set = SetObj::new(OrderedMap::new());
                 for item in list.snapshot() {
+                    let item = self.canonical_key(fiber, || set.snapshot(), item, span)?;
                     if let Ok((_, Some(spare))) = set.add(item) {
                         self.release(spare);
                     }
@@ -521,7 +502,7 @@ impl Interp {
                 | Builtin::MapEntries
                 | Builtin::MapClear
         ) {
-            let keys = if self.has_custom_eq() && !args.get(1).is_some_and(never_user_eq) {
+            let keys = if args.get(1).is_some_and(|k| self.key_needs_scan(k)) {
                 map.keys()
             } else {
                 Vec::new()
@@ -615,7 +596,7 @@ impl Interp {
             op,
             Builtin::SetLen | Builtin::SetIsEmpty | Builtin::SetClear
         ) {
-            let keys = if self.has_custom_eq() && !args.get(1).is_some_and(never_user_eq) {
+            let keys = if args.get(1).is_some_and(|k| self.key_needs_scan(k)) {
                 set.snapshot()
             } else {
                 Vec::new()
@@ -676,6 +657,7 @@ impl Interp {
         if !scan {
             return Ok(set.contains(item));
         }
+        self.key_scans += 1;
         for x in items {
             // One step per comparison actually made: a user `Eq` may do anything.
             self.charge(fiber, span, 1)?;
@@ -720,10 +702,8 @@ impl Interp {
         (rset, right): (&SetObj, &[Value]),
         span: Span,
     ) -> Eval {
-        // Only elements that may have a user `Eq` need the scan; all elements of a set share
-        // one type, so the first of each side tells.
-        let scan = self.has_custom_eq()
-            && !(left.first().is_none_or(never_user_eq) && right.first().is_none_or(never_user_eq));
+        // Only elements that may have a user `Eq` need the scan.
+        let scan = left.iter().chain(right).any(|x| self.key_needs_scan(x));
         // Which elements of `side` are (not) in `other`.
         let pick = |this: &mut Self,
                     fiber: &mut Fiber,
@@ -766,6 +746,7 @@ impl Interp {
         };
         let out = SetObj::new(OrderedMap::new());
         for item in items {
+            let item = self.canonical_key(fiber, || out.snapshot(), item, span)?;
             if let Ok((_, Some(spare))) = out.add(item) {
                 self.release(spare);
             }

@@ -3,24 +3,45 @@
 
 use std::io::{BufRead, Write};
 
-use colibri_runtime::{Cap, Ctx, Error, Vm};
+use colibri_runtime::{Cap, Ctx, Error, TypedError, Vm};
 
 use crate::config::State;
+use crate::errors::error_kind;
 use crate::{needs, plain};
+
+error_kind!(
+    "io",
+    /// Why reading standard input failed (`io.Error.InvalidData`).
+    Kind {
+        /// The input is not valid UTF-8 text.
+        InvalidData,
+        Other,
+    }
+);
 
 /// Runs `f` on the configured input, or on the process's standard input.
 fn with_input<T>(
     cx: &mut Ctx,
     f: impl FnOnce(&mut dyn BufRead) -> std::io::Result<T>,
-) -> Result<T, String> {
+) -> Result<T, TypedError> {
     let result = match cx.state_mut::<State>().and_then(|s| s.stdin.as_mut()) {
         Some(input) => f(input.as_mut()),
         None => f(&mut std::io::stdin().lock()),
     };
-    result.map_err(|e| format!("cannot read standard input: {}", crate::fs::reason(&e)))
+    result.map_err(|e| {
+        let kind = match e.kind() {
+            std::io::ErrorKind::InvalidData => Kind::InvalidData,
+            _ => Kind::Other,
+        };
+        kind.error(format!(
+            "cannot read standard input: {}",
+            crate::fs::reason(&e)
+        ))
+    })
 }
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
+    Kind::declare(vm)?;
     let mut m = vm.std_module("io");
     // Where `print` writes, but with no newline added.
     plain(

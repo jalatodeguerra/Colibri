@@ -289,11 +289,15 @@ impl FnCtx<'_, '_> {
         if let Some(enum_id) = self.enum_of(&known)
             && let Some(v) = self.variant_index(enum_id, &id.name)
         {
+            let decl = self.ck.types[enum_id.0 as usize].variants()[v as usize].span;
+            self.ck.note_ref(id.span, decl);
             let payload = self.ck.types[enum_id.0 as usize].variants()[v as usize]
                 .fields
                 .len();
             if payload > 0 {
-                let tname = self.ck.types[enum_id.0 as usize].name.clone();
+                let tname = self.ck.types[enum_id.0 as usize]
+                    .display_name()
+                    .into_owned();
                 let blanks = vec!["_"; payload].join(", ");
                 self.ck.report(
                     Diagnostic::error(
@@ -345,7 +349,11 @@ impl FnCtx<'_, '_> {
             Some(e) => {
                 let def = &self.ck.types[e.0 as usize];
                 candidates.extend(def.variants().iter().map(|v| v.name.clone()));
-                format!("the enum `{}` has no variant `{}`", def.name, id.name)
+                format!(
+                    "the enum `{}` has no variant `{}`",
+                    def.display_name(),
+                    id.name
+                )
             }
             None => format!("`{}` is not a variant or a constant", id.name),
         };
@@ -629,7 +637,7 @@ impl FnCtx<'_, '_> {
         };
         if self.ck.types[id.0 as usize].is_enum() {
             wild_fields(self, cx);
-            let tname = self.ck.types[id.0 as usize].name.clone();
+            let tname = self.ck.types[id.0 as usize].display_name().into_owned();
             self.ck.report(
                 Diagnostic::error(format!("`{tname}` is an enum, not a struct"), name.span)
                     .with_hint(format!("match its variants: `{tname}.Variant(...)`")),
@@ -638,7 +646,7 @@ impl FnCtx<'_, '_> {
         }
         if let Some(maker) = crate::types::prelude_class_maker(id) {
             wild_fields(self, cx);
-            let tname = self.ck.types[id.0 as usize].name.clone();
+            let tname = self.ck.types[id.0 as usize].display_name().into_owned();
             self.ck.report(
                 Diagnostic::error(
                     format!("`{tname}` is a built-in class and has no fields to match"),
@@ -663,7 +671,7 @@ impl FnCtx<'_, '_> {
         }
         if self.ck.types[id.0 as usize].is_host_class() {
             wild_fields(self, cx);
-            let tname = self.ck.types[id.0 as usize].name.clone();
+            let tname = self.ck.types[id.0 as usize].display_name().into_owned();
             self.ck.report(
                 Diagnostic::error(
                     format!("`{tname}` is a host class and has no fields to match"),
@@ -690,7 +698,7 @@ impl FnCtx<'_, '_> {
                 ..f.clone()
             })
             .collect();
-        let tname = def.name.clone();
+        let tname = def.display_name().into_owned();
         let mut subs: Vec<Option<Pat>> = decls.iter().map(|_| None).collect();
         for f in fields {
             let Some(i) = decls.iter().position(|d| d.name == f.name.name) else {
@@ -845,7 +853,7 @@ impl FnCtx<'_, '_> {
             }
         };
         let def = &self.ck.types[enum_id.0 as usize];
-        let tname = def.name.clone();
+        let tname = def.display_name().into_owned();
         let Some(v) = self.variant_index(enum_id, &name.name) else {
             let names: Vec<String> = def.variants().iter().map(|v| v.name.clone()).collect();
             let mut diag = Diagnostic::error(
@@ -859,12 +867,14 @@ impl FnCtx<'_, '_> {
             return fallback(self, cx);
         };
         let mut variant = def.variants()[v as usize].clone();
+        let (at, decl) = (name.span, variant.span);
         if let Ty::Adt(_, targs) = self.infer.shallow(expected) {
             let map = Checker::param_map_of(def, &targs);
             for f in &mut variant.fields {
                 f.ty = f.ty.subst(&map);
             }
         }
+        self.ck.note_ref(at, decl);
         let expected_args = variant.fields.len();
         let given = args.map_or(0, <[ast::Pat]>::len);
         if given != expected_args {

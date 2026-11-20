@@ -60,6 +60,22 @@ pub(crate) fn prelude() -> &'static File {
     PARSED.get_or_init(|| colibri_syntax::parse_file(PRELUDE_FILE, SOURCE).0)
 }
 
+/// Whether `name` is a type the language or its prelude declares (`int`, `Option`, `Show`,
+/// `Error`, ..): a program or a host module cannot declare another type with it.
+pub fn is_reserved_type_name(name: &str) -> bool {
+    use colibri_syntax::ast::{ItemKind, TopLevel};
+    crate::decls::BUILTIN_TYPES.contains(&name)
+        || prelude().items.iter().any(|top| match top {
+            TopLevel::Item(item) => match &item.kind {
+                ItemKind::Struct(s) => s.name.name == name,
+                ItemKind::Enum(e) => e.name.name == name,
+                ItemKind::Interface(i) => i.name.name == name,
+                _ => false,
+            },
+            TopLevel::Stmt(_) => false,
+        })
+}
+
 /// Whether a span belongs to the prelude.
 pub(crate) fn in_prelude(span: Span) -> bool {
     span.file == PRELUDE_FILE

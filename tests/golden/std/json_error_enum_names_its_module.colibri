@@ -1,0 +1,22 @@
+// A module enum is decoded and reported under the name a script writes: `fs.Error`.
+import json
+import fs
+
+fn main() {
+    match json.decode[fs.Error]("\"Nope\"") {
+        ok(_) => print("decoded")
+        err(e) => print(e.message())
+    }
+    match json.decode[fs.Error]("\"NotFound\"") {
+        ok(k) => print(k)
+        err(e) => print(e.message())
+    }
+    match json.decode[fs.Error]("3") {
+        ok(_) => print("decoded")
+        err(e) => print(e.message())
+    }
+}
+
+// expect: json: at `$`: `Nope` is not a variant of `fs.Error` (expected one of: NotFound, PermissionDenied, AlreadyExists, NotADirectory, IsADirectory, DirectoryNotEmpty, InvalidData, Other)
+// expect: NotFound
+// expect: json: at `$`: expected a string naming a variant of `fs.Error` (one of: NotFound, PermissionDenied, AlreadyExists, NotADirectory, IsADirectory, DirectoryNotEmpty, InvalidData, Other), found the number 3

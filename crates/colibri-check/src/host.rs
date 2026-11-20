@@ -53,10 +53,28 @@ pub fn body_hash(body: &str) -> String {
 
 /// The header line of an interface file.
 pub fn header_line(module: &str, hash: &str, caps: &[String]) -> String {
-    let caps: Vec<String> = caps.iter().map(|c| format!("\"{c}\"")).collect();
+    header_line_with(module, hash, caps, &[])
+}
+
+/// [`header_line`] for an interface that names types of other modules (`json.Value`): `uses`
+/// are those modules, listed in the header when there are any, so a file that uses none reads
+/// as it always did.
+pub fn header_line_with(module: &str, hash: &str, caps: &[String], uses: &[String]) -> String {
+    let list = |items: &[String]| {
+        items
+            .iter()
+            .map(|c| format!("\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let uses = if uses.is_empty() {
+        String::new()
+    } else {
+        format!(", uses = [{}]", list(uses))
+    };
     format!(
-        "@interface(format = {INTERFACE_FORMAT}, module = \"{module}\", hash = \"{hash}\", caps = [{}])",
-        caps.join(", ")
+        "@interface(format = {INTERFACE_FORMAT}, module = \"{module}\", hash = \"{hash}\", caps = [{}]{uses})",
+        list(caps)
     )
 }
 
@@ -68,6 +86,9 @@ pub struct InterfaceHeader {
     pub hash: String,
     /// The capabilities that items of the interface require.
     pub caps: Vec<String>,
+    /// The modules whose types the interface names, qualified (`json.Value` for `std.json`):
+    /// their interfaces must be given too.
+    pub uses: Vec<String>,
 }
 
 /// One parsed interface file.
@@ -151,6 +172,12 @@ impl HostEnv {
             })
     }
 
+    /// The syntax trees of the interfaces of module `name`, in order (for editors: what
+    /// `name.` offers; the default module `host` holds the functions that need no `import`).
+    pub fn module_syntax<'a>(&'a self, name: &str) -> Vec<&'a ast::File> {
+        self.module_files(name)
+    }
+
     /// The syntax trees of the interfaces of module `name`, in order.
     pub(crate) fn module_files<'a>(&'a self, name: &str) -> Vec<&'a ast::File> {
         self.modules
@@ -169,6 +196,36 @@ impl HostEnv {
             }
         }
         names
+    }
+
+    /// The modules whose types the interfaces of module `name` name (their `uses`).
+    pub(crate) fn uses_of(&self, name: &str) -> Vec<String> {
+        let mut uses: Vec<String> = Vec::new();
+        for m in self.modules.iter().filter(|m| m.header.module == name) {
+            for u in &m.header.uses {
+                if !uses.contains(u) {
+                    uses.push(u.clone());
+                }
+            }
+        }
+        uses
+    }
+
+    /// The pairs `(module, used module)` where an interface names the types of a module whose
+    /// interface is not part of this environment: such a program cannot be checked until
+    /// that interface is given too.
+    pub fn missing_uses(&self) -> Vec<(String, String)> {
+        let known = self.module_names();
+        let mut missing = Vec::new();
+        for m in &self.modules {
+            for u in &m.header.uses {
+                let pair = (m.header.module.clone(), u.clone());
+                if !known.contains(u) && !missing.contains(&pair) {
+                    missing.push(pair);
+                }
+            }
+        }
+        missing
     }
 
     /// The names of the modules other than the default one: what `import` can name.
@@ -193,7 +250,12 @@ impl HostModule {
         let hash = body_hash(&body);
         format!(
             "{GENERATED}\n{}\n{body}",
-            header_line(&self.header.module, &hash, &self.header.caps)
+            header_line_with(
+                &self.header.module,
+                &hash,
+                &self.header.caps,
+                &self.header.uses
+            )
         )
     }
 }
@@ -242,7 +304,11 @@ fn print_item(item: &ast::Item, out: &mut String) {
                 ));
             }
         }
+        ItemKind::TypeAlias(t) => {
+            out.push_str(&format!("type {} = {}\n", t.name.name, print_type(&t.ty)));
+        }
         ItemKind::Enum(e) => {
+            print_attrs(item, out);
             let variants: Vec<&str> = e.variants.iter().map(|v| v.name.name.as_str()).collect();
             out.push_str(&format!(
                 "enum {} {{ {} }}\n",
@@ -398,6 +464,32 @@ fn parse_module(text: &str) -> Result<HostModule, String> {
             "the module name `std` is reserved for the standard library",
         ));
     }
+    for (i, used) in header.uses.iter().enumerate() {
+        if !is_module_name(used) && !is_std_module_name(used) {
+            return Err(at(
+                start,
+                &format!("`{used}` in `uses` is not a module name"),
+            ));
+        }
+        if *used == header.module || used == DEFAULT_MODULE {
+            return Err(at(
+                start,
+                &format!(
+                    "a module cannot use `{used}`: its own and the default module's types need no declaration"
+                ),
+            ));
+        }
+        let short = used.rsplit('.').next().unwrap_or(used);
+        if header.uses[..i]
+            .iter()
+            .any(|u| u.rsplit('.').next().unwrap_or(u) == short)
+        {
+            return Err(at(
+                start,
+                &format!("two of the used modules are called `{short}`"),
+            ));
+        }
+    }
     let body_start = start + line.len();
     let body = &text[body_start..];
     let actual = body_hash(body);
@@ -454,6 +546,7 @@ fn parse_header(args: &str) -> Result<InterfaceHeader, String> {
     let mut module = None;
     let mut hash = None;
     let mut caps = None;
+    let mut uses = None;
     let mut rest = args.trim();
     while !rest.is_empty() {
         let (key, after) = rest
@@ -490,16 +583,20 @@ fn parse_header(args: &str) -> Result<InterfaceHeader, String> {
             }
             "module" => module = Some(string(value)?),
             "hash" => hash = Some(string(value)?),
-            "caps" => {
+            "caps" | "uses" => {
                 let inner = value
                     .strip_prefix('[')
                     .and_then(|v| v.strip_suffix(']'))
-                    .ok_or("`caps` must be a list")?;
+                    .ok_or_else(|| format!("`{key}` must be a list"))?;
                 let mut list = Vec::new();
                 for item in inner.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                     list.push(string(item)?);
                 }
-                caps = Some(list);
+                if key == "caps" {
+                    caps = Some(list);
+                } else {
+                    uses = Some(list);
+                }
             }
             other => return Err(format!("unknown header key `{other}`")),
         }
@@ -510,6 +607,7 @@ fn parse_header(args: &str) -> Result<InterfaceHeader, String> {
         module: module.ok_or("the header has no `module`")?,
         hash: hash.ok_or("the header has no `hash`")?,
         caps: caps.unwrap_or_default(),
+        uses: uses.unwrap_or_default(),
     })
 }
 
@@ -566,7 +664,22 @@ fn validate(file: &ast::File) -> Result<(), (u32, String)> {
                     }
                 }
             },
-            ItemKind::Enum(_) => check_attrs(item, &[])?,
+            ItemKind::Enum(_) => check_attrs(item, &["module"])?,
+            // `type Pos = physics.Pos`: this module's name for a type another module declares
+            // (the same Rust type registered by two modules), or `type Pos = Pos` for the
+            // default module's.
+            ItemKind::TypeAlias(t) => {
+                check_attrs(item, &[])?;
+                let simple = t.generics.is_empty()
+                    && matches!(&t.ty.kind, ast::TypeKind::Named { path, args }
+                        if args.is_empty() && matches!(path.len(), 1 | 2));
+                if !simple {
+                    return Err((
+                        item.span.start,
+                        "a type alias in an interface is `type Name = module.Name` (or `type Name = Name` for a type of the default module)".into(),
+                    ));
+                }
+            }
             ItemKind::Binding(b) => {
                 check_attrs(item, &[])?;
                 let simple = b.kind == ast::BindKind::Const

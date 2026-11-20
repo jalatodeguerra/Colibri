@@ -1,0 +1,9 @@
+// `fs.Error` converts to `Error` already, and belongs to its module: a program cannot write its
+// own `impl IntoError for fs.Error`, which would clash with a later one of the standard library.
+import fs
+
+impl IntoError for fs.Error {} // error: cannot implement the built-in `IntoError` for `fs.Error`
+
+fn main() {
+    print("unreachable")
+}

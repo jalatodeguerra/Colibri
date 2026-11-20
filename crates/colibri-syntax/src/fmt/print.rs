@@ -800,9 +800,71 @@ impl<'a> Fmt<'a> {
             let items = attr
                 .args
                 .iter()
-                .map(|a| self.element(a.span.start, a.span.end, |f| f.expr(a)))
+                .enumerate()
+                .map(|(i, a)| {
+                    // A block comment after an argument stays there: `@rename("y" /* c */)`.
+                    let limit = attr.args.get(i + 1).map_or(close, |n| n.span.start);
+                    self.element(a.span.start, a.span.end, |f| {
+                        let arg = f.expr(a);
+                        concat(vec![arg, f.inline_blocks(limit)])
+                    })
+                })
                 .collect();
             parts.push(self.list(PAREN, close, items, open_c));
+        }
+        concat(parts)
+    }
+
+    /// Single-line block comments before `limit` that follow what was just printed, kept on
+    /// that line (` /* c */`).
+    fn inline_blocks(&mut self, limit: u32) -> Doc {
+        let mut parts = Vec::new();
+        while let Some(c) = self.next_before(limit) {
+            if !(c.block && !c.text.contains('\n') && !c.own_line && !c.doc) {
+                break;
+            }
+            let c = self.take();
+            parts.push(text(" "));
+            parts.push(text(c.text));
+        }
+        concat(parts)
+    }
+
+    /// What comes between an attribute of a field and `next` (the next attribute or the rest of
+    /// the field): a space when nothing is there, comments kept where they were written, and
+    /// when one belongs to the attribute's line (a `// why`, or one on a line of its own) the
+    /// field continues on a new line.
+    fn after_field_attr(&mut self, next: u32) -> Doc {
+        let mut comments = Vec::new();
+        while self.next_before(next).is_some() {
+            let c = self.take();
+            let following = self.next_before(next).map_or(next, |n| n.start);
+            let line_end = self.sl(c.end, following).contains('\n');
+            comments.push((c, line_end));
+        }
+        if comments.is_empty() {
+            return text(" ");
+        }
+        let inline = comments.iter().all(|(c, line_end)| {
+            c.block && !c.text.contains('\n') && !c.own_line && !c.doc && !line_end
+        });
+        let mut parts = Vec::new();
+        if inline {
+            for (c, _) in comments {
+                parts.push(text(" "));
+                parts.push(text(c.text));
+            }
+            parts.push(text(" "));
+        } else {
+            for (c, _) in comments {
+                if c.own_line || c.doc {
+                    parts.push(Doc::HardLine);
+                } else {
+                    parts.push(text(" "));
+                }
+                parts.push(text(c.text));
+            }
+            parts.push(Doc::HardLine);
         }
         concat(parts)
     }
@@ -914,6 +976,17 @@ impl<'a> Fmt<'a> {
 
     fn field(&mut self, field: &Field) -> Doc {
         let mut parts = Vec::new();
+        // Attributes stay on the field's line: `@rename("id") user_id: int`.
+        for (i, attr) in field.attrs.iter().enumerate() {
+            parts.push(self.attr(attr));
+            let next = field
+                .attrs
+                .get(i + 1)
+                .map(|a| a.span.start)
+                .or_else(|| self.toks.get(self.tok_from(attr.span.end)).map(|t| t.start))
+                .unwrap_or(attr.span.end);
+            parts.push(self.after_field_attr(next));
+        }
         if field.public {
             parts.push(text("pub "));
         }

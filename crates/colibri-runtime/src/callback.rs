@@ -27,6 +27,9 @@ struct Shared {
     handle: RootHandle,
     vm: u64,
     queue: DropQueue,
+    /// The host module whose function received the callback: its bare type names are the
+    /// module's when the callback is called later.
+    module: Option<Rc<str>>,
 }
 
 impl Drop for Shared {
@@ -73,6 +76,9 @@ impl<A: Args, R: FromColibri> Callback<A, R> {
         let Some(f) = cx.interp.rooted(self.shared.handle).cloned() else {
             return Err(Error::StaleHandle);
         };
+        if self.shared.module.is_some() {
+            cx.module = self.shared.module.clone();
+        }
         let args = args.into_values(&mut cx);
         let value = cx.call_value(&Value(f), args)?;
         let result = R::from_colibri(&value, &mut cx);
@@ -103,6 +109,7 @@ impl<A: Args, R: FromColibri> FromColibri for Callback<A, R> {
                 handle,
                 vm: cx.interp.vm_id(),
                 queue: cx.interp.root_drop_queue(),
+                module: cx.module.clone(),
             }),
             _signature: PhantomData,
         })

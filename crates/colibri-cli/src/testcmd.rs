@@ -24,12 +24,17 @@ pub struct Options {
     pub nocapture: bool,
     /// Report the cycles each test leaks (`--leaks`); `Error` fails the test.
     pub leaks: Option<crate::leakcmd::LeakMode>,
+    /// `--locked` and `--offline` for git dependencies.
+    pub deps: crate::depscmd::DepFlags,
 }
 
 /// Runs the tests and prints the report to stdout; the exit code is 1 if the program does not
 /// compile or any test fails.
 pub fn run(options: &Options) -> ExitCode {
     let stderr_color = io::stderr().is_terminal();
+    if let Err(code) = crate::depscmd::prepare(&options.path, options.deps) {
+        return code;
+    }
     let captured = colibri::SharedBuffer::new();
     let mut builder = crate::vm_builder()
         .allow_all()

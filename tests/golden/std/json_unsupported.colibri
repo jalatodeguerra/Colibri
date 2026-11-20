@@ -1,15 +1,13 @@
 import json
 
-enum Shape {
-    Circle(float)
-    Square(float)
+enum Boxed[T] {
+    Full(T)
+    Empty
 }
 
 enum Plain { A, B }
 
 class Player { name: str }
-
-struct HasShape { shape: Shape }
 
 struct Pair[T] { a: T, b: T }
 
@@ -21,11 +19,8 @@ fn show[T: Show](r: Result[T]) {
 }
 
 fn main() {
-    // Enums with data, classes and generic structs are errors with a reason, not wrong output.
-    show(json.encode(Shape.Circle(1.0)))
-    show(json.encode(HasShape { shape: .Square(2.0) }))
-    show(json.decode[Shape](r"""{"Circle": 1.0}"""))
-    show(json.decode[Shape](r"""{"Circle": 1.0}"""))
+    // Classes are errors with a reason, not wrong output (generic types work: json_generic_types).
+    show(json.decode[Boxed[int]](r"""{"Full": 1}"""))
     show(json.encode(Player { name: "x" }))
     show(json.decode[Player](r"""{"name": "x"}"""))
     show(json.decode[Pair[int]](r"""{"a": 1, "b": 2}"""))
@@ -40,13 +35,10 @@ fn main() {
     show(json.encode(Plain.B))
 }
 
-// expect: json: cannot encode the enum `Shape`: only enums whose variants carry no data are supported
-// expect: json: cannot encode the enum `Shape`: only enums whose variants carry no data are supported
-// expect: json: at `$`: cannot decode the enum `Shape`: only enums whose variants carry no data are supported
-// expect: json: at `$`: cannot decode the enum `Shape`: only enums whose variants carry no data are supported
+// expect: ok Full(1)
 // expect: json: cannot encode a class object, function or host object
 // expect: json: at `$`: `Player` is a class, and json works on structs and enums
-// expect: json: at `$`: cannot decode the generic type `Pair[int]`
+// expect: ok Pair { a: 1, b: 2 }
 // expect: json: a Map becomes an object, so its keys must be str
 // expect: json: cannot encode NaN: JSON has no such number
 // expect: json: cannot encode inf: JSON has no such number

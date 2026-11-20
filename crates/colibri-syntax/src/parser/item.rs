@@ -399,6 +399,7 @@ impl Parser<'_> {
         let first = self.pos;
         let start = self.start();
         let doc = self.docs_before(first);
+        let attrs = self.parse_attrs()?;
         let public = self.eat(&TokenKind::Pub);
         let name = self.expect_ident("a field name")?;
         if !self.at(&TokenKind::Colon) {
@@ -422,6 +423,7 @@ impl Parser<'_> {
             id: self.id(),
             span: self.span_from(start),
             doc,
+            attrs,
             public,
             name,
             ty,

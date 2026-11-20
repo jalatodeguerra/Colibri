@@ -78,7 +78,7 @@ impl FnCtx<'_, '_> {
                 ),
                 Ty::Adt(id, _) => Some(format!(
                     "`{0}` has a part that cannot be compared; implement `Eq` for it: `impl Eq for {0} {{ fn eq(self, other: {0}) -> bool {{ ... }} }}`",
-                    self.ck.types[id.0 as usize].name
+                    self.ck.types[id.0 as usize].display_name()
                 )),
                 _ => None,
             };
@@ -89,12 +89,12 @@ impl FnCtx<'_, '_> {
                 Some(if def.is_enum() {
                     format!(
                         "`{0}` has variants with data; only enums without data compare by declaration order. Use `match`, or implement `Ord`: `impl Ord for {0} {{ fn cmp(self, other: {0}) -> int {{ ... }} }}`",
-                        def.name
+                        def.display_name()
                     )
                 } else {
                     format!(
                         "structs do not derive `Ord`: implement it for `{0}` (`impl Ord for {0} {{ fn cmp(self, other: {0}) -> int {{ ... }} }}`), or compare fields, like `a.{1} < b.{1}`",
-                        def.name,
+                        def.display_name(),
                         def.fields().first().map_or("field", |f| f.name.as_str())
                     )
                 })

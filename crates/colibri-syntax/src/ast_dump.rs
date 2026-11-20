@@ -205,6 +205,11 @@ fn dump_field(f: &Field) -> String {
     if let Some(doc) = &f.doc {
         parts.push(format!("(doc {doc:?})"));
     }
+    for attr in &f.attrs {
+        let mut inner = vec![format!("@{}", attr.name.name)];
+        inner.extend(attr.args.iter().map(dump_expr));
+        parts.push(format!("({})", inner.join(" ")));
+    }
     if f.public {
         parts.push("pub".to_string());
     }

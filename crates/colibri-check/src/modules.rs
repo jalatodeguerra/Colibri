@@ -249,6 +249,47 @@ impl<'a> Checker<'a> {
             .join(".")
     }
 
+    /// The modules a host module's interface says it uses (`uses = ["std.json"]` in its
+    /// header): their types are written `json.Value` in it, so each is bound under its last
+    /// name segment, the way `import json` would, but only for types.
+    pub(crate) fn bind_host_uses(&mut self, m: ModId) {
+        if self.mods[m.0 as usize].kind != ModKind::Host {
+            return;
+        }
+        let module = self.mods[m.0 as usize].name.clone();
+        let host: &'a crate::host::HostEnv = self.host;
+        let saved = self.enter_module(m);
+        for used in host.uses_of(&module) {
+            let target = self
+                .mods
+                .iter()
+                .position(|x| x.kind == ModKind::Host && x.name == used);
+            let Some(target) = target else {
+                // `HostEnv::missing_uses` tells the host before it gets here; a checker used
+                // without that check says so on the module's first line.
+                let at = colibri_syntax::Span::new(crate::host::HOST_FILE, 0, 0);
+                self.report(Diagnostic::error(
+                    format!(
+                        "the interface of the module `{module}` names types of the module `{used}`, whose interface was not given"
+                    ),
+                    at,
+                ));
+                continue;
+            };
+            let target = ModId(target as u32);
+            let short = used.rsplit('.').next().unwrap_or(&used).to_string();
+            let alias = ast::Ident {
+                name: short.clone(),
+                span: colibri_syntax::Span::new(crate::host::HOST_FILE, 0, 0),
+            };
+            self.bind_module_alias(&alias, target, &used);
+            for (name, exp) in self.sorted_type_exports(target) {
+                self.insert_type(&format!("{short}.{name}"), exp.target);
+            }
+        }
+        self.enter_module(saved);
+    }
+
     /// Imports, first pass: binds module names and brings in types (and aliases), which are all
     /// declared by now. Values come in [`Checker::bind_imports_values`].
     pub(crate) fn bind_imports_types(&mut self, m: ModId) {
@@ -642,7 +683,7 @@ impl Checker<'_> {
 
     /// `what` (a field or method) of `ty` is not exported from its package.
     pub(crate) fn report_private(&mut self, what: &str, name: &str, ty: TypeId, span: Span) {
-        let tname = self.types[ty.0 as usize].name.clone();
+        let tname = self.types[ty.0 as usize].display_name().into_owned();
         let package = self.type_package(ty);
         self.report(
             Diagnostic::error(

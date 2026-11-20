@@ -1,0 +1,38 @@
+import hex
+
+fn main() {
+    print(hex.encode("Hi!"))
+    print(hex.encode(""))
+    print(hex.encode_bytes([0, 15, 16, 255]))
+    print(hex.decode("486921"))
+    print(hex.decode("486F"))
+    print(hex.decode_bytes("000F10ff"))
+    print(hex.decode_bytes(""))
+    for bad in ["abc", "zz", "0x10"] {
+        match hex.decode_bytes(bad) {
+            ok(_) => print("decoded?")
+            err(e) => print(e.message())
+        }
+    }
+    match hex.decode("ff") {
+        ok(_) => print("decoded?")
+        err(e) => print(e.as[hex.Error]() == some(hex.Error.NotText))
+    }
+    match hex.encode_bytes([-1]) {
+        ok(_) => print("encoded?")
+        err(e) => print(e.message())
+    }
+}
+
+// expect: 486921
+// expect: 
+// expect: ok("000f10ff")
+// expect: ok("Hi!")
+// expect: ok("Ho")
+// expect: ok([0, 15, 16, 255])
+// expect: ok([])
+// expect: hex: the length 3 is odd, two digits make a byte
+// expect: hex: `z` at position 0 is not a hex digit
+// expect: hex: `x` at position 1 is not a hex digit
+// expect: true
+// expect: hex: a byte must be between 0 and 255, but item 0 of the list is -1

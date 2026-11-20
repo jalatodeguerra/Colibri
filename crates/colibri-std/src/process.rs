@@ -24,12 +24,38 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use colibri_runtime::{CancelToken, Cap, Ctx, Error, HostType, TypeBuilder, Vm};
+use colibri_runtime::{CancelToken, Cap, Ctx, Error, HostType, TypeBuilder, TypedError, Vm};
 
 use crate::config::State;
+use crate::errors::error_kind;
 use crate::fs::reason;
 use crate::needs;
 use crate::values::value_struct;
+
+error_kind!(
+    "process",
+    /// Why a program could not be run (`process.Error.NotFound`). A program that runs and
+    /// exits with a non-zero status is an `Output`, except for `process.output`, which turns
+    /// that into `Failed`.
+    Kind {
+        NotFound,
+        PermissionDenied,
+        Failed,
+        Cancelled,
+        /// The working folder (`options.cwd`) is missing or is not a folder.
+        InvalidDirectory,
+        Other,
+    }
+);
+
+/// The variant of `process.Error` an I/O error is.
+fn kind_of(e: &std::io::Error) -> Kind {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => Kind::NotFound,
+        std::io::ErrorKind::PermissionDenied => Kind::PermissionDenied,
+        _ => Kind::Other,
+    }
+}
 
 /// What a finished program left behind. `status` is its exit code; a program ended by a signal
 /// has `-N` for signal N (Unix), and `-1` when the system says nothing more.
@@ -121,7 +147,7 @@ fn command(
 
 /// Looks at the folder the program is to run in before starting it, so the message is the
 /// same on every system (Unix says the program is missing, Windows says "not a directory").
-fn check_folder(program: &str, opts: &Options) -> Result<(), String> {
+fn check_folder(program: &str, opts: &Options) -> Result<(), TypedError> {
     let Some(cwd) = &opts.cwd else {
         return Ok(());
     };
@@ -129,22 +155,23 @@ fn check_folder(program: &str, opts: &Options) -> Result<(), String> {
     if path.is_dir() {
         Ok(())
     } else if path.exists() {
-        Err(format!("cannot run `{program}`: `{cwd}` is not a folder"))
+        Err(Kind::InvalidDirectory
+            .error(format!("cannot run `{program}`: `{cwd}` is not a folder")))
     } else {
-        Err(format!(
+        Err(Kind::InvalidDirectory.error(format!(
             "cannot run `{program}`: the folder `{cwd}` does not exist"
-        ))
+        )))
     }
 }
 
-fn start_error(program: &str, e: &std::io::Error) -> String {
-    format!("cannot run `{program}`: {}", reason(e))
+fn start_error(program: &str, e: &std::io::Error) -> TypedError {
+    kind_of(e).error(format!("cannot run `{program}`: {}", reason(e)))
 }
 
 /// Writes the input on its own thread (a program may write a lot before it reads) and closes
 /// the pipe.
-fn feed(child: &mut OsChild, input: Option<String>) -> Option<JoinHandle<()>> {
-    let (mut stdin, input) = (child.stdin.take()?, input?);
+fn feed(stdin: Option<std::process::ChildStdin>, input: Option<String>) -> Option<JoinHandle<()>> {
+    let (mut stdin, input) = (stdin?, input?);
     Some(std::thread::spawn(move || {
         // A program that stops reading early is not an error.
         let _ = stdin.write_all(input.as_bytes());
@@ -173,24 +200,42 @@ fn lock(child: &Shared) -> std::sync::MutexGuard<'_, OsChild> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Makes `child` shared and has `token` kill it, and reap it, when it is cancelled. This is
-/// the same for `run`, `run_with`, `shell` and `status`: the kill reaches the program we
-/// started and nothing it started in turn (as in Python and Go). It is not a process group,
-/// because Ctrl-C from the terminal must still reach the children. So `shell("sleep 30")`
-/// kills `/bin/sh`, and where `sh` forks (dash does) the `sleep` lives on; a program that
-/// starts helpers has to stop them itself. The threads that read the killed program's output
-/// (`drain`) end when its pipes close, which is when the last process holding them ends, not
-/// when the program is killed.
-fn share(child: OsChild, token: &CancelToken) -> Shared {
-    let child = Arc::new(Mutex::new(child));
-    let victim = Arc::clone(&child);
-    token.on_cancel(move || {
-        let mut child = lock(&victim);
-        // Both fail when it has already ended and been collected, which is fine.
-        let _ = child.kill();
-        let _ = child.wait();
+/// Starts the program as a shared child that `token` kills, and reaps, when it is cancelled.
+/// This is the same for `run`, `run_with`, `shell` and `status`: the kill reaches the program
+/// we started and nothing it started in turn (as in Python and Go). It is not a process
+/// group, because Ctrl-C from the terminal must still reach the children. So
+/// `shell("sleep 30")` kills `/bin/sh`, and where `sh` forks (dash does) the `sleep` lives
+/// on; a program that starts helpers has to stop them itself. The threads that read the
+/// killed program's output (`drain`) end when its pipes close, which is when the last process
+/// holding them ends, not when the program is killed.
+///
+/// The spawn and the registration of the kill hook are one step as far as `cancel` is
+/// concerned ([`CancelToken::start`]): a `Vm` that ends (and so cancels) at any moment either
+/// stops the program from starting or finds the hook, never leaves it running unnoticed.
+fn spawn_shared(
+    cmd: &mut Command,
+    program: &str,
+    token: &CancelToken,
+) -> Result<Shared, TypedError> {
+    let started = token.start(|| {
+        let child = cmd.spawn()?;
+        let child = Arc::new(Mutex::new(child));
+        let victim = Arc::clone(&child);
+        let hook: Box<dyn FnOnce() + Send> = Box::new(move || {
+            let mut child = lock(&victim);
+            // Both fail when it has already ended and been collected, which is fine.
+            let _ = child.kill();
+            let _ = child.wait();
+        });
+        Ok::<_, std::io::Error>((child, hook))
     });
-    child
+    match started {
+        Ok(Some(child)) => Ok(child),
+        Ok(None) => Err(Kind::Cancelled.error(format!(
+            "`{program}` was not started: its caller was cancelled"
+        ))),
+        Err(e) => Err(start_error(program, &e)),
+    }
 }
 
 /// Blocks until the process has ended, without collecting its status (so a kill by the other
@@ -222,12 +267,14 @@ fn block_until_ended(_pid: u32) {}
 
 /// Waits for `child`. If `token` is cancelled the child has been killed (by its hook) and
 /// this gives up.
-fn wait_for(child: &Shared, program: &str, token: &CancelToken) -> Result<ExitStatus, String> {
+fn wait_for(child: &Shared, program: &str, token: &CancelToken) -> Result<ExitStatus, TypedError> {
     let pid = lock(child).id();
-    // Cancelled before `share` registered its hook: the hook ran at once and has collected
+    // Cancelled before the kill hook was registered: the hook ran at once and has collected
     // the child, so its pid may be reused and must not be waited for.
     if token.is_cancelled() {
-        return Err(format!("`{program}` was stopped: its caller was cancelled"));
+        return Err(
+            Kind::Cancelled.error(format!("`{program}` was stopped: its caller was cancelled"))
+        );
     }
     block_until_ended(pid);
     // Where `block_until_ended` does nothing, short naps at first so that a quick program
@@ -235,12 +282,18 @@ fn wait_for(child: &Shared, program: &str, token: &CancelToken) -> Result<ExitSt
     let mut nap = Duration::from_micros(100);
     loop {
         if token.is_cancelled() {
-            return Err(format!("`{program}` was stopped: its caller was cancelled"));
+            return Err(
+                Kind::Cancelled.error(format!("`{program}` was stopped: its caller was cancelled"))
+            );
         }
         match lock(child).try_wait() {
             Ok(Some(status)) => return Ok(status),
             Ok(None) => {}
-            Err(e) => return Err(format!("cannot wait for `{program}`: {}", reason(&e))),
+            Err(e) => {
+                return Err(
+                    Kind::Other.error(format!("cannot wait for `{program}`: {}", reason(&e)))
+                );
+            }
         }
         std::thread::sleep(nap);
         nap = (nap * 2).min(Duration::from_millis(5));
@@ -253,12 +306,16 @@ fn run_to_end(
     program: &str,
     opts: &Options,
     token: &CancelToken,
-) -> Result<Output, String> {
-    let mut child = cmd.spawn().map_err(|e| start_error(program, &e))?;
-    let feeder = feed(&mut child, opts.input.clone());
-    let out = drain(child.stdout.take());
-    let err = drain(child.stderr.take());
-    let child = share(child, token);
+) -> Result<Output, TypedError> {
+    let child = spawn_shared(&mut cmd, program, token)?;
+    // The threads start after the spawn, outside the critical section of `start`.
+    let (stdin, stdout, stderr) = {
+        let mut guard = lock(&child);
+        (guard.stdin.take(), guard.stdout.take(), guard.stderr.take())
+    };
+    let feeder = feed(stdin, opts.input.clone());
+    let out = drain(stdout);
+    let err = drain(stderr);
     let status = wait_for(&child, program, token)?;
     if let Some(feeder) = feeder {
         let _ = feeder.join();
@@ -279,7 +336,7 @@ fn run(
     args: &[String],
     raw: Option<&str>,
     opts: &Options,
-) -> Result<Output, String> {
+) -> Result<Output, TypedError> {
     check_folder(program, opts)?;
     let cmd = command(cx, program, args, raw, opts, true);
     let (program, opts) = (program.to_string(), opts.clone());
@@ -287,13 +344,12 @@ fn run(
 }
 
 /// `run` without capturing: the program shares this one's standard output and error.
-fn run_inheriting(cx: &mut Ctx, program: &str, args: &[String]) -> Result<i64, String> {
+fn run_inheriting(cx: &mut Ctx, program: &str, args: &[String]) -> Result<i64, TypedError> {
     let opts = Options::default();
     let mut cmd = command(cx, program, args, None, &opts, false);
     let program = program.to_string();
     cx.run_async_cancellable(move |token| {
-        let child = cmd.spawn().map_err(|e| start_error(&program, &e))?;
-        let child = share(child, token);
+        let child = spawn_shared(&mut cmd, &program, token)?;
         wait_for(&child, &program, token).map(status_code)
     })
 }
@@ -326,32 +382,32 @@ impl Child {
         output
     }
 
-    fn try_wait(&mut self) -> Result<Option<Output>, String> {
+    fn try_wait(&mut self) -> Result<Option<Output>, TypedError> {
         if let Some(done) = &self.done {
             return Ok(Some(done.clone()));
         }
         match self.child.try_wait() {
             Ok(Some(status)) => Ok(Some(self.finish(status))),
             Ok(None) => Ok(None),
-            Err(e) => Err(format!(
+            Err(e) => Err(Kind::Other.error(format!(
                 "cannot wait for `{}`: {}",
                 self.program,
                 reason(&e)
-            )),
+            ))),
         }
     }
 
-    fn wait(&mut self) -> Result<Output, String> {
+    fn wait(&mut self) -> Result<Output, TypedError> {
         if let Some(done) = &self.done {
             return Ok(done.clone());
         }
         match self.child.wait() {
             Ok(status) => Ok(self.finish(status)),
-            Err(e) => Err(format!(
+            Err(e) => Err(Kind::Other.error(format!(
                 "cannot wait for `{}`: {}",
                 self.program,
                 reason(&e)
-            )),
+            ))),
         }
     }
 }
@@ -416,6 +472,7 @@ fn shell_command(line: &str, windows: bool) -> ShellCommand {
 }
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
+    Kind::declare(vm)?;
     let mut m = vm.std_module("process");
     m.register_type::<Child>()?;
     // An empty `Options`: set the fields you need (`var o = process.options()`).
@@ -456,11 +513,11 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
                     return Ok(out.stdout);
                 }
                 let detail = out.stderr.trim();
-                Err(format!(
+                Err(Kind::Failed.error(format!(
                     "`{program}` failed with status {}{}{detail}",
                     out.status,
                     if detail.is_empty() { "" } else { ": " }
-                ))
+                )))
             },
         ),
     )?;
@@ -506,12 +563,17 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     Ok(())
 }
 
-fn spawn(cx: &mut Ctx, program: String, args: &[String], opts: &Options) -> Result<Child, String> {
+fn spawn(
+    cx: &mut Ctx,
+    program: String,
+    args: &[String],
+    opts: &Options,
+) -> Result<Child, TypedError> {
     check_folder(&program, opts)?;
     let mut child = command(cx, &program, args, None, opts, true)
         .spawn()
         .map_err(|e| start_error(&program, &e))?;
-    let feeder = feed(&mut child, opts.input.clone());
+    let feeder = feed(child.stdin.take(), opts.input.clone());
     let out = Some(drain(child.stdout.take()));
     let err = Some(drain(child.stderr.take()));
     Ok(Child {
@@ -555,12 +617,46 @@ mod tests {
             .arg("30")
             .spawn()
             .expect("sleep starts");
+        let child: Shared = Arc::new(Mutex::new(child));
         let token = CancelToken::cancelled();
-        // The hook runs inside `share`: the child is killed and collected.
-        let child = share(child, &token);
+        // The hook runs at once on a cancelled token: the child is killed and collected, so
+        // its pid may be reused and must not be waited for.
+        let victim = Arc::clone(&child);
+        token.on_cancel(move || {
+            let mut child = lock(&victim);
+            let _ = child.kill();
+            let _ = child.wait();
+        });
         let started = std::time::Instant::now();
         let result = wait_for(&child, "sleep", &token);
-        assert!(result.is_err_and(|e| e.contains("was stopped")));
+        assert!(result.is_err_and(|e| e.message().contains("was stopped")));
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_token_cancelled_before_the_spawn_starts_no_program() {
+        let marker = std::env::temp_dir().join(format!("colibri-never-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        // A program that would create the marker: `touch` on Unix, `cmd` on Windows.
+        #[cfg(unix)]
+        let (mut cmd, program) = {
+            let mut cmd = Command::new("touch");
+            cmd.arg(&marker);
+            (cmd, "touch")
+        };
+        #[cfg(windows)]
+        let (mut cmd, program) = {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/C", "type nul >"]).arg(&marker);
+            (cmd, "cmd")
+        };
+        let token = CancelToken::cancelled();
+        let result = spawn_shared(&mut cmd, program, &token);
+        assert!(result.is_err_and(|e| e.message().contains("was not started")));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !marker.exists(),
+            "the program ran although it was cancelled"
+        );
     }
 }

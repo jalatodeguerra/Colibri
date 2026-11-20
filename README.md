@@ -72,8 +72,9 @@ error: reading notes.txt: cannot read `notes.txt`: no such file or directory
   with default methods, enums with data and exhaustive `match`.
 - **Coroutines without colored functions.** `go f()` starts a coroutine and `wait(secs)`,
   `join()`, groups and signals suspend it. There is no `async`/`await`, so any function can wait.
-- **Batteries for scripting.** 15 standard library modules, including files and paths, JSON,
-  regular expressions, subprocesses, command-line arguments, dates and an HTTP client.
+- **Batteries for scripting.** 20 standard library modules, including files and paths, JSON,
+  TOML and CSV, regular expressions, subprocesses, command-line arguments, dates and an HTTP
+  client.
 - **One binary for the whole workflow:** run, check, test, format, a REPL, a language server,
   hot reload and a leak detector.
 - **Embeddable in Rust.** Load scripts, call their functions with typed arguments, and expose
@@ -259,7 +260,15 @@ name = "hello"
 
 [dependencies]
 utils = { path = "../utils" }
+greet = { git = "https://example.com/me/greet.git", tag = "v1.2.0" }
 ```
+
+A git dependency names one of `rev` (a commit hash of 7 to 40 hexadecimal digits: the full
+hash or the start of one that is long enough to be one commit), `tag` or `branch`, or none of
+them for the repository's default branch. `colibri run`, `check` and `test` fetch it
+into a cache folder and write the commit they used to `colibri.lock`, which belongs in version
+control; later runs use that commit until `colibri update` moves it. The editor never uses the
+network.
 
 ### The REPL
 
@@ -286,6 +295,7 @@ colibri> sq(7)
 | `colibri test [file or folder]` | run the `test "name" { ... }` blocks (`--filter`, `--nocapture`, `--leaks`) |
 | `colibri fmt [paths]` | format files in place (`--check` only reports) |
 | `colibri new <name>` | create a package |
+| `colibri update [names...]` | resolve git dependencies again (branches, tags) and rewrite `colibri.lock`: all of them, or only the ones named (transitive ones too); `--path DIR` is the package folder, `--locked` and `--offline` as for `run` |
 | `colibri repl` | interactive session |
 | `colibri lsp` | language server on stdin and stdout |
 | `colibri build` | **(planned)** one executable with the VM and the program's bytecode |
@@ -294,14 +304,18 @@ colibri> sq(7)
 Arguments after the file go to the program (`os.args()`, or the `args` module for parsing);
 put them after `--` if they could be mistaken for the tool's own flags, such as `--watch`.
 
+`run`, `check`, `test` and `update` fetch git dependencies into the cache and write `colibri.lock`;
+`--locked` fails instead of changing the lock and `--offline` never uses the network.
+
 ## Tooling
 
 ### Editor support
 
 `colibri lsp` is a language server with diagnostics as you type (the whole package is checked,
-including unsaved buffers), hover with types and signatures, go to definition, and formatting.
-Completion and rename are **(planned)**. A VS Code extension with syntax highlighting and the
-language client is in [`editors/vscode`](editors/vscode/README.md).
+including unsaved buffers), hover with types and signatures, completion, go to definition,
+find references, rename, the outline of a file, and formatting. A rename is refused, with the
+reason, where the editor cannot be sure to change every use. A VS Code extension with syntax
+highlighting and the language client is in [`editors/vscode`](editors/vscode/README.md).
 
 ### Hot reload
 
@@ -410,7 +424,11 @@ runs its logic from Colibri scripts. The API reference is in the crate's documen
 | `process` | run subprocesses, with pipes |
 | `args` | command-line argument parsing |
 | `str` | string helpers and parsing |
-| `json` | `json.encode` and typed `json.decode[T]` |
+| `json` | `json.encode`, typed `json.decode[T]`, and `json.Value` for a document of unknown shape |
+| `toml` | `toml.parse` into a `json.Value` and typed `toml.decode[T]` |
+| `csv` | CSV text to records or rows with a header, and back |
+| `base64`, `hex` | encoding and decoding of text and of bytes |
+| `hash` | SHA-256 |
 | `regex` | regular expressions |
 | `http` | a blocking HTTP client that does not block other coroutines |
 | `time`, `datetime` | clocks and sleeping; dates, times and formatting |
@@ -433,7 +451,7 @@ they have.
   `Result`/`Option` error handling, modules and packages, `weak` references.
 - A tree-walking interpreter over a typed intermediate representation, with a deterministic
   drop order.
-- The embedding API, the C FFI, coroutines, the 15 std modules above.
+- The embedding API, the C FFI, coroutines, the 20 std modules above.
 - Tooling: `run`, `check`, `test`, `fmt`, `new`, `repl`, `lsp`, hot reload and the leak detector.
 
 **Next** (not started):
@@ -449,7 +467,6 @@ they have.
 **Later:**
 
 - Thread tasks with channels, a debugger (DAP) and a profiler.
-- LSP completion and rename.
 - Using Rust crates from Colibri through generated bindings.
 
 **Not planned:** a JIT, exceptions, inheritance, macros, `async`/`await` and a package registry

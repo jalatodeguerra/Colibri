@@ -335,7 +335,11 @@ impl Writer<'_> {
                     self.out.push_str(": ");
                     cur = cause;
                 }
-                crate::results::Link::Root(value, impl_id) => {
+                crate::results::Link::Root(_, _, Some(message)) => {
+                    self.out.push_str(&message);
+                    return;
+                }
+                crate::results::Link::Root(value, impl_id, None) => {
                     match self.ov.error_message(&value, impl_id) {
                         Some(Ok(text)) => self.out.push_str(&text),
                         Some(Err(stop)) => self.stop = Some(stop),
@@ -408,6 +412,8 @@ mod tests {
             span: SP,
             weak: false,
             default: None,
+            rename: None,
+            skip: false,
         }
     }
 
@@ -425,6 +431,8 @@ mod tests {
                 span: SP,
                 params: Vec::new(),
                 sendable: true,
+                module: None,
+                open: false,
                 kind: TypeDefKind::Struct {
                     fields: vec![field("name"), field("hp")],
                 },
@@ -434,6 +442,8 @@ mod tests {
                 span: SP,
                 params: Vec::new(),
                 sendable: true,
+                module: None,
+                open: false,
                 kind: TypeDefKind::Enum {
                     variants: vec![
                         variant("Circle", vec![field("radius")], true),

@@ -13,6 +13,8 @@
 //! kind are *named*: they cover the whole call, but only answer when the word under the
 //! cursor is the name.
 
+use std::collections::HashMap;
+
 use colibri_syntax::{FileId, Span};
 
 use crate::checker::Checker;
@@ -21,8 +23,9 @@ use crate::hir::{
     TypeDefKind, ValueProj,
 };
 use crate::host::HOST_FILE;
+pub use crate::members::{Member, MemberKind};
 use crate::prelude;
-use crate::types::{FIRST_USER_TYPE, Ty, TypeId};
+use crate::types::{FIRST_USER_TYPE, ParamId, Ty, TypeId};
 
 /// What the checker knows about one place in the source.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,12 +45,58 @@ pub struct Fact {
 #[derive(Clone, Debug, Default)]
 pub struct Insight {
     facts: Vec<Fact>,
+    /// The fields and methods of each distinct type that an expression of the program has.
+    /// Types are told apart by identity (the type's id and arguments, a type parameter's own
+    /// id), not by how they are written: two structs `P` of different modules, or the `T` of
+    /// two generic declarations, have separate lists.
+    members: Vec<Vec<Member>>,
+    pub(crate) refs: Vec<(Span, Span)>,
+    /// The type of every expression, by its span, as written, and its entry in `members`.
+    types: HashMap<(FileId, u32, u32), (String, usize)>,
+    /// The type of every local and global at the span of its name, likewise.
+    bindings: HashMap<(FileId, u32, u32), (String, usize)>,
 }
 
 impl Insight {
     /// Every fact, in no particular order.
     pub fn facts(&self) -> &[Fact] {
         &self.facts
+    }
+
+    /// The names the checker resolved by the type of what is in front of them, as pairs of
+    /// the name's span and the span of what it names: fields (`p.x`, in places too), and
+    /// variants written `.Circle` or matched by a bare name. Only names that resolved are here.
+    pub fn references(&self) -> &[(Span, Span)] {
+        &self.refs
+    }
+
+    /// The type of the expression that spans exactly `span`, as written.
+    pub fn type_at(&self, span: Span) -> Option<&str> {
+        self.types
+            .get(&(span.file, span.start, span.end))
+            .map(|(text, _)| text.as_str())
+    }
+
+    /// The fields and methods of the value of the expression that spans exactly `span`,
+    /// sorted by name. Empty where the checker saw no such expression.
+    pub fn members_at(&self, span: Span) -> &[Member] {
+        self.members_in(self.types.get(&(span.file, span.start, span.end)))
+    }
+
+    /// The type, as written, of the local or global whose name is at `name`.
+    pub fn binding_type(&self, name: Span) -> Option<&str> {
+        self.bindings
+            .get(&(name.file, name.start, name.end))
+            .map(|(text, _)| text.as_str())
+    }
+
+    /// The fields and methods of the type of the local or global whose name is at `name`.
+    pub fn binding_members(&self, name: Span) -> &[Member] {
+        self.members_in(self.bindings.get(&(name.file, name.start, name.end)))
+    }
+
+    fn members_in(&self, entry: Option<&(String, usize)>) -> &[Member] {
+        entry.map_or(&[], |(_, i)| self.members[*i].as_slice())
     }
 
     /// The fact for the byte `offset` of `file` (a span covers `start..end`), given the identifier (possibly empty) the
@@ -66,6 +115,44 @@ impl Insight {
             })
             .min_by_key(|f| (f.span.len(), f.name.is_none()))
     }
+}
+
+/// What kind of thing a prelude name is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreludeKind {
+    Function,
+    Type,
+    Interface,
+}
+
+/// The names every module can use without declaring or importing them, for editors: the
+/// built-in functions, the built-in types and the prelude's interfaces. (Functions the host
+/// provides without a module are in [`crate::host::DEFAULT_MODULE`].)
+pub fn prelude_names() -> Vec<(String, PreludeKind)> {
+    use crate::checker::BUILTIN_FNS;
+    use colibri_syntax::ast::{ItemKind, TopLevel};
+    let mut out: Vec<(String, PreludeKind)> = BUILTIN_FNS
+        .iter()
+        .map(|n| (n.to_string(), PreludeKind::Function))
+        .collect();
+    let primitives = [
+        "int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "float", "f32", "f64", "bool",
+        "char", "str", "List", "Map", "Set", "Option", "Result", "ptr",
+    ];
+    out.extend(
+        primitives
+            .iter()
+            .map(|n| (n.to_string(), PreludeKind::Type)),
+    );
+    for top in &prelude::prelude().items {
+        let TopLevel::Item(item) = top else { continue };
+        match &item.kind {
+            ItemKind::Interface(i) => out.push((i.name.name.clone(), PreludeKind::Interface)),
+            ItemKind::Struct(s) => out.push((s.name.name.clone(), PreludeKind::Type)),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// What a recorded span stands for; turned into a [`Fact`] once every type is known.
@@ -224,31 +311,50 @@ fn is_source(span: Span) -> bool {
 }
 
 impl Checker<'_> {
-    fn show_ty(&self, ty: &Ty) -> String {
+    pub(crate) fn show_ty(&self, ty: &Ty) -> String {
         ty.render(&self.types)
     }
 
     /// `fn name[T](a: int, var self) -> int` for a function of the program.
     fn signature(&self, f: FnId) -> String {
+        self.signature_of(f, &self.fns[f.0 as usize].name, false, &[])
+    }
+
+    /// Like [`Checker::signature`] under another `name`, and without the receiver when
+    /// `skip_receiver` is set (a method written after a value: `v.name(..)`). The type
+    /// parameters in `bound` are replaced by their types and left out of the list.
+    pub(crate) fn signature_of(
+        &self,
+        f: FnId,
+        name: &str,
+        skip_receiver: bool,
+        bound: &[(ParamId, Ty)],
+    ) -> String {
         let info = &self.fns[f.0 as usize];
-        let mut out = format!("fn {}", info.name);
-        if !info.generics.is_empty() {
-            let names: Vec<&str> = info.generics.iter().map(|g| g.name.as_str()).collect();
-            out.push_str(&format!("[{}]", names.join(", ")));
+        let mut out = format!("fn {name}");
+        let open: Vec<&str> = info
+            .generics
+            .iter()
+            .filter(|g| !bound.iter().any(|(p, _)| *p == g.id))
+            .map(|g| g.name.as_str())
+            .collect();
+        if !open.is_empty() {
+            out.push_str(&format!("[{}]", open.join(", ")));
         }
         let params: Vec<String> = info
             .params
             .iter()
             .enumerate()
+            .filter(|(i, _)| !(skip_receiver && *i == 0 && info.receiver.is_some()))
             .map(|(i, p)| match (i, info.receiver) {
                 (0, Some(true)) => "var self".to_string(),
                 (0, Some(false)) => "self".to_string(),
-                _ => format!("{}: {}", p.name, self.show_ty(&p.ty)),
+                _ => format!("{}: {}", p.name, self.show_ty(&p.ty.subst(bound))),
             })
             .collect();
         out.push_str(&format!("({})", params.join(", ")));
         if info.ret != Ty::Unit {
-            out.push_str(&format!(" -> {}", self.show_ty(&info.ret)));
+            out.push_str(&format!(" -> {}", self.show_ty(&info.ret.subst(bound))));
         }
         out
     }
@@ -299,6 +405,8 @@ impl Checker<'_> {
                 span: Span::new(FileId(0), 0, 0),
                 weak: false,
                 default: None,
+                rename: None,
+                skip: false,
             }),
             _ => None,
         }
@@ -312,14 +420,48 @@ impl Checker<'_> {
             TypeDefKind::Enum { .. } => "enum",
             TypeDefKind::Interface { .. } => "interface",
         };
-        format!("{kw} {}", def.name)
+        format!("{kw} {}", def.display_name())
     }
 
     /// Turns what the zonker recorded into facts, and adds the declarations of items.
     pub(crate) fn build_insight(&self, raw: Vec<RawFact>) -> Insight {
         let mut facts = Vec::new();
+        let mut members: Vec<Vec<Member>> = Vec::new();
+        // The list of each type by identity: `Debug` of a `Ty` names type ids, arguments and
+        // the ids of type parameters, where the written text names none of them.
+        let mut by_identity: HashMap<String, usize> = HashMap::new();
+        let mut types: HashMap<(FileId, u32, u32), (String, usize)> = HashMap::new();
+        let mut bindings: HashMap<(FileId, u32, u32), (String, usize)> = HashMap::new();
         for r in raw {
             let ty = self.show_ty(&r.ty);
+            let member_list = matches!(
+                r.target,
+                Target::Expr | Target::Local { .. } | Target::Global { .. }
+            )
+            .then(|| {
+                *by_identity.entry(format!("{:?}", r.ty)).or_insert_with(|| {
+                    members.push(self.members_of(&r.ty));
+                    members.len() - 1
+                })
+            });
+            if let Some(list) = member_list {
+                let key = |s: Span| (s.file, s.start, s.end);
+                match &r.target {
+                    Target::Expr if is_source(r.span) => {
+                        types.insert(key(r.span), (ty.clone(), list));
+                    }
+                    Target::Local { def, .. } if is_source(*def) => {
+                        bindings.insert(key(*def), (ty.clone(), list));
+                    }
+                    Target::Global { id, .. } => {
+                        let name_span = self.globals[id.0 as usize].name_span;
+                        if is_source(name_span) {
+                            bindings.insert(key(name_span), (ty.clone(), list));
+                        }
+                    }
+                    _ => {}
+                }
+            }
             let fact = match r.target {
                 Target::Expr => Some(Fact {
                     span: r.span,
@@ -375,7 +517,7 @@ impl Checker<'_> {
                     def.variants().get(v as usize).map(|variant| Fact {
                         span: r.span,
                         name: Some(variant.name.clone()),
-                        text: format!("{}.{}: {ty}", def.name, variant.name),
+                        text: format!("{}.{}: {ty}", def.display_name(), variant.name),
                         def: Some(variant.span),
                     })
                 }
@@ -395,7 +537,13 @@ impl Checker<'_> {
         for f in &mut facts {
             f.def = f.def.filter(|d| is_source(*d));
         }
-        Insight { facts }
+        Insight {
+            facts,
+            members,
+            types,
+            bindings,
+            refs: Vec::new(),
+        }
     }
 
     fn call_fact(&self, span: Span, callee: &Callee) -> Option<Fact> {
@@ -467,7 +615,7 @@ impl Checker<'_> {
                 facts.push(Fact {
                     span: v.span,
                     name: None,
-                    text: format!("{}.{}", def.name, v.name),
+                    text: format!("{}.{}", def.display_name(), v.name),
                     def: Some(v.span),
                 });
             }
@@ -531,5 +679,154 @@ mod tests {
         let src = "fn main() {\n    let a = 1\n    let b: str = a\n}\n";
         let insight = insight_of(src);
         assert_eq!(text_at(&insight, src, "a\n}", "a").unwrap(), "a: int");
+    }
+
+    /// The members of the first expression whose type is written `ty`.
+    fn members_written<'a>(insight: &'a Insight, ty: &str) -> &'a [Member] {
+        let at = insight
+            .types
+            .iter()
+            .filter(|(_, (text, _))| text == ty)
+            .map(|(k, _)| *k)
+            .min();
+        at.map_or(&[], |(file, start, end)| {
+            insight.members_at(Span::new(file, start, end))
+        })
+    }
+
+    fn member_details(insight: &Insight, ty: &str) -> Vec<String> {
+        members_written(insight, ty)
+            .iter()
+            .map(|m| m.detail.clone())
+            .collect()
+    }
+
+    #[test]
+    fn members_of_types_the_program_uses() {
+        let src = "struct P { x: float, pub y: int }\n\
+            impl P {\n    fn scaled(self, k: float) -> P => P { x: self.x * k, y: self.y }\n    fn origin() -> P => P { x: 0.0, y: 0 }\n}\n\
+            interface Area { fn area(self) -> float }\n\
+            impl Area for P { fn area(self) -> float => self.x }\n\
+            fn main() {\n    let p = P { x: 1.0, y: 2 }\n    let xs = [1, 2]\n    let s = \"a\"\n    let o = some(1)\n    print(\"{p.x} {xs.len()} {s.len()} {o.is_some()}\")\n}\n";
+        let insight = insight_of(src);
+        let p = member_details(&insight, "P");
+        assert_eq!(
+            p,
+            [
+                "fn area() -> float",
+                "fn clone() -> P",
+                "fn eq(other: P) -> bool",
+                "fn scaled(k: float) -> P",
+                "x: float",
+                "y: int"
+            ],
+            "{p:?}"
+        );
+        let names: Vec<&str> = members_written(&insight, "P")
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(names, ["area", "clone", "eq", "scaled", "x", "y"]);
+        let xs = member_details(&insight, "List[int]");
+        assert!(
+            xs.contains(&"fn push(item: int)".to_string())
+                || xs.iter().any(|d| d.starts_with("fn push(")),
+            "{xs:?}"
+        );
+        assert!(
+            xs.iter().any(|d| d.starts_with("fn map(f: fn(int) -> U)")),
+            "{xs:?}"
+        );
+        let s = member_details(&insight, "str");
+        assert!(s.contains(&"fn len() -> int".to_string()), "{s:?}");
+        assert!(
+            s.contains(&"fn contains(sub: str) -> bool".to_string()),
+            "{s:?}"
+        );
+        let o = member_details(&insight, "int?");
+        assert!(o.contains(&"fn is_some() -> bool".to_string()), "{o:?}");
+        // A type no expression has is unknown.
+        assert!(members_written(&insight, "Q").is_empty());
+    }
+
+    #[test]
+    fn members_are_told_apart_by_type_identity_not_by_text() {
+        // The `T` of the impl has no bounds; the `T` of `one` is a `Shape`. Both print as `T`.
+        let src = "interface Shape { fn area(self) -> float }\n\
+            struct Box[T] { v: T }\n\
+            impl[T] Box[T] {\n    fn get(self) -> T => self.v\n}\n\
+            fn one[T: Shape](t: T) -> float {\n    return t.area()\n}\n";
+        let insight = insight_of(src);
+        let use_of_t = src.find("t.area").unwrap() as u32;
+        let span = Span::new(FileId(0), use_of_t, use_of_t + 1);
+        assert_eq!(insight.type_at(span), Some("T"));
+        let names: Vec<&str> = insight
+            .members_at(span)
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(names, ["area", "clone"]);
+        // The unbounded `T` of the impl (`self.v`) keeps its own list.
+        let v = src.find("self.v").unwrap() as u32;
+        let span = Span::new(FileId(0), v, v + 6);
+        assert_eq!(insight.type_at(span), Some("T"));
+        let names: Vec<&str> = insight
+            .members_at(span)
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(names, ["clone"]);
+    }
+
+    #[test]
+    fn generic_methods_show_the_types_of_the_receiver() {
+        let src = "struct Sq { s: int }\n\
+            struct Box[T] { v: T }\n\
+            impl[T] Box[T] {\n    fn get(self) -> T => self.v\n    fn pair[U](self, u: U) -> (T, U) => (self.v, u)\n}\n\
+            fn main() {\n    let b = Box { v: Sq { s: 1 } }\n    print(\"{b.get().s}\")\n}\n";
+        let insight = insight_of(src);
+        let details = member_details(&insight, "Box[Sq]");
+        assert!(
+            details.contains(&"fn get() -> Sq".to_string()),
+            "{details:?}"
+        );
+        assert!(
+            details.contains(&"fn pair[U](u: U) -> (Sq, U)".to_string()),
+            "{details:?}"
+        );
+    }
+
+    #[test]
+    fn references_name_fields_variants_and_expression_types() {
+        let src = "struct P { x: int, y: int }\n\
+            enum E { A(int), B }\n\
+            fn f(e: E) -> int {\n    match e {\n        .A(n) => return n\n        B => return 0\n    }\n}\n\
+            fn main() {\n    var p = P { x: 1, y: 2 }\n    p.x = p.y\n    let e: E = .A(p.x)\n    print(\"{f(e)}\")\n}\n";
+        let insight = insight_of(src);
+        let at = |needle: &str, add: usize| (src.find(needle).unwrap() + add) as u32;
+        let target = |use_at: u32| {
+            insight
+                .references()
+                .iter()
+                .find(|(u, _)| u.start == use_at)
+                .map(|(_, d)| (d.start, d.end))
+        };
+        let in_decl = |d: (u32, u32), name_at: u32| d.0 <= name_at && name_at < d.1;
+        // The write `p.x = ..`, the read `p.y`, and the read in `.A(p.x)`.
+        let field_x = at("x: int", 0);
+        assert!(in_decl(target(at("x = p.y", 0)).unwrap(), field_x));
+        assert!(in_decl(
+            target(at("y\n    let e", 0)).unwrap(),
+            at("y: int", 0)
+        ));
+        assert!(in_decl(target(at("x)", 0)).unwrap(), field_x));
+        // A `.A(n)` pattern, a bare `B` pattern and a `.A(..)` expression.
+        let a = at("A(int)", 0);
+        assert!(in_decl(target(at("A(n)", 0)).unwrap(), a));
+        assert!(in_decl(target(at("B =>", 0)).unwrap(), at("B }", 0)));
+        assert!(in_decl(target(at("A(p.x)", 0)).unwrap(), a));
+        // Types by span: the whole `p.y`.
+        let span = colibri_syntax::Span::new(FileId(0), at("p.y\n", 0), at("p.y\n", 3));
+        assert_eq!(insight.type_at(span), Some("int"));
     }
 }

@@ -1,0 +1,129 @@
+import json
+
+struct Event {
+    kind: str
+    data: json.Value
+    extra: json.Value?
+}
+
+fn second_tag(v: json.Value) -> str? {
+    // `?` walks down: a missing step ends the function with `none`.
+    return v.get("tags")?.at(1)?.as_str()
+}
+
+fn third_tag(v: json.Value) -> str? {
+    return v.get("tags")?.at(2)?.as_str()
+}
+
+fn nested(v: json.Value) -> int? {
+    return v.get("name")?.get("x")?.as_int()
+}
+
+fn y0(e: Event) -> int? {
+    return e.data.get("y")?.at(0)?.as_int()
+}
+
+fn main() {
+    let v = json.parse(r"""{"name": "Ann", "age": 41, "tags": ["a", "b"], "ok": true, "none": null, "pi": 3.5, "big": 9007199254740993}""").expect("parses")
+
+    // Walking down gives options, so a missing step is `none`, not a panic.
+    print(v.kind())
+    print(v.get("name").expect("name").kind())
+    print(v.get("name").expect("name").as_str())
+    print(v.get("age").expect("age").as_int())
+    print(v.get("age").expect("age").as_float())
+    print(v.get("pi").expect("pi").as_float())
+    print(v.get("pi").expect("pi").as_int())
+    print(v.get("ok").expect("ok").as_bool())
+    print(second_tag(v))
+    print(third_tag(v))
+    print(nested(v))
+    print(v.get("missing").is_none())
+    print(v.get("none").expect("none").is_null())
+    print(v.keys())
+    print(v.get("tags").expect("tags").len())
+
+    // An integer that a float cannot hold survives exactly.
+    print(v.get("big").expect("big").as_int())
+    print(json.encode(v.get("big").expect("big")))
+    let huge = json.parse("[123456789012345678901234567890, -9223372036854775809]").expect("parses")
+    print(json.encode(huge))
+    print(huge.at(0).expect("0").kind())
+    print(huge.at(0).expect("0").as_int())
+
+    // Containers come out as ordinary lists and maps (maps in the order of the text).
+    for tag in v.get("tags").expect("tags").as_list().expect("list") {
+        print(tag.as_str())
+    }
+    let m = v.as_map().expect("map")
+    print(m.len())
+    for (k, _) in m {
+        print(k)
+    }
+
+    // Encoding gives the same text back, compact or indented.
+    print(json.encode(v))
+    print(json.pretty(json.parse(r"""[1, {"a": []}, {}]""").expect("parses")))
+
+    // Building one.
+    let built = json.Value.map({
+        "n": json.Value.int(1),
+        "xs": json.Value.list([json.Value.str("a"), json.Value.null(), json.Value.float(2.5), json.Value.bool(false)]),
+    })
+    print(json.encode(built))
+
+    // A `json.Value` field keeps the raw value, whatever it is.
+    let e = json.decode[Event](r"""{"kind": "move", "data": {"x": 1, "y": [2, 3]}, "extra": 7}""").expect("decodes")
+    print(e.kind)
+    print(y0(e))
+    print(e.extra.expect("extra").as_int())
+    print(json.encode(e))
+    let e2 = json.decode[Event](r"""{"kind": "k", "data": null}""").expect("decodes")
+    print(e2.data.is_null())
+    print(json.encode(e2))
+
+    // `json.Value` is a type like any other.
+    let whole = json.decode[json.Value](r"""[1, 2]""").expect("decodes")
+    print(whole.len())
+}
+
+// expect: map
+// expect: string
+// expect: some("Ann")
+// expect: some(41)
+// expect: some(41.0)
+// expect: some(3.5)
+// expect: none
+// expect: some(true)
+// expect: some("b")
+// expect: none
+// expect: none
+// expect: true
+// expect: true
+// expect: ["name", "age", "tags", "ok", "none", "pi", "big"]
+// expect: 2
+// expect: some(9007199254740993)
+// expect: ok("9007199254740993")
+// expect: ok("[123456789012345678901234567890,-9223372036854775809]")
+// expect: int
+// expect: none
+// expect: some("a")
+// expect: some("b")
+// expect: 7
+// expect: name
+// expect: age
+// expect: tags
+// expect: ok
+// expect: none
+// expect: pi
+// expect: big
+// expect: ok("{\"name\":\"Ann\",\"age\":41,\"tags\":[\"a\",\"b\"],\"ok\":true,\"none\":null,\"pi\":3.5,\"big\":9007199254740993}")
+// expect: ok("[\n  1,\n  {\n    \"a\": []\n  },\n  {}\n]")
+// expect: ok("{\"n\":1,\"xs\":[\"a\",null,2.5,false]}")
+// expect: move
+// expect: some(2)
+// expect: some(7)
+// expect: ok("{\"kind\":\"move\",\"data\":{\"x\":1,\"y\":[2,3]},\"extra\":7}")
+// expect: true
+// expect: ok("{\"kind\":\"k\",\"data\":null,\"extra\":null}")
+// expect: 2

@@ -68,6 +68,10 @@ pub struct Program {
     /// How many types after the prelude's come from the host interface: the user's own types
     /// start at `FIRST_USER_TYPE + host_types`.
     pub host_types: u32,
+    /// The module each of those host types was declared in (`host` for the default module,
+    /// `std.fs` for a module of the standard library), parallel to the host types: two
+    /// modules may each declare an `Error`.
+    pub host_type_modules: Vec<String>,
     /// Every `test "name" { .. }` block of the program's own modules (not of the host or the
     /// standard library), in source order: the entry module first, then the other modules in
     /// load order (ARCHITECTURE §15). Their bodies are ordinary entries of [`Program::fns`].
@@ -218,6 +222,15 @@ pub struct TypeDef {
     /// Whether values of the type may move to another thread (`task.run`, DESIGN §14.1). Only
     /// the host's classes say no for now: the flag is recorded and nothing reads it yet.
     pub sendable: bool,
+    /// The named host module (`std.fs`, `game`) that declared this type; `None` for a type of
+    /// the program's own modules, the prelude or the default `host` module. A type of a named
+    /// module is that module's own: two modules may each declare a `Child` or an `Error`, and
+    /// it is shown as `module.Name`, the name a script writes (`process.Child`, `fs.Error`).
+    pub module: Option<String>,
+    /// An enum a host module declared as its own with `register_module_enum`
+    /// (`@module enum Error`): it is *open*, the module may add variants, so a `match` outside
+    /// it needs a catch-all arm (DESIGN §10.2).
+    pub open: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -267,6 +280,17 @@ pub struct FieldDef {
     /// computes it. Literals inline the default expression; this is for code that builds a
     /// struct without a literal (`json.decode`), where an absent field takes its default.
     pub default: Option<FnId>,
+    /// `@rename("x")`: the key serializers (`json`) use instead of `name`.
+    pub rename: Option<String>,
+    /// `@skip`: serializers neither write the field nor read it (it takes its default).
+    pub skip: bool,
+}
+
+impl FieldDef {
+    /// The key a serializer uses for the field: the `@rename` or the field's name.
+    pub fn key(&self) -> &str {
+        self.rename.as_deref().unwrap_or(&self.name)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -280,6 +304,21 @@ pub struct VariantDef {
 }
 
 impl TypeDef {
+    /// The name as shown to the user: `fs.Error` for the `Error` of the module `std.fs` and
+    /// `process.Child` for its `Child` (the module's last path segment, as a script writes it),
+    /// the plain name for any other type.
+    pub fn display_name(&self) -> std::borrow::Cow<'_, str> {
+        match &self.module {
+            Some(m) => format!("{}.{}", m.rsplit('.').next().unwrap_or(m), self.name).into(),
+            None => std::borrow::Cow::Borrowed(&self.name),
+        }
+    }
+
+    /// Whether this is an enum a host module declared as its own, which can grow.
+    pub fn is_open_enum(&self) -> bool {
+        self.open && matches!(self.kind, TypeDefKind::Enum { .. })
+    }
+
     /// The variants of an enum (empty for a struct).
     pub fn variants(&self) -> &[VariantDef] {
         match &self.kind {
@@ -642,6 +681,11 @@ pub enum ErrorConv {
     /// The type is a parameter bounded by `IntoError`: the implementation is found from the
     /// value at runtime.
     Bound,
+    /// A variant of an enum a host module declared as its own (`fs.Error.NotFound`, see
+    /// [`TypeDef::is_open_enum`]): it converts without an implementation, keeping the value,
+    /// and its message is the `Show` of the value, the variant's name. A program cannot write
+    /// `impl IntoError for fs.Error`, so the standard library may give it one later.
+    OpenEnum,
 }
 
 /// A `for` loop. The binding is fresh per iteration: its locals are listed in `body.locals`,

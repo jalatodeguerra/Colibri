@@ -1,0 +1,49 @@
+import csv
+
+fn show(r: Result[List[List[str]]]) {
+    match r {
+        ok(v) => print(v)
+        err(e) => print(e.message())
+    }
+}
+
+fn main() {
+    show(csv.parse("a,b\n1,\"x"))
+    show(csv.parse("a,b\"c\n"))
+    show(csv.parse("\"a\"b\n"))
+    show(csv.parse_with("a,b", ""))
+    show(csv.parse_with("a,b", ";;"))
+    show(csv.parse_with("a,b", "\""))
+
+    match csv.parse_rows("a,b\n1,2,3") {
+        ok(_) => print("parsed?")
+        err(e) => {
+            print(e.as[csv.Error]() == some(csv.Error.Shape))
+            print(e.message())
+        }
+    }
+    match csv.parse_rows("a,a\n1,2") {
+        ok(_) => print("parsed?")
+        err(e) => print(e.message())
+    }
+    match csv.parse("\"") {
+        ok(_) => print("parsed?")
+        err(e) => print(e.as[csv.Error]() == some(csv.Error.Syntax))
+    }
+    match csv.parse_with("a", "ab") {
+        ok(_) => print("parsed?")
+        err(e) => print(e.as[csv.Error]() == some(csv.Error.Separator))
+    }
+}
+
+// expect: csv: invalid syntax at line 2, column 3: this quote is never closed
+// expect: csv: invalid syntax at line 1, column 4: a quote may only start a field (quote the whole field to put a quote in it)
+// expect: csv: invalid syntax at line 1, column 4: after the closing quote only a separator or the end of the line may follow
+// expect: csv: the separator must be one character that is not a quote or a line break, found ""
+// expect: csv: the separator must be one character that is not a quote or a line break, found ";;"
+// expect: csv: the separator must be one character that is not a quote or a line break, found "\""
+// expect: true
+// expect: csv: record 2 has 3 fields, but the header has 2
+// expect: csv: the column `a` appears twice in the header
+// expect: true
+// expect: true

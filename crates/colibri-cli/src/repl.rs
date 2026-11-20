@@ -213,6 +213,10 @@ impl Session {
             eprintln!("usage: :load <file>");
             return;
         }
+        if let Some(message) = colibri_runtime::not_a_script(Path::new(path)) {
+            eprintln!("error: {path}: {message}");
+            return;
+        }
         match std::fs::read_to_string(Path::new(path)) {
             Ok(text) => {
                 self.eval(&text, true, false);

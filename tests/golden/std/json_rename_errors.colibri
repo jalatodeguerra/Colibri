@@ -1,0 +1,32 @@
+struct A {
+    @rename("x") a: int
+    @rename("x") b: int // error: both serialize as `x`
+}
+
+struct B {
+    a: int
+    @rename("a") b: int // error: both serialize as `a`
+}
+
+struct C {
+    @skip s: int // error: needs a default value
+    @skip t: int? // fine: an option is none
+    @skip u: int = 1
+    @rename(5) v: int // error: takes the new name as a string
+    @rename("") w: int // error: not empty
+    @rename("a") @rename("b") x: int // error: one `@rename`
+    @skip @rename("y") y: int = 0 // error: `@rename` does nothing
+    @skip(1) z: int = 0 // error: takes no arguments
+    @inline q: int // error: not supported
+}
+
+// A skipped field frees its key.
+struct D {
+    @skip a: int = 0
+    @rename("a") b: int
+}
+
+fn main() {
+    let d = D { a: 1, b: 2 }
+    print(d.b)
+}

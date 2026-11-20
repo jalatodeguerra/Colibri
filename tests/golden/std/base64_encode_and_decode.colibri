@@ -1,0 +1,33 @@
+import base64
+
+fn main() {
+    print(base64.encode("foobar"))
+    print(base64.encode("fo"))
+    print(base64.encode(""))
+    print(base64.encode("héllo ✓"))
+    print(base64.decode("Zm9vYmFy"))
+    print(base64.decode("aMOpbGxvIOKckw=="))
+    // Bytes are a list of ints for now.
+    print(base64.encode_bytes([0, 255, 128, 10]))
+    print(base64.decode_bytes("AP+ACg=="))
+    // The URL form uses - and _ and has no padding.
+    print(base64.encode_bytes([251, 255, 254]))
+    print(base64.encode_url_bytes([251, 255, 254]))
+    print(base64.encode_url("fo"))
+    print(base64.decode_url("Zm8"))
+    print(base64.decode_url_bytes("-__-"))
+}
+
+// expect: Zm9vYmFy
+// expect: Zm8=
+// expect: 
+// expect: aMOpbGxvIOKckw==
+// expect: ok("foobar")
+// expect: ok("héllo ✓")
+// expect: ok("AP+ACg==")
+// expect: ok([0, 255, 128, 10])
+// expect: ok("+//+")
+// expect: ok("-__-")
+// expect: Zm8
+// expect: ok("fo")
+// expect: ok([251, 255, 254])

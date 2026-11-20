@@ -32,6 +32,15 @@ pub enum HostFault {
 /// which the function must release (or hand on).
 pub type HostImpl = Rc<dyn Fn(&mut Interp, &mut Fiber, Vec<Value>) -> Result<Value, HostFault>>;
 
+/// What a host class customises: how its objects are shown and compared (`print`, `"{x}"`,
+/// `==`, `Map` and `Set` lookups). The implementations take the objects as ordinary
+/// arguments (one for `show`, two for `eq`) and return a `str` or a `bool`.
+#[derive(Clone, Default)]
+pub struct HostClassHooks {
+    pub show: Option<HostImpl>,
+    pub eq: Option<HostImpl>,
+}
+
 /// A handle to a root: slot, generation of the slot, epoch of the slab.
 pub type RootHandle = (u32, u32, u32);
 
@@ -68,8 +77,24 @@ pub(crate) struct HostSide {
     /// a program is loaded.
     pub owner: (u64, u32),
     pub loaded: bool,
-    /// The types declared by the host interface, by name.
+    /// The types of the default `host` module, by name: what a bare name means. A named
+    /// module's types are never here, two modules may each declare a `Child`.
     pub type_ids: HashMap<String, colibri_check::types::TypeId>,
+    /// Every host type by `module` and name.
+    pub module_type_ids: HashMap<(String, String), colibri_check::types::TypeId>,
+    /// The type a bare name means inside a module's host functions when the module does not
+    /// declare it itself: one of a module it uses (`render` naming `physics.Pos`).
+    pub type_aliases: HashMap<(String, String), colibri_check::types::TypeId>,
+    /// The named modules (not the standard library's) that declare a type of each bare
+    /// name, in module order, for the host calling into the script.
+    pub named_owners: HashMap<String, Vec<(String, colibri_check::types::TypeId)>>,
+    /// The host classes by the Rust type that implements them.
+    pub class_types: HashMap<AnyTypeId, colibri_check::types::TypeId>,
+    /// The classes that customise `Show` or `==`, by type.
+    pub class_hooks: HashMap<colibri_check::types::TypeId, HostClassHooks>,
+    /// Whether some class has a `show` hook, an `eq` hook.
+    pub any_show_hook: bool,
+    pub any_eq_hook: bool,
     /// Which `Vm` this interpreter belongs to.
     pub vm_id: u64,
     pub drop_queue: RootDropQueue,
@@ -88,15 +113,55 @@ impl Interp {
             .map(|h| Rc::clone(&program.fns[h.f.0 as usize].body))
             .collect();
         self.host.impls = vec![None; program.host_fns.len()];
+        self.host.class_types.clear();
+        self.host.class_hooks.clear();
+        self.host.any_show_hook = false;
+        self.host.any_eq_hook = false;
         let first = colibri_check::types::FIRST_USER_TYPE as usize;
+        // By bare name, for the host types of the default module only. A named module's types
+        // (`process.Child`, `fs.Error`) are never here: two modules each declare a `Child` or
+        // an `Error`, and the name alone would silently keep the last one. They are found with
+        // `host_type_in` and the module.
         self.host.type_ids = program
             .types
             .iter()
             .enumerate()
             .skip(first)
             .take(program.host_types as usize)
-            .map(|(i, t)| (t.name.clone(), colibri_check::types::TypeId(i as u32)))
+            .zip(&program.host_type_modules)
+            .filter(|(_, m)| *m == colibri_check::host::DEFAULT_MODULE)
+            .map(|((i, t), _)| (t.name.clone(), colibri_check::types::TypeId(i as u32)))
             .collect();
+        self.host.module_type_ids = program
+            .types
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(program.host_types as usize)
+            .zip(&program.host_type_modules)
+            .map(|((i, t), m)| {
+                (
+                    (m.clone(), t.name.clone()),
+                    colibri_check::types::TypeId(i as u32),
+                )
+            })
+            .collect();
+        let mut owners: HashMap<String, Vec<(String, colibri_check::types::TypeId)>> =
+            HashMap::new();
+        for ((module, name), id) in &self.host.module_type_ids {
+            if module != colibri_check::host::DEFAULT_MODULE
+                && !colibri_check::host::is_std_module_name(module)
+            {
+                owners
+                    .entry(name.clone())
+                    .or_default()
+                    .push((module.clone(), *id));
+            }
+        }
+        for list in owners.values_mut() {
+            list.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+        self.host.named_owners = owners;
     }
 
     /// Installs the implementation of host function `id`.
@@ -106,9 +171,127 @@ impl Interp {
         }
     }
 
-    /// The type id of a struct, enum or class declared by the host interface.
+    /// The type id of a struct, enum or class declared by the default `host` module of the
+    /// host interface. Another module's types are found with [`Interp::host_type_in`].
     pub fn host_type(&self, name: &str) -> Option<colibri_check::types::TypeId> {
         self.host.type_ids.get(name).copied()
+    }
+
+    /// The type id of a struct, enum or class that the host module `module` declares (`host`
+    /// for the default module).
+    pub fn host_type_in(&self, module: &str, name: &str) -> Option<colibri_check::types::TypeId> {
+        let key = (module.to_string(), name.to_string());
+        self.host
+            .module_type_ids
+            .get(&key)
+            .or_else(|| self.host.type_aliases.get(&key))
+            .copied()
+    }
+
+    /// Records the types a module's bare names mean that another module declares (see
+    /// [`Interp::host_type_here`]).
+    pub fn set_host_type_aliases(
+        &mut self,
+        aliases: HashMap<(String, String), colibri_check::types::TypeId>,
+    ) {
+        self.host.type_aliases = aliases;
+    }
+
+    /// The type a host function of `module` means by the bare `name`: the type of that name in
+    /// its own module, else one of a module it uses, else in the default module. With no
+    /// module (the host calling into the script) it is the default module's, else the one
+    /// named module that declares it. `Err` says why there is none: no such type, or several
+    /// modules declare one (named, so the host can say which it means).
+    pub fn host_type_here(
+        &self,
+        module: Option<&str>,
+        name: &str,
+    ) -> Result<colibri_check::types::TypeId, String> {
+        if let Some(module) = module {
+            if let Some(id) = self.host_type_in(module, name) {
+                return Ok(id);
+            }
+            if let Some(id) = self
+                .host
+                .type_aliases
+                .get(&(module.to_string(), name.to_string()))
+            {
+                return Ok(*id);
+            }
+        }
+        if let Some(id) = self.host_type(name) {
+            return Ok(id);
+        }
+        match self.host.named_owners.get(name).map(Vec::as_slice) {
+            Some([(_, id)]) => Ok(*id),
+            Some(owners) if owners.len() > 1 => {
+                let modules: Vec<&str> = owners.iter().map(|(m, _)| m.as_str()).collect();
+                Err(format!(
+                    "the type `{name}` is declared by several modules ({}) and the host cannot tell which one it means; call from a host function of that module, or name the module (`Ctx::new_struct_in`)",
+                    modules.join(", ")
+                ))
+            }
+            _ => Err(format!(
+                "the type `{name}` is not part of the loaded host interface (register it with `Vm::register_type` before loading)"
+            )),
+        }
+    }
+
+    /// Records which Rust type implements which host class of the loaded program.
+    pub fn set_host_classes(&mut self, classes: HashMap<AnyTypeId, colibri_check::types::TypeId>) {
+        self.host.class_types = classes;
+    }
+
+    /// Installs how the objects of the host class `ty` are shown and compared.
+    pub fn set_host_class_hooks(
+        &mut self,
+        ty: colibri_check::types::TypeId,
+        hooks: HostClassHooks,
+    ) {
+        self.host.any_show_hook |= hooks.show.is_some();
+        self.host.any_eq_hook |= hooks.eq.is_some();
+        self.host.class_hooks.insert(ty, hooks);
+    }
+
+    /// The type id of the host class that the Rust type `any` implements.
+    pub fn host_class(&self, any: AnyTypeId) -> Option<colibri_check::types::TypeId> {
+        self.host.class_types.get(&any).copied()
+    }
+
+    /// The type id and the index of the variant `variant` of the enum `enum_name` that the host
+    /// module `module` (`std.fs`) declared as its own with `register_module_enum`. `Err` is the
+    /// reason there is none, written for the host's bug report.
+    pub fn module_enum_variant(
+        &self,
+        module: &str,
+        enum_name: &str,
+        variant: &str,
+    ) -> Result<(colibri_check::types::TypeId, u32), String> {
+        let Some(id) = self.host_type_in(module, enum_name) else {
+            return Err(format!(
+                "the type `{enum_name}` of the module `{module}` is not part of the loaded host interface (declare it with `HostModule::register_module_enum` before loading)"
+            ));
+        };
+        let def = &self.types[id.0 as usize];
+        let shown = format!(
+            "{}.{enum_name}",
+            module.rsplit('.').next().unwrap_or(module)
+        );
+        if !def.is_open_enum() {
+            return Err(format!(
+                "`{shown}` is not a module enum (declare it with `HostModule::register_module_enum`)"
+            ));
+        }
+        match def.variants().iter().position(|v| v.name == variant) {
+            Some(i) => Ok((id, i as u32)),
+            None => {
+                let names: Vec<&str> = def.variants().iter().map(|v| v.name.as_str()).collect();
+                Err(format!(
+                    "`{shown}` has no variant `{variant}`; its variants are {}",
+                    names.join(", ")
+                ))
+            }
+        }
     }
 
     /// The name of a type of the loaded program.
@@ -295,6 +478,12 @@ impl Interp {
         Interp::new_error(Value::str(message), -1)
     }
 
+    /// An `Error` that keeps the typed `value` (an enum of a host module, say) and shows as
+    /// `message`: `e.is[T]()` and `e.as[T]()` find the value, `{e}` prints the message.
+    pub fn typed_error_value(value: Value, message: &str) -> Value {
+        Interp::new_typed_error(value, message)
+    }
+
     /// `err(e)` of the prelude `Result`.
     pub fn err_variant(error: Value) -> Value {
         use colibri_check::types::{RESULT_TYPE, VARIANT_ERR};
@@ -329,6 +518,30 @@ impl Interp {
     }
 
     /// A call of the host function `id` from Colibri code.
+    /// The control flow a failed `show` or `eq` hook of a host class ends the running
+    /// operation with: a panic at the span of the innermost frame.
+    pub(crate) fn host_fault_ctl(
+        &mut self,
+        fiber: &mut Fiber,
+        fault: HostFault,
+    ) -> crate::ctl::Ctl {
+        match fault {
+            HostFault::Panic(message) | HostFault::Message(message) => {
+                let span = fiber
+                    .frames
+                    .last()
+                    .map_or(Span::new(colibri_syntax::FileId(0), 0, 0), |frame| {
+                        frame.span
+                    });
+                self.panic(fiber, span, message)
+            }
+            HostFault::Cancel => {
+                fiber.cancelling = true;
+                crate::ctl::Ctl::Cancel
+            }
+        }
+    }
+
     pub(crate) fn call_host(
         &mut self,
         fiber: &mut Fiber,

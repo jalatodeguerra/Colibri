@@ -73,8 +73,28 @@ pub trait ExportedMethods: HostType {
 pub struct TypeBuilder<'r, T: HostType> {
     reg: &'r mut TypeRegistry,
     methods: Vec<MethodEntry>,
+    hooks: ClassHooks,
     problems: Vec<String>,
     _class: PhantomData<fn(T)>,
+}
+
+/// What a class customises beyond its methods: the text `print` and `"{x}"` give for an
+/// object, and what `==` means for two of them. Neither is a method a script can call, and
+/// neither appears in the module's interface. See [`TypeBuilder::show`] and
+/// [`TypeBuilder::eq`].
+#[derive(Clone, Default)]
+pub(crate) struct ClassHooks {
+    pub show: Option<RawHostFn>,
+    pub eq: Option<RawHostFn>,
+}
+
+impl std::fmt::Debug for ClassHooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClassHooks")
+            .field("show", &self.show.is_some())
+            .field("eq", &self.eq.is_some())
+            .finish()
+    }
 }
 
 impl<'r, T: HostType> TypeBuilder<'r, T> {
@@ -82,15 +102,73 @@ impl<'r, T: HostType> TypeBuilder<'r, T> {
         TypeBuilder {
             reg,
             methods: Vec::new(),
+            hooks: ClassHooks::default(),
             problems: Vec::new(),
             _class: PhantomData,
         }
     }
 
     /// The methods collected, after reporting every problem to the registry.
-    pub(crate) fn finish(self) -> Vec<MethodEntry> {
+    pub(crate) fn finish(self) -> (Vec<MethodEntry>, ClassHooks) {
         self.reg.conflicts.extend(self.problems);
-        self.methods
+        (self.methods, self.hooks)
+    }
+
+    /// The text of an object of the class for `print(x)`, `"{x}"` and every other place a
+    /// value is shown (also nested in a list, a struct or an `Option`). Without it an object
+    /// shows as `<Name #n>`. The closure should be cheap and must not run script code; an
+    /// object nested deeper than the closure can handle should be cut short with `...`
+    /// rather than recursing without a bound.
+    pub fn show<F: Fn(&T) -> String + 'static>(&mut self, f: F) -> &mut Self {
+        if self.hooks.show.is_some() {
+            self.problems
+                .push(format!("`{}` customises its `Show` text twice", T::NAME));
+            return self;
+        }
+        self.hooks.show = Some(Rc::new(move |cx: &mut Ctx<'_>, args: &[Value]| {
+            let [object] = args else {
+                return Err(arity_fault(1, args.len()));
+            };
+            let guard = borrow_receiver::<T>(cx, object, false)?;
+            let this = guard
+                .downcast_ref::<T>()
+                .ok_or_else(|| missing_object(T::NAME))?;
+            let text = f(this);
+            drop(guard);
+            Ok(text.into_colibri(cx))
+        }));
+        self
+    }
+
+    /// What `a == b` means for two objects of the class (also nested in a list, a struct or
+    /// an `Option`), where it was identity. Without it two objects are equal when they are
+    /// the same object. It should be an equivalence (reflexive, symmetric, transitive), and
+    /// the closure must not run script code.
+    ///
+    /// A `Map` key or `Set` element of such a class is found by this equality, by a scan of
+    /// the keys: lookups are linear in the size of the collection, as for a user-written `Eq`.
+    pub fn eq<F: Fn(&T, &T) -> bool + 'static>(&mut self, f: F) -> &mut Self {
+        if self.hooks.eq.is_some() {
+            self.problems
+                .push(format!("`{}` customises its `==` twice", T::NAME));
+            return self;
+        }
+        self.hooks.eq = Some(Rc::new(move |cx: &mut Ctx<'_>, args: &[Value]| {
+            let [a, b] = args else {
+                return Err(arity_fault(2, args.len()));
+            };
+            // Shared borrows: both sides may be one object.
+            let left = borrow_receiver::<T>(cx, a, false)?;
+            let right = borrow_receiver::<T>(cx, b, false)?;
+            let (Some(x), Some(y)) = (left.downcast_ref::<T>(), right.downcast_ref::<T>()) else {
+                return Err(missing_object(T::NAME));
+            };
+            let same = f(x, y);
+            drop(left);
+            drop(right);
+            Ok(same.into_colibri(cx))
+        }));
+        self
     }
 
     /// A function of the class that takes no object: `World.new(..)` in a script. The closure

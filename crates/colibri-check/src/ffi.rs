@@ -39,7 +39,7 @@ fn scalar_size_align(ty: CTy) -> Option<(usize, usize)> {
 const C_TYPES: &str = "`i8`..`i64`, `u8`..`u64`, `int`, `f32`, `f64`, `float`, `bool`, `vec2`..`ivec4`, `ptr[T]`, and other `@repr(C)` structs";
 
 /// The text of a `@link("name")` or `@repr(C)` argument.
-fn plain_string(e: &ast::Expr) -> Option<String> {
+pub(crate) fn plain_string(e: &ast::Expr) -> Option<String> {
     match &e.kind {
         ExprKind::Str(segs) => {
             let mut text = String::new();

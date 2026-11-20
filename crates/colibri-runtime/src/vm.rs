@@ -1,5 +1,6 @@
 //! The virtual machine a host embeds.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
@@ -48,6 +49,9 @@ enum LoadMode {
 
 mod session;
 pub use session::{SessionCheck, SessionError};
+
+/// See [`Vm::on_warnings`].
+type WarningHook = Box<dyn FnMut(&Report)>;
 
 /// A program that was read and checked, not yet loaded.
 struct Checked {
@@ -203,6 +207,7 @@ impl VmBuilder {
             fiber: Fiber::new(),
             program: None,
             warnings: Vec::new(),
+            warning_hook: None,
             id,
             epoch: 0,
             native_stack_budget: self.native_stack_budget,
@@ -214,6 +219,7 @@ impl VmBuilder {
             pending: Vec::new(),
             bulk: false,
             failed: Vec::new(),
+            registering: Vec::new(),
             reload: None,
         }
     }
@@ -226,6 +232,8 @@ pub struct Vm {
     fiber: Fiber,
     program: Option<Rc<Program>>,
     warnings: Vec<Diagnostic>,
+    /// Called by a load with the warnings of a program that checked, before any of its code runs.
+    warning_hook: Option<WarningHook>,
     /// Distinguishes this `Vm` from every other, so a handle cannot be used on the wrong one.
     id: u64,
     /// Bumped whenever the loaded program changes, which invalidates function handles.
@@ -250,6 +258,9 @@ pub struct Vm {
     bulk: bool,
     /// Lazy modules whose registration failed (or is running), with the reason.
     failed: Vec<(String, String)>,
+    /// The lazy modules being registered right now, outermost first: a module that asks for
+    /// one of them (through `uses`) is a cycle.
+    registering: Vec<String>,
     /// Where the program came from and which files it was built from, for
     /// [`Vm::reload_changed`]. Kept when a load fails, so that fixing the file loads it.
     reload: Option<ReloadState>,
@@ -266,8 +277,9 @@ struct BulkGuard<'a> {
 }
 
 impl<'a> BulkGuard<'a> {
-    fn new(vm: &'a mut Vm) -> Self {
+    fn new(vm: &'a mut Vm, module: &str) -> Self {
         let before = std::mem::replace(&mut vm.bulk, true);
+        vm.registering.push(module.to_string());
         BulkGuard { vm, before }
     }
 }
@@ -288,6 +300,7 @@ impl std::ops::DerefMut for BulkGuard<'_> {
 impl Drop for BulkGuard<'_> {
     fn drop(&mut self) {
         self.vm.bulk = self.before;
+        self.vm.registering.pop();
     }
 }
 
@@ -441,6 +454,17 @@ impl Vm {
     /// whose registration failed (now or earlier) reports that failure every time: what it
     /// had registered before failing stays, so it is not registered again.
     fn materialize(&mut self, name: &str) -> Result<(), Error> {
+        if let Some(at) = self.registering.iter().position(|n| n == name) {
+            let mut cycle: Vec<&str> = self.registering[at..].iter().map(String::as_str).collect();
+            cycle.push(name);
+            return Err(Error::Registration {
+                name: name.to_string(),
+                message: format!(
+                    "the modules {} use each other in a cycle: a module can only use a module that does not use it back",
+                    cycle.join(" -> ")
+                ),
+            });
+        }
         if let Some((_, message)) = self.failed.iter().find(|(n, _)| n == name) {
             return Err(Error::Registration {
                 name: name.to_string(),
@@ -465,7 +489,7 @@ impl Vm {
         ));
         let at = self.failed.len() - 1;
         let result = {
-            let mut guard = BulkGuard::new(self);
+            let mut guard = BulkGuard::new(self, module);
             register(&mut guard)
         };
         let outcome = result
@@ -561,6 +585,17 @@ impl Vm {
         names
     }
 
+    /// The standard modules (`std.math`, ...) that have been registered: the lazy ones
+    /// nothing has asked for yet are not among them. For tests of the lazy loading.
+    #[doc(hidden)]
+    pub fn registered_std_modules(&self) -> Vec<String> {
+        self.modules
+            .iter()
+            .filter(|m| is_std_module_name(m) && !self.pending.iter().any(|(n, _)| n == *m))
+            .cloned()
+            .collect()
+    }
+
     fn register_inner<Marker, F: HostFn<Marker>>(
         &mut self,
         module: &str,
@@ -640,7 +675,44 @@ impl Vm {
     }
 
     fn register_type_in<T: crate::IntoColibri>(&mut self, module: &str) -> Result<(), Error> {
-        let type_name = std::any::type_name::<T>();
+        self.describe_in(module, std::any::type_name::<T>(), |reg| {
+            // A class belongs to the module that first described it; naming it from another
+            // module's signatures is what `uses` is for, not registering it again. A value
+            // type is shared by every module that registers it, in whatever order, so it is
+            // not refused here: describing it goes through the sharing path.
+            reg.last_class = None;
+            if let TypeDesc::Host(_) = T::ty(reg)
+                && let Some(at) = reg.last_class
+            {
+                let class = &reg.classes[at];
+                let home = class.module.as_deref().unwrap_or(DEFAULT_MODULE);
+                if home != module {
+                    let name = &class.name;
+                    let how = if home == DEFAULT_MODULE {
+                        "the default module".to_string()
+                    } else {
+                        format!("the module `{home}`")
+                    };
+                    reg.conflicts.push(format!(
+                        "the class `{name}` belongs to {how}, which described it first: it cannot be registered into the module `{module}` too (name it in this module's signatures{})",
+                        if home == DEFAULT_MODULE {
+                            String::new()
+                        } else {
+                            format!(" after `uses(\"{home}\")`")
+                        }
+                    ));
+                }
+            }
+        })
+    }
+
+    /// Lets `describe` declare types into the registry as `module`'s, and checks the result.
+    fn describe_in(
+        &mut self,
+        module: &str,
+        type_name: &str,
+        describe: impl FnOnce(&mut TypeRegistry),
+    ) -> Result<(), Error> {
         let fail = |message: String| Error::Registration {
             name: type_name.to_string(),
             message,
@@ -651,7 +723,7 @@ impl Vm {
         Self::check_module_name(module).map_err(fail)?;
         let mut registry = self.registry.clone();
         registry.current_module = (module != DEFAULT_MODULE).then(|| module.to_string());
-        let _ = T::ty(&mut registry);
+        describe(&mut registry);
         registry.current_module = None;
         if let Some(conflict) = registry.conflicts.first() {
             return Err(fail(conflict.clone()));
@@ -662,6 +734,66 @@ impl Vm {
         if let Err(message) = self.validate_registration(module) {
             self.registry = before;
             self.forget_module(module, added);
+            return Err(fail(message));
+        }
+        Ok(())
+    }
+
+    /// Declares that `user`'s interface names types of the module `used`.
+    fn declare_use(&mut self, user: &str, used: &str) -> Result<(), Error> {
+        let fail = |message: String| Error::Registration {
+            name: used.to_string(),
+            message,
+        };
+        if self.program.is_some() && !self.bulk {
+            return Err(Error::AlreadyLoaded);
+        }
+        Self::check_module_name(used).map_err(fail)?;
+        if user == DEFAULT_MODULE {
+            return Err(fail(
+                "the default module cannot name another module's types: its interface is in the scope of every module, which has no way to say where `Name` comes from; put the function in a named module that uses it".to_string(),
+            ));
+        }
+        if used == DEFAULT_MODULE {
+            return Err(fail(
+                "the types of the default module are in every module's scope and need no declaration".to_string(),
+            ));
+        }
+        if used == user {
+            return Err(fail("a module's own types need no declaration".to_string()));
+        }
+        // A standard module that was declared and not registered yet is registered now: what
+        // a module uses exists before the module is described, and a program that imports
+        // only the user gets both.
+        self.materialize(used)?;
+        if !self.modules.iter().any(|m| m == used) {
+            return Err(fail(format!(
+                "the module `{used}` has nothing registered: register its types before the module `{user}` that uses them"
+            )));
+        }
+        let short = |m: &str| m.rsplit('.').next().unwrap_or(m).to_string();
+        let already = self.registry.uses_of(user);
+        if already.iter().any(|u| u == used) {
+            return Ok(());
+        }
+        if let Some(other) = already.iter().find(|u| short(u) == short(used)) {
+            return Err(fail(format!(
+                "the module `{user}` already uses `{other}`, which is also written `{}` in an interface",
+                short(used)
+            )));
+        }
+        let before = self.registry.clone();
+        match self.registry.uses.iter_mut().find(|(m, _)| m == user) {
+            Some((_, list)) => list.push(used.to_string()),
+            None => self
+                .registry
+                .uses
+                .push((user.to_string(), vec![used.to_string()])),
+        }
+        let added = self.note_module(user);
+        if let Err(message) = self.validate_registration(user) {
+            self.registry = before;
+            self.forget_module(user, added);
             return Err(fail(message));
         }
         Ok(())
@@ -707,15 +839,19 @@ impl Vm {
         }
     }
 
-    /// Prints every module's interface and reads it back, and checks that no module mentions
-    /// the types of another named module (its interface text could not express that).
+    /// Prints every module's interface and reads it back, and checks that every type a
+    /// signature mentions is one the interface text can name: the module's own, the default
+    /// module's, or one of a module it declared it uses (`HostModule::uses`). No signature can
+    /// name a module enum.
     ///
     /// `touched` is the module that just got a registration: another module's text does not
     /// change with it, so only that one is printed and read back (all of them when it is the
     /// default module, whose types the others may mention). This keeps registering a library
     /// of many functions linear and not quadratic, which dominates the start of a script.
     fn validate_interfaces(&self, touched: &str) -> Result<(), String> {
-        if touched == DEFAULT_MODULE {
+        // A type that changed owner changes the text of every module that names it.
+        let moved = self.registry.moved.replace(false);
+        if touched == DEFAULT_MODULE || moved {
             for module in self.module_names() {
                 HostEnv::from_text(&self.rendered_module(&module).text)?;
             }
@@ -730,12 +866,13 @@ impl Vm {
             }
             sig.ret.mentions(&mut names);
             for n in names {
-                let owner = reg.module_of(n);
-                if owner != module && owner != DEFAULT_MODULE {
+                if reg.is_module_enum_name(n) {
                     return Err(format!(
-                        "{what} is in the module `{module}` but mentions the type `{n}` of the module `{owner}`; a module can only mention its own types and those of the default `host` module"
+                        "{what} mentions the module enum `{n}`; a module's functions return the erased `Error` (a module enum is recovered with `is` and `as`), and no signature can name a module enum"
                     ));
                 }
+                reg.resolve(module, n)
+                    .map_err(|why| format!("{what} mentions the type `{n}`: {why}"))?;
             }
             Ok(())
         };
@@ -754,7 +891,7 @@ impl Vm {
         }
         for (i, d) in reg.decls.iter().enumerate() {
             if let crate::types::TypeDecl::Struct { name, fields } = d {
-                let module = reg.decl_modules[i].as_deref().unwrap_or(DEFAULT_MODULE);
+                let module = reg.decl_scope[i].as_deref().unwrap_or(DEFAULT_MODULE);
                 for (field, ty) in fields {
                     let sig = crate::types::SigDesc {
                         params: vec![ty.clone()],
@@ -951,6 +1088,88 @@ impl Vm {
         Ok(env)
     }
 
+    /// Tells the interpreter which type of the loaded program each host class is, by the Rust
+    /// type that implements it: a class is found by that and never by its bare name, which
+    /// two modules may share.
+    fn install_host_classes(&mut self) {
+        // The structs and enums are found by their Rust type too (a type of one name can be
+        // two Rust types in two modules).
+        let values: Vec<_> = (0..self.registry.decls.len())
+            .filter_map(|j| {
+                let any = self.registry.decl_rust[j]?;
+                let owner = self.registry.owner_of(j);
+                Some((
+                    any,
+                    self.interp
+                        .host_type_in(owner, self.registry.decls[j].name())?,
+                ))
+            })
+            .collect();
+        let classes = self
+            .registry
+            .classes
+            .iter()
+            .filter_map(|c| {
+                let module = c.module.as_deref().unwrap_or(DEFAULT_MODULE);
+                Some((c.any, self.interp.host_type_in(module, &c.name)?))
+            })
+            .chain(values)
+            .collect();
+        self.interp.set_host_classes(classes);
+        // A type of a module that another named module shares (or uses) is its bare name
+        // there too: the type a host function of `render` means by `Pos` is `physics.Pos`.
+        let mut aliases = HashMap::new();
+        for (user, used) in &self.registry.uses {
+            for home in used {
+                for (decl, m) in self.registry.decls.iter().zip(&self.registry.decl_modules) {
+                    let m = m.as_deref().unwrap_or(DEFAULT_MODULE);
+                    if m != home || decl.is_module_local() {
+                        continue;
+                    }
+                    let name = decl.name();
+                    if self.registry.find_decl(user, name).is_some()
+                        || self.registry.find_decl(DEFAULT_MODULE, name).is_some()
+                    {
+                        continue;
+                    }
+                    if let Some(id) = self.interp.host_type_in(home, name) {
+                        aliases
+                            .entry((user.clone(), name.to_string()))
+                            .or_insert(id);
+                    }
+                }
+            }
+        }
+        // The same Rust type registered by several modules: each names it by its own module.
+        for (user, name, j, _) in &self.registry.aliases {
+            let owner = self.registry.owner_of(*j);
+            if let Some(id) = self.interp.host_type_in(owner, name) {
+                aliases.insert((user.clone(), name.clone()), id);
+            }
+        }
+        self.interp.set_host_type_aliases(aliases);
+        for c in &self.registry.classes {
+            if c.hooks.show.is_none() && c.hooks.eq.is_none() {
+                continue;
+            }
+            let module = c.module.as_deref().unwrap_or(DEFAULT_MODULE);
+            let Some(ty) = self.interp.host_type_in(module, &c.name) else {
+                continue;
+            };
+            let wrap = |what: &str, raw: &Option<crate::host::RawHostFn>| {
+                raw.as_ref()
+                    .map(|raw| trampoline(&format!("{}.{what}", c.name), module, raw.clone()))
+            };
+            self.interp.set_host_class_hooks(
+                ty,
+                colibri_interp::HostClassHooks {
+                    show: wrap("show", &c.hooks.show),
+                    eq: wrap("eq", &c.hooks.eq),
+                },
+            );
+        }
+    }
+
     /// Installs the host functions the program uses. One whose capability was not granted
     /// stays a trap: the checker already refused every call of it.
     fn install_host_fns(&mut self, program: &Program) -> Result<(), Error> {
@@ -973,7 +1192,7 @@ impl Vm {
             if requires.is_some_and(|cap| !self.caps.contains(cap)) {
                 continue;
             }
-            let imp = trampoline(&def.name, raw);
+            let imp = trampoline(&def.name, &def.module, raw);
             self.interp.set_host_fn(HostFnId(i as u32), imp);
         }
         Ok(())
@@ -1096,7 +1315,22 @@ impl Vm {
         let recorder = RecordingFs::new(fs);
         let checked = self.check_entry(&recorder, entry, mode);
         self.reload = watch.map(|owned| ReloadState::new(owned, recorder.into_reads()));
-        self.install(checked?, mode)
+        let checked = checked?;
+        self.warn(&checked);
+        self.install(checked, mode)
+    }
+
+    /// Hands the warnings of a checked program to the [`Vm::on_warnings`] hook.
+    fn warn(&mut self, checked: &Checked) {
+        if !checked.warnings.is_empty()
+            && let Some(mut hook) = self.warning_hook.take()
+        {
+            hook(&Report {
+                sources: checked.sources.clone(),
+                diagnostics: checked.warnings.clone(),
+            });
+            self.warning_hook = Some(hook);
+        }
     }
 
     /// Reads and checks a program without touching the loaded one. The lazy standard modules
@@ -1153,7 +1387,8 @@ impl Vm {
                     dependency_order: mode == LoadMode::Session,
                 },
             );
-            diagnostics = checked.diagnostics;
+            // The loader's own warnings (an unknown `allow-ffi` name) stay.
+            diagnostics.extend(checked.diagnostics);
             program = checked.program;
         }
         match program {
@@ -1181,6 +1416,7 @@ impl Vm {
         self.warnings = warnings;
         self.epoch += 1;
         self.interp.load(&program);
+        self.install_host_classes();
         if let Err(error) = self.install_host_fns(&program) {
             self.epoch += 1;
             self.interp.shutdown();
@@ -1341,6 +1577,7 @@ impl Vm {
         if let Some(r) = self.reload.as_mut() {
             r.fingerprint = None;
         }
+        self.warn(&checked);
         self.install(checked, LoadMode::Run)?;
         if let Some(r) = self.reload.as_mut() {
             r.fingerprint = Some(fingerprint);
@@ -1591,7 +1828,9 @@ impl Vm {
             name: name.to_string(),
         })?;
         let sig = &program.fns[id.0 as usize].sig;
-        let mut registry = TypeRegistry::new();
+        // The host's own types are known, so a class of a module is named as the program does.
+        let mut registry = self.registry.clone();
+        registry.host_side = true;
         let params: Vec<Option<TypeDesc>> = sig
             .params
             .iter()
@@ -1600,6 +1839,12 @@ impl Vm {
         let wanted: Vec<TypeDesc> = A::tys(&mut registry);
         let ret = TypeDesc::of(&sig.ret, program);
         let want_ret = R::ty(&mut registry);
+        if let Some(conflict) = registry.conflicts.first() {
+            return Err(Error::Registration {
+                name: name.to_string(),
+                message: conflict.clone(),
+            });
+        }
         let matches = params.len() == wanted.len()
             && params
                 .iter()
@@ -1629,6 +1874,14 @@ impl Vm {
             Err(Error::FnNotFound { .. }) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// Sets a function that each load, and each reload that restarts the program (not one that
+    /// only patches function bodies), calls with the warnings of a program that checked, when
+    /// there are any: after the check and before any code of the program runs (initialisers,
+    /// an entry script's statements, `main`).
+    pub fn on_warnings(&mut self, hook: impl FnMut(&Report) + 'static) {
+        self.warning_hook = Some(Box::new(hook));
     }
 
     /// Warnings from the last successful load.
@@ -1690,12 +1943,13 @@ impl Vm {
 
 /// Wraps a host function for the interpreter: arguments are handed over as a slice, panics
 /// become Colibri panics, and the references the interpreter passed are released afterwards.
-fn trampoline(name: &str, raw: crate::host::RawHostFn) -> HostImpl {
+fn trampoline(name: &str, module: &str, raw: crate::host::RawHostFn) -> HostImpl {
     let name = name.to_string();
+    let module: Rc<str> = Rc::from(module);
     Rc::new(
         move |interp: &mut Interp, fiber: &mut Fiber, args: Vec<InterpValue>| {
             let args: Vec<Value> = args.into_iter().map(Value).collect();
-            let mut cx = Ctx::new(interp, fiber);
+            let mut cx = Ctx::in_module(interp, fiber, Rc::clone(&module));
             let outcome = catch_unwind(AssertUnwindSafe(|| raw(&mut cx, &args)));
             for arg in args {
                 cx.release(arg);
@@ -1806,6 +2060,72 @@ impl HostModule<'_> {
     pub fn register_type<T: crate::IntoColibri>(&mut self) -> Result<(), Error> {
         self.guard()?;
         self.vm.register_type_in::<T>(&self.name)
+    }
+
+    /// Declares that this module's interface names types of the module `module` (`std.json`
+    /// for the standard library's, as [`Vm::module`] and [`Vm::std_module`] name them): a
+    /// function or method of this module may then take or return its classes (a class that
+    /// the Rust type implements, found by [`TypeRegistry::define_host_type`] and written
+    /// `json.Value` in the interface) and its structs ([`TypeRegistry::foreign_type`]).
+    /// Without this declaration, registering a signature that mentions another module's type is
+    /// an [`Error::Registration`] that names the missing declaration.
+    ///
+    /// The module `module` must have something registered: one of the standard library that
+    /// was declared and not registered yet is registered now, so a program that imports only
+    /// this module still gets both, and before this module's own items, so that the types
+    /// exist when they are mentioned. The module's interface file lists what it uses
+    /// (`uses = ["std.json"]` in the header), and `colibri check --interface` then needs the
+    /// other file too. Not for the default module, whose names are in every module's scope.
+    pub fn uses(&mut self, module: &str) -> Result<(), Error> {
+        self.guard()?;
+        self.vm.declare_use(&self.name, module)
+    }
+
+    /// Declares the payload-free enum `name` with these variants as this module's own type
+    /// (`fs.Error`): scripts write `fs.Error` and `.NotFound`, and another module may declare
+    /// an enum of the same name. Host functions return an error that carries one of its
+    /// variants with [`TypedError`], and a script recovers it with `e.is[fs.Error]()` and
+    /// `e.as[fs.Error]()`. The module's signatures cannot mention the enum.
+    ///
+    /// Refused with [`Error::Registration`]: the default module (`vm.module("host")`, whose
+    /// names every script sees: it has no `fs.` to tell two `Error`s apart), a name the
+    /// language or its prelude already declares (`Option`, `Result`, `Show`, ..; only `Error`
+    /// is for modules to reuse), a name that another host type of any module already uses (or
+    /// uses later: a module enum's bare name is its own), no variants, a variant twice, and a
+    /// name or variant that is not an identifier.
+    pub fn register_module_enum(&mut self, name: &str, variants: &[&str]) -> Result<(), Error> {
+        self.guard()?;
+        let fail = |message: String| Error::Registration {
+            name: name.to_string(),
+            message,
+        };
+        if self.name == DEFAULT_MODULE {
+            return Err(fail(
+                "a module enum belongs to a named module (`vm.module(\"disk\")`): the default module's names are in every script's scope without a module name to tell them apart".to_string(),
+            ));
+        }
+        if !is_module_name(name) {
+            return Err(fail("this is not a type name".to_string()));
+        }
+        if name != "Error" && colibri_check::is_reserved_type_name(name) {
+            return Err(fail(format!(
+                "`{name}` is a type of the language or its prelude and cannot be redefined"
+            )));
+        }
+        if variants.is_empty() {
+            return Err(fail("an enum needs at least one variant".to_string()));
+        }
+        for (i, v) in variants.iter().enumerate() {
+            if !is_module_name(v) {
+                return Err(fail(format!("`{v}` is not a variant name")));
+            }
+            if variants[..i].contains(v) {
+                return Err(fail(format!("the variant `{v}` is declared twice")));
+            }
+        }
+        self.vm.describe_in(&self.name, name, |reg| {
+            let _ = reg.define_module_enum(name, variants);
+        })
     }
 
     /// The canonical interface (`.cbi`) text of this module (see [`Vm::interface_text`]).

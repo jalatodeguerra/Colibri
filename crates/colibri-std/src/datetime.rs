@@ -6,12 +6,48 @@
 //! calendar (days from civil, after Howard Hinnant), with no dependency and no leap seconds,
 //! which keeps every result identical on every platform.
 
-use colibri_runtime::{Cap, Ctx, Error, Vm};
+use colibri_runtime::{Cap, Ctx, Error, TypedError, Vm};
 
 use crate::config::State;
+use crate::errors::error_kind;
 use crate::needs;
 use crate::plain;
 use crate::values::value_struct;
+
+error_kind!(
+    "datetime",
+    /// Why a date and time could not be made or read (`datetime.Error.OutOfRange`).
+    Kind {
+        /// A field is outside its range: month 13, February 30th, hour 24.
+        OutOfRange,
+        /// The text does not have the form the pattern (or ISO 8601) says.
+        Syntax,
+        /// The pattern itself is wrong: an unknown specifier, `%H` together with `%I`.
+        InvalidPattern,
+    }
+);
+
+/// A failure to read a date, with the variant of `datetime.Error` it is. Each failure is made
+/// with the constructor that names its kind (there is no conversion from a message, which would
+/// pick a kind silently).
+#[derive(Debug)]
+struct Bad(Kind, String);
+
+impl Bad {
+    /// A field is outside its range.
+    fn out_of_range(message: impl Into<String>) -> Bad {
+        Bad(Kind::OutOfRange, message.into())
+    }
+
+    /// The pattern itself is wrong.
+    fn invalid_pattern(message: impl Into<String>) -> Bad {
+        Bad(Kind::InvalidPattern, message.into())
+    }
+
+    fn into_error(self, message: impl FnOnce(&str) -> String) -> TypedError {
+        self.0.error(message(&self.1))
+    }
+}
 
 const NANOS: i128 = 1_000_000_000;
 
@@ -338,17 +374,20 @@ struct Fields {
     unix: Option<i64>,
 }
 
-fn parse(text: &str, pattern: &str) -> Result<DateTime, String> {
+fn parse(text: &str, pattern: &str) -> Result<DateTime, Bad> {
     let fail = |what: &str, at: &Scan| {
         let consumed = text.len() - at.rest.len();
-        format!("expected {what} at position {consumed}, found `{}`", {
-            let shown: String = at.rest.chars().take(12).collect();
-            if shown.is_empty() {
-                "the end of the text".to_string()
-            } else {
-                shown
-            }
-        })
+        Bad(
+            Kind::Syntax,
+            format!("expected {what} at position {consumed}, found `{}`", {
+                let shown: String = at.rest.chars().take(12).collect();
+                if shown.is_empty() {
+                    "the end of the text".to_string()
+                } else {
+                    shown
+                }
+            }),
+        )
     };
     let mut scan = Scan { rest: text };
     let mut f = Fields::default();
@@ -360,7 +399,9 @@ fn parse(text: &str, pattern: &str) -> Result<DateTime, String> {
             }
             continue;
         }
-        let spec = chars.next().ok_or("the pattern ends with a lone `%`")?;
+        let spec = chars
+            .next()
+            .ok_or_else(|| Bad::invalid_pattern("the pattern ends with a lone `%`"))?;
         macro_rules! number {
             ($slot:expr, $min:expr, $max:expr, $what:expr) => {
                 match scan.digits($min, $max) {
@@ -420,7 +461,7 @@ fn parse(text: &str, pattern: &str) -> Result<DateTime, String> {
             },
             ':' => {
                 if chars.next() != Some('z') {
-                    return Err("`%:` is only known as `%:z`".into());
+                    return Err(Bad::invalid_pattern("`%:` is only known as `%:z`"));
                 }
                 match scan.offset() {
                     Some(o) => f.offset = Some(o),
@@ -461,30 +502,44 @@ fn parse(text: &str, pattern: &str) -> Result<DateTime, String> {
                     return Err(fail("`%`", &scan));
                 }
             }
-            other => return Err(format!("unknown specifier `%{other}` in the pattern")),
+            other => {
+                return Err(Bad::invalid_pattern(format!(
+                    "unknown specifier `%{other}` in the pattern"
+                )));
+            }
         }
     }
     if !scan.rest.is_empty() {
         let consumed = text.len() - scan.rest.len();
-        return Err(format!(
-            "unexpected `{}` after the end of the pattern (position {consumed})",
-            scan.rest.chars().take(12).collect::<String>()
+        return Err(Bad(
+            Kind::Syntax,
+            format!(
+                "unexpected `{}` after the end of the pattern (position {consumed})",
+                scan.rest.chars().take(12).collect::<String>()
+            ),
         ));
     }
     let offset = f.offset.unwrap_or(0);
     if let Some(unix) = f.unix {
-        return DateTime::from_unix_nanos(i128::from(unix) * NANOS, offset)
-            .ok_or_else(|| format!("{unix} seconds since 1970 is outside the years 0 to 9999"));
+        return DateTime::from_unix_nanos(i128::from(unix) * NANOS, offset).ok_or_else(|| {
+            Bad::out_of_range(format!(
+                "{unix} seconds since 1970 is outside the years 0 to 9999"
+            ))
+        });
     }
     let hour = match (f.hour, f.hour12, f.pm) {
         (Some(h), None, _) => h,
         (None, Some(h), pm) => {
             if !(1..=12).contains(&h) {
-                return Err(format!("the hour {h} is not between 1 and 12"));
+                return Err(Bad::out_of_range(format!(
+                    "the hour {h} is not between 1 and 12"
+                )));
             }
             h % 12 + if pm == Some(true) { 12 } else { 0 }
         }
-        (Some(_), Some(_), _) => return Err("the pattern has both %H and %I".into()),
+        (Some(_), Some(_), _) => {
+            return Err(Bad::invalid_pattern("the pattern has both %H and %I"));
+        }
         (None, None, _) => 0,
     };
     let year = f.year.unwrap_or(1970);
@@ -492,9 +547,9 @@ fn parse(text: &str, pattern: &str) -> Result<DateTime, String> {
         (None, None, Some(doy)) => {
             let max = if is_leap(year) { 366 } else { 365 };
             if !(1..=max).contains(&doy) {
-                return Err(format!(
+                return Err(Bad::out_of_range(format!(
                     "the day of the year {doy} is not between 1 and {max}"
-                ));
+                )));
             }
             let (_, m, d) = civil_from_days(days_from_civil(year, 1, 1) + doy - 1);
             (m, d)
@@ -512,11 +567,17 @@ fn parse(text: &str, pattern: &str) -> Result<DateTime, String> {
         offset,
     }
     .validated()
+    .map_err(Bad::out_of_range)
 }
 
-fn parse_iso(text: &str) -> Result<DateTime, String> {
+fn parse_iso(text: &str) -> Result<DateTime, Bad> {
     let mut scan = Scan { rest: text.trim() };
-    let bad = |what: &str| format!("`{text}` is not an ISO 8601 date and time: {what}");
+    let bad = |what: &str| {
+        Bad(
+            Kind::Syntax,
+            format!("`{text}` is not an ISO 8601 date and time: {what}"),
+        )
+    };
     let (year, _) = scan
         .digits(4, 4)
         .ok_or_else(|| bad("expected a four-digit year"))?;
@@ -578,7 +639,7 @@ fn parse_iso(text: &str) -> Result<DateTime, String> {
         offset,
     }
     .validated()
-    .map_err(|e| bad(&e))
+    .map_err(|e| Bad(Kind::OutOfRange, bad(&e).1))
 }
 
 fn to_iso(dt: &DateTime) -> String {
@@ -661,6 +722,7 @@ fn wall_clock(cx: &mut Ctx) -> i128 {
 }
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
+    Kind::declare(vm)?;
     let mut m = vm.std_module("datetime");
     m.register_const_float("MINUTE", 60.0)?;
     m.register_const_float("HOUR", 3600.0)?;
@@ -702,7 +764,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
                 offset: 0,
             }
             .validated()
-            .map_err(|e| format!("datetime.new: {e}"))
+            .map_err(|e| Kind::OutOfRange.error(format!("datetime.new: {e}")))
         },
     ))?;
     plain(
@@ -787,11 +849,14 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
         "parse",
         ["text", "pattern"],
         |text: String, pattern: String| {
-            parse(&text, &pattern).map_err(|e| format!("cannot parse `{text}` as `{pattern}`: {e}"))
+            parse(&text, &pattern)
+                .map_err(|e| e.into_error(|m| format!("cannot parse `{text}` as `{pattern}`: {m}")))
         },
     ))?;
     plain(m.register_fn_named("to_iso", ["dt"], |dt: DateTime| to_iso(&dt)))?;
-    plain(m.register_fn_named("parse_iso", ["text"], |text: String| parse_iso(&text)))?;
+    plain(m.register_fn_named("parse_iso", ["text"], |text: String| {
+        parse_iso(&text).map_err(|e| e.into_error(str::to_string))
+    }))?;
     Ok(())
 }
 

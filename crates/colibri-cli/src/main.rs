@@ -1,16 +1,11 @@
 //! The `colibri` command line tool.
 
-use std::io::{self, IsTerminal};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use colibri_lang::leakcmd::{self, LeakMode};
+use colibri_lang::depscmd::{self, DepFlags};
 use colibri_lang::on_big_stack;
-use colibri_runtime as colibri;
-
-/// Exit code of a program that panicked (the convention of Rust's own panics).
-const EXIT_PANIC: u8 = 101;
 
 #[derive(Parser)]
 #[command(name = "colibri", version, about = "The Colibri programming language")]
@@ -38,6 +33,8 @@ enum Command {
         /// were never freed to stderr; `--leaks=error` also exits with 1
         #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
+        #[command(flatten)]
+        deps: DepFlags,
     },
     /// Type-check a Colibri script or package without running it
     Check {
@@ -46,6 +43,8 @@ enum Command {
         /// given more than once
         #[arg(long = "interface", value_name = "FILE")]
         interfaces: Vec<PathBuf>,
+        #[command(flatten)]
+        deps: DepFlags,
     },
     /// Format Colibri source files in place (`-` formats stdin to stdout)
     Fmt {
@@ -71,6 +70,19 @@ enum Command {
         /// Report the reference cycles each test leaks; `--leaks=error` fails the test
         #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
+        #[command(flatten)]
+        deps: DepFlags,
+    },
+    /// Resolve the git dependencies of a package again (branches, tags and default branches
+    /// move) and write the new commits to `colibri.lock`
+    Update {
+        /// Only these dependencies (by name, transitive ones too); default: all of them
+        names: Vec<String>,
+        /// The package folder
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        path: PathBuf,
+        #[command(flatten)]
+        deps: DepFlags,
     },
     /// Create a new package in a folder named after it: a `colibri.toml`, a `main.colibri`
     /// that prints a greeting, and a test
@@ -84,96 +96,6 @@ enum Command {
     Repl,
     /// Run the language server (LSP) on stdin and stdout
     Lsp,
-}
-
-/// Checks `file`, printing every diagnostic to stderr. `Err` is the exit code to stop with.
-/// With `all_modules`, a package's modules that its entry does not import are checked too
-/// (`colibri check`); `run` needs only what the program uses.
-fn check(file: &Path, interface_files: &[PathBuf], all_modules: bool) -> Result<(), ExitCode> {
-    let color = io::stderr().is_terminal();
-    let mut interfaces = colibri_std::interfaces();
-    for path in interface_files {
-        match colibri::Interface::read(path) {
-            Ok(interface) => interfaces.push(interface),
-            Err(e) => {
-                eprint!("{}", e.render(color));
-                return Err(ExitCode::from(1));
-            }
-        }
-    }
-    // The tool trusts what it checks: every capability is granted (EMBEDDING §5).
-    let config = colibri::CheckConfig {
-        stack_budget: colibri_lang::NATIVE_STACK_BUDGET,
-        interfaces,
-        caps: colibri::CapSet::all(),
-    };
-    let checked = if all_modules && file.is_dir() {
-        colibri::check_package_all_with(file, &config)
-    } else {
-        colibri::check_path_with(file, &config)
-    };
-    match checked {
-        Ok(report) => {
-            eprint!("{}", report.render(color));
-            if report.has_errors() {
-                Err(ExitCode::from(1))
-            } else {
-                Ok(())
-            }
-        }
-        Err(e) => {
-            eprint!("{}", e.render(color));
-            Err(ExitCode::from(1))
-        }
-    }
-}
-
-fn run(file: &Path, args: Vec<String>, leaks: Option<LeakMode>) -> ExitCode {
-    if let Err(code) = check(file, &[], false) {
-        return code;
-    }
-    let color = io::stderr().is_terminal();
-    let mut vm = colibri_lang::build_vm(
-        colibri_lang::vm_builder()
-            .allow_all()
-            .track_leaks(leaks.is_some()),
-        args,
-    );
-    // After `main`, coroutines keep running (timed by the real clock) until none is left.
-    let outcome = vm
-        .load_path(file)
-        .and_then(|()| vm.run_main())
-        .and_then(|()| vm.run_event_loop());
-    let code = exit_code(&mut vm, outcome, color);
-    // The program is over: coroutines are cancelled and module-level values released, so a
-    // cycle that is left is a leak.
-    let Some(mode) = leaks else { return code };
-    vm.shutdown();
-    let found = vm.find_leaks();
-    eprint!("{}", leakcmd::render(&found, mode, color));
-    if mode == LeakMode::Error && !found.is_empty() && code == ExitCode::SUCCESS {
-        return ExitCode::from(1);
-    }
-    code
-}
-
-/// The exit code of a finished run, printing its error.
-fn exit_code(vm: &mut colibri::Vm, outcome: Result<(), colibri::Error>, color: bool) -> ExitCode {
-    match outcome {
-        Ok(()) => ExitCode::SUCCESS,
-        // `os.exit(n)` ends the program as a panic does; the code is what it asked for.
-        Err(colibri::Error::Panic { .. }) if colibri_std::exit_code(vm).is_some() => {
-            ExitCode::from(colibri_std::exit_code(vm).unwrap_or(1) as u8)
-        }
-        Err(e @ colibri::Error::Panic { .. }) => {
-            eprint!("{}", e.render(color));
-            ExitCode::from(EXIT_PANIC)
-        }
-        Err(e) => {
-            eprint!("{}", e.render(color));
-            ExitCode::from(1)
-        }
-    }
 }
 
 /// Serves the language server protocol on stdin and stdout.
@@ -193,11 +115,16 @@ fn lsp() -> ExitCode {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     on_big_stack(move || match cli.command {
-        Command::Check { file, interfaces } => {
-            match check(
+        Command::Check {
+            file,
+            interfaces,
+            deps,
+        } => {
+            match colibri_lang::checkcmd::check(
                 &file.unwrap_or_else(|| PathBuf::from(".")),
                 &interfaces,
                 true,
+                deps,
             ) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(code) => code,
@@ -208,12 +135,16 @@ fn main() -> ExitCode {
             watch,
             args,
             leaks,
+            deps,
         } => {
             let file = file.unwrap_or_else(|| PathBuf::from("."));
             if watch {
-                colibri_lang::watch::run(&file, args)
+                match depscmd::prepare(&file, deps) {
+                    Ok(()) => colibri_lang::watch::run(&file, args),
+                    Err(code) => code,
+                }
             } else {
-                run(&file, args, leaks)
+                colibri_lang::runcmd::run(&file, args, leaks, deps)
             }
         }
         Command::Test {
@@ -222,13 +153,16 @@ fn main() -> ExitCode {
             budget,
             nocapture,
             leaks,
+            deps,
         } => colibri_lang::testcmd::run(&colibri_lang::testcmd::Options {
             path: file.unwrap_or_else(|| PathBuf::from(".")),
             filter,
             budget,
             nocapture,
             leaks,
+            deps,
         }),
+        Command::Update { names, path, deps } => depscmd::update(&path, names, deps),
         Command::Fmt { paths, check } => colibri_lang::fmt::run(&paths, check),
         Command::New { name } => colibri_lang::newcmd::run(&name),
         Command::Repl => colibri_lang::repl::run(),

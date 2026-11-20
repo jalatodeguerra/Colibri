@@ -45,8 +45,10 @@ pub(crate) fn error_obj(v: &Value) -> Option<&Rc<ClassObj>> {
 pub(crate) enum Link {
     /// A message added by `context`, and the error it wraps.
     Context(Rc<str>, Rc<ClassObj>),
-    /// The root: the kept value and the index of its `IntoError` implementation (`-1`: none).
-    Root(Value, i64),
+    /// The root: the kept value, the index of its `IntoError` implementation (`-1`: none) and
+    /// the message the host gave it, if any (a host error keeps a typed value, an enum, and
+    /// says what happened in words: the message wins over the `Show` of the value).
+    Root(Value, i64, Option<Rc<str>>),
 }
 
 /// Reads one link of an error object.
@@ -54,12 +56,13 @@ pub(crate) fn link(obj: &ClassObj) -> Link {
     let field = |i| obj.field(i).unwrap_or(Value::Unit);
     match (field(CONTEXT), field(CAUSE)) {
         (Value::Str(message), Value::Obj(cause)) => Link::Context(message, cause),
+        (Value::Str(message), Value::Unit) => Link::Root(field(VALUE), -1, Some(message)),
         _ => {
             let imp = match field(IMPL) {
                 Value::Int(i) => i,
                 _ => -1,
             };
-            Link::Root(field(VALUE), imp)
+            Link::Root(field(VALUE), imp, None)
         }
     }
 }
@@ -70,7 +73,7 @@ fn root_value(obj: &Rc<ClassObj>) -> Value {
     loop {
         match link(&cur) {
             Link::Context(_, cause) => cur = cause,
-            Link::Root(value, _) => return value,
+            Link::Root(value, ..) => return value,
         }
     }
 }
@@ -106,6 +109,15 @@ impl Interp {
         ))
     }
 
+    /// A new root error that keeps the typed `value` (so `e.is[T]()` and `e.as[T]()` see it)
+    /// and shows as `message`.
+    pub(crate) fn new_typed_error(value: Value, message: &str) -> Value {
+        Value::Obj(ClassObj::new(
+            ERROR_TYPE,
+            vec![value, Value::Int(-1), Value::str(message), Value::Unit],
+        ))
+    }
+
     /// `context`: a new error with the message `message` around `cause`.
     fn wrap_error(cause: Value, message: Rc<str>) -> Value {
         Value::Obj(ClassObj::new(
@@ -122,6 +134,8 @@ impl Interp {
         let impl_id = match conv {
             ErrorConv::Impl(id) => i64::from(id.0),
             ErrorConv::Bound => self.impl_for(&value, INTO_ERROR).map_or(-1, i64::from),
+            // No implementation: the message is the `Show` of the variant.
+            ErrorConv::OpenEnum => -1,
         };
         Self::new_error(value, impl_id)
     }
@@ -171,7 +185,8 @@ impl Interp {
     fn outer_message(&mut self, fiber: &mut Fiber, e: &Rc<ClassObj>, span: Span) -> Eval<String> {
         match link(e) {
             Link::Context(message, _) => Ok(message.to_string()),
-            Link::Root(value, impl_id) => self.root_message(fiber, &value, impl_id, span),
+            Link::Root(_, _, Some(message)) => Ok(message.to_string()),
+            Link::Root(value, impl_id, None) => self.root_message(fiber, &value, impl_id, span),
         }
     }
 

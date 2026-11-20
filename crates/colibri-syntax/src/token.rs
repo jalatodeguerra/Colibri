@@ -298,6 +298,11 @@ impl TokenKind {
         })
     }
 
+    /// Every reserved word, in no particular order (for editors: completion, rename checks).
+    pub fn keywords() -> impl Iterator<Item = &'static str> {
+        KEYWORDS.iter().map(|(text, _)| *text)
+    }
+
     /// The fixed source text of a keyword or punctuation token.
     pub fn fixed_text(&self) -> Option<&'static str> {
         KEYWORDS

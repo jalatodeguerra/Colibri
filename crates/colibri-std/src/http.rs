@@ -27,9 +27,103 @@ use std::io::Read;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use colibri_runtime::{Cap, Ctx, Cx, Error, IntoColibri, TypeDesc, TypeRegistry, Value, Vm};
+use colibri_runtime::{
+    Cap, Ctx, Cx, Error, IntoColibri, TypeDesc, TypeRegistry, TypedError, Value, Vm,
+};
 
+use crate::errors::error_kind;
 use crate::needs;
+
+error_kind!(
+    "http",
+    /// Why a request failed (`http.Error.Timeout`). A response with any status is not an
+    /// error, so there is no variant for one.
+    Kind {
+        Timeout,
+        Connect,
+        Dns,
+        Tls,
+        InvalidUrl,
+        TooLarge,
+        Other,
+    }
+);
+
+/// The variant of `http.Error` a failure of the request is.
+fn classify(e: &ureq::Error) -> Kind {
+    use std::io::ErrorKind;
+    match e {
+        ureq::Error::Timeout(_) => Kind::Timeout,
+        ureq::Error::HostNotFound => Kind::Dns,
+        ureq::Error::ConnectionFailed => Kind::Connect,
+        ureq::Error::Tls(_) | ureq::Error::Rustls(_) | ureq::Error::Pem(_) => Kind::Tls,
+        ureq::Error::BadUri(_) | ureq::Error::Http(_) | ureq::Error::RequireHttpsOnly(_) => {
+            Kind::InvalidUrl
+        }
+        ureq::Error::BodyExceedsLimit(_) | ureq::Error::LargeResponseHeader(..) => Kind::TooLarge,
+        ureq::Error::Io(io) if is_tls(io) => Kind::Tls,
+        ureq::Error::Io(io) if is_lookup_failure(io) => Kind::Dns,
+        ureq::Error::Io(io) => match io.kind() {
+            ErrorKind::TimedOut | ErrorKind::WouldBlock => Kind::Timeout,
+            ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::AddrNotAvailable
+            | ErrorKind::HostUnreachable
+            | ErrorKind::NetworkUnreachable
+            | ErrorKind::BrokenPipe
+            | ErrorKind::UnexpectedEof => Kind::Connect,
+            _ => Kind::Other,
+        },
+        _ => Kind::Other,
+    }
+}
+
+/// Whether an I/O error is a failed name lookup. ureq turns a failed `to_socket_addrs()` into
+/// `Error::Io` (it only reports `HostNotFound` for a lookup that succeeds with no address), and
+/// the standard library gives that error no kind of its own (`Uncategorized`): only its message
+/// tells, and the message starts with this fixed text on the platforms that use `getaddrinfo`
+/// ("failed to lookup address information: Name or service not known").
+fn is_lookup_failure(e: &std::io::Error) -> bool {
+    e.to_string()
+        .starts_with("failed to lookup address information")
+}
+
+/// The variant of `http.Error` a failure to build the request is. Only a URL that does not parse
+/// is `InvalidUrl`; a bad method, header name or header value is `Other`.
+fn classify_build(e: &ureq::http::Error) -> Kind {
+    use ureq::http::uri::{InvalidUri, InvalidUriParts};
+    if e.is::<InvalidUri>() || e.is::<InvalidUriParts>() {
+        Kind::InvalidUrl
+    } else {
+        Kind::Other
+    }
+}
+
+/// Whether an I/O error is a TLS failure that the connection wrapped in it.
+fn is_tls(e: &std::io::Error) -> bool {
+    e.get_ref()
+        .is_some_and(|inner| inner.downcast_ref::<rustls::Error>().is_some())
+}
+
+/// Reading the body fails with an `io::Error` that may wrap the `ureq::Error` behind it.
+fn classify_io(e: &std::io::Error) -> Kind {
+    match e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<ureq::Error>())
+    {
+        Some(inner) => classify(inner),
+        None if is_tls(e) => Kind::Tls,
+        None => match e.kind() {
+            std::io::ErrorKind::TimedOut => Kind::Timeout,
+            std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::UnexpectedEof => Kind::Connect,
+            _ => Kind::Other,
+        },
+    }
+}
 
 /// The default for a whole request, from connecting to the last byte of the body.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -88,22 +182,24 @@ fn perform(
     url: &str,
     headers: &BTreeMap<String, String>,
     body: Option<String>,
-) -> Result<Response, String> {
-    let fail = |e: &dyn std::fmt::Display| format!("http: {method} {url} failed: {e}");
+) -> Result<Response, TypedError> {
+    let fail = |kind: Kind, e: &dyn std::fmt::Display| {
+        kind.error(format!("http: {method} {url} failed: {e}"))
+    };
     let mut builder = ureq::http::Request::builder().method(method).uri(url);
     for (name, value) in headers {
         builder = builder.header(name.as_str(), value.as_str());
     }
     let request = builder
         .body(body.unwrap_or_default())
-        .map_err(|e| fail(&e))?;
+        .map_err(|e| fail(classify_build(&e), &e))?;
     // The timeout is the request's own, so one agent serves every setting.
     let agent = agent();
     let request = agent
         .configure_request(request)
         .timeout_global(timeout)
         .build();
-    let mut response = agent.run(request).map_err(|e| fail(&e))?;
+    let mut response = agent.run(request).map_err(|e| fail(classify(&e), &e))?;
     let status = i64::from(response.status().as_u16());
     let mut out_headers: BTreeMap<String, String> = BTreeMap::new();
     for (name, value) in response.headers() {
@@ -122,12 +218,12 @@ fn perform(
         .as_reader()
         .take(MAX_BODY + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| fail(&e))?;
+        .map_err(|e| fail(classify_io(&e), &e))?;
     if bytes.len() as u64 > MAX_BODY {
-        return Err(fail(&format!(
-            "the response body is over {} MiB",
-            MAX_BODY >> 20
-        )));
+        return Err(fail(
+            Kind::TooLarge,
+            &format!("the response body is over {} MiB", MAX_BODY >> 20),
+        ));
     }
     Ok(Response {
         status,
@@ -142,7 +238,7 @@ fn run(
     url: &str,
     headers: &BTreeMap<String, String>,
     body: Option<String>,
-) -> Result<Response, String> {
+) -> Result<Response, TypedError> {
     let timeout = cx
         .state_mut::<HttpState>()
         .map_or(Some(DEFAULT_TIMEOUT), |s| s.timeout);
@@ -152,6 +248,7 @@ fn run(
 }
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
+    Kind::declare(vm)?;
     vm.insert_state(HttpState {
         timeout: Some(DEFAULT_TIMEOUT),
     });
@@ -194,7 +291,9 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
              headers: BTreeMap<String, String>,
              body: String| {
                 if method.is_empty() || !method.bytes().all(|b| b.is_ascii_alphabetic()) {
-                    return Err(format!("http: `{method}` is not an HTTP method"));
+                    return Err(
+                        Kind::Other.error(format!("http: `{method}` is not an HTTP method"))
+                    );
                 }
                 let method = method.to_ascii_uppercase();
                 let body = if body.is_empty() { None } else { Some(body) };
@@ -223,4 +322,53 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
 
 fn content_type(kind: &str) -> BTreeMap<String, String> {
     BTreeMap::from([("content-type".to_string(), kind.to_string())])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_name_lookup_is_dns() {
+        // What ureq returns when `to_socket_addrs()` fails (no real lookup in a test).
+        let lookup = ureq::Error::Io(std::io::Error::other(
+            "failed to lookup address information: Name or service not known",
+        ));
+        assert_eq!(classify(&lookup), Kind::Dns);
+        assert_eq!(classify(&ureq::Error::HostNotFound), Kind::Dns);
+        // Other I/O failures keep their kinds.
+        let refused = ureq::Error::Io(std::io::ErrorKind::ConnectionRefused.into());
+        assert_eq!(classify(&refused), Kind::Connect);
+        let other = ureq::Error::Io(std::io::Error::other("something else"));
+        assert_eq!(classify(&other), Kind::Other);
+    }
+
+    #[test]
+    fn only_a_bad_url_is_an_invalid_url() {
+        let build = |name: &str, value: &str, uri: &str| {
+            ureq::http::Request::builder()
+                .uri(uri)
+                .header(name, value)
+                .body(())
+                .unwrap_err()
+        };
+        assert_eq!(
+            classify_build(&build("x-ok", "1", "http://exa mple.com/")),
+            Kind::InvalidUrl
+        );
+        assert_eq!(
+            classify_build(&build("bad name", "1", "http://example.com/")),
+            Kind::Other
+        );
+        assert_eq!(
+            classify_build(&build("x-ok", "line\nbreak", "http://example.com/")),
+            Kind::Other
+        );
+        let method = ureq::http::Request::builder()
+            .method("BAD METHOD")
+            .uri("http://example.com/")
+            .body(())
+            .unwrap_err();
+        assert_eq!(classify_build(&method), Kind::Other);
+    }
 }

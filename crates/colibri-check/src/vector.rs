@@ -89,6 +89,25 @@ fn vec_sig(v: VecTy, name: &str) -> Option<VecSig> {
     })
 }
 
+/// The methods of a vector type with their signatures, for editors.
+pub(crate) fn vec_methods(v: VecTy) -> Vec<crate::members::MethodSig> {
+    method_names(v)
+        .into_iter()
+        .filter_map(|name| {
+            let sig = vec_sig(v, name)?;
+            Some(crate::members::MethodSig {
+                name: name.to_string(),
+                params: sig
+                    .params
+                    .iter()
+                    .map(|(n, t)| (n.to_string(), t.clone()))
+                    .collect(),
+                ret: sig.ret,
+            })
+        })
+        .collect()
+}
+
 /// Whether the vector type has a method called `name`.
 pub(crate) fn vec_method_exists(v: VecTy, name: &str) -> bool {
     vec_sig(v, name).is_some()

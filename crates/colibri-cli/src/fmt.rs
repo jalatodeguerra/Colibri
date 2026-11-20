@@ -4,7 +4,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use colibri_runtime::{Diagnostic, SourceMap, render_diagnostic};
+use colibri_runtime::{Diagnostic, SourceMap, render_diagnostics};
 
 /// Directories `colibri fmt` never looks into when it walks a tree.
 fn skipped_dir(name: &str) -> bool {
@@ -34,9 +34,7 @@ fn report(name: &str, source: &str, diagnostics: &[Diagnostic]) {
     let color = io::stderr().is_terminal();
     let mut map = SourceMap::new();
     map.add_file(name, source);
-    for diagnostic in diagnostics {
-        eprint!("{}", render_diagnostic(diagnostic, &map, color));
-    }
+    eprint!("{}", render_diagnostics(diagnostics, &map, color));
 }
 
 /// Formats `source`, reporting syntax errors on stderr.
@@ -97,6 +95,11 @@ pub fn run(paths: &[PathBuf], check: bool) -> ExitCode {
     let mut changed = Vec::new();
     for path in &files {
         let name = path.display().to_string();
+        // A manifest is no source: it is neither read nor rewritten.
+        if crate::depscmd::refuse_package_file(path).is_err() {
+            failed = true;
+            continue;
+        }
         let source = match std::fs::read_to_string(path) {
             Ok(source) => source,
             Err(e) => {

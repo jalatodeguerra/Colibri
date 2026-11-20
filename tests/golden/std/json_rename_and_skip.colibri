@@ -1,0 +1,40 @@
+import json
+
+struct User {
+    @rename("user_id") id: int
+    name: str
+    @skip cache: int = 7
+    @skip note: str?
+    @rename("e-mail") email: str = "none"
+}
+
+struct Team {
+    @rename("members") people: List[User]
+}
+
+fn main() {
+    let u = User { id: 1, name: "Ann", cache: 99, note: some("hi"), email: "a@b" }
+    // The key is the renamed one, the skipped fields are not written.
+    print(json.encode(u).expect("encodes"))
+    print(json.pretty(u).expect("encodes"))
+    // Decoding reads the renamed key; the field's own name is no longer a key.
+    print(json.decode[User](r"""{"user_id": 5, "name": "Bob", "e-mail": "b@c"}"""))
+    print(json.decode[User](r"""{"id": 5, "name": "Bob"}"""))
+    // A skipped field is not read even when the JSON has it: it takes its default.
+    print(json.decode[User](r"""{"user_id": 5, "name": "Bob", "cache": 1, "note": "x"}"""))
+    let t = Team { people: [u] }
+    print(json.encode(t).expect("encodes"))
+    print(json.decode[Team](json.encode(t).expect("encodes")).expect("round trip").people.len())
+}
+
+// expect: {"user_id":1,"name":"Ann","e-mail":"a@b"}
+// expect: {
+// expect:   "user_id": 1,
+// expect:   "name": "Ann",
+// expect:   "e-mail": "a@b"
+// expect: }
+// expect: ok(User { id: 5, name: "Bob", cache: 7, note: none, email: "b@c" })
+// expect: err(json: at `$`: the object has no field `user_id` (a `User` needs it))
+// expect: ok(User { id: 5, name: "Bob", cache: 7, note: none, email: "none" })
+// expect: {"members":[{"user_id":1,"name":"Ann","e-mail":"a@b"}]}
+// expect: 1

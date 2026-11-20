@@ -153,6 +153,8 @@ pub struct Field {
     pub id: NodeId,
     pub span: Span,
     pub doc: Option<String>,
+    /// `@rename("x")` and `@skip` before the field (DESIGN §7.5).
+    pub attrs: Vec<Attr>,
     pub public: bool,
     pub name: Ident,
     /// `weak T` appears here as [`TypeKind::Weak`].

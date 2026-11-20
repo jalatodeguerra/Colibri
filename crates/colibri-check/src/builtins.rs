@@ -505,6 +505,63 @@ pub(crate) fn builtin_method_exists(ty: &Ty, name: &str) -> bool {
     }
 }
 
+/// The methods of a built-in type with their signatures for this receiver, for editors. A
+/// method's own type parameter is shown as `U`. `clone`, which every type has, is not listed.
+pub(crate) fn builtin_methods(ty: &Ty) -> Vec<crate::members::MethodSig> {
+    let mut count = 0u32;
+    let mut fresh = || {
+        count += 1;
+        Ty::Param(crate::types::ParamId(u32::MAX - count), "U".into())
+    };
+    let rows: Vec<(&str, Option<Sig>)> = match ty {
+        Ty::Str => STR_METHODS.iter().map(|n| (*n, str_sig(n))).collect(),
+        Ty::List(t) => LIST_METHODS
+            .iter()
+            .map(|n| (*n, list_sig(t, n, &mut fresh)))
+            .collect(),
+        Ty::Map(k, v) => MAP_METHODS.iter().map(|n| (*n, map_sig(k, v, n))).collect(),
+        Ty::Set(t) => SET_METHODS.iter().map(|n| (*n, set_sig(t, n))).collect(),
+        Ty::Range(_) => RANGE_METHODS.iter().map(|n| (*n, range_sig(n))).collect(),
+        Ty::Option(t) => OPTION_METHODS
+            .iter()
+            .map(|n| (*n, option_sig(t, n, &mut fresh)))
+            .collect(),
+        Ty::Adt(RESULT_TYPE, a) if a.len() == 2 => RESULT_METHODS
+            .iter()
+            .map(|n| (*n, result_sig(&a[0], &a[1], n, &mut fresh)))
+            .collect(),
+        Ty::Adt(ERROR_TYPE, _) => ERROR_METHODS.iter().map(|n| (*n, error_sig(n))).collect(),
+        Ty::Adt(COROUTINE_TYPE, a) if a.len() == 1 => COROUTINE_METHODS
+            .iter()
+            .map(|n| (*n, coroutine_sig(&a[0], n)))
+            .collect(),
+        Ty::Adt(COGROUP_TYPE, _) => COGROUP_METHODS
+            .iter()
+            .map(|n| (*n, cogroup_sig(n)))
+            .collect(),
+        Ty::Adt(SIGNAL_TYPE, _) => SIGNAL_METHODS.iter().map(|n| (*n, signal_sig(n))).collect(),
+        Ty::Adt(STR_BUILDER_TYPE, _) => STR_BUILDER_METHODS
+            .iter()
+            .map(|n| (*n, str_builder_sig(n)))
+            .collect(),
+        _ => Vec::new(),
+    };
+    rows.into_iter()
+        .filter_map(|(name, sig)| {
+            let sig = sig?;
+            Some(crate::members::MethodSig {
+                name: name.to_string(),
+                params: sig
+                    .params
+                    .iter()
+                    .map(|(n, t)| (n.to_string(), t.clone()))
+                    .collect(),
+                ret: sig.ret,
+            })
+        })
+        .collect()
+}
+
 impl FnCtx<'_, '_> {
     /// `recv.name(args)` where `recv` is not a user-defined type. `Err` gives the receiver back
     /// when its type has no built-in methods at all (the caller reports that).

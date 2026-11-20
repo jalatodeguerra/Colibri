@@ -1,0 +1,16 @@
+// A std error keeps its module's enum and a message, no longer a `str` value: `as[str]` is
+// `none` and `message()` gives the text. A plain `error("..")` still keeps its `str`.
+import str
+
+fn main() {
+    let e = str.parse_int("x").err().expect("bad")
+    print(e.as[str]())
+    print(e.is[str.Error]())
+    print(e.message())
+    print(error("plain").as[str]())
+}
+
+// expect: none
+// expect: true
+// expect: cannot read `x` as an int: it has a character that is not a digit
+// expect: some("plain")

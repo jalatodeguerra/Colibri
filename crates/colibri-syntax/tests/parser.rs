@@ -864,6 +864,14 @@ fn interfaces_and_impls() {
 }
 
 #[test]
+fn field_attributes() {
+    check(&[(
+        "struct S { @rename(\"x\") a: int, @skip b: int = 1 }",
+        "(struct S ((@rename (str \"x\")) a : int) ((@skip) b : int = (int 1)))",
+    )]);
+}
+
+#[test]
 fn modules_externs_tests_and_attributes() {
     check(&[
         ("import math", "(import math)"),

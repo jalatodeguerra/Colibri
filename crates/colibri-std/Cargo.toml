@@ -16,6 +16,10 @@ regex = { version = "1.12", default-features = false, features = ["std", "unicod
 # A small blocking HTTP client for `http`: rustls with the bundled webpki roots, so a build
 # needs no system TLS library.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+# Only to recognise a TLS failure that ureq wraps in an `io::Error` (`http.Error.Tls`); the
+# features are those ureq already turns on.
+rustls = { version = "0.23", default-features = false }
+toml = { version = "1.2.1", default-features = false, features = ["parse", "preserve_order"] }
 # The machine's time zone for `datetime.now_local` (`localtime_r`), on Unix only.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

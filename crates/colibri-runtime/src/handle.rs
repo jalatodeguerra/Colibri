@@ -303,7 +303,7 @@ impl<T: HostType> IntoColibri for T {
         reg.define_host_type::<T>()
     }
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
-        let ty = cx.host_type(T::NAME);
+        let ty = cx.host_class::<T>();
         Value(
             cx.interp
                 .host_new_object(ty, AnyTypeId::of::<T>(), T::NAME, Box::new(self)),
@@ -324,7 +324,7 @@ impl<T: HostType> IntoColibri for Handle<T> {
             "a `Handle<{}>` of another Vm cannot be passed to this one",
             T::NAME
         );
-        let ty = cx.host_type(T::NAME);
+        let ty = cx.host_class::<T>();
         Value(cx.interp.host_value(ty, self.index, self.generation))
     }
 

@@ -8,6 +8,12 @@ use std::path::{Component, Path, PathBuf};
 pub trait SourceFs {
     /// The text of a file, or why it could not be read.
     fn read(&self, path: &Path) -> Result<String, String>;
+    /// The first `n` bytes of a file (fewer if it is shorter), or `None` if it cannot be read.
+    /// Reads no more than that where the system allows.
+    fn read_prefix(&self, path: &Path, n: usize) -> Option<Vec<u8>> {
+        let text = self.read(path).ok()?;
+        Some(text.as_bytes()[..n.min(text.len())].to_vec())
+    }
     fn is_file(&self, path: &Path) -> bool;
     fn is_dir(&self, path: &Path) -> bool;
     /// The names of the entries of a folder, sorted (empty if it is not one).
@@ -38,6 +44,17 @@ impl SourceFs for DiskFs {
         std::fs::read_to_string(path).map_err(|e| e.to_string())
     }
 
+    fn read_prefix(&self, path: &Path, n: usize) -> Option<Vec<u8>> {
+        use std::io::Read;
+        let mut out = Vec::new();
+        std::fs::File::open(path)
+            .ok()?
+            .take(n as u64)
+            .read_to_end(&mut out)
+            .ok()?;
+        Some(out)
+    }
+
     fn is_file(&self, path: &Path) -> bool {
         path.is_file()
     }
@@ -51,7 +68,7 @@ impl SourceFs for DiskFs {
     }
 
     fn canonical(&self, path: &Path) -> PathBuf {
-        std::fs::canonicalize(or_dot(path)).unwrap_or_else(|_| normalize(path))
+        canonical_path(path)
     }
 
     fn list(&self, dir: &Path) -> Vec<String> {
@@ -173,9 +190,140 @@ pub fn normalize(path: &Path) -> PathBuf {
     out.iter().collect()
 }
 
+/// `path` with its links resolved where it exists, else only [`normalize`]d. On Windows
+/// `canonicalize` gives the verbatim form (`\\?\C:\dir`), which would not compare equal to
+/// the plain form of a path that is not there (yet), and which no message should show: the
+/// plain one is returned.
+pub fn canonical_path(path: &Path) -> PathBuf {
+    try_canonical_path(path).unwrap_or_else(|_| normalize(path))
+}
+
+/// [`canonical_path`] for a path that must be on disk.
+pub fn try_canonical_path(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(or_dot(path)).map(|p| without_verbatim(&p))
+}
+
+/// `\\?\C:\dir` as `C:\dir` and `\\?\UNC\server\share` as `\\server\share`, when that is safe;
+/// any other path, and any path whose plain form would name something else, as it is (see
+/// [`plain_form`]).
+fn without_verbatim(path: &Path) -> PathBuf {
+    path.to_str()
+        .and_then(plain_form)
+        .map_or_else(|| path.to_path_buf(), PathBuf::from)
+}
+
+/// The plain form of a verbatim path, or `None` when it is not one or the plain form is not
+/// the same place. The verbatim prefix switches off what Windows does to a name, so it may only
+/// be taken off a path that would be read the same without it. A name that ends in `.` or a
+/// space (the plain form drops that), is a device (`CON`, `PRN`, `AUX`, `NUL`, `COM1` to
+/// `COM9`, `LPT1` to `LPT9`, with or without an extension, in any case) or a path of 260
+/// UTF-16 units or more (past the limit of the plain form) keeps it. Works on the text, with `\`
+/// between the pieces, so it is the same on every system.
+fn plain_form(text: &str) -> Option<String> {
+    let (plain_prefix, rest, skip) = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        (r"\\", rest, 0)
+    } else {
+        let rest = text.strip_prefix(r"\\?\")?;
+        let b = rest.as_bytes();
+        if !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':') {
+            return None;
+        }
+        ("", rest, 1)
+    };
+    for piece in rest.split('\\').skip(skip) {
+        if piece.ends_with(['.', ' ']) && !piece.is_empty() || is_device_name(piece) {
+            return None;
+        }
+    }
+    let plain = format!("{plain_prefix}{rest}");
+    (plain.encode_utf16().count() < 260).then_some(plain)
+}
+
+/// Whether Windows takes the file name `name` for a device, whatever its extension.
+fn is_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ');
+    let stem = stem.to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ["COM", "LPT"].iter().any(|d| {
+        stem.strip_prefix(d).is_some_and(|n| {
+            matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+                || matches!(n, "\u{b9}" | "\u{b2}" | "\u{b3}")
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_verbatim_form_of_a_windows_path_is_made_plain() {
+        let plain = |p: &str| {
+            without_verbatim(Path::new(p))
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert_eq!(plain(r"\\?\C:\repos\x"), r"C:\repos\x");
+        assert_eq!(plain(r"\\?\UNC\server\share\x"), r"\\server\share\x");
+        assert_eq!(plain(r"\\?\Volume{1}\x"), r"\\?\Volume{1}\x");
+        assert_eq!(plain("/home/me/x"), "/home/me/x");
+    }
+
+    #[test]
+    fn the_verbatim_prefix_stays_where_the_plain_form_would_be_another_place() {
+        for kept in [
+            r"\\?\C:\x\name.",
+            r"\\?\C:\x \y",
+            r"\\?\C:\x\y ",
+            r"\\?\C:\x\con",
+            r"\\?\C:\x\CON.txt",
+            r"\\?\C:\x\Aux.tar.gz",
+            r"\\?\C:\nul",
+            r"\\?\C:\x\prn.",
+            r"\\?\C:\x\com1",
+            r"\\?\C:\x\LPT9.log",
+            "\\\\?\\C:\\x\\com\u{b9}",
+            r"\\?\UNC\server\share\aux",
+            r"\\?\UNC\server.\share\x",
+        ] {
+            assert_eq!(without_verbatim(Path::new(kept)), Path::new(kept), "{kept}");
+        }
+        // Names that only look like those.
+        for plain in [
+            r"\\?\C:\x\console",
+            r"\\?\C:\x\com10",
+            r"\\?\C:\x\com0",
+            r"\\?\C:\x\lpt",
+            r"\\?\C:\x\a.b",
+            r"\\?\C:\x\.hidden",
+            r"\\?\C:\x\auxx.txt",
+        ] {
+            assert_ne!(
+                without_verbatim(Path::new(plain)),
+                Path::new(plain),
+                "{plain}"
+            );
+        }
+        // The limit is in UTF-16 units: 130 characters outside the BMP are 260 units.
+        let wide = format!(r"\\?\C:\{}", "\u{1f600}".repeat(130));
+        assert_eq!(without_verbatim(Path::new(&wide)), Path::new(&wide));
+        let ok = format!(r"\\?\C:\{}", "\u{1f600}".repeat(100));
+        assert_ne!(without_verbatim(Path::new(&ok)), Path::new(&ok));
+        // The limit of the plain form: 259 characters are fine, 260 are not.
+        let long = |n: usize| format!(r"\\?\C:\{}", "a".repeat(n - 3));
+        assert_eq!(
+            without_verbatim(Path::new(&long(259)))
+                .to_string_lossy()
+                .len(),
+            259
+        );
+        assert_eq!(
+            without_verbatim(Path::new(&long(260 + 4))),
+            Path::new(&long(260 + 4))
+        );
+    }
 
     #[test]
     fn normalising_paths() {
@@ -214,5 +362,95 @@ mod tests {
             fs.display_name(Path::new("app/none.colibri")),
             "app/none.colibri"
         );
+    }
+}
+
+/// Whether the dependency path `rel`, written in the manifest of the folder `dir`, certainly
+/// leaves the repository whose root is `root`, judged from the text of the paths alone: no
+/// folder is looked at, so nothing outside the repository is touched to find out. A path from
+/// a package that came from git is judged this way before anything else is done with it.
+///
+/// It leaves when it is absolute in any system's way (a rooted `/x` or `\x`, a drive `C:` with
+/// or without a slash, a UNC `\\host\share` or verbatim `\\?\` prefix, whatever system the
+/// tool runs on), or when its `..` climb above `root`. `/` and `\` both separate its pieces.
+/// Where `dir` is not under `root` as written, only the first rule applies: [`inside`] (which
+/// resolves links) still has the last word.
+///
+/// [`inside`]: super::sync::inside
+pub(super) fn leaves_repository(root: &Path, dir: &Path, rel: &str) -> bool {
+    let b = rel.as_bytes();
+    if rel.starts_with(['/', '\\'])
+        || (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
+        || Path::new(rel).has_root()
+        || Path::new(rel)
+            .components()
+            .next()
+            .is_some_and(|c| matches!(c, std::path::Component::Prefix(_)))
+    {
+        return true;
+    }
+    let Ok(below) = normalize(dir)
+        .strip_prefix(normalize(root))
+        .map(Path::to_path_buf)
+    else {
+        return false;
+    };
+    let mut depth = below.components().count() as i64;
+    for piece in rel.split(['/', '\\']) {
+        match piece {
+            "" | "." => {}
+            ".." => {
+                depth -= 1;
+                if depth < 0 {
+                    return true;
+                }
+            }
+            _ => depth += 1,
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod leaves_repository_tests {
+    use super::*;
+
+    #[test]
+    fn a_path_leaves_a_repository_by_its_text() {
+        let root = Path::new("/c/repo");
+        let dir = Path::new("/c/repo/pkg/inner");
+        for rel in [
+            "/etc",
+            "\\etc",
+            "\\\\host\\share\\x",
+            "//host/share/x",
+            "\\\\?\\C:\\x",
+            "C:/x",
+            "C:\\x",
+            "c:x",
+            "../../..",
+            "..\\..\\..",
+            "../../../x",
+            "a/../../../../x",
+            "a\\..\\..\\..\\..\\x",
+            "./../../../y",
+        ] {
+            assert!(leaves_repository(root, dir, rel), "{rel}");
+        }
+        for rel in [
+            ".",
+            "..",
+            "../..",
+            "../../pkg",
+            "x/../y",
+            "a/b/c",
+            "..\\..\\pkg\\x",
+            "./z",
+        ] {
+            assert!(!leaves_repository(root, dir, rel), "{rel}");
+        }
+        // A folder that is not under the root as written is for the resolving check.
+        assert!(!leaves_repository(root, Path::new("/d/x"), "../.."));
+        assert!(leaves_repository(root, Path::new("/d/x"), "/etc"));
     }
 }

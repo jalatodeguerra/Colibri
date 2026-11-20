@@ -1,0 +1,18 @@
+// caps: fs
+// Two modules each declare an `Error`: messages say which one they mean.
+import fs
+import http
+import json
+
+fn takes_fs(e: fs.Error) -> str {
+    return "{e}"
+}
+
+fn main() {
+    print(takes_fs(http.Error.Timeout)) // error: expected `fs.Error`, found `http.Error`
+    let e = fs.read("/a/missing/file").err().expect("missing")
+    match e.as[fs.Error]().expect("kept") {
+        Timeout => print("slow") // error: the enum `fs.Error` has no variant `Timeout`
+        _ => print("other")
+    }
+}

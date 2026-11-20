@@ -1,0 +1,46 @@
+// caps: fs, os
+// Every kind of `fs.Error` a script is likely to branch on.
+import fs
+import os
+import path
+
+fn kind(e: Error) -> str {
+    match e.as[fs.Error]() {
+        some(k) => return "{k}"
+        none => return "not an fs.Error"
+    }
+}
+
+fn main() -> Result[()] {
+    let root = path.join(os.temp_dir(), "kinds")
+    fs.create_dir(path.join(root, "full"))?
+    fs.write(path.join(root, "full/x.txt"), "x")?
+    fs.write(path.join(root, "file.txt"), "text")?
+    fs.write_bytes(path.join(root, "bad.bin"), [255, 254, 253])?
+
+    let removed = fs.remove_dir(path.join(root, "full")).err().expect("not empty")
+    print(kind(removed))
+    print(removed.message().replace(os.temp_dir(), "<dir>"))
+    print(kind(fs.read(path.join(root, "nope")).err().expect("missing")))
+    print(kind(fs.read(root).err().expect("a folder")))
+    print(kind(fs.list(path.join(root, "file.txt")).err().expect("not a folder")))
+    print(kind(fs.read(path.join(root, "bad.bin")).err().expect("not text")))
+    print(kind(fs.remove(path.join(root, "nope")).err().expect("missing")))
+    print(kind(fs.rename(path.join(root, "nope"), path.join(root, "other")).err().expect("missing")))
+    print(kind(fs.stat(path.join(root, "nope")).err().expect("missing")))
+    // Other errors are not fs errors.
+    print(kind(error("plain")))
+    fs.remove_tree(root)?
+    return ok(())
+}
+
+// expect: DirectoryNotEmpty
+// expect: cannot remove the folder `<dir>/kinds/full`: it is not empty (use `fs.remove_tree` to remove a folder with its contents)
+// expect: NotFound
+// expect: IsADirectory
+// expect: NotADirectory
+// expect: InvalidData
+// expect: NotFound
+// expect: NotFound
+// expect: NotFound
+// expect: not an fs.Error

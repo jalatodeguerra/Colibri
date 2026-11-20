@@ -1,0 +1,47 @@
+import csv
+
+fn main() {
+    let text = "name,age\r\nAnn,41\r\n\"Smith, Bob\",\"7\"\r\n"
+    let records = csv.parse(text).expect("parses")
+    print(records)
+    print(records.len())
+
+    // Quoted fields hold separators, doubled quotes and line breaks.
+    print(csv.parse("a,\"b\"\"c\",\"d\ne\"\n").expect("parses"))
+    // LF, a missing last line end, empty fields and blank lines.
+    print(csv.parse("a,,c\n\n,\nx").expect("parses"))
+    print(csv.parse("").expect("parses"))
+    // A quoted empty field is a record.
+    print(csv.parse("\"\"\n").expect("parses"))
+
+    // Another separator.
+    print(csv.parse_with("a;b\n\"c;d\";e", ";").expect("parses"))
+    print(csv.parse_with("a\tb", "\t").expect("parses"))
+
+    // Rows keyed by the header, in column order.
+    let rows = csv.parse_rows(text).expect("parses")
+    print(rows)
+    print(rows[1]["name"])
+    for (k, v) in rows[0] {
+        print("{k}={v}")
+    }
+    print(csv.parse_rows("").expect("parses"))
+    print(csv.parse_rows("only,a,header").expect("parses"))
+    print(csv.parse_rows_with("a;b\n1;2", ";").expect("parses"))
+}
+
+// expect: [["name", "age"], ["Ann", "41"], ["Smith, Bob", "7"]]
+// expect: 3
+// expect: [["a", "b\"c", "d\ne"]]
+// expect: [["a", "", "c"], ["", ""], ["x"]]
+// expect: []
+// expect: [[""]]
+// expect: [["a", "b"], ["c;d", "e"]]
+// expect: [["a", "b"]]
+// expect: [{"name": "Ann", "age": "41"}, {"name": "Smith, Bob", "age": "7"}]
+// expect: Smith, Bob
+// expect: name=Ann
+// expect: age=41
+// expect: []
+// expect: []
+// expect: [{"a": "1", "b": "2"}]

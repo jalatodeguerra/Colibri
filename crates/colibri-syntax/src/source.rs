@@ -55,6 +55,11 @@ impl SourceMap {
         Self::default()
     }
 
+    /// The id the next file registered will have.
+    pub fn next_file_id(&self) -> FileId {
+        FileId(self.files.len() as u32)
+    }
+
     /// Registers a file and returns its id.
     pub fn add_file(&mut self, name: impl Into<String>, text: impl Into<String>) -> FileId {
         let text = text.into();

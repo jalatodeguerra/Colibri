@@ -156,6 +156,38 @@ impl FnCtx<'_, '_> {
         if analysis.gave_up {
             self.report_gave_up(scrutinee_span, "`match`");
         } else if !analysis.missing.is_empty() {
+            // The cases are missing only because an enum of a host module can gain variants
+            // (`some(fs.Error)`, a tuple, a field): say why the `_` is needed. When an arm is
+            // missing for a closed part of the value, the ordinary message is the right one.
+            if analysis.only_open {
+                let names: Vec<String> = analysis
+                    .open_enums
+                    .iter()
+                    .map(|id| format!("`{}`", self.ck.types[id.0 as usize].display_name()))
+                    .collect();
+                let plural = if analysis.missing.len() == 1 { "" } else { "s" };
+                let mut list = analysis.missing.join(", ");
+                if analysis.more_missing {
+                    list.push_str(", ...");
+                }
+                let (what, verb) = match names.as_slice() {
+                    [one] => (format!("the enum {one}"), "belongs"),
+                    _ => (format!("the enums {}", names.join(" and ")), "belong"),
+                };
+                let hint_names = names.join(" and ");
+                self.ck.report(
+                    Diagnostic::error(
+                        format!(
+                            "non-exhaustive `match`: missing case{plural}: {list} ({what} can gain variants)"
+                        ),
+                        scrutinee_span,
+                    )
+                    .with_hint(format!(
+                        "{hint_names} {verb} to a host module that may add variants: add a `_ =>` arm (or bind the value), even when every current variant is listed"
+                    )),
+                );
+                return;
+            }
             self.report_non_exhaustive(
                 &analysis.missing,
                 analysis.more_missing,

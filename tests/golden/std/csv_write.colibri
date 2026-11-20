@@ -1,0 +1,37 @@
+import csv
+
+fn main() {
+    // Records end with CRLF; a field is quoted only when it has to be.
+    let text = csv.write([["name", "note"], ["Ann", "likes, commas"], ["Bob", "says \"hi\""], ["Cy", "two\nlines"], ["", ""]])
+    print(text.replace("\r", "<CR>").replace("\n", "<LF>\n"))
+    // A record of one empty field is quoted, so it is not a blank line.
+    print(csv.write([[""], ["x"]]).replace("\r", "<CR>").replace("\n", "<LF>"))
+    print(csv.write_with([["a;b", "c"]], ";").expect("writes").replace("\r", "<CR>").replace("\n", "<LF>"))
+    print(csv.write([]).len())
+
+    // Rows: the header decides the columns and their order; a missing key is empty.
+    let rows = [{"name": "Ann", "age": "41"}, {"age": "7", "name": "Bob", "extra": "ignored"}, {"name": "Cy"}]
+    print(csv.write_rows(["name", "age"], rows).replace("\r", "<CR>").replace("\n", "<LF>"))
+    print(csv.write_rows_with(["age", "name"], rows, "|").expect("writes").replace("\r", "<CR>").replace("\n", "<LF>"))
+
+    // What is written reads back.
+    let data = [["a,b", "c\"d", "e\nf", ""], ["", "x", "", "y"]]
+    print(csv.parse(csv.write(data)).expect("parses") == data)
+    let back = csv.parse_rows(csv.write_rows(["name", "age"], rows)).expect("parses")
+    print(back[1])
+}
+
+// expect: name,note<CR><LF>
+// expect: Ann,"likes, commas"<CR><LF>
+// expect: Bob,"says ""hi"""<CR><LF>
+// expect: Cy,"two<LF>
+// expect: lines"<CR><LF>
+// expect: ,<CR><LF>
+// expect: 
+// expect: ""<CR><LF>x<CR><LF>
+// expect: "a;b";c<CR><LF>
+// expect: 0
+// expect: name,age<CR><LF>Ann,41<CR><LF>Bob,7<CR><LF>Cy,<CR><LF>
+// expect: age|name<CR><LF>41|Ann<CR><LF>7|Bob<CR><LF>|Cy<CR><LF>
+// expect: true
+// expect: {"name": "Bob", "age": "7"}

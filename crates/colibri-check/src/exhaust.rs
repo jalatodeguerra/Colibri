@@ -11,10 +11,10 @@
 //! when it runs out it sets [`Analysis::gave_up`], and the checker reports an error instead of
 //! accepting a `match` it could not prove exhaustive.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use crate::hir::{GlobalId, Lit, Pat, PatKind, TypeDef, TypeDefKind};
-use crate::types::{Ty, VARIANT_NONE, VARIANT_SOME};
+use crate::types::{Ty, TypeId, VARIANT_NONE, VARIANT_SOME};
 
 /// How many recursive steps one analysis may take.
 const STEP_BUDGET: u32 = 200_000;
@@ -45,6 +45,17 @@ enum Opaque {
     Lit(Lit),
     Range(Option<Lit>, Option<Lit>, bool),
     Const(GlobalId),
+}
+
+impl P {
+    /// Matches every value.
+    fn irrefutable(&self) -> bool {
+        match self {
+            P::Wild => true,
+            P::Or(alts) => alts.iter().any(P::irrefutable),
+            P::Ctor(..) => false,
+        }
+    }
 }
 
 fn lower(pat: &Pat) -> P {
@@ -137,13 +148,31 @@ pub struct Analysis {
     pub unreachable: Vec<usize>,
     /// The work budget ran out before the analysis finished; nothing else is reported.
     pub gave_up: bool,
+    /// The enums that can gain variants (a host module's own) that took part.
+    pub open_enums: Vec<TypeId>,
+    /// There are missing cases, and they would all be covered if those enums had only the
+    /// variants they list: a missing `_` is then not the fault of the arms listed.
+    pub only_open: bool,
 }
 
 /// Analyses `arms` against a scrutinee of type `scrutinee`. The type must be resolved.
 pub fn analyze(types: &[TypeDef], scrutinee: &Ty, arms: &[ArmInfo<'_>]) -> Analysis {
+    analyze_within(types, scrutinee, arms, STEP_BUDGET)
+}
+
+/// [`analyze`] with a budget of `budget` steps for each of its two questions.
+fn analyze_within(
+    types: &[TypeDef],
+    scrutinee: &Ty,
+    arms: &[ArmInfo<'_>],
+    budget: u32,
+) -> Analysis {
     let cx = Cx {
         types,
+        budget: Cell::new(budget),
         steps: Cell::new(0),
+        open: RefCell::new(Vec::new()),
+        open_as_closed: Cell::new(false),
     };
     let tys = [scrutinee.clone()];
     let lowered: Vec<P> = arms.iter().map(|arm| lower(arm.pat)).collect();
@@ -154,17 +183,51 @@ pub fn analyze(types: &[TypeDef], scrutinee: &Ty, arms: &[ArmInfo<'_>]) -> Analy
     }
     let mut rows: Vec<Vec<P>> = Vec::new();
     let mut unreachable = Vec::new();
+    // The "this arm never runs" questions have a budget of their own: running out of it only
+    // means that no arm is reported as unreachable, never that the match is "too complex".
+    // It is a tenth of the whole one: the answer is a nicety, and the time of a match that
+    // cannot be searched is spent here first.
+    let mut reach_ran_out = false;
+    cx.budget.set(budget / 10);
     for (i, (arm, pat)) in arms.iter().zip(lowered).enumerate() {
         let row = vec![pat];
-        if !cx.useful(&rows, &row, &tys) && !cx.exhausted() {
-            unreachable.push(i);
+        if !reach_ran_out {
+            if !cx.useful(&rows, &row, &tys) && !cx.exhausted() {
+                unreachable.push(i);
+            }
+            reach_ran_out = cx.exhausted();
         }
         if !arm.guarded {
             rows.push(row);
         }
     }
-    let found = cx.witnesses(&rows, &tys);
+    if reach_ran_out {
+        unreachable.clear();
+    }
+    cx.steps.set(0);
+    cx.budget.set(budget);
+    // An unguarded arm that matches everything makes the match exhaustive: no search.
+    let found = if rows.iter().any(|r| r.iter().all(P::irrefutable)) {
+        Vec::new()
+    } else {
+        cx.witnesses(&rows, &tys)
+    };
     let more_missing = found.len() >= MAX_WITNESSES;
+    let open_enums = cx.open.borrow().clone();
+    // Would the match be exhaustive if the open enums had no variants but those listed? Then
+    // the cases are missing because they are open, not because an arm is absent.
+    let only_open = !found.is_empty() && !open_enums.is_empty() && !cx.exhausted() && {
+        // The second pass has a budget of its own: running out of it must not turn a real
+        // "missing case" of the first into "could not prove exhaustive". If it runs out, the
+        // answer is "not only because of open enums".
+        let spent = cx.steps.replace(0);
+        cx.open_as_closed.set(true);
+        let closed = cx.witnesses(&rows, &tys);
+        let ran_out = cx.exhausted();
+        cx.open_as_closed.set(false);
+        cx.steps.set(spent);
+        !ran_out && closed.is_empty()
+    };
     let missing = if cx.exhausted() {
         Vec::new()
     } else {
@@ -182,17 +245,25 @@ pub fn analyze(types: &[TypeDef], scrutinee: &Ty, arms: &[ArmInfo<'_>]) -> Analy
             unreachable
         },
         gave_up: cx.exhausted(),
+        open_enums,
+        only_open,
     }
 }
 
 struct Cx<'t> {
     types: &'t [TypeDef],
+    budget: Cell<u32>,
     steps: Cell<u32>,
+    /// The open enums (see [`TypeDef::is_open_enum`]) the analysis met.
+    open: RefCell<Vec<TypeId>>,
+    /// Treat an open enum as closed over its listed variants (the second question of
+    /// [`analyze`]).
+    open_as_closed: Cell<bool>,
 }
 
 impl Cx<'_> {
     fn exhausted(&self) -> bool {
-        self.steps.get() > STEP_BUDGET
+        self.steps.get() > self.budget.get()
     }
 
     /// Counts a step; `false` once the budget is gone.
@@ -212,6 +283,17 @@ impl Cx<'_> {
             ]),
             Ty::Adt(id, _) => match &self.types.get(id.0 as usize)?.kind {
                 TypeDefKind::Struct { .. } | TypeDefKind::Class { .. } => Some(vec![Ctor::Single]),
+                // A host module's own enum can gain variants (DESIGN §10.2): only a catch-all
+                // arm covers it, like an integer.
+                TypeDefKind::Enum { .. }
+                    if self.types[id.0 as usize].is_open_enum() && !self.open_as_closed.get() =>
+                {
+                    let mut open = self.open.borrow_mut();
+                    if !open.contains(id) {
+                        open.push(*id);
+                    }
+                    None
+                }
                 TypeDefKind::Enum { variants } => {
                     Some((0..variants.len() as u32).map(Ctor::Variant).collect())
                 }
@@ -265,7 +347,7 @@ impl Cx<'_> {
             }
             (Ctor::Single, Ty::Adt(id, _)) => match self.types.get(id.0 as usize) {
                 Some(def) => Head::Struct(
-                    def.name.clone(),
+                    def.display_name().into_owned(),
                     def.fields().iter().map(|f| f.name.clone()).collect(),
                 ),
                 None => Head::Tuple,
@@ -497,6 +579,8 @@ mod tests {
             span: SP,
             weak: false,
             default: None,
+            rename: None,
+            skip: false,
         }
     }
 
@@ -522,6 +606,8 @@ mod tests {
                 span: SP,
                 params: Vec::new(),
                 sendable: true,
+                module: None,
+                open: false,
                 kind: TypeDefKind::Enum {
                     variants: vec![
                         variant("Circle", vec![Ty::Float]),
@@ -535,6 +621,8 @@ mod tests {
                 span: SP,
                 params: Vec::new(),
                 sendable: true,
+                module: None,
+                open: false,
                 kind: TypeDefKind::Struct {
                     fields: vec![field("x", Ty::INT), field("ok", Ty::Bool)],
                 },
@@ -544,6 +632,8 @@ mod tests {
                 span: SP,
                 params: Vec::new(),
                 sendable: true,
+                module: None,
+                open: false,
                 kind: TypeDefKind::Enum {
                     variants: vec![variant("N", vec![]), variant("E", vec![])],
                 },
@@ -741,6 +831,8 @@ mod tests {
             span: SP,
             params: Vec::new(),
             sendable: true,
+            module: None,
+            open: false,
             kind: TypeDefKind::Enum { variants: vec![] },
         });
         let ty = Ty::Adt(TypeId(3), vec![]);
@@ -779,5 +871,126 @@ mod tests {
             .collect();
         let result = missing(&ty, &rows);
         assert!(result.len() <= MAX_WITNESSES);
+    }
+
+    /// `enum Host { A, B }` (type 3) of a host module, which can gain variants.
+    fn with_open_enum() -> Vec<TypeDef> {
+        let mut ts = types();
+        ts.push(TypeDef {
+            name: "Host".into(),
+            span: SP,
+            params: Vec::new(),
+            sendable: true,
+            module: Some("host".into()),
+            open: true,
+            kind: TypeDefKind::Enum {
+                variants: vec![variant("A", vec![]), variant("B", vec![])],
+            },
+        });
+        ts
+    }
+
+    #[test]
+    fn a_second_pass_that_runs_out_does_not_turn_missing_cases_into_giving_up() {
+        // `(Host, bool x 9)`: for `A` and for `B` there is an arm `false` at column i (any
+        // other column anything) for each i, and one with all `true`: every case of the
+        // closed `Host` is covered, so only the open enum's `_` is missing. The first question
+        // finds that at once; the second (`Host` taken as closed) has to search everything again.
+        let k = 9;
+        let ts = with_open_enum();
+        let host = Ty::Adt(TypeId(3), vec![]);
+        let mut cols = vec![host.clone()];
+        cols.extend(vec![Ty::Bool; k]);
+        let ty = Ty::Tuple(cols);
+        let mut rows: Vec<Pat> = Vec::new();
+        for variant in 0..2 {
+            for i in 0..=k {
+                let name = pat(
+                    PatKind::Variant {
+                        ty: TypeId(3),
+                        variant,
+                        args: vec![],
+                    },
+                    host.clone(),
+                );
+                let mut items = vec![name];
+                items.extend((0..k).map(|j| {
+                    if i == k {
+                        boolean(true)
+                    } else if j == i {
+                        boolean(false)
+                    } else {
+                        wild(&Ty::Bool)
+                    }
+                }));
+                rows.push(tuple(items));
+            }
+        }
+        let arms: Vec<ArmInfo<'_>> = rows
+            .iter()
+            .map(|pat| ArmInfo {
+                pat,
+                guarded: false,
+            })
+            .collect();
+        let full = analyze_within(&ts, &ty, &arms, STEP_BUDGET);
+        assert!(!full.gave_up && full.only_open, "{full:?}");
+        assert_eq!(full.open_enums, [TypeId(3)]);
+        // The first question takes under 20 steps and the second 112: a budget of 112 holds each
+        // but not their sum, which is what gave "could not prove exhaustive" before.
+        let tight = analyze_within(&ts, &ty, &arms, 112);
+        assert!(
+            !tight.gave_up,
+            "the second question has a budget of its own"
+        );
+        assert!(tight.only_open && !tight.missing.is_empty());
+        assert_eq!(tight.missing, full.missing);
+        // Out of budget in the first question is still giving up.
+        assert!(analyze_within(&ts, &ty, &arms, 5).gave_up);
+    }
+
+    #[test]
+    fn a_final_wildcard_makes_a_match_exhaustive_however_many_arms_come_first() {
+        // A tuple of 14 bools, one arm for each ordered pair (column i true, column j
+        // false) and a final `_`: the reachability questions used up the budget of the
+        // whole analysis and the match was reported as too complex.
+        let k = 14;
+        let ty = Ty::Tuple(vec![Ty::Bool; k]);
+        let mut rows: Vec<Pat> = Vec::new();
+        for i in 0..k {
+            for j in 0..k {
+                if i != j {
+                    rows.push(tuple(
+                        (0..k)
+                            .map(|c| {
+                                if c == i {
+                                    boolean(true)
+                                } else if c == j {
+                                    boolean(false)
+                                } else {
+                                    wild(&Ty::Bool)
+                                }
+                            })
+                            .collect(),
+                    ));
+                }
+            }
+        }
+        rows.push(wild(&ty));
+        let arms: Vec<ArmInfo<'_>> = rows
+            .iter()
+            .map(|pat| ArmInfo {
+                pat,
+                guarded: false,
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        let out = analyze(&[], &ty, &arms);
+        eprintln!("14 bools, 183 arms: {:?}", started.elapsed());
+        assert!(!out.gave_up, "{out:?}");
+        assert!(out.missing.is_empty());
+        // Only the reporting of unreachable arms is given up when its own budget runs out.
+        let tight = analyze_within(&[], &ty, &arms, 50);
+        assert!(!tight.gave_up && tight.unreachable.is_empty(), "{tight:?}");
     }
 }

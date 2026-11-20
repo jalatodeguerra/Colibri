@@ -424,3 +424,39 @@ fn set_algebra_by_a_user_eq_charges_the_comparisons() {
     let ks = vm.get_fn::<(), i64>("ks").unwrap();
     assert_eq!(ks.call(&mut vm, ()).unwrap(), 600);
 }
+
+struct Pt {
+    x: i64,
+}
+
+impl colibri::HostType for Pt {
+    const NAME: &'static str = "Pt";
+    fn describe(d: &mut colibri::TypeBuilder<'_, Self>) {
+        d.static_fn("new", ["x"], |x: i64| Pt { x });
+        d.show(|p: &Pt| format!("Pt{}", p.x));
+        d.eq(|a: &Pt, b: &Pt| a.x == b.x);
+    }
+}
+
+const PT_SET: &str = "fn main() {\n    let xs: List[Pt] = []\n    var i = 0\n    while i < 4000 {\n        xs.push(Pt.new(i + 100))\n        i += 1\n    }\n    let s = Set(xs)\n    print(s.len())\n}\n";
+
+#[test]
+fn host_eq_hooks_and_key_scans_are_charged() {
+    // 4 000 objects with an `eq` hook make about 8 million comparisons; a budget of 200 000
+    // steps must stop that (a hook call and a scanned key are a step each, EMBEDDING §5).
+    let (mut vm, _) = vm_with(200_000);
+    vm.register_type::<Pt>().unwrap();
+    vm.load_source("pts.colibri", PT_SET).unwrap();
+    let err = vm.run_main().unwrap_err();
+    exhausted(&err);
+    assert!(vm.steps_used() < 200_000 + 10_100, "{}", vm.steps_used());
+    // Within a big enough budget the same program completes, and costs at least the
+    // comparisons it made.
+    let (mut vm, out) = vm_with(100_000_000);
+    vm.register_type::<Pt>().unwrap();
+    vm.load_source("pts.colibri", &PT_SET.replace("4000", "300"))
+        .unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "300\n");
+    assert!(vm.steps_used() > 300 * 299 / 2, "{}", vm.steps_used());
+}
