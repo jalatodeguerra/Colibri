@@ -21,19 +21,23 @@
 //! costs no thread and no wake-up, a cancelled call has taken nothing (what a read had read is in
 //! the connection's buffer for the next read, what it had not read is still in the kernel, and a
 //! connection that was ready for an accept is still in the listener's backlog), and the
-//! interpreter thread holds neither the buffer nor a reference to the socket while a coroutine
-//! is suspended or has given the thread away. An `accept` makes its system call and returns the
-//! connection without suspending in between, so a cancel can neither lose a connection nor leak
-//! one.
+//! interpreter thread holds no lock and no reference to the socket while a coroutine is suspended
+//! or has given the thread away. (A read that waits keeps the staging buffer it reads through,
+//! up to 64 KiB, until the call returns; a connection with no call in progress holds none.) An
+//! `accept` makes its system call and returns the connection without suspending in between, so a
+//! cancel can neither lose a connection nor leak one.
 //!
 //! *Connect* looks the host up first when it is a name (a helper thread, because the system's
 //! resolver cannot be interrupted; it answers by resolving the wait cell of the call, and the
 //! call suspends with the deadline of the whole call), then, for each address, starts a
 //! non-blocking connect and waits for the socket to become writable with the attempt's share of
-//! the time left. The wait is at most a second long, and `SO_ERROR` is read whenever it ends,
-//! because a failed connect is not reported as an event by every system. The socket belongs to
-//! the call: a cancel ends the wait, and the socket is closed when the call is left, which
-//! withdraws a connect that was under way. `listen` (its lookup and its bind never wait for a
+//! the time left. The wait is at most a second long. Whenever it ends, `SO_ERROR` is read first
+//! (a failed connect is not reported as an event by every system), then whether the socket is
+//! connected at all (a wake proves nothing: on Windows a socket whose connect is still under
+//! way, or is going to be refused, can be reported ready); a connect that is neither failed nor
+//! done waits again, after a pause of 50 ms when the wake said "ready", so that no system can
+//! turn that into a spin. The socket belongs to the call: a cancel ends the wait, and the socket
+//! is closed when the call is left, which withdraws a connect that was under way. `listen` (its lookup and its bind never wait for a
 //! peer) is the one call that still runs on a helper thread of the runtime.
 //!
 //! A call that does not have to wait does not suspend; so that a coroutine in a loop of reads and
@@ -80,12 +84,12 @@
 //! A call made from a `Drop` hook or a callback of a host function cannot suspend: it blocks the
 //! interpreter thread (`Ctx::can_suspend` is `false`), and the poller wakes it (a `connect`
 //! from such a place waits for its lookup and its attempts the same way, and may block as long
-//! as they take). A read (or
-//! accept) holds its turn until its coroutine has taken the result, and a write is sent by the
-//! coroutine that called it, so one that is called there while an earlier read, write or accept
-//! of the same object is outstanding in another coroutine would wait for a coroutine that can
-//! never resume. It returns a `net.Error.Other` at once instead: that is the one case the module
-//! can see. `close_write` is the exception, because it has nothing to wait for: behind another
+//! as they take). A read (or accept) holds its turn until its coroutine has taken the result,
+//! and a write is sent by the coroutine that called it, so a read called there while an earlier
+//! read of the same connection is outstanding in another coroutine, an accept behind an accept
+//! of the same listener, or a write behind a write of the same connection, would wait for a
+//! coroutine that can never resume. It returns a `net.Error.Other` at once instead: that is the
+//! one case the module can see. `close_write` is the exception, because it has nothing to wait for: behind another
 //! coroutine's unfinished write it takes a place in the write order (a ticket and a parked cell
 //! whose callback shuts the writing end, run by the drop of the ticket ahead on the interpreter
 //! thread), returns `Ok` at once, and the write ahead is never cut. `Ok` from such a place means
@@ -94,8 +98,8 @@
 //! does. A write that finds no other write outstanding can still wait in a hook for room that
 //! only another coroutine of the same program would make (the one that reads what is written),
 //! and that coroutine cannot run while the hook waits. A program must not do that: from a
-//! `Drop` hook or a callback, write only what the peer takes without help from this program (as `fs` has the same limit with a pipe
-//! that this program reads itself).
+//! `Drop` hook or a callback, write only what the peer takes without help from this program (as
+//! `fs` has the same limit with a pipe that this program reads itself).
 //!
 //! # A write that stops part way breaks the write side
 //!

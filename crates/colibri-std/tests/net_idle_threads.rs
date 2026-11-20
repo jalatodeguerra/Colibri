@@ -1,4 +1,5 @@
-//! What a thousand idle blocked reads, and a thousand idle accepts, cost in threads and in CPU time: the point of waiting for
+//! What a thousand idle blocked reads, a thousand idle accepts and a thousand writes blocked on
+//! full buffers cost in threads and in CPU time: the point of waiting for
 //! sockets with one poller thread per `Vm`. This is a test file of its own because it counts the
 //! threads and measures the CPU time of the whole process, which the other tests of `net` (they
 //! run in threads of one process) would pollute. The thread count is read from `/proc/self/task`
@@ -19,6 +20,15 @@ use colibri_runtime as colibri;
 
 const READERS: usize = 1000;
 const LISTENERS: usize = 1000;
+const WRITERS: usize = 1000;
+
+/// What keeps the buffers of a blocked write small: the peer asks for a small receive buffer on its
+/// listener, which the accepted sockets inherit, and (Linux) a small segment size, which the
+/// connecting side takes over, so that the send buffer the system grows to stays small as well
+/// (without it a thousand connections took gigabytes of kernel memory before they were full).
+/// `WRITE_BYTES` is what a writer is given: far more than the two buffers can take.
+const SMALL_BUFFER: usize = 4 * 1024;
+const WRITE_BYTES: usize = 4 * 1024 * 1024;
 
 const IDLE_SECONDS: f64 = 3.0;
 const LIMIT: Duration = Duration::from_secs(30);
@@ -152,14 +162,15 @@ fn raise_descriptor_limit() {
     }
 }
 
-/// Both scenarios are one test, one after the other: they count the threads and the CPU time of
+/// The scenarios are one test, one after the other: they count the threads and the CPU time of
 /// the whole process, so no other test of this file may run beside them (a second test thread,
 /// even one that waits on a lock, would be counted).
 #[test]
-fn a_thousand_idle_reads_and_a_thousand_idle_accepts_use_a_few_threads_and_no_cpu() {
+fn a_thousand_idle_waits_use_a_few_threads_and_no_cpu() {
     raise_descriptor_limit();
     a_thousand_idle_blocked_reads();
     a_thousand_idle_accepts();
+    a_thousand_writes_blocked_on_full_buffers();
 }
 
 fn a_thousand_idle_blocked_reads() {
@@ -345,6 +356,142 @@ fn main() -> Result[()] {{
     assert!(
         cores < 0.05,
         "{LISTENERS} idle accepts used {cores:.3} cores"
+    );
+    drop(vm);
+    let began = Instant::now();
+    while threads() > before {
+        assert!(
+            began.elapsed() < LIMIT,
+            "{} threads are left from {before} after the Vm was dropped",
+            threads()
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A thousand writes, each blocked because the peer does not read and the buffers are full: one
+/// poller thread and no CPU, and the writers end with `Closed` when their connections are closed
+/// (a write that had gone through instead would show as a different end, so the count of
+/// `Closed` also says that every write was blocked all along). The peer asks for a small receive
+/// buffer on its listener, which the accepted sockets inherit, so that a few megabytes fill a
+/// connection; the bytes are one `Bytes` that every writer shares.
+fn a_thousand_writes_blocked_on_full_buffers() {
+    use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+    let before = threads();
+    let listener = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+    listener.set_recv_buffer_size(SMALL_BUFFER).unwrap();
+    #[cfg(target_os = "linux")]
+    listener.set_tcp_mss(536).unwrap();
+    listener
+        .bind(&SockAddr::from(
+            "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .unwrap();
+    listener.listen(1024).unwrap();
+    let addr = listener
+        .local_addr()
+        .unwrap()
+        .as_socket()
+        .unwrap()
+        .to_string();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    // The peer holds every connection open and never reads, until the script has ended.
+    let peer = thread::spawn(move || {
+        let mut held = Vec::new();
+        for _ in 0..WRITERS {
+            held.push(listener.accept().unwrap().0);
+        }
+        let _ = released.recv();
+    });
+
+    let marks = Arc::new(Mutex::new(Vec::<(Instant, f64, usize)>::new()));
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .allow(colibri::Cap::Net)
+        .build();
+    colibri_std::install(&mut vm).unwrap();
+    let m = Arc::clone(&marks);
+    vm.register_fn("mark", move || {
+        m.lock()
+            .unwrap()
+            .push((Instant::now(), cpu_seconds(), threads()));
+    })
+    .unwrap();
+    vm.load_source(
+        "app/main.colibri",
+        &format!(
+            r#"import net
+
+fn writing(c: net.Conn, data: Bytes) -> str {{
+    match c.write_bytes(data) {{
+        ok(_) => return "written"
+        err(e) => return "{{e.as[net.Error]().expect("a net error")}}"
+    }}
+}}
+
+fn main() -> Result[()] {{
+    let block = BytesBuilder()
+    for i in 0..1024 {{
+        block.push(u8(65))
+    }}
+    let data = BytesBuilder()
+    for i in 0..{blocks} {{
+        data.push_bytes(block.to_bytes())
+    }}
+    let bytes = data.to_bytes()
+    var conns: List[net.Conn] = []
+    var writers: List[Coroutine[str]] = []
+    for i in 0..{WRITERS} {{
+        let c = net.connect("{addr}")?
+        conns.push(c)
+        writers.push(go writing(c, bytes))
+    }}
+    // Every writer has filled its buffers and is waiting by now, and has been for a moment.
+    wait(0.5)
+    mark()
+    wait({IDLE_SECONDS})
+    mark()
+    for c in conns {{
+        c.close()
+    }}
+    var closed = 0
+    for w in writers {{
+        if w.join() == "Closed" {{
+            closed += 1
+        }}
+    }}
+    print("closed {{closed}}")
+    return ok(())
+}}
+"#,
+            blocks = WRITE_BYTES / 1024
+        ),
+    )
+    .unwrap();
+    let began = Instant::now();
+    vm.run_main().unwrap_or_else(|e| panic!("{e}"));
+    println!(
+        "{WRITERS} blocked writes: the script took {:?}",
+        began.elapsed()
+    );
+    assert_eq!(out.contents(), format!("closed {WRITERS}\n"));
+    release.send(()).unwrap();
+    peer.join().unwrap();
+
+    let marks = marks.lock().unwrap().clone();
+    let ((t0, c0, n0), (t1, c1, n1)) = (marks[0], marks[1]);
+    let cores = (c1 - c0) / t1.duration_since(t0).as_secs_f64();
+    println!(
+        "{WRITERS} blocked writes: {cores:.3} cores, {before} threads before, {n0} then, {n1} later"
+    );
+    assert!(
+        n0 <= before + MAY_GROW_BY && n1 <= before + MAY_GROW_BY,
+        "{WRITERS} blocked writes: {n0} and {n1} threads, from {before}"
+    );
+    assert!(
+        cores < 0.05,
+        "{WRITERS} blocked writes used {cores:.3} cores"
     );
     drop(vm);
     let began = Instant::now();
