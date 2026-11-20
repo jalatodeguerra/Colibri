@@ -260,9 +260,9 @@ fn uri_path(uri: &str) -> PathBuf {
     }
 }
 
-/// Makes `link` a link to `target`: a symbolic link on Unix; on Windows a junction for a folder
-/// (no privilege needed) and a symbolic link for a file (which needs Developer Mode or an
-/// elevated shell, as the CI machines have). A test that needs a link fails if it cannot be
+/// Makes `link` a link to `target`: a symbolic link on Unix; on Windows a symbolic link too
+/// (which needs Developer Mode or an elevated shell, as the CI machines have), and for a
+/// folder a junction (no privilege needed) when that is refused. A test that needs a link fails if it cannot be
 /// made, it is never skipped.
 fn make_link(target: &Path, link: &Path) {
     #[cfg(unix)]
@@ -270,6 +270,12 @@ fn make_link(target: &Path, link: &Path) {
     #[cfg(windows)]
     {
         use std::os::windows::{fs::symlink_dir, fs::symlink_file, process::CommandExt};
+        // Native separators throughout: the target of a link is stored as written, and a `/`
+        // in it (from `join("a/b")`) would not resolve.
+        let native = |p: &Path| p.components().collect::<PathBuf>();
+        let target = native(target);
+        let link = native(link);
+        let (target, link) = (target.as_path(), link.as_path());
         if target.is_dir() {
             // A symbolic link for a folder when the account may make one, else a junction
             // (which needs no privilege). The command line is passed as written, with
