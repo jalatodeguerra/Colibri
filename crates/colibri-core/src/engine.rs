@@ -10,9 +10,7 @@
 //! The trait is generic, not `dyn`: built-ins are hot, an associated `Fiber` avoids downcasts,
 //! and every instantiation is in the engine's crate, where it inlines.
 
-use std::rc::Rc;
-
-use colibri_check::hir::{Body, Builtin, FnId};
+use colibri_check::hir::{Builtin, FnId};
 use colibri_check::types::TypeId;
 use colibri_syntax::Span;
 
@@ -94,8 +92,14 @@ pub trait Engine: Sized {
     /// anywhere a value dies.
     fn call_detached(&mut self, f: FnId, args: Vec<Value>) -> Eval;
 
-    /// The checked body of `f`, or `None` for an id the engine does not have.
-    fn fn_body(&self, f: FnId) -> Option<&Rc<Body>>;
+    /// Where `f` is declared, or `None` for an id the engine does not have. Callers that must
+    /// know whether an id exists ask this; the engine's own `call_fn` reports an unknown id
+    /// as an internal error at its own position.
+    fn fn_span(&self, f: FnId) -> Option<Span>;
+
+    /// Whether `f` is a `var self` method, which hands the final `self` back to its caller.
+    /// `false` for an id the engine does not have.
+    fn fn_mutates_self(&self, f: FnId) -> bool;
 
     /// Runs the `hook` of the host class `ty` on `args`. The class has that hook (the caller
     /// asked [`Core::host_hook_set`] first).

@@ -1,6 +1,6 @@
 //! The `Error` object (DESIGN §10): its layout, how one is made and how a link of the chain is
 //! read. This module is the one owner of the layout; the methods of `Error` (`message`,
-//! `cause`, `context`, `is`, `as`) are in the interpreter's `results.rs`.
+//! `cause`, `context`, `is`, `as`) are in [`crate::results`].
 //!
 //! An `Error` is a class object of the prelude type [`ERROR_TYPE`] with four fields:
 //!

@@ -73,7 +73,7 @@ impl<E: Engine> Hooks<'_, E> {
 
     /// Runs the user method `f` on `args`; its result as a value.
     fn run(&mut self, f: FnId, args: Vec<Value>) -> Result<Value, Stop> {
-        if self.engine.fn_body(f).is_none() {
+        if self.engine.fn_span(f).is_none() {
             return Err(Stop::TooDeep);
         }
         self.engine

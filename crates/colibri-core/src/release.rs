@@ -263,7 +263,7 @@ pub trait Release: Engine {
         if obj.mark_hooked() {
             return false;
         }
-        let Some(span) = self.fn_body(f).map(|body| body.span) else {
+        let Some(span) = self.fn_span(f) else {
             return false;
         };
         let core = self.core_mut();

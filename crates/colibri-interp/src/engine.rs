@@ -1,9 +1,7 @@
 //! The interpreter as an [`Engine`]: what `colibri-core` asks of it, and the wrappers that keep
 //! the methods `colibri-runtime` calls on [`Interp`].
 
-use std::rc::Rc;
-
-use colibri_check::hir::{Body, Builtin, FnId};
+use colibri_check::hir::{Builtin, FnId};
 use colibri_check::types::TypeId;
 use colibri_core::engine::Engine;
 use colibri_core::host::HostHook;
@@ -96,8 +94,15 @@ impl Engine for Interp {
     }
 
     #[inline]
-    fn fn_body(&self, f: FnId) -> Option<&Rc<Body>> {
-        self.fns.get(f.0 as usize)
+    fn fn_span(&self, f: FnId) -> Option<Span> {
+        self.fns.get(f.0 as usize).map(|body| body.span)
+    }
+
+    #[inline]
+    fn fn_mutates_self(&self, f: FnId) -> bool {
+        self.fns
+            .get(f.0 as usize)
+            .is_some_and(|body| body.mutates_self)
     }
 
     fn call_host_hook(
@@ -172,7 +177,10 @@ impl Engine for Interp {
     }
 
     fn group_died(&mut self, obj: &ClassObj) {
-        // The inherent method of `coro.rs` (it wins over this one in a path).
+        // Recursion hazard: `Interp::group_died` must resolve to the inherent method of
+        // `coro.rs`. If that method is renamed or removed first, this path resolves to this
+        // trait method and recurses forever. Step 8 deletes the trait method and this
+        // delegation together.
         Interp::group_died(self, obj);
     }
 }

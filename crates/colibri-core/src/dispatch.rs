@@ -101,7 +101,7 @@ impl Tables {
 }
 
 /// The head of a value's type, which interface dispatch works on.
-pub fn runtime_key(v: &Value) -> Option<TypeKey> {
+pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
     Some(match v {
         Value::Unit => TypeKey::Unit,
         Value::Bool(_) => TypeKey::Bool,
@@ -139,12 +139,6 @@ pub fn runtime_key(v: &Value) -> Option<TypeKey> {
 /// engine, which owns the calling convention and the places a `var self` receiver lives in.
 #[doc(hidden)]
 pub trait Dispatch: Engine {
-    /// How many map or set key lookups scanned the stored keys for a user-written `Eq` (a
-    /// test hook: keys that cannot reach one never scan).
-    fn key_scans(&self) -> u64 {
-        self.core().key_scans
-    }
-
     /// A `Map` key or `Set` element is looked up by the user-written `Eq` of its type: the
     /// key in `args[1]` is replaced by the stored key that `eq` says is equal to it, so the
     /// structural lookup finds it. This scans the keys; a user `Hash` is not consulted (it
