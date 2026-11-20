@@ -203,20 +203,55 @@ pub fn try_canonical_path(path: &Path) -> std::io::Result<PathBuf> {
     std::fs::canonicalize(or_dot(path)).map(|p| without_verbatim(&p))
 }
 
-/// `\\?\C:\dir` as `C:\dir` and `\\?\UNC\server\share` as `\\server\share`; any other path
-/// as it is.
+/// `\\?\C:\dir` as `C:\dir` and `\\?\UNC\server\share` as `\\server\share`, when that is safe;
+/// any other path, and any path whose plain form would name something else, as it is (see
+/// [`plain_form`]).
 fn without_verbatim(path: &Path) -> PathBuf {
-    let text = path.to_string_lossy();
-    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{rest}"));
-    }
-    if let Some(rest) = text.strip_prefix(r"\\?\") {
+    path.to_str()
+        .and_then(plain_form)
+        .map_or_else(|| path.to_path_buf(), PathBuf::from)
+}
+
+/// The plain form of a verbatim path, or `None` when it is not one or the plain form is not
+/// the same place. The verbatim prefix switches off what Windows does to a name, so it may only
+/// be taken off a path that would be read the same without it. A name that ends in `.` or a
+/// space (the plain form drops that), is a device (`CON`, `PRN`, `AUX`, `NUL`, `COM1` to
+/// `COM9`, `LPT1` to `LPT9`, with or without an extension, in any case) or a path of 260
+/// characters or more (past the limit of the plain form) keeps it. Works on the text, with `\`
+/// between the pieces, so it is the same on every system.
+fn plain_form(text: &str) -> Option<String> {
+    let (plain_prefix, rest, skip) = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        (r"\\", rest, 0)
+    } else {
+        let rest = text.strip_prefix(r"\\?\")?;
         let b = rest.as_bytes();
-        if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
-            return PathBuf::from(rest);
+        if !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':') {
+            return None;
+        }
+        ("", rest, 1)
+    };
+    for piece in rest.split('\\').skip(skip) {
+        if piece.ends_with(['.', ' ']) && !piece.is_empty() || is_device_name(piece) {
+            return None;
         }
     }
-    path.to_path_buf()
+    let plain = format!("{plain_prefix}{rest}");
+    (plain.chars().count() < 260).then_some(plain)
+}
+
+/// Whether Windows takes the file name `name` for a device, whatever its extension.
+fn is_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ');
+    let stem = stem.to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ["COM", "LPT"].iter().any(|d| {
+        stem.strip_prefix(d).is_some_and(|n| {
+            matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+                || matches!(n, "\u{b9}" | "\u{b2}" | "\u{b3}")
+        })
+    })
 }
 
 #[cfg(test)]
@@ -234,6 +269,55 @@ mod tests {
         assert_eq!(plain(r"\\?\UNC\server\share\x"), r"\\server\share\x");
         assert_eq!(plain(r"\\?\Volume{1}\x"), r"\\?\Volume{1}\x");
         assert_eq!(plain("/home/me/x"), "/home/me/x");
+    }
+
+    #[test]
+    fn the_verbatim_prefix_stays_where_the_plain_form_would_be_another_place() {
+        for kept in [
+            r"\\?\C:\x\name.",
+            r"\\?\C:\x \y",
+            r"\\?\C:\x\y ",
+            r"\\?\C:\x\con",
+            r"\\?\C:\x\CON.txt",
+            r"\\?\C:\x\Aux.tar.gz",
+            r"\\?\C:\nul",
+            r"\\?\C:\x\prn.",
+            r"\\?\C:\x\com1",
+            r"\\?\C:\x\LPT9.log",
+            "\\\\?\\C:\\x\\com\u{b9}",
+            r"\\?\UNC\server\share\aux",
+            r"\\?\UNC\server.\share\x",
+        ] {
+            assert_eq!(without_verbatim(Path::new(kept)), Path::new(kept), "{kept}");
+        }
+        // Names that only look like those.
+        for plain in [
+            r"\\?\C:\x\console",
+            r"\\?\C:\x\com10",
+            r"\\?\C:\x\com0",
+            r"\\?\C:\x\lpt",
+            r"\\?\C:\x\a.b",
+            r"\\?\C:\x\.hidden",
+            r"\\?\C:\x\auxx.txt",
+        ] {
+            assert_ne!(
+                without_verbatim(Path::new(plain)),
+                Path::new(plain),
+                "{plain}"
+            );
+        }
+        // The limit of the plain form: 259 characters are fine, 260 are not.
+        let long = |n: usize| format!(r"\\?\C:\{}", "a".repeat(n - 3));
+        assert_eq!(
+            without_verbatim(Path::new(&long(259)))
+                .to_string_lossy()
+                .len(),
+            259
+        );
+        assert_eq!(
+            without_verbatim(Path::new(&long(260 + 4))),
+            Path::new(&long(260 + 4))
+        );
     }
 
     #[test]
