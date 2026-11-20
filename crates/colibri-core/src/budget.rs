@@ -34,11 +34,11 @@ pub struct Budget {
     phase_start: i64,
     /// Steps used in earlier phases of this entry.
     banked: u64,
-    pub state: BudgetState,
+    state: BudgetState,
     /// How many entries from the host are active, one inside another.
-    pub depth: u32,
+    depth: u32,
     /// The steps the last finished entry used.
-    pub last_used: u64,
+    last_used: u64,
 }
 
 impl Default for Budget {
@@ -114,11 +114,13 @@ impl Budget {
 
 impl Core {
     /// Whether the grace of an exhausted budget is used up: cleanups are skipped.
+    #[inline]
     pub fn budget_is_dead(&self) -> bool {
         self.budget.state == BudgetState::Dead
     }
 
     /// Whether the current entry ran out of budget (even if the program swallowed the panic).
+    #[inline]
     pub fn budget_was_exhausted(&self) -> bool {
         self.budget.state != BudgetState::Normal
     }
@@ -139,6 +141,7 @@ impl Core {
     }
 
     /// Begins an entry from the host: the outermost one gets a fresh allotment.
+    #[inline]
     pub fn begin_entry(&mut self) -> bool {
         let outermost = self.budget.depth == 0;
         if outermost {
@@ -149,6 +152,7 @@ impl Core {
     }
 
     /// Ends the entry `begin_entry` began. `record` keeps its step count for `steps_used`.
+    #[inline]
     pub fn end_entry(&mut self, outermost: bool, record: bool) {
         self.budget.depth -= 1;
         if outermost {

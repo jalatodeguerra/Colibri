@@ -6,18 +6,19 @@
 //! `colibri-runtime`, which re-exports what they need.
 
 pub mod budget;
+pub mod builders;
 pub mod clone;
 pub mod closure;
 pub mod compare;
 pub mod ctl;
 pub mod dispatch;
+pub mod error;
 pub mod format;
 pub mod heap;
 pub mod hooks;
 pub mod host;
 pub mod hostheap;
 pub mod iter;
-pub mod layout;
 pub mod leaks;
 pub mod num;
 pub mod ordered;
@@ -29,6 +30,7 @@ pub use state::Core;
 
 /// The current position on the native stack (it only has to be comparable with another one).
 #[doc(hidden)]
+#[inline]
 pub fn stack_position() -> usize {
     let marker = 0u8;
     std::hint::black_box(&marker) as *const u8 as usize

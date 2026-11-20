@@ -98,7 +98,7 @@ impl Default for LeakTracker {
 }
 
 impl LeakTracker {
-    pub fn new() -> Self {
+    fn new() -> Self {
         LeakTracker {
             entries: Vec::new(),
             prune_at: 1024,

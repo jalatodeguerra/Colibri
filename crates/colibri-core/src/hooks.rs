@@ -1,10 +1,10 @@
 //! Where user-written implementations take over from the structural defaults.
 //!
 //! Equality, ordering, `Show` and `clone` are implemented structurally (DESIGN §7.4), over
-//! plain values, by functions that know nothing of the interpreter. A user `impl Eq for T`
+//! plain values, by functions that know nothing of the engine. A user `impl Eq for T`
 //! (or `Ord`, `Show`, `Clone`) replaces the default for `T` wherever `T` appears, also nested
 //! inside a list or a struct. Those functions therefore ask an [`Overrides`] first; the
-//! interpreter answers by running the user's method, and [`Plain`] never overrides anything.
+//! engine answers by running the user's method, and [`Plain`] never overrides anything.
 
 use std::cmp::Ordering;
 

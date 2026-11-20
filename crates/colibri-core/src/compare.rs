@@ -249,6 +249,7 @@ fn equal_collections(
 }
 
 /// `a is b`: whether two reference values are the same object.
+#[inline]
 pub fn values_identical(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::List(x), Value::List(y)) => Rc::ptr_eq(x, y),

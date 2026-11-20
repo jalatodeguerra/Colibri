@@ -10,9 +10,9 @@ use colibri_check::hir::{Body, Program, TypeDef};
 use colibri_check::types::{Ty, TypeId};
 use colibri_syntax::SourceMap;
 
+use crate::error::{new_error, new_typed_error};
 use crate::heap::MapObj;
 use crate::hostheap::HostHeap;
-use crate::layout::{new_error, new_typed_error};
 use crate::ordered::OrderedMap;
 use crate::state::Core;
 use crate::value::Value;
@@ -62,7 +62,7 @@ pub struct HostSide {
     pub state: HashMap<AnyTypeId, Box<dyn Any>>,
     pub roots: Roots,
     pub sources: Rc<SourceMap>,
-    /// Which `Vm` and which program in it (its epoch) this interpreter belongs to, and whether
+    /// Which `Vm` and which program in it (its epoch) this engine belongs to, and whether
     /// a program is loaded.
     pub owner: (u64, u32),
     pub loaded: bool,
@@ -83,7 +83,7 @@ pub struct HostSide {
     /// engine's: they are host functions).
     pub any_show_hook: bool,
     pub any_eq_hook: bool,
-    /// Which `Vm` this interpreter belongs to.
+    /// Which `Vm` this engine belongs to.
     pub vm_id: u64,
     pub drop_queue: RootDropQueue,
     /// The type arguments of the host function call that is running.
@@ -267,7 +267,7 @@ impl Core {
         self.host.loaded
     }
 
-    /// Tells the interpreter which `Vm` it belongs to (for handles).
+    /// Tells the engine which `Vm` it belongs to (for handles).
     pub fn set_vm_id(&mut self, id: u64) {
         self.host.vm_id = id;
     }
@@ -369,6 +369,7 @@ impl Core {
 
     /// Lets go of a root and hands back its value, for the engine to release (a `Drop` hook
     /// may run). `None` for a stale handle.
+    #[must_use = "the value must be released by the engine"]
     pub fn take_root(&mut self, handle: RootHandle) -> Option<Value> {
         let roots = &mut self.host.roots;
         if roots.epoch != handle.2 {
@@ -386,6 +387,7 @@ impl Core {
 
     /// Every root dies at once; the handles made so far become stale. The values come back
     /// in slot order, for the engine to release.
+    #[must_use = "the values must be released by the engine"]
     pub fn take_all_roots(&mut self) -> Vec<Value> {
         let slots = std::mem::take(&mut self.host.roots.slots);
         self.host.roots.free.clear();

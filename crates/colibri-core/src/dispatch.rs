@@ -17,8 +17,7 @@ pub struct Tables {
     pub index: HashMap<(TypeKey, TypeId), u32>,
     /// The impls of `Add`, `Sub`, `Mul`, `Div` and `Neg`, by left type, interface and the head
     /// of the right-hand type (`None` when it is a type parameter, or for `Neg`).
-    #[doc(hidden)]
-    pub operators: HashMap<(TypeKey, TypeId, Option<TypeKey>), u32>,
+    operators: HashMap<(TypeKey, TypeId, Option<TypeKey>), u32>,
     #[doc(hidden)]
     pub eq: HashMap<TypeId, FnId>,
     #[doc(hidden)]
@@ -69,7 +68,20 @@ impl Tables {
         t
     }
 
+    /// The index of the user impl of operator interface `iface` for the left type `left` and
+    /// the right-hand type head `right` (`None` for a type parameter, or for `Neg`).
+    #[inline]
+    pub fn operator_impl(
+        &self,
+        left: TypeKey,
+        iface: TypeId,
+        right: Option<TypeKey>,
+    ) -> Option<u32> {
+        self.operators.get(&(left, iface, right)).copied()
+    }
+
     /// The user-written `Drop` hook of a class.
+    #[inline]
     pub fn drop_hook(&self, class: TypeId) -> Option<FnId> {
         self.drop.get(&class).copied()
     }

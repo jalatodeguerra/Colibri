@@ -1,15 +1,8 @@
 //! `Option`, `Result` and `Error` (DESIGN §10): their methods and the `Error` value.
 //!
-//! An `Error` is a class object of the prelude type [`ERROR_TYPE`] with four fields:
+//! The layout of the `Error` object, and how one is made and read, is `colibri_core::error`.
 //!
-//! | field | root error | error made by `context` |
-//! |-------|-----------|--------------------------|
-//! | 0 value | the original typed value (kept as it was, so `as[T]` returns it intact) | `()` |
-//! | 1 impl | the index of its `IntoError` implementation, or `-1` | `-1` |
-//! | 2 context | `()` | the context message |
-//! | 3 cause | `()` | the wrapped `Error` |
-//!
-//! So an error is a chain from the outermost `context` down to the root, which holds the
+//! An error is a chain from the outermost `context` down to the root, which holds the
 //! value. `{e}` shows the messages joined by `: `, `message()` the outermost one, `cause()`
 //! the next link, and `is`/`as` look at the value of the root. Objects die through
 //! `Interp::release` like every class object, which releases the kept value.
@@ -28,7 +21,7 @@ use crate::fiber::Fiber;
 use crate::heap::ClassObj;
 use crate::value::Value;
 
-use colibri_core::layout::{Link, link, new_error};
+use colibri_core::error::{Link, link, new_context_error, new_error};
 
 /// The `Error` object a value is, if it is one.
 pub(crate) fn error_obj(v: &Value) -> Option<&Rc<ClassObj>> {
@@ -71,14 +64,6 @@ fn err_value(v: Value) -> Value {
 
 impl Interp {
     // ---- making errors ----
-
-    /// `context`: a new error with the message `message` around `cause`.
-    fn wrap_error(cause: Value, message: Rc<str>) -> Value {
-        Value::Obj(ClassObj::new(
-            ERROR_TYPE,
-            vec![Value::Unit, Value::Int(-1), Value::Str(message), cause],
-        ))
-    }
 
     /// A value converted to an `Error` (an `Error` stays as it is).
     pub(crate) fn convert_to_error(&mut self, value: Value, conv: ErrorConv) -> Value {
@@ -211,7 +196,7 @@ impl Interp {
                 None => recv,
             },
             Builtin::ResultContext => match payload_of(&recv, VARIANT_ERR) {
-                Some(e) => err_value(Self::wrap_error(e, self.message_arg(args, 1))),
+                Some(e) => err_value(new_context_error(e, self.message_arg(args, 1))),
                 None => recv,
             },
             Builtin::ErrorMessage => {
@@ -225,7 +210,7 @@ impl Interp {
                 if error_obj(&recv).is_none() {
                     return Err(bad(self, fiber));
                 }
-                Self::wrap_error(recv, self.message_arg(args, 1))
+                new_context_error(recv, self.message_arg(args, 1))
             }
             Builtin::ErrorCause => match error_obj(&recv).map(|e| link(e)) {
                 Some(Link::Context(_, cause)) => Value::option(Some(Value::Obj(cause))),

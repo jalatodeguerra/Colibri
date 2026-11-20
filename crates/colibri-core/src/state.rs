@@ -70,6 +70,7 @@ impl Core {
     }
 
     /// The function id a closure made in an earlier generation has now.
+    #[inline]
     pub fn closure_fn(&self, c: &ClosureObj) -> Option<FnId> {
         let mut id = c.f.0;
         for map in self

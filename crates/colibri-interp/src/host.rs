@@ -67,37 +67,42 @@ impl Interp {
 
     // ---- the host side, which lives in `Core` ----
 
-    /// See [`colibri_core::Core::host_type`].
+    /// The type id of a struct, enum or class declared by the default `host` module of the
+    /// host interface. Another module's types are found with [`Interp::host_type_in`].
     pub fn host_type(&self, name: &str) -> Option<TypeId> {
         self.core.host_type(name)
     }
 
-    /// See [`colibri_core::Core::host_type_in`].
+    /// The type id of a struct, enum or class that the host module `module` declares (`host`
+    /// for the default module).
     pub fn host_type_in(&self, module: &str, name: &str) -> Option<TypeId> {
         self.core.host_type_in(module, name)
     }
 
-    /// See [`colibri_core::Core::set_host_type_aliases`].
+    /// Records the types a module's bare names mean that another module declares (see
+    /// [`Interp::host_type_here`]).
     pub fn set_host_type_aliases(&mut self, aliases: HashMap<(String, String), TypeId>) {
         self.core.set_host_type_aliases(aliases);
     }
 
-    /// See [`colibri_core::Core::host_type_here`].
+    /// The type a host function of `module` means by the bare `name`, or the reason there is
+    /// none (no such type, or several modules declare one).
     pub fn host_type_here(&self, module: Option<&str>, name: &str) -> Result<TypeId, String> {
         self.core.host_type_here(module, name)
     }
 
-    /// See [`colibri_core::Core::set_host_classes`].
+    /// Records which Rust type implements which host class of the loaded program.
     pub fn set_host_classes(&mut self, classes: HashMap<AnyTypeId, TypeId>) {
         self.core.set_host_classes(classes);
     }
 
-    /// See [`colibri_core::Core::host_class`].
+    /// The type id of the host class that the Rust type `any` implements.
     pub fn host_class(&self, any: AnyTypeId) -> Option<TypeId> {
         self.core.host_class(any)
     }
 
-    /// See [`colibri_core::Core::module_enum_variant`].
+    /// The type id and the index of the variant `variant` of the enum `enum_name` that the host
+    /// module `module` declared as its own, or the reason there is none.
     pub fn module_enum_variant(
         &self,
         module: &str,
@@ -112,7 +117,8 @@ impl Interp {
         self.core.type_name(id)
     }
 
-    /// See [`colibri_core::Core::set_owner`].
+    /// Says which program of which `Vm` this is, whether it is loaded, and what shows the
+    /// locations of its panics.
     pub fn set_owner(&mut self, owner: (u64, u32), loaded: bool, sources: Rc<SourceMap>) {
         self.core.set_owner(owner, loaded, sources);
     }

@@ -26,13 +26,16 @@ use crate::value::{CellObj, Value};
 pub(crate) use colibri_core::stack_position;
 pub(crate) use colibri_core::value::{unwrap_cell, unwrap_cell_ref};
 
-/// The interpreter: the loaded code, the module-level state and the output writer. Everything
+/// The interpreter: the loaded code, the module-level state and the [`Core`] it shares with the engine-neutral runtime code. Everything
 /// about a running computation is in the [`Fiber`] passed to each method.
 pub struct Interp {
     /// Looked up at call time, so a patched function takes effect at its next call.
     pub(crate) fns: Vec<Rc<Body>>,
     pub(crate) globals: Vec<Value>,
     /// The state shared with the engine-neutral runtime code (`colibri-core`).
+    /// Fields drop in declaration order, so `core` (the host state and the host heap) goes
+    /// before `host_impls` (the host function closures). Nothing observable depends on it
+    /// today, because the `Vm` keeps its own reference to every host function.
     pub(crate) core: Core,
     /// Every global's initialiser, in initialisation order (`Program::init_order`).
     pub(crate) inits: Vec<(GlobalId, Rc<Body>)>,

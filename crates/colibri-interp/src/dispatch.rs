@@ -550,10 +550,10 @@ impl Interp {
                 | (Some(Value::Str(_)), Some(Value::Str(_)))
         );
         let found = left.filter(|_| !primitives).and_then(|k| {
-            let ops = &self.core.dispatch.operators;
-            ops.get(&(k, iface, right))
-                .or_else(|| ops.get(&(k, iface, None)))
-                .copied()
+            let tables = &self.core.dispatch;
+            tables
+                .operator_impl(k, iface, right)
+                .or_else(|| tables.operator_impl(k, iface, None))
         });
         if let Some(f) = self.target_of(found, 0) {
             let Some(body) = self.fns.get(f.0 as usize).cloned() else {

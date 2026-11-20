@@ -210,18 +210,15 @@ impl HostHeap {
         obj
     }
 
-    #[doc(hidden)]
-    pub fn alive(&self, index: u32, generation: u32) -> bool {
+    fn alive(&self, index: u32, generation: u32) -> bool {
         self.slot(index, generation).is_some()
     }
 
-    #[doc(hidden)]
-    pub fn live_count(&self) -> usize {
+    fn live_count(&self) -> usize {
         self.slots.iter().filter(|s| s.live).count()
     }
 
-    #[doc(hidden)]
-    pub fn borrow(
+    fn borrow(
         &self,
         index: u32,
         generation: u32,
@@ -434,5 +431,108 @@ impl Core {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(obj)));
         }
         self.host.heap.free.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use colibri_check::hir::Body;
+
+    use super::*;
+
+    fn stub_body(name: &str) -> Body {
+        let span = colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0);
+        Body {
+            name: name.to_string(),
+            span,
+            param_count: 0,
+            locals: Vec::new(),
+            block: colibri_check::hir::Block {
+                locals: Vec::new(),
+                stmts: Vec::new(),
+                tail: None,
+                ty: colibri_check::types::Ty::Unit,
+                span,
+            },
+            ret: colibri_check::types::Ty::Unit,
+            mutates_self: false,
+        }
+    }
+
+    fn core() -> Core {
+        Core::new(Box::new(std::io::sink()))
+    }
+
+    /// Records when it is dropped.
+    struct Noisy(&'static str, Rc<RefCell<Vec<&'static str>>>);
+
+    impl Drop for Noisy {
+        fn drop(&mut self) {
+            self.1.borrow_mut().push(self.0);
+        }
+    }
+
+    fn any() -> AnyTypeId {
+        AnyTypeId::of::<Noisy>()
+    }
+
+    fn noisy(name: &'static str, log: &Rc<RefCell<Vec<&'static str>>>) -> Box<dyn Any> {
+        Box::new(Noisy(name, Rc::clone(log)))
+    }
+
+    #[test]
+    fn a_borrow_names_the_host_function_that_holds_it() {
+        let log = Rc::default();
+        let mut core = core();
+        let (i, g) = core.host_insert(any(), "Noisy", noisy("a", &log));
+        let holder = Rc::new(stub_body("render"));
+        let guard = core
+            .host_borrow(Some(Rc::clone(&holder)), i, g, any(), true)
+            .unwrap();
+        let busy = core.host_borrow(None, i, g, any(), false).err().unwrap();
+        assert_eq!(
+            busy,
+            HostBorrowError::InUse {
+                name: "Noisy".into(),
+                holder: Some(holder.name.clone()),
+            }
+        );
+        drop(guard);
+        assert!(core.host_borrow(None, i, g, any(), false).is_ok());
+    }
+
+    #[test]
+    fn removing_bumps_the_generation_and_reuses_the_slot() {
+        let log = Rc::default();
+        let mut core = core();
+        let (i, g) = core.host_insert(any(), "Noisy", noisy("a", &log));
+        assert!(core.host_alive(i, g));
+        assert_eq!(core.host_object_count(), 1);
+        let taken = core
+            .host_remove(i, g, any())
+            .unwrap()
+            .expect("it was there");
+        assert!(!core.host_alive(i, g));
+        assert!(log.borrow().is_empty(), "removing hands the object over");
+        drop(taken);
+        assert_eq!(*log.borrow(), ["a"]);
+        let (j, h) = core.host_insert(any(), "Noisy", noisy("b", &log));
+        assert_eq!(i, j);
+        assert_ne!(g, h);
+    }
+
+    #[test]
+    fn the_heap_drops_what_is_left_in_index_order() {
+        let log = Rc::default();
+        let mut core = core();
+        for name in ["a", "b", "c"] {
+            core.host_insert(any(), "Noisy", noisy(name, &log));
+        }
+        core.host_remove(1, 0, any()).unwrap();
+        assert_eq!(*log.borrow(), ["b"]);
+        core.drop_host_heap();
+        assert_eq!(*log.borrow(), ["b", "a", "c"]);
     }
 }

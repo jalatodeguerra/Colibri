@@ -15,7 +15,7 @@ use crate::heap::ClassObj;
 use crate::iter::IterObj;
 use crate::value::Value;
 
-pub(crate) use colibri_core::layout::builder_text;
+pub(crate) use colibri_core::builders::builder_text;
 
 /// The most integers `range.to_list()` builds.
 pub(crate) const MAX_RANGE_LIST: u64 = 1 << 27;

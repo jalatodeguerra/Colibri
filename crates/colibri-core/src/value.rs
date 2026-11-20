@@ -87,15 +87,18 @@ pub struct RangeVal {
 impl RangeVal {
     /// How many integers the range holds, saturating at `u64::MAX` (the full
     /// inclusive `i64` range holds 2^64).
+    #[inline]
     pub fn len(&self) -> u64 {
         let span = i128::from(self.end) - i128::from(self.start) + i128::from(self.inclusive);
         u64::try_from(span.max(0)).unwrap_or(u64::MAX)
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    #[inline]
     pub fn contains(&self, x: i64) -> bool {
         x >= self.start && (x < self.end || (self.inclusive && x == self.end))
     }
@@ -161,14 +164,17 @@ pub struct EnumVal {
 }
 
 impl Value {
+    #[inline]
     pub fn str(s: &str) -> Value {
         Value::Str(Rc::from(s))
     }
 
+    #[inline]
     pub fn bytes(b: &[u8]) -> Value {
         Value::Bytes(Rc::from(b))
     }
 
+    #[inline]
     pub fn range(start: i64, end: i64, inclusive: bool) -> Value {
         Value::Range(Rc::new(RangeVal {
             start,
@@ -177,10 +183,12 @@ impl Value {
         }))
     }
 
+    #[inline]
     pub fn tuple(items: Vec<Value>) -> Value {
         Value::Tuple(Rc::from(items))
     }
 
+    #[inline]
     pub fn strukt(ty: TypeId, fields: Vec<Value>) -> Value {
         Value::Struct(Rc::new(StructVal {
             ty,
@@ -188,6 +196,7 @@ impl Value {
         }))
     }
 
+    #[inline]
     pub fn variant(ty: TypeId, variant: u32, payload: Vec<Value>) -> Value {
         Value::Enum(Rc::new(EnumVal {
             ty,
@@ -196,11 +205,13 @@ impl Value {
         }))
     }
 
+    #[inline]
     pub fn list(items: Vec<Value>) -> Value {
         Value::List(ListObj::new(items))
     }
 
     /// The prelude `Option`: `none`, or `some(v)`.
+    #[inline]
     pub fn option(inner: Option<Value>) -> Value {
         use colibri_check::types::{OPTION_TYPE, VARIANT_NONE, VARIANT_SOME};
         match inner {
@@ -219,6 +230,7 @@ impl Value {
 }
 
 /// The value of a variable slot, looking through a cell.
+#[inline]
 pub fn unwrap_cell_ref(v: &Value) -> Value {
     match v {
         Value::Cell(c) => c.get(),
@@ -227,6 +239,7 @@ pub fn unwrap_cell_ref(v: &Value) -> Value {
 }
 
 /// The value a cell holds, for a variable that is handed back to its owner.
+#[inline]
 pub fn unwrap_cell(v: Value) -> Value {
     match v {
         Value::Cell(c) if Rc::strong_count(&c) == 1 => c.take(),

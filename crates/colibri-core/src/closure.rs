@@ -4,7 +4,7 @@
 //! copy of the value, a *cell* capture shares a [`CellObj`] with the frame that owns the
 //! variable (and with every other closure that captured it), and a *weak* capture holds a weak
 //! reference to a class object. Like the other heap objects these die only through
-//! `Interp::release`, so what a closure captured dies when the closure does.
+//! the engine's `release`, so what a closure captured dies when the closure does.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -19,6 +19,7 @@ pub struct CellObj {
 }
 
 impl CellObj {
+    #[inline]
     pub fn new(value: Value) -> std::rc::Rc<CellObj> {
         std::rc::Rc::new(CellObj {
             value: RefCell::new(value),
@@ -26,6 +27,7 @@ impl CellObj {
     }
 
     /// The current value (a reference bump for shared values).
+    #[inline]
     pub fn get(&self) -> Value {
         self.value.borrow().clone()
     }
@@ -36,11 +38,13 @@ impl CellObj {
     }
 
     /// Stores a value and returns the old one, to be released by the caller.
+    #[inline]
     pub fn set(&self, v: Value) -> Value {
         std::mem::replace(&mut *self.value.borrow_mut(), v)
     }
 
     /// Takes the value out, leaving `()`. Only `release` and a moving receiver do this.
+    #[inline]
     pub fn take(&self) -> Value {
         self.set(Value::Unit)
     }
@@ -71,7 +75,7 @@ pub struct Captured {
 #[derive(Debug)]
 pub struct ClosureObj {
     pub f: FnId,
-    /// How many times the program was extended (`Interp::session_extend`) when the closure
+    /// How many times the program was extended (a session extension) when the closure
     /// was made: `f` is an id of that generation of the function table.
     pub generation: u32,
     pub captures: Vec<Captured>,
