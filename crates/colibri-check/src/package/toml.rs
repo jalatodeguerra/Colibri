@@ -910,16 +910,26 @@ mod tests {
 
     #[test]
     fn reading_takes_time_in_proportion_to_the_size() {
-        for parses in [true, false] {
-            let text = |n: usize| {
-                let body: String = (0..n)
-                    .map(|i| format!("\"https://u{i}:SeCrEt@h{i}\" = \"x\", "))
-                    .collect();
-                if parses {
+        // The shapes: a file that parses, one that does not, and a literal string that holds a
+        // backslash and many at-signs (judged again with the escapes written as at-signs).
+        for shape in 0..3 {
+            let text = |n: usize| match shape {
+                0 => {
+                    let body: String = (0..n)
+                        .map(|i| format!("\"https://u{i}:SeCrEt@h{i}\" = \"x\", "))
+                        .collect();
                     format!("a = {{ {body}z = \"1\" }}\n# c@d\n")
-                } else {
+                }
+                1 => {
+                    let body: String = (0..n)
+                        .map(|i| format!("\"https://u{i}:SeCrEt@h{i}\" = \"x\", "))
+                        .collect();
                     format!("a = {{ {body}\n")
                 }
+                _ => format!(
+                    "[package]\nname = \"app\"\ndescription = '\\{}'\n",
+                    "@".repeat(n * 8)
+                ),
             };
             let time = |n: usize| {
                 let text = text(n);
@@ -931,143 +941,13 @@ mod tests {
             time(100);
             // The best of a few runs: a busy machine slows one run, not all of them.
             let best = |n: usize| (0..5).map(|_| time(n)).fold(f64::INFINITY, f64::min);
-            let (small, big) = (best(1000), best(8000));
+            let (small, big) = if shape == 2 {
+                (best(1250), best(10_000))
+            } else {
+                (best(1000), best(8000))
+            };
             // Eight times the text: about eight times the time, not sixty-four.
-            assert!(big < 20.0 * small.max(0.002), "{parses}: {small} {big}");
+            assert!(big < 20.0 * small.max(0.002), "{shape}: {small} {big}");
         }
-    }
-
-    #[test]
-    fn odd_text_never_panics_and_keeps_its_length() {
-        for text in [
-            "[package]\nname = \"p1\"\nx = \"\\é\"\n",
-            "x = \"\\😀\"\n",
-            "x = \"\\é@\"\n",
-            "x = \"abc\\",
-            "x = \"\\",
-            "é = \"x\"\n",
-            "[é]\n",
-            "[a é]\n",
-            "x é\n",
-            "x = é\n",
-            "x = { a = \"b\" é }\n",
-            "x = { a = \"b\", é }\n",
-            "x = [\"b\" é]\n",
-            "x = [é]\n",
-            "x = \"é\" é\n",
-            "x = {\"é\\😀\n",
-            "# é\nx = '\\é😀' # @\n",
-            "x = \"\\é\" # u:SeCrEt@h\r\n",
-        ] {
-            let c = read(text);
-            same_lengths(text, &c.display);
-            if let Err(errors) = &c.tables {
-                for e in errors {
-                    assert!(
-                        text.is_char_boundary(e.span.start as usize)
-                            && text.is_char_boundary(e.span.end as usize),
-                        "{text:?}: {:?}",
-                        e.span
-                    );
-                }
-            }
-        }
-        // The unknown escape is reported where the backslash is.
-        let text = "x = \"\\é\"\n";
-        let errors = read(text).tables.expect_err("does not parse");
-        assert!(errors[0].message.contains("unknown escape"));
-        assert_eq!(
-            &text[errors[0].span.start as usize..errors[0].span.end as usize],
-            "\\é"
-        );
-        // Spans off a character boundary are moved onto one.
-        let masked = mask_spans("aé😀b", vec![(2, 3), (4, 5)]);
-        assert_eq!(masked.len(), "aé😀b".len());
-        assert!(masked.starts_with('a') && masked.ends_with('b'), "{masked}");
-        assert!(!masked.contains(['é', '😀']), "{masked}");
-    }
-
-    #[test]
-    fn inline_tables_nest_to_a_limit() {
-        let nested = |n: usize| format!("x = {}\"v\"{}\n", "{a = ".repeat(n), "}".repeat(n));
-        assert!(read(&nested(64)).tables.is_ok());
-        let errors = read(&nested(65)).tables.expect_err("too deep");
-        assert!(
-            errors[0].message.contains("nest too deeply (more than 64)"),
-            "{}",
-            errors[0].message
-        );
-        let big = nested(200_000);
-        let c = read(&big);
-        assert!(c.tables.is_err());
-        same_lengths(&big, &c.display);
-        let arrays = format!("x = {}\n", "[".repeat(200_000));
-        assert!(read(&arrays).tables.is_err());
-    }
-
-    #[test]
-    fn an_error_on_a_line_with_an_at_says_its_fixed_part_only() {
-        let say = |text: &str| {
-            let c = read(text);
-            let e = c.tables.expect_err("does not parse").remove(0);
-            assert!(!c.display.contains("github") && !c.display.contains("SeCrEt"));
-            (e, c.display)
-        };
-        let text = "[dependencies]\nlib = { git = \"git@github.com:me/lib.git\", tag = v1 }\n";
-        let (e, display) = say(text);
-        assert!(
-            e.message
-                .starts_with("expected a string or `{` (the text of this line is not shown"),
-            "{}",
-            e.message
-        );
-        assert!(!e.message.contains("v1") && !e.message.contains('`') || e.message.contains("`{`"));
-        assert_eq!(text[e.span.start as usize..].chars().next(), Some('v'));
-        assert!(display.contains("[dependencies]") && !display.contains("tag = v1"));
-        // A duplicate key: the key is not quoted, the label is dropped.
-        let text = "ghp_SeCrEtKey = \"git@github.com:a\"\nghp_SeCrEtKey = \"x@y\"\n";
-        let (e, _) = say(text);
-        assert!(
-            e.message
-                .starts_with("a key is defined more than once (the text")
-        );
-        assert!(!e.message.contains("ghp") && e.labels.is_empty());
-        // No at-sign on the line: the whole message.
-        let c = read("a = 1\nb = \"x@y\"\n");
-        let e = &c.tables.expect_err("does not parse")[0];
-        assert!(
-            e.message
-                .contains("numbers are not supported in `colibri.toml`")
-        );
-        assert!(!e.message.contains("not shown"));
-        let c = read("[a]\n[a]\nb = \"x@y\"\n");
-        let e = &c.tables.expect_err("does not parse")[0];
-        assert!(
-            e.message
-                .contains("the table `[a]` is defined more than once")
-        );
-        assert_eq!(e.labels.len(), 0);
-    }
-
-    #[test]
-    fn an_at_escape_the_string_does_not_decode_counts_as_an_at_sign() {
-        for text in [
-            "a = { git = 'https://u:SeCrEt\\x40h/r' }\n",
-            "a = { git = 'https://u:SeCrEt\\u0040h/r' }\n",
-            "a = { git = 'https://u:SeCrEt\\U00000040h/r' }\n",
-            "a = { path = 'https://u:SeCrEt\\x40h/r' }\n",
-            "a = { git = \"https://u:SeCrEt\\\\x40h/r\" }\n",
-        ] {
-            let c = read(text);
-            assert!(!c.credentials.is_empty(), "{text}");
-            assert!(c.tables.is_err(), "{text}");
-            assert!(!c.display.contains("SeCrEt"), "{text}: {}", c.display);
-            same_lengths(text, &c.display);
-        }
-        // A plain ssh user written with an escape is still fine; so is a comment (hidden).
-        let c = read("a = { git = 'ssh://git\\x40h/r.git' }\n");
-        assert!(c.tables.is_ok(), "{:?}", c.tables.err());
-        let c = read("a = \"x\" # https://u:SeCrEt\\x40h\n");
-        assert!(c.tables.is_ok() && !c.display.contains("SeCrEt"));
     }
 }

@@ -1118,13 +1118,37 @@ pub(super) fn credential_like(value: &str, url: bool) -> bool {
 
 /// `value` with each escape for an `@` (`\u0040`, `\U00000040`, `\x40`) written as an `@`.
 fn at_escapes_to_at(value: &str) -> String {
-    // `last_at_like` finds the last one: put an `@` there, and go on with what is before it.
-    let mut out = value.to_string();
-    let mut end = out.len();
-    while let Some((s, e)) = last_at_like(&out[..end]) {
-        out.replace_range(s..e, "@");
-        end = s;
+    // One pass: what is not an escape is copied, an escape is written as `@` (the same
+    // case-insensitive comparison as `last_at_like`).
+    let b = value.as_bytes();
+    let mut out = String::with_capacity(value.len());
+    let (mut i, mut copied) = (0, 0);
+    while i < b.len() {
+        if b[i] == b'\\' {
+            let at = |s: &[u8]| {
+                b.get(i + 1..i + 1 + s.len())
+                    .is_some_and(|x| x.eq_ignore_ascii_case(s))
+            };
+            let len = if at(b"u0040") {
+                6
+            } else if at(b"u00000040") {
+                10
+            } else if at(b"x40") {
+                4
+            } else {
+                0
+            };
+            if len > 0 {
+                out.push_str(&value[copied..i]);
+                out.push('@');
+                i += len;
+                copied = i;
+                continue;
+            }
+        }
+        i += 1;
     }
+    out.push_str(&value[copied..]);
     out
 }
 
