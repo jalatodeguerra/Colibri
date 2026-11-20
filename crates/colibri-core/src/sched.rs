@@ -60,6 +60,17 @@ pub enum State {
     Finished,
 }
 
+/// What an engine needs to find its side of a coroutine, kept by the scheduler and handed back
+/// at every resumption. The scheduler does not look inside: for the tree-walker `index` is the
+/// slot of the coroutine's native stack and `budget` how much of it the evaluator may use; for
+/// an engine with heap frames `index` could be the frame list and `budget` is unused.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StackSlot {
+    pub index: u32,
+    pub budget: usize,
+}
+
 /// What the scheduler knows of one coroutine.
 #[doc(hidden)]
 pub struct Entry {
@@ -68,8 +79,8 @@ pub struct Entry {
     pub(crate) wake: Wake,
     pub(crate) handle: Weak<ClassObj>,
     pub(crate) cancel_requested: bool,
-    /// How much of the coroutine's native stack the evaluator may use (the engine's measure).
-    pub(crate) stack_budget: usize,
+    /// The engine's side of the coroutine, opaque here.
+    pub(crate) slot: StackSlot,
     /// The `CoGroup` that owns this coroutine.
     pub(crate) group: Option<u64>,
     /// The tick in which this coroutine was already resumed (as a signal waiter).
@@ -139,15 +150,15 @@ impl Scheduler {
     }
 
     /// Records the coroutine `id` (from [`Scheduler::alloc_id`]) as started and not yet run: it
-    /// is due at the next tick, and belongs to `group` if it has one. The engine keeps
-    /// whatever it needs to run the coroutine; `stack_budget` is the engine's measure of how
-    /// deep the coroutine may go, handed back by [`Scheduler::stack_budget`].
+    /// is due at the next tick, and belongs to `group` if it has one. `slot` is whatever the
+    /// engine needs to find its side of the coroutine; it is handed back to
+    /// [`crate::engine::Engine::resume_stack`] at every resumption.
     pub fn register(
         &mut self,
         id: u64,
         handle: Weak<ClassObj>,
         group: Option<u64>,
-        stack_budget: usize,
+        slot: StackSlot,
     ) {
         self.entries.push(Entry {
             id,
@@ -155,18 +166,13 @@ impl Scheduler {
             wake: Wake::Ready,
             handle,
             cancel_requested: false,
-            stack_budget,
+            slot,
             group,
             ticked: 0,
         });
         if let Some(g) = group {
             self.groups.entry(g).or_default().push(id);
         }
-    }
-
-    /// The engine's measure of how deep the coroutine `id` may go, as given to `register`.
-    pub fn stack_budget(&self, id: u64) -> Option<usize> {
-        Some(self.entries[self.find(id)?].stack_budget)
     }
 
     /// Whether `id` has been asked to cancel (it was running higher up the resume chain when

@@ -48,31 +48,65 @@ pub(crate) struct Resume {
     pub cancel: bool,
 }
 
-/// A cheap hasher for the coroutine ids that key `Interp::stacks`: ids are small and
-/// sequential, and every resumption looks one up twice, so the default hasher's cost showed.
-/// The multiplication spreads the low bits into the high ones, which the table's tags use.
+/// The native stacks of the coroutines that have not ended: a slab of slots, each `Some` while
+/// its coroutine is suspended and `None` while it runs (the stack is moved out for the
+/// resumption, so nothing in here is borrowed while the coroutine uses the interpreter, and a
+/// second resumption of a running coroutine finds an empty slot instead of a stack). A
+/// finished coroutine's slot goes on the free list for the next start. The scheduler keeps the
+/// slot index of each coroutine (`StackSlot`) and hands it back at every resumption.
 #[derive(Default)]
-pub(crate) struct IdHasher(u64);
+pub(crate) struct Stacks {
+    slots: Vec<Option<Box<Co>>>,
+    free: Vec<u32>,
+}
 
-impl std::hash::Hasher for IdHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.write_u64(self.0.rotate_left(8) ^ u64::from(*b));
+impl Stacks {
+    /// Stores the stack of a new coroutine and returns its slot.
+    pub(crate) fn insert(&mut self, co: Box<Co>) -> u32 {
+        match self.free.pop() {
+            Some(index) => {
+                self.slots[index as usize] = Some(co);
+                index
+            }
+            None => {
+                self.slots.push(Some(co));
+                (self.slots.len() - 1) as u32
+            }
         }
     }
 
-    fn write_u64(&mut self, n: u64) {
-        self.0 = n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    /// Moves the stack out of `slot` for a resumption; `None` if it is not there (the
+    /// coroutine is running, or ended).
+    #[inline]
+    pub(crate) fn take(&mut self, slot: u32) -> Option<Box<Co>> {
+        self.slots.get_mut(slot as usize)?.take()
+    }
+
+    /// Puts the stack of a coroutine that paused back into its slot.
+    #[inline]
+    pub(crate) fn put_back(&mut self, slot: u32, co: Box<Co>) {
+        self.slots[slot as usize] = Some(co);
+    }
+
+    /// The coroutine of `slot` ran to its end and its stack was dropped: the slot is free.
+    #[inline]
+    pub(crate) fn free(&mut self, slot: u32) {
+        self.free.push(slot);
+    }
+
+    /// Whether no stack is stored (none suspended, none left over).
+    pub(crate) fn is_empty(&self) -> bool {
+        self.slots.iter().all(Option::is_none)
+    }
+
+    /// Forgets every stored stack without unwinding it, and empties the slab.
+    pub(crate) fn forget_all(&mut self) {
+        for co in self.slots.drain(..).flatten() {
+            std::mem::forget(co);
+        }
+        self.free.clear();
     }
 }
-
-/// The native stacks of the coroutines that have not ended, by id.
-pub(crate) type Stacks =
-    std::collections::HashMap<u64, Box<Co>, std::hash::BuildHasherDefault<IdHasher>>;
 
 pub(crate) type Y = Yielder<Resume, *mut Interp>;
 pub(crate) type Co = Coroutine<Resume, *mut Interp, Finish, DefaultStack>;
@@ -290,10 +324,13 @@ impl Interp {
         };
         let co: Co = Coroutine::with_stack(stack, body);
         let budget = size * STACK_USABLE_NUM / STACK_USABLE_DEN;
-        self.stacks.insert(id, Box::new(co));
-        self.core
-            .sched
-            .register(id, Rc::downgrade(&handle), group, budget);
+        let index = self.stacks.insert(Box::new(co));
+        self.core.sched.register(
+            id,
+            Rc::downgrade(&handle),
+            group,
+            StackSlot { index, budget },
+        );
         // The first run shares the starter's instruction budget: it is part of the starter's
         // own execution.
         self.resume_coro(id, false, false);
@@ -613,17 +650,19 @@ impl Interp {
 
     // ---- the engine's half of resuming and the built-ins that pause ----
 
-    /// [`Engine::resume_stack`]: switches to the native stack of coroutine `id` and back.
-    pub(crate) fn resume_native_stack(&mut self, id: u64, cancel: bool) -> Resumed {
-        let Some(stack_budget) = self.core.sched.stack_budget(id) else {
+    /// [`Engine::resume_stack`]: switches to the native stack in `slot` and back.
+    #[inline]
+    pub(crate) fn resume_native_stack(&mut self, slot: StackSlot, cancel: bool) -> Resumed {
+        // The stack leaves the slab for the resumption: the slot is `None` while the
+        // coroutine runs, so a second resumption of it (which the scheduler does not
+        // attempt: it resumes suspended coroutines only) would find nothing and report `Gone`.
+        let Some(mut co) = self.stacks.take(slot.index) else {
             return Resumed::Gone;
         };
-        let Some(mut co) = self.stacks.remove(&id) else {
-            return Resumed::Gone;
-        };
-        let saved_stack = std::mem::replace(&mut self.native_stack_budget, stack_budget);
-        // From here to the `black_box` below, no reference into the interpreter (`self`, and
-        // so `core`) is used: the coroutine on `co` has the only one, through `ptr`.
+        let saved_stack = std::mem::replace(&mut self.native_stack_budget, slot.budget);
+        // From here to the `black_box` below, no reference into the interpreter (`self`, so
+        // `core` and `stacks`) is alive: `co` is owned by this frame, and the coroutine on it
+        // has the only reference, through `ptr`.
         let ptr: *mut Interp = self;
         let outcome = co.resume(Resume {
             interp: ptr,
@@ -633,12 +672,14 @@ impl Interp {
         self.native_stack_budget = saved_stack;
         match outcome {
             CoroutineResult::Yield(_) => {
-                self.stacks.insert(id, co);
+                // Nested starts may have grown the slab meanwhile; the slot index is still valid.
+                self.stacks.put_back(slot.index, co);
                 Resumed::Suspended
             }
             CoroutineResult::Return(finish) => {
                 // The coroutine ran to its end: only now is its stack freed.
                 drop(co);
+                self.stacks.free(slot.index);
                 Resumed::Finished(finish)
             }
         }
@@ -728,11 +769,9 @@ impl Interp {
     /// module-level values die. Nothing can start meanwhile.
     pub fn cancel_all_coroutines(&mut self) {
         Sched::cancel_all_coroutines(self);
-        for (_, co) in self.stacks.drain() {
-            // Unreachable in practice (every suspended coroutine was resumed with a cancel and
-            // ran to its end, which frees its stack); a forced unwind must never happen.
-            std::mem::forget(co);
-        }
+        // Unreachable in practice (every suspended coroutine was resumed with a cancel and ran
+        // to its end, which frees its stack); a forced unwind must never happen.
+        self.stacks.forget_all();
     }
 }
 

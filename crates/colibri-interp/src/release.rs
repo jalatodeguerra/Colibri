@@ -58,6 +58,10 @@ impl Interp {
 impl Drop for Interp {
     fn drop(&mut self) {
         self.shutdown();
+        debug_assert!(
+            self.stacks.is_empty(),
+            "a coroutine stack outlived the shutdown that runs every coroutine to its end"
+        );
         // Roots and module values are gone; what is left in the host heap dies last, in
         // index order (EMBEDDING §3).
         self.core.drop_host_heap();

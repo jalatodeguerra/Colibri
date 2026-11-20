@@ -34,12 +34,13 @@ pub struct Interp {
     /// Looked up at call time, so a patched function takes effect at its next call.
     pub(crate) fns: Vec<Rc<Body>>,
     pub(crate) globals: Vec<Value>,
-    /// The native stacks of the coroutines that have not ended, by id (ARCHITECTURE §16). A
-    /// stack is freed only after its coroutine ran to its end: `shutdown` runs
-    /// `cancel_all_coroutines` first (from `Drop`), which resumes every suspended coroutine with
-    /// a cancel, so this map is empty by the time fields drop. It is declared before `core` so
-    /// that if one were ever left, it would drop (a forced unwind of its frames) while the
-    /// state those frames point into is still alive.
+    /// The native stacks of the coroutines that have not ended (ARCHITECTURE §16), a slab:
+    /// the scheduler in `core` keeps each coroutine's slot. A stack is freed only after its
+    /// coroutine ran to its end: `shutdown` runs `cancel_all_coroutines` first (from `Drop`),
+    /// which resumes every suspended coroutine with a cancel, so the slab is empty by the time
+    /// fields drop (`Drop for Interp` asserts it in debug builds). It is declared before `core`
+    /// so that if a stack were ever left, it would drop (a forced unwind of its frames) while
+    /// the state those frames point into is still alive.
     pub(crate) stacks: crate::coro::Stacks,
     /// The state shared with the engine-neutral runtime code (`colibri-core`).
     /// Fields drop in declaration order, so `core` (the host state and the host heap) goes

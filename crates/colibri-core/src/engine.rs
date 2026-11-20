@@ -17,7 +17,7 @@ use colibri_syntax::Span;
 use crate::ctl::{Eval, TraceEntry};
 use crate::fiber::FiberState;
 use crate::host::{HostFault, HostHook};
-use crate::sched::Finish;
+use crate::sched::{Finish, StackSlot};
 use crate::state::Core;
 use crate::value::Value;
 
@@ -154,9 +154,11 @@ pub trait Engine: Sized {
     /// For the tree-walker this switches to the coroutine's native stack and back. For an
     /// engine with heap frames it is the same contract with no stack: run the coroutine's
     /// frames from where it paused until it waits again or ends. The engine must not hold a
-    /// reference into [`Core`] across the call (the coroutine uses it meanwhile). `Gone` means
-    /// the engine has nothing to run for `id`.
-    fn resume_stack(&mut self, id: u64, cancel: bool) -> Resumed;
+    /// reference into [`Core`] across the call (the coroutine uses it meanwhile). `slot` is what the
+    /// engine gave to `Scheduler::register` for this coroutine. `Gone` means the engine has
+    /// nothing to run for `id` (it is already running, or has ended): the scheduler then leaves
+    /// it as it was.
+    fn resume_stack(&mut self, id: u64, slot: StackSlot, cancel: bool) -> Resumed;
 
     // ---- built-ins that pause ----
 

@@ -116,6 +116,7 @@ pub trait Sched: Engine {
 
     /// Runs coroutine `id` until it pauses or ends. `fresh` gives the resumption an instruction
     /// budget of its own (the scheduler's ticks); a start shares its starter's.
+    #[inline]
     fn resume_coro(&mut self, id: u64, cancel: bool, fresh: bool) {
         let core = self.core_mut();
         let s = &mut core.sched;
@@ -127,6 +128,7 @@ pub trait Sched: Engine {
             return;
         }
         e.state = State::Running;
+        let slot = e.slot;
         if cancel && let Wake::Signal(sig) = e.wake {
             // A cancelled waiter leaves the signal's list.
             if let Some(list) = s.signals.get_mut(&sig) {
@@ -146,7 +148,7 @@ pub trait Sched: Engine {
         });
         // No reference into the core is held across this call: the engine runs the
         // coroutine, which uses the core through the engine's own pointer.
-        let outcome = self.resume_stack(id, cancel);
+        let outcome = self.resume_stack(id, slot, cancel);
         let core = self.core_mut();
         let exhausted = fresh && core.budget_was_exhausted();
         if let Some(b) = saved_budget {
