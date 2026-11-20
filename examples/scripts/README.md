@@ -63,6 +63,7 @@ total             10        81
 
 ```sh
 colibri run kvserver/kvserver.colibri -- [--addr 127.0.0.1:0] [--idle SECONDS]
+                                         [--max-connections N]
 ```
 
 A key-value store that speaks a line protocol over TCP, written with `net`. The first line it
@@ -81,7 +82,11 @@ prints is `listening on HOST:PORT` (port 0 lets the system pick). One request pe
 
 `main` is an accept loop that starts one coroutine per connection (`go serve(..)`), so clients
 are served at the same time; `net` waits on background threads and only the waiting coroutine
-stops. `--idle` closes a connection that is silent for that long (`conn.set_timeout`). A connection
+stops. `--idle SECONDS` is a deadline for each request line (`conn.set_timeout` counts from the
+call): a client whose next line has not arrived whole within that time is closed, also when it
+sent part of the line meanwhile. Each connection waiting for a request holds one operating system
+thread, so the server serves at most `--max-connections N` at once (default 256); a connection
+over that is told `ERR too many connections` and closed. A connection
 leaves the server's table when it ends, and an `accept` that fails for another reason than the
 listener being closed (no descriptor left, say) is reported on stderr and retried after a short
 wait. Exit codes: 0 stopped by `SHUTDOWN`, 1 the address cannot be used, 2 bad command line.

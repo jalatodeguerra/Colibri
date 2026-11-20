@@ -1,6 +1,6 @@
 // kvserver: a small key-value store that speaks a line protocol over TCP.
 //
-//   colibri run kvserver.colibri -- [--addr 127.0.0.1:0] [--idle SECONDS]
+//   colibri run kvserver.colibri -- [--addr 127.0.0.1:0] [--idle SECONDS] [--max-connections N]
 //
 // One request per line, one answer per line (`\n` or `\r\n` ends a request):
 //
@@ -13,8 +13,13 @@
 // the same time and a slow client holds nobody up. The store is shared by all of them: the
 // coroutines never run in parallel with each other, so a request is never half done when the
 // next one starts. The first line printed is `listening on HOST:PORT` (with port 0 the system
-// picks the port, and that line says which). `--idle` closes a connection that sends nothing
-// for that many seconds (`set_timeout`); the default is to wait for ever.
+// picks the port, and that line says which). `--idle` is a deadline for each request line:
+// a connection whose next line has not arrived whole within that many seconds is closed
+// (`set_timeout` counts from the call of `read_line`, so a client that sends a few bytes now
+// and then is cut off as well); the default is to wait for ever. Every connection waiting
+// for a request holds one operating system thread, so the server serves at most
+// `--max-connections` at once (default 256): one more is told `ERR too many connections`
+// and closed.
 //
 // Exit codes: 0 stopped by SHUTDOWN, 1 the address could not be used, 2 bad command line.
 import args
@@ -23,7 +28,9 @@ import net
 import os
 import str
 
-let USAGE = "usage: colibri run kvserver.colibri -- [--addr host:port] [--idle seconds]"
+let USAGE = "usage: colibri run kvserver.colibri -- [--addr host:port] [--idle seconds] [--max-connections n]"
+
+let DEFAULT_MAX_CONNECTIONS = 256
 
 class Store {
     data: Map[str, str]
@@ -104,6 +111,23 @@ fn main() -> Result[()] {
         idle = str.parse_float(text) or |e| {
             usage_error("--idle: {e.message()}")
         }
+        // Not negative, not `nan`, not `inf`: `set_timeout` accepts nothing else.
+        if !(idle >= 0.0 && idle < 1.0e9) {
+            usage_error(
+                "--idle: `{text}` is not a number of seconds (use 0 or more, 0 for no limit)",
+            )
+        }
+    }
+    var max_connections = DEFAULT_MAX_CONNECTIONS
+    if let some(text) = args.value("max-connections") {
+        max_connections = str.parse_int(text) or |e| {
+            usage_error("--max-connections: {e.message()}")
+        }
+        if max_connections < 1 {
+            usage_error(
+                "--max-connections: `{text}` is not a number of connections (use 1 or more)",
+            )
+        }
     }
     let listener = net.listen(addr).context("cannot start")?
     print("listening on {listener.addr()}")
@@ -120,6 +144,14 @@ fn main() -> Result[()] {
             }
             io.eprintln("kvserver: cannot accept a connection: {e.message()}")
             wait(0.1)
+            continue
+        }
+        if store.conns.len() >= max_connections {
+            // One line, then goodbye. The write is not waited for longer than a moment: a
+            // peer that does not read must not hold up the accept loop.
+            conn.set_timeout(1.0)
+            let _ = conn.write("ERR too many connections\n")
+            conn.close()
             continue
         }
         let id = store.next_id

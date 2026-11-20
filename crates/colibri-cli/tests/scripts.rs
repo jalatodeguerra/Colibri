@@ -748,6 +748,78 @@ fn kvserver_closes_idle_connections_and_reports_a_bad_address() {
     );
 }
 
+/// `--idle` is a deadline for each request line, and what it is given must be a number of
+/// seconds that `set_timeout` takes: anything else is a usage error (exit 2), not a panic.
+#[test]
+fn kvserver_refuses_an_idle_time_or_a_connection_cap_that_makes_no_sense() {
+    let script = scripts().join("kvserver/kvserver.colibri");
+    for (flag, value) in [
+        ("--idle", "-1"),
+        ("--idle", "nan"),
+        ("--idle", "inf"),
+        ("--idle", "soon"),
+        ("--max-connections", "0"),
+        ("--max-connections", "-3"),
+        ("--max-connections", "many"),
+    ] {
+        let out = run_script(&script, &[flag, value]);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{flag} {value}: {}",
+            text(&out.stderr)
+        );
+        assert!(
+            text(&out.stderr).contains("usage:") && !text(&out.stderr).contains("panic"),
+            "{flag} {value}: {}",
+            text(&out.stderr)
+        );
+        assert_eq!(text(&out.stdout), "", "{flag} {value}");
+    }
+}
+
+/// With `--max-connections 2` a third connection is told so in one line and closed, and a
+/// connection that leaves makes room again.
+#[test]
+fn kvserver_turns_away_connections_over_its_cap() {
+    use std::io::BufRead;
+    let kv = Kv::start(&["--max-connections", "2"]);
+    let mut a = kv.client();
+    let mut b = kv.client();
+    // Both are being served (the answer shows the server has taken them into its table).
+    assert_eq!(ask(&mut a, "SET k v\n"), "OK");
+    assert_eq!(ask(&mut b, "GET k\n"), "VALUE v");
+    let mut c = kv.client();
+    let mut line = String::new();
+    c.1.read_line(&mut line).unwrap();
+    assert_eq!(line.trim_end(), "ERR too many connections");
+    line.clear();
+    assert_eq!(
+        c.1.read_line(&mut line).unwrap(),
+        0,
+        "it is closed after that"
+    );
+    // The others are not disturbed.
+    assert_eq!(ask(&mut a, "COUNT\n"), "1");
+    // `a` leaves; the server notices when its coroutine ends, so ask until there is room.
+    assert_eq!(ask(&mut a, "QUIT\n"), "BYE");
+    let started = std::time::Instant::now();
+    loop {
+        let mut d = kv.client();
+        let answer = ask(&mut d, "COUNT\n");
+        if answer == "1" {
+            break;
+        }
+        assert_eq!(answer, "ERR too many connections");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "no room after a connection left"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
+}
+
 /// A server that runs out of descriptors reports it and goes on: `accept` fails with a
 /// `net.Error` while the table is full, and works again when connections have ended. Unix only,
 /// because the limit is set with `ulimit -n` (a Windows process has no such limit to lower).

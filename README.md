@@ -362,14 +362,28 @@ some("hello, Colibri!")
 waits for a peer the others keep running. Cancelling a coroutine that waits in `read` or `accept`
 never loses data or a connection: what had arrived stays for the next call. `close()` never
 waits and never fails, and it ends every call that waits on that object with `net.Error.Closed`.
+Each connection or listener that waits in a read or an accept holds one operating system thread
+while it waits, so `net` suits tens or hundreds of connections at once, not tens of thousands.
 
 - A `net.Conn` has `read(n)` (up to `n` bytes, waiting for at least one; empty `Bytes` is the
   end of the stream), `read_exact(n)`, `read_line()` (`none` at the end; a line may be up to 1 MiB
   and must be UTF-8), `write(text)`, `write_bytes(data)`, `close_write()` (tells the peer that
   nothing more comes, and the connection still reads), `set_timeout(seconds)` for each later read
-  and write (0 means none), `local_addr()`, `peer_addr()` and `close()`.
+  and write (0 means none), `local_addr()`, `peer_addr()` and `close()`. `set_timeout` is a
+  deadline for the whole call, counted from the call: a `read_line` that gets half a line and then
+  nothing times out as a whole, so to bound the wait for each line, set it before each call.
+  `close_write()` takes its turn behind the writes already called, so it never cuts one.
 - `net.connect_timeout(addr, seconds)` gives up after that long. A timed-out read keeps what it
   had read, and the connection stays usable.
+- A read or an accept that is called where nothing else can run (a `Drop` hook, a callback of a
+  host function) while another coroutine already waits in a read of the same connection (or an
+  accept of the same listener) is a `net.Error.Other` at once: that coroutine cannot resume while
+  the hook waits, so the two would wait for each other for ever.
+- A port can be listened on again as soon as its listener is closed, also when connections of it
+  are still closing. On Linux and Windows a second `listen` on a port that is in use fails with
+  `AddrInUse` even when it names a specific address (`127.0.0.1:P` while `0.0.0.0:P` is held); on
+  macOS it succeeds there, because the option that makes the restart possible lets a specific
+  address be bound next to a wildcard one.
 - `listen("[::]:0")` accepts IPv4 connections too, on every system, and connecting to an
   unspecified address (`0.0.0.0`) means the loopback address.
 - A write to a peer that has gone is `net.Error.BrokenPipe` on every system. A write that

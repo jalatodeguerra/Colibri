@@ -1421,7 +1421,7 @@ fn main() -> Result[()] {{
     assert_eq!(peer.join().unwrap(), [true, true]);
 }
 
-/// Many reads blocked at once (each holds one pool thread, see ARCHITECTURE §25) all end with
+/// Many reads blocked at once (each holds one pool thread, see ARCHITECTURE §22) all end with
 /// `Closed` when their connections are closed, and promptly.
 #[test]
 fn many_blocked_reads_end_when_their_connections_are_closed() {
