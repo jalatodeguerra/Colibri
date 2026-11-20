@@ -1,0 +1,73 @@
+// caps: net
+// A line protocol: the server answers `PING`, `ADD a b` and `QUIT`, and ends a request line
+// with `\r\n` or `\n`. Lines are text, so an empty line is `some("")`, not the end.
+import net
+import str
+
+fn serve_one(l: net.Listener) -> Result[()] {
+    let c = l.accept()?
+    defer c.close()
+    while true {
+        let line = c.read_line()?
+        match line {
+            none => return ok(())
+            some(text) => {
+                if text == "PING" {
+                    c.write("PONG\n")?
+                } else if text == "QUIT" {
+                    c.write("BYE\n")?
+                    return ok(())
+                } else if text == "" {
+                    c.write("EMPTY\n")?
+                } else {
+                    let parts = text.split(" ")
+                    if parts.len() == 3 && parts[0] == "ADD" {
+                        let sum = str.parse_int(parts[1])? + str.parse_int(parts[2])?
+                        c.write("{sum}\n")?
+                    } else {
+                        c.write("ERR unknown command `{text}`\n")?
+                    }
+                }
+            }
+        }
+    }
+    return ok(())
+}
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let server = go serve_one(l)
+    let c = net.connect(l.addr())?
+    c.write("PING\r\n")?
+    print(c.read_line()?)
+    c.write("ADD 40 2\n")?
+    print(c.read_line()?)
+    // Two requests in one write, and a request in two writes.
+    c.write("PING\nADD 1 ")?
+    c.write("2\n")?
+    print(c.read_line()?)
+    print(c.read_line()?)
+    c.write("\n")?
+    print(c.read_line()?)
+    c.write("HELLO\n")?
+    print(c.read_line()?)
+    c.write("QUIT\n")?
+    print(c.read_line()?)
+    // The server closed: the end of the stream is `none`, and stays so.
+    print(c.read_line()?)
+    print(c.read_line()?)
+    print(c.read(10)?.len())
+    server.join()?
+    return ok(())
+}
+
+// expect: some("PONG")
+// expect: some("42")
+// expect: some("PONG")
+// expect: some("3")
+// expect: some("EMPTY")
+// expect: some("ERR unknown command `HELLO`")
+// expect: some("BYE")
+// expect: none
+// expect: none
+// expect: 0

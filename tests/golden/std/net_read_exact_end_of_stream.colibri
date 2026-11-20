@@ -1,0 +1,41 @@
+// caps: net
+// `read_exact` gives exactly `n` bytes or `UnexpectedEnd`; the bytes that did arrive stay
+// readable.
+import net
+
+fn serve(l: net.Listener) -> Result[()] {
+    let c = l.accept()?
+    c.write("abcdef")?
+    c.close()
+    return ok(())
+}
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let server = go serve(l)
+    let c = net.connect(l.addr())?
+    print(c.read_exact(2)?)
+    print(c.read_exact(0)?.len())
+    match c.read_exact(10) {
+        ok(_) => print("unexpected")
+        err(e) => {
+            print("{e.as[net.Error]().expect("a net error")}")
+            print(e.message().replace(l.addr(), "<addr>").replace(c.local_addr(), "<local>"))
+        }
+    }
+    print(c.read(100)?)
+    print(c.read(100)?.len())
+    print(c.read_exact(1).is_err())
+    print(c.read_exact(0).is_ok())
+    server.join()?
+    return ok(())
+}
+
+// expect: b"ab"
+// expect: 0
+// expect: UnexpectedEnd
+// expect: cannot read 10 bytes from `<addr>`: the stream ended after 4 (the 4 bytes stay readable with `read`)
+// expect: b"cdef"
+// expect: 0
+// expect: true
+// expect: true

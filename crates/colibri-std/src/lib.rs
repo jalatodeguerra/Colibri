@@ -2,14 +2,14 @@
 //!
 //! Every module is a *named host module* implemented in Rust through the same machinery as
 //! `vm.module(..)`: [`install`] registers `io`, `fs`, `path`, `os`, `math`, `rand`, `time`, `str`,
-//! `json`, `regex`, `http`, `args`, `process`, `datetime`, `vec`, `base64`, `hex`, `hash` and `csv` into a [`Vm`], under the
+//! `json`, `regex`, `http`, `args`, `process`, `net`, `datetime`, `vec`, `base64`, `hex`, `hash` and `csv` into a [`Vm`], under the
 //! interface names `std.io`, `std.fs`, ... The checker sees
 //! them exactly as it sees an embedder's own host modules: from interface (`.cbi`) text generated
 //! from the registrations ([`interfaces`] gives it to a checker that has no `Vm`). A script
 //! writes `import math` (or `import std.math`, which always means the standard library).
 //!
 //! Modules that reach outside the program are tagged with a capability (`fs` needs
-//! [`Cap::Fs`]; `http` needs [`Cap::Net`]; the environment, `exit`, `sleep`, reading stdin and the wall clock need
+//! [`Cap::Fs`]; `http` and `net` need [`Cap::Net`]; the environment, `exit`, `sleep`, reading stdin and the wall clock need
 //! [`Cap::Os`]); a host that did not grant it gets a compile error at the use.
 //!
 //! Everything that depends on the world (the clock, the environment, the program's arguments,
@@ -44,6 +44,7 @@ mod http;
 mod io;
 mod json;
 mod math;
+mod net;
 mod os;
 mod path;
 mod process;
@@ -62,7 +63,7 @@ pub use rand::Rng;
 /// The modules of the standard library built so far, in the order they are registered.
 pub const MODULES: &[&str] = &[
     "io", "fs", "path", "os", "math", "rand", "time", "str", "json", "regex", "http", "args",
-    "process", "datetime", "vec", "base64", "hex", "hash", "csv", "toml",
+    "process", "net", "datetime", "vec", "base64", "hex", "hash", "csv", "toml",
 ];
 
 /// Registers the standard library into `vm` with the default [`StdConfig`]. It must happen
@@ -78,7 +79,7 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
     // Only the names are declared now: a module is registered (its interface generated,
     // parsed and checked) when a program imports it or something asks for it by name.
     type Register = fn(&mut Vm) -> Result<(), Error>;
-    let lazy: [(&str, Register); 19] = [
+    let lazy: [(&str, Register); 20] = [
         ("io", io::register),
         ("fs", fs::register),
         ("path", path::register),
@@ -92,6 +93,7 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
         ("http", http::register),
         ("args", args::register),
         ("process", process::register),
+        ("net", net::register),
         ("datetime", datetime::register),
         ("base64", base64::register),
         ("hex", hex::register),

@@ -1,0 +1,132 @@
+// kvserver: a small key-value store that speaks a line protocol over TCP.
+//
+//   colibri run kvserver.colibri -- [--addr 127.0.0.1:0] [--idle SECONDS]
+//
+// One request per line, one answer per line (`\n` or `\r\n` ends a request):
+//
+//   SET key value   OK                      GET key    VALUE value | MISSING
+//   DEL key         DELETED | MISSING       COUNT      the number of keys
+//   KEYS            KEYS a b c (sorted)     QUIT       BYE, and this connection is closed
+//   SHUTDOWN        BYE, and the server stops (every connection is closed)
+//
+// `main` accepts connections and starts one coroutine per connection, so clients are served at
+// the same time and a slow client holds nobody up. The store is shared by all of them: the
+// coroutines never run in parallel with each other, so a request is never half done when the
+// next one starts. The first line printed is `listening on HOST:PORT` (with port 0 the system
+// picks the port, and that line says which). `--idle` closes a connection that sends nothing
+// for that many seconds (`set_timeout`); the default is to wait for ever.
+//
+// Exit codes: 0 stopped by SHUTDOWN, 1 the address could not be used, 2 bad command line.
+import args
+import io
+import net
+import os
+import str
+
+let USAGE = "usage: colibri run kvserver.colibri -- [--addr host:port] [--idle seconds]"
+
+class Store {
+    data: Map[str, str]
+    // The connections that are open, by number: a connection leaves when it ends.
+    conns: Map[int, net.Conn]
+    next_id: int
+    stopping: bool
+}
+
+fn usage_error(message: str) -> ! {
+    io.eprintln("kvserver: {message}")
+    io.eprintln(USAGE)
+    os.exit(2)
+}
+
+// The answer to one request line.
+fn answer(store: Store, line: str) -> str {
+    let parts = line.split(" ")
+    let command = parts[0].to_upper()
+    if command == "SET" && parts.len() >= 3 {
+        store.data[parts[1]] = parts[2..].join(" ")
+        return "OK"
+    }
+    if command == "GET" && parts.len() == 2 {
+        let value = store.data.get(parts[1]) or { return "MISSING" }
+        return "VALUE {value}"
+    }
+    if command == "DEL" && parts.len() == 2 {
+        if store.data.remove(parts[1]) == none {
+            return "MISSING"
+        }
+        return "DELETED"
+    }
+    if command == "COUNT" && parts.len() == 1 {
+        return "{store.data.len()}"
+    }
+    if command == "KEYS" && parts.len() == 1 {
+        var keys = store.data.keys()
+        keys.sort()
+        return "KEYS {keys.join(" ")}"
+    }
+    return "ERR unknown or incomplete command `{line}`"
+}
+
+fn serve(store: Store, listener: net.Listener, conn: net.Conn, id: int, idle: float) {
+    defer {
+        conn.close()
+        let _ = store.conns.remove(id)
+    }
+    conn.set_timeout(idle)
+    while true {
+        // Any error (the peer left, the idle time ran out, the connection was closed by
+        // SHUTDOWN) ends this connection and nothing else.
+        let line = conn.read_line() or |e| { return }
+        let text = line or { return }
+        if text.to_upper() == "QUIT" {
+            let _ = conn.write("BYE\n")
+            return
+        }
+        if text.to_upper() == "SHUTDOWN" {
+            let _ = conn.write("BYE\n")
+            store.stopping = true
+            listener.close()
+            // A copy: the connections leave `store.conns` as they end.
+            for other in store.conns.values() {
+                other.close()
+            }
+            return
+        }
+        conn.write("{answer(store, text)}\n") or |e| { return }
+    }
+}
+
+fn main() -> Result[()] {
+    let addr = args.value("addr") or { "127.0.0.1:0" }
+    var idle = 0.0
+    if let some(text) = args.value("idle") {
+        idle = str.parse_float(text) or |e| {
+            usage_error("--idle: {e.message()}")
+            return ok(())
+        }
+    }
+    let listener = net.listen(addr).context("cannot start")?
+    print("listening on {listener.addr()}")
+    let store = Store { data: {:}, conns: {:}, next_id: 0, stopping: false }
+    while !store.stopping {
+        // `accept` waits without holding up the connections served meanwhile. SHUTDOWN
+        // closes the listener, which ends this wait with `net.Error.Closed`. Any other
+        // error (out of descriptors, a connection that was reset before it was accepted)
+        // costs one connection at most: it is reported, and the server goes on after a
+        // short wait, so a full descriptor table does not turn this into a busy loop.
+        let conn = listener.accept() or |e| {
+            if store.stopping {
+                break
+            }
+            io.eprintln("kvserver: cannot accept a connection: {e.message()}")
+            wait(0.1)
+            continue
+        }
+        let id = store.next_id
+        store.next_id += 1
+        store.conns[id] = conn
+        go serve(store, listener, conn, id, idle)
+    }
+    return ok(())
+}

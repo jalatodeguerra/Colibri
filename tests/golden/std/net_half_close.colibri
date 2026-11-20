@@ -1,0 +1,55 @@
+// caps: net
+// `close_write` tells the peer that nothing more comes, and the connection still reads: a
+// client sends a request, half-closes, and then reads the whole answer up to the end of the
+// stream. Writing after `close_write` fails.
+import net
+
+fn serve(l: net.Listener) -> Result[()] {
+    let c = l.accept()?
+    defer c.close()
+    // Read until the client is done, then answer with a different length.
+    var total = 0
+    while true {
+        let chunk = c.read(4)?
+        if chunk.len() == 0 {
+            break
+        }
+        total += chunk.len()
+    }
+    c.write("received {total} bytes\n")?
+    c.write("bye\n")?
+    return ok(())
+}
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let server = go serve(l)
+    let c = net.connect(l.addr())?
+    c.write("0123456789")?
+    c.close_write()?
+    print(c.read_line()?)
+    print(c.read_line()?)
+    print(c.read_line()?)
+    match c.write("more") {
+        ok(_) => print("written")
+        err(e) => {
+            print("{e.as[net.Error]().expect("a net error")}")
+            // The text is Colibri's own, not the system's: the same on every system.
+            print(e.message().replace(l.addr(), "<addr>"))
+        }
+    }
+    // Half-closing twice is fine.
+    print(c.close_write().is_ok())
+    server.join()?
+    c.close()
+    print(c.close_write().is_err())
+    return ok(())
+}
+
+// expect: some("received 10 bytes")
+// expect: some("bye")
+// expect: none
+// expect: BrokenPipe
+// expect: cannot write to `<addr>`: broken pipe (the writing end is shut down, or the peer is gone)
+// expect: true
+// expect: true

@@ -1,0 +1,43 @@
+// caps: net
+// `set_timeout` limits each later read and write: a read that waits too long is a `Timeout`
+// and the connection is still usable (a half-read line is kept for the next call).
+import net
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let c = net.connect(l.addr())?
+    let s = l.accept()?
+    c.set_timeout(0.05)
+    match c.read_line() {
+        ok(_) => print("unexpected")
+        err(e) => print("{e.as[net.Error]().expect("a net error")}")
+    }
+    // Half a line arrives: the read times out again, and keeps what came.
+    s.write("par")?
+    print(c.read_line().is_err())
+    s.write("tial\n")?
+    print(c.read_line()?)
+    print(c.read(5).is_err())
+    s.write("xyz")?
+    print(c.read_exact(5).is_err())
+    s.write("12")?
+    print(c.read_exact(5)?)
+    // No timeout again: the read waits for the writer, which is another coroutine.
+    c.set_timeout(0.0)
+    let late = go fn() {
+        s.write("late\n").expect("written")
+    }()
+    print(c.read_line()?)
+    late.join()
+    // A timeout of a bad size is a panic.
+    c.set_timeout(-1.0) // panic: net.Conn.set_timeout: -1 is not a number of seconds (it must be finite and not negative; 0 means no timeout)
+    return ok(())
+}
+
+// expect: Timeout
+// expect: true
+// expect: some("partial")
+// expect: true
+// expect: true
+// expect: b"xyz12"
+// expect: some("late")

@@ -42,7 +42,11 @@ fn temp_dir(name: &str) -> PathBuf {
 
 #[test]
 fn both_scripts_check() {
-    for script in ["organize/organize.colibri", "report/report.colibri"] {
+    for script in [
+        "organize/organize.colibri",
+        "report/report.colibri",
+        "kvserver/kvserver.colibri",
+    ] {
         let path = scripts().join(script);
         let out = colibri(&["check", path.to_str().unwrap()]);
         assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
@@ -617,6 +621,187 @@ fn report_requests_overlap_with_concurrency() {
     assert_eq!(peak1, 1);
     assert!(overlapped < Duration::from_millis(1000), "{overlapped:?}");
     assert!(serial >= Duration::from_millis(1500), "{serial:?}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------- kvserver
+
+/// A running `kvserver` and the address it printed.
+struct Kv {
+    child: std::process::Child,
+    addr: String,
+}
+
+impl Kv {
+    fn start(extra: &[&str]) -> Kv {
+        use std::io::BufRead;
+        let script = scripts().join("kvserver/kvserver.colibri");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+            .args(["run", script.to_str().unwrap(), "--"])
+            .args(extra)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the colibri binary runs");
+        let mut first = String::new();
+        std::io::BufReader::new(child.stdout.as_mut().unwrap())
+            .read_line(&mut first)
+            .unwrap();
+        let addr = first
+            .trim()
+            .strip_prefix("listening on ")
+            .unwrap_or_else(|| panic!("unexpected first line {first:?}"))
+            .to_string();
+        Kv { child, addr }
+    }
+
+    fn client(&self) -> (TcpStream, std::io::BufReader<TcpStream>) {
+        let s = TcpStream::connect(&self.addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let r = std::io::BufReader::new(s.try_clone().unwrap());
+        (s, r)
+    }
+}
+
+impl Drop for Kv {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn ask(c: &mut (TcpStream, std::io::BufReader<TcpStream>), request: &str) -> String {
+    use std::io::BufRead;
+    c.0.write_all(request.as_bytes()).unwrap();
+    let mut line = String::new();
+    c.1.read_line(&mut line).unwrap();
+    line.trim_end().to_string()
+}
+
+#[test]
+fn kvserver_serves_several_clients_and_shuts_down() {
+    let mut kv = Kv::start(&[]);
+    let mut a = kv.client();
+    let mut b = kv.client();
+    assert_eq!(ask(&mut a, "SET colour dark blue\r\n"), "OK");
+    // Another client sees it at once; and `\n` alone ends a request too.
+    assert_eq!(ask(&mut b, "GET colour\n"), "VALUE dark blue");
+    assert_eq!(ask(&mut b, "set size 3\n"), "OK");
+    assert_eq!(ask(&mut a, "KEYS\n"), "KEYS colour size");
+    assert_eq!(ask(&mut a, "COUNT\n"), "2");
+    assert_eq!(ask(&mut a, "DEL size\n"), "DELETED");
+    assert_eq!(ask(&mut b, "DEL size\n"), "MISSING");
+    assert_eq!(ask(&mut b, "GET size\n"), "MISSING");
+    assert!(ask(&mut b, "FROB\n").starts_with("ERR unknown"));
+    assert_eq!(ask(&mut a, "QUIT\n"), "BYE");
+    // QUIT closed that connection only.
+    assert_eq!(ask(&mut b, "COUNT\n"), "1");
+    assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
+    let status = kv.child.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
+}
+
+#[test]
+fn kvserver_closes_idle_connections_and_reports_a_bad_address() {
+    let kv = Kv::start(&["--idle", "0.2"]);
+    let mut c = kv.client();
+    assert_eq!(ask(&mut c, "COUNT\n"), "0");
+    // Silent for longer than the idle time: the server closes the connection.
+    use std::io::BufRead;
+    let mut line = String::new();
+    assert_eq!(c.1.read_line(&mut line).unwrap(), 0);
+    drop(kv);
+
+    let script = scripts().join("kvserver/kvserver.colibri");
+    let out = run_script(&script, &["--addr", "not an address"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("is not an address"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+/// A server that runs out of descriptors reports it and goes on: `accept` fails with a
+/// `net.Error` while the table is full, and works again when connections have ended. Unix only,
+/// because the limit is set with `ulimit -n` (a Windows process has no such limit to lower).
+#[cfg(unix)]
+#[test]
+fn kvserver_survives_running_out_of_descriptors() {
+    use std::io::BufRead;
+    let script = scripts().join("kvserver/kvserver.colibri");
+    let mut child = Command::new("sh")
+        .args(["-c", "ulimit -n 40; exec \"$0\" run \"$1\" --"])
+        .arg(env!("CARGO_BIN_EXE_colibri"))
+        .arg(&script)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh runs");
+    let mut first = String::new();
+    std::io::BufReader::new(child.stdout.as_mut().unwrap())
+        .read_line(&mut first)
+        .unwrap();
+    let addr = first
+        .trim()
+        .strip_prefix("listening on ")
+        .unwrap_or_else(|| panic!("unexpected first line {first:?}"))
+        .to_string();
+    let mut kv = Kv { child, addr };
+    // Many more connections than the server has descriptors for. Each is served or waits in
+    // the queue of the listener.
+    let crowd: Vec<_> = (0..80).map(|_| kv.client()).collect();
+    let mut first_ones = crowd;
+    let mut a = first_ones.remove(0);
+    assert_eq!(ask(&mut a, "SET k v\n"), "OK");
+    // They all go away; the server accepts the queued ones, finds them closed, and is free.
+    drop(first_ones);
+    let mut b = kv.client();
+    assert_eq!(ask(&mut b, "GET k\n"), "VALUE v");
+    assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
+    let status = kv.child.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
+}
+
+/// `os.exit` with coroutines blocked in `accept` and `read` ends the process at once: no
+/// background thread keeps it alive.
+#[test]
+fn os_exit_with_blocked_sockets_ends_the_process() {
+    let dir = temp_dir("net-exit");
+    let script = dir.join("exit.colibri");
+    fs::write(
+        &script,
+        r#"import net
+import os
+
+fn accepting(l: net.Listener) {
+    let _ = l.accept()
+}
+
+fn reading(c: net.Conn) {
+    let _ = c.read(1)
+}
+
+fn main() {
+    let l = net.listen("127.0.0.1:0").expect("listens")
+    let c = net.connect(l.addr()).expect("connects")
+    let s = l.accept().expect("accepts")
+    go reading(c)
+    go reading(s)
+    go accepting(l)
+    wait(0.05)
+    os.exit(3)
+}
+"#,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let out = run_script(&script, &[]);
+    assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
