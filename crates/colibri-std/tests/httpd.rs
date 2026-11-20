@@ -1291,13 +1291,14 @@ fn a_chunked_body_that_is_wrong_is_refused_and_nothing_after_it_is_handled() {
 #[test]
 fn a_chunked_body_that_ends_early_is_a_400_not_the_end_of_the_body() {
     let server = Server::app("httpd.Options {}");
-    let cases: [(&str, &[u8]); 4] = [
+    let cases: [(&str, &[u8]); 5] = [
         ("at a size line", b"5\r\nhello\r\n"),
         ("inside a size line", b"5\r\nhello\r\n3"),
         ("inside a chunk", b"5\r\nhel"),
         // The trap of `read_until`: the end of the stream right after the last chunk is not an
         // empty line, which would end the trailers.
         ("inside the trailers", b"5\r\nhello\r\n0\r\n"),
+        ("inside a trailer field", b"5\r\nhello\r\n0\r\nX-A: 1"),
     ];
     for (name, body) in cases {
         let mut w = server.connect();
