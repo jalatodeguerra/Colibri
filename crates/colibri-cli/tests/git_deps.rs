@@ -1751,10 +1751,10 @@ fn offline_without_git_says_git_was_not_found() {
 fn credentials_in_a_url_are_refused_and_never_printed_or_written() {
     let sb = Sandbox::new("credentials");
     for (n, url) in [
-        "https://user:s3cret@127.0.0.1:9/r.git",
-        "https://s3cret@127.0.0.1:9/r.git",
-        "HTTPS://user:s3cret@127.0.0.1:9/r.git",
-        "ssh://git:s3cret@127.0.0.1:9/r.git",
+        "https://user:s3cret@example.invalid:9/r.git",
+        "https://s3cret@example.invalid:9/r.git",
+        "HTTPS://user:s3cret@example.invalid:9/r.git",
+        "ssh://git:s3cret@example.invalid:9/r.git",
     ]
     .iter()
     .enumerate()
@@ -1788,11 +1788,16 @@ fn credentials_in_a_url_are_refused_and_never_printed_or_written() {
     // A user name for ssh is fine (it fails later, at the connection, never on the url).
     let app = sb.app(
         "ssh_user",
-        "greet = { git = \"ssh://git@127.0.0.1:9/r.git\" }",
+        "greet = { git = \"ssh://git@example.invalid:9/r.git\" }",
         &["greet"],
     );
-    let out = sb.colibri(&["check", app.to_str().unwrap()]);
-    assert!(!out.stderr.contains("credentials"), "{}", out.stderr);
+    // `--offline`: no connection is made, whatever is listening at the address.
+    let out = sb.colibri(&["check", "--offline", app.to_str().unwrap()]);
+    assert!(
+        !out.stderr.contains("credential helper") && !out.stderr.contains("not allowed"),
+        "{}",
+        out.stderr
+    );
 }
 
 /// Every file under `dir`, as text, for a search that must find nothing.
@@ -1825,19 +1830,19 @@ fn tree_text(dir: &Path, out: &mut String) {
 fn no_way_of_writing_a_secret_in_a_url_gets_it_printed_or_stored() {
     let sb = Sandbox::new("secret_forms");
     for (n, url) in [
-        "https://u:p#s3cret@127.0.0.1:9/r.git",
-        "https://u:p?s3cret@127.0.0.1:9/r.git",
-        "https://u:pa/s3cret@127.0.0.1:9/r.git",
-        "https://u:p@s3cret@127.0.0.1:9/r.git",
-        "https://u:p%40s3cret@127.0.0.1:9/r.git",
-        "https://u%3As3cret@127.0.0.1:9/r.git",
-        "HTTPS://u:s3cret@127.0.0.1:9/r.git",
-        "Git://u:s3cret@127.0.0.1:9/r.git",
-        "file://u:s3cret@127.0.0.1/r.git",
-        "ssh://u:p#s3cret@127.0.0.1:9/r.git",
-        "ssh://u:p@s3cret@127.0.0.1:9/r.git",
-        "u:s3cret@127.0.0.1:r.git",
-        "u:p@s3cret@127.0.0.1:r.git",
+        "https://u:p#s3cret@example.invalid:9/r.git",
+        "https://u:p?s3cret@example.invalid:9/r.git",
+        "https://u:pa/s3cret@example.invalid:9/r.git",
+        "https://u:p@s3cret@example.invalid:9/r.git",
+        "https://u:p%40s3cret@example.invalid:9/r.git",
+        "https://u%3As3cret@example.invalid:9/r.git",
+        "HTTPS://u:s3cret@example.invalid:9/r.git",
+        "Git://u:s3cret@example.invalid:9/r.git",
+        "file://u:s3cret@example.invalid/r.git",
+        "ssh://u:p#s3cret@example.invalid:9/r.git",
+        "ssh://u:p@s3cret@example.invalid:9/r.git",
+        "u:s3cret@example.invalid:r.git",
+        "u:p@s3cret@example.invalid:r.git",
     ]
     .iter()
     .enumerate()
@@ -1877,7 +1882,7 @@ fn a_secret_in_a_dependencys_own_manifest_is_refused_and_never_stored() {
         &lib_files(
             "lib",
             "one",
-            "\n[dependencies]\nbad = { git = \"https://u:p#s3cret@127.0.0.1:9/b.git\" }\n",
+            "\n[dependencies]\nbad = { git = \"https://u:p#s3cret@example.invalid:9/b.git\" }\n",
         ),
         "first",
     );
@@ -1913,12 +1918,12 @@ fn a_secret_in_a_dependencys_own_manifest_is_refused_and_never_stored() {
 /// Ways of writing a url with a secret (`s3cret`) in it that break a split at spaces and
 /// quotes: each is the text of a TOML value, as written after `git = ` or `url = `.
 fn quoted_secret_literals() -> Vec<String> {
-    let tail = "127.0.0.1:9/r.git";
+    let tail = "example.invalid:9/r.git";
     vec![
         format!("\"https://u:ab'cds3cret@{tail}\""),
         format!("\"https://u:x\\\"ys3cret@{tail}\""),
         format!("\"https://u:pa ss3cret@{tail}\""),
-        "'https://u:p\"qs3cret@127.0.0.1:99/r.git'".to_string(),
+        "'https://u:p\"qs3cret@example.invalid:99/r.git'".to_string(),
         format!("\"https://u:s3cret\\u0040{tail}\""),
         format!("\"https://u:s3cret\\U00000040{tail}\""),
         format!("\"https://u:p%40s3cret@{tail}\""),
@@ -1926,7 +1931,7 @@ fn quoted_secret_literals() -> Vec<String> {
         format!("\"https://u:pa\\tss3cret@{tail}\""),
         format!("\"https://u:p@s3cret@{tail}\""),
         format!("\"https://u:ab`s3cret@{tail}\""),
-        "\"u:a'bs3cret@127.0.0.1:r.git\"".to_string(),
+        "\"u:a'bs3cret@example.invalid:r.git\"".to_string(),
         format!("\"ssh://u:a b'c\\\"ds3cret@{tail}\""),
     ]
 }
@@ -2028,7 +2033,7 @@ fn a_hand_edited_lock_never_shows_a_password_with_a_quote_or_a_space() {
         {
             let app = sb.app(
                 &format!("l{n}_{k}"),
-                "greet = { git = \"https://127.0.0.1:9/r.git\" }",
+                "greet = { git = \"file:///colibri-no-such-repository/r.git\" }",
                 &["greet"],
             );
             fs::write(app.join("colibri.lock"), lock).unwrap();
@@ -2158,12 +2163,12 @@ fn an_old_lock_with_a_secret_in_it_is_not_printed() {
     let sb = Sandbox::new("old_lock_secret");
     let app = sb.app(
         "app",
-        "greet = { git = \"https://127.0.0.1:9/r.git\" }",
+        "greet = { git = \"file:///colibri-no-such-repository/r.git\" }",
         &["greet"],
     );
     fs::write(
         app.join("colibri.lock"),
-        "[git.greet]\nurl = \"https://user:s3cret@127.0.0.1:9/r.git\"\ncommit = \"5f2a9c1e0b7d4a6c8e3f1a2b4c5d6e7f8091a2b3\"\n",
+        "[git.greet]\nurl = \"https://user:s3cret@example.invalid:9/r.git\"\ncommit = \"5f2a9c1e0b7d4a6c8e3f1a2b4c5d6e7f8091a2b3\"\n",
     )
     .unwrap();
     for args in [
@@ -2330,7 +2335,7 @@ fn locked_fails_before_fetching_anything_the_lock_does_not_vouch_for() {
     fs::remove_dir_all(sb.home().join("git")).unwrap();
     sb.app(
         "app",
-        &format!("{first}\nsecond = {{ git = \"https://127.0.0.1:9/second.git\" }}"),
+        &format!("{first}\nsecond = {{ git = \"file:///colibri-no-such-repository/second.git\" }}"),
         &["first"],
     );
     let out = sb.colibri(&["check", "--locked", app.to_str().unwrap()]);
