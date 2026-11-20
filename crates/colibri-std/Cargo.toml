@@ -25,6 +25,8 @@ socket2 = { version = "0.6", features = ["all"] }
 # One poller thread per `Vm` for `net`: waits for the readiness of many sockets at once (epoll,
 # kqueue, or the AFD driver interface on Windows) and is woken from other threads.
 polling = "3"
+# `memmem` for `net.Conn.read_until`: a linear search for a delimiter of several bytes.
+memchr = "2.8.3"
 toml = { version = "1.2.1", default-features = false, features = ["parse", "preserve_order"] }
 # The machine's time zone for `datetime.now_local` (`localtime_r`), on Unix only.
 [target.'cfg(unix)'.dependencies]

@@ -450,12 +450,29 @@ call that waits on that object with `net.Error.Closed`.
 
 - A `net.Conn` has `read(n)` (up to `n` bytes, waiting for at least one; empty `Bytes` is the
   end of the stream), `read_exact(n)`, `read_line()` (`none` at the end; a line may be up to 1 MiB
-  and must be UTF-8), `write(text)`, `write_bytes(data)`, `close_write()` (tells the peer that
-  nothing more comes, and the connection still reads), `set_timeout(seconds)` for each later read
-  and write (0 means none), `local_addr()`, `peer_addr()` and `close()`. `set_timeout` is a
+  and must be UTF-8), `read_until(delim, max)`, `write(text)`, `write_bytes(data)`, `close_write()`
+  (tells the peer that nothing more comes, and the connection still reads), `set_timeout(seconds)`
+  for each later read and write (0 means none), `set_line_limit(bytes)`, `local_addr()`,
+  `peer_addr()` and `close()`. `set_timeout` is a
   deadline for the whole call, counted from the call: a `read_line` that gets half a line and then
   nothing times out as a whole, so to bound the wait for each line, set it before each call.
   `close_write()` takes its turn behind the writes already called, so it never cuts one.
+- `read_until(delim, max)` gives the `Bytes` before the first `delim` (one or more bytes, however
+  the stream is cut into packets) and takes the delimiter off the stream, so a line that must end
+  in `\r\n` and may hold a bare `\n` is `read_until("\r\n".to_bytes(), 8192)`. `max` counts the
+  bytes before the delimiter, from 0 to 1 GiB, and the delimiter has 1 to 1,024 bytes. The result
+  is `none` at the end of the stream with nothing pending, `UnexpectedEnd` at the end with bytes
+  pending, and `LineTooLong` as soon as `max + 1` bytes have arrived without a delimiter (not at
+  `max`: a delimiter right after `max` bytes is fine, also one whose first byte is the byte after
+  them and whose rest has not come yet). A call that fails with `LineTooLong` reads at most what
+  is left to the larger of 32 KiB and `max` plus the delimiter's length (`read_line`: its limit
+  plus 2) beyond what an earlier call had already buffered, so it never reads a whole extra read
+  past a large `max` or limit; the buffer's capacity may be up to twice that while it grows. The
+  bytes of a `LineTooLong` or an `UnexpectedEnd` stay in the stream. It scans only the bytes that
+  are new, takes its turn like the other reads, and a cancel or a timeout keeps what had arrived.
+  `set_line_limit(bytes)` sets what `read_line` takes before its line end (1 to 1 GiB, 1 MiB when
+  not set; `read_until` has its own `max`), and counts at the next look of a `read_line` that
+  already waits.
 - `net.connect_timeout(addr, seconds)` gives up after that long. A timed-out read keeps what it
   had read, and the connection stays usable.
 - A read, an accept or a write that is called where nothing else can run (a `Drop` hook, a
