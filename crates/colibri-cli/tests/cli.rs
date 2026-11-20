@@ -279,6 +279,89 @@ fn check_takes_several_interface_files() {
     );
 }
 
+/// A host class of one module that a function of another returns.
+struct Value(i64);
+impl colibri_runtime::HostType for Value {
+    const NAME: &'static str = "Value";
+    fn describe(d: &mut colibri_runtime::TypeBuilder<'_, Self>) {
+        d.method("int", [], |this: &Value| this.0);
+    }
+}
+
+/// The interface files of two modules, the second naming the first's `Value`.
+fn module_interfaces(prefix: &str) -> (PathBuf, PathBuf) {
+    let mut vm = colibri_runtime::Vm::builder().build();
+    let mut json = vm.module("jsonish");
+    json.register_type::<Value>().unwrap();
+    let json = temp_file(&format!("{prefix}_jsonish.cbi"), &json.interface_text());
+    let mut toml = vm.module("tomlish");
+    toml.uses("jsonish").unwrap();
+    toml.register_fn_named("parse", ["text"], |t: String| Value(t.len() as i64))
+        .unwrap();
+    let toml = temp_file(&format!("{prefix}_tomlish.cbi"), &toml.interface_text());
+    (json, toml)
+}
+
+#[test]
+fn check_reads_interfaces_whose_types_name_another_module() {
+    let (json, toml) = module_interfaces("both");
+    let src = temp_file(
+        "uses_modules.colibri",
+        "import tomlish\nimport jsonish\nfn main() {\n    let v: jsonish.Value = tomlish.parse(\"abc\")\n    print(v.int())\n}\n",
+    );
+    let out = colibri(&[
+        "check",
+        "--interface",
+        json.to_str().unwrap(),
+        "--interface",
+        toml.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The type is the module's: the message says `jsonish.Value`.
+    let bad = temp_file(
+        "misuses_modules.colibri",
+        "import tomlish\nfn main() {\n    let v: int = tomlish.parse(\"abc\")\n}\n",
+    );
+    let out = colibri(&[
+        "check",
+        "--interface",
+        json.to_str().unwrap(),
+        "--interface",
+        toml.to_str().unwrap(),
+        bad.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("jsonish.Value"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn check_says_which_interface_file_is_missing() {
+    let (_, toml) = module_interfaces("alone");
+    let src = temp_file("alone.colibri", "import tomlish\nfn main() {}\n");
+    let out = colibri(&[
+        "check",
+        "--interface",
+        toml.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("tomlish") && stderr.contains("jsonish"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn check_refuses_an_edited_interface_file() {
     let cbi = interface_file("edited.cbi", false);
@@ -736,4 +819,68 @@ fn new_creates_a_package_that_checks_runs_and_passes_its_tests() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("not a valid package name"));
     assert!(!kw.exists());
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A value of `std.json`'s `Value`, passed through by a host function of another module.
+struct JsonValue(colibri_runtime::Value);
+impl colibri_runtime::FromColibri for JsonValue {
+    fn ty(reg: &mut colibri_runtime::TypeRegistry) -> colibri_runtime::TypeDesc {
+        reg.foreign_type("std.json", "Value")
+    }
+    fn from_colibri(
+        v: &colibri_runtime::Value,
+        _cx: &mut colibri_runtime::Cx<'_>,
+    ) -> Result<Self, colibri_runtime::Error> {
+        Ok(JsonValue(v.clone()))
+    }
+}
+impl colibri_runtime::IntoColibri for JsonValue {
+    fn ty(reg: &mut colibri_runtime::TypeRegistry) -> colibri_runtime::TypeDesc {
+        reg.foreign_type("std.json", "Value")
+    }
+    fn into_colibri(self, _cx: &mut colibri_runtime::Cx<'_>) -> colibri_runtime::Value {
+        self.0
+    }
+}
+
+#[test]
+fn check_interface_of_a_module_that_uses_a_standard_module() {
+    let mut vm = colibri_runtime::Vm::builder().build();
+    colibri_std::install(&mut vm).unwrap();
+    let mut cfg = vm.module("cfg");
+    cfg.uses("std.json").unwrap();
+    cfg.register_fn("same", |j: JsonValue| j).unwrap();
+    let text = cfg.interface_text();
+    assert!(text.contains("uses = [\"std.json\"]"), "{text}");
+    let cbi = temp_file("cfg.cbi", &text);
+    let src = temp_file(
+        "ucfg.colibri",
+        "import cfg\nimport json\nfn main() {\n    print(cfg.same(json.Value.null()))\n}\n",
+    );
+    let out = colibri(&[
+        "check",
+        "--interface",
+        cbi.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // A program that imports only `cfg` needs `std.json` too, and gets it.
+    let alone = temp_file("ucfg_alone.colibri", "import cfg\nfn main() {}\n");
+    let out = colibri(&[
+        "check",
+        "--interface",
+        cbi.to_str().unwrap(),
+        alone.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

@@ -1,0 +1,28 @@
+import str
+
+fn kind(e: Error) -> str {
+    match e.as[str.Error]() {
+        some(k) => return "{k}"
+        none => return "not a str.Error"
+    }
+}
+
+fn main() {
+    print(kind(str.parse_int("").err().expect("empty")))
+    print(kind(str.parse_int("12x").err().expect("invalid")))
+    print(kind(str.parse_int("99999999999999999999").err().expect("range")))
+    print(kind(str.parse_float("").err().expect("empty")))
+    print(kind(str.parse_float("1.2.3").err().expect("invalid")))
+    print(kind(str.parse_bool("").err().expect("empty")))
+    print(kind(str.parse_bool("yes").err().expect("invalid")))
+    print(kind(error("plain")))
+}
+
+// expect: Empty
+// expect: Invalid
+// expect: OutOfRange
+// expect: Empty
+// expect: Invalid
+// expect: Empty
+// expect: Invalid
+// expect: not a str.Error

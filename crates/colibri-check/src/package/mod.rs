@@ -3,8 +3,11 @@
 //! takes.
 
 mod fs;
+mod git;
 mod loader;
+mod lock;
 mod manifest;
+mod sync;
 pub mod toml;
 
 use std::collections::HashMap;
@@ -13,8 +16,15 @@ use colibri_syntax::Diagnostic;
 use colibri_syntax::ast::{self, NodeId};
 
 pub use fs::{DiskFs, MemoryFs, SourceFs, normalize};
-pub use loader::{Entry, LoadError, LoadOptions, load, load_with};
-pub use manifest::{Dependency, Manifest, is_name as is_package_name};
+pub use git::{HOME_VAR, cache_root, mask_credentials, mask_source_text, redact, redact_url};
+pub use loader::{
+    CACHE_TAG_FILE, Entry, LoadError, LoadOptions, MANIFEST_FILE, is_hidden_or_cache, load,
+    load_with, skipped_folder,
+};
+pub use lock::{LOCK_FILE, Lock, LockEntry};
+pub use manifest::parse as parse_manifest;
+pub use manifest::{Dependency, GitSource, GitSpec, Manifest, Source, is_name as is_package_name};
+pub use sync::{SyncOptions, SyncReport, Update, sync};
 
 /// The extension of source files.
 pub const SOURCE_EXT: &str = "colibri";
@@ -74,6 +84,28 @@ pub struct Loaded {
     pub packages: Vec<PackageNode>,
     /// Syntax errors, unresolved imports, cycles between packages and manifest problems.
     pub diagnostics: Vec<Diagnostic>,
+    /// The problems among `diagnostics` that mean code or a module was left out of the
+    /// program (a tool that must know every use of a name cannot trust it then).
+    pub dropped: Vec<Dropped>,
+}
+
+/// Why part of a program is missing from a [`Loaded`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DroppedKind {
+    /// A file has a syntax error: the parser dropped what it could not read.
+    Syntax,
+    /// An `import` matches more than one module, so it is bound to none.
+    Ambiguous,
+    /// A file an `import` names exists but cannot be read.
+    Unreadable,
+}
+
+/// One problem that left code out of a [`Loaded`], with where it is reported.
+#[derive(Clone, Debug)]
+pub struct Dropped {
+    pub kind: DroppedKind,
+    pub span: colibri_syntax::Span,
+    pub message: String,
 }
 
 impl Loaded {

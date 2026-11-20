@@ -202,7 +202,26 @@ fn manifest_error(name: &str, files: &[(&str, &str)]) -> String {
 }
 
 #[test]
-fn git_dependencies_are_not_supported_yet() {
+fn registry_dependencies_are_not_supported_yet() {
+    let text = manifest_error(
+        "registry",
+        &[
+            (
+                "colibri.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nfoo = { version = \"1\" }\n",
+            ),
+            ("main.colibri", "fn main() {}\n"),
+        ],
+    );
+    assert!(
+        text.contains("registry dependencies are not supported yet"),
+        "{text}"
+    );
+}
+
+#[test]
+fn git_dependencies_are_not_fetched_by_loading() {
+    // `load_package` reads `colibri.lock` and the cache; fetching is the command line tool's job.
     let text = manifest_error(
         "git",
         &[
@@ -213,10 +232,8 @@ fn git_dependencies_are_not_supported_yet() {
             ("main.colibri", "fn main() {}\n"),
         ],
     );
-    assert!(
-        text.contains("git dependencies are not supported yet"),
-        "{text}"
-    );
+    assert!(text.contains("not in `colibri.lock` yet"), "{text}");
+    assert!(text.contains("colibri check"), "{text}");
 }
 
 #[test]

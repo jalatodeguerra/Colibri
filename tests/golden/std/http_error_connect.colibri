@@ -1,0 +1,28 @@
+// caps: net
+// Nothing listens on port 1 of the local machine: the request fails with `http.Error.Connect`.
+// (No traffic leaves the machine; timeouts and the other kinds are in crates/colibri-std/tests.)
+import http
+
+fn fetch(url: str) -> Result[str] {
+    let r = http.get(url).context("fetching {url}")?
+    return ok(r.body)
+}
+
+fn main() {
+    match fetch("http://127.0.0.1:1/") {
+        ok(_) => print("ok")
+        err(e) if e.is[http.Error]() => match e.as[http.Error]().expect("checked") {
+            Connect => print("could not connect")
+            Timeout => print("timed out")
+            _ => print("other http error")
+        }
+        err(_) => print("not an http error")
+    }
+    match http.get("not a url") {
+        ok(_) => print("ok")
+        err(e) => print(e.as[http.Error]().expect("an http error") == http.Error.InvalidUrl)
+    }
+}
+
+// expect: could not connect
+// expect: true

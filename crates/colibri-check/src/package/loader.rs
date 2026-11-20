@@ -8,10 +8,13 @@ use colibri_syntax::ast::{self, ItemKind, NodeId, TopLevel};
 use colibri_syntax::{Diagnostic, FileId, SourceMap, Span, parse_file};
 
 use super::fs::{SourceFs, normalize};
-use super::manifest::{self, Manifest};
+use super::git;
+use super::lock::{self, LOCK_FILE, Lock};
+use super::manifest::{self, GitSource, Manifest, Source};
+use super::sync::inside;
 use super::{
-    ImportTarget, LATER_STD_MODULES, LIB_FILE, Loaded, MAIN_FILE, ModuleMeta, PackageNode,
-    SOURCE_EXT, std_module,
+    Dropped, DroppedKind, ImportTarget, LATER_STD_MODULES, LIB_FILE, Loaded, MAIN_FILE, ModuleMeta,
+    PackageNode, SOURCE_EXT, std_module,
 };
 
 /// The manifest's file name.
@@ -43,6 +46,12 @@ struct Tree {
     manifest_name: Option<String>,
     /// The manifest allows `extern` blocks (or there is none: a script).
     ffi: bool,
+    /// The package comes from a git checkout (itself, or a path dependency inside one).
+    from_git: bool,
+    /// `allow-ffi` of the manifest: only the root's counts.
+    allow_ffi: Vec<String>,
+    /// Where each name of `allow_ffi` is written, with the manifest's file.
+    allow_ffi_spans: Vec<Span>,
     deps: Vec<(String, usize)>,
 }
 
@@ -97,6 +106,31 @@ struct Loader<'a> {
     packages: Vec<PackageNode>,
     package_keys: HashMap<(usize, PathBuf), usize>,
     diags: Vec<Diagnostic>,
+    dropped: Vec<Dropped>,
+    /// `colibri.lock` of the root package, read when the first git dependency needs it.
+    lock: Option<Lock>,
+    lock_read: bool,
+    /// Pairs of trees already reported as one name twice.
+    clashes: HashSet<(usize, usize)>,
+    /// Trees already reported for `ffi = true` without the root's `allow-ffi`.
+    ffi_reported: HashSet<usize>,
+}
+
+/// The file that marks a folder as a cache (the standard marker, written by Cargo's `target`
+/// and by many other tools): what is in it is not source.
+pub const CACHE_TAG_FILE: &str = "CACHEDIR.TAG";
+
+/// Whether a folder is no part of the source tree on its own: its name starts with `.`, or it
+/// holds a `CACHEDIR.TAG`. `target` and `node_modules` are ordinary folders to Colibri.
+pub fn is_hidden_or_cache(fs: &dyn SourceFs, name: &str, path: &Path) -> bool {
+    name.starts_with('.') || fs.is_file(&path.join(CACHE_TAG_FILE))
+}
+
+/// Whether the walk over the files of a package (every module of `colibri check <folder>`, and
+/// what the language server reads) leaves a folder out: [`is_hidden_or_cache`], or a
+/// `colibri.toml` of its own (another package). An explicit `import` does not look at this.
+pub fn skipped_folder(fs: &dyn SourceFs, name: &str, path: &Path) -> bool {
+    is_hidden_or_cache(fs, name, path) || fs.is_file(&path.join(MANIFEST_FILE))
 }
 
 /// What else `load` may do.
@@ -104,7 +138,7 @@ struct Loader<'a> {
 pub struct LoadOptions {
     /// For a package: load every `.colibri` file under its root, not only the modules the
     /// entry reaches by `import` (what `colibri test` needs to find every `test` block).
-    /// Folders that start with `.` and folders with a `colibri.toml` of their own are skipped.
+    /// Folders that [`skipped_folder`] names are not walked (an `import` still reaches into them).
     /// Ignored for a script.
     pub all_modules: bool,
 }
@@ -141,6 +175,11 @@ pub fn load_with(
         packages: Vec::new(),
         package_keys: HashMap::new(),
         diags: Vec::new(),
+        dropped: Vec::new(),
+        lock: None,
+        lock_read: false,
+        clashes: HashSet::new(),
+        ffi_reported: HashSet::new(),
     };
     let (root, file, require_manifest) = match entry {
         Entry::File(path) => {
@@ -163,11 +202,12 @@ pub fn load_with(
         });
     }
     let tree = loader
-        .load_tree(&root, require_manifest, false)
+        .load_tree(&root, require_manifest, false, None)
         .map_err(|message| LoadError {
             path: fs.display_name(&root.join(MANIFEST_FILE)),
             message,
         })?;
+    loader.warn_unknown_allow_ffi();
     let entry_path = match entry {
         Entry::File(path) => path.to_path_buf(),
         Entry::Package(_) => root.join(&file),
@@ -204,6 +244,7 @@ impl Loader<'_> {
         dir: &Path,
         require_manifest: bool,
         is_dep: bool,
+        git_root: Option<PathBuf>,
     ) -> Result<usize, String> {
         let key = normalize(dir);
         if let Some(&t) = self.trees_by_dir.get(&key) {
@@ -216,9 +257,11 @@ impl Loader<'_> {
                 .fs
                 .read(&manifest_path)
                 .map_err(|e| format!("cannot read it: {e}"))?;
-            let file = self
-                .sources
-                .add_file(self.fs.display_name(&manifest_path), text.clone());
+            // The error printer shows the line an error is on: not with a secret in it.
+            let file = self.sources.add_file(
+                self.fs.display_name(&manifest_path),
+                git::mask_source_text(&text),
+            );
             match manifest::parse(file, &text) {
                 Ok(m) => manifest = Some((m, file)),
                 Err(diags) => self.diags.extend(diags),
@@ -244,27 +287,66 @@ impl Loader<'_> {
             manifest_name: manifest.as_ref().map(|(m, _)| m.name.clone()),
             // A script with no manifest is the program itself: its host decides.
             ffi: manifest.as_ref().is_none_or(|(m, _)| m.ffi),
+            from_git: git_root.is_some(),
+            allow_ffi: manifest
+                .as_ref()
+                .map(|(m, _)| m.allow_ffi.clone())
+                .unwrap_or_default(),
+            allow_ffi_spans: manifest
+                .as_ref()
+                .map(|(m, _)| m.allow_ffi_spans.clone())
+                .unwrap_or_default(),
             deps: Vec::new(),
         });
         self.trees_by_dir.insert(key, tree);
         if let Some((m, _)) = &manifest {
             for dep in &m.dependencies {
-                let dep_dir = normalize(&dir.join(&dep.path));
-                if !self.fs.is_dir(&dep_dir) {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "the dependency `{}` is not at `{}`: no such folder",
-                                dep.name,
-                                display_dir(self.fs, &dep_dir)
-                            ),
-                            dep.path_span,
-                        )
-                        .with_hint("`path` is relative to the folder of this `colibri.toml`"),
-                    );
-                    continue;
-                }
-                match self.load_tree(&dep_dir, true, true) {
+                let (dep_dir, dep_root, span) = match &dep.source {
+                    Source::Path { path, path_span } => {
+                        let dep_dir = normalize(&dir.join(path));
+                        if !self.fs.is_dir(&dep_dir) {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!(
+                                        "the dependency `{}` is not at `{}`: no such folder",
+                                        dep.name,
+                                        display_dir(self.fs, &dep_dir)
+                                    ),
+                                    *path_span,
+                                )
+                                .with_hint(
+                                    "`path` is relative to the folder of this `colibri.toml`",
+                                ),
+                            );
+                            continue;
+                        }
+                        if let Some(root) = &git_root
+                            && !inside(&dep_dir, root)
+                        {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!(
+                                        "the path dependency `{}` leaves the git repository it is in (`{}`)",
+                                        dep.name,
+                                        display_dir(self.fs, &dep_dir)
+                                    ),
+                                    *path_span,
+                                )
+                                .with_hint("a package from git may only use folders of its own repository"),
+                            );
+                            continue;
+                        }
+                        (dep_dir, git_root.clone(), *path_span)
+                    }
+                    Source::Git(source) => match self.git_checkout(&dep.name, source) {
+                        Ok(dep_dir) => (dep_dir.clone(), Some(dep_dir), source.url_span),
+                        Err(diag) => {
+                            self.diags.push(diag);
+                            continue;
+                        }
+                    },
+                };
+                match self.load_tree(&dep_dir, true, true, dep_root) {
                     Ok(t) => {
                         if self.trees[t]
                             .manifest_name
@@ -283,16 +365,180 @@ impl Loader<'_> {
                                 .with_hint("the name before `=` and the package `name` must agree"),
                             );
                         }
+                        self.check_ffi_allowed(tree, t, dep.name_span);
+                        self.report_clash(t, dep.name_span);
                         self.trees[tree].deps.push((dep.name.clone(), t));
                     }
                     Err(message) => self.diags.push(Diagnostic::error(
                         format!("the dependency `{}`: {message}", dep.name),
-                        dep.path_span,
+                        span,
                     )),
                 }
             }
         }
         Ok(tree)
+    }
+
+    /// A package from git that declares `ffi = true` must be listed in the root package's
+    /// `allow-ffi` (DESIGN §15.3): FFI is a capability, and a dependency the user never read
+    /// (a transitive one) must not be able to link C code just by saying so itself.
+    fn check_ffi_allowed(&mut self, dependent: usize, t: usize, span: Span) {
+        if !self.trees[t].from_git
+            || !self.trees[t].ffi
+            || self.trees[t].manifest_name.is_none()
+            || !self.ffi_reported.insert(t)
+        {
+            return;
+        }
+        let name = self.trees[t].name.clone();
+        if self.trees[0].allow_ffi.contains(&name) {
+            return;
+        }
+        let root = &self.trees[0];
+        let root_manifest = root.root.join(MANIFEST_FILE);
+        self.diags.push(
+            Diagnostic::error(
+                format!(
+                    "the git dependency `{name}` declares `ffi = true` (it may link C code), and the package `{}` has not allowed it; it is needed by `{}`",
+                    root.name, self.trees[dependent].name
+                ),
+                span,
+            )
+            .with_hint(format!(
+                "to allow it, add `allow-ffi = [\"{name}\"]` to the `[package]` table of `{}`",
+                self.fs.display_name(&root_manifest)
+            )),
+        );
+    }
+
+    /// A name in the root package's `allow-ffi` that is no dependency (direct or transitive)
+    /// allows nothing: most likely a misspelling, which would leave the real one refused.
+    fn warn_unknown_allow_ffi(&mut self) {
+        let Some(root) = self.trees.first() else {
+            return;
+        };
+        let unknown: Vec<(String, Span)> = root
+            .allow_ffi
+            .iter()
+            .zip(&root.allow_ffi_spans)
+            .filter(|(name, _)| !self.trees.iter().any(|t| t.is_dep && t.name == **name))
+            .map(|(n, s)| (n.clone(), *s))
+            .collect();
+        for (name, span) in unknown {
+            self.diags.push(
+                Diagnostic::warning(
+                    format!(
+                        "`allow-ffi` lists `{name}`, which is not a dependency of this package"
+                    ),
+                    span,
+                )
+                .with_hint(
+                    "check the spelling: the name is the one before `=` in `[dependencies]`",
+                ),
+            );
+        }
+    }
+
+    /// Two different packages with one name cannot both be imported as that name: say so.
+    fn report_clash(&mut self, t: usize, span: Span) {
+        let name = self.trees[t].name.clone();
+        let Some(other) = (0..t).find(|&o| {
+            self.trees[o].is_dep
+                && self.trees[o].name == name
+                && self.fs.canonical(&self.trees[o].root) != self.fs.canonical(&self.trees[t].root)
+        }) else {
+            return;
+        };
+        if !self.clashes.insert((other, t)) {
+            return;
+        }
+        self.diags.push(
+            Diagnostic::error(
+                format!(
+                    "two different packages are both called `{name}`: `{}` and `{}`",
+                    display_dir(self.fs, &self.trees[other].root),
+                    display_dir(self.fs, &self.trees[t].root)
+                ),
+                span,
+            )
+            .with_hint(
+                "a build can have one version of a package; make the dependencies agree on one",
+            ),
+        );
+    }
+
+    /// The folder of the pinned checkout of a git dependency; never fetches.
+    fn git_checkout(&mut self, name: &str, source: &GitSource) -> Result<PathBuf, Diagnostic> {
+        let span = source.url_span;
+        let fetch_hint = "run `colibri check` or `colibri update` in a terminal to fetch it (editors and the language server never use the network)";
+        if !self.lock_read {
+            self.lock_read = true;
+            let root = self
+                .trees
+                .first()
+                .map(|t| t.root.clone())
+                .unwrap_or_default();
+            let path = root.join(LOCK_FILE);
+            if self.fs.is_file(&path) {
+                match self.fs.read(&path) {
+                    Ok(text) => {
+                        let file = self
+                            .sources
+                            .add_file(self.fs.display_name(&path), git::mask_source_text(&text));
+                        match Lock::parse(file, &text) {
+                            Ok(lock) => self.lock = Some(lock),
+                            Err(d) => {
+                                let hint = match &d.hint {
+                                    Some(h) => format!("{h}; {}", lock::RECREATE_HINT),
+                                    None => lock::RECREATE_HINT.to_string(),
+                                };
+                                self.diags.push(d.with_hint(hint));
+                            }
+                        }
+                    }
+                    Err(e) => self.diags.push(
+                        Diagnostic::error(format!("cannot read `{}`: {e}", self.fs.display_name(&path)), span)
+                            .with_hint(lock::RECREATE_HINT),
+                    ),
+                }
+            }
+        }
+        let entry = match self.lock.as_ref().and_then(|l| l.entries.get(name)) {
+            Some(e) if e.matches(source) => e.clone(),
+            Some(e) => {
+                let asked = source.spec.describe();
+                return Err(Diagnostic::error(
+                    format!(
+                        "`{LOCK_FILE}` is out of date for the dependency `{name}`: it was locked for `{}` ({}), and `colibri.toml` now says `{}` ({asked})",
+                        git::redact_url(&e.url),
+                        e.spec.describe(),
+                        git::redact_url(&source.url)
+                    ),
+                    span,
+                )
+                .with_hint("run `colibri check` or `colibri update` to lock it again"));
+            }
+            None => {
+                return Err(Diagnostic::error(
+                    format!("the git dependency `{name}` is not in `{LOCK_FILE}` yet"),
+                    span,
+                )
+                .with_hint(fetch_hint));
+            }
+        };
+        let cache = git::cache_root().map_err(|m| Diagnostic::error(m, span))?;
+        let dir = git::checkout_dir(&cache, &entry.url, &entry.commit);
+        if !self.fs.is_file(&dir.join(git::COMPLETE_MARKER)) {
+            return Err(Diagnostic::error(
+                format!(
+                    "the git dependency `{name}` ({}) is not in the cache",
+                    entry.commit.get(..10).unwrap_or(&entry.commit)
+                ),
+                span,
+            )
+            .with_hint(fetch_hint));
+        }
+        Ok(dir)
     }
 
     /// Adds every source file under `dir` (`rel` is its path under the tree root) that is not a
@@ -307,8 +553,7 @@ impl Loader<'_> {
                 if self.fs.is_symlink(&path) {
                     continue;
                 }
-                let own_tree = self.fs.is_file(&path.join(MANIFEST_FILE));
-                if !name.starts_with('.') && !own_tree {
+                if !skipped_folder(self.fs, &name, &path) {
                     self.add_tree_modules(tree, &path, &rel_path);
                 }
             } else if name.ends_with(&format!(".{SOURCE_EXT}"))
@@ -334,6 +579,13 @@ impl Loader<'_> {
             .sources
             .add_file(self.fs.display_name(path), text.clone());
         let (file, diags) = parse_file(file_id, &text);
+        for d in diags.iter().filter(|d| d.is_error()) {
+            self.dropped.push(Dropped {
+                kind: DroppedKind::Syntax,
+                span: d.span,
+                message: d.message.clone(),
+            });
+        }
         self.diags.extend(diags);
         let package = self.package_of(tree, rel);
         let name = self.module_name(tree, rel, entry);
@@ -494,10 +746,13 @@ impl Loader<'_> {
                             ImportTarget::Module(id)
                         }
                         Err(e) => {
-                            self.diags.push(Diagnostic::error(
-                                format!("cannot read `{}`: {e}", self.fs.display_name(&file)),
+                            let message = format!("cannot read `{}`: {e}", self.fs.display_name(&file));
+                            self.dropped.push(Dropped {
+                                kind: DroppedKind::Unreadable,
                                 span,
-                            ));
+                                message: message.clone(),
+                            });
+                            self.diags.push(Diagnostic::error(message, span));
                             ImportTarget::Failed
                         }
                     }
@@ -512,16 +767,17 @@ impl Loader<'_> {
                 } else {
                     "rename the file or the dependency so that only one matches".to_string()
                 };
-                self.diags.push(
-                    Diagnostic::error(
-                        format!(
-                            "`import {dotted_path}` is ambiguous: it could be {}",
-                            list.join(", or ")
-                        ),
-                        span,
-                    )
-                    .with_hint(hint),
+                let message = format!(
+                    "`import {dotted_path}` is ambiguous: it could be {}",
+                    list.join(", or ")
                 );
+                self.dropped.push(Dropped {
+                    kind: DroppedKind::Ambiguous,
+                    span,
+                    message: message.clone(),
+                });
+                self.diags
+                    .push(Diagnostic::error(message, span).with_hint(hint));
                 ImportTarget::Failed
             }
         }
@@ -717,6 +973,7 @@ impl Loader<'_> {
             metas,
             packages: self.packages,
             diagnostics: self.diags,
+            dropped: self.dropped,
         }
     }
 
@@ -868,6 +1125,52 @@ mod tests {
         let loaded =
             load(&fs, &mut sources, Entry::File(Path::new(files[0].0)), &host).expect("loads");
         (loaded, sources)
+    }
+
+    fn all_module_names(files: &[(&str, &str)]) -> Vec<String> {
+        let mut fs = MemoryFs::new();
+        for (p, t) in files {
+            fs.insert(p, *t);
+        }
+        let mut sources = SourceMap::new();
+        let loaded = load_with(
+            &fs,
+            &mut sources,
+            Entry::Package(Path::new("p")),
+            &[],
+            LoadOptions { all_modules: true },
+        )
+        .expect("loads");
+        let mut names: Vec<String> = loaded.metas.iter().map(|m| m.name.clone()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn the_all_modules_walk_skips_cache_folders_but_not_target_or_node_modules() {
+        let names = all_module_names(&[
+            ("p/colibri.toml", "[package]\nname = \"p\"\n"),
+            ("p/main.colibri", "import cached.c\n"),
+            ("p/target/a.colibri", ""),
+            ("p/node_modules/n.colibri", ""),
+            (
+                "p/build/CACHEDIR.TAG",
+                "Signature: 8a477f597d28d172789f06886806bc55",
+            ),
+            ("p/build/b.colibri", ""),
+            (
+                "p/cached/CACHEDIR.TAG",
+                "Signature: 8a477f597d28d172789f06886806bc55",
+            ),
+            ("p/cached/c.colibri", ""),
+            ("p/.hidden/h.colibri", ""),
+        ]);
+        // `build` is walked past; `cached` is only there because `main` imports it by name.
+        assert!(names.contains(&"target.a".to_string()), "{names:?}");
+        assert!(names.contains(&"node_modules.n".to_string()), "{names:?}");
+        assert!(!names.contains(&"build.b".to_string()), "{names:?}");
+        assert!(names.contains(&"cached.c".to_string()), "{names:?}");
+        assert!(!names.iter().any(|n| n.contains("hidden")), "{names:?}");
     }
 
     fn messages(l: &Loaded) -> Vec<String> {

@@ -202,6 +202,8 @@ fn a_hand_edited_file_is_refused() {
     let text = engine().interface_text().replace("fn add(", "fn plus(");
     let err = Interface::from_text("engine.cbi", &text).unwrap_err();
     assert!(matches!(err, colibri::Error::Interface { .. }), "{err:?}");
+    // The file name and the reason are two words, not one run together.
+    assert!(err.to_string().starts_with("engine.cbi: "), "{err}");
 }
 
 #[test]

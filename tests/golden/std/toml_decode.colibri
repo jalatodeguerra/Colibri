@@ -1,0 +1,90 @@
+import json
+import toml
+
+enum Level { Debug, Info }
+
+enum Sink {
+    File(path: str)
+    Remote(str, int)
+    Stdout
+}
+
+struct Server {
+    host: str = "localhost"
+    @rename("tcp-port") port: int
+    @skip secret: str = "hidden"
+    level: Level = Level.Info
+}
+
+struct Config {
+    title: str
+    server: Server
+    tags: List[str] = []
+    ratio: float?
+    sinks: List[Sink] = []
+    since: str = ""
+    extra: json.Value?
+}
+
+fn main() {
+    let text = r"""
+title = "demo"
+tags = ["a", "b"]
+ratio = 2
+since = 1979-05-27T07:32:00Z
+sinks = ["Stdout", { File = { path = "/tmp/x" } }, { Remote = ["h", 9] }]
+unknown = 1
+
+[extra]
+anything = [1, 2]
+
+[server]
+tcp-port = 8080
+secret = "ignored"
+level = "Debug"
+"""
+    match toml.decode[Config](text) {
+        ok(c) => {
+            print(c.title)
+            print(c.server)
+            print(c.tags)
+            print(c.ratio)
+            print(c.sinks)
+            print(c.since)
+            print(json.encode(c.extra.expect("extra")))
+        }
+        err(e) => print(e.message())
+    }
+    // Defaults fill what is missing.
+    let c = toml.decode[Config]("title = \"t\"\n[server]\ntcp-port = 1").expect("decodes")
+    print(c.server)
+    print(c.ratio)
+    print(c.extra.is_none())
+    // Errors name the place, like json.
+    for bad in [
+        "title = 1\n[server]\ntcp-port = 1",
+        "title = \"t\"\n[server]\nport = 1",
+        "title = \"t\"\n[server]\ntcp-port = 1\nlevel = \"Loud\"",
+        "title = \"t\"\nsinks = [\"Nope\"]\n[server]\ntcp-port = 1",
+    ] {
+        match toml.decode[Config](bad) {
+            ok(_) => print("decoded?")
+            err(e) => print(e.message())
+        }
+    }
+}
+
+// expect: demo
+// expect: Server { host: "localhost", port: 8080, secret: "hidden", level: Debug }
+// expect: ["a", "b"]
+// expect: some(2.0)
+// expect: [Stdout, File(path: "/tmp/x"), Remote("h", 9)]
+// expect: 1979-05-27T07:32:00Z
+// expect: ok("{\"anything\":[1,2]}")
+// expect: Server { host: "localhost", port: 1, secret: "hidden", level: Info }
+// expect: none
+// expect: true
+// expect: toml: at `$.title`: expected a string, found the number 1
+// expect: toml: at `$.server`: the object has no field `tcp-port` (a `Server` needs it)
+// expect: toml: at `$.server.level`: `Loud` is not a variant of `Level` (expected one of: Debug, Info)
+// expect: toml: at `$.sinks[0]`: `Nope` is not a variant of `Sink` (expected one of: File (with data), Remote (with data), Stdout)

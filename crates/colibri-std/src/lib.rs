@@ -2,7 +2,7 @@
 //!
 //! Every module is a *named host module* implemented in Rust through the same machinery as
 //! `vm.module(..)`: [`install`] registers `io`, `fs`, `path`, `os`, `math`, `rand`, `time`, `str`,
-//! `json`, `regex`, `http`, `args`, `process`, `datetime` and `vec` into a [`Vm`], under the
+//! `json`, `regex`, `http`, `args`, `process`, `datetime`, `vec`, `base64`, `hex`, `hash` and `csv` into a [`Vm`], under the
 //! interface names `std.io`, `std.fs`, ... The checker sees
 //! them exactly as it sees an embedder's own host modules: from interface (`.cbi`) text generated
 //! from the registrations ([`interfaces`] gives it to a checker that has no `Vm`). A script
@@ -30,9 +30,15 @@
 //! ```
 
 mod args;
+mod base64;
+mod bytes;
 mod config;
+mod csv;
 mod datetime;
+mod errors;
 mod fs;
+mod hash;
+mod hex;
 mod http;
 mod io;
 mod json;
@@ -44,6 +50,7 @@ mod rand;
 mod re;
 mod strs;
 mod time;
+mod tomls;
 mod values;
 
 use colibri_runtime::{Cap, Error, Interface, Registration, Vm};
@@ -54,7 +61,7 @@ pub use rand::Rng;
 /// The modules of the standard library built so far, in the order they are registered.
 pub const MODULES: &[&str] = &[
     "io", "fs", "path", "os", "math", "rand", "time", "str", "json", "regex", "http", "args",
-    "process", "datetime", "vec",
+    "process", "datetime", "vec", "base64", "hex", "hash", "csv", "toml",
 ];
 
 /// Registers the standard library into `vm` with the default [`StdConfig`]. It must happen
@@ -70,7 +77,7 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
     // Only the names are declared now: a module is registered (its interface generated,
     // parsed and checked) when a program imports it or something asks for it by name.
     type Register = fn(&mut Vm) -> Result<(), Error>;
-    let lazy: [(&str, Register); 14] = [
+    let lazy: [(&str, Register); 19] = [
         ("io", io::register),
         ("fs", fs::register),
         ("path", path::register),
@@ -85,6 +92,11 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
         ("args", args::register),
         ("process", process::register),
         ("datetime", datetime::register),
+        ("base64", base64::register),
+        ("hex", hex::register),
+        ("hash", hash::register),
+        ("csv", csv::register),
+        ("toml", tomls::register),
     ];
     for (name, register) in lazy {
         vm.lazy_std_module(name, register);
@@ -108,6 +120,21 @@ pub fn interfaces() -> Vec<Interface> {
                 .expect("the standard library's own interface text parses")
         })
         .collect()
+}
+
+/// The interface of the standard module `name` (`std.math` or `math`), or `None` if there is
+/// no such module. Only that module is registered and rendered: what [`interfaces`] does for
+/// all of them.
+pub fn interface(name: &str) -> Option<Interface> {
+    let short = name.strip_prefix("std.").unwrap_or(name);
+    let short = *MODULES.iter().find(|m| **m == short)?;
+    let mut vm = Vm::builder().stdout(Box::new(std::io::sink())).build();
+    install(&mut vm).expect("the standard library registers into an empty Vm");
+    let text = vm.std_module(short).interface_text();
+    Some(
+        Interface::from_text(&format!("std.{short}"), &text)
+            .expect("the standard library's own interface text parses"),
+    )
 }
 
 /// The code a script passed to `os.exit` in this `Vm`, if it did. A script that exits ends

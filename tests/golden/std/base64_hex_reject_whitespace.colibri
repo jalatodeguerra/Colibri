@@ -1,0 +1,27 @@
+import base64
+import hex
+
+fn main() {
+    // Neither decoder skips whitespace or line breaks: strip them first.
+    for text in ["Zm9v YmFy", "Zm9v\nYmFy", " Zm9v", "Zm9v\r\n", "Zg== "] {
+        print(base64.decode(text).is_err())
+    }
+    for text in ["666f 6f", "666f\n6f", " 666f", "666f\n", "66\t6f"] {
+        print(hex.decode(text).is_err())
+    }
+    print(base64.decode("Zm9vYmFy"))
+    print(hex.decode("666f6f"))
+}
+
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: ok("foobar")
+// expect: ok("foo")

@@ -1,0 +1,30 @@
+import regex
+
+fn kind(e: Error) -> str {
+    match e.as[regex.Error]() {
+        some(k) => return "{k}"
+        none => return "not a regex.Error"
+    }
+}
+
+fn main() {
+    match regex.compile("(unclosed") {
+        ok(_) => print("compiled")
+        err(e) if e.is[regex.Error]() => match e.as[regex.Error]().expect("checked") {
+            Syntax => print("bad pattern")
+            TooBig => print("too big")
+            _ => print("another kind")
+        }
+        err(_) => print("not a regex error")
+    }
+    print(kind(regex.compile("a(?=b)").err().expect("look-around")))
+    print(kind(regex.compile(r"a{2,1}").err().expect("bad repeat")))
+    print(kind(regex.compile(r"(((a{100}){100}){100}){100}").err().expect("too big")))
+    print(kind(error("plain")))
+}
+
+// expect: bad pattern
+// expect: Syntax
+// expect: Syntax
+// expect: TooBig
+// expect: not a regex.Error

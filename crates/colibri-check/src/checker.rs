@@ -185,12 +185,17 @@ pub(crate) struct Checker<'a> {
     pub diags: Vec<Diagnostic>,
     /// What the zonker records for [`crate::insight`], when asked to.
     pub facts: Option<Vec<crate::insight::RawFact>>,
+    /// Which declaration each field, variant-in-pattern and `.Variant` name resolved to
+    /// (use, declaration), when asked to (see [`crate::insight::Insight::references`]).
+    pub refs: Option<Vec<(Span, Span)>>,
     /// While positive, diagnostics are dropped (re-checking a default argument at a call).
     muted: u32,
     pub values: HashMap<String, ValueRef>,
     /// Type names that exist but cannot be used yet (they were declared with an unsupported
     /// construct), so uses of them do not cascade into "unknown type".
     pub poisoned_types: HashSet<String>,
+    /// Set while a host module's `@module enum` is being declared (see `declare_types`).
+    pub declaring_module_enum: bool,
     pub fns: Vec<FnInfo<'a>>,
     pub globals: Vec<GlobalInfo<'a>>,
     /// Every user-defined struct, enum, class and interface, indexed by [`TypeId`].
@@ -261,6 +266,8 @@ fn prelude_option(span: Span) -> TypeDef {
         span,
         params: vec![ParamId(0)],
         sendable: true,
+        module: None,
+        open: false,
         kind: TypeDefKind::Enum {
             variants: vec![
                 VariantDef {
@@ -278,6 +285,8 @@ fn prelude_option(span: Span) -> TypeDef {
                         span,
                         weak: false,
                         default: None,
+                        rename: None,
+                        skip: false,
                     }],
                     named: false,
                 },
@@ -298,6 +307,8 @@ fn prelude_result(span: Span) -> TypeDef {
             span,
             weak: false,
             default: None,
+            rename: None,
+            skip: false,
         }],
         named: false,
     };
@@ -306,6 +317,8 @@ fn prelude_result(span: Span) -> TypeDef {
         span,
         params: vec![ParamId(1), ParamId(2)],
         sendable: true,
+        module: None,
+        open: false,
         kind: TypeDefKind::Enum {
             variants: vec![variant("ok", 1, "T"), variant("err", 2, "E")],
         },
@@ -443,9 +456,11 @@ impl<'a> Checker<'a> {
             extern_lib: None,
             diags: Vec::new(),
             facts: None,
+            refs: None,
             muted: 0,
             values: HashMap::new(),
             poisoned_types: HashSet::new(),
+            declaring_module_enum: false,
             fns: Vec::new(),
             globals: Vec::new(),
             types: vec![prelude_option(file.span), prelude_result(file.span)],
@@ -490,7 +505,15 @@ impl<'a> Checker<'a> {
     /// Makes the checker record what every expression resolved to (see [`crate::insight`]).
     pub fn recording(mut self) -> Self {
         self.facts = Some(Vec::new());
+        self.refs = Some(Vec::new());
         self
+    }
+
+    /// Notes that the name at `at` resolved to the declaration at `def`, when recording.
+    pub(crate) fn note_ref(&mut self, at: Span, def: Span) {
+        if let Some(refs) = &mut self.refs {
+            refs.push((at, def));
+        }
     }
 
     pub fn run(self) -> Checked {
@@ -542,7 +565,12 @@ impl<'a> Checker<'a> {
         } else {
             self.assemble(init_order, script_from, main)
         };
-        let insight = self.facts.take().map(|raw| self.build_insight(raw));
+        let refs = self.refs.take().unwrap_or_default();
+        let insight = self.facts.take().map(|raw| {
+            let mut insight = self.build_insight(raw);
+            insight.refs = refs;
+            insight
+        });
         let checked = Checked {
             program,
             diagnostics: std::mem::take(&mut self.diags),
@@ -650,6 +678,7 @@ impl<'a> Checker<'a> {
         }
         self.host_type_count = host_end as u32 - crate::types::FIRST_USER_TYPE;
         for &m in &others {
+            self.bind_host_uses(m);
             self.bind_imports_types(m);
         }
         for (k, &m) in others.iter().enumerate() {
@@ -1131,7 +1160,11 @@ impl<'a> Checker<'a> {
     /// `Name[args]` for a user-defined struct, enum, class or interface.
     fn instantiate_type(&mut self, id: TypeId, args: &[ast::TypeExpr], span: Span) -> Ty {
         let def = &self.types[id.0 as usize];
-        let (name, wanted, is_iface) = (def.name.clone(), def.params.len(), def.is_interface());
+        let (name, wanted, is_iface) = (
+            def.display_name().into_owned(),
+            def.params.len(),
+            def.is_interface(),
+        );
         if args.len() != wanted {
             self.report_type_arity(&name, wanted, args.len(), span);
             for a in args {
@@ -1905,6 +1938,13 @@ impl<'a> Checker<'a> {
             types: self.types.clone(),
             host_fns,
             host_types: self.host_type_count,
+            host_type_modules: self
+                .type_extra
+                .iter()
+                .skip(crate::types::FIRST_USER_TYPE as usize)
+                .take(self.host_type_count as usize)
+                .map(|x| self.mods[x.module.unwrap_or(BASE).0 as usize].name.clone())
+                .collect(),
             c_layouts: self.c_layouts.clone(),
         })
     }

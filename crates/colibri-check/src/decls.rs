@@ -10,13 +10,13 @@ use crate::checker::Checker;
 use crate::generics::SigCtx;
 use crate::hir::{FieldDef, TypeDef, TypeDefKind, VariantDef};
 use crate::host::HOST_FILE;
-use crate::modules::{AliasId, ModId, TypeEntity};
+use crate::modules::{AliasId, BASE, ModId, ModKind, TypeEntity};
 use crate::suggest;
 use crate::traits::GenericParamInfo;
 use crate::types::{Ty, TypeId};
 
 /// Names that cannot be redefined as types.
-const BUILTIN_TYPES: &[&str] = &[
+pub(crate) const BUILTIN_TYPES: &[&str] = &[
     "int", "float", "bool", "str", "char", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
     "f32", "f64", "List", "Map", "Set", "Option", "Result", "ptr", "cstr",
 ];
@@ -76,10 +76,19 @@ impl<'a> Checker<'a> {
                     }
                 }
                 ItemKind::Enum(e) => {
-                    if let Some(id) = self.declare_type(&e.name, "enum", &e.generics, item.public) {
+                    // `@module enum Error { .. }` in a host module's interface: the module's own
+                    // enum (`fs.Error`), see `HostModule::register_module_enum`.
+                    let own = item.attrs.iter().any(|a| a.name.name == "module")
+                        && self.cur_mod != BASE
+                        && self.mods[self.cur_mod.0 as usize].kind == ModKind::Host;
+                    self.declaring_module_enum = own;
+                    let declared = self.declare_type(&e.name, "enum", &e.generics, item.public);
+                    self.declaring_module_enum = false;
+                    if let Some(id) = declared {
                         self.types[id.0 as usize].kind = TypeDefKind::Enum {
                             variants: Vec::new(),
                         };
+                        self.types[id.0 as usize].open = own;
                     }
                 }
                 ItemKind::Interface(i) => {
@@ -138,10 +147,21 @@ impl<'a> Checker<'a> {
         out
     }
 
+    /// The name of the named host module being declared, if the current module is one.
+    fn declaring_host_module(&self) -> Option<String> {
+        let info = &self.mods[self.cur_mod.0 as usize];
+        (self.cur_mod != BASE && info.kind == ModKind::Host).then(|| info.name.clone())
+    }
+
     /// Whether `name` can be declared as a type; reports a clash otherwise.
     fn name_is_free(&mut self, name: &ast::Ident, what: &str) -> bool {
+        // A host module may declare its own `enum Error` (`fs.Error`, DESIGN §10.2): inside the
+        // module it shadows the prelude's `Error`, which `Result[T]` still means. Nobody else
+        // may reuse the name.
+        let module_error = name.name == "Error" && what == "enum" && self.declaring_module_enum;
         if BUILTIN_TYPES.contains(&name.name.as_str())
-            || (!crate::prelude::in_prelude(name.span)
+            || (!module_error
+                && !crate::prelude::in_prelude(name.span)
                 && PRELUDE_CLASSES.contains(&name.name.as_str()))
         {
             self.report(Diagnostic::error(
@@ -153,6 +173,19 @@ impl<'a> Checker<'a> {
         let previous = self
             .type_ids
             .get(&name.name)
+            .filter(|&&id| {
+                // A module's own enum shares its name with the prelude's `Error`.
+                if self.declaring_module_enum && id == crate::types::ERROR_TYPE {
+                    return false;
+                }
+                // A named host module's type is its own: it hides a type of the same name
+                // that the default host module declares (the embedder's `Child` and
+                // `process.Child`), inside that module. Everywhere else the two are told
+                // apart by the module name.
+                !(self.declaring_host_module().is_some()
+                    && id.0 >= crate::types::FIRST_USER_TYPE
+                    && self.type_extra[id.0 as usize].module == Some(BASE))
+            })
             .map(|id| self.types[id.0 as usize].span)
             .or_else(|| {
                 self.aliases
@@ -190,6 +223,9 @@ impl<'a> Checker<'a> {
             span: name.span,
             params: generics.iter().map(|g| g.id).collect(),
             sendable: true,
+            // What a named host module declares is that module's own.
+            module: self.declaring_host_module(),
+            open: false,
             kind: TypeDefKind::Struct { fields: Vec::new() },
         });
         self.type_extra.push(TypeExtra {
@@ -301,16 +337,20 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let (ty, weak) = self.resolve_field_type(&f.ty, is_class);
+            let (rename, skip) = self.field_attrs(f, &ty);
             fields.push(FieldDef {
                 name: f.name.name.clone(),
                 ty,
                 span: f.name.span,
                 weak,
                 default: None,
+                rename,
+                skip,
             });
             defaults.push(f.default.as_ref());
             field_public.push(f.public || host);
         }
+        self.check_field_keys(&fields);
         self.types[id.0 as usize].kind = if is_class {
             TypeDefKind::Class { fields }
         } else {
@@ -318,6 +358,89 @@ impl<'a> Checker<'a> {
         };
         self.type_extra[id.0 as usize].defaults = defaults;
         self.type_extra[id.0 as usize].field_public = field_public;
+    }
+
+    /// Reads `@rename("key")` and `@skip` on a field (DESIGN §7.5); anything else is not
+    /// supported on a field. A skipped field must be buildable without the JSON: it needs a
+    /// default value or an optional type (it is `none`).
+    fn field_attrs(&mut self, f: &'a ast::Field, ty: &Ty) -> (Option<String>, bool) {
+        let mut rename: Option<String> = None;
+        let mut skip = false;
+        for attr in &f.attrs {
+            match attr.name.name.as_str() {
+                "rename" => match attr.args.as_slice() {
+                    [e] if crate::ffi::plain_string(e).is_some() => {
+                        let key = crate::ffi::plain_string(e).unwrap_or_default();
+                        if rename.is_some() {
+                            self.report(Diagnostic::error("a field has one `@rename`", attr.span));
+                        } else if key.is_empty() {
+                            self.report(Diagnostic::error(
+                                "`@rename` needs a name that is not empty",
+                                attr.span,
+                            ));
+                        } else {
+                            rename = Some(key);
+                        }
+                    }
+                    _ => self.report(
+                        Diagnostic::error("`@rename` takes the new name as a string", attr.span)
+                            .with_hint("write `@rename(\"user_id\") id: int`"),
+                    ),
+                },
+                "skip" => {
+                    if !attr.args.is_empty() {
+                        self.report(Diagnostic::error("`@skip` takes no arguments", attr.span));
+                    }
+                    skip = true;
+                }
+                other => {
+                    self.unsupported(&format!("the attribute `@{other}` on a field"), attr.span)
+                }
+            }
+        }
+        if skip && f.default.is_none() && !matches!(ty, Ty::Option(_)) {
+            self.report(
+                Diagnostic::error(
+                    format!(
+                        "the `@skip` field `{}` needs a default value, because `json.decode` cannot read it",
+                        f.name.name
+                    ),
+                    f.name.span,
+                )
+                .with_hint(format!(
+                    "write `@skip {}: ... = <default>`, or make the type optional",
+                    f.name.name
+                )),
+            );
+        }
+        if skip && rename.is_some() {
+            self.report(Diagnostic::error(
+                "a `@skip` field has no key, so `@rename` does nothing on it",
+                f.name.span,
+            ));
+        }
+        (rename, skip)
+    }
+
+    /// Two fields that serialize under the same key would overwrite each other.
+    fn check_field_keys(&mut self, fields: &[FieldDef]) {
+        for (i, f) in fields.iter().enumerate().filter(|(_, f)| !f.skip) {
+            if let Some(prev) = fields[..i].iter().find(|p| !p.skip && p.key() == f.key()) {
+                let prev_span = prev.span;
+                self.report(
+                    Diagnostic::error(
+                        format!(
+                            "the fields `{}` and `{}` both serialize as `{}`",
+                            prev.name,
+                            f.name,
+                            f.key()
+                        ),
+                        f.span,
+                    )
+                    .with_label(prev_span, "the same key here"),
+                );
+            }
+        }
     }
 
     fn define_enum(&mut self, id: TypeId, e: &'a ast::EnumDecl) {
@@ -346,6 +469,8 @@ impl<'a> Checker<'a> {
                             span: t.span,
                             weak: false,
                             default: None,
+                            rename: None,
+                            skip: false,
                         })
                         .collect();
                     (fields, false)
@@ -367,6 +492,8 @@ impl<'a> Checker<'a> {
                             span: f.name.span,
                             weak: false,
                             default: None,
+                            rename: None,
+                            skip: false,
                         });
                     }
                     (fields, true)
@@ -585,7 +712,7 @@ impl<'a> Checker<'a> {
         let id = self.add_fn(item, decl, ctx);
         let name = &decl.name;
         let def = &self.types[owner.0 as usize];
-        let type_name = def.name.clone();
+        let type_name = def.display_name().into_owned();
         if let Some(v) = def.variants().iter().find(|v| v.name == name.name) {
             let vspan = v.span;
             self.report(

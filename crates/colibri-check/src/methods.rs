@@ -152,9 +152,11 @@ impl FnCtx<'_, '_> {
                 let shown = self.show(&recv_ty);
                 let names: Vec<String> = found
                     .iter()
-                    .map(|(i, _)| format!("`{}`", self.ck.types[i.0 as usize].name))
+                    .map(|(i, _)| format!("`{}`", self.ck.types[i.0 as usize].display_name()))
                     .collect();
-                let first = self.ck.types[found[0].0.0 as usize].name.clone();
+                let first = self.ck.types[found[0].0.0 as usize]
+                    .display_name()
+                    .into_owned();
                 self.ck.report(
                     Diagnostic::error(
                         format!(
@@ -359,7 +361,7 @@ impl FnCtx<'_, '_> {
             } => {
                 if let Some(why) = self.ck.object_unsafety(iface, index) {
                     self.check_args_loosely(args);
-                    let iname = self.ck.types[iface.0 as usize].name.clone();
+                    let iname = self.ck.types[iface.0 as usize].display_name().into_owned();
                     self.ck.report(
                         Diagnostic::error(
                             format!(
@@ -620,7 +622,7 @@ impl FnCtx<'_, '_> {
         let shown = self.show(recv_ty);
         match recv_ty {
             Ty::Adt(id, _) => {
-                let tname = self.ck.types[id.0 as usize].name.clone();
+                let tname = self.ck.types[id.0 as usize].display_name().into_owned();
                 let mut methods: Vec<String> = self
                     .ck
                     .methods
@@ -656,7 +658,7 @@ impl FnCtx<'_, '_> {
                 self.ck.report(diag);
             }
             Ty::Dyn(iface, _) => {
-                let iname = self.ck.types[iface.0 as usize].name.clone();
+                let iname = self.ck.types[iface.0 as usize].display_name().into_owned();
                 let names: Vec<String> = self
                     .ck
                     .ifaces

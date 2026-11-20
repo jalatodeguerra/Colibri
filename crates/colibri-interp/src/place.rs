@@ -140,7 +140,10 @@ impl Interp {
                 let kv = self.eval(fiber, key)?;
                 fiber.temps.push(kv.clone());
                 match mv {
-                    Value::Map(m) => Ok(Resolved::Entry(m, kv)),
+                    Value::Map(m) => {
+                        let kv = self.canonical_key(fiber, || m.keys(), kv, span)?;
+                        Ok(Resolved::Entry(m, kv))
+                    }
                     _ => Err(self.internal(fiber, span, "an ill-typed map index")),
                 }
             }

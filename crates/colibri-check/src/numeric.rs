@@ -104,6 +104,30 @@ fn num_sig(ty: &Ty, name: &str) -> Option<NumSig> {
     }
 }
 
+/// The methods of a number type with their signatures, for editors.
+pub(crate) fn num_methods(ty: &Ty) -> Vec<crate::members::MethodSig> {
+    let names = match ty {
+        Ty::Int(_) => INT_METHODS,
+        Ty::Float | Ty::F32 => FLOAT_METHODS,
+        _ => return Vec::new(),
+    };
+    names
+        .iter()
+        .filter_map(|name| {
+            let sig = num_sig(ty, name)?;
+            Some(crate::members::MethodSig {
+                name: name.to_string(),
+                params: sig
+                    .params
+                    .iter()
+                    .map(|(n, t)| (n.to_string(), t.clone()))
+                    .collect(),
+                ret: sig.ret,
+            })
+        })
+        .collect()
+}
+
 /// Whether the number type `ty` has a method called `name`.
 pub(crate) fn num_method_exists(ty: &Ty, name: &str) -> bool {
     num_sig(ty, name).is_some()

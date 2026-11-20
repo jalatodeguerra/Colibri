@@ -108,10 +108,12 @@ impl ReloadState {
     pub fn set_files(&mut self, reads: Vec<(PathBuf, u64)>) {
         let mut reads = reads;
         // Even a load that failed before reading the entry should notice it appearing.
+        // As `RecordingFs::into_reads` writes them: the entry may have been given relative.
         let entry = match &self.entry {
             OwnedEntry::File(p) => p.clone(),
             OwnedEntry::Package(p) => p.join(colibri_check::package::MAIN_FILE),
         };
+        let entry = std::path::absolute(&entry).unwrap_or(entry);
         if !reads.iter().any(|(p, _)| *p == entry) {
             reads.push((entry, 0));
         }

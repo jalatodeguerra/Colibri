@@ -14,6 +14,10 @@ fn vm() -> (colibri::Vm, colibri::SharedBuffer) {
     (vm, out)
 }
 
+fn colibri_vm() -> (colibri::Vm, colibri::SharedBuffer) {
+    vm()
+}
+
 fn run(vm: &mut colibri::Vm, src: &str) -> Result<(), colibri::Error> {
     vm.load_source("game.colibri", src)?;
     vm.run_main()
@@ -470,4 +474,406 @@ fn the_default_module_needs_no_import() {
     vm.load_source("game.colibri", "print(spawn_enemy(1.0, 2.5))\n")
         .unwrap();
     assert_eq!(out.contents(), "enemy at 1,2.5\n");
+}
+
+// ---- typed errors: `Result<T, TypedError>` and `HostModule::register_module_enum` ----
+
+fn typed_vm() -> (colibri::Vm, colibri::SharedBuffer) {
+    let (mut vm, out) = vm();
+    {
+        let mut disk = vm.module("disk");
+        disk.register_module_enum("Error", &["Full", "Gone"])
+            .unwrap();
+        disk.register_fn("save", |n: i64| -> Result<i64, colibri::TypedError> {
+            match n {
+                0 => Err(colibri::TypedError::new(
+                    "disk",
+                    "Error",
+                    "Full",
+                    "the disk is full",
+                )),
+                1 => Err(colibri::TypedError::new(
+                    "disk",
+                    "Error",
+                    "Gone",
+                    "the disk is gone",
+                )),
+                n => Ok(n),
+            }
+        })
+        .unwrap();
+    }
+    {
+        // Another module with an `Error` of its own.
+        let mut net = vm.module("net");
+        net.register_module_enum("Error", &["Down", "Slow", "Gone"])
+            .unwrap();
+        net.register_fn("send", |n: i64| -> Result<i64, colibri::TypedError> {
+            match n {
+                0 => Err(colibri::TypedError::new(
+                    "net",
+                    "Error",
+                    "Gone",
+                    "the link is gone",
+                )),
+                n => Ok(n),
+            }
+        })
+        .unwrap();
+    }
+    (vm, out)
+}
+
+#[test]
+fn a_host_error_keeps_a_typed_value_that_is_and_as_recover() {
+    let (mut vm, out) = typed_vm();
+    run(
+        &mut vm,
+        r#"import disk
+import net
+
+fn store(n: int) -> Result[int] {
+    let v = disk.save(n).context("storing {n}")?
+    return ok(v)
+}
+
+fn main() {
+    for n in [0, 1, 5] {
+        match store(n) {
+            ok(v) => print("saved {v}")
+            err(e) if e.is[disk.Error]() => match e.as[disk.Error]().expect("checked") {
+                Full => print("full: {e}")
+                Gone => print("gone: {e}")
+                _ => print("another: {e}")
+            }
+            err(e) => print("other: {e}")
+        }
+    }
+    let e = net.send(0).err().expect("fails")
+    print("{e.is[net.Error]()} {e.is[disk.Error]()}")
+    // `Gone` of `net.Error` is not `Gone` of `disk.Error`.
+    print("{e.as[net.Error]()} {e.as[disk.Error]()}")
+    print(e.message())
+}
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        out.contents(),
+        "full: storing 0: the disk is full\ngone: storing 1: the disk is gone\nsaved 5\ntrue false\nsome(Gone) none\nthe link is gone\n"
+    );
+}
+
+#[test]
+fn a_typed_error_comes_back_to_rust_as_its_message() {
+    let (mut vm, _) = typed_vm();
+    vm.load_source(
+        "game.colibri",
+        "import disk\nfn save(n: int) -> Result[int] {\n    return disk.save(n)\n}\n",
+    )
+    .unwrap();
+    let save = vm.get_fn::<(i64,), Result<i64, String>>("save").unwrap();
+    assert_eq!(
+        save.call(&mut vm, (0,)).unwrap(),
+        Err("the disk is full".to_string())
+    );
+    assert_eq!(save.call(&mut vm, (3,)).unwrap(), Ok(3));
+}
+
+#[test]
+fn a_module_enum_is_declared_before_the_program_loads_and_may_not_clash() {
+    let (mut vm, _) = typed_vm();
+    let text = vm.module("disk").interface_text();
+    assert!(text.contains("enum Error { Full, Gone }"), "{text}");
+    let text = vm.module("net").interface_text();
+    assert!(text.contains("enum Error { Down, Slow, Gone }"), "{text}");
+    // The same name in the same module with other variants is a conflict.
+    let err = vm
+        .module("disk")
+        .register_module_enum("Error", &["Other"])
+        .unwrap_err();
+    assert!(matches!(err, colibri::Error::Registration { .. }), "{err}");
+    vm.load_source("game.colibri", "fn main() {}\n").unwrap();
+    let err = vm
+        .module("disk")
+        .register_module_enum("Other", &["A"])
+        .unwrap_err();
+    assert!(matches!(err, colibri::Error::AlreadyLoaded), "{err}");
+}
+
+#[test]
+fn a_typed_error_of_an_undeclared_enum_is_a_bug_of_the_host() {
+    let (mut vm, _) = vm();
+    vm.module("disk")
+        .register_fn("save", || -> Result<(), colibri::TypedError> {
+            Err(colibri::TypedError::new("disk", "Error", "Full", "x"))
+        })
+        .unwrap();
+    let err = run(
+        &mut vm,
+        "import disk\nfn main() {\n    let _ = disk.save()\n}\n",
+    )
+    .unwrap_err()
+    .render(false);
+    assert!(
+        err.contains("is not part of the loaded host interface"),
+        "{err}"
+    );
+}
+
+/// Runs `import disk; disk.save()` against a host function that fails with the error `make`
+/// builds, and gives the text of the failure.
+#[colibri::export(value)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stat {
+    pub size: i64,
+}
+
+#[colibri::export(value)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mode {
+    Fast,
+    Slow,
+}
+
+fn failure_of_typed_error(
+    declare: impl FnOnce(&mut colibri::HostModule<'_>),
+    make: fn() -> colibri::TypedError,
+) -> String {
+    let (mut vm, _) = vm();
+    {
+        let mut disk = vm.module("disk");
+        declare(&mut disk);
+        disk.register_fn("save", move || -> Result<(), colibri::TypedError> {
+            Err(make())
+        })
+        .unwrap();
+    }
+    run(
+        &mut vm,
+        "import disk\nfn main() {\n    let _ = disk.save()\n}\n",
+    )
+    .unwrap_err()
+    .render(false)
+}
+
+#[test]
+fn a_typed_error_names_its_variant_and_the_name_is_checked() {
+    let declare = |m: &mut colibri::HostModule<'_>| {
+        m.register_module_enum("Error", &["Full", "Gone"]).unwrap();
+    };
+    // A variant the enum does not have: a host bug with a message, not an `<enum>` value.
+    let err = failure_of_typed_error(declare, || {
+        colibri::TypedError::new("disk", "Error", "Gone2", "x")
+    });
+    assert!(
+        err.contains("`disk.Error` has no variant `Gone2`; its variants are Full, Gone"),
+        "{err}"
+    );
+    // A struct is not a module enum.
+    let err = failure_of_typed_error(
+        |m| {
+            m.register_module_enum("Error", &["Full"]).unwrap();
+            m.register_type::<Stat>().unwrap();
+        },
+        || colibri::TypedError::new("disk", "Stat", "Full", "x"),
+    );
+    assert!(err.contains("`disk.Stat` is not a module enum"), "{err}");
+    // A plain enum of the module is not one either.
+    let err = failure_of_typed_error(
+        |m| {
+            m.register_module_enum("Error", &["Full"]).unwrap();
+            m.register_type::<Mode>().unwrap();
+        },
+        || colibri::TypedError::new("disk", "Mode", "Fast", "x"),
+    );
+    assert!(err.contains("`disk.Mode` is not a module enum"), "{err}");
+}
+
+#[test]
+fn a_match_over_a_module_enum_needs_a_catch_all_arm() {
+    let load = |body: &str| {
+        let (mut vm, _) = typed_vm();
+        vm.module("disk").register_type::<Mode>().unwrap();
+        vm.load_source(
+            "game.colibri",
+            &format!(
+                "import disk\nfn f(e: disk.Error) -> int {{\n    match e {{\n{body}    }}\n}}\n"
+            ),
+        )
+        .map_err(|e| e.render(false))
+    };
+    // Every variant of today, no catch-all: the enum can grow.
+    let err = load("        Full => return 1\n        Gone => return 2\n").unwrap_err();
+    assert!(
+        err.contains("non-exhaustive `match`") && err.contains("`disk.Error` can gain variants"),
+        "{err}"
+    );
+    assert!(err.contains("a `_ =>` arm"), "{err}");
+    // A wildcard or a binding is enough, and the arms before it are not "unreachable".
+    for tail in ["_ => return 3", "other => return 3"] {
+        let body = format!("        Full => return 1\n        Gone => return 2\n        {tail}\n");
+        load(&body).unwrap();
+    }
+    // An enum registered the ordinary way stays closed.
+    let (mut vm, _) = typed_vm();
+    vm.module("disk").register_type::<Mode>().unwrap();
+    vm.load_source(
+        "game.colibri",
+        "import disk\nfn f(m: disk.Mode) -> int {\n    match m {\n        Fast => return 1\n        Slow => return 2\n    }\n}\n",
+    )
+    .unwrap();
+}
+
+// ---- what `register_module_enum` refuses ----
+
+fn refused(result: Result<(), colibri::Error>) -> String {
+    match result {
+        Err(colibri::Error::Registration { message, .. }) => message,
+        other => panic!("expected a registration error, got {other:?}"),
+    }
+}
+
+#[test]
+fn register_module_enum_refuses_what_every_later_load_would_fail_on() {
+    let (mut vm, _) = vm();
+    // The default module has no module name to tell two `Error`s apart.
+    let message = refused(vm.module("host").register_module_enum("Error", &["A"]));
+    assert!(message.contains("named module"), "{message}");
+    let mut disk = vm.module("disk");
+    // Names the language or the prelude declares.
+    for name in ["Option", "Result", "Show", "List", "int", "Coroutine"] {
+        let message = refused(disk.register_module_enum(name, &["A"]));
+        assert!(message.contains("cannot be redefined"), "{name}: {message}");
+    }
+    assert!(refused(disk.register_module_enum("Error", &[])).contains("at least one variant"));
+    assert!(refused(disk.register_module_enum("Error", &["A", "B", "A"])).contains("twice"));
+    assert!(refused(disk.register_module_enum("Error", &["A B"])).contains("not a variant name"));
+    assert!(refused(disk.register_module_enum("Not a name", &["A"])).contains("type name"));
+    // Nothing of that was kept: the module still loads, and a good enum goes in.
+    disk.register_module_enum("Error", &["Full"]).unwrap();
+    drop(disk);
+    vm.load_source("game.colibri", "import disk\nfn main() {}\n")
+        .unwrap();
+}
+
+#[test]
+fn a_module_enum_and_another_host_type_never_share_a_name_in_either_order() {
+    // A plain host type first, then a module enum of that name.
+    let (mut vm, _) = colibri_vm();
+    vm.module("disk").register_type::<Mode>().unwrap();
+    let message = refused(vm.module("net").register_module_enum("Mode", &["A"]));
+    assert!(message.contains("a name of its own"), "{message}");
+    let message = refused(vm.module("disk").register_module_enum("Mode", &["A"]));
+    assert!(message.contains("a name of its own"), "{message}");
+    // A module enum first, then a plain host type of that name, in its module or another.
+    let (mut vm, _) = colibri_vm();
+    vm.module("net")
+        .register_module_enum("Mode", &["A"])
+        .unwrap();
+    let message = refused(vm.module("disk").register_type::<Mode>());
+    assert!(message.contains("a name of its own"), "{message}");
+    let message = refused(vm.module("net").register_type::<Mode>());
+    assert!(message.contains("a name of its own"), "{message}");
+    // Two modules may each declare a module enum of the same name.
+    vm.module("disk")
+        .register_module_enum("Mode", &["B"])
+        .unwrap();
+}
+
+/// A type whose description is the module enum `disk.Error`, to put it in a signature.
+struct ErrorKind;
+
+impl colibri::IntoColibri for ErrorKind {
+    fn ty(reg: &mut colibri::TypeRegistry) -> colibri::TypeDesc {
+        reg.define_module_enum("Error", &["Full"])
+    }
+    fn into_colibri(self, _cx: &mut colibri::Cx<'_>) -> colibri::Value {
+        colibri::Value::unit()
+    }
+}
+
+#[test]
+fn a_host_signature_cannot_mention_a_module_enum() {
+    let (mut vm, _) = vm();
+    let mut disk = vm.module("disk");
+    let err = disk
+        .register_fn("kind", || ErrorKind)
+        .err()
+        .expect("refused");
+    let colibri::Error::Registration { message, .. } = err else {
+        panic!("a registration error: {err:?}");
+    };
+    assert!(message.contains("module enum"), "{message}");
+}
+
+#[test]
+fn an_embedders_module_enum_converts_to_error_without_an_impl() {
+    let (mut vm, out) = typed_vm();
+    run(
+        &mut vm,
+        r#"import disk
+
+fn fake() -> Result[int] {
+    return err(disk.Error.Gone)
+}
+
+fn typed(n: int) -> Result[int, disk.Error] {
+    if n == 0 { return err(disk.Error.Full) }
+    return ok(n)
+}
+
+fn wrapped(n: int) -> Result[int] {
+    let v = typed(n)?
+    return ok(v)
+}
+
+fn main() {
+    let e = fake().err().expect("fails")
+    print("{e} {e.is[disk.Error]()} {e.as[disk.Error]()}")
+    let e = wrapped(0).err().expect("fails")
+    print("{e} {e.as[disk.Error]() == some(disk.Error.Full)}")
+    print(wrapped(2).expect("ok"))
+}
+"#,
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "Gone true some(Gone)\nFull true\n2\n");
+    // The name stays the module's: a program cannot write the impl itself.
+    let err = run(
+        &mut typed_vm().0,
+        "import disk\nimpl IntoError for disk.Error {}\nfn main() {}\n",
+    )
+    .unwrap_err()
+    .render(false);
+    assert!(
+        err.contains("cannot implement the built-in `IntoError` for `disk.Error`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_display_error_keeps_a_str_and_a_typed_error_keeps_none() {
+    let (mut vm, out) = typed_vm();
+    vm.register_fn("plain", || -> Result<(), String> {
+        Err("plain failure".to_string())
+    })
+    .unwrap();
+    run(
+        &mut vm,
+        r#"import disk
+
+fn main() {
+    let p = plain().err().expect("fails")
+    print("{p.as[str]()} {p.message()}")
+    let t = disk.save(0).err().expect("fails")
+    print("{t.as[str]()} {t.message()}")
+}
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        out.contents(),
+        "some(\"plain failure\") plain failure\nnone the disk is full\n"
+    );
 }

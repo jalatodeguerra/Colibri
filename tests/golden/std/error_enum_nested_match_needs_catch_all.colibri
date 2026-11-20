@@ -1,0 +1,36 @@
+// The explanation for a module enum that can gain variants is given wherever the enum sits in
+// the value that is matched (in an option, a tuple, a result or a struct field), when every
+// variant the module has today is listed and the match is still not exhaustive.
+import hash
+import io
+
+struct Holder { e: hash.Error }
+
+fn in_option(x: hash.Error?) {
+    match x { // error: non-exhaustive `match`: missing case: some(_) (the enum `hash.Error` can gain variants)
+        some(OutOfRange) => print("oor")
+        none => print("none")
+    }
+}
+
+fn in_tuple(x: (hash.Error, io.Error)) {
+    match x { // error: (the enums `hash.Error` and `io.Error` can gain variants)
+        (OutOfRange, InvalidData) => print("1")
+        (OutOfRange, Other) => print("2")
+    }
+}
+
+fn in_result(x: Result[int, hash.Error]) {
+    match x { // error: non-exhaustive `match`: missing case: err(_) (the enum `hash.Error` can gain variants)
+        ok(n) => print(n)
+        err(OutOfRange) => print("oor")
+    }
+}
+
+fn in_field(h: Holder) {
+    match h { // error: non-exhaustive `match`: missing case: Holder { .. } (the enum `hash.Error` can gain variants)
+        Holder { e: OutOfRange } => print("oor")
+    }
+}
+
+fn main() {}

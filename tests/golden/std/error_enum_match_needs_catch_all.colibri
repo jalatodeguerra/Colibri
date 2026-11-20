@@ -1,0 +1,11 @@
+// A module's `Error` can gain variants, so a `match` over it outside the module needs a
+// catch-all arm even when it lists every variant there is today (DESIGN §10.2).
+import regex
+
+fn main() {
+    let e = regex.compile("(unclosed").err().expect("bad pattern")
+    match e.as[regex.Error]().expect("kept") { // error: non-exhaustive `match`: missing case: _ (the enum `regex.Error` can gain variants)
+        Syntax => print("syntax")
+        TooBig => print("too big")
+    }
+}

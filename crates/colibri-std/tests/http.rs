@@ -356,3 +356,64 @@ fn requests_to_one_host_reuse_the_connection() {
         "five requests, one connection"
     );
 }
+
+/// A server that answers every connection with bytes that are not a TLS handshake and closes.
+fn serve_garbage() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
+            let _ = stream.flush();
+            thread::sleep(Duration::from_millis(50));
+        }
+    });
+    format!("127.0.0.1:{port}")
+}
+
+#[test]
+fn failures_carry_an_http_error_to_branch_on() {
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
+    http.set_timeout(0.2)
+    print(http.get("{base}/slow").err().expect("times out").as[http.Error]())
+    http.set_timeout(30.0)
+    print(http.get("http://127.0.0.1:1/").err().expect("refused").as[http.Error]())
+    print(http.get("not a url").err().expect("bad url").as[http.Error]())
+    print(http.request("GET", "{base}/hello", {"bad header": "x"}, "").err().expect("bad header").as[http.Error]())
+    print(http.request("GE T", "{base}/hello", {:}, "").err().expect("bad method").as[http.Error]())
+    print(error("plain").as[http.Error]())
+    // The same after `?`-style wrapping, and the message is the old one.
+    let e = http.get("http://127.0.0.1:1/").context("fetching").err().expect("refused")
+    print(e.is[http.Error]())
+    print(e.as[http.Error]().expect("kept") == http.Error.Connect)
+    print("{e}".starts_with("fetching: http: GET http://127.0.0.1:1/ failed:"))
+"#,
+    );
+    assert_eq!(
+        out,
+        "some(Timeout)\nsome(Connect)\nsome(InvalidUrl)\nsome(Other)\nsome(Other)\nnone\ntrue\ntrue\ntrue\n"
+    );
+}
+
+#[test]
+fn speaking_tls_to_a_server_that_does_not_is_a_tls_error() {
+    let addr = serve_garbage();
+    let out = run(
+        "",
+        &format!(
+            r#"
+    match http.get("https://{addr}/") {{
+        ok(_) => print("ok")
+        err(e) => {{
+            print(e.as[http.Error]())
+            print(e)
+        }}
+    }}
+"#
+        ),
+    );
+    assert!(out.starts_with("some(Tls)\nhttp: GET https://"), "{out}");
+}

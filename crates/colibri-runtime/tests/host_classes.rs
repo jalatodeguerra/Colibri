@@ -874,3 +874,112 @@ fn a_panic_in_the_rust_drop_of_a_script_owned_object_is_a_panic_of_the_script() 
     let after = f.vm.get_fn::<(), i64>("after").unwrap();
     assert_eq!(after.call(&mut f.vm, ()).unwrap(), 7);
 }
+
+/// A class that customises how it shows and what `==` means.
+struct Pt(i64, i64);
+
+impl HostType for Pt {
+    const NAME: &'static str = "Pt";
+    fn describe(d: &mut TypeBuilder<'_, Self>) {
+        d.static_fn("new", ["x", "y"], |x: i64, y: i64| Pt(x, y));
+        d.method("x", [], |this: &Pt| this.0);
+        d.show(|this: &Pt| format!("({}, {})", this.0, this.1));
+        d.eq(|a: &Pt, b: &Pt| a.0 == b.0 && a.1 == b.1);
+    }
+}
+
+/// Another class, without either.
+struct Plain;
+
+impl HostType for Plain {
+    const NAME: &'static str = "Plain";
+    fn describe(d: &mut TypeBuilder<'_, Self>) {
+        d.static_fn("new", [], || Plain);
+    }
+}
+
+#[test]
+fn a_class_can_customise_show_and_equality() {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    vm.register_type::<Pt>().unwrap();
+    vm.register_type::<Plain>().unwrap();
+    vm.load_source(
+        "game.colibri",
+        r#"fn main() {
+    let a = Pt.new(1, 2)
+    let b = Pt.new(1, 2)
+    let c = Pt.new(3, 4)
+    print(a)
+    print("{a} {c}")
+    print([a, c])
+    print(some(b))
+    print(a == b)
+    print(a == c)
+    print(a != c)
+    print([a] == [b])
+    print(some(a) == some(c))
+    let m: Map[Pt, str] = {a: "one"}
+    m[b] = "two"
+    print(m.len())
+    print(m.get(Pt.new(1, 2)))
+    print(Set([a, b, c]).len())
+    let p = Plain.new()
+    let q = Plain.new()
+    print(p == p)
+    print(p == q)
+}
+"#,
+    )
+    .unwrap_or_else(|e| panic!("{}", e.render(false)));
+    vm.run_main().unwrap();
+    let text = out.contents();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[..5],
+        [
+            "(1, 2)",
+            "(1, 2) (3, 4)",
+            "[(1, 2), (3, 4)]",
+            "some((1, 2))",
+            "true"
+        ]
+    );
+    assert_eq!(
+        lines[5..],
+        [
+            "false",
+            "true",
+            "true",
+            "false",
+            "1",
+            "some(\"two\")",
+            "2",
+            "true",
+            "false"
+        ]
+    );
+    // Nothing is added to the module's interface for the two hooks.
+    let interface = vm.interface_text();
+    assert!(
+        !interface.contains("show") && !interface.contains("eq"),
+        "{interface}"
+    );
+}
+
+#[test]
+fn describing_show_or_eq_twice_is_a_registration_error() {
+    struct Twice;
+    impl HostType for Twice {
+        const NAME: &'static str = "Twice";
+        fn describe(d: &mut TypeBuilder<'_, Self>) {
+            d.show(|_: &Twice| String::new());
+            d.show(|_: &Twice| String::new());
+            d.eq(|_: &Twice, _: &Twice| true);
+            d.eq(|_: &Twice, _: &Twice| true);
+        }
+    }
+    let mut vm = colibri::Vm::builder().build();
+    let err = vm.register_type::<Twice>().unwrap_err().to_string();
+    assert!(err.contains("customises its `Show` text twice"), "{err}");
+}

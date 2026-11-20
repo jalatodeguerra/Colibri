@@ -573,3 +573,53 @@ fn patching_a_ten_thousand_line_program_is_quick() {
     eprintln!("patch of a 10k-line program: {took:?}");
     assert!(took.as_millis() < 3_000, "{took:?}");
 }
+
+/// Removes a folder when dropped, so a failing test leaves nothing behind.
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// `to` written relative to `from` (both absolute): `../../tmp/x`.
+fn relative_to(from: &std::path::Path, to: &std::path::Path) -> PathBuf {
+    let from: Vec<_> = from.components().collect();
+    let to: Vec<_> = to.components().collect();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut out = PathBuf::new();
+    for _ in common..from.len() {
+        out.push("..");
+    }
+    for c in &to[common..] {
+        out.push(c);
+    }
+    out
+}
+
+#[test]
+fn a_relative_entry_path_does_not_look_changed_right_after_the_load() {
+    // The entry is given relative to the working directory (as `colibri run --watch a.colibri`
+    // does); the files the load read are recorded absolute, and the two must be one file. The
+    // folder is under the system's temporary folder, reached by a relative path.
+    let dir = std::env::temp_dir().join(format!("colibri-reload-rel-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let _cleanup = RemoveOnDrop(dir.clone());
+    write(&dir, "a.colibri", "fn greet() -> str => \"v1\"\n");
+    let cwd = std::env::current_dir().unwrap();
+    let relative = relative_to(&cwd, &fs::canonicalize(&dir).unwrap()).join("a.colibri");
+    assert!(relative.is_relative(), "{relative:?}");
+    let (mut vm, _) = vm();
+    vm.load_file(&relative).unwrap();
+    // Just written: inside the window in which a file's time is not trusted, a file whose
+    // content is not known would be read again and look different every time.
+    for _ in 0..3 {
+        let outcome = vm
+            .reload_changed_with(ReloadOptions {
+                force_restart: true,
+            })
+            .unwrap();
+        assert!(matches!(outcome, ReloadOutcome::Unchanged), "{outcome:?}");
+    }
+}

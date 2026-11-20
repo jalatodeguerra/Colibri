@@ -33,11 +33,12 @@ pub fn run(file: &Path, args: Vec<String>) -> ExitCode {
         color: io::stderr().is_terminal(),
         last_io_error: None,
     };
+    // Warnings are printed once the program has checked and before any of its code runs (its
+    // top level may run for a long time or exit), at the first load and at every restart.
+    let color = watcher.color;
+    vm.on_warnings(move |report| eprint!("{}", report.render(color)));
     let mut ready = match vm.load_path(file) {
-        Ok(()) => {
-            watcher.warnings(&vm);
-            true
-        }
+        Ok(()) => true,
         Err(e) => match watcher.failed(&mut vm, &e) {
             Some(code) => return code,
             None => {
@@ -116,7 +117,6 @@ impl Watcher {
                 reason,
                 state_carried,
             } => {
-                self.warnings(vm);
                 let carried = if state_carried { ", state carried" } else { "" };
                 note(&format!("restarted ({reason}{carried})"));
                 true

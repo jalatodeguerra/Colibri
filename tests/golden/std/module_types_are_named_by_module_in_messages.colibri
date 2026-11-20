@@ -1,0 +1,20 @@
+// Messages that print a type of a standard module say which module it is of.
+import fs
+import json
+
+impl json.Value {
+    fn kind(self) -> str => "mine" // error: `kind` is defined more than once for `json.Value`
+}
+
+impl fs.Error {
+    fn NotFound(self) -> int => 1 // error: `NotFound` is already a variant of `fs.Error`
+}
+
+fn stat(s: fs.Stat?) {
+    match s { // error: missing cases: some(fs.Stat {
+        some(fs.Stat { readonly: true, .. }) => print(1)
+        none => print(0)
+    }
+}
+
+fn main() {}

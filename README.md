@@ -286,6 +286,7 @@ colibri> sq(7)
 | `colibri test [file or folder]` | run the `test "name" { ... }` blocks (`--filter`, `--nocapture`, `--leaks`) |
 | `colibri fmt [paths]` | format files in place (`--check` only reports) |
 | `colibri new <name>` | create a package |
+| `colibri update [name]` | resolve git dependencies again (branches, tags) and rewrite `colibri.lock` |
 | `colibri repl` | interactive session |
 | `colibri lsp` | language server on stdin and stdout |
 | `colibri build` | **(planned)** one executable with the VM and the program's bytecode |
@@ -293,6 +294,9 @@ colibri> sq(7)
 
 Arguments after the file go to the program (`os.args()`, or the `args` module for parsing);
 put them after `--` if they could be mistaken for the tool's own flags, such as `--watch`.
+
+`run`, `check`, `test` and `update` fetch git dependencies into the cache and write `colibri.lock`;
+`--locked` fails instead of changing the lock and `--offline` never uses the network.
 
 ## Tooling
 

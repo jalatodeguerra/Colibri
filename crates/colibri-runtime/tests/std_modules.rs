@@ -383,6 +383,7 @@ mod lazy {
     impl colibri::HostType for Mine {
         const NAME: &'static str = "Child";
         fn describe(d: &mut colibri::TypeBuilder<'_, Self>) {
+            d.static_fn("make", [], || Mine);
             d.method("id", [], |_: &Mine| 1i64);
         }
     }
@@ -391,11 +392,29 @@ mod lazy {
     impl colibri::HostType for Std {
         const NAME: &'static str = "Child";
         fn describe(d: &mut colibri::TypeBuilder<'_, Self>) {
+            d.static_fn("make", [], || Std);
             d.method("id", [], |_: &Std| 2i64);
         }
     }
 
+    /// A second class of the same name in the same module: that is a clash.
+    struct StdToo;
+    impl colibri::HostType for StdToo {
+        const NAME: &'static str = "Child";
+        fn describe(d: &mut colibri::TypeBuilder<'_, Self>) {
+            d.method("id", [], |_: &StdToo| 3i64);
+        }
+    }
+
+    /// Registers `Child` once, which is fine, and another class of the same name, which is
+    /// not: the module's own types are known by their name inside it.
     fn register_clashing(vm: &mut colibri::Vm) -> Result<(), colibri::Error> {
+        let mut m = vm.std_module("clash");
+        m.register_type::<Std>()?;
+        m.register_type::<StdToo>()
+    }
+
+    fn register_alongside(vm: &mut colibri::Vm) -> Result<(), colibri::Error> {
         vm.std_module("clash").register_type::<Std>()
     }
 
@@ -423,19 +442,43 @@ mod lazy {
     }
 
     #[test]
-    fn a_host_type_clash_before_the_module_is_declared_is_a_load_error() {
+    fn two_classes_of_a_name_in_one_module_are_a_load_error() {
         let (mut vm, _) = vm();
-        vm.register_type::<Mine>().unwrap();
         vm.lazy_std_module("clash", register_clashing);
         check_clash_is_an_error(&mut vm);
     }
 
+    /// The embedder's `Child` and the module's own `Child` are two types: it is not an
+    /// error whichever is registered first, and both work in one program.
+    fn check_alongside(vm: &mut colibri::Vm, out: &colibri::SharedBuffer) {
+        vm.load_source(
+            "a.colibri",
+            "import clash
+fn main() {
+    print(Child.make().id())
+    print(clash.Child.make().id())
+}
+",
+        )
+        .unwrap_or_else(|e| panic!("{}", e.render(false)));
+        vm.run_main().unwrap();
+        assert_eq!(out.contents(), "1\n2\n");
+    }
+
     #[test]
-    fn a_host_type_clash_after_the_module_is_declared_is_a_load_error() {
-        let (mut vm, _) = vm();
-        vm.lazy_std_module("clash", register_clashing);
+    fn an_embedder_type_of_the_modules_name_registered_before_it_coexists() {
+        let (mut vm, out) = vm();
         vm.register_type::<Mine>().unwrap();
-        check_clash_is_an_error(&mut vm);
+        vm.lazy_std_module("clash", register_alongside);
+        check_alongside(&mut vm, &out);
+    }
+
+    #[test]
+    fn an_embedder_type_of_the_modules_name_registered_after_it_coexists() {
+        let (mut vm, out) = vm();
+        vm.lazy_std_module("clash", register_alongside);
+        vm.register_type::<Mine>().unwrap();
+        check_alongside(&mut vm, &out);
     }
 
     #[test]

@@ -540,6 +540,70 @@ impl<T: IntoColibri, E: Display> IntoColibri for Result<T, E> {
     }
 }
 
+/// An error a host function returns that keeps a typed value, so a script can tell errors
+/// apart after `?`: the value is a variant of an enum its module declared with
+/// [`crate::HostModule::register_module_enum`], and the error shows as `message`.
+///
+/// A host function returning `Result<T, TypedError>` becomes a Colibri `Result[T]`; in the
+/// script, `e.is[fs.Error]()` and `e.as[fs.Error]()` find the variant, `{e}` and
+/// `e.message()` give the message, and `.context(..)` wraps it as usual.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedError {
+    module: String,
+    enum_name: String,
+    variant: String,
+    message: String,
+}
+
+impl TypedError {
+    /// An error that keeps the variant `variant` of the enum `enum_name` that `module` (as
+    /// `Vm::std_module` or `Vm::module` named it: `std.fs`) declared with
+    /// [`crate::HostModule::register_module_enum`].
+    ///
+    /// The variant is named, not numbered, so it cannot drift from the declaration. When the
+    /// error becomes a value, a name that does not fit (the enum is not a module enum of that
+    /// module, or has no such variant) is a bug of the host: the host function panics with a
+    /// message that says so, for example "`disk.Error` has no variant `Gone2`; its variants are
+    /// Full, Gone".
+    pub fn new(
+        module: impl Into<String>,
+        enum_name: impl Into<String>,
+        variant: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        TypedError {
+            module: module.into(),
+            enum_name: enum_name.into(),
+            variant: variant.into(),
+            message: message.into(),
+        }
+    }
+
+    /// The message the error shows as.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub(crate) fn into_error_value(self, cx: &mut Cx<'_>) -> Inner {
+        let (ty, index) = cx.module_enum_variant(&self.module, &self.enum_name, &self.variant);
+        let kept = Inner::variant(ty, index, Vec::new());
+        Interp::typed_error_value(kept, &self.message)
+    }
+}
+
+/// A [`TypedError`] becomes a Colibri `err` whose `Error` keeps the typed value.
+impl<T: IntoColibri> IntoColibri for Result<T, TypedError> {
+    fn ty(reg: &mut TypeRegistry) -> TypeDesc {
+        TypeDesc::Result(Box::new(T::ty(reg)))
+    }
+    fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
+        Value(match self {
+            Ok(v) => Interp::ok_variant(v.into_colibri(cx).0),
+            Err(e) => Interp::err_variant(e.into_error_value(cx)),
+        })
+    }
+}
+
 /// A Colibri `Result[T]` read as a Rust `Result`: the error is its message (the whole chain).
 impl<T: FromColibri> FromColibri for Result<T, String> {
     fn ty(reg: &mut TypeRegistry) -> TypeDesc {

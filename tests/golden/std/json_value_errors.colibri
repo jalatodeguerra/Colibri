@@ -1,0 +1,51 @@
+import json
+
+fn main() {
+    // Errors are the same typed errors as for `decode`.
+    match json.parse(r"""{"a": """) {
+        ok(_) => print("parsed?")
+        err(e) => {
+            print(e.is[json.Error]())
+            print(e.as[json.Error]() == some(json.Error.Syntax))
+            print(e.message())
+        }
+    }
+    match json.parse("[1e999]") {
+        ok(_) => print("parsed?")
+        err(e) => print(e.message())
+    }
+    match json.parse("") {
+        ok(_) => print("parsed?")
+        err(e) => print(e.message())
+    }
+    // `nan` cannot be written.
+    match json.encode(json.Value.float(0.0 / 0.0)) {
+        ok(_) => print("encoded?")
+        err(e) => {
+            print(e.as[json.Error]() == some(json.Error.Unsupported))
+            print(e.message())
+        }
+    }
+    // The wrong kind of access is `none`, never a panic.
+    let v = json.parse("[1, \"a\"]").expect("parses")
+    print(v.get("x").is_none())
+    print(v.at(5).is_none())
+    print(v.at(-1).is_none())
+    print(v.at(1).expect("1").as_int().is_none())
+    print(v.as_map().is_none())
+    print(json.Value.null().len())
+}
+
+// expect: true
+// expect: true
+// expect: json: invalid syntax at line 1, column 7: the text ends where a value was expected
+// expect: json: invalid syntax at line 1, column 2: the number 1e999 is out of range (a float cannot hold it)
+// expect: json: invalid syntax at line 1, column 1: the text is empty
+// expect: true
+// expect: json: cannot encode NaN: JSON has no such number
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: 0

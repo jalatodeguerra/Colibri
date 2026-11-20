@@ -14,7 +14,7 @@ use crate::generics::SigCtx;
 use crate::hir::{FnId, IfaceMethod, ImplId, TypeDefKind};
 use crate::prelude;
 use crate::traits::{BoundRef, GenericParamInfo, ImplInfo, key_of};
-use crate::types::{DROP, FIRST_USER_TYPE, IntTy, ParamId, Ty, TypeId};
+use crate::types::{DROP, FIRST_USER_TYPE, INTO_ERROR, IntTy, ParamId, Ty, TypeId};
 
 /// An interface as the checker keeps it.
 pub(crate) struct IfaceInfo<'a> {
@@ -257,6 +257,25 @@ impl<'a> Checker<'a> {
                     iface_expr.span,
                 )
                 .with_hint("the orphan rule: `impl I for T` must be written in the package that defines `I` or `T`; wrap the type in your own struct, or declare your own interface"),
+            );
+            return;
+        }
+        // The enums of a host module are the module's: the standard library may add variants and
+        // implementations to them later, so a built-in interface cannot be implemented for one
+        // here. (`IntoError` already works for them: `err(fs.Error.NotFound)` and `?`.)
+        if iface.0 < FIRST_USER_TYPE
+            && matches!(&target, Ty::Adt(id, _) if self.types[id.0 as usize].is_open_enum())
+        {
+            self.report(
+                Diagnostic::error(
+                    format!("cannot implement the built-in `{iface_name}` for `{target_shown}`"),
+                    iface_expr.span,
+                )
+                .with_hint(if iface == INTO_ERROR {
+                    format!("the orphan rule: `{target_shown}` belongs to a host module; it already converts to `Error` (the message is the variant's name), so `err({target_shown}.Variant)` and `?` work as they are")
+                } else {
+                    format!("the orphan rule: `impl I for T` must be written in the package that defines `I` or `T`, and `{target_shown}` belongs to a host module; wrap it in your own struct, or declare your own interface")
+                }),
             );
             return;
         }

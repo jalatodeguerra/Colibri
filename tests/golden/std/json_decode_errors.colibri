@@ -75,7 +75,7 @@ fn main() {
 // expect: json: at `$.at`: expected an object for `Point`, found an array
 // expect: json: at `$.color`: `Blue` is not a variant of `Color` (expected one of: Red, Green)
 // expect: json: at `$`: `Purple` is not a variant of `Color` (expected one of: Red, Green)
-// expect: json: at `$`: expected a string naming a `Color` variant, found the number 3
+// expect: json: at `$`: expected a string naming a variant of `Color` (one of: Red, Green), found the number 3
 // expect: json: at `$.sides`: 300 does not fit in `u8`
 // expect: json: at `$`: -1 does not fit in `u8`
 // expect: json: at `$`: expected an int (a whole number), found the number 1.5

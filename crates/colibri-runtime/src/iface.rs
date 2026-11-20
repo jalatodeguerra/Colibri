@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use colibri_check::HostEnv;
-use colibri_check::host::{DEFAULT_MODULE, body_hash, float_literal, header_line};
+use colibri_check::host::{DEFAULT_MODULE, body_hash, float_literal, header_line_with};
 
 use crate::cap::Cap;
 use crate::error::Error;
@@ -79,29 +79,49 @@ pub(crate) fn render(
             }
         }
     }
-    for (i, decl) in reg.decls.iter().enumerate() {
-        if reg.decl_modules[i].as_deref().unwrap_or(DEFAULT_MODULE) != module {
-            continue;
-        }
+    // The module's own types, in the order it described them: what other modules registered
+    // meanwhile does not change it.
+    let mut own: Vec<usize> = (0..reg.decls.len())
+        .filter(|&i| reg.decl_modules[i].as_deref().unwrap_or(DEFAULT_MODULE) == module)
+        .collect();
+    let order = reg.local_orders(module);
+    own.sort_by_key(|i| order.get(i).copied().unwrap_or(usize::MAX));
+    for i in own {
+        let decl = &reg.decls[i];
         match decl {
             TypeDecl::Struct { name, fields } => {
                 if fields.is_empty() {
                     body.push_str(&format!("struct {name} {{}}\n"));
                 } else {
-                    let fields: Vec<String> =
-                        fields.iter().map(|(n, t)| format!("{n}: {t}")).collect();
+                    // Field types are named by their owners now, not as they were written.
+                    let scope = reg.decl_scope[i].as_deref().unwrap_or(DEFAULT_MODULE);
+                    let fields: Vec<String> = fields
+                        .iter()
+                        .map(|(n, t)| format!("{n}: {}", reg.spelled(scope, module, t)))
+                        .collect();
                     body.push_str(&format!("struct {name} {{ {} }}\n", fields.join(", ")));
                 }
             }
-            TypeDecl::Enum { name, variants } => {
-                body.push_str(&format!("enum {name} {{ {} }}\n", variants.join(", ")));
+            TypeDecl::Enum {
+                name,
+                variants,
+                local,
+            } => {
+                // `@module`: the module's own enum (`fs.Error`), open to new variants.
+                let attr = if *local { "@module " } else { "" };
+                body.push_str(&format!(
+                    "{attr}enum {name} {{ {} }}\n",
+                    variants.join(", ")
+                ));
             }
             TypeDecl::Class { name } => {
                 body.push_str(&format!("@host class {name} {{}}\n"));
                 let methods = reg
                     .classes
                     .iter()
-                    .find(|c| c.name == *name)
+                    .find(|c| {
+                        c.name == *name && c.module.as_deref().unwrap_or(DEFAULT_MODULE) == module
+                    })
                     .map(|c| c.methods.as_slice())
                     .unwrap_or_default();
                 if !methods.is_empty() {
@@ -115,17 +135,35 @@ pub(crate) fn render(
                             m.params
                                 .iter()
                                 .zip(&m.sig.params)
-                                .map(|(n, t)| format!("{n}: {t}")),
+                                .map(|(n, t)| format!("{n}: {}", reg.spelled(module, module, t))),
                         );
                         body.push_str(&format!("    fn {}({})", m.name, params.join(", ")));
                         if m.sig.ret != crate::types::TypeDesc::Unit {
-                            body.push_str(&format!(" -> {}", m.sig.ret));
+                            body.push_str(&format!(
+                                " -> {}",
+                                reg.spelled(module, module, &m.sig.ret)
+                            ));
                         }
                         body.push('\n');
                     }
                     body.push_str("}\n");
                 }
             }
+        }
+    }
+    // The types of other modules this module registered too (the same Rust type): its names
+    // for them, so a script can write `module.Name` whichever module owns the type.
+    let mut aliases: Vec<_> = reg.aliases.iter().filter(|a| a.0 == module).collect();
+    aliases.sort_by_key(|a| order.get(&a.2).copied().unwrap_or(usize::MAX));
+    for (_, name, i, _) in aliases {
+        let owner = reg.owner_of(*i);
+        if owner == DEFAULT_MODULE {
+            body.push_str(&format!("type {name} = {name}\n"));
+        } else {
+            body.push_str(&format!(
+                "type {name} = {}.{name}\n",
+                crate::types::short_module_name(owner)
+            ));
         }
     }
     let mut caps: Vec<Cap> = Vec::new();
@@ -140,15 +178,23 @@ pub(crate) fn render(
         if f.positional {
             line.push_str("@positional ");
         }
+        let sig = crate::types::SigDesc {
+            params: f
+                .sig
+                .params
+                .iter()
+                .map(|t| reg.spelled(module, module, t))
+                .collect(),
+            ret: reg.spelled(module, module, &f.sig.ret),
+        };
         let mut generics = Vec::new();
-        for p in f.sig.params.iter().chain([&f.sig.ret]) {
+        for p in sig.params.iter().chain([&sig.ret]) {
             p.params(&mut generics);
         }
         if f.typed {
             line.push_str("@typed ");
         }
-        let params: Vec<String> = f
-            .sig
+        let params: Vec<String> = sig
             .params
             .iter()
             .enumerate()
@@ -163,8 +209,8 @@ pub(crate) fn render(
             format!("[{}]", generics.join(", "))
         };
         line.push_str(&format!("fn {}{generics}({})", f.name, params.join(", ")));
-        if f.sig.ret != crate::types::TypeDesc::Unit {
-            line.push_str(&format!(" -> {}", f.sig.ret));
+        if sig.ret != crate::types::TypeDesc::Unit {
+            line.push_str(&format!(" -> {}", sig.ret));
         }
         body.push_str(&line);
         body.push('\n');
@@ -174,7 +220,7 @@ pub(crate) fn render(
     let hash = body_hash(&body);
     let text = format!(
         "{GENERATED}\n{}\n{body}",
-        header_line(module, &hash, &names)
+        header_line_with(module, &hash, &names, &reg.uses_of(module))
     );
     Rendered { text, hash }
 }

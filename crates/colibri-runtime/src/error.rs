@@ -251,7 +251,7 @@ impl fmt::Display for Error {
                     "the interface file `{path}` does not match the host's interface (hash {expected})"
                 ),
             },
-            Error::Interface { path, message } => write!(f, "{path}:{message}"),
+            Error::Interface { path, message } => write!(f, "{path}: {message}"),
             Error::HostObject(message) => f.write_str(message),
             Error::Ffi(message) => write!(f, "cannot link C: {message}"),
         }

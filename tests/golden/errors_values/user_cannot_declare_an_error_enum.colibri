@@ -1,0 +1,5 @@
+// Only a standard-library module may declare its own `enum Error` (`fs.Error`): a program
+// still cannot reuse the prelude's name.
+enum Error { // error: `Error` is a built-in type and cannot be redefined
+    NotFound
+}

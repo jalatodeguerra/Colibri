@@ -50,10 +50,12 @@ impl FnCtx<'_, '_> {
                         if let Some(i) = fields.iter().position(|f| f.name == name.name) {
                             let map = Checker::param_map_of(def, targs);
                             let found = (FieldIdx(i as u32), fields[i].ty.subst(&map));
+                            let decl = fields[i].span;
                             if !self.ck.field_visible(*id, i) {
                                 self.ck.report_private("field", &name.name, *id, name.span);
                                 return None;
                             }
+                            self.ck.note_ref(name.span, decl);
                             return Some(found);
                         }
                         let names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
@@ -61,7 +63,7 @@ impl FnCtx<'_, '_> {
                             format!(
                                 "the {} `{}` has no field `{}`",
                                 kind_word(def),
-                                def.name,
+                                def.display_name(),
                                 name.name
                             ),
                             name.span,
@@ -75,14 +77,16 @@ impl FnCtx<'_, '_> {
                                 }
                             }),
                         );
-                        diag =
-                            diag.with_label(def.span, format!("`{}` is declared here", def.name));
+                        diag = diag.with_label(
+                            def.span,
+                            format!("`{}` is declared here", def.display_name()),
+                        );
                         self.ck.report(diag);
                         None
                     }
                     TypeDefKind::HostClass => {
                         let diag = Diagnostic::error(
-                            format!("the host class `{}` has no fields", def.name),
+                            format!("the host class `{}` has no fields", def.display_name()),
                             name.span,
                         )
                         .with_hint(
@@ -93,7 +97,7 @@ impl FnCtx<'_, '_> {
                     }
                     TypeDefKind::Interface { .. } => {
                         let diag = Diagnostic::error(
-                            format!("the interface `{}` has no fields", def.name),
+                            format!("the interface `{}` has no fields", def.display_name()),
                             name.span,
                         )
                         .with_hint("call one of its methods instead");
@@ -102,7 +106,7 @@ impl FnCtx<'_, '_> {
                     }
                     TypeDefKind::Enum { .. } => {
                         let diag = Diagnostic::error(
-                            format!("the enum `{}` has no fields", def.name),
+                            format!("the enum `{}` has no fields", def.display_name()),
                             name.span,
                         )
                         .with_hint("use `match` to look at the data inside a variant");
@@ -356,7 +360,7 @@ impl FnCtx<'_, '_> {
             }
             let info = &self.ck.fns[f.0 as usize];
             if info.receiver.is_some() {
-                let (shown, tname) = (name.name.clone(), def.name.clone());
+                let (shown, tname) = (name.name.clone(), def.display_name().into_owned());
                 self.check_args_loosely_opt(args);
                 self.ck.report(
                     Diagnostic::error(
@@ -380,7 +384,7 @@ impl FnCtx<'_, '_> {
                 }
             };
         }
-        let tname = def.name.clone();
+        let tname = def.display_name().into_owned();
         let candidates = self.ck.member_names(ty);
         self.check_args_loosely_opt(args);
         let mut diag = Diagnostic::error(
@@ -415,9 +419,13 @@ impl FnCtx<'_, '_> {
             Some(Ty::Adt(id, owner_args)) if self.ck.types[id.0 as usize].is_enum() => {
                 let def = &self.ck.types[id.0 as usize];
                 match def.variants().iter().position(|v| v.name == name.name) {
-                    Some(v) => self.construct_variant(id, owner_args, v as u32, args, span),
+                    Some(v) => {
+                        let decl = def.variants()[v].span;
+                        self.ck.note_ref(name.span, decl);
+                        self.construct_variant(id, owner_args, v as u32, args, span)
+                    }
                     None => {
-                        let tname = def.name.clone();
+                        let tname = def.display_name().into_owned();
                         let names: Vec<String> =
                             def.variants().iter().map(|v| v.name.clone()).collect();
                         self.check_args_loosely_opt(args);
@@ -493,7 +501,7 @@ impl FnCtx<'_, '_> {
         span: Span,
     ) -> Expr {
         let def = &self.ck.types[ty.0 as usize];
-        let tname = def.name.clone();
+        let tname = def.display_name().into_owned();
         let map = Checker::param_map_of(def, &owner_args);
         let mut v = def.variants()[variant as usize].clone();
         for f in &mut v.fields {
@@ -646,7 +654,7 @@ impl FnCtx<'_, '_> {
             }
             Ty::Adt(id, _) if crate::types::prelude_class_maker(*id).is_some() => {
                 loose(self);
-                let tname = self.ck.types[id.0 as usize].name.clone();
+                let tname = self.ck.types[id.0 as usize].display_name().into_owned();
                 let maker = crate::types::prelude_class_maker(*id).unwrap_or_default();
                 self.ck.report(
                     Diagnostic::error(
@@ -659,7 +667,7 @@ impl FnCtx<'_, '_> {
             }
             Ty::Adt(id, _) if self.ck.types[id.0 as usize].is_host_class() => {
                 loose(self);
-                let tname = self.ck.types[id.0 as usize].name.clone();
+                let tname = self.ck.types[id.0 as usize].display_name().into_owned();
                 self.ck.report(
                     Diagnostic::error(
                         format!("`{tname}` is a host class and cannot be built with `{{ ... }}`"),
@@ -672,7 +680,7 @@ impl FnCtx<'_, '_> {
             Ty::Adt(id, targs) if !self.ck.types[id.0 as usize].is_enum() => (*id, targs.clone()),
             Ty::Adt(id, _) => {
                 loose(self);
-                let tname = self.ck.types[id.0 as usize].name.clone();
+                let tname = self.ck.types[id.0 as usize].display_name().into_owned();
                 self.ck.report(
                     Diagnostic::error(format!("`{tname}` is an enum, not a struct"), ty_expr.span)
                         .with_hint(format!("build a variant instead: `{tname}.Variant(...)`")),
@@ -695,7 +703,7 @@ impl FnCtx<'_, '_> {
             .collect();
         if !hidden.is_empty() {
             loose(self);
-            let tname = self.ck.types[id.0 as usize].name.clone();
+            let tname = self.ck.types[id.0 as usize].display_name().into_owned();
             let package = self.ck.type_package(id);
             let plural = if hidden.len() == 1 { "" } else { "s" };
             let mut diag = Diagnostic::error(
@@ -718,7 +726,7 @@ impl FnCtx<'_, '_> {
         let def = &self.ck.types[id.0 as usize];
         let is_class = def.is_class();
         let word = kind_word(def);
-        let tname = def.name.clone();
+        let tname = def.display_name().into_owned();
         let map = Checker::param_map_of(def, &targs);
         let decls: Vec<FieldDef> = def
             .fields()

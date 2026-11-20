@@ -13,7 +13,19 @@ use colibri_runtime::{
     Cx, Error, HostType, IntoColibri, TypeBuilder, TypeDesc, TypeRegistry, Value, Vm,
 };
 
+use crate::errors::error_kind;
 use crate::plain;
+
+error_kind!(
+    "regex",
+    /// Why a pattern could not be compiled (`regex.Error.Syntax`).
+    Kind {
+        /// The pattern is not valid.
+        Syntax,
+        /// The compiled pattern would be over the size limit.
+        TooBig,
+    }
+);
 
 /// A match: `text` is `s[start..end]`.
 struct Match {
@@ -156,6 +168,7 @@ impl HostType for Regex {
 }
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
+    Kind::declare(vm)?;
     let mut m = vm.std_module("regex");
     m.register_type::<Captures>()?;
     m.register_type::<Regex>()?;
@@ -165,7 +178,13 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
                 .size_limit(10 << 20)
                 .build()
                 .map(Regex)
-                .map_err(|e| e.to_string())
+                .map_err(|e| {
+                    let kind = match e {
+                        regex::Error::CompiledTooBig(_) => Kind::TooBig,
+                        _ => Kind::Syntax,
+                    };
+                    kind.error(e.to_string())
+                })
         }),
     )?;
     Ok(())

@@ -1,0 +1,46 @@
+// caps: fs, os
+// DESIGN §10.2: the error of `fs.read` keeps an `fs.Error` that `is` and `as` recover, also
+// after `?` and `.context(..)`, and `{e}` still prints the message.
+import fs
+import os
+import path
+
+fn load_config(file: str) -> Result[str] {
+    let text = fs.read(file).context("loading config")?
+    return ok(text)
+}
+
+fn run(file: str) {
+    match load_config(file) {
+        ok(cfg) => print("config: {cfg}")
+        err(e) if e.is[fs.Error]() => match e.as[fs.Error]().expect("checked") {
+            NotFound         => print("not found, using the default")
+            PermissionDenied => print("can't read the file")
+            _                => print("other: {e}".replace(os.temp_dir(), "<dir>"))
+        }
+        err(e) => print("not an fs error: {e}")
+    }
+}
+
+fn main() -> Result[()] {
+    let dir = os.temp_dir()
+    run(path.join(dir, "missing.txt"))
+    let file = path.join(dir, "present.txt")
+    fs.write(file, "hello")?
+    run(file)
+    // Reading a folder as a file is another kind of failure.
+    run(dir)
+    // The value is the enum itself.
+    let e = fs.read(path.join(dir, "missing.txt")).err().expect("it fails")
+    print(e.as[fs.Error]().expect("an fs error") == fs.Error.NotFound)
+    print(e.is[fs.Error]())
+    print(e.is[os.Error]())
+    return ok(())
+}
+
+// expect: not found, using the default
+// expect: config: hello
+// expect: other: loading config: cannot read `<dir>`: is a directory
+// expect: true
+// expect: true
+// expect: false

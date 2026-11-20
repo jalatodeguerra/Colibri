@@ -1,0 +1,39 @@
+import toml
+
+struct Reading { x: float, n: int }
+
+fn show(text: str) {
+    match toml.parse(text) {
+        ok(d) => print("{text} -> {d.get("x")}")
+        err(_) => print("{text} -> error")
+    }
+}
+
+fn main() {
+    // Underscores between digits are allowed in every number; they do not change the value.
+    show("x = 1_000.5")
+    show("x = -1_0.0_1")
+    show("x = 6.626_070e-3_4")
+    show("x = 1e1_0")
+    show("x = 1_000")
+    show("x = 0xdead_beef")
+    // Not between digits: TOML refuses them.
+    show("x = 1__0.5")
+    show("x = _1.5")
+    show("x = 1_.5")
+    show("x = 1._5")
+    let r = toml.decode[Reading]("x = 1_000.5\nn = 2_000").expect("decodes")
+    print("{r.x} {r.n}")
+}
+
+// expect: x = 1_000.5 -> some(1000.5)
+// expect: x = -1_0.0_1 -> some(-10.01)
+// expect: x = 6.626_070e-3_4 -> some(6.62607e-34)
+// expect: x = 1e1_0 -> some(10000000000.0)
+// expect: x = 1_000 -> some(1000)
+// expect: x = 0xdead_beef -> some(3735928559)
+// expect: x = 1__0.5 -> error
+// expect: x = _1.5 -> error
+// expect: x = 1_.5 -> error
+// expect: x = 1._5 -> error
+// expect: 1000.5 2000

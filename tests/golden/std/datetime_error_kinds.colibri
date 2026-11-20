@@ -1,0 +1,38 @@
+import datetime
+
+fn kind(e: Error) -> str {
+    match e.as[datetime.Error]() {
+        some(k) => return "{k}"
+        none => return "not a datetime.Error"
+    }
+}
+
+fn main() {
+    print(kind(datetime.new(2024, 13, 1, 0, 0, 0).err().expect("month")))
+    print(kind(datetime.new(2023, 2, 29, 0, 0, 0).err().expect("day")))
+    print(kind(datetime.parse("2024-02-30", "%F").err().expect("day")))
+    print(kind(datetime.parse("tomorrow", "%F").err().expect("syntax")))
+    print(kind(datetime.parse("2024", "%Q").err().expect("pattern")))
+    print(kind(datetime.parse("10 10", "%H %I").err().expect("pattern")))
+    print(kind(datetime.parse("2024", "%Y%").err().expect("lone percent")))
+    print(kind(datetime.parse("13", "%I").err().expect("hour 13 on a 12-hour clock")))
+    print(kind(datetime.parse_iso("2024-1-1").err().expect("syntax")))
+    print(kind(datetime.parse_iso("2024-01-01T25:00:00Z").err().expect("range")))
+    match datetime.parse_iso("nonsense") {
+        ok(_) => print("parsed")
+        err(e) if e.is[datetime.Error]() => print("typed: {e}")
+        err(e) => print("untyped: {e}")
+    }
+}
+
+// expect: OutOfRange
+// expect: OutOfRange
+// expect: OutOfRange
+// expect: Syntax
+// expect: InvalidPattern
+// expect: InvalidPattern
+// expect: InvalidPattern
+// expect: OutOfRange
+// expect: Syntax
+// expect: OutOfRange
+// expect: typed: `nonsense` is not an ISO 8601 date and time: expected a four-digit year

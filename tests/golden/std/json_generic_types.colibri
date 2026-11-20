@@ -1,0 +1,70 @@
+import json
+
+enum Boxed[T] {
+    Full(T)
+    Empty
+}
+
+enum Either[A, B] {
+    Left(A)
+    Right(b: B)
+}
+
+struct Pair[T] { a: T, b: T? }
+
+struct Wrap { inner: Boxed[Pair[int]], items: List[Boxed[str]] }
+
+fn show[T: Show](r: Result[T]) {
+    match r {
+        ok(v)  => print("ok {v}")
+        err(e) => print(e.message())
+    }
+}
+
+fn main() {
+    // Encoding and decoding agree: the type arguments come from the `decode[T]` call.
+    print(json.encode(Boxed.Full(3)).expect("e"))
+    let none_int: Boxed[int] = Boxed.Empty
+    print(json.encode(none_int).expect("e"))
+    show(json.decode[Boxed[int]](r"""{"Full": 3}"""))
+    show(json.decode[Boxed[str]](r"""{"Full": "x"}"""))
+    show(json.decode[Boxed[int]]("\"Empty\""))
+    show(json.decode[Boxed[int]](r"""{"Full": "x"}"""))
+    let l: Either[int, str] = Either.Left(1)
+    let rt: Either[int, str] = Either.Right(b: "s")
+    print(json.encode(l).expect("e"))
+    print(json.encode(rt).expect("e"))
+    show(json.decode[Either[int, str]](r"""{"Right": {"b": "s"}}"""))
+    show(json.decode[Either[int, str]](r"""{"Left": 7}"""))
+    print(json.encode(Pair { a: 1, b: some(2) }).expect("e"))
+    show(json.decode[Pair[int]](r"""{"a": 1}"""))
+    show(json.decode[Pair[str]](r"""{"a": 1, "b": "y"}"""))
+    let w = Wrap { inner: Boxed.Full(Pair { a: 1, b: none }), items: [Boxed.Full("a"), Boxed.Empty] }
+    let text = json.encode(w).expect("encodes")
+    print(text)
+    show(json.decode[Wrap](text))
+    // The standard Result is an enum with the variants ok and err.
+    let r: Result[int, str] = ok(1)
+    print(json.encode(r).expect("e"))
+    show(json.decode[Result[int, str]](r"""{"ok": 5}"""))
+    show(json.decode[Result[int, str]](r"""{"err": "no"}"""))
+}
+
+// expect: {"Full":3}
+// expect: "Empty"
+// expect: ok Full(3)
+// expect: ok Full("x")
+// expect: ok Empty
+// expect: json: at `$.Full`: expected an int, found the string "x"
+// expect: {"Left":1}
+// expect: {"Right":{"b":"s"}}
+// expect: ok Right(b: "s")
+// expect: ok Left(7)
+// expect: {"a":1,"b":2}
+// expect: ok Pair { a: 1, b: none }
+// expect: json: at `$.a`: expected a string, found the number 1
+// expect: {"inner":{"Full":{"a":1,"b":null}},"items":[{"Full":"a"},"Empty"]}
+// expect: ok Wrap { inner: Full(Pair { a: 1, b: none }), items: [Full("a"), Empty] }
+// expect: {"ok":1}
+// expect: ok ok(5)
+// expect: ok err("no")

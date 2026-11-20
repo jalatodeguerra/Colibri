@@ -1,0 +1,62 @@
+import json
+import toml
+
+fn port(doc: json.Value) -> int? {
+    return doc.get("server")?.get("port")?.as_int()
+}
+
+fn main() {
+    let doc = toml.parse(r"""
+title = "demo"
+count = 0x10
+ratio = 1.5
+on = true
+when = 1979-05-27T07:32:00Z
+tags = ["a", "b"]
+
+[server]
+host = "localhost"
+port = 8080
+
+[[user]]
+name = "ann"
+
+[[user]]
+name = "bob"
+""").expect("parses")
+    print(doc.kind())
+    print(doc.get("title").expect("title").as_str())
+    print(doc.get("count").expect("count").as_int())
+    print(doc.get("ratio").expect("ratio").as_float())
+    print(doc.get("on").expect("on").as_bool())
+    print(doc.get("when").expect("when").as_str())
+    print(port(doc))
+    print(doc.keys())
+    print(doc.get("user").expect("user").len())
+    print(doc.get("user").expect("user").at(1).expect("1").get("name").expect("name").as_str())
+    // A node as JSON, for the json module.
+    let server = json.parse(doc.get("server").expect("server").to_json().expect("json")).expect("parses")
+    print(server.get("host").expect("host").as_str())
+    print(doc.get("user").expect("user").to_json())
+    // Datetimes are strings; `inf` and `nan` are floats.
+    let odd = toml.parse("a = inf\nb = [1979-05-27, 07:32:00]\nc = \"x\"").expect("parses")
+    print(odd.get("a").expect("a").as_float())
+    print(odd.get("b").expect("b").as_list().expect("list").len())
+    print(odd.get("b").expect("b").at(1).expect("1").as_str())
+}
+
+// expect: map
+// expect: some("demo")
+// expect: some(16)
+// expect: some(1.5)
+// expect: some(true)
+// expect: some("1979-05-27T07:32:00Z")
+// expect: some(8080)
+// expect: ["title", "count", "ratio", "on", "when", "tags", "server", "user"]
+// expect: 2
+// expect: some("bob")
+// expect: some("localhost")
+// expect: ok("[{\"name\":\"ann\"},{\"name\":\"bob\"}]")
+// expect: some(inf)
+// expect: 2
+// expect: some("07:32:00")

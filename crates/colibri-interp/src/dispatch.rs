@@ -129,11 +129,36 @@ fn adt_of(v: &Value) -> Option<TypeId> {
 pub(crate) struct Hooks<'a> {
     pub interp: &'a mut Interp,
     pub fiber: &'a mut Fiber,
+    /// Where the operation that runs the hooks stands, for the steps they cost.
+    pub span: Span,
 }
 
 use crate::eval::Interp;
 
 impl Hooks<'_> {
+    /// Runs the `show` or `eq` hook of the host class of `v` (picked by `pick`), if it has one.
+    fn host_hook(
+        &mut self,
+        v: &Value,
+        pick: impl Fn(&crate::host::HostClassHooks) -> Option<crate::host::HostImpl>,
+        args: Vec<Value>,
+    ) -> Option<Result<Value, Stop>> {
+        let Value::Host(r) = v else {
+            return None;
+        };
+        let hook = pick(self.interp.host.class_hooks.get(&r.ty)?)?;
+        // A host hook is a call like any other: one step (EMBEDDING §5).
+        if let Err(ctl) = self.interp.step(self.fiber, self.span) {
+            return Some(Err(Stop::Ctl(Box::new(ctl))));
+        }
+        Some(match hook(self.interp, self.fiber, args) {
+            Ok(value) => Ok(value),
+            Err(fault) => Err(Stop::Ctl(Box::new(
+                self.interp.host_fault_ctl(self.fiber, fault),
+            ))),
+        })
+    }
+
     /// Runs the user method `f` on `args`; its result as a value.
     fn run(&mut self, f: FnId, args: Vec<Value>) -> Result<Value, Stop> {
         let Some(body) = self.interp.fns.get(f.0 as usize).cloned() else {
@@ -147,6 +172,9 @@ impl Hooks<'_> {
 
 impl Overrides for Hooks<'_> {
     fn eq(&mut self, a: &Value, b: &Value) -> Answer<bool> {
+        if let Some(answer) = self.host_hook(a, |h| h.eq.clone(), vec![a.clone(), b.clone()]) {
+            return Some(answer.map(|v| matches!(v, Value::Bool(true))));
+        }
         let f = *self.interp.dispatch.eq.get(&adt_of(a)?)?;
         Some(
             self.run(f, vec![a.clone(), b.clone()])
@@ -163,6 +191,12 @@ impl Overrides for Hooks<'_> {
     }
 
     fn show(&mut self, v: &Value) -> Answer<String> {
+        if let Some(answer) = self.host_hook(v, |h| h.show.clone(), vec![v.clone()]) {
+            return Some(answer.map(|s| match s {
+                Value::Str(s) => s.to_string(),
+                _ => String::new(),
+            }));
+        }
         let f = *self.interp.dispatch.show.get(&adt_of(v)?)?;
         Some(self.run(f, vec![v.clone()]).map(|s| match s {
             Value::Str(s) => s.to_string(),
@@ -185,6 +219,12 @@ impl Overrides for Hooks<'_> {
 }
 
 impl Interp {
+    /// How many map or set key lookups scanned the stored keys for a user-written `Eq` (a
+    /// test hook: keys that cannot reach one never scan).
+    pub fn key_scans(&self) -> u64 {
+        self.key_scans
+    }
+
     /// Whether any user-written method replaces a derived one (else the plain functions run).
     fn has_overrides(&self) -> bool {
         let t = &self.dispatch;
@@ -192,12 +232,52 @@ impl Interp {
             && t.ord.is_empty()
             && t.show.is_empty()
             && t.clone.is_empty()
-            && !t.error_messages)
+            && !t.error_messages
+            && !self.host.any_show_hook
+            && !self.host.any_eq_hook)
     }
 
-    /// Whether any type has a user-written `Eq`.
-    pub(crate) fn has_custom_eq(&self) -> bool {
-        !self.dispatch.eq.is_empty()
+    /// Whether a key like `v` may be compared by an `Eq` that structure and identity do not
+    /// give: it holds (at any depth, also inside a list, an interface value, ...) a value
+    /// whose type has a user-written `impl Eq`, or an object of a host class that customises
+    /// `==`. Such keys are found by scanning, see [`Interp::canonicalise_key`]; every other
+    /// key takes the plain hashed path.
+    ///
+    /// The answer comes from the key's own values, so generics are exact (`Pair { a: 1 }` is
+    /// plain even if a `Pair[Q]` with `impl Eq for Q` exists) and a later `impl Eq` (hot
+    /// reload, the REPL) is seen at once: the tables it reads are rebuilt on load.
+    pub(crate) fn key_needs_scan(&self, v: &Value) -> bool {
+        (!self.dispatch.eq.is_empty() || self.host.any_eq_hook) && self.reaches_eq(v, 0)
+    }
+
+    fn reaches_eq(&self, v: &Value, depth: u32) -> bool {
+        if depth > 64 {
+            return true;
+        }
+        let d = depth + 1;
+        let user_eq = |ty: &TypeId| self.dispatch.eq.contains_key(ty);
+        match v {
+            Value::Host(r) => {
+                user_eq(&r.ty)
+                    || self
+                        .host
+                        .class_hooks
+                        .get(&r.ty)
+                        .is_some_and(|hooks| hooks.eq.is_some())
+            }
+            Value::Obj(o) => user_eq(&o.ty()),
+            Value::Struct(s) => user_eq(&s.ty) || s.fields.iter().any(|x| self.reaches_eq(x, d)),
+            Value::Enum(e) => user_eq(&e.ty) || e.payload.iter().any(|x| self.reaches_eq(x, d)),
+            Value::Tuple(items) => items.iter().any(|x| self.reaches_eq(x, d)),
+            Value::Dyn(dv) => self.reaches_eq(&dv.val, d),
+            Value::List(l) => l.snapshot().iter().any(|x| self.reaches_eq(x, d)),
+            Value::Set(set) => set.snapshot().iter().any(|x| self.reaches_eq(x, d)),
+            Value::Map(m) => m
+                .snapshot()
+                .iter()
+                .any(|(k, x)| self.reaches_eq(k, d) || self.reaches_eq(x, d)),
+            _ => false,
+        }
     }
 
     /// A `Map` key or `Set` element is looked up by the user-written `Eq` of its type: the
@@ -214,13 +294,42 @@ impl Interp {
         let Some(key) = args.get(1).cloned() else {
             return Ok(());
         };
+        if keys.is_empty() {
+            return Ok(());
+        }
+        self.key_scans += 1;
         for stored in keys {
+            // Each comparison costs a step, so a budget stops a quadratic scan.
+            self.step(fiber, span)?;
             if self.eq_deep(fiber, stored, &key, span)? {
                 args[1] = stored.clone();
                 break;
             }
         }
         Ok(())
+    }
+
+    /// `key` as a `Map` or `Set` stores it: the stored key that a user-written (or host
+    /// class) `Eq` says is equal to it, else `key` itself. For the places that add keys
+    /// without a method call (`m[k] = v`, a map literal, `Set(list)`, set algebra).
+    pub(crate) fn canonical_key(
+        &mut self,
+        fiber: &mut Fiber,
+        stored: impl FnOnce() -> Vec<Value>,
+        key: Value,
+        span: Span,
+    ) -> Eval<Value> {
+        if !self.key_needs_scan(&key) {
+            return Ok(key);
+        }
+        self.key_scans += 1;
+        for candidate in stored() {
+            self.step(fiber, span)?;
+            if self.eq_deep(fiber, &candidate, &key, span)? {
+                return Ok(candidate);
+            }
+        }
+        Ok(key)
     }
 
     /// Turns a stop of a structural operation into a panic.
@@ -279,6 +388,7 @@ impl Interp {
                 &mut Hooks {
                     interp: self,
                     fiber,
+                    span,
                 },
             )
         } else {
@@ -304,6 +414,7 @@ impl Interp {
                 &mut Hooks {
                     interp: self,
                     fiber,
+                    span,
                 },
             )
         } else {
@@ -324,6 +435,7 @@ impl Interp {
             &mut Hooks {
                 interp: self,
                 fiber,
+                span,
             },
         );
         result.map_err(|stop| self.stop_to_ctl(fiber, stop, span, "show"))
@@ -338,6 +450,7 @@ impl Interp {
                 &mut Hooks {
                     interp: self,
                     fiber,
+                    span,
                 },
             )
         } else {

@@ -154,6 +154,29 @@ impl CancelToken {
         }
     }
 
+    /// Starts a resource that a hook must release (a child process) so that cancelling cannot
+    /// slip between creating it and registering the hook. `f` makes the resource and returns
+    /// it with its release hook; it runs only if the token is not cancelled yet, and the
+    /// hook is registered before `cancel` can run: `cancel` takes the same lock, so it either
+    /// comes first (`Ok(None)`, `f` never runs) or waits for `f` to return and then finds the
+    /// hook. `f` runs under that lock: it must be quick (one `fork`/`exec`), and must not call
+    /// [`CancelToken::on_cancel`]. An `Err` from `f` registers nothing.
+    pub fn start<T, E>(
+        &self,
+        f: impl FnOnce() -> Result<(T, Box<dyn FnOnce() + Send>), E>,
+    ) -> Result<Option<T>, E> {
+        let mut hooks = self
+            .hooks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.is_cancelled() {
+            return Ok(None);
+        }
+        let (resource, hook) = f()?;
+        hooks.push(hook);
+        Ok(Some(resource))
+    }
+
     fn cancel(&self) {
         let hooks = {
             let mut hooks = self
@@ -1631,5 +1654,71 @@ impl Interp {
         self.sched.groups.clear();
         self.sched.ext.completed.clear();
         self.end_entry(outermost, false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CancelToken;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    type Hook = Box<dyn FnOnce() + Send>;
+
+    /// Cancelling races starting a resource: either the resource is never made, or its hook
+    /// has run by the time `cancel` returns. Never made-and-forgotten.
+    #[test]
+    fn cancel_racing_start_never_leaves_a_resource_behind() {
+        let (mut never, mut released) = (0, 0);
+        for _ in 0..3000 {
+            let token = Arc::new(CancelToken::default());
+            let made = Arc::new(AtomicUsize::new(0));
+            let freed = Arc::new(AtomicUsize::new(0));
+            let starter = {
+                let (token, made, freed) = (token.clone(), made.clone(), freed.clone());
+                std::thread::spawn(move || {
+                    token
+                        .start(|| {
+                            made.fetch_add(1, Ordering::SeqCst);
+                            let hook: Box<dyn FnOnce() + Send> = Box::new(move || {
+                                freed.fetch_add(1, Ordering::SeqCst);
+                            });
+                            Ok::<_, ()>(((), hook))
+                        })
+                        .unwrap()
+                        .is_some()
+                })
+            };
+            let canceller = {
+                let token = token.clone();
+                std::thread::spawn(move || token.cancel())
+            };
+            let started = starter.join().unwrap();
+            canceller.join().unwrap();
+            assert_eq!(made.load(Ordering::SeqCst), usize::from(started));
+            assert_eq!(
+                freed.load(Ordering::SeqCst),
+                made.load(Ordering::SeqCst),
+                "a resource was made and its hook did not run"
+            );
+            if started {
+                released += 1;
+            } else {
+                never += 1;
+            }
+        }
+        // Both orders happen (or at least the invariant held for every run).
+        assert_eq!(never + released, 3000);
+    }
+
+    #[test]
+    fn start_after_cancel_makes_nothing_and_an_error_registers_no_hook() {
+        let token = CancelToken::cancelled();
+        let ran = token.start(|| -> Result<((), Hook), ()> { panic!("ran") });
+        assert!(matches!(ran, Ok(None)));
+        let token = CancelToken::default();
+        let failed = token.start(|| -> Result<((), Hook), &str> { Err("no") });
+        assert_eq!(failed.err(), Some("no"));
+        assert!(token.hooks.lock().unwrap().is_empty());
     }
 }

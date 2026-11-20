@@ -2,7 +2,8 @@
 //!
 //! Understood: `#` comments, `[table]` and `[a.b]` headers, `key = "string"` (basic strings with
 //! the usual escapes, and `'literal'` strings), `key = { inline = "tables" }` on one line, and
-//! bare or quoted keys, and the booleans `true` and `false`. Everything else (numbers, arrays, dotted keys, multi-line
+//! bare or quoted keys, the booleans `true` and `false`, and one-line arrays of strings
+//! (`["a", "b"]`). Everything else (numbers, other arrays, dotted keys, multi-line
 //! strings) is an error that says what was found, with its line and column. Duplicate keys and
 //! tables are errors.
 
@@ -19,6 +20,8 @@ pub struct Value {
 pub enum ValueKind {
     Str(String),
     Bool(bool),
+    /// `["a", "b"]`: strings only.
+    Array(Vec<Value>),
     Table(Vec<Entry>),
 }
 
@@ -243,7 +246,7 @@ impl Parser<'_> {
                 })
             }
             Some('{') => self.inline_table(),
-            Some('[') => Err(self.error("arrays are not supported in `colibri.toml`")),
+            Some('[') => self.array(),
             Some(c) if c.is_ascii_digit() || c == '+' || c == '-' => {
                 Err(self.error("numbers are not supported in `colibri.toml`: use a string"))
             }
@@ -264,6 +267,49 @@ impl Parser<'_> {
             Some(c) => Err(self.error(format!("expected a string or `{{`, found `{c}`"))),
             None => Err(self.error("expected a value, found the end of the file")),
         }
+    }
+
+    /// `["a", "b"]` on one line; the elements are strings.
+    fn array(&mut self) -> Result<Value, Diagnostic> {
+        let start = self.pos;
+        self.bump(); // `[`
+        let mut items = Vec::new();
+        loop {
+            self.blanks();
+            match self.peek() {
+                Some(']') => {
+                    self.pos += 1;
+                    break;
+                }
+                Some('"' | '\'') => {
+                    let item_start = self.pos;
+                    let s = self.string()?;
+                    items.push(Value {
+                        span: self.span(item_start, self.pos),
+                        kind: ValueKind::Str(s),
+                    });
+                    self.blanks();
+                    match self.peek() {
+                        Some(',') => self.pos += 1,
+                        Some(']') => {}
+                        _ => {
+                            return Err(self.error(
+                                "expected `,` or `]` in an array (it must be on one line)",
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(self.error(
+                        "an array in `colibri.toml` holds strings, on one line: `[\"a\", \"b\"]`",
+                    ));
+                }
+            }
+        }
+        Ok(Value {
+            span: self.span(start, self.pos),
+            kind: ValueKind::Array(items),
+        })
     }
 
     fn inline_table(&mut self) -> Result<Value, Diagnostic> {
@@ -377,7 +423,9 @@ mod tests {
     fn errors_say_what_is_wrong() {
         assert!(err("a = 1\n").contains("numbers are not supported"));
         assert!(err("a = tru\n").contains("`true`"));
-        assert!(err("a = [\"x\"]\n").contains("arrays"));
+        assert!(err("a = [1]\n").contains("holds strings"));
+        assert!(err("a = [\"x\" \"y\"]\n").contains("expected `,` or `]`"));
+        assert!(err("a = [\"x\",\n").contains("holds strings"));
         assert!(err("a.b = \"x\"\n").contains("dotted keys"));
         assert!(err("a = \"x\nb = \"y\"\n").contains("not closed"));
         assert!(err("a = \"x\" b\n").contains("end of the line"));
@@ -395,5 +443,25 @@ mod tests {
         assert_eq!(doc("").len(), 1);
         let t = doc("a = {}\n");
         assert_eq!(t[0].entries[0].value.kind, ValueKind::Table(Vec::new()));
+    }
+
+    #[test]
+    fn arrays_of_strings() {
+        let t = parse(FileId(0), "a = [\"x\", 'y',]\nb = []\nc = [ \"z\" ]\n").unwrap();
+        let strs = |i: usize| -> Vec<String> {
+            let ValueKind::Array(items) = &t[0].entries[i].value.kind else {
+                panic!("not an array")
+            };
+            items
+                .iter()
+                .map(|v| match &v.kind {
+                    ValueKind::Str(s) => s.clone(),
+                    _ => panic!("not a string"),
+                })
+                .collect()
+        };
+        assert_eq!(strs(0), ["x", "y"]);
+        assert!(strs(1).is_empty());
+        assert_eq!(strs(2), ["z"]);
     }
 }

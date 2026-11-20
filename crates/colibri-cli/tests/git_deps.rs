@@ -1,0 +1,2348 @@
+//! Git dependencies and `colibri.lock`, end to end: the repositories are made here, in
+//! temporary folders, and used by path or `file://` url, so nothing needs the network. A
+//! missing `git` program fails these tests loudly (they never skip).
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// What a `colibri` run left.
+struct Out {
+    stdout: String,
+    stderr: String,
+    code: i32,
+}
+
+/// A fresh folder with a private `COLIBRI_HOME` and room for repositories and apps.
+struct Sandbox {
+    root: PathBuf,
+}
+
+fn git_env(cmd: &mut Command) -> &mut Command {
+    cmd.env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let mut cmd = Command::new("git");
+    git_env(&mut cmd).current_dir(dir).args(args);
+    let out = cmd
+        .output()
+        .expect("`git` must be installed to run these tests");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+impl Sandbox {
+    fn new(name: &str) -> Sandbox {
+        let root = std::env::temp_dir().join(format!("colibri-git-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("home")).unwrap();
+        Sandbox { root }
+    }
+
+    fn home(&self) -> PathBuf {
+        self.root.join("home")
+    }
+
+    fn path(&self, rel: &str) -> PathBuf {
+        self.root.join(rel)
+    }
+
+    fn write(&self, rel: &str, text: &str) {
+        let full = self.root.join(rel);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        fs::write(full, text).unwrap();
+    }
+
+    /// An empty repository on branch `main`.
+    fn repo(&self, name: &str) -> Repo {
+        let dir = self.root.join("repos").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "--quiet", "-b", "main"]);
+        Repo { dir }
+    }
+
+    /// A repository with a package `name` whose `lib.colibri` answers `version()` with `v`.
+    fn lib_repo(&self, name: &str, v: &str) -> (Repo, String) {
+        let repo = self.repo(name);
+        let sha = repo.commit(&lib_files(name, v, ""), "first");
+        (repo, sha)
+    }
+
+    /// An app package `app` whose `main` prints `<dep>.version()` for each of `deps`.
+    fn app(&self, folder: &str, deps_toml: &str, uses: &[&str]) -> PathBuf {
+        let dir = format!("apps/{folder}");
+        self.write(
+            &format!("{dir}/colibri.toml"),
+            &format!("[package]\nname = \"app\"\n\n[dependencies]\n{deps_toml}\n"),
+        );
+        let imports: String = uses.iter().map(|u| format!("import {u}\n")).collect();
+        let calls: String = uses
+            .iter()
+            .map(|u| format!("    print({u}.version())\n"))
+            .collect();
+        self.write(
+            &format!("{dir}/main.colibri"),
+            &format!("{imports}fn main() {{\n{calls}}}\n"),
+        );
+        self.path(&dir)
+    }
+
+    fn colibri(&self, args: &[&str]) -> Out {
+        self.colibri_env(args, &[])
+    }
+
+    fn colibri_env(&self, args: &[&str], env: &[(&str, &str)]) -> Out {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_colibri"));
+        git_env(&mut cmd)
+            .env("COLIBRI_HOME", self.home())
+            .args(args);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().expect("the colibri binary runs");
+        Out {
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            code: out.status.code().unwrap_or(-1),
+        }
+    }
+
+    fn run(&self, dir: &Path) -> Out {
+        self.colibri(&["run", dir.to_str().unwrap()])
+    }
+
+    fn lock(&self, dir: &Path) -> String {
+        fs::read_to_string(dir.join("colibri.lock")).expect("a colibri.lock")
+    }
+}
+
+struct Repo {
+    dir: PathBuf,
+}
+
+impl Repo {
+    fn url(&self) -> String {
+        self.dir.display().to_string()
+    }
+
+    /// Writes `files`, commits all and returns the commit.
+    fn commit(&self, files: &[(String, String)], message: &str) -> String {
+        for (path, text) in files {
+            let full = self.dir.join(path);
+            fs::create_dir_all(full.parent().unwrap()).unwrap();
+            fs::write(full, text).unwrap();
+        }
+        git(&self.dir, &["add", "--all"]);
+        git(&self.dir, &["commit", "--quiet", "-m", message]);
+        git(&self.dir, &["rev-parse", "HEAD"])
+    }
+
+    fn tag(&self, tag: &str) {
+        git(&self.dir, &["tag", tag]);
+    }
+
+    fn branch(&self, branch: &str) {
+        git(&self.dir, &["branch", branch]);
+    }
+
+    fn checkout(&self, branch: &str) {
+        git(&self.dir, &["checkout", "--quiet", branch]);
+    }
+}
+
+/// The files of a package `name` with `version()` answering `v`; `extra` is more manifest text.
+fn lib_files(name: &str, v: &str, extra: &str) -> Vec<(String, String)> {
+    vec![
+        (
+            "colibri.toml".into(),
+            format!("[package]\nname = \"{name}\"\n{extra}"),
+        ),
+        (
+            "lib.colibri".into(),
+            format!("pub fn version() -> str => \"{v}\"\n"),
+        ),
+    ]
+}
+
+fn new_version(repo: &Repo, name: &str, v: &str) -> String {
+    repo.commit(&lib_files(name, v, ""), &format!("version {v}"))
+}
+
+#[test]
+fn a_rev_dependency_is_checked_out_at_that_commit_and_locked() {
+    let sb = Sandbox::new("rev");
+    let (repo, c1) = sb.lib_repo("greet", "one");
+    new_version(&repo, "greet", "two");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\", rev = \"{c1}\" }}", repo.url()),
+        &["greet"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stderr.contains("locking greet"), "{}", out.stderr);
+    let lock = sb.lock(&app);
+    assert!(lock.contains("[git.greet]"), "{lock}");
+    assert!(lock.contains(&format!("rev = \"{c1}\"")), "{lock}");
+    assert!(lock.contains(&format!("commit = \"{c1}\"")), "{lock}");
+    // The checkout is in the cache, under its url and its commit.
+    let checkouts = sb.home().join("git/checkouts");
+    let repo_dir = fs::read_dir(&checkouts)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(
+        repo_dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("greet-")
+    );
+    assert!(repo_dir.join(&c1).join("lib.colibri").is_file());
+    assert!(!repo_dir.join(&c1).join(".git").exists());
+}
+
+#[test]
+fn an_abbreviated_rev_resolves_to_the_full_commit() {
+    let sb = Sandbox::new("short_rev");
+    let (repo, c1) = sb.lib_repo("greet", "one");
+    new_version(&repo, "greet", "two");
+    let app = sb.app(
+        "app",
+        &format!(
+            "greet = {{ git = \"{}\", rev = \"{}\" }}",
+            repo.url(),
+            &c1[..8]
+        ),
+        &["greet"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+    assert!(sb.lock(&app).contains(&format!("commit = \"{c1}\"")));
+}
+
+#[test]
+fn tag_branch_and_default_branch_dependencies() {
+    let sb = Sandbox::new("refs");
+    let (repo, c1) = sb.lib_repo("greet", "one");
+    repo.tag("v1");
+    repo.branch("old");
+    let c2 = new_version(&repo, "greet", "two");
+    repo.checkout("old");
+    let c3 = new_version(&repo, "greet", "three");
+    repo.checkout("main");
+    let url = repo.url();
+    for (spec, want, commit) in [
+        ("tag = \"v1\"", "one\n", &c1),
+        ("branch = \"old\"", "three\n", &c3),
+        ("", "two\n", &c2),
+    ] {
+        let comma = if spec.is_empty() { "" } else { ", " };
+        let app = sb.app(
+            &format!("app{}", spec.len()),
+            &format!("greet = {{ git = \"{url}\"{comma}{spec} }}"),
+            &["greet"],
+        );
+        let out = sb.run(&app);
+        assert_eq!(
+            (out.code, out.stdout.as_str()),
+            (0, want),
+            "{spec}: {}",
+            out.stderr
+        );
+        let lock = sb.lock(&app);
+        assert!(
+            lock.contains(&format!("commit = \"{commit}\"")),
+            "{spec}: {lock}"
+        );
+        if !spec.is_empty() {
+            assert!(lock.contains(spec), "{lock}");
+        }
+    }
+}
+
+#[test]
+fn a_file_url_works_like_a_path() {
+    let sb = Sandbox::new("file_url");
+    let (repo, c1) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"file://{}\" }}", repo.url()),
+        &["greet"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+    assert!(sb.lock(&app).contains(&c1));
+}
+
+#[test]
+fn the_lock_is_stable_and_used_without_the_network() {
+    let sb = Sandbox::new("reuse");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    assert_eq!(sb.run(&app).code, 0);
+    let first = sb.lock(&app);
+    // The branch moves on, but the lock still says the old commit.
+    new_version(&repo, "greet", "two");
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stderr.is_empty(), "{}", out.stderr);
+    assert_eq!(sb.lock(&app), first);
+    // And with the repository gone, nothing is fetched at all.
+    fs::remove_dir_all(&repo.dir).unwrap();
+    for cmd in ["run", "check", "test"] {
+        let out = sb.colibri(&[cmd, app.to_str().unwrap()]);
+        assert_eq!(out.code, 0, "{cmd}: {}", out.stderr);
+    }
+    assert_eq!(sb.lock(&app), first);
+}
+
+#[test]
+fn two_projects_share_one_checkout() {
+    let sb = Sandbox::new("share");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let dep = format!("greet = {{ git = \"{}\" }}", repo.url());
+    let a = sb.app("a", &dep, &["greet"]);
+    assert_eq!(sb.run(&a).code, 0);
+    // The second project locks from the cache: no repository, no network.
+    fs::remove_dir_all(&repo.dir).unwrap();
+    let b = sb.app("b", &dep, &["greet"]);
+    let out = sb.colibri(&["run", "--offline", b.to_str().unwrap()]);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+    let checkouts: Vec<_> = fs::read_dir(sb.home().join("git/checkouts"))
+        .unwrap()
+        .collect();
+    assert_eq!(checkouts.len(), 1);
+}
+
+#[test]
+fn a_changed_manifest_re_resolves_only_the_changed_entries() {
+    let sb = Sandbox::new("stale");
+    let (ra, ca) = sb.lib_repo("alpha", "a1");
+    ra.tag("v1");
+    let (rb, cb1) = sb.lib_repo("beta", "b1");
+    rb.branch("dev");
+    rb.checkout("dev");
+    let cb2 = new_version(&rb, "beta", "b2");
+    rb.checkout("main");
+    let dep_a = format!("alpha = {{ git = \"{}\", tag = \"v1\" }}", ra.url());
+    let app = sb.app(
+        "app",
+        &format!("{dep_a}\nbeta = {{ git = \"{}\" }}", rb.url()),
+        &["alpha", "beta"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "a1\nb1\n"),
+        "{}",
+        out.stderr
+    );
+    assert!(sb.lock(&app).contains(&cb1));
+    // `alpha` could not be resolved again now; it need not be, as it did not change.
+    fs::remove_dir_all(&ra.dir).unwrap();
+    let app = sb.app(
+        "app",
+        &format!(
+            "{dep_a}\nbeta = {{ git = \"{}\", branch = \"dev\" }}",
+            rb.url()
+        ),
+        &["alpha", "beta"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "a1\nb2\n"),
+        "{}",
+        out.stderr
+    );
+    let lock = sb.lock(&app);
+    assert!(
+        lock.contains(&ca) && lock.contains(&cb2) && !lock.contains(&cb1),
+        "{lock}"
+    );
+    assert!(out.stderr.contains("updating beta") && !out.stderr.contains("alpha"));
+    // A dependency that is removed leaves the lock.
+    let app = sb.app(
+        "app",
+        &format!("beta = {{ git = \"{}\" }}", rb.url()),
+        &["beta"],
+    );
+    assert_eq!(sb.run(&app).code, 0);
+    assert!(!sb.lock(&app).contains("alpha"));
+}
+
+#[test]
+fn update_moves_branches_and_tags_and_only_the_named_one() {
+    let sb = Sandbox::new("update");
+    let (ra, ca1) = sb.lib_repo("alpha", "a1");
+    let (rb, cb1) = sb.lib_repo("beta", "b1");
+    let app = sb.app(
+        "app",
+        &format!(
+            "alpha = {{ git = \"{}\" }}\nbeta = {{ git = \"{}\" }}",
+            ra.url(),
+            rb.url()
+        ),
+        &["alpha", "beta"],
+    );
+    assert_eq!(sb.run(&app).code, 0);
+    let ca2 = new_version(&ra, "alpha", "a2");
+    let cb2 = new_version(&rb, "beta", "b2");
+    // `run` does not move anything.
+    assert_eq!(sb.run(&app).stdout, "a1\nb1\n");
+    let path = app.to_str().unwrap();
+    let out = sb.colibri(&["update", "alpha", "--path", path]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stderr.contains("updating alpha"), "{}", out.stderr);
+    let lock = sb.lock(&app);
+    assert!(
+        lock.contains(&ca2) && !lock.contains(&ca1) && lock.contains(&cb1),
+        "{lock}"
+    );
+    assert_eq!(sb.run(&app).stdout, "a2\nb1\n");
+    let out = sb.colibri(&["update", "--path", path]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(sb.lock(&app).contains(&cb2));
+    assert_eq!(sb.run(&app).stdout, "a2\nb2\n");
+    // Nothing moved: nothing is said, and the file is the same.
+    let before = sb.lock(&app);
+    let out = sb.colibri(&["update", "--path", path]);
+    assert_eq!((out.code, out.stderr.as_str()), (0, ""));
+    assert_eq!(sb.lock(&app), before);
+    let out = sb.colibri(&["update", "nope", "--path", path]);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("`nope` is not a git dependency"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stderr.contains("`alpha`, `beta`"), "{}", out.stderr);
+}
+
+#[test]
+fn a_moved_tag_stays_put_until_update() {
+    let sb = Sandbox::new("moved_tag");
+    let (repo, c1) = sb.lib_repo("greet", "one");
+    repo.tag("stable");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\", tag = \"stable\" }}", repo.url()),
+        &["greet"],
+    );
+    assert_eq!(sb.run(&app).code, 0);
+    let c2 = new_version(&repo, "greet", "two");
+    git(&repo.dir, &["tag", "--force", "stable"]);
+    assert!(sb.lock(&app).contains(&c1));
+    assert_eq!(sb.run(&app).stdout, "one\n");
+    assert_eq!(
+        sb.colibri(&["update", "--path", app.to_str().unwrap()])
+            .code,
+        0
+    );
+    assert!(sb.lock(&app).contains(&c2));
+    assert_eq!(sb.run(&app).stdout, "two\n");
+}
+
+#[test]
+fn transitive_git_and_path_dependencies_are_locked_and_work() {
+    let sb = Sandbox::new("transitive");
+    let (rc, cc) = sb.lib_repo("deep", "deep");
+    // `mid` uses `deep` from git and `helper` from a folder of its own repository.
+    let mid = sb.repo("mid");
+    let mut files = lib_files(
+        "mid",
+        "mid",
+        &format!(
+            "\n[dependencies]\ndeep = {{ git = \"{}\" }}\nhelper = {{ path = \"helper\" }}\n",
+            rc.url()
+        ),
+    );
+    files[1].1 = "import deep\nimport helper\npub fn version() -> str => \"mid+{deep.version()}+{helper.version()}\"\n".into();
+    files.extend(
+        lib_files("helper", "help", "")
+            .into_iter()
+            .map(|(p, t)| (format!("helper/{p}"), t)),
+    );
+    let cm = mid.commit(&files, "mid");
+    let app = sb.app(
+        "app",
+        &format!("mid = {{ git = \"{}\" }}", mid.url()),
+        &["mid"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "mid+deep+help\n"),
+        "{}",
+        out.stderr
+    );
+    let lock = sb.lock(&app);
+    assert!(
+        lock.find("[git.deep]").unwrap() < lock.find("[git.mid]").unwrap(),
+        "{lock}"
+    );
+    assert!(lock.contains(&cc) && lock.contains(&cm), "{lock}");
+    assert!(
+        !lock.contains("helper"),
+        "path dependencies are not locked: {lock}"
+    );
+    // Both repositories can go: the lock and the cache are enough.
+    fs::remove_dir_all(&rc.dir).unwrap();
+    fs::remove_dir_all(&mid.dir).unwrap();
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "mid+deep+help\n"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn a_path_dependency_of_a_git_dependency_cannot_leave_its_repository() {
+    let sb = Sandbox::new("escape");
+    sb.write("outside/colibri.toml", "[package]\nname = \"outside\"\n");
+    sb.write("outside/lib.colibri", "pub fn version() -> str => \"x\"\n");
+    let repo = sb.repo("evil");
+    let outside = sb.path("outside");
+    let files = vec![
+        (
+            "colibri.toml".to_string(),
+            format!(
+                "[package]\nname = \"evil\"\n[dependencies]\noutside = {{ path = \"{}\" }}\n",
+                outside.display()
+            ),
+        ),
+        (
+            "lib.colibri".to_string(),
+            "pub fn version() -> str => \"e\"\n".to_string(),
+        ),
+    ];
+    repo.commit(&files, "evil");
+    let app = sb.app(
+        "app",
+        &format!("evil = {{ git = \"{}\" }}", repo.url()),
+        &["evil"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("leaves the git repository"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn two_versions_of_one_package_are_an_error_naming_both() {
+    let sb = Sandbox::new("dup");
+    let (rc, c1) = sb.lib_repo("shared", "s1");
+    let c2 = new_version(&rc, "shared", "s2");
+    let mk = |name: &str, rev: &str| {
+        let r = sb.repo(name);
+        let mut files = lib_files(
+            name,
+            name,
+            &format!(
+                "\n[dependencies]\nshared = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+                rc.url()
+            ),
+        );
+        files[1].1 = format!("pub fn version() -> str => \"{name}\"\n");
+        r.commit(&files, name);
+        r
+    };
+    let ra = mk("alpha", &c1);
+    let rb = mk("beta", &c2);
+    let app = sb.app(
+        "app",
+        &format!(
+            "alpha = {{ git = \"{}\" }}\nbeta = {{ git = \"{}\" }}",
+            ra.url(),
+            rb.url()
+        ),
+        &["alpha", "beta"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("two different versions of the package `shared`"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains(&c1[..10]) && out.stderr.contains(&c2[..10]),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("`alpha` asks for") && out.stderr.contains("`beta` asks for"),
+        "{}",
+        out.stderr
+    );
+    assert!(!app.join("colibri.lock").exists());
+    // The same commit twice is one package.
+    let rb = mk("beta", &c1);
+    let app = sb.app(
+        "app2",
+        &format!(
+            "alpha = {{ git = \"{}\" }}\nbeta = {{ git = \"{}\" }}",
+            ra.url(),
+            rb.url()
+        ),
+        &["alpha", "beta"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+}
+
+#[test]
+fn a_path_and_a_git_package_of_one_name_are_an_error_naming_both() {
+    let sb = Sandbox::new("dup_path");
+    let (rc, _) = sb.lib_repo("shared", "git");
+    sb.write(
+        "local/shared/colibri.toml",
+        "[package]\nname = \"shared\"\n",
+    );
+    sb.write(
+        "local/shared/lib.colibri",
+        "pub fn version() -> str => \"path\"\n",
+    );
+    let repo = sb.repo("holder");
+    let mut files = lib_files(
+        "holder",
+        "h",
+        &format!("\n[dependencies]\nshared = {{ git = \"{}\" }}\n", rc.url()),
+    );
+    files[1].1 = "pub fn version() -> str => \"h\"\n".into();
+    repo.commit(&files, "holder");
+    let shared_path = sb.path("local/shared");
+    let app = sb.app(
+        "app",
+        &format!(
+            "holder = {{ git = \"{}\" }}\nshared = {{ path = \"{}\" }}",
+            repo.url(),
+            shared_path.display()
+        ),
+        &["holder"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("two different packages are both called `shared`"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("local/shared") && out.stderr.contains("git/checkouts"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn locked_fails_instead_of_writing_the_lock() {
+    let sb = Sandbox::new("locked");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let dep = format!("greet = {{ git = \"{}\" }}", repo.url());
+    let app = sb.app("app", &dep, &["greet"]);
+    let path = app.to_str().unwrap();
+    let out = sb.colibri(&["check", "--locked", path]);
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.contains("`--locked`"), "{}", out.stderr);
+    assert!(!app.join("colibri.lock").exists());
+    assert_eq!(sb.colibri(&["check", path]).code, 0);
+    let lock = sb.lock(&app);
+    for cmd in ["check", "run", "test"] {
+        assert_eq!(sb.colibri(&[cmd, "--locked", path]).code, 0, "{cmd}");
+    }
+    // A manifest that the lock no longer matches.
+    repo.branch("dev");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\", branch = \"dev\" }}", repo.url()),
+        &["greet"],
+    );
+    let out = sb.colibri(&["run", "--locked", path]);
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.contains("`--locked`"), "{}", out.stderr);
+    assert_eq!(sb.lock(&app), lock);
+}
+
+#[test]
+fn offline_uses_the_cache_and_never_the_repository() {
+    let sb = Sandbox::new("offline");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    let path = app.to_str().unwrap();
+    let out = sb.colibri(&["check", "--offline", path]);
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.contains("offline"), "{}", out.stderr);
+    assert!(!app.join("colibri.lock").exists());
+    assert_eq!(sb.colibri(&["check", path]).code, 0);
+    // Even a url that does not exist any more is not contacted.
+    new_version(&repo, "greet", "two");
+    fs::remove_dir_all(&repo.dir).unwrap();
+    assert_eq!(sb.colibri(&["run", "--offline", path]).stdout, "one\n");
+    // `update --offline` can only answer from what the cache already has.
+    let out = sb.colibri(&["update", "--offline", "--path", path]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(sb.colibri(&["run", "--offline", path]).stdout, "one\n");
+}
+
+#[test]
+fn each_failure_to_fetch_has_its_own_message() {
+    let sb = Sandbox::new("errors");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    repo.tag("v1");
+    let url = repo.url();
+    let check = |name: &str, spec: &str| -> Out {
+        let app = sb.app(
+            name,
+            &format!("greet = {{ git = \"{url}\"{spec} }}"),
+            &["greet"],
+        );
+        sb.colibri(&["check", app.to_str().unwrap()])
+    };
+    let out = check(
+        "unknown_rev",
+        ", rev = \"0123456789abcdef0123456789abcdef01234567\"",
+    );
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("has no commit `0123456789abcdef"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("the dependency `greet`"),
+        "{}",
+        out.stderr
+    );
+    let out = check("unknown_tag", ", tag = \"v9\"");
+    assert!(out.stderr.contains("has no tag `v9`"), "{}", out.stderr);
+    let out = check("unknown_branch", ", branch = \"nope\"");
+    assert!(
+        out.stderr.contains("has no branch `nope`"),
+        "{}",
+        out.stderr
+    );
+
+    // The url does not lead anywhere.
+    let app = sb.app(
+        "unreachable",
+        &format!(
+            "greet = {{ git = \"{}\" }}",
+            sb.path("repos/missing").display()
+        ),
+        &["greet"],
+    );
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.contains("cannot fetch"), "{}", out.stderr);
+    assert!(out.stderr.contains("repos/missing"), "{}", out.stderr);
+
+    // A repository with no commits at all.
+    let empty = sb.repo("empty");
+    let app = sb.app(
+        "empty_app",
+        &format!("greet = {{ git = \"{}\" }}", empty.url()),
+        &["greet"],
+    );
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert!(out.stderr.contains("has no commits"), "{}", out.stderr);
+
+    // A repository that is not a Colibri package.
+    let plain = sb.repo("plain");
+    let sha = plain.commit(&[("README".to_string(), "hi\n".to_string())], "readme");
+    let app = sb.app(
+        "plain_app",
+        &format!("greet = {{ git = \"{}\" }}", plain.url()),
+        &["greet"],
+    );
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("has no `colibri.toml`"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stderr.contains(&sha[..10]), "{}", out.stderr);
+    assert!(!app.join("colibri.lock").exists());
+}
+
+#[test]
+fn a_missing_git_program_is_said_plainly() {
+    let sb = Sandbox::new("no_git");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    let empty = sb.path("empty_path");
+    fs::create_dir_all(&empty).unwrap();
+    let out = sb.colibri_env(
+        &["check", app.to_str().unwrap()],
+        &[("PATH", empty.to_str().unwrap())],
+    );
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("the `git` program was not found"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn manifest_mistakes_in_a_git_dependency_are_reported() {
+    let sb = Sandbox::new("manifest");
+    for (spec, want) in [
+        (", rev = \"abc1234\", tag = \"v1\"", "both `rev` and `tag`"),
+        (", rev = \"main\"", "not a commit hash"),
+        (", path = \"x\"", "both `path` and `git`"),
+        (
+            ", version = \"1\"",
+            "registry dependencies are not supported yet",
+        ),
+    ] {
+        let app = sb.app(
+            "app",
+            &format!("greet = {{ git = \"/x\"{spec} }}"),
+            &["greet"],
+        );
+        let out = sb.colibri(&["check", app.to_str().unwrap()]);
+        assert_eq!(out.code, 1, "{spec}");
+        assert!(out.stderr.contains(want), "{spec}: {}", out.stderr);
+    }
+}
+
+#[test]
+fn a_git_dependency_with_ffi_must_be_allowed_by_the_root() {
+    let sb = Sandbox::new("ffi");
+    let extern_lib = "@link(\"c\")\nextern \"C\" { pub fn abs(x: i32) -> i32 }\npub fn version() -> str => \"{abs(-1)}\"\n";
+    let make = |name: &str, extra: &str| {
+        let repo = sb.repo(name);
+        let mut files = lib_files(name, "", extra);
+        files[1].1 = extern_lib.into();
+        repo.commit(&files, "ffi");
+        repo
+    };
+    // An app manifest with the given `[package]` extras and dependencies.
+    let app_with = |folder: &str, package_extra: &str, deps: &str, uses: &[&str]| {
+        let app = sb.app(folder, deps, uses);
+        fs::write(
+            app.join("colibri.toml"),
+            format!("[package]\nname = \"app\"\n{package_extra}[dependencies]\n{deps}\n"),
+        )
+        .unwrap();
+        app
+    };
+    // The app declaring `ffi = true` does not grant it to what it depends on.
+    let quiet = make("quiet", "");
+    let dep = format!("quiet = {{ git = \"{}\" }}", quiet.url());
+    let app = app_with("app", "ffi = true\n", &dep, &["quiet"]);
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("the package `quiet` cannot contain `extern` blocks"),
+        "{}",
+        out.stderr
+    );
+    // The dependency says so in its own manifest, but the root has not allowed it: the error
+    // names the package, who needs it, and the line to add.
+    let open = make("open", "ffi = true\n");
+    let dep = format!("open = {{ git = \"{}\" }}", open.url());
+    let app = app_with("app2", "", &dep, &["open"]);
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    for want in [
+        "the git dependency `open` declares `ffi = true`",
+        "needed by `app`",
+        "allow-ffi = [\"open\"]",
+        "colibri.toml",
+    ] {
+        assert!(out.stderr.contains(want), "{want}: {}", out.stderr);
+    }
+    // Another name in the list does not help; the right one does.
+    let app = app_with("app3", "allow-ffi = [\"other\"]\n", &dep, &["open"]);
+    assert_eq!(sb.colibri(&["check", app.to_str().unwrap()]).code, 1);
+    let app = app_with(
+        "app4",
+        "allow-ffi = [\"other\", \"open\"]\n",
+        &dep,
+        &["open"],
+    );
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(sb.run(&app).stdout, "1\n");
+    // A transitive one, which the user never read, needs the root's say-so as well.
+    let holder = sb.repo("holder");
+    let mut files = lib_files(
+        "holder",
+        "h",
+        &format!("\n[dependencies]\nopen = {{ git = \"{}\" }}\n", open.url()),
+    );
+    files[1].1 = "import open\npub fn version() -> str => open.version()\n".into();
+    holder.commit(&files, "holder");
+    let dep = format!("holder = {{ git = \"{}\" }}", holder.url());
+    let app = app_with("app5", "", &dep, &["holder"]);
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("`open` declares `ffi = true`")
+            && out.stderr.contains("needed by `holder`"),
+        "{}",
+        out.stderr
+    );
+    let app = app_with("app6", "allow-ffi = [\"open\"]\n", &dep, &["holder"]);
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+}
+
+#[test]
+fn loading_never_fetches_it_says_to_run_the_tool() {
+    // This is what the language server does: it loads through the library, which has no
+    // network code, so a dependency that is not in the cache is a diagnostic.
+    let sb = Sandbox::new("no_fetch");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    let config = colibri_runtime::CheckConfig::default();
+    let report = colibri_runtime::check_package_with(&app, &config)
+        .unwrap()
+        .render(false);
+    assert!(report.contains("is not in `colibri.lock` yet"), "{report}");
+    assert!(
+        report.contains("run `colibri check` or `colibri update`"),
+        "{report}"
+    );
+    assert!(!app.join("colibri.lock").exists());
+    // With a lock, but a cache that does not have the checkout (this process's cache, not the
+    // sandbox's).
+    let lock = format!(
+        "[git.greet]\nurl = \"{}\"\ncommit = \"{}\"\n",
+        repo.url(),
+        "0123456789abcdef0123456789abcdef01234567"
+    );
+    fs::write(app.join("colibri.lock"), lock).unwrap();
+    let report = colibri_runtime::check_package_with(&app, &config)
+        .unwrap()
+        .render(false);
+    assert!(report.contains("is not in the cache"), "{report}");
+    assert!(
+        report.contains("run `colibri check` or `colibri update`"),
+        "{report}"
+    );
+    // A lock for something else than the manifest says is out of date.
+    fs::write(
+        app.join("colibri.lock"),
+        "[git.greet]\nurl = \"/elsewhere\"\ncommit = \"0123456789abcdef0123456789abcdef01234567\"\n",
+    )
+    .unwrap();
+    let report = colibri_runtime::check_package_with(&app, &config)
+        .unwrap()
+        .render(false);
+    assert!(
+        report.contains("is out of date for the dependency `greet`"),
+        "{report}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinks_in_a_dependency_are_ignored_and_never_followed() {
+    use std::os::unix::fs::symlink;
+    let sb = Sandbox::new("symlinks");
+    let secret = sb.path("outside/secret");
+    sb.write("outside/secret", "TOP-SECRET-LINE\nmore\n");
+    sb.write(
+        "outside/sneaky.colibri",
+        "pub fn version() -> str => \"OUTSIDE\"\n",
+    );
+    let repo = sb.repo("linky");
+    repo.commit(&lib_files("linky", "ok", ""), "lib");
+    symlink(&secret, repo.dir.join("leak.colibri")).unwrap();
+    symlink(
+        sb.path("outside/sneaky.colibri"),
+        repo.dir.join("sneaky.colibri"),
+    )
+    .unwrap();
+    git(&repo.dir, &["add", "--all"]);
+    git(&repo.dir, &["commit", "--quiet", "-m", "links"]);
+    let mode = git(&repo.dir, &["ls-files", "-s", "leak.colibri"]);
+    assert!(mode.starts_with("120000"), "{mode}");
+    for module in ["leak", "sneaky"] {
+        let app = sb.app(
+            &format!("app_{module}"),
+            &format!("linky = {{ git = \"{}\" }}", repo.url()),
+            &[],
+        );
+        sb.write(
+            &format!("apps/app_{module}/main.colibri"),
+            &format!("import linky.{module}\nfn main() {{\n    print({module}.version())\n}}\n"),
+        );
+        let out = sb.run(&app);
+        assert_eq!(out.code, 1, "{module}: {}", out.stderr);
+        assert!(
+            !out.stderr.contains("TOP-SECRET") && !out.stdout.contains("OUTSIDE"),
+            "{module}: {}{}",
+            out.stdout,
+            out.stderr
+        );
+        assert!(
+            out.stderr.contains("not found") || out.stderr.contains("no module"),
+            "{module}: {}",
+            out.stderr
+        );
+    }
+    // Nothing of the links is in the checkout at all.
+    let mut stack = vec![sb.home().join("git/checkouts")];
+    let mut files = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for e in fs::read_dir(dir).unwrap().flatten() {
+            if e.file_type().unwrap().is_dir() {
+                stack.push(e.path());
+            } else {
+                files.push(e.file_name().to_string_lossy().into_owned());
+            }
+        }
+    }
+    assert!(
+        !files
+            .iter()
+            .any(|f| f == "leak.colibri" || f == "sneaky.colibri"),
+        "{files:?}"
+    );
+}
+
+#[test]
+fn gitattributes_filters_and_ident_do_not_run_on_a_dependency() {
+    let sb = Sandbox::new("filters");
+    let repo = sb.repo("attr");
+    let mut files = lib_files("attr", "x", "");
+    files[1].1 = "pub fn version() -> str => \"$Id$\"\n".into();
+    files.push((".gitattributes".into(), "* filter=demo ident\n".into()));
+    repo.commit(&files, "attributes");
+    let ran = sb.path("filter-ran");
+    let smudge = format!("echo ran >> {} && cat", ran.display());
+    let app = sb.app(
+        "app",
+        &format!("attr = {{ git = \"{}\" }}", repo.url()),
+        &["attr"],
+    );
+    let out = sb.colibri_env(
+        &["run", app.to_str().unwrap()],
+        &[
+            ("GIT_CONFIG_COUNT", "2"),
+            ("GIT_CONFIG_KEY_0", "filter.demo.smudge"),
+            ("GIT_CONFIG_VALUE_0", &smudge),
+            ("GIT_CONFIG_KEY_1", "core.autocrlf"),
+            ("GIT_CONFIG_VALUE_1", "true"),
+        ],
+    );
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "$Id$\n"),
+        "{}",
+        out.stderr
+    );
+    assert!(!ran.exists(), "the user's filter program ran");
+}
+
+#[test]
+fn a_rev_is_an_object_name_never_a_branch_or_tag_of_the_same_name() {
+    let sb = Sandbox::new("rev_vs_ref");
+    let (repo, c1) = sb.lib_repo("greet", "one");
+    let c2 = new_version(&repo, "greet", "two");
+    let short = &c1[..7];
+    // Upstream adds a branch and a tag called like the abbreviated rev, pointing elsewhere.
+    git(&repo.dir, &["branch", short, &c2]);
+    git(&repo.dir, &["tag", &c1[..9], &c2]);
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\", rev = \"{short}\" }}", repo.url()),
+        &["greet"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+    assert!(sb.lock(&app).contains(&format!("commit = \"{c1}\"")));
+    // The rev may be written in capitals.
+    let app = sb.app(
+        "app_upper",
+        &format!(
+            "greet = {{ git = \"{}\", rev = \"{}\" }}",
+            repo.url(),
+            c1[..9].to_uppercase()
+        ),
+        &["greet"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn a_lock_edited_to_point_a_rev_elsewhere_is_not_trusted() {
+    let sb = Sandbox::new("rev_lock_edit");
+    let (repo, c1) = sb.lib_repo("greet", "one");
+    let c2 = new_version(&repo, "greet", "two");
+    let app = sb.app(
+        "app",
+        &format!(
+            "greet = {{ git = \"{}\", rev = \"{}\" }}",
+            repo.url(),
+            &c1[..8]
+        ),
+        &["greet"],
+    );
+    let path = app.to_str().unwrap();
+    assert_eq!(sb.run(&app).code, 0);
+    let good = sb.lock(&app);
+    let evil = good.replace(&c1, &c2);
+    assert_ne!(good, evil);
+    fs::write(app.join("colibri.lock"), &evil).unwrap();
+    let out = sb.colibri(&["run", "--locked", path]);
+    assert_eq!(out.code, 1, "{}", out.stdout);
+    assert!(
+        out.stderr.contains("does not start with the rev"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(sb.lock(&app), evil, "--locked leaves the file alone");
+    let out = sb.colibri(&["run", path]);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("does not match its rev"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(sb.lock(&app), good);
+}
+
+/// Starts one `colibri` per app at once on the sandbox's cache and waits for all of them.
+fn run_together(sb: &Sandbox, command: &str, apps: &[PathBuf]) -> Vec<Out> {
+    let children: Vec<_> = apps
+        .iter()
+        .map(|app| {
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_colibri"));
+            git_env(&mut cmd)
+                .env("COLIBRI_HOME", sb.home())
+                .args([command, app.to_str().unwrap()])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            cmd.spawn().expect("the colibri binary runs")
+        })
+        .collect();
+    children
+        .into_iter()
+        .map(|c| {
+            let out = c.wait_with_output().unwrap();
+            Out {
+                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                code: out.status.code().unwrap_or(-1),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn parallel_processes_on_a_fresh_cache_all_succeed() {
+    for round in 0..3 {
+        let sb = Sandbox::new(&format!("parallel{round}"));
+        let (r1, _) = sb.lib_repo("one", "1");
+        let (r2, _) = sb.lib_repo("two", "2");
+        let apps: Vec<PathBuf> = (0..8)
+            .map(|i| {
+                sb.app(
+                    &format!("app{i}"),
+                    &format!(
+                        "one = {{ git = \"{}\" }}\ntwo = {{ git = \"{}\" }}",
+                        r1.url(),
+                        r2.url()
+                    ),
+                    &["one", "two"],
+                )
+            })
+            .collect();
+        for (i, out) in run_together(&sb, "run", &apps).iter().enumerate() {
+            assert_eq!(
+                (out.code, out.stdout.as_str()),
+                (0, "1\n2\n"),
+                "round {round}, process {i}: {}",
+                out.stderr
+            );
+        }
+        // And again on the warm cache.
+        for out in run_together(&sb, "check", &apps) {
+            assert_eq!(out.code, 0, "{}", out.stderr);
+        }
+    }
+}
+
+/// The single folder under `dir` whose name ends in `suffix`.
+fn only_entry(dir: &Path, suffix: &str) -> PathBuf {
+    let found: Vec<PathBuf> = fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().ends_with(suffix))
+        .collect();
+    assert_eq!(found.len(), 1, "{dir:?}: {found:?}");
+    found[0].clone()
+}
+
+#[test]
+fn a_damaged_or_interrupted_cache_is_made_again() {
+    let sb = Sandbox::new("recover");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    assert_eq!(sb.run(&app).stdout, "one\n");
+    let db = only_entry(&sb.home().join("git/db"), ".git");
+    // A crash between `mkdir` and `git init` left an empty folder, and no checkout.
+    fs::remove_dir_all(&db).unwrap();
+    fs::create_dir(&db).unwrap();
+    fs::remove_dir_all(sb.home().join("git/checkouts")).unwrap();
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+
+    // A checkout folder without its completion marker is not trusted, and is written again.
+    let key = only_entry(&sb.home().join("git/checkouts"), "");
+    let commit_dir = fs::read_dir(&key).unwrap().flatten().next().unwrap().path();
+    fs::remove_file(commit_dir.join(".colibri-complete")).unwrap();
+    fs::remove_file(commit_dir.join("lib.colibri")).unwrap();
+    let out = sb.colibri(&["run", "--offline", app.to_str().unwrap()]);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+    assert!(commit_dir.join(".colibri-complete").is_file());
+
+    // Temporary folders of a run that died: old ones go, a fresh one stays.
+    let old = key.join(".dead.tmp1");
+    let fresh = key.join(".live.tmp2");
+    fs::create_dir_all(old.join("x")).unwrap();
+    fs::create_dir_all(&fresh).unwrap();
+    let two_days = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86400);
+    fs::File::open(&old)
+        .unwrap()
+        .set_modified(two_days)
+        .unwrap();
+    new_version(&repo, "greet", "two");
+    let out = sb.colibri(&["update", "--path", app.to_str().unwrap()]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(!old.exists() && fresh.exists());
+}
+
+#[test]
+fn a_failed_fetch_keeps_only_the_end_of_gits_complaint() {
+    let sb = Sandbox::new("short_errors");
+    let app = sb.app(
+        "app",
+        &format!(
+            "greet = {{ git = \"{}\" }}",
+            sb.path("repos/missing").display()
+        ),
+        &["greet"],
+    );
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.len() < 2000, "{}", out.stderr.len());
+}
+
+#[test]
+fn remote_helpers_and_other_transports_are_refused_not_run() {
+    let sb = Sandbox::new("transports");
+    let proof = sb.path("helper-ran");
+    for (name, url, want) in [
+        (
+            "ext",
+            format!("ext::sh -c touch$IFS{}", proof.display()),
+            "remote helper",
+        ),
+        ("fd", "fd::17".to_string(), "remote helper"),
+        (
+            "http",
+            "http://example.com/r.git".to_string(),
+            "transport `http`",
+        ),
+        (
+            "ftp",
+            "ftp://example.com/r.git".to_string(),
+            "transport `ftp`",
+        ),
+    ] {
+        let app = sb.app(name, &format!("greet = {{ git = \"{url}\" }}"), &["greet"]);
+        let out = sb.colibri(&["check", app.to_str().unwrap()]);
+        assert_eq!(out.code, 1, "{name}: {}", out.stderr);
+        assert!(out.stderr.contains(want), "{name}: {}", out.stderr);
+        assert!(out.stderr.contains("not allowed"), "{name}: {}", out.stderr);
+    }
+    assert!(!proof.exists());
+}
+
+#[test]
+fn git_variables_from_a_hook_do_not_redirect_the_cache() {
+    // Started from a git hook, `colibri` inherits `GIT_DIR` and friends for the user's own
+    // repository; the objects of a dependency must still land in the cache.
+    let sb = Sandbox::new("hook_env");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let decoy = sb.path("decoy.git");
+    fs::create_dir_all(&decoy).unwrap();
+    git(&decoy, &["init", "--bare", "--quiet"]);
+    let count = |dir: &Path| {
+        let mut n = 0;
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in fs::read_dir(d).unwrap().flatten() {
+                if e.file_type().unwrap().is_dir() {
+                    stack.push(e.path());
+                } else {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    let before = count(&decoy);
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    let decoy_str = decoy.to_str().unwrap().to_string();
+    let objects = decoy.join("objects").to_str().unwrap().to_string();
+    let work = sb.path("decoy-work");
+    fs::create_dir_all(&work).unwrap();
+    let out = sb.colibri_env(
+        &["run", app.to_str().unwrap()],
+        &[
+            ("GIT_DIR", &decoy_str),
+            ("GIT_OBJECT_DIRECTORY", &objects),
+            ("GIT_WORK_TREE", work.to_str().unwrap()),
+            ("GIT_INDEX_FILE", sb.path("decoy-index").to_str().unwrap()),
+            ("GIT_NAMESPACE", "decoy"),
+            ("GIT_COMMON_DIR", &decoy_str),
+        ],
+    );
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(count(&decoy), before, "the decoy repository was written to");
+    assert_eq!(fs::read_dir(&work).unwrap().count(), 0);
+    assert!(!sb.path("decoy-index").exists());
+}
+
+#[test]
+fn only_urls_scp_addresses_and_absolute_paths_are_git_urls() {
+    let sb = Sandbox::new("url_forms");
+    for url in ["r4", "sub/repo", ".git", "..\\\\x", "host:path", "./x"] {
+        let app = sb.app("app", &format!("greet = {{ git = \"{url}\" }}"), &["greet"]);
+        let out = sb.colibri(&["check", app.to_str().unwrap()]);
+        assert_eq!(out.code, 1, "{url}");
+        assert!(
+            out.stderr.contains("not a git url") || out.stderr.contains("relative path"),
+            "{url}: {}",
+            out.stderr
+        );
+        assert!(!sb.path("apps/app/colibri.lock").exists());
+    }
+}
+
+#[test]
+fn a_remote_package_cannot_name_a_local_repository() {
+    let sb = Sandbox::new("remote_to_local");
+    // The user's private repository, and a package that was published at an https url
+    // (here the url is rewritten to a local folder, as `url.<base>.insteadOf` does).
+    let (private, _) = sb.lib_repo("private", "SECRET");
+    let outer = sb.repo("outer");
+    let mut files = lib_files(
+        "outer",
+        "o",
+        &format!(
+            "\n[dependencies]\nprivate = {{ git = \"file://{}\" }}\n",
+            private.url()
+        ),
+    );
+    files[1].1 = "pub fn version() -> str => \"o\"\n".into();
+    outer.commit(&files, "outer");
+    let key = format!("url.{}.insteadOf", outer.url());
+    let rewrite = [
+        ("GIT_CONFIG_COUNT", "1"),
+        ("GIT_CONFIG_KEY_0", key.as_str()),
+        ("GIT_CONFIG_VALUE_0", "https://example.test/outer.git"),
+    ];
+    let remote = sb.app(
+        "remote",
+        "outer = { git = \"https://example.test/outer.git\" }",
+        &["outer"],
+    );
+    let out = sb.colibri_env(&["run", remote.to_str().unwrap()], &rewrite);
+    assert_eq!(out.code, 1, "{}{}", out.stdout, out.stderr);
+    for want in [
+        "`outer`",
+        "https://example.test/outer.git",
+        "`private`",
+        "local",
+    ] {
+        assert!(out.stderr.contains(want), "{want}: {}", out.stderr);
+    }
+    assert!(!remote.join("colibri.lock").exists());
+    // The same package fetched from a local url may use local repositories.
+    let local = sb.app(
+        "local",
+        &format!("outer = {{ git = \"{}\" }}", outer.url()),
+        &["outer"],
+    );
+    let out = sb.run(&local);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "o\n"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn a_branch_or_tag_deleted_upstream_is_gone_from_the_cache_too() {
+    let sb = Sandbox::new("prune");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    repo.branch("dev");
+    repo.branch("feature");
+    repo.tag("v1");
+    let by_branch = sb.app(
+        "by_branch",
+        &format!("greet = {{ git = \"{}\", branch = \"dev\" }}", repo.url()),
+        &["greet"],
+    );
+    let by_tag = sb.app(
+        "by_tag",
+        &format!("greet = {{ git = \"{}\", tag = \"v1\" }}", repo.url()),
+        &["greet"],
+    );
+    assert_eq!(sb.run(&by_branch).code, 0);
+    assert_eq!(sb.run(&by_tag).code, 0);
+    git(&repo.dir, &["branch", "-D", "dev"]);
+    git(&repo.dir, &["tag", "-d", "v1"]);
+    // A branch `feature` becoming `feature/x` is a ref conflict that only pruning resolves.
+    git(&repo.dir, &["branch", "-D", "feature"]);
+    git(&repo.dir, &["branch", "feature/x"]);
+    let out = sb.colibri(&["update", "--path", by_branch.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(out.stderr.contains("has no branch `dev`"), "{}", out.stderr);
+    let out = sb.colibri(&["update", "--path", by_tag.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(out.stderr.contains("has no tag `v1`"), "{}", out.stderr);
+    // The new branch is there.
+    let by_new = sb.app(
+        "by_new",
+        &format!(
+            "greet = {{ git = \"{}\", branch = \"feature/x\" }}",
+            repo.url()
+        ),
+        &["greet"],
+    );
+    assert_eq!(sb.run(&by_new).code, 0);
+}
+
+#[test]
+fn a_database_holding_another_url_is_never_shared() {
+    // Two urls with one cache key are simulated by a database folder that says it holds
+    // another url: the tool must not fetch into it, but use the next name.
+    let sb = Sandbox::new("collision");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    assert_eq!(sb.run(&app).code, 0);
+    let dbs = sb.home().join("git/db");
+    let first = only_entry(&dbs, ".git");
+    assert_eq!(
+        fs::read_to_string(first.join("colibri-url")).unwrap(),
+        repo.url()
+    );
+    fs::write(first.join("colibri-url"), "https://other.example/greet.git").unwrap();
+    let refs_before = git(&first, &["for-each-ref"]);
+    new_version(&repo, "greet", "two");
+    let out = sb.colibri(&["update", "--path", app.to_str().unwrap()]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(sb.run(&app).stdout, "two\n");
+    assert_eq!(git(&first, &["for-each-ref"]), refs_before);
+    let second = dbs.join(format!(
+        "{}-1.git",
+        first
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .trim_end_matches(".git")
+    ));
+    assert_eq!(
+        fs::read_to_string(second.join("colibri-url")).unwrap(),
+        repo.url()
+    );
+}
+
+#[test]
+fn one_commit_asked_for_by_a_tag_and_by_a_branch_is_one_package() {
+    let sb = Sandbox::new("diamond_specs");
+    let (shared, c1) = sb.lib_repo("shared", "s");
+    shared.tag("v1");
+    let mk = |name: &str, spec: &str| {
+        let r = sb.repo(name);
+        let mut files = lib_files(
+            name,
+            name,
+            &format!(
+                "\n[dependencies]\nshared = {{ git = \"{}\", {spec} }}\n",
+                shared.url()
+            ),
+        );
+        files[1].1 = format!("pub fn version() -> str => \"{name}\"\n");
+        r.commit(&files, name);
+        r
+    };
+    let ra = mk("alpha", "tag = \"v1\"");
+    let rb = mk("beta", "branch = \"main\"");
+    let app = sb.app(
+        "app",
+        &format!(
+            "alpha = {{ git = \"{}\" }}\nbeta = {{ git = \"{}\" }}",
+            ra.url(),
+            rb.url()
+        ),
+        &["alpha", "beta"],
+    );
+    let path = app.to_str().unwrap();
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "alpha\nbeta\n"),
+        "{}",
+        out.stderr
+    );
+    assert!(sb.lock(&app).contains(&c1));
+    assert_eq!(sb.lock(&app).matches("[git.shared]").count(), 1);
+    for cmd in ["check", "run"] {
+        assert_eq!(sb.colibri(&[cmd, "--locked", path]).code, 0, "{cmd}");
+    }
+    // Once the branch moves on, the two really differ, and the message says who asked for what.
+    new_version(&shared, "shared", "s2");
+    let out = sb.colibri(&["update", "--path", path]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("`alpha` asks for") && out.stderr.contains("tag `v1`"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("`beta` asks for") && out.stderr.contains("branch `main`"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn a_lock_that_cannot_be_read_is_an_error_not_an_absent_lock() {
+    let sb = Sandbox::new("bad_lock");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    let path = app.to_str().unwrap();
+    let lock = app.join("colibri.lock");
+    for command in [vec!["check", path], vec!["update", "--path", path]] {
+        // A syntax error: the line and the way out.
+        let text = "[git.greet]\nurl = \"x\"\nbogus\n";
+        fs::write(&lock, text).unwrap();
+        let out = sb.colibri(&command);
+        assert_eq!(out.code, 1, "{command:?}: {}", out.stderr);
+        assert!(out.stderr.contains("line 3"), "{}", out.stderr);
+        assert!(
+            out.stderr
+                .contains("delete `colibri.lock` and run `colibri update`"),
+            "{}",
+            out.stderr
+        );
+        assert_eq!(fs::read_to_string(&lock).unwrap(), text, "left alone");
+        // Not UTF-8.
+        fs::write(&lock, [0xff, 0xfe, b'x']).unwrap();
+        let out = sb.colibri(&command);
+        assert_eq!(out.code, 1, "{command:?}: {}", out.stderr);
+        assert!(out.stderr.contains("not valid UTF-8"), "{}", out.stderr);
+        assert_eq!(fs::read(&lock).unwrap(), [0xff, 0xfe, b'x']);
+    }
+    // The loader (the editor's side) gives the same way out.
+    fs::write(&lock, "[git.greet]\nurl = \"x\"\nbogus\n").unwrap();
+    let report =
+        colibri_runtime::check_package_with(&app, &colibri_runtime::CheckConfig::default())
+            .unwrap()
+            .render(false);
+    assert!(
+        report.contains("delete `colibri.lock` and run `colibri update`"),
+        "{report}"
+    );
+    // Unreadable (here: a folder where the file should be).
+    fs::remove_file(&lock).unwrap();
+    fs::create_dir(&lock).unwrap();
+    let out = sb.colibri(&["check", path]);
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.contains("cannot read"), "{}", out.stderr);
+    assert!(lock.is_dir());
+    fs::remove_dir(&lock).unwrap();
+    assert_eq!(sb.colibri(&["check", path]).code, 0);
+}
+
+#[test]
+fn offline_without_git_says_git_was_not_found() {
+    let sb = Sandbox::new("offline_no_git");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    let empty = sb.path("empty_path");
+    fs::create_dir_all(&empty).unwrap();
+    let out = sb.colibri_env(
+        &["check", "--offline", app.to_str().unwrap()],
+        &[("PATH", empty.to_str().unwrap())],
+    );
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("the `git` program was not found"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("not in the cache"), "{}", out.stderr);
+}
+
+#[test]
+fn credentials_in_a_url_are_refused_and_never_printed_or_written() {
+    let sb = Sandbox::new("credentials");
+    for (n, url) in [
+        "https://user:s3cret@127.0.0.1:9/r.git",
+        "https://s3cret@127.0.0.1:9/r.git",
+        "HTTPS://user:s3cret@127.0.0.1:9/r.git",
+        "ssh://git:s3cret@127.0.0.1:9/r.git",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let app = sb.app(
+            &format!("app{n}"),
+            &format!("greet = {{ git = \"{url}\" }}"),
+            &["greet"],
+        );
+        for cmd in ["check", "run"] {
+            let out = sb.colibri(&[cmd, app.to_str().unwrap()]);
+            assert_eq!(out.code, 1, "{url}: {cmd}");
+            let all = format!("{}{}", out.stdout, out.stderr);
+            assert!(!all.contains("s3cret"), "{url}: {cmd}: {all}");
+            assert!(
+                all.contains("`greet`") && all.contains("credential helper"),
+                "{url}: {cmd}: {all}"
+            );
+            assert!(!app.join("colibri.lock").exists(), "{url}: {cmd}");
+        }
+        // `update` reads no url it cannot use: nothing is fetched, locked or printed.
+        let out = sb.colibri(&["update", "--path", app.to_str().unwrap()]);
+        assert!(
+            !format!("{}{}", out.stdout, out.stderr).contains("s3cret"),
+            "{url}: update"
+        );
+        assert!(!app.join("colibri.lock").exists(), "{url}: update");
+    }
+    // The cache was never touched: nothing was fetched for them.
+    assert!(!sb.home().join("git").exists());
+    // A user name for ssh is fine (it fails later, at the connection, never on the url).
+    let app = sb.app(
+        "ssh_user",
+        "greet = { git = \"ssh://git@127.0.0.1:9/r.git\" }",
+        &["greet"],
+    );
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert!(!out.stderr.contains("credentials"), "{}", out.stderr);
+}
+
+/// Every file under `dir`, as text, for a search that must find nothing.
+fn tree_text(dir: &Path, out: &mut String) {
+    // The checkouts hold the files of a repository as they are, a manifest with its own text.
+    if dir.file_name().is_some_and(|n| n == "checkouts") {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        out.push_str(&path.display().to_string());
+        out.push('\n');
+        match e.file_type() {
+            Ok(t) if t.is_dir() => tree_text(&path, out),
+            Ok(t) if t.is_file() => {
+                out.push_str(&String::from_utf8_lossy(
+                    &fs::read(&path).unwrap_or_default(),
+                ));
+                out.push('\n');
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn no_way_of_writing_a_secret_in_a_url_gets_it_printed_or_stored() {
+    let sb = Sandbox::new("secret_forms");
+    for (n, url) in [
+        "https://u:p#s3cret@127.0.0.1:9/r.git",
+        "https://u:p?s3cret@127.0.0.1:9/r.git",
+        "https://u:pa/s3cret@127.0.0.1:9/r.git",
+        "https://u:p@s3cret@127.0.0.1:9/r.git",
+        "https://u:p%40s3cret@127.0.0.1:9/r.git",
+        "https://u%3As3cret@127.0.0.1:9/r.git",
+        "HTTPS://u:s3cret@127.0.0.1:9/r.git",
+        "Git://u:s3cret@127.0.0.1:9/r.git",
+        "file://u:s3cret@127.0.0.1/r.git",
+        "ssh://u:p#s3cret@127.0.0.1:9/r.git",
+        "ssh://u:p@s3cret@127.0.0.1:9/r.git",
+        "u:s3cret@127.0.0.1:r.git",
+        "u:p@s3cret@127.0.0.1:r.git",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let app = sb.app(
+            &format!("form{n}"),
+            &format!("greet = {{ git = \"{url}\" }}"),
+            &["greet"],
+        );
+        for args in [
+            &["check"][..],
+            &["run"][..],
+            &["update", "--path"][..],
+            &["check", "--offline"][..],
+            &["check", "--locked"][..],
+        ] {
+            let mut full = args.to_vec();
+            full.push(app.to_str().unwrap());
+            let out = sb.colibri(&full);
+            let all = format!("{}{}", out.stdout, out.stderr);
+            assert_eq!(out.code, 1, "{url}: {args:?}: {all}");
+            assert!(!all.contains("s3cret"), "{url}: {args:?}: {all}");
+            assert!(all.contains("credential helper"), "{url}: {args:?}: {all}");
+            assert!(!app.join("colibri.lock").exists(), "{url}: {args:?}");
+        }
+    }
+    let mut files = String::new();
+    tree_text(&sb.home(), &mut files);
+    assert!(!files.contains("s3cret"), "{files}");
+}
+
+#[test]
+fn a_secret_in_a_dependencys_own_manifest_is_refused_and_never_stored() {
+    let sb = Sandbox::new("secret_in_dependency");
+    let repo = sb.repo("lib");
+    repo.commit(
+        &lib_files(
+            "lib",
+            "one",
+            "\n[dependencies]\nbad = { git = \"https://u:p#s3cret@127.0.0.1:9/b.git\" }\n",
+        ),
+        "first",
+    );
+    let app = sb.app(
+        "app",
+        &format!("lib = {{ git = \"{}\" }}", repo.url()),
+        &["lib"],
+    );
+    for args in [&["run"][..], &["check"][..], &["update"][..]] {
+        let mut full = args.to_vec();
+        if args[0] == "update" {
+            full.push("--path");
+        }
+        full.push(app.to_str().unwrap());
+        let out = sb.colibri(&full);
+        let all = format!("{}{}", out.stdout, out.stderr);
+        assert_eq!(out.code, 1, "{args:?}: {all}");
+        assert!(!all.contains("s3cret"), "{args:?}: {all}");
+        assert!(all.contains("credential helper"), "{args:?}: {all}");
+        assert!(all.contains("`bad`"), "{args:?}: {all}");
+    }
+    // `update` refused the dependency instead of writing a lock that leaves it out.
+    let _ = fs::remove_file(app.join("colibri.lock"));
+    let out = sb.colibri(&["update", "--path", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(!app.join("colibri.lock").exists());
+    let mut files = String::new();
+    tree_text(&sb.home(), &mut files);
+    tree_text(&app, &mut files);
+    assert!(!files.contains("s3cret"), "{files}");
+}
+
+/// Ways of writing a url with a secret (`s3cret`) in it that break a split at spaces and
+/// quotes: each is the text of a TOML value, as written after `git = ` or `url = `.
+fn quoted_secret_literals() -> Vec<String> {
+    let tail = "127.0.0.1:9/r.git";
+    vec![
+        format!("\"https://u:ab'cds3cret@{tail}\""),
+        format!("\"https://u:x\\\"ys3cret@{tail}\""),
+        format!("\"https://u:pa ss3cret@{tail}\""),
+        "'https://u:p\"qs3cret@127.0.0.1:99/r.git'".to_string(),
+        format!("\"https://u:s3cret\\u0040{tail}\""),
+        format!("\"https://u:s3cret\\U00000040{tail}\""),
+        format!("\"https://u:p%40s3cret@{tail}\""),
+        format!("\"https://u:pa\tss3cret@{tail}\""),
+        format!("\"https://u:pa\\tss3cret@{tail}\""),
+        format!("\"https://u:p@s3cret@{tail}\""),
+        format!("\"https://u:ab`s3cret@{tail}\""),
+        "\"u:a'bs3cret@127.0.0.1:r.git\"".to_string(),
+        format!("\"ssh://u:a b'c\\\"ds3cret@{tail}\""),
+    ]
+}
+
+/// What the commands that read a project printed, and what they wrote under `COLIBRI_HOME`,
+/// holds no secret.
+fn assert_nothing_leaks(sb: &Sandbox, app: &Path, what: &str, skip_lock: bool) {
+    for args in [
+        &["check"][..],
+        &["run"][..],
+        &["check", "--locked"][..],
+        &["check", "--offline"][..],
+        &["update", "--path"][..],
+    ] {
+        let mut full = args.to_vec();
+        full.push(app.to_str().unwrap());
+        let out = sb.colibri(&full);
+        let all = format!("{}{}", out.stdout, out.stderr);
+        assert!(!all.contains("s3cret"), "{what}: {args:?}: {all}");
+    }
+    let mut files = String::new();
+    tree_text(&sb.home(), &mut files);
+    if !skip_lock && let Ok(lock) = fs::read_to_string(app.join("colibri.lock")) {
+        files.push_str(&lock);
+    }
+    assert!(!files.contains("s3cret"), "{what}: {files}");
+}
+
+#[test]
+fn a_quoted_manifest_line_never_shows_a_password_with_a_quote_or_a_space() {
+    let sb = Sandbox::new("quoted_secret_manifest");
+    for (n, lit) in quoted_secret_literals().iter().enumerate() {
+        // The value parses (or the parser rejects an escape in it) ...
+        let app = sb.app(&format!("m{n}"), &format!("g = {{ git = {lit} }}"), &[]);
+        let out = sb.colibri(&["check", app.to_str().unwrap()]);
+        let all = format!("{}{}", out.stdout, out.stderr);
+        assert_eq!(out.code, 1, "{lit}: {all}");
+        assert!(
+            all.contains("credentials") || all.contains("escape"),
+            "{lit}: {all}"
+        );
+        assert_nothing_leaks(&sb, &app, lit, false);
+        // ... or the manifest is cut short, so it does not parse at all.
+        let app = sb.app(&format!("b{n}"), &format!("g = {{ git = {lit} "), &[]);
+        let out = sb.colibri(&["check", app.to_str().unwrap()]);
+        assert_eq!(out.code, 1, "{lit}: {}", out.stderr);
+        assert_nothing_leaks(&sb, &app, lit, false);
+        // The same in a table of its own, after a line that is wrong.
+        let app = sb.app(
+            &format!("t{n}"),
+            &format!("g = {{ git = {lit} }}\nx = 5"),
+            &[],
+        );
+        assert_nothing_leaks(&sb, &app, lit, false);
+    }
+}
+
+#[test]
+fn a_dependencys_manifest_line_never_shows_a_password_with_a_quote_or_a_space() {
+    let sb = Sandbox::new("quoted_secret_dependency");
+    for (n, lit) in quoted_secret_literals().iter().enumerate() {
+        for (k, broken) in [false, true].into_iter().enumerate() {
+            let repo = sb.repo(&format!("lib{n}_{k}"));
+            let line = if broken {
+                format!("bad = {{ git = {lit} ")
+            } else {
+                format!("bad = {{ git = {lit} }}")
+            };
+            repo.commit(
+                &lib_files("lib", "one", &format!("\n[dependencies]\n{line}\n")),
+                "first",
+            );
+            let app = sb.app(
+                &format!("d{n}_{k}"),
+                &format!("lib = {{ git = \"{}\" }}", repo.url()),
+                &["lib"],
+            );
+            let out = sb.colibri(&["check", app.to_str().unwrap()]);
+            assert_eq!(out.code, 1, "{lit}: {}{}", out.stdout, out.stderr);
+            assert_nothing_leaks(&sb, &app, lit, false);
+            // The fetched copy of the repository holds the manifest as it is written: that
+            // is the repository's own text, not something the tool stored.
+        }
+    }
+}
+
+#[test]
+fn a_hand_edited_lock_never_shows_a_password_with_a_quote_or_a_space() {
+    let sb = Sandbox::new("quoted_secret_lock");
+    let commit = "5f2a9c1e0b7d4a6c8e3f1a2b4c5d6e7f8091a2b3";
+    for (n, lit) in quoted_secret_literals().iter().enumerate() {
+        for (k, lock) in [
+            format!("[git.greet]\nurl = {lit}\ncommit = \"{commit}\"\n"),
+            format!("[git.greet]\nurl = {lit} junk\ncommit = \"{commit}\"\n"),
+            format!("[git.greet]\ncommit = \"{commit}\"\nurl = {lit}"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let app = sb.app(
+                &format!("l{n}_{k}"),
+                "greet = { git = \"https://127.0.0.1:9/r.git\" }",
+                &["greet"],
+            );
+            fs::write(app.join("colibri.lock"), lock).unwrap();
+            for args in [
+                &["check", "--locked"][..],
+                &["check", "--offline"][..],
+                &["check"][..],
+                &["run"][..],
+            ] {
+                let mut full = args.to_vec();
+                full.push(app.to_str().unwrap());
+                let out = sb.colibri(&full);
+                let all = format!("{}{}", out.stdout, out.stderr);
+                assert!(!all.contains("s3cret"), "{lit}: {args:?}: {all}");
+            }
+            let mut files = String::new();
+            tree_text(&sb.home(), &mut files);
+            assert!(!files.contains("s3cret"), "{lit}: {files}");
+            // `update` writes a new lock from the manifest, never from the old text (a lock
+            // it refuses to read stays as the person wrote it).
+            let out = sb.colibri(&["update", "--path", app.to_str().unwrap()]);
+            let all = format!("{}{}", out.stdout, out.stderr);
+            assert!(!all.contains("s3cret"), "{lit}: update: {all}");
+            if let Ok(new) = fs::read_to_string(app.join("colibri.lock"))
+                && new != *lock
+            {
+                assert!(!new.contains("s3cret"), "{lit}: {new}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_ssh_or_scp_url_that_looks_like_an_option_is_refused_before_git_runs() {
+    let sb = Sandbox::new("option_urls");
+    for (n, url) in [
+        "ssh://-oProxyCommand=x/r",
+        "u@h:-oProxyCommand=x",
+        "ssh://git@-oProxyCommand=x/r",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let app = sb.app(&format!("o{n}"), &format!("g = {{ git = \"{url}\" }}"), &[]);
+        let out = sb.colibri(&["check", app.to_str().unwrap()]);
+        let all = format!("{}{}", out.stdout, out.stderr);
+        assert_eq!(out.code, 1, "{url}: {all}");
+        assert!(all.contains("starts with `-`"), "{url}: {all}");
+    }
+}
+
+#[test]
+fn update_says_when_a_manifest_does_not_parse_and_writes_no_lock() {
+    let sb = Sandbox::new("update_bad_manifest");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    sb.write("apps/app/colibri.toml", "[package\nname = \"app\"\n");
+    let out = sb.colibri(&["update", "--path", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stderr.contains("colibri.toml") && out.stderr.contains("error"),
+        "{}",
+        out.stderr
+    );
+    assert!(!app.join("colibri.lock").exists());
+    // The manifest of a dependency that does not parse stops the update as well.
+    let bad = sb.repo("bad");
+    let mut files = lib_files("bad", "b", "");
+    files[0].1 = "[package\nname = \"bad\"\n".into();
+    bad.commit(&files, "broken");
+    sb.app(
+        "app",
+        &format!("bad = {{ git = \"{}\" }}", bad.url()),
+        &["bad"],
+    );
+    let out = sb.colibri(&["update", "--path", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}{}", out.stdout, out.stderr);
+    assert!(out.stderr.contains("colibri.toml"), "{}", out.stderr);
+    assert!(!app.join("colibri.lock").exists());
+}
+
+#[cfg(not(windows))]
+#[test]
+fn names_only_windows_dislikes_do_not_stop_a_checkout_elsewhere() {
+    let sb = Sandbox::new("windows_names");
+    let repo = sb.repo("greet");
+    let mut files = lib_files("greet", "one", "");
+    for name in [
+        "docs/aux.md",
+        "src/con.c",
+        "notes/2021-01-01T10:00.md",
+        "a.b.",
+    ] {
+        files.push((name.into(), "x\n".into()));
+    }
+    repo.commit(&files, "first");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn an_old_lock_with_a_secret_in_it_is_not_printed() {
+    let sb = Sandbox::new("old_lock_secret");
+    let app = sb.app(
+        "app",
+        "greet = { git = \"https://127.0.0.1:9/r.git\" }",
+        &["greet"],
+    );
+    fs::write(
+        app.join("colibri.lock"),
+        "[git.greet]\nurl = \"https://user:s3cret@127.0.0.1:9/r.git\"\ncommit = \"5f2a9c1e0b7d4a6c8e3f1a2b4c5d6e7f8091a2b3\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["check", "--locked"][..],
+        &["check", "--offline"][..],
+        &["check"][..],
+    ] {
+        let mut full = args.to_vec();
+        full.push(app.to_str().unwrap());
+        let out = sb.colibri(&full);
+        let all = format!("{}{}", out.stdout, out.stderr);
+        assert!(!all.contains("s3cret"), "{args:?}: {all}");
+    }
+}
+
+#[test]
+fn an_upper_case_scheme_is_normalised_in_the_lock_and_works() {
+    let sb = Sandbox::new("upper_scheme");
+    let (repo, c1) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"FILE://{}\" }}", repo.url()),
+        &["greet"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+    let lock = sb.lock(&app);
+    assert!(lock.contains(&c1));
+    assert!(
+        lock.contains(&format!("url = \"file://{}\"", repo.url())),
+        "{lock}"
+    );
+    assert!(!lock.contains("FILE://"), "{lock}");
+    // The lower-case spelling of the same url is the same dependency.
+    sb.app(
+        "app",
+        &format!("greet = {{ git = \"file://{}\" }}", repo.url()),
+        &["greet"],
+    );
+    let out = sb.colibri(&["check", "--locked", app.to_str().unwrap()]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+}
+
+#[test]
+fn a_second_process_says_it_is_waiting_for_the_lock() {
+    use std::io::Read;
+    use std::process::Stdio;
+    let sb = Sandbox::new("lock_wait");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    assert_eq!(sb.run(&app).stdout, "one\n");
+    // Make the next run need the lock: no checkout any more.
+    fs::remove_dir_all(sb.home().join("git/checkouts")).unwrap();
+    let lock_path = only_entry(&sb.home().join("git/db"), ".lock");
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    held.lock().unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_colibri"));
+    git_env(&mut cmd)
+        .env("COLIBRI_HOME", sb.home())
+        .args(["run", app.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(child.try_wait().unwrap().is_none(), "it should be waiting");
+    held.unlock().unwrap();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    assert!(child.wait().unwrap().success(), "{stderr}");
+    assert_eq!(stdout, "one\n");
+    assert!(
+        stderr.contains("waiting for another colibri process to finish with `greet-")
+            && stderr.contains(&lock_path.display().to_string()),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_damaged_database_says_where_to_delete_it() {
+    let sb = Sandbox::new("damaged_db");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    assert_eq!(sb.run(&app).stdout, "one\n");
+    let db = only_entry(&sb.home().join("git/db"), ".git");
+    // Every object file emptied, as after a full disk.
+    let mut stack = vec![db.join("objects")];
+    while let Some(dir) = stack.pop() {
+        for e in fs::read_dir(dir).unwrap().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path
+                .parent()
+                .is_some_and(|p| p.file_name().is_some_and(|n| n.len() == 2))
+            {
+                let mut perms = fs::metadata(&path).unwrap().permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                perms.set_readonly(false);
+                fs::set_permissions(&path, perms).unwrap();
+                fs::write(&path, b"").unwrap();
+            }
+        }
+    }
+    fs::remove_dir_all(sb.home().join("git/checkouts")).unwrap();
+    let out = sb.run(&app);
+    assert_eq!(out.code, 1, "{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stderr.contains("the cached copy may be damaged")
+            && out.stderr.contains(&format!("delete `{}`", db.display())),
+        "{}",
+        out.stderr
+    );
+    // Doing what it says works.
+    fs::remove_dir_all(&db).unwrap();
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "one\n"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn locked_fails_before_fetching_anything_the_lock_does_not_vouch_for() {
+    let sb = Sandbox::new("locked_early");
+    let (repo, _) = sb.lib_repo("first", "one");
+    let first = format!("first = {{ git = \"{}\" }}", repo.url());
+    let app = sb.app("app", &first, &["first"]);
+    assert_eq!(sb.colibri(&["check", app.to_str().unwrap()]).code, 0);
+    // `first` is locked but no longer in the cache; `second` is new.
+    fs::remove_dir_all(sb.home().join("git")).unwrap();
+    sb.app(
+        "app",
+        &format!("{first}\nsecond = {{ git = \"https://127.0.0.1:9/second.git\" }}"),
+        &["first"],
+    );
+    let out = sb.colibri(&["check", "--locked", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("`second`") && out.stderr.contains("`--locked`"),
+        "{}",
+        out.stderr
+    );
+    // `first` comes before `second` and could have been fetched again: it was not.
+    assert!(!sb.home().join("git").exists(), "the cache was touched");
+}
+
+#[test]
+fn an_allow_ffi_name_that_matches_no_dependency_is_a_warning() {
+    let sb = Sandbox::new("allow_ffi_unknown");
+    let (repo, _) = sb.lib_repo("greet", "one");
+    let app = sb.app(
+        "app",
+        &format!("greet = {{ git = \"{}\" }}", repo.url()),
+        &["greet"],
+    );
+    sb.write(
+        "apps/app/colibri.toml",
+        &format!(
+            "[package]\nname = \"app\"\nallow-ffi = [\"gfx\", \"greet\"]\n\n[dependencies]\ngreet = {{ git = \"{}\" }}\n",
+            repo.url()
+        ),
+    );
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let all = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        all.contains("`allow-ffi` lists `gfx`") && !all.contains("lists `greet`"),
+        "{all}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_manifest_that_is_a_symbolic_link_is_named_as_one() {
+    use std::os::unix::fs::symlink;
+    let sb = Sandbox::new("manifest_link");
+    let repo = sb.repo("linked");
+    repo.commit(
+        &[
+            ("real.toml".into(), "[package]\nname = \"linked\"\n".into()),
+            (
+                "lib.colibri".into(),
+                "pub fn version() -> str => \"x\"\n".into(),
+            ),
+        ],
+        "files",
+    );
+    symlink("real.toml", repo.dir.join("colibri.toml")).unwrap();
+    git(&repo.dir, &["add", "--all"]);
+    git(&repo.dir, &["commit", "--quiet", "-m", "link"]);
+    let app = sb.app(
+        "app",
+        &format!("linked = {{ git = \"{}\" }}", repo.url()),
+        &["linked"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(out.code, 1, "{}", out.stdout);
+    assert!(
+        out.stderr
+            .contains("`colibri.toml` that is a symbolic link")
+            && out
+                .stderr
+                .contains("symbolic links in dependencies are ignored"),
+        "{}",
+        out.stderr
+    );
+}

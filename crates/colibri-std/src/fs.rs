@@ -6,10 +6,26 @@
 use std::io::ErrorKind;
 use std::path::Path;
 
-use colibri_runtime::{Cap, Error, Vm};
+use colibri_runtime::{Cap, Error, TypedError, Vm};
 
+use crate::errors::error_kind;
 use crate::needs;
 use crate::values::value_struct;
+
+error_kind!(
+    "fs",
+    /// Why an `fs` function failed: what a script branches on (`fs.Error.NotFound`).
+    Kind {
+        NotFound,
+        PermissionDenied,
+        AlreadyExists,
+        NotADirectory,
+        IsADirectory,
+        DirectoryNotEmpty,
+        InvalidData,
+        Other,
+    }
+);
 
 /// What `fs.stat` reports: one look at a path, without following a final symlink
 /// (`fs.stat_follow` does follow it).
@@ -126,11 +142,25 @@ pub(crate) fn reason(e: &std::io::Error) -> String {
     }
 }
 
-fn fail(action: &str, path: &str, e: &std::io::Error) -> String {
-    format!("cannot {action} `{path}`: {}", reason(e))
+/// The variant of `fs.Error` an I/O error is.
+pub(crate) fn kind_of(e: &std::io::Error) -> Kind {
+    match e.kind() {
+        ErrorKind::NotFound => Kind::NotFound,
+        ErrorKind::PermissionDenied => Kind::PermissionDenied,
+        ErrorKind::AlreadyExists => Kind::AlreadyExists,
+        ErrorKind::NotADirectory => Kind::NotADirectory,
+        ErrorKind::IsADirectory => Kind::IsADirectory,
+        ErrorKind::DirectoryNotEmpty => Kind::DirectoryNotEmpty,
+        ErrorKind::InvalidData => Kind::InvalidData,
+        _ => Kind::Other,
+    }
 }
 
-fn stat_of(path: &str, meta: &std::fs::Metadata) -> Result<Stat, String> {
+fn fail(action: &str, path: &str, e: &std::io::Error) -> TypedError {
+    kind_of(e).error(format!("cannot {action} `{path}`: {}", reason(e)))
+}
+
+fn stat_of(path: &str, meta: &std::fs::Metadata) -> Result<Stat, TypedError> {
     let kind = if meta.file_type().is_symlink() {
         "symlink"
     } else if meta.is_dir() {
@@ -140,7 +170,8 @@ fn stat_of(path: &str, meta: &std::fs::Metadata) -> Result<Stat, String> {
     } else {
         "other"
     };
-    let size = i64::try_from(meta.len()).map_err(|_| format!("`{path}` is too big"))?;
+    let size =
+        i64::try_from(meta.len()).map_err(|_| Kind::Other.error(format!("`{path}` is too big")))?;
     let modified = meta.modified().map_err(|e| fail("look at", path, &e))?;
     Ok(Stat {
         kind: kind.to_string(),
@@ -152,6 +183,7 @@ fn stat_of(path: &str, meta: &std::fs::Metadata) -> Result<Stat, String> {
 }
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
+    Kind::declare(vm)?;
     let mut m = vm.std_module("fs");
     macro_rules! fs_fn {
         ($name:literal, [$($p:literal),*], $f:expr) => {
@@ -196,7 +228,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             names.push(entry.file_name().to_string_lossy().into_owned());
         }
         names.sort();
-        Ok::<_, String>(names)
+        Ok::<_, TypedError>(names)
     });
     // Like `mkdir -p`: also makes the parents, and is fine when the folder exists already.
     fs_fn!("create_dir", ["path"], |path: String| {
@@ -210,10 +242,10 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     fs_fn!("remove_dir", ["path"], |path: String| {
         std::fs::remove_dir(&path).map_err(|e| {
             if e.kind() == ErrorKind::DirectoryNotEmpty {
-                format!(
+                Kind::DirectoryNotEmpty.error(format!(
                     "cannot remove the folder `{path}`: it is not empty \
                      (use `fs.remove_tree` to remove a folder with its contents)"
-                )
+                ))
             } else {
                 fail("remove the folder", &path, &e)
             }
@@ -230,7 +262,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
         walk_into(Path::new(&path), Path::new(&path), &mut out)
             .map_err(|e| fail("walk", &path, &e))?;
         out.sort();
-        Ok::<_, String>(out)
+        Ok::<_, TypedError>(out)
     });
     // One look at a path; a final symlink is described, not followed (`kind` is `"symlink"`
     // and `size` is the link's own). `stat_follow` looks at what it points to.
@@ -251,9 +283,9 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
         |path: String, seconds: f64| {
             let fail_set = |e: &std::io::Error| fail("set the time of", &path, e);
             if !seconds.is_finite() || seconds.abs() > 1e11 {
-                return Err(format!(
+                return Err(Kind::Other.error(format!(
                     "cannot set the time of `{path}`: {seconds} is not a usable time"
-                ));
+                )));
             }
             let magnitude = std::time::Duration::from_secs_f64(seconds.abs());
             let time = if seconds >= 0.0 {

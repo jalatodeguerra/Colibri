@@ -69,6 +69,8 @@ pub struct Interp {
     pub(crate) hook_depth: u32,
     /// The instruction budget (EMBEDDING §5).
     pub(crate) budget: crate::budget::Budget,
+    /// How many times a map or set key was looked up by scanning the stored keys.
+    pub(crate) key_scans: u64,
     /// What the embedding program attached: host functions, state and roots.
     pub(crate) host: crate::host::HostSide,
     /// The coroutine scheduler (ARCHITECTURE §16).
@@ -116,6 +118,7 @@ impl Interp {
             hook_panics: Vec::new(),
             hook_depth: 0,
             budget: crate::budget::Budget::new(),
+            key_scans: 0,
             host: crate::host::HostSide::default(),
             sched: crate::coro::Scheduler::new(),
             leaks: None,
@@ -863,9 +866,16 @@ impl Interp {
     #[inline(never)]
     fn eval_map_lit(&mut self, fiber: &mut Fiber, entries: &[(Expr, Expr)]) -> Eval {
         let mut map = OrderedMap::new();
-        for (k, v) in entries {
-            let k = self.eval_twin(fiber, k)?;
+        for (k_expr, v) in entries {
+            let k = self.eval_twin(fiber, k_expr)?;
             let v = self.eval_twin(fiber, v)?;
+            // A key that a user `Eq` calls equal to a stored one is that key.
+            let k = self.canonical_key(
+                fiber,
+                || map.iter().map(|(key, _)| key.clone()).collect(),
+                k,
+                k_expr.span,
+            )?;
             let (old, spare) = map.insert(k, v);
             if let Some(old) = old {
                 self.release(old);
