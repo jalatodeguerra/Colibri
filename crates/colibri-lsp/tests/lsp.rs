@@ -3206,11 +3206,14 @@ fn nested_and_dependent_packages_are_edited_within_the_workspace_only() {
     let m = message(&c.rename(&u, pos_of(u_text, "f()"), "g").unwrap_err());
     assert!(m.contains("outside the open folder"), "{m}");
     assert!(m.contains("open"), "{m}");
-    // Names that nothing outside the package can use still rename.
+    // A name that nothing outside the package can use is refused too: a rename edits files
+    // of the open folder and no others.
     let private = "fn p() -> int => 1\npub fn q() -> int => p()\n";
     let pu = write(&ws, "lib/priv.colibri", private);
     c.open(&pu, private);
-    assert!(c.rename(&pu, pos_of(private, "p()"), "r").is_ok());
+    let m = message(&c.rename(&pu, pos_of(private, "p()"), "r").unwrap_err());
+    assert!(m.contains("outside the open folder"), "{m}");
+    assert_eq!(std::fs::read_to_string(&pu).unwrap(), private);
     c.shutdown();
 
     // No workspace folder: the document's own package.
@@ -3298,5 +3301,53 @@ fn a_masked_non_ascii_credential_keeps_the_columns_after_it() {
     );
     let shown = d[0].to_string();
     assert!(!shown.contains(":p@"), "{shown}");
+    c.shutdown();
+}
+
+#[test]
+fn a_rename_never_edits_a_file_outside_the_open_folder_even_through_a_link() {
+    // `ws/ext` is a link to a folder outside `ws`: `main` imports `ext.x`, but the file is
+    // not in the workspace. Whatever the name renamed, nothing outside is edited.
+    let top = temp_dir("rename_outside_link");
+    let ws = top.join("ws");
+    let x_text =
+        "pub fn f() -> int => 1\nfn helper() -> int => 2\npub fn g() -> int => f() + helper()\n";
+    let x = write(&top, "out/x.colibri", x_text);
+    write(&ws, "colibri.toml", "[package]\nname = \"p\"\n");
+    make_link(&top.join("out"), &ws.join("ext"));
+    let main_text = "import ext.x\nfn main() {\n    print(x.f())\n}\n";
+    let main = write(&ws, "main.colibri", main_text);
+    assert_eq!(check_reading(&ws), Ok(()));
+    let mut c = Client::start(Some(&ws), Value::Null);
+    c.open(&main, main_text);
+    // The same file opened by its other name, through the link.
+    let linked = ws.join("ext/x.colibri");
+    for (doc, text, needle) in [
+        (&main, main_text, "f()"),
+        (&x, x_text, "g()"),
+        (&linked, x_text, "helper()"),
+    ] {
+        if doc != &main {
+            c.open(doc, text);
+        }
+        let r = c.rename(doc, pos_of(text, needle), "h");
+        match r {
+            Err(e) => {
+                let why = message(&e);
+                assert!(why.contains("outside the open folder"), "{why}");
+            }
+            Ok(edit) => {
+                let changes = edit["changes"].as_object().cloned().unwrap_or_default();
+                for (u, _) in &changes {
+                    assert!(
+                        uri_path(u).starts_with(&ws) && !uri_path(u).starts_with(top.join("out")),
+                        "an edit outside the folder: {u}"
+                    );
+                }
+                assert!(changes.is_empty(), "{edit}");
+            }
+        }
+    }
+    assert_eq!(std::fs::read_to_string(&x).unwrap(), x_text);
     c.shutdown();
 }

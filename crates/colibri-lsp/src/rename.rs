@@ -89,7 +89,9 @@ pub struct Plan<'a> {
 /// folders (a package of the workspace that the edited package is a path dependency of).
 /// With a workspace folder `root`, an item that other packages can name is renamed only if
 /// its file is inside the folder: the packages that depend on it are looked for there, and
-/// a rename does not edit what it did not look for.
+/// a rename does not edit what it did not look for. (The server also refuses any rename that
+/// would edit a file whose canonical path is outside the folder, however the file is named or
+/// reached: a link inside the folder to a folder outside it does not make that one inside.)
 pub fn plan<'a>(
     analysis: &Analysis,
     res: &'a Resolution,

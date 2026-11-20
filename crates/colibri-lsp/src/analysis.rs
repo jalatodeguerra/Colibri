@@ -558,14 +558,14 @@ struct Walk {
     /// The canonical path of each file, in the order found.
     files: Vec<PathBuf>,
     seen_files: HashSet<PathBuf>,
-    /// The folders already walked, by canonical path (a link to a folder is followed once,
-    /// and a link back up the tree ends there).
+    /// The folders already walked, by canonical path.
     seen_dirs: HashSet<PathBuf>,
 }
 
 /// Adds the `.colibri` files under `dir` (itself a folder with a manifest, or one without):
-/// no skipped folders, no folders with a manifest of their own; links to folders are
-/// followed. `Err` past `FILE_CAP`.
+/// no skipped folders, no folders with a manifest of their own, and no links to folders (the
+/// walk of `colibri check <folder>` does not follow them either; a file behind one is reached
+/// where it is, or by an import). `Err` past `FILE_CAP`.
 fn source_files(fs: &dyn SourceFs, dir: &Path, walk: &mut Walk) -> Result<(), ()> {
     // `dir` is a canonical path: only a link needs resolving to get one for what is under it.
     if !walk.seen_dirs.insert(dir.to_path_buf()) {
@@ -574,13 +574,8 @@ fn source_files(fs: &dyn SourceFs, dir: &Path, walk: &mut Walk) -> Result<(), ()
     for name in fs.list(dir) {
         let path = dir.join(&name);
         if fs.is_dir(&path) {
-            if !skipped_folder(fs, &name, &path) {
-                let real = if fs.is_symlink(&path) {
-                    canon(&path)
-                } else {
-                    path
-                };
-                source_files(fs, &real, walk)?;
+            if !fs.is_symlink(&path) && !skipped_folder(fs, &name, &path) {
+                source_files(fs, &path, walk)?;
             }
         } else if name.ends_with(".colibri") {
             let c = if fs.is_symlink(&path) {

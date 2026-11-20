@@ -695,6 +695,17 @@ impl<'c> Server<'c> {
                 .or_default()
                 .push((*start, *end, text.clone()));
         }
+        // A rename edits the files of the open folder and no others, judged by canonical path:
+        // a link inside the folder to a folder outside it does not make that one inside.
+        if let Some(root) = &self.settings.root
+            && let Some(outside) = by_file.keys().find(|f| !f.starts_with(root))
+        {
+            return Err(format!(
+                "renaming would edit `{}`, which is outside the open folder (`{}`): not renamed",
+                outside.display(),
+                root.display()
+            ));
+        }
         let mut sources: HashMap<PathBuf, String> = HashMap::new();
         for file_path in by_file.keys() {
             let text = pkg
