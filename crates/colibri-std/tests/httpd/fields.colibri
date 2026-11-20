@@ -1,0 +1,183 @@
+import common
+import httpd_impl
+
+fn fields(lines: List[str]) -> Result[httpd_impl.Head, httpd_impl.Reject] {
+    let all = ["GET / HTTP/1.1", "Host: example.com"]
+    all.extend(lines)
+    return common.head(all)
+}
+
+test "a field line is a name, a colon and a value" {
+    let h = common.accepted(fields(["Accept: text/html"]))
+    assert_eq(h.headers.get("accept"), some("text/html"))
+}
+
+test "the optional whitespace around the value is cut, and only space and tab are whitespace" {
+    assert_eq(common.accepted(fields(["A:b"])).headers.get("a"), some("b"))
+    assert_eq(common.accepted(fields(["A:   b"])).headers.get("a"), some("b"))
+    assert_eq(common.accepted(fields(["A: b   "])).headers.get("a"), some("b"))
+    assert_eq(common.accepted(fields(["A: \t b \t "])).headers.get("a"), some("b"))
+    assert_eq(common.accepted(fields(["A: b c"])).headers.get("a"), some("b c"))
+    // U+00A0 is white space for `trim` and not for HTTP
+    assert_eq(common.accepted(fields(["A: \u{a0}b\u{a0}"])).headers.get("a"), some("\u{a0}b\u{a0}"))
+}
+
+test "an empty value is a value" {
+    assert_eq(common.accepted(fields(["A:"])).headers.get("a"), some(""))
+    assert_eq(common.accepted(fields(["A:  \t "])).headers.get("a"), some(""))
+}
+
+test "a colon inside the value is part of it" {
+    assert_eq(common.accepted(fields(["Location: http://x:80/a"])).headers.get("location"), some("http://x:80/a"))
+}
+
+test "a tab inside the value is kept" {
+    assert_eq(common.accepted(fields(["A: x\ty"])).headers.get("a"), some("x\ty"))
+}
+
+test "a non-ASCII UTF-8 value is kept" {
+    assert_eq(common.accepted(fields(["X-Name: café 日本"])).headers.get("x-name"), some("café 日本"))
+}
+
+test "a name is a token, with any of its punctuation" {
+    let h = common.accepted(fields(["X-A.b_c~d!e#f$g%h&i'j*k+l^m`n|o: v"]))
+    assert_eq(h.headers.get("x-a.b_c~d!e#f$g%h&i'j*k+l^m`n|o"), some("v"))
+}
+
+test "names are matched without regard to case and keep their first spelling" {
+    let h = common.accepted(fields(["X-Thing: 1", "x-THING: 2"]))
+    assert_eq(h.headers.get("X-THING"), some("1, 2"))
+    assert_eq(h.headers.get_all("x-thing"), ["1", "2"])
+    assert_eq(h.headers.lines()[1], ("X-Thing", "1"))
+    assert_eq(h.headers.lines()[2], ("X-Thing", "2"))
+}
+
+test "a field line is refused when it has whitespace before the colon" {
+    assert_eq(common.status_of(fields(["A : b"])), 400)
+    assert_eq(common.status_of(fields(["A\t: b"])), 400)
+    assert(common.why_of(fields(["A : b"])).contains("whitespace before the colon"))
+}
+
+test "a field line is refused when it has no name or no colon" {
+    assert_eq(common.status_of(fields([": b"])), 400)
+    assert_eq(common.status_of(fields(["no colon here"])), 400)
+    assert(common.why_of(fields(["no colon here"])).contains("no colon"))
+    assert(common.why_of(fields([": b"])).contains("no name"))
+}
+
+test "a name that is not a token is refused" {
+    assert_eq(common.status_of(fields(["A B: c"])), 400)
+    assert_eq(common.status_of(fields(["A(B: c"])), 400)
+    assert_eq(common.status_of(fields(["A\"B: c"])), 400)
+    assert_eq(common.status_of(fields(["A/B: c"])), 400)
+    assert_eq(common.status_of(fields(["A@B: c"])), 400)
+    assert_eq(common.status_of(fields(["Ä: c"])), 400)
+    assert(common.why_of(fields(["A B: c"])).contains("not a token"))
+}
+
+test "a line that starts with a space or a tab is obsolete line folding" {
+    assert_eq(common.status_of(fields(["A: b", " continued"])), 400)
+    assert_eq(common.status_of(fields(["A: b", "\tcontinued"])), 400)
+    assert(common.why_of(fields(["A: b", " continued"])).contains("line folding"))
+}
+
+test "whitespace between the request line and the first field is refused" {
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", " Host: example.com"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "\tHost: example.com"])), 400)
+    assert(common.why_of(common.head(["GET / HTTP/1.1", " Host: x"])).contains("between the request line"))
+}
+
+test "a folded line that starts with a colon or a space-only line is refused too" {
+    assert_eq(common.status_of(fields([" "])), 400)
+    assert_eq(common.status_of(fields(["A: b", " "])), 400)
+}
+
+test "a bare CR in a value is refused" {
+    assert_eq(common.status_of(fields(["A: b\rc"])), 400)
+    assert_eq(common.status_of(fields(["A: b\r"])), 400)
+    assert_eq(common.status_of(fields(["A: \rb"])), 400)
+}
+
+test "a bare CR in a name is refused" {
+    assert_eq(common.status_of(fields(["A\r: b"])), 400)
+    assert_eq(common.status_of(fields(["\rA: b"])), 400)
+}
+
+test "a LF inside a line is refused" {
+    assert_eq(common.status_of(fields(["A: b\nX-Smuggled: 1"])), 400)
+}
+
+test "NUL, other control characters and DEL in a value are refused" {
+    assert_eq(common.status_of(fields(["A: b\0c"])), 400)
+    assert_eq(common.status_of(fields(["A: b\u{1}c"])), 400)
+    assert_eq(common.status_of(fields(["A: b\u{8}c"])), 400)
+    assert_eq(common.status_of(fields(["A: b\u{1f}c"])), 400)
+    assert_eq(common.status_of(fields(["A: b\u{7f}c"])), 400)
+    assert(common.why_of(fields(["A: b\0c"])).contains("control character"))
+}
+
+test "a control character in a name is refused" {
+    assert_eq(common.status_of(fields(["A\0: b"])), 400)
+    assert_eq(common.status_of(fields(["A\u{1}B: b"])), 400)
+}
+
+test "repeated fields are kept as separate lines" {
+    let h = common.accepted(fields(["Set-Cookie: a=1", "Set-Cookie: b=2"]))
+    assert_eq(h.headers.get_all("set-cookie"), ["a=1", "b=2"])
+    assert_eq(h.headers.get("set-cookie"), some("a=1, b=2"))
+}
+
+test "an empty line ends the head, and the lines after it are not read" {
+    let h = common.accepted(common.head(["GET / HTTP/1.1", "Host: x", "", "A: 1"]))
+    assert(!h.headers.has("a"))
+}
+
+test "max_headers: the limit itself is accepted and one more is 431" {
+    let o = httpd_impl.Options { max_headers: 3 }
+    let at_limit = ["GET / HTTP/1.1", "Host: x", "A: 1", "B: 2"]
+    assert_eq(common.status_of(common.head_with(o, at_limit)), 0)
+    let over = ["GET / HTTP/1.1", "Host: x", "A: 1", "B: 2", "C: 3"]
+    assert_eq(common.status_of(common.head_with(o, over)), 431)
+}
+
+test "max_headers counts the lines of a repeated field" {
+    let o = httpd_impl.Options { max_headers: 2 }
+    assert_eq(common.status_of(common.head_with(o, ["GET / HTTP/1.1", "Host: x", "A: 1"])), 0)
+    assert_eq(common.status_of(common.head_with(o, ["GET / HTTP/1.1", "Host: x", "A: 1", "A: 2"])), 431)
+}
+
+test "max_headers is checked as the line arrives, before the line is looked at" {
+    // the line that passes the limit is refused with 431 though it is also malformed
+    let o = httpd_impl.Options { max_headers: 1 }
+    assert_eq(common.status_of(common.head_with(o, ["GET / HTTP/1.1", "Host: x", "not a field"])), 431)
+}
+
+test "max_header_bytes counts each line with its CRLF: the limit is accepted and one more is 431" {
+    // "Host: x" is 7 bytes and 9 with CRLF; "A: 12345" is 8 and 10: 19 in all
+    let lines = ["GET / HTTP/1.1", "Host: x", "A: 12345"]
+    let at_limit = httpd_impl.Options { max_header_bytes: 19 }
+    assert_eq(common.status_of(common.head_with(at_limit, lines)), 0)
+    let over = httpd_impl.Options { max_header_bytes: 18 }
+    assert_eq(common.status_of(common.head_with(over, lines)), 431)
+}
+
+test "max_header_bytes is checked at the line, so one huge line is refused at once" {
+    let o = httpd_impl.Options { max_header_bytes: 100 }
+    let huge = "A: " + common.rep("x", 5000)
+    assert_eq(common.status_of(common.head_with(o, ["GET / HTTP/1.1", "Host: x", huge])), 431)
+}
+
+test "the default limits are 100 fields and 65536 bytes" {
+    let o = common.options()
+    assert_eq(o.max_headers, 100)
+    assert_eq(o.max_header_bytes, 65536)
+    assert_eq(o.max_request_line, 8192)
+    let ok100 = ["GET / HTTP/1.1", "Host: x"]
+    for i in 0..99 {
+        ok100.push("A{i}: 1")
+    }
+    // Host and 99 more are 100 lines
+    assert_eq(common.status_of(common.head(ok100)), 0)
+    ok100.push("Z: 1")
+    assert_eq(common.status_of(common.head(ok100)), 431)
+}

@@ -1,0 +1,68 @@
+// Helpers of the test files of `httpd`: they feed a head parser the lines a connection would.
+// The module under test is `httpd_impl`, a copy of the text of the `httpd` source module (the
+// harness, `tests/httpd_colibri.rs`, writes it next to these files).
+import httpd_impl
+import str
+
+fn options() -> httpd_impl.Options => httpd_impl.Options {}
+
+/// Parses a head: the first line is the request line, the others are field lines, and an empty
+/// line (or the end of the list) ends it.
+fn head_with(
+    o: httpd_impl.Options,
+    lines: List[str],
+) -> Result[httpd_impl.Head, httpd_impl.Reject] {
+    let p = httpd_impl.head_parser(httpd_impl.grammar(), o)
+    p.request_line(lines[0])?
+    for i in 1..lines.len() {
+        if p.field_line(lines[i])? {
+            break
+        }
+    }
+    return p.finish()
+}
+
+fn head(lines: List[str]) -> Result[httpd_impl.Head, httpd_impl.Reject] => head_with(
+    options(),
+    lines,
+)
+
+/// A request line and its fields, with a `Host` so that HTTP/1.1 is satisfied.
+fn head_of(request_line: str, fields: List[str]) -> Result[httpd_impl.Head, httpd_impl.Reject] {
+    let lines = [request_line, "Host: example.com"]
+    lines.extend(fields)
+    return head(lines)
+}
+
+/// 0 when the head was accepted, else the status it was refused with.
+fn status_of(r: Result[httpd_impl.Head, httpd_impl.Reject]) -> int {
+    return match r {
+        ok(_) => 0
+        err(e) => e.status
+    }
+}
+
+/// What the head was refused for, "" when it was accepted.
+fn why_of(r: Result[httpd_impl.Head, httpd_impl.Reject]) -> str {
+    return match r {
+        ok(_) => ""
+        err(e) => e.why
+    }
+}
+
+/// The head, which must have been accepted.
+fn accepted(r: Result[httpd_impl.Head, httpd_impl.Reject]) -> httpd_impl.Head {
+    return match r {
+        ok(h) => h
+        err(e) => panic("the head was refused with {e.status}: {e.why}")
+    }
+}
+
+fn fail_status(e: Error) -> int {
+    if let some(f) = e.as[httpd_impl.Failure]() {
+        return f.status
+    }
+    return 0
+}
+
+fn rep(text: str, times: int) -> str => str.repeat(text, times)

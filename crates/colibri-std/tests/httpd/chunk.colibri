@@ -1,0 +1,95 @@
+import common
+import httpd_impl
+
+fn size(line: str) -> Result[int, httpd_impl.Reject] {
+    return httpd_impl.chunk_size(httpd_impl.grammar(), line.to_bytes())
+}
+
+fn size_status(line: str) -> int {
+    return match size(line) {
+        ok(_) => 0
+        err(e) => e.status
+    }
+}
+
+test "a chunk size is hex" {
+    assert_eq(size("0") or -1, 0)
+    assert_eq(size("1") or -1, 1)
+    assert_eq(size("a") or -1, 10)
+    assert_eq(size("1a") or -1, 26)
+    assert_eq(size("1A") or -1, 26)
+    assert_eq(size("ff") or -1, 255)
+    assert_eq(size("10") or -1, 16)
+    assert_eq(size("0000") or -1, 0)
+    assert_eq(size("00ff") or -1, 255)
+}
+
+test "fifteen hex digits are accepted and sixteen are 400" {
+    assert_eq(size("FFFFFFFFFFFFFFF") or -1, 1152921504606846975)
+    assert_eq(size("7ffffffffffffff") or -1, 576460752303423487)
+    assert_eq(size_status("1000000000000000"), 400)
+    assert_eq(size_status("FFFFFFFFFFFFFFFF"), 400)
+    assert_eq(size_status("0000000000000001"), 400)
+}
+
+test "a sign, whitespace before the size and a prefix are 400" {
+    assert_eq(size_status("+1"), 400)
+    assert_eq(size_status("-1"), 400)
+    assert_eq(size_status(" 1"), 400)
+    assert_eq(size_status("\t1"), 400)
+    assert_eq(size_status("0x1"), 400)
+    assert_eq(size_status("1g"), 400)
+    assert_eq(size_status("g"), 400)
+    assert_eq(size_status("1_0"), 400)
+}
+
+test "an empty line is 400" {
+    assert_eq(size_status(""), 400)
+    assert_eq(size_status(";ext"), 400)
+}
+
+test "whitespace before the extension is allowed, and the extension is ignored" {
+    assert_eq(size("1 ;ext=v") or -1, 1)
+    assert_eq(size("1\t;ext=v") or -1, 1)
+    assert_eq(size("1 \t ;ext=v") or -1, 1)
+    assert_eq(size("1;ext=v") or -1, 1)
+    assert_eq(size("a;name=\"quoted value\";other") or -1, 10)
+    assert_eq(size("1;") or -1, 1)
+    assert_eq(size("1 ") or -1, 1)
+    assert_eq(size("10 ;a;b=c\td") or -1, 16)
+}
+
+test "an extension with a control character is 400" {
+    assert_eq(size_status("1;ext=\0"), 400)
+    assert_eq(size_status("1;ext=a\0b"), 400)
+    assert_eq(size_status("1;ext=\u{1}"), 400)
+    assert_eq(size_status("1;ext=\r"), 400)
+    assert_eq(size_status("1;ext=\n"), 400)
+    assert_eq(size_status("1;ext=\u{7f}"), 400)
+}
+
+test "a bare CR or LF in the line is 400, so a bare LF is never a line end" {
+    // `read_until` for CRLF leaves a lone LF or CR inside the line; neither may pass
+    assert_eq(size_status("1\n"), 400)
+    assert_eq(size_status("1\r"), 400)
+    assert_eq(size_status("1\nGET /smuggled HTTP/1.1"), 400)
+    assert_eq(size_status("1;a\nGET /smuggled HTTP/1.1"), 400)
+    assert_eq(size_status("1\r\n"), 400)
+}
+
+test "something after the extension that is not a visible character is 400, non-ASCII too" {
+    assert_eq(size_status("1;é"), 400)
+}
+
+test "a line that is not UTF-8 is 400" {
+    let line = Bytes([49, 59, 255])
+    let r = httpd_impl.chunk_size(httpd_impl.grammar(), line)
+    assert_eq(r.is_err(), true)
+}
+
+test "a chunk-size line is limited to 4096 bytes" {
+    let ext = common.rep("x", 4094)
+    assert_eq(size("1;" + ext) or -1, 1)
+    assert_eq(size_status("1;" + ext + "x"), 400)
+    assert_eq(size_status("1;" + common.rep("x", 100000)), 400)
+}

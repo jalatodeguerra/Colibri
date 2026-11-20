@@ -1,0 +1,175 @@
+import common
+import httpd_impl
+
+fn parse(line: str) -> Result[httpd_impl.Head, httpd_impl.Reject] {
+    return common.head([line, "Host: example.com"])
+}
+
+test "an origin-form target is split into path and query" {
+    let h = common.accepted(parse("GET /items/7?x=1&y=2 HTTP/1.1"))
+    assert_eq(h.method, "GET")
+    assert_eq(h.target, "/items/7?x=1&y=2")
+    assert_eq(h.path, "/items/7")
+    assert_eq(h.query, "x=1&y=2")
+    assert_eq(h.version, "HTTP/1.1")
+    assert_eq(h.host, "example.com")
+}
+
+test "a target with no query has an empty query" {
+    let h = common.accepted(parse("GET / HTTP/1.1"))
+    assert_eq(h.path, "/")
+    assert_eq(h.query, "")
+    let q = common.accepted(parse("GET /a? HTTP/1.1"))
+    assert_eq(q.path, "/a")
+    assert_eq(q.query, "")
+}
+
+test "the path and the query stay as they were sent" {
+    let h = common.accepted(parse("GET /a%2Fb/%41?q=%20+x HTTP/1.1"))
+    assert_eq(h.path, "/a%2Fb/%41")
+    assert_eq(h.query, "q=%20+x")
+}
+
+test "a target with bytes over 0x7f is accepted as sent" {
+    let h = common.accepted(parse("GET /café HTTP/1.1"))
+    assert_eq(h.path, "/café")
+}
+
+test "the method is kept as sent, and any token is a method" {
+    assert_eq(common.accepted(parse("get / HTTP/1.1")).method, "get")
+    assert_eq(common.accepted(parse("BREW / HTTP/1.1")).method, "BREW")
+    assert_eq(common.accepted(parse("M-SEARCH /x HTTP/1.1")).method, "M-SEARCH")
+}
+
+test "an absolute-form target gives the authority as the host" {
+    let h = common.accepted(common.head(["GET http://other.example:8080/a/b?x=1 HTTP/1.1", "Host: example.com"]))
+    assert_eq(h.path, "/a/b")
+    assert_eq(h.query, "x=1")
+    assert_eq(h.host, "other.example:8080")
+    assert_eq(h.target, "http://other.example:8080/a/b?x=1")
+}
+
+test "an absolute-form target with no path is the path /" {
+    let h = common.accepted(common.head(["GET http://other.example HTTP/1.1", "Host: example.com"]))
+    assert_eq(h.path, "/")
+    assert_eq(h.query, "")
+    let q = common.accepted(common.head(["GET http://other.example?x=1 HTTP/1.1", "Host: example.com"]))
+    assert_eq(q.path, "/")
+    assert_eq(q.query, "x=1")
+}
+
+test "an absolute-form target needs a valid authority" {
+    assert_eq(common.status_of(common.head(["GET http://a b/ HTTP/1.1", "Host: x"])), 400)
+    assert_eq(common.status_of(common.head(["GET http://[zz]/ HTTP/1.1", "Host: x"])), 400)
+}
+
+test "OPTIONS with * is accepted, and only OPTIONS" {
+    let h = common.accepted(parse("OPTIONS * HTTP/1.1"))
+    assert_eq(h.path, "*")
+    assert_eq(h.query, "")
+    assert_eq(common.status_of(parse("GET * HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("POST * HTTP/1.1")), 400)
+}
+
+test "the request line of CONNECT is parsed and the head is then refused with 501" {
+    let p = httpd_impl.head_parser(httpd_impl.grammar(), common.options())
+    assert(p.request_line("CONNECT example.com:443 HTTP/1.1").is_ok())
+    assert(p.field_line("Host: example.com:443").is_ok())
+    assert_eq(common.status_of(p.finish()), 501)
+}
+
+test "a target of the form host:port is only for CONNECT" {
+    assert_eq(common.status_of(parse("GET example.com:443 HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("CONNECT /path HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("CONNECT example.com HTTP/1.1")), 400)
+}
+
+test "HTTP/1.0 and HTTP/1.1 are the versions, and a higher minor version is 1.1" {
+    assert_eq(common.accepted(common.head(["GET / HTTP/1.0"])).version, "HTTP/1.0")
+    assert_eq(common.accepted(parse("GET / HTTP/1.1")).version, "HTTP/1.1")
+    assert_eq(common.accepted(parse("GET / HTTP/1.9")).version, "HTTP/1.1")
+}
+
+test "another major version is 505" {
+    assert_eq(common.status_of(parse("GET / HTTP/2.0")), 505)
+    assert_eq(common.status_of(parse("PRI * HTTP/2.0")), 505)
+    assert_eq(common.status_of(parse("GET / HTTP/0.9")), 505)
+    assert_eq(common.status_of(parse("GET / HTTP/3.0")), 505)
+}
+
+test "a line that is not method SP target SP version is 400" {
+    // two spaces, a tab, a leading space, a trailing space
+    assert_eq(common.status_of(parse("GET  / HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("GET /  HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("GET\t/ HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("GET /\tHTTP/1.1")), 400)
+    assert_eq(common.status_of(parse(" GET / HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("GET / HTTP/1.1 ")), 400)
+    // no version (HTTP/0.9), no target, nothing
+    assert_eq(common.status_of(parse("GET /")), 400)
+    assert_eq(common.status_of(parse("GET")), 400)
+    assert_eq(common.status_of(parse("")), 400)
+}
+
+test "the version must be HTTP/ digit . digit in capitals" {
+    assert_eq(common.status_of(parse("GET / http/1.1")), 400)
+    assert_eq(common.status_of(parse("GET / Http/1.1")), 400)
+    assert_eq(common.status_of(parse("GET / HTTP/1.10")), 400)
+    assert_eq(common.status_of(parse("GET / HTTP/10.1")), 400)
+    assert_eq(common.status_of(parse("GET / HTTP/1")), 400)
+    assert_eq(common.status_of(parse("GET / HTTP/1.")), 400)
+    assert_eq(common.status_of(parse("GET / HTTP/a.b")), 400)
+    assert_eq(common.status_of(parse("GET / HTTP/1,1")), 400)
+}
+
+test "the method must be a token" {
+    assert_eq(common.status_of(parse("G(T / HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("GE:T / HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("/ HTTP/1.1")), 400)
+}
+
+test "a control character in the target is 400" {
+    assert_eq(common.status_of(parse("GET /a\u{1}b HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("GET /a\0b HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("GET /a\u{7f}b HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("GET /a\rb HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("GET /a\nb HTTP/1.1")), 400)
+}
+
+test "a bare CR at the end of the request line is 400" {
+    assert_eq(common.status_of(parse("GET / HTTP/1.1\r")), 400)
+}
+
+test "a fragment in the target is 400" {
+    assert_eq(common.status_of(parse("GET /a#b HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("GET http://h/a#b HTTP/1.1")), 400)
+}
+
+test "a target that is not a path, an absolute URI or * is 400" {
+    assert_eq(common.status_of(parse("GET a/b HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("GET mailto:x HTTP/1.1")), 400)
+    assert_eq(common.status_of(parse("GET :// HTTP/1.1")), 400)
+}
+
+test "a request line of exactly max_request_line is accepted and one byte more is 414" {
+    let o = httpd_impl.Options { max_request_line: 20 }
+    // "GET /" is 5 bytes, " HTTP/1.1" is 9: 14 bytes and the path make 20
+    let at_limit = "GET /" + common.rep("a", 6) + " HTTP/1.1"
+    assert_eq(at_limit.len(), 20)
+    assert_eq(common.status_of(common.head_with(o, [at_limit, "Host: x"])), 0)
+    let over = "GET /" + common.rep("a", 7) + " HTTP/1.1"
+    assert_eq(over.len(), 21)
+    let r = common.head_with(o, [over, "Host: x"])
+    assert_eq(common.status_of(r), 414)
+}
+
+test "the length is checked before the line is read, so a long line of junk is 414" {
+    let o = httpd_impl.Options { max_request_line: 20 }
+    assert_eq(common.status_of(common.head_with(o, [common.rep("x", 500)])), 414)
+}
+
+test "a refusal says what was wrong" {
+    assert(common.why_of(parse("GET  / HTTP/1.1")).contains("single space"))
+    assert(common.why_of(parse("GET / HTTP/2.0")).contains("HTTP/2.0"))
+    assert(common.why_of(parse("GET / http/1.1")).contains("version"))
+}
