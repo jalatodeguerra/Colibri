@@ -110,6 +110,13 @@ impl SourceFs for Overlay<'_> {
         }
     }
 
+    fn read_prefix(&self, path: &Path, n: usize) -> Option<Vec<u8>> {
+        match self.buffer(path) {
+            Some(text) => Some(text.as_bytes()[..n.min(text.len())].to_vec()),
+            None => DiskFs.read_prefix(path, n),
+        }
+    }
+
     fn is_file(&self, path: &Path) -> bool {
         self.buffer(path).is_some() || DiskFs.is_file(path)
     }

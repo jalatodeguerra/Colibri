@@ -120,10 +120,23 @@ struct Loader<'a> {
 /// and by many other tools): what is in it is not source.
 pub const CACHE_TAG_FILE: &str = "CACHEDIR.TAG";
 
+/// What a `CACHEDIR.TAG` starts with (the Cache Directory Tagging Specification): a file of
+/// that name that does not start with it is not a tag.
+pub const CACHE_TAG_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
+
 /// Whether a folder is no part of the source tree on its own: its name starts with `.`, or it
-/// holds a `CACHEDIR.TAG`. `target` and `node_modules` are ordinary folders to Colibri.
+/// holds a `CACHEDIR.TAG` that starts with the standard signature (only its first 43 bytes are
+/// read). `target` and `node_modules` are ordinary folders to Colibri.
 pub fn is_hidden_or_cache(fs: &dyn SourceFs, name: &str, path: &Path) -> bool {
-    name.starts_with('.') || fs.is_file(&path.join(CACHE_TAG_FILE))
+    name.starts_with('.') || has_cache_tag(fs, path)
+}
+
+fn has_cache_tag(fs: &dyn SourceFs, dir: &Path) -> bool {
+    let tag = dir.join(CACHE_TAG_FILE);
+    fs.is_file(&tag)
+        && fs
+            .read_prefix(&tag, CACHE_TAG_SIGNATURE.len())
+            .is_some_and(|head| head == CACHE_TAG_SIGNATURE.as_bytes())
 }
 
 /// Whether the walk over the files of a package (every module of `colibri check <folder>`, and
@@ -1148,6 +1161,41 @@ mod tests {
         let mut names: Vec<String> = loaded.metas.iter().map(|m| m.name.clone()).collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn a_cachedir_tag_without_the_signature_does_not_make_a_cache() {
+        let names = all_module_names(&[
+            ("p/colibri.toml", "[package]\nname = \"p\"\n"),
+            ("p/main.colibri", ""),
+            ("p/empty/CACHEDIR.TAG", ""),
+            ("p/empty/e.colibri", ""),
+            (
+                "p/words/CACHEDIR.TAG",
+                "this is not a signature, only a file",
+            ),
+            ("p/words/w.colibri", ""),
+            (
+                "p/short/CACHEDIR.TAG",
+                "Signature: 8a477f597d28d172789f06886806bc5",
+            ),
+            ("p/short/s.colibri", ""),
+            (
+                "p/other/CACHEDIR.TAG",
+                "Signature: 00000000000000000000000000000000",
+            ),
+            ("p/other/o.colibri", ""),
+            // The signature at the start, whatever follows it.
+            (
+                "p/real/CACHEDIR.TAG",
+                "Signature: 8a477f597d28d172789f06886806bc55\n# a comment\n",
+            ),
+            ("p/real/r.colibri", ""),
+        ]);
+        for walked in ["empty.e", "words.w", "short.s", "other.o"] {
+            assert!(names.contains(&walked.to_string()), "{walked}: {names:?}");
+        }
+        assert!(!names.contains(&"real.r".to_string()), "{names:?}");
     }
 
     #[test]

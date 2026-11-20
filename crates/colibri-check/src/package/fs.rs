@@ -8,6 +8,12 @@ use std::path::{Component, Path, PathBuf};
 pub trait SourceFs {
     /// The text of a file, or why it could not be read.
     fn read(&self, path: &Path) -> Result<String, String>;
+    /// The first `n` bytes of a file (fewer if it is shorter), or `None` if it cannot be read.
+    /// Reads no more than that where the system allows.
+    fn read_prefix(&self, path: &Path, n: usize) -> Option<Vec<u8>> {
+        let text = self.read(path).ok()?;
+        Some(text.as_bytes()[..n.min(text.len())].to_vec())
+    }
     fn is_file(&self, path: &Path) -> bool;
     fn is_dir(&self, path: &Path) -> bool;
     /// The names of the entries of a folder, sorted (empty if it is not one).
@@ -36,6 +42,17 @@ pub struct DiskFs;
 impl SourceFs for DiskFs {
     fn read(&self, path: &Path) -> Result<String, String> {
         std::fs::read_to_string(path).map_err(|e| e.to_string())
+    }
+
+    fn read_prefix(&self, path: &Path, n: usize) -> Option<Vec<u8>> {
+        use std::io::Read;
+        let mut out = Vec::new();
+        std::fs::File::open(path)
+            .ok()?
+            .take(n as u64)
+            .read_to_end(&mut out)
+            .ok()?;
+        Some(out)
     }
 
     fn is_file(&self, path: &Path) -> bool {
