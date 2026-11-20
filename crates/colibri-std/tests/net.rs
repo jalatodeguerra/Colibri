@@ -1659,8 +1659,10 @@ fn main() -> Result[()] {{
 /// which does not need a connect to stay pending.
 ///
 /// How many connections fill the queue is not the same on every system (Linux: one more than the
-/// backlog; macOS lets in more than the backlog says), so the test connects until one does not
-/// finish, up to a generous limit, and keeps what it made open.
+/// backlog; BSD lets in half as much again), so the test connects until one does not finish, up
+/// to a generous limit, and keeps what it made open. The backlog is 1 and not 0 because on macOS
+/// a backlog of 0 (or less) means the system's maximum (`somaxconn`, 128 by default, and a
+/// machine may set it higher than the limit here); 1 is the smallest queue there is on both.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_connect_that_does_not_finish_is_bounded_and_cancellable() {
@@ -1668,7 +1670,7 @@ fn a_connect_that_does_not_finish_is_bounded_and_cancellable() {
     /// half as much again).
     const FILL_LIMIT: usize = 400;
     raise_descriptor_limit();
-    // A listener nobody accepts from, with the smallest backlog there is.
+    // A listener nobody accepts from, with the smallest backlog there is (see above for 1).
     let sock = socket2::Socket::new(
         socket2::Domain::IPV4,
         socket2::Type::STREAM,
@@ -1682,7 +1684,7 @@ fn a_connect_that_does_not_finish_is_bounded_and_cancellable() {
             .into(),
     )
     .unwrap();
-    sock.listen(0).unwrap();
+    sock.listen(1).unwrap();
     let addr = sock.local_addr().unwrap().as_socket().unwrap();
     let mut filling = Vec::new();
     let full = loop {
