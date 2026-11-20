@@ -677,8 +677,10 @@ impl Vm {
     fn register_type_in<T: crate::IntoColibri>(&mut self, module: &str) -> Result<(), Error> {
         self.describe_in(module, std::any::type_name::<T>(), |reg| {
             // A class belongs to the module that first described it; naming it from another
-            // module's signatures is what `uses` is for, not registering it again.
-            if let TypeDesc::Host(written) | TypeDesc::Value(written) = T::ty(reg)
+            // module's signatures is what `uses` is for, not registering it again. A value
+            // type is shared by every module that registers it, in whatever order, so it is
+            // not refused here: describing it goes through the sharing path.
+            if let TypeDesc::Host(written) = T::ty(reg)
                 && let Some((alias, name)) = written.split_once('.')
             {
                 let home = reg

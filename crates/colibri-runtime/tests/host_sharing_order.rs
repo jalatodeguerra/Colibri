@@ -41,6 +41,7 @@ fn step(vm: &mut colibri::Vm, module: &str, step: usize) {
             vm.register_fn("dflt", |p: Pos| p.x + 100).unwrap();
         }
         ("default", _) => {
+            vm.register_type::<Pos>().unwrap();
             vm.register_fn("dvel", |v: Vel| v.v + 1000).unwrap();
         }
         ("a", 0) => {
@@ -60,6 +61,8 @@ fn step(vm: &mut colibri::Vm, module: &str, step: usize) {
                 .unwrap();
         }
         ("b", _) => {
+            // Registered by itself, after (or before) the others described it in a signature.
+            vm.module("b").register_type::<Pos>().unwrap();
             vm.module("b")
                 .register_fn("opt", |x: i64| if x > 0 { Some(Pos { x }) } else { None })
                 .unwrap();
@@ -70,6 +73,8 @@ fn step(vm: &mut colibri::Vm, module: &str, step: usize) {
                 .unwrap();
         }
         ("c", _) => {
+            vm.module("c").register_type::<Vel>().unwrap();
+            vm.module("c").register_type::<Dir>().unwrap();
             vm.module("c").register_fn("up", || Dir::Up).unwrap();
             vm.module("c").register_fn("cv", |v: Vel| v.v + 1).unwrap();
         }
