@@ -261,7 +261,9 @@ fn loading_a_file_with_two_when_variants_keeps_both() {
         "@when(debug)\nfn mode() -> str => \"debug\"\n@when(!debug)\nfn mode() -> str => \"release\"\n",
     )
     .unwrap();
-    // The path is handed to the REPL command, not pasted into Colibri source.
+    // The path is a command argument (`:load <file>` reads the rest of the line as a path), not
+    // Colibri source, so the native spelling is right here, `\` on Windows included. The
+    // folder's own name (`colibri_repl_when_<pid>`) has no spaces.
     let (out, err) = repl(&format!(":load {}\nmode()\n", file.display()));
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(err, "");
