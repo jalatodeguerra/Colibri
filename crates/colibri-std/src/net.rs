@@ -7,7 +7,7 @@
 //!
 //! # How waiting works (the same on Linux, macOS and Windows)
 //!
-//! Everything that can wait runs on a background thread (`Ctx::run_async_cancellable`), so other
+//! Everything that can wait runs on a background thread (`Ctx::try_run_async_cancellable`), so other
 //! coroutines keep running meanwhile. Every socket (listener, accepted and connected streams) is
 //! non-blocking. A worker waits for readiness with `poll(2)` (Unix) or `WSAPoll` (Windows) for
 //! at most one slice (`SLICE`, 50 ms), and only when the socket is ready does it touch a buffer
@@ -502,6 +502,11 @@ struct Wait<'a> {
     limit: Limit,
     /// What to call the thing in messages: the peer or listening address.
     name: &'a str,
+}
+
+/// The pool could not start a thread for an operation: `reason` is the system's.
+fn no_thread(action: &str, name: &str, reason: &str) -> TypedError {
+    Kind::Other.error(format!("cannot {action} `{name}`: {reason}"))
 }
 
 fn closed_error(name: &str, action: &str) -> TypedError {
@@ -1365,11 +1370,13 @@ fn on_read<R>(
     let ticket = sh.reads.ticket();
     let limit = sh.limit();
     let worker = Arc::clone(&sh);
-    let ticket = cx.run_async_cancellable(move |token| {
-        let wait = worker.wait(Some(token), limit);
-        worker.read_wait(&ticket, &wait, "read from", probe)?;
-        Ok::<Ticket, TypedError>(ticket)
-    })?;
+    let ticket = cx
+        .try_run_async_cancellable(move |token| {
+            let wait = worker.wait(Some(token), limit);
+            worker.read_wait(&ticket, &wait, "read from", probe)?;
+            Ok::<Ticket, TypedError>(ticket)
+        })
+        .map_err(|why| no_thread("read from", &sh.peer, &why))??;
     // The coroutine has resumed and holds the turn: nothing else touches the buffer.
     let mut r = sh.reader.lock().unwrap_or_else(PoisonError::into_inner);
     let out = if sh.closed.load(Ordering::SeqCst) {
@@ -1387,7 +1394,8 @@ fn on_write(cx: &mut Ctx, this: &Conn, data: Bytes) -> Result<(), TypedError> {
     let sh = Arc::clone(&this.sh);
     let ticket = sh.writes.ticket();
     let limit = sh.limit();
-    cx.run_async_cancellable(move |token| {
+    let peer = sh.peer.clone();
+    cx.try_run_async_cancellable(move |token| {
         let wait = sh.wait(Some(token), limit);
         sh.write_op(&ticket, &wait, &data)
     })
@@ -1406,6 +1414,16 @@ fn text_of(line: Vec<u8>, peer: &str) -> Result<String, TypedError> {
             utf8_problem(&e.utf8_error())
         ))
     })
+    .map_err(|why| no_thread("write to", &peer, &why))?
+}
+
+/// "1 byte", "2 bytes".
+fn count_of_bytes(n: usize) -> String {
+    if n == 1 {
+        "1 byte".to_string()
+    } else {
+        format!("{n} bytes")
+    }
 }
 
 /// Where the next line is in the buffer.
@@ -1671,6 +1689,16 @@ impl Drop for Accepted {
 }
 
 impl ListenShared {
+    fn new(sock: TcpListener, addr: String) -> Arc<ListenShared> {
+        Arc::new(ListenShared {
+            sock: Handle::new(sock),
+            closed: AtomicBool::new(false),
+            accepts: Turns::new(),
+            pending: Mutex::new(VecDeque::new()),
+            addr,
+        })
+    }
+
     fn accept(
         self: &Arc<Self>,
         ticket: Ticket,
@@ -1833,7 +1861,8 @@ impl HostType for Listener {
 // ---- functions ----
 
 fn listen(cx: &mut Ctx, addr: String) -> Result<Listener, TypedError> {
-    cx.run_async(move || {
+    let what = addr.clone();
+    cx.try_run_async_cancellable(move |_| {
         let mut addrs = resolve(&addr)?;
         // IPv4 first: `localhost` gives both, and IPv4 is what a client that asks for
         // `localhost` tries as well.
@@ -1847,13 +1876,7 @@ fn listen(cx: &mut Ctx, addr: String) -> Result<Listener, TypedError> {
             match bound {
                 Ok((l, shown)) => {
                     return Ok(Listener {
-                        sh: Arc::new(ListenShared {
-                            sock: Handle::new(l),
-                            closed: AtomicBool::new(false),
-                            accepts: Turns::new(),
-                            pending: Mutex::new(VecDeque::new()),
-                            addr: shown,
-                        }),
+                        sh: ListenShared::new(l, shown),
                     });
                 }
                 Err(e) => first = first.or(Some(e)),
@@ -1862,6 +1885,16 @@ fn listen(cx: &mut Ctx, addr: String) -> Result<Listener, TypedError> {
         let e = first.expect("an address list is never empty");
         Err(fail("listen on", &addr, &e))
     })
+    .map_err(|why| no_thread("listen on", &what, &why))?
+}
+
+/// When the attempt at the next address must end: its share of the time left until `deadline`,
+/// which is all of it for the last address. `remaining` counts the addresses not tried yet,
+/// this one included.
+fn attempt_deadline(now: Instant, deadline: Option<Instant>, remaining: usize) -> Option<Instant> {
+    let deadline = deadline?;
+    let share = u32::try_from(remaining.max(1)).unwrap_or(u32::MAX);
+    Some(now + deadline.saturating_duration_since(now) / share)
 }
 
 /// Opens a connection to `addr`, trying every address it resolves to. `timeout` limits the
@@ -1869,7 +1902,8 @@ fn listen(cx: &mut Ctx, addr: String) -> Result<Listener, TypedError> {
 fn connect(cx: &mut Ctx, addr: String, timeout: Option<Duration>) -> Result<Conn, TypedError> {
     // Counted from the call, on this thread, not from when a worker starts.
     let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
-    let stream = cx.run_async_cancellable(move |token| {
+    let target = addr.clone();
+    let stream = cx.try_run_async_cancellable(move |token| {
         let patience = Patience { token, deadline };
         let halted = |halt: Halt| match halt {
             Halt::Cancelled => Kind::Other.error(format!(
@@ -1895,7 +1929,8 @@ fn connect(cx: &mut Ctx, addr: String, timeout: Option<Duration>) -> Result<Conn
         }
         let e = first.expect("an address list is never empty");
         Err(fail("connect to", &addr, &e))
-    })?;
+    })
+    .map_err(|why| no_thread("connect to", &target, &why))??;
     Ok(Conn::new(stream))
 }
 
