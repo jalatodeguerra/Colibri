@@ -1072,20 +1072,28 @@ mod tests {
         let target = held.local_addr().unwrap();
         let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
         socket.set_nonblocking(true).unwrap();
-        let at_once = match socket.connect(&target) {
+        // Some systems refuse a loopback connect inside the call itself (the answer comes back
+        // before `connect` returns); others return "in progress" and report the refusal on the
+        // socket later. Look at what this one did: only a connect in progress has a wait to
+        // test, and for one that failed at once there is no connect left for a wait to end.
+        let in_progress = match socket.connect(&target) {
             Ok(()) => panic!("connected to a socket that does not listen"),
-            Err(e) if e.kind() == ErrorKind::ConnectionRefused => true,
-            Err(e) if e.kind() == ErrorKind::WouldBlock => false,
+            Err(e) if e.kind() == ErrorKind::ConnectionRefused => false,
+            Err(e) if e.kind() == ErrorKind::WouldBlock => true,
             #[cfg(unix)]
-            Err(e) if e.raw_os_error() == Some(libc::EINPROGRESS) => false,
+            Err(e) if e.raw_os_error() == Some(libc::EINPROGRESS) => true,
             Err(e) => panic!("connect: {e}"),
         };
         let socket = Arc::new(socket);
-        let (cell, rx) = cell();
-        p.arm(&socket, Dir::Write, None, &cell).unwrap();
-        assert_eq!(expect(&rx), Why::Ready);
-        let error = socket.take_error().unwrap();
-        if !at_once {
+        if in_progress {
+            let (cell, rx) = cell();
+            p.arm(&socket, Dir::Write, None, &cell).unwrap();
+            let why = rx.recv_timeout(CEILING).expect(
+                "the connect was in progress and was refused, but the writable wait on its \
+                 socket never ended: the system did not report a failed connect",
+            );
+            assert_eq!(why, Why::Ready);
+            let error = socket.take_error().unwrap();
             assert_eq!(
                 error.expect("the failure is the socket's error").kind(),
                 ErrorKind::ConnectionRefused
