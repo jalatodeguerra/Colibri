@@ -369,6 +369,49 @@ fn main() -> Result[()] {{
     }
 }
 
+/// How many writers the blocked-writes scenario runs. A blocked writer parks about one full send
+/// buffer of the connection in the kernel, and the buffer size is the system's default: `net`
+/// gives a script no way to make it smaller. Linux and Windows take that memory from the general
+/// pool, so they run `WRITERS`. macOS takes it from a fixed pool of 2 KiB mbuf clusters
+/// (`kern.ipc.nmbclusters`), and a thousand default send buffers (`net.inet.tcp.sendspace`, 128 KiB
+/// and more with auto-sizing, up to `net.inet.tcp.autosndbufmax`) can exhaust the pool of a small
+/// machine: `connect` then fails with "no buffer space available". There the count is at most a
+/// quarter of the pool, in send buffers, and never more than `WRITERS`; a pool that allows fewer
+/// than `MIN_MAC_WRITERS` fails the test with the numbers instead of running it with a handful.
+#[cfg(not(target_os = "macos"))]
+fn writer_count() -> usize {
+    WRITERS
+}
+
+#[cfg(target_os = "macos")]
+const MIN_MAC_WRITERS: usize = 100;
+
+#[cfg(target_os = "macos")]
+fn writer_count() -> usize {
+    fn sysctl(name: &str) -> Option<u64> {
+        let out = std::process::Command::new("sysctl")
+            .args(["-n", name])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    }
+    let clusters = sysctl("kern.ipc.nmbclusters").expect("kern.ipc.nmbclusters");
+    let sendspace = sysctl("net.inet.tcp.sendspace").expect("net.inet.tcp.sendspace");
+    let autosndbufmax = sysctl("net.inet.tcp.autosndbufmax");
+    let pool = clusters * 2048;
+    let count = ((pool / 4 / sendspace.max(1)) as usize).min(WRITERS);
+    println!(
+        "macOS buffer pool: nmbclusters {clusters} ({pool} bytes), sendspace {sendspace}, \
+         autosndbufmax {autosndbufmax:?}: {count} writers"
+    );
+    assert!(
+        count >= MIN_MAC_WRITERS,
+        "the buffer pool allows only {count} blocked writers (nmbclusters {clusters}, \
+         sendspace {sendspace}, autosndbufmax {autosndbufmax:?})"
+    );
+    count
+}
+
 /// A thousand writes, each blocked because the peer does not read and the buffers are full: one
 /// poller thread and no CPU, and the writers end with `Closed` when their connections are closed
 /// (a write that had gone through instead would show as a different end, so the count of
@@ -376,6 +419,7 @@ fn main() -> Result[()] {{
 /// buffer on its listener, which the accepted sockets inherit, so that a few megabytes fill a
 /// connection; the bytes are one `Bytes` that every writer shares.
 fn a_thousand_writes_blocked_on_full_buffers() {
+    let writers = writer_count();
     use socket2::{Domain, Protocol, SockAddr, Socket, Type};
     let before = threads();
     let listener = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
@@ -398,7 +442,7 @@ fn a_thousand_writes_blocked_on_full_buffers() {
     // The peer holds every connection open and never reads, until the script has ended.
     let peer = thread::spawn(move || {
         let mut held = Vec::new();
-        for _ in 0..WRITERS {
+        for _ in 0..writers {
             held.push(listener.accept().unwrap().0);
         }
         let _ = released.recv();
@@ -442,7 +486,7 @@ fn main() -> Result[()] {{
     let bytes = data.to_bytes()
     var conns: List[net.Conn] = []
     var writers: List[Coroutine[str]] = []
-    for i in 0..{WRITERS} {{
+    for i in 0..{writers} {{
         let c = net.connect("{addr}")?
         conns.push(c)
         writers.push(go writing(c, bytes))
@@ -472,10 +516,10 @@ fn main() -> Result[()] {{
     let began = Instant::now();
     vm.run_main().unwrap_or_else(|e| panic!("{e}"));
     println!(
-        "{WRITERS} blocked writes: the script took {:?}",
+        "{writers} blocked writes: the script took {:?}",
         began.elapsed()
     );
-    assert_eq!(out.contents(), format!("closed {WRITERS}\n"));
+    assert_eq!(out.contents(), format!("closed {writers}\n"));
     release.send(()).unwrap();
     peer.join().unwrap();
 
@@ -483,15 +527,15 @@ fn main() -> Result[()] {{
     let ((t0, c0, n0), (t1, c1, n1)) = (marks[0], marks[1]);
     let cores = (c1 - c0) / t1.duration_since(t0).as_secs_f64();
     println!(
-        "{WRITERS} blocked writes: {cores:.3} cores, {before} threads before, {n0} then, {n1} later"
+        "{writers} blocked writes: {cores:.3} cores, {before} threads before, {n0} then, {n1} later"
     );
     assert!(
         n0 <= before + MAY_GROW_BY && n1 <= before + MAY_GROW_BY,
-        "{WRITERS} blocked writes: {n0} and {n1} threads, from {before}"
+        "{writers} blocked writes: {n0} and {n1} threads, from {before}"
     );
     assert!(
         cores < 0.05,
-        "{WRITERS} blocked writes used {cores:.3} cores"
+        "{writers} blocked writes used {cores:.3} cores"
     );
     drop(vm);
     let began = Instant::now();
