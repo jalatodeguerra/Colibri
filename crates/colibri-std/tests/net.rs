@@ -3258,3 +3258,257 @@ fn main() -> Result[()] {{
         "drop hook writes: true\ncoroutine read: ok(some(\"one\"))\ndone\n"
     );
 }
+
+// One waiter among a thousand ends promptly. What "promptly" means here has no sleep in it: the
+// call that is waited for ends while the other 999 are still waiting (none of them has ended when
+// the script sees the end of this one: an order of events), and the time from the event to the
+// end stays under a ceiling that is generous for a loaded machine and far above what an end takes
+// (milliseconds), so that only an end that waits for something other than its own event (a scan of
+// all the waiters, the deadline of another waiter, a periodic round) can miss it.
+
+const WAITERS: usize = 1000;
+/// The last connection made, so that the deadline of the timeout scenario (which starts when its
+/// read starts) begins when every other reader is already waiting, however slow the machine.
+const TARGET: usize = WAITERS - 1;
+const PROMPT: Duration = Duration::from_secs(5);
+
+/// The thousand-connection scenarios do not run side by side: each holds two thousand
+/// descriptors, and macOS allows 10,240 to a process.
+static THOUSAND: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[derive(Clone, Copy)]
+enum Event {
+    /// The peer sends one byte on the target's connection.
+    Data,
+    /// The peer closes the target's connection.
+    PeerClose,
+    /// The script cancels the coroutine that reads.
+    Cancel,
+    /// The target's connection has a timeout of half a second; the others have a minute.
+    Timeout,
+}
+
+/// Runs the scenario and returns what the script printed, and the time from the event to the end
+/// of the target's call.
+fn one_among_a_thousand(event: Event) -> (String, Duration) {
+    let _one_at_a_time = THOUSAND.lock().unwrap_or_else(|e| e.into_inner());
+    let (listener, addr) = rust_listener();
+    let (tx, rx) = mpsc::channel::<()>();
+    let release = tx.clone();
+    let peer = thread::spawn(move || {
+        let mut held = Vec::new();
+        for _ in 0..WAITERS {
+            let (s, _) = listener.accept().unwrap();
+            with_timeouts(&s);
+            held.push(Some(s));
+        }
+        // The script says when every reader is waiting, and when it is done.
+        rx.recv_timeout(LIMIT)
+            .expect("the script's readers are waiting");
+        match event {
+            Event::Data => {
+                held[TARGET].as_mut().unwrap().write_all(b"x").unwrap();
+            }
+            Event::PeerClose => drop(held[TARGET].take()),
+            Event::Cancel | Event::Timeout => {}
+        }
+        rx.recv_timeout(LIMIT).expect("the script ends");
+    });
+    let (mut vm, out) = vm();
+    let marks = std::sync::Arc::new(std::sync::Mutex::new((None::<Instant>, None::<Instant>)));
+    let m = std::sync::Arc::clone(&marks);
+    vm.register_fn("ready", move || {
+        m.lock().unwrap().0 = Some(Instant::now());
+        tx.send(()).unwrap();
+    })
+    .unwrap();
+    let m = std::sync::Arc::clone(&marks);
+    vm.register_fn("target_ended", move || {
+        m.lock().unwrap().1 = Some(Instant::now());
+    })
+    .unwrap();
+    let act = match event {
+        Event::Cancel => "readers[TARGET].cancel()",
+        _ => "",
+    };
+    let timeouts = match event {
+        Event::Timeout => "c.set_timeout(if i == TARGET { 0.5 } else { 60.0 })",
+        _ => "",
+    };
+    let wait_for_target = match event {
+        Event::Cancel => "",
+        _ => "let result = readers[TARGET].join()",
+    };
+    let result = match event {
+        Event::Cancel => r#"readers[TARGET].done()"#,
+        _ => "result",
+    };
+    run(
+        &mut vm,
+        &format!(
+            r#"import net
+
+let TARGET = {TARGET}
+var started = 0
+var ended = 0
+
+fn reading(c: net.Conn) -> str {{
+    started += 1
+    let r = c.read(1)
+    ended += 1
+    match r {{
+        ok(b) => return "data {{b.len()}}"
+        err(e) => return "{{e.as[net.Error]().expect("a net error")}}"
+    }}
+}}
+
+fn main() -> Result[()] {{
+    var conns: List[net.Conn] = []
+    var readers: List[Coroutine[str]] = []
+    for i in 0..{WAITERS} {{
+        let c = net.connect("{addr}")?
+        {timeouts}
+        conns.push(c)
+        readers.push(go reading(c))
+    }}
+    // The script runs again only when every reader that has started is suspended in its read.
+    while started < {WAITERS} {{
+        task.tick(0.0)
+    }}
+    let ended_at_ready = ended
+    ready()
+    {act}
+    {wait_for_target}
+    target_ended()
+    print("ended when the readers were waiting: {{ended_at_ready}}")
+    print("target {{{result}}}, ended before the rest: {{ended}}")
+    for c in conns {{
+        c.close()
+    }}
+    var closed = 0
+    for i in 0..{WAITERS} {{
+        if i != TARGET {{
+            if readers[i].join() == "Closed" {{
+                closed += 1
+            }}
+        }}
+    }}
+    print("closed {{closed}}")
+    return ok(())
+}}
+"#
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    release.send(()).unwrap();
+    peer.join().unwrap();
+    let (ready, ended) = *marks.lock().unwrap();
+    let took = ended
+        .expect("the target's end was seen")
+        .saturating_duration_since(ready.expect("the readers were waiting"));
+    (out.contents(), took)
+}
+
+#[test]
+fn one_read_among_a_thousand_ends_promptly_on_data() {
+    let (out, took) = one_among_a_thousand(Event::Data);
+    assert_eq!(
+        out,
+        format!(
+            "ended when the readers were waiting: 0\ntarget data 1, ended before the rest: 1\nclosed {}\n",
+            WAITERS - 1
+        )
+    );
+    assert!(took < PROMPT, "took {took:?}");
+}
+
+#[test]
+fn one_read_among_a_thousand_ends_promptly_on_the_close_of_the_peer() {
+    let (out, took) = one_among_a_thousand(Event::PeerClose);
+    assert_eq!(
+        out,
+        format!(
+            "ended when the readers were waiting: 0\ntarget data 0, ended before the rest: 1\nclosed {}\n",
+            WAITERS - 1
+        )
+    );
+    assert!(took < PROMPT, "took {took:?}");
+}
+
+#[test]
+fn one_read_among_a_thousand_ends_promptly_on_cancel() {
+    let (out, took) = one_among_a_thousand(Event::Cancel);
+    assert_eq!(
+        out,
+        format!(
+            "ended when the readers were waiting: 0\ntarget true, ended before the rest: 0\nclosed {}\n",
+            WAITERS - 1
+        )
+    );
+    assert!(took < PROMPT, "took {took:?}");
+}
+
+#[test]
+fn one_read_among_a_thousand_ends_promptly_on_its_timeout() {
+    let (out, took) = one_among_a_thousand(Event::Timeout);
+    assert_eq!(
+        out,
+        format!(
+            "ended when the readers were waiting: 0\ntarget Timeout, ended before the rest: 1\nclosed {}\n",
+            WAITERS - 1
+        )
+    );
+    assert!(took < PROMPT, "took {took:?}");
+}
+
+/// The port of a listener is free when `close()` returns, also while an `accept` waits on the
+/// listener at that moment (the case in which a close once had to wake the wait first): nothing
+/// holds the socket while the accept is suspended, so the descriptor is released by the close.
+/// No sleep, no retry. The script says which step failed.
+#[test]
+fn a_port_can_be_listened_on_again_at_once_after_a_close_with_an_accept_waiting() {
+    let out = output_within(
+        r#"import net
+
+var started = 0
+
+fn accepting(l: net.Listener) -> str {
+    started += 1
+    match l.accept() {
+        ok(_) => return "accepted"
+        err(e) => return "{e.as[net.Error]().expect("a net error")}"
+    }
+}
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let addr = l.addr()
+    let a = go accepting(l)
+    // The script runs again only when the accept is suspended in its wait.
+    while started < 1 {
+        task.tick(0.0)
+    }
+    l.close()
+    match net.listen(addr) {
+        err(e) => print("step 2, listening again right after the close: {e.message()}")
+        ok(again) => {
+            print("listening again: ok")
+            // And it serves on the port it got back.
+            let c = net.connect(addr)?
+            let s = again.accept()?
+            c.write("hi\n")?
+            print(s.read_line()?)
+        }
+    }
+    print("step 1, the waiting accept ended with: {a.join()}")
+    return ok(())
+}
+"#
+        .to_string(),
+        LIMIT,
+    );
+    assert_eq!(
+        out,
+        "listening again: ok\nsome(\"hi\")\nstep 1, the waiting accept ended with: Closed\n"
+    );
+}

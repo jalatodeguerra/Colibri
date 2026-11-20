@@ -21,19 +21,25 @@
 //! costs no thread and no wake-up, a cancelled call has taken nothing (what a read had read is in
 //! the connection's buffer for the next read, what it had not read is still in the kernel, and a
 //! connection that was ready for an accept is still in the listener's backlog), and the
-//! interpreter thread holds neither the buffer nor a reference to the socket while a coroutine
-//! is suspended or has given the thread away. An `accept` makes its system call and returns the
-//! connection without suspending in between, so a cancel can neither lose a connection nor leak
-//! one.
+//! interpreter thread holds no lock and no reference to the socket while a coroutine is suspended
+//! or has given the thread away. (A read that waits holds no room for reading either: it reads
+//! into uninitialised spare capacity, so no byte is written but the ones that arrive, and it lets
+//! the buffer go before it suspends when the buffer holds nothing; one that holds a half line
+//! keeps the half line.) An `accept` makes its system call and returns the connection without
+//! suspending in between, so a cancel can neither lose a connection nor leak one.
 //!
 //! *Connect* looks the host up first when it is a name (a helper thread, because the system's
 //! resolver cannot be interrupted; it answers by resolving the wait cell of the call, and the
 //! call suspends with the deadline of the whole call), then, for each address, starts a
 //! non-blocking connect and waits for the socket to become writable with the attempt's share of
-//! the time left. The wait is at most a second long, and `SO_ERROR` is read whenever it ends,
-//! because a failed connect is not reported as an event by every system. The socket belongs to
-//! the call: a cancel ends the wait, and the socket is closed when the call is left, which
-//! withdraws a connect that was under way. `listen` (its lookup and its bind never wait for a
+//! the time left. The wait is at most a second long. Whenever it ends, `SO_ERROR` is read first
+//! (a failed connect is not reported as an event by every system), then whether the socket is
+//! connected at all (a wake proves nothing: the one-second recheck is a timer and no event, and
+//! on Windows `getpeername` succeeds on a socket whose connect is still under way, so a connect
+//! that is going to be refused looked connected at the recheck); a connect that is neither failed nor
+//! done waits again, after a pause of 50 ms when the wake said "ready", so that no system can
+//! turn that into a spin. The socket belongs to the call: a cancel ends the wait, and the socket
+//! is closed when the call is left, which withdraws a connect that was under way. `listen` (its lookup and its bind never wait for a
 //! peer) is the one call that still runs on a helper thread of the runtime.
 //!
 //! A call that does not have to wait does not suspend; so that a coroutine in a loop of reads and
@@ -80,12 +86,12 @@
 //! A call made from a `Drop` hook or a callback of a host function cannot suspend: it blocks the
 //! interpreter thread (`Ctx::can_suspend` is `false`), and the poller wakes it (a `connect`
 //! from such a place waits for its lookup and its attempts the same way, and may block as long
-//! as they take). A read (or
-//! accept) holds its turn until its coroutine has taken the result, and a write is sent by the
-//! coroutine that called it, so one that is called there while an earlier read, write or accept
-//! of the same object is outstanding in another coroutine would wait for a coroutine that can
-//! never resume. It returns a `net.Error.Other` at once instead: that is the one case the module
-//! can see. `close_write` is the exception, because it has nothing to wait for: behind another
+//! as they take). A read (or accept) holds its turn until its coroutine has taken the result,
+//! and a write is sent by the coroutine that called it, so a read called there while an earlier
+//! read of the same connection is outstanding in another coroutine, an accept behind an accept
+//! of the same listener, or a write behind a write of the same connection, would wait for a
+//! coroutine that can never resume. It returns a `net.Error.Other` at once instead: that is the
+//! one case the module can see. `close_write` is the exception, because it has nothing to wait for: behind another
 //! coroutine's unfinished write it takes a place in the write order (a ticket and a parked cell
 //! whose callback shuts the writing end, run by the drop of the ticket ahead on the interpreter
 //! thread), returns `Ok` at once, and the write ahead is never cut. `Ok` from such a place means
@@ -94,8 +100,8 @@
 //! does. A write that finds no other write outstanding can still wait in a hook for room that
 //! only another coroutine of the same program would make (the one that reads what is written),
 //! and that coroutine cannot run while the hook waits. A program must not do that: from a
-//! `Drop` hook or a callback, write only what the peer takes without help from this program (as `fs` has the same limit with a pipe
-//! that this program reads itself).
+//! `Drop` hook or a callback, write only what the peer takes without help from this program (as
+//! `fs` has the same limit with a pipe that this program reads itself).
 //!
 //! # A write that stops part way breaks the write side
 //!
@@ -110,7 +116,8 @@
 //! leave the coroutine at all.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Write};
+use std::mem::MaybeUninit;
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -203,8 +210,7 @@ const BACKLOG: i32 = 1024;
 /// The least a `read_exact` buffer grows by while the bytes it waits for are still arriving.
 const GROW_STEP: usize = 1 << 20;
 
-/// The most one `read` call on the socket is given room for, and the size of the buffer that the
-/// reads go through (see `Reader::stage`).
+/// The most one `read` call on the socket is given room for.
 const READ_STEP: usize = 64 * 1024;
 
 /// What a read of unknown size (a line, `read`) is given room for.
@@ -513,6 +519,76 @@ enum Lookup {
     NoThread(String),
 }
 
+/// The system's answer for a name (what the helper thread of a lookup asks).
+fn resolve_name(name: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+    #[cfg(test)]
+    if let Some(answer) = lookup_probe::answer(name, port) {
+        return answer;
+    }
+    (name, port)
+        .to_socket_addrs()
+        .map(Iterator::collect::<Vec<SocketAddr>>)
+}
+
+/// What the unit tests see of the lookup helper: a name can be held (the helper waits until the
+/// test lets it go, then answers with an address the test chose, no resolver asked), and the
+/// end of the helper's work is reported.
+#[cfg(test)]
+mod lookup_probe {
+    use std::collections::HashMap;
+    use std::io;
+    use std::net::SocketAddr;
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::sync::{Mutex, PoisonError};
+
+    struct Held {
+        go: Receiver<()>,
+        answer: SocketAddr,
+        done: Sender<()>,
+    }
+
+    static HELD: Mutex<Option<HashMap<String, Held>>> = Mutex::new(None);
+
+    /// Holds the lookup of `name` until `go` is sent on; `done` gets a message when the helper
+    /// has finished with its answer.
+    pub(super) fn hold(name: &str, go: Receiver<()>, answer: SocketAddr, done: Sender<()>) {
+        HELD.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(HashMap::new)
+            .insert(name.to_string(), Held { go, answer, done });
+    }
+
+    pub(super) fn answer(name: &str, _port: u16) -> Option<io::Result<Vec<SocketAddr>>> {
+        let held = HELD
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()?
+            .remove(name)?;
+        let _ = held.go.recv();
+        let answer = held.answer;
+        // Kept for `finished`.
+        FINISHED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(HashMap::new)
+            .insert(name.to_string(), held.done);
+        Some(Ok(vec![answer]))
+    }
+
+    static FINISHED: Mutex<Option<HashMap<String, Sender<()>>>> = Mutex::new(None);
+
+    pub(super) fn finished(name: &str) {
+        if let Some(done) = FINISHED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+            .and_then(|m| m.remove(name))
+        {
+            let _ = done.send(());
+        }
+    }
+}
+
 /// What a `connect` suspends on: it belongs to no connection or listener, so nothing closes it
 /// (the closed flag stays false) and the slot only holds the cell of its wait.
 struct ConnectSite {
@@ -599,20 +675,22 @@ fn lookup(
             let spawned = std::thread::Builder::new()
                 .name("colibri-net-resolve".into())
                 .spawn(move || {
-                    let found = (name.as_str(), port)
-                        .to_socket_addrs()
-                        .map(Iterator::collect::<Vec<SocketAddr>>);
+                    let found = resolve_name(&name, port);
                     *answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(match found {
                         Ok(found) => Lookup::Found(found),
                         Err(_) => Lookup::Failed,
                     });
                     helper_cell.fire(poll::Why::Ready);
+                    #[cfg(test)]
+                    lookup_probe::finished(&name);
                 });
             if let Err(e) = spawned {
                 *slot.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some(Lookup::NoThread(reason(&e)));
                 cell.fire(poll::Why::Ready);
             }
+            #[cfg(test)]
+            arm_probe::armed(cell);
             Ok(())
         }
     });
@@ -887,9 +965,7 @@ struct TurnState {
     next: u64,
     serving: u64,
     skipped: BTreeSet<u64>,
-    /// The wait cells of tickets that wait for their turn without sleeping on the condition
-    /// variable (see `Ticket::park`), by ticket. Until the reads, writes and accepts move to the
-    /// poller nothing but the tests parks.
+    /// The wait cells of tickets that wait for their turn (see `Ticket::park`), by ticket.
     parked: BTreeMap<u64, Arc<poll::Cell>>,
 }
 
@@ -1283,8 +1359,10 @@ fn is_connected(sock: &Socket) -> io::Result<bool> {
 /// way (it gives back the address that was passed to `connect`), so a peer address proves
 /// nothing, and a connect that is going to be refused stays in that state for about two seconds
 /// while the SYN is sent again. `SO_CONNECT_TIME` is what says: the seconds the socket has been
-/// connected, or `0xFFFFFFFF` while it is not (Microsoft documents it for `ConnectEx`, and it is
-/// the one the event loops of Windows use for a plain non-blocking `connect` as well).
+/// connected, or `0xFFFFFFFF` while it is not. Microsoft documents it for connection-oriented
+/// sockets; that it answers for a plain non-blocking `connect` is what the Windows CI of this
+/// project confirmed on the refused-connect tests. A socket that is not connected may also make
+/// the call fail with `WSAENOTCONN`, which means "not yet" as well, and is no error of the connect.
 #[cfg(windows)]
 fn is_connected(sock: &Socket) -> io::Result<bool> {
     use std::os::windows::io::AsRawSocket;
@@ -1306,7 +1384,13 @@ fn is_connected(sock: &Socket) -> io::Result<bool> {
     };
     if r == SOCKET_ERROR {
         // SAFETY: a plain call that reads the thread's last Winsock error.
-        return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+        let code = unsafe { WSAGetLastError() };
+        // WSAENOTCONN: not connected (yet), not a failure of the connect.
+        return if code == 10057 {
+            Ok(false)
+        } else {
+            Err(io::Error::from_raw_os_error(code))
+        };
     }
     Ok(seconds != u32::MAX)
 }
@@ -1399,14 +1483,28 @@ struct Reader {
     /// Bytes after `pos` known to hold no `\n`.
     scanned: usize,
     eof: bool,
-    /// The buffer the socket is read into before the bytes are appended to `data`. It is zeroed
-    /// once, when it is made, and lives for one read call (`end_call`), so a peer that sends single bytes costs a copy of
-    /// one byte per read and not a zero-fill of the room that was offered (which, done into
-    /// `data` itself, is a `memset` of up to a mebibyte for every byte that arrives).
-    stage: Vec<u8>,
-    /// How many bytes `stage` has had zero-filled in all (for the test of the above).
-    #[cfg(test)]
-    zero_filled: usize,
+}
+
+/// Where a read gets its bytes from: the socket (`recv` into room that holds nothing yet, so the
+/// room is never zero-filled and only the bytes that arrive are ever written), or a test's
+/// source.
+///
+/// # Safety
+///
+/// An implementation must have written (initialised) the first `n` bytes of `buf` when it
+/// returns `Ok(n)`, and must not return an `n` above `buf.len()`: `Reader::read_from` takes those
+/// bytes as part of its data without looking.
+unsafe trait Recv {
+    /// Writes up to `buf.len()` bytes at the start of `buf` and returns how many; the bytes
+    /// after those are not touched.
+    fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize>;
+}
+
+// SAFETY: `SockRef::recv` is `recv(2)`, which writes the bytes it returns the count of.
+unsafe impl Recv for &TcpStream {
+    fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
+        SockRef::from(*self).recv(buf)
+    }
 }
 
 impl Reader {
@@ -1416,9 +1514,6 @@ impl Reader {
             pos: 0,
             scanned: 0,
             eof: false,
-            stage: Vec::new(),
-            #[cfg(test)]
-            zero_filled: 0,
         }
     }
 
@@ -1488,18 +1583,30 @@ impl Reader {
         }
     }
 
-    /// The end of one read call (`read`, `read_line`, `read_exact`): lets go of the buffer the
-    /// socket was read into. It is made again, and zero-filled again, by the next call that has
-    /// to read from the socket.
-    fn end_call(&mut self) {
-        self.stage = Vec::new();
+    /// Lets go of the buffer when it holds nothing that has not been taken: a read that waits
+    /// (and a connection that is idle) holds no memory for reading, resident or virtual. The
+    /// next read makes room again, which is an allocation and no write. A buffer that holds
+    /// bytes keeps them, with the room it has: they are what a later read goes on from.
+    fn release(&mut self) {
+        if self.pos == self.data.len() {
+            self.data = Vec::new();
+            self.pos = 0;
+        }
     }
 
-    /// Reads once from `src` into the buffer: room for up to one `READ_STEP` (or `READ_UNKNOWN`
-    /// when `want` is 0). Gives `Err(bytes)` when memory for that many cannot be had, and
-    /// otherwise the result of the read (the number of bytes appended; 0 is the end of the
-    /// stream).
-    fn read_from(&mut self, src: &mut impl Read, want: usize) -> Result<io::Result<usize>, usize> {
+    /// The end of one read call (`read`, `read_line`, `read_exact`).
+    fn end_call(&mut self) {
+        self.release();
+    }
+
+    /// Reads once from `src` into the room of the buffer: up to one `READ_STEP` (or
+    /// `READ_UNKNOWN` when `want` is 0). The room is the spare capacity of `data` itself, handed
+    /// to the system as it is (`recv` into uninitialised bytes), so no byte is written but the
+    /// ones that arrive: a peer that sends single bytes costs a copy of one byte per read, and
+    /// a read that finds nothing touches no page. Gives `Err(bytes)` when memory for that many
+    /// cannot be had, and otherwise the result of the read (the number of bytes appended; 0 is
+    /// the end of the stream).
+    fn read_from(&mut self, src: &mut impl Recv, want: usize) -> Result<io::Result<usize>, usize> {
         let chunk = if want == 0 {
             READ_UNKNOWN
         } else {
@@ -1507,17 +1614,16 @@ impl Reader {
         };
         self.make_room(want, chunk)
             .map_err(|_| self.step(want).saturating_add(chunk).min(want.max(chunk)))?;
-        if self.stage.len() < READ_STEP {
-            #[cfg(test)]
-            {
-                self.zero_filled += READ_STEP - self.stage.len();
-            }
-            self.stage.resize(READ_STEP, 0);
-        }
-        Ok(match src.read(&mut self.stage[..chunk]) {
+        let room = &mut self.data.spare_capacity_mut()[..chunk];
+        Ok(match src.recv(room) {
             Ok(n) => {
-                // The room is there (`make_room`), so this does not reallocate.
-                self.data.extend_from_slice(&self.stage[..n]);
+                assert!(
+                    n <= chunk,
+                    "a read returned more bytes than the room it was given"
+                );
+                // SAFETY: `recv` wrote the first `n` bytes of `room`, which is the spare
+                // capacity of `data` after its `len` bytes, and `n <= chunk` is within it.
+                unsafe { self.data.set_len(self.data.len() + n) };
                 Ok(n)
             }
             Err(e) => Err(e),
@@ -1904,6 +2010,8 @@ impl Shared {
                     if final_try || limit.late() {
                         return Err(self.timeout_error(limit, action, None));
                     }
+                    // A waiting read holds no room for reading (see `Reader::release`).
+                    self.lock_reader().release();
                     match self.wait_ready(cx, sock, poll::Dir::Read, limit, action, None)? {
                         Ended::Ready => owed = true,
                         Ended::TimedOut => final_try = true,
@@ -2007,8 +2115,9 @@ impl Shared {
                     if final_try || limit.late() {
                         return Err(self.timeout_error(limit, action, Some((*done, total))));
                     }
-                    // Room for no byte at all, or for fewer than were wanted: the wait ends when
-                    // the socket says "try again", which is not a promise of room for the rest.
+                    // No room at all: the wait ends when the socket says "try again", which is
+                    // not a promise of room for the rest (a short send is followed by another
+                    // send, not by a wait).
                     match self.wait_ready(
                         cx,
                         sock,
@@ -2745,7 +2854,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Error, ErrorKind};
+    use std::io::{Error, ErrorKind, Read};
     use std::sync::mpsc;
 
     #[test]
@@ -3140,44 +3249,126 @@ mod tests {
         assert_eq!(counts, (0, 0));
     }
 
-    /// A wake proves nothing by itself: a connect that is under way (the queue of the listener is
-    /// full, so it stays so) is not concluded on the one-second recheck, which is a timer and
-    /// no event, nor on a "ready" wake that finds it neither failed nor connected (forced by the
-    /// hook): the wait is armed again. Each of the two wakes is followed by a second arm, where
-    /// the hook cancels. (Windows needs this most: there `getpeername` succeeds while a connect
-    /// is under way, and a refused one stays so for about two seconds.)
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    /// A connect that is cancelled while its name is being looked up ends at once, leaves nothing
+    /// armed (the timer of its deadline is gone from the poller), and the late answer of the
+    /// helper thread is dropped harmlessly: the helper finishes, resolves a cell that is
+    /// resolved already, and nothing is connected to. The hook cancels where the lookup was
+    /// armed, and the name is held (no resolver, no network) until after the cancel; then the
+    /// test lets the helper go and waits for it to report that it is done, with a ceiling.
+    #[test]
+    fn a_connect_cancelled_during_its_lookup_ends_and_the_late_answer_is_dropped() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let name = "held.lookup.test";
+        let (go, gate) = std::sync::mpsc::channel::<()>();
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        lookup_probe::hold(name, gate, listener.local_addr().unwrap(), done);
+        let (error, counts, hook_ran) = with_cx(move |cx| {
+            let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+            let flag = std::rc::Rc::clone(&ran);
+            arm_probe::set_hook(move |cell| {
+                flag.set(true);
+                cell.fire(poll::Why::Cancelled);
+            });
+            let error = match connect(cx, format!("{name}:{port}"), Some(Duration::from_secs(60))) {
+                Err(e) => e.message().to_string(),
+                Ok(_) => panic!("connected"),
+            };
+            let poller = cx
+                .state_mut::<poll::NetState>()
+                .unwrap()
+                .poller()
+                .expect("the poller started");
+            (error, poller.counts(), ran.get())
+        });
+        assert!(hook_ran, "the lookup was never armed");
+        assert!(error.contains("cancelled"), "{error}");
+        assert_eq!(counts, (0, 0), "something is left armed");
+        // The helper has not answered yet (it is held): let it, and wait until it has finished.
+        assert!(finished.try_recv().is_err(), "the helper was not held");
+        go.send(()).unwrap();
+        finished
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the helper thread did not finish its late answer");
+        // Nothing connected to the listener.
+        assert!(listener.accept().is_err(), "a connection was made");
+    }
+
+    /// A wake proves nothing by itself: a connect that is under way (Linux and macOS: the queue of
+    /// the listener is full; Windows: a port that nothing is bound to, which that system keeps
+    /// pending for about two seconds) is not concluded on the one-second recheck, which is a timer
+    /// and no event, nor on a "ready" wake that finds it neither failed nor connected (forced by
+    /// the hook): the wait is armed again. Each of the two wakes is followed by a second arm, where
+    /// the hook cancels. After the forced "ready" the second arm comes no sooner than
+    /// `CONNECT_PAUSE`, measured between the two arms: a lower bound that a timer cannot break, so
+    /// the test cannot fail for being slow, only for a missing pause. A connect that ends before
+    /// the second arm fails the precondition, and the test says so.
     #[test]
     fn a_wake_that_finds_the_connect_neither_failed_nor_done_arms_again() {
         for forced_ready in [false, true] {
-            let (_listener, addr, _clients) = full_listener();
-            let (arms, error) = with_cx(move |cx| {
+            let (addr, _keep) = pending_target();
+            let (arms, error, gap) = with_cx(move |cx| {
                 let site = ConnectSite::new("test");
-                let Ok(Started::Pending(sock)) = start_connect(addr, None) else {
-                    panic!("the connect to a full queue was not left under way");
+                let sock = match start_connect(addr, None) {
+                    Ok(Started::Pending(sock)) => sock,
+                    Ok(Started::Connected(_)) => {
+                        panic!(
+                            "precondition: the connect finished at once, it was not left under way"
+                        )
+                    }
+                    Err(Attempt::Io(e)) => panic!(
+                        "precondition: the connect was refused at once, not left under way: {e}"
+                    ),
+                    Err(_) => panic!("precondition: the connect did not start"),
                 };
                 let arms = std::rc::Rc::new(std::cell::Cell::new(0));
-                let counted = std::rc::Rc::clone(&arms);
+                let first = std::rc::Rc::new(std::cell::Cell::new(None::<Instant>));
+                let second = std::rc::Rc::new(std::cell::Cell::new(None::<Instant>));
+                let (counted, t1, t2) = (
+                    std::rc::Rc::clone(&arms),
+                    std::rc::Rc::clone(&first),
+                    std::rc::Rc::clone(&second),
+                );
                 arm_probe::set_hook_for_every_arm(move |cell| {
                     counted.set(counted.get() + 1);
                     if counted.get() == 1 {
+                        t1.set(Some(Instant::now()));
                         // The first wake: a "ready" (forced), or none (the recheck comes).
                         if forced_ready {
                             cell.fire(poll::Why::Ready);
                         }
                     } else {
+                        if counted.get() == 2 {
+                            t2.set(Some(Instant::now()));
+                        }
                         cell.fire(poll::Why::Cancelled);
                     }
                 });
                 let error = match finish_connect(cx, &site, Arc::new(sock), None) {
                     Err(Attempt::Failed(e)) => e.message().to_string(),
-                    Err(_) => panic!("another end"),
+                    Err(Attempt::Io(e)) => panic!(
+                        "precondition: the connect ended before the second arm (forced_ready \
+                         {forced_ready}): {e}"
+                    ),
+                    Err(Attempt::TimedOut) => panic!("another end"),
                     Ok(_) => panic!("concluded that the connect was done"),
                 };
-                (arms.get(), error)
+                let gap = match (first.get(), second.get()) {
+                    (Some(a), Some(b)) => b.duration_since(a),
+                    _ => Duration::ZERO,
+                };
+                (arms.get(), error, gap)
             });
             assert_eq!(arms, 2, "forced_ready {forced_ready}");
             assert!(error.contains("cancelled"), "{error}");
+            if forced_ready {
+                assert!(
+                    gap >= CONNECT_PAUSE,
+                    "the second arm came {gap:?} after the first, before the pause of \
+                     {CONNECT_PAUSE:?} was over"
+                );
+            }
         }
     }
 
@@ -3780,10 +3971,13 @@ mod tests {
     /// A peer that sends `piece` bytes at a time (or as many as the room takes, if less).
     struct Pieces(usize);
 
-    impl Read for Pieces {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    // SAFETY: writes the first `n` bytes of the room before it returns `n`.
+    unsafe impl Recv for Pieces {
+        fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
             let n = self.0.min(buf.len());
-            buf[..n].fill(0xAB);
+            for b in &mut buf[..n] {
+                b.write(0xAB);
+            }
             Ok(n)
         }
     }
@@ -3823,38 +4017,73 @@ mod tests {
         }
     }
 
-    /// A peer that sends single bytes costs a copy of one byte per read: the buffer the socket is
-    /// read into is zero-filled once, not the room offered for each read (which was up to a
-    /// mebibyte of `memset` for every byte that arrived).
+    /// The room a read is handed is never written before the system call: the test fills the
+    /// capacity of the buffer with a pattern, and the source checks that every byte it is given
+    /// still has it (a zero-fill of the room, for each read or for each wake, would show) and
+    /// writes only the bytes that arrive. A peer that sends single bytes thus costs a copy of one
+    /// byte per read, and the bytes after the data are as they were at the end.
     #[test]
-    fn a_trickle_of_single_bytes_zero_fills_nothing_after_the_first_read() {
+    fn a_trickle_of_single_bytes_zero_fills_nothing() {
+        /// `(piece size, start of the filled capacity, its end)`.
+        struct Checked(usize, usize, usize);
+        // SAFETY: writes the first `n` bytes of the room before it returns `n`.
+        unsafe impl Recv for Checked {
+            fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
+                // The room must lie in the region the test filled, or it is not read at all.
+                let (from, to) = (buf.as_ptr() as usize, buf.as_ptr() as usize + buf.len());
+                assert!(
+                    from >= self.1 && to <= self.2,
+                    "the room lies outside the capacity the test filled: the buffer moved"
+                );
+                for b in buf.iter() {
+                    // SAFETY: the test wrote the pattern to all of the capacity, and the room
+                    // is inside it (checked above).
+                    assert_eq!(
+                        unsafe { b.assume_init() },
+                        0xCD,
+                        "the room was written before the read"
+                    );
+                }
+                let n = self.0.min(buf.len());
+                for b in &mut buf[..n] {
+                    b.write(0xAB);
+                }
+                Ok(n)
+            }
+        }
         for want in [4 * GROW_STEP, 0] {
             let mut r = reader(b"", false);
-            let mut src = Pieces(1);
+            r.data.reserve_exact(8 * GROW_STEP);
+            let capacity = r.data.capacity();
+            for b in r.data.spare_capacity_mut() {
+                b.write(0xCD);
+            }
+            let start = r.data.as_ptr() as usize;
+            let mut src = Checked(1, start, start + capacity);
             for i in 1..=5000 {
                 let more = if want == 0 { 0 } else { want - (i - 1) };
                 r.read_from(&mut src, more).unwrap().unwrap();
                 assert_eq!(r.data.len(), i);
             }
-            // Over one call (the lifetime of the buffer) it is zero-filled once, however many
-            // reads the call makes.
-            assert_eq!(r.zero_filled, READ_STEP, "want {want}");
-            // Nor does a read hand the system more room than one step.
-            assert_eq!(r.stage.len(), READ_STEP);
-            // The next call makes it again: the cost is one step for each call, not for each read.
-            r.end_call();
-            for _ in 0..100 {
-                r.read_from(&mut src, 0).unwrap().unwrap();
+            assert_eq!(
+                r.data.capacity(),
+                capacity,
+                "want {want}: it was reallocated"
+            );
+            assert!(r.data.iter().all(|&b| b == 0xAB));
+            for b in &r.data.spare_capacity_mut()[..READ_STEP] {
+                // SAFETY: as above.
+                assert_eq!(unsafe { b.assume_init() }, 0xCD, "want {want}");
             }
-            assert_eq!(r.zero_filled, 2 * READ_STEP, "want {want}");
         }
     }
 
     /// A connection that has read holds no buffer for reading while it is idle: after a read has
     /// returned (here a line) the `Reader` has none, and a second read makes it again and lets
-    /// it go again; a call that fails or is unwound lets go too.
+    /// it go again. A call that fails or is unwound lets go of what it does not need too; the
+    /// half line that is left is kept.
     #[test]
-    fn a_reader_holds_no_stage_buffer_after_a_read_has_returned() {
+    fn a_reader_holds_no_buffer_after_a_read_has_returned() {
         let (c, mut peer) = conn_pair();
         let sh = Arc::clone(&c.sh);
         for expected in ["one", "two"] {
@@ -3874,14 +4103,13 @@ mod tests {
             });
             assert_eq!(line.as_deref(), Some(expected));
             assert_eq!(
-                sh.reader.lock().unwrap().stage.capacity(),
+                sh.reader.lock().unwrap().data.capacity(),
                 0,
                 "after {expected}"
             );
         }
-        // It was made for each of the two calls.
-        assert_eq!(sh.reader.lock().unwrap().zero_filled, 2 * READ_STEP);
-        // And a call that fails (here: a read that times out half way through a line) lets go too.
+        // A call that fails (here: a read that times out half way through a line) keeps the
+        // half line for the next read.
         peer.write_all(b"three").unwrap();
         let shared = Arc::clone(&sh);
         let failed = with_cx(move |cx| {
@@ -3902,9 +4130,38 @@ mod tests {
                 .map_err(|e| variant(&e))
         });
         assert_eq!(failed, Err("Timeout".to_string()));
-        assert_eq!(sh.reader.lock().unwrap().stage.capacity(), 0);
-        // The half line is still there for the next read.
         assert_eq!(sh.reader.lock().unwrap().available(), b"three");
+    }
+
+    /// A read that waits holds no room for reading: while its wait is armed (the hook runs where
+    /// it was just armed, and cancels it) the buffer of the connection has no capacity, which is
+    /// neither resident nor virtual memory. A thousand waiting reads held 64 MB, and 10,000 held
+    /// 640 MB, when each kept a buffer across its wait.
+    #[test]
+    fn a_waiting_read_holds_no_buffer() {
+        let (c, _peer) = conn_pair();
+        let sh = Arc::clone(&c.sh);
+        let (held, ran) = with_cx(move |cx| {
+            let seen = Arc::new(Mutex::new(None));
+            let probe = Arc::clone(&seen);
+            let shared = Arc::clone(&sh);
+            arm_probe::set_hook(move |cell| {
+                *probe.lock().unwrap() = Some(shared.reader.lock().unwrap().data.capacity());
+                cell.fire(poll::Why::Cancelled);
+            });
+            let ticket = sh.reads.ticket();
+            let _ = sh.read_call(
+                cx,
+                ticket,
+                Limit::NONE,
+                |r| line_probe(r, "p"),
+                |r| take_line(r, "p"),
+            );
+            let seen = *seen.lock().unwrap();
+            (seen, sh.reader.lock().unwrap().data.capacity())
+        });
+        assert_eq!(held, Some(0), "the read kept a buffer across its wait");
+        assert_eq!(ran, 0);
     }
 
     /// A wait that ends because the poller stopped (or broke) is an error of `net` that says so,

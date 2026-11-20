@@ -16,10 +16,13 @@
 // picks the port, and that line says which). `--idle` is a deadline for each request line:
 // a connection whose next line has not arrived whole within that many seconds is closed
 // (`set_timeout` counts from the call of `read_line`, so a client that sends a few bytes now
-// and then is cut off as well); the default is to wait for ever. Every connection waiting
-// for a request holds one operating system thread, so the server serves at most
-// `--max-connections` at once (default 256): one more is told `ERR too many connections`
-// and closed.
+// and then is cut off as well); the default is to wait for ever. A connection that waits
+// for a request costs no thread (the waits of `net` share one poller thread), but it holds a
+// descriptor, and a process has a limited number of them (often 1024, and 256 by default on
+// macOS). The server serves at most `--max-connections` at once (default 256): one more is
+// told `ERR too many connections` and closed. Where the limit is lower than that, an `accept`
+// fails for lack of descriptors first, which the loop below reports and survives; where it
+// is higher, the cap can be raised with it.
 //
 // Exit codes: 0 stopped by SHUTDOWN, 1 the address could not be used, 2 bad command line.
 import args
