@@ -142,6 +142,9 @@ const SEND_CHUNK: usize = 256 * 1024;
 /// What `listen` asks the system for: connections that wait to be accepted.
 const BACKLOG: i32 = 1024;
 
+/// The least a `read_exact` buffer grows by while the bytes it waits for are still arriving.
+const GROW_STEP: usize = 1 << 20;
+
 /// From this many bytes on, reads hand out the buffer itself instead of a copy of it.
 const HAND_OUT: usize = 64 * 1024;
 
@@ -1016,8 +1019,17 @@ impl Reader {
         out
     }
 
+    /// How much more room a `read_exact` that waits for `want` more bytes asks for now.
+    fn step(&self, want: usize) -> usize {
+        want.min(self.data.len().max(GROW_STEP))
+    }
+
     /// Makes room for the next read. `want` is how many more bytes a `read_exact` waits for
-    /// (0 when unknown): the room is then exactly that, once, so the buffer does not double.
+    /// (0 when unknown). The room grows with what has arrived, not with what is asked for: a
+    /// peer that announces a gigabyte and sends one byte holds one step of memory, not a
+    /// gigabyte. Each step is as big as everything received so far (and at least one mebibyte),
+    /// so the buffer stays within about twice the bytes received plus a step, and the number
+    /// of reallocations of a big read is logarithmic.
     fn make_room(
         &mut self,
         want: usize,
@@ -1032,7 +1044,7 @@ impl Reader {
                 self.data.drain(..self.pos);
                 self.pos = 0;
             }
-            self.data.try_reserve_exact(want)
+            self.data.try_reserve_exact(self.step(want))
         } else {
             self.data.try_reserve(chunk)
         }
@@ -1147,13 +1159,13 @@ impl Shared {
         let chunk = if want == 0 {
             32 * 1024
         } else {
-            want.min(1 << 20)
+            want.min(GROW_STEP)
         };
         r.make_room(want, chunk).map_err(|_| {
             Kind::Other.error(format!(
                 "cannot {action} `{}`: not enough memory for {} more bytes",
                 self.peer,
-                want.max(chunk)
+                r.step(want).max(chunk)
             ))
         })?;
         let start = r.data.len();
@@ -2294,5 +2306,32 @@ mod tests {
         let mut r = reader(b"hello world", false);
         assert_eq!(r.take(5), b"hello");
         assert_eq!(r.available(), b" world");
+    }
+
+    /// `read_exact` of a gigabyte asks the system for one step of memory when one byte has
+    /// arrived, and the buffer then grows with what comes in (at most twice what has arrived
+    /// plus a step), never to the size that was asked for.
+    #[test]
+    fn read_exact_reserves_with_what_has_arrived() {
+        let mut r = reader(b"x", false);
+        r.make_room(MAX_EXACT - 1, GROW_STEP).unwrap();
+        assert!(
+            r.data.capacity() <= 2 * GROW_STEP + 1,
+            "{}",
+            r.data.capacity()
+        );
+        assert!(r.data.capacity() >= GROW_STEP);
+        // Grows by what has arrived, a doubling each time, so that a big read stays linear.
+        let mut r = reader(&vec![0u8; 8 * GROW_STEP], false);
+        r.make_room(MAX_EXACT, GROW_STEP).unwrap();
+        let cap = r.data.capacity();
+        assert!(
+            cap >= 16 * GROW_STEP && cap <= 16 * GROW_STEP + GROW_STEP,
+            "{cap}"
+        );
+        // A small request is exact: nothing is reserved beyond it.
+        let mut r = reader(b"x", false);
+        r.make_room(100, 100).unwrap();
+        assert!(r.data.capacity() >= 101 && r.data.capacity() < GROW_STEP);
     }
 }

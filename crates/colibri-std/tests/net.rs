@@ -1467,6 +1467,64 @@ fn main() -> Result[()] {{
     );
 }
 
+/// A big `read_exact` is correct and takes time in proportion to its size (the buffer grows
+/// with what has arrived: a doubling, not a copy per piece).
+#[test]
+fn a_big_read_exact_over_loopback_is_correct_and_linear() {
+    const SIZE: usize = 64 * 1024 * 1024;
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        // Pieces that do not divide the total, each with a pattern that depends on the offset.
+        let mut sent = 0usize;
+        let mut piece = vec![0u8; 100_003];
+        while sent < SIZE {
+            let n = piece.len().min(SIZE - sent);
+            for (i, b) in piece[..n].iter_mut().enumerate() {
+                *b = ((sent + i) % 251) as u8;
+            }
+            s.write_all(&piece[..n]).unwrap();
+            sent += n;
+        }
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let started = Instant::now();
+    let out = output_within(
+        format!(
+            r#"import net
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let b = c.read_exact({SIZE})?
+    var bad = 0
+    var i = 0
+    while i < {SIZE} {{
+        if int(b[i]) != i % 251 {{
+            bad += 1
+        }}
+        i += 40009
+    }}
+    print(b.len())
+    print(bad)
+    c.close()
+    return ok(())
+}}
+"#
+        ),
+        Duration::from_secs(120),
+    );
+    peer.join().unwrap();
+    assert_eq!(out, format!("{SIZE}\n0\n"));
+    // Not a bound on speed (a debug build on a loaded machine is slow): a hang or a quadratic
+    // buffer would take minutes.
+    assert!(
+        started.elapsed() < Duration::from_secs(100),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 /// `connect_timeout` connects like `connect`, fails like it, and takes only a positive number.
 #[test]
 fn connect_timeout_connects_fails_and_checks_its_argument() {
