@@ -308,24 +308,30 @@ impl Env<'_> {
         }
     }
 
-    /// The methods of the impls that run when `ty` is used through the operator interface
-    /// `iface`: the impl that satisfies it, and the impls its own operator bounds pick
-    /// (`impl[T: Add] Add for W[T]` runs `T`'s `add`), recursively. Only operator interfaces
-    /// are followed: each has one method, so every method listed is reached by the call.
-    pub fn operator_impl_methods(
+    /// The methods of the impls that run when `ty` is used through an interface with exactly
+    /// one method (`single` says which): the impl that satisfies it, and the impls its own
+    /// bounds of such interfaces pick (`impl[T: Add] Add for W[T]` runs `T`'s `add`),
+    /// recursively. With one method, every method listed is reached by the call. `seen` holds
+    /// the (impl, type) pairs already walked, which bounds the walk.
+    pub fn single_method_impl_methods(
         &self,
         ty: &Ty,
         iface: TypeId,
         args: &[Ty],
+        single: &dyn Fn(TypeId) -> bool,
+        seen: &mut Vec<(ImplId, Ty)>,
         out: &mut Vec<crate::hir::FnId>,
-        depth: usize,
     ) {
-        if depth > 16 || !crate::types::is_operator(iface) {
+        if !single(iface) {
             return;
         }
         let Ok(Source::User(id)) = self.implements(ty, iface, args) else {
             return;
         };
+        if seen.iter().any(|(i, t)| *i == id && t == ty) {
+            return;
+        }
+        seen.push((id, ty.clone()));
         let info = &self.impls[id.0 as usize];
         out.extend(info.methods.iter().flatten().copied());
         let params: Vec<ParamId> = info.generics.iter().map(|g| g.id).collect();
@@ -339,7 +345,7 @@ impl Env<'_> {
             };
             for b in &g.bounds {
                 let bargs: Vec<Ty> = b.args.iter().map(|a| a.subst(&subst)).collect();
-                self.operator_impl_methods(arg, b.iface, &bargs, out, depth + 1);
+                self.single_method_impl_methods(arg, b.iface, &bargs, single, seen, out);
             }
         }
     }

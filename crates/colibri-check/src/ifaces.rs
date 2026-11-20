@@ -282,14 +282,17 @@ impl<'a> Checker<'a> {
         // output type does not count, and neither does a type parameter `R`: either could be a
         // built-in type, and a built-in operator must never be replaceable. Only numbers can be
         // the left operand of a user type, so no other built-in type qualifies.
-        // A type of a standard library module written in Colibri (`vec.vec2`) is the library's,
-        // like the types of a host module: the library may add impls for it later, so a program
+        // A type of a standard library module, written in Colibri (`vec.vec2`) or by the host
+        // (`datetime.DateTime`), is the library's: the library may add impls for it later, so a program
         // cannot write one of the built-in interfaces for it, and a type of the library is not
         // "a type of the program" for the rule above. (The library's own sources are exempt.)
         let in_std = self.std_files.contains(&iface_expr.span.file);
         let of_std = |ck: &Self, t: &Ty| {
-            matches!(t, Ty::Adt(id, _) if id.0 >= FIRST_USER_TYPE
-                && ck.std_files.contains(&ck.types[id.0 as usize].span.file))
+            matches!(t, Ty::Adt(id, _) if id.0 >= FIRST_USER_TYPE && {
+                let def = &ck.types[id.0 as usize];
+                ck.std_files.contains(&def.span.file)
+                    || def.module.as_deref().is_some_and(|m| m.starts_with("std."))
+            })
         };
         let program_ty = |ck: &Self, t: &Ty| {
             matches!(t, Ty::Adt(id, _) if id.0 >= FIRST_USER_TYPE) && (in_std || !of_std(ck, t))

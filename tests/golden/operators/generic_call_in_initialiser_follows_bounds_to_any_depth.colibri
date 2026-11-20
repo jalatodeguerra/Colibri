@@ -1,0 +1,11 @@
+// The impls picked by nested bounds are followed to any depth (18 levels here).
+struct V { x: int }
+impl Add for V { fn add(self, o: V) -> V => V { x: self.x + o.x + bias } }
+struct W[T] { v: T }
+impl[T: Add] Add for W[T] { fn add(self, o: W[T]) -> W[T] => W { v: self.v + o.v } }
+fn twice[T: Add](a: T) -> T => a + a
+let s = twice(W { v: W { v: W { v: W { v: W { v: W { v: W { v: W { v: W { v: W { v: W { v: W { v: W { v: W { v: W { v: W { v: W { v: W { v: V { x: 1 } } } } } } } } } } } } } } } } } } })
+let bias = 1000
+fn main() {
+    print(s.v.v.v.v.v.v.v.v.v.v.v.v.v.v.v.v.v.v.x) // expect: 1002
+}

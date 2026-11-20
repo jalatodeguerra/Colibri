@@ -266,26 +266,34 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         deps
     }
 
-    /// A generic call with an operator bound runs the impl that satisfies it (and the impls
-    /// that impl's own operator bounds pick), so what their methods read must be initialised
-    /// before this body's initialiser runs: the methods are used here too. Only operator
-    /// interfaces are followed, because each has one method, which the call reaches; for an
-    /// interface of the program the methods a generic function reaches are not recorded, and
-    /// listing them all would report initialisation cycles that cannot happen.
+    /// A generic call with a bound runs the impl that satisfies it (and the impls that impl's
+    /// own bounds pick), so what their methods read must be initialised before this body's
+    /// initialiser runs: the methods are used here too. Only interfaces with exactly one method
+    /// are followed, because the call reaches it; for a larger interface the methods a generic
+    /// function reaches are not recorded, and listing them all would report initialisation
+    /// cycles that cannot happen.
     fn add_bound_impl_deps(&mut self) {
         let pending = std::mem::take(&mut self.obligations);
         for ob in &pending {
-            if !matches!(ob.origin, crate::obligations::Origin::Bound { .. })
-                || !crate::types::is_operator(ob.iface)
-            {
+            if !matches!(ob.origin, crate::obligations::Origin::Bound { .. }) {
                 continue;
             }
             let ty = self.infer.finalize(&ob.ty).0;
             let args: Vec<Ty> = ob.args.iter().map(|a| self.infer.finalize(a).0).collect();
             let mut methods = Vec::new();
-            self.ck
-                .env()
-                .operator_impl_methods(&ty, ob.iface, &args, &mut methods, 0);
+            let ck = &*self.ck;
+            let single = |i: crate::types::TypeId| {
+                crate::types::is_operator(i)
+                    || ck.ifaces.get(&i).is_some_and(|f| f.methods.len() == 1)
+            };
+            ck.env().single_method_impl_methods(
+                &ty,
+                ob.iface,
+                &args,
+                &single,
+                &mut Vec::new(),
+                &mut methods,
+            );
             for f in methods {
                 self.add_dep(Dep::Fn(f), ob.span);
             }
