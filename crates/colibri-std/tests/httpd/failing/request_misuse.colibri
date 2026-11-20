@@ -1,0 +1,23 @@
+import httpd_impl
+
+test "read with a maximum of 0 => a maximum of at least 1" {
+    let req = httpd_impl.test_request("POST", "/", [], "x".to_bytes())
+    let _ = req.read(0)
+}
+
+test "read with a negative maximum => a maximum of at least 1" {
+    let req = httpd_impl.test_request("POST", "/", [], "x".to_bytes())
+    let _ = req.read(-5)
+}
+
+test "test_request with a target that is not a path => must start with `/`" {
+    let _ = httpd_impl.test_request("GET", "items")
+}
+
+test "test_request with an absolute target => must start with `/`" {
+    let _ = httpd_impl.test_request("GET", "http://example.com/")
+}
+
+test "test_request with no method => the method is empty" {
+    let _ = httpd_impl.test_request("", "/")
+}

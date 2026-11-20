@@ -1,0 +1,70 @@
+import httpd_impl
+
+fn nothing() -> httpd_impl.Handler {
+    return fn(req: httpd_impl.Request) -> Result[httpd_impl.Response] {
+        return ok(httpd_impl.status(204))
+    }
+}
+
+test "the same method and pattern twice => GET /items is already registered" {
+    let r = httpd_impl.Router()
+    r.get("/items", nothing())
+    r.get("/items", nothing())
+}
+
+test "the same method and a pattern of the same shape twice => already registered" {
+    let r = httpd_impl.Router()
+    r.get("/items/:id", nothing())
+    r.get("/items/:name", nothing())
+}
+
+test "the same wildcard pattern twice => already registered" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", nothing())
+    r.get("/files/*other", nothing())
+}
+
+test "a * that is not last => before its end" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest/more", nothing())
+}
+
+test "a : with no name => has a `:` with no name" {
+    let r = httpd_impl.Router()
+    r.get("/items/:", nothing())
+}
+
+test "a * with no name => has a `*` with no name" {
+    let r = httpd_impl.Router()
+    r.get("/files/*", nothing())
+}
+
+test "a parameter named twice => names `id` twice" {
+    let r = httpd_impl.Router()
+    r.get("/a/:id/b/:id", nothing())
+}
+
+test "a wildcard named like a parameter => names `id` twice" {
+    let r = httpd_impl.Router()
+    r.get("/a/:id/*id", nothing())
+}
+
+test "a pattern that does not start with a slash => must start with `/`" {
+    let r = httpd_impl.Router()
+    r.get("items", nothing())
+}
+
+test "an empty pattern => must start with `/`" {
+    let r = httpd_impl.Router()
+    r.get("", nothing())
+}
+
+test "an empty method => is not a method" {
+    let r = httpd_impl.Router()
+    r.handle("", "/a", nothing())
+}
+
+test "a method with a space => is not a method" {
+    let r = httpd_impl.Router()
+    r.handle("GET POST", "/a", nothing())
+}

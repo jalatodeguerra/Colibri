@@ -110,7 +110,10 @@ fn run_file(name: &str, text: &str) {
 /// Runs the tests of a file of `tests/httpd/failing/`: each must panic, and the panic's message
 /// must hold the text after ` => ` in the test's name.
 fn expect_failure(name: &str, text: &str) {
-    let package = Package::new(&format!("{name}-failing"), &[(&format!("{name}.colibri"), text)]);
+    let package = Package::new(
+        &format!("{name}-failing"),
+        &[(&format!("{name}.colibri"), text)],
+    );
     let mut vm = package.load();
     let tests: Vec<colibri::TestInfo> = vm.tests().into_iter().filter(|t| t.root).collect();
     assert_eq!(
@@ -154,7 +157,18 @@ macro_rules! suite {
     };
 }
 
-suite!(request_line, fields, host, framing, chunk);
+suite!(
+    request_line,
+    fields,
+    host,
+    framing,
+    chunk,
+    percent,
+    headers,
+    router,
+    response,
+    body,
+);
 
 macro_rules! failing {
     ($($name:ident),* $(,)?) => {
@@ -170,4 +184,99 @@ macro_rules! failing {
     };
 }
 
-failing!();
+failing!(router_registration, request_misuse);
+
+/// The module as a program sees it: `import httpd` (the source module itself, not the copy the
+/// tests above use), the handlers of the plan's JSON example, and `test_request` to call them.
+#[test]
+fn a_program_imports_the_module_and_tests_its_handlers_without_sockets() {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    colibri_std::install(&mut vm).expect("the standard library installs");
+    vm.load_source(
+        "app/main.colibri",
+        r##"
+import httpd
+import json
+import str
+
+struct Item {
+    id: int
+    name: str
+}
+
+struct NewItem {
+    name: str
+}
+
+class Store {
+    items: Map[int, Item] = {:}
+    next_id: int = 1
+}
+
+fn item_id(req: httpd.Request) -> Result[int] {
+    let text = req.param("id") or ""
+    let id = str.parse_int(text) or |e| {
+        return err(httpd.fail(400, "`{text}` is not an item id"))
+    }
+    return ok(id)
+}
+
+fn show(result: Result[httpd.Response]) -> str {
+    return match result {
+        ok(r) => {
+            let body = match r.body {
+                Text(s) => s
+                _ => ""
+            }
+            "{r.status} {body}"
+        }
+        err(e) => "error {e}"
+    }
+}
+
+fn main() -> Result[()] {
+    let store = Store {}
+    let r = httpd.Router()
+    r.get("/items", fn(req) => httpd.json(200, store.items.values()))
+    r.get("/items/:id", fn(req: httpd.Request) -> Result[httpd.Response] {
+        let id = item_id(req)?
+        let item = store.items.get(id) or { return err(httpd.fail(404, "no item {id}")) }
+        return httpd.json(200, item)
+    })
+    r.post("/items", fn(req: httpd.Request) -> Result[httpd.Response] {
+        let new = json.decode[NewItem](req.text()?) or |e| { return err(httpd.fail(400, e.message())) }
+        let item = Item { id: store.next_id, name: new.name }
+        store.next_id += 1
+        store.items[item.id] = item
+        return ok(httpd.json(201, item)?.header("Location", "/items/{item.id}"))
+    })
+    let handle = r.handler()
+    let created = handle(httpd.test_request("POST", "/items", [("Content-Type", "application/json")], r#"{"name": "pen"}"#.to_bytes()))
+    print(show(created))
+    print(show(handle(httpd.test_request("GET", "/items/1"))))
+    print(show(handle(httpd.test_request("GET", "/items/9"))))
+    print(show(handle(httpd.test_request("GET", "/items/x"))))
+    print(show(handle(httpd.test_request("POST", "/items", [], "not json".to_bytes()))))
+    print(show(handle(httpd.test_request("GET", "/items"))))
+    print(show(handle(httpd.test_request("DELETE", "/items"))))
+    return ok(())
+}
+"##,
+    )
+    .unwrap_or_else(|e| panic!("{}", e.render(false)));
+    vm.run_main()
+        .unwrap_or_else(|e| panic!("{}", e.render(false)));
+    let printed = out.contents();
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines[0], r#"201 {"id":1,"name":"pen"}"#);
+    assert_eq!(lines[1], r#"200 {"id":1,"name":"pen"}"#);
+    assert_eq!(lines[2], "error 404: no item 9");
+    assert_eq!(lines[3], "error 400: `x` is not an item id");
+    assert!(lines[4].starts_with("error 400: "), "{}", lines[4]);
+    // the message of a JSON error may take more than one line, so the last ones are counted from
+    // the end; the body of the 405 ends with a newline of its own
+    assert_eq!(lines[lines.len() - 3], r#"200 [{"id":1,"name":"pen"}]"#);
+    assert_eq!(lines[lines.len() - 2], "405 405 Method Not Allowed");
+    assert_eq!(lines[lines.len() - 1], "");
+}

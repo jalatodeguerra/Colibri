@@ -1,0 +1,347 @@
+import common
+import httpd_impl
+
+fn request(body: Bytes) -> httpd_impl.Request {
+    return httpd_impl.test_request("POST", "/up", [], body)
+}
+
+fn some_bytes(n: int) -> Bytes {
+    let out = BytesBuilder()
+    for i in 0..n {
+        out.push(u8(i % 251))
+    }
+    return out.to_bytes()
+}
+
+/// A body reader over `data` with the length framing that `count` records the calls of `pull` in.
+fn reader_over(data: Bytes, limit: int, calls: List[int]) -> httpd_impl.BodyReader {
+    var pos = 0
+    let pull = fn(n: int) -> Result[Bytes] {
+        calls.push(n)
+        let end = (pos + n).min(data.len())
+        let piece = data.slice(pos, end)
+        pos = end
+        return ok(piece)
+    }
+    let framing: httpd_impl.Framing = .Length(data.len())
+    return httpd_impl.body_reader(framing, limit, pull)
+}
+
+fn status_of(r: Result[Bytes]) -> int {
+    return match r {
+        ok(_) => 0
+        err(e) => common.fail_status(e)
+    }
+}
+
+// ---- test_request ----
+
+test "test_request splits the target and keeps what it is given" {
+    let req = httpd_impl.test_request("GET", "/items/7?x=1&y=2", [("Accept", "text/html"), ("X-A", "1")])
+    assert_eq(req.method, "GET")
+    assert_eq(req.target, "/items/7?x=1&y=2")
+    assert_eq(req.path, "/items/7")
+    assert_eq(req.query, "x=1&y=2")
+    assert_eq(req.version, "HTTP/1.1")
+    assert_eq(req.header("accept"), some("text/html"))
+    assert_eq(req.header("X-A"), some("1"))
+    assert_eq(req.header("x-b"), none)
+    assert(req.remote_addr.len() > 0)
+}
+
+test "test_request with no query, and with a target of *" {
+    let req = httpd_impl.test_request("GET", "/a")
+    assert_eq(req.query, "")
+    assert_eq(req.headers.len(), 0)
+    let star = httpd_impl.test_request("OPTIONS", "*")
+    assert_eq(star.path, "*")
+}
+
+test "test_request keeps the lines of a repeated header apart" {
+    let req = httpd_impl.test_request("GET", "/", [("Set-Cookie", "a=1"), ("set-cookie", "b=2")])
+    assert_eq(req.headers.get_all("set-cookie"), ["a=1", "b=2"])
+}
+
+test "host is the Host header, or empty" {
+    assert_eq(httpd_impl.test_request("GET", "/", [("Host", "example.com")]).host(), "example.com")
+    assert_eq(httpd_impl.test_request("GET", "/").host(), "")
+}
+
+test "a Content-Length is added for a body, unless one is given" {
+    let req = request("hello".to_bytes())
+    assert_eq(req.header("content-length"), some("5"))
+    let given = httpd_impl.test_request("POST", "/", [("Content-Length", "5")], "hello".to_bytes())
+    assert_eq(given.headers.get_all("content-length"), ["5"])
+    let plain = httpd_impl.test_request("POST", "/")
+    assert_eq(plain.header("content-length"), none)
+}
+
+// ---- the query ----
+
+test "query_value is the first value, decoded" {
+    let req = httpd_impl.test_request("GET", "/s?q=hello+world&tag=a&tag=b&name=caf%C3%A9")
+    assert_eq(req.query_value("q"), some("hello world"))
+    assert_eq(req.query_value("tag"), some("a"))
+    assert_eq(req.query_value("name"), some("café"))
+    assert_eq(req.query_value("missing"), none)
+}
+
+test "query_values has every value of every name" {
+    let req = httpd_impl.test_request("GET", "/s?tag=a&tag=b&x=1")
+    let all = req.query_values()
+    assert_eq(all.get("tag"), some(["a", "b"]))
+    assert_eq(all.get("x"), some(["1"]))
+    assert_eq(all.len(), 2)
+}
+
+test "a request with no query has no parameters" {
+    let req = httpd_impl.test_request("GET", "/s")
+    assert_eq(req.query_values().len(), 0)
+    assert_eq(req.query_value("a"), none)
+}
+
+test "the query is parsed once and the path and query stay as sent" {
+    let req = httpd_impl.test_request("GET", "/s%20x?a=%41")
+    assert_eq(req.query_value("a"), some("A"))
+    assert_eq(req.query_value("a"), some("A"))
+    assert_eq(req.path, "/s%20x")
+    assert_eq(req.query, "a=%41")
+}
+
+// ---- reading the body ----
+
+test "body is the whole body, and text is it as UTF-8" {
+    assert_eq(request("hello".to_bytes()).body().expect("reads"), "hello".to_bytes())
+    assert_eq(request("héllo".to_bytes()).text().expect("reads"), "héllo")
+}
+
+test "a request without a body has an empty body" {
+    let req = httpd_impl.test_request("GET", "/")
+    assert_eq(req.body().expect("reads"), Bytes())
+    assert_eq(req.text().expect("reads"), "")
+    assert_eq(req.content_length(), some(0))
+    assert_eq(req.read(10).expect("reads"), Bytes())
+}
+
+test "content_length is the declared length" {
+    assert_eq(request("hello".to_bytes()).content_length(), some(5))
+}
+
+test "read gives the body in pieces of at most max, and empty at the end" {
+    let req = request("hello".to_bytes())
+    assert_eq(req.read(2).expect("reads"), "he".to_bytes())
+    assert_eq(req.read(2).expect("reads"), "ll".to_bytes())
+    assert_eq(req.read(2).expect("reads"), "o".to_bytes())
+    assert_eq(req.read(2).expect("reads"), Bytes())
+    assert_eq(req.read(2).expect("reads"), Bytes())
+}
+
+test "read and body can be mixed, and after the end both give empty bytes" {
+    let req = request("hello".to_bytes())
+    assert_eq(req.read(2).expect("reads"), "he".to_bytes())
+    assert_eq(req.body().expect("reads"), "llo".to_bytes())
+    assert_eq(req.body().expect("reads"), Bytes())
+    assert_eq(req.read(5).expect("reads"), Bytes())
+}
+
+test "a body bigger than one piece is whole" {
+    let data = some_bytes(200000)
+    assert_eq(request(data).body().expect("reads"), data)
+    // exactly one and two pieces
+    assert_eq(request(some_bytes(65536)).body().expect("reads"), some_bytes(65536))
+    assert_eq(request(some_bytes(65537)).body().expect("reads"), some_bytes(65537))
+    assert_eq(request(some_bytes(131072)).body().expect("reads"), some_bytes(131072))
+}
+
+test "text that is not UTF-8 is a 400 Failure" {
+    let r = request(Bytes([104, 255, 105])).text()
+    assert_eq(r.is_err(), true)
+    match r {
+        ok(_) => panic("an error was expected")
+        err(e) => assert_eq(common.fail_status(e), 400)
+    }
+}
+
+// ---- the limit ----
+
+test "a body over the limit is a 413 Failure, and one at the limit is read" {
+    let req = request("hello".to_bytes())
+    req.set_body_limit(4)
+    assert_eq(status_of(req.body()), 413)
+    assert_eq(status_of(req.read(10)), 413)
+    let at = request("hello".to_bytes())
+    at.set_body_limit(5)
+    assert_eq(at.body().expect("reads"), "hello".to_bytes())
+}
+
+test "the default limit is 10 MiB" {
+    assert_eq(request("x".to_bytes()).reader.limit, 10485760)
+}
+
+test "a body over the limit is refused before any of it is read" {
+    let calls: List[int] = []
+    let reader = reader_over(some_bytes(100), 99, calls)
+    assert_eq(status_of(reader.read(10)), 413)
+    assert_eq(calls.len(), 0)
+}
+
+test "a limit of 0 refuses a body and accepts none" {
+    let req = request("x".to_bytes())
+    req.set_body_limit(0)
+    assert_eq(status_of(req.body()), 413)
+    let empty = httpd_impl.test_request("GET", "/")
+    empty.set_body_limit(0)
+    assert_eq(empty.body().expect("reads"), Bytes())
+}
+
+// ---- the reader and its source ----
+
+test "a read asks the source for no more than the body has left, nor more than 64 KiB" {
+    let calls: List[int] = []
+    let reader = reader_over(some_bytes(150000), 1000000, calls)
+    assert_eq(reader.read(1000000).expect("reads").len(), 65536)
+    assert_eq(reader.read(1000000).expect("reads").len(), 65536)
+    assert_eq(reader.read(1000000).expect("reads").len(), 150000 - 2 * 65536)
+    assert_eq(reader.read(1000000).expect("reads").len(), 0)
+    assert_eq(calls, [65536, 65536, 150000 - 2 * 65536])
+}
+
+test "a read asks for at most the maximum the handler gave" {
+    let calls: List[int] = []
+    let reader = reader_over(some_bytes(100), 1000, calls)
+    assert_eq(reader.read(30).expect("reads").len(), 30)
+    assert_eq(calls, [30])
+}
+
+test "the source is not asked again once the length has been read" {
+    let calls: List[int] = []
+    let reader = reader_over(some_bytes(10), 1000, calls)
+    assert_eq(reader.read(100).expect("reads").len(), 10)
+    assert_eq(reader.read(100).expect("reads").len(), 0)
+    assert_eq(reader.read(100).expect("reads").len(), 0)
+    assert_eq(calls.len(), 1)
+}
+
+test "the first_read hook runs once, before the first bytes are pulled" {
+    let events: List[str] = []
+    var pos = 0
+    let data = some_bytes(10)
+    let pull = fn(n: int) -> Result[Bytes] {
+        events.push("pull")
+        let end = (pos + n).min(data.len())
+        let piece = data.slice(pos, end)
+        pos = end
+        return ok(piece)
+    }
+    let framing: httpd_impl.Framing = .Length(10)
+    let reader = httpd_impl.body_reader(framing, 100, pull)
+    reader.first_read = fn() -> Result[()] {
+        events.push("first")
+        return ok(())
+    }
+    let _ = reader.read(4)
+    let _ = reader.read(4)
+    let _ = reader.read(4)
+    let _ = reader.read(4)
+    assert_eq(events, ["first", "pull", "pull", "pull"])
+}
+
+test "the first_read hook does not run for an empty body or a body that is refused" {
+    let events: List[str] = []
+    let hook = fn() -> Result[()] {
+        events.push("first")
+        return ok(())
+    }
+    let calls: List[int] = []
+    let empty = reader_over(Bytes(), 100, calls)
+    empty.first_read = hook
+    assert_eq(empty.read(10).expect("reads").len(), 0)
+    let big = reader_over(some_bytes(10), 5, calls)
+    big.first_read = hook
+    assert_eq(status_of(big.read(10)), 413)
+    let no_body: httpd_impl.Framing = .NoBody
+    let nobody = httpd_impl.body_reader(no_body, 100, fn(n: int) -> Result[Bytes] {
+        return ok(Bytes())
+    })
+    nobody.first_read = hook
+    assert_eq(nobody.read(10).expect("reads").len(), 0)
+    assert_eq(events, [])
+}
+
+test "an error of the first_read hook is the error of the read, and nothing is pulled" {
+    let calls: List[int] = []
+    let reader = reader_over(some_bytes(10), 100, calls)
+    reader.first_read = fn() -> Result[()] {
+        return err(httpd_impl.fail(500, "could not write 100 Continue"))
+    }
+    assert_eq(status_of(reader.read(10)), 500)
+    assert_eq(calls.len(), 0)
+}
+
+test "a source that ends before the length is a 400 Failure" {
+    let framing: httpd_impl.Framing = .Length(10)
+    let reader = httpd_impl.body_reader(framing, 100, fn(n: int) -> Result[Bytes] {
+        return ok(Bytes())
+    })
+    assert_eq(status_of(reader.read(10)), 400)
+    assert_eq(status_of(reader.all()), 400)
+}
+
+test "a source that gives more than was asked for is refused, so it cannot eat the next request" {
+    let framing: httpd_impl.Framing = .Length(10)
+    let reader = httpd_impl.body_reader(framing, 100, fn(n: int) -> Result[Bytes] {
+        return ok(some_bytes(n + 1))
+    })
+    assert_eq(status_of(reader.read(10)), 500)
+}
+
+test "an error of the source is passed up as it is" {
+    let framing: httpd_impl.Framing = .Length(10)
+    let reader = httpd_impl.body_reader(framing, 100, fn(n: int) -> Result[Bytes] {
+        return err(httpd_impl.fail(408, "the body did not arrive in time"))
+    })
+    assert_eq(status_of(reader.read(10)), 408)
+    assert_eq(status_of(reader.all()), 408)
+}
+
+test "unread is what the body still has, when that is known" {
+    let calls: List[int] = []
+    let reader = reader_over(some_bytes(10), 100, calls)
+    assert_eq(reader.unread(), some(10))
+    let _ = reader.read(4)
+    assert_eq(reader.unread(), some(6))
+    let _ = reader.all()
+    assert_eq(reader.unread(), some(0))
+    let no_body: httpd_impl.Framing = .NoBody
+    let nobody = httpd_impl.body_reader(no_body, 100, fn(n: int) -> Result[Bytes] {
+        return ok(Bytes())
+    })
+    assert_eq(nobody.unread(), some(0))
+    let chunked: httpd_impl.Framing = .Chunked
+    let c = httpd_impl.body_reader(chunked, 100, fn(n: int) -> Result[Bytes] {
+        return ok(Bytes())
+    })
+    assert_eq(c.unread(), none)
+}
+
+test "a chunked body is not read yet: an honest 501, and no byte is pulled" {
+    let calls: List[int] = []
+    let chunked: httpd_impl.Framing = .Chunked
+    let reader = httpd_impl.body_reader(chunked, 100, fn(n: int) -> Result[Bytes] {
+        calls.push(n)
+        return ok(Bytes())
+    })
+    assert_eq(status_of(reader.read(10)), 501)
+    assert_eq(calls.len(), 0)
+}
+
+test "a request built from a parsed head reads its body through the source" {
+    let h = common.accepted(common.head(["POST /up HTTP/1.1", "Host: x", "Content-Length: 5"]))
+    let calls: List[int] = []
+    let reader = reader_over("hello".to_bytes(), 100, calls)
+    let req = httpd_impl.request(h, reader, "127.0.0.1:5555")
+    assert_eq(req.method, "POST")
+    assert_eq(req.remote_addr, "127.0.0.1:5555")
+    assert_eq(req.host(), "x")
+    assert_eq(req.text().expect("reads"), "hello")
+}

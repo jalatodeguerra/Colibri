@@ -1,0 +1,159 @@
+import httpd_impl
+
+// ---- percent_decode: strict, for a path segment ----
+
+test "an escape is the byte it names" {
+    assert_eq(httpd_impl.percent_decode("%41", false), some("A"))
+    assert_eq(httpd_impl.percent_decode("a%20b", false), some("a b"))
+    assert_eq(httpd_impl.percent_decode("%61%62%63", false), some("abc"))
+    assert_eq(httpd_impl.percent_decode("x%2Fy", false), some("x/y"))
+    assert_eq(httpd_impl.percent_decode("x%2fy", false), some("x/y"))
+    assert_eq(httpd_impl.percent_decode("100%25", false), some("100%"))
+}
+
+test "a text without an escape comes back as it is" {
+    assert_eq(httpd_impl.percent_decode("plain", false), some("plain"))
+    assert_eq(httpd_impl.percent_decode("", false), some(""))
+    assert_eq(httpd_impl.percent_decode("café", false), some("café"))
+}
+
+test "a multi-byte character is made of several escapes" {
+    assert_eq(httpd_impl.percent_decode("%C3%A9", false), some("é"))
+    assert_eq(httpd_impl.percent_decode("%E6%97%A5%E6%9C%AC", false), some("日本"))
+    assert_eq(httpd_impl.percent_decode("caf%C3%A9", false), some("café"))
+}
+
+test "a plus is a plus in a path and a space in a query" {
+    assert_eq(httpd_impl.percent_decode("a+b", false), some("a+b"))
+    assert_eq(httpd_impl.percent_decode("a+b", true), some("a b"))
+}
+
+test "an escaped plus is a plus even where a plus is a space" {
+    assert_eq(httpd_impl.percent_decode("a%2Bb", true), some("a+b"))
+    assert_eq(httpd_impl.percent_decode("a%2Bb+c", true), some("a+b c"))
+    assert_eq(httpd_impl.percent_decode("%2B", false), some("+"))
+}
+
+test "a bad escape is none" {
+    assert_eq(httpd_impl.percent_decode("%", false), none)
+    assert_eq(httpd_impl.percent_decode("%4", false), none)
+    assert_eq(httpd_impl.percent_decode("%zz", false), none)
+    assert_eq(httpd_impl.percent_decode("%4z", false), none)
+    assert_eq(httpd_impl.percent_decode("%z4", false), none)
+    assert_eq(httpd_impl.percent_decode("a%", false), none)
+    assert_eq(httpd_impl.percent_decode("%41%", false), none)
+    assert_eq(httpd_impl.percent_decode("%%41", false), none)
+    assert_eq(httpd_impl.percent_decode("%+1", true), none)
+    assert_eq(httpd_impl.percent_decode("% 1", false), none)
+}
+
+test "an escape followed by a multi-byte character is not cut inside it" {
+    assert_eq(httpd_impl.percent_decode("%é", false), none)
+    assert_eq(httpd_impl.percent_decode("%4é", false), none)
+    assert_eq(httpd_impl.percent_decode("%41é", false), some("Aé"))
+}
+
+test "a result that is not UTF-8 is none" {
+    assert_eq(httpd_impl.percent_decode("%FF", false), none)
+    assert_eq(httpd_impl.percent_decode("%C3", false), none)
+    assert_eq(httpd_impl.percent_decode("a%80b", false), none)
+}
+
+test "a decoded NUL or slash stays in the text" {
+    assert_eq(httpd_impl.percent_decode("a%00b", false), some("a\0b"))
+    assert_eq(httpd_impl.percent_decode("..%2F..", false), some("../.."))
+}
+
+// ---- percent_decode_lossy: for a query ----
+
+test "lossy decoding keeps a bad escape as it was written" {
+    assert_eq(httpd_impl.percent_decode_lossy("%zz", true), "%zz")
+    assert_eq(httpd_impl.percent_decode_lossy("100%", true), "100%")
+    assert_eq(httpd_impl.percent_decode_lossy("%4", true), "%4")
+    assert_eq(httpd_impl.percent_decode_lossy("a%zzb%41", true), "a%zzbA")
+    assert_eq(httpd_impl.percent_decode_lossy("%%41", true), "%A")
+    assert_eq(httpd_impl.percent_decode_lossy("%é", true), "%é")
+}
+
+test "lossy decoding replaces bytes that are not UTF-8" {
+    assert_eq(httpd_impl.percent_decode_lossy("%FF", true), "\u{fffd}")
+    assert_eq(httpd_impl.percent_decode_lossy("a%80b", true), "a\u{fffd}b")
+    assert_eq(httpd_impl.percent_decode_lossy("%C3%A9%C3", true), "é\u{fffd}")
+}
+
+test "lossy decoding reads a plus as a space only when asked" {
+    assert_eq(httpd_impl.percent_decode_lossy("a+b", true), "a b")
+    assert_eq(httpd_impl.percent_decode_lossy("a+b", false), "a+b")
+    assert_eq(httpd_impl.percent_decode_lossy("a%2Bb+c", true), "a+b c")
+}
+
+// ---- parse_query ----
+
+test "a query is names and values" {
+    let q = httpd_impl.parse_query("a=1&b=2")
+    assert_eq(q.get("a"), some(["1"]))
+    assert_eq(q.get("b"), some(["2"]))
+    assert_eq(q.len(), 2)
+}
+
+test "a name that comes twice has both values, in order" {
+    let q = httpd_impl.parse_query("tag=x&tag=y&other=1&tag=z")
+    assert_eq(q.get("tag"), some(["x", "y", "z"]))
+    assert_eq(q.get("other"), some(["1"]))
+    assert_eq(q.keys(), ["tag", "other"])
+}
+
+test "an empty query has no parameters" {
+    assert_eq(httpd_impl.parse_query("").len(), 0)
+    assert_eq(httpd_impl.parse_query("&").len(), 0)
+    assert_eq(httpd_impl.parse_query("&&&").len(), 0)
+}
+
+test "a name with no equals sign has an empty value" {
+    let q = httpd_impl.parse_query("flag&a=1&other")
+    assert_eq(q.get("flag"), some([""]))
+    assert_eq(q.get("other"), some([""]))
+    assert_eq(q.get("a"), some(["1"]))
+}
+
+test "an empty value, an empty name and empty pairs" {
+    let q = httpd_impl.parse_query("a=&=b&&c=3")
+    assert_eq(q.get("a"), some([""]))
+    assert_eq(q.get(""), some(["b"]))
+    assert_eq(q.get("c"), some(["3"]))
+    assert_eq(q.len(), 3)
+}
+
+test "only the first equals sign splits, and a value can hold one" {
+    let q = httpd_impl.parse_query("a=b=c&d==")
+    assert_eq(q.get("a"), some(["b=c"]))
+    assert_eq(q.get("d"), some(["="]))
+}
+
+test "a query is decoded: plus is a space, escapes are bytes" {
+    let q = httpd_impl.parse_query("q=hello+world&name=caf%C3%A9&p=a%2Bb&k%20ey=v%26w")
+    assert_eq(q.get("q"), some(["hello world"]))
+    assert_eq(q.get("name"), some(["café"]))
+    assert_eq(q.get("p"), some(["a+b"]))
+    assert_eq(q.get("k ey"), some(["v&w"]))
+}
+
+test "%2F and %26 stay inside a parameter and do not split it" {
+    let q = httpd_impl.parse_query("path=a%2Fb&x=1%262")
+    assert_eq(q.get("path"), some(["a/b"]))
+    assert_eq(q.get("x"), some(["1&2"]))
+    assert_eq(q.len(), 2)
+}
+
+test "a query with a bad escape or bad UTF-8 is lenient" {
+    let q = httpd_impl.parse_query("a=100%&b=%zz&c=%FF&%=1")
+    assert_eq(q.get("a"), some(["100%"]))
+    assert_eq(q.get("b"), some(["%zz"]))
+    assert_eq(q.get("c"), some(["\u{fffd}"]))
+    assert_eq(q.get("%"), some(["1"]))
+}
+
+test "a semicolon does not separate parameters" {
+    let q = httpd_impl.parse_query("a=1;b=2")
+    assert_eq(q.get("a"), some(["1;b=2"]))
+}
