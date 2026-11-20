@@ -653,7 +653,7 @@ impl Interp {
             _ => return Err(self.internal(fiber, span, "not an operator interface")),
         };
         let op = match (&values.first(), num) {
-            (Some(Value::Str(_)), _) if iface == ADD => BinOp::Concat,
+            (Some(Value::Str(_) | Value::Bytes(_)), _) if iface == ADD => BinOp::Concat,
             (_, Some(n)) => BinOp::Arith(arith, n),
             _ => return Err(self.internal(fiber, span, "an operator without an implementation")),
         };

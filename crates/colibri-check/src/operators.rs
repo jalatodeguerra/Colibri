@@ -561,7 +561,7 @@ impl FnCtx<'_, '_> {
             .collect();
         if let [first, ..] = lefts.as_slice() {
             Some(format!(
-                "a number on the left of `{sym}` must be a `{first}` here: convert it, for example `{first}(n) {sym} v`, or write the `{rt}` first"
+                "a number on the left of `{sym}` must be of type `{first}` here: convert it, for example `{first}(n) {sym} v`, or write the `{rt}` first"
             ))
         } else if !own.is_empty() {
             Some(format!(

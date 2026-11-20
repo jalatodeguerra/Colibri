@@ -364,7 +364,7 @@ impl<'a> Checker<'a> {
                 )
                 .with_label(prev_span, "the first implementation")
                 .with_hint(if is_binary_operator(iface) {
-                    "a type has at most one implementation of an operator for each right-hand type (and a right-hand type that is a type parameter is the only one)"
+                    "a type has at most one implementation of an operator for each right-hand type, and right-hand types are told apart by their head only: `Add[Box[int]]` and `Add[Box[str]]` count as the same one (a right-hand type that is a type parameter is the only one)"
                 } else {
                     "one type has at most one implementation of an interface, whatever its type arguments"
                 }),

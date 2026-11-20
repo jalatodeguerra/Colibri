@@ -298,7 +298,7 @@ impl Env<'_> {
         let numeric = match ty {
             Ty::Int(IntTy::I64) | Ty::Float | Ty::F32 => true,
             Ty::Int(IntTy::U64) => iface != NEG,
-            Ty::Str => iface == ADD,
+            Ty::Str | Ty::Bytes => iface == ADD,
             _ => false,
         };
         if numeric && args.iter().all(same) {

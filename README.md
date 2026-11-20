@@ -182,8 +182,10 @@ fn main() {
 `+ - * /` and unary `-` on a type of your own are the interfaces `Add`, `Sub`, `Mul`, `Div` and
 `Neg`. `Add[R, O]` has a right-hand type `R` and a result `O`, and both default to `Self`, so
 `impl Add for Money` means `Add[Money, Money]`. A type can implement an operator once for each
-right-hand type, and a number can be the left operand of your type (comparison stays on `Eq` and
-`Ord`):
+right-hand type, told apart by the type's head only (`Add[Box[int]]` and `Add[Box[str]]` count as
+one). A number can be the left operand of your type when the right-hand type is yours (comparison
+stays on `Eq` and `Ord`). A narrow integer type (`i8` to `u32`) cannot yet stand for a type
+parameter that has an operator bound:
 
 ```colibri
 struct Money { cents: int }
