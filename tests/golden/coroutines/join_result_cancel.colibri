@@ -8,12 +8,12 @@ fn forever() {
 
 fn parent(c: Coroutine[()]) {
     match c.join_result() {
-        ok(_) => print("ok?"),
-        err(e) => print("err: {e.message()}"),
+        ok(_)  => print("ok?")
+        err(e) => print("err: {e.message()}")
     }
     match c.join_result() {
-        ok(_) => print("ok?"),
-        err(e) => print("again: {e.message()}"),
+        ok(_)  => print("ok?")
+        err(e) => print("again: {e.message()}")
     }
 }
 

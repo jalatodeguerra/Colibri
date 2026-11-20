@@ -16,12 +16,12 @@ fn main() {
     let second = c.join_result()
     print("{first.is_err()} {second.is_err()}")
     match first {
-        ok(_) => print("ok?"),
-        err(e) => print("{e.message()}"),
+        ok(_)  => print("ok?")
+        err(e) => print("{e.message()}")
     }
     match second {
-        ok(_) => print("ok?"),
-        err(e) => print("{e.message()}"),
+        ok(_)  => print("ok?")
+        err(e) => print("{e.message()}")
     }
     task.tick(5.0)
 }

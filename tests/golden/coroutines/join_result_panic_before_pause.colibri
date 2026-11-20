@@ -7,8 +7,8 @@ fn boom() {
 fn parent() {
     let c = go boom()
     match c.join_result() {
-        ok(_) => print("ok?"),
-        err(e) => print("err: {e.message()}"),
+        ok(_)  => print("ok?")
+        err(e) => print("err: {e.message()}")
     }
     print("parent goes on")
 }

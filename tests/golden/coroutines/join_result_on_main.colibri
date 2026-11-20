@@ -16,8 +16,8 @@ fn main() {
     print("waiting")
     print("a {a.join_result().expect("a")}")
     match b.join_result() {
-        ok(v) => print("ok? {v}"),
-        err(e) => print("b: {e.message()}"),
+        ok(v)  => print("ok? {v}")
+        err(e) => print("b: {e.message()}")
     }
     print("done")
 }

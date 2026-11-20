@@ -14,8 +14,8 @@ fn parent(c: Coroutine[()]) {
     let r = c.join_result()
     print("is_err {r.is_err()}")
     match r {
-        ok(_) => print("ok?"),
-        err(e) => print("err: {e.message()}"),
+        ok(_)  => print("ok?")
+        err(e) => print("err: {e.message()}")
     }
 }
 

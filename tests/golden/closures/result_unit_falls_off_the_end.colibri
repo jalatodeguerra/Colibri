@@ -12,9 +12,14 @@ fn main() {
     print(annotated(1))
 
     // The type comes from the parameter the closure is passed to.
-    print(run(fn(n) {
-        print("inferred {n}")
-    }, 2))
+    print(
+        run(
+            fn(n) {
+                print("inferred {n}")
+            },
+            2,
+        ),
+    )
 
     // An early `return err(..)` still works, and so does a `defer`.
     let early = fn(flag: bool) -> Result[(), str] {
