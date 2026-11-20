@@ -432,10 +432,13 @@ some("hello, Colibri!")
 `accept`, the reads, the writes and `connect` suspend the coroutine that calls them while they
 wait, so the other coroutines keep running. One poller thread per program waits for every
 connection and listener at once, so a connection or a listener that waits costs no thread and
-no wake-ups, only its descriptor and a little memory: a thousand idle reads and a thousand idle
-accepts are measured to cost about no CPU time. What bounds how many a program can serve is the
-operating system's limit on open descriptors and the one thread that runs the program's
-coroutines, not a thread per connection; counts beyond a thousand have not been measured.
+no wake-ups, only its descriptor, its coroutine and, for a read, a 64 KiB buffer: measured by
+hand in a release build on Linux with the peer in another process, 10,000 idle blocked reads are
+3 threads in all, no CPU time over ten seconds and 782 MB of resident memory (a thousand idle
+accepts and a thousand writes blocked on full buffers are tested to cost a few threads and no CPU
+time). What bounds how many a program can serve is the operating system's limit on open
+descriptors (raise it for thousands) and the one thread that runs the program's coroutines, not a
+thread per connection; counts beyond 10,000 have not been measured.
 Cancelling a coroutine that waits in `read` or `accept` never loses data or a connection: what
 had arrived stays for the next call. `close()` never waits and never fails, and it ends every
 call that waits on that object with `net.Error.Closed`.

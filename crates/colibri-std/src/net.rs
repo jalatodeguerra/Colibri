@@ -891,9 +891,7 @@ struct TurnState {
     next: u64,
     serving: u64,
     skipped: BTreeSet<u64>,
-    /// The wait cells of tickets that wait for their turn without sleeping on the condition
-    /// variable (see `Ticket::park`), by ticket. Until the reads, writes and accepts move to the
-    /// poller nothing but the tests parks.
+    /// The wait cells of tickets that wait for their turn (see `Ticket::park`), by ticket.
     parked: BTreeMap<u64, Arc<poll::Cell>>,
 }
 
