@@ -177,6 +177,45 @@ fn main() {
 }
 ```
 
+### Operators on your own types
+
+`+ - * /` and unary `-` on a type of your own are the interfaces `Add`, `Sub`, `Mul`, `Div` and
+`Neg`. `Add[R, O]` has a right-hand type `R` and a result `O`, and both default to `Self`, so
+`impl Add for Money` means `Add[Money, Money]`. A type can implement an operator once for each
+right-hand type, and a number can be the left operand of your type (comparison stays on `Eq` and
+`Ord`):
+
+```colibri
+struct Money { cents: int }
+
+impl Add for Money {
+    fn add(self, other: Money) -> Money => Money { cents: self.cents + other.cents }
+}
+impl Mul[int] for Money {
+    fn mul(self, k: int) -> Money => Money { cents: self.cents * k }
+}
+impl Mul[Money, Money] for int {
+    fn mul(self, m: Money) -> Money => m * self
+}
+
+fn total[T: Add](xs: List[T], zero: T) -> T {
+    var sum = zero
+    for x in xs {
+        sum += x
+    }
+    return sum
+}
+
+fn main() {
+    let price = Money { cents: 250 }
+    print((price * 3 + 2 * price).cents) // 1250
+    print(total([price, price], Money { cents: 0 }).cents) // 500
+}
+```
+
+`a += b` is `a = a + b`. `%` and the bit operators are for numbers only. The `vec` module
+(`import vec`) is built this way.
+
 ### Ordering and bounds
 
 A struct, or an enum whose variants carry data, is ordered by its parts when every part can be
@@ -727,7 +766,7 @@ whose logic comes from Colibri scripts (host classes, handles, callbacks and a s
 | `net` | TCP sockets: `net.listen`, `net.connect` and `net.connect_timeout` give a `net.Listener` or a `net.Conn` that read and write lines, bytes and text without blocking other coroutines |
 | `time`, `datetime` | clocks and sleeping; dates, times and formatting |
 | `math`, `rand` | math functions; random numbers |
-| `vec` | 2D, 3D and 4D vector types |
+| `vec` | 2D, 3D and 4D vector types of `f32` and `i32`, written in Colibri (a library on top of operator interfaces, not part of the language) |
 
 Paths are `/`-separated text on every system, Windows included. `path.from_native` converts a path
 that came from outside (a command-line argument, a file's content) from the system's own spelling,
@@ -748,12 +787,12 @@ they have.
   drop order.
 - The embedding API, the C FFI, coroutines, the 21 std modules above (TCP sockets included),
   `Bytes` and file handles.
+- Operator interfaces (`Add`, `Sub`, `Mul`, `Div`, `Neg`) with default type parameters, which
+  let a library such as `vec` define its own arithmetic.
 - Tooling: `run`, `check`, `test`, `fmt`, `new`, `repl`, `lsp`, hot reload and the leak detector.
 
 **Next** (not started):
 
-- Arithmetic operator interfaces (`Add`, `Sub`, `Mul`, `Neg`), so that vector types can move out
-  of the core into a library.
 - A shared runtime core, then the **bytecode VM**, which becomes the engine behind `colibri run`,
   embedding and hot reload. The interpreter is retired once the VM passes every test. The first
   speed goal is to beat CPython 3.13 on every program in [`benchmarks/`](benchmarks/README.md);
