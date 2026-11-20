@@ -492,9 +492,9 @@ impl Shared {
     /// halted so that nothing is armed on it from now on, deletes every registration, and then
     /// resolves every waiter that is left with `Why::Failed`, also those whose cell is held
     /// elsewhere (a cancel hook, an object's slot), which would otherwise never be woken. The
-    /// sockets are released and the cells let go after the lock is gone.
+    /// sockets are released under the lock and the cells let go after it is gone.
     fn leave(&self) {
-        let (regs, waiters, to_fire, trash) = {
+        let (waiters, to_fire, trash) = {
             let mut t = self.lock();
             if t.halt.is_none() {
                 t.halt = Some(Halt::Failed("the poller thread ended".to_string()));
@@ -505,8 +505,10 @@ impl Shared {
             t.by_raw.clear();
             t.heap.clear();
             t.live_deadlines = 0;
+            // The sockets are released here, under the lock, as in `rearm`: a closer whose
+            // `fire` wins from now on returns with the descriptor already released.
+            t.regs.clear();
             (
-                std::mem::take(&mut t.regs),
                 std::mem::take(&mut t.waiters),
                 std::mem::take(&mut t.to_fire),
                 std::mem::take(&mut t.trash),
@@ -515,10 +517,7 @@ impl Shared {
         let cells = to_fire
             .into_iter()
             .chain(waiters.into_values().map(|w| (w.cell, Why::Failed)));
-        // The sockets go before any callback runs, as in `rearm`: a waiter that wakes finds its
-        // descriptor released. A callback that panics here is lost with the thread; the others
-        // still run.
-        drop(regs);
+        // A callback that panics here is lost with the thread; the others still run.
         let _ = fire_all(cells.collect());
         drop(trash);
     }
@@ -1917,14 +1916,32 @@ mod tests {
         drop(b);
     }
 
+    /// A spin of 0 to 2,000 iterations, different every round (a small xorshift: the point is
+    /// only that the closer's arrival is spread over the time the poller thread needs to take
+    /// an event, so that both orders happen).
+    fn jitter(round: u64) -> u64 {
+        let mut x = round.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x % 2001
+    }
+
+    fn spin(iterations: u64) {
+        for _ in 0..iterations {
+            std::hint::spin_loop();
+        }
+    }
+
     /// The rule of the table: a socket is released under the table lock, so that when the call
     /// that ended a wait (a close, here) has returned, the table no longer holds the socket, also
-    /// when the poller thread is handling an event on it at the same time.
+    /// when the poller thread is handling an event on it at the same time. The closer waits a
+    /// random spin before it fires, so that it wins about as often as it loses.
     #[test]
     fn a_closer_racing_an_event_finds_the_socket_released_when_it_returns() {
         let p = poller();
         let mut closed = 0;
-        for round in 0..2000 {
+        for round in 0..8000u64 {
             let (a, mut b) = pair();
             let (cell, rx) = cell();
             p.arm(&a, Dir::Read, None, &cell).unwrap();
@@ -1938,6 +1955,7 @@ mod tests {
                 })
             };
             start.wait();
+            spin(jitter(round));
             if cell.fire(Why::Closed) {
                 closed += 1;
                 assert_eq!(
@@ -1955,23 +1973,43 @@ mod tests {
             }
             let _b = writer.join().unwrap();
         }
-        eprintln!("poller test: the closer won {closed} of 2000 rounds");
+        eprintln!("poller test: the closer won {closed} of 8000 rounds");
     }
 
     /// A listener that the table was the last holder of is closed when the close returns: its
-    /// port can be bound again at once.
+    /// port can be bound again at once, also when a connection arrives (an event for the poller
+    /// thread to take) while the closer comes.
     #[test]
     fn a_listener_the_table_held_is_closed_when_the_close_returns() {
         let p = poller();
-        for round in 0..1000 {
+        let mut closed = 0;
+        for round in 0..4000u64 {
             let listener = Arc::new(TcpListener::bind("127.0.0.1:0").unwrap());
             let addr = listener.local_addr().unwrap();
-            let (cell, _rx) = cell();
+            let (cell, rx) = cell();
             p.arm(&listener, Dir::Read, None, &cell).unwrap();
             drop(listener);
-            assert!(cell.fire(Why::Closed), "round {round}");
-            TcpListener::bind(addr)
-                .unwrap_or_else(|e| panic!("round {round}: the port is still held: {e}"));
+            let start = Arc::new(Barrier::new(2));
+            let client = {
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    // Refused when the close came first: that is one of the orders.
+                    let _ = TcpStream::connect(addr);
+                })
+            };
+            start.wait();
+            spin(jitter(round));
+            if cell.fire(Why::Closed) {
+                closed += 1;
+                TcpListener::bind(addr)
+                    .unwrap_or_else(|e| panic!("round {round}: the port is still held: {e}"));
+                assert_eq!(expect(&rx), Why::Closed);
+            } else {
+                assert_eq!(expect(&rx), Why::Ready);
+            }
+            client.join().unwrap();
         }
+        eprintln!("poller test: the closer won {closed} of 4000 rounds");
     }
 }
