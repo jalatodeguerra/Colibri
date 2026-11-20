@@ -48,17 +48,28 @@ pub struct Options {
     pub max_headers: int = 100
     /// The bytes of a body a handler may read; `Request.set_body_limit` changes it for one request.
     pub max_body_bytes: int = 10485760
-    /// The whole head of a request.
+    /// The whole head of a request: its fields have this long from the end of the request line,
+    /// and on a new connection the empty lines and the request line have this long from the
+    /// accept. No sequence of bytes extends a deadline.
     pub header_timeout: float = 10.0
-    /// How long a kept-alive connection may wait for its next request.
+    /// How long a kept-alive connection may wait for its next request: one deadline for the
+    /// empty lines and the request line together (the server cannot tell when the first byte
+    /// of a request arrived, so `header_timeout` starts only after the request line).
     pub idle_timeout: float = 60.0
-    /// Each read of a body (a piece of at most 64 KiB).
+    /// Each read of a body piece (at most 64 KiB, or what is left of the body, or the `max` a
+    /// handler gave `Request.read`) must deliver the whole piece within this time. A client
+    /// that sends a byte at a time does not extend it.
     pub body_timeout: float = 30.0
     /// Each write of a response (a piece of at most 256 KiB).
     pub write_timeout: float = 30.0
-    /// From the call of the handler to its `Response`; 0 is none.
+    /// From the call of the handler to its `Response`; 0 is none. **Not enforced yet** (step 7
+    /// of the plan): the field is validated and kept, and nothing reads it. Until then a handler
+    /// that never returns holds its connection until `stop`'s grace ends it, and a body that
+    /// trickles is bounded by `body_timeout` for each piece only.
     pub handler_timeout: float = 60.0
-    /// Open connections. At the cap the server stops accepting until one ends.
+    /// Open connections. At the cap the server stops accepting until one ends. Until
+    /// `net.Conn.set_line_limit` is used, a connection may hold up to 1 MiB of a line before it
+    /// is refused, so size this with that in mind (1,024 connections: about 1 GiB).
     pub max_connections: int = 1024
     /// The `Server` header of every response; "" sends none.
     pub server_name: str = ""
@@ -283,6 +294,9 @@ fn hex_value(b: int) -> int {
 /// A run of one or more `%XX` escapes.
 const ESCAPE_RUNS: str = r"(?:%[0-9A-Fa-f]{2})+"
 
+/// The pattern `ESCAPE_RUNS`, compiled once when the module loads.
+const ESCAPES: regex.Regex = pattern(ESCAPE_RUNS)
+
 /// The bytes of `text` with its `%XX` escapes decoded, and its `+` read as a space when
 /// `plus_is_space`. `escapes` is the pattern `ESCAPE_RUNS`. A bad escape (a `%` not followed by
 /// two hex digits) is `none` when `strict`, and is kept as written otherwise. A `+` is replaced
@@ -341,7 +355,7 @@ fn percent_decode_lossy(escapes: regex.Regex, text: str, plus_is_space: bool) ->
 /// grow with its pairs, and a form handler should also lower `Request.set_body_limit` to what a
 /// form of its own needs (the default allows 10 MiB).
 pub fn parse_query(text: str, max_pairs: int = 1000) -> Result[Map[str, List[str]]] {
-    return query_pairs(pattern(ESCAPE_RUNS), text, max_pairs)
+    return query_pairs(ESCAPES, text, max_pairs)
 }
 
 fn query_pairs(
@@ -408,6 +422,10 @@ class Grammar {
     control_escape: regex.Regex
     /// A path segment that is `.` or `..`, written with dots or with `%2E`.
     dot_segment: regex.Regex
+    /// A `.` or `..` piece of a decoded value (`a/../b`), after splitting on `/`.
+    decoded_dot: regex.Regex
+    /// A C1 control character (U+0080 to U+009F), which some loggers treat as a line end.
+    c1_control: regex.Regex
     /// What a literal segment of a route may be: path characters and escapes (RFC 3986 3.3).
     path_literal: regex.Regex
     /// `close` as a token of a `Connection` value: after the start or a comma, before a comma or
@@ -449,6 +467,8 @@ fn grammar() -> Grammar {
         bad_escape: pattern(r"%(?:[0-9A-Fa-f]?[^0-9A-Fa-f]|[0-9A-Fa-f]?$)"),
         control_escape: pattern(r"%(?:[01][0-9A-Fa-f]|7[Ff])"),
         dot_segment: pattern(r"(?:^|/)(?:\.|%2[Ee])(?:\.|%2[Ee])?(?:/|$)"),
+        decoded_dot: pattern(r"(?:^|/)\.\.?(?:/|$)"),
+        c1_control: pattern(r"[\x{80}-\x{9f}]"),
         path_literal: pattern(r"^(?:[A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-Fa-f]{2})*$"),
         close_token: pattern(r"(?:^|,)[ \t]*[Cc][Ll][Oo][Ss][Ee][ \t]*(?:,|$)"),
         keep_token: pattern(
@@ -513,6 +533,7 @@ class HeadParser {
     path: str = ""
     query: str = ""
     authority: str = ""
+    scheme: str = ""
     version: str = "HTTP/1.1"
     http10: bool = false
     asterisk: bool = false
@@ -523,6 +544,16 @@ class HeadParser {
 
 fn head_parser(g: Grammar, options: Options) -> HeadParser {
     return HeadParser { grammar: g, options: options }
+}
+
+/// `text` without the default port of `scheme` (`:80` for http, `:443` for https), so that
+/// `a` and `a:80` are the same host. Both sides of a comparison are cut the same way.
+fn without_default_port(text: str, scheme: str) -> str {
+    let port = if scheme == "https" { ":443" } else { ":80" }
+    if scheme != "" && text.ends_with(port) {
+        return text[..text.len() - port.len()]
+    }
+    return text
 }
 
 /// Why a request line did not match its pattern: a message for the error response. It runs only
@@ -621,6 +652,7 @@ impl HeadParser {
                 return err(reject(400, "the authority of the request target is not valid"))
             }
             self.authority = authority
+            self.scheme = scheme
             let path = c.get(3) or ""
             self.path = if path.is_empty() { "/" } else { path }
             self.query = c.get(4) or ""
@@ -712,11 +744,14 @@ impl HeadParser {
             }
             if host.is_empty() {
                 host = value
-            } else if value.to_lower() != host.to_lower() {
+            } else if without_default_port(value.to_lower(), self.scheme) != without_default_port(
+                host.to_lower(),
+                self.scheme,
+            ) {
                 // RFC 9112 3.2.2 says to ignore `Host` when the target has an authority. This
                 // server is stricter: a front end that routes by `Host` and one that routes by
-                // the target would otherwise disagree about the request, so a difference (as
-                // text, in lower case, a default port written on one side only counts) is 400.
+                // the target would otherwise disagree about the request, so a difference is 400
+                // (compared as lower-case text, with the default port of the scheme cut off).
                 return err(
                     reject(
                         400,
@@ -1077,23 +1112,22 @@ impl Request {
     /// 400 for them.
     pub fn param(self, name: str) -> str? => self.params.get(name)
 
-    /// All the parameters of the query, decoded; see `parse_query`. More than `max_pairs` is a
-    /// 400 `Failure`, which a handler returns as it is.
-    pub fn query_values(self, max_pairs: int = 1000) -> Result[Map[str, List[str]]] {
+    /// All the parameters of the query, decoded; see `parse_query` for how. The query is already
+    /// bounded by `max_request_line`, so it is parsed whole, without a cap on its pairs.
+    pub fn query_values(self) -> Map[str, List[str]] {
         if let some(parsed) = self.parsed_query {
-            return ok(parsed)
+            return parsed
         }
-        let parsed = query_pairs(self.grammar.escapes, self.query, max_pairs)?
+        let empty: Map[str, List[str]] = {:}
+        let parsed = query_pairs(self.grammar.escapes, self.query, self.query.len() + 1) or empty
         self.parsed_query = some(parsed)
-        return ok(parsed)
+        return parsed
     }
 
     /// The first value of a parameter of the query, decoded.
-    pub fn query_value(self, name: str) -> Result[str?] {
-        let values = self.query_values()?.get(name) or {
-            return ok(none)
-        }
-        return ok(values.first())
+    pub fn query_value(self, name: str) -> str? {
+        let values = self.query_values().get(name)?
+        return values.first()
     }
 
     /// The length the body is declared to have: 0 when there is no body, `none` when it is
@@ -1242,7 +1276,8 @@ const KNOWN_METHODS: List[str] = [
 /// redirect. A literal is compared with the segment as it came on the wire, so it matches what
 /// `Request.path` says: `/admin` does not match `/%61dmin`. Only the values of `:name` and
 /// `*name` are percent-decoded. A literal is written as it appears in a URL, so it may hold
-/// `%XX` escapes and then matches exactly that text. A pattern that is malformed, that has a
+/// `%XX` escapes and then matches exactly that text, byte for byte: `%2f` and `%2F` are two
+/// different literals, and a client that writes the other one gets a 404. A pattern that is malformed, that has a
 /// literal that is not valid path text (a space, a control character, `?`, `#`, a bad escape, a
 /// `.` or `..`), that repeats a method and pattern, or that has a method that is not a token or
 /// is a lower-case spelling of a standard method, panics where it is added.
@@ -1406,9 +1441,19 @@ impl Router {
         }
         if let some(r) = route {
             for i in 0..values.len() {
-                values[i] = percent_decode(g.escapes, values[i], false) or {
+                let value = percent_decode(g.escapes, values[i], false) or {
                     return ok(text(400, "400 Bad Request: a parameter that is not valid text\n"))
                 }
+                // `%2F` is allowed inside a value, so a dot segment can hide in one
+                // (`a%2F..%2Fb`): the decoded value is checked as the path was, and for a C1
+                // control character, which the escape check on the path does not see.
+                if value.contains(".") && g.decoded_dot.is_match(value) {
+                    return ok(text(400, "400 Bad Request: a dot segment in a parameter\n"))
+                }
+                if g.c1_control.is_match(value) {
+                    return ok(text(400, "400 Bad Request: a control character in a parameter\n"))
+                }
+                values[i] = value
             }
             let params: Map[str, str] = {:}
             for i in 0..r.names.len() {
@@ -1641,13 +1686,17 @@ enum Line {
 }
 
 /// What a read of a line gave: its text, the end of the connection, or why the request is
-/// refused. A timeout is `Gone` unless `timeout_answers`, a line over 1 MiB is 414 and a line
-/// that is not UTF-8 is 400.
-fn read_head_line(conn: net.Conn, timeout_answers: bool) -> Line {
+/// refused. A timeout is `Gone` unless `timeout_answers`, a line over 1 MiB is 414 (431 for a
+/// field line, `field`) and a line that is not UTF-8 is 400.
+fn read_head_line(conn: net.Conn, timeout_answers: bool, field: bool) -> Line {
     let got = conn.read_line() or |e| {
         if let some(ne) = e.as[net.Error]() {
             return match ne {
-                LineTooLong => .Refuse(reject(414, "a line is longer than 1 MiB"))
+                LineTooLong => if field {
+                    .Refuse(reject(431, "a header field line is longer than 1 MiB"))
+                } else {
+                    .Refuse(reject(414, "the request line is longer than 1 MiB"))
+                }
                 InvalidData => .Refuse(reject(400, "a line is not UTF-8 text"))
                 Timeout => if timeout_answers {
                     .Refuse(reject(408, "the request head did not arrive in time"))
@@ -1795,7 +1844,8 @@ impl Server {
         while !self.stopping {
             // At the cap the server stops accepting: the backlog holds the connections that
             // wait. It looks again every few milliseconds (an event wait is not allowed on the
-            // main fiber).
+            // main fiber). Step 7: when `serve` can wait on a signal in a coroutine, this poll
+            // (about 200 wakeups a second while at the cap) goes away.
             while self.conns.len() >= self.options.max_connections && !self.stopping {
                 wait(0.005)
             }
@@ -1956,11 +2006,11 @@ impl Server {
 
     /// Answers with an error the server found in the request and ends the connection (the
     /// lingering close of 3.10 follows in the caller's return).
-    fn refuse(self, conn: net.Conn, why: Reject) {
+    fn refuse(self, conn: net.Conn, why: Reject, head_only: bool) {
         let sent = self.write_response(
             conn,
             error_response(why.status, why.why),
-            false,
+            head_only,
             true,
             false,
         )
@@ -2041,9 +2091,11 @@ impl Server {
     /// asked for it.
     fn body_for(self, conn: net.Conn, head: Head) -> BodyReader {
         let timeout = self.options.body_timeout
+        // Each piece is read whole, under one deadline for the call: `read_exact` waits for all
+        // `n` bytes, and a client that sends one byte at a time cannot extend `set_timeout`.
         let pull = fn(n: int) -> Result[Bytes] {
             conn.set_timeout(timeout)
-            return match conn.read(n) {
+            return match conn.read_exact(n) {
                 ok(data) => ok(data)
                 err(e)   => err(body_failure(e))
             }
@@ -2063,10 +2115,21 @@ impl Server {
     }
 
     /// Reads the request line, which may follow some empty lines (RFC 9112 2.2); the parser
-    /// counts them against `max_header_bytes`.
-    fn request_line(self, conn: net.Conn, parser: HeadParser) -> Line {
+    /// counts them against `max_header_bytes`. They and the request line have one deadline of
+    /// `limit` seconds from the call (0 is none): each read gets what is left of it, so no
+    /// sequence of empty lines extends it. The deadline passing is a silent close, as an idle
+    /// timeout is.
+    fn request_line(self, conn: net.Conn, parser: HeadParser, limit: float) -> Line {
+        let deadline = time.now() + limit
         while true {
-            let line = read_head_line(conn, false)
+            if limit > 0.0 {
+                let left = deadline - time.now()
+                if left <= 0.0 {
+                    return .Gone
+                }
+                conn.set_timeout(left)
+            }
+            let line = read_head_line(conn, false, false)
             match line {
                 Text(t) => {
                     if !t.is_empty() {
@@ -2090,25 +2153,26 @@ impl Server {
         var first = true
         while !self.stopping {
             state.phase = .Idle
-            conn.set_timeout(if first { o.header_timeout } else { o.idle_timeout })
+            let wait_limit = if first { o.header_timeout } else { o.idle_timeout }
+            conn.set_timeout(wait_limit)
             // TODO(set_line_limit): once `net.Conn.set_line_limit` exists, set it here, to the
             // larger of `max_request_line` and the longest field line, so that a huge line is
             // not buffered before it is refused. Until then a line is read whole (at most 1 MiB)
             // and the parser refuses it.
             first = false
             let parser = head_parser(self.grammar, o)
-            let started = self.request_line(conn, parser)
+            let started = self.request_line(conn, parser, wait_limit)
             let first_line = match started {
                 Text(t) => t
                 Gone    => return
                 Refuse(r) => {
-                    self.refuse(conn, r)
+                    self.refuse(conn, r, parser.method == "HEAD")
                     return
                 }
             }
             state.phase = .Head
             parser.request_line(first_line) or |r| {
-                self.refuse(conn, r)
+                self.refuse(conn, r, parser.method == "HEAD")
                 return
             }
             // The rest of the head has `header_timeout` for each line, and the whole of it is
@@ -2118,29 +2182,33 @@ impl Server {
             let head_started = time.now()
             var ended = false
             while !ended {
-                let line = read_head_line(conn, true)
+                let line = read_head_line(conn, true, true)
                 match line {
                     Text(t) => {
                         ended = parser.field_line(t) or |r| {
-                            self.refuse(conn, r)
+                            self.refuse(conn, r, parser.method == "HEAD")
                             return
                         }
                     }
                     Gone => return
                     Refuse(r) => {
-                        self.refuse(conn, r)
+                        self.refuse(conn, r, parser.method == "HEAD")
                         return
                     }
                 }
                 if !ended
                     && o.header_timeout > 0.0
                     && time.now() - head_started > o.header_timeout {
-                    self.refuse(conn, reject(408, "the request head did not arrive in time"))
+                    self.refuse(
+                        conn,
+                        reject(408, "the request head did not arrive in time"),
+                        parser.method == "HEAD",
+                    )
                     return
                 }
             }
             let head = parser.finish() or |r| {
-                self.refuse(conn, r)
+                self.refuse(conn, r, parser.method == "HEAD")
                 return
             }
             state.phase = .Handler

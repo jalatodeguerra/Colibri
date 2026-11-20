@@ -537,3 +537,43 @@ test "a * path with another method is 404" {
     r.get("/a", labelled("a"))
     assert_eq(call(r, "GET", "*").status, 404)
 }
+
+test "a dot segment hidden in a decoded value is 400: %2F is a separator after decoding" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", labelled("files"))
+    r.get("/admin/:id", labelled("admin"))
+    for target in [
+        "/files/%2e%2e%2f", "/files/a%2F..%2F..%2Fetc%2Fpasswd", "/admin/x%2F..%2F..%2Fpublic",
+        "/admin/%2e%2e", "/admin/a%2F%2e%2e", "/admin/..%2Fa", "/admin/%2E%2E%2f%2e", "/admin/a%2f.",
+    ] {
+        assert(is_400(r, target))
+    }
+}
+
+test "a legitimate encoded slash or dot in a value still passes" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", labelled("files"))
+    r.get("/admin/:id", labelled("admin"))
+    assert_eq(answer(r, "GET", "/admin/a%2Fb"), "200 admin id=a/b rest=-")
+    assert_eq(answer(r, "GET", "/admin/a.b%2Fc.d"), "200 admin id=a.b/c.d rest=-")
+    assert_eq(answer(r, "GET", "/admin/%2e%2ex"), "200 admin id=..x rest=-")
+    assert_eq(answer(r, "GET", "/admin/...%2Fx"), "200 admin id=.../x rest=-")
+    assert_eq(answer(r, "GET", "/files/a/b%2Fc"), "200 files id=- rest=a/b/c")
+}
+
+test "a decoded C1 control character in a value is 400, a printable one is not" {
+    let r = httpd_impl.Router()
+    r.get("/admin/:id", labelled("admin"))
+    assert(is_400(r, "/admin/%C2%85"))
+    assert(is_400(r, "/admin/a%C2%80b"))
+    assert(is_400(r, "/admin/%C2%9F"))
+    assert_eq(answer(r, "GET", "/admin/%C2%A0"), "200 admin id=\u{a0} rest=-")
+    assert_eq(answer(r, "GET", "/admin/%C3%A9"), "200 admin id=\u{e9} rest=-")
+}
+
+test "literals are compared byte for byte: %2f and %2F are different" {
+    let r = httpd_impl.Router()
+    r.get("/a%2Fb", labelled("upper"))
+    assert_eq(answer(r, "GET", "/a%2Fb"), "200 upper id=- rest=-")
+    assert_eq(answer(r, "GET", "/a%2fb"), "404 404 Not Found\n")
+}

@@ -74,8 +74,11 @@ test "an absolute-form target gives the host, and Host is still required in HTTP
 
 test "a Host that differs from the authority of an absolute-form target is 400" {
     assert_eq(common.status_of(common.head(["GET http://a.example/x HTTP/1.1", "Host: b.example"])), 400)
-    assert_eq(common.status_of(common.head(["GET http://a.example:80/x HTTP/1.1", "Host: a.example"])), 400)
-    assert_eq(common.status_of(common.head(["GET http://a.example/x HTTP/1.1", "Host: a.example:80"])), 400)
+    assert_eq(common.status_of(common.head(["GET http://a.example:8080/x HTTP/1.1", "Host: a.example"])), 400)
+    assert_eq(common.status_of(common.head(["GET http://a.example/x HTTP/1.1", "Host: a.example:8080"])), 400)
+    assert_eq(common.status_of(common.head(["GET http://a.example:443/x HTTP/1.1", "Host: a.example"])), 400)
+    assert_eq(common.status_of(common.head(["GET https://a.example:80/x HTTP/1.1", "Host: a.example"])), 400)
+    assert_eq(common.status_of(common.head(["GET http://a.example:80/x HTTP/1.1", "Host: a.example:81"])), 400)
     assert_eq(common.status_of(common.head(["GET http://a.example/x HTTP/1.1", "Host:"])), 400)
 }
 
@@ -102,4 +105,13 @@ test "an absolute-form target has the scheme http or https, in any case" {
 
 test "a Host that is invalid is refused also when the target is absolute" {
     assert_eq(common.status_of(common.head(["GET http://a.example/x HTTP/1.1", "Host: a b"])), 400)
+}
+
+test "the default port of the scheme is the same host as no port, on either side" {
+    assert_eq(common.status_of(common.head(["GET http://a.example:80/x HTTP/1.1", "Host: a.example"])), 0)
+    assert_eq(common.status_of(common.head(["GET http://a.example/x HTTP/1.1", "Host: a.example:80"])), 0)
+    assert_eq(common.status_of(common.head(["GET https://a.example:443/x HTTP/1.1", "Host: a.example"])), 0)
+    assert_eq(common.status_of(common.head(["GET https://a.example/x HTTP/1.1", "Host: A.Example:443"])), 0)
+    assert_eq(common.status_of(common.head(["GET http://[::1]:80/x HTTP/1.1", "Host: [::1]"])), 0)
+    assert_eq(common.status_of(common.head(["GET http://a.example:80/x HTTP/1.1", "Host: a.example:80"])), 0)
 }

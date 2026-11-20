@@ -158,6 +158,7 @@ impl Server {
     }
 
     /// `start` with more imports for the program, and statements for after `serve` returns.
+    #[allow(dead_code)]
     fn start_with(app: &str, options: &str, imports: &str, after: &str) -> Server {
         let source = PROGRAM
             .replace("@APP@", app)
@@ -876,7 +877,9 @@ fn a_reset_during_a_body_read_fails_the_handlers_read_and_the_server_goes_on() {
     let mut w = server.connect();
     w.send(request("POST", "/echo", &["Content-Length: 100"], b""));
     w.send("0123456789");
-    // The handler is reading by now or will be: the reset is what ends its read.
+    // The server must have the head before the reset: on some systems a reset discards what
+    // the server has not read yet. Then the handler is reading, and the reset ends its read.
+    server.wait_seen(1);
     w.reset();
     // The handler's coroutine has seen the error once the connection is gone from the count.
     server.wait_connections_at_most(1);
@@ -1046,16 +1049,9 @@ fn at_the_cap_a_new_connection_waits_until_one_ends() {
 }
 
 #[test]
-fn stopping_closes_the_idle_connections_and_ends_serve_and_the_address_is_free_again() {
-    let server = Server::start_with(
-        HELLO,
-        "httpd.Options {}",
-        "import net",
-        r#"    let again = net.listen(server.addr())
-    if again.is_ok() {
-        seen.items.push("listens again")
-    }"#,
-    );
+fn stopping_closes_the_idle_connections_and_ends_serve_and_nothing_listens_any_more() {
+    let server = Server::hello();
+    let addr = server.addr.clone();
     let mut idle: Vec<Wire> = (0..3).map(|_| server.connect()).collect();
     for w in &mut idle {
         assert_eq!(w.call(get("/")).status, 200);
@@ -1064,7 +1060,21 @@ fn stopping_closes_the_idle_connections_and_ends_serve_and_the_address_is_free_a
     for w in &mut idle {
         w.expect_silent_close();
     }
-    assert_eq!(seen, ["GET /", "GET /", "GET /", "listens again"]);
+    assert_eq!(seen, ["GET /", "GET /", "GET /"]);
+    // The listener is gone: a client does not get a connection to it. What it sees is a refusal
+    // (on Windows after about 2 s, so the ceiling is generous), never a served connection. The
+    // port is not bound again here: whether it can be at once differs between systems.
+    let target: std::net::SocketAddr = addr.parse().expect("an address");
+    if let Ok(stream) = std::net::TcpStream::connect_timeout(&target, EVENT) {
+        // Something else took the port in the meantime, or the system accepted into a dead
+        // backlog: a request must then get no answer from this server.
+        let mut w = Wire::from_stream(stream);
+        let _ = w.try_send(&get("/"));
+        assert!(matches!(
+            w.read_within(Duration::from_secs(2), false),
+            Read1::Closed | Read1::Timeout
+        ));
+    }
 }
 
 #[test]
@@ -1350,6 +1360,9 @@ fn dot_segments_and_escaped_control_characters_are_400_and_never_reach_a_handler
         "/items/%00",
         "/items/a%0d%0ab",
         "/items/%zz",
+        "/files/%2e%2e%2f",
+        "/files/a%2F..%2F..%2Fetc%2Fpasswd",
+        "/items/x%2F..%2F..%2Fpublic",
     ] {
         let r = w.call(get(target));
         assert_eq!(r.status, 400, "{target}");
@@ -1359,4 +1372,137 @@ fn dot_segments_and_escaped_control_characters_are_400_and_never_reach_a_handler
     // They are recorded as requests (the server saw them), but no route ran: the answers
     // above are the router's, and `item` would have said `item `.
     server.finish();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Deadlines that no sequence of bytes may extend
+// ---------------------------------------------------------------------------------------------
+
+/// Sends `piece` every 0.3 s (the pace is the wait for an answer) until the server ends the
+/// connection or `rounds` pieces are sent; what ended it, and how long it took.
+fn trickle(w: &mut Wire, piece: &[u8], rounds: usize) -> (Read1, Duration, usize) {
+    let started = Instant::now();
+    for sent in 0..rounds {
+        if !w.try_send(piece) {
+            return (Read1::Closed, started.elapsed(), sent);
+        }
+        match w.read_within(Duration::from_millis(300), false) {
+            Read1::Timeout => {}
+            other => return (other, started.elapsed(), sent + 1),
+        }
+    }
+    (Read1::Timeout, started.elapsed(), rounds)
+}
+
+#[test]
+fn empty_lines_sent_slowly_do_not_extend_the_header_timeout_of_a_new_connection() {
+    // An empty line every 0.3 s: each read would wait its own 0.5 s, but the empty lines and
+    // the request line have 0.5 s together.
+    let server = Server::app("httpd.Options { header_timeout: 0.5 }");
+    let mut w = server.connect();
+    let (ended, waited, sent) = trickle(&mut w, b"\r\n", 40);
+    assert!(
+        matches!(ended, Read1::Closed),
+        "{ended:?} after {sent} lines"
+    );
+    assert!(waited >= NOT_BEFORE, "closed after only {waited:?}");
+    assert!(waited < EVENT, "closed after {waited:?}");
+    assert_eq!(server.finish().seen, Vec::<String>::new());
+}
+
+#[test]
+fn empty_lines_sent_slowly_do_not_extend_the_idle_timeout_of_a_kept_alive_connection() {
+    let server = Server::app("httpd.Options { idle_timeout: 0.5 }");
+    let mut w = server.connect();
+    assert_eq!(w.call(get("/")).status, 200);
+    let (ended, waited, sent) = trickle(&mut w, b"\r\n", 40);
+    assert!(
+        matches!(ended, Read1::Closed),
+        "{ended:?} after {sent} lines"
+    );
+    assert!(waited >= NOT_BEFORE, "closed after only {waited:?}");
+    assert!(waited < EVENT, "closed after {waited:?}");
+    drop(w);
+    assert_eq!(server.finish().seen, ["GET /"]);
+}
+
+#[test]
+fn a_request_line_sent_a_byte_at_a_time_is_cut_off_by_the_same_deadline() {
+    let server = Server::app("httpd.Options { header_timeout: 0.5 }");
+    let mut w = server.connect();
+    let (ended, waited, _) = trickle(&mut w, b"G", 40);
+    assert!(matches!(ended, Read1::Closed), "{ended:?}");
+    assert!(waited >= NOT_BEFORE && waited < EVENT, "{waited:?}");
+    assert_eq!(server.finish().seen, Vec::<String>::new());
+}
+
+#[test]
+fn a_body_sent_a_byte_at_a_time_gets_a_408_after_the_body_timeout() {
+    // One byte every 0.3 s is a read that never waits 0.5 s, but a piece has 0.5 s altogether.
+    let server = Server::app("httpd.Options { body_timeout: 0.5 }");
+    let mut w = server.connect();
+    w.send(request("POST", "/echo", &["Content-Length: 100"], b""));
+    let (ended, waited, sent) = trickle(&mut w, b"x", 40);
+    let r = ended.response();
+    assert_eq!(r.status, 408, "after {sent} bytes");
+    assert!(r.says_close());
+    assert!(waited >= NOT_BEFORE && waited < EVENT, "{waited:?}");
+    drop(w);
+    assert_eq!(server.finish().seen, ["POST /echo", "body failed"]);
+}
+
+#[test]
+fn a_body_that_arrives_in_pieces_within_the_timeout_is_read_whole() {
+    let server = Server::app("httpd.Options { body_timeout: 5.0 }");
+    let mut w = server.connect();
+    w.send(request("POST", "/echo", &["Content-Length: 6"], b""));
+    for piece in ["ab", "cd", "ef"] {
+        w.send(piece);
+        thread::sleep(Duration::from_millis(50));
+    }
+    let r = w.read();
+    assert_eq!(r.status, 200);
+    assert_eq!(r.text(), "abcdef");
+    drop(w);
+    server.finish();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Refusals: HEAD, and lines over 1 MiB
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_refusal_of_a_head_request_has_no_body() {
+    let server = Server::hello();
+    let mut w = server.connect();
+    w.send(head("HEAD / HTTP/1.1", &["Host: test", "X-A : 1"]));
+    let r = w.read_head();
+    assert_eq!(r.status, 400);
+    assert!(r.header("content-length").is_some());
+    assert!(r.says_close());
+    // Nothing follows the head: the text of the error is not sent.
+    w.expect_silent_close();
+    assert_eq!(server.finish().seen, Vec::<String>::new());
+}
+
+#[test]
+fn a_header_field_line_over_a_megabyte_is_a_431_and_a_request_line_over_it_a_414() {
+    let server = Server::hello();
+    // A little over `MAX_LINE` (1 MiB) of `net`, so that what is left to send after the server
+    // gave up is small enough for the lingering close to read.
+    let long = "a".repeat(1_048_576 + 1000);
+    let mut w = server.connect();
+    w.send(format!(
+        "GET / HTTP/1.1\r\nHost: test\r\nX-Long: {long}\r\n\r\n"
+    ));
+    let r = w.read();
+    assert_eq!(r.status, 431);
+    assert!(r.says_close());
+    w.expect_closed();
+    let mut w = server.connect();
+    w.send(format!("GET /{long} HTTP/1.1\r\nHost: test\r\n\r\n"));
+    let r = w.read();
+    assert_eq!(r.status, 414);
+    w.expect_closed();
+    assert_eq!(server.finish().seen, Vec::<String>::new());
 }

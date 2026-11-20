@@ -80,15 +80,15 @@ test "a Content-Length is added for a body, unless one is given" {
 
 test "query_value is the first value, decoded" {
     let req = httpd_impl.test_request("GET", "/s?q=hello+world&tag=a&tag=b&name=caf%C3%A9")
-    assert_eq(req.query_value("q").expect("parses"), some("hello world"))
-    assert_eq(req.query_value("tag").expect("parses"), some("a"))
-    assert_eq(req.query_value("name").expect("parses"), some("café"))
-    assert_eq(req.query_value("missing").expect("parses"), none)
+    assert_eq(req.query_value("q"), some("hello world"))
+    assert_eq(req.query_value("tag"), some("a"))
+    assert_eq(req.query_value("name"), some("café"))
+    assert_eq(req.query_value("missing"), none)
 }
 
 test "query_values has every value of every name" {
     let req = httpd_impl.test_request("GET", "/s?tag=a&tag=b&x=1")
-    let all = req.query_values().expect("parses")
+    let all = req.query_values()
     assert_eq(all.get("tag"), some(["a", "b"]))
     assert_eq(all.get("x"), some(["1"]))
     assert_eq(all.len(), 2)
@@ -96,14 +96,14 @@ test "query_values has every value of every name" {
 
 test "a request with no query has no parameters" {
     let req = httpd_impl.test_request("GET", "/s")
-    assert_eq(req.query_values().expect("parses").len(), 0)
-    assert_eq(req.query_value("a").expect("parses"), none)
+    assert_eq(req.query_values().len(), 0)
+    assert_eq(req.query_value("a"), none)
 }
 
 test "the query is parsed once and the path and query stay as sent" {
     let req = httpd_impl.test_request("GET", "/s%20x?a=%41")
-    assert_eq(req.query_value("a").expect("parses"), some("A"))
-    assert_eq(req.query_value("a").expect("parses"), some("A"))
+    assert_eq(req.query_value("a"), some("A"))
+    assert_eq(req.query_value("a"), some("A"))
     assert_eq(req.path, "/s%20x")
     assert_eq(req.query, "a=%41")
 }

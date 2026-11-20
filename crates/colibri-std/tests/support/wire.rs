@@ -103,6 +103,16 @@ impl Wire {
         }
     }
 
+    /// A client over a stream that was connected elsewhere.
+    pub fn from_stream(stream: TcpStream) -> Wire {
+        stream.set_nodelay(true).ok();
+        Wire {
+            stream,
+            buf: Vec::new(),
+            closed: false,
+        }
+    }
+
     /// Writes `data`; a failure (the server already closed) is the caller's to ignore or not.
     pub fn try_send(&mut self, data: &[u8]) -> bool {
         self.stream.set_write_timeout(Some(EVENT)).ok();
