@@ -171,7 +171,7 @@ struct Sync<'a> {
     /// The package that first asked for each git dependency of this run.
     asked: HashMap<String, String>,
     /// A manifest in the tree could not be read into a `Manifest` (it does not parse, does
-    /// not validate, or is not there): what was collected is not the whole tree, so the lock
+    /// not validate, or cannot be read): what was collected is not the whole tree, so the lock
     /// made from it would drop the entries of what was not seen. It is not written.
     incomplete: bool,
 }
@@ -225,9 +225,14 @@ impl Sync<'_> {
         if !self.visited.insert(key) {
             return Ok(());
         }
-        let Ok(text) = std::fs::read_to_string(dir.join(MANIFEST_FILE)) else {
-            self.incomplete = true;
-            return Ok(());
+        let text = match std::fs::read_to_string(dir.join(MANIFEST_FILE)) {
+            Ok(text) => text,
+            Err(e) => {
+                // No manifest has no dependencies to lose (a script; the loader reports a
+                // path dependency without one); one that is there and cannot be read has.
+                self.incomplete |= e.kind() != std::io::ErrorKind::NotFound;
+                return Ok(());
+            }
         };
         let manifest = match read_manifest(dir, &text)? {
             Ok(m) => m,
