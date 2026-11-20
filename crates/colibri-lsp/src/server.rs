@@ -379,6 +379,11 @@ impl<'c> Server<'c> {
             References::METHOD => self.reply_refusable(params, Self::references),
             PrepareRenameRequest::METHOD => self.reply_refusable(params, Self::prepare_rename),
             Rename::METHOD => self.reply_refusable(params, Self::rename),
+            // For the tests that bound the work a request does: what this server has read.
+            "colibri/counters" => {
+                let (files_read, analyses) = crate::analysis::counters();
+                Ok(serde_json::json!({"filesRead": files_read, "analyses": analyses}))
+            }
             _ => {
                 self.respond_err(
                     id,
@@ -703,9 +708,7 @@ impl<'c> Server<'c> {
         // refused earlier when it is declared outside, and a rename that would edit any other
         // file outside is refused here.
         if let Some(root) = &self.settings.root
-            && let Some(outside) = by_file
-                .keys()
-                .find(|f| !f.starts_with(root) && **f != path)
+            && let Some(outside) = by_file.keys().find(|f| !f.starts_with(root) && **f != path)
         {
             return Err(rename::outside_folder_message(
                 &rename::shown(None, outside),

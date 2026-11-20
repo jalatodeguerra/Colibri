@@ -141,7 +141,6 @@ pub fn plan<'a>(
                 &shown(None, &file),
                 &shown(None, root),
             ));
-
         }
     }
     // Names that only a type (or a callee) can resolve: refuse where that did not work.

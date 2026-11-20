@@ -133,6 +133,15 @@ impl Client {
             .unwrap_or_default()
     }
 
+    /// `(files read, programs checked)` by the server so far.
+    fn counters(&mut self) -> (u64, u64) {
+        let c = self.request("colibri/counters", Value::Null);
+        (
+            c["filesRead"].as_u64().expect("a count"),
+            c["analyses"].as_u64().expect("a count"),
+        )
+    }
+
     fn hover(&mut self, path: &Path, line: u32, character: u32) -> Value {
         self.request(
             "textDocument/hover",
@@ -3249,7 +3258,7 @@ fn nested_and_dependent_packages_are_edited_within_the_workspace_only() {
 
 /// A package with `n` modules (in subfolders, or all in the root), each using `util.f`;
 /// renames `f` and returns how long that took.
-fn big_tree(n: usize, flat: bool, name: &str) -> std::time::Duration {
+fn big_tree(n: usize, flat: bool, name: &str) -> (std::time::Duration, (u64, u64)) {
     let dir = temp_dir(name);
     write(&dir, "colibri.toml", PKG);
     write(&dir, "main.colibri", "import util\nprint(util.f())\n");
@@ -3268,9 +3277,13 @@ fn big_tree(n: usize, flat: bool, name: &str) -> std::time::Duration {
     }
     let mut c = Client::start(Some(&dir), Value::Null);
     c.open(&util, util_text);
+    let before = c.counters();
     let t = std::time::Instant::now();
     let edit = c.rename(&util, pos_of(util_text, "f()"), "g");
     let took = t.elapsed();
+    let after = c.counters();
+    let work = (after.0 - before.0, after.1 - before.1);
+    eprintln!("rename in {n} files ({name}): {work:?}");
     eprintln!("rename in {n} files: {took:?}");
     let edit = edit.expect("the rename is answered");
     // Deterministic: every module (n), `main` and `util` are edited, so every file was
@@ -3278,16 +3291,35 @@ fn big_tree(n: usize, flat: bool, name: &str) -> std::time::Duration {
     let changes = edit["changes"].as_object().expect("changes");
     assert_eq!(changes.len(), n + 2, "{name}");
     c.shutdown();
-    took
+    (took, work)
 }
 
 #[test]
-fn rename_in_a_big_tree_takes_seconds_not_minutes() {
-    // It took 11.5 s in subfolders and 4 s flat when every file lookup scanned the buffers,
-    // and well under a second now; the bound is wide so that a slow machine cannot fail it,
-    // and `big_tree` checks that every file was edited.
+fn rename_in_a_big_tree_does_work_linear_in_its_size() {
+    // Counted, not timed: a rename read every file and checked the program a number of times
+    // that grew with the square of the files when each lookup scanned all the others (11.5 s
+    // at this size). Now it reads each file a few times and checks the program a few times
+    // per file at most (measured: 4 reads and 2 checks per file in subfolders, 2 reads and
+    // no more than a couple of checks flat).
     for (flat, name) in [(false, "rv4_big_sub"), (true, "rv4_big_flat")] {
-        let took = big_tree(1900, flat, name);
+        let (small, big) = (475, 1900);
+        let (_, (small_reads, small_checks)) = big_tree(small, flat, &format!("{name}_small"));
+        let (took, (reads, checks)) = big_tree(big, flat, name);
+        let files = big as u64 + 2;
+        assert!(
+            reads <= 6 * files,
+            "{name}: {reads} reads for {files} files"
+        );
+        assert!(
+            checks <= 3 * files,
+            "{name}: {checks} checks for {files} files"
+        );
+        // Four times the files, about four times the work (and not sixteen).
+        assert!(
+            reads <= 5 * small_reads && checks <= 5 * small_checks.max(1) + 2,
+            "{name}: {small_reads} reads and {small_checks} checks at {small} files, {reads} and {checks} at {big}"
+        );
+        // The time is only a safety net for a machine that is far too slow for the counts.
         assert!(
             took < std::time::Duration::from_secs(30),
             "{name}: {took:?}"

@@ -104,6 +104,7 @@ impl<'a> Overlay<'a> {
 
 impl SourceFs for Overlay<'_> {
     fn read(&self, path: &Path) -> Result<String, String> {
+        COUNTERS.with(|c| c.files_read.set(c.files_read.get() + 1));
         match self.buffer(path) {
             Some(text) => Ok(text.clone()),
             None => DiskFs.read(path),
@@ -188,6 +189,26 @@ pub struct Analysis {
     by_path: HashMap<PathBuf, FileId>,
 }
 
+/// How much work the server on this thread has done: what the tests that bound the cost of a
+/// request count, instead of the time it took. (Each server runs on a thread of its own, and
+/// the counts are of that thread.)
+#[derive(Default)]
+struct Counters {
+    /// Files read through the overlay (a buffer or the disk).
+    files_read: std::cell::Cell<u64>,
+    /// Programs checked.
+    analyses: std::cell::Cell<u64>,
+}
+
+thread_local! {
+    static COUNTERS: Counters = Counters::default();
+}
+
+/// `(files read, programs checked)` so far by the server of this thread.
+pub fn counters() -> (u64, u64) {
+    COUNTERS.with(|c| (c.files_read.get(), c.analyses.get()))
+}
+
 impl Analysis {
     fn new(
         sources: SourceMap,
@@ -197,6 +218,7 @@ impl Analysis {
         host: Rc<HostEnv>,
         spec: Spec,
     ) -> Analysis {
+        COUNTERS.with(|c| c.analyses.set(c.analyses.get() + 1));
         let canon: Vec<PathBuf> = (0..)
             .map(FileId)
             .take_while(|f| sources.contains(*f))
