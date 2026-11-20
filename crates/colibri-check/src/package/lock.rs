@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 
 use colibri_syntax::{Diagnostic, FileId};
 
+use super::git;
 use super::manifest::{GitSource, GitSpec};
 use super::toml::{self, ValueKind};
 
@@ -121,6 +122,11 @@ pub struct Lock {
 
 impl Lock {
     pub fn parse(file: FileId, text: &str) -> Result<Lock, Diagnostic> {
+        Self::parse_unmasked(file, text)
+            .map_err(|d| git::hide_secrets_in(d, &git::secrets_in(text)))
+    }
+
+    fn parse_unmasked(file: FileId, text: &str) -> Result<Lock, Diagnostic> {
         let tables = toml::parse(file, text)?;
         let mut lock = Lock::default();
         for table in &tables {

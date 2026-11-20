@@ -1235,6 +1235,100 @@ pub fn mask_source_text(text: &str) -> String {
     mask_credentials(&masked)
 }
 
+/// The user information (everything between the scheme and the last `@`) of every string in
+/// `text` (a `colibri.toml` or `colibri.lock`) that has credentials in it, whatever key or
+/// table it stands under: the values as written, before a message about them is made (a path
+/// is normalised, a name is quoted, a branch is checked). [`hide_secrets`] takes them out of
+/// such a message.
+///
+/// When the text does not parse, every line with an `@` in it is looked at as
+/// [`mask_source_text`] does.
+pub fn secrets_in(text: &str) -> Vec<String> {
+    fn of(candidate: &str, out: &mut Vec<String>) {
+        if userinfo_problem(candidate).is_none() {
+            return;
+        }
+        let Some((start, at)) = credential_range(candidate, true) else {
+            return;
+        };
+        let found = &candidate[start..at];
+        let found = found.find("://").map_or(found, |i| &found[i + 3..]);
+        if !found.is_empty() && !out.iter().any(|f| f == found) {
+            out.push(found.to_string());
+        }
+    }
+    fn value(v: &super::toml::Value, out: &mut Vec<String>) {
+        use super::toml::ValueKind;
+        match &v.kind {
+            ValueKind::Str(s) => of(s, out),
+            ValueKind::Array(items) => items.iter().for_each(|i| value(i, out)),
+            ValueKind::Table(entries) => {
+                for e in entries {
+                    of(&e.key, out);
+                    value(&e.value, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    match super::toml::parse(colibri_syntax::FileId(0), text) {
+        Ok(tables) => {
+            for t in &tables {
+                t.path.iter().for_each(|segment| of(segment, &mut out));
+                for e in &t.entries {
+                    of(&e.key, &mut out);
+                    value(&e.value, &mut out);
+                }
+            }
+        }
+        Err(_) => {
+            for line in text.lines() {
+                if let Some((start, at)) = credential_range(line, false) {
+                    let found = line[start..at].trim_start_matches(['"', '\'', ' ', '\t']);
+                    let found = found.find("://").map_or(found, |i| &found[i + 3..]);
+                    if !found.is_empty() && !out.iter().any(|f| f == found) {
+                        out.push(found.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `message` with each of `secrets` (see [`secrets_in`]) that stands before an `@` replaced by
+/// `***`. The secret is also looked for with its `//` written `/` (a path that was normalised
+/// before it was quoted).
+pub fn hide_secrets(message: &str, secrets: &[String]) -> String {
+    let mut out = message.to_string();
+    for secret in secrets {
+        let forms = [secret.clone(), secret.replace("//", "/")];
+        for form in forms {
+            if !form.is_empty() && out.contains(&format!("{form}@")) {
+                out = out.replace(&format!("{form}@"), "***@");
+            }
+        }
+    }
+    out
+}
+
+/// `diagnostic` with [`hide_secrets`] applied to its message, labels and hint.
+pub fn hide_secrets_in(
+    mut diagnostic: colibri_syntax::Diagnostic,
+    secrets: &[String],
+) -> colibri_syntax::Diagnostic {
+    if secrets.is_empty() {
+        return diagnostic;
+    }
+    diagnostic.message = hide_secrets(&diagnostic.message, secrets);
+    for (_, text) in &mut diagnostic.labels {
+        *text = hide_secrets(text, secrets);
+    }
+    diagnostic.hint = diagnostic.hint.map(|h| hide_secrets(&h, secrets));
+    diagnostic
+}
+
 /// What is wrong with the user information of `url`, if anything, without repeating it. An
 /// `http`, `https`, `git` or `file` url may have no `@` at all (what stands before it would be
 /// written to `colibri.lock` and printed in messages; a git credential helper keeps it out of
@@ -1793,6 +1887,42 @@ mod tests {
         );
         assert!(said[0].contains(".lock"), "{}", said[0]);
         let _ = remove_tree(&cache);
+    }
+
+    #[test]
+    fn a_secret_is_found_in_any_value_and_hidden_in_a_message_made_from_it() {
+        for (text, message) in [
+            (
+                "[dependencies]\nx = { path = \"https://u:SeCrEt@h/r\" }\n",
+                "not at `a/https:/u:SeCrEt@h/r`",
+            ),
+            (
+                "[dependencies]\nx = { tag = [\"git:SeCrEt@h:r\"] }\n",
+                "`git:SeCrEt@h:r` is not valid",
+            ),
+            (
+                "[dependencies]\n\"https://u:SeCrEt@h\" = 1\n",
+                "`https://u:SeCrEt@h` is no name",
+            ),
+            (
+                "[dependencies.\"https://u:SeCrEt@h\"]\n",
+                "`https://u:SeCrEt@h` is no name",
+            ),
+            // Not a manifest at all.
+            (
+                "x = { path = \"https://u:SeCrEt@h/r\" \n",
+                "not at `a/https:/u:SeCrEt@h/r`",
+            ),
+        ] {
+            let shown = hide_secrets(message, &secrets_in(text));
+            assert!(
+                shown.contains("***@") && !shown.contains("SeCrEt"),
+                "{text}: {shown}"
+            );
+        }
+        // A plain user name and an ordinary string are nothing to hide.
+        assert!(secrets_in("x = \"git@host:r\"\nz = \"plain\"\n").is_empty());
+        assert_eq!(hide_secrets("a@b", &[]), "a@b");
     }
 
     #[test]

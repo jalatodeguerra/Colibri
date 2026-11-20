@@ -733,7 +733,9 @@ fn a_path_and_a_git_package_of_one_name_are_an_error_naming_both() {
     );
     assert!(
         out.stderr.contains(&native(&shared_path))
-            && out.stderr.contains(&native(&sb.home().join("git/checkouts"))),
+            && out
+                .stderr
+                .contains(&native(&sb.home().join("git/checkouts"))),
         "{}",
         out.stderr
     );
@@ -1322,10 +1324,7 @@ fn set_modified(dir: &Path, when: std::time::SystemTime) {
 /// pieces (`home\git\db\x.git` on Windows) whatever way the test joined it
 /// (`home\git/db\x.git`).
 fn native(path: &Path) -> String {
-    path.components()
-        .collect::<PathBuf>()
-        .display()
-        .to_string()
+    path.components().collect::<PathBuf>().display().to_string()
 }
 
 /// The single folder under `dir` whose name ends in `suffix`.
@@ -2354,6 +2353,53 @@ fn a_damaged_database_says_where_to_delete_it() {
         "{}",
         out.stderr
     );
+}
+
+/// What a manifest can hold in a value that is not a url: a credential in it is in no message
+/// about it, whatever the key and whatever the command.
+#[test]
+fn a_credential_in_any_value_of_a_manifest_is_in_no_message_about_it() {
+    let sb = Sandbox::new("secret_messages");
+    let cases = [
+        "x = { path = \"https://u:SeCrEt@h.invalid/r\" }",
+        "x = { path = \"git:SeCrEt@h.invalid:r\" }",
+        "x = { git = \"https://h.invalid/r\", branch = \"https://u:SeCrEt@h\" }",
+        "x = { git = \"https://h.invalid/r\", tag = \"https://u:SeCrEt@h\" }",
+        "x = { git = \"https://h.invalid/r\", rev = \"https://u:SeCrEt@h\" }",
+        "x = { version = \"https://u:SeCrEt@h\" }",
+        "\"https://u:SeCrEt@h\" = { path = \"p\" }",
+        "x = { git = \"https://h.invalid/r\", features = [\"https://u:SeCrEt@h\"] }",
+    ];
+    for (i, dep) in cases.iter().enumerate() {
+        let app = sb.app(&format!("secret{i}"), dep, &[]);
+        for args in [
+            vec!["check"],
+            vec!["run"],
+            vec!["update"],
+            vec!["check", "--offline"],
+        ] {
+            let mut args = args;
+            let target = app.to_str().unwrap().to_string();
+            args.push(&target);
+            let out = sb.colibri(&args);
+            assert_eq!(out.code, 1, "{dep}: {}", out.stderr);
+            assert!(
+                !format!("{}{}", out.stdout, out.stderr).contains("SeCrEt"),
+                "{dep} {args:?}: {}{}",
+                out.stdout,
+                out.stderr
+            );
+        }
+    }
+    // The package name is a value too.
+    sb.write(
+        "apps/named/colibri.toml",
+        "[package]\nname = \"https://u:SeCrEt@h\"\n",
+    );
+    sb.write("apps/named/main.colibri", "fn main() {}\n");
+    let out = sb.colibri(&["check", sb.path("apps/named").to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(!out.stderr.contains("SeCrEt"), "{}", out.stderr);
 }
 
 #[test]

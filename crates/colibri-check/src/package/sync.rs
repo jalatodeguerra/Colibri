@@ -3,6 +3,7 @@
 //! command line tool calls it, before it loads a program: the loader and the language server
 //! read the lock and the cache and never fetch.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -55,6 +56,18 @@ fn sync_in(
     options: &SyncOptions,
     cache: Option<PathBuf>,
 ) -> Result<SyncReport, String> {
+    // Every error says things about values in manifests; none shows a credential written in
+    // one of them, whatever it is about (see `git::secrets_in`).
+    let secrets = RefCell::new(Vec::new());
+    sync_with(root, options, cache, &secrets).map_err(|m| git::hide_secrets(&m, &secrets.borrow()))
+}
+
+fn sync_with(
+    root: &Path,
+    options: &SyncOptions,
+    cache: Option<PathBuf>,
+    secrets: &RefCell<Vec<String>>,
+) -> Result<SyncReport, String> {
     let lock_path = root.join(LOCK_FILE);
     // A lock that is there but cannot be read or understood is an error, never "no lock":
     // the file would be overwritten, and with it the commits it pinned.
@@ -75,6 +88,9 @@ fn sync_in(
             ));
         }
     };
+    if let Some(text) = &old_text {
+        secrets.borrow_mut().extend(git::secrets_in(text));
+    }
     let old = match &old_text {
         Some(text) => Lock::parse(FileId(0), text).map_err(|d| {
             format!(
@@ -94,6 +110,7 @@ fn sync_in(
         report: SyncReport::default(),
         updated: HashSet::new(),
         asked: HashMap::new(),
+        secrets,
     };
     if options.locked && options.update == Update::Nothing {
         // What the lock cannot vouch for is known from the manifests the user wrote, before
@@ -157,6 +174,8 @@ struct Sync<'a> {
     updated: HashSet<String>,
     /// The package that first asked for each git dependency of this run.
     asked: HashMap<String, String>,
+    /// The credentials written in the manifests read so far.
+    secrets: &'a RefCell<Vec<String>>,
 }
 
 impl Sync<'_> {
@@ -170,6 +189,7 @@ impl Sync<'_> {
         let Ok(text) = std::fs::read_to_string(dir.join(MANIFEST_FILE)) else {
             return Ok(());
         };
+        self.secrets.borrow_mut().extend(git::secrets_in(&text));
         let Ok(manifest) = manifest::parse(FileId(0), &text) else {
             return Ok(());
         };
@@ -211,6 +231,7 @@ impl Sync<'_> {
         let Ok(text) = std::fs::read_to_string(dir.join(MANIFEST_FILE)) else {
             return Ok(());
         };
+        self.secrets.borrow_mut().extend(git::secrets_in(&text));
         let manifest = match manifest::parse(FileId(0), &text) {
             Ok(m) => m,
             // `run` and `check` leave the report to the loader, which shows the source line;

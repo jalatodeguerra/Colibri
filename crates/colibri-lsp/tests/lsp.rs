@@ -267,11 +267,7 @@ fn make_link(target: &Path, link: &Path) {
             // native `\` paths in quotes: `cmd` has its own rules for quotes, so the usual
             // escaping of an argument would break it.
             if symlink_dir(target, link).is_err() {
-                let command = format!(
-                    "mklink /J \"{}\" \"{}\"",
-                    link.display(),
-                    target.display()
-                );
+                let command = format!("mklink /J \"{}\" \"{}\"", link.display(), target.display());
                 let made = std::process::Command::new("cmd")
                     .arg("/C")
                     .raw_arg(format!("\"{command}\""))
@@ -3323,6 +3319,43 @@ fn a_masked_non_ascii_credential_keeps_the_columns_after_it() {
     let shown = d[0].to_string();
     assert!(!shown.contains(":p@"), "{shown}");
     c.shutdown();
+}
+
+/// Values of a manifest that are not urls and have a credential written in them: the messages
+/// about them quote them, and must not show it.
+const CREDENTIAL_VALUES: [&str; 9] = [
+    "x = { path = \"https://u:SeCrEt@h.invalid/r\" }",
+    "x = { path = \"git:SeCrEt@h.invalid:r\" }",
+    "x = { git = \"https://h.invalid/r\", branch = \"https://u:SeCrEt@h\" }",
+    "x = { git = \"https://h.invalid/r\", tag = \"https://u:SeCrEt@h\" }",
+    "x = { git = \"https://h.invalid/r\", rev = \"https://u:SeCrEt@h\" }",
+    "x = { version = \"https://u:SeCrEt@h\" }",
+    "\"https://u:SeCrEt@h\" = { path = \"p\" }",
+    "x = { git = \"https://h.invalid/r\", features = [\"https://u:SeCrEt@h\"] }",
+    "x = { path = \"p\", name = \"https://u:SeCrEt@h\" }",
+];
+
+#[test]
+fn a_credential_in_any_value_of_a_manifest_is_in_no_message_about_it() {
+    for (i, dependency) in CREDENTIAL_VALUES.iter().enumerate() {
+        let dir = temp_dir(&format!("secret_in_messages{i}"));
+        let manifest = format!("[package]\nname = \"demo\"\n\n[dependencies]\n{dependency}\n");
+        let toml = write(&dir, "colibri.toml", &manifest);
+        let main_text = "fn main() {}\n";
+        let main = write(&dir, "main.colibri", main_text);
+        let mut c = Client::start(Some(&dir), Value::Null);
+        c.open(&main, main_text);
+        // The manifest is reported on its own file, and on nothing else is it quoted.
+        let d = c.diags(&toml);
+        assert!(!d.is_empty(), "{dependency}: nothing was reported");
+        let shown = c
+            .diagnostics
+            .values()
+            .map(|d| serde_json::to_string(d).unwrap())
+            .collect::<String>();
+        assert!(!shown.contains("SeCrEt"), "{dependency}: {shown}");
+        c.shutdown();
+    }
 }
 
 #[test]

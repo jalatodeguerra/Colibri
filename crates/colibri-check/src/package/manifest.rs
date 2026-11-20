@@ -2,6 +2,7 @@
 
 use colibri_syntax::{Diagnostic, FileId, Span};
 
+use super::git;
 use super::toml::{self, Entry, Table, ValueKind};
 
 /// A dependency listed in `[dependencies]`.
@@ -79,6 +80,18 @@ pub struct Manifest {
 
 /// Parses a manifest; every problem is a diagnostic in file `file`.
 pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
+    parse_unmasked(file, text).map_err(|errors| {
+        // A message quotes a value as it was written (a branch name, a package name, a path
+        // that went through `normalize`): not with a credential in it, whatever the key.
+        let secrets = git::secrets_in(text);
+        errors
+            .into_iter()
+            .map(|d| git::hide_secrets_in(d, &secrets))
+            .collect()
+    })
+}
+
+fn parse_unmasked(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
     let tables = toml::parse(file, text).map_err(|d| vec![d])?;
     let mut errors = Vec::new();
     let mut name = None;

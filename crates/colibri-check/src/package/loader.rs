@@ -106,6 +106,11 @@ struct Loader<'a> {
     packages: Vec<PackageNode>,
     package_keys: HashMap<(usize, PathBuf), usize>,
     diags: Vec<Diagnostic>,
+    /// The credentials written in the manifests and the lock file read so far (see
+    /// [`git::secrets_in`]), and the files they were read from: a message about a value in
+    /// one of them never shows them, whatever it says and wherever it is made.
+    secrets: Vec<String>,
+    config_files: HashSet<FileId>,
     dropped: Vec<Dropped>,
     /// `colibri.lock` of the root package, read when the first git dependency needs it.
     lock: Option<Lock>,
@@ -188,6 +193,8 @@ pub fn load_with(
         packages: Vec::new(),
         package_keys: HashMap::new(),
         diags: Vec::new(),
+        secrets: Vec::new(),
+        config_files: HashSet::new(),
         dropped: Vec::new(),
         lock: None,
         lock_read: false,
@@ -252,6 +259,21 @@ pub fn load_with(
 impl Loader<'_> {
     /// Reads the manifest of the tree rooted at `dir` (and, recursively, its dependencies).
     /// `Err` is a message about the folder itself.
+    /// Puts a manifest or a lock file in the source map with its credentials hidden, and
+    /// remembers them for the messages about it.
+    fn add_config_file(&mut self, path: &Path, text: &str) -> FileId {
+        let file = self
+            .sources
+            .add_file(self.fs.display_name(path), git::mask_source_text(text));
+        for secret in git::secrets_in(text) {
+            if !self.secrets.contains(&secret) {
+                self.secrets.push(secret);
+            }
+        }
+        self.config_files.insert(file);
+        file
+    }
+
     fn load_tree(
         &mut self,
         dir: &Path,
@@ -271,10 +293,7 @@ impl Loader<'_> {
                 .read(&manifest_path)
                 .map_err(|e| format!("cannot read it: {e}"))?;
             // The error printer shows the line an error is on: not with a secret in it.
-            let file = self.sources.add_file(
-                self.fs.display_name(&manifest_path),
-                git::mask_source_text(&text),
-            );
+            let file = self.add_config_file(&manifest_path, &text);
             match manifest::parse(file, &text) {
                 Ok(m) => manifest = Some((m, file)),
                 Err(diags) => self.diags.extend(diags),
@@ -495,9 +514,7 @@ impl Loader<'_> {
             if self.fs.is_file(&path) {
                 match self.fs.read(&path) {
                     Ok(text) => {
-                        let file = self
-                            .sources
-                            .add_file(self.fs.display_name(&path), git::mask_source_text(&text));
+                        let file = self.add_config_file(&path, &text);
                         match Lock::parse(file, &text) {
                             Ok(lock) => self.lock = Some(lock),
                             Err(d) => {
@@ -985,11 +1002,27 @@ impl Loader<'_> {
             });
             files.push(disc.file);
         }
+        // Every message about a value in a manifest or a lock file goes out here, so none of
+        // the places that make one has to remember: the source lines are masked, the
+        // messages are made from the values as written.
+        let secrets = std::mem::take(&mut self.secrets);
+        let config_files = std::mem::take(&mut self.config_files);
+        let diagnostics = self
+            .diags
+            .into_iter()
+            .map(|d| {
+                if config_files.contains(&d.span.file) {
+                    git::hide_secrets_in(d, &secrets)
+                } else {
+                    d
+                }
+            })
+            .collect();
         Loaded {
             files,
             metas,
             packages: self.packages,
-            diagnostics: self.diags,
+            diagnostics,
             dropped: self.dropped,
         }
     }
