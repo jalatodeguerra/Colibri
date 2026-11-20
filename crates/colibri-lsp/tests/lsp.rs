@@ -3480,6 +3480,75 @@ fn a_manifest_the_editor_opened_is_not_colibri_source_and_the_server_survives_od
 }
 
 #[test]
+fn no_request_about_a_document_that_is_not_colibri_source_is_answered_from_its_text() {
+    let dir = temp_dir("manifest_requests");
+    let main_text = "fn main() {\n    let count = 3\n    print(count)\n}\n";
+    let main = write(&dir, "main.colibri", main_text);
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, main_text);
+    let mut answers = String::new();
+    for (i, text) in [
+        "[package]\nname = \"app\"\nurl = \"https://user:SeCrEt@example.invalid/r\"\n",
+        "test   \"https://user:SeCrEt@example.invalid/r\"   {\n}\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let toml = write(
+            &dir,
+            &format!("pkg{i}/colibri.toml"),
+            "[package]\nname = \"app\"\n",
+        );
+        c.open(&toml, text);
+        let at =
+            json!({"textDocument": {"uri": uri(&toml)}, "position": {"line": 2, "character": 3}});
+        let with = |extra: Value| {
+            let mut v = at.clone();
+            for (k, x) in extra.as_object().unwrap() {
+                v[k] = x.clone();
+            }
+            v
+        };
+        for (method, params) in [
+            (
+                "textDocument/formatting",
+                json!({"textDocument": {"uri": uri(&toml)}, "options": {"tabSize": 4, "insertSpaces": true}}),
+            ),
+            (
+                "textDocument/documentSymbol",
+                json!({"textDocument": {"uri": uri(&toml)}}),
+            ),
+            ("textDocument/completion", at.clone()),
+            ("textDocument/hover", at.clone()),
+            ("textDocument/definition", at.clone()),
+            (
+                "textDocument/references",
+                with(json!({"context": {"includeDeclaration": true}})),
+            ),
+            ("textDocument/prepareRename", at.clone()),
+            ("textDocument/rename", with(json!({"newName": "other"}))),
+        ] {
+            let answer = c.request_raw(method, params).expect(method);
+            assert!(
+                answer.is_null() || answer == json!([]),
+                "{method}: {answer}"
+            );
+            answers.push_str(&answer.to_string());
+        }
+    }
+    assert!(!answers.contains("SeCrEt"), "{answers}");
+    let shown = format!("{:?} {:?} {:?}", c.diagnostics, c.logs, c.shown);
+    assert!(!shown.contains("SeCrEt"), "{shown}");
+    // The server still answers about a Colibri document.
+    let hover = c.hover(&main, 1, 9);
+    assert!(
+        hover["contents"]["value"].as_str().unwrap().contains("int"),
+        "{hover}"
+    );
+    c.shutdown();
+}
+
+#[test]
 fn a_rename_never_edits_a_file_outside_the_open_folder_even_through_a_link() {
     // `ws/ext` is a link to a folder outside `ws`: `main` imports `ext.x`, but the file is
     // not in the workspace. Whatever the name renamed, nothing outside is edited.

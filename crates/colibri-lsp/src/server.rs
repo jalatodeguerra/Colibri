@@ -103,6 +103,27 @@ pub fn serve(connection: Connection, config: Config) -> Result<(), BoxError> {
     Ok(())
 }
 
+/// Whether the file at `path` is Colibri source (`*.colibri`): the only kind of document a
+/// request is answered for.
+fn is_source(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "colibri")
+}
+
+/// The requests that are about one document, which has its `uri` in `textDocument`.
+fn is_document_request(method: &str) -> bool {
+    [
+        Formatting::METHOD,
+        HoverRequest::METHOD,
+        GotoDefinition::METHOD,
+        DocumentSymbolRequest::METHOD,
+        Completion::METHOD,
+        References::METHOD,
+        PrepareRenameRequest::METHOD,
+        Rename::METHOD,
+    ]
+    .contains(&method)
+}
+
 /// An open document.
 struct Doc {
     uri: Uri,
@@ -220,18 +241,13 @@ impl<'c> Server<'c> {
         let path = key(&uri);
         self.buffers.insert(path.clone(), text.clone());
         self.docs.insert(path.clone(), Doc { uri, text });
-        if path.extension().is_some_and(|e| e == "colibri") {
+        if is_source(&path) {
             self.check(&path);
         } else {
             // A `colibri.toml` (or any other file) the editor opened is not Colibri source:
             // it is never parsed as such. It is a buffer the loader reads when it reads the
             // package, so the open Colibri documents are read again to see it.
-            let open: Vec<PathBuf> = self
-                .docs
-                .keys()
-                .filter(|p| p.extension().is_some_and(|e| e == "colibri"))
-                .cloned()
-                .collect();
+            let open: Vec<PathBuf> = self.docs.keys().filter(|p| is_source(p)).cloned().collect();
             for doc in open {
                 self.check(&doc);
             }
@@ -385,6 +401,18 @@ impl<'c> Server<'c> {
 
     fn request(&mut self, req: Request) {
         let Request { id, method, params } = req;
+        // A document that is not Colibri source (a `colibri.toml` the editor opened) is a
+        // buffer for the loader and nothing else: no request about it parses it, or looks
+        // at it at all.
+        if is_document_request(&method)
+            && params
+                .pointer("/textDocument/uri")
+                .and_then(|u| serde_json::from_value::<Uri>(u.clone()).ok())
+                .is_some_and(|uri| !is_source(&key(&uri)))
+        {
+            self.send(Response::new_ok(id, Value::Null));
+            return;
+        }
         let result: Result<Value, (ErrorCode, String)> = match method.as_str() {
             Formatting::METHOD => self.reply(params, Self::formatting),
             HoverRequest::METHOD => self.reply(params, Self::hover),
@@ -412,6 +440,14 @@ impl<'c> Server<'c> {
             Ok(value) => self.send(Response::new_ok(id, value)),
             Err((code, message)) => self.respond_err(id, code, message),
         }
+    }
+
+    /// The open document at `path`, if it is Colibri source.
+    fn source_doc(&self, path: &Path) -> Option<&Doc> {
+        if !is_source(path) {
+            return None;
+        }
+        self.docs.get(path)
     }
 
     fn respond_err(&self, id: RequestId, code: ErrorCode, message: String) {
@@ -443,7 +479,7 @@ impl<'c> Server<'c> {
 
     fn formatting(&self, p: lsp_types::DocumentFormattingParams) -> Option<Vec<TextEdit>> {
         let path = key(&p.text_document.uri);
-        let doc = self.docs.get(&path)?;
+        let doc = self.source_doc(&path)?;
         // A file with syntax errors is left alone.
         let formatted = format_source(&path.to_string_lossy(), &doc.text).ok()?;
         if formatted == doc.text {
@@ -458,14 +494,14 @@ impl<'c> Server<'c> {
         p: lsp_types::DocumentSymbolParams,
     ) -> Option<DocumentSymbolResponse> {
         let path = key(&p.text_document.uri);
-        let doc = self.docs.get(&path)?;
+        let doc = self.source_doc(&path)?;
         Some(DocumentSymbolResponse::Nested(document_symbols(&doc.text)))
     }
 
     fn completion(&self, p: lsp_types::CompletionParams) -> Option<CompletionResponse> {
         let at = &p.text_document_position;
         let path = key(&at.text_document.uri);
-        let doc = self.docs.get(&path)?;
+        let doc = self.source_doc(&path)?;
         let offset = LineIndex::new(&doc.text).offset(at.position);
         let none = || Some(CompletionResponse::Array(Vec::new()));
         let Some(ctx) = completion::context(&doc.text, offset) else {
@@ -514,7 +550,7 @@ impl<'c> Server<'c> {
         at: &lsp_types::TextDocumentPositionParams,
     ) -> Result<Option<Package>, String> {
         let path = key(&at.text_document.uri);
-        if !self.docs.contains_key(&path) {
+        if self.source_doc(&path).is_none() {
             return Ok(None);
         }
         let overlay = Overlay::new(&self.buffers);
@@ -863,6 +899,9 @@ impl<'c> Server<'c> {
         colibri_check::insight::Fact,
     )> {
         let path = key(&p.text_document.uri);
+        if !is_source(&path) {
+            return None;
+        }
         let analysis = self.latest.get(&path)?.clone();
         let file = analysis.file_of(&path)?;
         let text = analysis.sources.text(file);
@@ -876,6 +915,9 @@ impl<'c> Server<'c> {
     /// as `kind: fs.Error`): what the name denotes.
     fn type_hover(&self, p: &lsp_types::TextDocumentPositionParams) -> Option<Hover> {
         let path = key(&p.text_document.uri);
+        if !is_source(&path) {
+            return None;
+        }
         let analysis = self.latest.get(&path)?.clone();
         let file = analysis.file_of(&path)?;
         let text = analysis.sources.text(file);
