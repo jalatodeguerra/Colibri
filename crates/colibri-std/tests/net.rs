@@ -1911,7 +1911,9 @@ fn main() -> Result[()] {{
 
 /// `close_write` takes its turn behind the writes called before it: `go c.write(big)` then
 /// `c.close_write()` sends all of `big` and then the end of the stream (it used to cut the write
-/// with a broken pipe). Also from a `Drop` hook, which blocks until the writes ahead are done.
+/// with a broken pipe). Also from a `Drop` hook, once the writes ahead are done: a hook blocks
+/// the interpreter thread, and a write that another coroutine has begun is sent by that
+/// coroutine, so a hook that has a write ahead of it is refused (the next test).
 #[test]
 fn close_write_waits_for_the_writes_called_before_it() {
     // A whole number of 64 KiB blocks, built the way the other tests build a big value.
@@ -1925,10 +1927,14 @@ fn close_write_waits_for_the_writes_called_before_it() {
             s.read_to_end(&mut all).unwrap();
             all.len()
         });
-        let call = if from_hook {
-            "var g: Option[Guard] = some(Guard { conn: c })\n    g = none"
+        let (call, join_before, join_after) = if from_hook {
+            (
+                "var g: Option[Guard] = some(Guard { conn: c })\n    g = none",
+                "w.join()",
+                "",
+            )
         } else {
-            "c.close_write()?"
+            ("c.close_write()?", "", "w.join()")
         };
         let out = output_within(
             format!(
@@ -1959,8 +1965,9 @@ fn main() -> Result[()] {{
     }}
     let w = go sender(c, b.to_bytes())
     task.tick(0.0)
+    {join_before}
     {call}
-    w.join()
+    {join_after}
     print("sent")
     c.close()
     return ok(())
@@ -1980,6 +1987,83 @@ fn main() -> Result[()] {{
         );
         assert_eq!(peer.join().unwrap(), SIZE, "from_hook = {from_hook}");
     }
+}
+
+/// A `Drop` hook that writes or closes the writing end while a coroutine is in the middle of a
+/// write on the same connection is refused at once, as a hook's read behind a read is: the hook
+/// blocks the interpreter thread and the rest of the write can only be sent by the coroutine, so
+/// waiting would be for ever. Nothing is lost: the coroutine's write goes on and the peer gets it
+/// whole.
+#[test]
+fn a_drop_hook_that_writes_while_a_coroutine_is_writing_gets_an_error_not_a_hang() {
+    // More than a connection's buffers hold and more than one burst, so that the writer is
+    // still in the middle of its write when the hook runs.
+    const SIZE: usize = 64 * 1024 * 1024;
+    let (listener, addr) = rust_listener();
+    let (go_on, hold) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        // Reads nothing until the script has made its two refused calls.
+        hold.recv_timeout(LIMIT).unwrap();
+        let mut all = Vec::new();
+        s.read_to_end(&mut all).unwrap();
+        all.len()
+    });
+    let out = output_within_released(
+        format!(
+            r#"import net
+
+class Guard {{ conn: net.Conn, close_end: bool }}
+
+impl Drop for Guard {{
+    fn drop(self) {{
+        let result = if self.close_end {{ self.conn.close_write() }} else {{ self.conn.write("x") }}
+        match result {{
+            ok(_) => print("hook: done")
+            err(e) => {{
+                print("hook: {{e.as[net.Error]().expect("a net error")}}")
+                print(e.message().contains("already waiting in another coroutine"))
+            }}
+        }}
+    }}
+}}
+
+fn sender(c: net.Conn, data: Bytes) {{
+    c.write_bytes(data).expect("the write is not cut")
+    print("written")
+}}
+
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
+    let seed = BytesBuilder()
+    for _ in 0..65536 {{
+        seed.push(u8(120))
+    }}
+    let piece = seed.to_bytes()
+    let b = BytesBuilder()
+    for _ in 0..{blocks} {{
+        b.push_bytes(piece)
+    }}
+    let w = go sender(c, b.to_bytes())
+    task.tick(0.0)
+    var g: Option[Guard] = some(Guard {{ conn: c, close_end: false }})
+    g = none
+    g = some(Guard {{ conn: c, close_end: true }})
+    g = none
+    release()
+    w.join()
+    c.close_write()?
+    c.close()
+    return ok(())
+}}
+"#,
+            blocks = SIZE / 65536
+        ),
+        go_on,
+    );
+    assert_eq!(out, "hook: Other\ntrue\nhook: Other\ntrue\nwritten\n");
+    assert_eq!(peer.join().unwrap(), SIZE);
 }
 
 /// A write that stopped part way (here: cancelled) breaks the write side, and `close_write` behind
@@ -2212,8 +2296,8 @@ fn main() -> Result[()] {
 /// port must still be listenable again after the listener is closed: `kvserver` does this on
 /// SHUTDOWN and `--idle`. On Linux and macOS `SO_REUSEADDR` allows it; on Windows `listen` sets
 /// `SO_EXCLUSIVEADDRUSE`, whose rule for a port with connections of its own still around is
-/// what this test checks (it has not been run on Windows by the author of this change). No
-/// retry: the restart must work at once.
+/// what this test checks (it runs on Windows in CI and passes). No retry: the restart must work
+/// at once.
 #[test]
 fn a_port_can_be_listened_on_again_after_the_server_closed_a_connection_first() {
     let out = output_within(
