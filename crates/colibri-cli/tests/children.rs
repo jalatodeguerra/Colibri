@@ -1,7 +1,9 @@
 //! Programs that `process.run`, `shell` and `status` are waiting for must not outlive the
 //! `colibri` that started them, whichever way it ends.
 
-#![cfg(target_os = "linux")]
+// Unix only: the programs are started with `sh`, and "still running" is asked of the system
+// (`/proc` on Linux, `ps` elsewhere). Windows has no `sh` to rely on.
+#![cfg(unix)]
 
 use std::fs;
 use std::path::PathBuf;
@@ -46,6 +48,7 @@ fn main() {{
 }
 
 /// Whether process `pid` still runs (a zombie that nobody collected yet does not).
+#[cfg(target_os = "linux")]
 fn alive(pid: &str) -> bool {
     match fs::read_to_string(format!("/proc/{pid}/stat")) {
         Err(_) => false,
@@ -54,6 +57,19 @@ fn alive(pid: &str) -> bool {
             !after_name.trim_start().starts_with('Z')
         }
     }
+}
+
+/// The same question on a Unix without `/proc` (macOS): `ps -o stat= -p PID` prints the state
+/// (`S`, `R`, `Z` for a zombie...) and nothing for a process that is gone.
+#[cfg(not(target_os = "linux"))]
+fn alive(pid: &str) -> bool {
+    let out = Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .expect("`ps` runs");
+    let state = String::from_utf8_lossy(&out.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
 }
 
 fn check_no_child_is_left(name: &str, ending: &str, code: i32) {
