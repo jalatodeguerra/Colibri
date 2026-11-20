@@ -1485,6 +1485,10 @@ struct Shared {
     /// A write stopped with some of its data sent and some not: the stream is out of step, and
     /// every later write fails (`BrokenPipe`). Reads are not affected.
     write_broken: AtomicBool,
+    /// Set when a shutdown of the writing end was scheduled behind a write (see
+    /// `schedule_shutdown`): a write that a hook makes after that must fail as one after
+    /// `close_write` does, and cannot wait behind the shutdown for the write ahead of it.
+    shutdown_scheduled: AtomicBool,
     /// Nanoseconds; 0 means no timeout.
     timeout_ns: AtomicU64,
     reader: Mutex<Reader>,
@@ -1529,6 +1533,7 @@ impl Conn {
                 sock: Handle::new(stream),
                 closed: AtomicBool::new(false),
                 write_broken: AtomicBool::new(false),
+                shutdown_scheduled: AtomicBool::new(false),
                 timeout_ns: AtomicU64::new(0),
                 reader: Mutex::new(Reader::new()),
                 reads: Turns::new(),
@@ -1583,6 +1588,16 @@ impl Shared {
     /// would wait for something that cannot happen while the thread is blocked. It is refused at
     /// once instead, as a read is. (`close_write` is not refused: it is scheduled.)
     fn refuse_behind_a_write(&self, cx: &mut Ctx, action: &str) -> Result<(), TypedError> {
+        if !cx.can_suspend()
+            && !self.closed.load(Ordering::SeqCst)
+            && self.shutdown_scheduled.load(Ordering::SeqCst)
+        {
+            // Behind a scheduled shutdown the write would fail anyway: it fails now, with the
+            // error of a write after `close_write`.
+            let (kind, message) =
+                write_failure(action, &self.peer, &io::Error::from(ErrorKind::BrokenPipe));
+            return Err(kind.error(message));
+        }
         if !cx.can_suspend() && !self.closed.load(Ordering::SeqCst) && self.writes.busy() {
             return Err(Kind::Other.error(format!(
                 "cannot {action} `{}`: a write of this connection is already waiting in another coroutine, and it cannot finish while a `Drop` hook or a callback waits (write in the coroutine, or before that write starts)",
@@ -1931,6 +1946,7 @@ impl Shared {
     /// parked cell keeps alive; the connection is only reached through a weak reference, so a
     /// connection that goes away with the shutdown still scheduled is not kept alive by it.
     fn schedule_shutdown(self: &Arc<Self>) {
+        self.shutdown_scheduled.store(true, Ordering::SeqCst);
         let ticket = self.writes.ticket();
         let (turns, id) = (Arc::clone(&self.writes), ticket.id);
         let sh = Arc::downgrade(self);

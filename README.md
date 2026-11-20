@@ -454,7 +454,8 @@ while it waits, so `net` suits tens or hundreds of connections at once, not tens
   place is not refused: behind another coroutine's write it takes its place after that write and
   returns at once, and the writing end is shut when the write is done (the write is never cut).
   Its `ok` then means that the shutdown is scheduled, and an error of the shutdown itself has
-  nowhere to go. A write from such a place that finds no write ahead of it can still wait for
+  nowhere to go. A `close()` before the shutdown's turn comes skips it, and a write called after a
+  scheduled `close_write` fails with `BrokenPipe`, as one after an ordinary `close_write` does. A write from such a place that finds no write ahead of it can still wait for
   room that only another coroutine of the same program would make by reading what was written (a
   write is not finished until the peer takes it), and that coroutine cannot run while the hook
   waits: a program must not do that.

@@ -2257,7 +2257,10 @@ impl Drop for Guard {{
             self.conn.close()
             print("hook close")
         }} else {{
-            print("hook write: {{self.conn.write("x").is_ok()}}")
+            match self.conn.write("x") {{
+                ok(_) => print("hook write: done")
+                err(e) => print("hook write: {{e.as[net.Error]().expect("a net error")}}")
+            }}
         }}
     }}
 }}
@@ -2330,11 +2333,15 @@ fn two_scheduled_close_writes_and_a_write_called_after_them() {
         r#"{COUNTING_SENDER}
 
 fn late(c: net.Conn) {{
-    print("late write fails: {{c.write("late").is_err()}}")
+    match c.write("late") {{
+        ok(_) => print("late write: done")
+        err(e) => print("late write: {{e.as[net.Error]().expect("a net error")}}")
+    }}
 }}"#
     );
     let main_body = r#"    hook(c, "close_write")
     hook(c, "close_write")
+    hook(c, "write")
     let l = go late(c)
     task.tick(0.0)
     release()
@@ -2345,7 +2352,7 @@ fn late(c: net.Conn) {{
     let out = output_within_released(hook_script(&addr, &sender, main_body), go_on);
     assert_eq!(
         out,
-        "hook close_write: true\nhook close_write: true\nwritten\nlate write fails: true\nk\n"
+        "hook close_write: true\nhook close_write: true\nhook write: BrokenPipe\nwritten\nlate write: BrokenPipe\nk\n"
     );
     let got = peer.join().unwrap();
     assert_eq!(got.len(), HOOK_SIZE, "no byte of the late write");
