@@ -1,4 +1,4 @@
-//! What a thousand idle blocked reads cost in threads and in CPU time: the point of waiting for
+//! What a thousand idle blocked reads, and a thousand idle accepts, cost in threads and in CPU time: the point of waiting for
 //! sockets with one poller thread per `Vm`. This is a test file of its own because it counts the
 //! threads and measures the CPU time of the whole process, which the other tests of `net` (they
 //! run in threads of one process) would pollute. The thread count is read from `/proc/self/task`
@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 use colibri_runtime as colibri;
 
 const READERS: usize = 1000;
+const LISTENERS: usize = 1000;
+
 const IDLE_SECONDS: f64 = 3.0;
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -150,9 +152,17 @@ fn raise_descriptor_limit() {
     }
 }
 
+/// Both scenarios are one test, one after the other: they count the threads and the CPU time of
+/// the whole process, so no other test of this file may run beside them (a second test thread,
+/// even one that waits on a lock, would be counted).
 #[test]
-fn a_thousand_idle_blocked_reads_use_a_few_threads_and_no_cpu() {
+fn a_thousand_idle_reads_and_a_thousand_idle_accepts_use_a_few_threads_and_no_cpu() {
     raise_descriptor_limit();
+    a_thousand_idle_blocked_reads();
+    a_thousand_idle_accepts();
+}
+
+fn a_thousand_idle_blocked_reads() {
     let before = threads();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -246,6 +256,96 @@ fn main() -> Result[()] {{
 
     // Dropping the `Vm` ends the poller (joined) and the threads of the pool (they end by
     // themselves, so wait for them, with a ceiling).
+    drop(vm);
+    let began = Instant::now();
+    while threads() > before {
+        assert!(
+            began.elapsed() < LIMIT,
+            "{} threads are left from {before} after the Vm was dropped",
+            threads()
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A thousand listeners, each with a coroutine in `accept` and no connection coming: one poller
+/// thread and no CPU. Before the poller each of them held a pool thread that woke every slice.
+/// (A thousand listeners are a thousand descriptors; the other scenario of this file has a
+/// thousand connections, two thousand descriptors, and has ended before this one starts.)
+fn a_thousand_idle_accepts() {
+    let before = threads();
+    let marks = Arc::new(Mutex::new(Vec::<(Instant, f64, usize)>::new()));
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .allow(colibri::Cap::Net)
+        .build();
+    colibri_std::install(&mut vm).unwrap();
+    let m = Arc::clone(&marks);
+    vm.register_fn("mark", move || {
+        m.lock()
+            .unwrap()
+            .push((Instant::now(), cpu_seconds(), threads()));
+    })
+    .unwrap();
+    vm.load_source(
+        "app/main.colibri",
+        &format!(
+            r#"import net
+
+fn accepting(l: net.Listener) -> str {{
+    match l.accept() {{
+        ok(_) => return "connection"
+        err(e) => return "{{e.as[net.Error]().expect("a net error")}}"
+    }}
+}}
+
+fn main() -> Result[()] {{
+    var listeners: List[net.Listener] = []
+    var acceptors: List[Coroutine[str]] = []
+    for i in 0..{LISTENERS} {{
+        let l = net.listen("127.0.0.1:0")?
+        listeners.push(l)
+        acceptors.push(go accepting(l))
+    }}
+    // Every accept is waiting by now, and has been for a moment.
+    wait(0.5)
+    mark()
+    wait({IDLE_SECONDS})
+    mark()
+    for l in listeners {{
+        l.close()
+    }}
+    var closed = 0
+    for a in acceptors {{
+        if a.join() == "Closed" {{
+            closed += 1
+        }}
+    }}
+    print("closed {{closed}}")
+    return ok(())
+}}
+"#
+        ),
+    )
+    .unwrap();
+    vm.run_main().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(out.contents(), format!("closed {LISTENERS}\n"));
+
+    let marks = marks.lock().unwrap().clone();
+    let ((t0, c0, n0), (t1, c1, n1)) = (marks[0], marks[1]);
+    let cores = (c1 - c0) / t1.duration_since(t0).as_secs_f64();
+    println!(
+        "{LISTENERS} idle accepts: {cores:.3} cores, {before} threads before, {n0} then, {n1} later"
+    );
+    assert!(
+        n0 <= before + MAY_GROW_BY && n1 <= before + MAY_GROW_BY,
+        "{LISTENERS} idle accepts: {n0} and {n1} threads, from {before}"
+    );
+    assert!(
+        cores < 0.05,
+        "{LISTENERS} idle accepts used {cores:.3} cores"
+    );
     drop(vm);
     let began = Instant::now();
     while threads() > before {
