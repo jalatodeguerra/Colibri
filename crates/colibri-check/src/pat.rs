@@ -6,6 +6,7 @@ use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::{FnCtx, LocalKind};
 use crate::checker::{Checker, Dep, ValueRef};
+use crate::deprecated::DeprKey;
 use crate::hir::{GlobalId, Lit, LocalId, Pat, PatKind};
 use crate::types::{
     OPTION_TYPE, RESULT_TYPE, Ty, TypeId, VARIANT_ERR, VARIANT_NONE, VARIANT_OK, VARIANT_SOME,
@@ -378,6 +379,7 @@ impl FnCtx<'_, '_> {
     fn const_pat(&mut self, g: GlobalId, expected: &Ty, span: Span) -> Pat {
         let ty = self.ck.global_ty(g);
         self.add_dep(Dep::Global(g), span);
+        self.ck.note_deprecated_use(DeprKey::Global(g), span);
         let shown = self.show(&ty);
         if self.infer.unify(&ty, expected).is_err() {
             self.report_pat_mismatch(expected, &ty, span);
@@ -681,7 +683,8 @@ impl FnCtx<'_, '_> {
             );
             return self.pat(PatKind::Wild, expected, span);
         }
-        let struct_ty = Ty::Adt(id, self.fresh_args(id));
+        self.ck.note_deprecated_use(DeprKey::Type(id), name.span);
+        let struct_ty = Ty::Adt(id, self.fresh_args(id, span));
         if self.infer.unify(expected, &struct_ty).is_err() {
             self.report_pat_mismatch(expected, &struct_ty, span);
         }
@@ -728,6 +731,8 @@ impl FnCtx<'_, '_> {
                 self.check_pat(&f.pat, &Ty::Error, cx);
                 continue;
             }
+            self.ck
+                .note_deprecated_use(DeprKey::Field(id, i as u32), f.name.span);
             subs[i] = Some(self.check_pat(&f.pat, &decls[i].ty, cx));
         }
         let missing: Vec<&str> = decls
@@ -833,6 +838,7 @@ impl FnCtx<'_, '_> {
                     }
                     return fallback(self, cx);
                 };
+                self.ck.note_deprecated_use(DeprKey::Type(e), ty_name.span);
                 if !self.ck.types[e.0 as usize].is_enum() {
                     self.ck.report(Diagnostic::error(
                         format!("`{}` is a struct, not an enum", ty_name.name),
@@ -840,7 +846,7 @@ impl FnCtx<'_, '_> {
                     ));
                     return fallback(self, cx);
                 }
-                let enum_ty = Ty::Adt(e, self.fresh_args(e));
+                let enum_ty = Ty::Adt(e, self.fresh_args(e, span));
                 if self.infer.unify(expected, &enum_ty).is_err() {
                     self.report_pat_mismatch(expected, &enum_ty, span);
                     return fallback(self, cx);

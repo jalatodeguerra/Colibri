@@ -566,3 +566,41 @@ fn converting_text_to_a_number_points_at_the_parse_functions() {
         "{h}"
     );
 }
+
+/// The first diagnostic's message and hint.
+fn first_diagnostic(src: &str) -> (String, String) {
+    let (ast, _) = parse_file(FileId(0), src);
+    let checked = colibri_check::check(&ast);
+    let d = &checked.diagnostics[0];
+    (d.message.clone(), d.hint.clone().unwrap_or_default())
+}
+
+#[test]
+fn a_str_where_bytes_is_expected_says_how_to_convert() {
+    let (message, hint) = first_diagnostic("fn f(b: Bytes) {}\nfn main() {\n    f(\"x\")\n}\n");
+    assert_eq!(message, "expected `Bytes`, found `str`");
+    assert!(hint.contains("use `s.to_bytes()`"), "{hint}");
+    let (_, hint) = first_diagnostic("let b: Bytes = \"x\"\n");
+    assert!(hint.contains("use `s.to_bytes()`"), "{hint}");
+}
+
+#[test]
+fn bytes_where_a_str_is_expected_says_how_to_convert() {
+    let (message, hint) = first_diagnostic("fn f(s: str) {}\nfn main() {\n    f(Bytes())\n}\n");
+    assert_eq!(message, "expected `str`, found `Bytes`");
+    assert!(
+        hint.contains("use `b.to_str()`") && hint.contains("`b.to_str_lossy()`"),
+        "{hint}"
+    );
+}
+
+#[test]
+fn assigning_to_a_bytes_element_says_it_is_immutable() {
+    let (message, hint) =
+        first_diagnostic("fn main() {\n    var b = Bytes([1, 2])\n    b[0] = 9\n}\n");
+    assert_eq!(
+        message,
+        "cannot assign to an element of a `Bytes`: it is immutable"
+    );
+    assert!(hint.contains("BytesBuilder"), "{hint}");
+}

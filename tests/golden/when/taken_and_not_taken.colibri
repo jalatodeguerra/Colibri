@@ -1,0 +1,59 @@
+// An item whose condition is false is not declared at all: two items with one name under
+// exclusive conditions are fine, and the untaken one is not even type-checked.
+@when(os == "linux" || os == "macos" || os == "windows")
+fn known_platform() -> bool => true
+
+@when(!(os == "linux" || os == "macos" || os == "windows"))
+fn known_platform() -> bool => false
+
+@when(debug)
+const LEVEL = 3
+
+@when(!debug)
+const LEVEL = 0
+
+@when(debug)
+struct Settings { verbose: bool }
+
+@when(!debug)
+struct Settings { verbose: bool, extra: int }
+
+@when(debug)
+impl Settings {
+    fn describe(self) -> str => "debug settings"
+}
+
+@when(!debug)
+impl Settings {
+    fn describe(self) -> str => "{self.extra} release settings"
+}
+
+// Never true, so none of this is checked: a type error, an unknown name, a missing module.
+@when(os == "linux" && os == "macos")
+fn never() -> int {
+    let x: int = "text"
+    return unknown_name + x
+}
+
+@when(debug && !debug)
+import no_such_module
+
+@when(os != "linux" && os == "linux")
+struct Broken { field: NoSuchType }
+
+@when(true)
+fn always() -> int => 1
+
+@when(false)
+fn nothing() -> int => nope
+
+fn main() {
+    print(known_platform())
+    print(LEVEL)
+    print(Settings { verbose: true }.describe())
+    print(always())
+}
+// expect: true
+// expect: 3
+// expect: debug settings
+// expect: 1

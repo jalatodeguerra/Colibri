@@ -1,0 +1,10 @@
+@when(speed) // error: unknown name `speed` in `@when`
+fn a() {}
+
+@when(debug && turbo) // error: unknown name `turbo` in `@when`
+fn b() {}
+
+@when(os) // error: `os` is a text: compare it with `==`
+fn c() {}
+
+fn main() {}

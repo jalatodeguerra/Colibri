@@ -123,7 +123,8 @@ pub enum Error {
     Ffi(String),
 }
 
-/// How many frames of a long stack trace are shown at each end.
+/// How many frames of a long stack trace are shown at each end, unless the environment variable
+/// `COLIBRI_FULL_TRACE` is set to something other than `0`.
 const TRACE_EDGE: usize = 12;
 
 impl Error {
@@ -167,10 +168,13 @@ fn render_trace(
     let shown = |out: &mut String, frame: &StackFrame| {
         out.push_str(&format!("  at {} ({})\n", frame.function, frame.location));
     };
-    if stack.len() > 2 * TRACE_EDGE {
+    let full = std::env::var_os("COLIBRI_FULL_TRACE").is_some_and(|v| !v.is_empty() && v != "0");
+    if stack.len() > 2 * TRACE_EDGE && !full {
         stack[..TRACE_EDGE].iter().for_each(|f| shown(&mut out, f));
         let hidden = stack.len() - 2 * TRACE_EDGE;
-        out.push_str(&format!("  ... {hidden} more calls ...\n"));
+        out.push_str(&format!(
+            "  ... {hidden} more calls (set COLIBRI_FULL_TRACE=1 to show them all) ...\n"
+        ));
         stack[stack.len() - TRACE_EDGE..]
             .iter()
             .for_each(|f| shown(&mut out, f));

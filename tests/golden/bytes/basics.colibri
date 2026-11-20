@@ -1,0 +1,32 @@
+fn main() {
+    let b = Bytes([104, 105, 0, 255])
+    print(b)
+    print(b.len())
+    print(b.is_empty())
+    print(Bytes().is_empty())
+    print(Bytes())
+    print(b[0])
+    print(b[3])
+    print(b.get(1))
+    print(b.get(4))
+    print(b.get(-1))
+    print(b.to_list())
+    let n: u8 = b[3]
+    print(n)
+    let empty = Bytes([])
+    print(empty.len())
+}
+
+// expect: b"hi\x00\xff"
+// expect: 4
+// expect: false
+// expect: true
+// expect: b""
+// expect: 104
+// expect: 255
+// expect: some(105)
+// expect: none
+// expect: none
+// expect: [104, 105, 0, 255]
+// expect: 255
+// expect: 0

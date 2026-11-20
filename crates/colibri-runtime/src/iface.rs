@@ -29,6 +29,8 @@ pub(crate) struct HostFnEntry {
     pub names: Option<Vec<String>>,
     /// The function reads the type arguments of its calls (`@typed`).
     pub typed: bool,
+    /// `@deprecated("message")`: scripts that use the function get a warning.
+    pub deprecated: Option<String>,
 }
 
 /// A registered constant of a module (`math.PI`).
@@ -175,6 +177,16 @@ pub(crate) fn render(
                 caps.push(cap);
             }
         }
+        if let Some(message) = &f.deprecated {
+            if message.is_empty() {
+                line.push_str("@deprecated ");
+            } else {
+                line.push_str(&format!(
+                    "@deprecated(\"{}\") ",
+                    colibri_check::host::escape_text(message)
+                ));
+            }
+        }
         if f.positional {
             line.push_str("@positional ");
         }
@@ -279,7 +291,7 @@ impl Interface {
     pub fn read(path: impl AsRef<Path>) -> Result<Interface, Error> {
         let path = path.as_ref();
         // A package's manifest or lock is not an interface file: it is not read.
-        if let Some(message) = colibri_check::package::not_a_script(path) {
+        if let Some(message) = colibri_check::package::not_a_script_plainly(path) {
             return Err(Error::Io {
                 path: path.display().to_string(),
                 message,
@@ -324,6 +336,7 @@ mod tests {
             positional: true,
             names: None,
             typed: false,
+            deprecated: None,
         }
     }
 

@@ -106,9 +106,15 @@ impl Interp {
             }
             Anchor::Global(id) => match self.uninit.get(id.0 as usize) {
                 Some(Some(name)) => {
-                    let message = format!(
-                        "`{name}` is used before it is initialised (the script has not reached its line)"
-                    );
+                    let message = if self.released {
+                        format!(
+                            "`{name}` is used before it is initialised (module values do not exist while no test runs, for instance in an `on_test_start` hook)"
+                        )
+                    } else {
+                        format!(
+                            "`{name}` is used before it is initialised (the script has not reached its line)"
+                        )
+                    };
                     Err(self.panic(fiber, span, message))
                 }
                 _ => Ok(Resolved::Global(*id)),

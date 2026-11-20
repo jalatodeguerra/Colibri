@@ -4,7 +4,7 @@ impl[T: Ord] Range[T] {
     fn contains(self, x: T) -> bool => x >= self.lo
 }
 
-struct Opaque { v: int }
+class Opaque { v: int }
 
 fn main() {
     let r = Range { lo: Opaque { v: 1 }, hi: Opaque { v: 2 } }

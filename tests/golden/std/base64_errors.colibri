@@ -7,28 +7,20 @@ fn main() {
             err(e) => print(e.message())
         }
     }
-    // Bytes that are not text.
-    match base64.decode("/w==") {
-        ok(_) => print("decoded?")
-        err(e) => {
-            print(e.as[base64.Error]() == some(base64.Error.NotText))
-            print(e.message())
-        }
-    }
     match base64.decode("Zg") {
         ok(_) => print("decoded?")
         err(e) => print(e.as[base64.Error]() == some(base64.Error.Invalid))
     }
-    // A byte outside 0..=255.
-    match base64.encode_bytes([1, 256]) {
-        ok(_) => print("encoded?")
-        err(e) => {
-            print(e.as[base64.Error]() == some(base64.Error.OutOfRange))
-            print(e.message())
-        }
-    }
     match base64.decode_url("Zg==") {
         ok(_) => print("decoded?")
+        err(e) => print(e.message())
+    }
+    // Bytes that are not text decode fine; turning them into a `str` is a separate step.
+    match base64.decode("/w==") {
+        ok(b) => {
+            print(b)
+            print(b.to_str().is_err())
+        }
         err(e) => print(e.message())
     }
 }
@@ -39,8 +31,6 @@ fn main() {
 // expect: base64: the length 3 is not a multiple of 4 (is the `=` padding missing?)
 // expect: base64: the length 1 is not a multiple of 4 (is the `=` padding missing?)
 // expect: true
-// expect: base64: the decoded bytes are not UTF-8 text (invalid utf-8 sequence of 1 bytes from index 0); use decode_bytes
-// expect: true
-// expect: true
-// expect: base64: a byte must be between 0 and 255, but item 1 of the list is 256
 // expect: base64: the URL form has no `=` padding
+// expect: b"\xff"
+// expect: true

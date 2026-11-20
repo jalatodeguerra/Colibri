@@ -1,0 +1,4 @@
+fn main() {
+    let b = Bytes([1]) - Bytes([2]) // error: `-` cannot be applied to values of type `Bytes`
+    print(b)
+}

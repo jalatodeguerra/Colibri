@@ -1,0 +1,26 @@
+import base64
+import json
+
+struct Blob { name: str, data: Bytes }
+
+fn show[T: Show](r: Result[T]) {
+    match r {
+        ok(v) => print("ok {v}")
+        err(e) => print(e.message())
+    }
+}
+
+fn main() {
+    show(json.encode(Bytes([1, 2])))
+    show(json.encode(Blob { name: "a", data: Bytes() }))
+    show(json.decode[Bytes]("\"AQI=\""))
+    show(json.decode[Blob](r"""{"name": "a", "data": "AQI="}"""))
+    // The way through: base64 text.
+    show(json.encode(base64.encode(Bytes([1, 2]))))
+}
+
+// expect: json: cannot encode `Bytes`, which is not text; encode it as base64 text first: `base64.encode(data)`
+// expect: json: cannot encode `Bytes`, which is not text; encode it as base64 text first: `base64.encode(data)`
+// expect: json: at `$`: cannot decode a value of the type `Bytes`; decode the base64 text as a `str` and call `base64.decode` on it
+// expect: json: at `$.data`: cannot decode a value of the type `Bytes`; decode the base64 text as a `str` and call `base64.decode` on it
+// expect: ok "AQI="

@@ -1,0 +1,6 @@
+fn main() {
+    let b = Bytes([1, 2, 3])
+    print(b[2..5])
+}
+
+// panic: slice 2..5 out of range for Bytes of length 3

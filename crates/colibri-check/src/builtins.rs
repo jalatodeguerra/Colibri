@@ -18,7 +18,8 @@ use crate::optres::{
 };
 use crate::suggest;
 use crate::types::{
-    COGROUP_TYPE, COROUTINE_TYPE, ERROR_TYPE, ITER, RESULT_TYPE, SIGNAL_TYPE, STR_BUILDER_TYPE, Ty,
+    BYTES_BUILDER_TYPE, COGROUP_TYPE, COROUTINE_TYPE, ERROR_TYPE, ITER, IntTy, RESULT_TYPE,
+    SIGNAL_TYPE, STR_BUILDER_TYPE, Ty,
 };
 
 /// What a method needs of the element type beyond its signature.
@@ -89,6 +90,33 @@ const STR_METHODS: &[&str] = &[
     "pad_right",
     "pad_left_with",
     "pad_right_with",
+    "to_bytes",
+    "clone",
+];
+const BYTES_METHODS: &[&str] = &[
+    "len",
+    "is_empty",
+    "get",
+    "slice",
+    "iter",
+    "enumerate",
+    "to_list",
+    "to_str",
+    "to_str_lossy",
+    "starts_with",
+    "ends_with",
+    "find",
+    "contains",
+    "clone",
+];
+const BYTES_BUILDER_METHODS: &[&str] = &[
+    "push",
+    "push_bytes",
+    "push_str",
+    "len",
+    "is_empty",
+    "clear",
+    "to_bytes",
     "clone",
 ];
 const LIST_METHODS: &[&str] = &[
@@ -235,6 +263,54 @@ fn str_sig(name: &str) -> Option<Sig> {
             vec![("width", Ty::INT), ("fill", Ty::Char)],
             Ty::Str,
         ),
+        "to_bytes" => sig(Builtin::StrToBytes, vec![], Ty::Bytes),
+        _ => return None,
+    })
+}
+
+/// The type of one byte.
+pub(crate) const BYTE: Ty = Ty::Int(IntTy::U8);
+
+fn bytes_sig(name: &str) -> Option<Sig> {
+    let bytes = Ty::Bytes;
+    Some(match name {
+        "len" => sig(Builtin::BytesLen, vec![], Ty::INT),
+        "is_empty" => sig(Builtin::BytesIsEmpty, vec![], Ty::Bool),
+        "get" => sig(Builtin::BytesGet, vec![("index", Ty::INT)], optional(BYTE)),
+        "slice" => sig(
+            Builtin::BytesSliceOf,
+            vec![("start", Ty::INT), ("end", Ty::INT)],
+            Ty::Bytes,
+        ),
+        "iter" => sig(Builtin::Iter, vec![], iter_of(BYTE)),
+        "to_list" => sig(Builtin::BytesToList, vec![], Ty::List(Box::new(BYTE))),
+        "to_str" => sig(
+            Builtin::BytesToStr,
+            vec![],
+            crate::optres::result_ty(Ty::Str, crate::optres::error_ty()),
+        ),
+        "to_str_lossy" => sig(Builtin::BytesToStrLossy, vec![], Ty::Str),
+        "starts_with" => sig(Builtin::BytesStartsWith, vec![("prefix", bytes)], Ty::Bool),
+        "ends_with" => sig(Builtin::BytesEndsWith, vec![("suffix", bytes)], Ty::Bool),
+        "find" => sig(Builtin::BytesFind, vec![("sub", bytes)], optional(Ty::INT)),
+        "contains" => sig(Builtin::BytesContains, vec![("sub", bytes)], Ty::Bool),
+        _ => return None,
+    })
+}
+
+fn bytes_builder_sig(name: &str) -> Option<Sig> {
+    Some(match name {
+        "push" => sig(Builtin::BytesBuilderPush, vec![("byte", BYTE)], Ty::Unit),
+        "push_bytes" => sig(
+            Builtin::BytesBuilderPushBytes,
+            vec![("bytes", Ty::Bytes)],
+            Ty::Unit,
+        ),
+        "push_str" => sig(Builtin::BytesBuilderPushStr, vec![("s", Ty::Str)], Ty::Unit),
+        "len" => sig(Builtin::BytesBuilderLen, vec![], Ty::INT),
+        "is_empty" => sig(Builtin::BytesBuilderIsEmpty, vec![], Ty::Bool),
+        "clear" => sig(Builtin::BytesBuilderClear, vec![], Ty::Unit),
+        "to_bytes" => sig(Builtin::BytesBuilderToBytes, vec![], Ty::Bytes),
         _ => return None,
     })
 }
@@ -488,6 +564,7 @@ pub(crate) fn builtin_method_exists(ty: &Ty, name: &str) -> bool {
     let mut fresh = || Ty::Error;
     match ty {
         Ty::Str => str_sig(name).is_some(),
+        Ty::Bytes => bytes_sig(name).is_some(),
         Ty::List(t) => list_sig(t, name, &mut fresh).is_some(),
         Ty::Map(k, v) => map_sig(k, v, name).is_some(),
         Ty::Set(t) => set_sig(t, name).is_some(),
@@ -501,6 +578,7 @@ pub(crate) fn builtin_method_exists(ty: &Ty, name: &str) -> bool {
         Ty::Adt(COGROUP_TYPE, _) => name == "go" || cogroup_sig(name).is_some(),
         Ty::Adt(SIGNAL_TYPE, _) => signal_sig(name).is_some(),
         Ty::Adt(STR_BUILDER_TYPE, _) => name == "write" || str_builder_sig(name).is_some(),
+        Ty::Adt(BYTES_BUILDER_TYPE, _) => bytes_builder_sig(name).is_some(),
         _ => false,
     }
 }
@@ -515,6 +593,7 @@ pub(crate) fn builtin_methods(ty: &Ty) -> Vec<crate::members::MethodSig> {
     };
     let rows: Vec<(&str, Option<Sig>)> = match ty {
         Ty::Str => STR_METHODS.iter().map(|n| (*n, str_sig(n))).collect(),
+        Ty::Bytes => BYTES_METHODS.iter().map(|n| (*n, bytes_sig(n))).collect(),
         Ty::List(t) => LIST_METHODS
             .iter()
             .map(|n| (*n, list_sig(t, n, &mut fresh)))
@@ -543,6 +622,10 @@ pub(crate) fn builtin_methods(ty: &Ty) -> Vec<crate::members::MethodSig> {
         Ty::Adt(STR_BUILDER_TYPE, _) => STR_BUILDER_METHODS
             .iter()
             .map(|n| (*n, str_builder_sig(n)))
+            .collect(),
+        Ty::Adt(BYTES_BUILDER_TYPE, _) => BYTES_BUILDER_METHODS
+            .iter()
+            .map(|n| (*n, bytes_builder_sig(n)))
             .collect(),
         _ => Vec::new(),
     };
@@ -579,6 +662,7 @@ impl FnCtx<'_, '_> {
         let mut fresh = || self.infer.fresh(crate::infer::VarKind::General);
         let (sig, candidates) = match &recv_ty {
             Ty::Str => (str_sig(&name.name), STR_METHODS),
+            Ty::Bytes => (bytes_sig(&name.name), BYTES_METHODS),
             Ty::List(t) => (list_sig(t, &name.name, &mut fresh), LIST_METHODS),
             Ty::Map(k, v) => (map_sig(k, v, &name.name), MAP_METHODS),
             Ty::Set(t) => (set_sig(t, &name.name), SET_METHODS),
@@ -599,6 +683,9 @@ impl FnCtx<'_, '_> {
                     return Ok(self.check_str_builder_write(recv, args, span));
                 }
                 (str_builder_sig(&name.name), STR_BUILDER_METHODS)
+            }
+            Ty::Adt(BYTES_BUILDER_TYPE, _) => {
+                (bytes_builder_sig(&name.name), BYTES_BUILDER_METHODS)
             }
             _ => return Err(recv),
         };

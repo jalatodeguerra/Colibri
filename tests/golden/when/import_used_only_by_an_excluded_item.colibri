@@ -1,0 +1,14 @@
+// An import that is used only inside an item that `@when` left out is unused, unless the
+// import carries the same `@when`.
+import math // warning: unused import `math`
+
+@when(false)
+import str
+
+@when(false)
+fn uses_both() -> int {
+    let _ = math.abs(-1)
+    return str.len("x")
+}
+
+fn main() {}

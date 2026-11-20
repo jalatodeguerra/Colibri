@@ -106,10 +106,18 @@ fn deep_recursion_is_a_stack_overflow_panic_not_a_crash() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("more calls ..."),
+        stderr.contains("more calls (set COLIBRI_FULL_TRACE=1 to show them all) ..."),
         "long traces are elided: {stderr}"
     );
     assert!(stderr.lines().count() < 40, "{stderr}");
+    let full = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
+        .args(["run", path.to_str().unwrap()])
+        .env("COLIBRI_FULL_TRACE", "1")
+        .output()
+        .unwrap();
+    let full = String::from_utf8_lossy(&full.stderr);
+    assert!(!full.contains("more calls"), "{full}");
+    assert!(full.lines().count() > 5000, "{}", full.lines().count());
 }
 
 #[test]
@@ -164,10 +172,7 @@ fn check_prints_warnings_and_exits_zero() {
 
 #[test]
 fn unsupported_features_are_clean_errors() {
-    let path = temp_file(
-        "unsupported.colibri",
-        "@inline\nfn id(x: int) -> int => x\n",
-    );
+    let path = temp_file("unsupported.colibri", "fn id(x: [int; 3]) {}\n");
     let out = colibri(&["run", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("is not supported yet"));
@@ -912,4 +917,141 @@ fn a_manifest_is_not_an_interface_file() {
         assert!(!stderr.contains("SeCrEt"), "{stderr}");
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+const WHEN_PROGRAM: &str = "@when(debug)\nfn mode() -> str => \"debug\"\n@when(!debug)\nfn mode() -> str => \"release\"\n@when(fast)\nfn speed() -> str => \"fast\"\n@when(!fast)\nfn speed() -> str => \"slow\"\nfn main() {\n    print(\"{mode()} {speed()}\")\n}\n";
+
+#[test]
+fn when_follows_release_and_feature_flags() {
+    let dir = std::env::temp_dir().join(format!("colibri-cli-when-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("colibri.toml"),
+        "[package]\nname = \"w\"\n\n[features]\ndefault = []\nfast = []\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.colibri"), WHEN_PROGRAM).unwrap();
+    let d = dir.to_str().unwrap();
+    let run = |extra: &[&str]| -> (Option<i32>, String, String) {
+        let mut args = vec!["run", d];
+        args.extend_from_slice(extra);
+        let out = colibri(&args);
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(run(&[]).1, "debug slow\n");
+    assert_eq!(run(&["--release"]).1, "release slow\n");
+    assert_eq!(run(&["--feature", "fast"]).1, "debug fast\n");
+    assert_eq!(run(&["--release", "--feature=fast"]).1, "release fast\n");
+    // A feature the manifest does not declare is refused at the manifest.
+    let (code, _, stderr) = run(&["--feature", "turbo"]);
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.contains("the feature `turbo` is not declared in `colibri.toml`"),
+        "{stderr}"
+    );
+    // `check` and `test` take the same flags.
+    let check = colibri(&["check", d, "--feature", "fast", "--release"]);
+    assert_eq!(check.status.code(), Some(0));
+    // A script has no manifest: any flag is a feature.
+    let script = temp_file("when_script.colibri", WHEN_PROGRAM);
+    let out = colibri(&["run", script.to_str().unwrap(), "--feature", "fast"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "debug fast\n");
+}
+
+#[test]
+fn the_hint_for_an_unknown_when_name_in_a_package_can_be_followed() {
+    let dir = std::env::temp_dir().join(format!("colibri-cli-when-hint-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("colibri.toml"), "[package]\nname = \"w\"\n").unwrap();
+    std::fs::write(
+        dir.join("main.colibri"),
+        "@when(fast)\nfn speed() -> int => 1\nfn main() {\n    print(1)\n}\n",
+    )
+    .unwrap();
+    let d = dir.to_str().unwrap();
+    let out = colibri(&["check", d]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unknown name `fast` in `@when`"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("declare the feature in `colibri.toml`")
+            && stderr.contains("then turn it on with `--feature fast`"),
+        "{stderr}"
+    );
+    // The flag alone is refused, as the hint says it must come after the declaration.
+    let out = colibri(&["check", d, "--feature", "fast"]);
+    assert_eq!(out.status.code(), Some(1));
+    // Following the hint: declare it, then turn it on.
+    std::fs::write(
+        dir.join("colibri.toml"),
+        "[package]\nname = \"w\"\n\n[features]\nfast = []\n",
+    )
+    .unwrap();
+    let out = colibri(&["check", d, "--feature", "fast"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn update_given_the_manifest_itself_asks_for_the_folder_and_interface_asks_for_a_file() {
+    let dir = std::env::temp_dir().join(format!("colibri-cli-manifest-arg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let manifest = dir.join("colibri.toml");
+    std::fs::write(&manifest, "[package]\nname = \"w\"\n").unwrap();
+    let out = colibri(&["update", "--path", manifest.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("is the manifest of a package, not a script")
+            && stderr.contains("pass the folder that holds it instead"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("there is no `colibri.toml`"), "{stderr}");
+    // An interface is a file, so the advice to pass a folder does not fit there.
+    let script = dir.join("s.colibri");
+    std::fs::write(&script, "fn main() {}\n").unwrap();
+    let out = colibri(&[
+        "check",
+        "--interface",
+        manifest.to_str().unwrap(),
+        script.to_str().unwrap(),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("is the manifest of a package, not a script"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("pass the folder"), "{stderr}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn feature_names_on_the_command_line_follow_the_manifest_rules() {
+    let script = temp_file("feature_names.colibri", "fn main() { print(1) }\n");
+    let s = script.to_str().unwrap();
+    for (name, why) in [
+        ("debug", "meaning of its own"),
+        ("os", "meaning of its own"),
+        ("true", "meaning of its own"),
+        ("", "cannot be empty"),
+        ("a b", "is not a valid feature name"),
+    ] {
+        let out = colibri(&["run", s, "--feature", name]);
+        assert_eq!(out.status.code(), Some(2), "[{name}]");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(why), "[{name}] {stderr}");
+    }
+    let out = colibri(&["run", s, "--feature", "fast_2"]);
+    assert_eq!(out.status.code(), Some(0));
 }

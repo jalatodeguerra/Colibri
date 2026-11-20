@@ -120,11 +120,12 @@ impl FnCtx<'_, '_> {
             Ty::Error => return self.error_expr(span),
             Ty::List(t) => (Builtin::ListSlice, Ty::List(t)),
             Ty::Str => (Builtin::StrSlice, Ty::Str),
+            Ty::Bytes => (Builtin::BytesSlice, Ty::Bytes),
             other => {
                 let shown = self.show(&other);
                 self.ck.report(
                     Diagnostic::error(format!("cannot slice a value of type `{shown}`"), span)
-                        .with_hint("only lists and strings can be sliced"),
+                        .with_hint("only lists, strings and `Bytes` can be sliced"),
                 );
                 return self.error_expr(span);
             }

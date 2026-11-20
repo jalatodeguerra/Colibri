@@ -276,7 +276,6 @@ fn int_option(name: str, fallback: int) -> int {
     let text = args.value(name) or { return fallback }
     return str.parse_int(text) or |e| {
         usage_error("--{name}: {e.message()}")
-        return fallback
     }
 }
 

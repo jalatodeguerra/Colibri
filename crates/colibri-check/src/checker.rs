@@ -10,6 +10,7 @@ use colibri_syntax::{Diagnostic, Span};
 use crate::ModuleInput;
 use crate::body::FnCtx;
 use crate::decls::{AliasInfo, TypeExtra};
+use crate::deprecated::DeprKey;
 use crate::generics::SigCtx;
 use crate::hir::{
     Block, Body, FieldDef, FnDef, FnId, GlobalDef, GlobalId, HostFnDef, HostFnId, ImplDef, ImplId,
@@ -219,6 +220,9 @@ pub(crate) struct Checker<'a> {
     /// Bounds written in declarations before the types and impls were all known, checked once
     /// they are (`Map` keys and `Set` elements in field types and signatures, for example).
     pub pending: Vec<Obligation>,
+    /// The alias whose right-hand side is being resolved: a bound that its type arguments
+    /// must meet because of a type it names becomes a bound of the alias's own parameter.
+    pub implying: Option<crate::modules::AliasId>,
     /// The next unused [`ParamId`] (0 is the prelude `Option`'s `T`, 1 and 2 are `Result`'s `T` and `E`).
     pub next_param: u32,
     /// The bounds of every type parameter declared so far.
@@ -256,6 +260,12 @@ pub(crate) struct Checker<'a> {
     /// The native stack position where checking started, and how far below it checking may go.
     stack_base: usize,
     stack_budget: usize,
+    /// The deprecated items (`@deprecated`), see [`crate::deprecated`].
+    pub(crate) deprecated: HashMap<crate::deprecated::DeprKey, crate::deprecated::Deprecation>,
+    /// The items whose code is being collected or checked, innermost last.
+    pub(crate) depr_ctx: Vec<crate::deprecated::DeprKey>,
+    /// While positive, uses of deprecated items are not reported.
+    pub(crate) depr_mute: u32,
 }
 
 /// The prelude `Option` enum (index 0 of the type table): `none` and `some(T)`, where the
@@ -265,7 +275,6 @@ fn prelude_option(span: Span) -> TypeDef {
         name: "Option".to_string(),
         span,
         params: vec![ParamId(0)],
-        sendable: true,
         module: None,
         open: false,
         kind: TypeDefKind::Enum {
@@ -316,7 +325,6 @@ fn prelude_result(span: Span) -> TypeDef {
         name: "Result".to_string(),
         span,
         params: vec![ParamId(1), ParamId(2)],
-        sendable: true,
         module: None,
         open: false,
         kind: TypeDefKind::Enum {
@@ -380,6 +388,7 @@ impl<'a> Checker<'a> {
             script: false,
             root: false,
             imports: None,
+            excluded: &[],
             scope: Scope::default(),
             exports: Exports::default(),
             alias_spans: HashMap::new(),
@@ -408,6 +417,7 @@ impl<'a> Checker<'a> {
                 script: false,
                 root: false,
                 imports: None,
+                excluded: &[],
                 scope: Scope::default(),
                 exports,
                 alias_spans: HashMap::new(),
@@ -426,6 +436,7 @@ impl<'a> Checker<'a> {
                 script: meta.script,
                 root: !meta.dependency,
                 imports: Some(&meta.imports),
+                excluded: &meta.excluded,
                 scope: Scope::default(),
                 exports: Exports::default(),
                 alias_spans: HashMap::new(),
@@ -471,6 +482,7 @@ impl<'a> Checker<'a> {
             methods: HashMap::new(),
             collected: false,
             pending: Vec::new(),
+            implying: None,
             next_param: 3,
             param_bounds: HashMap::new(),
             type_scope: Vec::new(),
@@ -488,6 +500,9 @@ impl<'a> Checker<'a> {
             tests: Vec::new(),
             stack_base: 0,
             stack_budget,
+            deprecated: HashMap::new(),
+            depr_ctx: Vec::new(),
+            depr_mute: 0,
         }
     }
 
@@ -569,6 +584,7 @@ impl<'a> Checker<'a> {
         let insight = self.facts.take().map(|raw| {
             let mut insight = self.build_insight(raw);
             insight.refs = refs;
+            insight.deprecated = self.deprecated_spans();
             insight
         });
         let checked = Checked {
@@ -680,6 +696,10 @@ impl<'a> Checker<'a> {
         for &m in &others {
             self.bind_host_uses(m);
             self.bind_imports_types(m);
+        }
+        for (k, &m) in others.iter().enumerate() {
+            self.enter_module(m);
+            self.define_type_bounds(&module_items[k]);
         }
         for (k, &m) in others.iter().enumerate() {
             self.enter_module(m);
@@ -802,10 +822,57 @@ impl<'a> Checker<'a> {
                     ));
                     true
                 }
+                // Read when the item is declared (`declare_deprecation`).
+                (
+                    ItemKind::Fn(_)
+                    | ItemKind::Struct(_)
+                    | ItemKind::Enum(_)
+                    | ItemKind::Interface(_)
+                    | ItemKind::TypeAlias(_)
+                    | ItemKind::Binding(_),
+                    "deprecated",
+                ) => true,
+                (kind, "deprecated") => {
+                    let (what, hint) = match kind {
+                        ItemKind::Impl(_) => (
+                            "an `impl` block",
+                            "put it on the method that is deprecated, or on the type",
+                        ),
+                        ItemKind::Import(_) => (
+                            "an `import`",
+                            "an import cannot be deprecated: deprecate the function, type or constant it brings in",
+                        ),
+                        ItemKind::Extern(_) => (
+                            "an `extern` block",
+                            "put it on the function in the block that is deprecated",
+                        ),
+                        ItemKind::Test(_) => (
+                            "a `test`",
+                            "a test is not used by other code: delete it or leave it as it is",
+                        ),
+                        _ => (
+                            "this",
+                            "it goes on a function, type, constant or module-level value",
+                        ),
+                    };
+                    self.report(
+                        Diagnostic::error(
+                            format!("`@deprecated` does not apply to {what}"),
+                            attr.span,
+                        )
+                        .with_hint(hint),
+                    );
+                    true
+                }
+                // Evaluated by the loader (`package::cfg`) before the checker sees the items.
+                (_, "when") => {
+                    self.unsupported(&format!("the attribute `@{}`", attr.name.name), attr.span);
+                    true
+                }
                 _ => false,
             };
             if !known {
-                self.unsupported(&format!("the attribute `@{}`", attr.name.name), attr.span);
+                self.unknown_attribute(attr, crate::attrs::AttrSite::Item);
             }
         }
         match &item.kind {
@@ -887,9 +954,26 @@ impl<'a> Checker<'a> {
         decl: &'a ast::FnDecl,
         ctx: &SigCtx,
     ) -> FnId {
+        let id = FnId(self.fns.len() as u32);
+        let mut keys = vec![DeprKey::Fn(id)];
+        if let Some(Ty::Adt(t, _) | Ty::Dyn(t, _)) = &ctx.self_ty {
+            keys.push(DeprKey::Type(*t));
+        }
+        let shown = match &ctx.owner {
+            Some(owner) => format!("{owner}.{}", decl.name.name),
+            None => decl.name.name.clone(),
+        };
+        self.declare_deprecation(DeprKey::Fn(id), &shown, &item.attrs);
+        if (ctx.owner.is_some() || ctx.self_ty.is_some())
+            && !self.collecting_host
+            && self.extern_lib.is_none()
+        {
+            self.check_member_attrs(item);
+        }
         let saved = std::mem::replace(&mut self.self_ty, ctx.self_ty.clone());
-        let sig = self.resolve_sig(decl, ctx);
+        let sig = self.with_depr_ctx(&keys, |ck| ck.resolve_sig(decl, ctx));
         self.self_ty = saved;
+        debug_assert_eq!(id.0 as usize, self.fns.len());
         let is_extern = self.extern_lib.is_some();
         let host = (self.collecting_host || is_extern).then(|| {
             let id = HostFnId(self.host_fn_count);
@@ -918,7 +1002,6 @@ impl<'a> Checker<'a> {
             Some(owner) => format!("{prefix}{owner}.{}", decl.name.name),
             None => format!("{prefix}{}", decl.name.name),
         };
-        let id = FnId(self.fns.len() as u32);
         self.fns.push(FnInfo {
             name,
             name_span: decl.name.span,
@@ -944,11 +1027,15 @@ impl<'a> Checker<'a> {
             self.unsupported("a pattern in a module-level binding", binding.pat.span);
             return;
         };
+        let id = GlobalId(self.globals.len() as u32);
+        self.declare_deprecation(DeprKey::Global(id), &name.name, &item.attrs);
         let (ty, annotation_span) = match &binding.ty {
-            Some(t) => (Some(self.resolve_type(t)), Some(t.span)),
+            Some(t) => (
+                Some(self.with_depr_ctx(&[DeprKey::Global(id)], |ck| ck.resolve_type(t))),
+                Some(t.span),
+            ),
             None => (None, None),
         };
-        let id = GlobalId(self.globals.len() as u32);
         self.globals.push(GlobalInfo {
             name: name.name.clone(),
             name_span: name.span,
@@ -1084,9 +1171,11 @@ impl<'a> Checker<'a> {
             _ => {}
         }
         if let Some(&id) = self.type_ids.get(name) {
+            self.note_deprecated_use(DeprKey::Type(id), span);
             return self.instantiate_type(id, args, span);
         }
         if let Some(&alias) = self.aliases.get(name) {
+            self.note_deprecated_use(DeprKey::Alias(alias), span);
             return self.alias_instance(alias, args, span);
         }
         // The text of a host interface may always say `vec.vec2` (it has no imports).
@@ -1108,7 +1197,7 @@ impl<'a> Checker<'a> {
         }
         if !args.is_empty() && !self.poisoned_types.contains(name) {
             let known = Ty::numeric_by_name(name).is_some()
-                || matches!(name, "int" | "bool" | "str" | "char");
+                || matches!(name, "int" | "bool" | "str" | "char" | "Bytes");
             if known {
                 self.report(Diagnostic::error(
                     format!("`{name}` takes no type arguments"),
@@ -1120,6 +1209,7 @@ impl<'a> Checker<'a> {
         match name {
             "bool" => Ty::Bool,
             "str" => Ty::Str,
+            "Bytes" => Ty::Bytes,
             "char" => Ty::Char,
             _ if Ty::numeric_by_name(name).is_some() => {
                 Ty::numeric_by_name(name).unwrap_or(Ty::Error)
@@ -1176,6 +1266,8 @@ impl<'a> Checker<'a> {
         if tys.iter().any(Ty::is_error) {
             return Ty::Error;
         }
+        let spans: Vec<Span> = args.iter().map(|a| a.span).collect();
+        self.require_type_bounds(id, &tys, &spans, span);
         if is_iface {
             Ty::Dyn(id, tys)
         } else {
@@ -1279,6 +1371,10 @@ impl<'a> Checker<'a> {
             return;
         }
         let mut diag = Diagnostic::error(format!("unknown type `{name}`"), span);
+        if let Some(hint) = self.excluded_hint(self.cur_mod, name) {
+            self.report(diag.with_hint(hint));
+            return;
+        }
         if VecTy::from_name(name).is_some() {
             diag = diag.with_hint(format!(
                 "the vector types are in the `vec` module: write `import vec` and then `vec.{name}`, or `import vec.{{{name}}}`"
@@ -1352,12 +1448,14 @@ impl<'a> Checker<'a> {
         let span = info.span;
         let module = info.module;
         let back = self.enter_module(module);
-        let (body, ty, deps) = FnCtx::new(self, format!("<init {name}>"), None).check_initialiser(
-            &decl.init,
-            declared.as_ref(),
-            annotation_span,
-            span,
-        );
+        let (body, ty, deps) = self.with_depr_ctx(&[DeprKey::Global(g)], |ck| {
+            FnCtx::new(ck, format!("<init {name}>"), None).check_initialiser(
+                &decl.init,
+                declared.as_ref(),
+                annotation_span,
+                span,
+            )
+        });
         self.enter_module(back);
         let info = &mut self.globals[g.0 as usize];
         info.ty = Some(ty);
@@ -1386,7 +1484,13 @@ impl<'a> Checker<'a> {
                     let generics = self.type_extra[t].generics.clone();
                     let back = self.enter_module(self.type_extra[t].module.unwrap_or(BASE));
                     let mark = self.enter_generics(&generics);
-                    let body = FnCtx::new(self, name.clone(), None).check_default(default, &ty);
+                    let keys = [
+                        DeprKey::Type(TypeId(t as u32)),
+                        DeprKey::Field(TypeId(t as u32), i as u32),
+                    ];
+                    let body = self.with_depr_ctx(&keys, |ck| {
+                        FnCtx::new(ck, name.clone(), None).check_default(default, &ty)
+                    });
                     self.leave_generics(mark);
                     self.enter_module(back);
                     let module = self.type_extra[t].module.unwrap_or(BASE);
@@ -1432,7 +1536,9 @@ impl<'a> Checker<'a> {
             for p in params {
                 if let Some(default) = p.default {
                     let name = format!("<default {}>", p.name);
-                    FnCtx::new(self, name, None).check_default(default, &p.ty);
+                    self.with_depr_ctx(&[DeprKey::Fn(FnId(f as u32))], |ck| {
+                        FnCtx::new(ck, name, None).check_default(default, &p.ty);
+                    });
                 }
             }
             self.self_ty = saved;
@@ -1462,9 +1568,15 @@ impl<'a> Checker<'a> {
         let back = self.enter_module(module);
         let mark = self.enter_generics(&generics);
         let saved = std::mem::replace(&mut self.self_ty, self_ty);
-        let (body, deps) = FnCtx::new(self, name, Some((ret.clone(), ret_span)))
-            .mutating_self(mutates_self)
-            .check_fn_body(decl, &params, &ret, ret_span, span);
+        let mut keys = vec![DeprKey::Fn(f)];
+        if let Some(Ty::Adt(t, _) | Ty::Dyn(t, _)) = &self.self_ty {
+            keys.push(DeprKey::Type(*t));
+        }
+        let (body, deps) = self.with_depr_ctx(&keys, |ck| {
+            FnCtx::new(ck, name, Some((ret.clone(), ret_span)))
+                .mutating_self(mutates_self)
+                .check_fn_body(decl, &params, &ret, ret_span, span)
+        });
         self.self_ty = saved;
         self.leave_generics(mark);
         self.enter_module(back);
@@ -1476,9 +1588,7 @@ impl<'a> Checker<'a> {
     /// A `test "name" { .. }` block is a function `() -> Result[()]` that nothing calls: it is
     /// checked like any other body, so `?` works and an `err` fails the test (ARCHITECTURE §15).
     fn collect_test(&mut self, item: &'a ast::Item, decl: &'a ast::TestDecl) {
-        for attr in &item.attrs {
-            self.unsupported(&format!("the attribute `@{}`", attr.name.name), attr.span);
-        }
+        // Attributes were checked with the other items (`collect_item`).
         let module = self.cur_mod;
         if let Some(prev) = self
             .tests

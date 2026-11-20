@@ -1,0 +1,47 @@
+// caps: fs, os
+// More than a few buffers' worth, written and read back a line at a time.
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let file = path.join(os.temp_dir(), "big.txt")
+    let n = 200000
+    let w = fs.create(file)?
+    for i in 0..n {
+        w.write("record {i}: the quick brown fox jumps over the lazy dog\n")?
+    }
+    print(w.position()? > 10000000)
+    w.close()?
+    print(fs.stat(file)?.size > 10000000)
+
+    let r = fs.open(file)?
+    defer r.close()
+    var count = 0
+    var bytes = 0
+    var last = ""
+    while true {
+        match r.read_line()? {
+            some(line) => {
+                if line != "record {count}: the quick brown fox jumps over the lazy dog" {
+                    print("wrong line {count}: {line}")
+                    break
+                }
+                count += 1
+                bytes += line.len() + 1
+                last = line
+            }
+            none => break
+        }
+    }
+    print(count)
+    print(bytes == fs.stat(file)?.size)
+    print(last)
+    return ok(())
+}
+
+// expect: true
+// expect: true
+// expect: 200000
+// expect: true
+// expect: record 199999: the quick brown fox jumps over the lazy dog

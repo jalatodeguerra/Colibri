@@ -1,4 +1,5 @@
 // caps: os
+// allow: unused
 // `os.exit` ends the program like a panic does: `defer`s run. The host reads the code.
 import os
 

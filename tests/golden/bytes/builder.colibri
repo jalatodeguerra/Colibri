@@ -1,0 +1,41 @@
+fn main() {
+    let b = BytesBuilder()
+    print(b.is_empty())
+    b.push(1)
+    b.push_str("hé")
+    b.push_bytes(Bytes([0, 255]))
+    print(b.len())
+    print(b.to_bytes())
+    print(b.is_empty())
+    let first = b.to_bytes()
+    b.push(9)
+    print(first.len())
+    print(b.to_bytes().len())
+    b.clear()
+    print(b.len())
+    print(b.to_bytes())
+    for i in 0..300 {
+        b.push(u8(i % 256))
+    }
+    print(b.len())
+    let alias = b
+    alias.push(1)
+    print(b.len())
+    let copy = b.clone()
+    copy.push(2)
+    print(b.len())
+    print(copy.len())
+}
+
+// expect: true
+// expect: 6
+// expect: b"\x01h\xc3\xa9\x00\xff"
+// expect: false
+// expect: 6
+// expect: 7
+// expect: 0
+// expect: b""
+// expect: 300
+// expect: 301
+// expect: 301
+// expect: 302

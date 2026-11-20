@@ -214,6 +214,12 @@ impl SourceFs for RecordingFs<'_> {
         Ok(text)
     }
 
+    /// Forwarded as it is: the start of a file (a `CACHEDIR.TAG`) is not a read of the program,
+    /// and the default would read the whole file and watch it.
+    fn read_prefix(&self, path: &Path, n: usize) -> Option<Vec<u8>> {
+        self.inner.read_prefix(path, n)
+    }
+
     fn is_file(&self, path: &Path) -> bool {
         self.inner.is_file(path)
     }
@@ -373,5 +379,37 @@ mod tests {
         let c = "Foo { x: 2, span: Span { file: FileId(0), start: 3, end: 9 } }";
         assert_eq!(hash_without_spans(a), hash_without_spans(b));
         assert_ne!(hash_without_spans(a), hash_without_spans(c));
+    }
+
+    /// A file system that can only give the start of `tag`; reading all of it is a failure.
+    struct PrefixOnly;
+
+    impl SourceFs for PrefixOnly {
+        fn read(&self, _: &Path) -> Result<String, String> {
+            Err("the whole file must not be read".to_string())
+        }
+        fn read_prefix(&self, _: &Path, n: usize) -> Option<Vec<u8>> {
+            Some(b"Signature: 8a477f597d28d172789f06886806bc55"[..n.min(10)].to_vec())
+        }
+        fn is_file(&self, _: &Path) -> bool {
+            true
+        }
+        fn is_dir(&self, _: &Path) -> bool {
+            false
+        }
+        fn list(&self, _: &Path) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn the_start_of_a_file_is_forwarded_and_is_not_a_watched_read() {
+        let inner = PrefixOnly;
+        let fs = RecordingFs::new(&inner);
+        assert_eq!(
+            fs.read_prefix(Path::new("CACHEDIR.TAG"), 43).as_deref(),
+            Some(&b"Signature:"[..])
+        );
+        assert!(fs.into_reads().is_empty());
     }
 }

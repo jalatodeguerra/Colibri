@@ -1,0 +1,103 @@
+// Bounds on the type parameters of types: checked where the type is written or built, and
+// relied on inside the type's own impl blocks without restating them.
+struct Sorted[T: Ord] { items: List[T] }
+
+impl[T] Sorted[T] {
+    fn new() -> Sorted[T] => Sorted { items: [] }
+    fn insert(var self, x: T) {
+        var i = 0
+        while i < self.items.len() && self.items[i] < x {
+            i += 1
+        }
+        self.items.insert(i, x)
+    }
+    fn in_order(self) -> bool {
+        var i = 1
+        while i < self.items.len() {
+            if self.items[i - 1] > self.items[i] {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+}
+
+class Cache[K: Hash + Eq, V] {
+    entries: Map[K, V] = {:}
+}
+
+impl[K, V] Cache[K, V] {
+    fn put(self, k: K, v: V) { self.entries[k] = v }
+    fn get(self, k: K) -> V? => self.entries.get(k)
+}
+
+enum Tree[T: Ord] {
+    Leaf
+    Node(Tree[T], T, Tree[T])
+}
+
+impl[T] Tree[T] {
+    fn add(self, x: T) -> Tree[T] {
+        match self {
+            .Leaf => return Tree.Node(Tree.Leaf, x, Tree.Leaf)
+            .Node(l, v, r) => {
+                if x < v {
+                    return Tree.Node(l.add(x), v, r)
+                }
+                return Tree.Node(l, v, r.add(x))
+            }
+        }
+    }
+    fn count(self) -> int {
+        match self {
+            .Leaf => return 0
+            .Node(l, _, r) => return l.count() + 1 + r.count()
+        }
+    }
+}
+
+interface Container[T: Ord] {
+    fn largest(self) -> T
+}
+
+impl Container[int] for Sorted[int] {
+    fn largest(self) -> int => self.items[self.items.len() - 1]
+}
+
+// Equality and hashing are derived for a bounded generic struct.
+struct Tagged[T: Ord] { v: T }
+
+// A function writes the bound itself, as for any generic parameter.
+fn smallest[T: Ord](s: Sorted[T]) -> T => s.items[0]
+
+fn main() {
+    var s: Sorted[int] = Sorted.new()
+    s.insert(5)
+    s.insert(1)
+    s.insert(3)
+    print(s.items)
+    print(s.in_order())
+    print(smallest(s))
+    let words = Sorted { items: ["b", "a"] }
+    print(words.in_order())
+    let c = Cache[str, int] { }
+    c.put("a", 1)
+    print(c.get("a"))
+    let t: Tree[int] = .Leaf
+    print(t.add(4).add(2).add(9).count())
+    let big: Container[int] = s
+    print(big.largest())
+    print(s == Sorted { items: [1, 3, 5] })
+    let m: Map[Tagged[int], str] = {Tagged { v: 1 }: "one"}
+    print(m.get(Tagged { v: 1 }))
+}
+// expect: [1, 3, 5]
+// expect: true
+// expect: 1
+// expect: false
+// expect: some(1)
+// expect: 3
+// expect: 5
+// expect: true
+// expect: some("one")

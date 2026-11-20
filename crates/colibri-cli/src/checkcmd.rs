@@ -53,6 +53,7 @@ pub fn check_with(
         stack_budget: crate::NATIVE_STACK_BUDGET,
         interfaces,
         caps: colibri::CapSet::all(),
+        cfg: crate::build_cfg(),
     };
     // The loader needs the names of the standard modules; their interfaces are built for the
     // ones the program imports.

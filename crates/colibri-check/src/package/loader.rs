@@ -7,15 +7,16 @@ use std::path::{Path, PathBuf};
 use colibri_syntax::ast::{self, ItemKind, NodeId, TopLevel};
 use colibri_syntax::{Diagnostic, FileId, SourceMap, Span, parse_file};
 
+use super::cfg::{self, BuildCfg};
 use super::fs::{SourceFs, leaves_repository, normalize};
 use super::git;
 use super::lock::{self, LOCK_FILE, Lock};
-use super::manifest::{self, GitSource, Manifest, Source};
+use super::manifest::{self, Features, GitSource, Manifest, Source, feature_name_problem};
 use super::sync::inside;
 use super::toml;
 use super::{
-    Dropped, DroppedKind, ImportTarget, LATER_STD_MODULES, LIB_FILE, Loaded, MAIN_FILE, ModuleMeta,
-    PackageNode, SOURCE_EXT, std_module,
+    Dropped, DroppedKind, ImportTarget, LATER_STD_MODULES, LIB_FILE, Loaded, MAIN_FILE,
+    MISSING_STD_HINTS, ModuleMeta, PackageNode, SOURCE_EXT, std_module,
 };
 
 /// The manifest's file name.
@@ -54,6 +55,22 @@ struct Tree {
     /// Where each name of `allow_ffi` is written, with the manifest's file.
     allow_ffi_spans: Vec<Span>,
     deps: Vec<(String, usize)>,
+    /// The feature names `@when` knows in this package's files, and those that are on.
+    known_features: HashSet<String>,
+    enabled_features: HashSet<String>,
+    /// What the manifest declares, and where (for the messages about features).
+    declared: Option<(Features, FileId)>,
+    /// What each package that depends on this one asks of its features.
+    requests: Vec<FeatureRequest>,
+}
+
+/// The features one dependent asks for in a dependency entry (`features`,
+/// `default-features`).
+struct FeatureRequest {
+    /// The tree of the package that depends.
+    from: usize,
+    features: Vec<(String, Span)>,
+    default_features: bool,
 }
 
 struct Disc {
@@ -63,6 +80,7 @@ struct Disc {
     package: usize,
     entry: bool,
     imports: Vec<(NodeId, ImportTarget)>,
+    excluded: Vec<cfg::Excluded>,
 }
 
 /// One way an import could be satisfied.
@@ -108,6 +126,7 @@ struct Loader<'a> {
     package_keys: HashMap<(usize, PathBuf), usize>,
     diags: Vec<Diagnostic>,
     dropped: Vec<Dropped>,
+    cfg: BuildCfg,
     /// `colibri.lock` of the root package, read when the first git dependency needs it.
     lock: Option<Lock>,
     lock_read: bool,
@@ -148,13 +167,15 @@ pub fn skipped_folder(fs: &dyn SourceFs, name: &str, path: &Path) -> bool {
 }
 
 /// What else `load` may do.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct LoadOptions {
     /// For a package: load every `.colibri` file under its root, not only the modules the
     /// entry reaches by `import` (what `colibri test` needs to find every `test` block).
     /// Folders that [`skipped_folder`] names are not walked (an `import` still reaches into them).
     /// Ignored for a script.
     pub all_modules: bool,
+    /// What `@when` conditions are decided with (DESIGN §3.6).
+    pub cfg: BuildCfg,
 }
 
 /// Loads the program that starts at `entry`, reading through `fs` and adding every file it
@@ -176,6 +197,13 @@ pub fn load(
 /// (`x.colibri -> colibri.toml`) is its owner's own statement that the file is a script, and
 /// the path is not resolved.
 pub fn not_a_script(path: &Path) -> Option<String> {
+    not_a_script_plainly(path)
+        .map(|message| format!("{message}: pass the folder that holds it instead"))
+}
+
+/// What [`not_a_script`] says without the advice to pass the folder, for a place where a
+/// folder cannot be given (the REPL's `:load`, which reads one script).
+pub fn not_a_script_plainly(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     let (file, what) = if name.eq_ignore_ascii_case(MANIFEST_FILE) {
         (MANIFEST_FILE, "manifest")
@@ -184,9 +212,7 @@ pub fn not_a_script(path: &Path) -> Option<String> {
     } else {
         return None;
     };
-    Some(format!(
-        "`{file}` is the {what} of a package, not a script: pass the folder that holds it instead"
-    ))
+    Some(format!("`{file}` is the {what} of a package, not a script"))
 }
 
 /// [`load`] with options.
@@ -197,7 +223,28 @@ pub fn load_with(
     host_modules: &[String],
     options: LoadOptions,
 ) -> Result<Loaded, LoadError> {
-    let mut loader = Loader::new(fs, sources, host_modules);
+    let mut loader = Loader::new(fs, sources, host_modules, options.cfg.clone());
+    // Flags are checked like the names in a manifest. A bad one is reported once, and left out
+    // so that it does not also come back as "not declared".
+    let mut flag_problems = Vec::new();
+    loader
+        .cfg
+        .features
+        .retain(|name| match feature_name_problem(name) {
+            Some(problem) => {
+                flag_problems.push((name.clone(), problem));
+                false
+            }
+            None => true,
+        });
+    for (name, (message, hint)) in flag_problems {
+        let text = format!("feature {name}\n");
+        let file = loader.sources.add_file("<build flags>".to_string(), text);
+        let span = Span::new(file, 8, 8 + name.len() as u32);
+        loader
+            .diags
+            .push(Diagnostic::error(message, span).with_hint(hint));
+    }
     let (root, file, require_manifest) = match entry {
         Entry::File(path) => {
             if let Some(message) = not_a_script(path) {
@@ -231,6 +278,7 @@ pub fn load_with(
             message,
         })?;
     loader.warn_unknown_allow_ffi();
+    loader.resolve_features();
     let entry_path = match entry {
         Entry::File(path) => path.to_path_buf(),
         Entry::Package(_) => root.join(&file),
@@ -260,7 +308,12 @@ pub fn load_with(
 }
 
 impl<'a> Loader<'a> {
-    fn new(fs: &'a dyn SourceFs, sources: &'a mut SourceMap, host_modules: &'a [String]) -> Self {
+    fn new(
+        fs: &'a dyn SourceFs,
+        sources: &'a mut SourceMap,
+        host_modules: &'a [String],
+        cfg: BuildCfg,
+    ) -> Self {
         Loader {
             fs,
             sources,
@@ -274,11 +327,101 @@ impl<'a> Loader<'a> {
             package_keys: HashMap::new(),
             diags: Vec::new(),
             dropped: Vec::new(),
+            cfg,
             lock: None,
             lock_read: false,
             clashes: HashSet::new(),
             ffi_reported: HashSet::new(),
         }
+    }
+
+    /// Decides which features are on in every package, once the whole tree of manifests is
+    /// read (DESIGN §3.6). The root package takes the build's flags (`--feature`,
+    /// `--no-default-features`). A dependency gets the union of what every package that depends
+    /// on it asks for, plus its `default` list unless every one of them says
+    /// `default-features = false`. A feature a dependent asks for that the dependency does not
+    /// declare is an error that names both manifests.
+    fn resolve_features(&mut self) {
+        for t in 0..self.trees.len() {
+            let is_dep = self.trees[t].is_dep;
+            let mut requested: Vec<String> = Vec::new();
+            let defaults;
+            if is_dep {
+                defaults = self.trees[t].requests.iter().any(|r| r.default_features);
+                let requests = std::mem::take(&mut self.trees[t].requests);
+                for r in &requests {
+                    for (name, span) in &r.features {
+                        if !requested.contains(name) {
+                            requested.push(name.clone());
+                        }
+                        self.check_requested(t, name, Some((r.from, *span)));
+                    }
+                }
+                self.trees[t].requests = requests;
+            } else {
+                requested = self.cfg.features.clone();
+                defaults = !self.cfg.no_default_features;
+                for name in requested.clone() {
+                    self.check_requested(t, &name, None);
+                }
+            }
+            let (known, on) = match &self.trees[t].declared {
+                Some((features, _)) => {
+                    let known = features.declared.iter().map(|(n, _)| n.clone()).collect();
+                    // A request for a feature that is not declared was reported; leave it out.
+                    let asked: Vec<String> =
+                        requested.into_iter().filter(|n| features.has(n)).collect();
+                    let on = features.enabled(&asked, !defaults);
+                    (known, on.into_iter().collect())
+                }
+                // A script has no manifest: the flags the build turned on are the features there
+                // are.
+                None => {
+                    let on: HashSet<String> = requested.into_iter().collect();
+                    (on.clone(), on)
+                }
+            };
+            self.trees[t].known_features = known;
+            self.trees[t].enabled_features = on;
+        }
+    }
+
+    /// Reports a requested feature the package of tree `t` does not declare. `from` is the
+    /// dependent and the place in its manifest; `None` is a flag of the build.
+    fn check_requested(&mut self, t: usize, name: &str, from: Option<(usize, Span)>) {
+        let Some((features, file)) = &self.trees[t].declared else {
+            return;
+        };
+        if features.has(name) {
+            return;
+        }
+        let declared: Vec<&str> = features.declared.iter().map(|(n, _)| n.as_str()).collect();
+        let hint = if declared.is_empty() {
+            "declare it in a `[features]` table: `name = []`".to_string()
+        } else {
+            format!("the declared features are: {}", declared.join(", "))
+        };
+        let manifest = self.trees[t].root.join(MANIFEST_FILE);
+        let diag = match from {
+            None => Diagnostic::error(
+                format!("the feature `{name}` is not declared in `colibri.toml`"),
+                Span::new(*file, 0, 0),
+            )
+            .with_hint(hint),
+            Some((dependent, span)) => Diagnostic::error(
+                format!(
+                    "the package `{}` asks for the feature `{name}` of `{}`, which `{}` does not declare",
+                    self.trees[dependent].name, self.trees[t].name, self.trees[t].name
+                ),
+                span,
+            )
+            .with_label(
+                Span::new(*file, 0, 0),
+                format!("the features of `{}` are declared here", self.trees[t].name),
+            )
+            .with_hint(format!("{hint} (in `{}`)", self.fs.display_name(&manifest))),
+        };
+        self.diags.push(diag);
     }
 
     /// Reads the manifest of the tree rooted at `dir` (and, recursively, its dependencies).
@@ -355,6 +498,10 @@ impl<'a> Loader<'a> {
                 .map(|(m, _)| m.allow_ffi_spans.clone())
                 .unwrap_or_default(),
             deps: Vec::new(),
+            known_features: HashSet::new(),
+            enabled_features: HashSet::new(),
+            declared: manifest.as_ref().map(|(m, f)| (m.features.clone(), *f)),
+            requests: Vec::new(),
         });
         self.trees_by_dir.insert(key, tree);
         if let Some((m, _)) = &manifest {
@@ -426,6 +573,11 @@ impl<'a> Loader<'a> {
                                 .with_hint("the name before `=` and the package `name` must agree"),
                             );
                         }
+                        self.trees[t].requests.push(FeatureRequest {
+                            from: tree,
+                            features: dep.features.clone(),
+                            default_features: dep.default_features,
+                        });
                         self.check_ffi_allowed(tree, t, dep.name_span);
                         self.report_clash(t, dep.name_span);
                         self.trees[tree].deps.push((dep.name.clone(), t));
@@ -640,7 +792,7 @@ impl<'a> Loader<'a> {
         let file_id = self
             .sources
             .add_file(self.fs.display_name(path), text.clone());
-        let (file, diags) = parse_file(file_id, &text);
+        let (mut file, diags) = parse_file(file_id, &text);
         for d in diags.iter().filter(|d| d.is_error()) {
             self.dropped.push(Dropped {
                 kind: DroppedKind::Syntax,
@@ -649,6 +801,13 @@ impl<'a> Loader<'a> {
             });
         }
         self.diags.extend(diags);
+        let env = cfg::Env {
+            cfg: &self.cfg,
+            known: &self.trees[tree].known_features,
+            enabled: &self.trees[tree].enabled_features,
+            has_manifest: self.trees[tree].manifest_name.is_some(),
+        };
+        let excluded = cfg::apply(&mut file, &text, &env, &mut self.diags);
         let package = self.package_of(tree, rel);
         let name = self.module_name(tree, rel, entry);
         let id = self.discs.len();
@@ -659,6 +818,7 @@ impl<'a> Loader<'a> {
             package,
             entry,
             imports: Vec::new(),
+            excluded,
         }));
         self.by_path.insert(self.fs.canonical(path), id);
         id
@@ -871,6 +1031,18 @@ impl<'a> Loader<'a> {
             self.diags.push(diag);
             return;
         }
+        if let Some(name) = std_name
+            && let Some((_, hint)) = MISSING_STD_HINTS.iter().find(|(n, _)| *n == name)
+            && self.candidates(tree, names).is_empty()
+        {
+            let message = match names {
+                ["std", _] => format!("the standard library has no module `{name}`"),
+                _ => format!("no module `{dotted_path}`"),
+            };
+            self.diags
+                .push(Diagnostic::error(message, span).with_hint(*hint));
+            return;
+        }
         if names[0] == "std" {
             let available: Vec<&str> = self
                 .host_modules
@@ -1028,6 +1200,7 @@ impl<'a> Loader<'a> {
                 dependency: self.trees[disc.tree].is_dep,
                 ffi: self.trees[disc.tree].ffi,
                 imports,
+                excluded: disc.excluded,
             });
             files.push(disc.file);
         }
@@ -1231,7 +1404,10 @@ mod tests {
             &mut sources,
             Entry::Package(Path::new("p")),
             &[],
-            LoadOptions { all_modules: true },
+            LoadOptions {
+                all_modules: true,
+                ..LoadOptions::default()
+            },
         )
         .expect("loads");
         let mut names: Vec<String> = loaded.metas.iter().map(|m| m.name.clone()).collect();
@@ -1314,7 +1490,7 @@ mod tests {
             );
             let fs = Watching(mem);
             let mut sources = SourceMap::new();
-            let mut loader = Loader::new(&fs, &mut sources, &[]);
+            let mut loader = Loader::new(&fs, &mut sources, &[], BuildCfg::default());
             let root = PathBuf::from("/cache/repo");
             loader
                 .load_tree(Path::new("/cache/repo/pkg"), true, true, Some(root))
@@ -1475,5 +1651,20 @@ mod tests {
             &[],
         );
         assert!(!l.has_errors(), "{:?}", messages(&l));
+    }
+
+    #[test]
+    fn import_collections_says_the_collections_are_built_in() {
+        let (l, _) = load_mem(&[("m.colibri", "import collections\n")], &[]);
+        let d = &l.diagnostics[0];
+        assert_eq!(d.message, "no module `collections`");
+        assert!(
+            d.hint
+                .as_deref()
+                .unwrap()
+                .contains("`List`, `Map` and `Set` are built in")
+        );
+        let (l, _) = load_mem(&[("m.colibri", "import mem\n")], &[]);
+        assert_eq!(l.diagnostics[0].message, "no module `mem`");
     }
 }

@@ -296,3 +296,276 @@ fn a_tests_script_values_are_initialised_in_source_order_without_the_statements(
     assert!(vm.run_test(0).is_ok());
     assert_eq!(out.take(), "a\nb\n");
 }
+
+// ---- the per-test host hook (EMBEDDING §9) ----
+
+/// The host's own state: a counter its function bumps. Tests that run after another one see
+/// what the earlier one left unless the host resets it.
+#[derive(Default)]
+struct Calls(i64);
+
+const HOST_STATE_SOURCE: &str = r#"
+test "first" {
+    assert_eq(call_count(), 1)
+}
+
+test "second" {
+    assert_eq(call_count(), 1)
+}
+
+test "third" {
+    assert_eq(call_count(), 1)
+}
+"#;
+
+fn vm_with_counter() -> colibri::Vm {
+    let mut vm = colibri::Vm::builder().build();
+    vm.insert_state(Calls::default());
+    vm.register_fn("call_count", |cx: &mut colibri::Ctx| {
+        let calls = cx.state_mut::<Calls>().unwrap();
+        calls.0 += 1;
+        calls.0
+    })
+    .unwrap();
+    vm.load_source("state.colibri", HOST_STATE_SOURCE).unwrap();
+    vm
+}
+
+#[test]
+fn host_state_leaks_from_one_test_to_the_next_without_the_hook() {
+    let mut vm = vm_with_counter();
+    let results: Vec<bool> = (0..3).map(|id| vm.run_test(id).is_ok()).collect();
+    assert_eq!(results, [true, false, false]);
+    assert_eq!(vm.state_mut::<Calls>().unwrap().0, 3);
+}
+
+#[test]
+fn on_test_start_lets_the_host_reset_its_state_before_each_test() {
+    let mut vm = vm_with_counter();
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let log = seen.clone();
+    vm.on_test_start(move |vm, info| {
+        log.borrow_mut().push((info.id, info.name.clone()));
+        vm.state_mut::<Calls>().unwrap().0 = 0;
+    });
+    for id in 0..3 {
+        vm.run_test(id).unwrap();
+    }
+    assert_eq!(
+        *seen.borrow(),
+        [
+            (0, "first".to_string()),
+            (1, "second".to_string()),
+            (2, "third".to_string())
+        ]
+    );
+}
+
+#[test]
+fn the_hook_does_not_run_for_an_unknown_test_or_a_plain_load() {
+    let mut vm = vm_with_counter();
+    let count = std::rc::Rc::new(std::cell::Cell::new(0));
+    let c = count.clone();
+    vm.on_test_start(move |_, _| c.set(c.get() + 1));
+    assert!(vm.run_test(99).is_err());
+    assert_eq!(count.get(), 0);
+    vm.run_test(0).unwrap();
+    assert_eq!(count.get(), 1);
+}
+
+#[test]
+fn a_hook_set_inside_the_hook_replaces_it() {
+    let mut vm = vm_with_counter();
+    let hits = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let first = hits.clone();
+    let second = hits.clone();
+    vm.on_test_start(move |vm, _| {
+        first.borrow_mut().push("first");
+        let second = second.clone();
+        vm.on_test_start(move |_, _| second.borrow_mut().push("second"));
+    });
+    vm.run_test(0).unwrap();
+    let _ = vm.run_test(1);
+    assert_eq!(*hits.borrow(), ["first", "second"]);
+}
+
+const HOOK_SOURCE: &str = r#"
+var items = [1, 2, 3]
+fn peek() -> int { return items.len() }
+test "one" { assert_eq(items.len(), 3) }
+test "two" { items.push(4); assert_eq(items.len(), 4) }
+"#;
+
+fn hook_dir(name: &str, text: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("colibri-hook-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.colibri"), text).unwrap();
+    dir
+}
+
+#[test]
+fn a_hook_that_reloads_the_program_runs_the_test_of_the_new_program() {
+    let dir = hook_dir(
+        "reload",
+        "test \"one\" { print(\"old one\") }\ntest \"two\" { print(\"old two\") }\n",
+    );
+    let path = dir.join("main.colibri");
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    vm.load_file(&path).unwrap();
+    let rewrite = path.clone();
+    vm.on_test_start(move |vm, _| {
+        // More functions than before: the old index of `two` would be out of range in the new
+        // program, and the old function id would name another function.
+        std::fs::write(
+            &rewrite,
+            "fn helper() { print(\"helper ran\") }\nfn h2() { panic(\"h2 ran\") }\ntest \"one\" { print(\"new one\") }\ntest \"two\" { print(\"new two\") }\n",
+        )
+        .unwrap();
+        vm.reload_changed().unwrap();
+    });
+    vm.run_test(1).unwrap();
+    assert_eq!(out.contents(), "new two\n");
+}
+
+#[test]
+fn a_hook_that_reloads_with_a_test_inserted_earlier_runs_the_same_test() {
+    let dir = hook_dir(
+        "inserted",
+        "test \"one\" { print(\"old one\") }\ntest \"two\" { print(\"old two\") }\n",
+    );
+    let path = dir.join("main.colibri");
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    vm.load_file(&path).unwrap();
+    let rewrite = path.clone();
+    vm.on_test_start(move |vm, _| {
+        // A new first test: by position, id 1 is now `one`.
+        std::fs::write(
+            &rewrite,
+            "test \"zero\" { print(\"new zero\") }\ntest \"one\" { print(\"new one\") }\ntest \"two\" { print(\"new two\") }\n",
+        )
+        .unwrap();
+        vm.reload_changed().unwrap();
+    });
+    vm.run_test(1).unwrap();
+    assert_eq!(out.contents(), "new two\n");
+}
+
+#[test]
+fn going_by_name_runs_every_test_once_when_the_hook_reloads() {
+    let dir = hook_dir(
+        "byname",
+        "test \"a\" { print(\"a\") }\ntest \"b\" { print(\"b\") }\n",
+    );
+    let path = dir.join("main.colibri");
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    vm.load_file(&path).unwrap();
+    let names: Vec<String> = vm.tests().into_iter().map(|t| t.name).collect();
+    let rewrite = path.clone();
+    let done = std::cell::Cell::new(false);
+    let done = std::rc::Rc::new(done);
+    let once = done.clone();
+    vm.on_test_start(move |vm, _| {
+        if !once.replace(true) {
+            // A new first test: the ids taken before are stale from here on.
+            std::fs::write(
+                &rewrite,
+                "test \"z\" { print(\"z\") }\ntest \"a\" { print(\"a\") }\ntest \"b\" { print(\"b\") }\n",
+            )
+            .unwrap();
+            vm.reload_changed().unwrap();
+        }
+    });
+    for name in names {
+        let id = vm.tests().iter().find(|t| t.name == name).map(|t| t.id);
+        vm.run_test(id.expect("the test is still there")).unwrap();
+    }
+    assert_eq!(out.contents(), "a\nb\n");
+}
+
+#[test]
+fn a_hook_that_reloads_to_fewer_tests_makes_run_test_fail_clearly() {
+    let dir = hook_dir(
+        "fewer",
+        "test \"one\" { print(\"old one\") }\ntest \"two\" { print(\"old two\") }\n",
+    );
+    let path = dir.join("main.colibri");
+    let mut vm = colibri::Vm::builder().build();
+    vm.load_file(&path).unwrap();
+    let rewrite = path.clone();
+    vm.on_test_start(move |vm, _| {
+        std::fs::write(&rewrite, "test \"only\" { print(\"only\") }\n").unwrap();
+        vm.reload_changed().unwrap();
+    });
+    let err = vm.run_test(1).unwrap_err();
+    assert!(
+        matches!(&err, colibri::Error::FnNotFound { name } if name.contains("test #1") && name.contains("reloaded")),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_script_function_called_from_the_hook_that_reads_a_module_value_panics_clearly() {
+    let mut vm = colibri::Vm::builder().build();
+    vm.load_source("s.colibri", HOOK_SOURCE).unwrap();
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let s = seen.clone();
+    vm.on_test_start(move |vm, _| {
+        let peek = vm.get_fn::<(), i64>("peek").unwrap();
+        *s.borrow_mut() = Some(peek.call(vm, ()));
+    });
+    vm.run_test(0).unwrap();
+    let result = seen.borrow_mut().take().unwrap();
+    match result {
+        Err(colibri::Error::Panic { message, .. }) => {
+            assert!(
+                message.contains("`items` is used before it is initialised"),
+                "{message}"
+            );
+            assert!(message.contains("on_test_start"), "{message}");
+        }
+        other => panic!("expected a panic, got {other:?}"),
+    }
+    // The test itself still sees its module values.
+    vm.run_test(1).unwrap();
+}
+
+#[test]
+fn a_panicking_hook_stays_registered() {
+    let mut vm = colibri::Vm::builder().build();
+    vm.load_source("s.colibri", HOOK_SOURCE).unwrap();
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let c = calls.clone();
+    vm.on_test_start(move |_, _| {
+        c.set(c.get() + 1);
+        if c.get() == 1 {
+            panic!("boom");
+        }
+    });
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| vm.run_test(0)));
+    assert!(caught.is_err());
+    vm.run_test(1).unwrap();
+    assert_eq!(calls.get(), 2);
+}
+
+#[test]
+fn a_test_run_from_inside_the_hook_runs_without_the_hook() {
+    let mut vm = colibri::Vm::builder().build();
+    vm.load_source("s.colibri", HOOK_SOURCE).unwrap();
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let s = seen.clone();
+    vm.on_test_start(move |vm, info| {
+        s.borrow_mut().push(info.id);
+        if info.id == 1 {
+            vm.run_test(0).unwrap();
+        }
+    });
+    vm.run_test(1).unwrap();
+    assert_eq!(*seen.borrow(), [1]);
+    // The hook is back for the next call.
+    vm.run_test(0).unwrap();
+    assert_eq!(*seen.borrow(), [1, 0]);
+}

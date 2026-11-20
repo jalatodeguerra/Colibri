@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use colibri_lsp::{Config, serve};
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
@@ -15,6 +16,8 @@ struct Client {
     init: Value,
     /// The latest diagnostics published for each URI.
     diagnostics: HashMap<String, Vec<Value>>,
+    /// How many `publishDiagnostics` notifications arrived for each URI.
+    publishes: HashMap<String, usize>,
     /// `window/logMessage` texts.
     logs: Vec<String>,
     /// `window/showMessage` texts.
@@ -24,15 +27,30 @@ struct Client {
 
 impl Client {
     fn start(root: Option<&Path>, options: Value) -> Client {
+        Client::start_with(root, options, Config::default())
+    }
+
+    /// A client whose server waits `debounce` after a change before it analyses (a very long one
+    /// means: only a request analyses).
+    fn start_debounced(root: Option<&Path>, debounce: Duration) -> Client {
+        let config = Config {
+            debounce,
+            ..Config::default()
+        };
+        Client::start_with(root, Value::Null, config)
+    }
+
+    fn start_with(root: Option<&Path>, options: Value, config: Config) -> Client {
         let (server_side, conn) = Connection::memory();
         let server = std::thread::spawn(move || {
-            serve(server_side, Config::default()).expect("the server runs");
+            serve(server_side, config).expect("the server runs");
         });
         let mut client = Client {
             conn,
             next_id: 1,
             init: Value::Null,
             diagnostics: HashMap::new(),
+            publishes: HashMap::new(),
             logs: Vec::new(),
             shown: Vec::new(),
             server: Some(server),
@@ -68,6 +86,7 @@ impl Client {
             "textDocument/publishDiagnostics" => {
                 let uri = note.params["uri"].as_str().unwrap().to_string();
                 let list = note.params["diagnostics"].as_array().unwrap().clone();
+                *self.publishes.entry(uri.clone()).or_default() += 1;
                 self.diagnostics.insert(uri, list);
             }
             "window/showMessage" => self
@@ -119,11 +138,19 @@ impl Client {
     }
 
     fn change(&mut self, path: &Path, text: &str) {
+        self.change_without_sync(path, text);
+        self.sync();
+    }
+
+    fn change_without_sync(&self, path: &Path, text: &str) {
         self.notify(
             "textDocument/didChange",
             json!({"textDocument": {"uri": uri(path), "version": 2}, "contentChanges": [{"text": text}]}),
         );
-        self.sync();
+    }
+
+    fn publish_count(&self, path: &Path) -> usize {
+        self.publishes.get(&uri(path)).copied().unwrap_or(0)
     }
 
     fn diags(&self, path: &Path) -> Vec<Value> {
@@ -962,6 +989,66 @@ fn unused_variables_are_published_as_warnings() {
     c.shutdown();
 }
 
+#[test]
+fn deprecated_items_are_struck_through_in_diagnostics_completion_and_hover() {
+    let dir = temp_dir("deprecated");
+    let file = dir.join("a.colibri");
+    let src = "struct S {\n    @deprecated(\"use b\") a: int\n    b: int\n}\n\
+        @deprecated(\"use fresh\")\nfn old() -> int => 1\nfn fresh() -> int => 2\n\
+        fn main() {\n    let s = S { a: 1, b: 2 }\n    print(old() + fresh() + s.b)\n    let f = fre\n}\n";
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&file, src);
+    let diags = c.diags(&file);
+    let old: Vec<&Value> = diags
+        .iter()
+        .filter(|d| {
+            d["message"]
+                .as_str()
+                .unwrap()
+                .contains("`old` is deprecated")
+        })
+        .collect();
+    assert_eq!(old.len(), 1, "{diags:?}");
+    assert_eq!(old[0]["severity"], 2);
+    // `DiagnosticTag::Deprecated` = 2.
+    assert_eq!(old[0]["tags"], json!([2]));
+    // The struct literal's field.
+    assert!(diags.iter().any(|d| {
+        d["message"].as_str().unwrap() == "`a` is deprecated: use b" && d["tags"] == json!([2])
+    }));
+    // Completion marks the function; its sibling is plain.
+    let items = c.complete_after(&file, src, "let f = ");
+    assert_eq!(item(&items, "old")["tags"], json!([1]), "{items:?}");
+    assert!(item(&items, "fresh").get("tags").is_none());
+    // Hover on the use says so.
+    let (l, col) = pos_of(src, "old() + fresh");
+    let h = hover_text(&c.hover(&file, l, col + 1));
+    assert!(h.contains("**Deprecated**: use fresh"), "{h}");
+    c.shutdown();
+}
+
+#[test]
+fn when_conditions_use_the_same_values_as_the_command_line() {
+    let dir = temp_dir("when");
+    let file = dir.join("a.colibri");
+    let mut c = Client::start(Some(&dir), Value::Null);
+    // The item that is not taken is not checked; the one that is, is.
+    let src = "@when(debug && !debug)\nfn gone() -> int { return \"text\" }\n@when(debug)\nfn here() -> int => 1\nfn main() { print(here()) }\n";
+    c.open(&file, src);
+    assert!(c.diags(&file).is_empty(), "{:?}", c.diags(&file));
+    let bad = src.replace("debug && !debug", "dbg");
+    c.change(&file, &bad);
+    let diags = c.diags(&file);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown name `dbg` in `@when`")
+    );
+    c.shutdown();
+}
+
 const OUTLINE: &str = "\
 /// A point.
 pub struct Point { x: float, pub y: float }
@@ -1253,14 +1340,16 @@ fn main() {
     let o = some(1)
     let r = parse(\"1\")
     let mut_buf = StrBuilder()
+    let raw = Bytes([1, 2])
+    let raw_buf = BytesBuilder()
     let f = 1.5
     let i = 3
-    print(\"{s} {xs} {m} {set} {o} {r} {mut_buf} {f} {i}\")
+    print(\"{s} {xs} {m} {set} {o} {r} {mut_buf} {raw} {raw_buf} {f} {i}\")
 }
 ";
     c.open(&file, program);
     assert!(c.diags(&file).is_empty(), "{:?}", c.diags(&file));
-    let cases: [(&str, &[&str]); 8] = [
+    let cases: [(&str, &[&str]); 10] = [
         ("s", &["len", "split", "trim", "contains", "to_upper"]),
         ("xs", &["push", "pop", "map", "filter", "len", "sort"]),
         ("m", &["get", "insert", "keys", "contains_key"]),
@@ -1268,6 +1357,11 @@ fn main() {
         ("o", &["is_some", "is_none", "map", "expect"]),
         ("r", &["is_ok", "ok", "err", "expect"]),
         ("mut_buf", &["push", "to_str", "len"]),
+        (
+            "raw",
+            &["len", "slice", "to_str", "to_str_lossy", "find", "to_list"],
+        ),
+        ("raw_buf", &["push", "push_bytes", "push_str", "to_bytes"]),
         ("f", &["sqrt", "floor", "abs", "is_nan"]),
     ];
     for (name, expected) in cases {
@@ -1290,6 +1384,20 @@ fn main() {
     let items = c.complete_after(&file, &typing, "    xs.");
     assert_eq!(item(&items, "push")["detail"], "fn push(item: int)");
     assert_eq!(item(&items, "len")["detail"], "fn len() -> int");
+    let typing = program.replace("    print(", "    raw.\n    print(");
+    c.change(&file, &typing);
+    let items = c.complete_after(&file, &typing, "    raw.");
+    assert_eq!(
+        item(&items, "to_str")["detail"],
+        "fn to_str() -> Result[str]"
+    );
+    assert_eq!(
+        item(&items, "slice")["detail"],
+        "fn slice(start: int, end: int) -> Bytes"
+    );
+    let typing = program.replace("    print(", "    xs.\n    print(");
+    c.change(&file, &typing);
+    let items = c.complete_after(&file, &typing, "    xs.");
     assert_eq!(
         item(&items, "map")["detail"],
         "fn map(f: fn(int) -> U) -> List[U]"
@@ -1956,6 +2064,79 @@ fn rename_is_refused_while_a_file_of_the_package_has_a_syntax_error() {
     assert_eq!(renamed.matches("assist").count(), 5, "{renamed}");
     assert!(!renamed.contains("helper"));
     c.shutdown();
+}
+
+#[test]
+fn rename_is_refused_when_code_left_out_by_when_names_the_thing() {
+    let dir = temp_dir("rename_when");
+    write(&dir, "colibri.toml", "[package]\nname = \"demo\"\n");
+    let util_text = "@when(debug)\npub fn helper(x: int) -> int => x + 1\n@when(!debug)\npub fn helper(x: int) -> int => x + 2\npub fn plain() -> int => 1\n";
+    write(&dir, "util.colibri", util_text);
+    let main_text = "import util\nfn main() {\n    print(util.helper(1))\n    let helper2 = util.plain()\n    print(helper2)\n}\n";
+    let main = write(&dir, "main.colibri", main_text);
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, main_text);
+    let at = pos_of(main_text, "helper(1)");
+    for err in [
+        c.rename(&main, at, "assist").unwrap_err(),
+        c.prepare_rename(&main, at).unwrap_err(),
+    ] {
+        let message = err["message"].as_str().unwrap();
+        assert!(
+            message.contains("util.colibri") && message.contains("@when(!debug)"),
+            "{message}"
+        );
+    }
+    // A name that no left-out item mentions (as a whole word) still renames.
+    assert!(
+        c.rename(&main, pos_of(main_text, "plain()"), "simple")
+            .is_ok()
+    );
+    assert!(
+        c.rename(&main, pos_of(main_text, "helper2 ="), "h3")
+            .is_ok()
+    );
+    c.shutdown();
+}
+
+#[test]
+fn rename_is_refused_when_a_left_out_impl_test_or_wildcard_names_the_thing() {
+    let never = "@when(os == \"linux\" && os == \"macos\")";
+    for (name, extra) in [
+        (
+            "impl",
+            "pub struct P { pub x: int }\nIMPL impl P { pub fn get(self) -> int => helper(self.x) }\n",
+        ),
+        ("test", "TEST test \"t\" { assert(helper(1) == 2) }\n"),
+        ("wild", "WILD let _ = helper(1)\n"),
+    ] {
+        let dir = temp_dir(&format!("rename_when_{name}"));
+        write(&dir, "colibri.toml", "[package]\nname = \"demo\"\n");
+        let util_text = format!(
+            "pub fn helper(x: int) -> int => x + 1\n{}",
+            extra
+                .replace("IMPL", never)
+                .replace("TEST", never)
+                .replace("WILD", never)
+        );
+        write(&dir, "util.colibri", &util_text);
+        let main_text = "import util\nfn main() {\n    print(util.helper(1))\n}\n";
+        let main = write(&dir, "main.colibri", main_text);
+        let mut c = Client::start(Some(&dir), Value::Null);
+        c.open(&main, main_text);
+        let at = pos_of(main_text, "helper(1)");
+        for err in [
+            c.rename(&main, at, "assist").unwrap_err(),
+            c.prepare_rename(&main, at).unwrap_err(),
+        ] {
+            let message = err["message"].as_str().unwrap();
+            assert!(
+                message.contains("util.colibri") && message.contains("@when("),
+                "{name}: {message}"
+            );
+        }
+        c.shutdown();
+    }
 }
 
 #[test]
@@ -2996,6 +3177,691 @@ fn cache_folders_are_not_walked_and_a_cut_walk_is_said() {
     c.shutdown();
 }
 
+// ---- debounce and cancellation ----
+
+/// Long enough that only a request (or the end of the test) ever analyses.
+const NEVER: Duration = Duration::from_secs(3600);
+
+#[test]
+fn several_rapid_changes_publish_diagnostics_once_for_the_last_text() {
+    let dir = temp_dir("debounce_burst");
+    let file = dir.join("a.colibri");
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&file, "fn main() {}\n");
+    assert_eq!(c.publish_count(&file), 1);
+    assert!(c.diags(&file).is_empty());
+    // Four texts with different errors, then the one that counts.
+    for text in [
+        "fn main() {\n    print(a)\n}\n",
+        "fn main() {\n    print(a)\n    print(b)\n}\n",
+        "fn main() {\n    let x: int = \"s\"\n}\n",
+        "fn main() {\n    print(1)\n}\n",
+        "fn main() {\n    print(last_one)\n}\n",
+    ] {
+        c.change_without_sync(&file, text);
+    }
+    // Nothing is analysed until something asks: this request does.
+    c.sync();
+    assert_eq!(
+        c.publish_count(&file),
+        2,
+        "one publish for the five changes"
+    );
+    let diags = c.diags(&file);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0]["message"].as_str().unwrap().contains("last_one"),
+        "{diags:?}"
+    );
+    c.shutdown();
+}
+
+#[test]
+fn the_quiet_period_ends_and_the_diagnostics_arrive_without_any_request() {
+    let dir = temp_dir("debounce_timer");
+    let file = dir.join("a.colibri");
+    let mut c = Client::start_debounced(Some(&dir), Duration::from_millis(20));
+    c.open(&file, "fn main() {}\n");
+    c.change_without_sync(&file, "fn main() {\n    print(nope)\n}\n");
+    // The next message from the server is the publish, whenever the quiet period ends.
+    match c
+        .conn
+        .receiver
+        .recv_timeout(Duration::from_secs(30))
+        .expect("diagnostics are published")
+    {
+        Message::Notification(n) => c.absorb(n),
+        other => panic!("unexpected message {other:?}"),
+    }
+    let diags = c.diags(&file);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(c.publish_count(&file), 2);
+    c.shutdown();
+}
+
+#[test]
+fn a_request_right_after_a_change_sees_the_new_text() {
+    let dir = temp_dir("debounce_hover");
+    let file = dir.join("a.colibri");
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&file, "fn one() -> int {\n    return 1\n}\n");
+    let after = "fn two() -> str {\n    return \"x\"\n}\n\nfn main() {\n    print(two())\n}\n";
+    c.change_without_sync(&file, after);
+    let hover = c.hover(&file, 0, 4);
+    assert_eq!(
+        hover_text(&hover),
+        "```colibri\nfn two() -> str\n```",
+        "{hover:?}"
+    );
+    // The same for the outline and for go to definition of a call in the new text.
+    let symbols = c.document_symbols(&file);
+    let names: Vec<&str> = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["two", "main"]);
+    let (l, col) = pos_of(after, "two())");
+    c.change_without_sync(&file, &after.replace("return \"x\"", "return \"y\""));
+    let def = c.definition(&file, l, col);
+    assert_eq!(location(&def).1, 0, "{def:?}");
+    c.shutdown();
+}
+
+#[test]
+fn rename_and_references_use_the_current_text_and_its_safety_rules() {
+    let dir = temp_dir("debounce_rename");
+    let file = dir.join("a.colibri");
+    let good = "fn helper() -> int => 1\n\nfn main() {\n    print(helper())\n}\n";
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&file, good);
+    assert_eq!(c.references(&file, pos_of(good, "helper()"), true).len(), 2);
+    // An unsaved edit that breaks the file: rename refuses on the new text, even though the
+    // last analysis of the old text was fine.
+    let broken = "fn helper() -> int => 1\n\nfn main() {\n    print(helper(\n}\n";
+    c.change_without_sync(&file, broken);
+    assert!(c.prepare_rename(&file, pos_of(broken, "helper()")).is_err());
+    // And an edit that adds a use is seen by references at once.
+    let more =
+        "fn helper() -> int => 1\n\nfn main() {\n    print(helper())\n    print(helper())\n}\n";
+    c.change_without_sync(&file, more);
+    assert_eq!(c.references(&file, pos_of(more, "helper()"), true).len(), 3);
+    c.shutdown();
+}
+
+#[test]
+fn a_cancelled_request_that_has_not_started_gets_request_cancelled() {
+    let dir = temp_dir("cancel");
+    let file = dir.join("a.colibri");
+    let text = "fn one() -> int {\n    return 1\n}\n";
+    let hover = |id: i32| {
+        Request::new(
+            RequestId::from(id),
+            "textDocument/hover".to_string(),
+            json!({"textDocument": {"uri": uri(&file)}, "position": {"line": 0, "character": 4}}),
+        )
+    };
+    // Everything is queued before the server reads its first message, so the cancellation of
+    // request 2 is waiting behind it when it would start.
+    let (server_side, conn) = Connection::memory();
+    let send = |m: Message| conn.sender.send(m).unwrap();
+    send(
+        Request::new(
+            RequestId::from(1),
+            "initialize".to_string(),
+            json!({"processId": null, "rootUri": uri(&dir), "capabilities": {}}),
+        )
+        .into(),
+    );
+    send(Notification::new("initialized".to_string(), json!({})).into());
+    send(
+        Notification::new(
+            "textDocument/didOpen".to_string(),
+            json!({"textDocument": {"uri": uri(&file), "languageId": "colibri", "version": 1, "text": text}}),
+        )
+        .into(),
+    );
+    send(hover(2).into());
+    send(Notification::new("$/cancelRequest".to_string(), json!({"id": 2})).into());
+    send(hover(3).into());
+    send(Request::new(RequestId::from(4), "shutdown".to_string(), Value::Null).into());
+    send(Notification::new("exit".to_string(), Value::Null).into());
+    let server = std::thread::spawn(move || serve(server_side, Config::default()));
+    let mut responses = HashMap::new();
+    while responses.len() < 4 {
+        let message = conn.receiver.recv_timeout(Duration::from_secs(30)).unwrap();
+        if let Message::Response(r) = message {
+            responses.insert(r.id.to_string(), r);
+        }
+    }
+    server.join().unwrap().expect("the server exits cleanly");
+    let cancelled = &responses["2"];
+    assert_eq!(cancelled.error.as_ref().expect("an error").code, -32800);
+    assert!(cancelled.result.is_none());
+    // The request that was not cancelled is answered as usual.
+    let answered = responses["3"].result.clone().expect("a hover");
+    assert!(
+        hover_text(&answered).contains("fn one() -> int"),
+        "{answered:?}"
+    );
+}
+
+#[test]
+fn shutdown_with_a_change_still_pending_exits_cleanly_and_publishes_nothing_more() {
+    let dir = temp_dir("debounce_shutdown");
+    let file = dir.join("a.colibri");
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&file, "fn main() {}\n");
+    c.change_without_sync(&file, "fn main() {\n    print(nope)\n}\n");
+    assert_eq!(c.request("shutdown", Value::Null), Value::Null);
+    c.notify("exit", Value::Null);
+    c.server
+        .take()
+        .unwrap()
+        .join()
+        .expect("the server exits cleanly");
+    // The pending analysis was dropped, not run on the way out.
+    let late: Vec<Message> = c.conn.receiver.try_iter().collect();
+    assert!(late.is_empty(), "{late:?}");
+    assert_eq!(c.publish_count(&file), 1);
+}
+
+/// Starts a server on an in-memory connection and completes the handshake; the thread yields
+/// what `serve` returned.
+type Served = JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>;
+
+fn raw_session(config: Config) -> (Connection, Served) {
+    let (server_side, conn) = Connection::memory();
+    let server = std::thread::spawn(move || serve(server_side, config));
+    conn.sender
+        .send(
+            Request::new(
+                RequestId::from(1),
+                "initialize".to_string(),
+                json!({"processId": null, "rootUri": null, "capabilities": {}}),
+            )
+            .into(),
+        )
+        .unwrap();
+    let Message::Response(_) = conn.receiver.recv_timeout(Duration::from_secs(30)).unwrap() else {
+        panic!("the initialize response comes first");
+    };
+    conn.sender
+        .send(Notification::new("initialized".to_string(), json!({})).into())
+        .unwrap();
+    (conn, server)
+}
+
+fn shutdown_request(conn: &Connection) {
+    conn.sender
+        .send(Request::new(RequestId::from(2), "shutdown".to_string(), Value::Null).into())
+        .unwrap();
+    let Message::Response(r) = conn.receiver.recv_timeout(Duration::from_secs(30)).unwrap() else {
+        panic!("the shutdown response");
+    };
+    assert!(r.error.is_none());
+}
+
+fn quick_exit_wait() -> Config {
+    Config {
+        exit_wait: Duration::from_millis(300),
+        ..Config::default()
+    }
+}
+
+#[test]
+fn shutdown_without_exit_ends_the_session_with_an_error_after_the_wait() {
+    let (conn, server) = raw_session(quick_exit_wait());
+    shutdown_request(&conn);
+    // The client stays connected and silent: serve still returns (so the process can end
+    // instead of waiting for stdin), with an error.
+    let started = std::time::Instant::now();
+    let result = server.join().unwrap();
+    let err = result.expect_err("no exit came");
+    assert!(err.to_string().contains("timed out"), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(20));
+    drop(conn);
+}
+
+#[test]
+fn a_connection_that_closes_after_shutdown_ends_the_session_with_an_error() {
+    let (conn, server) = raw_session(Config::default());
+    shutdown_request(&conn);
+    drop(conn);
+    let err = server.join().unwrap().expect_err("no exit came");
+    assert!(err.to_string().contains("closed"), "{err}");
+}
+
+#[test]
+fn exit_without_shutdown_ends_the_session_with_an_error() {
+    let (conn, server) = raw_session(Config::default());
+    conn.sender
+        .send(Notification::new("exit".to_string(), Value::Null).into())
+        .unwrap();
+    let err = server.join().unwrap().expect_err("exit without shutdown");
+    assert!(err.to_string().contains("without `shutdown`"), "{err}");
+    drop(conn);
+}
+
+#[test]
+fn shutdown_then_exit_is_a_clean_end() {
+    let (conn, server) = raw_session(quick_exit_wait());
+    shutdown_request(&conn);
+    conn.sender
+        .send(Notification::new("exit".to_string(), Value::Null).into())
+        .unwrap();
+    server.join().unwrap().expect("a clean end");
+}
+
+#[test]
+fn a_burst_that_edits_two_open_files_of_one_package_analyses_and_publishes_it_once() {
+    let dir = temp_dir("debounce_two_docs");
+    let main = write(
+        &dir,
+        "main.colibri",
+        "import lib\n\nfn main() {\n    print(\"{lib.f()}\")\n}\n",
+    );
+    let lib = write(
+        &dir,
+        "lib.colibri",
+        "pub fn f() -> int {\n    return 1\n}\n",
+    );
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, &std::fs::read_to_string(&main).unwrap());
+    c.open(&lib, "pub fn f() -> int {\n    return 1\n}\n");
+    let (main_before, lib_before) = (c.publish_count(&main), c.publish_count(&lib));
+    c.change_without_sync(&main, "import lib\n\nfn main() {\n    print(nope)\n}\n");
+    c.change_without_sync(&lib, "pub fn f() -> int {\n    return true\n}\n");
+    c.change_without_sync(&main, "import lib\n\nfn main() {\n    print(nope2)\n}\n");
+    c.sync();
+    // One analysis for the package: one publish per file, not one per edited document.
+    assert_eq!(c.publish_count(&main), main_before + 1);
+    assert_eq!(c.publish_count(&lib), lib_before + 1);
+    let main_diags = c.diags(&main);
+    assert!(
+        main_diags.len() == 1 && main_diags[0]["message"].as_str().unwrap().contains("nope2"),
+        "{main_diags:?}"
+    );
+    assert_eq!(c.diags(&lib).len(), 1);
+    // The second document answers from the same analysis.
+    let hover = c.hover(&lib, 0, 8);
+    assert!(
+        hover_text(&hover).contains("fn lib.f() -> int"),
+        "{hover:?}"
+    );
+    c.shutdown();
+}
+
+#[test]
+fn a_file_only_the_old_analysis_of_a_document_held_loses_its_diagnostics_when_it_adopts_another() {
+    // `main` and `util` are open; `util` imports `deep`, which has an error and is not open.
+    // Both documents are analysed with `deep` in the package. Then `util` stops importing it
+    // and `main` changes in the same burst: `util` is analysed, `main` adopts that analysis,
+    // and nothing holds `deep` any more, so its diagnostics are cleared.
+    let dir = temp_dir("adopt_clears");
+    write(&dir, "colibri.toml", PKG);
+    let deep = write(
+        &dir,
+        "deep.colibri",
+        "pub fn g() -> int {\n    return true\n}\n",
+    );
+    let util_text = "import deep\npub fn f() -> int => deep.g()\n";
+    let util = write(&dir, "util.colibri", util_text);
+    let main_text = "import util\nfn main() {\n    print(util.f())\n}\n";
+    let main = write(&dir, "main.colibri", main_text);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, main_text);
+    c.open(&util, util_text);
+    assert_eq!(c.diags(&deep).len(), 1, "{:?}", c.diags(&deep));
+    c.change_without_sync(&util, "pub fn f() -> int => 1\n");
+    c.change_without_sync(
+        &main,
+        "import util\nfn main() {\n    print(util.f())\n    print(2)\n}\n",
+    );
+    c.sync();
+    assert!(c.diags(&deep).is_empty(), "{:?}", c.diags(&deep));
+    c.shutdown();
+}
+
+#[test]
+fn opening_a_manifest_analyses_the_open_documents_of_one_package_once() {
+    let dir = temp_dir("manifest_open_once");
+    let manifest = write(&dir, "colibri.toml", PKG);
+    let util_text = "pub fn f() -> int => 1\n";
+    let util = write(&dir, "util.colibri", util_text);
+    let main_text = "import util\nfn main() {\n    print(util.f())\n}\n";
+    let main = write(&dir, "main.colibri", main_text);
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, main_text);
+    c.open(&util, util_text);
+    let before = c.counters();
+    c.open(&manifest, PKG);
+    let after = c.counters();
+    assert_eq!(after.1 - before.1, 1, "one analysis for the package");
+    assert!(c.diags(&main).is_empty() && c.diags(&util).is_empty());
+    c.shutdown();
+}
+
+/// `app` and `app2` both depend on `lib`, which has a second file, `inner`. `app` turns the
+/// feature `x` on, which adds a function with a type error to `inner`; `app2` does not. `inner`
+/// also has a lint of its own, which only the analysis of `lib` itself reports.
+struct Shared {
+    dir: PathBuf,
+    main: PathBuf,
+    main2: PathBuf,
+    lib: PathBuf,
+    inner: PathBuf,
+}
+
+const MAIN_USING_LIB: &str = "import lib\nfn main() {\n    print(lib.f())\n}\n";
+const SHARED_LIB: &str = "import inner\npub fn f() -> int => inner.h()\n";
+const SHARED_INNER: &str = "pub fn h() -> int {\n    let spare = 1\n    return 2\n}\n\n@when(x)\npub fn g() -> int {\n    return true\n}\n";
+
+fn shared(name: &str) -> Shared {
+    let dir = temp_dir(name);
+    write(
+        &dir,
+        "app/colibri.toml",
+        "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\", features = [\"x\"] }\n",
+    );
+    write(
+        &dir,
+        "app2/colibri.toml",
+        "[package]\nname = \"app2\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n",
+    );
+    write(
+        &dir,
+        "lib/colibri.toml",
+        "[package]\nname = \"lib\"\n\n[features]\nx = []\n",
+    );
+    let main = write(&dir, "app/main.colibri", MAIN_USING_LIB);
+    let main2 = write(&dir, "app2/main.colibri", MAIN_USING_LIB);
+    let lib = write(&dir, "lib/lib.colibri", SHARED_LIB);
+    let inner = write(&dir, "lib/inner.colibri", SHARED_INNER);
+    Shared {
+        dir,
+        main,
+        main2,
+        lib,
+        inner,
+    }
+}
+
+fn has(c: &Client, path: &Path, what: &str) -> bool {
+    messages(c, path).iter().any(|m| m.contains(what))
+}
+
+const INNER_LINT: &str = "unused variable `spare`";
+const INNER_ERROR: &str = "expected `int`";
+
+fn close(c: &mut Client, path: &Path) {
+    c.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": uri(path)}}),
+    );
+    c.sync();
+}
+
+#[test]
+fn a_file_of_an_open_dependency_package_keeps_its_own_lints_while_the_app_opens_and_closes() {
+    let w = shared("shared_open_close");
+    let mut c = Client::start_debounced(Some(&w.dir), NEVER);
+    c.open(&w.lib, SHARED_LIB);
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(!has(&c, &w.inner, INNER_ERROR));
+    // The app, which has the feature on, is analysed after the library: `inner` is not open,
+    // but the package of the open `lib.colibri` owns it, and its analysis speaks for it.
+    c.open(&w.main, MAIN_USING_LIB);
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    close(&mut c, &w.main);
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    c.shutdown();
+}
+
+#[test]
+fn a_library_opened_after_its_app_takes_over_the_files_of_its_package_and_gives_them_back() {
+    let w = shared("shared_open_order");
+    let mut c = Client::start_debounced(Some(&w.dir), NEVER);
+    // Nothing of the library is open: the app's analysis shows its view of `inner`.
+    c.open(&w.main, MAIN_USING_LIB);
+    assert!(
+        has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(!has(&c, &w.inner, INNER_LINT));
+    // The library is opened: its analysis shows `inner` as the library's own file.
+    c.open(&w.lib, SHARED_LIB);
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    // An edit of the app does not take it back.
+    c.change(
+        &w.main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n",
+    );
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    // The library closes: nothing of it is open, and the app shows `inner` again.
+    close(&mut c, &w.lib);
+    assert!(
+        has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    // And with the app closed too, nothing is left on it.
+    close(&mut c, &w.main);
+    assert!(c.diags(&w.inner).is_empty(), "{:?}", messages(&c, &w.inner));
+    c.shutdown();
+}
+
+#[test]
+fn a_dependency_changed_before_its_app_keeps_the_lints_of_its_other_files() {
+    let w = shared("shared_changed_together");
+    let mut c = Client::start_debounced(Some(&w.dir), NEVER);
+    c.open(&w.main, MAIN_USING_LIB);
+    c.open(&w.lib, SHARED_LIB);
+    c.change_without_sync(&w.lib, "import inner\npub fn f() -> int => inner.h() + 0\n");
+    c.change_without_sync(
+        &w.main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n",
+    );
+    c.sync();
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    // The app alone.
+    c.change(
+        &w.main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(2)\n}\n",
+    );
+    assert!(
+        has(&c, &w.inner, INNER_LINT),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    c.shutdown();
+}
+
+#[test]
+fn closing_one_of_two_apps_gives_the_shared_dependency_back_to_the_other() {
+    let w = shared("shared_two_apps");
+    let mut c = Client::start_debounced(Some(&w.dir), NEVER);
+    c.open(&w.main2, MAIN_USING_LIB);
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    c.open(&w.main, MAIN_USING_LIB);
+    assert!(
+        has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    close(&mut c, &w.main);
+    // What the closed app found for the feature it turned on is gone.
+    assert!(
+        !has(&c, &w.inner, INNER_ERROR),
+        "{:?}",
+        messages(&c, &w.inner)
+    );
+    c.shutdown();
+}
+
+#[test]
+fn closing_a_manifest_analyses_the_open_documents_of_one_package_once() {
+    let dir = temp_dir("manifest_close_once");
+    let manifest = write(&dir, "colibri.toml", PKG);
+    let util_text = "pub fn f() -> int => 1\n";
+    let util = write(&dir, "util.colibri", util_text);
+    let main_text = "import util\nfn main() {\n    print(util.f())\n}\n";
+    let main = write(&dir, "main.colibri", main_text);
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, main_text);
+    c.open(&util, util_text);
+    c.open(&manifest, PKG);
+    let before = c.counters();
+    close(&mut c, &manifest);
+    let after = c.counters();
+    assert_eq!(after.1 - before.1, 1, "one analysis for the package");
+    c.shutdown();
+}
+
+/// The app turns the feature `x` of `lib` on. `lib` loads `inner` always, then (after the
+/// edit the tests make) only with `x`, which its own analysis has off and the app's has on;
+/// `inner` has a type error.
+fn app_with_a_library_that_drops_a_file(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    let dir = temp_dir(name);
+    write(
+        &dir,
+        "app/colibri.toml",
+        "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\", features = [\"x\"] }\n",
+    );
+    write(
+        &dir,
+        "lib/colibri.toml",
+        "[package]\nname = \"lib\"\n\n[features]\nx = []\n",
+    );
+    write(
+        &dir,
+        "lib/inner.colibri",
+        "pub fn h() -> int {\n    return \"s\"\n}\n",
+    );
+    let lib = write(&dir, "lib/lib.colibri", LIB_LOADING_INNER);
+    let main = write(&dir, "app/main.colibri", APP_USING_LIB);
+    let inner = dir.join("lib/inner.colibri");
+    (dir, main, lib, inner)
+}
+
+const LIB_LOADING_INNER: &str = "import inner\npub fn f() -> int => 2\n";
+const LIB_LOADING_INNER_WITH_X: &str = "@when(x)\nimport inner\npub fn f() -> int => 2\n";
+const APP_EDITED: &str = "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n";
+
+fn a_library_drops_a_file_the_app_still_loads(main_first: Option<bool>) {
+    // A folder for each of the three tests: they run at the same time, and `temp_dir` empties
+    // the folder it is given.
+    let name = match main_first {
+        Some(true) => "drops_a_file_app_first",
+        Some(false) => "drops_a_file_library_first",
+        None => "drops_a_file_library_alone",
+    };
+    let (dir, main, lib, inner) = app_with_a_library_that_drops_a_file(name);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, APP_USING_LIB);
+    c.open(&lib, LIB_LOADING_INNER);
+    match main_first {
+        Some(true) => {
+            c.change_without_sync(&main, APP_EDITED);
+            c.change_without_sync(&lib, LIB_LOADING_INNER_WITH_X);
+        }
+        Some(false) => {
+            c.change_without_sync(&lib, LIB_LOADING_INNER_WITH_X);
+            c.change_without_sync(&main, APP_EDITED);
+        }
+        // The library alone: the app was not edited, and its analysis still loads `inner`
+        // with `x` on, so the file shows the app's error once the library lets go of it.
+        None => c.change_without_sync(&lib, LIB_LOADING_INNER_WITH_X),
+    }
+    c.sync();
+    let shown = messages(&c, &inner);
+    assert!(
+        shown.iter().any(|m| m.contains("expected `int`")),
+        "{main_first:?}: {shown:?}"
+    );
+    c.shutdown();
+}
+
+#[test]
+fn a_file_dropped_by_the_library_still_shows_the_apps_error_when_the_app_is_analysed_first() {
+    a_library_drops_a_file_the_app_still_loads(Some(true));
+}
+
+#[test]
+fn a_file_dropped_by_the_library_still_shows_the_apps_error_when_the_library_is_analysed_first() {
+    a_library_drops_a_file_the_app_still_loads(Some(false));
+}
+
+#[test]
+fn a_file_dropped_by_the_library_alone_still_shows_the_apps_error() {
+    a_library_drops_a_file_the_app_still_loads(None);
+}
+
 // ---- the fourth review: conflicts, one skip rule, links, speed, scope ----
 
 const PKG: &str = "[package]\nname = \"demo\"\n";
@@ -3602,5 +4468,190 @@ fn a_rename_never_edits_a_file_outside_the_open_folder_even_through_a_link() {
         }
     }
     assert_eq!(std::fs::read_to_string(&x).unwrap(), x_text);
+    c.shutdown();
+}
+
+#[test]
+fn the_refusal_for_left_out_code_names_the_file_by_its_path_in_the_folder() {
+    // A workspace can have two files with one name: the message gives the path in the folder.
+    let dir = temp_dir("left_out_path");
+    write(&dir, "colibri.toml", "[package]\nname = \"demo\"\n");
+    write(&dir, "util.colibri", "pub fn other() -> int => 0\n");
+    let sub = "pub fn helper(x: int) -> int => x + 1\n@when(os == \"linux\" && os == \"macos\")\npub fn helper(x: int) -> int => x + 2\n";
+    write(&dir, "sub/util.colibri", sub);
+    let main_text = "import sub.util\nfn main() {\n    print(util.helper(1))\n}\n";
+    let main = write(&dir, "main.colibri", main_text);
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, main_text);
+    let err = c
+        .prepare_rename(&main, pos_of(main_text, "helper(1)"))
+        .unwrap_err();
+    let message = err["message"].as_str().unwrap();
+    assert!(message.contains("`sub/util.colibri` (line 2)"), "{message}");
+    assert!(!message.contains('\\'), "{message}");
+    c.shutdown();
+}
+
+#[test]
+fn a_package_and_its_dependency_changed_together_are_each_analysed_as_themselves() {
+    let dir = temp_dir("debounce_dependency");
+    write(
+        &dir,
+        "app/colibri.toml",
+        "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n",
+    );
+    write(&dir, "lib/colibri.toml", "[package]\nname = \"lib\"\n");
+    let lib_text = "pub fn f() -> int {\n    let spare = 1\n    return 2\n}\n";
+    let lib = write(&dir, "lib/lib.colibri", lib_text);
+    let main_text = "import lib\nfn main() {\n    print(lib.f())\n}\n";
+    let main = write(&dir, "app/main.colibri", main_text);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, main_text);
+    c.open(&lib, lib_text);
+    let lints = |c: &Client| -> Vec<String> {
+        c.diags(&lib)
+            .iter()
+            .map(|d| d["message"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(
+        lints(&c)
+            .iter()
+            .any(|m| m.contains("unused variable `spare`")),
+        "{:?}",
+        lints(&c)
+    );
+    // Both change before the quiet period ends: the library is analysed as its own package, so
+    // its own lint is still there, and the app is not told about the library's code.
+    let main2 = "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n";
+    let lib2 = "pub fn f() -> int {\n    let spare = 1\n    return 3\n}\n";
+    c.change_without_sync(&main, main2);
+    c.change_without_sync(&lib, lib2);
+    c.sync();
+    assert!(
+        lints(&c)
+            .iter()
+            .any(|m| m.contains("unused variable `spare`")),
+        "the library's own lints: {:?}",
+        lints(&c)
+    );
+    assert!(c.diags(&main).is_empty(), "{:?}", c.diags(&main));
+    c.shutdown();
+}
+
+/// An app in `app` that imports the library in `lib`, as the two folders of one workspace.
+/// Returns the folder, the main file and the library file.
+fn app_with_library(name: &str, lib_text: &str, main_text: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let dir = temp_dir(name);
+    write(
+        &dir,
+        "app/colibri.toml",
+        "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n",
+    );
+    write(&dir, "lib/colibri.toml", "[package]\nname = \"lib\"\n");
+    let lib = write(&dir, "lib/lib.colibri", lib_text);
+    let main = write(&dir, "app/main.colibri", main_text);
+    (dir, main, lib)
+}
+
+const LIB_WITH_A_LINT: &str = "pub fn f() -> int {\n    let spare = 1\n    return 2\n}\n";
+const APP_USING_LIB: &str = "import lib\nfn main() {\n    print(lib.f())\n}\n";
+
+fn messages(c: &Client, path: &Path) -> Vec<String> {
+    c.diags(path)
+        .iter()
+        .map(|d| d["message"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn a_dependency_changed_before_its_app_keeps_its_own_lints() {
+    let (dir, main, lib) =
+        app_with_library("debounce_dependency_first", LIB_WITH_A_LINT, APP_USING_LIB);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, APP_USING_LIB);
+    c.open(&lib, LIB_WITH_A_LINT);
+    // The library is changed first, the app second: the analysis of the app comes last and
+    // must not take the library's diagnostics over.
+    c.change_without_sync(
+        &lib,
+        "pub fn f() -> int {\n    let spare = 1\n    return 3\n}\n",
+    );
+    c.change_without_sync(
+        &main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n",
+    );
+    c.sync();
+    let lints = messages(&c, &lib);
+    assert!(
+        lints.iter().any(|m| m.contains("unused variable `spare`")),
+        "{lints:?}"
+    );
+    assert!(c.diags(&main).is_empty(), "{:?}", c.diags(&main));
+    c.shutdown();
+}
+
+#[test]
+fn an_edit_of_the_app_alone_leaves_its_open_dependency_its_own_lints() {
+    let (dir, main, lib) = app_with_library("debounce_app_alone", LIB_WITH_A_LINT, APP_USING_LIB);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, APP_USING_LIB);
+    c.open(&lib, LIB_WITH_A_LINT);
+    c.change(
+        &main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n",
+    );
+    let lints = messages(&c, &lib);
+    assert!(
+        lints.iter().any(|m| m.contains("unused variable `spare`")),
+        "{lints:?}"
+    );
+    // What the library's own analysis says is also what a request about it sees.
+    c.change(
+        &main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(2)\n}\n",
+    );
+    let lints = messages(&c, &lib);
+    assert!(
+        lints.iter().any(|m| m.contains("unused variable `spare`")),
+        "{lints:?}"
+    );
+    c.shutdown();
+}
+
+#[test]
+fn a_dependency_that_is_not_open_is_published_by_the_analysis_of_its_app() {
+    let broken = "pub fn f() -> int {\n    return true\n}\n";
+    let (dir, main, lib) = app_with_library("debounce_dependency_closed", broken, APP_USING_LIB);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, APP_USING_LIB);
+    assert_eq!(c.diags(&lib).len(), 1, "{:?}", c.diags(&lib));
+    c.change(
+        &main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n",
+    );
+    assert_eq!(c.diags(&lib).len(), 1, "{:?}", c.diags(&lib));
+    c.shutdown();
+}
+
+#[test]
+fn closing_an_open_dependency_gives_its_diagnostics_back_to_its_app() {
+    let broken = "pub fn f() -> int {\n    return true\n}\n";
+    let (dir, main, lib) = app_with_library("debounce_dependency_close", broken, APP_USING_LIB);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, APP_USING_LIB);
+    c.open(&lib, broken);
+    assert_eq!(c.diags(&lib).len(), 1, "{:?}", c.diags(&lib));
+    c.change(
+        &main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n",
+    );
+    c.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": uri(&lib)}}),
+    );
+    c.sync();
+    // Nobody holds the closed document's own analysis now; the app's analysis publishes it.
+    assert_eq!(c.diags(&lib).len(), 1, "{:?}", c.diags(&lib));
     c.shutdown();
 }

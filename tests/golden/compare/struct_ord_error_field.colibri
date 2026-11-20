@@ -1,0 +1,14 @@
+class Handle {
+    id: int
+}
+
+struct Entry {
+    key: int
+    handle: Handle
+}
+
+fn main() {
+    let a = Entry { key: 1, handle: Handle { id: 1 } }
+    let b = Entry { key: 2, handle: Handle { id: 2 } }
+    print(a < b) // error: `<` cannot compare values of type `Entry`
+}

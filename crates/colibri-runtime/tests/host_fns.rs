@@ -469,11 +469,11 @@ fn an_unconsumed_host_value_is_released_properly() {
 #[test]
 fn the_default_module_needs_no_import() {
     let (mut vm, out) = vm();
-    vm.register_fn("spawn_enemy", |x: f32, y: f32| format!("enemy at {x},{y}"))
+    vm.register_fn("submit_job", |x: f32, y: f32| format!("job at {x},{y}"))
         .unwrap();
-    vm.load_source("game.colibri", "print(spawn_enemy(1.0, 2.5))\n")
+    vm.load_source("game.colibri", "print(submit_job(1.0, 2.5))\n")
         .unwrap();
-    assert_eq!(out.contents(), "enemy at 1,2.5\n");
+    assert_eq!(out.contents(), "job at 1,2.5\n");
 }
 
 // ---- typed errors: `Result<T, TypedError>` and `HostModule::register_module_enum` ----

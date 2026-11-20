@@ -967,6 +967,70 @@ fn a_class_can_customise_show_and_equality() {
     );
 }
 
+/// A class that compares by its first field only, and hashes by it.
+struct Key(i64, i64);
+
+impl HostType for Key {
+    const NAME: &'static str = "Key";
+    fn describe(d: &mut TypeBuilder<'_, Self>) {
+        d.static_fn("new", ["a", "b"], |a: i64, b: i64| Key(a, b));
+        d.method("second", [], |this: &Key| this.1);
+        d.eq(|a: &Key, b: &Key| a.0 == b.0);
+        d.hash(|this: &Key| this.0 as u64);
+    }
+}
+
+#[test]
+fn equal_host_objects_hash_equally_and_one_without_a_hash_is_a_clean_error() {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    vm.register_type::<Key>().unwrap();
+    vm.register_type::<Pt>().unwrap();
+    vm.register_type::<Plain>().unwrap();
+    vm.load_source(
+        "game.colibri",
+        r#"fn main() {
+    let a = Key.new(1, 10)
+    let b = Key.new(1, 20)
+    let c = Key.new(2, 10)
+    print(a == b)
+    print(a.hash() == b.hash())
+    print(a.hash() == c.hash())
+    print((a, 5).hash() == (b, 5).hash())
+    let p = Plain.new()
+    print(p.hash() == p.hash())
+}
+fn no_hash() -> int => Pt.new(1, 2).hash()
+"#,
+    )
+    .unwrap_or_else(|e| panic!("{}", e.render(false)));
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "true\ntrue\nfalse\ntrue\ntrue\n");
+    let f = vm.get_fn::<(), i64>("no_hash").unwrap();
+    let err = f.call(&mut vm, ()).unwrap_err().to_string();
+    assert!(
+        err.contains("`Pt` compares with its own `==` but gives no hash"),
+        "{err}"
+    );
+    // Nothing is added to the module's interface for the hook.
+    assert!(!vm.interface_text().contains("fn hash"));
+}
+
+#[test]
+fn describing_hash_twice_is_a_registration_error() {
+    struct Twice;
+    impl HostType for Twice {
+        const NAME: &'static str = "TwiceHash";
+        fn describe(d: &mut TypeBuilder<'_, Self>) {
+            d.hash(|_: &Twice| 0);
+            d.hash(|_: &Twice| 0);
+        }
+    }
+    let mut vm = colibri::Vm::builder().build();
+    let err = vm.register_type::<Twice>().unwrap_err().to_string();
+    assert!(err.contains("customises its `hash` twice"), "{err}");
+}
+
 #[test]
 fn describing_show_or_eq_twice_is_a_registration_error() {
     struct Twice;

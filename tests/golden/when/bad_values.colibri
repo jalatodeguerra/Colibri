@@ -1,0 +1,19 @@
+@when(os == "win") // error: `win` is not an operating system name
+fn a() {}
+
+@when(arch == "amd64") // error: `amd64` is not an architecture name
+fn b() {}
+
+@when(os == 1) // error: `os` is compared with a text
+fn c() {}
+
+@when(debug == true) // error: `debug` is true or false: it is not compared
+fn d() {}
+
+@when(1 + 1) // error: this is not a condition `@when` understands
+fn e() {}
+
+@when(debug) @when(!debug) // error: an item has one `@when`
+fn f() {}
+
+fn main() {}

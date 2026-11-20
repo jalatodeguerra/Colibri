@@ -1,0 +1,4 @@
+struct Opaque { v: int }
+struct Bad[T: Opaque] { x: T } // error: `Opaque` is not an interface
+
+fn main() {}

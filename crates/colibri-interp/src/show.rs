@@ -11,7 +11,7 @@ use std::borrow::Cow;
 
 use std::rc::Rc;
 
-use colibri_check::hir::{FieldDef, TypeDef, TypeDefKind};
+use colibri_check::hir::{FieldDef, TypeDef, TypeDefKind, VariantDef};
 use colibri_check::types::ERROR_TYPE;
 
 use crate::hooks::{Overrides, Plain, Stop};
@@ -38,6 +38,8 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
         }
         Value::Char(c) => Cow::Owned(c.to_string()),
         Value::Str(s) => Cow::Borrowed(s),
+        Value::Bytes(b) => Cow::Owned(crate::bytesfn::show_bytes(b)),
+        Value::ByteBuf(_) => Cow::Borrowed("<buffer>"),
         Value::Struct(_)
         | Value::Tuple(_)
         | Value::Enum(_)
@@ -165,7 +167,7 @@ fn write_nested(
     *out = w.out;
 }
 
-impl Writer<'_> {
+impl<'t> Writer<'t> {
     fn list(&mut self, items: &[Value], depth: u32) {
         for (i, item) in items.iter().enumerate() {
             if i > 0 {
@@ -176,6 +178,12 @@ impl Writer<'_> {
     }
 
     fn value(&mut self, v: &Value, depth: u32) {
+        // A `dyn` shows as the value it holds, at the same depth: peeled here, in a loop, so
+        // that it costs no frame of its own.
+        let mut v = v;
+        while let Value::Dyn(d) = v {
+            v = &d.val;
+        }
         if depth > MAX_SHOW_DEPTH || self.stop.is_some() {
             self.out.push_str("...");
             return;
@@ -183,126 +191,184 @@ impl Writer<'_> {
         if matches!(
             v,
             Value::Struct(_) | Value::Enum(_) | Value::Obj(_) | Value::Host(_)
-        ) && let Some(answer) = self.ov.show(v)
+        ) && self.overridden(v)
         {
-            match answer {
-                Ok(text) => self.out.push_str(&text),
-                Err(stop) => self.stop = Some(stop),
-            }
             return;
         }
-        let types = self.types;
         match v {
-            Value::Dyn(d) => self.value(&d.val, depth),
+            Value::Str(_) | Value::Bytes(_) | Value::Char(_) => self.leaf(v),
+            Value::Tuple(items) => self.tuple(items, depth),
+            Value::Struct(s) => self.structure(s, depth),
+            Value::Enum(e) => self.variant(e, depth),
+            Value::List(l) => self.list_value(l, depth),
+            Value::Map(m) => self.map(m, depth),
+            Value::Set(s) => self.set_value(s, depth),
+            Value::Obj(obj) if obj.ty() == ERROR_TYPE => self.error(obj, depth),
+            Value::Obj(obj) => {
+                if !self.leaf_object(obj) {
+                    self.object(obj, depth);
+                }
+            }
+            Value::Weak(w) => self.weak(w, depth),
+            _ => self.leaf(v),
+        }
+    }
+
+    fn tuple(&mut self, items: &[Value], depth: u32) {
+        self.out.push('(');
+        self.list(items, depth);
+        if items.len() == 1 {
+            self.out.push(',');
+        }
+        self.out.push(')');
+    }
+
+    fn structure(&mut self, s: &crate::value::StructVal, depth: u32) {
+        match self.types.get(s.ty.0 as usize) {
+            Some(def) => self.record(&def.name, def.fields(), &s.fields, depth),
+            None => self.out.push_str("<struct>"),
+        }
+    }
+
+    fn list_value(&mut self, l: &crate::value::ListObj, depth: u32) {
+        let items = l.snapshot();
+        self.out.push('[');
+        self.list(&items, depth);
+        self.out.push(']');
+    }
+
+    fn set_value(&mut self, s: &crate::value::SetObj, depth: u32) {
+        let items = s.snapshot();
+        self.out.push_str("Set([");
+        self.list(&items, depth);
+        self.out.push_str("])");
+    }
+
+    fn variant(&mut self, e: &crate::value::EnumVal, depth: u32) {
+        let Some(variant) = self.variant_def(e) else {
+            self.out.push_str("<enum>");
+            return;
+        };
+        self.out.push_str(&variant.name);
+        if e.payload.is_empty() {
+            return;
+        }
+        self.out.push('(');
+        if variant.named {
+            self.named_payload(&variant.fields, &e.payload, depth);
+        } else {
+            self.list(&e.payload, depth);
+        }
+        self.out.push(')');
+    }
+
+    fn variant_def(&self, e: &crate::value::EnumVal) -> Option<&'t VariantDef> {
+        let def = self.types.get(e.ty.0 as usize)?;
+        match &def.kind {
+            TypeDefKind::Enum { variants } => variants.get(e.variant as usize),
+            _ => None,
+        }
+    }
+
+    fn named_payload(&mut self, fields: &[FieldDef], payload: &[Value], depth: u32) {
+        for i in 0..fields.len().min(payload.len()) {
+            if i > 0 {
+                self.out.push_str(", ");
+            }
+            self.out.push_str(&fields[i].name);
+            self.out.push_str(": ");
+            self.value(&payload[i], depth + 1);
+        }
+    }
+
+    fn map(&mut self, m: &crate::value::MapObj, depth: u32) {
+        if m.is_empty() {
+            self.out.push_str("{:}");
+            return;
+        }
+        self.out.push('{');
+        let entries = m.snapshot();
+        for (i, (key, value)) in entries.iter().enumerate() {
+            if i > 0 {
+                self.out.push_str(", ");
+            }
+            self.value(key, depth + 1);
+            self.out.push_str(": ");
+            self.value(value, depth + 1);
+        }
+        self.out.push('}');
+    }
+
+    fn weak(&mut self, w: &std::rc::Weak<ClassObj>, depth: u32) {
+        match w.upgrade() {
+            Some(obj) => {
+                self.out.push_str("some(");
+                self.object(&obj, depth + 1);
+                self.out.push(')');
+            }
+            None => self.out.push_str("none"),
+        }
+    }
+
+    /// Asks the host's `show` override for a value. Kept out of line, with the other arms that
+    /// need temporaries, so that the frame of the recursive `value` stays small: a value can
+    /// nest 1,000 deep, and a test thread has only 2 MB of stack.
+    #[inline(never)]
+    fn overridden(&mut self, v: &Value) -> bool {
+        let Some(answer) = self.ov.show(v) else {
+            return false;
+        };
+        match answer {
+            Ok(text) => self.out.push_str(&text),
+            Err(stop) => self.stop = Some(stop),
+        }
+        true
+    }
+
+    /// The values that hold no other value to show: text, bytes, characters, scalars. Out of
+    /// line for the reason given at `overridden`.
+    #[inline(never)]
+    fn leaf(&mut self, v: &Value) {
+        match v {
             Value::Str(s) => {
                 self.out.push('"');
                 s.chars().for_each(|c| escape(&mut self.out, c, '"'));
                 self.out.push('"');
             }
+            Value::Bytes(b) => self.out.push_str(&crate::bytesfn::show_bytes(b)),
             Value::Char(c) => {
                 self.out.push('\'');
                 escape(&mut self.out, *c, '\'');
                 self.out.push('\'');
             }
-            Value::Tuple(items) => {
-                self.out.push('(');
-                self.list(items, depth);
-                if items.len() == 1 {
-                    self.out.push(',');
-                }
-                self.out.push(')');
-            }
-            Value::Struct(s) => {
-                let Some(def) = types.get(s.ty.0 as usize) else {
-                    self.out.push_str("<struct>");
-                    return;
-                };
-                self.record(&def.name, def.fields(), &s.fields, depth);
-            }
-            Value::Enum(e) => {
-                let variant = types.get(e.ty.0 as usize).and_then(|def| match &def.kind {
-                    TypeDefKind::Enum { variants } => variants.get(e.variant as usize),
-                    _ => None,
-                });
-                let Some(variant) = variant else {
-                    self.out.push_str("<enum>");
-                    return;
-                };
-                self.out.push_str(&variant.name);
-                if e.payload.is_empty() {
-                    return;
-                }
-                self.out.push('(');
-                if variant.named {
-                    for (i, (field, value)) in
-                        variant.fields.iter().zip(e.payload.iter()).enumerate()
-                    {
-                        if i > 0 {
-                            self.out.push_str(", ");
-                        }
-                        self.out.push_str(&field.name);
-                        self.out.push_str(": ");
-                        self.value(value, depth + 1);
-                    }
-                } else {
-                    self.list(&e.payload, depth);
-                }
-                self.out.push(')');
-            }
-            Value::List(l) => {
-                self.out.push('[');
-                self.list(&l.snapshot(), depth);
-                self.out.push(']');
-            }
-            Value::Map(m) => {
-                if m.is_empty() {
-                    self.out.push_str("{:}");
-                    return;
-                }
-                self.out.push('{');
-                for (i, (k, v)) in m.snapshot().iter().enumerate() {
-                    if i > 0 {
-                        self.out.push_str(", ");
-                    }
-                    self.value(k, depth + 1);
-                    self.out.push_str(": ");
-                    self.value(v, depth + 1);
-                }
-                self.out.push('}');
-            }
-            Value::Set(s) => {
-                self.out.push_str("Set([");
-                self.list(&s.snapshot(), depth);
-                self.out.push_str("])");
-            }
-            Value::Obj(obj) if obj.ty() == ERROR_TYPE => self.error(obj, depth),
-            Value::Obj(obj) if obj.ty() == colibri_check::types::COROUTINE_TYPE => {
-                let name = match obj.field(3) {
-                    Some(Value::Str(s)) => s.to_string(),
-                    _ => "?".to_string(),
-                };
-                self.out.push_str(&format!("<coroutine {name}>"));
-            }
-            Value::Obj(obj) if obj.ty() == colibri_check::types::COGROUP_TYPE => {
-                self.out.push_str("<CoGroup>");
-            }
-            Value::Obj(obj) if obj.ty() == colibri_check::types::STR_BUILDER_TYPE => {
-                self.out.push_str(&crate::strfn::builder_text(obj));
-            }
-            Value::Obj(obj) if obj.ty() == colibri_check::types::SIGNAL_TYPE => {
-                self.out.push_str("<Signal>");
-            }
-            Value::Obj(obj) => self.object(obj, depth),
-            Value::Weak(w) => match w.upgrade() {
-                Some(obj) => {
-                    self.out.push_str("some(");
-                    self.object(&obj, depth + 1);
-                    self.out.push(')');
-                }
-                None => self.out.push_str("none"),
-            },
-            scalar => self.out.push_str(&show(types, scalar)),
+            scalar => self.out.push_str(&show(self.types, scalar)),
         }
+    }
+
+    /// The runtime objects that show as text rather than as fields. Says whether `obj` was one.
+    /// Out of line for the reason given at `overridden`.
+    #[inline(never)]
+    fn leaf_object(&mut self, obj: &Rc<ClassObj>) -> bool {
+        let ty = obj.ty();
+        if ty == colibri_check::types::COROUTINE_TYPE {
+            let name = match obj.field(3) {
+                Some(Value::Str(s)) => s.to_string(),
+                _ => "?".to_string(),
+            };
+            self.out.push_str(&format!("<coroutine {name}>"));
+        } else if ty == colibri_check::types::COGROUP_TYPE {
+            self.out.push_str("<CoGroup>");
+        } else if ty == colibri_check::types::STR_BUILDER_TYPE {
+            self.out.push_str(&crate::strfn::builder_text(obj));
+        } else if ty == colibri_check::types::BYTES_BUILDER_TYPE {
+            let bytes = crate::bytesfn::builder_bytes(obj);
+            self.out.push_str(&crate::bytesfn::show_bytes(&bytes));
+        } else if ty == colibri_check::types::SIGNAL_TYPE {
+            self.out.push_str("<Signal>");
+        } else {
+            return false;
+        }
+        true
     }
 
     /// `Name { field: value, .. }` for a struct or a class.
@@ -313,13 +379,13 @@ impl Writer<'_> {
             return;
         }
         self.out.push_str(" { ");
-        for (i, (field, value)) in fields.iter().zip(values.iter()).enumerate() {
+        for i in 0..fields.len().min(values.len()) {
             if i > 0 {
                 self.out.push_str(", ");
             }
-            self.out.push_str(&field.name);
+            self.out.push_str(&fields[i].name);
             self.out.push_str(": ");
-            self.value(value, depth + 1);
+            self.value(&values[i], depth + 1);
         }
         self.out.push_str(" }");
     }
@@ -430,7 +496,6 @@ mod tests {
                 name: "Player".into(),
                 span: SP,
                 params: Vec::new(),
-                sendable: true,
                 module: None,
                 open: false,
                 kind: TypeDefKind::Struct {
@@ -441,7 +506,6 @@ mod tests {
                 name: "Shape".into(),
                 span: SP,
                 params: Vec::new(),
-                sendable: true,
                 module: None,
                 open: false,
                 kind: TypeDefKind::Enum {
@@ -450,6 +514,16 @@ mod tests {
                         variant("Move", vec![field("0")], false),
                         variant("Quit", vec![], false),
                     ],
+                },
+            },
+            TypeDef {
+                name: "Node".into(),
+                span: SP,
+                params: Vec::new(),
+                module: None,
+                open: false,
+                kind: TypeDefKind::Struct {
+                    fields: vec![field("next")],
                 },
             },
         ]
@@ -512,5 +586,78 @@ mod tests {
         }
         let text = show(&types(), &v);
         assert!(text.contains("..."));
+    }
+
+    /// The same deep show on a thread with half of a test thread's stack. A debug build has
+    /// no frame reuse, so every temporary in an arm of `Writer::value` and of the functions
+    /// it calls adds to the stack used by each of the 1,000 levels. A new arm that grows
+    /// those frames overflowed the 2 MB test stack only on a build with debug info, which
+    /// the local setup does not use. Running on 1 MB makes that show up here, with a margin
+    /// of about two against the figure measured when this test was written (544 bytes a level
+    /// with debug info, so about 540 KB).
+    #[test]
+    fn very_deep_values_are_elided_within_one_megabyte_of_stack() {
+        let worker = std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(|| {
+                let mut v = Value::Unit;
+                for _ in 0..100_000 {
+                    v = Value::variant(TypeId(1), 1, vec![v]);
+                }
+                let text = show(&types(), &v);
+                assert!(text.contains("..."));
+            })
+            .expect("a thread starts");
+        worker.join().expect("the show stays within the stack");
+    }
+
+    /// Shows a chain of 100,000 values made by `make` on a thread with a 1 MB stack. The chain
+    /// is leaked: dropping it is not what is measured here, and a chain of 100,000 structs
+    /// would drop recursively.
+    fn deep_on_one_megabyte(make: fn(Value) -> Value) {
+        let worker = std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(move || {
+                let mut v = Value::Unit;
+                for _ in 0..100_000 {
+                    v = make(v);
+                }
+                let text = show(&types(), &v);
+                assert!(text.contains("..."));
+                std::mem::forget(v);
+            })
+            .expect("a thread starts");
+        worker.join().expect("the show stays within the stack");
+    }
+
+    /// The other recursive paths of `Writer`, which the guard above does not run through, so
+    /// that a frame that grows in `record`, `object` or `named_payload` shows up here too.
+    /// Bytes per level with debug info, as measured when this was written: a struct 560, a
+    /// class object 688, a `dyn` holding a struct 560, a named variant 544. The worst is 688 KB
+    /// at depth 1,000, which leaves the 1 MB of these tests a margin of 1.5 on the target that
+    /// was measured; other targets have room above that, up to the 2 MB of a test thread.
+    #[test]
+    fn very_deep_structs_are_elided_within_one_megabyte_of_stack() {
+        deep_on_one_megabyte(|v| Value::strukt(TypeId(2), vec![v]));
+    }
+
+    #[test]
+    fn very_deep_class_objects_are_elided_within_one_megabyte_of_stack() {
+        deep_on_one_megabyte(|v| Value::Obj(ClassObj::new(TypeId(2), vec![v])));
+    }
+
+    #[test]
+    fn very_deep_dyn_structs_are_elided_within_one_megabyte_of_stack() {
+        deep_on_one_megabyte(|v| {
+            Value::Dyn(Rc::new(crate::value::DynVal {
+                impl_id: 0,
+                val: Value::strukt(TypeId(2), vec![v]),
+            }))
+        });
+    }
+
+    #[test]
+    fn very_deep_named_variants_are_elided_within_one_megabyte_of_stack() {
+        deep_on_one_megabyte(|v| Value::variant(TypeId(1), 0, vec![v]));
     }
 }

@@ -6,7 +6,7 @@
 use std::io::ErrorKind;
 use std::path::Path;
 
-use colibri_runtime::{Cap, Error, TypedError, Vm};
+use colibri_runtime::{Bytes, Cap, Error, TypedError, Vm};
 
 use crate::errors::error_kind;
 use crate::needs;
@@ -23,6 +23,11 @@ error_kind!(
         IsADirectory,
         DirectoryNotEmpty,
         InvalidData,
+        /// A `fs.File` that was closed.
+        Closed,
+        /// Reading a file opened for writing, writing one opened for reading, or seeking in
+        /// one opened for appending.
+        WrongMode,
         Other,
     }
 );
@@ -156,18 +161,25 @@ pub(crate) fn kind_of(e: &std::io::Error) -> Kind {
     }
 }
 
-fn fail(action: &str, path: &str, e: &std::io::Error) -> TypedError {
-    // Windows says "access denied" where Unix says "is a directory" when a folder is opened
-    // as a file: say what is meant, so a script branches on the same variant everywhere.
+/// The one rule for a folder that is opened as a file. Windows says "access denied" where Unix
+/// says "is a directory": say what is meant, so a script branches on the same variant on every
+/// system. Whether it applies is up to the caller (`fail` asks only on Windows).
+fn directory_refusal(action: &str, path: &str, e: &std::io::Error) -> Option<TypedError> {
+    let opens_a_file = matches!(action, "read" | "write" | "append to" | "open" | "create");
+    if e.kind() != ErrorKind::PermissionDenied || !opens_a_file || !Path::new(path).is_dir() {
+        return None;
+    }
+    Some(Kind::IsADirectory.error(format!(
+        "cannot {action} `{path}`: {}",
+        reason(&std::io::Error::from(ErrorKind::IsADirectory))
+    )))
+}
+
+pub(crate) fn fail(action: &str, path: &str, e: &std::io::Error) -> TypedError {
     if cfg!(windows)
-        && e.kind() == ErrorKind::PermissionDenied
-        && matches!(action, "read" | "write" | "append to")
-        && Path::new(path).is_dir()
+        && let Some(refused) = directory_refusal(action, path, e)
     {
-        return Kind::IsADirectory.error(format!(
-            "cannot {action} `{path}`: {}",
-            reason(&std::io::Error::from(ErrorKind::IsADirectory))
-        ));
+        return refused;
     }
     kind_of(e).error(format!("cannot {action} `{path}`: {}", reason(e)))
 }
@@ -194,6 +206,17 @@ fn stat_of(path: &str, meta: &std::fs::Metadata) -> Result<Stat, TypedError> {
     })
 }
 
+/// Adds `data` at the end of the file, which is created when it is missing.
+fn append_to(path: &str, data: &[u8]) -> Result<(), TypedError> {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(data))
+        .map_err(|e| fail("append to", path, &e))
+}
+
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     Kind::declare(vm)?;
     let mut m = vm.std_module("fs");
@@ -202,31 +225,35 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             needs(Cap::Fs, m.register_fn_named($name, [$($p),*], $f))?;
         };
     }
+    // The whole-file functions run on the calling thread and return when they are done: a
+    // coroutine that calls one does not give the others a turn. Streaming and non-blocking
+    // file I/O is what `fs.File` is for.
     fs_fn!("read", ["path"], |path: String| {
         std::fs::read_to_string(&path).map_err(|e| fail("read", &path, &e))
     });
     fs_fn!("read_bytes", ["path"], |path: String| {
-        std::fs::read(&path).map_err(|e| fail("read", &path, &e))
+        std::fs::read(&path)
+            .map(Bytes)
+            .map_err(|e| fail("read", &path, &e))
     });
     fs_fn!("write", ["path", "text"], |path: String, text: String| {
         std::fs::write(&path, text).map_err(|e| fail("write", &path, &e))
     });
     fs_fn!(
         "write_bytes",
-        ["path", "bytes"],
-        |path: String, bytes: Vec<u8>| {
-            std::fs::write(&path, bytes).map_err(|e| fail("write", &path, &e))
+        ["path", "data"],
+        |path: String, data: Bytes| {
+            std::fs::write(&path, &*data).map_err(|e| fail("write", &path, &e))
         }
     );
     fs_fn!("append", ["path", "text"], |path: String, text: String| {
-        use std::io::Write;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .and_then(|mut f| f.write_all(text.as_bytes()))
-            .map_err(|e| fail("append to", &path, &e))
+        append_to(&path, text.as_bytes())
     });
+    fs_fn!(
+        "append_bytes",
+        ["path", "data"],
+        |path: String, data: Bytes| append_to(&path, &data)
+    );
     fs_fn!("exists", ["path"], |path: String| Path::new(&path).exists());
     fs_fn!("is_file", ["path"], |path: String| Path::new(&path)
         .is_file());
@@ -317,12 +344,13 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     fs_fn!("rename", ["from", "to"], |from: String, to: String| {
         std::fs::rename(&from, &to).map_err(|e| fail("rename", &from, &e))
     });
+    crate::fsfile::register(&mut m)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::windows_script_path;
+    use super::{directory_refusal, windows_script_path};
 
     #[test]
     fn windows_paths_reach_scripts_with_forward_slashes() {
@@ -340,5 +368,25 @@ mod tests {
         );
         assert_eq!(windows_script_path(r"\\server\share"), "//server/share");
         assert_eq!(windows_script_path("relative/already"), "relative/already");
+    }
+
+    #[test]
+    fn a_refused_open_of_a_directory_is_is_a_directory() {
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let dir = std::env::temp_dir();
+        let refused = directory_refusal("open", &dir.to_string_lossy(), &denied)
+            .expect("a directory is recognised");
+        let shown = format!("{refused:?}");
+        assert!(
+            shown.contains("IsADirectory") && shown.contains("is a directory"),
+            "{shown}"
+        );
+        // A file that is refused stays a permission error; so does any other failure, and so
+        // does a refusal to remove a folder.
+        let file = std::env::current_exe().unwrap();
+        assert!(directory_refusal("open", &file.to_string_lossy(), &denied).is_none());
+        let other = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert!(directory_refusal("open", &dir.to_string_lossy(), &other).is_none());
+        assert!(directory_refusal("remove the folder", &dir.to_string_lossy(), &denied).is_none());
     }
 }

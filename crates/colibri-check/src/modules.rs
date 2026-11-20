@@ -25,7 +25,7 @@ pub(crate) struct ModId(pub u32);
 pub(crate) const BASE: ModId = ModId(0);
 
 /// A type alias, by index into `Checker::alias_infos`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct AliasId(pub u32);
 
 /// What a type name refers to.
@@ -74,7 +74,7 @@ pub(crate) struct Exports {
 }
 
 pub(crate) struct ModInfo<'a> {
-    /// `game.player`, or the host module's name.
+    /// `jobs.worker`, or the host module's name.
     pub name: String,
     pub kind: ModKind,
     /// The syntax trees of its items: one for a source module, any number for a host module.
@@ -87,6 +87,8 @@ pub(crate) struct ModInfo<'a> {
     /// Not a module of a dependency: the program's own (false for a dependency's).
     pub root: bool,
     pub imports: Option<&'a HashMap<NodeId, ImportTarget>>,
+    /// What a false `@when` left out of the module (names and conditions).
+    pub excluded: &'a [crate::package::Excluded],
     /// The scope while the module is not the one being checked.
     pub scope: Scope,
     pub exports: Exports,
@@ -625,12 +627,26 @@ impl<'a> Checker<'a> {
             format!("the module `{}` has no `{member}`", info.name),
             span,
         );
-        if let Some(hint) = removed_item_hint(&info.name, member) {
+        if let Some(hint) = self.excluded_hint(m, member) {
+            diag = diag.with_hint(hint);
+        } else if let Some(hint) = removed_item_hint(&info.name, member) {
             diag = diag.with_hint(hint);
         } else if let Some(s) = suggest::closest(member, visible.iter().copied()) {
             diag = diag.with_hint(format!("did you mean `{alias}.{s}`?"));
         }
         Some(diag)
+    }
+
+    /// The hint for a name that a false `@when` left out of module `m`.
+    pub(crate) fn excluded_hint(&self, m: ModId, name: &str) -> Option<String> {
+        let found = self.mods[m.0 as usize]
+            .excluded
+            .iter()
+            .find(|e| e.name == name)?;
+        Some(format!(
+            "`{name}` exists but is left out here by `@when({})`",
+            found.cond
+        ))
     }
 
     /// `alias.member` split at the first dot, if `alias` is an imported module.

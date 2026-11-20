@@ -1,6 +1,6 @@
 //! All state of one running Colibri computation lives here, on the heap (ARCHITECTURE §2): the
 //! frames and the temporaries stack. Rust locals never own a droppable Colibri value across a
-//! nested evaluation, so a coroutine can later be a second `Fiber` plus a stackful context.
+//! nested evaluation, so a coroutine is a second `Fiber` plus a stackful context (`coro.rs`).
 
 use std::rc::Rc;
 

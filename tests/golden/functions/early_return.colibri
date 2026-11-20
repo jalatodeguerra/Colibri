@@ -15,7 +15,6 @@ fn first_multiple(n: int, of: int) -> int {
         }
         i += 1
     }
-    return 0
 }
 print(sign(-5))
 print(sign(0))

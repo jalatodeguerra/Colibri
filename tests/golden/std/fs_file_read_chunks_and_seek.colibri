@@ -1,0 +1,48 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let file = path.join(os.temp_dir(), "chunks.bin")
+    fs.write_bytes(file, "0123456789".to_bytes())?
+    let f = fs.open(file)?
+    defer f.close()
+    print(f.position()?)
+    print(f.read(4)?)
+    print(f.position()?)
+    print(f.read(0)?)
+    print(f.read(100)?)
+    print(f.read(5)?)
+    print(f.position()?)
+    f.seek(7)?
+    print(f.read_all()?)
+    f.seek(2)?
+    print(f.read_line()?)
+    print(f.read_all()?.is_empty())
+    f.seek(0)?
+    print(f.read_all()?.len())
+    // Seeking past the end is allowed: there is nothing to read there.
+    f.seek(50)?
+    print(f.read(3)?)
+    print(f.position()?)
+    print(f.read(-1).is_err())
+    print(f.seek(-1).is_err())
+    return ok(())
+}
+
+// expect: 0
+// expect: b"0123"
+// expect: 4
+// expect: b""
+// expect: b"456789"
+// expect: b""
+// expect: 10
+// expect: b"789"
+// expect: some("23456789")
+// expect: true
+// expect: 10
+// expect: b""
+// expect: 50
+// expect: true
+// expect: true

@@ -1,0 +1,14 @@
+// `@inline` was removed from the language: inlining is the engine's decision.
+@inline // error: unknown attribute `@inline`
+fn f() {}
+
+struct S {}
+
+impl S {
+    @inline // error: unknown attribute `@inline` on a method
+    fn m(self) {}
+}
+
+fn main() {
+    f()
+}

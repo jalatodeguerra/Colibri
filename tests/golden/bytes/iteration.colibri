@@ -1,0 +1,17 @@
+fn main() {
+    var sum = 0
+    for x in Bytes([1, 2, 250]) {
+        sum += int(x)
+    }
+    print(sum)
+    for (i, x) in "ab".to_bytes().enumerate() {
+        print("{i}: {x}")
+    }
+    var it = Bytes([7, 8]).iter()
+    print(it.next())
+}
+
+// expect: 253
+// expect: 0: 97
+// expect: 1: 98
+// expect: some(7)

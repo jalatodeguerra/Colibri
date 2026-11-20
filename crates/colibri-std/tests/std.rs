@@ -94,6 +94,20 @@ const GATED: &[(&str, &str, &str, colibri::Cap)] = &[
     ("fs", "fs.write", "fs.write(\"x\", \"y\")", colibri::Cap::Fs),
     ("fs", "fs.exists", "fs.exists(\"x\")", colibri::Cap::Fs),
     ("fs", "fs.list", "fs.list(\"x\")", colibri::Cap::Fs),
+    ("fs", "fs.open", "fs.open(\"x\")", colibri::Cap::Fs),
+    ("fs", "fs.create", "fs.create(\"x\")", colibri::Cap::Fs),
+    (
+        "fs",
+        "fs.open_append",
+        "fs.open_append(\"x\")",
+        colibri::Cap::Fs,
+    ),
+    (
+        "fs",
+        "fs.read_bytes",
+        "fs.read_bytes(\"x\")",
+        colibri::Cap::Fs,
+    ),
     (
         "fs",
         "fs.remove_dir",
@@ -327,12 +341,7 @@ fn a_dependency_named_std_cannot_shadow_the_standard_library() {
 #[test]
 fn modules_that_are_not_built_say_when_they_come() {
     let (mut vm, _) = vm(&[]);
-    for (module, wanted) in [
-        ("task", "does not exist yet"),
-        ("mem", "does not exist yet"),
-        ("reflect", "does not exist yet"),
-        ("collections", "`List`, `Map` and `Set` are built in"),
-    ] {
+    for (module, wanted) in [("task", "does not exist yet")] {
         for path in [module.to_string(), format!("std.{module}")] {
             let err = compile_error(&mut vm, &format!("import {path}\nfn main() {{}}\n"));
             assert!(
@@ -882,7 +891,7 @@ fn every_failing_module_declares_its_error_enum_and_keeps_the_erased_signatures(
     let expected = [
         (
             "fs",
-            "enum Error { NotFound, PermissionDenied, AlreadyExists, NotADirectory, IsADirectory, DirectoryNotEmpty, InvalidData, Other }",
+            "enum Error { NotFound, PermissionDenied, AlreadyExists, NotADirectory, IsADirectory, DirectoryNotEmpty, InvalidData, Closed, WrongMode, Other }",
         ),
         (
             "http",
@@ -901,9 +910,8 @@ fn every_failing_module_declares_its_error_enum_and_keeps_the_erased_signatures(
             "enum Error { OutOfRange, Syntax, InvalidPattern }",
         ),
         ("str", "enum Error { Empty, Invalid, OutOfRange }"),
-        ("base64", "enum Error { Invalid, NotText, OutOfRange }"),
-        ("hex", "enum Error { Invalid, NotText, OutOfRange }"),
-        ("hash", "enum Error { OutOfRange }"),
+        ("base64", "enum Error { Invalid }"),
+        ("hex", "enum Error { Invalid }"),
         ("csv", "enum Error { Syntax, Shape, Separator }"),
         ("toml", "enum Error { Syntax, Mismatch, Unsupported }"),
     ];
@@ -913,12 +921,15 @@ fn every_failing_module_declares_its_error_enum_and_keeps_the_erased_signatures(
         // The functions still return the erased `Error`; the enum is recovered with `as`.
         assert!(!text.contains("-> Result[Error"), "{module}: {text}");
     }
-    // `args` has nothing that fails, so it has no `Error`.
-    assert!(
-        !vm.std_module("args")
-            .interface_text()
-            .contains("enum Error")
-    );
+    // `args` and `hash` have nothing that fails, so they have no `Error`.
+    for module in ["args", "hash"] {
+        assert!(
+            !vm.std_module(module)
+                .interface_text()
+                .contains("enum Error"),
+            "{module}"
+        );
+    }
 }
 
 #[test]

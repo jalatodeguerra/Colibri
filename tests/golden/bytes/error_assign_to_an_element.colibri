@@ -1,0 +1,5 @@
+fn main() {
+    let b = Bytes([1, 2])
+    var c = b
+    c[0] = 9 // error: cannot assign to an element of a `Bytes`: it is immutable
+}

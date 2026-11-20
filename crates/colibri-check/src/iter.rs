@@ -26,6 +26,7 @@ impl FnCtx<'_, '_> {
             Ty::List(t) | Ty::Set(t) => Some((**t).clone()),
             Ty::Map(k, v) => Some(Ty::Tuple(vec![(**k).clone(), (**v).clone()])),
             Ty::Range(_) => Some(Ty::INT),
+            Ty::Bytes => Some(crate::builtins::BYTE),
             Ty::Dyn(id, args) if *id == ITER || *id == ITERABLE => args.first().cloned(),
             Ty::Param(p, _) => self
                 .ck
@@ -82,7 +83,7 @@ impl FnCtx<'_, '_> {
             return None;
         };
         let iter = match &ty {
-            Ty::List(_) | Ty::Set(_) | Ty::Map(..) | Ty::Range(_) => {
+            Ty::List(_) | Ty::Set(_) | Ty::Map(..) | Ty::Range(_) | Ty::Bytes => {
                 self.builtin_call(Builtin::Iter, vec![value], iter_of(item.clone()), span)
             }
             Ty::Dyn(id, _) if *id == ITER => value,

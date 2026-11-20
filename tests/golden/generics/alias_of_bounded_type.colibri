@@ -1,0 +1,36 @@
+// An alias takes the bounds of the type it names: `Sorted` needs `T: Ord`, so `S[T]` does too.
+struct Sorted[T: Ord] {
+    items: List[T]
+}
+
+type S[T] = Sorted[T]
+type Nested[T] = S[T]
+
+struct NotOrd {
+    f: List[int]
+}
+
+fn largest[T: Ord](s: S[T]) -> T {
+    var best = s.items[0]
+    for x in s.items {
+        if x > best {
+            best = x
+        }
+    }
+    return best
+}
+
+fn unbounded[T](s: S[T]) -> int => 0 // error: `T` does not implement `Ord`, which the alias `S` needs
+
+fn main() {
+    let a: S[int] = Sorted { items: [3, 9, 4] }
+    print(largest(a))
+    let n: Nested[str] = Sorted { items: ["b", "a"] }
+    print(n.items.len())
+}
+
+fn take(s: S[NotOrd]) {} // error: `NotOrd` does not implement `Ord` because `List[int]` does not, and the alias `S` needs it of its type parameter `T` because `Sorted` does
+
+fn take_nested(s: Nested[NotOrd]) {} // error: and the alias `Nested` needs it of its type parameter `T`
+// expect: 9
+// expect: 2

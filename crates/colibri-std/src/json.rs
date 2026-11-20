@@ -434,6 +434,11 @@ impl Encoder<'_, '_> {
             ValueKind::F32(f) => self.float(f64::from(f), format!("{f:?}"))?,
             ValueKind::Char(c) => escape(&mut self.out, &c.to_string()),
             ValueKind::Str(s) => escape(&mut self.out, &s),
+            ValueKind::Bytes(_) => {
+                return Err("json: cannot encode `Bytes`, which is not text; \
+                            encode it as base64 text first: `base64.encode(data)`"
+                    .to_string());
+            }
             ValueKind::List(items) | ValueKind::Set(items) | ValueKind::Tuple(items) => {
                 self.sequence(('[', ']'), items, level, |e, item, l| e.value(&item, l))?;
             }
@@ -665,6 +670,7 @@ impl Decoder<'_, '_> {
             Ty::Bool => "bool".to_string(),
             Ty::Char => "char".to_string(),
             Ty::Str => "str".to_string(),
+            Ty::Bytes => "Bytes".to_string(),
             Ty::Unit => "()".to_string(),
             Ty::Tuple(items) => format!(
                 "({})",
@@ -796,10 +802,15 @@ impl Decoder<'_, '_> {
             }
             Ty::Adt(id, args) => self.adt(json, *id, args, at),
             other => {
-                let message = format!(
+                let mut message = format!(
                     "json: at `{at}`: cannot decode a value of the type `{}`",
                     self.show(other)
                 );
+                if *other == Ty::Bytes {
+                    message.push_str(
+                        "; decode the base64 text as a `str` and call `base64.decode` on it",
+                    );
+                }
                 Err(self.unsupported(message))
             }
         }

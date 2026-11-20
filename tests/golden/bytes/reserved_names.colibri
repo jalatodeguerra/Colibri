@@ -1,0 +1,7 @@
+struct Bytes { // error: `Bytes` is a built-in type and cannot be redefined
+    data: List[int]
+}
+
+class BytesBuilder {} // error: `BytesBuilder` is a built-in type and cannot be redefined
+
+fn main() {}

@@ -1,0 +1,9 @@
+import base64
+import hash
+import hex
+
+fn main() {
+    print(base64.encode("hi")) // error: expected `Bytes`, found `str`
+    print(hex.encode("x")) // error: expected `Bytes`, found `str`
+    print(hash.sha256("x")) // error: expected `Bytes`, found `str`
+}

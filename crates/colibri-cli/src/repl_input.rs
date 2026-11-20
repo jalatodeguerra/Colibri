@@ -32,6 +32,16 @@ pub fn is_complete(text: &str) -> bool {
     if depth > 0 {
         return false;
     }
+    // Attributes (and `pub`) on their own line wait for the item they belong to: the formatter
+    // writes `@when(..)` above the declaration, and pasting that must not run the declaration
+    // without its condition.
+    let (_, parse_diags) = colibri_syntax::parse_file(FileId(0), text);
+    if parse_diags.iter().any(|d| {
+        d.message
+            .starts_with("expected an item after the attributes or `pub`, found end of file")
+    }) {
+        return false;
+    }
     let last = tokens.iter().rev().find(|t| {
         !matches!(
             t.kind,
@@ -112,6 +122,23 @@ mod tests {
         }
         assert!(is_complete("a.b"));
         assert!(is_complete("x?"));
+    }
+
+    #[test]
+    fn attributes_wait_for_their_item() {
+        for text in [
+            "@when(false)",
+            "@when(false)\n",
+            "@deprecated(\"old\")\n@when(debug)",
+            "@deprecated",
+            "pub",
+            "@when(false) // not on a release build",
+        ] {
+            assert!(!is_complete(text), "{text:?}");
+        }
+        assert!(is_complete("@when(false)\nfn z() -> int => 2"));
+        assert!(is_complete("@deprecated\nfn old() {}"));
+        assert!(is_complete("@when(debug) fn z() {}"));
     }
 
     #[test]

@@ -1,0 +1,14 @@
+fn main() {
+    let b = Bytes([104, 0, 9, 10, 13, 34, 92, 127, 128, 255, 126, 32])
+    print(b)
+    print("{b}")
+    print([Bytes([65]), Bytes()])
+    print(some(Bytes([66])))
+    print("é".to_bytes())
+}
+
+// expect: b"h\x00\t\n\r\"\\\x7f\x80\xff~ "
+// expect: b"h\x00\t\n\r\"\\\x7f\x80\xff~ "
+// expect: [b"A", b""]
+// expect: some(b"B")
+// expect: b"\xc3\xa9"

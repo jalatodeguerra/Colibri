@@ -1,0 +1,4 @@
+fn main() {
+    let b = BytesBuilder()
+    b.push("a") // error: expected `u8`, found `str`
+}

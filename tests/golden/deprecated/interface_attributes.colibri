@@ -1,0 +1,21 @@
+// Attributes on interface methods are checked whether or not the method has a body.
+struct S {}
+
+interface I {
+    @when(false) // error: `@when` applies to top-level items only
+    fn a(self) -> int
+
+    @when(os == "nonsense") // error: `@when` applies to top-level items only
+    fn b(self) -> int
+
+    @foo // error: unknown attribute `@foo` on a method
+    fn c(self) -> int
+
+    @foo // error: unknown attribute `@foo` on a method
+    fn d(self) -> int => 1
+
+    @inline // error: unknown attribute `@inline` on a method
+    fn e(self) -> int
+}
+
+fn main() {}

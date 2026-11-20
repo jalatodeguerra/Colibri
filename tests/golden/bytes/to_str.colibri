@@ -1,0 +1,26 @@
+fn main() {
+    print("héllo".to_bytes().to_str())
+    print("héllo".to_bytes().to_str_lossy())
+    let bad = Bytes([104, 105, 255, 33])
+    match bad.to_str() {
+        ok(_) => print("decoded?")
+        err(e) => print(e.message())
+    }
+    print(bad.to_str_lossy())
+    let cut = "é".to_bytes()[0..1]
+    match cut.to_str() {
+        ok(_) => print("decoded?")
+        err(e) => print(e.message())
+    }
+    let euro = Bytes([0xe2, 0x82, 0xac]).to_str().expect("a euro sign")
+    print(euro)
+    print(euro.len())
+}
+
+// expect: ok("héllo")
+// expect: héllo
+// expect: the bytes are not valid UTF-8: byte 2 is not part of a valid character (`to_str_lossy()` replaces such bytes)
+// expect: hi�!
+// expect: the bytes are not valid UTF-8: they end in the middle of a character that starts at byte 0 (`to_str_lossy()` replaces such bytes)
+// expect: €
+// expect: 3

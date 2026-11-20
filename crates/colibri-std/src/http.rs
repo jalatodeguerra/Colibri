@@ -8,8 +8,14 @@
 //!   timeout, a body over the size limit.
 //! * `Response` is a struct: `status: int`, `headers: Map[str, str]` (names lowercased; a
 //!   header sent several times is joined with `, `) and `body: str`. A body that is not valid
-//!   UTF-8 is decoded lossily (invalid sequences become U+FFFD): v1 has no byte-body variant.
-//!   Parse JSON with `json.decode[T](response.body)`.
+//!   UTF-8 is decoded lossily (invalid sequences become U+FFFD). Parse JSON with
+//!   `json.decode[T](response.body)`.
+//! * For a body that is not text there is a second set of calls, with the body as `Bytes` in
+//!   both directions (like `fs.read_bytes` and `fs.write_bytes`): `http.get_bytes(url)` and the
+//!   general `http.request_bytes(method, url, headers, data)` return
+//!   `Result[BytesResponse]`, a struct with the same `status` and `headers` and `body: Bytes`,
+//!   exactly as it arrived; no text copy is made. `http.to_text(response)` turns a
+//!   `BytesResponse` into a `Response` (lossy), for a text answer to an upload.
 //! * Connections are kept and reused: every request goes through one `ureq::Agent`.
 //! * Redirects are followed (up to 10). The proxy variables of the process (`HTTP_PROXY`,
 //!   `HTTPS_PROXY`, `NO_PROXY`) are honoured.
@@ -27,12 +33,11 @@ use std::io::Read;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use colibri_runtime::{
-    Cap, Ctx, Cx, Error, IntoColibri, TypeDesc, TypeRegistry, TypedError, Value, Vm,
-};
+use colibri_runtime::{Bytes, Cap, Ctx, Error, TypedError, Vm};
 
 use crate::errors::error_kind;
 use crate::needs;
+use crate::values::value_struct;
 
 error_kind!(
     "http",
@@ -135,30 +140,58 @@ struct HttpState {
     timeout: Option<Duration>,
 }
 
+/// What a request got back, before it is given a shape for the script.
+struct Raw {
+    status: i64,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
+/// The answer to `http.get`, `http.post`, `http.post_as` and `http.request`.
+#[derive(Clone)]
 struct Response {
     status: i64,
     headers: BTreeMap<String, String>,
     body: String,
 }
 
-impl IntoColibri for Response {
-    fn ty(reg: &mut TypeRegistry) -> TypeDesc {
-        let status = <i64 as IntoColibri>::ty(reg);
-        let headers = <BTreeMap<String, String> as IntoColibri>::ty(reg);
-        let body = <String as IntoColibri>::ty(reg);
-        reg.define_struct(
-            "Response",
-            vec![("status", status), ("headers", headers), ("body", body)],
-        )
-    }
+value_struct!(Response {
+    status: i64,
+    headers: BTreeMap<String, String>,
+    body: String,
+});
 
-    fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
-        let fields = vec![
-            self.status.into_colibri(cx),
-            self.headers.into_colibri(cx),
-            self.body.into_colibri(cx),
-        ];
-        cx.new_struct("Response", fields)
+/// The answer to `http.get_bytes` and `http.request_bytes`: the body as it arrived.
+#[derive(Clone)]
+struct BytesResponse {
+    status: i64,
+    headers: BTreeMap<String, String>,
+    body: Bytes,
+}
+
+value_struct!(BytesResponse {
+    status: i64,
+    headers: BTreeMap<String, String>,
+    body: Bytes,
+});
+
+impl From<Raw> for Response {
+    fn from(raw: Raw) -> Response {
+        Response {
+            status: raw.status,
+            headers: raw.headers,
+            body: String::from_utf8_lossy(&raw.body).into_owned(),
+        }
+    }
+}
+
+impl From<Raw> for BytesResponse {
+    fn from(raw: Raw) -> BytesResponse {
+        BytesResponse {
+            status: raw.status,
+            headers: raw.headers,
+            body: Bytes(raw.body),
+        }
     }
 }
 
@@ -181,8 +214,8 @@ fn perform(
     method: &str,
     url: &str,
     headers: &BTreeMap<String, String>,
-    body: Option<String>,
-) -> Result<Response, TypedError> {
+    body: Option<Vec<u8>>,
+) -> Result<Raw, TypedError> {
     let fail = |kind: Kind, e: &dyn std::fmt::Display| {
         kind.error(format!("http: {method} {url} failed: {e}"))
     };
@@ -225,10 +258,10 @@ fn perform(
             &format!("the response body is over {} MiB", MAX_BODY >> 20),
         ));
     }
-    Ok(Response {
+    Ok(Raw {
         status,
         headers: out_headers,
-        body: String::from_utf8_lossy(&bytes).into_owned(),
+        body: bytes,
     })
 }
 
@@ -237,8 +270,8 @@ fn run(
     method: &str,
     url: &str,
     headers: &BTreeMap<String, String>,
-    body: Option<String>,
-) -> Result<Response, TypedError> {
+    body: Option<Vec<u8>>,
+) -> Result<Raw, TypedError> {
     let timeout = cx
         .state_mut::<HttpState>()
         .map_or(Some(DEFAULT_TIMEOUT), |s| s.timeout);
@@ -253,10 +286,11 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
         timeout: Some(DEFAULT_TIMEOUT),
     });
     let mut m = vm.std_module("http");
+    // The text calls: the body goes in as text and comes back as lossy text.
     needs(
         Cap::Net,
         m.register_fn_named("get", ["url"], |cx: &mut Ctx, url: String| {
-            run(cx, "GET", &url, &BTreeMap::new(), None)
+            run(cx, "GET", &url, &BTreeMap::new(), None).map(Response::from)
         }),
     )?;
     needs(
@@ -266,7 +300,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             ["url", "body"],
             |cx: &mut Ctx, url: String, body: String| {
                 let headers = content_type("text/plain; charset=utf-8");
-                run(cx, "POST", &url, &headers, Some(body))
+                run(cx, "POST", &url, &headers, Some(body.into_bytes())).map(Response::from)
             },
         ),
     )?;
@@ -276,7 +310,14 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             "post_as",
             ["url", "body", "content_type"],
             |cx: &mut Ctx, url: String, body: String, kind: String| {
-                run(cx, "POST", &url, &content_type(&kind), Some(body))
+                run(
+                    cx,
+                    "POST",
+                    &url,
+                    &content_type(&kind),
+                    Some(body.into_bytes()),
+                )
+                .map(Response::from)
             },
         ),
     )?;
@@ -290,16 +331,50 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
              url: String,
              headers: BTreeMap<String, String>,
              body: String| {
-                if method.is_empty() || !method.bytes().all(|b| b.is_ascii_alphabetic()) {
-                    return Err(
-                        Kind::Other.error(format!("http: `{method}` is not an HTTP method"))
-                    );
-                }
-                let method = method.to_ascii_uppercase();
-                let body = if body.is_empty() { None } else { Some(body) };
-                run(cx, &method, &url, &headers, body)
+                let method = check_method(&method)?;
+                let body = if body.is_empty() {
+                    None
+                } else {
+                    Some(body.into_bytes())
+                };
+                run(cx, &method, &url, &headers, body).map(Response::from)
             },
         ),
+    )?;
+    // The `Bytes` calls: the body goes in and comes back as it is, and no text copy is made.
+    needs(
+        Cap::Net,
+        m.register_fn_named("get_bytes", ["url"], |cx: &mut Ctx, url: String| {
+            run(cx, "GET", &url, &BTreeMap::new(), None).map(BytesResponse::from)
+        }),
+    )?;
+    // Like `request`, with a body that is not text (an empty `Bytes` sends no body).
+    needs(
+        Cap::Net,
+        m.register_fn_named(
+            "request_bytes",
+            ["method", "url", "headers", "data"],
+            |cx: &mut Ctx,
+             method: String,
+             url: String,
+             headers: BTreeMap<String, String>,
+             data: Bytes| {
+                let method = check_method(&method)?;
+                let body = if data.is_empty() { None } else { Some(data.0) };
+                run(cx, &method, &url, &headers, body).map(BytesResponse::from)
+            },
+        ),
+    )?;
+    // A `BytesResponse` as a `Response`: the body decoded as text, lossily.
+    needs(
+        Cap::Net,
+        m.register_fn_named("to_text", ["response"], |response: BytesResponse| {
+            Response {
+                status: response.status,
+                headers: response.headers,
+                body: String::from_utf8_lossy(&response.body).into_owned(),
+            }
+        }),
     )?;
     // Gated like the rest of the module, so `import http` never needs a second look.
     needs(
@@ -318,6 +393,14 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
         }),
     )?;
     Ok(())
+}
+
+/// The method in upper case, or an error when it is not a method name.
+fn check_method(method: &str) -> Result<String, TypedError> {
+    if method.is_empty() || !method.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return Err(Kind::Other.error(format!("http: `{method}` is not an HTTP method")));
+    }
+    Ok(method.to_ascii_uppercase())
 }
 
 fn content_type(kind: &str) -> BTreeMap<String, String> {

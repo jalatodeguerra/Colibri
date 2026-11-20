@@ -9,10 +9,17 @@ use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::{FnCtx, LocalKind};
 use crate::checker::{Dep, ValueRef};
-use crate::hir::{self, Anchor, Expr, LocalId, Place, ValueProj};
+use crate::deprecated::DeprKey;
+use crate::hir::{self, Anchor, Builtin, Expr, LocalId, Place, ValueProj};
 use crate::types::Ty;
 
 /// What a field or element access starts from: a place, or a computed value.
+/// What `base[index]` is: a place that can be assigned to, or (a `Bytes`) a value.
+enum Indexed {
+    Place(Place),
+    Value(Expr),
+}
+
 enum Base {
     Place(Place),
     Value(Expr),
@@ -242,6 +249,21 @@ impl FnCtx<'_, '_> {
         args: &[IndexArg],
         whole: &ast::Expr,
     ) -> Option<Place> {
+        match self.index_target(base, args, whole, false)? {
+            Indexed::Place(place) => Some(place),
+            Indexed::Value(_) => None,
+        }
+    }
+
+    /// `base[index]`. A `Bytes` is not a place (it is immutable): read as a value it is the
+    /// `BytesAt` call, and as the target of an assignment it is an error.
+    fn index_target(
+        &mut self,
+        base: &ast::Expr,
+        args: &[IndexArg],
+        whole: &ast::Expr,
+        read: bool,
+    ) -> Option<Indexed> {
         let [IndexArg::Expr(index)] = args else {
             self.check_index_args_loosely(base, args);
             self.ck.unsupported("a generic instantiation", whole.span);
@@ -275,12 +297,12 @@ impl FnCtx<'_, '_> {
                 if !self.expect(&idx, &Ty::INT, reason) {
                     return None;
                 }
-                Some(Place {
+                Some(Indexed::Place(Place {
                     anchor: Anchor::ListElem(Box::new(collection), Box::new(idx), name),
                     path: Vec::new(),
                     ty: *elem,
                     display: expr_text(whole),
-                })
+                }))
             }
             Ty::Map(key, value) => {
                 let k = self.check_expr(index, Some(&key));
@@ -291,25 +313,43 @@ impl FnCtx<'_, '_> {
                 if !self.expect(&k, &key, reason) {
                     return None;
                 }
-                Some(Place {
+                Some(Indexed::Place(Place {
                     anchor: Anchor::MapEntry(Box::new(collection), Box::new(k), name),
                     path: Vec::new(),
                     ty: *value,
                     display: expr_text(whole),
-                })
+                }))
+            }
+            Ty::Bytes if read => {
+                let idx = self.check_expr(index, Some(&Ty::INT));
+                let reason = Some((index.span, "`Bytes` is indexed by an `int`".to_string()));
+                if !self.expect(&idx, &Ty::INT, reason) {
+                    return None;
+                }
+                Some(Indexed::Value(self.builtin_call(
+                    Builtin::BytesAt,
+                    vec![collection, idx],
+                    crate::builtins::BYTE,
+                    whole.span,
+                )))
             }
             other => {
                 self.check_expr(index, None);
                 let shown = self.show(&other);
-                let mut diag = Diagnostic::error(
-                    format!("cannot index into a value of type `{shown}`"),
-                    whole.span,
-                );
+                let message = if other == Ty::Bytes {
+                    "cannot assign to an element of a `Bytes`: it is immutable".to_string()
+                } else {
+                    format!("cannot index into a value of type `{shown}`")
+                };
+                let mut diag = Diagnostic::error(message, whole.span);
                 diag = match other {
                     Ty::Str => diag.with_hint(
                         "strings cannot be indexed by position; use `s.chars()` to go through the characters",
                     ),
-                    _ => diag.with_hint("only lists and maps can be indexed"),
+                    Ty::Bytes => diag.with_hint(
+                        "a `Bytes` is immutable; build a new one with `BytesBuilder`",
+                    ),
+                    _ => diag.with_hint("only lists, maps and `Bytes` can be indexed"),
                 };
                 self.ck.report(diag);
                 None
@@ -346,11 +386,12 @@ impl FnCtx<'_, '_> {
                 None => self.error_expr(whole.span),
             };
         }
-        match self.index_place(base, args, whole) {
-            Some(place) => {
+        match self.index_target(base, args, whole, true) {
+            Some(Indexed::Place(place)) => {
                 let ty = place.ty.clone();
                 self.mk(hir::ExprKind::Read(Box::new(place)), ty, whole.span)
             }
+            Some(Indexed::Value(value)) => value,
             None => self.error_expr(whole.span),
         }
     }
@@ -377,6 +418,7 @@ impl FnCtx<'_, '_> {
             Some(ValueRef::Global(g)) => {
                 let ty = self.ck.global_ty(g);
                 self.add_dep(Dep::Global(g), id.span);
+                self.ck.note_deprecated_use(DeprKey::Global(g), id.span);
                 Some(Place {
                     anchor: Anchor::Global(g),
                     path: Vec::new(),

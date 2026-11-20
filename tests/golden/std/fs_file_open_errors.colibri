@@ -1,0 +1,45 @@
+// caps: fs, os
+import fs
+import os
+import path
+
+fn main() -> Result[()] {
+    let dir = os.temp_dir()
+    let missing = path.join(dir, "missing.txt")
+    let e = fs.open(missing).err().expect("no such file")
+    print(e.as[fs.Error]().expect("an fs error"))
+    print(e.message().replace(dir, "<dir>"))
+    print(fs.create(path.join(dir, "no/such/folder/x")).is_err())
+    print(fs.open_append(path.join(dir, "no/such/folder/x")).is_err())
+    print(fs.open(dir).err().expect("a folder").as[fs.Error]().expect("an fs error"))
+    print(fs.create(dir).err().expect("a folder").as[fs.Error]().expect("an fs error"))
+
+    // A line that is not UTF-8 is an error, not replacement characters.
+    let bad = path.join(dir, "bad.txt")
+    fs.write_bytes(bad, Bytes([111, 107, 10, 104, 105, 255, 33, 10, 102, 105, 110, 10]))?
+    let f = fs.open(bad)?
+    print(f.read_line()?)
+    let e2 = f.read_line().err().expect("not UTF-8")
+    print(e2.as[fs.Error]().expect("an fs error"))
+    print(e2.message().replace(dir, "<dir>"))
+    // The bad line is behind us; the file goes on.
+    print(f.read_line()?)
+    f.close()?
+    // `read` gives the bytes of such a file.
+    let g = fs.open(bad)?
+    print(g.read_all()?.len())
+    g.close()?
+    return ok(())
+}
+
+// expect: NotFound
+// expect: cannot open `<dir>/missing.txt`: no such file or directory
+// expect: true
+// expect: true
+// expect: IsADirectory
+// expect: IsADirectory
+// expect: some("ok")
+// expect: InvalidData
+// expect: cannot read a line of `<dir>/bad.txt`: the line is not valid UTF-8 (byte 2 is not part of a valid UTF-8 character); `read` gives the bytes of a file that is not text
+// expect: some("fin")
+// expect: 12

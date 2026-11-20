@@ -3,7 +3,7 @@
 
 use colibri_syntax::ast::{ExprKind, ItemKind, StmtKind, TopLevel};
 use colibri_syntax::ast_dump::dump_file;
-use colibri_syntax::{Diagnostic, FileId, parse_file};
+use colibri_syntax::{Diagnostic, FileId, parse_file, parse_interface_file};
 
 const F: FileId = FileId(0);
 
@@ -1303,6 +1303,28 @@ fn corpus() -> Vec<(usize, String)> {
     blocks
 }
 
+/// The text of a corpus block that is an interface file (`.cbi`): it starts with the
+/// `@interface(..)` header (after the comment line `colibri-runtime` writes). The loader blanks
+/// the header out before it parses the rest, and so does this.
+fn interface_text(src: &str) -> Option<String> {
+    let mut offset = 0;
+    for line in src.split_inclusive('\n') {
+        let t = line.trim();
+        if t.starts_with("@interface(") {
+            let content = line.trim_end_matches(['\n', '\r']);
+            let mut masked = src[..offset].to_string();
+            masked.push_str(&" ".repeat(content.len()));
+            masked.push_str(&src[offset + content.len()..]);
+            return Some(masked);
+        }
+        if !(t.is_empty() || t.starts_with("//")) {
+            return None;
+        }
+        offset += line.len();
+    }
+    None
+}
+
 /// Replaces the `...` placeholders of the doc with parseable text: a line of
 /// just `...` is removed, `{ ... }` becomes `{}` and `(...)` becomes `()`.
 fn fill_placeholders(src: &str) -> String {
@@ -1331,7 +1353,12 @@ fn every_design_block_parses_without_diagnostics() {
             continue;
         }
         let src = fill_placeholders(block);
-        let (_, diags) = parse_file(F, &src);
+        // The interface of a host (`.cbi`) is a block of the notes too: functions without
+        // bodies are what an interface file is.
+        let (_, diags) = match interface_text(&src) {
+            Some(text) => parse_interface_file(F, &text),
+            None => parse_file(F, &src),
+        };
         if !diags.is_empty() {
             let msgs: Vec<String> = diags
                 .iter()
@@ -1368,4 +1395,16 @@ fn match_arms_with_leading_dot_variants() {
         "fn f(s: Shape) -> float {\n    return match s {\n        .Circle(r) => r\n        .Rect(w, h) => w * h\n        .Point => 0\n    }\n}\n",
     );
     assert!(diags.is_empty(), "{diags:?}");
+}
+
+#[test]
+fn when_refuses_a_trailing_comma() {
+    let d = one_error("@when(debug,)\nfn f() {}\n");
+    assert_eq!(
+        d.message,
+        "`@when` takes one condition, without a trailing comma"
+    );
+    assert_eq!(pointed_at("@when(debug,)\nfn f() {}\n", &d), ",");
+    // Other attributes are not affected.
+    assert!(parse_dump("@deprecated(\"x\",)\nfn f() {}\n").1.is_empty());
 }

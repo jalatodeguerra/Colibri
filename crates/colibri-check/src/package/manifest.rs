@@ -11,6 +11,12 @@ pub struct Dependency {
     pub name: String,
     pub name_span: Span,
     pub source: Source,
+    /// `features = ["a", "b"]`: the features of the dependency this package asks for, with the
+    /// place of each name (DESIGN §3.6).
+    pub features: Vec<(String, Span)>,
+    /// `default-features = false` turns off the dependency's `default` list (for this
+    /// dependent; another one may still ask for it).
+    pub default_features: bool,
 }
 
 /// Where a dependency comes from.
@@ -75,7 +81,86 @@ pub struct Manifest {
     pub allow_ffi: Vec<String>,
     /// Where each name of `allow_ffi` is written.
     pub allow_ffi_spans: Vec<Span>,
+    /// `[features]`: the feature flags `@when(name)` can test (DESIGN §3.6).
+    pub features: Features,
 }
+
+/// The `[features]` table of `colibri.toml`:
+///
+/// ```toml
+/// [features]
+/// default = ["audio"]   # on unless the build says `--no-default-features`
+/// audio = []            # a feature; the list holds the features it turns on too
+/// net = ["audio"]
+/// ```
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Features {
+    /// Every declared feature with the features it turns on, in the order written.
+    pub declared: Vec<(String, Vec<String>)>,
+    /// The `default` list: the features that are on unless the build turns the defaults off.
+    pub default: Vec<String>,
+}
+
+impl Features {
+    /// Whether the package declares a feature called `name`.
+    pub fn has(&self, name: &str) -> bool {
+        self.declared.iter().any(|(n, _)| n == name)
+    }
+
+    /// The features that are on when the build asks for `requested` (and, unless
+    /// `no_defaults`, the `default` list), each with everything it turns on.
+    pub fn enabled(&self, requested: &[String], no_defaults: bool) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut todo: Vec<String> = requested.to_vec();
+        if !no_defaults {
+            todo.extend(self.default.iter().cloned());
+        }
+        while let Some(name) = todo.pop() {
+            if out.contains(&name) {
+                continue;
+            }
+            if let Some((_, more)) = self.declared.iter().find(|(n, _)| *n == name) {
+                todo.extend(more.iter().cloned());
+            }
+            out.push(name);
+        }
+        out.sort();
+        out
+    }
+}
+
+/// The names a feature may not take: they mean something in a `@when` condition already.
+/// Why `name` cannot be a feature name (a message and a hint), or `None` when it can: letters,
+/// digits and `_`, not starting with a digit, no keyword, and none of the names `@when` gives a
+/// meaning of its own. The rule for `[features]` keys, `--feature` and `VmBuilder::feature`.
+pub fn feature_name_problem(name: &str) -> Option<(String, String)> {
+    if name.is_empty() {
+        return Some((
+            "a feature name cannot be empty".to_string(),
+            "use letters, digits and `_`, as in `--feature fast`".to_string(),
+        ));
+    }
+    if RESERVED_FEATURES.contains(&name) {
+        return Some((
+            format!("`{name}` is not a valid feature name: it has a meaning of its own in `@when`"),
+            "`os`, `arch` and `debug` are decided by the build, `default` is the list of features that are on by default, and `true` and `false` are conditions; choose another name".to_string(),
+        ));
+    }
+    if !is_name(name) {
+        let why = if colibri_syntax::TokenKind::keyword(name).is_some() {
+            "it is a keyword"
+        } else {
+            "use letters, digits and `_`, and do not start with a digit"
+        };
+        return Some((
+            format!("`{name}` is not a valid feature name"),
+            why.to_string(),
+        ));
+    }
+    None
+}
+
+pub const RESERVED_FEATURES: &[&str] = &["os", "arch", "debug", "default", "true", "false"];
 
 /// Parses a manifest; every problem is a diagnostic in file `file`. The file is read through
 /// [`toml::read_config`]: one with a credential in it is refused as a whole.
@@ -94,6 +179,7 @@ pub fn from_tables(
     let mut ffi = false;
     let mut allow_ffi: Vec<(String, Span)> = Vec::new();
     let mut dependencies: Vec<Dependency> = Vec::new();
+    let mut features = Features::default();
     for table in &tables {
         let path: Vec<&str> = table.path.iter().map(String::as_str).collect();
         match path.as_slice() {
@@ -106,6 +192,7 @@ pub fn from_tables(
                 }
             }
             ["package"] => package(table, &mut name, &mut ffi, &mut allow_ffi, &mut errors),
+            ["features"] => parse_features(table, &mut features, &mut errors),
             ["dependencies"] => {
                 for entry in &table.entries {
                     dependency(
@@ -130,7 +217,7 @@ pub fn from_tables(
                     format!("unknown table `[{}]`", table.path.join(".")),
                     table.span,
                 )
-                .with_hint("`colibri.toml` has `[package]` and `[dependencies]`"),
+                .with_hint("`colibri.toml` has `[package]`, `[dependencies]` and `[features]`"),
             ),
         }
     }
@@ -153,7 +240,97 @@ pub fn from_tables(
         ffi,
         allow_ffi_spans: allow_ffi.iter().map(|(_, s)| *s).collect(),
         allow_ffi: allow_ffi.into_iter().map(|(n, _)| n).collect(),
+        features,
     })
+}
+
+fn parse_features(table: &Table, features: &mut Features, errors: &mut Vec<Diagnostic>) {
+    let names = |value: &toml::Value, errors: &mut Vec<Diagnostic>| -> Option<Vec<String>> {
+        let ValueKind::Array(items) = &value.kind else {
+            errors.push(
+                Diagnostic::error(
+                    "a feature is a list of the features it turns on",
+                    value.span,
+                )
+                .with_hint("write `audio = []` or `net = [\"audio\"]`"),
+            );
+            return None;
+        };
+        let mut out = Vec::new();
+        for item in items {
+            match &item.kind {
+                ValueKind::Str(n) => out.push(n.clone()),
+                _ => errors.push(Diagnostic::error(
+                    "a feature list holds feature names as strings",
+                    item.span,
+                )),
+            }
+        }
+        Some(out)
+    };
+    let mut default: Option<(Vec<String>, Vec<Span>)> = None;
+    for entry in &table.entries {
+        if entry.key == "default" {
+            if let Some(list) = names(&entry.value, errors) {
+                let spans = match &entry.value.kind {
+                    ValueKind::Array(items) => items.iter().map(|i| i.span).collect(),
+                    _ => Vec::new(),
+                };
+                default = Some((list, spans));
+            }
+            continue;
+        }
+        if let Some((message, hint)) = feature_name_problem(&entry.key) {
+            errors.push(Diagnostic::error(message, entry.key_span).with_hint(hint));
+            continue;
+        }
+        if features.has(&entry.key) {
+            errors.push(Diagnostic::error(
+                format!("the feature `{}` is listed more than once", entry.key),
+                entry.key_span,
+            ));
+            continue;
+        }
+        if let Some(list) = names(&entry.value, errors) {
+            features.declared.push((entry.key.clone(), list));
+        }
+    }
+    // Everything a list names must be declared.
+    let spans_of = |entry_key: &str| -> Vec<Span> {
+        table
+            .entries
+            .iter()
+            .find(|e| e.key == entry_key)
+            .and_then(|e| match &e.value.kind {
+                ValueKind::Array(items) => Some(items.iter().map(|i| i.span).collect()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    let mut check = |owner: &str, list: &[String]| {
+        let spans = spans_of(owner);
+        for (i, name) in list.iter().enumerate() {
+            if !features.has(name) {
+                let known: Vec<&str> = features.declared.iter().map(|(n, _)| n.as_str()).collect();
+                let span = spans.get(i).copied().unwrap_or(table.span);
+                errors.push(
+                    Diagnostic::error(format!("`{name}` is not a declared feature"), span)
+                        .with_hint(if known.is_empty() {
+                            "declare it as a key of `[features]`: `name = []`".to_string()
+                        } else {
+                            format!("the declared features are: {}", known.join(", "))
+                        }),
+                );
+            }
+        }
+    };
+    for (owner, list) in features.declared.clone() {
+        check(&owner, &list);
+    }
+    if let Some((list, _)) = &default {
+        check("default", list);
+        features.default = list.clone();
+    }
 }
 
 fn package(
@@ -261,6 +438,8 @@ fn dependency(
     let mut path: Option<(String, Span)> = None;
     let mut git: Option<(String, Span)> = None;
     let mut specs: Vec<(&'static str, String, Span, Span)> = Vec::new();
+    let mut features: Vec<(String, Span)> = Vec::new();
+    let mut default_features = true;
     for entry in entries {
         let vspan = entry.value.span;
         match (entry.key.as_str(), &entry.value.kind) {
@@ -283,6 +462,32 @@ fn dependency(
                 format!("`{}` must be a string", entry.key),
                 vspan,
             )),
+            ("features", ValueKind::Array(items)) => {
+                for item in items {
+                    match &item.kind {
+                        ValueKind::Str(f) => {
+                            if let Some((message, hint)) = feature_name_problem(f) {
+                                errors.push(Diagnostic::error(message, item.span).with_hint(hint));
+                            } else if !features.iter().any(|(n, _)| n == f) {
+                                features.push((f.clone(), item.span));
+                            }
+                        }
+                        _ => errors.push(
+                            Diagnostic::error("`features` lists feature names", item.span)
+                                .with_hint("write `features = [\"fast\"]`"),
+                        ),
+                    }
+                }
+            }
+            ("features", _) => errors.push(
+                Diagnostic::error("`features` must be a list of feature names", vspan)
+                    .with_hint("write `features = [\"fast\"]`"),
+            ),
+            ("default-features", ValueKind::Bool(b)) => default_features = *b,
+            ("default-features", _) => errors.push(
+                Diagnostic::error("`default-features` must be `true` or `false`", vspan)
+                    .with_hint("write `default-features = false` to leave the dependency's default features off"),
+            ),
             ("version" | "registry", _) => errors.push(
                 Diagnostic::error(
                     format!(
@@ -298,7 +503,7 @@ fn dependency(
                     format!("unknown key `{other}` in the dependency `{name}`"),
                     entry.key_span,
                 )
-                .with_hint("a dependency has `path`, or `git` with `rev`, `tag` or `branch`"),
+                .with_hint("a dependency has `path`, or `git` with `rev`, `tag` or `branch`, and may have `features` and `default-features`"),
             ),
         }
     }
@@ -355,6 +560,8 @@ fn dependency(
             name: name.to_string(),
             name_span,
             source: Source::Path { path, path_span },
+            features,
+            default_features,
         }),
         (None, Some((url, url_span))) => {
             if let Some(why) = super::git::userinfo_problem(&url) {
@@ -396,6 +603,8 @@ fn dependency(
                     url_span,
                     spec,
                 }),
+                features,
+                default_features,
             });
         }
         _ => errors.push(
@@ -1018,6 +1227,38 @@ mod tests {
         assert!(
             dep_errs("foo = { git = \"/u\", branch = \"a@{1}\" }")[0]
                 .contains("not a valid branch")
+        );
+    }
+
+    #[test]
+    fn a_dependency_may_ask_for_features_and_turn_defaults_off() {
+        let m = ok(
+            "[package]\nname = \"a\"\n\n[dependencies]\nlib = { path = \"../lib\", features = [\"x\", \"y\"], default-features = false }\nother = { path = \"../o\" }\n",
+        );
+        let lib = &m.dependencies[0];
+        let names: Vec<&str> = lib.features.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["x", "y"]);
+        assert!(!lib.default_features);
+        let other = &m.dependencies[1];
+        assert!(other.features.is_empty() && other.default_features);
+    }
+
+    #[test]
+    fn bad_dependency_features_are_errors() {
+        let bad = |dep: &str| {
+            let text = format!(
+                "[package]\nname = \"a\"\n\n[dependencies]\nlib = {{ path = \"../lib\", {dep} }}\n"
+            );
+            parse(FileId(0), &text).unwrap_err()[0].message.clone()
+        };
+        assert_eq!(
+            bad("features = \"x\""),
+            "`features` must be a list of feature names"
+        );
+        assert!(bad("features = [\"debug\"]").contains("`debug` is not a valid feature name"));
+        assert_eq!(
+            bad("default-features = \"no\""),
+            "`default-features` must be `true` or `false`"
         );
     }
 }

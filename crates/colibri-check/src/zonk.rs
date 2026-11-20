@@ -123,6 +123,7 @@ fn operand_of(ty: &Ty) -> Operand {
         | Ty::Range(_)
         | Ty::Ptr(_)
         | Ty::Vec(_)
+        | Ty::Bytes
         | Ty::Param(..) => Operand::Structural,
         _ => Operand::Int(IntTy::I64),
     }
@@ -132,7 +133,7 @@ fn operand_of(ty: &Ty) -> Operand {
 /// not know while a literal was still untyped.
 fn resolve_binop(op: BinOp, operand: &Ty) -> BinOp {
     match op {
-        BinOp::Arith(..) | BinOp::Concat if *operand == Ty::Str => BinOp::Concat,
+        BinOp::Arith(..) | BinOp::Concat if matches!(operand, Ty::Str | Ty::Bytes) => BinOp::Concat,
         BinOp::Arith(a, _) => BinOp::Arith(a, num_of(operand)),
         BinOp::Bit(b, _) => BinOp::Bit(b, int_of(operand)),
         BinOp::Concat => BinOp::Concat,

@@ -1,5 +1,7 @@
-enum Cmd { Move(int), Quit }
+class Job { id: int }
+
+enum Cmd { Run(Job), Quit }
 
 fn main() {
-    print(Cmd.Quit < Cmd.Move(1)) // error: `<` cannot compare values of type `Cmd`
+    print(Cmd.Quit < Cmd.Run(Job { id: 1 })) // error: `<` cannot compare values of type `Cmd`
 }

@@ -1,0 +1,51 @@
+struct Version {
+    major: int
+    minor: int
+}
+
+struct Release {
+    version: Version
+    name: str
+}
+
+enum Shape {
+    Dot
+    Circle(int)
+    Rect(int, int)
+}
+
+fn main() {
+    let a = Version { major: 1, minor: 9 }
+    let b = Version { major: 2, minor: 0 }
+    print(a < b)
+    print(b <= a)
+    print(compare(a, b))
+
+    var xs = [b, a, Version { major: 1, minor: 2 }]
+    xs.sort()
+    for v in xs {
+        print("{v.major}.{v.minor}")
+    }
+
+    // Nested structs compare field by field, first field first.
+    let r1 = Release { version: a, name: "b" }
+    let r2 = Release { version: a, name: "a" }
+    print(r2 < r1)
+
+    // Enums: variant order first, then the payload.
+    print(Shape.Dot < Shape.Circle(1))
+    print(Shape.Circle(5) < Shape.Circle(7))
+    print(Shape.Rect(1, 9) < Shape.Rect(2, 0))
+    print(Shape.Rect(1, 1) < Shape.Circle(99))
+}
+// expect: true
+// expect: false
+// expect: -1
+// expect: 1.2
+// expect: 1.9
+// expect: 2.0
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: false

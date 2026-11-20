@@ -173,6 +173,8 @@ impl FnCtx<'_, '_> {
                     }
                     "Set" => Some(self.check_set_from(args, expected, span)),
                     "StrBuilder" => Some(self.check_str_builder_new(args, span)),
+                    "Bytes" => Some(self.check_bytes_new(args, span)),
+                    "BytesBuilder" => Some(self.check_bytes_builder_new(args, span)),
                     "CoGroup" | "Signal" => {
                         Some(self.check_group_or_signal_new(&id.name, args, span))
                     }
@@ -218,6 +220,52 @@ impl FnCtx<'_, '_> {
             Ty::Adt(crate::types::STR_BUILDER_TYPE, Vec::new()),
             span,
         )
+    }
+
+    /// `BytesBuilder()` (DESIGN §12): an empty byte builder.
+    fn check_bytes_builder_new(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        if !args.is_empty() {
+            self.check_args_loosely(args);
+            self.ck.report(Diagnostic::error(
+                "`BytesBuilder()` takes no arguments",
+                span,
+            ));
+            return self.error_expr(span);
+        }
+        self.builtin_call(
+            Builtin::BytesBuilderNew,
+            Vec::new(),
+            Ty::Adt(crate::types::BYTES_BUILDER_TYPE, Vec::new()),
+            span,
+        )
+    }
+
+    /// `Bytes()` (no bytes) and `Bytes(list)` (a `List[u8]`), DESIGN §5.1.
+    fn check_bytes_new(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        let [arg] = args else {
+            if args.is_empty() {
+                return self.builtin_call(Builtin::BytesEmpty, Vec::new(), Ty::Bytes, span);
+            }
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error(
+                    format!("`Bytes` takes one list, found {} arguments", args.len()),
+                    span,
+                )
+                .with_hint("write `Bytes([1, 2, 255])`, or `Bytes()` for no bytes"),
+            );
+            return self.error_expr(span);
+        };
+        let want = Ty::List(Box::new(crate::builtins::BYTE));
+        let value = self.check_expr(&arg.value, Some(&want));
+        let reason = Some((
+            arg.value.span,
+            "`Bytes` is built from a list of `u8`".to_string(),
+        ));
+        if !self.expect(&value, &want, reason) {
+            return self.error_expr(span);
+        }
+        self.builtin_call(Builtin::BytesFromList, vec![value], Ty::Bytes, span)
     }
 
     /// `CoGroup()` and `Signal()` (DESIGN §14.2).

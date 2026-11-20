@@ -155,6 +155,22 @@ impl Parser<'_> {
                 })?;
             }
             let span = self.span_from(start);
+            // `@when(a, b)` is two conditions, an error the loader reports; `@when(a,)` has
+            // one and the comma means nothing, which the formatter could not keep.
+            if name.name == "when"
+                && !args.is_empty()
+                && self.pos >= 2
+                && self.toks[self.pos - 2].kind == TokenKind::Comma
+            {
+                let comma = self.toks[self.pos - 2].span;
+                self.report(
+                    Diagnostic::error(
+                        "`@when` takes one condition, without a trailing comma",
+                        comma,
+                    )
+                    .with_hint("write `@when(debug)`; to join conditions use `&&` or `||`"),
+                );
+            }
             attrs.push(Attr { span, name, args });
             self.skip_semis();
         }
@@ -447,6 +463,21 @@ impl Parser<'_> {
         let first = self.pos;
         let start = self.start();
         let doc = self.docs_before(first);
+        if self.at(&TokenKind::At) {
+            let at = self.found_span();
+            let hint = match self.nth(1) {
+                TokenKind::Ident(name) if name == "when" => {
+                    "a variant cannot be left out of one build: the enum would change shape; put `@when` on the whole enum"
+                }
+                TokenKind::Ident(name) if name == "deprecated" => {
+                    "`@deprecated` goes on the whole enum"
+                }
+                _ => "attributes go on a declaration or a field, not on a variant",
+            };
+            let diag = Diagnostic::error("attributes are not supported on enum variants", at)
+                .with_hint(hint);
+            return self.fail(diag);
+        }
         let name = self.expect_ident("a variant name")?;
         let payload = if self.eat(&TokenKind::LParen) {
             let named =

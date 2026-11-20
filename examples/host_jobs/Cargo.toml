@@ -1,0 +1,11 @@
+[package]
+name = "colibri-example-host-jobs"
+description = "A headless Rust job runner that takes its job logic from Colibri scripts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+colibri-runtime = { path = "../../crates/colibri-runtime" }

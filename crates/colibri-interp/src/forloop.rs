@@ -20,6 +20,7 @@ use crate::value::Value;
 fn same_object(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Str(x), Value::Str(y)) => Rc::ptr_eq(x, y),
+        (Value::Bytes(x), Value::Bytes(y)) => Rc::ptr_eq(x, y),
         (Value::Struct(x), Value::Struct(y)) => Rc::ptr_eq(x, y),
         (Value::Tuple(x), Value::Tuple(y)) => Rc::ptr_eq(x, y),
         (Value::Enum(x), Value::Enum(y)) => Rc::ptr_eq(x, y),

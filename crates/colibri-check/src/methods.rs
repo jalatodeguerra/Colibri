@@ -14,6 +14,7 @@ use crate::builtins::builtin_method_exists;
 use crate::call::Receiver;
 use crate::checker::Dep;
 use crate::checker::ParamInfo;
+use crate::deprecated::DeprKey;
 use crate::hir::{self, Callee, Expr, FnId, Intrinsic};
 use crate::infer::VarKind;
 use crate::traits::{Source, key_of, match_ty};
@@ -395,6 +396,7 @@ impl FnCtx<'_, '_> {
         span: Span,
     ) -> Expr {
         self.add_dep(Dep::Fn(f), span);
+        self.ck.note_deprecated_use(DeprKey::Fn(f), name.span);
         let info = &self.ck.fns[f.0 as usize];
         let (fname, params, ret, receiver, poisoned, generics, host) = (
             info.name.clone(),
@@ -477,6 +479,8 @@ impl FnCtx<'_, '_> {
         };
         let fname = format!("{}.{}", info.name, m.name);
         let skip = 1 + info.generics.len();
+        self.ck
+            .note_deprecated_use(DeprKey::IfaceMethod(iface, index as u32), name.span);
         let Some((vars, map)) = self.instantiate(&m.generics, skip, explicit, &fname, span) else {
             self.check_args_loosely(args);
             return self.error_expr(span);
@@ -715,10 +719,12 @@ impl FnCtx<'_, '_> {
                     .join("."),
             )
         {
+            self.ck.note_deprecated_use(DeprKey::Type(id), t.span);
             let def = &self.ck.types[id.0 as usize];
             if !def.is_interface() && !def.params.is_empty() {
                 let n = def.params.len();
-                let vars = (0..n).map(|_| self.fresh_var(VarKind::General)).collect();
+                let vars: Vec<Ty> = (0..n).map(|_| self.fresh_var(VarKind::General)).collect();
+                self.require_type_bounds(id, &vars, t.span);
                 return Ty::Adt(id, vars);
             }
         }

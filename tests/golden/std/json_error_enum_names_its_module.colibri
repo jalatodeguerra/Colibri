@@ -17,6 +17,6 @@ fn main() {
     }
 }
 
-// expect: json: at `$`: `Nope` is not a variant of `fs.Error` (expected one of: NotFound, PermissionDenied, AlreadyExists, NotADirectory, IsADirectory, DirectoryNotEmpty, InvalidData, Other)
+// expect: json: at `$`: `Nope` is not a variant of `fs.Error` (expected one of: NotFound, PermissionDenied, AlreadyExists, NotADirectory, IsADirectory, DirectoryNotEmpty, InvalidData, Closed, WrongMode, Other)
 // expect: NotFound
-// expect: json: at `$`: expected a string naming a variant of `fs.Error` (one of: NotFound, PermissionDenied, AlreadyExists, NotADirectory, IsADirectory, DirectoryNotEmpty, InvalidData, Other), found the number 3
+// expect: json: at `$`: expected a string naming a variant of `fs.Error` (one of: NotFound, PermissionDenied, AlreadyExists, NotADirectory, IsADirectory, DirectoryNotEmpty, InvalidData, Closed, WrongMode, Other), found the number 3

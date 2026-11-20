@@ -1,0 +1,7 @@
+struct Sorted[T: Ord] { items: List[T] }
+
+fn first[T](s: Sorted[T]) -> int => 0 // error: `T` does not implement `Ord`, which `Sorted` needs of its type parameter `T`
+
+fn good[T: Ord](s: Sorted[T]) -> int => 0
+
+fn main() {}

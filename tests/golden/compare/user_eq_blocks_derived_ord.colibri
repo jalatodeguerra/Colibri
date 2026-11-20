@@ -1,0 +1,29 @@
+// A type with its own `impl Eq` does not derive `Ord`: the author decided what equal means,
+// so the order is the author's too. The error says to write `impl Ord` as well.
+struct Version {
+    major: int
+    tag: str
+}
+
+impl Eq for Version {
+    fn eq(self, other: Version) -> bool => self.major == other.major
+}
+
+enum Level {
+    Low(int)
+    High(int)
+}
+
+impl Eq for Level {
+    fn eq(self, other: Level) -> bool => true
+}
+
+fn main() {
+    let a = Version { major: 1, tag: "a" }
+    let b = Version { major: 1, tag: "b" }
+    print(a == b)
+    print(a < b) // error: `<` cannot compare values of type
+    var versions = [a, b]
+    versions.sort() // error: `sort` needs values that can be ordered
+    print(Level.Low(1) < Level.High(0)) // error: `<` cannot compare values of type
+}

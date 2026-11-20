@@ -23,5 +23,5 @@ fn main() {
 // expect: true
 // expect: true
 // expect: true
-// expect: ok("foobar")
-// expect: ok("foo")
+// expect: ok(b"foobar")
+// expect: ok(b"foo")

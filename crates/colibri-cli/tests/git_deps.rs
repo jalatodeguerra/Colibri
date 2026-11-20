@@ -2419,15 +2419,52 @@ fn refused_without_the_secret(sb: &Sandbox, app: &Path, what: &str) {
     ] {
         let mut args = args;
         let target = app.to_str().unwrap().to_string();
+        // `update` takes the folder as `--path`; as a plain argument it names a dependency,
+        // and the manifest would never be read.
+        if args[0] == "update" {
+            args.push("--path");
+        }
         args.push(&target);
         let out = sb.colibri(&args);
         assert_eq!(out.code, 1, "{what} {args:?}: {}", out.stderr);
+        assert!(
+            !out.stderr.contains("there is no `colibri.toml`"),
+            "{what} {args:?} never reached the manifest: {}",
+            out.stderr
+        );
         assert!(
             !format!("{}{}", out.stdout, out.stderr).contains("SeCrEt"),
             "{what} {args:?}: {}{}",
             out.stdout,
             out.stderr
         );
+    }
+}
+
+/// The `[features]` table of a manifest that also has a url with a password: the file is
+/// refused for the credential like any other, whatever is wrong or right in the table, and
+/// nothing printed has the password in it.
+#[test]
+fn a_feature_error_next_to_a_url_with_a_password_has_no_password_in_it() {
+    let sb = Sandbox::new("secret_features");
+    let cases = [
+        "[features]\n\"a b\" = []\n",
+        "[features]\nfast = [\"missing\"]\n",
+        "[features]\nfast = \"x\"\n",
+        "[features]\nfast = []\n",
+        "[features]\ndefault = [\"https://u:SeCrEt@h\"]\n",
+        "[features]\n\"https://u:SeCrEt@h\" = []\n",
+    ];
+    for (i, features) in cases.iter().enumerate() {
+        let dir = format!("apps/feat{i}");
+        sb.write(
+            &format!("{dir}/colibri.toml"),
+            &format!(
+                "[package]\nname = \"app\"\n\n[dependencies]\nx = {{ git = \"https://u:SeCrEt@h.invalid/r\" }}\n\n{features}"
+            ),
+        );
+        sb.write(&format!("{dir}/main.colibri"), "fn main() {}\n");
+        refused_without_the_secret(&sb, &sb.path(&dir), features);
     }
 }
 
@@ -2458,6 +2495,11 @@ fn a_credential_in_any_value_of_a_manifest_is_in_no_message_about_it() {
         "lib = { git = \"https\\u003a//ghp_SeCrEtToKeN@github.com/me/r\" }",
         "lib = { git = \"https\\x3a//ghp_SeCrEtToKeN@github.com/me/r\" }",
         "lib = { git = \"ghp\\u003aSeCrEt@github.com\" }",
+        // Round 4: the features of a dependency, next to a url with a password.
+        "x = { git = \"https://u:SeCrEt@h.invalid/r\", features = [\"a b\"] }",
+        "x = { git = \"https://u:SeCrEt@h.invalid/r\", features = [\"os\"] }",
+        "x = { git = \"https://u:SeCrEt@h.invalid/r\", features = [\"fast\"], default-features = \"no\" }",
+        "x = { path = \"https://u:SeCrEt@h/r\", features = [3] }",
     ];
     for (i, dep) in cases.iter().enumerate() {
         let app = sb.app(&format!("secret{i}"), dep, &[]);
@@ -2606,9 +2648,17 @@ fn odd_text_around_an_at_sign_is_an_error_not_a_panic() {
         let app = package_with(&sb, &format!("odd{i}"), text);
         for args in [vec!["check"], vec!["run"], vec!["update"]] {
             let mut args = args;
+            if args[0] == "update" {
+                args.push("--path");
+            }
             args.push(app.to_str().unwrap());
             let out = sb.colibri(&args);
             assert_eq!(out.code, 1, "{text} {args:?}: {}", out.stderr);
+            assert!(
+                !out.stderr.contains("there is no `colibri.toml`"),
+                "{text} {args:?} never reached the manifest: {}",
+                out.stderr
+            );
             assert!(!out.stderr.contains("panicked"), "{text}: {}", out.stderr);
             assert!(!out.stderr.contains("SeCrEt"), "{text}: {}", out.stderr);
         }
@@ -2997,4 +3047,67 @@ fn the_note_that_the_lock_was_left_is_only_said_when_there_is_a_lock() {
     let out = sb.colibri(&["check", app.to_str().unwrap()]);
     assert_eq!(out.code, 1, "{}", out.stderr);
     assert!(out.stderr.contains("was left as it is"), "{}", out.stderr);
+}
+
+#[test]
+fn a_git_dependency_takes_features_and_the_lock_does_not_know_them() {
+    let sb = Sandbox::new("features");
+    let repo = sb.repo("speedy");
+    repo.commit(
+        &[
+            (
+                "colibri.toml".to_string(),
+                "[package]\nname = \"speedy\"\n\n[features]\ndefault = []\nfast = []\n".to_string(),
+            ),
+            (
+                "lib.colibri".to_string(),
+                "@when(fast)\npub fn version() -> str => \"fast\"\n@when(!fast)\npub fn version() -> str => \"slow\"\n".to_string(),
+            ),
+        ],
+        "first",
+    );
+    let url = repo.url();
+    // No features asked: the dependency's own default (nothing).
+    let app = sb.app(
+        "app",
+        &format!("speedy = {{ git = \"{url}\" }}"),
+        &["speedy"],
+    );
+    let out = sb.run(&app);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "slow\n"),
+        "{}",
+        out.stderr
+    );
+    let lock = sb.lock(&app);
+    // Asking for the feature changes the program, not the lock, so `--locked` still works.
+    let app = sb.app(
+        "app",
+        &format!("speedy = {{ git = \"{url}\", features = [\"fast\"] }}"),
+        &["speedy"],
+    );
+    let out = sb.colibri(&["run", "--locked", app.to_str().unwrap()]);
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (0, "fast\n"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(sb.lock(&app), lock);
+    // A feature the repository does not declare names both manifests.
+    let app = sb.app(
+        "app",
+        &format!("speedy = {{ git = \"{url}\", features = [\"turbo\"] }}"),
+        &["speedy"],
+    );
+    let out = sb.colibri(&["check", "--locked", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("asks for the feature `turbo` of `speedy`, which `speedy` does not declare"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stderr.contains("colibri.toml"), "{}", out.stderr);
 }

@@ -34,6 +34,8 @@ pub enum TypeDesc {
     F32,
     Char,
     Str,
+    /// `Bytes`: an immutable byte string, [`crate::Bytes`] on the Rust side.
+    Bytes,
     /// A vector type of the `vec` module (`vec.vec3`, `vec.ivec2`); glam's `Vec3` and `IVec2`
     /// are its Rust side.
     Vec(VecTy),
@@ -84,6 +86,7 @@ impl fmt::Display for TypeDesc {
             TypeDesc::F32 => f.write_str("f32"),
             TypeDesc::Char => f.write_str("char"),
             TypeDesc::Str => f.write_str("str"),
+            TypeDesc::Bytes => f.write_str("Bytes"),
             TypeDesc::Vec(v) => write!(f, "vec.{}", v.name()),
             TypeDesc::List(t) => write!(f, "List[{t}]"),
             TypeDesc::Option(t) => write!(f, "Option[{t}]"),
@@ -180,6 +183,7 @@ impl TypeDesc {
             Ty::F32 => TypeDesc::F32,
             Ty::Char => TypeDesc::Char,
             Ty::Str => TypeDesc::Str,
+            Ty::Bytes => TypeDesc::Bytes,
             Ty::Vec(v) => TypeDesc::Vec(*v),
             Ty::List(t) => TypeDesc::List(Box::new(of(t)?)),
             Ty::Option(t) => TypeDesc::Option(Box::new(of(t)?)),
@@ -263,7 +267,7 @@ pub(crate) fn short_module_name(module: &str) -> &str {
 ///
 /// A type belongs to the module that described it and is known by that module and its name:
 /// the `Child` of `std.process` and the `Child` of the default `host` module, or of a module
-/// `game`, are different types.
+/// `jobs`, are different types.
 #[derive(Clone, Debug, Default)]
 pub struct TypeRegistry {
     pub(crate) decls: Vec<TypeDecl>,

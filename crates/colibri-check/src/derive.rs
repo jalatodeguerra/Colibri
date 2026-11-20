@@ -5,6 +5,8 @@
 use colibri_syntax::Span;
 
 use crate::body::FnCtx;
+use crate::checker::Checker;
+use crate::hir::TypeDefKind;
 use crate::obligations::{Obligation, Origin};
 use crate::types::{EQ, HASH, ORD, Ty};
 
@@ -17,6 +19,68 @@ pub(crate) fn has_infer(ty: &Ty) -> bool {
         Ty::Map(a, b) => has_infer(a) || has_infer(b),
         Ty::Fn(ps, r) => ps.iter().any(has_infer) || has_infer(r),
         _ => false,
+    }
+}
+
+impl Checker<'_> {
+    /// Where in `ty` the part `blame` that cannot be ordered is, in words: "its field `inner.items`
+    /// (`List[int]`) cannot be ordered", or the variant payload for an enum.
+    pub(crate) fn ord_blame(&self, ty: &Ty, blame: &Ty) -> Option<String> {
+        let (path, found) = self.blame_path(ty, blame, 0)?;
+        Some(format!(
+            "{path} (`{}`) cannot be ordered",
+            self.render(&found)
+        ))
+    }
+
+    /// The path from `ty` to the part `blame` and how it is written: "its field `a.b`",
+    /// "the payload of its variant `Circle`".
+    fn blame_path(&self, ty: &Ty, blame: &Ty, depth: usize) -> Option<(String, Ty)> {
+        if depth > 6 {
+            return None;
+        }
+        let Ty::Adt(id, args) = ty else { return None };
+        let def = self.types.get(id.0 as usize)?;
+        let map = Checker::param_map_of(def, args);
+        match &def.kind {
+            TypeDefKind::Struct { fields } | TypeDefKind::Class { fields } => {
+                for f in fields {
+                    let fty = f.ty.subst(&map);
+                    if &fty == blame || self.env().implements(&fty, crate::types::ORD, &[]).is_err()
+                    {
+                        if &fty == blame {
+                            return Some((format!("its field `{}`", f.name), fty));
+                        }
+                        if let Some((path, leaf)) = self.blame_path(&fty, blame, depth + 1) {
+                            let inner = path
+                                .strip_prefix("its field `")
+                                .and_then(|p| p.strip_suffix('`'))
+                                .map(str::to_string);
+                            return Some(match inner {
+                                Some(inner) => (format!("its field `{}.{inner}`", f.name), leaf),
+                                None => (format!("its field `{}`", f.name), fty),
+                            });
+                        }
+                        return Some((format!("its field `{}`", f.name), fty));
+                    }
+                }
+                None
+            }
+            TypeDefKind::Enum { variants } => {
+                for v in variants {
+                    for f in &v.fields {
+                        let fty = f.ty.subst(&map);
+                        if &fty == blame
+                            || self.env().implements(&fty, crate::types::ORD, &[]).is_err()
+                        {
+                            return Some((format!("the payload of its variant `{}`", v.name), fty));
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
     }
 }
 
@@ -86,17 +150,25 @@ impl FnCtx<'_, '_> {
         match &ty {
             Ty::Adt(id, _) => {
                 let def = &self.ck.types[id.0 as usize];
-                Some(if def.is_enum() {
-                    format!(
-                        "`{0}` has variants with data; only enums without data compare by declaration order. Use `match`, or implement `Ord`: `impl Ord for {0} {{ fn cmp(self, other: {0}) -> int {{ ... }} }}`",
-                        def.display_name()
-                    )
-                } else {
-                    format!(
-                        "structs do not derive `Ord`: implement it for `{0}` (`impl Ord for {0} {{ fn cmp(self, other: {0}) -> int {{ ... }} }}`), or compare fields, like `a.{1} < b.{1}`",
-                        def.display_name(),
-                        def.fields().first().map_or("field", |f| f.name.as_str())
-                    )
+                let name = def.display_name();
+                if self.ck.env().user_eq_blocks_ord(&ty) {
+                    return Some(user_eq_hint(&name));
+                }
+                // A struct or an enum with data is ordered by its parts: say which one is not.
+                let why = match self.ck.env().implements(&ty, crate::types::ORD, &[]) {
+                    Err(blame) => self.ck.ord_blame(&ty, &blame),
+                    Ok(_) => None,
+                };
+                Some(match (def.is_class(), why) {
+                    (true, _) => format!(
+                        "`{name}` is a class, which has no derived order; implement `Ord`: `impl Ord for {name} {{ fn cmp(self, other: {name}) -> int {{ ... }} }}`, or compare one of its fields"
+                    ),
+                    (false, Some(why)) => format!(
+                        "`{name}` is ordered by its parts, but {why}; implement `Ord` for `{name}` (`impl Ord for {name} {{ fn cmp(self, other: {name}) -> int {{ ... }} }}`), or compare the parts that can be ordered"
+                    ),
+                    (false, None) => format!(
+                        "`{name}` cannot be ordered; implement `Ord`: `impl Ord for {name} {{ fn cmp(self, other: {name}) -> int {{ ... }} }}`"
+                    ),
                 })
             }
             Ty::Tuple(_) => Some(
@@ -112,4 +184,11 @@ impl FnCtx<'_, '_> {
             _ => None,
         }
     }
+}
+
+/// Why a type with its own `Eq` is not ordered, and what to write.
+pub(crate) fn user_eq_hint(name: &str) -> String {
+    format!(
+        "`{name}` has its own `impl Eq`, so its order is not derived (it could disagree with your `==`); write `impl Ord for {name} {{ fn cmp(self, other: {name}) -> int {{ ... }} }}` as well, and make `cmp` return 0 exactly when the values are equal"
+    )
 }

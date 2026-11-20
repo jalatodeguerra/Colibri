@@ -15,7 +15,7 @@
 //! equal whatever the order of their keys, an `int` and a `float` never equal since `1` and
 //! `1.0` are different JSON texts and different kinds, a `nan` equal to itself), the same as
 //! `a.equals(b)`. `print(v)` and `"{v}"` give the compact JSON text (`Jv::show`). Both are hooks
-//! of the host class (`TypeBuilder::show` and `eq`). Used as a `Map` key or a `Set` element a
+//! of the host class (`TypeBuilder::show`, `eq` and `hash`: `a == b` gives `a.hash() == b.hash()`). Used as a `Map` key or a `Set` element a
 //! value is found by `==` (a scan of the keys, see `HostType` hooks in EMBEDDING §2).
 //! `v.to_json()` is the same text as a `Result` (an error for a `nan` or an infinity).
 //!
@@ -143,6 +143,63 @@ impl PartialEq for Jv {
 }
 
 impl Jv {
+    /// A number that is the same for values that are `==` (`hash()` of a script must agree with
+    /// `==`): the sum of one number per node of the tree, each made from the node's path (the
+    /// keys and indexes from the root) and what it holds. A sum does not depend on the order
+    /// of the keys of an object, which `==` ignores. A `-0.0` hashes as `0.0` and every `nan`
+    /// alike, as `==` treats them. Iterative, like `==`.
+    pub(crate) fn hash64(&self) -> u64 {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        fn node(path: u64, tag: u8, f: impl FnOnce(&mut DefaultHasher)) -> u64 {
+            let mut h = DefaultHasher::new();
+            path.hash(&mut h);
+            tag.hash(&mut h);
+            f(&mut h);
+            h.finish()
+        }
+        fn step(path: u64, key: impl FnOnce(&mut DefaultHasher)) -> u64 {
+            let mut h = DefaultHasher::new();
+            path.hash(&mut h);
+            key(&mut h);
+            h.finish()
+        }
+        let mut total = 0u64;
+        let mut stack: Vec<(&Jv, u64)> = vec![(self, 0)];
+        while let Some((jv, path)) = stack.pop() {
+            let part = match jv {
+                Jv::Null => node(path, 0, |_| {}),
+                Jv::Bool(b) => node(path, 1, |h| b.hash(h)),
+                Jv::Int(i) => node(path, 2, |h| i.hash(h)),
+                Jv::Big(digits) => node(path, 3, |h| digits.hash(h)),
+                Jv::Float(x) => node(path, 4, |h| {
+                    let bits = if x.is_nan() {
+                        f64::NAN.to_bits()
+                    } else if *x == 0.0 {
+                        0
+                    } else {
+                        x.to_bits()
+                    };
+                    bits.hash(h)
+                }),
+                Jv::Str(s) => node(path, 5, |h| s.hash(h)),
+                Jv::List(items) => {
+                    for (i, item) in items.iter().enumerate() {
+                        stack.push((item, step(path, |h| i.hash(h))));
+                    }
+                    node(path, 6, |h| items.len().hash(h))
+                }
+                Jv::Map(entries) => {
+                    for (key, value) in entries.iter() {
+                        stack.push((value, step(path, |h| key.hash(h))));
+                    }
+                    node(path, 7, |h| entries.len().hash(h))
+                }
+            };
+            total = total.wrapping_add(part);
+        }
+        total
+    }
+
     /// The value of a parsed document.
     pub(crate) fn from_json(json: &Json) -> Result<Jv, JvError> {
         Ok(match json {
@@ -394,6 +451,7 @@ impl HostType for Jv {
         // class can customise both (`TypeBuilder::show` and `eq`).
         d.show(|this: &Jv| this.show());
         d.eq(|a: &Jv, b: &Jv| a == b);
+        d.hash(|this: &Jv| this.hash64());
         // The compact JSON text, as `json.encode(v)` writes it.
         d.method("to_json", [], |this: &Jv| {
             super::encode_jv(this).map_err(|m| super::Kind::Unsupported.error(m))

@@ -1,13 +1,38 @@
 //! The checker never panics, whatever it is given: every example of the corpus, mangled
 //! variants of them, and random token soup.
 
-use colibri_syntax::{FileId, parse_file};
+use colibri_syntax::{FileId, parse_file, parse_interface_file};
 
 const F: FileId = FileId(0);
 
+/// The text of `src` when it is an interface file, with its `@interface(..)` header blanked out.
+fn interface_text(src: &str) -> Option<String> {
+    let mut offset = 0;
+    for line in src.split_inclusive('\n') {
+        let t = line.trim();
+        if t.starts_with("@interface(") {
+            let content = line.trim_end_matches(['\n', '\r']);
+            let mut masked = src[..offset].to_string();
+            masked.push_str(&" ".repeat(content.len()));
+            masked.push_str(&src[offset + content.len()..]);
+            return Some(masked);
+        }
+        if !(t.is_empty() || t.starts_with("//")) {
+            return None;
+        }
+        offset += line.len();
+    }
+    None
+}
+
 /// Parses and checks `src`; the result does not matter, only that nothing panics.
 fn check_str(src: &str) -> usize {
-    let (ast, _) = parse_file(F, src);
+    // A host's interface file (`@interface(..)` header, functions without bodies) is parsed
+    // as one, with the header blanked out as the loader does.
+    let (ast, _) = match interface_text(src) {
+        Some(text) => parse_interface_file(F, &text),
+        None => parse_file(F, src),
+    };
     colibri_check::check(&ast).diagnostics.len()
 }
 

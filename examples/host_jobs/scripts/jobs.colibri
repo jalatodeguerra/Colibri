@@ -1,0 +1,117 @@
+// Job logic for the host_jobs example. The host owns the queue; this script decides what happens.
+// Check it against the host API with:
+//   colibri check --interface examples/host_jobs/scripts/host.cbi examples/host_jobs/scripts/jobs.colibri
+
+enum Priority {
+    Interactive
+    Batch
+}
+
+class Entry {
+    job: Job
+    priority: Priority
+}
+
+var balance = 0
+var submitted = 0
+var entries: List[Entry] = []
+
+fn get_balance() -> int => balance
+
+fn drain_rate(priority: Priority) -> f32 {
+    match priority {
+        .Interactive => return 2.5
+        .Batch       => return 1.5
+    }
+}
+
+fn price(priority: Priority) -> int {
+    match priority {
+        .Interactive => return 10
+        .Batch       => return 25
+    }
+}
+
+fn submit_one() {
+    // Every fifth job asks for a template the host does not have; `or` supplies a default.
+    let load = template(submitted % 5) or Load { cpu: 6.0, io: 6.0 }
+    let priority = if submitted % 3 == 2 { Priority.Batch } else { Priority.Interactive }
+    submitted += 1
+    entries.push(Entry { job: submit(load), priority: priority })
+}
+
+fn schedule_submissions(every: f32) {
+    on_timer(every, fn() {
+        submit_one()
+        schedule_submissions(every)
+    })
+}
+
+fn report_every(secs: f32) {
+    on_timer(secs, fn() {
+        log("balance {balance}, {jobs().len()} jobs pending")
+        report_every(secs)
+    })
+}
+
+fn init() {
+    log("init")
+    schedule_submissions(0.75)
+    report_every(2.0)
+}
+
+fn update(dt: f32) {
+    for entry in entries {
+        let j = entry.job
+        if !j.alive() {
+            continue
+        }
+        j.set_load(ease(j.load(), baseline(), drain_rate(entry.priority) * dt))
+        if gap(j.load(), baseline()) < 0.5 {
+            balance -= 5
+            log("job #{j.id()} expired")
+            finish(j) or log("could not finish a job")
+        }
+    }
+    entries = entries.filter(fn(entry) => entry.job.alive())
+}
+
+fn on_progress(j: Job, units: int) {
+    if j.remaining() > 0 {
+        return
+    }
+    for entry in entries {
+        if entry.job == j {
+            balance += price(entry.priority)
+            log("job #{j.id()} completed, balance {balance}")
+        }
+    }
+    finish(j) or log("could not finish a job")
+}
+
+// Script tests: `run_script_tests` in the host runs these, resetting the queue before each one.
+
+test "the first job of a test gets id 1" {
+    let j = submit(Load { cpu: 3.0, io: 4.0 })
+    assert_eq(j.id(), 1)
+    assert_eq(jobs().len(), 1)
+}
+
+test "a test does not see the jobs of the one before" {
+    assert_eq(jobs().len(), 0)
+    let j = submit(template(1)?)
+    assert_eq(j.id(), 1)
+}
+
+test "finish destroys the job" {
+    let j = submit(Load { cpu: 1.0, io: 1.0 })
+    finish(j)?
+    assert(!j.alive())
+    assert_eq(jobs().len(), 0)
+}
+
+test "a load eases toward the baseline" {
+    let l = ease(Load { cpu: 3.0, io: 4.0 }, baseline(), 1.0)
+    assert(gap(l, baseline()) < 4.1)
+    assert_eq(gap(Load { cpu: 3.0, io: 4.0 }, baseline()), 5.0)
+}

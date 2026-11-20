@@ -59,6 +59,7 @@ impl Cloner {
             | Value::IVec(_)
             | Value::Char(_)
             | Value::Str(_)
+            | Value::Bytes(_)
             | Value::Fn(..)
             | Value::Closure(_)
             | Value::Cell(_)
@@ -66,6 +67,7 @@ impl Cloner {
             | Value::Iter(_)
             // There is one host object, however many references name it.
             | Value::Host(_) => v.clone(),
+            Value::ByteBuf(b) => Value::ByteBuf(Rc::new(std::cell::RefCell::new(b.borrow().clone()))),
             Value::Struct(s) => Value::strukt(s.ty, self.clone_all(&s.fields, ov)?),
             Value::Tuple(items) => Value::tuple(self.clone_all(items, ov)?),
             Value::Enum(e) => Value::variant(e.ty, e.variant, self.clone_all(&e.payload, ov)?),

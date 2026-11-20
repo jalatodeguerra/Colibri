@@ -1,4 +1,4 @@
-@inline // error: the attribute `@inline` is not supported yet
+@inline // error: unknown attribute `@inline`
 fn f() {}
 fn main() {
     let (a, b) = 1 // error: this is a tuple pattern, but the value is a `int`

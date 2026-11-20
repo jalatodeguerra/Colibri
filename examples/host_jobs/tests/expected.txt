@@ -1,0 +1,48 @@
+[0000] script: init
+[0045] host: submitted #1 with load (12.0, 0.0)
+[0090] host: submitted #2 with load (0.0, 12.0)
+[0120] script: balance 0, 2 jobs pending
+[0135] host: submitted #3 with load (-12.0, 0.0)
+[0150] host: worked #1 for 25, remaining 50
+[0180] host: submitted #4 with load (0.0, -12.0)
+[0180] host: worked #1 for 25, remaining 25
+[0210] host: worked #1 for 25, remaining 0
+[0210] script: job #1 completed, balance 10
+[0210] host: finished #1
+[0225] host: submitted #5 with load (6.0, 6.0)
+[0240] script: balance 10, 4 jobs pending
+[0240] host: worked #2 for 25, remaining 75
+[0270] host: submitted #6 with load (12.0, 0.0)
+[0270] host: worked #2 for 25, remaining 50
+[0300] host: worked #2 for 25, remaining 25
+[0315] host: submitted #7 with load (0.0, 12.0)
+[0330] host: worked #2 for 25, remaining 0
+[0330] script: job #2 completed, balance 20
+[0330] host: finished #2
+[0360] script: balance 20, 5 jobs pending
+[0360] host: submitted #8 with load (-12.0, 0.0)
+[0360] host: worked #5 for 25, remaining 75
+[0390] host: worked #5 for 25, remaining 50
+[0405] host: submitted #9 with load (0.0, -12.0)
+[0416] script: job #5 expired
+[0416] host: finished #5
+[0420] host: worked #4 for 25, remaining 50
+[0450] host: submitted #10 with load (6.0, 6.0)
+[0450] host: worked #4 for 25, remaining 25
+[0455] script: job #4 expired
+[0455] host: finished #4
+[0480] script: balance 10, 6 jobs pending
+[0480] host: worked #3 for 25, remaining 25
+[0495] host: submitted #11 with load (12.0, 0.0)
+[0510] host: worked #3 for 25, remaining 0
+[0510] script: job #3 completed, balance 35
+[0510] host: finished #3
+[0540] host: submitted #12 with load (0.0, 12.0)
+[0540] host: worked #7 for 25, remaining 50
+[0570] host: worked #7 for 25, remaining 25
+[0585] host: submitted #13 with load (-12.0, 0.0)
+[0590] script: job #7 expired
+[0590] host: finished #7
+[0600] script: balance 30, 7 jobs pending
+[0600] host: worked #8 for 25, remaining 75
+summary: ticks=600 submitted=13 pending=7 worked=16 balance=30 script_errors=0 max_steps=145

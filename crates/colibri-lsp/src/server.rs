@@ -1,13 +1,14 @@
 //! The message loop and the handlers.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use colibri_check::DEFAULT_STACK_BUDGET;
 use colibri_check::package::{DroppedKind, Loaded, normalize};
-use colibri_syntax::{Severity, SourceMap, format_source};
+use colibri_syntax::{FileId, Severity, SourceMap, format_source};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
@@ -38,22 +39,43 @@ use crate::symbols::document_symbols;
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
+/// How long the server waits after a change to a document before it analyses the package, so
+/// that a burst of keystrokes costs one analysis. A request that needs an analysis does not
+/// wait for it (see [`Config::debounce`]).
+pub const DEBOUNCE: Duration = Duration::from_millis(150);
+
 /// Settings of the server that the client does not send.
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
     /// How much native stack checking may use (see `colibri_check::check_with_stack_budget`).
     pub stack_budget: usize,
+    /// The quiet period after a `didChange` before the diagnostics are computed; a newer change
+    /// restarts it, and only the newest text is analysed. [`DEBOUNCE`] by default. Requests
+    /// (hover, completion, definition, references, rename, symbols) analyse pending changes at
+    /// once instead of waiting, so an answer never describes an older text. Tests set it very
+    /// long (nothing is analysed but by a request) or zero (every change is analysed as soon as
+    /// the incoming queue is empty).
+    pub debounce: Duration,
+    /// How long the server waits for `exit` after it answered `shutdown` before it gives up and
+    /// ends with an error (so the process does not hang on a client that never says `exit`).
+    /// [`EXIT_WAIT`] by default.
+    pub exit_wait: Duration,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
             stack_budget: DEFAULT_STACK_BUDGET,
+            debounce: DEBOUNCE,
+            exit_wait: EXIT_WAIT,
         }
     }
 }
 
-/// Serves the protocol on stdin and stdout until the client asks to exit.
+/// Serves the protocol on stdin and stdout until the client asks to exit. `Err` when the
+/// session did not end the way the protocol says (`exit` without `shutdown`, or no `exit` after
+/// `shutdown`); the caller then ends the process without waiting for the stdin reader, which
+/// may be blocked on a client that never closes the pipe.
 pub fn run_stdio(config: Config) -> Result<(), BoxError> {
     let (connection, io_threads) = Connection::stdio();
     serve(connection, config)?;
@@ -61,7 +83,10 @@ pub fn run_stdio(config: Config) -> Result<(), BoxError> {
     Ok(())
 }
 
-/// Serves the protocol on `connection` until the client asks to exit.
+/// Serves the protocol on `connection` until the client asks to exit. `Ok` after `shutdown`
+/// followed by `exit` and when the client just went away; `Err` after an `exit` that came
+/// without `shutdown` (the protocol's exit code is 1), after a `shutdown` whose `exit` did not
+/// come within [`Config::exit_wait`], and after a connection that closed in between.
 pub fn serve(connection: Connection, config: Config) -> Result<(), BoxError> {
     let capabilities = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
@@ -88,19 +113,7 @@ pub fn serve(connection: Connection, config: Config) -> Result<(), BoxError> {
     connection.initialize_finish(id, result)?;
     let params: InitializeParams = serde_json::from_value(params)?;
     let mut server = Server::new(&connection, config, &params);
-    for message in &connection.receiver {
-        match message {
-            Message::Request(req) => {
-                if connection.handle_shutdown(&req)? {
-                    return Ok(());
-                }
-                server.request(req);
-            }
-            Message::Notification(note) => server.notification(note),
-            Message::Response(_) => {}
-        }
-    }
-    Ok(())
+    server.run().map_err(Into::into)
 }
 
 /// Whether the file at `path` is Colibri source (`*.colibri`): the only kind of document a
@@ -124,6 +137,12 @@ fn is_document_request(method: &str) -> bool {
     .contains(&method)
 }
 
+/// How long the server waits for `exit` after answering `shutdown` by default.
+pub const EXIT_WAIT: Duration = Duration::from_secs(30);
+
+/// The method of the cancellation notification.
+const CANCEL_REQUEST: &str = "$/cancelRequest";
+
 /// An open document.
 struct Doc {
     uri: Uri,
@@ -146,6 +165,17 @@ struct Server<'c> {
     published: HashMap<PathBuf, HashSet<PathBuf>>,
     /// Interface files already reported as unreadable, so the message is sent once.
     reported: HashSet<PathBuf>,
+    /// Messages that arrived and have not been handled yet, oldest first. The loop moves
+    /// everything that is waiting on the connection here before it starts a request, so it can
+    /// see a cancellation that is queued behind the request.
+    inbox: VecDeque<Message>,
+    /// Open documents whose text changed since they were last analysed, in the order of their
+    /// first change.
+    dirty: Vec<PathBuf>,
+    /// When the quiet period of the newest change ends; `None` when nothing is pending.
+    due: Option<Instant>,
+    debounce: Duration,
+    exit_wait: Duration,
 }
 
 impl<'c> Server<'c> {
@@ -175,6 +205,307 @@ impl<'c> Server<'c> {
             good: HashMap::new(),
             published: HashMap::new(),
             reported: HashSet::new(),
+            inbox: VecDeque::new(),
+            dirty: Vec::new(),
+            due: None,
+            debounce: config.debounce,
+            exit_wait: config.exit_wait,
+        }
+    }
+
+    // ---- the message loop ----
+
+    /// Handles messages in order until the client exits or the connection closes. `Err` for the
+    /// ways the protocol's end of a session goes wrong (see [`serve`]). The server is
+    /// single-threaded: a change only marks the document dirty, and the analysis runs when the
+    /// quiet period ends with nothing else waiting, or at once when a request needs it.
+    fn run(&mut self) -> Result<(), String> {
+        loop {
+            self.drain();
+            let Some(message) = self.inbox.pop_front().or_else(|| self.wait()) else {
+                return Ok(());
+            };
+            match message {
+                Message::Notification(note) if note.method == "exit" => {
+                    return Err("`exit` arrived without `shutdown`".to_string());
+                }
+                Message::Notification(note) => self.notification(note),
+                Message::Request(req) if req.method == "shutdown" => {
+                    return self.shutdown(req);
+                }
+                Message::Request(req) => self.start_request(req),
+                Message::Response(_) => {}
+            }
+        }
+    }
+
+    /// Moves what is waiting on the connection into the inbox, without blocking.
+    fn drain(&mut self) {
+        while let Ok(message) = self.connection.receiver.try_recv() {
+            self.inbox.push_back(message);
+        }
+    }
+
+    /// Blocks for the next message; while a change is pending, only until its quiet period ends,
+    /// and then the analysis runs and the wait goes on. `None` when the connection is closed.
+    fn wait(&mut self) -> Option<Message> {
+        loop {
+            let Some(due) = self.due else {
+                return self.connection.receiver.recv().ok();
+            };
+            let now = Instant::now();
+            if now < due {
+                match self.connection.receiver.recv_timeout(due - now) {
+                    Ok(message) => return Some(message),
+                    Err(e) if e.is_timeout() => {}
+                    Err(_) => return None,
+                }
+            }
+            // A message may have come in as the time ran out; it is handled first.
+            self.drain();
+            if !self.inbox.is_empty() {
+                return self.inbox.pop_front();
+            }
+            self.flush();
+        }
+    }
+
+    /// Answers `shutdown` and waits for `exit`, at most [`Config::exit_wait`] for each message.
+    /// Pending changes are dropped: nothing is analysed or published after the client asked to
+    /// stop.
+    fn shutdown(&mut self, req: Request) -> Result<(), String> {
+        self.dirty.clear();
+        self.due = None;
+        self.send(Response::new_ok(req.id, ()));
+        loop {
+            let message = match self.inbox.pop_front() {
+                Some(m) => m,
+                None => match self.connection.receiver.recv_timeout(self.exit_wait) {
+                    Ok(m) => m,
+                    Err(e) if e.is_timeout() => {
+                        return Err("waiting for the `exit` notification timed out".to_string());
+                    }
+                    Err(_) => {
+                        return Err(
+                            "the connection closed before the `exit` notification".to_string()
+                        );
+                    }
+                },
+            };
+            match message {
+                Message::Notification(note) if note.method == "exit" => return Ok(()),
+                Message::Request(req) => self.respond_err(
+                    req.id,
+                    ErrorCode::InvalidRequest,
+                    "the server is shutting down".to_string(),
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    /// Whether the client has cancelled request `id`: a `$/cancelRequest` for it is waiting.
+    fn cancelled(&mut self, id: &RequestId) -> bool {
+        self.drain();
+        self.inbox.iter().any(|m| match m {
+            Message::Notification(n) if n.method == CANCEL_REQUEST => n
+                .params
+                .get("id")
+                .and_then(|v| serde_json::from_value::<RequestId>(v.clone()).ok())
+                .is_some_and(|c| &c == id),
+            _ => false,
+        })
+    }
+
+    /// Starts a request: skipped with `RequestCancelled` if the client already cancelled it;
+    /// otherwise pending changes are analysed first (formatting only needs the text, which is
+    /// always current), so the answer describes the document as it is now.
+    fn start_request(&mut self, req: Request) {
+        let needs_analysis = req.method != Formatting::METHOD;
+        if self.cancelled(&req.id) || (needs_analysis && self.flush_then_cancelled(&req.id)) {
+            self.respond_err(
+                req.id,
+                ErrorCode::RequestCanceled,
+                "the request was cancelled".to_string(),
+            );
+            return;
+        }
+        self.request(req);
+    }
+
+    /// Analyses what is pending, and reports whether the request was cancelled meanwhile.
+    fn flush_then_cancelled(&mut self, id: &RequestId) -> bool {
+        self.flush();
+        self.cancelled(id)
+    }
+
+    /// Analyses every document that changed since it was last analysed. Documents of one
+    /// package are analysed once between them: the analysis of the first covers the others that
+    /// belong to that package, which take it over without a second analysis or a second
+    /// publish. A document of a dependency is a member of its own package: it is analysed on
+    /// its own, with its own features.
+    fn flush(&mut self) {
+        // An analysis can leave a file out that another document's analysis still loads; that
+        // document is then scheduled (see `clear_unheld`), and goes round again here. Each
+        // round replaces the `latest` of the file that was left out, so the rounds end.
+        loop {
+            self.due = None;
+            let mut pending = std::mem::take(&mut self.dirty);
+            pending.retain(|p| self.docs.contains_key(p));
+            if pending.is_empty() {
+                return;
+            }
+            while !pending.is_empty() {
+                let path = pending.remove(0);
+                let analysis = self.check(&path);
+                let (covered, rest): (Vec<PathBuf>, Vec<PathBuf>) =
+                    pending.into_iter().partition(|p| analysis.owns(p));
+                pending = rest;
+                for other in covered {
+                    self.adopt(&other, &analysis);
+                }
+            }
+        }
+    }
+
+    /// Records `analysis` (made for another document of the same package, whose result was
+    /// already published) as the analysis of `doc` too.
+    fn adopt(&mut self, doc: &Path, analysis: &Rc<Analysis>) {
+        self.remember_good(doc, analysis);
+        let now: HashSet<PathBuf> = self
+            .published_by(doc, analysis)
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect();
+        self.take_over(doc, analysis, &now);
+        let before = self.published.insert(doc.to_path_buf(), now.clone());
+        self.clear_unheld(before, &now);
+    }
+
+    /// The files of `analysis` that the analysis of `doc` publishes diagnostics for: the ones
+    /// it owns, and the files of other packages (the dependencies) that no open document
+    /// holds. A file of a dependency is a member of its own package, with its own features and
+    /// its own lints, which only the analysis of a document of that package has: when such a
+    /// document is open, this analysis leaves the file to it.
+    fn published_by(&self, doc: &Path, analysis: &Analysis) -> Vec<(FileId, PathBuf)> {
+        analysis
+            .files()
+            .into_iter()
+            .filter(|(_, path)| {
+                path == doc || analysis.owns(path) || !self.held_by_own_package(doc, path)
+            })
+            .collect()
+    }
+
+    /// Whether the analysis of an open document other than `doc` owns `path`, or `path` is open
+    /// itself.
+    fn held_by_own_package(&self, doc: &Path, path: &Path) -> bool {
+        self.docs.contains_key(path)
+            || self.docs.keys().any(|d| {
+                d != doc
+                    && self
+                        .latest
+                        .get(d)
+                        .is_some_and(|a| a.owns(d) && a.owns(path))
+            })
+    }
+
+    /// The analysis of `doc` owns the files in `now` that it owns: the sets of the other
+    /// documents, made by analyses that do not own them, stop holding them.
+    fn take_over(&mut self, doc: &Path, analysis: &Analysis, now: &HashSet<PathBuf>) {
+        let owned: Vec<&PathBuf> = now.iter().filter(|p| analysis.owns(p)).collect();
+        let others: Vec<PathBuf> = self
+            .published
+            .keys()
+            .filter(|d| *d != doc)
+            .cloned()
+            .collect();
+        for other in others {
+            let theirs = self.latest.get(&other).cloned();
+            let Some(set) = self.published.get_mut(&other) else {
+                continue;
+            };
+            for file in &owned {
+                if !theirs.as_ref().is_some_and(|a| a.owns(file)) {
+                    set.remove(*file);
+                }
+            }
+        }
+    }
+
+    /// Publishes no diagnostics for the files that an analysis `before` held and the one that
+    /// replaced it (`now`) does not, unless the analysis of another document still holds them.
+    fn clear_unheld(&mut self, before: Option<HashSet<PathBuf>>, now: &HashSet<PathBuf>) {
+        let still: HashSet<PathBuf> = self.published.values().flatten().cloned().collect();
+        for gone in before.into_iter().flatten().filter(|p| !now.contains(p)) {
+            if !still.contains(&gone) {
+                self.publish(&gone, Vec::new());
+                self.latest.remove(&gone);
+                // An open document whose analysis loaded the file may still load it: it was
+                // analysed before the one that dropped it, and left the file out because the
+                // other package owned it then. Its next analysis publishes the file, or drops
+                // it too. Each such analysis replaces the `latest` that made the document a
+                // holder, so a document is scheduled for a file at most once.
+                // A file that is open itself needs none: no analysis but its own publishes it.
+                let holders: Vec<PathBuf> = self
+                    .docs
+                    .keys()
+                    .filter(|d| {
+                        !self.docs.contains_key(&gone)
+                            && self
+                                .latest
+                                .get(*d)
+                                .is_some_and(|a| a.file_of(&gone).is_some())
+                    })
+                    .cloned()
+                    .collect();
+                for holder in holders {
+                    self.schedule(holder);
+                }
+            }
+        }
+    }
+
+    fn remember_good(&mut self, doc: &Path, analysis: &Rc<Analysis>) {
+        if !analysis.insight.facts().is_empty()
+            && let Some(text) = self.buffers.get(doc)
+        {
+            self.good
+                .insert(doc.to_path_buf(), (text.clone(), analysis.clone()));
+        }
+    }
+
+    /// Notes that `path` changed: it is analysed when the quiet period after the newest change
+    /// ends, or when a request needs it.
+    fn schedule(&mut self, path: PathBuf) {
+        if !self.dirty.contains(&path) {
+            self.dirty.push(path);
+        }
+        self.due = Some(Instant::now() + self.debounce);
+    }
+
+    /// Analyses `path` now; a pending analysis of it is then not needed.
+    fn check_now(&mut self, path: &Path) {
+        self.dirty.retain(|p| p != path);
+        if self.dirty.is_empty() {
+            self.due = None;
+        }
+        self.check(path);
+    }
+
+    /// Analyses `paths` now. One path is analysed on its own. Several (the open documents,
+    /// after a manifest changed) go through `flush`, so that the documents of one package are
+    /// analysed once between them.
+    fn analyse_now(&mut self, paths: Vec<PathBuf>) {
+        match paths.as_slice() {
+            [] => {}
+            [path] => self.check_now(path),
+            _ => {
+                for path in paths {
+                    self.schedule(path);
+                }
+                self.flush();
+            }
         }
     }
 
@@ -202,7 +533,8 @@ impl<'c> Server<'c> {
                 if let Ok(p) =
                     serde_json::from_value::<lsp_types::DidOpenTextDocumentParams>(note.params)
                 {
-                    self.set_text(p.text_document.uri, p.text_document.text);
+                    let paths = self.set_text(p.text_document.uri, p.text_document.text);
+                    self.analyse_now(paths);
                 }
             }
             DidChangeTextDocument::METHOD => {
@@ -211,7 +543,9 @@ impl<'c> Server<'c> {
                 {
                     // Full synchronisation: the last change is the whole text.
                     if let Some(change) = p.content_changes.into_iter().last() {
-                        self.set_text(p.text_document.uri, change.text);
+                        for path in self.set_text(p.text_document.uri, change.text) {
+                            self.schedule(path);
+                        }
                     }
                 }
             }
@@ -222,7 +556,8 @@ impl<'c> Server<'c> {
                     // The buffer is what was saved; a save can still change what imports read.
                     if let Some(doc) = self.docs.get(&key(&p.text_document.uri)) {
                         let (uri, text) = (doc.uri.clone(), doc.text.clone());
-                        self.set_text(uri, text);
+                        let paths = self.set_text(uri, text);
+                        self.analyse_now(paths);
                     }
                 }
             }
@@ -237,50 +572,67 @@ impl<'c> Server<'c> {
         }
     }
 
-    fn set_text(&mut self, uri: Uri, text: String) {
+    /// Records the new text of a document and returns the documents to analyse for it (the
+    /// document itself when it is Colibri source); the caller decides when.
+    fn set_text(&mut self, uri: Uri, text: String) -> Vec<PathBuf> {
         let path = key(&uri);
         self.buffers.insert(path.clone(), text.clone());
         self.docs.insert(path.clone(), Doc { uri, text });
         if is_source(&path) {
-            self.check(&path);
-        } else {
-            // A `colibri.toml` (or any other file) the editor opened is not Colibri source:
-            // it is never parsed as such. It is a buffer the loader reads when it reads the
-            // package, so the open Colibri documents are read again to see it.
-            let open: Vec<PathBuf> = self.docs.keys().filter(|p| is_source(p)).cloned().collect();
-            for doc in open {
-                self.check(&doc);
-            }
+            return vec![path];
         }
+        // A `colibri.toml` (or any other file) the editor opened is not Colibri source: it is
+        // never parsed as such. It is a buffer the loader reads when it reads the package, so
+        // the open Colibri documents are the ones to analyse again.
+        self.docs.keys().filter(|p| is_source(p)).cloned().collect()
     }
 
     fn close(&mut self, path: &Path) {
+        self.dirty.retain(|p| p != path);
         self.docs.remove(path);
         self.buffers.remove(path);
         self.good.remove(path);
+        let closing = self.latest.get(path).cloned();
         let files = self.published.remove(path).unwrap_or_default();
         let still: HashSet<&PathBuf> = self.published.values().flatten().collect();
+        let mut taken_over = Vec::new();
         for file in files {
             if !still.contains(&file) {
                 self.publish(&file, Vec::new());
                 self.latest.remove(&file);
+            } else if let (Some(closing), Some(now)) = (&closing, self.latest.get(&file))
+                && Rc::ptr_eq(closing, now)
+            {
+                // Another document's analysis holds the file too, but what is shown is the
+                // closed document's: one of the holders shows its own.
+                if let Some(holder) = self.docs.keys().find(|d| {
+                    self.published
+                        .get(*d)
+                        .is_some_and(|set| set.contains(&file))
+                }) {
+                    taken_over.push(holder.clone());
+                }
             }
         }
         // Other open documents may have imported this one: they see the file on disk now.
-        let others: Vec<PathBuf> = self.docs.keys().cloned().collect();
-        for other in others {
-            if self
-                .latest
-                .get(&other)
-                .is_some_and(|a| a.file_of(path).is_some())
-            {
-                self.check(&other);
-            }
-        }
+        let mut again = taken_over;
+        again.extend(
+            self.docs
+                .keys()
+                .filter(|other| {
+                    self.latest
+                        .get(*other)
+                        .is_some_and(|a| a.file_of(path).is_some())
+                })
+                .cloned(),
+        );
+        again.sort();
+        again.dedup();
+        self.analyse_now(again);
     }
 
     /// Checks the package of `doc` and publishes what it found.
-    fn check(&mut self, doc: &Path) {
+    fn check(&mut self, doc: &Path) -> Rc<Analysis> {
         let overlay = Overlay::new(&self.buffers);
         let (analysis, problems) = analyze(doc, &overlay, &self.settings);
         for (path, message) in problems {
@@ -292,28 +644,18 @@ impl<'c> Server<'c> {
             }
         }
         let analysis = Rc::new(analysis);
-        if !analysis.insight.facts().is_empty()
-            && let Some(text) = self.buffers.get(doc)
-        {
-            self.good
-                .insert(doc.to_path_buf(), (text.clone(), analysis.clone()));
-        }
-        let files = analysis.files();
+        self.remember_good(doc, &analysis);
         let mut now = HashSet::new();
-        for (file, path) in &files {
-            let diagnostics = self.convert_diagnostics(&analysis, *file);
-            self.publish(path, diagnostics);
+        for (file, path) in self.published_by(doc, &analysis) {
+            let diagnostics = self.convert_diagnostics(&analysis, file);
+            self.publish(&path, diagnostics);
             self.latest.insert(path.clone(), analysis.clone());
-            now.insert(path.clone());
+            now.insert(path);
         }
+        self.take_over(doc, &analysis, &now);
         let before = self.published.insert(doc.to_path_buf(), now.clone());
-        let still: HashSet<PathBuf> = self.published.values().flatten().cloned().collect();
-        for gone in before.into_iter().flatten().filter(|p| !now.contains(p)) {
-            if !still.contains(&gone) {
-                self.publish(&gone, Vec::new());
-                self.latest.remove(&gone);
-            }
-        }
+        self.clear_unheld(before, &now);
+        analysis
     }
 
     /// The URI the client knows a file by: the one it opened it with, else a path under the
@@ -384,11 +726,21 @@ impl<'c> Server<'c> {
                         Severity::Warning => DiagnosticSeverity::WARNING,
                     }),
                     source: Some("colibri".to_string()),
-                    // Unused code is shown faded.
-                    tags: (d.severity == Severity::Warning
-                        && (d.message.starts_with("unused variable")
-                            || d.message.starts_with("unused import")))
-                    .then(|| vec![DiagnosticTag::UNNECESSARY]),
+                    // Unused code is shown faded, deprecated names struck through.
+                    tags: {
+                        let warning = d.severity == Severity::Warning;
+                        let mut tags = Vec::new();
+                        if warning
+                            && (d.message.starts_with("unused variable")
+                                || d.message.starts_with("unused import"))
+                        {
+                            tags.push(DiagnosticTag::UNNECESSARY);
+                        }
+                        if warning && is_deprecation_warning(&d.message) {
+                            tags.push(DiagnosticTag::DEPRECATED);
+                        }
+                        (!tags.is_empty()).then_some(tags)
+                    },
                     message,
                     related_information: (!related.is_empty()).then_some(related),
                     ..Diagnostic::default()
@@ -650,6 +1002,7 @@ impl<'c> Server<'c> {
             self.settings.root.as_deref(),
         )?;
         pkg.refuse_if_incomplete(plan.info)?;
+        pkg.refuse_if_left_out(plan.info, self.settings.root.as_deref())?;
         for (a, r) in &pkg.parts[1..] {
             if let Some(o) = rename::occ_of_meaning(a, r, what) {
                 rename::plan(a, r, o, &pkg.editable, self.settings.root.as_deref())?;
@@ -684,6 +1037,7 @@ impl<'c> Server<'c> {
             self.settings.root.as_deref(),
         )?;
         pkg.refuse_if_incomplete(plan.info)?;
+        pkg.refuse_if_left_out(plan.info, self.settings.root.as_deref())?;
         rename::check_new_name(plan.info, &p.new_name)?;
         let old_name = plan.info.name.clone();
         if p.new_name == old_name {
@@ -978,10 +1332,17 @@ impl<'c> Server<'c> {
             return self.type_hover(&p.text_document_position_params);
         };
         let index = LineIndex::new(analysis.sources.text(file));
+        let mut value = format!("```colibri\n{}\n```", fact.text);
+        if let Some(message) = fact.def.and_then(|d| analysis.insight.deprecation(d)) {
+            value.push_str("\n\n**Deprecated**");
+            if !message.is_empty() {
+                value.push_str(&format!(": {message}"));
+            }
+        }
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("```colibri\n{}\n```", fact.text),
+                value,
             }),
             range: Some(index.range(fact.span.start as usize, fact.span.end as usize)),
         })
@@ -1114,6 +1475,23 @@ impl Package {
         Ok(())
     }
 
+    /// Refuses a rename while an item that a false `@when` left out of the program mentions the
+    /// name: the program does not read that item, so its uses would not be renamed and the
+    /// other configuration would break. A local variable cannot be used by such an item.
+    fn refuse_if_left_out(&self, info: &DefInfo, root: Option<&Path>) -> Result<(), String> {
+        if self.local {
+            return Ok(());
+        }
+        for (analysis, _) in &self.parts {
+            refuse_if_left_out(&analysis.sources, &analysis.program, &info.name, root)?;
+        }
+        for pending in &self.rest {
+            let (sources, loaded) = pending.program();
+            refuse_if_left_out(sources, loaded, &info.name, root)?;
+        }
+        Ok(())
+    }
+
     /// Refuses to rename something other files can name when not every file that could was
     /// found.
     fn refuse_if_incomplete(&self, info: &DefInfo) -> Result<(), String> {
@@ -1179,6 +1557,61 @@ fn refuse_if_broken(
     Ok(())
 }
 
+/// Whether `name` is written as a whole word (not part of a longer name) in `text`.
+fn mentions_word(text: &str, name: &str) -> bool {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(name).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(is_word)
+            && !text[at + name.len()..].chars().next().is_some_and(is_word)
+    })
+}
+
+/// Whether a rename of `name` is refused because an item that a false `@when` left out of a
+/// module of the package mentions it.
+fn refuse_if_left_out(
+    sources: &SourceMap,
+    program: &Loaded,
+    name: &str,
+    root: Option<&Path>,
+) -> Result<(), String> {
+    for (module, meta) in program.metas.iter().enumerate() {
+        if meta.dependency {
+            continue;
+        }
+        let Some(file) = program.files.get(module) else {
+            continue;
+        };
+        for left in &meta.excluded {
+            let span = left.span;
+            if span.file != file.span.file || !sources.contains(span.file) {
+                continue;
+            }
+            let Some(text) = sources
+                .text(span.file)
+                .get(span.start as usize..span.end as usize)
+            else {
+                continue;
+            };
+            if !mentions_word(text, name) {
+                continue;
+            }
+            let path = canon(Path::new(sources.name(span.file)));
+            // Relative to the open folder with `/`: a workspace can have two `main.colibri`.
+            let shown = rename::shown(root, &path);
+            let line = LineIndex::new(sources.text(span.file))
+                .range(span.start as usize, span.end as usize)
+                .start
+                .line
+                + 1;
+            return Err(format!(
+                "cannot rename `{name}` while `{shown}` (line {line}) has code left out here by `@when({})` that mentions it: the rename would not reach it and would break the other configuration",
+                left.cond
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The identifier around a byte offset: where it starts (or `offset` if there is none) and
 /// the word.
 fn word_at(text: &str, offset: usize) -> (u32, &str) {
@@ -1227,6 +1660,12 @@ fn interface_paths(options: Option<&Value>, root: Option<&Path>) -> Vec<PathBuf>
             }
         })
         .collect()
+}
+
+/// Whether `message` is the checker's warning about a use of a `@deprecated` item.
+fn is_deprecation_warning(message: &str) -> bool {
+    message.starts_with('`')
+        && (message.ends_with("` is deprecated") || message.contains("` is deprecated: "))
 }
 
 #[cfg(test)]

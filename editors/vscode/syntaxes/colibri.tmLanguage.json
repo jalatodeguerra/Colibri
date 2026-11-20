@@ -40,7 +40,7 @@
     },
     "types": {
       "patterns": [
-        { "name": "support.type.primitive.colibri", "match": "\\b(int|i8|i16|i32|i64|u8|u16|u32|u64|float|f32|f64|bool|char|str|vec2|vec3|vec4|ivec2|ivec3|ivec4|mat3|mat4|quat)\\b" },
+        { "name": "support.type.primitive.colibri", "match": "\\b(int|i8|i16|i32|i64|u8|u16|u32|u64|float|f32|f64|bool|char|str|Bytes|vec2|vec3|vec4|ivec2|ivec3|ivec4|mat3|mat4|quat)\\b" },
         { "name": "entity.name.type.colibri", "match": "\\b[A-Z][A-Za-z0-9_]*\\b" }
       ]
     },

@@ -23,6 +23,11 @@ pub(crate) struct BoundRef {
     pub iface: TypeId,
     pub args: Vec<Ty>,
     pub span: Span,
+    /// The bound was not written here: an `impl` header takes it from the type it is for
+    /// (`impl[T] Sorted[T]` has the bound `T: Ord` that `struct Sorted[T: Ord]` declares).
+    /// Nothing checks it again where the impl's methods are called: the type itself was
+    /// checked where it was written.
+    pub implied: bool,
 }
 
 /// A declared type parameter with its bounds.
@@ -78,6 +83,7 @@ pub(crate) fn key_of(ty: &Ty) -> Option<TypeKey> {
         Ty::Bool => TypeKey::Bool,
         Ty::Char => TypeKey::Char,
         Ty::Str => TypeKey::Str,
+        Ty::Bytes => TypeKey::Bytes,
         Ty::Unit => TypeKey::Unit,
         Ty::Tuple(_) => TypeKey::Tuple,
         Ty::List(_) => TypeKey::List,
@@ -217,6 +223,14 @@ impl Env<'_> {
         }
     }
 
+    /// Whether `ty` has its own `impl Eq` and no `impl Ord`: its order is then not derived, because
+    /// an order made from the fields could disagree with the `==` the author wrote (DESIGN §7.4).
+    pub fn user_eq_blocks_ord(&self, ty: &Ty) -> bool {
+        matches!(ty, Ty::Adt(..))
+            && self.user_impl_for(ty, EQ).is_some()
+            && self.user_impl_for(ty, ORD).is_none()
+    }
+
     /// The explicit implementation of `iface` for the head of `ty`, if there is one.
     fn user_impl_for(&self, ty: &Ty, iface: TypeId) -> Option<ImplId> {
         self.by_key.get(&(key_of(ty)?, iface)).copied()
@@ -228,6 +242,7 @@ impl Env<'_> {
             Ty::List(t) | Ty::Set(t) => (**t).clone(),
             Ty::Map(k, v) => Ty::Tuple(vec![(**k).clone(), (**v).clone()]),
             Ty::Range(_) => Ty::INT,
+            Ty::Bytes => Ty::Int(crate::types::IntTy::U8),
             Ty::Dyn(id, a) if *id == ITER && a.len() == 1 => a[0].clone(),
             _ => return Err(ty.clone()),
         };
@@ -342,6 +357,7 @@ impl Env<'_> {
             | Ty::Bool
             | Ty::Char
             | Ty::Str
+            | Ty::Bytes
             | Ty::Unit
             | Ty::Ptr(_)
             | Ty::Vec(_)
@@ -355,16 +371,30 @@ impl Env<'_> {
         }
     }
 
-    /// `<` is derived for scalars, tuples of ordered parts and enums without payloads.
+    /// `<` is derived for scalars and tuples of ordered parts; for a struct, field by field
+    /// in declaration order; for an enum, by variant in declaration order and then by payload.
+    /// Every field or payload has to be ordered. A class and the prelude's own enums
+    /// (`Result`, `Error`) are not ordered, and neither is a type with its own `impl Eq`
+    /// (and none for `Ord`): the author decided what equal means, so the order is theirs too.
     fn ord_part(&self, ty: &Ty) -> Part {
+        if self.user_eq_blocks_ord(ty) {
+            return Part::Fail;
+        }
         match ty {
-            Ty::Int(_) | Ty::Float | Ty::F32 | Ty::Bool | Ty::Char | Ty::Str => Part::Ok,
+            Ty::Int(_) | Ty::Float | Ty::F32 | Ty::Bool | Ty::Char | Ty::Str | Ty::Bytes => {
+                Part::Ok
+            }
             Ty::Tuple(items) => Part::Inside(items.clone()),
-            Ty::Adt(id, _) => match self.types.get(id.0 as usize).map(|d| &d.kind) {
+            Ty::Adt(id, args) => match self.types.get(id.0 as usize).map(|d| &d.kind) {
                 Some(TypeDefKind::Enum { variants })
                     if variants.iter().all(|v| v.fields.is_empty()) =>
                 {
                     Part::Ok
+                }
+                Some(TypeDefKind::Enum { .. } | TypeDefKind::Struct { .. })
+                    if id.0 >= crate::types::FIRST_USER_TYPE =>
+                {
+                    Part::Fields(*id, args.clone())
                 }
                 _ => Part::Fail,
             },
@@ -376,7 +406,9 @@ impl Env<'_> {
     /// mutable collection; a class hashes by identity (DESIGN §5.3).
     fn hash_part(&self, ty: &Ty) -> Part {
         match ty {
-            Ty::Int(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Unit | Ty::Ptr(_) => Part::Ok,
+            Ty::Int(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Bytes | Ty::Unit | Ty::Ptr(_) => {
+                Part::Ok
+            }
             Ty::Vec(v) if v.int => Part::Ok,
             Ty::Tuple(items) => Part::Inside(items.clone()),
             Ty::Option(t) => Part::Inside(vec![(**t).clone()]),

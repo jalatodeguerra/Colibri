@@ -1,0 +1,20 @@
+// A `let` whose value never finishes (`die()` returns `!`) ends the block, like a call
+// statement does: the code after it is unreachable and the function needs no `return`.
+fn die() -> ! {
+    panic("stop")
+}
+
+fn after_let() -> int {
+    let _x: int = die()
+    print("never") // warning: unreachable code
+}
+
+fn fine(o: int?) -> int {
+    let v = o or { die() }
+    return v
+}
+
+fn main() {
+    print(fine(some(4)))
+}
+// expect: 4

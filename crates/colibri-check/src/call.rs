@@ -7,6 +7,7 @@ use colibri_syntax::{Diagnostic, Span};
 use crate::body::FnCtx;
 use crate::body::GenericCall;
 use crate::checker::{Checker, Dep, ParamInfo, ValueRef};
+use crate::deprecated::DeprKey;
 use crate::hir::{self, Arg, Block, Callee, Expr, FnId, Intrinsic, LocalId, Place, Stmt, StmtKind};
 use crate::infer::VarKind;
 use crate::obligations::{Obligation, Origin};
@@ -72,6 +73,7 @@ impl FnCtx<'_, '_> {
             return self.check_value_call(callee, args, span);
         }
         if let Some(f) = self.lookup_fn(name) {
+            self.ck.note_deprecated_use(DeprKey::Fn(f), id.span);
             return self.check_fn_call(f, args, span);
         }
         if matches!(self.ck.values.get(name), Some(ValueRef::Global(_))) {
@@ -513,6 +515,7 @@ impl FnCtx<'_, '_> {
                 | Ty::Bool
                 | Ty::Char
                 | Ty::Str
+                | Ty::Bytes
                 | Ty::Unit
                 | Ty::Error
                 | Ty::Tuple(_)
@@ -698,7 +701,7 @@ impl FnCtx<'_, '_> {
         }
         let map = Checker::param_map(generics, &vars);
         for g in generics {
-            for b in &g.bounds {
+            for b in g.bounds.iter().filter(|b| !b.implied) {
                 self.obligations.push(Obligation {
                     ty: g.ty().subst(&map),
                     iface: b.iface,

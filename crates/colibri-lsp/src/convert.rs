@@ -199,9 +199,9 @@ mod tests {
 
     #[test]
     fn uris_and_paths_round_trip() {
-        let path = Path::new("/home/me/my game/é.colibri");
+        let path = Path::new("/home/me/my app/é.colibri");
         let uri = path_to_uri(path).unwrap();
-        assert_eq!(uri.as_str(), "file:///home/me/my%20game/%C3%A9.colibri");
+        assert_eq!(uri.as_str(), "file:///home/me/my%20app/%C3%A9.colibri");
         assert_eq!(uri_to_path(&uri), path);
     }
 

@@ -1,8 +1,9 @@
 import task // error: the standard library module `task` does not exist yet
 import std.game // error: the standard library has no module `game`
-import mem // error: the standard library module `mem` does not exist yet
-import reflect // error: the standard library module `reflect` does not exist yet
-import collections // error: the standard library module `collections` does not exist: `List`, `Map` and `Set` are built in
+import mem // error: no module `mem`
+import reflect // error: no module `reflect`
+import collections // error: no module `collections`
+import std.reflect // error: the standard library has no module `reflect`
 import std.nothing // error: the standard library has no module `nothing`
 import nothing // error: no module `nothing`
 

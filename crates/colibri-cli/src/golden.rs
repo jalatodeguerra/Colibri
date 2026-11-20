@@ -47,8 +47,11 @@ pub struct Directives {
     /// `// caps: fs, os`: the capabilities the test's `Vm` grants (the default is none). Read
     /// from the file that starts the program.
     pub caps: Vec<String>,
-    /// `// allow: unused` in the comment lines at the top of the file: unused-variable and
-    /// unused-import warnings in this file need not be listed. Every other file must list them
+    /// `// features: net, audio`: the feature flags the test's `Vm` turns on for `@when`.
+    /// Read from the file that starts the program.
+    pub features: Vec<String>,
+    /// `// allow: unused` in the comment lines at the top of the file: unused-variable,
+    /// unused-import and unreachable-code warnings in this file need not be listed. Every other file must list them
     /// as `// warning:` or have none.
     pub allow_unused: bool,
 }
@@ -169,6 +172,18 @@ pub fn parse_directives(source: &str) -> Directives {
                     Ok(only) => d.only = Some(only),
                     Err(problem) => d.malformed.push(format!("line {}: {problem}", i + 1)),
                 }
+            } else if let Some(v) = comment.strip_prefix("features:") {
+                // Names are separated by commas or spaces; each is a feature name as in
+                // `colibri.toml`, so `// features: a b` is two features and a name that is not
+                // one is a failure of the test.
+                for name in v.split([',', ' ', '\t']).filter(|s| !s.is_empty()) {
+                    match colibri::feature_name_problem(name) {
+                        Some((problem, _)) => d
+                            .malformed
+                            .push(format!("line {}: `// features:` {problem}", i + 1)),
+                        None => d.features.push(name.to_string()),
+                    }
+                }
             } else if let Some(v) = comment.strip_prefix("caps:") {
                 d.caps.extend(
                     v.split(',')
@@ -235,18 +250,30 @@ pub enum Outcome {
 /// [`crate::on_big_stack`]) so deep recursion reaches the call-depth limit.
 pub fn run_golden(path: &Path, source: &str) -> Outcome {
     let name = path.display().to_string();
-    let caps = parse_directives(source).caps;
-    run_with(|vm| vm.load_source(&name, source), None, &name, &caps)
+    let d = parse_directives(source);
+    run_with(
+        |vm| vm.load_source(&name, source),
+        None,
+        &name,
+        &d.caps,
+        &d.features,
+    )
 }
 
 /// Runs a golden test that is a folder: the files in it are one program, started from
 /// `main.colibri` (see `Vm::load_file`, which makes the folder its implicit package).
 pub fn run_golden_package(dir: &Path) -> Outcome {
     let main = dir.join("main.colibri");
-    let caps = std::fs::read_to_string(&main)
-        .map(|text| parse_directives(&text).caps)
+    let d = std::fs::read_to_string(&main)
+        .map(|text| parse_directives(&text))
         .unwrap_or_default();
-    run_with(|vm| vm.load_file(&main), Some(dir), "", &caps)
+    run_with(
+        |vm| vm.load_file(&main),
+        Some(dir),
+        "",
+        &d.caps,
+        &d.features,
+    )
 }
 
 /// The standard library's view of the world in a golden test: a clock that only moves when the
@@ -326,12 +353,16 @@ fn run_with(
     dir: Option<&Path>,
     blank: &str,
     caps: &[String],
+    features: &[String],
 ) -> Outcome {
     let out = colibri::SharedBuffer::new();
     let mut builder = crate::vm_builder()
         .trace_drops(true)
         .track_leaks(true)
         .stdout(Box::new(out.clone()));
+    for feature in features {
+        builder = builder.feature(feature);
+    }
     for cap in caps {
         match colibri::Cap::ALL.into_iter().find(|c| c.name() == cap) {
             Some(cap) => builder = builder.allow(cap),
@@ -424,7 +455,7 @@ impl PackageDirectives {
     }
 
     /// The directives that apply to the run as a whole. `expect` lines of every file in order;
-    /// `drops`, `panic`, `main-err` and `skip` come from `main.colibri` alone.
+    /// `drops`, `panic`, `main-err`, `skip`, `only`, `caps` and `features` come from `main.colibri` alone.
     fn whole(&self) -> Directives {
         let mut d = Directives::default();
         for (path, files) in &self.files {
@@ -437,10 +468,23 @@ impl PackageDirectives {
                 d.skip = files.skip.clone();
                 d.only = files.only.clone();
             }
-            if !(path == "main.colibri" || path.is_empty()) && files.only.is_some() {
-                d.malformed.push(format!(
-                    "{path}: `// only:` counts in main.colibri alone; it would be ignored here"
-                ));
+            if path == "main.colibri" || path.is_empty() {
+                d.caps = files.caps.clone();
+                d.features = files.features.clone();
+            } else {
+                // Every directive that is about the run as a whole counts in main.colibri
+                // alone: say so instead of ignoring it.
+                for (name, present) in [
+                    ("only", files.only.is_some()),
+                    ("caps", !files.caps.is_empty()),
+                    ("features", !files.features.is_empty()),
+                ] {
+                    if present {
+                        d.malformed.push(format!(
+                            "{path}: `// {name}:` counts in main.colibri alone; it would be ignored here"
+                        ));
+                    }
+                }
             }
             d.malformed.extend(files.malformed.iter().map(|m| {
                 if path.is_empty() {
@@ -475,6 +519,7 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
         only: d.only.clone(),
         malformed: d.malformed.clone(),
         caps: d.caps.clone(),
+        features: d.features.clone(),
         allow_unused: d.allow_unused,
     };
     check_package(
@@ -630,7 +675,9 @@ pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), Str
 /// warnings (`unused variable`, `unused import`) of a file with `// allow: unused` are
 /// tolerated when unlisted; a `// warning: unused variable` directive there must still match.
 fn is_unused_code_lint(message: &str) -> bool {
-    message.starts_with("unused variable") || message.starts_with("unused import")
+    message.starts_with("unused variable")
+        || message.starts_with("unused import")
+        || message.starts_with("unreachable code")
 }
 
 fn compare_warnings(
@@ -784,6 +831,46 @@ mod tests {
                 .malformed
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn caps_and_features_outside_main_colibri_are_a_failure_like_only() {
+        for directive in ["// caps: fs", "// features: fast"] {
+            let files = vec![
+                ("main.colibri".to_string(), "fn main() {}\n".to_string()),
+                ("m.colibri".to_string(), format!("{directive}\n")),
+            ];
+            let malformed = PackageDirectives::parse(&files).whole().malformed;
+            assert_eq!(malformed.len(), 1, "{directive}: {malformed:?}");
+            assert!(
+                malformed[0].starts_with("m.colibri:") && malformed[0].contains("main.colibri"),
+                "{malformed:?}"
+            );
+        }
+        // In main.colibri they count, and reach the run.
+        let files = vec![(
+            "main.colibri".to_string(),
+            "// caps: fs\n// features: fast\nfn main() {}\n".to_string(),
+        )];
+        let d = PackageDirectives::parse(&files).whole();
+        assert!(d.malformed.is_empty(), "{:?}", d.malformed);
+        assert_eq!(
+            (d.caps, d.features),
+            (vec!["fs".into()], vec!["fast".into()])
+        );
+    }
+
+    #[test]
+    fn feature_names_are_split_on_commas_or_spaces_and_checked() {
+        let d = parse_directives("// features: a b, c,d\n");
+        assert_eq!(d.features, ["a", "b", "c", "d"]);
+        assert!(d.malformed.is_empty());
+        for bad in ["a-b", "debug", "os", "1x!"] {
+            let d = parse_directives(&format!("// features: fast {bad}\n"));
+            assert_eq!(d.features, ["fast"], "{bad}");
+            assert_eq!(d.malformed.len(), 1, "{bad}: {:?}", d.malformed);
+            assert!(d.malformed[0].starts_with("line 1:"), "{:?}", d.malformed);
+        }
     }
 
     #[test]

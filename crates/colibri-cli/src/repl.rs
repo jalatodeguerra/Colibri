@@ -34,14 +34,26 @@ line submits what is there.
 const LAST: &str = "__last";
 
 /// One declaration or module-level binding of the session.
+/// A `@when` condition: the attribute as written (to ask whether it holds) and the condition
+/// printed in a canonical form (spacing and redundant parentheses do not matter).
+#[derive(Clone)]
+struct Cond {
+    attr: String,
+    canon: String,
+}
+
 #[derive(Clone)]
 struct Item {
     /// What it defines (`fn:name`, `type:name`, `val:name`, `import:text`), if it can be
     /// defined again.
     key: Option<String>,
+    /// The `@when` condition of the declaration, if it has one.
+    cond: Option<Cond>,
     text: String,
     /// Part of the current entry.
     fresh: bool,
+    /// Typed in the entry being checked, not in an earlier one: only its warnings are shown.
+    new: bool,
 }
 
 /// An entry split into declarations and top-level statements.
@@ -58,6 +70,8 @@ struct Built {
     source: String,
     /// `(start in source, end in source, start in shown)`.
     segments: Vec<(usize, usize, usize)>,
+    /// The ranges of `source` that this entry typed (a subset of what `segments` covers).
+    new_ranges: Vec<(usize, usize)>,
     shown: String,
 }
 
@@ -213,7 +227,7 @@ impl Session {
             eprintln!("usage: :load <file>");
             return;
         }
-        if let Some(message) = colibri_runtime::not_a_script(Path::new(path)) {
+        if let Some(message) = colibri_runtime::not_a_script_plainly(Path::new(path)) {
             eprintln!("error: {path}: {message}");
             return;
         }
@@ -266,6 +280,10 @@ impl Session {
     /// Checks and runs `text`; whether it was taken. With `echo`, an entry that is one
     /// expression prints its value.
     fn eval(&mut self, text: &str, load: bool, echo: bool) -> bool {
+        if let Some(why) = dangling_attributes(text) {
+            eprintln!("error: {why}");
+            return false;
+        }
         let mut parts = split(text);
         if !echo {
             parts.expr = None;
@@ -284,27 +302,71 @@ impl Session {
         let mut replaced: Vec<String> = Vec::new();
         let mut reinit: Vec<String> = Vec::new();
         for item in parts.items {
-            if let Some(key) = &item.key
-                && let Some(pos) = items.iter().position(|i| i.key.as_ref() == Some(key))
-            {
-                if let Some(name) = key.strip_prefix("type:") {
-                    eprintln!(
-                        "error: `{name}` is already defined; types cannot be redefined (`:reset` starts over)"
-                    );
-                    return false;
-                }
-                if key.starts_with("import:") {
-                    continue;
-                }
+            // A new definition replaces every stored definition of the name with the same
+            // condition, and every one when either side has no `@when` at all.
+            let same: Vec<usize> = match &item.key {
+                Some(key) => (0..items.len())
+                    .filter(|&p| {
+                        items[p].key.as_ref() == Some(key)
+                            && match (&item.cond, &items[p].cond) {
+                                (Some(a), Some(b)) => a.canon == b.canon,
+                                _ => true,
+                            }
+                    })
+                    .collect(),
+                None => Vec::new(),
+            };
+            let Some(&first) = same.first() else {
+                items.push(item);
+                continue;
+            };
+            let key = item.key.clone().unwrap_or_default();
+            if let Some(name) = key.strip_prefix("type:") {
+                eprintln!(
+                    "error: `{name}` is already defined; types cannot be redefined (`:reset` starts over)"
+                );
+                return false;
+            }
+            if key.starts_with("import:") {
+                continue;
+            }
+            // The definition that is part of the program now (its condition holds): the new one
+            // takes its place, so the order of the program stays what it was; when none holds,
+            // the first.
+            let holding: Vec<usize> = same
+                .iter()
+                .copied()
+                .filter(|&p| self.holds(&items[p].cond))
+                .collect();
+            let at = holding.first().copied().unwrap_or(first);
+            // A new definition that is left out here replaces the one that is in the program:
+            // the name would vanish. Refuse it, and keep the old one.
+            if !holding.is_empty() && !self.holds(&item.cond) {
+                let name = key
+                    .strip_prefix("fn:")
+                    .or_else(|| key.strip_prefix("val:"))
+                    .unwrap_or(&key);
+                let cond = item.cond.as_ref().map_or(String::new(), |c| c.attr.clone());
+                eprintln!(
+                    "error: `{name}` would no longer exist: the new definition is left out here by `{cond}` (its condition is false here), and a definition replaces every stored one of its name unless both have a `@when`; the old definition is kept"
+                );
+                return false;
+            }
+            // Only a definition whose condition holds is part of the program, so only it
+            // replaces a function or starts a module-level value over.
+            if self.holds(&item.cond) {
                 if let Some(name) = key.strip_prefix("fn:") {
                     replaced.push(name.to_string());
                 } else if let Some(name) = key.strip_prefix("val:") {
                     reinit.push(name.to_string());
                 }
-                items[pos] = item;
-                continue;
             }
-            items.push(item);
+            items[at] = item;
+            for &p in same.iter().rev() {
+                if p != at {
+                    items.remove(p);
+                }
+            }
         }
         // An expression entry: `let __last = (expr)` gives its type and value in one go.
         if let Some(expr) = &parts.expr {
@@ -316,10 +378,14 @@ impl Session {
             {
                 let mut reinit2 = reinit.clone();
                 reinit2.push(LAST.to_string());
+                self.show_warnings(&check, &built);
                 if !self.commit(check, &reinit2, &replaced, &built) {
                     return false;
                 }
                 self.items = with;
+                for item in &mut self.items {
+                    item.new = false;
+                }
                 if let Some((value, ty)) = self.vm.session_display(LAST) {
                     println!("= {value} : {ty}");
                 }
@@ -343,8 +409,10 @@ impl Session {
             let n = self.entries + 1;
             items.push(Item {
                 key: None,
+                cond: None,
                 text: format!("fn __entry_{n}() {{\n{script}\n}}"),
                 fresh: true,
+                new: true,
             });
             script = format!("__entry_{n}()");
             built = build(&items, &script);
@@ -357,14 +425,31 @@ impl Session {
             };
             entry_fn = true;
         }
+        self.show_warnings(&check, &built);
         if !self.commit(check, &reinit, &replaced, &built) {
             return false;
         }
         self.items = items;
+        for item in &mut self.items {
+            item.new = false;
+        }
         if entry_fn {
             self.entries += 1;
         }
         true
+    }
+
+    /// Whether a declaration with this `@when` condition is part of the program (it is when it
+    /// has none). Asked of the checker with a probe function carrying the same attribute.
+    fn holds(&self, cond: &Option<Cond>) -> bool {
+        let Some(cond) = cond else {
+            return true;
+        };
+        let probe = format!("{}\nfn __when_probe() {{}}\n", cond.attr);
+        self.vm
+            .session_check(&probe)
+            .map(|c| c.has_fn("__when_probe"))
+            .unwrap_or(true)
     }
 
     /// Puts a checked entry to work; whether it was taken.
@@ -395,44 +480,93 @@ impl Session {
         let colibri::Error::Compile(report) = error else {
             return error.render(self.color);
         };
-        let mut sources = report.sources.clone();
+        let errors = report
+            .diagnostics
+            .iter()
+            .filter(|d| d.is_error())
+            .cloned()
+            .collect();
+        self.remapped(&report.sources, errors, built, false)
+            .render(self.color)
+    }
+
+    /// The warnings of an entry that was taken, for the text of this entry only: the session
+    /// program is checked again as a whole with every entry, and what an earlier entry
+    /// warned about was shown then. Lints are on in the REPL (a deprecated function used in
+    /// an entry warns as it would in a file). The "unused" lints are left out on purpose: an
+    /// entry is only part of a program, so an `import` or a binding that nothing uses yet is
+    /// waiting for the next entry, not unused.
+    fn show_warnings(&self, check: &colibri::SessionCheck, built: &Built) {
+        let warnings: Vec<colibri::Diagnostic> = check
+            .warnings()
+            .iter()
+            .filter(|d| !d.is_error() && !d.message.starts_with("unused "))
+            .cloned()
+            .collect();
+        let report = self.remapped(check.sources(), warnings, built, true);
+        if !report.diagnostics.is_empty() {
+            eprint!("{}", report.render(self.color));
+        }
+    }
+
+    /// `diagnostics` with their places moved into the text the user typed. With `fresh_only`
+    /// a diagnostic that is not in what was typed in this entry is dropped; otherwise it
+    /// points into the whole session program.
+    fn remapped(
+        &self,
+        sources: &colibri_syntax::SourceMap,
+        diagnostics: Vec<colibri::Diagnostic>,
+        built: &Built,
+        fresh_only: bool,
+    ) -> colibri::Report {
+        let mut sources = sources.clone();
         let shown = sources.add_file("<repl>", built.shown.as_str());
         let all = sources.add_file("<session>", built.source.as_str());
         let session_file = (0..)
             .map(FileId)
             .take_while(|f| sources.contains(*f))
             .find(|f| sources.name(*f) == "<repl>" && *f != shown);
-        let remap = |span: colibri_syntax::Span| {
+        let remap = |span: colibri_syntax::Span| -> Option<colibri_syntax::Span> {
             if Some(span.file) != session_file {
-                return span;
+                return (!fresh_only).then_some(span);
             }
             let (s, e) = (span.start as usize, span.end as usize);
+            if fresh_only
+                && !built
+                    .new_ranges
+                    .iter()
+                    .any(|&(from, to)| s >= from && s <= to)
+            {
+                return None;
+            }
             for &(from, to, at) in &built.segments {
                 if s >= from && s <= to {
                     let end = e.min(to) - from + at;
-                    return colibri_syntax::Span::new(shown, (s - from + at) as u32, end as u32);
+                    return Some(colibri_syntax::Span::new(
+                        shown,
+                        (s - from + at) as u32,
+                        end as u32,
+                    ));
                 }
             }
-            colibri_syntax::Span::new(all, span.start, span.end)
+            (!fresh_only).then(|| colibri_syntax::Span::new(all, span.start, span.end))
         };
-        let diagnostics = report
-            .diagnostics
-            .iter()
-            .filter(|d| d.is_error())
-            .map(|d| {
-                let mut d = d.clone();
-                d.span = remap(d.span);
-                for l in &mut d.labels {
-                    l.0 = remap(l.0);
-                }
-                d
+        let diagnostics = diagnostics
+            .into_iter()
+            .filter_map(|mut d| {
+                d.span = remap(d.span)?;
+                d.labels = d
+                    .labels
+                    .into_iter()
+                    .map(|(span, text)| (remap(span).unwrap_or(span), text))
+                    .collect();
+                Some(d)
             })
             .collect();
         colibri::Report {
             sources,
             diagnostics,
         }
-        .render(self.color)
     }
 }
 
@@ -440,8 +574,10 @@ impl Session {
 fn last_item(expr: &str, name: &str) -> Item {
     Item {
         key: Some(format!("val:{name}")),
+        cond: None,
         text: format!("let {name} = (\n{}\n)", expr.trim()),
         fresh: true,
+        new: true,
     }
 }
 
@@ -459,7 +595,9 @@ fn build(items: &[Item], script: &str) -> Built {
     let mut source = String::new();
     let mut shown = String::new();
     let mut segments = Vec::new();
+    let mut new_ranges = Vec::new();
     if !script.is_empty() {
+        new_ranges.push((0, script.len()));
         segments.push((0, script.len(), 0));
         source.push_str(script);
         shown.push_str(script);
@@ -471,11 +609,15 @@ fn build(items: &[Item], script: &str) -> Built {
             segments.push((source.len(), source.len() + item.text.len(), shown.len()));
             shown.push_str(&item.text);
         }
+        if item.new {
+            new_ranges.push((source.len(), source.len() + item.text.len()));
+        }
         source.push_str(&item.text);
     }
     Built {
         source,
         segments,
+        new_ranges,
         shown,
     }
 }
@@ -514,6 +656,65 @@ fn pieces(text: &str) -> Vec<&str> {
     out
 }
 
+/// The parser's complaint when `text` ends in attributes with no item after them. Such an entry
+/// is refused: built into the session program, the attributes would attach to the first
+/// declaration that follows.
+fn dangling_attributes(text: &str) -> Option<String> {
+    let (_, diagnostics) = parse_file(FileId(0), text);
+    diagnostics
+        .into_iter()
+        .find(|d| {
+            d.message
+                .starts_with("expected an item after the attributes")
+        })
+        .map(|d| d.message)
+}
+
+/// The `@when(..)` condition of an item, if it has one.
+fn when_condition(item: &colibri_syntax::ast::Item, text: &str) -> Option<Cond> {
+    let attr = item.attrs.iter().find(|a| a.name.name == "when")?;
+    let written = text.get(attr.span.start as usize..attr.span.end as usize)?;
+    let canon = match attr.args.first() {
+        Some(e) => canonical(e, text),
+        None => String::new(),
+    };
+    Some(Cond {
+        attr: written.to_string(),
+        canon,
+    })
+}
+
+/// A condition printed so that spacing and redundant parentheses do not matter.
+fn canonical(e: &colibri_syntax::ast::Expr, text: &str) -> String {
+    use colibri_syntax::ast::{BinOp, ExprKind, UnOp};
+    match &e.kind {
+        ExprKind::Paren(inner) => canonical(inner, text),
+        ExprKind::Ident(id) => id.name.clone(),
+        ExprKind::Bool(b) => b.to_string(),
+        ExprKind::Unary {
+            op: UnOp::Not,
+            expr,
+        } => format!("!{}", canonical(expr, text)),
+        ExprKind::Binary { op, lhs, rhs }
+            if matches!(op, BinOp::And | BinOp::Or | BinOp::Eq | BinOp::Ne) =>
+        {
+            let op = match op {
+                BinOp::And => "&&",
+                BinOp::Or => "||",
+                BinOp::Eq => "==",
+                _ => "!=",
+            };
+            format!("({} {op} {})", canonical(lhs, text), canonical(rhs, text))
+        }
+        _ => text
+            .get(e.span.start as usize..e.span.end as usize)
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
 /// Splits an entry into declarations, statements and the expression it may be.
 fn split(text: &str) -> Parts {
     let (file, diagnostics) = parse_file(FileId(0), text);
@@ -548,6 +749,7 @@ fn split(text: &str) -> Parts {
         prev = end;
         match top {
             TopLevel::Item(item) => {
+                let condition = when_condition(item, text);
                 let key = match &item.kind {
                     ItemKind::Fn(f) if f.receiver.is_none() => Some(format!("fn:{}", f.name.name)),
                     ItemKind::Struct(s) => Some(format!("type:{}", s.name.name)),
@@ -564,10 +766,14 @@ fn split(text: &str) -> Parts {
                     )),
                     _ => None,
                 };
+                // Two declarations of one name under different `@when` conditions are both
+                // part of the session; only the one whose condition holds is in the program.
                 parts.items.push(Item {
                     key,
+                    cond: condition,
                     text: chunk,
                     fresh: true,
+                    new: true,
                 });
             }
             TopLevel::Stmt(stmt) => {

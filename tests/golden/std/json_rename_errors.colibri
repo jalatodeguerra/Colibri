@@ -17,7 +17,7 @@ struct C {
     @rename("a") @rename("b") x: int // error: one `@rename`
     @skip @rename("y") y: int = 0 // error: `@rename` does nothing
     @skip(1) z: int = 0 // error: takes no arguments
-    @inline q: int // error: not supported
+    @inline q: int // error: unknown attribute `@inline` on a field
 }
 
 // A skipped field frees its key.

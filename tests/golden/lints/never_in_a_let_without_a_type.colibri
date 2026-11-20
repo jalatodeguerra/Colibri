@@ -1,0 +1,19 @@
+// A `let` without a type whose value never finishes keeps the type `!`: it is not turned into
+// a poison type that would let ill-typed code through when it leaves the block.
+fn main() {
+    let c = false
+    let r = if c {
+        let x = panic("a")
+        x // warning: unreachable code
+    } else { 1 }
+    let s: str = r // error: expected `str`
+    print(s.len())
+    let t = match c {
+        true => {
+            let y = panic("b")
+            y // warning: unreachable code
+        }
+        false => 2
+    }
+    t.nonsense() // error: has no method `nonsense`
+}

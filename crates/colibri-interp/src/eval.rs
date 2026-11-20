@@ -55,6 +55,10 @@ pub struct Interp {
     /// there is none). The checker rejects the uses it can see; this catches the rest (a
     /// call through an interface, a `Show` impl), DESIGN §4.2.
     pub(crate) uninit: Vec<Option<Rc<str>>>,
+    /// Every global's name, by id, and whether `release_globals` emptied them all (between
+    /// tests): a use then says so instead of blaming a script line that has not run.
+    pub(crate) global_names: Vec<Rc<str>>,
+    pub(crate) released: bool,
     script: Option<Rc<Body>>,
     out: Box<dyn Write>,
     max_depth: usize,
@@ -109,6 +113,8 @@ impl Interp {
             inits: Vec::new(),
             script_from: 0,
             uninit: Vec::new(),
+            global_names: Vec::new(),
+            released: false,
             script: None,
             out,
             max_depth: max_call_depth,
@@ -160,6 +166,12 @@ impl Interp {
             .collect();
         self.script_from = program.script_from;
         self.uninit = Vec::new();
+        self.released = false;
+        self.global_names = program
+            .globals
+            .iter()
+            .map(|g| Rc::from(g.name.as_str()))
+            .collect();
         if program.script_from < program.init_order.len() {
             self.uninit = vec![None; program.globals.len()];
             for g in &program.init_order[program.script_from..] {
@@ -257,6 +269,7 @@ impl Interp {
                 }
             }
         }
+        self.released = false;
         self.end_entry(outermost, true);
         result
     }
@@ -1298,6 +1311,12 @@ impl Interp {
                 s.push_str(a);
                 s.push_str(b);
                 Ok(Value::Str(Rc::from(s)))
+            }
+            (BinOp::Concat, Value::Bytes(a), Value::Bytes(b)) => {
+                let mut bytes = Vec::with_capacity(a.len() + b.len());
+                bytes.extend_from_slice(a);
+                bytes.extend_from_slice(b);
+                Ok(Value::Bytes(Rc::from(bytes)))
             }
             (BinOp::Is, l, r) => Ok(Value::Bool(values_identical(l, r))),
             (BinOp::Cmp(op, Operand::Structural), l, r) => {

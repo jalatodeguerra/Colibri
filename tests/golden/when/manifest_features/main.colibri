@@ -1,0 +1,19 @@
+// The manifest's default list turns `fast` on; `net` and `tls` and `extra` are off.
+@when(fast)
+fn speed() -> str => "fast"
+
+@when(!fast)
+fn speed() -> str => "slow"
+
+@when(net || tls || extra)
+fn network() -> str => "online"
+
+@when(!(net || tls || extra))
+fn network() -> str => "offline"
+
+fn main() {
+    print(speed())
+    print(network())
+}
+// expect: fast
+// expect: offline

@@ -6,30 +6,39 @@
 use colibri_syntax::ast::{self, ItemKind, StructKind, VariantPayload};
 use colibri_syntax::{Diagnostic, Span};
 
+use crate::attrs::AttrSite;
 use crate::checker::Checker;
+use crate::deprecated::DeprKey;
 use crate::generics::SigCtx;
 use crate::hir::{FieldDef, TypeDef, TypeDefKind, VariantDef};
 use crate::host::HOST_FILE;
 use crate::modules::{AliasId, BASE, ModId, ModKind, TypeEntity};
 use crate::suggest;
-use crate::traits::GenericParamInfo;
+use crate::traits::{BoundRef, GenericParamInfo};
 use crate::types::{Ty, TypeId};
 
 /// Names that cannot be redefined as types.
 pub(crate) const BUILTIN_TYPES: &[&str] = &[
     "int", "float", "bool", "str", "char", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-    "f32", "f64", "List", "Map", "Set", "Option", "Result", "ptr", "cstr",
+    "f32", "f64", "List", "Map", "Set", "Option", "Result", "ptr", "cstr", "Bytes",
 ];
 
 /// The classes the prelude declares: a program cannot declare its own.
-const PRELUDE_CLASSES: &[&str] = &["Error", "Coroutine", "CoGroup", "Signal", "StrBuilder"];
+const PRELUDE_CLASSES: &[&str] = &[
+    "Error",
+    "Coroutine",
+    "CoGroup",
+    "Signal",
+    "StrBuilder",
+    "BytesBuilder",
+];
 
 /// What HIR does not keep about a user type.
 #[derive(Clone, Default)]
 pub(crate) struct TypeExtra<'a> {
     /// The default of each struct field, parallel to its fields.
     pub defaults: Vec<Option<&'a ast::Expr>>,
-    /// The type parameters, in order (without bounds: a type's own parameters take none yet).
+    /// The type parameters, in order, with the bounds written on them.
     pub generics: Vec<GenericParamInfo>,
     /// The module that declares the type: where its field types and defaults are resolved.
     pub module: Option<ModId>,
@@ -70,9 +79,8 @@ impl<'a> Checker<'a> {
                             StructKind::Class if host => TypeDefKind::HostClass,
                             StructKind::Class => TypeDefKind::Class { fields },
                         };
-                        // Objects of the host's classes stay on the thread of their `Vm`.
-                        self.types[id.0 as usize].sendable = !(host && s.kind == StructKind::Class);
                         self.note_repr_attrs(id, item, s.kind == StructKind::Class);
+                        self.declare_deprecation(DeprKey::Type(id), &s.name.name, &item.attrs);
                     }
                 }
                 ItemKind::Enum(e) => {
@@ -85,6 +93,7 @@ impl<'a> Checker<'a> {
                     let declared = self.declare_type(&e.name, "enum", &e.generics, item.public);
                     self.declaring_module_enum = false;
                     if let Some(id) = declared {
+                        self.declare_deprecation(DeprKey::Type(id), &e.name.name, &item.attrs);
                         self.types[id.0 as usize].kind = TypeDefKind::Enum {
                             variants: Vec::new(),
                         };
@@ -95,6 +104,7 @@ impl<'a> Checker<'a> {
                     if let Some(id) =
                         self.declare_type(&i.name, "interface", &i.generics, item.public)
                     {
+                        self.declare_deprecation(DeprKey::Type(id), &i.name.name, &item.attrs);
                         self.types[id.0 as usize].kind = TypeDefKind::Interface {
                             methods: Vec::new(),
                         };
@@ -102,7 +112,7 @@ impl<'a> Checker<'a> {
                     }
                 }
                 ItemKind::TypeAlias(t) if self.name_is_free(&t.name, "type alias") => {
-                    let generics = self.type_params(&t.generics);
+                    let generics = self.type_params(&t.generics, false);
                     let id = AliasId(self.alias_infos.len() as u32);
                     self.alias_infos.push(AliasInfo {
                         name: t.name.name.clone(),
@@ -112,6 +122,7 @@ impl<'a> Checker<'a> {
                         state: AliasState::Pending(&t.ty),
                     });
                     self.aliases.insert(t.name.name.clone(), id);
+                    self.declare_deprecation(DeprKey::Alias(id), &t.name.name, &item.attrs);
                     self.export_type(&t.name.name, TypeEntity::Alias(id), item.public);
                 }
                 _ => {}
@@ -119,9 +130,14 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Allocates the type parameters of a type or alias. Bounds on them are not supported
-    /// yet: write them on the `impl` blocks and functions that need them.
-    pub(crate) fn type_params(&mut self, decls: &[ast::GenericParam]) -> Vec<GenericParamInfo> {
+    /// Allocates the type parameters of a type or alias. The bounds of a struct, enum or
+    /// interface are resolved later (`define_type_bounds`, once every type has a name); an
+    /// alias takes none.
+    pub(crate) fn type_params(
+        &mut self,
+        decls: &[ast::GenericParam],
+        bounds_allowed: bool,
+    ) -> Vec<GenericParamInfo> {
         let mut out: Vec<GenericParamInfo> = Vec::new();
         for d in decls {
             if out.iter().any(|g| g.name == d.name.name) {
@@ -134,8 +150,18 @@ impl<'a> Checker<'a> {
                 ));
                 continue;
             }
-            if let Some(b) = d.bounds.first() {
-                self.unsupported("a bound on the type parameter of a type", b.span);
+            if let Some(b) = d.bounds.first()
+                && !bounds_allowed
+            {
+                self.report(
+                    Diagnostic::error(
+                        "a type alias takes no bounds on its type parameters",
+                        b.span,
+                    )
+                    .with_hint(
+                        "an alias takes the bounds of the type it names: `type S[T] = Sorted[T]` is enough when `Sorted` needs `T: Ord`",
+                    ),
+                );
             }
             out.push(GenericParamInfo {
                 id: self.new_param(),
@@ -216,13 +242,12 @@ impl<'a> Checker<'a> {
         if !self.name_is_free(name, what) {
             return None;
         }
-        let generics = self.type_params(generics);
+        let generics = self.type_params(generics, true);
         let id = TypeId(self.types.len() as u32);
         self.types.push(TypeDef {
             name: name.name.clone(),
             span: name.span,
             params: generics.iter().map(|g| g.id).collect(),
-            sendable: true,
             // What a named host module declares is that module's own.
             module: self.declaring_host_module(),
             open: false,
@@ -270,6 +295,151 @@ impl<'a> Checker<'a> {
                 _ => {}
             }
         }
+    }
+
+    /// Resolves the bounds written on the type parameters of structs, enums and interfaces
+    /// (`struct Sorted[T: Ord]`). It runs once every type has a name and every import is bound,
+    /// and before any field or signature is resolved, so each use of a type finds its bounds.
+    pub(crate) fn define_type_bounds(&mut self, items: &[&'a ast::Item]) {
+        for item in items {
+            let (name, decls) = match &item.kind {
+                ItemKind::Struct(s) => (&s.name, &s.generics),
+                ItemKind::Enum(e) => (&e.name, &e.generics),
+                ItemKind::Interface(i) => (&i.name, &i.generics),
+                _ => continue,
+            };
+            if decls.iter().all(|g| g.bounds.is_empty()) {
+                continue;
+            }
+            let Some(id) = self.own_type(name) else {
+                continue;
+            };
+            let mark = self.enter_type_params(id);
+            let mut generics = self.type_extra[id.0 as usize].generics.clone();
+            for (info, decl) in generics.iter_mut().zip(decls.iter()) {
+                let bounds: Vec<_> = decl
+                    .bounds
+                    .iter()
+                    .filter_map(|b| self.resolve_bound(b))
+                    .collect();
+                self.param_bounds.insert(info.id, bounds.clone());
+                info.bounds = bounds;
+            }
+            self.leave_generics(mark);
+            if let Some(iface) = self.ifaces.get_mut(&id) {
+                iface.generics = generics.clone();
+            }
+            self.type_extra[id.0 as usize].generics = generics;
+        }
+    }
+
+    /// A type parameter of an `impl` header that is a type argument of `t` takes the bounds the
+    /// type declares for that parameter: `impl[T] Sorted[T]` is `impl[T: Ord] Sorted[T]` when
+    /// `struct Sorted[T: Ord]`. (A function must still write the bound: `fn f[T](s: Sorted[T])`
+    /// is an error, as a bound on a function's own parameter always is.)
+    fn imply_bounds(&mut self, t: &ast::TypeExpr, generics: &mut [GenericParamInfo]) {
+        let ast::TypeKind::Named { path, args } = &t.kind else {
+            return;
+        };
+        let name = path
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect::<Vec<_>>()
+            .join(".");
+        let Some(&id) = self.type_ids.get(&name) else {
+            return;
+        };
+        let declared = self.type_extra[id.0 as usize].generics.clone();
+        if declared.iter().all(|g| g.bounds.is_empty()) {
+            return;
+        }
+        // Which impl parameter each type parameter was given, when it is given one by name.
+        let mut map: Vec<(crate::types::ParamId, Ty)> = Vec::new();
+        for (g, a) in declared.iter().zip(args) {
+            if let ast::TypeKind::Named { path, args } = &a.kind
+                && let [one] = path.as_slice()
+                && args.is_empty()
+                && let Some(ty @ Ty::Param(..)) = self.scoped_param(&one.name)
+            {
+                map.push((g.id, ty));
+            }
+        }
+        for g in &declared {
+            let Some((_, Ty::Param(pid, _))) = map.iter().find(|(id, _)| *id == g.id).cloned()
+            else {
+                continue;
+            };
+            for b in &g.bounds {
+                let bound = BoundRef {
+                    iface: b.iface,
+                    args: b.args.iter().map(|a| a.subst(&map)).collect(),
+                    span: b.span,
+                    implied: true,
+                };
+                if let Some(info) = generics.iter_mut().find(|x| x.id == pid)
+                    && !info
+                        .bounds
+                        .iter()
+                        .any(|x| x.iface == bound.iface && x.args == bound.args)
+                {
+                    info.bounds.push(bound.clone());
+                    self.param_bounds.entry(pid).or_default().push(bound);
+                }
+            }
+        }
+    }
+
+    /// Requires what the type `id` declares of its type parameters (`struct Sorted[T: Ord]`)
+    /// of the arguments `args` it is given; `spans` say where each was written. Decided at
+    /// once, or when every declaration is collected.
+    pub(crate) fn require_type_bounds(
+        &mut self,
+        id: TypeId,
+        args: &[Ty],
+        spans: &[Span],
+        at: Span,
+    ) {
+        let Some(obligations) =
+            self.type_bound_obligations(id, args, |i| spans.get(i).copied().unwrap_or(at))
+        else {
+            return;
+        };
+        for ob in obligations {
+            self.require(ob);
+        }
+    }
+
+    /// The requirements the bounds of type `id` make of `args`, if it has any.
+    pub(crate) fn type_bound_obligations(
+        &self,
+        id: TypeId,
+        args: &[Ty],
+        span_of: impl Fn(usize) -> Span,
+    ) -> Option<Vec<crate::obligations::Obligation>> {
+        let generics = &self.type_extra.get(id.0 as usize)?.generics;
+        if generics.iter().all(|g| g.bounds.is_empty()) {
+            return None;
+        }
+        let map = Self::param_map(generics, args);
+        let name = self.types[id.0 as usize].name.clone();
+        let mut out = Vec::new();
+        for (i, g) in generics.iter().enumerate() {
+            let Some(ty) = args.get(i) else { continue };
+            for b in &g.bounds {
+                out.push(crate::obligations::Obligation {
+                    ty: ty.clone(),
+                    iface: b.iface,
+                    args: b.args.iter().map(|a| a.subst(&map)).collect(),
+                    span: span_of(i),
+                    origin: crate::obligations::Origin::TypeBound {
+                        ty: name.clone(),
+                        param: g.name.clone(),
+                        bound_span: b.span,
+                    },
+                });
+            }
+        }
+        Some(out)
     }
 
     /// Interfaces last: their signatures may name any type.
@@ -336,8 +506,11 @@ impl<'a> Checker<'a> {
                 );
                 continue;
             }
-            let (ty, weak) = self.resolve_field_type(&f.ty, is_class);
-            let (rename, skip) = self.field_attrs(f, &ty);
+            let key = DeprKey::Field(id, fields.len() as u32);
+            let (ty, weak) = self.with_depr_ctx(&[DeprKey::Type(id), key], |ck| {
+                ck.resolve_field_type(&f.ty, is_class)
+            });
+            let (rename, skip) = self.field_attrs(f, &ty, key);
             fields.push(FieldDef {
                 name: f.name.name.clone(),
                 ty,
@@ -363,7 +536,7 @@ impl<'a> Checker<'a> {
     /// Reads `@rename("key")` and `@skip` on a field (DESIGN §7.5); anything else is not
     /// supported on a field. A skipped field must be buildable without the JSON: it needs a
     /// default value or an optional type (it is `none`).
-    fn field_attrs(&mut self, f: &'a ast::Field, ty: &Ty) -> (Option<String>, bool) {
+    fn field_attrs(&mut self, f: &'a ast::Field, ty: &Ty, key: DeprKey) -> (Option<String>, bool) {
         let mut rename: Option<String> = None;
         let mut skip = false;
         for attr in &f.attrs {
@@ -393,11 +566,11 @@ impl<'a> Checker<'a> {
                     }
                     skip = true;
                 }
-                other => {
-                    self.unsupported(&format!("the attribute `@{other}` on a field"), attr.span)
-                }
+                "deprecated" => {}
+                _ => self.unknown_attribute(attr, AttrSite::Field),
             }
         }
+        self.declare_deprecation(key, &f.name.name, &f.attrs);
         if skip && f.default.is_none() && !matches!(ty, Ty::Option(_)) {
             self.report(
                 Diagnostic::error(
@@ -580,7 +753,9 @@ impl<'a> Checker<'a> {
                 let back = self.enter_module(module);
                 let mark = self.enter_generics(&generics);
                 let saved = self.self_ty.take();
+                let outer = self.implying.replace(id);
                 let ty = self.resolve_type(target);
+                self.implying = outer;
                 self.self_ty = saved;
                 self.leave_generics(mark);
                 self.enter_module(back);
@@ -606,7 +781,44 @@ impl<'a> Checker<'a> {
         if tys.iter().any(Ty::is_error) {
             return Ty::Error;
         }
-        body.subst(&Self::param_map(&generics, &tys))
+        // The bounds the alias took from the type it names (its parameters were given before the
+        // body was resolved, so read them again now).
+        let generics = self.alias_infos[id.0 as usize].generics.clone();
+        let map = Self::param_map(&generics, &tys);
+        let (alias, underlying) = (
+            self.alias_infos[id.0 as usize].name.clone(),
+            self.underlying_name(&body),
+        );
+        for (i, g) in generics.iter().enumerate() {
+            for b in &g.bounds {
+                let ob = crate::obligations::Obligation {
+                    ty: tys[i].clone(),
+                    iface: b.iface,
+                    args: b.args.iter().map(|a| a.subst(&map)).collect(),
+                    span: args[i].span,
+                    origin: crate::obligations::Origin::AliasBound {
+                        alias: alias.clone(),
+                        underlying: underlying.clone(),
+                        param: g.name.clone(),
+                        bound_span: b.span,
+                    },
+                };
+                self.require(ob);
+            }
+        }
+        body.subst(&map)
+    }
+
+    /// The name of the type an alias stands for, without arguments, for messages.
+    fn underlying_name(&self, ty: &Ty) -> String {
+        match ty {
+            Ty::Adt(id, _) | Ty::Dyn(id, _) => {
+                self.types[id.0 as usize].display_name().into_owned()
+            }
+            Ty::Map(..) => "Map".to_string(),
+            Ty::Set(_) => "Set".to_string(),
+            other => self.render(other),
+        }
     }
 
     /// A struct that contains itself by value could never be built.
@@ -655,10 +867,18 @@ impl<'a> Checker<'a> {
     // ---- impl blocks ----
 
     pub(crate) fn collect_impl(&mut self, decl: &'a ast::ImplDecl, item: &'a ast::Item) {
-        let (generics, mark) = self.declare_generics(&decl.generics);
+        let (mut generics, mark) = self.declare_generics(&decl.generics);
+        // The header of an `impl` for `struct Sorted[T: Ord]` has the bound without writing it.
+        self.imply_bounds(&decl.target, &mut generics);
+        if let Some(iface) = &decl.interface {
+            self.imply_bounds(iface, &mut generics);
+        }
         // `Self` is not available in the header: it is what the header says.
         let saved = self.self_ty.take();
+        // Writing the name of a deprecated type in the header of its own `impl` is no use.
+        self.depr_mute += 1;
         let target = self.resolve_type(&decl.target);
+        self.depr_mute -= 1;
         match &decl.interface {
             Some(iface) => self.collect_iface_impl(decl, item, iface, target, &generics),
             None => self.collect_inherent_impl(decl, target, &generics),

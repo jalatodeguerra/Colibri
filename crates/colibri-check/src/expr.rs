@@ -8,6 +8,7 @@ use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::{BlockMode, FnCtx};
 use crate::checker::{Dep, ValueRef};
+use crate::deprecated::DeprKey;
 use crate::format;
 use crate::hir::{
     self, Anchor, ArithOp, BinOp, BitOp, Block, CmpOp, Expr, Intrinsic, Lit, Num, Operand, Place,
@@ -149,6 +150,7 @@ impl FnCtx<'_, '_> {
             Some(ValueRef::Global(g)) => {
                 let ty = self.ck.global_ty(g);
                 self.add_dep(Dep::Global(g), span);
+                self.ck.note_deprecated_use(DeprKey::Global(g), span);
                 let place = Place {
                     anchor: Anchor::Global(g),
                     path: Vec::new(),
@@ -157,7 +159,10 @@ impl FnCtx<'_, '_> {
                 };
                 self.mk(hir::ExprKind::Read(Box::new(place)), ty, span)
             }
-            Some(ValueRef::Fn(f)) => self.fn_value(f, None, None, span),
+            Some(ValueRef::Fn(f)) => {
+                self.ck.note_deprecated_use(DeprKey::Fn(f), span);
+                self.fn_value(f, None, None, span)
+            }
             None => match name {
                 "print" => {
                     self.ck.report(
@@ -268,6 +273,7 @@ impl FnCtx<'_, '_> {
                     | Ty::Range(_)
                     | Ty::Ptr(_)
                     | Ty::Vec(_)
+                    | Ty::Bytes
             ) {
                 self.ck.report(Diagnostic::error(
                     format!("a value of type `{shown}` cannot be shown in a string"),
@@ -652,7 +658,7 @@ impl FnCtx<'_, '_> {
         }
         let ok = match self.infer.shallow(&l.ty) {
             Ty::Error => true,
-            Ty::Str => arith == ArithOp::Add,
+            Ty::Str | Ty::Bytes => arith == ArithOp::Add,
             t => self.is_numeric(&t),
         };
         if !ok {
@@ -666,12 +672,15 @@ impl FnCtx<'_, '_> {
             );
             if shown == "str" {
                 diag = diag.with_hint("`+` joins strings; there is no other arithmetic on `str`");
+            } else if shown == "Bytes" {
+                diag =
+                    diag.with_hint("`+` joins two `Bytes`; there is no other arithmetic on them");
             }
             self.ck.report(diag);
             return self.error_expr(span);
         }
         let ty = l.ty.clone();
-        let op = if self.infer.shallow(&ty) == Ty::Str {
+        let op = if matches!(self.infer.shallow(&ty), Ty::Str | Ty::Bytes) {
             BinOp::Concat
         } else {
             BinOp::Arith(arith, Num::Int(IntTy::I64))

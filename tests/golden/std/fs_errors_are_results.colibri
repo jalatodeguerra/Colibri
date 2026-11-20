@@ -28,7 +28,7 @@ fn main() -> Result[()] {
     print(fs.remove(folder).is_err())
     // Invalid UTF-8 is an error for `read`, and fine for `read_bytes`.
     let binary = path.join(dir, "binary")
-    fs.write_bytes(binary, [255, 254, 0])?
+    fs.write_bytes(binary, Bytes([255, 254, 0]))?
     print(fs.read(binary).is_err())
     print(fs.read_bytes(binary)?)
     return ok(())
@@ -46,4 +46,4 @@ fn main() -> Result[()] {
 // expect: true
 // expect: true
 // expect: true
-// expect: [255, 254, 0]
+// expect: b"\xff\xfe\x00"

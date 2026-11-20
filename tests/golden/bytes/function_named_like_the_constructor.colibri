@@ -1,0 +1,18 @@
+// A function may take the name of a built-in constructor (`Set`, `Map`, `StrBuilder`, `Bytes`,
+// `BytesBuilder` all behave alike): the function is what the name means in that program. A
+// struct with such a name is refused (reserved_names).
+fn Bytes(x: int) -> int {
+    return x + 1
+}
+
+fn BytesBuilder(x: int) -> int {
+    return x + 2
+}
+
+fn main() {
+    print(Bytes(1))
+    print(BytesBuilder(1))
+}
+
+// expect: 2
+// expect: 3

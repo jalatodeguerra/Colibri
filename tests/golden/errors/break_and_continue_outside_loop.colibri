@@ -1,3 +1,4 @@
+// allow: unused
 fn main() {
     break // error: `break` outside of a loop
     continue // error: `continue` outside of a loop
