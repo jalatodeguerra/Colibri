@@ -175,6 +175,32 @@ fn kind_of_windows_code(code: i32) -> Option<Kind> {
     })
 }
 
+/// The variant of `net.Error` a Windows socket error code is when it comes from `bind` (so from
+/// `listen`), where it differs from `kind_of_windows_code`. `WSAEACCES` there means that the port
+/// is not free for this socket: another socket holds it with `SO_EXCLUSIVEADDRUSE` (also when
+/// that one is bound to the wildcard address and this one asks for a specific address of it),
+/// or the system has reserved it (an excluded port range). It is not a lack of rights on the
+/// user's part, as `EACCES` of a port below 1024 is on Unix, so it is `AddrInUse`, the variant
+/// every system gives a second listener on a port. Never used for a connect, where `WSAEACCES`
+/// is a real refusal (a broadcast address, a firewall).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn kind_of_windows_bind_code(code: i32) -> Option<Kind> {
+    match code {
+        // WSAEACCES
+        10013 => Some(Kind::AddrInUse),
+        _ => kind_of_windows_code(code),
+    }
+}
+
+/// The variant of `net.Error` a failed `bind` is (see `kind_of_windows_bind_code`).
+fn kind_of_bind(e: &io::Error) -> Kind {
+    #[cfg(windows)]
+    if let Some(kind) = e.raw_os_error().and_then(kind_of_windows_bind_code) {
+        return kind;
+    }
+    kind_of(e)
+}
+
 /// The variant of `net.Error` a Unix `errno` is, where `ErrorKind` has none.
 #[cfg(unix)]
 fn kind_of_unix_code(code: i32) -> Option<Kind> {
@@ -246,7 +272,7 @@ fn describe(kind: Kind, e: &io::Error, listening: bool) -> String {
         ),
         Kind::AddrInUse => (
             "address already in use",
-            " (another socket has that port: stop it, or listen on port 0 for a free one)",
+            " (another socket has or reserves that port: stop it, or listen on port 0 for a free one)",
         ),
         Kind::AddrNotAvailable if listening => (
             "address not available",
@@ -276,7 +302,10 @@ fn describe(kind: Kind, e: &io::Error, listening: bool) -> String {
 
 /// An I/O error as a `(variant, message)` that says what was attempted and what to do about it.
 fn failure(action: &str, what: &str, e: &io::Error) -> (Kind, String) {
-    let kind = kind_of(e);
+    failure_as(kind_of(e), action, what, e)
+}
+
+fn failure_as(kind: Kind, action: &str, what: &str, e: &io::Error) -> (Kind, String) {
     (
         kind,
         format!(
@@ -1915,7 +1944,9 @@ fn listen(cx: &mut Ctx, addr: String) -> Result<Listener, TypedError> {
             }
         }
         let e = first.expect("an address list is never empty");
-        Err(fail("listen on", &addr, &e))
+        // The kind of a failed bind: a port that is not free is `AddrInUse` on every system.
+        let (kind, message) = failure_as(kind_of_bind(&e), "listen on", &addr, &e);
+        Err(kind.error(message))
     })
     .map_err(|why| no_thread("listen on", &what, &why))?
 }
@@ -2053,6 +2084,22 @@ mod tests {
         assert_eq!(kind(10065), Some(Kind::Unreachable)); // WSAEHOSTUNREACH
         assert_eq!(kind(10013), Some(Kind::PermissionDenied)); // WSAEACCES
         assert_eq!(kind(10035), None); // WSAEWOULDBLOCK is `WouldBlock` for `std`
+    }
+
+    /// `WSAEACCES` from a bind is `AddrInUse`, and from anything else it stays `PermissionDenied`.
+    /// Run on every system: the function takes the raw code.
+    #[test]
+    fn a_windows_access_error_from_bind_is_an_address_in_use() {
+        assert_eq!(kind_of_windows_bind_code(10013), Some(Kind::AddrInUse));
+        assert_eq!(kind_of_windows_code(10013), Some(Kind::PermissionDenied));
+        // The other codes are the ones every call has.
+        assert_eq!(kind_of_windows_bind_code(10048), Some(Kind::AddrInUse));
+        assert_eq!(
+            kind_of_windows_bind_code(10049),
+            Some(Kind::AddrNotAvailable)
+        );
+        assert_eq!(kind_of_windows_bind_code(10061), Some(Kind::Refused));
+        assert_eq!(kind_of_windows_bind_code(10035), None);
     }
 
     #[cfg(unix)]

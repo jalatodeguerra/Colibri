@@ -53,7 +53,7 @@ fn main() -> Result[()] {
 // expect: Refused
 // expect: cannot connect to `<addr>`: connection refused (nothing is listening there)
 // expect: AddrInUse
-// expect: cannot listen on `<addr>`: address already in use (another socket has that port: stop it, or listen on port 0 for a free one)
+// expect: cannot listen on `<addr>`: address already in use (another socket has or reserves that port: stop it, or listen on port 0 for a free one)
 // expect: InvalidAddress InvalidAddress
 // expect: InvalidAddress InvalidAddress
 // expect: InvalidAddress InvalidAddress
