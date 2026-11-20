@@ -170,10 +170,14 @@ pub use colibri_check::package::{
     sync as sync_dependencies,
 };
 pub use colibri_check::package::{is_package_name, not_a_script, not_a_script_plainly};
+#[doc(hidden)]
+pub use colibri_interp::Completer;
 pub use colibri_interp::Leak;
 pub use colibri_interp::{CancelToken, Clock, DEFAULT_NATIVE_STACK_BUDGET, SystemClock};
 pub use colibri_syntax::{Diagnostic, Severity, SourceMap, Span};
 pub use convert::{Args, Bytes, FromColibri, IntoColibri, Never, TypedError, Value, ValueKind};
+#[doc(hidden)]
+pub use ctx::Incomplete;
 pub use ctx::{Caller, Ctx, Cx};
 pub use error::{Error, Location, Report, StackFrame};
 pub use func::Fn;

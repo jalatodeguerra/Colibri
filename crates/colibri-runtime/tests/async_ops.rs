@@ -505,3 +505,463 @@ fn a_fake_clock_does_not_advance_while_an_operation_runs() {
         assert_eq!(time.get(), 0.0);
     }
 }
+
+// ---- operations that another thread completes (`Ctx::try_await_completion`) ----
+
+use std::sync::Mutex;
+
+/// The result of a parked operation: counts how often it is dropped, so a value that is
+/// delivered, a value that arrives after the waiter has gone and one that is never made can be
+/// told apart.
+struct Probe(Arc<AtomicUsize>);
+
+impl Drop for Probe {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// What the host functions of `completion_vm` share with the test.
+#[derive(Clone, Default)]
+struct Parked {
+    /// Completers handed out by `park()` and not yet completed or dropped.
+    slots: Arc<Mutex<Vec<colibri::Completer<Probe>>>>,
+    /// Hooks of `park()` that have run.
+    hooks: Arc<AtomicUsize>,
+    /// Drops of the probes made by `release`.
+    probe_drops: Arc<AtomicUsize>,
+    /// The gate of `gated`: a thread that holds a completer waits for `open()`.
+    gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+/// A bound for every wait for another thread: a ceiling, never the thing measured.
+const CEILING: Duration = Duration::from_secs(30);
+
+fn describe(outcome: Result<i64, colibri::Incomplete>) -> String {
+    match outcome {
+        Ok(v) => format!("ok {v}"),
+        Err(colibri::Incomplete::NotStarted(message)) => format!("not started: {message}"),
+        Err(colibri::Incomplete::Dropped(message)) => format!("dropped: {message}"),
+    }
+}
+
+fn completion_vm() -> (colibri::Vm, colibri::SharedBuffer, Parked) {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    let shared = Parked::default();
+    // `now(v)`: another thread completes at once.
+    vm.register_fn("now", |cx: &mut colibri::Ctx, v: i64| -> String {
+        describe(cx.try_await_completion(move |completer| {
+            std::thread::spawn(move || completer.complete(v));
+            Ok(())
+        }))
+    })
+    .unwrap();
+    // `inline(v)`: completed inside `start`, on the calling thread, before the wait begins.
+    vm.register_fn("inline", |cx: &mut colibri::Ctx, v: i64| -> String {
+        describe(cx.try_await_completion(move |completer| {
+            completer.complete(v);
+            Ok(())
+        }))
+    })
+    .unwrap();
+    // `gated(v)`: another thread completes once `open()` has been called.
+    let gate = Arc::clone(&shared.gate);
+    vm.register_fn("gated", move |cx: &mut colibri::Ctx, v: i64| -> String {
+        let gate = Arc::clone(&gate);
+        describe(cx.try_await_completion(move |completer| {
+            std::thread::spawn(move || {
+                let (open, changed) = &*gate;
+                let guard = open.lock().unwrap();
+                let (guard, _) = changed
+                    .wait_timeout_while(guard, CEILING, |open| !*open)
+                    .unwrap();
+                drop(guard);
+                completer.complete(v);
+            });
+            Ok(())
+        }))
+    })
+    .unwrap();
+    let gate = Arc::clone(&shared.gate);
+    vm.register_fn("open", move || {
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+    })
+    .unwrap();
+    // `forgotten()`: the thread that was to complete drops the completer instead.
+    vm.register_fn("forgotten", |cx: &mut colibri::Ctx| -> String {
+        describe(
+            cx.try_await_completion(|completer: colibri::Completer<i64>| {
+                std::thread::spawn(move || drop(completer));
+                Ok(())
+            }),
+        )
+    })
+    .unwrap();
+    vm.register_fn("refuse", |cx: &mut colibri::Ctx| -> String {
+        describe(cx.try_await_completion(|_: colibri::Completer<i64>| Err("no thread".into())))
+    })
+    .unwrap();
+    // `park()`: keeps the completer in `slots` until `release` or `forget_parked`.
+    let state = shared.clone();
+    vm.register_fn("park", move |cx: &mut colibri::Ctx| -> String {
+        let state = state.clone();
+        describe(
+            cx.try_await_completion(move |completer| {
+                let hooks = Arc::clone(&state.hooks);
+                completer.token().on_cancel(move || {
+                    hooks.fetch_add(1, Ordering::SeqCst);
+                });
+                state.slots.lock().unwrap().push(completer);
+                Ok(())
+            })
+            .map(|_probe: Probe| 1),
+        )
+    })
+    .unwrap();
+    let state = shared.clone();
+    vm.register_fn("parked", move || state.slots.lock().unwrap().len() as i64)
+        .unwrap();
+    let state = shared.clone();
+    vm.register_fn("hooks", move || state.hooks.load(Ordering::SeqCst) as i64)
+        .unwrap();
+    let state = shared.clone();
+    vm.register_fn("release", move || -> i64 {
+        let slots = std::mem::take(&mut *state.slots.lock().unwrap());
+        let n = slots.len();
+        for completer in slots {
+            completer.complete(Probe(Arc::clone(&state.probe_drops)));
+        }
+        n as i64
+    })
+    .unwrap();
+    let state = shared.clone();
+    vm.register_fn("forget_parked", move || -> i64 {
+        let slots = std::mem::take(&mut *state.slots.lock().unwrap());
+        slots.len() as i64
+    })
+    .unwrap();
+    (vm, out, shared)
+}
+
+/// Runs `main` of `source` and returns what it printed.
+fn run_completion(source: &str) -> String {
+    let (mut vm, out, _) = completion_vm();
+    vm.load_source("a.colibri", source).unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(vm.coroutine_count(), 0);
+    out.contents()
+}
+
+#[test]
+fn a_completion_from_another_thread_wakes_coroutines_that_overlap() {
+    let text = run_completion(
+        r#"
+fn job(i: int) -> str { return now(i * 10) }
+fn main() {
+    let group = CoGroup()
+    var handles: List[Coroutine[str]] = []
+    for i in 0..4 {
+        handles.push(group.go(job(i)))
+    }
+    group.join_all()
+    for h in handles {
+        print(h.join())
+    }
+}
+"#,
+    );
+    assert_eq!(text, "ok 0\nok 10\nok 20\nok 30\n");
+}
+
+/// On the main fiber the wait runs the event loop: the coroutine that opens the gate only runs
+/// if it does, and the thread that completes only does after the gate is open.
+#[test]
+fn a_completion_on_the_main_fiber_runs_the_loop_meanwhile() {
+    let text = run_completion(
+        r#"
+fn opener() {
+    wait(0.001)
+    open()
+}
+fn main() {
+    go opener()
+    print(gated(7))
+}
+"#,
+    );
+    assert_eq!(text, "ok 7\n");
+}
+
+/// The thread that completes may finish before the coroutine has suspended; the wait looks at
+/// what has completed before it sleeps.
+#[test]
+fn a_completion_that_arrives_before_the_waiter_suspends_is_not_lost() {
+    for _ in 0..200 {
+        let text = run_completion("fn main() { print(now(1)) }\n");
+        assert_eq!(text, "ok 1\n");
+    }
+}
+
+#[test]
+fn a_completion_in_a_drop_hook_blocks_until_it_is_done() {
+    let text = run_completion(
+        r#"
+class Res { label: str }
+
+impl Drop for Res {
+    fn drop(self) { print("drop {self.label} {now(3)}") }
+}
+
+fn main() {
+    let r = Res { label: "r" }
+    print("end of main")
+}
+"#,
+    );
+    assert_eq!(text, "end of main\ndrop r ok 3\n");
+}
+
+#[test]
+fn a_completer_dropped_without_a_result_is_an_error_not_a_hang() {
+    // In a coroutine, on the main fiber, and where the wait blocks (a drop hook).
+    let text = run_completion(
+        r#"
+class Res { label: str }
+
+impl Drop for Res {
+    fn drop(self) { print("hook {forgotten()}") }
+}
+
+fn job() -> str { return forgotten() }
+fn main() {
+    let c = go job()
+    print("main {forgotten()}")
+    print("coroutine {c.join()}")
+    let r = Res { label: "r" }
+}
+"#,
+    );
+    let none = "dropped: the operation ended without a result";
+    assert_eq!(
+        text,
+        format!("main {none}\ncoroutine {none}\nhook {none}\n")
+    );
+}
+
+#[test]
+fn a_start_that_fails_is_an_error_and_nothing_waits() {
+    let (mut vm, out, shared) = completion_vm();
+    vm.load_source(
+        "a.colibri",
+        "fn job() -> str { return refuse() }\nfn main() {\n    let c = go job()\n    print(c.join())\n    print(refuse())\n}\n",
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(
+        out.contents(),
+        "not started: no thread\nnot started: no thread\n"
+    );
+    assert_eq!(vm.coroutine_count(), 0);
+    assert!(shared.slots.lock().unwrap().is_empty());
+}
+
+/// A parked operation that is cancelled: its hook has run when `cancel()` returns, the
+/// coroutine unwound, and a `complete` that comes later changes nothing for anyone and drops
+/// its value.
+#[test]
+fn a_cancelled_completion_has_run_its_hook_and_ignores_a_late_complete() {
+    let (mut vm, out, shared) = completion_vm();
+    vm.load_source(
+        "a.colibri",
+        r#"
+fn waiter() {
+    defer print("cleanup")
+    let v = park()
+    print("never {v}")
+}
+fn main() {
+    let c = go waiter()
+    while parked() == 0 {
+        wait(0.001)
+    }
+    c.cancel()
+    print("cancelled {c.done()} hooks {hooks()}")
+    print("late {release()}")
+    wait(0.01)
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "cleanup\ncancelled true hooks 1\nlate 1\n");
+    assert_eq!(vm.coroutine_count(), 0);
+    // The late value was dropped on the completing thread, not kept.
+    assert_eq!(shared.probe_drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_completer_dropped_by_its_holder_wakes_a_parked_waiter_with_an_error() {
+    let text = run_completion(
+        r#"
+fn waiter() -> str { return park() }
+fn main() {
+    let c = go waiter()
+    while parked() == 0 {
+        wait(0.001)
+    }
+    print("dropped {forget_parked()}")
+    print(c.join())
+}
+"#,
+    );
+    assert_eq!(
+        text,
+        "dropped 1\ndropped: the operation ended without a result\n"
+    );
+}
+
+#[test]
+fn a_completed_parked_waiter_gets_its_value_once() {
+    let (mut vm, out, shared) = completion_vm();
+    vm.load_source(
+        "a.colibri",
+        r#"
+fn waiter() -> str { return park() }
+fn main() {
+    let a = go waiter()
+    let b = go waiter()
+    while parked() < 2 {
+        wait(0.001)
+    }
+    print("released {release()}")
+    print(a.join())
+    print(b.join())
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "released 2\nok 1\nok 1\n");
+    assert_eq!(shared.hooks.load(Ordering::SeqCst), 0);
+    assert_eq!(shared.probe_drops.load(Ordering::SeqCst), 2);
+}
+
+/// Ending the `Vm` with a completer outstanding is prompt, cancels its token (the hook runs),
+/// and leaves the completer inert: completing it afterwards drops the value and does nothing
+/// else.
+#[test]
+fn dropping_the_vm_with_a_completer_outstanding_cancels_its_token() {
+    let (mut vm, _out, shared) = completion_vm();
+    vm.load_source(
+        "a.colibri",
+        r#"
+fn waiter() { let v = park() }
+fn main() {
+    go waiter()
+    while parked() == 0 {
+        wait(0.001)
+    }
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(shared.hooks.load(Ordering::SeqCst), 0);
+    let began = Instant::now();
+    drop(vm);
+    assert!(began.elapsed() < CEILING, "dropping the Vm was not prompt");
+    assert_eq!(shared.hooks.load(Ordering::SeqCst), 1);
+    let slots = std::mem::take(&mut *shared.slots.lock().unwrap());
+    assert_eq!(slots.len(), 1);
+    for completer in slots {
+        assert!(completer.token().is_cancelled());
+        completer.complete(Probe(Arc::clone(&shared.probe_drops)));
+    }
+    assert_eq!(shared.probe_drops.load(Ordering::SeqCst), 1);
+}
+
+/// A completer that `start` completes itself is a plain yield: the call gives the result at
+/// once, and still goes through the scheduler once, so the coroutines behind it run first. (This
+/// is how a call that could proceed yields after its burst budget; see the poller's notes.)
+#[test]
+fn a_completion_made_inside_start_yields_once_and_gives_its_value() {
+    let text = run_completion(
+        r#"
+fn first() {
+    print("first begins")
+    print("first got {inline(5)}")
+}
+fn second() { print("second runs") }
+fn main() {
+    let group = CoGroup()
+    group.go(first())
+    group.go(second())
+    group.join_all()
+    print("main got {inline(6)}")
+}
+"#,
+    );
+    assert_eq!(
+        text,
+        "first begins\nsecond runs\nfirst got ok 5\nmain got ok 6\n"
+    );
+}
+
+#[test]
+fn a_completion_made_inside_start_works_where_the_wait_blocks() {
+    let text = run_completion(
+        r#"
+class Res { label: str }
+
+impl Drop for Res {
+    fn drop(self) { print("drop {self.label} {inline(8)}") }
+}
+
+fn main() {
+    let r = Res { label: "r" }
+}
+"#,
+    );
+    assert_eq!(text, "drop r ok 8\n");
+}
+
+/// A `start` that panics is a panic of the host function (the program sees it), leaves nothing of
+/// the operation behind (its hook has run, not at the end of the `Vm`), and the `Vm` goes on.
+#[test]
+fn a_start_that_panics_is_a_panic_of_the_call_and_the_vm_goes_on() {
+    let (mut vm, out, shared) = completion_vm();
+    let hooks = Arc::clone(&shared.hooks);
+    vm.register_fn("bad_start", move |cx: &mut colibri::Ctx| -> String {
+        let hooks = Arc::clone(&hooks);
+        describe(
+            cx.try_await_completion(move |completer: colibri::Completer<i64>| {
+                completer.token().on_cancel(move || {
+                    hooks.fetch_add(1, Ordering::SeqCst);
+                });
+                panic!("start blew up")
+            }),
+        )
+    })
+    .unwrap();
+    vm.load_source(
+        "a.colibri",
+        "fn main() { print(bad_start()) }\nfn again() { print(now(4)) }\n",
+    )
+    .unwrap();
+    let again = vm.get_fn::<(), ()>("again").unwrap();
+    let Err(colibri::Error::Panic { message, .. }) = vm.run_main() else {
+        panic!("expected a panic");
+    };
+    assert!(message.contains("start blew up"), "{message}");
+    assert_eq!(
+        shared.hooks.load(Ordering::SeqCst),
+        1,
+        "the hook ran at once"
+    );
+    // `again` is called through the same `Vm` after the panic: the wait works.
+    again.call(&mut vm, ()).unwrap();
+    assert_eq!(out.contents(), "ok 4\n");
+    assert_eq!(vm.coroutine_count(), 0);
+}

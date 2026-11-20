@@ -74,7 +74,7 @@
 //! leaves everything for the next call. A read that finds what it needs in the buffer does not
 //! leave the coroutine at all.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -135,6 +135,12 @@ error_kind!(
         Other,
     }
 );
+
+// The poller and its wait cells (step 2 of the change that replaces the thread per waiting
+// socket). Only the tests use them until the operations move over, so the compiler is told not
+// to complain about code that nothing calls yet; the step that moves the reads removes this.
+#[cfg_attr(not(test), allow(dead_code))]
+mod poll;
 
 /// How long a worker waits for readiness before it looks at its stop conditions again.
 const SLICE: Duration = Duration::from_millis(50);
@@ -578,6 +584,24 @@ fn no_thread(action: &str, name: &str, reason: &str) -> TypedError {
     Kind::Other.error(format!("cannot {action} `{name}`: {reason}"))
 }
 
+/// The error of a wait that needed the poller and could not get one. A poller that the system
+/// would not make is an error of the system (out of descriptors gets the text that `describe`
+/// gives it); a thread that cannot be started is `Other`, as for the helper threads.
+#[cfg_attr(not(test), allow(dead_code))]
+fn poller_error(action: &str, name: &str, e: &poll::StartError) -> TypedError {
+    match e {
+        poll::StartError::System(e) => fail(action, name, e),
+        poll::StartError::Thread(e) => no_thread(
+            action,
+            name,
+            &format!(
+                "cannot start the thread that waits for sockets: {}",
+                reason(e)
+            ),
+        ),
+    }
+}
+
 fn closed_error(name: &str, action: &str) -> TypedError {
     Kind::Closed.error(format!(
         "cannot {action} `{name}`: it was closed (do not use a connection or listener after `close()`)"
@@ -686,6 +710,10 @@ struct TurnState {
     next: u64,
     serving: u64,
     skipped: BTreeSet<u64>,
+    /// The wait cells of tickets that wait for their turn without sleeping on the condition
+    /// variable (see `Ticket::park`), by ticket. Until the reads, writes and accepts move to the
+    /// poller nothing but the tests parks.
+    parked: BTreeMap<u64, Arc<poll::Cell>>,
 }
 
 struct Ticket {
@@ -700,6 +728,7 @@ impl Turns {
                 next: 0,
                 serving: 0,
                 skipped: BTreeSet::new(),
+                parked: BTreeMap::new(),
             }),
             advanced: Condvar::new(),
         })
@@ -724,9 +753,21 @@ impl Turns {
     /// now. Whoever cancels or closes calls this after it has set the condition: taking the
     /// lock first means a waiter either has seen the condition already or is waiting and gets
     /// the notification.
+    ///
+    /// The parked cells are resolved with `Why::Closed` (each looks at the flag and at its
+    /// deadline to find out whether that is what happened). Every cell is resolved even if the
+    /// callback of one of them panics; the first such panic is then passed on to the caller.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn wake(&self) {
-        drop(self.lock());
+        let parked = std::mem::take(&mut self.lock().parked);
         self.advanced.notify_all();
+        let cells = parked
+            .into_values()
+            .map(|cell| (cell, poll::Why::Closed))
+            .collect();
+        if let Some(panic) = poll::fire_all(cells) {
+            std::panic::resume_unwind(panic);
+        }
     }
 
     /// Whether an operation holds the queue or waits in it.
@@ -789,6 +830,34 @@ impl Ticket {
     }
 }
 
+impl Ticket {
+    /// Waits for this ticket's turn without a thread: `cell` is resolved with `Why::Turn` when
+    /// the turn comes (at once if it is here), or with whatever else ends the wait first (a
+    /// close through `Turns::wake`, a deadline given to the poller with the same cell, a cancel).
+    /// A cell that ends another way is taken out of the queue. Does nothing if the cell is
+    /// resolved already.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn park(&self, cell: &Arc<poll::Cell>) {
+        let mut st = self.turns.lock();
+        if st.serving == self.id {
+            drop(st);
+            cell.fire(poll::Why::Turn);
+            return;
+        }
+        let turns = Arc::downgrade(&self.turns);
+        let id = self.id;
+        let leave = move || {
+            if let Some(turns) = turns.upgrade() {
+                turns.lock().parked.remove(&id);
+            }
+        };
+        // The cell takes only its own lock here; `fire` never holds it while it runs `leave`.
+        if cell.on_resolve(leave) {
+            st.parked.insert(id, Arc::clone(cell));
+        }
+    }
+}
+
 impl Drop for Ticket {
     fn drop(&mut self) {
         let mut st = self.turns.lock();
@@ -801,10 +870,26 @@ impl Drop for Ticket {
                 }
                 st.serving += 1;
             }
+            let serving = st.serving;
+            let next = st.parked.remove(&serving);
             drop(st);
             self.turns.advanced.notify_all();
+            if let Some(cell) = next {
+                // A callback that panics is the dropper's panic, unless the dropper is already
+                // unwinding: a second panic then would abort the process.
+                let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    cell.fire(poll::Why::Turn)
+                }));
+                if let Err(panic) = fired
+                    && !std::thread::panicking()
+                {
+                    std::panic::resume_unwind(panic);
+                }
+            }
         } else {
             st.skipped.insert(self.id);
+            // A ticket that is dropped while its cell is parked never has its turn.
+            st.parked.remove(&self.id);
         }
     }
 }
@@ -2087,6 +2172,8 @@ fn connect(cx: &mut Ctx, addr: String, timeout: Option<Duration>) -> Result<Conn
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     Kind::declare(vm)?;
+    // The poller thread is made by the first wait that needs it, not here.
+    vm.insert_state(poll::NetState::default());
     let mut m = vm.std_module("net");
     m.register_type::<Conn>()?;
     m.register_type::<Listener>()?;
@@ -2567,6 +2654,202 @@ mod tests {
         closed.store(true, Ordering::SeqCst);
         turns.wake();
         assert_eq!(waiter.join().unwrap(), "Closed");
+    }
+
+    /// The twin of `a_queued_operation_wakes_on_close_cancel_and_deadline` for a ticket that
+    /// parks a cell instead of sleeping: the turn comes, a close, a cancel and a deadline each
+    /// end the wait, with their own reason, at once and with no sleep in the test; and a cell
+    /// that ended another way leaves the queue, so it neither fires later nor holds up the
+    /// tickets behind it.
+    #[test]
+    fn a_parked_ticket_wakes_on_its_turn_close_cancel_and_deadline() {
+        use poll::{Cell, Why};
+        use std::sync::mpsc::{self, Receiver};
+        let ceiling = Duration::from_secs(30);
+        let cell = || -> (Arc<Cell>, Receiver<Why>) {
+            let (tx, rx) = mpsc::channel();
+            (
+                Cell::new(move |why| {
+                    let _ = tx.send(why);
+                }),
+                rx,
+            )
+        };
+        let parked = |turns: &Turns| turns.lock().parked.len();
+
+        // Its turn: parks while the ticket ahead is held, and is told when that one is dropped.
+        let turns = Turns::new();
+        let first = turns.ticket();
+        let second = turns.ticket();
+        let (c, rx) = cell();
+        second.park(&c);
+        assert_eq!(parked(&turns), 1);
+        assert!(rx.try_recv().is_err());
+        drop(first);
+        assert_eq!(rx.recv_timeout(ceiling).unwrap(), Why::Turn);
+        assert_eq!(parked(&turns), 0);
+        // A ticket that has its turn already is told at once.
+        let (c, rx) = cell();
+        second.park(&c);
+        assert_eq!(rx.recv_timeout(ceiling).unwrap(), Why::Turn);
+        drop(second);
+
+        // Closed: `wake` resolves every parked cell.
+        let turns = Turns::new();
+        let _first = turns.ticket();
+        let (second, third) = (turns.ticket(), turns.ticket());
+        let ((c2, rx2), (c3, rx3)) = (cell(), cell());
+        second.park(&c2);
+        third.park(&c3);
+        turns.wake();
+        assert_eq!(rx2.recv_timeout(ceiling).unwrap(), Why::Closed);
+        assert_eq!(rx3.recv_timeout(ceiling).unwrap(), Why::Closed);
+        assert_eq!(parked(&turns), 0);
+
+        // Cancelled: the cell leaves the queue; the ticket (dropped by the unwinding caller) is
+        // skipped, and the one behind it gets the turn when the first is dropped.
+        let turns = Turns::new();
+        let first = turns.ticket();
+        let (second, third) = (turns.ticket(), turns.ticket());
+        let ((c2, rx2), (c3, rx3)) = (cell(), cell());
+        second.park(&c2);
+        third.park(&c3);
+        assert!(c2.fire(Why::Cancelled));
+        assert_eq!(rx2.recv_timeout(ceiling).unwrap(), Why::Cancelled);
+        assert_eq!(parked(&turns), 1);
+        drop(second);
+        drop(first);
+        assert_eq!(rx3.recv_timeout(ceiling).unwrap(), Why::Turn);
+        assert_eq!(parked(&turns), 0);
+        assert!(rx2.try_recv().is_err(), "the cancelled cell fired again");
+
+        // Its deadline: the poller's timer resolves the cell, which leaves the queue.
+        let poller = poll::Poller::start().unwrap();
+        let turns = Turns::new();
+        let _first = turns.ticket();
+        let second = turns.ticket();
+        let (c, rx) = cell();
+        let deadline = Instant::now() + Duration::from_millis(50);
+        second.park(&c);
+        poller.timer(deadline, &c).unwrap();
+        assert_eq!(rx.recv_timeout(ceiling).unwrap(), Why::TimedOut);
+        assert!(Instant::now() >= deadline);
+        assert_eq!(parked(&turns), 0);
+        assert_eq!(poller.counts(), (0, 0));
+
+        // The turn arrives first: the deadline's timer is taken out of the poller.
+        let turns = Turns::new();
+        let first = turns.ticket();
+        let second = turns.ticket();
+        let (c, rx) = cell();
+        second.park(&c);
+        poller
+            .timer(Instant::now() + Duration::from_secs(3600), &c)
+            .unwrap();
+        assert_eq!(poller.counts(), (0, 1));
+        drop(first);
+        assert_eq!(rx.recv_timeout(ceiling).unwrap(), Why::Turn);
+        assert_eq!(poller.counts(), (0, 0));
+        drop(second);
+
+        // A parked ticket that is dropped never gets its turn, and does not hold up the next.
+        let turns = Turns::new();
+        let first = turns.ticket();
+        let (second, third) = (turns.ticket(), turns.ticket());
+        let ((c2, rx2), (c3, rx3)) = (cell(), cell());
+        second.park(&c2);
+        third.park(&c3);
+        drop(second);
+        drop(first);
+        assert_eq!(rx3.recv_timeout(ceiling).unwrap(), Why::Turn);
+        assert!(rx2.try_recv().is_err());
+        // Nothing of the dropped ticket is left in the queue.
+        assert_eq!(parked(&turns), 0);
+        drop(c2);
+    }
+
+    /// A callback that panics does not keep the other parked cells from being resolved when a
+    /// close wakes them, and does not abort the process when the ticket that hands on the turn is
+    /// dropped by an unwinding thread.
+    #[test]
+    fn a_panicking_callback_of_a_parked_cell_is_contained() {
+        use poll::{Cell, Why};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use std::sync::mpsc;
+        let ceiling = Duration::from_secs(30);
+        let panicking = || Cell::new(|_| panic!("the callback panics"));
+        let quiet = || {
+            let (tx, rx) = mpsc::channel();
+            (
+                Cell::new(move |why| {
+                    let _ = tx.send(why);
+                }),
+                rx,
+            )
+        };
+
+        // A close: the first cell panics, the other two are resolved all the same, and the
+        // panic reaches the caller of `wake`.
+        let turns = Turns::new();
+        let _first = turns.ticket();
+        let (second, third, fourth) = (turns.ticket(), turns.ticket(), turns.ticket());
+        let (c3, rx3) = quiet();
+        let (c4, rx4) = quiet();
+        second.park(&panicking());
+        third.park(&c3);
+        fourth.park(&c4);
+        assert!(catch_unwind(AssertUnwindSafe(|| turns.wake())).is_err());
+        assert_eq!(rx3.recv_timeout(ceiling).unwrap(), Why::Closed);
+        assert_eq!(rx4.recv_timeout(ceiling).unwrap(), Why::Closed);
+
+        // A turn handed on to a callback that panics: a panic of the dropper when it is not
+        // unwinding already...
+        let turns = Turns::new();
+        let first = turns.ticket();
+        let second = turns.ticket();
+        let bomb = panicking();
+        second.park(&bomb);
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(first))).is_err());
+        drop(second);
+
+        // ...and nothing but the first panic when it is (a second one would abort here).
+        let turns = Turns::new();
+        let first = turns.ticket();
+        let second = turns.ticket();
+        let bomb = panicking();
+        second.park(&bomb);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            let _held = first;
+            panic!("the thread is unwinding");
+        }));
+        assert!(outcome.is_err());
+        drop(second);
+    }
+
+    /// A poller that cannot be made is the system's error (the text for running out of
+    /// descriptors is Colibri's own); a thread that cannot be started is `Other` and says so.
+    #[test]
+    fn a_poller_that_cannot_be_had_is_reported_as_an_error_of_the_wait() {
+        // The system's code for "too many open files" differs by system; the text must not.
+        #[cfg(unix)]
+        let emfile = libc::EMFILE;
+        // WSAEMFILE
+        #[cfg(windows)]
+        let emfile = 10024;
+        let e = poll::StartError::System(io::Error::from_raw_os_error(emfile));
+        let text = format!("{:?}", poller_error("read from", "peer", &e));
+        assert!(text.contains("too many open files"), "{text}");
+        assert_eq!(variant(&poller_error("read from", "peer", &e)), "Other");
+        let e = poll::StartError::Thread(io::Error::other("no more threads"));
+        let error = poller_error("read from", "peer", &e);
+        assert_eq!(variant(&error), "Other");
+        let text = format!("{error:?}");
+        assert!(
+            text.contains(
+                "cannot read from `peer`: cannot start the thread that waits for sockets"
+            ),
+            "{text}"
+        );
     }
 
     /// A connected pair: the `Conn` of the server side and the peer's stream.
