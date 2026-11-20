@@ -20,9 +20,6 @@ use colibri_runtime as colibri;
 const READERS: usize = 1000;
 const LISTENERS: usize = 1000;
 
-/// The tests of this file count the threads and the CPU time of the whole process, so they run
-/// one at a time.
-static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 const IDLE_SECONDS: f64 = 3.0;
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -155,10 +152,17 @@ fn raise_descriptor_limit() {
     }
 }
 
+/// Both scenarios are one test, one after the other: they count the threads and the CPU time of
+/// the whole process, so no other test of this file may run beside them (a second test thread,
+/// even one that waits on a lock, would be counted).
 #[test]
-fn a_thousand_idle_blocked_reads_use_a_few_threads_and_no_cpu() {
-    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+fn a_thousand_idle_reads_and_a_thousand_idle_accepts_use_a_few_threads_and_no_cpu() {
     raise_descriptor_limit();
+    a_thousand_idle_blocked_reads();
+    a_thousand_idle_accepts();
+}
+
+fn a_thousand_idle_blocked_reads() {
     let before = threads();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -268,10 +272,7 @@ fn main() -> Result[()] {{
 /// thread and no CPU. Before the poller each of them held a pool thread that woke every slice.
 /// (A thousand listeners are a thousand descriptors; the other test of this file has a thousand
 /// connections, two thousand descriptors, and runs at another time.)
-#[test]
-fn a_thousand_idle_accepts_use_a_few_threads_and_no_cpu() {
-    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    raise_descriptor_limit();
+fn a_thousand_idle_accepts() {
     let before = threads();
     let marks = Arc::new(Mutex::new(Vec::<(Instant, f64, usize)>::new()));
     let out = colibri::SharedBuffer::new();
