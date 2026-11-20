@@ -614,3 +614,113 @@ fn main() {
         "captured argument\ndrop argument\ndrop captured\n"
     );
 }
+
+/// A `Drop` hook that panics when the last reference to a go closure's capture goes away is the
+/// failure of that child, and of nobody else: not another coroutine of the same tick, not the
+/// host's next call, not the coroutine that cancelled the child.
+const BOMB: &str = r#"
+class Bomb {
+    name: str
+}
+impl Drop for Bomb {
+    fn drop(self) {
+        print("hook {self.name}")
+        panic("boom {self.name}")
+    }
+}
+"#;
+
+fn run_with_bomb(body: &str) -> (colibri::Vm, colibri::SharedBuffer) {
+    let (mut vm, out) = vm();
+    vm.load_source("bomb.colibri", &format!("{BOMB}{body}"))
+        .unwrap();
+    (vm, out)
+}
+
+#[test]
+fn a_hook_panic_of_a_finished_go_closure_does_not_stop_another_coroutine() {
+    let (mut vm, out) = run_with_bomb(
+        r#"
+fn start() {
+    let b = Bomb { name: "b" }
+    let _c = go fn() {
+        wait(0.5)
+        print("child {b.name}")
+    }()
+}
+fn other() {
+    wait(0.5)
+    print("other 1")
+    print("other 2")
+}
+fn ping() {
+    print("ping")
+}
+fn main() {
+    start()
+    let _o = go other()
+}
+"#,
+    );
+    vm.run_main().unwrap();
+    let err = vm.tick(0.5).expect_err("the child's hook panicked");
+    assert!(err.to_string().contains("boom b"), "{err}");
+    assert_eq!(
+        out.contents(),
+        "child b\nhook b\nother 1\nother 2\n",
+        "the other coroutine ran to its end"
+    );
+    let ping = vm.get_fn::<(), ()>("ping").unwrap();
+    ping.call(&mut vm, ()).expect("the host's next call is not charged");
+}
+
+#[test]
+fn a_hook_panic_of_a_finished_go_closure_is_reported_by_its_tick_not_the_next_host_call() {
+    let (mut vm, out) = run_with_bomb(
+        r#"
+fn start() {
+    let b = Bomb { name: "b" }
+    let _c = go fn() {
+        wait(0.5)
+        print("child {b.name}")
+    }()
+}
+fn ping() {
+    print("ping")
+}
+fn main() {
+    start()
+}
+"#,
+    );
+    vm.run_main().unwrap();
+    let err = vm.tick(0.5).expect_err("tick reports the child's failure");
+    assert!(err.to_string().contains("boom b"), "{err}");
+    let ping = vm.get_fn::<(), ()>("ping").unwrap();
+    ping.call(&mut vm, ()).expect("ping is not charged");
+    assert_eq!(out.contents(), "child b\nhook b\nping\n");
+}
+
+#[test]
+fn a_hook_panic_of_a_cancelled_go_closure_does_not_stop_the_canceller() {
+    let (mut vm, out) = run_with_bomb(
+        r#"
+fn start() -> Coroutine[()] {
+    let b = Bomb { name: "b" }
+    return go fn() {
+        wait(5.0)
+        print("never {b.name}")
+    }()
+}
+fn main() {
+    let h = start()
+    h.cancel()
+    print("main after cancel")
+}
+"#,
+    );
+    vm.run_main().expect("main is not charged with the child's hook");
+    assert_eq!(out.contents(), "hook b\nmain after cancel\n");
+    let err = vm.tick(0.0).expect_err("the child's failure is reported");
+    assert!(err.to_string().contains("boom b"), "{err}");
+}
