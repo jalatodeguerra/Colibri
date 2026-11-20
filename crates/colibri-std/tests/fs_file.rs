@@ -624,8 +624,20 @@ fn main() -> Result[()] {{
         let scratch = Scratch::new("cancel-queued");
         let pipe = Pipe::new(&scratch, "pipe");
         let (mut vm, out) = vm();
-        let writer = pipe.serve(|end| {
-            std::thread::sleep(Duration::from_millis(400));
+        // The data is written only after the program says it has cancelled `x`, so the result
+        // does not depend on how fast the program gets there. (A read that has had its turn
+        // before the cancel takes its line, and the cancel comes too late for it.)
+        let marker = scratch.file("cancelled");
+        let marker_path = std::path::PathBuf::from(&marker);
+        let writer = pipe.serve(move |end| {
+            let waited = Instant::now();
+            while !marker_path.exists() {
+                assert!(
+                    waited.elapsed() < Duration::from_secs(60),
+                    "the program never cancelled x"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
             end.write_all(b"first\nsecond\nthird\n").unwrap();
         });
         let pipe = pipe.path.clone();
@@ -644,13 +656,16 @@ fn next(f: fs.File, name: str) -> str {{
 
 fn main() -> Result[()] {{
     let f = fs.open("{pipe}")?
+    // `wait` yields, so each coroutine starts and takes its place in the queue of the handle
+    // before the next one is made: the queue is a, x, y whatever the time each wait takes.
     let a = go next(f, "a")
-    wait(0.05)
+    wait(0.01)
     let x = go next(f, "x")
-    wait(0.05)
+    wait(0.01)
     let y = go next(f, "y")
-    wait(0.05)
+    wait(0.01)
     x.cancel()
+    fs.write("{marker}", "done")?
     print(a.join())
     print(y.join())
     print("main got {{f.read_line()?}}")
