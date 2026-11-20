@@ -3493,6 +3493,56 @@ fn a_burst_that_edits_two_open_files_of_one_package_analyses_and_publishes_it_on
     c.shutdown();
 }
 
+#[test]
+fn a_file_only_the_old_analysis_of_a_document_held_loses_its_diagnostics_when_it_adopts_another() {
+    // `main` and `util` are open; `util` imports `deep`, which has an error and is not open.
+    // Both documents are analysed with `deep` in the package. Then `util` stops importing it
+    // and `main` changes in the same burst: `util` is analysed, `main` adopts that analysis,
+    // and nothing holds `deep` any more, so its diagnostics are cleared.
+    let dir = temp_dir("adopt_clears");
+    write(&dir, "colibri.toml", PKG);
+    let deep = write(
+        &dir,
+        "deep.colibri",
+        "pub fn g() -> int {\n    return true\n}\n",
+    );
+    let util_text = "import deep\npub fn f() -> int => deep.g()\n";
+    let util = write(&dir, "util.colibri", util_text);
+    let main_text = "import util\nfn main() {\n    print(util.f())\n}\n";
+    let main = write(&dir, "main.colibri", main_text);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, main_text);
+    c.open(&util, util_text);
+    assert_eq!(c.diags(&deep).len(), 1, "{:?}", c.diags(&deep));
+    c.change_without_sync(&util, "pub fn f() -> int => 1\n");
+    c.change_without_sync(
+        &main,
+        "import util\nfn main() {\n    print(util.f())\n    print(2)\n}\n",
+    );
+    c.sync();
+    assert!(c.diags(&deep).is_empty(), "{:?}", c.diags(&deep));
+    c.shutdown();
+}
+
+#[test]
+fn opening_a_manifest_analyses_the_open_documents_of_one_package_once() {
+    let dir = temp_dir("manifest_open_once");
+    let manifest = write(&dir, "colibri.toml", PKG);
+    let util_text = "pub fn f() -> int => 1\n";
+    let util = write(&dir, "util.colibri", util_text);
+    let main_text = "import util\nfn main() {\n    print(util.f())\n}\n";
+    let main = write(&dir, "main.colibri", main_text);
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, main_text);
+    c.open(&util, util_text);
+    let before = c.counters();
+    c.open(&manifest, PKG);
+    let after = c.counters();
+    assert_eq!(after.1 - before.1, 1, "one analysis for the package");
+    assert!(c.diags(&main).is_empty() && c.diags(&util).is_empty());
+    c.shutdown();
+}
+
 // ---- the fourth review: conflicts, one skip rule, links, speed, scope ----
 
 const PKG: &str = "[package]\nname = \"demo\"\n";
@@ -4167,5 +4217,122 @@ fn a_package_and_its_dependency_changed_together_are_each_analysed_as_themselves
         lints(&c)
     );
     assert!(c.diags(&main).is_empty(), "{:?}", c.diags(&main));
+    c.shutdown();
+}
+
+/// An app in `app` that imports the library in `lib`, as the two folders of one workspace.
+/// Returns the folder, the main file and the library file.
+fn app_with_library(name: &str, lib_text: &str, main_text: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let dir = temp_dir(name);
+    write(
+        &dir,
+        "app/colibri.toml",
+        "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n",
+    );
+    write(&dir, "lib/colibri.toml", "[package]\nname = \"lib\"\n");
+    let lib = write(&dir, "lib/lib.colibri", lib_text);
+    let main = write(&dir, "app/main.colibri", main_text);
+    (dir, main, lib)
+}
+
+const LIB_WITH_A_LINT: &str = "pub fn f() -> int {\n    let spare = 1\n    return 2\n}\n";
+const APP_USING_LIB: &str = "import lib\nfn main() {\n    print(lib.f())\n}\n";
+
+fn messages(c: &Client, path: &Path) -> Vec<String> {
+    c.diags(path)
+        .iter()
+        .map(|d| d["message"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn a_dependency_changed_before_its_app_keeps_its_own_lints() {
+    let (dir, main, lib) =
+        app_with_library("debounce_dependency_first", LIB_WITH_A_LINT, APP_USING_LIB);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, APP_USING_LIB);
+    c.open(&lib, LIB_WITH_A_LINT);
+    // The library is changed first, the app second: the analysis of the app comes last and
+    // must not take the library's diagnostics over.
+    c.change_without_sync(
+        &lib,
+        "pub fn f() -> int {\n    let spare = 1\n    return 3\n}\n",
+    );
+    c.change_without_sync(
+        &main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n",
+    );
+    c.sync();
+    let lints = messages(&c, &lib);
+    assert!(
+        lints.iter().any(|m| m.contains("unused variable `spare`")),
+        "{lints:?}"
+    );
+    assert!(c.diags(&main).is_empty(), "{:?}", c.diags(&main));
+    c.shutdown();
+}
+
+#[test]
+fn an_edit_of_the_app_alone_leaves_its_open_dependency_its_own_lints() {
+    let (dir, main, lib) = app_with_library("debounce_app_alone", LIB_WITH_A_LINT, APP_USING_LIB);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, APP_USING_LIB);
+    c.open(&lib, LIB_WITH_A_LINT);
+    c.change(
+        &main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n",
+    );
+    let lints = messages(&c, &lib);
+    assert!(
+        lints.iter().any(|m| m.contains("unused variable `spare`")),
+        "{lints:?}"
+    );
+    // What the library's own analysis says is also what a request about it sees.
+    c.change(
+        &main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(2)\n}\n",
+    );
+    let lints = messages(&c, &lib);
+    assert!(
+        lints.iter().any(|m| m.contains("unused variable `spare`")),
+        "{lints:?}"
+    );
+    c.shutdown();
+}
+
+#[test]
+fn a_dependency_that_is_not_open_is_published_by_the_analysis_of_its_app() {
+    let broken = "pub fn f() -> int {\n    return true\n}\n";
+    let (dir, main, lib) = app_with_library("debounce_dependency_closed", broken, APP_USING_LIB);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, APP_USING_LIB);
+    assert_eq!(c.diags(&lib).len(), 1, "{:?}", c.diags(&lib));
+    c.change(
+        &main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n",
+    );
+    assert_eq!(c.diags(&lib).len(), 1, "{:?}", c.diags(&lib));
+    c.shutdown();
+}
+
+#[test]
+fn closing_an_open_dependency_gives_its_diagnostics_back_to_its_app() {
+    let broken = "pub fn f() -> int {\n    return true\n}\n";
+    let (dir, main, lib) = app_with_library("debounce_dependency_close", broken, APP_USING_LIB);
+    let mut c = Client::start_debounced(Some(&dir), NEVER);
+    c.open(&main, APP_USING_LIB);
+    c.open(&lib, broken);
+    assert_eq!(c.diags(&lib).len(), 1, "{:?}", c.diags(&lib));
+    c.change(
+        &main,
+        "import lib\nfn main() {\n    print(lib.f())\n    print(1)\n}\n",
+    );
+    c.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": uri(&lib)}}),
+    );
+    c.sync();
+    // Nobody holds the closed document's own analysis now; the app's analysis publishes it.
+    assert_eq!(c.diags(&lib).len(), 1, "{:?}", c.diags(&lib));
     c.shutdown();
 }

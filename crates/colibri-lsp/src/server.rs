@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use colibri_check::DEFAULT_STACK_BUDGET;
 use colibri_check::package::{DroppedKind, Loaded, normalize};
-use colibri_syntax::{Severity, SourceMap, format_source};
+use colibri_syntax::{FileId, Severity, SourceMap, format_source};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
@@ -364,8 +364,36 @@ impl<'c> Server<'c> {
     /// already published) as the analysis of `doc` too.
     fn adopt(&mut self, doc: &Path, analysis: &Rc<Analysis>) {
         self.remember_good(doc, analysis);
-        let files: HashSet<PathBuf> = analysis.files().into_iter().map(|(_, p)| p).collect();
-        self.published.insert(doc.to_path_buf(), files);
+        let now: HashSet<PathBuf> = self
+            .published_by(doc, analysis)
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect();
+        let before = self.published.insert(doc.to_path_buf(), now.clone());
+        self.clear_unheld(before, &now);
+    }
+
+    /// The files of `analysis` that the analysis of `doc` publishes diagnostics for. A file of
+    /// a dependency that is open in the editor is left out: it is a member of its own package,
+    /// the analysis of that document publishes it, and this analysis has none of its lints.
+    fn published_by(&self, doc: &Path, analysis: &Analysis) -> Vec<(FileId, PathBuf)> {
+        analysis
+            .files()
+            .into_iter()
+            .filter(|(_, path)| path == doc || analysis.owns(path) || !self.docs.contains_key(path))
+            .collect()
+    }
+
+    /// Publishes no diagnostics for the files that an analysis `before` held and the one that
+    /// replaced it (`now`) does not, unless the analysis of another document still holds them.
+    fn clear_unheld(&mut self, before: Option<HashSet<PathBuf>>, now: &HashSet<PathBuf>) {
+        let still: HashSet<PathBuf> = self.published.values().flatten().cloned().collect();
+        for gone in before.into_iter().flatten().filter(|p| !now.contains(p)) {
+            if !still.contains(&gone) {
+                self.publish(&gone, Vec::new());
+                self.latest.remove(&gone);
+            }
+        }
     }
 
     fn remember_good(&mut self, doc: &Path, analysis: &Rc<Analysis>) {
@@ -395,6 +423,22 @@ impl<'c> Server<'c> {
         self.check(path);
     }
 
+    /// Analyses `paths` now. One path is analysed on its own. Several (the open documents,
+    /// after a manifest changed) go through `flush`, so that the documents of one package are
+    /// analysed once between them.
+    fn analyse_now(&mut self, paths: Vec<PathBuf>) {
+        match paths.as_slice() {
+            [] => {}
+            [path] => self.check_now(path),
+            _ => {
+                for path in paths {
+                    self.schedule(path);
+                }
+                self.flush();
+            }
+        }
+    }
+
     fn send(&self, message: impl Into<Message>) {
         // A closed connection ends the loop on the next receive.
         let _ = self.connection.sender.send(message.into());
@@ -419,9 +463,8 @@ impl<'c> Server<'c> {
                 if let Ok(p) =
                     serde_json::from_value::<lsp_types::DidOpenTextDocumentParams>(note.params)
                 {
-                    for path in self.set_text(p.text_document.uri, p.text_document.text) {
-                        self.check_now(&path);
-                    }
+                    let paths = self.set_text(p.text_document.uri, p.text_document.text);
+                    self.analyse_now(paths);
                 }
             }
             DidChangeTextDocument::METHOD => {
@@ -443,9 +486,8 @@ impl<'c> Server<'c> {
                     // The buffer is what was saved; a save can still change what imports read.
                     if let Some(doc) = self.docs.get(&key(&p.text_document.uri)) {
                         let (uri, text) = (doc.uri.clone(), doc.text.clone());
-                        for path in self.set_text(uri, text) {
-                            self.check_now(&path);
-                        }
+                        let paths = self.set_text(uri, text);
+                        self.analyse_now(paths);
                     }
                 }
             }
@@ -515,22 +557,15 @@ impl<'c> Server<'c> {
         }
         let analysis = Rc::new(analysis);
         self.remember_good(doc, &analysis);
-        let files = analysis.files();
         let mut now = HashSet::new();
-        for (file, path) in &files {
-            let diagnostics = self.convert_diagnostics(&analysis, *file);
-            self.publish(path, diagnostics);
+        for (file, path) in self.published_by(doc, &analysis) {
+            let diagnostics = self.convert_diagnostics(&analysis, file);
+            self.publish(&path, diagnostics);
             self.latest.insert(path.clone(), analysis.clone());
-            now.insert(path.clone());
+            now.insert(path);
         }
         let before = self.published.insert(doc.to_path_buf(), now.clone());
-        let still: HashSet<PathBuf> = self.published.values().flatten().cloned().collect();
-        for gone in before.into_iter().flatten().filter(|p| !now.contains(p)) {
-            if !still.contains(&gone) {
-                self.publish(&gone, Vec::new());
-                self.latest.remove(&gone);
-            }
-        }
+        self.clear_unheld(before, &now);
         analysis
     }
 
