@@ -183,7 +183,7 @@ pub use handle::{Handle, Ref, RefMut};
 pub use host::{HostFault, HostFn, Plain, RawHostFn, Registration, WithCtx};
 pub use iface::Interface;
 pub use reload::{ReloadOptions, ReloadOutcome};
-pub use render::render_diagnostic;
+pub use render::{render_diagnostic, render_diagnostics};
 pub use types::{SigDesc, TypeDesc, TypeRegistry};
 pub use vecmod::install_vec;
 pub use vm::{
