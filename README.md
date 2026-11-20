@@ -438,7 +438,10 @@ the room made for them): measured by
 hand in a release build on Linux with the peer in another process, 10,000 idle blocked reads are
 3 threads in all, no CPU time over ten seconds and 117 MB of resident memory (a thousand idle
 accepts and a thousand writes blocked on full buffers are tested to cost a few threads and no CPU
-time). What bounds how many a program can serve is the operating system's limit on open
+time; on macOS the test blocks fewer writes, 192 on the machine that runs it, because the kernel
+there keeps unsent data in a pool of fixed size, 96 MiB on that machine, and a thousand full send
+buffers of 128 KiB need more, after which a connect fails with "no buffer space available"). What
+bounds how many a program can serve is the operating system's limit on open
 descriptors (raise it for thousands) and the one thread that runs the program's coroutines, not a
 thread per connection; counts beyond 10,000 have not been measured.
 Cancelling a coroutine that waits in `read` or `accept` never loses data or a connection: what

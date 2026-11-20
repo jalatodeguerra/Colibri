@@ -373,8 +373,9 @@ fn main() -> Result[()] {{
 /// buffer of the connection in the kernel, and the buffer size is the system's default: `net`
 /// gives a script no way to make it smaller. Linux and Windows take that memory from the general
 /// pool, so they run `WRITERS`. macOS takes it from a fixed pool of 2 KiB mbuf clusters
-/// (`kern.ipc.nmbclusters`), and a thousand default send buffers (`net.inet.tcp.sendspace`, 128 KiB
-/// and more with auto-sizing, up to `net.inet.tcp.autosndbufmax`) can exhaust the pool of a small
+/// (`kern.ipc.nmbclusters`), and a thousand default send buffers (`net.inet.tcp.sendspace`,
+/// 128 KiB; auto-sizing does not grow them here, since the peer's window stays small, and
+/// `net.inet.tcp.autosndbufmax` is printed only to show that) can exhaust the pool of a small
 /// machine: `connect` then fails with "no buffer space available". There the count is at most a
 /// quarter of the pool, in send buffers, and never more than `WRITERS`; a pool that allows fewer
 /// than `MIN_MAC_WRITERS` fails the test with the numbers instead of running it with a handful.
