@@ -154,6 +154,19 @@ fn app(r: httpd.Request, seen: Seen, server: httpd.Server) -> Result[httpd.Respo
             return ok(())
         }))
     }
+    if r.path == "/bg" {
+        // The closure hands a big write to a child coroutine and returns while it is in flight.
+        return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
+            let big = str.repeat("y", 12582912).to_bytes()
+            let child = go fn() {
+                let res = w.write(big)
+                seen.items.push("child write ok: {res.is_ok()}")
+            }()
+            wait(0.05)
+            seen.items.push("closure returned")
+            return ok(())
+        }))
+    }
     if r.path == "/stream_panic" {
         return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
             w.write_str("x")?
@@ -1614,6 +1627,55 @@ fn a_writer_kept_after_its_response_cannot_write_into_the_next_one() {
     drop(b);
     let seen = server.finish().seen;
     assert!(seen.contains(&"inject refused".to_string()), "{seen:?}");
+}
+
+#[test]
+fn a_write_in_flight_when_the_closure_returns_never_follows_the_end_of_the_response() {
+    let server = Server::app("httpd.Options { log_errors: false }");
+    let mut a = server.connect();
+    // The next request is in the same write: the response to it must not be mixed with bytes
+    // of the stream.
+    let mut data = get("/bg");
+    data.extend(get("/"));
+    a.send(&data);
+    // The client reads late: the closure has returned (it recorded that) while the child's
+    // write waits on a connection nobody reads.
+    server.wait_seen(2);
+    let all = a.read_to_close();
+    let head_end = all
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("a head")
+        + 4;
+    assert!(all.starts_with(b"HTTP/1.1 200 OK"));
+    // Walk the chunks: whatever arrived is whole chunks of the stream, and either the body
+    // is cut (no last chunk) or nothing follows the last chunk.
+    let mut at = head_end;
+    let mut ended_at = None;
+    while let Some(i) = all[at..].windows(2).position(|w| w == b"\r\n") {
+        let size = usize::from_str_radix(std::str::from_utf8(&all[at..at + i]).unwrap(), 16)
+            .unwrap_or_else(|_| panic!("not a chunk size at {at}: {:?}", &all[at..at + i.min(40)]));
+        if size == 0 {
+            ended_at = Some(at + i + 4);
+            break;
+        }
+        if all.len() < at + i + 2 + size + 2 {
+            break;
+        }
+        assert_eq!(&all[at + i + 2 + size..at + i + 2 + size + 2], b"\r\n");
+        at += i + 2 + size + 2;
+    }
+    if let Some(end) = ended_at {
+        assert_eq!(all.len(), end, "bytes follow the last chunk");
+    }
+    assert!(
+        !String::from_utf8_lossy(&all).contains("hello"),
+        "the next response was sent after a cut stream"
+    );
+    drop(a);
+    let seen = server.finish().seen;
+    assert_eq!(seen[0], "GET /bg");
+    assert!(!seen.contains(&"GET /".to_string()), "{seen:?}");
 }
 
 #[test]

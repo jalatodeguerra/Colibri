@@ -241,6 +241,9 @@ pub class BodyWriter {
     /// The closure has returned and the response is over: the connection carries the next
     /// response, so a late write (from a writer the closure kept) must not reach it.
     done: bool = false
+    /// The writes that are running (a write waits when the peer reads slowly): the closure may
+    /// return, or hand the writer to another coroutine, while one is.
+    busy: int = 0
     /// Where a misuse is logged.
     note: fn(str) = no_note
 }
@@ -273,7 +276,13 @@ impl BodyWriter {
             }
         }
         var at = 0
+        self.busy += 1
         while at < data.len() {
+            // The response may have ended while an earlier piece waited: nothing more goes out.
+            if self.done {
+                self.busy -= 1
+                return err(error("httpd: the stream's response has ended"))
+            }
             let end = (at + WRITE_PIECE).min(data.len())
             let piece = if at == 0 && end == data.len() { data } else { data.slice(at, end) }
             var out = piece
@@ -286,12 +295,14 @@ impl BodyWriter {
                 out = frame.to_bytes()
             }
             (self.send)(out) or |e| {
+                self.busy -= 1
                 self.failed = some(e)
                 return err(e)
             }
             self.written += piece.len()
             at = end
         }
+        self.busy -= 1
         return ok(())
     }
 
@@ -1014,10 +1025,20 @@ fn chunk_head(g: Grammar, line: Bytes) -> Result[(int, int), Reject] {
     // At most 15 digits, and once for each chunk, so a loop is cheap here.
     let digits = c.get(1) or ""
     var size = 0
+    var zeros = 0
+    var leading = true
     for b in digits.bytes() {
         size = size * 16 + hex_value(b)
+        if leading && b == 48 {
+            zeros += 1
+        } else {
+            leading = false
+        }
     }
-    return ok((size, line.len() - digits.len()))
+    // Leading zeros past the first digit are padding, like extensions: a size of `0` is one
+    // digit, and `000` has two bytes too many.
+    let padding = if zeros == digits.len() { zeros - 1 } else { zeros }
+    return ok((size, line.len() - digits.len() + padding))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1179,9 +1200,7 @@ impl BodyReader {
             // The data, and the whitespace and extensions of the size lines, are one total.
             self.extension_bytes += extra
             if self.extension_bytes > self.limit - self.delivered {
-                return err(
-                    self.halt(fail(413, "the request body is larger than {self.limit} bytes")),
-                )
+                return err(self.halt(fail(413, self.over_limit(true))))
             }
             if size == 0 {
                 self.trailers(g)?
@@ -1190,7 +1209,7 @@ impl BodyReader {
             }
             if size > self.limit - self.delivered - self.extension_bytes {
                 return err(
-                    self.halt(fail(413, "the request body is larger than {self.limit} bytes")),
+                    self.halt(fail(413, self.over_limit(size <= self.limit - self.delivered))),
                 )
             }
             self.chunk_left = size
@@ -1211,6 +1230,15 @@ impl BodyReader {
             self.crlf_pending = true
         }
         return ok(piece)
+    }
+
+    /// The 413 text: when the data alone is within the limit, the extensions and padding of the
+    /// size lines are what tipped it over, and it says so.
+    fn over_limit(self, data_fits: bool) -> str {
+        if data_fits {
+            return "the request body and the extensions of its chunks are larger than {self.limit} bytes"
+        }
+        return "the request body is larger than {self.limit} bytes"
     }
 
     /// The trailer fields after the last chunk, up to the empty line: each is checked like a
@@ -2381,6 +2409,13 @@ impl Server {
         }
         let outcome = write(writer)
         writer.done = true
+        if writer.busy > 0 {
+            // A write is still waiting on the connection (the closure gave the writer to
+            // another coroutine and returned): what it sends would land after the end of the
+            // response, so the connection ends here, without a final chunk.
+            self.log("{what}: the stream returned while a write was in flight")
+            return err(error("httpd: the stream returned while a write was in flight"))
+        }
         if let some(e) = writer.failed {
             if writer.over {
                 self.log("{what}: {e}")

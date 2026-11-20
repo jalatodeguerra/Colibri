@@ -285,3 +285,36 @@ test "ordinary extensions and whitespace still pass under a small limit" {
     let f = feed("5;a=b\r\nhello\r\n3 ; c\r\nabc\r\n0;done\r\n\r\n")
     assert_eq(text_of(reader_with(limit, f).all()), "helloabc")
 }
+
+test "leading zeros of a size past its first digit count like extensions" {
+    let limit = httpd_impl.Options { max_body_bytes: 30 }
+    // One byte of data and 14 of padding: two such chunks are 30, three are over.
+    let chunk = "000000000000001\r\nx\r\n"
+    assert_eq(text_of(reader_with(limit, feed(chunk + chunk + "0\r\n\r\n")).all()), "xx")
+    assert_eq(status_of(reader_with(limit, feed(chunk + chunk + chunk + "0\r\n\r\n")).all()), 413)
+    // A size of `0` and one with no padding cost nothing, and `000` costs two.
+    assert_eq(text_of(reader_with(limit, feed("5\r\nhello\r\n0\r\n\r\n")).all()), "hello")
+    let padded_end = feed("1\r\nx\r\n" + str_of("0", 31) + "\r\n\r\n")
+    assert_eq(status_of(reader_with(limit, padded_end).all()), 400)
+    assert_eq(status_of(reader_with(limit, feed("1\r\nx\r\n000\r\n\r\n")).all()), 0)
+}
+
+test "the 413 says when the extensions are what pushed the body over the limit" {
+    let limit = httpd_impl.Options { max_body_bytes: 100 }
+    let ext = str_of("a", 60)
+    let f = feed("1;" + ext + "\r\nx\r\n1;" + ext + "\r\ny\r\n0\r\n\r\n")
+    let r = reader_with(limit, f).all()
+    let said = match r {
+        ok(_) => ""
+        err(e) => e.message()
+    }
+    assert(said.contains("extensions"))
+    let big = feed("65\r\n" + str_of("d", 101) + "\r\n0\r\n\r\n")
+    let r2 = reader_with(limit, big).all()
+    let said2 = match r2 {
+        ok(_) => ""
+        err(e) => e.message()
+    }
+    assert(said2.contains("larger than 100"))
+    assert(!said2.contains("extensions"))
+}
