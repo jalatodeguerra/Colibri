@@ -693,7 +693,7 @@ impl Interp {
         if !scan {
             return Ok(set.contains(item));
         }
-        self.key_scans += 1;
+        self.core.key_scans += 1;
         for x in items {
             // One step per comparison actually made: a user `Eq` may do anything.
             self.charge(fiber, span, 1)?;
@@ -792,6 +792,6 @@ impl Interp {
 
     /// The `Show` text of a value, for panic messages.
     pub(crate) fn shown(&self, v: &Value) -> String {
-        show(&self.types, v).into_owned()
+        show(&self.core.types, v).into_owned()
     }
 }

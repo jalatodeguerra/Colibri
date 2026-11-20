@@ -7,17 +7,17 @@
 //! interface gets the derived one, which this module runs structurally.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use colibri_check::hir::{
-    ArithOp, BinOp, CmpOp, Coercion, FnId, ImplDef, Num, Place, Program, TypeKey, UnOp,
+    ArithOp, BinOp, CmpOp, Coercion, FnId, ImplDef, Num, Place, TypeKey, UnOp,
 };
 use colibri_check::types::{
-    ADD, CLONE, DIV, DROP, EQ, HASH, INTO_ERROR, ITER, ITERABLE, IntTy, MUL, NEG, ORD, SHOW, SUB,
-    Ty, TypeId, is_operator,
+    ADD, CLONE, DIV, DROP, EQ, HASH, ITER, ITERABLE, IntTy, MUL, NEG, ORD, SHOW, SUB, Ty, TypeId,
 };
 use colibri_syntax::{FileId, Span};
+
+pub(crate) use colibri_core::dispatch::Tables;
 
 use crate::clone::Cloner;
 use crate::compare::{Guard, cmp_with, equal_with};
@@ -30,65 +30,6 @@ use crate::value::{DynVal, Value};
 
 /// Hooks may nest this deep (a hook that drops an object whose hook drops another, ...).
 pub(crate) const MAX_HOOK_DEPTH: u32 = 64;
-
-/// The implementations a program has, and the user-written methods that take over from the
-/// derived `Eq`, `Ord`, `Show`, `Clone` and `Drop` of one type.
-#[derive(Default)]
-pub(crate) struct Tables {
-    pub impls: Vec<ImplDef>,
-    index: HashMap<(TypeKey, TypeId), u32>,
-    /// The impls of `Add`, `Sub`, `Mul`, `Div` and `Neg`, by left type, interface and the head
-    /// of the right-hand type (`None` when it is a type parameter, or for `Neg`).
-    operators: HashMap<(TypeKey, TypeId, Option<TypeKey>), u32>,
-    eq: HashMap<TypeId, FnId>,
-    ord: HashMap<TypeId, FnId>,
-    show: HashMap<TypeId, FnId>,
-    clone: HashMap<TypeId, FnId>,
-    drop: HashMap<TypeId, FnId>,
-    /// Some `IntoError` implementation has a `message` method that must run to show an error.
-    error_messages: bool,
-}
-
-impl Tables {
-    pub fn new(program: &Program) -> Self {
-        let mut t = Tables {
-            impls: program.impls.clone(),
-            ..Tables::default()
-        };
-        for (i, imp) in program.impls.iter().enumerate() {
-            t.index.insert((imp.key, imp.iface), i as u32);
-            if is_operator(imp.iface) && !imp.derived {
-                t.operators.insert((imp.key, imp.iface, imp.rhs), i as u32);
-            }
-            if imp.iface == INTO_ERROR
-                && !imp.derived
-                && matches!(imp.methods.first(), Some(Some(_)))
-            {
-                t.error_messages = true;
-            }
-            let (TypeKey::Adt(ty), Some(Some(f)), false) =
-                (imp.key, imp.methods.first(), imp.derived)
-            else {
-                continue;
-            };
-            let table = match imp.iface {
-                EQ => &mut t.eq,
-                ORD => &mut t.ord,
-                SHOW => &mut t.show,
-                CLONE => &mut t.clone,
-                DROP => &mut t.drop,
-                _ => continue,
-            };
-            table.insert(ty, *f);
-        }
-        t
-    }
-
-    /// The user-written `Drop` hook of a class.
-    pub fn drop_hook(&self, class: TypeId) -> Option<FnId> {
-        self.drop.get(&class).copied()
-    }
-}
 
 /// The head of a value's type, which interface dispatch works on.
 pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
@@ -184,7 +125,7 @@ impl Overrides for Hooks<'_> {
         if let Some(answer) = self.host_hook(a, |h| h.eq.clone(), vec![a.clone(), b.clone()]) {
             return Some(answer.map(|v| matches!(v, Value::Bool(true))));
         }
-        let f = *self.interp.dispatch.eq.get(&adt_of(a)?)?;
+        let f = *self.interp.core.dispatch.eq.get(&adt_of(a)?)?;
         Some(
             self.run(f, vec![a.clone(), b.clone()])
                 .map(|v| matches!(v, Value::Bool(true))),
@@ -192,7 +133,7 @@ impl Overrides for Hooks<'_> {
     }
 
     fn cmp(&mut self, a: &Value, b: &Value) -> Answer<Option<Ordering>> {
-        let f = *self.interp.dispatch.ord.get(&adt_of(a)?)?;
+        let f = *self.interp.core.dispatch.ord.get(&adt_of(a)?)?;
         Some(self.run(f, vec![a.clone(), b.clone()]).map(|v| match v {
             Value::Int(i) => Some(i.cmp(&0)),
             _ => None,
@@ -206,7 +147,7 @@ impl Overrides for Hooks<'_> {
                 _ => String::new(),
             }));
         }
-        let f = *self.interp.dispatch.show.get(&adt_of(v)?)?;
+        let f = *self.interp.core.dispatch.show.get(&adt_of(v)?)?;
         Some(self.run(f, vec![v.clone()]).map(|s| match s {
             Value::Str(s) => s.to_string(),
             _ => String::new(),
@@ -214,7 +155,7 @@ impl Overrides for Hooks<'_> {
     }
 
     fn clone_value(&mut self, v: &Value) -> Answer<Value> {
-        let f = *self.interp.dispatch.clone.get(&adt_of(v)?)?;
+        let f = *self.interp.core.dispatch.clone.get(&adt_of(v)?)?;
         Some(self.run(f, vec![v.clone()]))
     }
 
@@ -231,12 +172,12 @@ impl Interp {
     /// How many map or set key lookups scanned the stored keys for a user-written `Eq` (a
     /// test hook: keys that cannot reach one never scan).
     pub fn key_scans(&self) -> u64 {
-        self.key_scans
+        self.core.key_scans
     }
 
     /// Whether any user-written method replaces a derived one (else the plain functions run).
     fn has_overrides(&self) -> bool {
-        let t = &self.dispatch;
+        let t = &self.core.dispatch;
         !(t.eq.is_empty()
             && t.ord.is_empty()
             && t.show.is_empty()
@@ -256,7 +197,7 @@ impl Interp {
     /// plain even if a `Pair[Q]` with `impl Eq for Q` exists) and a later `impl Eq` (hot
     /// reload, the REPL) is seen at once: the tables it reads are rebuilt on load.
     pub(crate) fn key_needs_scan(&self, v: &Value) -> bool {
-        (!self.dispatch.eq.is_empty() || self.host.any_eq_hook) && self.reaches_eq(v, 0)
+        (!self.core.dispatch.eq.is_empty() || self.host.any_eq_hook) && self.reaches_eq(v, 0)
     }
 
     fn reaches_eq(&self, v: &Value, depth: u32) -> bool {
@@ -264,7 +205,7 @@ impl Interp {
             return true;
         }
         let d = depth + 1;
-        let user_eq = |ty: &TypeId| self.dispatch.eq.contains_key(ty);
+        let user_eq = |ty: &TypeId| self.core.dispatch.eq.contains_key(ty);
         match v {
             Value::Host(r) => {
                 user_eq(&r.ty)
@@ -306,7 +247,7 @@ impl Interp {
         if keys.is_empty() {
             return Ok(());
         }
-        self.key_scans += 1;
+        self.core.key_scans += 1;
         for stored in keys {
             // Each comparison costs a step, so a budget stops a quadratic scan.
             self.step(fiber, span)?;
@@ -331,7 +272,7 @@ impl Interp {
         if !self.key_needs_scan(&key) {
             return Ok(key);
         }
-        self.key_scans += 1;
+        self.core.key_scans += 1;
         for candidate in stored() {
             self.step(fiber, span)?;
             if self.eq_deep(fiber, &candidate, &key, span)? {
@@ -435,9 +376,9 @@ impl Interp {
     /// The `Show` text of a value, honouring a user-written `impl Show` at every level.
     pub(crate) fn show_deep(&mut self, fiber: &mut Fiber, v: &Value, span: Span) -> Eval<String> {
         if !self.has_overrides() {
-            return Ok(crate::show::show(&self.types, v).into_owned());
+            return Ok(crate::show::show(&self.core.types, v).into_owned());
         }
-        let types = Rc::clone(&self.types);
+        let types = Rc::clone(&self.core.types);
         let result = show_with(
             &types,
             v,
@@ -489,15 +430,16 @@ impl Interp {
     /// when the program has none.
     pub(crate) fn impl_for(&mut self, v: &Value, iface: TypeId) -> Option<u32> {
         let key = runtime_key(v)?;
-        if let Some(&i) = self.dispatch.index.get(&(key, iface)) {
+        if let Some(&i) = self.core.dispatch.index.get(&(key, iface)) {
             return Some(i);
         }
         let methods = self
+            .core
             .types
             .get(iface.0 as usize)
             .map_or(0, |t| t.iface_methods().len());
-        let id = self.dispatch.impls.len() as u32;
-        self.dispatch.impls.push(ImplDef {
+        let id = self.core.dispatch.impls.len() as u32;
+        self.core.dispatch.impls.push(ImplDef {
             iface,
             iface_args: Vec::new(),
             target: Ty::Unit,
@@ -507,7 +449,7 @@ impl Interp {
             derived: true,
             span: Span::new(FileId(0), 0, 0),
         });
-        self.dispatch.index.insert((key, iface), id);
+        self.core.dispatch.index.insert((key, iface), id);
         Some(id)
     }
 
@@ -526,6 +468,7 @@ impl Interp {
             Coercion::ToDynBound(iface) => {
                 if let Value::Dyn(d) = &value
                     && self
+                        .core
                         .dispatch
                         .impls
                         .get(d.impl_id as usize)
@@ -607,7 +550,7 @@ impl Interp {
                 | (Some(Value::Str(_)), Some(Value::Str(_)))
         );
         let found = left.filter(|_| !primitives).and_then(|k| {
-            let ops = &self.dispatch.operators;
+            let ops = &self.core.dispatch.operators;
             ops.get(&(k, iface, right))
                 .or_else(|| ops.get(&(k, iface, None)))
                 .copied()
@@ -665,7 +608,8 @@ impl Interp {
 
     /// The function an implementation runs for `method`, if it has one of its own.
     pub(crate) fn target_of(&self, impl_id: Option<u32>, method: u32) -> Option<FnId> {
-        self.dispatch
+        self.core
+            .dispatch
             .impls
             .get(impl_id? as usize)?
             .methods
@@ -774,7 +718,7 @@ impl Interp {
             let hooks = self.host.class_hooks.get(&r.ty)?;
             hooks.eq.as_ref()?;
             let Some(hook) = hooks.hash.clone() else {
-                let name = self.types[r.ty.0 as usize].name.clone();
+                let name = self.core.types[r.ty.0 as usize].name.clone();
                 failed = Some(self.panic(
                     fiber,
                     span,
@@ -839,7 +783,7 @@ impl Interp {
     /// kept the object alive (resurrection): then it is not destroyed, and its hook never runs
     /// again (ARCHITECTURE §6).
     pub(crate) fn run_drop_hook(&mut self, obj: &Rc<crate::heap::ClassObj>) -> bool {
-        let Some(f) = self.dispatch.drop_hook(obj.ty()) else {
+        let Some(f) = self.core.dispatch.drop_hook(obj.ty()) else {
             return false;
         };
         if obj.mark_hooked() {
@@ -848,8 +792,8 @@ impl Interp {
         let Some(body) = self.fns.get(f.0 as usize).cloned() else {
             return false;
         };
-        if self.hook_depth >= MAX_HOOK_DEPTH {
-            self.hook_panics.push(crate::ctl::PanicInfo {
+        if self.core.hook_depth >= MAX_HOOK_DEPTH {
+            self.core.hook_panics.push(crate::ctl::PanicInfo {
                 message: "Drop hooks are nested too deeply".to_string(),
                 span: body.span,
                 stack: Vec::new(),
@@ -863,14 +807,14 @@ impl Interp {
         if self.budget_is_dead() {
             return false;
         }
-        self.hook_depth += 1;
+        self.core.hook_depth += 1;
         let mut hook_fiber = Fiber::new();
         hook_fiber.stack_base = crate::eval::stack_position();
         let result = self.call_body(&mut hook_fiber, body, vec![Value::Obj(Rc::clone(obj))]);
-        self.hook_depth -= 1;
+        self.core.hook_depth -= 1;
         match result {
             Ok(v) | Err(Ctl::Return(v)) => self.release(v),
-            Err(Ctl::Panic(info)) => self.hook_panics.push(*info),
+            Err(Ctl::Panic(info)) => self.core.hook_panics.push(*info),
             Err(_) => {}
         }
         Rc::strong_count(obj) > 1

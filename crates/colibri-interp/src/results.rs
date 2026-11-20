@@ -121,7 +121,11 @@ impl Interp {
 
     /// The user-written `message` method of an `IntoError` implementation, if it has one.
     pub(crate) fn error_message_fn(&self, impl_id: i64) -> Option<colibri_check::hir::FnId> {
-        let imp = self.dispatch.impls.get(usize::try_from(impl_id).ok()?)?;
+        let imp = self
+            .core
+            .dispatch
+            .impls
+            .get(usize::try_from(impl_id).ok()?)?;
         if imp.derived {
             return None;
         }
@@ -282,7 +286,7 @@ impl Interp {
             Intrinsic::Panic => {
                 let msg = match arg {
                     Value::Str(s) => s.to_string(),
-                    other => crate::show::show(&self.types, other).into_owned(),
+                    other => crate::show::show(&self.core.types, other).into_owned(),
                 };
                 Err(self.panic(fiber, span, msg))
             }

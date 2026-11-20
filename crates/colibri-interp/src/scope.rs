@@ -159,10 +159,10 @@ impl Interp {
     /// Folds the panics of `Drop` hooks that ran meanwhile into `result`: the first panic is
     /// the one reported, later ones ride along as notes (ARCHITECTURE §6).
     pub(crate) fn fold_hook_panics(&mut self, result: Eval) -> Eval {
-        if self.hook_panics.is_empty() {
+        if self.core.hook_panics.is_empty() {
             return result;
         }
-        let mut panics = std::mem::take(&mut self.hook_panics).into_iter();
+        let mut panics = std::mem::take(&mut self.core.hook_panics).into_iter();
         let mut result = result;
         for failure in &mut panics {
             result = self.merge_failure(result, Box::new(failure), "a `Drop` hook also panicked");

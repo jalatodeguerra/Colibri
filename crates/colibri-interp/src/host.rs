@@ -274,7 +274,7 @@ impl Interp {
                 "the type `{enum_name}` of the module `{module}` is not part of the loaded host interface (declare it with `HostModule::register_module_enum` before loading)"
             ));
         };
-        let def = &self.types[id.0 as usize];
+        let def = &self.core.types[id.0 as usize];
         let shown = format!(
             "{}.{enum_name}",
             module.rsplit('.').next().unwrap_or(module)
@@ -298,7 +298,7 @@ impl Interp {
 
     /// The name of a type of the loaded program.
     pub fn type_name(&self, id: colibri_check::types::TypeId) -> Option<&str> {
-        self.types.get(id.0 as usize).map(|t| t.name.as_str())
+        self.core.types.get(id.0 as usize).map(|t| t.name.as_str())
     }
 
     /// Says which program of which `Vm` this is, whether it is loaded, and what shows the
@@ -351,7 +351,7 @@ impl Interp {
 
     /// Every struct, enum and class of the loaded program, indexed by type id.
     pub fn type_defs(&self) -> &[colibri_check::hir::TypeDef] {
-        &self.types
+        &self.core.types
     }
 
     /// How many parameters function `f` takes; `None` if there is no such function in the
@@ -363,7 +363,7 @@ impl Interp {
     /// The same descriptors, shared: a host function can keep them while it calls back into
     /// the program.
     pub fn type_defs_shared(&self) -> Rc<[colibri_check::hir::TypeDef]> {
-        Rc::clone(&self.types)
+        Rc::clone(&self.core.types)
     }
 
     // ---- host state ----

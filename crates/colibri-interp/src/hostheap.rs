@@ -368,8 +368,9 @@ impl crate::eval::Interp {
             return;
         }
         let name = slot.name;
-        if let Some(trace) = self.trace.as_mut() {
+        if let Some(trace) = self.core.trace.as_mut() {
             let label = self
+                .core
                 .types
                 .get(reference.ty.0 as usize)
                 .map_or_else(|| name.to_string(), |def| def.name.clone());
@@ -397,7 +398,7 @@ impl crate::eval::Interp {
             } else {
                 "a panic that is not a message".to_string()
             };
-            self.hook_panics.push(crate::ctl::PanicInfo {
+            self.core.hook_panics.push(crate::ctl::PanicInfo {
                 message: format!("dropping the host object `{name}` panicked: {message}"),
                 span: colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),
                 stack: Vec::new(),

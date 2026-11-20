@@ -33,13 +33,14 @@ pub struct SessionUndo {
 impl Interp {
     /// How many times the program was extended since it was loaded.
     pub(crate) fn generation(&self) -> u32 {
-        self.closure_maps.len() as u32
+        self.core.closure_maps.len() as u32
     }
 
     /// The function id a closure made in an earlier generation has now.
     fn closure_fn(&self, c: &ClosureObj) -> Option<FnId> {
         let mut id = c.f.0;
         for map in self
+            .core
             .closure_maps
             .get(c.generation as usize..)
             .unwrap_or(&[])
@@ -75,8 +76,8 @@ impl Interp {
     ) -> SessionUndo {
         let undo = SessionUndo {
             fns: std::mem::take(&mut self.fns),
-            types: Rc::clone(&self.types),
-            dispatch: std::mem::take(&mut self.dispatch),
+            types: Rc::clone(&self.core.types),
+            dispatch: std::mem::take(&mut self.core.dispatch),
             inits: std::mem::take(&mut self.inits),
             globals_len: self.globals.len(),
             replaced: reinit
@@ -86,9 +87,9 @@ impl Interp {
                     Some((g.0 as usize, std::mem::replace(slot, Value::Unit)))
                 })
                 .collect(),
-            maps_len: self.closure_maps.len(),
+            maps_len: self.core.closure_maps.len(),
         };
-        self.closure_maps.push(closure_map);
+        self.core.closure_maps.push(closure_map);
         self.globals.resize(program.globals.len(), Value::Unit);
         self.swap_program(program);
         undo
@@ -165,10 +166,10 @@ impl Interp {
             maps_len,
         } = undo;
         self.fns = fns;
-        self.types = types;
-        self.dispatch = dispatch;
+        self.core.types = types;
+        self.core.dispatch = dispatch;
         self.inits = inits;
-        self.closure_maps.truncate(maps_len);
+        self.core.closure_maps.truncate(maps_len);
         self.set_script(old);
         self.cffi.load(old);
         self.host.bodies = old

@@ -5,10 +5,12 @@
 //! meant to share this crate. The API is workspace-internal and unstable: hosts use
 //! `colibri-runtime`, which re-exports what they need.
 
+pub mod budget;
 pub mod clone;
 pub mod closure;
 pub mod compare;
 pub mod ctl;
+pub mod dispatch;
 pub mod format;
 pub mod heap;
 pub mod hooks;
@@ -18,7 +20,10 @@ pub mod layout;
 pub mod num;
 pub mod ordered;
 pub mod show;
+pub mod state;
 pub mod value;
+
+pub use state::Core;
 
 /// The current position on the native stack (it only has to be comparable with another one).
 #[doc(hidden)]

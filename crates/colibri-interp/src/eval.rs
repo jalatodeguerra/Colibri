@@ -6,10 +6,12 @@ use std::rc::{Rc, Weak};
 use colibri_check::hir::Storage;
 use colibri_check::hir::{
     Arg, ArithOp, Arm, BinOp, Block, Body, Callee, CmpOp, Expr, ExprKind, FnId, GlobalId,
-    Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, TypeDef, UnOp, UserOp,
+    Intrinsic, Lit, LoopId, Num, Operand, Place, Program, Stmt, StmtKind, UnOp, UserOp,
 };
 use colibri_check::types::{IntTy, Ty};
 use colibri_syntax::Span;
+
+use colibri_core::Core;
 
 use crate::compare::values_identical;
 use crate::ctl::{Ctl, Eval, PanicInfo, TraceEntry, into_panic};
@@ -30,8 +32,8 @@ pub struct Interp {
     /// Looked up at call time, so a patched function takes effect at its next call.
     pub(crate) fns: Vec<Rc<Body>>,
     pub(crate) globals: Vec<Value>,
-    /// The user-defined types, which `Show` and drop tracing need for names.
-    pub(crate) types: Rc<[TypeDef]>,
+    /// The state shared with the engine-neutral runtime code (`colibri-core`).
+    pub(crate) core: Core,
     /// Every global's initialiser, in initialisation order (`Program::init_order`).
     pub(crate) inits: Vec<(GlobalId, Rc<Body>)>,
     /// Where the globals the script initialises itself start in `inits`.
@@ -45,21 +47,8 @@ pub struct Interp {
     pub(crate) global_names: Vec<Rc<str>>,
     pub(crate) released: bool,
     script: Option<Rc<Body>>,
-    out: Box<dyn Write>,
     max_depth: usize,
     pub(crate) native_stack_budget: usize,
-    /// The labels of destroyed class objects, when tracing is on (`set_trace_drops`).
-    pub(crate) trace: Option<Vec<String>>,
-    /// Interface implementations and the user-written methods that replace derived behaviour.
-    pub(crate) dispatch: crate::dispatch::Tables,
-    /// Panics in `Drop` hooks that no running statement has picked up yet.
-    pub(crate) hook_panics: Vec<PanicInfo>,
-    /// How many `Drop` hooks are running, one inside another.
-    pub(crate) hook_depth: u32,
-    /// The instruction budget (EMBEDDING §5).
-    pub(crate) budget: crate::budget::Budget,
-    /// How many times a map or set key was looked up by scanning the stored keys.
-    pub(crate) key_scans: u64,
     /// What the embedding program attached: host functions, state and roots.
     pub(crate) host: crate::host::HostSide,
     /// The coroutine scheduler (ARCHITECTURE §16).
@@ -68,9 +57,6 @@ pub struct Interp {
     pub(crate) leaks: Option<Box<crate::leaks::LeakTracker>>,
     /// The C layout of every `@repr(C)` struct of the loaded program, and the open libraries.
     pub(crate) cffi: crate::cffi::CffiState,
-    /// For each extension of the program (`session_extend`), how the function ids of the
-    /// generation before map to the one after (`u32::MAX`: the function is gone).
-    pub(crate) closure_maps: Vec<Vec<u32>>,
 }
 
 /// The default for [`Interp::set_native_stack_budget`]: small enough for a default test thread.
@@ -88,27 +74,19 @@ impl Interp {
         Interp {
             fns: Vec::new(),
             globals: Vec::new(),
-            types: Rc::from(Vec::new()),
+            core: Core::new(out),
             inits: Vec::new(),
             script_from: 0,
             uninit: Vec::new(),
             global_names: Vec::new(),
             released: false,
             script: None,
-            out,
             max_depth: max_call_depth,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
-            trace: None,
-            dispatch: crate::dispatch::Tables::default(),
-            hook_panics: Vec::new(),
-            hook_depth: 0,
-            budget: crate::budget::Budget::new(),
-            key_scans: 0,
             host: crate::host::HostSide::default(),
             sched: crate::coro::Scheduler::new(),
             leaks: None,
             cffi: crate::cffi::CffiState::default(),
-            closure_maps: Vec::new(),
         }
     }
 
@@ -132,12 +110,12 @@ impl Interp {
     /// old module-level values die first).
     pub fn load(&mut self, program: &Program) {
         self.shutdown();
-        self.closure_maps.clear();
+        self.core.closure_maps.clear();
         self.load_host(program);
         self.fns = program.fns.iter().map(|f| Rc::clone(&f.body)).collect();
         self.globals = vec![Value::Unit; program.globals.len()];
-        self.types = Rc::from(program.types.clone());
-        self.dispatch = crate::dispatch::Tables::new(program);
+        self.core.types = Rc::from(program.types.clone());
+        self.core.dispatch = crate::dispatch::Tables::new(program);
         self.inits = program
             .init_order
             .iter()
@@ -176,8 +154,8 @@ impl Interp {
     /// Replaces every table that comes from the checked program (not the module-level values).
     pub(crate) fn swap_program(&mut self, program: &Program) {
         self.fns = program.fns.iter().map(|f| Rc::clone(&f.body)).collect();
-        self.types = Rc::from(program.types.clone());
-        self.dispatch = crate::dispatch::Tables::new(program);
+        self.core.types = Rc::from(program.types.clone());
+        self.core.dispatch = crate::dispatch::Tables::new(program);
         self.inits = program
             .init_order
             .iter()
@@ -283,12 +261,12 @@ impl Interp {
 
     /// Writes text to the program's standard output, where `print` writes (without a newline).
     pub fn write_stdout(&mut self, text: &str) {
-        let _ = self.out.write_all(text.as_bytes());
+        let _ = self.core.out.write_all(text.as_bytes());
     }
 
     /// Writes buffered output through to the writer.
     pub fn flush(&mut self) {
-        let _ = self.out.flush();
+        let _ = self.core.out.flush();
     }
 
     /// The module-level value `g` (for hosts and tests).
@@ -426,8 +404,8 @@ impl Interp {
         captures: Vec<(colibri_check::hir::LocalId, Value)>,
     ) -> (Eval, Option<Value>) {
         let overflow = fiber.frames.len() >= self.max_depth;
-        self.budget.left -= 1;
-        if overflow || self.budget.left < 0 {
+        self.core.budget.left -= 1;
+        if overflow || self.core.budget.left < 0 {
             let span = fiber.frames.last().map_or(body.span, |f| f.span);
             let ctl = if overflow {
                 let message = format!("stack overflow: more than {} nested calls", self.max_depth);
@@ -554,7 +532,7 @@ impl Interp {
             Err(ctl) => Err(ctl),
         };
         self.release_temps(fiber, mark);
-        if self.hook_panics.is_empty() {
+        if self.core.hook_panics.is_empty() {
             return result;
         }
         self.fold_hook_panics(result.map(|()| Value::Unit))
@@ -1178,7 +1156,7 @@ impl Interp {
                     }
                 };
                 // A closed pipe is not a Colibri error; output is best effort.
-                let _ = writeln!(self.out, "{text}");
+                let _ = writeln!(self.core.out, "{text}");
                 Value::Unit
             }
             Intrinsic::Show => match self.show_deep(fiber, &arg, span) {

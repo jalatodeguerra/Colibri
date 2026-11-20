@@ -551,7 +551,7 @@ impl Namer<'_> {
     }
 
     fn types(&self) -> &[TypeDef] {
-        &self.interp.types
+        &self.interp.core.types
     }
 
     fn class(&self, v: &Value) -> String {

@@ -1062,8 +1062,8 @@ impl Interp {
         self.sched.running.push(id);
         let saved_stack = std::mem::replace(&mut self.native_stack_budget, stack_budget);
         let saved_budget = fresh.then(|| {
-            let allotment = self.budget.allotment;
-            std::mem::replace(&mut self.budget, Budget::fresh(allotment))
+            let allotment = self.core.budget.allotment;
+            std::mem::replace(&mut self.core.budget, Budget::fresh(allotment))
         });
         let ptr: *mut Interp = self;
         let outcome = co.resume(Resume {
@@ -1073,7 +1073,7 @@ impl Interp {
         std::hint::black_box(ptr);
         let exhausted = fresh && self.budget_was_exhausted();
         if let Some(b) = saved_budget {
-            self.budget = b;
+            self.core.budget = b;
         }
         self.native_stack_budget = saved_stack;
         self.sched.running.pop();
@@ -1181,7 +1181,7 @@ impl Interp {
             );
             return Err(self.panic(fiber, span, message));
         }
-        if self.hook_depth > 0 {
+        if self.core.hook_depth > 0 {
             let message = format!("`{what}` cannot pause inside a `Drop` hook");
             return Err(self.panic(fiber, span, message));
         }
@@ -1337,7 +1337,7 @@ impl Interp {
     fn can_drive(&self, fiber: &Fiber, depth: u32) -> bool {
         fiber.coro.is_none()
             && fiber.host_depth <= depth
-            && self.hook_depth == 0
+            && self.core.hook_depth == 0
             && !self.sched.in_tick
             && self.sched.running.is_empty()
             && !self.sched.shutting_down
@@ -1353,14 +1353,14 @@ impl Interp {
     }
 
     fn can_suspend_for_external(&self, fiber: &Fiber) -> bool {
-        fiber.coro.is_some() && fiber.host_depth <= 1 && self.hook_depth == 0
+        fiber.coro.is_some() && fiber.host_depth <= 1 && self.core.hook_depth == 0
     }
 
     /// The checks of a wait on the main fiber, as panics with a message that says why.
     fn check_drive(&mut self, fiber: &mut Fiber, span: Span, what: &str) -> Eval<()> {
         let why = if fiber.host_depth > 0 {
             "inside a host function's callback"
-        } else if self.hook_depth > 0 {
+        } else if self.core.hook_depth > 0 {
             "inside a `Drop` hook"
         } else if self.sched.in_tick || !self.sched.running.is_empty() {
             "inside a tick"
