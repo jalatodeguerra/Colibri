@@ -1246,3 +1246,117 @@ fn endless_empty_lines_are_cut_off_by_the_header_byte_limit() {
     w.expect_closed();
     assert_eq!(server.finish().seen, Vec::<String>::new());
 }
+
+// ---------------------------------------------------------------------------------------------
+// The router over the wire (step 6)
+// ---------------------------------------------------------------------------------------------
+
+/// An `app` that sends everything through a `Router`.
+const ROUTED: &str = r#"
+fn item(r: httpd.Request) -> Result[httpd.Response] {
+    return ok(httpd.text(200, "item {r.param("id") or "-"}\n"))
+}
+
+fn app(r: httpd.Request, seen: Seen, server: httpd.Server) -> Result[httpd.Response] {
+    let router = httpd.Router()
+    router.get("/items/:id", item)
+    router.post("/items/:id", item)
+    router.get("/admin", fn(r: httpd.Request) -> Result[httpd.Response] {
+        return ok(httpd.text(200, "admin\n"))
+    })
+    router.get("/files/*rest", fn(r: httpd.Request) -> Result[httpd.Response] {
+        return ok(httpd.text(200, "file {r.param("rest") or "-"}\n"))
+    })
+    return router.handler()(r)
+}
+"#;
+
+#[test]
+fn a_known_path_under_another_method_is_405_with_allow_and_the_connection_stays() {
+    let server = Server::start(ROUTED, "httpd.Options {}");
+    let mut w = server.connect();
+    let r = w.call(request("DELETE", "/items/7", &[], b""));
+    assert_eq!(r.status, 405);
+    assert_eq!(r.header("allow"), Some("GET, HEAD, OPTIONS, POST"));
+    assert!(!r.says_close());
+    // The same connection carries the next request.
+    assert_eq!(w.call(get("/items/7")).text(), "item 7\n");
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn head_goes_through_the_route_of_get_and_has_no_body() {
+    let server = Server::start(ROUTED, "httpd.Options {}");
+    let mut w = server.connect();
+    let mut data = request("HEAD", "/items/7", &[], b"");
+    data.extend(get("/items/8"));
+    w.send(&data);
+    let head = w.read_head();
+    assert_eq!(head.status, 200);
+    assert_eq!(head.header("content-length"), Some("7"));
+    let next = w.read();
+    assert_eq!(next.text(), "item 8\n");
+    drop(w);
+    assert_eq!(server.finish().seen, ["HEAD /items/7", "GET /items/8"]);
+}
+
+#[test]
+fn options_is_answered_by_the_router_with_allow() {
+    let server = Server::start(ROUTED, "httpd.Options {}");
+    let mut w = server.connect();
+    let r = w.call(request("OPTIONS", "/items/7", &[], b""));
+    assert_eq!(r.status, 204);
+    assert_eq!(r.header("allow"), Some("GET, HEAD, OPTIONS, POST"));
+    assert_eq!(r.header("content-length"), None);
+    let star = w.call(request("OPTIONS", "*", &[], b""));
+    assert_eq!(star.status, 204);
+    assert!(star.header("allow").is_some());
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn a_method_nobody_knows_is_501_and_an_unknown_path_is_404() {
+    let server = Server::start(ROUTED, "httpd.Options {}");
+    let mut w = server.connect();
+    assert_eq!(w.call(request("BREW", "/items/7", &[], b"")).status, 501);
+    assert_eq!(w.call(get("/nothing")).status, 404);
+    assert_eq!(w.call(get("/items/")).status, 404);
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn the_router_reads_the_path_as_it_came_and_decodes_only_parameters() {
+    let server = Server::start(ROUTED, "httpd.Options {}");
+    let mut w = server.connect();
+    // An escaped letter does not make `/admin` out of `/%61dmin`.
+    assert_eq!(w.call(get("/%61dmin")).status, 404);
+    assert_eq!(w.call(get("/admin")).status, 200);
+    assert_eq!(w.call(get("/items/a%20b")).text(), "item a b\n");
+    assert_eq!(w.call(get("/files/a/b%2Fc")).text(), "file a/b/c\n");
+    drop(w);
+    server.finish();
+}
+
+#[test]
+fn dot_segments_and_escaped_control_characters_are_400_and_never_reach_a_handler() {
+    let server = Server::start(ROUTED, "httpd.Options {}");
+    let mut w = server.connect();
+    for target in [
+        "/files/../../etc/passwd",
+        "/items/%2e%2e",
+        "/items/%00",
+        "/items/a%0d%0ab",
+        "/items/%zz",
+    ] {
+        let r = w.call(get(target));
+        assert_eq!(r.status, 400, "{target}");
+        assert!(!r.says_close(), "{target}");
+    }
+    drop(w);
+    // They are recorded as requests (the server saw them), but no route ran: the answers
+    // above are the router's, and `item` would have said `item `.
+    server.finish();
+}
