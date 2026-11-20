@@ -1,5 +1,6 @@
 //! The structural `Eq` and `Ord` every struct, enum and tuple derives (DESIGN §7.4).
 
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::rc::{Rc, Weak};
 
@@ -44,6 +45,28 @@ impl Guard {
 /// A comparison gave up because the values nest too deeply.
 #[derive(Debug, PartialEq, Eq)]
 pub struct TooDeep;
+
+thread_local! {
+    /// Set when a comparison that has no way to report an error gave up: the lookup of a
+    /// `Map` or `Set` key, a constant pattern. The evaluator checks it around every expression
+    /// and panics, so the stand-in answer is never used.
+    static GAVE_UP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// [`values_equal`] for callers that cannot report an error: when the comparison gives up the
+/// answer is `false` and [`take_gave_up`] says so until the evaluator has turned it into a panic.
+pub(crate) fn equal_or_give_up(a: &Value, b: &Value) -> bool {
+    values_equal(a, b).unwrap_or_else(|TooDeep| {
+        GAVE_UP.set(true);
+        false
+    })
+}
+
+/// Whether a comparison gave up since the last call; asking clears it.
+#[inline]
+pub(crate) fn take_gave_up() -> bool {
+    GAVE_UP.get() && GAVE_UP.replace(false)
+}
 
 /// Structural equality. Floats compare as IEEE numbers, so a value containing `nan` is not
 /// equal to itself, exactly as `nan == nan` is false.
