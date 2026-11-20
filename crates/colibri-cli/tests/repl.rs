@@ -178,3 +178,19 @@ fn the_repl_does_not_show_unused_code_warnings() {
     assert_eq!(out, "", "{err}");
     assert_eq!(err, "");
 }
+
+#[test]
+fn load_refuses_a_manifest_and_prints_nothing_of_it() {
+    let dir = std::env::temp_dir().join(format!("colibri-repl-manifest-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let text = "[package]\nname = \"x\"\nurl = \"https://user:SeCrEt@example.invalid/r\"\n";
+    for name in ["colibri.toml", "colibri.lock"] {
+        let file = dir.join(name);
+        std::fs::write(&file, text).expect("file");
+        let (out, err) = repl(&format!(":load {}\n1 + 1\n", file.display()));
+        assert_eq!(out, "= 2 : int\n", "{err}");
+        assert!(err.contains("not a script") && err.contains(name), "{err}");
+        assert!(!err.contains("SeCrEt") && !out.contains("SeCrEt"), "{err}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

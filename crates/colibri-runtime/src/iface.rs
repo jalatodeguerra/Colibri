@@ -278,6 +278,13 @@ impl Interface {
     /// Reads and parses an interface file.
     pub fn read(path: impl AsRef<Path>) -> Result<Interface, Error> {
         let path = path.as_ref();
+        // A package's manifest or lock is not an interface file: it is not read.
+        if let Some(message) = colibri_check::package::not_a_script(path) {
+            return Err(Error::Io {
+                path: path.display().to_string(),
+                message,
+            });
+        }
         let text = std::fs::read_to_string(path).map_err(|e| Error::Io {
             path: path.display().to_string(),
             message: e.to_string(),

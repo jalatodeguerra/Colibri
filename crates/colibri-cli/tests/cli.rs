@@ -884,3 +884,32 @@ fn check_interface_of_a_module_that_uses_a_standard_module() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn a_manifest_is_not_an_interface_file() {
+    let dir = std::env::temp_dir().join(format!("colibri-cli-iface-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let src = temp_file("iface_user.colibri", "fn main() {}\n");
+    for name in ["colibri.toml", "colibri.lock"] {
+        let file = dir.join(name);
+        std::fs::write(
+            &file,
+            "[package]\nname = \"x\"\nurl = \"https://user:SeCrEt@example.invalid/r\" \n",
+        )
+        .expect("file");
+        let out = colibri(&[
+            "check",
+            "--interface",
+            file.to_str().unwrap(),
+            src.to_str().unwrap(),
+        ]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains("not a script") && stderr.contains(name),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("SeCrEt"), "{stderr}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

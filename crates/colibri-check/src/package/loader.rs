@@ -171,7 +171,10 @@ pub fn load(
 
 /// What to say when `path` names the manifest or the lock file of a package, which is never
 /// Colibri source (its text would be parsed and printed as such): `None` for any other file.
-/// The names are compared without regard to case, as the file systems that ignore it do.
+/// The names are compared without regard to case, as the file systems that ignore it do. The
+/// name is tested as it is given: a link with another name that points at a manifest
+/// (`x.colibri -> colibri.toml`) is its owner's own statement that the file is a script, and
+/// the path is not resolved.
 pub fn not_a_script(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     let (file, what) = if name.eq_ignore_ascii_case(MANIFEST_FILE) {
