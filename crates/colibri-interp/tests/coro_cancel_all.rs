@@ -2,6 +2,7 @@
 //! slab of coroutine stacks must keep true meanwhile. The call must change nothing (it returns at
 //! once, as it always did): the stacks that suspended coroutines own stay where they are.
 
+use colibri_core::prelude::*;
 use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
@@ -71,11 +72,11 @@ fn cancel_all_from_inside_a_coroutine_changes_nothing() {
     });
     assert!(r.is_ok(), "the call panicked in Rust: {msg:?}");
     assert!(r.unwrap().is_ok());
-    assert_eq!(interp.coroutine_count(), 2);
+    assert_eq!(interp.core().sched.coroutine_count(), 2);
     for _ in 0..3 {
         interp.tick(&mut fiber, 0.5).expect("tick");
     }
-    assert_eq!(interp.coroutine_count(), 0);
+    assert_eq!(interp.core().sched.coroutine_count(), 0);
     let printed = String::from_utf8_lossy(&out.0.borrow()).into_owned();
     assert_eq!(printed, "body\nworker\n");
 }

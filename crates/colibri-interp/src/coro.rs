@@ -19,7 +19,6 @@ use std::sync::mpsc;
 
 use colibri_check::hir::{Builtin, Callee, Expr, ExprKind, Intrinsic};
 use colibri_check::types::{COGROUP_TYPE, COROUTINE_TYPE, SIGNAL_TYPE, Ty};
-use colibri_core::clock::Clock;
 use colibri_core::coro::Sched;
 use colibri_core::engine::Resumed;
 use colibri_core::external::{
@@ -142,36 +141,6 @@ pub(crate) type Co = Coroutine<Resume, *mut Interp, Finish, DefaultStack>;
 
 impl Interp {
     // ---- configuration and inspection (the scheduler's own, for the host) ----
-
-    /// The size of the native stack given to each coroutine (default 16 MiB).
-    pub fn set_coroutine_stack_size(&mut self, bytes: usize) {
-        self.core.sched.set_stack_size(bytes);
-    }
-
-    /// Replaces the clock behind `wait_real` and the event loop.
-    pub fn set_clock(&mut self, clock: Box<dyn Clock>) {
-        self.core.sched.set_clock(clock);
-    }
-
-    /// The reading of the clock, in seconds.
-    pub fn clock_now(&mut self) -> f64 {
-        self.core.sched.clock_now()
-    }
-
-    /// Sleeps on the clock.
-    pub fn clock_sleep(&mut self, seconds: f64) {
-        self.core.sched.clock_sleep(seconds);
-    }
-
-    /// How many coroutines are alive (started and not yet finished).
-    pub fn coroutine_count(&self) -> usize {
-        self.core.sched.coroutine_count()
-    }
-
-    /// How many coroutine resumptions have happened (starts, ticks and cancellations).
-    pub fn coroutine_resumptions(&self) -> u64 {
-        self.core.sched.resumptions()
-    }
 
     /// How long until the next coroutine needs a tick, for an event loop: `None` when nothing
     /// is alive or every live coroutine waits for a signal (nothing but an emit can wake it), `Some(0.0)`-ish small polling interval when something is checked at every tick
@@ -1009,7 +978,7 @@ mod tests {
         interp
             .call(&mut fiber, program.fn_by_name("main").unwrap(), vec![])
             .expect("main");
-        assert_eq!(interp.coroutine_count(), 1);
+        assert_eq!(interp.core.sched.coroutine_count(), 1);
         let lost = interp.stacks.take(0).expect("the worker's stack").0;
         std::mem::forget(lost);
         // If the lost coroutine stayed suspended, the cancel below would never end: a watchdog
@@ -1031,7 +1000,11 @@ mod tests {
             "{}",
             failure.message
         );
-        assert_eq!(interp.coroutine_count(), 0, "the coroutine is over");
+        assert_eq!(
+            interp.core.sched.coroutine_count(),
+            0,
+            "the coroutine is over"
+        );
         assert_eq!(out.text(), "");
         interp.cancel_all_coroutines();
         done.store(1, Ordering::SeqCst);

@@ -1,5 +1,6 @@
 //! The virtual machine a host embeds.
 
+use colibri_core::prelude::*;
 use std::collections::HashMap;
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -215,17 +216,19 @@ impl VmBuilder {
         // Boxed because suspended coroutines point into it: it must never move.
         let mut interp = Box::new(Interp::new(out, self.max_call_depth));
         interp.set_native_stack_budget(self.native_stack_budget);
-        interp.set_trace_drops(self.trace_drops);
-        interp.set_track_leaks(self.track_leaks);
-        interp.set_instruction_budget(self.instruction_budget);
+        interp.core_mut().set_trace_drops(self.trace_drops);
+        interp.core_mut().set_track_leaks(self.track_leaks);
+        interp
+            .core_mut()
+            .set_instruction_budget(self.instruction_budget);
         if let Some(size) = self.coroutine_stack_size {
-            interp.set_coroutine_stack_size(size);
+            interp.core_mut().sched.set_stack_size(size);
         }
         if let Some(clock) = self.clock {
-            interp.set_clock(clock);
+            interp.core_mut().sched.set_clock(clock);
         }
         let id = NEXT_VM_ID.fetch_add(1, Ordering::Relaxed);
-        interp.set_vm_id(id);
+        interp.core_mut().set_vm_id(id);
         Vm {
             sources: Rc::new(SourceMap::new()),
             interp,
@@ -1068,17 +1071,17 @@ impl Vm {
     /// Stores host state of type `T`, which host functions reach through `cx.state_mut::<T>()`
     /// and the host between calls through [`Vm::state_mut`]. Returns the state it replaces.
     pub fn insert_state<T: 'static>(&mut self, value: T) -> Option<T> {
-        self.interp.insert_state(value)
+        self.interp.core_mut().insert_state(value)
     }
 
     /// The host state of type `T`.
     pub fn state_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        self.interp.state_mut::<T>()
+        self.interp.core_mut().state_mut::<T>()
     }
 
     /// Takes host state of type `T` out of the `Vm`.
     pub fn remove_state<T: 'static>(&mut self) -> Option<T> {
-        self.interp.remove_state::<T>()
+        self.interp.core_mut().remove_state::<T>()
     }
 
     // ---- interface files ----
@@ -1157,6 +1160,7 @@ impl Vm {
                 Some((
                     any,
                     self.interp
+                        .core()
                         .host_type_in(owner, self.registry.decls[j].name())?,
                 ))
             })
@@ -1167,11 +1171,11 @@ impl Vm {
             .iter()
             .filter_map(|c| {
                 let module = c.module.as_deref().unwrap_or(DEFAULT_MODULE);
-                Some((c.any, self.interp.host_type_in(module, &c.name)?))
+                Some((c.any, self.interp.core().host_type_in(module, &c.name)?))
             })
             .chain(values)
             .collect();
-        self.interp.set_host_classes(classes);
+        self.interp.core_mut().set_host_classes(classes);
         // A type of a module that another named module shares (or uses) is its bare name
         // there too: the type a host function of `render` means by `Pos` is `physics.Pos`.
         let mut aliases = HashMap::new();
@@ -1188,7 +1192,7 @@ impl Vm {
                     {
                         continue;
                     }
-                    if let Some(id) = self.interp.host_type_in(home, name) {
+                    if let Some(id) = self.interp.core().host_type_in(home, name) {
                         aliases
                             .entry((user.clone(), name.to_string()))
                             .or_insert(id);
@@ -1199,17 +1203,17 @@ impl Vm {
         // The same Rust type registered by several modules: each names it by its own module.
         for (user, name, j, _) in &self.registry.aliases {
             let owner = self.registry.owner_of(*j);
-            if let Some(id) = self.interp.host_type_in(owner, name) {
+            if let Some(id) = self.interp.core().host_type_in(owner, name) {
                 aliases.insert((user.clone(), name.clone()), id);
             }
         }
-        self.interp.set_host_type_aliases(aliases);
+        self.interp.core_mut().set_host_type_aliases(aliases);
         for c in &self.registry.classes {
             if c.hooks.show.is_none() && c.hooks.eq.is_none() && c.hooks.hash.is_none() {
                 continue;
             }
             let module = c.module.as_deref().unwrap_or(DEFAULT_MODULE);
-            let Some(ty) = self.interp.host_type_in(module, &c.name) else {
+            let Some(ty) = self.interp.core().host_type_in(module, &c.name) else {
                 continue;
             };
             let wrap = |what: &str, raw: &Option<crate::host::RawHostFn>| {
@@ -1263,12 +1267,12 @@ impl Vm {
     /// panic (so `defer` statements and `Drop` hooks run, for a grace of 10 000 more steps) and
     /// the call returns [`Error::BudgetExhausted`]; the `Vm` stays usable.
     pub fn set_instruction_budget(&mut self, steps: Option<u64>) {
-        self.interp.set_instruction_budget(steps);
+        self.interp.core_mut().set_instruction_budget(steps);
     }
 
     /// The steps the latest entry from the host used (including the grace after running out).
     pub fn steps_used(&self) -> u64 {
-        self.interp.steps_used()
+        self.interp.core().steps_used()
     }
 
     // ---- loading and running ----
@@ -1479,11 +1483,15 @@ impl Vm {
         if let Err(error) = self.install_host_fns(&program) {
             self.epoch += 1;
             self.interp.shutdown();
-            self.interp
-                .set_owner((self.id, self.epoch), false, Rc::clone(&self.sources));
+            self.interp.core_mut().set_owner(
+                (self.id, self.epoch),
+                false,
+                Rc::clone(&self.sources),
+            );
             return Err(error);
         }
         self.interp
+            .core_mut()
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
         let outcome = match mode {
             LoadMode::Run => self.interp.run_module(&mut self.fiber),
@@ -1499,8 +1507,11 @@ impl Vm {
                 let error = panic_error(&self.interp, *info);
                 self.epoch += 1;
                 self.interp.shutdown();
-                self.interp
-                    .set_owner((self.id, self.epoch), false, Rc::clone(&self.sources));
+                self.interp.core_mut().set_owner(
+                    (self.id, self.epoch),
+                    false,
+                    Rc::clone(&self.sources),
+                );
                 Err(error)
             }
         }
@@ -1595,6 +1606,7 @@ impl Vm {
         self.sources = Rc::new(checked.sources);
         self.warnings = checked.warnings;
         self.interp
+            .core_mut()
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
         self.program = Some(Rc::new(checked.program));
         if let Some(r) = self.reload.as_mut() {
@@ -1699,13 +1711,13 @@ impl Vm {
 
     /// How many coroutines are alive: started and neither finished nor cancelled.
     pub fn coroutine_count(&self) -> usize {
-        self.interp.coroutine_count()
+        self.interp.core().sched.coroutine_count()
     }
 
     /// How many times a coroutine has been resumed so far (starts, ticks and cancellations).
     /// A coroutine waiting for a `Signal` is not resumed until the signal is emitted.
     pub fn coroutine_resumptions(&self) -> u64 {
-        self.interp.coroutine_resumptions()
+        self.interp.core().sched.resumptions()
     }
 
     /// Cancels every live coroutine, newest first, running their `defer`s and drops. Done
@@ -1727,19 +1739,19 @@ impl Vm {
 
     /// [`Vm::run_event_loop`] with a chosen polling interval in seconds.
     pub fn run_event_loop_polling(&mut self, poll: f64) -> Result<(), Error> {
-        let mut last = self.interp.clock_now();
+        let mut last = self.interp.core_mut().sched.clock_now();
         loop {
-            if self.interp.coroutine_count() == 0 {
+            if self.interp.core().sched.coroutine_count() == 0 {
                 return self.collect_failure();
             }
-            let now = self.interp.clock_now();
+            let now = self.interp.core_mut().sched.clock_now();
             let dt = (now - last).max(0.0);
             last = now;
             self.tick(dt)?;
             let Some(delay) = self.interp.next_wake(poll) else {
                 return self.collect_failure();
             };
-            self.interp.clock_sleep(delay);
+            self.interp.core_mut().sched.clock_sleep(delay);
         }
     }
 
@@ -1754,22 +1766,24 @@ impl Vm {
         max_sleep: f64,
         mut between_ticks: impl FnMut(&mut Vm) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        let mut last = self.interp.clock_now();
+        let mut last = self.interp.core_mut().sched.clock_now();
         loop {
             between_ticks(self)?;
-            if self.interp.coroutine_count() == 0 {
+            if self.interp.core().sched.coroutine_count() == 0 {
                 return self.collect_failure();
             }
-            let now = self.interp.clock_now();
+            let now = self.interp.core_mut().sched.clock_now();
             let dt = (now - last).max(0.0);
             last = now;
             self.tick(dt)?;
             let delay = match self.interp.next_wake(poll) {
                 Some(delay) => delay.min(max_sleep),
-                None if self.interp.coroutine_count() == 0 => return self.collect_failure(),
+                None if self.interp.core().sched.coroutine_count() == 0 => {
+                    return self.collect_failure();
+                }
                 None => max_sleep,
             };
-            self.interp.clock_sleep(delay);
+            self.interp.core_mut().sched.clock_sleep(delay);
         }
     }
 
@@ -2045,6 +2059,7 @@ impl Vm {
             self.epoch += 1;
         }
         self.interp
+            .core_mut()
             .set_owner((self.id, self.epoch), false, Rc::clone(&self.sources));
     }
 
@@ -2063,7 +2078,7 @@ impl Vm {
     /// with [`VmBuilder::trace_drops`]; the trace is emptied. Test support.
     #[doc(hidden)]
     pub fn take_drop_trace(&mut self) -> Vec<String> {
-        self.interp.take_trace()
+        self.interp.core_mut().take_trace()
     }
 }
 

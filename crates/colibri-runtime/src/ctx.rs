@@ -4,6 +4,7 @@
 use colibri_check::hir::{FnId, TypeDef};
 use colibri_check::types::{Ty, TypeId};
 use colibri_core::ctl::PanicInfo;
+use colibri_core::prelude::*;
 use colibri_interp::{Fiber, Interp};
 use colibri_syntax::Span;
 
@@ -88,17 +89,17 @@ impl<'a> Ctx<'a> {
     /// The borrow lasts as long as `&mut self`, so a host function cannot hold it across a call
     /// back into Colibri: the borrow checker enforces it.
     pub fn state_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        self.interp.state_mut::<T>()
+        self.interp.core_mut().state_mut::<T>()
     }
 
     /// Stores host state of type `T`, returning the value it replaces.
     pub fn insert_state<T: 'static>(&mut self, value: T) -> Option<T> {
-        self.interp.insert_state(value)
+        self.interp.core_mut().insert_state(value)
     }
 
     /// Takes host state of type `T` out.
     pub fn remove_state<T: 'static>(&mut self) -> Option<T> {
-        self.interp.remove_state::<T>()
+        self.interp.core_mut().remove_state::<T>()
     }
 
     /// How many host functions are running, one inside another (at least 1 inside a host
@@ -110,7 +111,7 @@ impl<'a> Ctx<'a> {
     /// The steps the current outermost entry has used so far (see
     /// [`crate::Vm::set_instruction_budget`]).
     pub fn steps_used(&self) -> u64 {
-        self.interp.steps_used()
+        self.interp.core().steps_used()
     }
 
     /// Writes text to the `Vm`'s standard output, where `print` writes. It adds no newline.
@@ -246,19 +247,19 @@ impl<'a> Ctx<'a> {
     /// not generic. Only a function registered with [`crate::Registration::typed`] can count
     /// on them being concrete types.
     pub fn type_args(&self) -> &[Ty] {
-        self.interp.host_type_args()
+        self.interp.core().host_type_args()
     }
 
     /// Every struct, enum and class of the loaded program, indexed by [`TypeId`]: the type
     /// descriptors a serializer reads (DESIGN §7.5).
     pub fn type_defs(&self) -> &[TypeDef] {
-        self.interp.type_defs()
+        self.interp.core().type_defs()
     }
 
     /// [`Ctx::type_defs`], shared, so a serializer can read them while it calls
     /// [`Ctx::call_field_default`].
     pub fn type_defs_shared(&self) -> std::rc::Rc<[TypeDef]> {
-        self.interp.type_defs_shared()
+        self.interp.core().type_defs_shared()
     }
 
     /// Computes the default value of a struct field: `f` is [`FieldDef::default`]
@@ -292,7 +293,11 @@ impl<'a> Ctx<'a> {
     /// The type id of a struct or enum the host declared, by the bare name a host function
     /// uses: its own module's type of that name, else the default module's.
     pub(crate) fn host_type(&self, name: &str) -> TypeId {
-        match self.interp.host_type_here(self.module.as_deref(), name) {
+        match self
+            .interp
+            .core()
+            .host_type_here(self.module.as_deref(), name)
+        {
             Ok(id) => id,
             Err(message) => panic!("{message}"),
         }
@@ -300,7 +305,7 @@ impl<'a> Ctx<'a> {
 
     /// The type id of the host class that the Rust type `T` implements.
     pub(crate) fn host_class<T: crate::HostType>(&self) -> TypeId {
-        match self.interp.host_class(std::any::TypeId::of::<T>()) {
+        match self.interp.core().host_class(std::any::TypeId::of::<T>()) {
             Some(id) => id,
             None => panic!(
                 "the host class `{}` is not part of the loaded host interface (register it with `Vm::register_type` before loading)",
@@ -320,7 +325,11 @@ impl<'a> Ctx<'a> {
         enum_name: &str,
         variant: &str,
     ) -> (TypeId, u32) {
-        match self.interp.module_enum_variant(module, enum_name, variant) {
+        match self
+            .interp
+            .core()
+            .module_enum_variant(module, enum_name, variant)
+        {
             Ok(found) => found,
             Err(message) => panic!("{message}"),
         }
@@ -346,7 +355,7 @@ impl<'a> Ctx<'a> {
     /// (`#[colibri::export(value)]`): found by the Rust type, so it does not depend on which
     /// module's function is running; `name` is used when the Rust type is not registered.
     pub fn new_struct_of(&self, rust: std::any::TypeId, name: &str, fields: Vec<Value>) -> Value {
-        let ty = match self.interp.host_class(rust) {
+        let ty = match self.interp.core().host_class(rust) {
             Some(id) => id,
             None => self.host_type(name),
         };
@@ -358,7 +367,7 @@ impl<'a> Ctx<'a> {
 
     /// [`Ctx::new_variant`] for the enum that the Rust type `rust` converts to.
     pub fn new_variant_of(&self, rust: std::any::TypeId, name: &str, variant: u32) -> Value {
-        let ty = match self.interp.host_class(rust) {
+        let ty = match self.interp.core().host_class(rust) {
             Some(id) => id,
             None => self.host_type(name),
         };
@@ -371,7 +380,7 @@ impl<'a> Ctx<'a> {
     /// # Panics
     /// As [`Ctx::new_struct`].
     pub fn new_struct_in(&self, module: &str, name: &str, fields: Vec<Value>) -> Value {
-        let ty = match self.interp.host_type_in(module, name) {
+        let ty = match self.interp.core().host_type_in(module, name) {
             Some(id) => id,
             None => panic!(
                 "the type `{name}` of the module `{module}` is not part of the loaded host interface (register it before loading)"
@@ -405,10 +414,10 @@ impl<'a> Ctx<'a> {
         owner: (u64, u32),
         args: Vec<Value>,
     ) -> Result<Value, Error> {
-        if self.interp.owner() != owner {
+        if self.interp.core().owner() != owner {
             return Err(Error::StaleHandle);
         }
-        if !self.interp.is_loaded() {
+        if !self.interp.core().is_loaded() {
             return Err(Error::NotLoaded);
         }
         let args = args.into_iter().map(|v| v.0).collect();
@@ -435,7 +444,7 @@ impl<'a> Ctx<'a> {
 /// A panic of the interpreter as the error a host sees, with the locations looked up in the
 /// program's sources.
 pub(crate) fn panic_error(interp: &Interp, info: PanicInfo) -> Error {
-    let sources = interp.sources();
+    let sources = interp.core().sources();
     let locate = |span: Span| {
         if !sources.contains(span.file) {
             return Location {
