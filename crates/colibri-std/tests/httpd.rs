@@ -282,6 +282,9 @@ impl Server {
             let result = vm
                 .load_source("app/main.colibri", &source)
                 .and_then(|()| vm.run_main())
+                // As `colibri run` does: the loop collects the panic of a coroutine that nothing
+                // reported.
+                .and_then(|()| vm.run_event_loop())
                 .map(|()| out.contents())
                 .map_err(|e| e.render(false));
             let _ = done_tx.send(result);
@@ -1598,17 +1601,17 @@ fn a_panic_in_a_stream_closure_cuts_that_connection_and_the_server_goes_on() {
     // Another connection is served as before.
     let mut other = server.connect();
     assert_eq!(other.call(get("/")).text(), "hello\n");
-    // How the panic is reported (a 500 for a handler, a log line) is for step 7, with
-    // `join_result`: here it is only that the connection is cut and the run goes on and ends.
+    // How a panic should be reported (a 500 for a handler, a log line) is for step 7, with
+    // `join_result`. Until then the panic of a coroutine ends the run, which the harness
+    // sees because it runs the event loop after `main` as `colibri run` does. Whether `serve`
+    // returns before the panic surfaces is scheduler timing, and either way the run ends in it.
     let mut stop = server.connect();
     let r = stop.call(request("POST", "/__stop", &["Content-Length: 0"], b""));
     assert_eq!(r.status, 200);
     drop(stop);
-    // The run ends either normally or, when the join at the stop raises the coroutine's panic,
-    // with that panic (it depends on when the scheduler reports it): never in another way.
     match server.done.recv_timeout(CEILING) {
-        Ok(Ok(printed)) => assert_eq!(printed, "GET /stream_panic\nGET /\n"),
         Ok(Err(e)) => assert!(e.contains("index 5 out of bounds"), "{e}"),
+        Ok(Ok(printed)) => panic!("the run ended without the panic: {printed:?}"),
         Err(_) => panic!("the server did not end within {CEILING:?}"),
     }
 }
