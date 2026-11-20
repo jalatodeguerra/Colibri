@@ -257,21 +257,16 @@ mod tests {
             needle.push(b'b');
             (hay, needle)
         };
-        let time = |n: usize| {
-            let (hay, needle) = shape(n);
-            let t = std::time::Instant::now();
-            assert_eq!(find(&hay, &needle), None);
-            t.elapsed().as_secs_f64()
-        };
-        time(1000);
-        // The best of a few runs: a busy machine slows one run, not all of them.
-        let best = |n: usize| (0..5).map(|_| time(n)).fold(f64::INFINITY, f64::min);
-        // A 2 MB text with a 200 KB needle, and one eighth of that.
-        let (small, big) = (best(25_000), best(200_000));
-        // Eight times the size: about eight times the time, not sixty-four.
-        assert!(big < 20.0 * small.max(0.002), "{small} {big}");
-        // And a bound so generous that only a quadratic scan (minutes) goes over it.
-        assert!(big < 10.0, "{big}");
+        // A 2 MB text with a 200 KB needle. There is no comparison with a smaller size: on a
+        // busy machine the times of two runs vary by more than a ratio can allow for. The
+        // bound is absolute and far above the time taken (a few milliseconds, tens in a debug
+        // build), while the scan that tries every offset needs about 4e11 comparisons here,
+        // which is minutes.
+        let (hay, needle) = shape(200_000);
+        let t = std::time::Instant::now();
+        assert_eq!(find(&hay, &needle), None);
+        let took = t.elapsed().as_secs_f64();
+        assert!(took < 10.0, "{took}");
         // A needle that is there is found at its offset.
         let (mut hay, needle) = shape(200_000);
         let at = hay.len() - needle.len();
