@@ -171,6 +171,12 @@ impl Wire {
         let status_line = lines.next().unwrap_or("");
         let mut parts = status_line.splitn(3, ' ');
         let version = parts.next().unwrap_or("").to_string();
+        // A status line is `HTTP/1.x`, a code and a reason, on one line: bytes of a body that
+        // was sent when it should not have been would show up here as something else.
+        assert!(
+            (version == "HTTP/1.1" || version == "HTTP/1.0") && !status_line.contains(['\r', '\n']),
+            "not a status line: {status_line:?}"
+        );
         let status: u16 = parts
             .next()
             .and_then(|s| s.parse().ok())

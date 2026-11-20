@@ -968,6 +968,7 @@ fn a_handler_that_reads_the_body_makes_the_server_send_100_continue_first() {
     // The client holds the body back until it is told to go on.
     let interim = w.read_within(EVENT, false).response();
     assert_eq!(interim.status, 100);
+    assert_eq!(interim.reason, "Continue");
     w.send("hello");
     let last = w.read();
     assert_eq!(last.status, 200);
@@ -1117,7 +1118,10 @@ fn the_answer_to_a_refused_request_arrives_although_the_client_goes_on_sending()
     // that unread could reset the connection, and a reset can take the answer with it; the
     // lingering close reads the rest and then closes in order. What the client reads is what is
     // tested, and a system may show an end or a reset after the answer (Windows resets where
-    // Unix ends in order), which `Wire` counts alike.
+    // Unix ends in order), which `Wire` counts alike. On Linux a reset leaves the data that
+    // already arrived readable, so this test cannot fail there for a missing lingering close
+    // (the mutation that removes it survives on Linux); on Windows the reset can take the
+    // answer with it, and that is where this test shows the defect.
     let server = Server::hello();
     let mut w = server.connect();
     let mut data = head("GET * HTTP/1.1", &["Host: test"]);
