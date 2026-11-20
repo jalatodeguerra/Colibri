@@ -429,12 +429,16 @@ $ colibri run greet.colibri
 some("hello, Colibri!")
 ```
 
-`accept`, the reads, the writes and `connect` wait on background threads, so while one coroutine
-waits for a peer the others keep running. Cancelling a coroutine that waits in `read` or `accept`
-never loses data or a connection: what had arrived stays for the next call. `close()` never
-waits and never fails, and it ends every call that waits on that object with `net.Error.Closed`.
-Each connection or listener that waits in a read or an accept holds one operating system thread
-while it waits, so `net` suits tens or hundreds of connections at once, not tens of thousands.
+`accept`, the reads, the writes and `connect` suspend the coroutine that calls them while they
+wait, so the other coroutines keep running. One poller thread per program waits for every
+connection and listener at once, so a connection or a listener that waits costs no thread and
+no wake-ups, only its descriptor and a little memory: a thousand idle reads and a thousand idle
+accepts are measured to cost about no CPU time. What bounds how many a program can serve is the
+operating system's limit on open descriptors and the one thread that runs the program's
+coroutines, not a thread per connection; counts beyond a thousand have not been measured.
+Cancelling a coroutine that waits in `read` or `accept` never loses data or a connection: what
+had arrived stays for the next call. `close()` never waits and never fails, and it ends every
+call that waits on that object with `net.Error.Closed`.
 
 - A `net.Conn` has `read(n)` (up to `n` bytes, waiting for at least one; empty `Bytes` is the
   end of the stream), `read_exact(n)`, `read_line()` (`none` at the end; a line may be up to 1 MiB

@@ -30,7 +30,7 @@ toml = { version = "1.2.1", default-features = false, features = ["parse", "pres
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# `WSAPoll`, the readiness wait of `net` on Windows (`poll(2)` is the one on Unix).
+# `SO_EXCLUSIVEADDRUSE` (`setsockopt`) for the listeners of `net` on Windows.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", default-features = false, features = ["Win32_Networking_WinSock"] }
 

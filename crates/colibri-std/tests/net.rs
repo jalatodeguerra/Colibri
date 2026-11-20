@@ -1656,6 +1656,102 @@ fn main() -> Result[()] {{
     }
 }
 
+/// `connect` by name: the lookup goes to a helper thread and the call goes on when it answers, and
+/// `connect_timeout` by name does the same with a deadline over the whole call. The listener is
+/// on `127.0.0.1` and `localhost` may give `::1` first, so the first attempt may be refused and
+/// the next one connects.
+#[test]
+fn a_connect_by_name_finds_the_listener() {
+    let (listener, addr) = rust_listener();
+    let port = addr.rsplit(':').next().unwrap().to_string();
+    let peer = thread::spawn(move || {
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            let (mut s, _) = listener.accept().unwrap();
+            with_timeouts(&s);
+            let mut line = [0u8; 2];
+            s.read_exact(&mut line).unwrap();
+            got.push(line);
+        }
+        got
+    });
+    let out = output_within(
+        format!(
+            r#"import net
+
+fn main() -> Result[()] {{
+    let a = net.connect("localhost:{port}")?
+    a.write("a\n")?
+    let b = net.connect_timeout("localhost:{port}", 20.0)?
+    b.write("b\n")?
+    print("both")
+    a.close()
+    b.close()
+    return ok(())
+}}
+"#
+        ),
+        LIMIT,
+    );
+    assert_eq!(out, "both\n");
+    assert_eq!(peer.join().unwrap(), [*b"a\n", *b"b\n"]);
+}
+
+/// A connect from a place that cannot suspend (a `Drop` hook) blocks the interpreter thread and
+/// works: the lookup and the attempt are waited for on their completions. It connects, it is
+/// refused where nothing listens.
+#[test]
+fn a_connect_from_a_drop_hook_connects_and_is_refused() {
+    let (listener, addr) = rust_listener();
+    // A port that nothing is bound to: bound and let go of.
+    let free = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().to_string()
+    };
+    let peer = thread::spawn(move || {
+        let (s, _) = listener.accept().unwrap();
+        drop(s);
+    });
+    let out = output_within(
+        format!(
+            r#"import net
+
+class Guard {{ what: str }}
+
+impl Drop for Guard {{
+    fn drop(self) {{
+        if self.what == "connect" {{
+            match net.connect("{addr}") {{
+                ok(c) => {{
+                    print("connected")
+                    c.close()
+                }}
+                err(e) => print("error {{e.as[net.Error]().expect("a net error")}}")
+            }}
+        }} else {{
+            match net.connect_timeout("{free}", 20.0) {{
+                ok(_) => print("connected")
+                err(e) => print("error {{e.as[net.Error]().expect("a net error")}}")
+            }}
+        }}
+    }}
+}}
+
+fn main() -> Result[()] {{
+    var g: Option[Guard] = some(Guard {{ what: "connect" }})
+    g = none
+    g = some(Guard {{ what: "refused" }})
+    g = none
+    return ok(())
+}}
+"#
+        ),
+        LIMIT,
+    );
+    assert_eq!(out, "connected\nerror Refused\n");
+    peer.join().unwrap();
+}
+
 /// A connect that cannot finish ends at its timeout, and one that is cancelled ends at once.
 /// Linux and macOS only: a listener whose accept queue is full leaves further connects waiting
 /// there (the SYN is dropped; BSD, and so macOS, does the same as Linux), while Windows answers
