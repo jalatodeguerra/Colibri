@@ -1,0 +1,51 @@
+// DESIGN §6.1 for closures: a `{ }` body whose return type is `Result[()]` and that reaches
+// its end returns `ok(())`, as a function does.
+fn run(f: fn(int) -> Result[()], n: int) -> Result[()] {
+    return f(n)
+}
+
+fn main() {
+    // The type is written on the closure.
+    let annotated = fn(n: int) -> Result[()] {
+        print("annotated {n}")
+    }
+    print(annotated(1))
+
+    // The type comes from the parameter the closure is passed to.
+    print(run(fn(n) {
+        print("inferred {n}")
+    }, 2))
+
+    // An early `return err(..)` still works, and so does a `defer`.
+    let early = fn(flag: bool) -> Result[(), str] {
+        defer print("deferred")
+        if flag {
+            return err("stopped")
+        }
+        print("went on")
+    }
+    print(early(false))
+    print(early(true))
+
+    // The closure's value can be used with `?`.
+    let inner = fn() -> Result[()] {
+        let _ = 1
+    }
+    let outer = fn() -> Result[()] {
+        inner()?
+        print("outer went on")
+    }
+    print(outer())
+}
+
+// expect: annotated 1
+// expect: ok(())
+// expect: inferred 2
+// expect: ok(())
+// expect: went on
+// expect: deferred
+// expect: ok(())
+// expect: deferred
+// expect: err("stopped")
+// expect: outer went on
+// expect: ok(())

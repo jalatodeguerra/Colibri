@@ -1,0 +1,7 @@
+// allow: unused
+// Only `Result[()]` gets the implicit `ok(())`: any other `Result` closure must return.
+fn main() {
+    let f = fn(n: int) -> Result[int] {
+        print(n)
+    } // error: this closure must return `Result[int]`, but its body can end without returning
+}
