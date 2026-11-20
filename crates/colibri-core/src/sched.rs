@@ -41,6 +41,9 @@ pub enum Wake {
     Real(f64),
     /// When this coroutine handle is finished.
     Join(Weak<ClassObj>),
+    /// `join_result` on the coroutine with this id: no polling, the coroutine is in the
+    /// target's joiner list and is woken (as `Signaled`) when the target ends.
+    JoinResult(u64),
     /// Waiting for this signal (no polling: the coroutine is in the signal's waiter list).
     Signal(u64),
     /// The signal was emitted; the coroutine resumes at the next tick, in emission order.
@@ -101,6 +104,8 @@ pub struct Scheduler {
     pub(crate) clock: Box<dyn Clock>,
     /// The coroutines waiting for each signal, in wait order.
     pub(crate) signals: HashMap<u64, Vec<u64>>,
+    /// The coroutines waiting in `join_result` for each coroutine, in wait order.
+    pub(crate) joiners: HashMap<u64, Vec<u64>>,
     /// Coroutines whose signal was emitted, in the order they will resume next tick.
     pub(crate) signaled: Vec<u64>,
     /// The live coroutines of each `CoGroup`, in start order.
@@ -125,6 +130,7 @@ impl Scheduler {
             stack_size: DEFAULT_COROUTINE_STACK,
             clock: Box::new(SystemClock::new()),
             signals: HashMap::new(),
+            joiners: HashMap::new(),
             signaled: Vec::new(),
             groups: HashMap::new(),
             resumptions: 0,
@@ -188,8 +194,10 @@ impl Scheduler {
             fiber.cancelling = true;
             return Err(Cancelled);
         }
-        if let Wake::Signal(s) = &wake {
-            self.signals.entry(*s).or_default().push(id);
+        match &wake {
+            Wake::Signal(s) => self.signals.entry(*s).or_default().push(id),
+            Wake::JoinResult(target) => self.joiners.entry(*target).or_default().push(id),
+            _ => {}
         }
         self.entries[idx].wake = wake;
         Ok(())
@@ -234,6 +242,13 @@ impl Scheduler {
     /// The background operations: the pool, the tokens and the completions.
     pub fn ext(&mut self) -> &mut Externals {
         &mut self.ext
+    }
+
+    /// How many coroutines are registered as waiting for a signal or for another coroutine
+    /// (for tests: a coroutine that is cancelled or woken must leave every list).
+    pub fn waiter_count(&self) -> usize {
+        self.signals.values().map(Vec::len).sum::<usize>()
+            + self.joiners.values().map(Vec::len).sum::<usize>()
     }
 
     /// Scheduler time: the sum of the `dt` of the ticks so far.
@@ -291,7 +306,9 @@ impl Scheduler {
             }
             // A coroutine waiting for a signal needs no tick of its own: only an emit (from
             // code that runs at a tick or before it) can wake it.
-            if e.state == State::Suspended && matches!(e.wake, Wake::Signal(_)) {
+            if e.state == State::Suspended
+                && matches!(e.wake, Wake::Signal(_) | Wake::JoinResult(_))
+            {
                 continue;
             }
             any = true;
@@ -304,7 +321,11 @@ impl Scheduler {
                 }
                 // Only a completion (which ends the sleep) can wake it.
                 Wake::External(_) => f64::INFINITY,
-                Wake::Ready | Wake::Join(_) | Wake::Group(_) | Wake::Signal(_) => poll,
+                Wake::Ready
+                | Wake::Join(_)
+                | Wake::Group(_)
+                | Wake::Signal(_)
+                | Wake::JoinResult(_) => poll,
             };
             best = Some(best.map_or(delay, |b| b.min(delay)));
         }
@@ -360,6 +381,48 @@ impl Scheduler {
     /// Forgets the panic of the coroutine `id`: whoever joined it reports it instead.
     pub fn forget_failure_of(&mut self, id: u64) {
         self.failures.retain(|(f, _)| *f != id);
+    }
+
+    /// The coroutine `target` has ended: every coroutine waiting in `join_result` on it is
+    /// woken the way a signal's waiters are (resumed at the start of the next tick, in the
+    /// order they began waiting, before the other due coroutines). Returns whether one of them
+    /// will receive the target's outcome, which is what makes a panic "handed over".
+    pub(crate) fn wake_joiners(&mut self, target: u64) -> bool {
+        let Some(waiters) = self.joiners.remove(&target) else {
+            return false;
+        };
+        let mut received = false;
+        for id in waiters {
+            if let Some(idx) = self.find(id) {
+                let e = &mut self.entries[idx];
+                if e.state == State::Suspended
+                    && matches!(e.wake, Wake::JoinResult(t) if t == target)
+                {
+                    e.wake = Wake::Signaled;
+                    self.signaled.push(id);
+                    received = true;
+                }
+            }
+        }
+        received
+    }
+
+    /// A waiter that is cancelled leaves the list of what it waited for: no stale entry
+    /// stays behind, and nothing wakes a coroutine that is gone.
+    pub(crate) fn forget_waiter(&mut self, id: u64, wake: &Wake) {
+        let (map, key) = match wake {
+            Wake::Signal(sig) => (&mut self.signals, *sig),
+            Wake::JoinResult(target) => (&mut self.joiners, *target),
+            _ => return,
+        };
+        if let Some(list) = map.get_mut(&key) {
+            if let Some(pos) = list.iter().rposition(|w| *w == id) {
+                list.remove(pos);
+            }
+            if list.is_empty() {
+                map.remove(&key);
+            }
+        }
     }
 
     /// The coroutine `id` is no longer a member of `group`.

@@ -226,7 +226,7 @@ pub trait Builtins: Engine {
                 return self.cogroup_builtin(fiber, op, &recv, span);
             }
             Builtin::SignalEmit => return self.signal_builtin(fiber, &recv, span),
-            Builtin::CoroutineJoin | Builtin::CoGroupJoinAll => {
+            Builtin::CoroutineJoin | Builtin::CoroutineJoinResult | Builtin::CoGroupJoinAll => {
                 return self.pausing_builtin(fiber, op, &recv, span);
             }
             Builtin::StrBuilderNew => Value::Obj(ClassObj::new(

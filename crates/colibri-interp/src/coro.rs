@@ -148,6 +148,12 @@ impl Interp {
     // engine's own API, not accessors of the shared state. Removing them would also make the
     // `local/r6-join` branch, which adds to this block, harder to rebase.
 
+    /// How many coroutines are registered as waiting for a signal or for another coroutine.
+    #[doc(hidden)]
+    pub fn coroutine_waiters(&self) -> usize {
+        self.core.sched.waiter_count()
+    }
+
     /// How long until the next coroutine needs a tick, for an event loop: `None` when nothing
     /// is alive or every live coroutine waits for a signal (nothing but an emit can wake it), `Some(0.0)`-ish small polling interval when something is checked at every tick
     /// (`wait_until`, `join`), else the time to the earliest timed wake.
@@ -692,7 +698,7 @@ impl Interp {
         }
     }
 
-    /// `join` on a `Coroutine` and `join_all` on a `CoGroup`.
+    /// `join` and `join_result` on a `Coroutine`, and `join_all` on a `CoGroup`.
     pub(crate) fn pausing_op(
         &mut self,
         fiber: &mut Fiber,
@@ -707,45 +713,43 @@ impl Interp {
             return Err(self.internal(fiber, span, "ill-typed coroutine method"));
         };
         let h = Rc::clone(h);
-        let result = self.join_coroutine(fiber, &h, span);
+        let result = self.join_coroutine(fiber, &h, span, op == Builtin::CoroutineJoinResult);
         // `h` is a clone of a handle the caller still holds, so this is never the last owner.
         drop(h);
         result
     }
 
-    fn join_coroutine(&mut self, fiber: &mut Fiber, h: &Rc<ClassObj>, span: Span) -> Eval {
+    /// Waits until the coroutine of `h` has ended, then `joined_outcome`.
+    fn join_coroutine(
+        &mut self,
+        fiber: &mut Fiber,
+        h: &Rc<ClassObj>,
+        span: Span,
+        as_result: bool,
+    ) -> Eval {
+        let what = if as_result { "join_result" } else { "join" };
         if handle_status(h) == RUNNING && fiber.state.coro.is_none() {
             let target = Rc::clone(h);
-            self.drive_main(fiber, span, "join", None, &mut |_| {
+            self.drive_main(fiber, span, what, None, &mut |_| {
                 handle_status(&target) != RUNNING
             })?;
         }
         if handle_status(h) == RUNNING {
-            let id = self.pause_context(fiber, span, "join")?;
+            let id = self.pause_context(fiber, span, what)?;
             if handle_id(h) == id {
                 return Err(self.panic(fiber, span, "a coroutine cannot join itself"));
             }
             while handle_status(h) == RUNNING {
-                self.suspend(fiber, id, Wake::Join(Rc::downgrade(h)))?;
-            }
-        }
-        match handle_status(h) {
-            DONE => Ok(h.field(H_RESULT).unwrap_or(Value::Unit)),
-            PANICKED => {
-                let id = handle_id(h);
-                self.core.sched.forget_failure_of(id);
-                let msg = match h.field(H_RESULT) {
-                    Some(Value::Str(s)) => s.to_string(),
-                    _ => String::new(),
+                let wake = if as_result {
+                    // Registered with the target: woken when it ends, never polled.
+                    Wake::JoinResult(handle_id(h))
+                } else {
+                    Wake::Join(Rc::downgrade(h))
                 };
-                let message = format!("the joined coroutine `{}` panicked: {msg}", handle_name(h));
-                Err(self.panic(fiber, span, message))
-            }
-            _ => {
-                let message = format!("the joined coroutine `{}` was cancelled", handle_name(h));
-                Err(self.panic(fiber, span, message))
+                self.suspend(fiber, id, wake)?;
             }
         }
+        self.joined_outcome(fiber, h, span, as_result)
     }
 
     /// `join_all` on a `CoGroup`: pauses until no other member of the group is alive.

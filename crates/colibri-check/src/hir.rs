@@ -1117,6 +1117,8 @@ pub enum Builtin {
     CoroutineDone,
     /// `c.join() -> T`
     CoroutineJoin,
+    /// `c.join_result() -> Result[T]`
+    CoroutineJoinResult,
     // ---- CoGroup and Signal (DESIGN §14.2) ----
     /// `g.cancel()`
     CoGroupCancel,
