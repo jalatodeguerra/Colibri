@@ -47,6 +47,17 @@ enum Opaque {
     Const(GlobalId),
 }
 
+impl P {
+    /// Matches every value.
+    fn irrefutable(&self) -> bool {
+        match self {
+            P::Wild => true,
+            P::Or(alts) => alts.iter().any(P::irrefutable),
+            P::Ctor(..) => false,
+        }
+    }
+}
+
 fn lower(pat: &Pat) -> P {
     match &pat.kind {
         PatKind::Wild | PatKind::Bind(_, None) => P::Wild,
@@ -158,7 +169,7 @@ fn analyze_within(
 ) -> Analysis {
     let cx = Cx {
         types,
-        budget,
+        budget: Cell::new(budget),
         steps: Cell::new(0),
         open: RefCell::new(Vec::new()),
         open_as_closed: Cell::new(false),
@@ -172,16 +183,35 @@ fn analyze_within(
     }
     let mut rows: Vec<Vec<P>> = Vec::new();
     let mut unreachable = Vec::new();
+    // The "this arm never runs" questions have a budget of their own: running out of it only
+    // means that no arm is reported as unreachable, never that the match is "too complex".
+    // It is a tenth of the whole one: the answer is a nicety, and the time of a match that
+    // cannot be searched is spent here first.
+    let mut reach_ran_out = false;
+    cx.budget.set(budget / 10);
     for (i, (arm, pat)) in arms.iter().zip(lowered).enumerate() {
         let row = vec![pat];
-        if !cx.useful(&rows, &row, &tys) && !cx.exhausted() {
-            unreachable.push(i);
+        if !reach_ran_out {
+            if !cx.useful(&rows, &row, &tys) && !cx.exhausted() {
+                unreachable.push(i);
+            }
+            reach_ran_out = cx.exhausted();
         }
         if !arm.guarded {
             rows.push(row);
         }
     }
-    let found = cx.witnesses(&rows, &tys);
+    if reach_ran_out {
+        unreachable.clear();
+    }
+    cx.steps.set(0);
+    cx.budget.set(budget);
+    // An unguarded arm that matches everything makes the match exhaustive: no search.
+    let found = if rows.iter().any(|r| r.iter().all(P::irrefutable)) {
+        Vec::new()
+    } else {
+        cx.witnesses(&rows, &tys)
+    };
     let more_missing = found.len() >= MAX_WITNESSES;
     let open_enums = cx.open.borrow().clone();
     // Would the match be exhaustive if the open enums had no variants but those listed? Then
@@ -222,7 +252,7 @@ fn analyze_within(
 
 struct Cx<'t> {
     types: &'t [TypeDef],
-    budget: u32,
+    budget: Cell<u32>,
     steps: Cell<u32>,
     /// The open enums (see [`TypeDef::is_open_enum`]) the analysis met.
     open: RefCell<Vec<TypeId>>,
@@ -233,7 +263,7 @@ struct Cx<'t> {
 
 impl Cx<'_> {
     fn exhausted(&self) -> bool {
-        self.steps.get() > self.budget
+        self.steps.get() > self.budget.get()
     }
 
     /// Counts a step; `false` once the budget is gone.
@@ -906,9 +936,9 @@ mod tests {
         let full = analyze_within(&ts, &ty, &arms, STEP_BUDGET);
         assert!(!full.gave_up && full.only_open, "{full:?}");
         assert_eq!(full.open_enums, [TypeId(3)]);
-        // The first question takes 252 steps and the second 112: a budget of 300 holds each
+        // The first question takes under 20 steps and the second 112: a budget of 112 holds each
         // but not their sum, which is what gave "could not prove exhaustive" before.
-        let tight = analyze_within(&ts, &ty, &arms, 300);
+        let tight = analyze_within(&ts, &ty, &arms, 112);
         assert!(
             !tight.gave_up,
             "the second question has a budget of its own"
@@ -916,6 +946,51 @@ mod tests {
         assert!(tight.only_open && !tight.missing.is_empty());
         assert_eq!(tight.missing, full.missing);
         // Out of budget in the first question is still giving up.
-        assert!(analyze_within(&ts, &ty, &arms, 200).gave_up);
+        assert!(analyze_within(&ts, &ty, &arms, 5).gave_up);
+    }
+
+    #[test]
+    fn a_final_wildcard_makes_a_match_exhaustive_however_many_arms_come_first() {
+        // A tuple of 14 bools, one arm for each ordered pair (column i true, column j
+        // false) and a final `_`: the reachability questions used up the budget of the
+        // whole analysis and the match was reported as too complex.
+        let k = 14;
+        let ty = Ty::Tuple(vec![Ty::Bool; k]);
+        let mut rows: Vec<Pat> = Vec::new();
+        for i in 0..k {
+            for j in 0..k {
+                if i != j {
+                    rows.push(tuple(
+                        (0..k)
+                            .map(|c| {
+                                if c == i {
+                                    boolean(true)
+                                } else if c == j {
+                                    boolean(false)
+                                } else {
+                                    wild(&Ty::Bool)
+                                }
+                            })
+                            .collect(),
+                    ));
+                }
+            }
+        }
+        rows.push(wild(&ty));
+        let arms: Vec<ArmInfo<'_>> = rows
+            .iter()
+            .map(|pat| ArmInfo {
+                pat,
+                guarded: false,
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        let out = analyze(&[], &ty, &arms);
+        eprintln!("14 bools, 183 arms: {:?}", started.elapsed());
+        assert!(!out.gave_up, "{out:?}");
+        assert!(out.missing.is_empty());
+        // Only the reporting of unreachable arms is given up when its own budget runs out.
+        let tight = analyze_within(&[], &ty, &arms, 50);
+        assert!(!tight.gave_up && tight.unreachable.is_empty(), "{tight:?}");
     }
 }
