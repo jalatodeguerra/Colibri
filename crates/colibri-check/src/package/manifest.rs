@@ -2,7 +2,6 @@
 
 use colibri_syntax::{Diagnostic, FileId, Span};
 
-use super::git;
 use super::toml::{self, Entry, Table, ValueKind};
 
 /// A dependency listed in `[dependencies]`.
@@ -78,26 +77,18 @@ pub struct Manifest {
     pub allow_ffi_spans: Vec<Span>,
 }
 
-/// Parses a manifest; every problem is a diagnostic in file `file`.
+/// Parses a manifest; every problem is a diagnostic in file `file`. The file is read through
+/// [`toml::read_config`]: one with a credential in it is refused as a whole.
 pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
-    // A file with a credential in it is refused as a whole: what is read from here on is the
-    // masked text, so no message (or path, or key) made from it can show the secret.
-    let (masked, credentials) = git::credential_ranges(text);
-    if credentials.is_empty() {
-        return parse_unmasked(file, text);
-    }
-    // The file is not read any further (its other errors can wait until the credentials are
-    // out of it); the text is the masked one wherever it is shown.
-    let _ = masked;
-    Err(git::credential_diagnostics(
-        file,
-        "colibri.toml",
-        &credentials,
-    ))
+    from_tables(file, toml::read_config(file, text, "colibri.toml").tables)
 }
 
-fn parse_unmasked(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
-    let tables = toml::parse(file, text).map_err(|d| vec![d])?;
+/// The manifest that the tables of a `colibri.toml` read by [`toml::read_config`] mean.
+pub fn from_tables(
+    file: FileId,
+    tables: Result<Vec<toml::Table>, Vec<Diagnostic>>,
+) -> Result<Manifest, Vec<Diagnostic>> {
+    let tables = tables?;
     let mut errors = Vec::new();
     let mut name = None;
     let mut ffi = false;

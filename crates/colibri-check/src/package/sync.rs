@@ -13,6 +13,7 @@ use super::git::{self, Git};
 use super::loader::MANIFEST_FILE;
 use super::lock::{self, LOCK_FILE, Lock, LockEntry};
 use super::manifest::{self, GitSource, Source, UrlKind, classify_url};
+use super::toml;
 
 /// Which locked dependencies to resolve again, as `colibri update` does.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -170,8 +171,7 @@ impl Sync<'_> {
         let Ok(text) = std::fs::read_to_string(dir.join(MANIFEST_FILE)) else {
             return Ok(());
         };
-        refuse_credentials(dir, &text)?;
-        let Ok(manifest) = manifest::parse(FileId(0), &text) else {
+        let Ok(manifest) = read_manifest(dir, &text)? else {
             return Ok(());
         };
         for dep in &manifest.dependencies {
@@ -212,8 +212,7 @@ impl Sync<'_> {
         let Ok(text) = std::fs::read_to_string(dir.join(MANIFEST_FILE)) else {
             return Ok(());
         };
-        refuse_credentials(dir, &text)?;
-        let manifest = match manifest::parse(FileId(0), &text) {
+        let manifest = match read_manifest(dir, &text)? {
             Ok(m) => m,
             // `run` and `check` leave the report to the loader, which shows the source line;
             // `update` would otherwise write a lock without the dependencies it could not read.
@@ -413,30 +412,33 @@ impl Sync<'_> {
     }
 }
 
-/// A manifest with a credential written in it is refused as a whole, whatever the command:
-/// nothing is fetched and no lock is written from it. The message gives the lines, never the
-/// text.
-fn refuse_credentials(dir: &Path, text: &str) -> Result<(), String> {
-    let (_, credentials) = git::credential_ranges(text);
-    let Some(&(first, _)) = credentials.first() else {
-        return Ok(());
-    };
-    let line = text.as_bytes()[..first.min(text.len())]
-        .iter()
-        .filter(|&&b| b == b'\n')
-        .count()
-        + 1;
-    Err(format!(
-        "{}:{line}: a credential is written in `{MANIFEST_FILE}` ({} place{}): the file is refused, nothing was fetched and `{LOCK_FILE}` was not written; a url may not hold a user name and password, use a git credential helper or an ssh key",
-        dir.join(MANIFEST_FILE).display(),
-        credentials.len(),
-        if credentials.len() == 1 { "" } else { "s" }
-    ))
+/// Reads the manifest `text` of `dir` through [`toml::read_config`]. A manifest with a
+/// credential written in it is refused as a whole, whatever the command: the outer `Err`,
+/// nothing is fetched and no lock is written from it. The message gives the line, never the
+/// text. The inner `Err` is a manifest that does not mean anything.
+fn read_manifest(
+    dir: &Path,
+    text: &str,
+) -> Result<Result<manifest::Manifest, Vec<colibri_syntax::Diagnostic>>, String> {
+    let config = toml::read_config(FileId(0), text, MANIFEST_FILE);
+    if let Some(&(first, _)) = config.credentials.first() {
+        let line = text.as_bytes()[..first.min(text.len())]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
+            + 1;
+        let places = config.credentials.len();
+        return Err(format!(
+            "{}:{line}: a credential is written in `{MANIFEST_FILE}` ({places} place{}): the file is refused, nothing was fetched and `{LOCK_FILE}` was not written; a url may not hold a user name and password, use a git credential helper or an ssh key",
+            dir.join(MANIFEST_FILE).display(),
+            if places == 1 { "" } else { "s" }
+        ));
+    }
+    Ok(manifest::from_tables(FileId(0), config.tables))
 }
 
 /// The errors of the manifest in `dir` as text: each with its line, and no credentials.
 fn manifest_errors(dir: &Path, text: &str, errors: &[colibri_syntax::Diagnostic]) -> String {
-    let text = git::mask_source_text(text);
     let file = dir.join(MANIFEST_FILE);
     let lines: Vec<String> = errors
         .iter()

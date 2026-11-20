@@ -220,7 +220,22 @@ impl<'c> Server<'c> {
         let path = key(&uri);
         self.buffers.insert(path.clone(), text.clone());
         self.docs.insert(path.clone(), Doc { uri, text });
-        self.check(&path);
+        if path.extension().is_some_and(|e| e == "colibri") {
+            self.check(&path);
+        } else {
+            // A `colibri.toml` (or any other file) the editor opened is not Colibri source:
+            // it is never parsed as such. It is a buffer the loader reads when it reads the
+            // package, so the open Colibri documents are read again to see it.
+            let open: Vec<PathBuf> = self
+                .docs
+                .keys()
+                .filter(|p| p.extension().is_some_and(|e| e == "colibri"))
+                .cloned()
+                .collect();
+            for doc in open {
+                self.check(&doc);
+            }
+        }
     }
 
     fn close(&mut self, path: &Path) {

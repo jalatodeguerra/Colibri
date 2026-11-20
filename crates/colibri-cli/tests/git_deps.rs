@@ -2411,6 +2411,7 @@ fn refused_without_the_secret(sb: &Sandbox, app: &Path, what: &str) {
         vec!["run"],
         vec!["update"],
         vec!["check", "--offline"],
+        vec!["test"],
     ] {
         let mut args = args;
         let target = app.to_str().unwrap().to_string();
@@ -2449,6 +2450,10 @@ fn a_credential_in_any_value_of_a_manifest_is_in_no_message_about_it() {
         "x = { \"https://v:SeCrEt@h\" = \"1\", \"https://v:SeCrEt@h\" = \"2\" }",
         "x = { \"https://v:SeCrEt@h\" = \"1\", \"https://w:SeCrEt@h\" = \"2\"",
         "a = \"git:SeCrEt@h:r\", b = \"https://u:SeCrEt@h/r\", c = \"u:SeCrEt@h\"",
+        // A file that does not parse because of an escape.
+        "lib = { git = \"https\\u003a//ghp_SeCrEtToKeN@github.com/me/r\" }",
+        "lib = { git = \"https\\x3a//ghp_SeCrEtToKeN@github.com/me/r\" }",
+        "lib = { git = \"ghp\\u003aSeCrEt@github.com\" }",
     ];
     for (i, dep) in cases.iter().enumerate() {
         let app = sb.app(&format!("secret{i}"), dep, &[]);
@@ -2540,6 +2545,114 @@ fn a_credential_in_the_manifest_of_a_dependency_or_in_the_lock_is_refused_throug
     )
     .unwrap();
     refused_without_the_secret(&sb, &app, "lock, many");
+}
+
+/// A package whose `colibri.toml` is `manifest` and whose `main` does nothing.
+fn package_with(sb: &Sandbox, name: &str, manifest: &str) -> PathBuf {
+    sb.write(&format!("apps/{name}/colibri.toml"), manifest);
+    sb.write(&format!("apps/{name}/main.colibri"), "fn main() {}\n");
+    sb.path(&format!("apps/{name}"))
+}
+
+#[test]
+fn an_at_sign_in_a_comment_or_a_path_never_refuses_a_manifest() {
+    let sb = Sandbox::new("at_in_comments");
+    sb.write(
+        "apps/@scope/lib/colibri.toml",
+        "[package]\nname = \"lib\"\n",
+    );
+    sb.write(
+        "apps/@scope/lib/lib.colibri",
+        "pub fn version() -> str => \"l\"\n",
+    );
+    for (i, text) in [
+        "# docs: https://medium.com/@me/post\n[package]\nname = \"app\"\n",
+        "# mirror of https://www.npmjs.com/package/@scope/pkg\n[package]\nname = \"app\"\n",
+        "[package]\nname = \"app\" # contact jane.doe+x@example.com: thanks\n",
+        "# see http://example.com/~user@host\n[package]\nname = \"app\"\n",
+        "# TODO(jane@example.com): pin a tag\n[package]\nname = \"app\"\n",
+        "# Maintainer: Jane Doe <jane@example.com> (license: MIT)\n[package]\nname = \"app\"\n",
+        "# clone git@github.com:me/x.git\n[package]\nname = \"app\"\n",
+        "[package]\nname = \"app\"\n[dependencies]\nlib = { path = \"../@scope/lib\" } # https://u:SeCrEt@h/r\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let app = package_with(&sb, &format!("ok{i}"), text);
+        let out = sb.colibri(&["check", "--offline", app.to_str().unwrap()]);
+        assert_eq!(out.code, 0, "{text}: {}", out.stderr);
+        assert!(!out.stderr.contains("SeCrEt"), "{text}: {}", out.stderr);
+    }
+}
+
+#[test]
+fn odd_text_around_an_at_sign_is_an_error_not_a_panic() {
+    let sb = Sandbox::new("at_no_panic");
+    for (i, text) in [
+        "[package]\nname = \"app\"\nffi = 1\n# owner: me@example.com = Jane\n",
+        "v = 1\n# me@x = y\n",
+        "[package]\nname = \"app\"\n\n\nu:SeCrEt@host:r = 1\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let app = package_with(&sb, &format!("odd{i}"), text);
+        for args in [vec!["check"], vec!["run"], vec!["update"]] {
+            let mut args = args;
+            args.push(app.to_str().unwrap());
+            let out = sb.colibri(&args);
+            assert_eq!(out.code, 1, "{text} {args:?}: {}", out.stderr);
+            assert!(!out.stderr.contains("panicked"), "{text}: {}", out.stderr);
+            assert!(!out.stderr.contains("SeCrEt"), "{text}: {}", out.stderr);
+        }
+    }
+}
+
+#[test]
+fn a_file_that_does_not_parse_reports_its_true_error_and_shows_no_line_with_an_at_sign() {
+    let sb = Sandbox::new("unparsed");
+    // The error is on line 3, which has no `@`; line 5 has a credential.
+    let app = package_with(
+        &sb,
+        "true_error",
+        "[package]\nname = \"app\"\nffi = 1\n[dependencies]\nlib = { git = \"https://u:SeCrEt@h/r\" }\n",
+    );
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("numbers are not supported"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stderr.contains("colibri.toml:3:"), "{}", out.stderr);
+    assert!(out.stderr.contains("ffi = 1"), "{}", out.stderr);
+    assert!(!out.stderr.contains("SeCrEt"), "{}", out.stderr);
+    // The error is on a line with a legitimate `@`: a fixed message, the place, no text.
+    let app = package_with(
+        &sb,
+        "fixed_text",
+        "[package]\nname = \"app\"\n[dependencies]\nlib = { git = \"git@github.com:me/x.git\" \n",
+    );
+    let out = sb.colibri(&["check", "--offline", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(out.stderr.contains("cannot be read"), "{}", out.stderr);
+    assert!(out.stderr.contains("colibri.toml:4:"), "{}", out.stderr);
+    assert!(!out.stderr.contains("github"), "{}", out.stderr);
+    // A credential in a comment only, on a line with an unrelated manifest error.
+    let app = package_with(
+        &sb,
+        "comment_only",
+        "[package]\nname = \"app\"\nbogus = \"x\" # was https://u:SeCrEt@h/r\n",
+    );
+    let out = sb.colibri(&["check", "--offline", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(out.stderr.contains("unknown key `bogus`"), "{}", out.stderr);
+    assert!(!out.stderr.contains("SeCrEt"), "{}", out.stderr);
+    assert!(
+        !out.stderr.contains("a credential is written"),
+        "{}",
+        out.stderr
+    );
 }
 
 #[test]

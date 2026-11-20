@@ -1034,23 +1034,10 @@ pub(super) fn mask_str(text: &str) -> String {
         .collect()
 }
 
-/// [`redact`] with every hidden byte replaced by a `*`, so the text keeps its length and the
-/// spans into it stay right: what the loader hands to the error printer in place of a
-/// manifest or lock file, which show the line an error is on.
-pub fn mask_credentials(text: &str) -> String {
-    rewrite_userinfo(text, &|userinfo, may_stay| {
-        if may_stay && is_plain_user(userinfo) {
-            userinfo.to_string()
-        } else {
-            mask_str(userinfo)
-        }
-    })
-}
-
 /// Where an `@` is written in `line`, as the byte range of the last one: a plain `@`, or a TOML
 /// escape for it (`\u0040`, `\U00000040`, `\x40`), which a parser may reject and a reader
 /// would still see as the end of the user information.
-fn last_at_like(line: &str) -> Option<(usize, usize)> {
+pub(super) fn last_at_like(line: &str) -> Option<(usize, usize)> {
     let b = line.as_bytes();
     let mut last = None;
     let mut i = 0;
@@ -1117,7 +1104,7 @@ fn scp_credential_like(text: &str) -> bool {
 /// `git` or `url` value (`url`) is judged as a url is (`userinfo_problem`); another value only
 /// if it is shaped like one (`scheme://user:password@host`, or the scp form), so a path such
 /// as `../@scope/lib` or a name with an `@` in it is no credential.
-fn credential_like(value: &str, url: bool) -> bool {
+pub(super) fn credential_like(value: &str, url: bool) -> bool {
     if !value.contains('@') {
         return false;
     }
@@ -1129,106 +1116,6 @@ fn credential_like(value: &str, url: bool) -> bool {
     } else {
         scp_credential_like(value)
     }
-}
-
-/// Whether the part of a line before its first scheme is searched for the scp shape, and how.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Scp {
-    No,
-    /// A line of a file that does not parse: from the first quote of the value.
-    Value,
-    /// A comment.
-    Comment,
-}
-
-/// `line` with the user information of every url in it hidden, for text that is not
-/// understood (a file that does not parse, a comment): each `scheme://userinfo@` runs from the
-/// scheme to the last `@` before the next scheme, whatever quotes and spaces the password has,
-/// and a plain user name of an `ssh` url stays. With `scp`, the scheme-less part before the
-/// first scheme is searched for the scp shape (`user:password@host`, `user@host:path` with
-/// more than a plain user) as well. One pass over the line: the time is linear.
-fn mask_credentials_in_line(line: &str, scp: Scp) -> String {
-    let mut out = String::with_capacity(line.len());
-    let first = line.find("://");
-    let head_end = first.map_or(line.len(), |i| scheme_start(&line[..i]));
-    let head = &line[..head_end];
-    match last_at_like(head) {
-        Some((at, at_end)) if scp != Scp::No => {
-            let start = if scp == Scp::Comment {
-                // The word the `@` ends: a comment is prose, a password with a space in it
-                // is not looked for.
-                head[..at].rfind(char::is_whitespace).map_or(0, |i| i + 1)
-            } else {
-                let from = head.find('=').map_or(0, |e| e + 1);
-                head[from..].find(['"', '\'']).map_or(from, |q| from + q)
-            };
-            let user = head[start..at].trim_start_matches(['"', '\'']);
-            let legit = is_plain_user(user) && head[at_end..].contains(':');
-            let credential = start < at
-                && !legit
-                && (head[start..at].contains(':') || head[at_end..].contains(':'));
-            if credential {
-                out.push_str(&head[..start]);
-                out.push_str(&mask_str(&head[start..at]));
-                out.push_str(&head[at..]);
-            } else {
-                out.push_str(head);
-            }
-        }
-        _ => out.push_str(head),
-    }
-    let mut pos = head_end;
-    while pos < line.len() {
-        let Some(found) = line[pos..].find("://") else {
-            out.push_str(&line[pos..]);
-            break;
-        };
-        let scheme = line[pos..pos + found].to_ascii_lowercase();
-        let user_at = pos + found + 3;
-        let next = line[user_at..].find("://").map_or(line.len(), |j| {
-            user_at + scheme_start(&line[user_at..user_at + j])
-        });
-        out.push_str(&line[pos..user_at]);
-        let seg = &line[user_at..next];
-        match last_at_like(seg) {
-            Some((at, _)) if !(scheme == "ssh" && is_plain_user(&seg[..at])) => {
-                out.push_str(&mask_str(&seg[..at]));
-                out.push_str(&seg[at..]);
-            }
-            _ => out.push_str(seg),
-        }
-        pos = next;
-    }
-    out
-}
-
-/// `line` with the comment at its end (outside any string) masked like an unparsed line.
-fn mask_comment(line: &str) -> String {
-    let mut quote = None;
-    let mut escaped = false;
-    for (i, c) in line.char_indices() {
-        match quote {
-            Some(q) => {
-                if escaped {
-                    escaped = false;
-                } else if c == '\\' && q == '"' {
-                    escaped = true;
-                } else if c == q {
-                    quote = None;
-                }
-            }
-            None if c == '"' || c == '\'' => quote = Some(c),
-            None if c == '#' => {
-                return format!(
-                    "{}{}",
-                    &line[..i],
-                    mask_credentials_in_line(&line[i..], Scp::Comment)
-                );
-            }
-            None => {}
-        }
-    }
-    line.to_string()
 }
 
 /// `url` as it may be shown: when it has credentials in it (or anything else wrong before the
@@ -1250,7 +1137,7 @@ pub fn redact_url(url: &str) -> String {
 
 /// The literals (values, keys and table names) of `tables` that have a credential in them,
 /// as spans, at any depth. Under a `git` or `url` key every string is judged as a url.
-fn credential_spans(tables: &[super::toml::Table], out: &mut Vec<(usize, usize)>) {
+pub(super) fn credential_spans(tables: &[super::toml::Table], out: &mut Vec<(usize, usize)>) {
     for t in tables {
         if t.path.iter().any(|segment| credential_like(segment, false)) {
             out.push((t.span.start as usize, t.span.end as usize));
@@ -1285,77 +1172,8 @@ fn value_spans(value: &super::toml::Value, url: bool, out: &mut Vec<(usize, usiz
     }
 }
 
-/// `text` (a `colibri.toml` or `colibri.lock`) with its credentials hidden, in the same
-/// length in UTF-8 and in UTF-16: what every reader of such a file works on, so that nothing
-/// that is made from it (a message, a path, a key) holds a secret. A text without credentials
-/// comes back as it is; see [`credential_ranges`] for what was hidden.
-///
-/// When the text parses, the whole literal of every string, key and table name that has a
-/// credential in it is overwritten, by its span, whatever the password holds. When it does
-/// not parse, every url on every line is masked from its scheme to its own last `@` (see
-/// [`mask_credentials_in_line`]), and the scp shape too: that may hide too much, and never
-/// shows a secret. A plain user name of an `ssh` url or the scp form (`ssh://git@host/r`,
-/// `git@host:r`) is no credential.
-pub fn mask_source_text(text: &str) -> String {
-    use colibri_syntax::FileId;
-    if !text.contains(['@', '\\']) {
-        return text.to_string();
-    }
-    let masked = match super::toml::parse(FileId(0), text) {
-        Ok(tables) => {
-            let mut spans = Vec::new();
-            credential_spans(&tables, &mut spans);
-            let mut masked = String::with_capacity(text.len());
-            let mut done = 0;
-            spans.sort_unstable();
-            for (s, e) in spans {
-                let e = e.min(text.len());
-                if s < done || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
-                    continue;
-                }
-                masked.push_str(&text[done..s]);
-                masked.push_str(&mask_str(&text[s..e]));
-                done = e;
-            }
-            masked.push_str(&text[done..]);
-            // A comment may hold a url too.
-            masked
-                .split_inclusive('\n')
-                .map(mask_comment)
-                .collect::<String>()
-        }
-        Err(_) => text
-            .split_inclusive('\n')
-            .map(|line| mask_credentials_in_line(line, Scp::Value))
-            .collect(),
-    };
-    mask_credentials(&masked)
-}
-
-/// Where `text` has a credential written in it: the byte ranges that [`mask_source_text`]
-/// hides, merged where they touch. Empty when the file has none, and then it is used as it is;
-/// otherwise the file is refused as a whole and every reader works on the masked text.
-pub fn credential_ranges(text: &str) -> (String, Vec<(usize, usize)>) {
-    let masked = mask_source_text(text);
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    if masked != text {
-        // By character: a mask character of four bytes shares its first bytes with the
-        // character it hides.
-        for ((i, a), b) in text.char_indices().zip(masked.chars()) {
-            if a != b {
-                let end = i + a.len_utf8();
-                match ranges.last_mut() {
-                    Some(r) if r.1 == i => r.1 = end,
-                    _ => ranges.push((i, end)),
-                }
-            }
-        }
-    }
-    (masked, ranges)
-}
-
 /// The errors for the credentials of the file `file` (called `name`), at most a few at once.
-pub fn credential_diagnostics(
+pub(super) fn credential_diagnostics(
     file: colibri_syntax::FileId,
     name: &str,
     ranges: &[(usize, usize)],
@@ -1482,10 +1300,14 @@ fn run_bytes(cmd: &mut Command) -> Result<Vec<u8>, String> {
     if output.status.success() {
         return Ok(output.stdout);
     }
-    Err(redact(
-        &stderr_tail(&String::from_utf8_lossy(&output.stderr))
-            .unwrap_or_else(|| format!("git exited with {}", output.status)),
-    ))
+    Err(failure_text(&output.stderr)
+        .unwrap_or_else(|| format!("git exited with {}", output.status)))
+}
+
+/// What a failed command said, for a message: the credentials in it hidden first, and then the
+/// last lines cut to length, so that a cut can never fall between a password and its `@`.
+fn failure_text(stderr: &[u8]) -> Option<String> {
+    stderr_tail(&redact(&String::from_utf8_lossy(stderr)))
 }
 
 /// How many lines of git's stderr an error message keeps, and how long each may be.
@@ -1699,152 +1521,6 @@ mod tests {
     }
 
     #[test]
-    fn every_kind_of_password_is_hidden() {
-        for secret in [
-            "u:p#s3cret@",
-            "u:p?s3cret@",
-            "u:pa/s3cret@",
-            "u:p@s3cret@",
-            "u:p%40s3cret@",
-        ] {
-            for scheme in ["https", "HTTPS", "http", "git", "file", "ssh", "Ssh"] {
-                let text = format!("cannot fetch {scheme}://{secret}host:9/r.git: x");
-                assert!(!redact(&text).contains("s3cret"), "{text}");
-                assert!(!mask_credentials(&text).contains("s3cret"), "{text}");
-                assert_eq!(mask_credentials(&text).len(), text.len());
-                let line = format!("g = {{ git = \"{scheme}://{secret}host/r.git\" }}");
-                assert!(!redact(&line).contains("s3cret"), "{line}");
-            }
-        }
-        for scp in [
-            "u:s3cret@host:r.git",
-            "u:p@s3cret@host:r.git",
-            "a/s3cret@host:r",
-        ] {
-            let text = format!("`{scp}` is not a git url");
-            assert!(!redact(&text).contains("s3cret"), "{text}");
-            assert!(!mask_credentials(&text).contains("s3cret"), "{text}");
-        }
-        assert_eq!(
-            redact("fatal: could not read from git@github.com: no"),
-            "fatal: could not read from git@github.com: no"
-        );
-        assert_eq!(
-            redact("ssh://git@h/r https://a:b@c"),
-            "ssh://git@h/r https://***@c"
-        );
-    }
-
-    #[test]
-    fn masked_text_keeps_its_length() {
-        for text in [
-            "g = { git = \"https://user:s3cret@host/r.git\" }",
-            "ssh://git:pw@h/x",
-            "ssh://git@h/x",
-            "https://tökén@h/x and https://a@b",
-        ] {
-            let masked = mask_credentials(text);
-            assert_eq!(masked.len(), text.len(), "{masked}");
-            assert!(
-                !masked.contains("s3cret") && !masked.contains("pw@"),
-                "{masked}"
-            );
-        }
-        assert_eq!(mask_credentials("ssh://git:pw@h/x"), "ssh://******@h/x");
-        assert_eq!(mask_credentials("ssh://git@h/x"), "ssh://git@h/x");
-    }
-
-    #[test]
-    fn source_text_hides_a_url_with_credentials_whatever_the_password_holds() {
-        for lit in [
-            "\"https://u:ab'cds3cret@h/r.git\"",
-            "\"https://u:x\\\"ys3cret@h/r.git\"",
-            "\"https://u:pa ss3cret@h/r.git\"",
-            "'https://u:p\"qs3cret@h:99/r.git'",
-            "\"https://u:pa\tss3cret@h/r.git\"",
-            "\"https://u:p@s3cret@h/r.git\"",
-            "\"https://u:ab`s3cret@h/r.git\"",
-            "\"u:a'bs3cret@h:r.git\"",
-        ] {
-            // Parsed: the literal is overwritten by its span.
-            let text = format!("[dependencies]\ng = {{ git = {lit} }}\nh = true\n");
-            let masked = mask_source_text(&text);
-            assert_eq!(masked.len(), text.len(), "{lit}");
-            assert!(!masked.contains("s3cret"), "{lit}: {masked}");
-            assert!(masked.contains("g = { git = ***"), "{lit}: {masked}");
-            let lock = format!("[git.g]\nurl = {lit}\ncommit = \"abc\"\n");
-            assert!(!mask_source_text(&lock).contains("s3cret"), "{lit}");
-            // Not parsed: every line with an `@` is masked up to the last one.
-            for broken in [
-                format!("[dependencies]\ng = {{ git = {lit} \n"),
-                format!("url = {lit} junk\n"),
-                format!("# {lit}\n"),
-            ] {
-                let masked = mask_source_text(&broken);
-                assert_eq!(masked.len(), broken.len(), "{broken}");
-                assert!(!masked.contains("s3cret"), "{broken}: {masked}");
-            }
-        }
-        for broken in [
-            "g = { git = \"https://u:s3cret\\u0040h/r.git\" }\n",
-            "g = { git = \"https://u:s3cret\\U00000040h/r.git\" }\n",
-            "g = { git = \"https://u:s3cret\\x40h/r.git\" }\n",
-        ] {
-            let masked = mask_source_text(broken);
-            assert_eq!(masked.len(), broken.len());
-            assert!(!masked.contains("s3cret"), "{masked}");
-        }
-    }
-
-    #[test]
-    fn a_wrong_value_of_a_git_key_is_masked_at_any_depth() {
-        for text in [
-            "[dependencies]\nj = { git = [\"https://u:pa ss3cret@h/r\"] }\n",
-            "[dependencies]\nj = { git = { u = \"https://u:pa ss3cret@h/r\" } }\n",
-            "[dependencies]\nj = { git = [[\"x\"], [\"https://u:pa ss3cret@h/r\"]] }\n",
-            "[git.j]\nurl = [\"https://u:pa ss3cret@h/r\"]\ncommit = \"abc\"\n",
-        ] {
-            let masked = mask_source_text(text);
-            assert_eq!(masked.len(), text.len(), "{text}");
-            assert!(!masked.contains("s3cret"), "{text}: {masked}");
-        }
-        // A string that is not under a url key is not touched.
-        let other = "[package]\nname = \"x\"\nnote = \"me@home\"\n";
-        assert_eq!(mask_source_text(other), other);
-    }
-
-    #[test]
-    fn masks_have_the_length_of_what_they_hide_in_utf8_and_utf16() {
-        for text in ["abc", "éé", "日本", "😀😀", "a é 日 😀"] {
-            let masked = mask_str(text);
-            assert_eq!(masked.len(), text.len(), "{text}");
-            assert_eq!(
-                masked.encode_utf16().count(),
-                text.encode_utf16().count(),
-                "{text}"
-            );
-            assert_eq!(masked.chars().count(), text.chars().count());
-            assert!(!masked.contains(|c: char| text.contains(c) && c != '*'));
-            // Masking what is masked changes nothing.
-            assert_eq!(mask_str(&masked), masked);
-        }
-        let text = "[dependencies]\nj = { git = \"https://éé😀:p@h/r\" }\n";
-        let masked = mask_source_text(text);
-        assert_eq!(masked.len(), text.len());
-        assert_eq!(masked.encode_utf16().count(), text.encode_utf16().count());
-        assert!(!masked.contains("éé"), "{masked}");
-    }
-
-    #[test]
-    fn source_text_without_credentials_is_left_alone() {
-        let text = "[dependencies]\na = { git = \"ssh://git@host/r.git\" }\nb = { git = \"git@host:r.git\" }\nc = { git = \"https://host/r.git\" }\n";
-        assert_eq!(mask_source_text(text), text);
-        assert_eq!(redact_url("https://u:pa ss3cret@h/x"), "https://***@h/x");
-        assert_eq!(redact_url("ssh://git@h/x"), "ssh://git@h/x");
-        assert_eq!(redact_url("u:a'bs3cret@h:r"), "***@h:r");
-    }
-
-    #[test]
     fn user_information_is_judged_by_scheme() {
         for bad in [
             "https://user@host/r.git",
@@ -1882,29 +1558,6 @@ mod tests {
         ] {
             assert!(userinfo_problem(good).is_none(), "{good}");
         }
-    }
-
-    #[test]
-    fn masking_a_very_long_line_of_backslashes_is_linear() {
-        // A comment of a million backslashes and an `@`: each backslash used to copy the rest
-        // of the line. The bound is generous; the quadratic scan took minutes.
-        let line = format!("# {}@x\n", "\\".repeat(1_000_000));
-        let text = format!("[package]\nname = \"x\"\n{line}");
-        let start = std::time::Instant::now();
-        let masked = mask_source_text(&text);
-        assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
-        assert_eq!(masked.len(), text.len());
-        assert!(
-            masked.starts_with("[package]\nname = \"x\"\n"),
-            "{}",
-            &masked[..30]
-        );
-        // And the same line where the text does not parse.
-        let broken = format!("= = {line}");
-        let start = std::time::Instant::now();
-        let masked = mask_source_text(&broken);
-        assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
-        assert_eq!(masked.len(), broken.len());
     }
 
     #[test]
@@ -1947,79 +1600,19 @@ mod tests {
     }
 
     #[test]
-    fn a_file_is_masked_when_it_has_a_credential_and_never_otherwise() {
-        // Nothing here is a credential: a plain user name of ssh or the scp form, a path with
-        // an `@` in it, a name with one, comments with urls, in files that parse and in files
-        // that do not.
-        for text in [
-            "[dependencies]\na = { git = \"ssh://git@host/r\" }\n",
-            "[dependencies]\na = { git = \"git@host:r.git\" }\n",
-            "[dependencies]\na = { path = \"../@scope/lib\" }\n",
-            "[package]\nname = \"me@example.com\"\n",
-            "# clone git@github.com:me/x.git or ssh://git@h/r\n[package]\nname = \"a\"\n",
-            "[dependencies]\na = { git = \"ssh://git@host/r\" \n",
-            "a = { git = \"git@host:r\" \n",
-            "[git.a]\nurl = \"ssh://git@host/r\"\ncommit = \"abc\"\n",
-        ] {
-            let (masked, ranges) = credential_ranges(text);
-            assert!(ranges.is_empty() && masked == text, "{text}: {masked}");
-        }
-        // These are.
-        for text in [
-            "a = { path = \"https://u:SeCrEt@h/r\" }\n",
-            "a = { path = \"git:SeCrEt@h:r\" }\n",
-            "a = { path = \"user:SeCrEt@h\" }\n",
-            "a = { \"https://v:SeCrEt@h\" = \"1\", \"https://v:SeCrEt@h\" = \"2\" }\n",
-            "a = { \"https://v:SeCrEt@h\" = \"1\", \"https://v:SeCrEt@h\" = \"2\" \n",
-            "a = { \"git:SeCrEt@h:r\" = \"1\" \n",
-            "# https://u:pa ss SeCrEt@h/r\n",
-            "[dependencies.\"https://u:SeCrEt@h\"]\n",
-        ] {
-            let (masked, ranges) = credential_ranges(text);
-            assert!(!ranges.is_empty(), "{text}");
-            assert!(!masked.contains("SeCrEt"), "{text}: {masked}");
-            assert_eq!(masked.len(), text.len());
-            assert_eq!(
-                masked.encode_utf16().count(),
-                text.encode_utf16().count(),
-                "{text}"
+    fn git_stderr_is_redacted_before_it_is_cut_to_length() {
+        // The cut at 300 characters falls inside the user information, whatever its length.
+        for pad in 280..=300 {
+            let line = format!(
+                "fatal: unable to access 'https://{}:SeCrEtPaSsWoRd@host/r.git/': nope",
+                "u".repeat(pad - 30)
             );
-        }
-        // Many on one line, in a file that does not parse.
-        let many: String = (0..300)
-            .map(|i| format!("\"https://u{i}:SeCrEt{i}@h{i}\" = \"{i}\", "))
-            .collect();
-        let masked = mask_source_text(&format!("a = {{ {many}\n"));
-        assert!(!masked.contains("SeCrEt"), "{masked}");
-        assert!(masked.contains("@h299"), "the hosts stay");
-    }
-
-    #[test]
-    fn masking_a_file_takes_time_in_proportion_to_its_size() {
-        let line = |n: usize, parses: bool| -> String {
-            let body: String = (0..n)
-                .map(|i| format!("\"https://u{i}:SeCrEt@h{i}\" = \"x\", "))
-                .collect();
-            if parses {
-                format!("a = {{ {body}z = \"1\" }}\n")
-            } else {
-                format!("a = {{ {body}\n")
-            }
-        };
-        for parses in [true, false] {
-            let time = |n: usize| {
-                let text = line(n, parses);
-                let t = std::time::Instant::now();
-                let masked = mask_source_text(&text);
-                assert!(!masked.contains("SeCrEt"));
-                t.elapsed().as_secs_f64()
-            };
-            time(100);
-            // The best of a few runs: a busy machine slows one run, not all of them.
-            let best = |n: usize| (0..5).map(|_| time(n)).fold(f64::INFINITY, f64::min);
-            let (small, big) = (best(1000), best(8000));
-            // Eight times the text: about eight times the time, not sixty-four.
-            assert!(big < 20.0 * small.max(0.002), "{parses}: {small} {big}");
+            let said = failure_text(line.as_bytes()).unwrap();
+            assert!(
+                !said.contains("SeCrEt") && !said.contains("uuuu"),
+                "{pad}: {said}"
+            );
+            assert!(said.contains("***@host"), "{pad}: {said}");
         }
     }
 

@@ -217,7 +217,7 @@ fn without_verbatim(path: &Path) -> PathBuf {
 /// be taken off a path that would be read the same without it. A name that ends in `.` or a
 /// space (the plain form drops that), is a device (`CON`, `PRN`, `AUX`, `NUL`, `COM1` to
 /// `COM9`, `LPT1` to `LPT9`, with or without an extension, in any case) or a path of 260
-/// characters or more (past the limit of the plain form) keeps it. Works on the text, with `\`
+/// UTF-16 units or more (past the limit of the plain form) keeps it. Works on the text, with `\`
 /// between the pieces, so it is the same on every system.
 fn plain_form(text: &str) -> Option<String> {
     let (plain_prefix, rest, skip) = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {

@@ -3367,7 +3367,7 @@ fn a_masked_non_ascii_credential_keeps_the_columns_after_it() {
 
 /// Values of a manifest that are not urls and have a credential written in them: the messages
 /// about them quote them, and must not show it.
-const CREDENTIAL_VALUES: [&str; 15] = [
+const CREDENTIAL_VALUES: [&str; 18] = [
     "x = { path = \"https://u:SeCrEt@h.invalid/r\" }",
     "x = { path = \"git:SeCrEt@h.invalid:r\" }",
     "x = { git = \"https://h.invalid/r\", branch = \"https://u:SeCrEt@h\" }",
@@ -3383,6 +3383,10 @@ const CREDENTIAL_VALUES: [&str; 15] = [
     "x = { \"https://v:SeCrEt@h\" = \"1\", \"https://v:SeCrEt@h\" = \"2\" }",
     "x = { \"https://v:SeCrEt@h\" = \"1\", \"https://w:SeCrEt@h\" = \"2\"",
     "a = \"git:SeCrEt@h:r\", b = \"https://u:SeCrEt@h/r\", c = \"u:SeCrEt@h\"",
+    // A file that does not parse because of an escape.
+    "lib = { git = \"https\\u003a//ghp_SeCrEtToKeN@github.com/me/r\" }",
+    "lib = { git = \"https\\x3a//ghp_SeCrEtToKeN@github.com/me/r\" }",
+    "lib = { git = \"ghp\\u003aSeCrEt@github.com\" }",
 ];
 
 #[test]
@@ -3431,6 +3435,47 @@ fn a_local_variable_in_an_open_file_outside_the_folder_is_renamed_in_that_file_o
     let files = edit["changes"].as_object().expect("changes");
     assert_eq!(files.len(), 1, "no other file is edited: {edit}");
     assert!(edit["changes"][uri(&other)].is_null());
+    c.shutdown();
+}
+
+#[test]
+fn a_manifest_the_editor_opened_is_not_colibri_source_and_the_server_survives_odd_ones() {
+    let dir = temp_dir("manifest_buffer");
+    let main_text = "fn main() {}\n";
+    let main = write(&dir, "main.colibri", main_text);
+    let manifest = "[package]\nname = \"app\"\n\n\nu:SeCrEt@host:r = 1\n";
+    let toml = write(&dir, "colibri.toml", "[package]\nname = \"app\"\n");
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, main_text);
+    // Never parsed as Colibri: no syntax errors for TOML text; a credential shown nowhere.
+    c.open(&toml, manifest);
+    let shown: String = c
+        .diagnostics
+        .values()
+        .map(|d| serde_json::to_string(d).unwrap())
+        .collect();
+    assert!(!shown.contains("SeCrEt"), "{shown}");
+    for d in c.diags(&toml) {
+        let m = d["message"].as_str().unwrap();
+        assert!(
+            !m.contains("expected") || m.contains("cannot be read"),
+            "{m}"
+        );
+    }
+    // Odd text in a manifest does not stop the server: it answers the next request.
+    for odd in [
+        "[package]\nname = \"app\"\nffi = 1\n# owner: me@example.com = Jane\n",
+        "[package]\nname = \"app\"\n# contact jane@example.com: thanks\n",
+        "v = 1\n# me@x = y\n",
+    ] {
+        c.change(&toml, odd);
+        let _ = c.hover(&main, 0, 3);
+    }
+    assert!(
+        c.diags(&toml)
+            .iter()
+            .all(|d| !d["message"].as_str().unwrap().contains("@"))
+    );
     c.shutdown();
 }
 

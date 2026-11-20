@@ -44,14 +44,161 @@ pub struct Table {
     pub entries: Vec<Entry>,
 }
 
-/// Parses `text` (the contents of file `file`), a `colibri.toml`.
-pub fn parse(file: FileId, text: &str) -> Result<Vec<Table>, Diagnostic> {
-    parse_named(file, text, "colibri.toml")
+/// What reading a `colibri.toml` or a `colibri.lock` gives: the text to show, and what it means.
+///
+/// This is the one way into those files (the parser below is private): every reader goes
+/// through [`read_config`], so that the two decisions about credentials are made in one place
+/// and never from each other.
+pub struct Config {
+    /// The text for the source map, every snippet and every printed line: the file with the
+    /// same length in UTF-8 and in UTF-16 (see [`read_config`] for what is hidden in it).
+    pub display: String,
+    /// The tables, or the errors that stop the file being used.
+    pub tables: Result<Vec<Table>, Vec<Diagnostic>>,
+    /// Where the file has a credential written in it, when it parses: it is refused as a whole
+    /// (`tables` is then the error at each of these places), and nothing is fetched or locked
+    /// from it.
+    pub credentials: Vec<(usize, usize)>,
 }
 
-/// [`parse`] for the file called `name` (`colibri.lock` is read with the same parser), which
-/// the messages that name the file use.
-pub fn parse_named(file: FileId, text: &str, name: &str) -> Result<Vec<Table>, Diagnostic> {
+/// Reads `text`, the contents of file `file`, which is called `name` in messages.
+///
+/// Refusal is decided from the parsed values alone. If the text parses, every string, key and
+/// table name with a credential in it (`git::credential_like`) makes the file refused; with
+/// none, the values are used as written. A comment never refuses a file, and a file that does
+/// not parse is not refused for a credential: it has its parse error.
+///
+/// What is shown is decided apart from that. If the text parses, the display is the text with
+/// each credential and each comment that has an `@` in it hidden whole (the comment found from
+/// the parser's own spans, not by looking at quotes). If it does not, every line with an `@`
+/// in it (or an escape for one) is hidden whole, and an error on such a line says only that the
+/// line cannot be shown.
+pub fn read_config(file: FileId, text: &str, name: &str) -> Config {
+    match parse_named(file, text, name) {
+        Ok(tables) => {
+            let mut credentials = Vec::new();
+            super::git::credential_spans(&tables, &mut credentials);
+            credentials.sort_unstable();
+            let mut hidden = credentials.clone();
+            comments_with_at(text, &tables, &mut hidden);
+            let display = mask_spans(text, hidden);
+            let tables = if credentials.is_empty() {
+                Ok(tables)
+            } else {
+                Err(super::git::credential_diagnostics(file, name, &credentials))
+            };
+            Config {
+                display,
+                tables,
+                credentials,
+            }
+        }
+        Err(mut error) => {
+            let has_at = |at: usize| {
+                let at = at.min(text.len());
+                let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+                let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+                super::git::last_at_like(&text[start..end]).is_some()
+            };
+            if has_at(error.span.start as usize)
+                || error.labels.iter().any(|(s, _)| has_at(s.start as usize))
+            {
+                error.message = format!(
+                    "this line of `{name}` cannot be read (it is not shown: the file does not parse and the line has an `@` in it, so it may hold a credential)"
+                );
+                error.hint = None;
+                error.labels.clear();
+            }
+            Config {
+                display: mask_lines_with_at(text),
+                tables: Err(vec![error]),
+                credentials: Vec::new(),
+            }
+        }
+    }
+}
+
+/// `text` with each of `spans` (byte ranges) replaced by a mask of the same length.
+fn mask_spans(text: &str, mut spans: Vec<(usize, usize)>) -> String {
+    if spans.is_empty() {
+        return text.to_string();
+    }
+    spans.sort_unstable();
+    let mut out = String::with_capacity(text.len());
+    let mut done = 0;
+    for (s, e) in spans {
+        let e = e.min(text.len());
+        if s < done || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
+            continue;
+        }
+        out.push_str(&text[done..s]);
+        out.push_str(&super::git::mask_str(&text[s..e]));
+        done = e;
+    }
+    out.push_str(&text[done..]);
+    out
+}
+
+/// The comments of a text that parsed, as byte ranges (from the character after `#` to the end
+/// of the line), for the ones that have an `@` in them. A comment starts at the first `#` of a
+/// line that is outside the table headers, keys and values the parser found.
+fn comments_with_at(text: &str, tables: &[Table], out: &mut Vec<(usize, usize)>) {
+    if !text.contains('@') || !text.contains('#') {
+        return;
+    }
+    let mut regions: Vec<(usize, usize)> = Vec::new();
+    for t in tables {
+        regions.push((t.span.start as usize, t.span.end as usize));
+        for e in &t.entries {
+            regions.push((e.key_span.start as usize, e.key_span.end as usize));
+            regions.push((e.value.span.start as usize, e.value.span.end as usize));
+        }
+    }
+    regions.sort_unstable();
+    let inside = |p: usize| {
+        let i = regions.partition_point(|r| r.0 <= p);
+        i > 0 && p < regions[i - 1].1
+    };
+    let mut resume = 0;
+    for (p, _) in text.match_indices('#') {
+        if p < resume || inside(p) {
+            continue;
+        }
+        let line_end = text[p..].find('\n').map_or(text.len(), |i| p + i);
+        let end = if text[..line_end].ends_with('\r') {
+            line_end - 1
+        } else {
+            line_end
+        };
+        resume = line_end;
+        if text[p + 1..end].contains('@') {
+            out.push((p + 1, end));
+        }
+    }
+}
+
+/// `text` with every line that has an `@` in it (or an escape for one) hidden whole, from its
+/// first character that is not blank to the end of the line. No shape of url is looked for: a
+/// file that does not parse is not understood, and a line that may hold a credential is not
+/// shown.
+fn mask_lines_with_at(text: &str) -> String {
+    let mut spans = Vec::new();
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        let content = content.strip_suffix('\r').unwrap_or(content);
+        if super::git::last_at_like(content).is_some() {
+            let blank = content.len() - content.trim_start().len();
+            spans.push((at + blank, at + content.len()));
+        }
+        at += line.len();
+    }
+    mask_spans(text, spans)
+}
+
+/// The text parsed, for the file called `name` (`colibri.lock` is read with the same parser),
+/// which the messages that name the file use.
+fn parse_named(file: FileId, text: &str, name: &str) -> Result<Vec<Table>, Diagnostic> {
     let mut p = Parser {
         file,
         name,
@@ -59,6 +206,11 @@ pub fn parse_named(file: FileId, text: &str, name: &str) -> Result<Vec<Table>, D
         pos: 0,
     };
     p.document()
+}
+
+#[cfg(test)]
+fn parse(file: FileId, text: &str) -> Result<Vec<Table>, Diagnostic> {
+    parse_named(file, text, "colibri.toml")
 }
 
 struct Parser<'a> {
@@ -488,5 +640,180 @@ mod tests {
         assert_eq!(strs(0), ["x", "y"]);
         assert!(strs(1).is_empty());
         assert_eq!(strs(2), ["z"]);
+    }
+
+    // ---- read_config ----
+
+    fn read(text: &str) -> Config {
+        read_config(FileId(0), text, "colibri.toml")
+    }
+
+    fn same_lengths(text: &str, display: &str) {
+        assert_eq!(display.len(), text.len(), "{text}");
+        assert_eq!(
+            display.encode_utf16().count(),
+            text.encode_utf16().count(),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_comment_never_refuses_a_file() {
+        for comment in [
+            "# docs: https://medium.com/@me/post",
+            "# mirror of https://www.npmjs.com/package/@scope/pkg",
+            "# see http://example.com/~user@host",
+            "# TODO(jane@example.com): pin a tag",
+            "# Maintainer: Jane Doe <jane@example.com> (license: MIT)",
+            "# clone git@github.com:me/x.git",
+            "# was https://u:SeCrEt@h/r",
+        ] {
+            let text = format!("[package]\nname = \"app\"\n{comment}\n[dependencies]\n");
+            let c = read(&text);
+            assert!(c.tables.is_ok() && c.credentials.is_empty(), "{comment}");
+            same_lengths(&text, &c.display);
+            assert!(!c.display.contains('@'), "{comment}: {}", c.display);
+            assert!(c.display.contains("name = \"app\""), "{}", c.display);
+        }
+        // A comment after a value, with a `#` and `@` in strings before it that stay.
+        let text = "[package]\nname = \"a#b\" # contact jane.doe+x@example.com: thanks\n";
+        let c = read(text);
+        assert!(c.tables.is_ok(), "{:?}", c.tables.err());
+        assert!(c.display.contains("name = \"a#b\" #"), "{}", c.display);
+        assert!(!c.display.contains('@'), "{}", c.display);
+        // A legitimate ssh url with a comment holding a url.
+        let text = "[dependencies]\nlib = { git = \"ssh://git@example.invalid/r.git\" } # fork of https://github.com/@someone/lib\nb = { path = \"../@scope/lib\" }\n";
+        let c = read(text);
+        let tables = c.tables.expect("accepted");
+        assert!(c.credentials.is_empty());
+        assert_eq!(tables[1].entries[0].key, "lib");
+        assert!(c.display.contains("ssh://git@example.invalid/r.git"));
+        assert!(c.display.contains("../@scope/lib"));
+        assert!(!c.display.contains("someone"));
+    }
+
+    #[test]
+    fn a_credential_in_any_parsed_value_refuses_the_file_and_is_hidden() {
+        for text in [
+            "a = { path = \"https://u:SeCrEt@h/r\" }\n",
+            "a = { path = \"git:SeCrEt@h:r\" }\n",
+            "a = { git = \"https://SeCrEt@h/r\" }\n",
+            "\"https://v:SeCrEt@h\" = { path = \"p\" }\n",
+            "[dependencies.\"https://u:SeCrEt@h\"]\n",
+            "a = { b = [\"https://é:SeCrEt@h\"], git = [\"u:SeCrEt@h\"] }\n",
+        ] {
+            let c = read(text);
+            assert!(!c.credentials.is_empty(), "{text}");
+            assert!(c.tables.is_err(), "{text}");
+            assert!(!c.display.contains("SeCrEt"), "{text}: {}", c.display);
+            same_lengths(text, &c.display);
+        }
+    }
+
+    #[test]
+    fn a_file_that_does_not_parse_hides_every_line_with_an_at_and_reports_the_true_error() {
+        // The error is on line 3, which has no `@`; line 4 has a credential.
+        let text = "[package]\nname = \"app\"\nffi = 1\n# owner: me@example.com = Jane\nlib = { git = \"https://u:SeCrEt@h\" }\n";
+        let c = read(text);
+        let errors = c.tables.expect_err("does not parse");
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].message.contains("numbers are not supported"),
+            "{}",
+            errors[0].message
+        );
+        assert_eq!(&text[errors[0].span.start as usize..][..1], "1");
+        assert!(
+            !c.display.contains("SeCrEt") && !c.display.contains("me@"),
+            "{}",
+            c.display
+        );
+        assert!(c.display.contains("ffi = 1"), "the line of the error stays");
+        same_lengths(text, &c.display);
+        // The error is on a line with an `@` (a legitimate one): fixed text, no line text.
+        let text = "[package]\nname = \"app\"\nlib = { git = \"git@github.com:me/x.git\" \n";
+        let c = read(text);
+        let errors = c.tables.expect_err("does not parse");
+        assert!(
+            errors[0].message.contains("cannot be read"),
+            "{}",
+            errors[0].message
+        );
+        assert!(!errors[0].message.contains("github") && errors[0].hint.is_none());
+        assert!(!c.display.contains("github"), "{}", c.display);
+        let line_start = text.find("lib").unwrap();
+        assert!(
+            errors[0].span.start as usize >= line_start,
+            "the true position"
+        );
+        // Escapes for the colon and the at-sign.
+        for text in [
+            "lib = { git = \"https\\u003a//ghp_SeCrEtToKeN@github.com/me/r\" }\n",
+            "lib = { git = \"https\\x3a//ghp_SeCrEtToKeN@github.com/me/r\" }\n",
+            "lib = { git = \"ghp\\u003aSeCrEt@github.com\" }\n",
+            "lib = { git = \"u:SeCrEt\\u0040github.com\" }\n",
+            "lib = { git = \"u:SeCrEt\\U00000040github.com\" }\n",
+            "lib = { git = \"u:SeCrEt\\x40github.com\" }\n",
+        ] {
+            let c = read(text);
+            let errors = c.tables.expect_err(text);
+            let shown = format!("{} {:?} {}", errors[0].message, errors[0].hint, c.display);
+            assert!(
+                !shown.contains("SeCrEt") && !shown.contains("ghp"),
+                "{text}: {shown}"
+            );
+            same_lengths(text, &c.display);
+        }
+        // A backslash without an at-sign stays readable, with its own error.
+        let text = "path = \"C:\\Users\\x\"\n";
+        let c = read(text);
+        assert!(c.display.contains("Users"), "{}", c.display);
+        assert!(
+            !c.tables.expect_err("bad escape")[0]
+                .message
+                .contains("cannot be read")
+        );
+    }
+
+    #[test]
+    fn what_is_hidden_has_the_length_of_the_text_in_utf8_and_utf16() {
+        for text in [
+            "# é😀 jane@example.com ü\nname = \"😀é\"\nx = { path = \"https://é😀:SeCrEt@h/r\" } # ü@\n",
+            "# é😀 jane@example.com ü\nname = \"😀é\" 1 \nx = \"é😀 u:SeCrEt@h ü\" \n",
+            "é = \"😀\" # a@b\r\n# c@d\r\n",
+        ] {
+            let c = read(text);
+            same_lengths(text, &c.display);
+            assert_eq!(text.lines().count(), c.display.lines().count());
+        }
+    }
+
+    #[test]
+    fn reading_takes_time_in_proportion_to_the_size() {
+        for parses in [true, false] {
+            let text = |n: usize| {
+                let body: String = (0..n)
+                    .map(|i| format!("\"https://u{i}:SeCrEt@h{i}\" = \"x\", "))
+                    .collect();
+                if parses {
+                    format!("a = {{ {body}z = \"1\" }}\n# c@d\n")
+                } else {
+                    format!("a = {{ {body}\n")
+                }
+            };
+            let time = |n: usize| {
+                let text = text(n);
+                let t = std::time::Instant::now();
+                let c = read(&text);
+                assert!(!c.display.contains("SeCrEt"));
+                t.elapsed().as_secs_f64()
+            };
+            time(100);
+            // The best of a few runs: a busy machine slows one run, not all of them.
+            let best = |n: usize| (0..5).map(|_| time(n)).fold(f64::INFINITY, f64::min);
+            let (small, big) = (best(1000), best(8000));
+            // Eight times the text: about eight times the time, not sixty-four.
+            assert!(big < 20.0 * small.max(0.002), "{parses}: {small} {big}");
+        }
     }
 }

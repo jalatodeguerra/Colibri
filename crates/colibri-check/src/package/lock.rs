@@ -20,7 +20,6 @@ use std::collections::BTreeMap;
 
 use colibri_syntax::{Diagnostic, FileId};
 
-use super::git;
 use super::manifest::{GitSource, GitSpec};
 use super::toml::{self, ValueKind};
 
@@ -122,17 +121,15 @@ pub struct Lock {
 
 impl Lock {
     pub fn parse(file: FileId, text: &str) -> Result<Lock, Diagnostic> {
-        // Refused as a whole when a credential is written in it (see `manifest::parse`).
-        let (_, credentials) = git::credential_ranges(text);
-        if credentials.is_empty() {
-            return Self::parse_unmasked(file, text);
-        }
-        let first = git::credential_diagnostics(file, LOCK_FILE, &credentials).swap_remove(0);
-        Err(first)
+        Self::from_tables(toml::read_config(file, text, LOCK_FILE).tables)
     }
 
-    fn parse_unmasked(file: FileId, text: &str) -> Result<Lock, Diagnostic> {
-        let tables = toml::parse_named(file, text, LOCK_FILE)?;
+    /// The lock that the tables of a `colibri.lock` read by [`toml::read_config`] mean; of
+    /// several errors, the first.
+    pub fn from_tables(
+        tables: Result<Vec<toml::Table>, Vec<Diagnostic>>,
+    ) -> Result<Lock, Diagnostic> {
+        let tables = tables.map_err(|mut errors| errors.swap_remove(0))?;
         let mut lock = Lock::default();
         for table in &tables {
             let path: Vec<&str> = table.path.iter().map(String::as_str).collect();

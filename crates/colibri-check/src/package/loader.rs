@@ -12,6 +12,7 @@ use super::git;
 use super::lock::{self, LOCK_FILE, Lock};
 use super::manifest::{self, GitSource, Manifest, Source};
 use super::sync::inside;
+use super::toml;
 use super::{
     Dropped, DroppedKind, ImportTarget, LATER_STD_MODULES, LIB_FILE, Loaded, MAIN_FILE, ModuleMeta,
     PackageNode, SOURCE_EXT, std_module,
@@ -256,11 +257,22 @@ impl<'a> Loader<'a> {
 
     /// Reads the manifest of the tree rooted at `dir` (and, recursively, its dependencies).
     /// `Err` is a message about the folder itself.
-    /// Puts a manifest or a lock file in the source map with its credentials hidden (the
-    /// parsers refuse a file that has one, and work on this same text).
-    fn add_config_file(&mut self, path: &Path, text: &str) -> FileId {
-        self.sources
-            .add_file(self.fs.display_name(path), git::mask_source_text(text))
+    /// Reads a manifest or a lock file, `text`, through [`toml::read_config`] and puts what
+    /// it says to show in the source map: every snippet and printed line of the file comes
+    /// from that text, never from `text`.
+    fn read_config_file(
+        &mut self,
+        path: &Path,
+        text: &str,
+        name: &str,
+    ) -> (FileId, Result<Vec<toml::Table>, Vec<Diagnostic>>) {
+        let file = self.sources.next_file_id();
+        let config = toml::read_config(file, text, name);
+        let added = self
+            .sources
+            .add_file(self.fs.display_name(path), config.display);
+        debug_assert_eq!(added, file);
+        (file, config.tables)
     }
 
     fn load_tree(
@@ -281,9 +293,8 @@ impl<'a> Loader<'a> {
                 .fs
                 .read(&manifest_path)
                 .map_err(|e| format!("cannot read it: {e}"))?;
-            // The error printer shows the line an error is on: not with a secret in it.
-            let file = self.add_config_file(&manifest_path, &text);
-            match manifest::parse(file, &text) {
+            let (file, tables) = self.read_config_file(&manifest_path, &text, MANIFEST_FILE);
+            match manifest::from_tables(file, tables) {
                 Ok(m) => manifest = Some((m, file)),
                 Err(diags) => self.diags.extend(diags),
             }
@@ -506,8 +517,8 @@ impl<'a> Loader<'a> {
             if self.fs.is_file(&path) {
                 match self.fs.read(&path) {
                     Ok(text) => {
-                        let file = self.add_config_file(&path, &text);
-                        match Lock::parse(file, &text) {
+                        let (_, tables) = self.read_config_file(&path, &text, LOCK_FILE);
+                        match Lock::from_tables(tables) {
                             Ok(lock) => self.lock = Some(lock),
                             Err(d) => {
                                 let hint = match &d.hint {

@@ -16,7 +16,7 @@ use colibri_syntax::Diagnostic;
 use colibri_syntax::ast::{self, NodeId};
 
 pub use fs::{DiskFs, MemoryFs, SourceFs, canonical_path, normalize, try_canonical_path};
-pub use git::{HOME_VAR, cache_root, mask_credentials, mask_source_text, redact, redact_url};
+pub use git::{HOME_VAR, cache_root, redact, redact_url};
 pub use loader::{
     CACHE_TAG_FILE, Entry, LoadError, LoadOptions, MANIFEST_FILE, is_hidden_or_cache, load,
     load_with, skipped_folder,
