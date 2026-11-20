@@ -695,15 +695,21 @@ impl<'c> Server<'c> {
                 .or_default()
                 .push((*start, *end, text.clone()));
         }
-        // A rename edits the files of the open folder and no others, judged by canonical path:
-        // a link inside the folder to a folder outside it does not make that one inside.
+        // A rename edits the files of the open folder and no others, judged by canonical path
+        // (a link inside the folder to a folder outside it does not make that one inside),
+        // with one exception: the document the rename was asked in. A local variable or a
+        // private item of an open file outside the folder is used in that file only, so
+        // renaming it edits that file and nothing else. An item that other files can name is
+        // refused earlier when it is declared outside, and a rename that would edit any other
+        // file outside is refused here.
         if let Some(root) = &self.settings.root
-            && let Some(outside) = by_file.keys().find(|f| !f.starts_with(root))
+            && let Some(outside) = by_file
+                .keys()
+                .find(|f| !f.starts_with(root) && **f != path)
         {
-            return Err(format!(
-                "renaming would edit `{}`, which is outside the open folder (`{}`): not renamed",
-                outside.display(),
-                root.display()
+            return Err(rename::outside_folder_message(
+                &rename::shown(None, outside),
+                &rename::shown(None, root),
             ));
         }
         let mut sources: HashMap<PathBuf, String> = HashMap::new();
@@ -796,7 +802,12 @@ impl<'c> Server<'c> {
             );
             let after_res = resolve(after, None);
             let shift = rename::Shift::new(before, &edits);
-            rename::compare((before, res), (after, &after_res), &shift)?;
+            rename::compare(
+                (before, res),
+                (after, &after_res),
+                &shift,
+                self.settings.root.as_deref(),
+            )?;
         }
 
         // `WorkspaceEdit::changes` is keyed by `Uri`, which lsp-types fixes.
@@ -804,10 +815,10 @@ impl<'c> Server<'c> {
         let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
         for (file_path, list) in &by_file {
             let Some(uri) = self.uri_of(file_path) else {
-                return Err(format!(
-                    "cannot address `{}` to edit it: not renamed",
-                    file_path.display()
-                ));
+                return Err(rename::no_address_message(&rename::shown(
+                    self.settings.root.as_deref(),
+                    file_path,
+                )));
             };
             let index = LineIndex::new(&sources[file_path]);
             let out = changes.entry(uri).or_default();

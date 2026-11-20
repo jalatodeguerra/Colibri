@@ -136,12 +136,12 @@ pub fn plan<'a>(
     {
         let file = path_of(analysis, f.span.file);
         if !file.starts_with(root) {
-            return Err(format!(
-                "`{}` is declared in `{}`, which belongs to a package outside the open folder (`{}`), and packages that use it cannot all be found from here: open the folder that holds it to rename it",
-                info.name,
-                file.display(),
-                root.display()
+            return Err(declared_outside_message(
+                &info.name,
+                &shown(None, &file),
+                &shown(None, root),
             ));
+
         }
     }
     // Names that only a type (or a callee) can resolve: refuse where that did not work.
@@ -321,6 +321,7 @@ pub fn compare(
     before: (&Analysis, &Resolution),
     after: (&Analysis, &Resolution),
     shift: &Shift,
+    root: Option<&Path>,
 ) -> Result<(), String> {
     let (a0, r0) = before;
     let (a1, r1) = after;
@@ -368,12 +369,37 @@ pub fn compare(
     if wrong == 0 && r0.occs.len() == r1.occs.len() {
         return Ok(());
     }
-    let place = first.map_or(String::new(), |p| format!(", first in {}", p.display()));
-    Err(format!(
+    Err(clash_message(wrong, first.map(|p| shown(root, &p))))
+}
+
+/// The message for a rename that would edit `outside`, a file outside the open folder `root`
+/// (both as [`shown`] writes them).
+pub fn outside_folder_message(outside: &str, root: &str) -> String {
+    format!(
+        "renaming would edit `{outside}`, which is outside the open folder (`{root}`): not renamed"
+    )
+}
+
+/// The message for an item of `file` that packages outside the open folder `root` can use.
+fn declared_outside_message(name: &str, file: &str, root: &str) -> String {
+    format!(
+        "`{name}` is declared in `{file}`, which belongs to a package outside the open folder (`{root}`), and packages that use it cannot all be found from here: open the folder that holds it to rename it"
+    )
+}
+
+/// The message for a rename whose new name clashes, `first` being the first place it did.
+fn clash_message(wrong: usize, first: Option<String>) -> String {
+    let place = first.map_or(String::new(), |p| format!(", first in {p}"));
+    format!(
         "the new name would change what {} name{} mean{place}: it clashes with another name in scope, or the program no longer reads as before",
         wrong.max(1),
         if wrong == 1 { "" } else { "s" },
-    ))
+    )
+}
+
+/// The message for a file that has no address to edit it by.
+pub fn no_address_message(file: &str) -> String {
+    format!("cannot address `{file}` to edit it: not renamed")
 }
 
 /// `text` with each whole identifier equal to `old` replaced by `new` (an identifier is a
@@ -444,11 +470,16 @@ pub fn added_error(
 /// system (the messages tell the user to run `colibri run tools/t.colibri`, which Windows
 /// takes as well as `\`).
 pub fn shown(root: Option<&Path>, path: &Path) -> String {
+    shown_as(root, path, cfg!(windows))
+}
+
+/// [`shown`] for a system where `\` separates (`windows`) or does not.
+fn shown_as(root: Option<&Path>, path: &Path, windows: bool) -> String {
     let rel = root.and_then(|r| path.strip_prefix(r).ok()).unwrap_or(path);
     if rel.as_os_str().is_empty() {
         ".".to_string()
     } else {
-        with_slashes(&rel.to_string_lossy(), cfg!(windows))
+        with_slashes(&rel.to_string_lossy(), windows)
     }
 }
 
@@ -554,7 +585,10 @@ pub fn conflicting_reading(
 
 #[cfg(test)]
 mod tests {
-    use super::{replace_ident, shown, with_slashes};
+    use super::{
+        clash_message, declared_outside_message, no_address_message, outside_folder_message,
+        replace_ident, shown, shown_as, with_slashes,
+    };
     use std::path::Path;
 
     #[test]
@@ -570,6 +604,29 @@ mod tests {
             shown(Some(root), &root.join("tools").join("t.colibri")),
             "tools/t.colibri"
         );
+    }
+
+    #[test]
+    fn every_rename_message_shows_a_windows_path_with_slashes() {
+        // The paths a Windows system hands over, built into each message the way the server
+        // does: a `\` anywhere in one would show.
+        let root = Path::new(r"C:\ws");
+        let outside = Path::new(r"D:\other\out\x.colibri");
+        let inside = Path::new(r"C:\ws\sub\y.colibri");
+        let s = |p: &Path, r: Option<&Path>| shown_as(r, p, true);
+        let messages = [
+            outside_folder_message(&s(outside, None), &s(root, None)),
+            declared_outside_message("f", &s(outside, None), &s(root, None)),
+            no_address_message(&s(inside, Some(root))),
+            clash_message(2, Some(s(inside, Some(root)))),
+            clash_message(1, Some(s(outside, Some(root)))),
+        ];
+        for m in &messages {
+            assert!(!m.contains('\\'), "{m}");
+        }
+        assert!(messages[0].contains("`D:/other/out/x.colibri`"));
+        assert!(messages[0].contains("`C:/ws`"));
+        assert!(messages[3].contains("sub/y.colibri"), "{}", messages[3]);
     }
 
     #[test]

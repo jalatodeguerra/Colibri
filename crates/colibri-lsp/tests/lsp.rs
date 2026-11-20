@@ -3208,20 +3208,26 @@ fn nested_and_dependent_packages_are_edited_within_the_workspace_only() {
     c.shutdown();
 
     // Open at `app`: `lib` is outside the open folder and its `pub fn f` is used by packages
-    // nobody looked for, so the rename is refused and says to open the folder.
+    // nobody looked for, so the rename is refused and says to open the folder. (The rule: every
+    // file a rename edits is inside the open folder, except the document it is asked in.)
     let mut c = Client::start(Some(&ws.join("app")), Value::Null);
     c.open(&u, u_text);
     let m = message(&c.rename(&u, pos_of(u_text, "f()"), "g").unwrap_err());
     assert!(m.contains("outside the open folder"), "{m}");
     assert!(m.contains("open"), "{m}");
-    // A name that nothing outside the package can use is refused too: a rename edits files
-    // of the open folder and no others.
+    // A name that nothing outside the package can use (private to its file) is renamed in the
+    // document it was asked in: that file is the only one edited, though it is outside.
     let private = "fn p() -> int => 1\npub fn q() -> int => p()\n";
     let pu = write(&ws, "lib/priv.colibri", private);
     c.open(&pu, private);
-    let m = message(&c.rename(&pu, pos_of(private, "p()"), "r").unwrap_err());
-    assert!(m.contains("outside the open folder"), "{m}");
-    assert_eq!(std::fs::read_to_string(&pu).unwrap(), private);
+    let edit = c
+        .rename(&pu, pos_of(private, "p()"), "r")
+        .expect("a private item of the open document is renamed in it");
+    assert_eq!(
+        edited(&edit, &pu, private),
+        "fn r() -> int => 1\npub fn q() -> int => r()\n"
+    );
+    assert_eq!(edit["changes"].as_object().unwrap().len(), 1, "{edit}");
     c.shutdown();
 
     // No workspace folder: the document's own package.
@@ -3359,6 +3365,32 @@ fn a_credential_in_any_value_of_a_manifest_is_in_no_message_about_it() {
 }
 
 #[test]
+fn a_local_variable_in_an_open_file_outside_the_folder_is_renamed_in_that_file_only() {
+    let top = temp_dir("rename_local_outside");
+    let ws = top.join("ws");
+    write(&ws, "colibri.toml", "[package]\nname = \"p\"\n");
+    write(&ws, "main.colibri", "fn main() {}\n");
+    let text = "fn main() {\n    let count = 3\n    print(count + count)\n}\n";
+    let other_text = "fn main() {\n    let count = 4\n}\n";
+    let outside = write(&top, "elsewhere/script.colibri", text);
+    let other = write(&top, "elsewhere/other.colibri", other_text);
+    let mut c = Client::start(Some(&ws), Value::Null);
+    c.open(&outside, text);
+    c.open(&other, other_text);
+    let edit = c
+        .rename(&outside, pos_of(text, "count = 3"), "total")
+        .expect("a local variable of the open document is renamed in it");
+    assert_eq!(
+        edited(&edit, &outside, text),
+        "fn main() {\n    let total = 3\n    print(total + total)\n}\n"
+    );
+    let files = edit["changes"].as_object().expect("changes");
+    assert_eq!(files.len(), 1, "no other file is edited: {edit}");
+    assert!(edit["changes"][uri(&other)].is_null());
+    c.shutdown();
+}
+
+#[test]
 fn a_rename_never_edits_a_file_outside_the_open_folder_even_through_a_link() {
     // `ws/ext` is a link to a folder outside `ws`: `main` imports `ext.x`, but the file is
     // not in the workspace. Whatever the name renamed, nothing outside is edited.
@@ -3376,30 +3408,39 @@ fn a_rename_never_edits_a_file_outside_the_open_folder_even_through_a_link() {
     c.open(&main, main_text);
     // The same file opened by its other name, through the link.
     let linked = ws.join("ext/x.colibri");
-    for (doc, text, needle) in [
-        (&main, main_text, "f()"),
-        (&x, x_text, "g()"),
-        (&linked, x_text, "helper()"),
+    // `f` and `g` are `pub`: other files can name them, and they are declared outside, so the
+    // rename is refused. `helper` is private to the file: asked in that very document it edits
+    // that document only (by the name the editor has it under), and nothing else.
+    for (doc, text, needle, allowed) in [
+        (&main, main_text, "f()", false),
+        (&x, x_text, "g()", false),
+        (&linked, x_text, "g()", false),
+        (&linked, x_text, "helper()", true),
+        (&x, x_text, "helper()", true),
     ] {
         if doc != &main {
             c.open(doc, text);
         }
-        let r = c.rename(doc, pos_of(text, needle), "h");
-        match r {
-            Err(e) => {
+        match (c.rename(doc, pos_of(text, needle), "h"), allowed) {
+            (Err(e), false) => {
                 let why = message(&e);
                 assert!(why.contains("outside the open folder"), "{why}");
             }
-            Ok(edit) => {
-                let changes = edit["changes"].as_object().cloned().unwrap_or_default();
-                for (u, _) in &changes {
-                    assert!(
-                        uri_path(u).starts_with(&ws) && !uri_path(u).starts_with(top.join("out")),
-                        "an edit outside the folder: {u}"
-                    );
-                }
-                assert!(changes.is_empty(), "{edit}");
+            (Ok(edit), true) => {
+                let changes = edit["changes"].as_object().expect("changes");
+                assert_eq!(changes.len(), 1, "only the document is edited: {edit}");
+                let (u, _) = changes.iter().next().unwrap();
+                assert_eq!(
+                    std::fs::canonicalize(uri_path(u)).unwrap(),
+                    std::fs::canonicalize(&x).unwrap(),
+                    "{u}"
+                );
+                assert_eq!(
+                    edited(&edit, &PathBuf::from(uri_path(u)), x_text),
+                    x_text.replace("helper", "h"),
+                );
             }
+            (other, allowed) => panic!("{needle} (allowed: {allowed}): {other:?}"),
         }
     }
     assert_eq!(std::fs::read_to_string(&x).unwrap(), x_text);
