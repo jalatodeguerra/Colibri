@@ -1290,11 +1290,12 @@ fn finish_connect(
         }
     }
     // The poller's reference went with the resolved cell, before this call resumed.
-    let sock = Arc::try_unwrap(sock).unwrap_or_else(|shared| {
-        shared
-            .try_clone()
-            .expect("a connected socket can be duplicated")
-    });
+    let sock = match Arc::try_unwrap(sock) {
+        Ok(sock) => sock,
+        // Never so by what is said above; if it were, the socket is duplicated, and a system
+        // that cannot (out of descriptors) is an error of the connect and not a panic.
+        Err(shared) => shared.try_clone().map_err(Attempt::Io)?,
+    };
     Ok(sock.into())
 }
 
@@ -1485,7 +1486,7 @@ pub(crate) struct Conn {
 }
 
 impl Conn {
-    /// Wraps a socket that `prepare` or `connect_one` has made ready.
+    /// Wraps a socket that `prepare` or `start_connect` / `finish_connect` has made ready.
     fn new(stream: TcpStream) -> Conn {
         // The peer may be gone already; the address is then only for messages.
         let peer = stream
@@ -2519,8 +2520,9 @@ impl HostType for Listener {
             Ok::<Conn, TypedError>(Conn::new(stream))
         });
         // Stops listening: the port is free again, and an `accept` that waits ends with
-        // `Closed`. Connections already accepted are not touched; connections that were
-        // accepted but not handed out are closed. Closing twice is fine.
+        // `Closed`. Connections already accepted are not touched; connections that still wait
+        // in the system's backlog (nobody accepted them) are reset or see the end of the stream,
+        // as the system does when a listening socket is closed. Closing twice is fine.
         d.method("close", [], |this: &Listener| this.sh.close());
     }
 }
@@ -2975,28 +2977,58 @@ mod tests {
         (sock, addr, clients)
     }
 
+    /// What a connect can be left under way against, and what keeps it so. Linux and macOS: a
+    /// listener whose accept queue is full (the SYN is dropped and retried). Windows answers an
+    /// overflowing backlog with a reset, but keeps a connect that is refused pending for about
+    /// two seconds, so there it is a port that nothing is bound to (bound and let go of).
+    #[cfg(windows)]
+    fn pending_target() -> (SocketAddr, ()) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        (l.local_addr().unwrap(), ())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn pending_target() -> (SocketAddr, (Socket, Vec<TcpStream>)) {
+        let (listener, addr, clients) = full_listener();
+        (addr, (listener, clients))
+    }
+
     /// A connect that is cancelled while it waits for the connection leaves nothing behind: the
     /// poller's entry is gone, and nothing holds the socket once the call has been left, so no
     /// connect goes on in the background. The hook cancels the wait where it was just armed (the
-    /// connection cannot finish: the queue of the listener is full). Where the call is
-    /// cancelled for real, the coroutine unwinds and drops the same things.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    /// connection cannot finish yet). Where the call is cancelled for real, the coroutine
+    /// unwinds and drops the same things. On Windows the connect is one to a port that nothing
+    /// is bound to, which that system keeps pending for about two seconds: if it is refused at
+    /// once instead, the test says that its precondition did not hold.
     #[test]
     fn a_cancelled_connect_leaves_no_socket() {
-        let (_listener, addr, _clients) = full_listener();
-        let (error, weak_dead, counts) = with_cx(move |cx| {
+        let (addr, _keep) = pending_target();
+        let (error, weak_dead, counts, hook_ran) = with_cx(move |cx| {
             let site = ConnectSite::new("test");
-            let Ok(Started::Pending(sock)) = start_connect(addr, None) else {
-                panic!("the connect to a full queue was not left under way");
+            let sock = match start_connect(addr, None) {
+                Ok(Started::Pending(sock)) => sock,
+                Ok(Started::Connected(_)) => {
+                    panic!("precondition: the connect finished at once, it was not left under way")
+                }
+                Err(Attempt::Io(e)) => {
+                    panic!("precondition: the connect was refused at once, not left under way: {e}")
+                }
+                Err(_) => panic!("precondition: the connect did not start"),
             };
             let sock = Arc::new(sock);
             let weak = Arc::downgrade(&sock);
-            arm_probe::set_hook(|cell| {
+            let ran = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&ran);
+            arm_probe::set_hook(move |cell| {
+                flag.store(true, Ordering::SeqCst);
                 cell.fire(poll::Why::Cancelled);
             });
             let error = match finish_connect(cx, &site, sock, None) {
                 Err(Attempt::Failed(e)) => e.message().to_string(),
-                Err(_) => panic!("another end"),
+                Err(Attempt::Io(e)) => panic!(
+                    "precondition: the connect ended with an error before the wait began: {e}"
+                ),
+                Err(Attempt::TimedOut) => panic!("another end"),
                 Ok(_) => panic!("connected"),
             };
             let poller = cx
@@ -3004,8 +3036,14 @@ mod tests {
                 .unwrap()
                 .poller()
                 .expect("the poller started");
-            (error, weak.strong_count() == 0, poller.counts())
+            (
+                error,
+                weak.strong_count() == 0,
+                poller.counts(),
+                ran.load(Ordering::SeqCst),
+            )
         });
+        assert!(hook_ran, "the wait was never armed: nothing was cancelled");
         assert!(error.contains("cancelled"), "{error}");
         assert!(weak_dead, "the socket was still held");
         assert_eq!(counts, (0, 0));

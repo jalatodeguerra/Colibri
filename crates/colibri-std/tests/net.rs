@@ -1756,9 +1756,11 @@ fn main() -> Result[()] {{
 /// Linux and macOS only: a listener whose accept queue is full leaves further connects waiting
 /// there (the SYN is dropped; BSD, and so macOS, does the same as Linux), while Windows answers
 /// an overflowing backlog with a reset, so a connect cannot be kept pending on loopback there.
-/// For Windows (and for every system) the cancel and the deadline of a connect are covered by
-/// the unit test `a_connect_that_is_cancelled_or_late_stops_before_it_connects` in `net.rs`,
-/// which does not need a connect to stay pending.
+/// For Windows the cancel of a connect that is under way is `a_cancelled_connect_leaves_no_socket`
+/// in `net.rs`, which there connects to a port nothing listens on (a refused connect stays
+/// pending for about two seconds), and the deadline of a connect is
+/// `a_connect_that_is_late_stops_before_it_connects`, which does not need a connect to stay
+/// pending.
 ///
 /// How many connections fill the queue is not the same on every system (Linux: one more than the
 /// backlog; BSD lets in half as much again), so the test connects until one does not finish, up
@@ -2243,7 +2245,9 @@ fn main() -> Result[()] {{
 /// its own. No timing is involved; an accept that does wait only adds turns of the counter.
 #[test]
 fn a_loop_of_accepts_that_never_wait_still_lets_the_other_coroutines_run() {
-    const CONNECTIONS: usize = 400;
+    // Few enough to fit the queue of a listener on every system (macOS admits about 192, Windows
+    // about 200), as the connects of the client are blocking and none may be left waiting.
+    const CONNECTIONS: usize = 100;
     let (addr_tx, addr_rx) = mpsc::channel::<String>();
     let (ready_tx, ready_rx) = mpsc::channel::<()>();
     let (done_tx, done_rx) = mpsc::channel::<()>();
@@ -2291,8 +2295,8 @@ fn main() -> Result[()] {{
     }}
     finished = true
     k.join()
-    // 400 accepts: one turn of the counter for every 64 of them is six turns at least.
-    print(ticks >= 4)
+    // 100 accepts: one turn of the counter at call 64, and the one it had when it started.
+    print(ticks >= 2)
     l.close()
     return ok(())
 }}
