@@ -22,10 +22,11 @@
 //! the connection's buffer for the next read, what it had not read is still in the kernel, and a
 //! connection that was ready for an accept is still in the listener's backlog), and the
 //! interpreter thread holds no lock and no reference to the socket while a coroutine is suspended
-//! or has given the thread away. (A read that waits keeps the staging buffer it reads through,
-//! up to 64 KiB, until the call returns; a connection with no call in progress holds none.) An
-//! `accept` makes its system call and returns the connection without suspending in between, so a
-//! cancel can neither lose a connection nor leak one.
+//! or has given the thread away. (A read that waits holds no room for reading either: it reads
+//! into uninitialised spare capacity, so no byte is written but the ones that arrive, and it lets
+//! the buffer go before it suspends when the buffer holds nothing; one that holds a half line
+//! keeps the half line.) An `accept` makes its system call and returns the connection without
+//! suspending in between, so a cancel can neither lose a connection nor leak one.
 //!
 //! *Connect* looks the host up first when it is a name (a helper thread, because the system's
 //! resolver cannot be interrupted; it answers by resolving the wait cell of the call, and the
@@ -114,7 +115,8 @@
 //! leave the coroutine at all.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Write};
+use std::mem::MaybeUninit;
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -207,8 +209,7 @@ const BACKLOG: i32 = 1024;
 /// The least a `read_exact` buffer grows by while the bytes it waits for are still arriving.
 const GROW_STEP: usize = 1 << 20;
 
-/// The most one `read` call on the socket is given room for, and the size of the buffer that the
-/// reads go through (see `Reader::stage`).
+/// The most one `read` call on the socket is given room for.
 const READ_STEP: usize = 64 * 1024;
 
 /// What a read of unknown size (a line, `read`) is given room for.
@@ -1409,14 +1410,21 @@ struct Reader {
     /// Bytes after `pos` known to hold no `\n`.
     scanned: usize,
     eof: bool,
-    /// The buffer the socket is read into before the bytes are appended to `data`. It is zeroed
-    /// once, when it is made, and lives for one read call (`end_call`), so a peer that sends single bytes costs a copy of
-    /// one byte per read and not a zero-fill of the room that was offered (which, done into
-    /// `data` itself, is a `memset` of up to a mebibyte for every byte that arrives).
-    stage: Vec<u8>,
-    /// How many bytes `stage` has had zero-filled in all (for the test of the above).
-    #[cfg(test)]
-    zero_filled: usize,
+}
+
+/// Where a read gets its bytes from: the socket (`recv` into room that holds nothing yet, so the
+/// room is never zero-filled and only the bytes that arrive are ever written), or a test's
+/// source.
+trait Recv {
+    /// Writes up to `buf.len()` bytes at the start of `buf` and returns how many; the bytes
+    /// after those are not touched.
+    fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize>;
+}
+
+impl Recv for &TcpStream {
+    fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
+        SockRef::from(*self).recv(buf)
+    }
 }
 
 impl Reader {
@@ -1426,9 +1434,6 @@ impl Reader {
             pos: 0,
             scanned: 0,
             eof: false,
-            stage: Vec::new(),
-            #[cfg(test)]
-            zero_filled: 0,
         }
     }
 
@@ -1498,18 +1503,30 @@ impl Reader {
         }
     }
 
-    /// The end of one read call (`read`, `read_line`, `read_exact`): lets go of the buffer the
-    /// socket was read into. It is made again, and zero-filled again, by the next call that has
-    /// to read from the socket.
-    fn end_call(&mut self) {
-        self.stage = Vec::new();
+    /// Lets go of the buffer when it holds nothing that has not been taken: a read that waits
+    /// (and a connection that is idle) holds no memory for reading, resident or virtual. The
+    /// next read makes room again, which is an allocation and no write. A buffer that holds
+    /// bytes keeps them, with the room it has: they are what a later read goes on from.
+    fn release(&mut self) {
+        if self.pos == self.data.len() {
+            self.data = Vec::new();
+            self.pos = 0;
+        }
     }
 
-    /// Reads once from `src` into the buffer: room for up to one `READ_STEP` (or `READ_UNKNOWN`
-    /// when `want` is 0). Gives `Err(bytes)` when memory for that many cannot be had, and
-    /// otherwise the result of the read (the number of bytes appended; 0 is the end of the
-    /// stream).
-    fn read_from(&mut self, src: &mut impl Read, want: usize) -> Result<io::Result<usize>, usize> {
+    /// The end of one read call (`read`, `read_line`, `read_exact`).
+    fn end_call(&mut self) {
+        self.release();
+    }
+
+    /// Reads once from `src` into the room of the buffer: up to one `READ_STEP` (or
+    /// `READ_UNKNOWN` when `want` is 0). The room is the spare capacity of `data` itself, handed
+    /// to the system as it is (`recv` into uninitialised bytes), so no byte is written but the
+    /// ones that arrive: a peer that sends single bytes costs a copy of one byte per read, and
+    /// a read that finds nothing touches no page. Gives `Err(bytes)` when memory for that many
+    /// cannot be had, and otherwise the result of the read (the number of bytes appended; 0 is
+    /// the end of the stream).
+    fn read_from(&mut self, src: &mut impl Recv, want: usize) -> Result<io::Result<usize>, usize> {
         let chunk = if want == 0 {
             READ_UNKNOWN
         } else {
@@ -1517,17 +1534,16 @@ impl Reader {
         };
         self.make_room(want, chunk)
             .map_err(|_| self.step(want).saturating_add(chunk).min(want.max(chunk)))?;
-        if self.stage.len() < READ_STEP {
-            #[cfg(test)]
-            {
-                self.zero_filled += READ_STEP - self.stage.len();
-            }
-            self.stage.resize(READ_STEP, 0);
-        }
-        Ok(match src.read(&mut self.stage[..chunk]) {
+        let room = &mut self.data.spare_capacity_mut()[..chunk];
+        Ok(match src.recv(room) {
             Ok(n) => {
-                // The room is there (`make_room`), so this does not reallocate.
-                self.data.extend_from_slice(&self.stage[..n]);
+                assert!(
+                    n <= chunk,
+                    "a read returned more bytes than the room it was given"
+                );
+                // SAFETY: `recv` wrote the first `n` bytes of `room`, which is the spare
+                // capacity of `data` after its `len` bytes, and `n <= chunk` is within it.
+                unsafe { self.data.set_len(self.data.len() + n) };
                 Ok(n)
             }
             Err(e) => Err(e),
@@ -1914,6 +1930,8 @@ impl Shared {
                     if final_try || limit.late() {
                         return Err(self.timeout_error(limit, action, None));
                     }
+                    // A waiting read holds no room for reading (see `Reader::release`).
+                    self.lock_reader().release();
                     match self.wait_ready(cx, sock, poll::Dir::Read, limit, action, None)? {
                         Ended::Ready => owed = true,
                         Ended::TimedOut => final_try = true,
@@ -2755,7 +2773,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Error, ErrorKind};
+    use std::io::{Error, ErrorKind, Read};
     use std::sync::mpsc;
 
     #[test]
@@ -3826,10 +3844,12 @@ mod tests {
     /// A peer that sends `piece` bytes at a time (or as many as the room takes, if less).
     struct Pieces(usize);
 
-    impl Read for Pieces {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    impl Recv for Pieces {
+        fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
             let n = self.0.min(buf.len());
-            buf[..n].fill(0xAB);
+            for b in &mut buf[..n] {
+                b.write(0xAB);
+            }
             Ok(n)
         }
     }
@@ -3869,38 +3889,63 @@ mod tests {
         }
     }
 
-    /// A peer that sends single bytes costs a copy of one byte per read: the buffer the socket is
-    /// read into is zero-filled once, not the room offered for each read (which was up to a
-    /// mebibyte of `memset` for every byte that arrived).
+    /// The room a read is handed is never written before the system call: the test fills the
+    /// capacity of the buffer with a pattern, and the source checks that every byte it is given
+    /// still has it (a zero-fill of the room, for each read or for each wake, would show) and
+    /// writes only the bytes that arrive. A peer that sends single bytes thus costs a copy of one
+    /// byte per read, and the bytes after the data are as they were at the end.
     #[test]
-    fn a_trickle_of_single_bytes_zero_fills_nothing_after_the_first_read() {
+    fn a_trickle_of_single_bytes_zero_fills_nothing() {
+        struct Checked(usize);
+        impl Recv for Checked {
+            fn recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
+                for b in buf.iter() {
+                    // SAFETY: the test wrote the pattern to all of the capacity.
+                    assert_eq!(
+                        unsafe { b.assume_init() },
+                        0xCD,
+                        "the room was written before the read"
+                    );
+                }
+                let n = self.0.min(buf.len());
+                for b in &mut buf[..n] {
+                    b.write(0xAB);
+                }
+                Ok(n)
+            }
+        }
         for want in [4 * GROW_STEP, 0] {
             let mut r = reader(b"", false);
-            let mut src = Pieces(1);
+            r.data.reserve_exact(8 * GROW_STEP);
+            let capacity = r.data.capacity();
+            for b in r.data.spare_capacity_mut() {
+                b.write(0xCD);
+            }
+            let mut src = Checked(1);
             for i in 1..=5000 {
                 let more = if want == 0 { 0 } else { want - (i - 1) };
                 r.read_from(&mut src, more).unwrap().unwrap();
                 assert_eq!(r.data.len(), i);
             }
-            // Over one call (the lifetime of the buffer) it is zero-filled once, however many
-            // reads the call makes.
-            assert_eq!(r.zero_filled, READ_STEP, "want {want}");
-            // Nor does a read hand the system more room than one step.
-            assert_eq!(r.stage.len(), READ_STEP);
-            // The next call makes it again: the cost is one step for each call, not for each read.
-            r.end_call();
-            for _ in 0..100 {
-                r.read_from(&mut src, 0).unwrap().unwrap();
+            assert_eq!(
+                r.data.capacity(),
+                capacity,
+                "want {want}: it was reallocated"
+            );
+            assert!(r.data.iter().all(|&b| b == 0xAB));
+            for b in &r.data.spare_capacity_mut()[..READ_STEP] {
+                // SAFETY: as above.
+                assert_eq!(unsafe { b.assume_init() }, 0xCD, "want {want}");
             }
-            assert_eq!(r.zero_filled, 2 * READ_STEP, "want {want}");
         }
     }
 
     /// A connection that has read holds no buffer for reading while it is idle: after a read has
     /// returned (here a line) the `Reader` has none, and a second read makes it again and lets
-    /// it go again; a call that fails or is unwound lets go too.
+    /// it go again. A call that fails or is unwound lets go of what it does not need too; the
+    /// half line that is left is kept.
     #[test]
-    fn a_reader_holds_no_stage_buffer_after_a_read_has_returned() {
+    fn a_reader_holds_no_buffer_after_a_read_has_returned() {
         let (c, mut peer) = conn_pair();
         let sh = Arc::clone(&c.sh);
         for expected in ["one", "two"] {
@@ -3920,14 +3965,13 @@ mod tests {
             });
             assert_eq!(line.as_deref(), Some(expected));
             assert_eq!(
-                sh.reader.lock().unwrap().stage.capacity(),
+                sh.reader.lock().unwrap().data.capacity(),
                 0,
                 "after {expected}"
             );
         }
-        // It was made for each of the two calls.
-        assert_eq!(sh.reader.lock().unwrap().zero_filled, 2 * READ_STEP);
-        // And a call that fails (here: a read that times out half way through a line) lets go too.
+        // A call that fails (here: a read that times out half way through a line) keeps the
+        // half line for the next read.
         peer.write_all(b"three").unwrap();
         let shared = Arc::clone(&sh);
         let failed = with_cx(move |cx| {
@@ -3948,9 +3992,38 @@ mod tests {
                 .map_err(|e| variant(&e))
         });
         assert_eq!(failed, Err("Timeout".to_string()));
-        assert_eq!(sh.reader.lock().unwrap().stage.capacity(), 0);
-        // The half line is still there for the next read.
         assert_eq!(sh.reader.lock().unwrap().available(), b"three");
+    }
+
+    /// A read that waits holds no room for reading: while its wait is armed (the hook runs where
+    /// it was just armed, and cancels it) the buffer of the connection has no capacity, which is
+    /// neither resident nor virtual memory. A thousand waiting reads held 64 MB, and 10,000 held
+    /// 640 MB, when each kept a buffer across its wait.
+    #[test]
+    fn a_waiting_read_holds_no_buffer() {
+        let (c, _peer) = conn_pair();
+        let sh = Arc::clone(&c.sh);
+        let (held, ran) = with_cx(move |cx| {
+            let seen = Arc::new(Mutex::new(None));
+            let probe = Arc::clone(&seen);
+            let shared = Arc::clone(&sh);
+            arm_probe::set_hook(move |cell| {
+                *probe.lock().unwrap() = Some(shared.reader.lock().unwrap().data.capacity());
+                cell.fire(poll::Why::Cancelled);
+            });
+            let ticket = sh.reads.ticket();
+            let _ = sh.read_call(
+                cx,
+                ticket,
+                Limit::NONE,
+                |r| line_probe(r, "p"),
+                |r| take_line(r, "p"),
+            );
+            let seen = *seen.lock().unwrap();
+            (seen, sh.reader.lock().unwrap().data.capacity())
+        });
+        assert_eq!(held, Some(0), "the read kept a buffer across its wait");
+        assert_eq!(ran, 0);
     }
 
     /// A wait that ends because the poller stopped (or broke) is an error of `net` that says so,

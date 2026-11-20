@@ -3456,3 +3456,55 @@ fn one_read_among_a_thousand_ends_promptly_on_its_timeout() {
     );
     assert!(took < PROMPT, "took {took:?}");
 }
+
+/// The port of a listener is free when `close()` returns, also while an `accept` waits on the
+/// listener at that moment (the case in which a close once had to wake the wait first): nothing
+/// holds the socket while the accept is suspended, so the descriptor is released by the close.
+/// No sleep, no retry. The script says which step failed.
+#[test]
+fn a_port_can_be_listened_on_again_at_once_after_a_close_with_an_accept_waiting() {
+    let out = output_within(
+        r#"import net
+
+var started = 0
+
+fn accepting(l: net.Listener) -> str {
+    started += 1
+    match l.accept() {
+        ok(_) => return "accepted"
+        err(e) => return "{e.as[net.Error]().expect("a net error")}"
+    }
+}
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let addr = l.addr()
+    let a = go accepting(l)
+    // The script runs again only when the accept is suspended in its wait.
+    while started < 1 {
+        task.tick(0.0)
+    }
+    l.close()
+    match net.listen(addr) {
+        err(e) => print("step 2, listening again right after the close: {e.message()}")
+        ok(again) => {
+            print("listening again: ok")
+            // And it serves on the port it got back.
+            let c = net.connect(addr)?
+            let s = again.accept()?
+            c.write("hi\n")?
+            print(s.read_line()?)
+        }
+    }
+    print("step 1, the waiting accept ended with: {a.join()}")
+    return ok(())
+}
+"#
+        .to_string(),
+        LIMIT,
+    );
+    assert_eq!(
+        out,
+        "listening again: ok\nsome(\"hi\")\nstep 1, the waiting accept ended with: Closed\n"
+    );
+}
