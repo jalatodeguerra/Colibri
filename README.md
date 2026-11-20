@@ -446,14 +446,18 @@ while it waits, so `net` suits tens or hundreds of connections at once, not tens
   `close_write()` takes its turn behind the writes already called, so it never cuts one.
 - `net.connect_timeout(addr, seconds)` gives up after that long. A timed-out read keeps what it
   had read, and the connection stays usable.
-- A read or an accept that is called where nothing else can run (a `Drop` hook, a callback of a
-  host function) while another coroutine already waits in a read of the same connection (or an
-  accept of the same listener) is a `net.Error.Other` at once: that coroutine cannot resume while
-  the hook waits, so the two would wait for each other for ever. That is the one case `net` can
-  see. A `write` or `close_write` from such a place can still wait for room that only another
-  coroutine of the same program would make by reading what was written (a write is not
-  finished until the peer takes it, and `close_write` waits for the writes before it), and that
-  coroutine cannot run while the hook waits: a program must not do that.
+- A read, an accept or a write that is called where nothing else can run (a `Drop` hook, a
+  callback of a host function) while another coroutine already waits in a read of the same
+  connection (or an accept of the same listener, or a write of the same connection) is a
+  `net.Error.Other` at once: that coroutine cannot resume while the hook waits, so the two would
+  wait for each other for ever. That is the one case `net` can see. `close_write()` from such a
+  place is not refused: behind another coroutine's write it takes its place after that write and
+  returns at once, and the writing end is shut when the write is done (the write is never cut).
+  Its `ok` then means that the shutdown is scheduled, and an error of the shutdown itself has
+  nowhere to go. A write from such a place that finds no write ahead of it can still wait for
+  room that only another coroutine of the same program would make by reading what was written (a
+  write is not finished until the peer takes it), and that coroutine cannot run while the hook
+  waits: a program must not do that.
 - A port can be listened on again as soon as its listener is closed, also when connections of it
   are still closing. On Linux and Windows a second `listen` on a port that is in use fails with
   `AddrInUse` even when it names a specific address (`127.0.0.1:P` while `0.0.0.0:P` is held); on

@@ -19,12 +19,14 @@
 //! system call itself when it resumes and waits again if the socket would still block. So an
 //! idle connection costs no thread and no wake-up, a cancelled call has taken nothing (what it
 //! had read is in the connection's buffer for the next read, and what it had not read is still
-//! in the kernel), and the interpreter thread never holds the buffer or a reference to the
-//! socket while a coroutine is suspended. A call that does not have to wait does not suspend; so
+//! in the kernel), and the interpreter thread holds neither the buffer nor a reference to the
+//! socket while a coroutine is suspended or has given the thread away. A call that does not have to wait does not suspend; so
 //! that a coroutine in a loop of reads and writes against a peer that is always ready cannot
 //! keep the others from running, a connection counts what its calls do without any of them
-//! suspending and, when `MAX_BURST` bytes or `MAX_BURST_CALLS` calls are used up, the next call
-//! gives the thread to the other coroutines once.
+//! suspending and, when `MAX_BURST_CALLS` calls are used up, the next call gives the thread to the
+//! other coroutines once; when `MAX_BURST` bytes are used up, the call that used them up does
+//! (after it released its reference to the socket). The budget is per connection, so a loop over
+//! N connections that are all ready yields every 64 x N calls, not every 64.
 //!
 //! *Accept and connect* (and `listen`) still run on a background thread (`Ctx::try_run_async_cancellable`)
 //! which waits for readiness with `poll(2)` (Unix) or `WSAPoll` (Windows) for at most one slice
@@ -73,10 +75,15 @@
 //! coroutine that called it, so one that is called there while an earlier read, write or accept
 //! of the same object is outstanding in another coroutine would wait for a coroutine that can
 //! never resume. It returns a `net.Error.Other` at once instead: that is the one case the module
-//! can see (`close_write` too, when it would have to wait for a write). A write that finds no
-//! other write outstanding can still wait in a hook for room that only another coroutine of the
-//! same program would make (the one that reads what is written), and that coroutine cannot run
-//! while the hook waits. A program must not do that: from a `Drop` hook or a callback, write only
+//! can see. `close_write` is the exception, because it has nothing to wait for: behind another
+//! coroutine's unfinished write it takes a place in the write order (a ticket and a parked cell
+//! whose callback shuts the writing end, run by the drop of the ticket ahead on the interpreter
+//! thread), returns `Ok` at once, and the write ahead is never cut. `Ok` from such a place means
+//! "scheduled": a shutdown that then fails has nobody to tell, a connection that is closed
+//! before its turn skips it, and a write called after it fails as a write after `close_write`
+//! does. A write that finds no other write outstanding can still wait in a hook for room that
+//! only another coroutine of the same program would make (the one that reads what is written),
+//! and that coroutine cannot run while the hook waits. A program must not do that: from a `Drop` hook or a callback, write only
 //! what the peer takes without help from this program (as `fs` has the same limit with a pipe
 //! that this program reads itself).
 //!
@@ -169,7 +176,8 @@ pub(crate) const MAX_LINE: usize = 1 << 20;
 /// The most bytes one `read_exact` buffers.
 const MAX_EXACT: usize = 1 << 30;
 
-/// The most one `send` is given, so that a cancel or a deadline is noticed between sends.
+/// The most one `send` is given, so that a deadline is noticed between sends. (A cancel is seen
+/// only where the call suspends, a give-way included: a send that makes progress does not.)
 const SEND_CHUNK: usize = 256 * 1024;
 
 /// How many bytes of reads and writes a connection does on the interpreter thread without any
@@ -814,8 +822,8 @@ impl Wait<'_> {
 
 /// The order in which operations of one kind (reads, writes, accepts) on one object are served:
 /// the order their calls were made. A ticket is taken on the interpreter thread when the method
-/// is called, and the operation waits on its worker for its turn, so which pool thread happens
-/// to start first decides nothing. A ticket that is dropped without having had its turn (the
+/// is called, and the operation waits (suspended, or on its worker) for its turn, so which
+/// thread happens to start first decides nothing. A ticket that is dropped without having had its turn (the
 /// coroutine was cancelled, the operation stopped while it waited, its job never started) is
 /// skipped, so it neither runs later nor holds up the ones behind it.
 struct Turns {
@@ -1536,7 +1544,7 @@ impl Conn {
 
 impl Shared {
     /// The deadline a call made now has. Taken on the interpreter thread, when the method is
-    /// called, so waiting for a worker or for earlier calls counts against it.
+    /// called, so waiting for earlier calls counts against it.
     fn limit(&self) -> Limit {
         let ns = self.timeout_ns.load(Ordering::SeqCst);
         let timeout = Duration::from_nanos(ns);
@@ -1570,10 +1578,10 @@ impl Shared {
         }
     }
 
-    /// A write or `close_write` that cannot suspend (a `Drop` hook, a callback) blocks the
-    /// interpreter thread, and a write that another coroutine has begun is sent by that coroutine
-    /// when it runs again: it would wait for something that cannot happen while the thread is
-    /// blocked. It is refused at once instead, as a read is.
+    /// A write that cannot suspend (a `Drop` hook, a callback) blocks the interpreter thread, and
+    /// a write that another coroutine has begun is sent by that coroutine when it runs again: it
+    /// would wait for something that cannot happen while the thread is blocked. It is refused at
+    /// once instead, as a read is. (`close_write` is not refused: it is scheduled.)
     fn refuse_behind_a_write(&self, cx: &mut Ctx, action: &str) -> Result<(), TypedError> {
         if !cx.can_suspend() && !self.closed.load(Ordering::SeqCst) && self.writes.busy() {
             return Err(Kind::Other.error(format!(
@@ -2254,12 +2262,14 @@ impl HostType for Conn {
             |cx: &mut Ctx, this: &Conn, data: Bytes| on_write(cx, this, data),
         );
         // Closes both directions and releases the socket. Anything waiting on this
-        // connection ends with `Closed`. Closing twice is fine. Never waits for anything but
-        // a worker that is in the middle of one system call, and never fails.
+        // connection ends with `Closed`. Closing twice is fine. Never waits for anything and
+        // never fails.
         d.method("close", [], |this: &Conn| this.sh.close());
         // Tells the peer that nothing more comes (it reads the end of the stream) and keeps
         // reading possible. It takes its turn behind the writes called before it, so a write
-        // that is still on its way is sent whole first; with none queued it is done at once.
+        // that is still on its way is sent whole first; with none queued it is done at once. From
+        // a hook or callback behind another coroutine's write it is scheduled and returns `Ok` at
+        // once ("scheduled": a shutdown error then has nowhere to go).
         d.method("close_write", [], |cx: &mut Ctx, this: &Conn| {
             let sh = Arc::clone(&this.sh);
             let action = "close the writing end of";
