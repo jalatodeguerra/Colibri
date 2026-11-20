@@ -533,6 +533,16 @@ impl ConnectSite {
     }
 }
 
+impl ConnectSite {
+    /// Suspends until `until`, on a timer of the poller and nothing else.
+    fn pause(&self, cx: &mut Ctx, until: Instant) -> Result<(), TypedError> {
+        let action = "connect to";
+        let poller = poller_of(cx, action, &self.name, "")?;
+        let end = suspend(cx, move |cell| poller.timer(until, cell));
+        self.ended(end, action, None).map(|_| ())
+    }
+}
+
 impl Waits for ConnectSite {
     fn flag(&self) -> &AtomicBool {
         &self.never_closed
@@ -787,19 +797,37 @@ mod arm_probe {
 
     use super::poll::Cell;
 
-    type Hook = Box<dyn FnOnce(&Arc<Cell>)>;
+    type Hook = Box<dyn FnMut(&Arc<Cell>)>;
 
     thread_local! {
         static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
     }
 
     pub(super) fn armed(cell: &Arc<Cell>) {
-        if let Some(hook) = HOOK.with(|h| h.borrow_mut().take()) {
+        // Taken out while it runs, and put back unless it set another meanwhile.
+        if let Some(mut hook) = HOOK.with(|h| h.borrow_mut().take()) {
             hook(cell);
+            HOOK.with(|h| {
+                let mut slot = h.borrow_mut();
+                if slot.is_none() {
+                    *slot = Some(hook);
+                }
+            });
         }
     }
 
+    /// A hook for the next arm only.
     pub(super) fn set_hook(hook: impl FnOnce(&Arc<Cell>) + 'static) {
+        let mut hook = Some(hook);
+        set_hook_for_every_arm(move |cell| {
+            if let Some(hook) = hook.take() {
+                hook(cell);
+            }
+        });
+    }
+
+    /// A hook for every arm, until the thread's next `set_hook*` replaces it.
+    pub(super) fn set_hook_for_every_arm(hook: impl FnMut(&Arc<Cell>) + 'static) {
         HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
     }
 }
@@ -1221,7 +1249,12 @@ fn start_connect(addr: SocketAddr, deadline: Option<Instant>) -> Result<Started,
     let _ = sock.set_nosigpipe(true);
     let _ = sock.set_tcp_nodelay(true);
     match sock.connect(&SockAddr::from(addr)) {
-        Ok(()) => finished_connect(sock).map(Started::Connected),
+        // Done at once, by what `connect` says; the same check as after a wait confirms it.
+        Ok(()) => match is_connected(&sock) {
+            Ok(true) => finished_connect(sock).map(Started::Connected),
+            Ok(false) => Ok(Started::Pending(sock)),
+            Err(e) => Err(Attempt::Io(e)),
+        },
         Err(e) if in_progress(&e) => Ok(Started::Pending(sock)),
         Err(e) => Err(Attempt::Io(e)),
     }
@@ -1232,6 +1265,57 @@ fn start_connect(addr: SocketAddr, deadline: Option<Instant>) -> Result<Started,
 /// on macOS may not), so a wait is at most this long. One wake a second for a connect in flight,
 /// never for an idle connection.
 const CONNECT_RECHECK: Duration = Duration::from_secs(1);
+
+/// Whether the connect of `sock` has completed, which is not the same as the socket being
+/// readable or writable, and not to be read from `SO_ERROR` alone (it is 0 while the connect is
+/// still under way). On Unix a socket that is not connected has no peer (`getpeername` fails
+/// with `ENOTCONN`), and one that is connected has.
+#[cfg(unix)]
+fn is_connected(sock: &Socket) -> io::Result<bool> {
+    match sock.peer_addr() {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == ErrorKind::NotConnected => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Windows differs: `getpeername` succeeds on a socket whose non-blocking connect is still under
+/// way (it gives back the address that was passed to `connect`), so a peer address proves
+/// nothing, and a connect that is going to be refused stays in that state for about two seconds
+/// while the SYN is sent again. `SO_CONNECT_TIME` is what says: the seconds the socket has been
+/// connected, or `0xFFFFFFFF` while it is not (Microsoft documents it for `ConnectEx`, and it is
+/// the one the event loops of Windows use for a plain non-blocking `connect` as well).
+#[cfg(windows)]
+fn is_connected(sock: &Socket) -> io::Result<bool> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{
+        SO_CONNECT_TIME, SOCKET_ERROR, SOL_SOCKET, WSAGetLastError, getsockopt,
+    };
+    let mut seconds: u32 = 0;
+    let mut len = size_of::<u32>() as i32;
+    // SAFETY: `seconds` is a valid `u32` for the call to write, `len` is its size and a valid
+    // `i32` to read and write, and the socket is open.
+    let r = unsafe {
+        getsockopt(
+            sock.as_raw_socket() as usize,
+            SOL_SOCKET,
+            SO_CONNECT_TIME,
+            std::ptr::from_mut(&mut seconds).cast::<u8>(),
+            &mut len,
+        )
+    };
+    if r == SOCKET_ERROR {
+        // SAFETY: a plain call that reads the thread's last Winsock error.
+        return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+    }
+    Ok(seconds != u32::MAX)
+}
+
+/// How long a connect that is waited for pauses after a wake that said "ready" but found it
+/// neither failed nor connected (a state that the systems do not seem to have; if one had it,
+/// a one-shot wait that is ready at once would otherwise spin): a timer, never the socket, so
+/// that such a connect costs twenty wakes a second at most, and the deadline ends it.
+const CONNECT_PAUSE: Duration = Duration::from_millis(50);
 
 /// The socket of a connect that has ended, as a stream, or the error it ended with.
 fn finished_connect(sock: Socket) -> Result<TcpStream, Attempt> {
@@ -1259,7 +1343,7 @@ fn finish_connect(
             deadline: Some(deadline.map_or(recheck, |d| d.min(recheck))),
             timeout: Duration::ZERO,
         };
-        match site.wait_ready(
+        let woke = match site.wait_ready(
             cx,
             Arc::clone(&sock),
             poll::Dir::Write,
@@ -1267,7 +1351,7 @@ fn finish_connect(
             "connect to",
             None,
         ) {
-            Ok(Ended::Ready | Ended::TimedOut) => {}
+            Ok(woke @ (Ended::Ready | Ended::TimedOut)) => woke,
             Ok(Ended::Closed) => {
                 return Err(Attempt::Failed(Kind::Other.error(format!(
                     "cannot connect to `{}`: the wait was stopped",
@@ -1275,18 +1359,25 @@ fn finish_connect(
                 ))));
             }
             Err(e) => return Err(Attempt::Failed(e)),
-        }
+        };
+        // What a wake proves: nothing by itself (the recheck is a timer, a "ready" is "try
+        // again"). What the socket says does: a failure shows in `SO_ERROR` (read first), and a
+        // connect that has completed is told by `is_connected`, not by the wake. Anything else
+        // is a connect still under way, and the wait is armed again.
         if let Some(e) = sock.take_error().map_err(Attempt::Io)? {
             return Err(Attempt::Io(e));
         }
-        match sock.peer_addr() {
-            Ok(_) => break,
-            // Not yet: the wake was "try again" (or the recheck).
-            Err(e) if e.kind() == ErrorKind::NotConnected => {}
-            Err(e) => return Err(Attempt::Io(e)),
+        if is_connected(&sock).map_err(Attempt::Io)? {
+            break;
         }
         if deadline.is_some_and(|d| Instant::now() >= d) {
             return Err(Attempt::TimedOut);
+        }
+        if matches!(woke, Ended::Ready) {
+            // "Ready" with the connect neither failed nor done: not to be spun on.
+            let until = Instant::now() + CONNECT_PAUSE;
+            site.pause(cx, deadline.map_or(until, |d| d.min(until)))
+                .map_err(Attempt::Failed)?;
         }
     }
     // The poller's reference went with the resolved cell, before this call resumed.
@@ -3047,6 +3138,47 @@ mod tests {
         assert!(error.contains("cancelled"), "{error}");
         assert!(weak_dead, "the socket was still held");
         assert_eq!(counts, (0, 0));
+    }
+
+    /// A wake proves nothing by itself: a connect that is under way (the queue of the listener is
+    /// full, so it stays so) is not concluded on the one-second recheck, which is a timer and
+    /// no event, nor on a "ready" wake that finds it neither failed nor connected (forced by the
+    /// hook): the wait is armed again. Each of the two wakes is followed by a second arm, where
+    /// the hook cancels. (Windows needs this most: there `getpeername` succeeds while a connect
+    /// is under way, and a refused one stays so for about two seconds.)
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_wake_that_finds_the_connect_neither_failed_nor_done_arms_again() {
+        for forced_ready in [false, true] {
+            let (_listener, addr, _clients) = full_listener();
+            let (arms, error) = with_cx(move |cx| {
+                let site = ConnectSite::new("test");
+                let Ok(Started::Pending(sock)) = start_connect(addr, None) else {
+                    panic!("the connect to a full queue was not left under way");
+                };
+                let arms = std::rc::Rc::new(std::cell::Cell::new(0));
+                let counted = std::rc::Rc::clone(&arms);
+                arm_probe::set_hook_for_every_arm(move |cell| {
+                    counted.set(counted.get() + 1);
+                    if counted.get() == 1 {
+                        // The first wake: a "ready" (forced), or none (the recheck comes).
+                        if forced_ready {
+                            cell.fire(poll::Why::Ready);
+                        }
+                    } else {
+                        cell.fire(poll::Why::Cancelled);
+                    }
+                });
+                let error = match finish_connect(cx, &site, Arc::new(sock), None) {
+                    Err(Attempt::Failed(e)) => e.message().to_string(),
+                    Err(_) => panic!("another end"),
+                    Ok(_) => panic!("concluded that the connect was done"),
+                };
+                (arms.get(), error)
+            });
+            assert_eq!(arms, 2, "forced_ready {forced_ready}");
+            assert!(error.contains("cancelled"), "{error}");
+        }
     }
 
     /// A connect that was under way (the queue of the listener was full, so its SYN was dropped)
