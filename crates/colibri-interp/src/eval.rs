@@ -38,7 +38,8 @@ pub struct Interp {
     /// the scheduler in `core` keeps each coroutine's slot. A stack is freed only after its
     /// coroutine ran to its end: `shutdown` runs `cancel_all_coroutines` first (from `Drop`),
     /// which resumes every suspended coroutine with a cancel, so the slab is empty by the time
-    /// fields drop (`Drop for Interp` asserts it in debug builds). It is declared before `core`
+    /// fields drop (`cancel_all_coroutines` asserts it in debug builds, and `Drop for Interp`
+    /// forgets anything left). It is declared before `core`
     /// so that if a stack were ever left, it would drop (a forced unwind of its frames) while
     /// the state those frames point into is still alive.
     pub(crate) stacks: crate::coro::Stacks,

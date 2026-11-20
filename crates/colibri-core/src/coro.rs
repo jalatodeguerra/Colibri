@@ -30,7 +30,7 @@ fn bare_panic_info(message: &str) -> Box<PanicInfo> {
     })
 }
 
-/// The scheduler's policy, for any engine.
+/// The scheduler's policy that engines and the runtime call, for any engine.
 #[doc(hidden)]
 pub trait Sched: Engine {
     // ---- ticking ----
@@ -59,60 +59,7 @@ pub trait Sched: Engine {
         self.core_mut().sched.take_failures()
     }
 
-    /// One tick, leaving the coroutines' failures queued.
-    fn tick_run(&mut self, dt: f64) -> Result<(), TickError> {
-        let s = &mut self.core_mut().sched;
-        if s.is_busy() {
-            return Err(TickError::Reentrant);
-        }
-        let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
-        s.in_tick = true;
-        s.ext.drain();
-        s.time += dt;
-        s.frame += 1;
-        let mut real_now: Option<f64> = None;
-        let count = s.entries.len();
-        // Coroutines whose signal was emitted before this tick resume first, in emission order.
-        let queue = std::mem::take(&mut s.signaled);
-        let frame = s.frame;
-        for id in queue {
-            let s = &mut self.core_mut().sched;
-            let Some(idx) = s.find(id) else {
-                continue;
-            };
-            let e = &mut s.entries[idx];
-            if e.state == State::Suspended && matches!(e.wake, Wake::Signaled) {
-                e.ticked = frame;
-                self.resume_coro(id, false, true);
-            }
-        }
-        for i in 0..count {
-            let s = &mut self.core_mut().sched;
-            let e = &s.entries[i];
-            if e.state != State::Suspended || e.ticked == s.frame {
-                continue;
-            }
-            let due = match &e.wake {
-                Wake::Signal(_) | Wake::Signaled => false,
-                Wake::Group(g) => s.groups.get(g).is_none_or(|m| m.iter().all(|c| *c == e.id)),
-                Wake::Ready => true,
-                Wake::Time(d) => s.time + TIME_EPSILON >= *d,
-                Wake::Real(d) => *real_now.get_or_insert_with(|| s.clock.now()) >= *d,
-                Wake::Join(w) => w.upgrade().is_none_or(|h| handle_status(&h) != RUNNING),
-                Wake::External(op) => s.ext.is_completed(*op),
-            };
-            if due {
-                let id = e.id;
-                self.resume_coro(id, false, true);
-            }
-        }
-        let s = &mut self.core_mut().sched;
-        s.in_tick = false;
-        s.compact();
-        Ok(())
-    }
-
-    // ---- resuming ----
+    // ---- starting and cancelling ----
 
     /// Runs coroutine `id` until it pauses or ends. `fresh` gives the resumption an instruction
     /// budget of its own (the scheduler's ticks); a start shares its starter's.
@@ -160,104 +107,34 @@ pub trait Sched: Engine {
             // Cannot happen (nothing removes a running entry).
             return;
         };
-        match outcome {
-            Resumed::Suspended => s.entries[idx].state = State::Suspended,
-            Resumed::Finished(finish) => {
-                s.entries[idx].state = State::Finished;
-                s.finished += 1;
-                self.finish_coro(idx, id, finish, exhausted);
-            }
-            Resumed::Gone => {
-                // The engine has no stack for this coroutine, which cannot happen for one
-                // that is suspended: as if it had not been resumed.
+        let (finish, exhausted) = match outcome {
+            Resumed::Suspended => {
                 s.entries[idx].state = State::Suspended;
-                s.resumptions -= 1;
+                return;
             }
-        }
-    }
-
-    /// Records how coroutine `id` ended: its handle's status and result, its group, and a
-    /// panic that nobody has collected yet.
-    fn finish_coro(&mut self, idx: usize, id: u64, finish: Finish, exhausted: bool) {
-        let s = &mut self.core_mut().sched;
-        let handle = s.entries[idx].handle.upgrade();
-        if let Some(g) = s.entries[idx].group {
-            s.leave_group(g, id);
-        }
-        let finish = match finish {
-            Finish::Panicked(info) => Finish::Panicked(info),
-            other if exhausted => {
-                if let Finish::Done(v) = other {
-                    self.release(v);
-                }
-                let mut info = bare_panic_info("the instruction budget is exhausted");
-                info.budget = true;
-                Finish::Panicked(info)
-            }
-            other => other,
+            Resumed::Finished(finish) => (finish, exhausted),
+            // The engine cannot find the coroutine it was asked to resume. The scheduler only
+            // resumes suspended coroutines, so the engine has lost its side of one: a broken
+            // invariant. The coroutine ends as a failure (a tick reports it, its group and
+            // joiners see it end), instead of staying suspended to be resumed at every tick,
+            // and instead of keeping `cancel_all_coroutines` from ever finishing.
+            Resumed::Gone => (
+                Finish::Panicked(bare_panic_info(
+                    "internal error: the engine lost the stack of a coroutine",
+                )),
+                false,
+            ),
         };
-        match finish {
-            Finish::Done(v) => match &handle {
-                Some(h) => {
-                    let _ = h.set_field(H_STATUS, Value::Int(DONE));
-                    if let Ok(old) = h.set_field(H_RESULT, v) {
-                        self.release(old);
-                    }
-                }
-                None => self.release(v),
-            },
-            Finish::Cancelled => {
-                if let Some(h) = &handle {
-                    let _ = h.set_field(H_STATUS, Value::Int(CANCELLED));
-                }
-            }
-            Finish::Panicked(info) => {
-                if let Some(h) = &handle {
-                    let _ = h.set_field(H_STATUS, Value::Int(PANICKED));
-                    let old = h.set_field(
-                        H_RESULT,
-                        Value::Str(std::rc::Rc::from(info.message.as_str())),
-                    );
-                    if let Ok(old) = old {
-                        self.release(old);
-                    }
-                }
-                self.core_mut().sched.failures.push((id, info));
-            }
-        }
-    }
-
-    // ---- cancelling ----
-
-    /// Cancels the coroutine `id` (not the running one): a suspended coroutine unwinds at
-    /// once, one that is mid-run higher up the resume chain stops at its next pause.
-    fn cancel_id(&mut self, id: u64) {
-        let s = &mut self.core_mut().sched;
-        let Some(idx) = s.find(id) else {
-            return;
-        };
-        match s.entries[idx].state {
-            State::Finished => {}
-            State::Running => s.entries[idx].cancel_requested = true,
-            State::Suspended => self.resume_coro(id, true, false),
-        }
-    }
-
-    /// The last reference to a `CoGroup` died: its coroutines are cancelled, newest first.
-    fn group_died(&mut self, obj: &ClassObj) {
-        let Some(Value::Int(g)) = obj.field(0) else {
-            return;
-        };
-        if let Some(members) = self.core_mut().sched.groups.remove(&(g as u64)) {
-            for id in members.into_iter().rev() {
-                self.cancel_id(id);
-            }
-        }
+        s.entries[idx].state = State::Finished;
+        s.finished += 1;
+        self.finish_coro(idx, id, finish, exhausted);
     }
 
     /// Cancels every live coroutine, newest first, so their `defer`s and drops run before the
-    /// module-level values die. Nothing can start meanwhile. The engine frees what is left of
-    /// the stacks afterwards (nothing, once every coroutine has run to its end).
+    /// module-level values die. Nothing can start meanwhile. Does nothing while a coroutine runs
+    /// (a host function that calls this from inside one changes nothing). Afterwards no
+    /// coroutine is suspended: every one ran to its end, which is when an engine frees what it
+    /// kept for it.
     fn cancel_all_coroutines(&mut self) {
         let s = &self.core().sched;
         if s.entries.is_empty() || !s.running.is_empty() {
@@ -300,42 +177,6 @@ pub trait Sched: Engine {
             && core.hook_depth == 0
             && !core.sched.is_busy()
             && !core.sched.is_shutting_down()
-    }
-
-    /// Whether the coroutine on `fiber` may suspend for a background operation: it is a
-    /// coroutine, at most one host function deep, outside a `Drop` hook.
-    fn can_suspend_for_external(&self, fiber: &Self::Fiber) -> bool {
-        let state = Self::fiber_state(fiber);
-        state.coro.is_some() && state.host_depth <= 1 && self.core().hook_depth == 0
-    }
-
-    /// Whether an external operation that `fiber` waits for lets the rest of the program run
-    /// meanwhile: a coroutine outside a `Drop` hook and a callback is suspended, and the main
-    /// fiber drives the event loop where it may. When this is `false` the wait blocks the
-    /// engine's thread, and nothing that another coroutine still has to do can happen until
-    /// the operation is done.
-    fn external_wait_runs_others(&self, fiber: &Self::Fiber) -> bool {
-        self.can_suspend_for_external(fiber) || self.can_drive(fiber, 1)
-    }
-
-    /// The checks of a wait on the main fiber, as panics with a message that says why.
-    fn check_drive(&mut self, fiber: &mut Self::Fiber, span: Span, what: &str) -> Eval<()> {
-        let core = self.core();
-        let why = if Self::fiber_state(fiber).host_depth > 0 {
-            "inside a host function's callback"
-        } else if core.hook_depth > 0 {
-            "inside a `Drop` hook"
-        } else if core.sched.is_busy() {
-            "inside a tick"
-        } else if core.sched.is_shutting_down() {
-            "while the program is shutting down"
-        } else {
-            return Ok(());
-        };
-        let message = format!(
-            "`{what}` on the main fiber runs the event loop, which cannot be done {why} (ARCHITECTURE section 22)"
-        );
-        Err(self.panic(fiber, span, message))
     }
 
     /// Runs the event loop on the main fiber, as the loop after `main` does (ticks with the
@@ -432,22 +273,6 @@ pub trait Sched: Engine {
         result
     }
 
-    /// `cancel` of a `Coroutine` handle.
-    fn cancel_coroutine(&mut self, fiber: &mut Self::Fiber, h: &ClassObj) -> Eval<()> {
-        if handle_status(h) != RUNNING {
-            return Ok(());
-        }
-        let id = handle_id(h);
-        let state: &mut FiberState = Self::fiber_state_mut(fiber);
-        if state.coro == Some(id) {
-            // A coroutine cancelling itself stops at once.
-            state.cancelling = true;
-            return Err(Ctl::Cancel);
-        }
-        self.cancel_id(id);
-        Ok(())
-    }
-
     /// `count` and `cancel` of a `CoGroup` (`join_all` pauses, and is the engine's).
     fn cogroup_builtin(
         &mut self,
@@ -514,4 +339,176 @@ pub trait Sched: Engine {
     }
 }
 
+/// The parts of the policy that are not for an engine to call: they index into the scheduler's
+/// entries or run only inside the public ones. Crate-private, with the same blanket impl.
+pub(crate) trait SchedInternal: Engine {
+    /// One tick, leaving the coroutines' failures queued.
+    fn tick_run(&mut self, dt: f64) -> Result<(), TickError> {
+        let s = &mut self.core_mut().sched;
+        if s.is_busy() {
+            return Err(TickError::Reentrant);
+        }
+        let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
+        s.in_tick = true;
+        s.ext.drain();
+        s.time += dt;
+        s.frame += 1;
+        let mut real_now: Option<f64> = None;
+        let count = s.entries.len();
+        // Coroutines whose signal was emitted before this tick resume first, in emission order.
+        let queue = std::mem::take(&mut s.signaled);
+        let frame = s.frame;
+        for id in queue {
+            let s = &mut self.core_mut().sched;
+            let Some(idx) = s.find(id) else {
+                continue;
+            };
+            let e = &mut s.entries[idx];
+            if e.state == State::Suspended && matches!(e.wake, Wake::Signaled) {
+                e.ticked = frame;
+                self.resume_coro(id, false, true);
+            }
+        }
+        for i in 0..count {
+            let s = &mut self.core_mut().sched;
+            let e = &s.entries[i];
+            if e.state != State::Suspended || e.ticked == s.frame {
+                continue;
+            }
+            let due = match &e.wake {
+                Wake::Signal(_) | Wake::Signaled => false,
+                Wake::Group(g) => s.groups.get(g).is_none_or(|m| m.iter().all(|c| *c == e.id)),
+                Wake::Ready => true,
+                Wake::Time(d) => s.time + TIME_EPSILON >= *d,
+                Wake::Real(d) => *real_now.get_or_insert_with(|| s.clock.now()) >= *d,
+                Wake::Join(w) => w.upgrade().is_none_or(|h| handle_status(&h) != RUNNING),
+                Wake::External(op) => s.ext.is_completed(*op),
+            };
+            if due {
+                let id = e.id;
+                self.resume_coro(id, false, true);
+            }
+        }
+        let s = &mut self.core_mut().sched;
+        s.in_tick = false;
+        s.compact();
+        Ok(())
+    }
+
+    /// Records how coroutine `id` ended: its handle's status and result, its group, and a
+    /// panic that nobody has collected yet.
+    fn finish_coro(&mut self, idx: usize, id: u64, finish: Finish, exhausted: bool) {
+        let s = &mut self.core_mut().sched;
+        let handle = s.entries[idx].handle.upgrade();
+        if let Some(g) = s.entries[idx].group {
+            s.leave_group(g, id);
+        }
+        let finish = match finish {
+            Finish::Panicked(info) => Finish::Panicked(info),
+            other if exhausted => {
+                if let Finish::Done(v) = other {
+                    self.release(v);
+                }
+                let mut info = bare_panic_info("the instruction budget is exhausted");
+                info.budget = true;
+                Finish::Panicked(info)
+            }
+            other => other,
+        };
+        match finish {
+            Finish::Done(v) => match &handle {
+                Some(h) => {
+                    let _ = h.set_field(H_STATUS, Value::Int(DONE));
+                    if let Ok(old) = h.set_field(H_RESULT, v) {
+                        self.release(old);
+                    }
+                }
+                None => self.release(v),
+            },
+            Finish::Cancelled => {
+                if let Some(h) = &handle {
+                    let _ = h.set_field(H_STATUS, Value::Int(CANCELLED));
+                }
+            }
+            Finish::Panicked(info) => {
+                if let Some(h) = &handle {
+                    let _ = h.set_field(H_STATUS, Value::Int(PANICKED));
+                    let old = h.set_field(
+                        H_RESULT,
+                        Value::Str(std::rc::Rc::from(info.message.as_str())),
+                    );
+                    if let Ok(old) = old {
+                        self.release(old);
+                    }
+                }
+                self.core_mut().sched.failures.push((id, info));
+            }
+        }
+    }
+
+    /// Cancels the coroutine `id` (not the running one): a suspended coroutine unwinds at
+    /// once, one that is mid-run higher up the resume chain stops at its next pause.
+    fn cancel_id(&mut self, id: u64) {
+        let s = &mut self.core_mut().sched;
+        let Some(idx) = s.find(id) else {
+            return;
+        };
+        match s.entries[idx].state {
+            State::Finished => {}
+            State::Running => s.entries[idx].cancel_requested = true,
+            State::Suspended => self.resume_coro(id, true, false),
+        }
+    }
+
+    /// The last reference to a `CoGroup` died: its coroutines are cancelled, newest first.
+    fn group_died(&mut self, obj: &ClassObj) {
+        let Some(Value::Int(g)) = obj.field(0) else {
+            return;
+        };
+        if let Some(members) = self.core_mut().sched.groups.remove(&(g as u64)) {
+            for id in members.into_iter().rev() {
+                self.cancel_id(id);
+            }
+        }
+    }
+
+    /// The checks of a wait on the main fiber, as panics with a message that says why.
+    fn check_drive(&mut self, fiber: &mut Self::Fiber, span: Span, what: &str) -> Eval<()> {
+        let core = self.core();
+        let why = if Self::fiber_state(fiber).host_depth > 0 {
+            "inside a host function's callback"
+        } else if core.hook_depth > 0 {
+            "inside a `Drop` hook"
+        } else if core.sched.is_busy() {
+            "inside a tick"
+        } else if core.sched.is_shutting_down() {
+            "while the program is shutting down"
+        } else {
+            return Ok(());
+        };
+        let message = format!(
+            "`{what}` on the main fiber runs the event loop, which cannot be done {why} (ARCHITECTURE section 22)"
+        );
+        Err(self.panic(fiber, span, message))
+    }
+
+    /// `cancel` of a `Coroutine` handle.
+    fn cancel_coroutine(&mut self, fiber: &mut Self::Fiber, h: &ClassObj) -> Eval<()> {
+        if handle_status(h) != RUNNING {
+            return Ok(());
+        }
+        let id = handle_id(h);
+        let state: &mut FiberState = Self::fiber_state_mut(fiber);
+        if state.coro == Some(id) {
+            // A coroutine cancelling itself stops at once.
+            state.cancelling = true;
+            return Err(Ctl::Cancel);
+        }
+        self.cancel_id(id);
+        Ok(())
+    }
+}
+
 impl<E: Engine> Sched for E {}
+
+impl<E: Engine> SchedInternal for E {}

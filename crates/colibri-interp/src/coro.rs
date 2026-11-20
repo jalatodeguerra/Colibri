@@ -48,61 +48,93 @@ pub(crate) struct Resume {
     pub cancel: bool,
 }
 
-/// The native stacks of the coroutines that have not ended: a slab of slots, each `Some` while
-/// its coroutine is suspended and `None` while it runs (the stack is moved out for the
-/// resumption, so nothing in here is borrowed while the coroutine uses the interpreter, and a
-/// second resumption of a running coroutine finds an empty slot instead of a stack). A
-/// finished coroutine's slot goes on the free list for the next start. The scheduler keeps the
-/// slot index of each coroutine (`StackSlot`) and hands it back at every resumption.
+/// One slot of the slab of native stacks: the stack while its coroutine is suspended (`None`
+/// while it runs, or once it ended), and how much of the stack the evaluator may use.
+struct StackSlot {
+    co: Option<Box<Co>>,
+    budget: usize,
+}
+
+/// The native stacks of the coroutines that have not ended: a slab of slots, each holding its
+/// stack while its coroutine is suspended and nothing while it runs (the stack is moved out
+/// for the resumption, so nothing in here is borrowed while the coroutine uses the
+/// interpreter, and a second resumption of a running coroutine finds an empty slot instead of
+/// a stack). A finished coroutine's slot goes on the free list for the next start. The
+/// scheduler keeps the slot index of each coroutine (an `EngineSlot`) and hands it back at
+/// every resumption.
 #[derive(Default)]
 pub(crate) struct Stacks {
-    slots: Vec<Option<Box<Co>>>,
+    slots: Vec<StackSlot>,
     free: Vec<u32>,
 }
 
 impl Stacks {
-    /// Stores the stack of a new coroutine and returns its slot.
-    pub(crate) fn insert(&mut self, co: Box<Co>) -> u32 {
+    /// Stores the stack of a new coroutine with its native stack budget and returns its slot.
+    pub(crate) fn insert(&mut self, co: Box<Co>, budget: usize) -> u32 {
+        let fresh = StackSlot {
+            co: Some(co),
+            budget,
+        };
         match self.free.pop() {
             Some(index) => {
-                self.slots[index as usize] = Some(co);
+                self.slots[index as usize] = fresh;
                 index
             }
             None => {
-                self.slots.push(Some(co));
+                self.slots.push(fresh);
                 (self.slots.len() - 1) as u32
             }
         }
     }
 
-    /// Moves the stack out of `slot` for a resumption; `None` if it is not there (the
-    /// coroutine is running, or ended).
+    /// Moves the stack out of `slot` for a resumption, with its budget; `None` if it is not
+    /// there (the coroutine is running, or ended).
     #[inline]
-    pub(crate) fn take(&mut self, slot: u32) -> Option<Box<Co>> {
-        self.slots.get_mut(slot as usize)?.take()
+    pub(crate) fn take(&mut self, slot: u32) -> Option<(Box<Co>, usize)> {
+        let s = self.slots.get_mut(slot as usize)?;
+        let co = s.co.take()?;
+        Some((co, s.budget))
     }
 
     /// Puts the stack of a coroutine that paused back into its slot.
     #[inline]
     pub(crate) fn put_back(&mut self, slot: u32, co: Box<Co>) {
-        self.slots[slot as usize] = Some(co);
+        self.slots[slot as usize].co = Some(co);
     }
 
-    /// The coroutine of `slot` ran to its end and its stack was dropped: the slot is free.
+    /// The coroutine of `slot` ran to its end and its stack was dropped: the slot is free. In
+    /// debug builds a slot that still holds a stack, or that is already free, is a bug here.
     #[inline]
     pub(crate) fn free(&mut self, slot: u32) {
+        debug_assert!(
+            self.slots[slot as usize].co.is_none(),
+            "a stack slot was freed while it still holds a stack"
+        );
+        debug_assert!(
+            !self.free.contains(&slot),
+            "a stack slot was freed twice"
+        );
         self.free.push(slot);
+    }
+
+    /// How many slots are in use: started and not yet freed, whether the stack is stored or out
+    /// for a resumption.
+    #[cfg(test)]
+    pub(crate) fn live(&self) -> usize {
+        self.slots.len() - self.free.len()
     }
 
     /// Whether no stack is stored (none suspended, none left over).
     pub(crate) fn is_empty(&self) -> bool {
-        self.slots.iter().all(Option::is_none)
+        self.slots.iter().all(|s| s.co.is_none())
     }
 
     /// Forgets every stored stack without unwinding it, and empties the slab.
     pub(crate) fn forget_all(&mut self) {
-        for co in self.slots.drain(..).flatten() {
-            std::mem::forget(co);
+        for s in self.slots.drain(..) {
+            if let Some(co) = s.co {
+                std::mem::forget(co);
+            }
         }
         self.free.clear();
     }
@@ -178,7 +210,13 @@ impl Interp {
     /// interpreter thread, and nothing that another coroutine still has to do can happen until
     /// the operation is done (see [`Interp::await_external_with`]).
     pub fn external_wait_runs_others(&self, fiber: &Fiber) -> bool {
-        Sched::external_wait_runs_others(self, fiber)
+        self.can_suspend_for_external(fiber) || self.can_drive(fiber, 1)
+    }
+
+    /// Whether the coroutine on `fiber` may suspend for a background operation: it is a
+    /// coroutine, at most one host function deep, outside a `Drop` hook.
+    pub(crate) fn can_suspend_for_external(&self, fiber: &Fiber) -> bool {
+        fiber.state.coro.is_some() && fiber.state.host_depth <= 1 && self.core.hook_depth == 0
     }
 
     // ---- starting ----
@@ -324,13 +362,10 @@ impl Interp {
         };
         let co: Co = Coroutine::with_stack(stack, body);
         let budget = size * STACK_USABLE_NUM / STACK_USABLE_DEN;
-        let index = self.stacks.insert(Box::new(co));
-        self.core.sched.register(
-            id,
-            Rc::downgrade(&handle),
-            group,
-            StackSlot { index, budget },
-        );
+        let index = self.stacks.insert(Box::new(co), budget);
+        self.core
+            .sched
+            .register(id, Rc::downgrade(&handle), group, EngineSlot(index));
         // The first run shares the starter's instruction budget: it is part of the starter's
         // own execution.
         self.resume_coro(id, false, false);
@@ -652,14 +687,14 @@ impl Interp {
 
     /// [`Engine::resume_stack`]: switches to the native stack in `slot` and back.
     #[inline]
-    pub(crate) fn resume_native_stack(&mut self, slot: StackSlot, cancel: bool) -> Resumed {
+    pub(crate) fn resume_native_stack(&mut self, slot: EngineSlot, cancel: bool) -> Resumed {
         // The stack leaves the slab for the resumption: the slot is `None` while the
         // coroutine runs, so a second resumption of it (which the scheduler does not
         // attempt: it resumes suspended coroutines only) would find nothing and report `Gone`.
-        let Some(mut co) = self.stacks.take(slot.index) else {
+        let Some((mut co, budget)) = self.stacks.take(slot.0) else {
             return Resumed::Gone;
         };
-        let saved_stack = std::mem::replace(&mut self.native_stack_budget, slot.budget);
+        let saved_stack = std::mem::replace(&mut self.native_stack_budget, budget);
         // From here to the `black_box` below, no reference into the interpreter (`self`, so
         // `core` and `stacks`) is alive: `co` is owned by this frame, and the coroutine on it
         // has the only reference, through `ptr`.
@@ -673,13 +708,13 @@ impl Interp {
         match outcome {
             CoroutineResult::Yield(_) => {
                 // Nested starts may have grown the slab meanwhile; the slot index is still valid.
-                self.stacks.put_back(slot.index, co);
+                self.stacks.put_back(slot.0, co);
                 Resumed::Suspended
             }
             CoroutineResult::Return(finish) => {
                 // The coroutine ran to its end: only now is its stack freed.
                 drop(co);
-                self.stacks.free(slot.index);
+                self.stacks.free(slot.0);
                 Resumed::Finished(finish)
             }
         }
@@ -766,12 +801,19 @@ impl Interp {
     // ---- shutdown ----
 
     /// Cancels every live coroutine, newest first, so their `defer`s and drops run before the
-    /// module-level values die. Nothing can start meanwhile.
+    /// module-level values die. Nothing can start meanwhile. While a coroutine runs this does
+    /// nothing (see [`Sched::cancel_all_coroutines`]).
     pub fn cancel_all_coroutines(&mut self) {
+        let was_busy = self.core.sched.is_busy();
         Sched::cancel_all_coroutines(self);
-        // Unreachable in practice (every suspended coroutine was resumed with a cancel and ran
-        // to its end, which frees its stack); a forced unwind must never happen.
-        self.stacks.forget_all();
+        // Every suspended coroutine was resumed with a cancel and ran to its end, which frees
+        // its stack, so none is left. This guards the rule that a stack is freed only after
+        // its coroutine ended: a stack left here would later be unwound by force. (When this
+        // call did nothing because a coroutine is running, the slab is in use and untouched.)
+        debug_assert!(
+            was_busy || self.stacks.is_empty(),
+            "a coroutine stack outlived `cancel_all_coroutines`"
+        );
     }
 }
 
@@ -836,5 +878,152 @@ mod tests {
         }));
         assert!(outcome.is_err(), "the panic is passed on");
         assert!(interp.core.sched.ext().is_idle());
+    }
+
+    /// Loads `src` (checked, no host functions) into a fresh interpreter.
+    fn loaded(src: &str, out: Box<dyn std::io::Write>) -> (crate::Interp, colibri_check::Program) {
+        let (ast, diags) = colibri_syntax::parse_file(colibri_syntax::FileId(0), src);
+        assert!(diags.is_empty(), "{diags:?}");
+        let checked = colibri_check::check(&ast);
+        let program = checked
+            .program
+            .unwrap_or_else(|| panic!("{:?}", checked.diagnostics));
+        let mut interp = crate::Interp::new(out, 200);
+        interp.set_native_stack_budget(64 << 20);
+        interp.load(&program);
+        (interp, program)
+    }
+
+    /// A buffer the test can read back after the interpreter wrote to it.
+    #[derive(Clone, Default)]
+    struct Out(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+
+    impl std::io::Write for Out {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Out {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.borrow()).into_owned()
+        }
+    }
+
+    /// Two coroutines suspended at once hold two slots; when one ends, its slot is reused by
+    /// the next start while the other keeps its own, and each resumes where it paused.
+    #[test]
+    fn a_freed_slot_is_reused_and_a_suspended_neighbour_keeps_its_own() {
+        use crate::Fiber;
+        let src = "fn slow(tag: str) {\n    wait(2.0)\n    print(tag)\n}\nfn quick(tag: str) {\n    wait(0.5)\n    print(tag)\n}\nfn first() {\n    let _a = go slow(\"slow\")\n    let _b = go quick(\"quick\")\n}\nfn second() {\n    let _c = go quick(\"again\")\n}\n";
+        let out = Out::default();
+        let (mut interp, program) = loaded(src, Box::new(out.clone()));
+        let mut fiber = Fiber::new();
+        interp
+            .call(&mut fiber, program.fn_by_name("first").unwrap(), vec![])
+            .expect("first");
+        assert_eq!(interp.stacks.live(), 2, "two coroutines, two slots");
+        interp.tick(&mut fiber, 1.0).expect("tick");
+        assert_eq!(out.text(), "quick\n");
+        assert_eq!(interp.stacks.live(), 1, "the quick one gave its slot back");
+        interp
+            .call(&mut fiber, program.fn_by_name("second").unwrap(), vec![])
+            .expect("second");
+        assert_eq!(interp.stacks.live(), 2);
+        assert_eq!(interp.stacks.slots.len(), 2, "the freed slot was reused");
+        for _ in 0..4 {
+            interp.tick(&mut fiber, 0.5).expect("tick");
+        }
+        assert_eq!(out.text(), "quick\nagain\nslow\n");
+        assert_eq!(interp.stacks.live(), 0);
+    }
+
+    /// A coroutine that starts another while it runs: its own stack is out of the slab then, and
+    /// the slab grows (it may reallocate) before the stack goes back into its slot.
+    #[test]
+    fn a_nested_start_while_a_stack_is_out_of_its_slot() {
+        use crate::Fiber;
+        let src = "fn leaf(n: int) {\n    wait(0.5)\n    print(n)\n}\nfn parent() {\n    var i = 0\n    while i < 40 {\n        let _h = go leaf(i)\n        i = i + 1\n    }\n    wait(0.1)\n    print(\"parent\")\n}\nfn main() {\n    let _p = go parent()\n}\n";
+        let out = Out::default();
+        let (mut interp, program) = loaded(src, Box::new(out.clone()));
+        let mut fiber = Fiber::new();
+        interp
+            .call(&mut fiber, program.fn_by_name("main").unwrap(), vec![])
+            .expect("main");
+        assert_eq!(interp.stacks.live(), 41, "the parent and its forty leaves");
+        for _ in 0..4 {
+            interp.tick(&mut fiber, 0.5).expect("tick");
+        }
+        let text = out.text();
+        assert!(text.starts_with("parent\n0\n1\n"), "{text}");
+        assert_eq!(text.lines().count(), 41);
+        assert_eq!(interp.stacks.live(), 0);
+    }
+
+    /// Many start and finish cycles keep the slab at the size of the most that lived at once: a
+    /// slot that is never freed would grow it (and the live count) with every cycle.
+    #[test]
+    fn slots_are_freed_after_many_start_and_finish_cycles() {
+        use crate::Fiber;
+        let src = "fn work() {\n    wait(0.0)\n}\nfn main() {\n    var i = 0\n    while i < 100 {\n        let h = go work()\n        h.join()\n        i = i + 1\n    }\n}\n";
+        let (mut interp, program) = loaded(src, Box::new(std::io::sink()));
+        let mut fiber = Fiber::new();
+        interp
+            .call(&mut fiber, program.fn_by_name("main").unwrap(), vec![])
+            .expect("main");
+        assert_eq!(interp.stacks.live(), 0, "every slot was freed");
+        assert!(
+            interp.stacks.slots.len() <= 2,
+            "the slab has {} slots after 100 cycles",
+            interp.stacks.slots.len()
+        );
+    }
+
+    /// Freeing a slot twice would hand it to two coroutines: debug builds stop it at the second
+    /// `free`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "freed twice")]
+    fn freeing_a_slot_twice_is_caught() {
+        let mut stacks = super::Stacks::default();
+        let co = super::Coroutine::new(|_y: &super::Y, _r: super::Resume| {
+            super::Finish::Cancelled
+        });
+        let slot = stacks.insert(Box::new(co), 0);
+        drop(stacks.take(slot));
+        stacks.free(slot);
+        stacks.free(slot);
+    }
+
+    /// If the engine cannot find the stack of a suspended coroutine (`Resumed::Gone`, a broken
+    /// invariant), the coroutine ends as a failure with an internal error instead of staying
+    /// suspended: the next tick reports it, and `cancel_all_coroutines` terminates. The stack is
+    /// taken out of the slab by the test (and forgotten, safely, without unwinding it).
+    #[test]
+    fn a_lost_stack_ends_its_coroutine_as_an_internal_error() {
+        use crate::Fiber;
+        let src = "fn worker() {\n    wait(1.0)\n    print(\"never\")\n}\nfn main() {\n    let _a = go worker()\n}\n";
+        let out = Out::default();
+        let (mut interp, program) = loaded(src, Box::new(out.clone()));
+        let mut fiber = Fiber::new();
+        interp
+            .call(&mut fiber, program.fn_by_name("main").unwrap(), vec![])
+            .expect("main");
+        assert_eq!(interp.coroutine_count(), 1);
+        let lost = interp.stacks.take(0).expect("the worker's stack").0;
+        std::mem::forget(lost);
+        let failure = interp.tick(&mut fiber, 2.0).expect_err("the tick reports it");
+        assert!(
+            failure.message.contains("internal error"),
+            "{}",
+            failure.message
+        );
+        assert_eq!(interp.coroutine_count(), 0, "the coroutine is over");
+        assert_eq!(out.text(), "");
+        interp.cancel_all_coroutines();
     }
 }

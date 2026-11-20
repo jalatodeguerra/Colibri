@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use colibri_check::types::Ty;
 
-use crate::coro::Sched;
+use crate::coro::SchedInternal;
 use crate::ctl::{Ctl, Eval, PanicInfo};
 use crate::engine::Engine;
 use crate::heap::ClassObj;

@@ -9,7 +9,7 @@ use colibri_core::host::HostHook;
 use colibri_core::prelude::*;
 use colibri_core::release::Release;
 use colibri_core::results::ResultOps;
-use colibri_core::sched::StackSlot;
+use colibri_core::sched::EngineSlot;
 use colibri_core::{Core, stack_position};
 use colibri_syntax::{FileId, Span};
 
@@ -171,7 +171,7 @@ impl Engine for Interp {
     }
 
     #[inline]
-    fn resume_stack(&mut self, _id: u64, slot: StackSlot, cancel: bool) -> Resumed {
+    fn resume_stack(&mut self, _id: u64, slot: EngineSlot, cancel: bool) -> Resumed {
         self.resume_native_stack(slot, cancel)
     }
 }

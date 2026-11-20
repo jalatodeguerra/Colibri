@@ -61,26 +61,22 @@ pub enum State {
 }
 
 /// What an engine needs to find its side of a coroutine, kept by the scheduler and handed back
-/// at every resumption. The scheduler does not look inside: for the tree-walker `index` is the
-/// slot of the coroutine's native stack and `budget` how much of it the evaluator may use; for
-/// an engine with heap frames `index` could be the frame list and `budget` is unused.
+/// at every resumption. The scheduler does not look inside: for the tree-walker it is the slot
+/// of the coroutine's native stack; for an engine with heap frames it could be the frame list.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct StackSlot {
-    pub index: u32,
-    pub budget: usize,
-}
+pub struct EngineSlot(pub u32);
 
 /// What the scheduler knows of one coroutine.
 #[doc(hidden)]
-pub struct Entry {
+pub(crate) struct Entry {
     pub(crate) id: u64,
     pub(crate) state: State,
     pub(crate) wake: Wake,
     pub(crate) handle: Weak<ClassObj>,
     pub(crate) cancel_requested: bool,
     /// The engine's side of the coroutine, opaque here.
-    pub(crate) slot: StackSlot,
+    pub(crate) slot: EngineSlot,
     /// The `CoGroup` that owns this coroutine.
     pub(crate) group: Option<u64>,
     /// The tick in which this coroutine was already resumed (as a signal waiter).
@@ -137,7 +133,7 @@ impl Scheduler {
         }
     }
 
-    pub fn find(&self, id: u64) -> Option<usize> {
+    pub(crate) fn find(&self, id: u64) -> Option<usize> {
         self.entries.binary_search_by_key(&id, |e| e.id).ok()
     }
 
@@ -158,7 +154,7 @@ impl Scheduler {
         id: u64,
         handle: Weak<ClassObj>,
         group: Option<u64>,
-        slot: StackSlot,
+        slot: EngineSlot,
     ) {
         self.entries.push(Entry {
             id,
@@ -175,17 +171,11 @@ impl Scheduler {
         }
     }
 
-    /// Whether `id` has been asked to cancel (it was running higher up the resume chain when
-    /// asked, so it stops at its next pause).
-    pub fn is_cancel_requested(&self, id: u64) -> bool {
-        self.find(id)
-            .is_some_and(|idx| self.entries[idx].cancel_requested)
-    }
-
     /// The bookkeeping of a coroutine that is about to pause until `wake`: `Err` when it must
     /// not (it is cancelled, or the scheduler does not know it) and `fiber` is marked
     /// cancelling; otherwise it is recorded as waiting. The engine then does the pausing
     /// itself (the tree-walker switches stacks; a VM returns to its loop).
+    #[inline]
     pub fn prepare_suspend(
         &mut self,
         id: u64,

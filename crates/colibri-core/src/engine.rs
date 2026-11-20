@@ -17,7 +17,7 @@ use colibri_syntax::Span;
 use crate::ctl::{Eval, TraceEntry};
 use crate::fiber::FiberState;
 use crate::host::{HostFault, HostHook};
-use crate::sched::{Finish, StackSlot};
+use crate::sched::{EngineSlot, Finish};
 use crate::state::Core;
 use crate::value::Value;
 
@@ -156,9 +156,10 @@ pub trait Engine: Sized {
     /// frames from where it paused until it waits again or ends. The engine must not hold a
     /// reference into [`Core`] across the call (the coroutine uses it meanwhile). `slot` is what the
     /// engine gave to `Scheduler::register` for this coroutine. `Gone` means the engine has
-    /// nothing to run for `id` (it is already running, or has ended): the scheduler then leaves
-    /// it as it was.
-    fn resume_stack(&mut self, id: u64, slot: StackSlot, cancel: bool) -> Resumed;
+    /// nothing to run for `id` (it is already running, or has ended). The scheduler only resumes
+    /// suspended coroutines, so this is a broken invariant: the coroutine ends as a failure with
+    /// an internal error.
+    fn resume_stack(&mut self, id: u64, slot: EngineSlot, cancel: bool) -> Resumed;
 
     // ---- built-ins that pause ----
 
