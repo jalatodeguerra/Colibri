@@ -670,6 +670,35 @@ impl Drop for Kv {
     }
 }
 
+/// Whether the server turns this new client away: its one line is read before anything is
+/// written, because a connection closed with unread input is reset on Windows, and the reset can
+/// drop the line before it is read. A client that is served says nothing, so no line within the
+/// wait means it is served.
+fn is_turned_away(c: &mut (TcpStream, std::io::BufReader<TcpStream>)) -> bool {
+    use std::io::BufRead;
+    c.0.set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let mut line = String::new();
+    let got = c.1.read_line(&mut line);
+    c.0.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    match got {
+        Ok(_) => {
+            assert_eq!(line.trim_end(), "ERR too many connections");
+            true
+        }
+        Err(e) => {
+            assert!(
+                matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ),
+                "{e}"
+            );
+            false
+        }
+    }
+}
+
 fn ask(c: &mut (TcpStream, std::io::BufReader<TcpStream>), request: &str) -> String {
     use std::io::BufRead;
     c.0.write_all(request.as_bytes()).unwrap();
@@ -806,11 +835,10 @@ fn kvserver_turns_away_connections_over_its_cap() {
     let started = std::time::Instant::now();
     loop {
         let mut d = kv.client();
-        let answer = ask(&mut d, "COUNT\n");
-        if answer == "1" {
+        if !is_turned_away(&mut d) {
+            assert_eq!(ask(&mut d, "COUNT\n"), "1");
             break;
         }
-        assert_eq!(answer, "ERR too many connections");
         assert!(
             started.elapsed() < Duration::from_secs(20),
             "no room after a connection left"

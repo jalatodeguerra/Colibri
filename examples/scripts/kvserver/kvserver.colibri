@@ -150,7 +150,13 @@ fn main() -> Result[()] {
             // One line, then goodbye. The write is not waited for longer than a moment: a
             // peer that does not read must not hold up the accept loop.
             conn.set_timeout(1.0)
+            // After the line the stream is ended with `close_write`, and the peer is given a
+            // moment to read it and leave: closing a connection that has unread input resets
+            // it on some systems, and the reset can take the line with it.
             let _ = conn.write("ERR too many connections\n")
+            let _ = conn.close_write()
+            conn.set_timeout(0.2)
+            let _ = conn.read(4096)
             conn.close()
             continue
         }
