@@ -226,8 +226,7 @@ colibri --version
 This puts the `colibri` binary in `~/.cargo/bin`. To build without installing, run
 `cargo build --release` and use `./target/release/colibri`.
 
-Development and testing happen on Linux. macOS and Windows are intended targets but are not
-tested yet.
+Every change is tested on Linux, macOS and Windows.
 
 ## Quick start
 

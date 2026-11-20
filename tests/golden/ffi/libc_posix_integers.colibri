@@ -1,15 +1,18 @@
-// only: unix - `getpid` and `htons` are not in the Windows C runtime (`_getpid`; `htons` is in ws2_32); see libc_windows_integers.colibri
+// only: unix - `getpid` and `htons` are not in the Windows C runtime (`_getpid`; `htons` is in ws2_32), and C's `long` (`labs`) is 64 bits only on Unix; see libc_windows_integers.colibri
 // caps: ffi
 // POSIX functions of the process's own symbols.
 
 extern "C" {
     fn getpid() -> i32
     fn htons(x: u16) -> u16
+    fn labs(x: int) -> int
 }
 
 fn main() {
     print(getpid() > 0)
     print(htons(1) == 256 || htons(1) == 1)
+    print(labs(-(1 << 40)))
 }
 // expect: true
 // expect: true
+// expect: 1099511627776

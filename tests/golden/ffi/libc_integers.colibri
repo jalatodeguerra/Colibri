@@ -1,10 +1,10 @@
 // caps: ffi
 // Integers of every width; the process's own symbols need no `@link`. The functions only
-// Unix has are in libc_posix_integers.colibri (and libc_windows_integers.colibri).
+// Unix has are in libc_posix_integers.colibri (and libc_windows_integers.colibri), and so is
+// `labs`: C's `long` is 64 bits on Unix and 32 bits on Windows.
 
 extern "C" {
     fn abs(x: i32) -> i32
-    fn labs(x: int) -> int
     fn llabs(x: int) -> int
     fn isdigit(c: i32) -> i32
     fn rand() -> i32
@@ -13,7 +13,7 @@ extern "C" {
 
 fn main() {
     print(abs(-7))
-    print(labs(-(1 << 40)))
+    print(llabs(-(1 << 40)))
     print(llabs(-3))
     print(isdigit(55) != 0)
     print(isdigit(65) != 0)
