@@ -68,13 +68,17 @@ error: reading notes.txt: cannot read `notes.txt`: no such file or directory
 - **Values and references.** `struct`s are value types (assignment copies), `class`es are
   reference counted and shared, and `weak` references break cycles. Memory is freed as soon as
   the last reference goes away, in a predictable order.
-- **Generics and interfaces:** `List[T]`, `fn largest[T: Ord](...)`, interfaces
-  with default methods, enums with data and exhaustive `match`.
+- **Generics and interfaces:** `List[T]`, `fn largest[T: Ord](...)`, bounds on the parameters of
+  types too (`struct Sorted[T: Ord]`), interfaces with default methods, enums with data and
+  exhaustive `match`. Structs and enums with data can be compared and sorted without writing
+  any code.
 - **Coroutines without colored functions.** `go f()` starts a coroutine and `wait(secs)`,
   `join()`, groups and signals suspend it. There is no `async`/`await`, so any function can wait.
-- **Batteries for scripting.** 20 standard library modules, including files and paths, JSON,
-  TOML and CSV, regular expressions, subprocesses, command-line arguments, dates and an HTTP
-  client.
+- **Batteries for scripting.** 20 standard library modules, including files (whole or streamed
+  through a handle) and paths, JSON, TOML and CSV, regular expressions, subprocesses,
+  command-line arguments, dates and an HTTP client, and `Bytes` for data that is not text.
+- **Conditional code.** `@when(os == "windows")`, `@when(debug)` and feature flags from
+  `colibri.toml` decide which items exist; `@deprecated` makes a use of an old item warn.
 - **One binary for the whole workflow:** run, check, test, format, a REPL, a language server,
   hot reload and a leak detector.
 - **Embeddable in Rust.** Load scripts, call their functions with typed arguments, and expose
@@ -172,6 +176,54 @@ fn main() {
 }
 ```
 
+### Ordering and bounds
+
+A struct, or an enum whose variants carry data, is ordered by its parts when every part can be
+ordered: structs field by field in the order they are declared, enums by variant (in declaration
+order) and then by what the variant holds. Classes are not ordered unless they implement `Ord`.
+A type can ask for bounds on its parameters, as a function does:
+
+```colibri
+struct Version {
+    major: int
+    minor: int
+}
+
+enum Level {
+    Low
+    Mid(n: int)
+    High
+}
+
+class Sorted[T: Ord] {
+    items: List[T] = []
+}
+
+impl[T] Sorted[T] {
+    fn add(self, x: T) {
+        self.items.push(x)
+        self.items.sort()
+    }
+}
+
+fn main() {
+    var versions = [Version { major: 1, minor: 10 }, Version { major: 1, minor: 2 }]
+    versions.sort()
+    print(versions) // [Version { major: 1, minor: 2 }, Version { major: 1, minor: 10 }]
+    print(Level.Mid(5) < Level.Mid(7)) // true
+    print(Level.High > Level.Mid(100)) // true
+
+    let numbers = Sorted[int] {}
+    numbers.add(3)
+    numbers.add(1)
+    print(numbers.items) // [1, 3]
+}
+```
+
+`Sorted[Version]` is fine and `Sorted[SomeClass]` is an error where it is written, unless
+`SomeClass` implements `Ord`. A type alias takes the bounds of the type it names (`type S[T] =
+Sorted[T]` needs `T: Ord` as well), so it does not write them.
+
 ### Coroutines
 
 ```colibri
@@ -189,6 +241,75 @@ fn main() {
 ```
 
 Both coroutines wait at the same time, so the program takes 0.2 seconds, not 0.3.
+
+### Bytes and files
+
+`Bytes` is an immutable string of bytes, the type for data that is not text. It needs no import.
+A `Bytes` compares, hashes and can be a `Map` key like a `str`; printing one shows it in the Rust
+form. `BytesBuilder` builds one a piece at a time.
+
+```colibri
+fn main() {
+    let data = "héllo".to_bytes()
+    print(data) // b"h\xc3\xa9llo"
+    print(data.len()) // 6
+    print(data[1..3]) // b"\xc3\xa9"
+    print(data.to_str() or "not text") // héllo
+
+    let packet = BytesBuilder()
+    packet.push(0xCA)
+    packet.push(0xFE)
+    packet.push_str("hi")
+    let bytes = packet.to_bytes()
+    print(bytes) // b"\xca\xfehi"
+    print(bytes.starts_with(Bytes([0xCA, 0xFE]))) // true
+    print(bytes.to_str().is_err()) // true: not valid UTF-8
+}
+```
+
+`fs.read`, `fs.write` and `fs.append` move a whole file as text, and `fs.read_bytes`,
+`fs.write_bytes` and `fs.append_bytes` as `Bytes`. For a file too big to hold in memory, or a
+log that grows a line at a time, `fs.open`, `fs.create` and `fs.open_append` give an `fs.File`
+that reads or writes through a buffer:
+
+```colibri
+import fs
+
+fn count_errors(path: str) -> Result[int] {
+    let f = fs.open(path)?
+    defer f.close()
+    var errors = 0
+    while true {
+        match f.read_line()? {
+            some(line) => {
+                if line.contains("ERROR") {
+                    errors += 1
+                }
+            }
+            none => break
+        }
+    }
+    return ok(errors)
+}
+
+fn main() {
+    let log = fs.create("app.log") or |e| {
+        print("error: {e}")
+        return
+    }
+    log.write("ok\nERROR disk\nok\nERROR net\n") or |e| { print("error: {e}") }
+    log.close() or |e| { print("error: {e}") }
+    print(count_errors("app.log") or 0) // 2
+}
+```
+
+A handle reads or writes, not both. `read_line`, `read(n)`, `read_all`, `write`, `write_bytes`,
+`flush`, `seek`, `position` and `close` are its methods. A call on a handle waits for the disk on
+a background thread, so other coroutines keep running (the whole-file functions above run to
+their end first), and the operations on one handle happen in the order they were called, even
+from different coroutines. A handle that goes out of scope is flushed and closed; call
+`close()` (best with `defer`) to see an error from that. Reading or writing a folder as a file
+is `fs.Error.IsADirectory` on every system.
 
 ### Tests
 
@@ -270,6 +391,77 @@ into a cache folder and write the commit they used to `colibri.lock`, which belo
 control; later runs use that commit until `colibri update` moves it. The editor never uses the
 network.
 
+### Conditional code and deprecation
+
+An item with `@when(condition)` exists only where the condition is true; otherwise it is parsed
+and left out, so two items with the same name can be there for different builds. The condition
+can test `os` (`"linux"`, `"macos"`, `"windows"`, ...), `arch` (`"x86_64"`, `"aarch64"`, ...),
+`debug` (true unless the build is a release build) and feature flags, and combine them with `!`,
+`&&`, `||` and parentheses. A misspelt name, or a value that no system has (`os == "win"`), is an
+error, never a quiet `false`. Features are declared in `colibri.toml`:
+
+```toml
+[package]
+name = "app"
+
+[features]
+default = []   # the features that are on unless --no-default-features
+fast = []      # a feature; the list holds the features it turns on as well
+```
+
+```colibri
+@deprecated("use scale instead")
+fn double(x: int) -> int => x * 2
+
+fn scale(x: int, by: int) -> int => x * by
+
+@when(debug)
+fn log(msg: str) {
+    print("debug: {msg}")
+}
+
+@when(!debug)
+fn log(msg: str) {}
+
+@when(fast)
+fn sum(n: int) -> int => n * (n + 1) / 2
+
+@when(!fast)
+fn sum(n: int) -> int {
+    var total = 0
+    for i in 1..=n {
+        total += i
+    }
+    return total
+}
+
+fn main() {
+    log("starting")
+    print(sum(100)) // 5050
+    print(double(4)) // 8, and a warning on the line above
+}
+```
+
+`colibri run` prints `debug: starting`; `colibri run --release --feature fast` does not, and
+uses the closed form of `sum`. `run`, `check` and `test` take `--feature NAME` (as often as you
+like; the name must be declared in `colibri.toml`), `--no-default-features` and `--release`.
+A single script has no manifest, so any `--feature` flag exists for it. A dependency asks for
+its own features in the entry that names it, and git dependencies take the same keys:
+
+```toml
+[dependencies]
+audio = { path = "../audio", features = ["wav"], default-features = false }
+```
+
+The features of a package are the union of what everything that depends on it asks for, and the
+command-line flags apply to the root package only. Features are not in `colibri.lock`, since
+they change the program and not what is fetched.
+
+`@deprecated("message")` goes on a function, method, type, constant or field. Every use of the
+item is a warning with the message; the item's own code and the code of a dependency do not
+warn, and the warning never fails `check` or `run`. Editors show deprecated names struck
+through.
+
 ### The REPL
 
 ```console
@@ -282,7 +474,9 @@ colibri> sq(7)
 = 49 : int
 ```
 
-`:help` lists the commands, such as `:type <expr>` and `:load <file>`.
+`:help` lists the commands, such as `:type <expr>` and `:load <file>`. A `@deprecated` or
+`@when` line waits for the declaration under it, a use of a deprecated item warns with its
+entry, and two `@when` variants of one name are both kept.
 
 ## Commands
 
@@ -312,7 +506,8 @@ put them after `--` if they could be mistaken for the tool's own flags, such as 
 ### Editor support
 
 `colibri lsp` is a language server with diagnostics as you type (the whole package is checked,
-including unsaved buffers), hover with types and signatures, completion, go to definition,
+including unsaved buffers, re-checked a moment after you stop typing, or at once when a request
+needs the result), hover with types and signatures, completion, go to definition,
 find references, rename, the outline of a file, and formatting. A rename is refused, with the
 reason, where the editor cannot be sure to change every use. A VS Code extension with syntax
 highlighting and the language client is in [`editors/vscode`](editors/vscode/README.md).
@@ -407,11 +602,17 @@ take its place behind the same API. The runtime also offers:
   environment, and foreign functions
 - an instruction budget per call, so a runaway script cannot hang the host
 - hot reload of embedded scripts
+- `Bytes` crossing as `colibri_runtime::Bytes`
+- running a package's `test` blocks from the host (`Vm::load_tests`, `tests`, `run_test`), with
+  `Vm::on_test_start` to put the host's own state back before each test
+- a host class that defines `==` with `TypeBuilder::eq` gives `TypeBuilder::hash` next to it, so
+  that `x.hash()` agrees with `==`
+- feature flags for `@when` (`VmBuilder::feature`)
 - `.cbi` interface files, so `colibri check` and the editor know about the host's functions
 
 A script panic comes back to the host as an `Error` and leaves the `Vm` usable.
-[`examples/host_game`](examples/host_game/README.md) is a complete example: a Rust program that
-runs its logic from Colibri scripts. The API reference is in the crate's documentation:
+[`examples/host_jobs`](examples/host_jobs/README.md) is a complete example: a Rust job runner
+whose logic comes from Colibri scripts (host classes, handles, callbacks and a scheduler). The API reference is in the crate's documentation:
 `cargo doc -p colibri-runtime --open`.
 
 ## Standard library
@@ -419,7 +620,7 @@ runs its logic from Colibri scripts. The API reference is in the crate's documen
 | Module | Contents |
 |--------|----------|
 | `io` | standard input and output |
-| `fs`, `path` | files, folders, walking trees, metadata; path manipulation |
+| `fs`, `path` | files, folders, walking trees, metadata; `fs.File` handles for reading and writing piece by piece; path manipulation |
 | `os` | environment variables, arguments, exit |
 | `process` | run subprocesses, with pipes |
 | `args` | command-line argument parsing |
@@ -427,10 +628,10 @@ runs its logic from Colibri scripts. The API reference is in the crate's documen
 | `json` | `json.encode`, typed `json.decode[T]`, and `json.Value` for a document of unknown shape |
 | `toml` | `toml.parse` into a `json.Value` and typed `toml.decode[T]` |
 | `csv` | CSV text to records or rows with a header, and back |
-| `base64`, `hex` | encoding and decoding of text and of bytes |
-| `hash` | SHA-256 |
+| `base64`, `hex` | encoding and decoding of text and of `Bytes` |
+| `hash` | SHA-256 of text and of `Bytes` |
 | `regex` | regular expressions |
-| `http` | a blocking HTTP client that does not block other coroutines |
+| `http` | a blocking HTTP client that does not block other coroutines; `get_bytes` and `request_bytes` for bodies that are not text |
 | `time`, `datetime` | clocks and sleeping; dates, times and formatting |
 | `math`, `rand` | math functions; random numbers |
 | `vec` | 2D, 3D and 4D vector types |
@@ -439,7 +640,7 @@ Paths are `/`-separated text on every system, Windows included. `path.from_nativ
 that came from outside (a command-line argument, a file's content) from the system's own spelling,
 and on Windows, and only there, `C:/` and `//host/share/` are roots.
 
-`List`, `Map`, `Set` and `StrBuilder` are built in. A Rust program that embeds Colibri decides
+`List`, `Map`, `Set`, `Bytes`, `StrBuilder` and `BytesBuilder` are built in. A Rust program that embeds Colibri decides
 whether its scripts get the standard library (the `colibri-std` crate) and which capabilities
 they have.
 
@@ -447,11 +648,12 @@ they have.
 
 **Done:**
 
-- The language core: structs, classes, enums, `match`, generics, interfaces, closures,
-  `Result`/`Option` error handling, modules and packages, `weak` references.
+- The language core: structs, classes, enums, `match`, generics with bounds, interfaces,
+  closures, `Result`/`Option` error handling, modules and packages, `weak` references, derived
+  ordering, `@deprecated` and conditional code with `@when` and features.
 - A tree-walking interpreter over a typed intermediate representation, with a deterministic
   drop order.
-- The embedding API, the C FFI, coroutines, the 20 std modules above.
+- The embedding API, the C FFI, coroutines, the 20 std modules above, `Bytes` and file handles.
 - Tooling: `run`, `check`, `test`, `fmt`, `new`, `repl`, `lsp`, hot reload and the leak detector.
 
 **Next** (not started):
