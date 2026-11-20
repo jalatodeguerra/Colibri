@@ -3283,7 +3283,9 @@ mod tests {
     /// inside the data (`aab` in `xaaab`), a `\r` before `\r\n`, and a `\n` inside the data.
     #[test]
     fn a_delimiter_is_found_however_the_stream_is_cut_into_reads() {
-        let cases: [(&[u8], &[u8], &[&[u8]]); 8] = [
+        // The delimiter, the stream, and the pieces that calls one after the other give.
+        type Case = (&'static [u8], &'static [u8], &'static [&'static [u8]]);
+        let cases: [Case; 8] = [
             (b"\r\n", b"a\nb\r\n\r\nc", &[b"a\nb", b""]),
             (b"\r\n", b"a\r\r\nbb\r\n", &[b"a\r", b"bb"]),
             (b"\n", b"ab\ncd\n", &[b"ab", b"cd"]),
