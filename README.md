@@ -263,8 +263,9 @@ utils = { path = "../utils" }
 greet = { git = "https://example.com/me/greet.git", tag = "v1.2.0" }
 ```
 
-A git dependency names one of `rev` (a commit hash, or the start of one), `tag` or `branch`, or
-none of them for the repository's default branch. `colibri run`, `check` and `test` fetch it
+A git dependency names one of `rev` (a commit hash of 7 to 40 hexadecimal digits: the full
+hash or the start of one that is long enough to be one commit), `tag` or `branch`, or none of
+them for the repository's default branch. `colibri run`, `check` and `test` fetch it
 into a cache folder and write the commit they used to `colibri.lock`, which belongs in version
 control; later runs use that commit until `colibri update` moves it. The editor never uses the
 network.
@@ -294,7 +295,7 @@ colibri> sq(7)
 | `colibri test [file or folder]` | run the `test "name" { ... }` blocks (`--filter`, `--nocapture`, `--leaks`) |
 | `colibri fmt [paths]` | format files in place (`--check` only reports) |
 | `colibri new <name>` | create a package |
-| `colibri update [name]` | resolve git dependencies again (branches, tags) and rewrite `colibri.lock` |
+| `colibri update [names...]` | resolve git dependencies again (branches, tags) and rewrite `colibri.lock`: all of them, or only the ones named (transitive ones too); `--path DIR` is the package folder, `--locked` and `--offline` as for `run` |
 | `colibri repl` | interactive session |
 | `colibri lsp` | language server on stdin and stdout |
 | `colibri build` | **(planned)** one executable with the VM and the program's bytecode |

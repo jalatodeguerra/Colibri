@@ -42,14 +42,27 @@ pub struct Table {
     pub entries: Vec<Entry>,
 }
 
-/// Parses `text` (the contents of file `file`).
+/// Parses `text` (the contents of file `file`), a `colibri.toml`.
 pub fn parse(file: FileId, text: &str) -> Result<Vec<Table>, Diagnostic> {
-    let mut p = Parser { file, text, pos: 0 };
+    parse_named(file, text, "colibri.toml")
+}
+
+/// [`parse`] for the file called `name` (`colibri.lock` is read with the same parser), which
+/// the messages that name the file use.
+pub fn parse_named(file: FileId, text: &str, name: &str) -> Result<Vec<Table>, Diagnostic> {
+    let mut p = Parser {
+        file,
+        name,
+        text,
+        pos: 0,
+    };
     p.document()
 }
 
 struct Parser<'a> {
     file: FileId,
+    /// What the file is called in a message.
+    name: &'a str,
     text: &'a str,
     pos: usize,
 }
@@ -247,9 +260,10 @@ impl Parser<'_> {
             }
             Some('{') => self.inline_table(),
             Some('[') => self.array(),
-            Some(c) if c.is_ascii_digit() || c == '+' || c == '-' => {
-                Err(self.error("numbers are not supported in `colibri.toml`: use a string"))
-            }
+            Some(c) if c.is_ascii_digit() || c == '+' || c == '-' => Err(self.error(format!(
+                "numbers are not supported in `{}`: use a string",
+                self.name
+            ))),
             Some('t' | 'f') => {
                 for (word, value) in [("true", true), ("false", false)] {
                     if self.rest().starts_with(word) {
@@ -300,9 +314,10 @@ impl Parser<'_> {
                     }
                 }
                 _ => {
-                    return Err(self.error(
-                        "an array in `colibri.toml` holds strings, on one line: `[\"a\", \"b\"]`",
-                    ));
+                    return Err(self.error(format!(
+                        "an array in `{}` holds strings, on one line: `[\"a\", \"b\"]`",
+                        self.name
+                    )));
                 }
             }
         }

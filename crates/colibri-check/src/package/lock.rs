@@ -127,7 +127,7 @@ impl Lock {
     }
 
     fn parse_unmasked(file: FileId, text: &str) -> Result<Lock, Diagnostic> {
-        let tables = toml::parse(file, text)?;
+        let tables = toml::parse_named(file, text, LOCK_FILE)?;
         let mut lock = Lock::default();
         for table in &tables {
             let path: Vec<&str> = table.path.iter().map(String::as_str).collect();
@@ -317,6 +317,27 @@ mod tests {
             entry("C:\\repos\\\"a\"", GitSpec::DefaultBranch, C1),
         );
         assert_eq!(Lock::parse(FileId(0), &lock.render()).unwrap(), lock);
+    }
+
+    #[test]
+    fn a_syntax_error_in_the_lock_names_the_lock_and_in_the_manifest_the_manifest() {
+        let lock = |t: &str| Lock::parse(FileId(0), t).unwrap_err().message;
+        for text in ["[git.a]\nurl = 1\n", "[git.a]\nurl = [1]\n"] {
+            let m = lock(text);
+            assert!(
+                m.contains("`colibri.lock`") && !m.contains("colibri.toml"),
+                "{m}"
+            );
+        }
+        for text in ["[package]\nname = 1\n", "[package]\nname = [1]\n"] {
+            let m = crate::package::manifest::parse(FileId(0), text).unwrap_err()[0]
+                .message
+                .clone();
+            assert!(
+                m.contains("`colibri.toml`") && !m.contains("colibri.lock"),
+                "{m}"
+            );
+        }
     }
 
     #[test]
