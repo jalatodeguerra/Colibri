@@ -184,7 +184,9 @@ fn main() {
 `impl Add for Money` means `Add[Money, Money]`. A type can implement an operator once for each
 right-hand type, told apart by the type's head only (`Add[Box[int]]` and `Add[Box[str]]` count as
 one). A number can be the left operand of your type when the right-hand type is yours (comparison
-stays on `Eq` and `Ord`). A narrow integer type (`i8` to `u32`) cannot yet stand for a type
+stays on `Eq` and `Ord`). A type of the standard library (`vec.vec2`) is the library's: you
+can give it an operator only with a right-hand type of your own, and no other built-in interface.
+A narrow integer type (`i8` to `u32`) cannot yet stand for a type
 parameter that has an operator bound:
 
 ```colibri
@@ -217,6 +219,34 @@ fn main() {
 
 `a += b` is `a = a + b`. `%` and the bit operators are for numbers only. The `vec` module
 (`import vec`) is built this way.
+
+For code written against the vectors that used to be built in, three things change. The vector
+types need `import vec` (`vec.vec3(..)`, or `import vec.{vec3}`). Swizzle fields are methods or
+constructor calls, and the splat and conversion constructors have other names. And an operator
+that has more than one impl for the left type (`v * k`, where `vec2` takes a `vec2` or a
+`float`) must know the type of its right operand where it is written, so a list that is filled
+only later needs its type spelled out:
+
+```colibri
+import vec
+
+fn main() {
+    let v = vec.vec3(1.0, 2.0, 3.0)
+    print(v.xy()) // not v.xy: a method
+    print(vec.vec3(v.z, v.y, v.x)) // not v.zyx
+    print(vec.vec3(7.0, 7.0, 7.0)) // not vec3(7)
+    print(vec.ivec3(1, 2, 3).to_vec()) // not vec3(iv); and v.to_ivec() the other way
+    var ks: List[float] = [] // not `var ks = []`: its type decides which `*` is meant
+    var w = v
+    for i in 0..3 {
+        if ks.len() > 0 {
+            w = w * ks[0]
+        }
+        ks.push(2.0)
+    }
+    print(w)
+}
+```
 
 ### Ordering and bounds
 
