@@ -45,8 +45,11 @@ pub struct SyncReport {
 /// Makes `colibri.lock` next to `root/colibri.toml` list the commit of every git dependency of
 /// the package at `root` (direct and transitive), fetching what is not in the cache.
 ///
-/// A folder without a manifest, and a manifest that does not parse, are not this function's
-/// business: it does nothing and the loader reports them.
+/// A folder without a manifest, and a manifest that does not parse or validate (the package's
+/// own or a dependency's), are not this function's business: the loader reports them. Nothing
+/// more is fetched below such a manifest, and `colibri.lock` is not written in any mode: what
+/// was collected is not the whole tree, and a lock made from it would drop what the manifest
+/// it could not read had pinned.
 pub fn sync(root: &Path, options: &SyncOptions) -> Result<SyncReport, String> {
     sync_in(root, options, git::cache_root().ok())
 }
@@ -95,6 +98,7 @@ fn sync_in(
         report: SyncReport::default(),
         updated: HashSet::new(),
         asked: HashMap::new(),
+        incomplete: false,
     };
     if options.locked && options.update == Update::Nothing {
         // What the lock cannot vouch for is known from the manifests the user wrote, before
@@ -102,6 +106,14 @@ fn sync_in(
         s.check_locked(root, &mut HashSet::new())?;
     }
     s.visit(root, None, None)?;
+    if s.incomplete {
+        // The loader reports the manifest; the lock keeps what it pinned until the manifest
+        // can be read again (never written, whatever the mode).
+        s.report.notes.push(format!(
+            "`{LOCK_FILE}` was left as it is: a `{MANIFEST_FILE}` of the package or of a dependency could not be read"
+        ));
+        return Ok(s.report);
+    }
     if let Update::Names(names) = &options.update {
         for n in names {
             if !s.new.entries.contains_key(n) {
@@ -158,6 +170,10 @@ struct Sync<'a> {
     updated: HashSet<String>,
     /// The package that first asked for each git dependency of this run.
     asked: HashMap<String, String>,
+    /// A manifest in the tree could not be read into a `Manifest` (it does not parse, does
+    /// not validate, or is not there): what was collected is not the whole tree, so the lock
+    /// made from it would drop the entries of what was not seen. It is not written.
+    incomplete: bool,
 }
 
 impl Sync<'_> {
@@ -210,16 +226,21 @@ impl Sync<'_> {
             return Ok(());
         }
         let Ok(text) = std::fs::read_to_string(dir.join(MANIFEST_FILE)) else {
+            self.incomplete = true;
             return Ok(());
         };
         let manifest = match read_manifest(dir, &text)? {
             Ok(m) => m,
             // `run` and `check` leave the report to the loader, which shows the source line;
-            // `update` would otherwise write a lock without the dependencies it could not read.
+            // `update` fails here.
             Err(errors) if self.options.update != Update::Nothing => {
                 return Err(manifest_errors(dir, &text, &errors));
             }
-            Err(_) => return Ok(()),
+            // Nothing more is fetched below it, and the lock is not written (see `sync_in`).
+            Err(_) => {
+                self.incomplete = true;
+                return Ok(());
+            }
         };
         for dep in &manifest.dependencies {
             match &dep.source {

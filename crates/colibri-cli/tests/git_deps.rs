@@ -2840,3 +2840,56 @@ fn a_manifest_or_a_lock_is_never_taken_for_a_script() {
         assert_eq!(&fs::read_to_string(app.join("colibri.toml")).unwrap(), text);
     }
 }
+
+#[test]
+fn a_manifest_that_cannot_be_read_never_empties_or_rewrites_the_lock() {
+    let sb = Sandbox::new("broken_manifest_lock");
+    let lock = "# colibri.lock\n\n[git.lib]\nurl = \"https://example.invalid/lib.git\"\ntag = \"v1\"\ncommit = \"0123456789abcdef0123456789abcdef01234567\"\n";
+    let broken_git = "[package]\nname = \"p5\"\n[dependencies]\nlib = { git = \"https://example.invalid/lib.git\", tag = \"v1\" }\nbad = 1\n";
+    // The manifest of the package itself, then of a path dependency that holds the git one.
+    let app = package_with(&sb, "p5", broken_git);
+    sb.write("apps/p5/colibri.lock", lock);
+    let top = app.clone();
+    sb.write(
+        "apps/p6/colibri.toml",
+        "[package]\nname = \"p6\"\n[dependencies]\nsub = { path = \"../sub6\" }\n",
+    );
+    sb.write("apps/p6/main.colibri", "fn main() {}\n");
+    sb.write("apps/p6/colibri.lock", lock);
+    sb.write("apps/sub6/colibri.toml", broken_git);
+    sb.write("apps/sub6/lib.colibri", "pub fn f() {}\n");
+    // A path dependency whose manifest fails validation (an unknown key) is the same.
+    sb.write(
+        "apps/p7/colibri.toml",
+        "[package]\nname = \"p7\"\n[dependencies]\nsub = { path = \"../sub7\" }\n",
+    );
+    sb.write("apps/p7/main.colibri", "fn main() {}\n");
+    sb.write("apps/p7/colibri.lock", lock);
+    sb.write("apps/sub7/colibri.toml", "[package]\nname = \"sub7\"\nbogus = \"x\"\n[dependencies]\nlib = { git = \"https://example.invalid/lib.git\", tag = \"v1\" }\n");
+    sb.write("apps/sub7/lib.colibri", "pub fn f() {}\n");
+    for dir in [top, sb.path("apps/p6"), sb.path("apps/p7")] {
+        let lock_file = dir.join("colibri.lock");
+        for args in [
+            vec!["check"],
+            vec!["check", "--offline"],
+            vec!["run"],
+            vec!["test"],
+            vec!["update"],
+        ] {
+            let mut args = args;
+            if args[0] == "update" {
+                args.push("--path");
+            }
+            args.push(dir.to_str().unwrap());
+            let out = sb.colibri(&args);
+            let all = format!("{}{}", out.stdout, out.stderr);
+            assert_eq!(out.code, 1, "{args:?}: {all}");
+            assert!(!all.contains("panicked"), "{args:?}: {all}");
+            assert_eq!(
+                fs::read_to_string(&lock_file).unwrap(),
+                lock,
+                "{args:?}: {all}"
+            );
+        }
+    }
+}
