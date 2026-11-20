@@ -2431,6 +2431,33 @@ fn refused_without_the_secret(sb: &Sandbox, app: &Path, what: &str) {
     }
 }
 
+/// The `[features]` table of a manifest that also has a url with a password: the file is
+/// refused for the credential like any other, whatever is wrong or right in the table, and
+/// nothing printed has the password in it.
+#[test]
+fn a_feature_error_next_to_a_url_with_a_password_has_no_password_in_it() {
+    let sb = Sandbox::new("secret_features");
+    let cases = [
+        "[features]\n\"a b\" = []\n",
+        "[features]\nfast = [\"missing\"]\n",
+        "[features]\nfast = \"x\"\n",
+        "[features]\nfast = []\n",
+        "[features]\ndefault = [\"https://u:SeCrEt@h\"]\n",
+        "[features]\n\"https://u:SeCrEt@h\" = []\n",
+    ];
+    for (i, features) in cases.iter().enumerate() {
+        let dir = format!("apps/feat{i}");
+        sb.write(
+            &format!("{dir}/colibri.toml"),
+            &format!(
+                "[package]\nname = \"app\"\n\n[dependencies]\nx = {{ git = \"https://u:SeCrEt@h.invalid/r\" }}\n\n{features}"
+            ),
+        );
+        sb.write(&format!("{dir}/main.colibri"), "fn main() {}\n");
+        refused_without_the_secret(&sb, &sb.path(&dir), features);
+    }
+}
+
 /// What a manifest can hold in a value that is not a url: a credential in it is in no message
 /// about it, whatever the key and whatever the command, and the file is refused.
 #[test]
@@ -2458,6 +2485,11 @@ fn a_credential_in_any_value_of_a_manifest_is_in_no_message_about_it() {
         "lib = { git = \"https\\u003a//ghp_SeCrEtToKeN@github.com/me/r\" }",
         "lib = { git = \"https\\x3a//ghp_SeCrEtToKeN@github.com/me/r\" }",
         "lib = { git = \"ghp\\u003aSeCrEt@github.com\" }",
+        // Round 4: the features of a dependency, next to a url with a password.
+        "x = { git = \"https://u:SeCrEt@h.invalid/r\", features = [\"a b\"] }",
+        "x = { git = \"https://u:SeCrEt@h.invalid/r\", features = [\"os\"] }",
+        "x = { git = \"https://u:SeCrEt@h.invalid/r\", features = [\"fast\"], default-features = \"no\" }",
+        "x = { path = \"https://u:SeCrEt@h/r\", features = [3] }",
     ];
     for (i, dep) in cases.iter().enumerate() {
         let app = sb.app(&format!("secret{i}"), dep, &[]);
