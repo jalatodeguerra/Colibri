@@ -8,10 +8,10 @@ test "the default options are valid" {
     assert_eq(httpd_impl.options_fault(httpd_impl.Options {}), none)
 }
 
-test "zero is valid for every limit and every timeout, and 1 is the least for max_connections" {
+test "zero is valid for every limit but the two line limits (1 is their least) and every timeout, and 1 is the least for max_connections" {
     let o = httpd_impl.Options {
-        max_request_line: 0,
-        max_header_bytes: 0,
+        max_request_line: 1,
+        max_header_bytes: 1,
         max_headers: 0,
         max_body_bytes: 0,
         header_timeout: 0.0,
@@ -22,6 +22,15 @@ test "zero is valid for every limit and every timeout, and 1 is the least for ma
         max_connections: 1,
     }
     assert_eq(httpd_impl.options_fault(o), none)
+}
+
+test "the line limits are 1 to 1 GiB, what a connection's line limit takes" {
+    assert(fault(httpd_impl.Options { max_request_line: 0 }).contains("max_request_line"))
+    assert(fault(httpd_impl.Options { max_header_bytes: 0 }).contains("max_header_bytes"))
+    assert(fault(httpd_impl.Options { max_header_bytes: 1073741825 }).contains("1073741824"))
+    assert(fault(httpd_impl.Options { max_request_line: 2000000000 }).contains("max_request_line"))
+    let top = httpd_impl.Options { max_request_line: 1073741824, max_header_bytes: 1073741824 }
+    assert_eq(httpd_impl.options_fault(top), none)
 }
 
 test "a negative limit is refused, and the message names the field" {

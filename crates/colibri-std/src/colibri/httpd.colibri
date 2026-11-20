@@ -38,7 +38,7 @@ import std.time
 pub type Handler = fn(Request) -> Result[Response]
 
 /// The limits and timeouts of a server. A timeout is in seconds, and a limit in bytes unless it
-/// says otherwise. `listen` is given one and refuses a negative limit.
+/// says otherwise. `listen` is given one and refuses a negative limit, and a line limit outside 1 to 1 GiB.
 pub struct Options {
     /// The request line without its line end. A longer line is answered with 414.
     pub max_request_line: int = 8192
@@ -2045,6 +2045,17 @@ fn limit_fault(name: str, value: int) -> str? {
     return none
 }
 
+/// The most `net.Conn.set_line_limit` takes, which the two line limits are given to.
+const MAX_LINE_LIMIT: int = 1073741824
+
+/// A limit that is the line limit of a connection: 1 to `MAX_LINE_LIMIT`.
+fn line_limit_fault(name: str, value: int) -> str? {
+    if value < 1 || value > MAX_LINE_LIMIT {
+        return some("httpd: Options.{name} is {value}: use 1 to {MAX_LINE_LIMIT} bytes")
+    }
+    return none
+}
+
 fn time_fault(name: str, value: float) -> str? {
     if value.is_nan() || value < 0.0 || value >= 1.0e9 {
         return some(
@@ -2057,8 +2068,8 @@ fn time_fault(name: str, value: float) -> str? {
 /// The first thing wrong with `options`, naming the field, or `none`.
 fn options_fault(o: Options) -> str? {
     let found = [
-        limit_fault("max_request_line", o.max_request_line),
-        limit_fault("max_header_bytes", o.max_header_bytes),
+        line_limit_fault("max_request_line", o.max_request_line),
+        line_limit_fault("max_header_bytes", o.max_header_bytes),
         limit_fault("max_headers", o.max_headers),
         limit_fault("max_body_bytes", o.max_body_bytes),
         time_fault("header_timeout", o.header_timeout),

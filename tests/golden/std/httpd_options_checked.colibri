@@ -10,6 +10,8 @@ fn main() {
         httpd.Options { header_timeout: -0.5 },
         httpd.Options { write_timeout: 2.0e9 },
         httpd.Options { max_connections: 0 },
+        httpd.Options { max_request_line: 0 },
+        httpd.Options { max_header_bytes: 2000000000 },
     ]
     for options in bad {
         match httpd.listen("127.0.0.1:0", options) {
@@ -23,9 +25,11 @@ fn main() {
     }
 }
 
-// expect: httpd: Options.max_request_line is -1: it cannot be negative
+// expect: httpd: Options.max_request_line is -1: use 1 to 1073741824 bytes
 // expect: httpd: Options.max_headers is -1: it cannot be negative
 // expect: httpd: Options.header_timeout is -0.5: use 0 or more and under 1e9 seconds (0 is none)
 // expect: httpd: Options.write_timeout is 2000000000.0: use 0 or more and under 1e9 seconds (0 is none)
 // expect: httpd: Options.max_connections is 0: it must be at least 1
+// expect: httpd: Options.max_request_line is 0: use 1 to 1073741824 bytes
+// expect: httpd: Options.max_header_bytes is 2000000000: use 1 to 1073741824 bytes
 // expect: listening: true
