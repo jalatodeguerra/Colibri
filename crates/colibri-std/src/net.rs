@@ -3870,6 +3870,51 @@ mod tests {
         }
     }
 
+    /// The same for a write: `close` of a connection that a write waits on (the peer reads
+    /// nothing, so the write fills the buffers and waits for room) releases the descriptor by the
+    /// time it returns. This needs the write slot's wake in `close`: the poller's hold on the
+    /// socket goes with the resolved cell, and without that nothing resolves it before `close`
+    /// returns. (A write wait may end `Ready` on its own on some systems, and arm again: the
+    /// closer waits for a moment when the write is armed, and does not need it to stay quiet.)
+    #[test]
+    fn close_releases_the_socket_of_a_connection_that_a_write_waits_on() {
+        for _ in 0..20 {
+            let (c, peer) = conn_pair();
+            let sh = Arc::clone(&c.sh);
+            let weak = Arc::downgrade(&sh.sock.get().expect("open"));
+            let (error, released) = with_cx(move |cx| {
+                let poller = cx
+                    .state_mut::<poll::NetState>()
+                    .unwrap()
+                    .poller()
+                    .expect("the poller starts");
+                let closer = {
+                    let sh = Arc::clone(&sh);
+                    std::thread::spawn(move || {
+                        let began = Instant::now();
+                        while poller.counts() != (1, 1) || weak.strong_count() != 2 {
+                            assert!(
+                                began.elapsed() < Duration::from_secs(30),
+                                "the write never waited"
+                            );
+                            std::thread::yield_now();
+                        }
+                        sh.close();
+                        weak.strong_count() == 0
+                    })
+                };
+                let ticket = sh.writes.ticket();
+                let error = sh
+                    .write_call(cx, ticket, Limit::NONE, &vec![1u8; 64 << 20])
+                    .map_err(|e| variant(&e));
+                (error, closer.join().unwrap())
+            });
+            drop(peer);
+            assert_eq!(error, Err("Closed".to_string()));
+            assert!(released, "the socket was still held when close returned");
+        }
+    }
+
     /// Makes the next successful read or write of `sh` use the burst budget up.
     fn nearly_spent(sh: &Shared) {
         sh.burst.reset();
