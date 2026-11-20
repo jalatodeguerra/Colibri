@@ -2338,52 +2338,90 @@ fn output_within(source: String, limit: Duration) -> String {
     }
 }
 
+/// A Rust peer for the hook tests: accepts one connection and, when told, writes `one\ntwo\n` to
+/// it; then it reads what the script writes until the end of the stream. The data is sent when
+/// the script calls `release()`, a host function that is not a scheduling point, so a coroutine
+/// that waits for it cannot finish its read before the next thing the script does.
+fn hook_peer() -> (String, mpsc::Sender<()>, thread::JoinHandle<String>) {
+    let (listener, addr) = rust_listener();
+    let (tx, rx) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        rx.recv_timeout(LIMIT).unwrap();
+        s.write_all(b"one\ntwo\n").unwrap();
+        let mut got = String::new();
+        s.read_to_string(&mut got).unwrap();
+        got
+    });
+    (addr, tx, peer)
+}
+
+/// Runs `source` like `output_within`, with `release()` registered.
+fn output_within_released(source: String, release: mpsc::Sender<()>) -> String {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut vm, out) = vm();
+        vm.register_fn("release", move || release.send(()).unwrap())
+            .unwrap();
+        let result = run(&mut vm, &source).map(|()| out.contents());
+        let _ = tx.send(result.map_err(|e| e.to_string()));
+    });
+    match rx.recv_timeout(LIMIT) {
+        Ok(Ok(text)) => text,
+        Ok(Err(e)) => panic!("{e}"),
+        Err(_) => panic!("the program did not finish within {LIMIT:?}: it hangs"),
+    }
+}
+
 /// A `Drop` hook cannot suspend, so it blocks the interpreter thread. A coroutine that has a
 /// read outstanding on the same connection holds the turn until it resumes, which it cannot do
 /// while the hook blocks: the hook's read used to wait for ever. It is an error at once now.
 #[test]
 fn a_drop_hook_that_reads_while_a_coroutine_reads_gets_an_error_not_a_hang() {
-    let out = output_within(
-        r#"import net
+    let (addr, release, peer) = hook_peer();
+    let out = output_within_released(
+        format!(
+            r#"import net
 
-class Guard { conn: net.Conn }
+class Guard {{ conn: net.Conn }}
 
-impl Drop for Guard {
-    fn drop(self) {
-        match self.conn.read_line() {
-            ok(line) => print("drop hook read: {line}")
-            err(e) => {
-                print("drop hook: {e.as[net.Error]().expect("a net error")}")
+impl Drop for Guard {{
+    fn drop(self) {{
+        match self.conn.read_line() {{
+            ok(line) => print("drop hook read: {{line}}")
+            err(e) => {{
+                print("drop hook: {{e.as[net.Error]().expect("a net error")}}")
                 print(e.message().contains("already waiting in another coroutine"))
                 print(e.message().contains("`Drop` hook"))
-            }
-        }
-    }
-}
+            }}
+        }}
+    }}
+}}
 
-fn reader(c: net.Conn) {
-    print("coroutine read: {c.read_line()}")
-}
+fn reader(c: net.Conn) {{
+    print("coroutine read: {{c.read_line()}}")
+}}
 
-fn main() -> Result[()] {
-    let l = net.listen("127.0.0.1:0")?
-    let c = net.connect(l.addr())?
-    let s = l.accept()?
+fn main() -> Result[()] {{
+    let c = net.connect("{addr}")?
     let r = go reader(c)
     task.tick(0.0)
-    s.write("one\ntwo\n")?
-    var g: Option[Guard] = some(Guard { conn: c })
+    // The peer sends now; nothing on this fiber lets the coroutine run before the hook does.
+    release()
+    var g: Option[Guard] = some(Guard {{ conn: c }})
     g = none
     r.join()
     // Nothing was lost: the coroutine got the first line, the next read gets the second.
-    print("then: {c.read_line()}")
+    print("then: {{c.read_line()}}")
     print("done")
     return ok(())
-}
+}}
 "#
-        .to_string(),
-        LIMIT,
+        ),
+        release,
     );
+    peer.join().unwrap();
     assert_eq!(
         out,
         "drop hook: Other\ntrue\ntrue\ncoroutine read: ok(some(\"one\"))\nthen: ok(some(\"two\"))\ndone\n"
@@ -2441,7 +2479,7 @@ fn main() -> Result[()] {
 /// on the worker).
 #[test]
 fn a_drop_hook_reads_normally_when_nothing_waits_and_writes_while_a_coroutine_reads() {
-    let hook = |body: &str, spawned: &str, after: &str| {
+    let program = |addr: &str, body: &str, spawned: &str| {
         format!(
             r#"import net
 
@@ -2458,45 +2496,48 @@ fn reader(c: net.Conn) {{
 }}
 
 fn main() -> Result[()] {{
-    let l = net.listen("127.0.0.1:0")?
-    let c = net.connect(l.addr())?
-    let s = l.accept()?
+    let c = net.connect("{addr}")?
     let r = go {spawned}
     task.tick(0.0)
-    s.write("one\ntwo\n")?
+    release()
     var g: Option[Guard] = some(Guard {{ conn: c }})
     g = none
     r.join()
-    {after}
     print("done")
+    c.close()
     return ok(())
 }}
 "#
         )
     };
-    let out = output_within(
-        hook(
+    let (addr, release, peer) = hook_peer();
+    let out = output_within_released(
+        program(
+            &addr,
             r#"print("drop hook reads: {self.conn.read_line()}")"#,
             r#"fn() { print("no read here") }()"#,
-            "",
         ),
-        LIMIT,
+        release,
     );
+    peer.join().unwrap();
     assert_eq!(
         out,
         "no read here\ndrop hook reads: ok(some(\"one\"))\ndone\n"
     );
-    // A hook that writes while a coroutine reads: the write goes out whole and in order.
-    let out = output_within(
-        hook(
+    // A hook that writes while a coroutine reads: the write goes out whole, and the peer gets it
+    // (it reads to the end of the stream, which `close` brings).
+    let (addr, release, peer) = hook_peer();
+    let out = output_within_released(
+        program(
+            &addr,
             r#"print("drop hook writes: {self.conn.write("x\n").is_ok()}")"#,
             "reader(c)",
-            r#"print("peer got: {s.read_line()}")"#,
         ),
-        LIMIT,
+        release,
     );
+    assert_eq!(peer.join().unwrap(), "x\n");
     assert_eq!(
         out,
-        "drop hook writes: true\ncoroutine read: ok(some(\"one\"))\npeer got: ok(some(\"x\"))\ndone\n"
+        "drop hook writes: true\ncoroutine read: ok(some(\"one\"))\ndone\n"
     );
 }
