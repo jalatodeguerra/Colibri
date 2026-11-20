@@ -4550,6 +4550,22 @@ mod tests {
         peer.write_all(b"three").unwrap();
         let shared = Arc::clone(&sh);
         let failed = with_cx(move |cx| {
+            // The five bytes are in the buffer before the call that times out is made (a call
+            // that waits for them and takes none), so the result does not depend on how fast
+            // the system delivers them.
+            let ticket = shared.reads.ticket();
+            shared
+                .read_call(
+                    cx,
+                    ticket,
+                    close_test_limit(),
+                    |r| match r.available().len() {
+                        5.. => Probe::Ready,
+                        have => Probe::Pending(5 - have),
+                    },
+                    |r| Ok(r.take(0)),
+                )
+                .unwrap();
             let ticket = shared.reads.ticket();
             let limit = Limit {
                 deadline: Some(Instant::now() + Duration::from_millis(150)),
@@ -4639,18 +4655,31 @@ mod tests {
             let first = until_call(cx, &sh, b"\r\n", 100, Limit::NONE);
             assert!(first.is_err(), "the wait was cancelled");
             let empty = seen.lock().unwrap().take();
-            // Half a delimiter arrives; the read waits again with it buffered.
-            peer.write_all(b"ab\r").unwrap();
+            // Half a delimiter arrives; the read waits again with it buffered. The order is the
+            // slowest one a system can have, and the test makes it so: the call finds nothing and
+            // waits (the first arm), the bytes are sent only then, the wake reads them, they are
+            // half a match, and the read waits again (the second arm), which is where the buffer
+            // is looked at. Whether the system delivers before the first try or after it decides
+            // nothing.
             let shared = Arc::clone(&sh);
             let probe = Arc::clone(&seen);
-            arm_probe::set_hook(move |cell| {
+            let mut sender = peer.try_clone().unwrap();
+            let mut arms = 0;
+            arm_probe::set_hook_for_every_arm(move |cell| {
+                arms += 1;
+                if arms == 1 {
+                    assert!(shared.reader.lock().unwrap().available().is_empty());
+                    sender.write_all(b"ab\r").unwrap();
+                    return;
+                }
                 let r = shared.reader.lock().unwrap();
                 *probe.lock().unwrap() = Some(r.data.capacity());
                 assert_eq!(r.available(), b"ab\r", "the bytes were let go of");
                 drop(r);
                 cell.fire(poll::Why::Cancelled);
             });
-            let second = until_call(cx, &sh, b"\r\n", 100, Limit::NONE);
+            let second = until_call(cx, &sh, b"\r\n", 100, close_test_limit());
+            arm_probe::set_hook_for_every_arm(|_| {});
             assert!(second.is_err(), "the wait was cancelled");
             let partial = seen.lock().unwrap().take();
             let left = sh.reader.lock().unwrap().available().to_vec();
@@ -4674,6 +4703,21 @@ mod tests {
         let (c, mut peer) = conn_pair();
         peer.write_all(b"one\r\ntwo\r\nthree").unwrap();
         let (armed, got) = with_cx(move |cx| {
+            // The bytes are in the buffer before the calls under test are made (a call that waits
+            // for all fifteen and takes none), so that a system that delivers late cannot make
+            // them wait.
+            let ticket = c.sh.reads.ticket();
+            c.sh.read_call(
+                cx,
+                ticket,
+                close_test_limit(),
+                |r| match r.available().len() {
+                    15.. => Probe::Ready,
+                    have => Probe::Pending(15 - have),
+                },
+                |r| Ok(r.take(0)),
+            )
+            .unwrap();
             let armed = Arc::new(Mutex::new(0usize));
             let count = Arc::clone(&armed);
             arm_probe::set_hook_for_every_arm(move |cell| {
