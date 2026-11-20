@@ -1044,13 +1044,17 @@ fn last_at_like(line: &str) -> Option<(usize, usize)> {
         if b[i] == b'@' {
             last = Some((i, i + 1));
         } else if b[i] == b'\\' {
-            let rest = &line[i + 1..];
-            let low = rest.to_ascii_lowercase();
-            let len = if low.starts_with("u0040") {
+            // Compared in place: a copy of the rest of the line per backslash would make a
+            // long line cost the square of its length.
+            let at = |s: &[u8]| {
+                b.get(i + 1..i + 1 + s.len())
+                    .is_some_and(|x| x.eq_ignore_ascii_case(s))
+            };
+            let len = if at(b"u0040") {
                 Some(6)
-            } else if low.starts_with("u00000040") {
+            } else if at(b"u00000040") {
                 Some(10)
-            } else if low.starts_with("x40") {
+            } else if at(b"x40") {
                 Some(4)
             } else {
                 None
@@ -1650,6 +1654,29 @@ mod tests {
         ] {
             assert!(userinfo_problem(good).is_none(), "{good}");
         }
+    }
+
+    #[test]
+    fn masking_a_very_long_line_of_backslashes_is_linear() {
+        // A comment of a million backslashes and an `@`: each backslash used to copy the rest
+        // of the line. The bound is generous; the quadratic scan took minutes.
+        let line = format!("# {}@x\n", "\\".repeat(1_000_000));
+        let text = format!("[package]\nname = \"x\"\n{line}");
+        let start = std::time::Instant::now();
+        let masked = mask_source_text(&text);
+        assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
+        assert_eq!(masked.len(), text.len());
+        assert!(
+            masked.starts_with("[package]\nname = \"x\"\n"),
+            "{}",
+            &masked[..30]
+        );
+        // And the same line where the text does not parse.
+        let broken = format!("= = {line}");
+        let start = std::time::Instant::now();
+        let masked = mask_source_text(&broken);
+        assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
+        assert_eq!(masked.len(), broken.len());
     }
 
     #[test]
