@@ -1976,9 +1976,12 @@ mod tests {
         eprintln!("poller test: the closer won {closed} of 8000 rounds");
     }
 
-    /// A listener that the table was the last holder of is closed when the close returns: its
-    /// port can be bound again at once, also when a connection arrives (an event for the poller
-    /// thread to take) while the closer comes.
+    /// A listener that the table was the last holder of is closed when the close returns, also
+    /// when a connection arrives (an event for the poller thread to take) while the closer
+    /// comes. "Closed" is that nobody holds the listener any more: the test's own reference is
+    /// dropped before the race, so the table's is the last, and its drop is the close of the
+    /// descriptor. (The port is not bound again to look: a connection that arrived is torn down
+    /// by the system for a while after the close, and the port stays in use meanwhile.)
     #[test]
     fn a_listener_the_table_held_is_closed_when_the_close_returns() {
         let p = poller();
@@ -1986,6 +1989,7 @@ mod tests {
         for round in 0..4000u64 {
             let listener = Arc::new(TcpListener::bind("127.0.0.1:0").unwrap());
             let addr = listener.local_addr().unwrap();
+            let held = Arc::downgrade(&listener);
             let (cell, rx) = cell();
             p.arm(&listener, Dir::Read, None, &cell).unwrap();
             drop(listener);
@@ -2008,11 +2012,16 @@ mod tests {
             spin(jitter(round));
             if cell.fire(Why::Closed) {
                 closed += 1;
-                TcpListener::bind(addr)
-                    .unwrap_or_else(|e| panic!("round {round}: the port is still held: {e}"));
+                assert_eq!(
+                    held.strong_count(),
+                    0,
+                    "round {round}: the table held the listener after the close returned"
+                );
                 assert_eq!(expect(&rx), Why::Closed);
             } else {
+                // The event won: the table's hold was released before the callback ran.
                 assert_eq!(expect(&rx), Why::Ready);
+                assert_eq!(held.strong_count(), 0, "round {round}");
             }
             client.join().unwrap();
         }
