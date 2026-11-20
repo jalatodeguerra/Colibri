@@ -2122,6 +2122,44 @@ fn main() -> Result[()] {
     assert_eq!(out, "AddrInUse\nAddrInUse\ntrue\n");
 }
 
+/// A server that closes a connection first leaves the port in `TIME_WAIT` on its side, and the
+/// port must still be listenable again after the listener is closed: `kvserver` does this on
+/// SHUTDOWN and `--idle`. On Linux and macOS `SO_REUSEADDR` allows it; on Windows `listen` sets
+/// `SO_EXCLUSIVEADDRUSE`, whose rule for a port with connections of its own still around is
+/// what this test checks (it has not been run on Windows by the author of this change). No
+/// retry: the restart must work at once.
+#[test]
+fn a_port_can_be_listened_on_again_after_the_server_closed_a_connection_first() {
+    let out = output_within(
+        r#"import net
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let addr = l.addr()
+    let c = net.connect(addr)?
+    let s = l.accept()?
+    s.write("bye\n")?
+    // The server side closes first.
+    s.close()
+    print(c.read_line()?)
+    print(c.read_line()?)
+    c.close()
+    l.close()
+    let again = net.listen(addr)?
+    print(again.addr() == addr)
+    // And it serves on the port it got back.
+    let c2 = net.connect(addr)?
+    let s2 = again.accept()?
+    c2.write("hi\n")?
+    print(s2.read_line()?)
+    return ok(())
+}
+"#
+        .to_string(),
+        LIMIT,
+    );
+    assert_eq!(out, "some(\"bye\")\nnone\ntrue\nsome(\"hi\")\n");
+}
 /// Whether this machine has IPv6 at all: it can bind `[::1]`. A machine without it fails that
 /// with "address not available" or "address family not supported" (EAFNOSUPPORT: 97 on Linux,
 /// 47 on macOS, WSAEAFNOSUPPORT 10047 on Windows); the test is skipped then, and says so. Any
