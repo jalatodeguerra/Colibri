@@ -894,3 +894,58 @@ fn main() -> Result[()] {{
         assert_eq!(out.contents(), "some(\"one\")\n");
     }
 }
+
+/// A `Drop` hook cannot suspend, so its call blocks the interpreter thread, which is the shape
+/// that deadlocks a `net.Conn` read behind a coroutine's read (see `tests/net.rs`). A file does
+/// not: the ticket of an operation is dropped on its background thread, so the hook's read
+/// waits for the coroutine's one to finish there, and does not need the coroutine to resume.
+/// The program runs on a thread with a time bound, so a hang fails the test.
+#[test]
+fn a_drop_hook_reads_a_handle_while_a_coroutine_reads_it_without_a_hang() {
+    let scratch = Scratch::new("drophook");
+    let path = scratch.file("lines.txt");
+    std::fs::write(&path, "one\ntwo\n").unwrap();
+    let source = format!(
+        r#"import fs
+
+class Guard {{ file: fs.File }}
+
+impl Drop for Guard {{
+    fn drop(self) {{
+        print("drop hook reads: {{self.file.read_line()}}")
+    }}
+}}
+
+fn reader(f: fs.File) {{
+    print("coroutine reads: {{f.read_line()}}")
+}}
+
+fn main() -> Result[()] {{
+    let f = fs.open("{path}")?
+    let r = go reader(f)
+    task.tick(0.0)
+    var g: Option[Guard] = some(Guard {{ file: f }})
+    g = none
+    r.join()
+    print("done")
+    return ok(())
+}}
+"#
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut vm, out) = vm();
+        let result = run(&mut vm, &source).map(|()| out.contents());
+        let _ = tx.send(result.map_err(|e| e.to_string()));
+    });
+    let out = match rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(Ok(text)) => text,
+        Ok(Err(e)) => panic!("{e}"),
+        Err(_) => panic!("the program did not finish within 30 s: it hangs"),
+    };
+    // The coroutine's read was called first, so it has the first line; the hook has the second.
+    assert_eq!(
+        out,
+        "drop hook reads: ok(some(\"two\"))\ncoroutine reads: ok(some(\"one\"))\ndone\n"
+    );
+}

@@ -2015,3 +2015,185 @@ fn the_interface_has_connect_timeout_and_no_cancelled() {
     );
     assert!(!text.contains("Cancelled"), "{text}");
 }
+
+// ---- a read or accept that cannot suspend ----
+
+/// Runs `source` on a thread of its own and waits for it at most `limit`, so that a program that
+/// hangs fails the test instead of hanging it (the thread that hangs is left behind; the process
+/// ends when the tests do).
+fn output_within(source: String, limit: Duration) -> String {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut vm, out) = vm();
+        let result = run(&mut vm, &source).map(|()| out.contents());
+        let _ = tx.send(result.map_err(|e| e.to_string()));
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Ok(text)) => text,
+        Ok(Err(e)) => panic!("{e}"),
+        Err(_) => panic!("the program did not finish within {limit:?}: it hangs"),
+    }
+}
+
+/// A `Drop` hook cannot suspend, so it blocks the interpreter thread. A coroutine that has a
+/// read outstanding on the same connection holds the turn until it resumes, which it cannot do
+/// while the hook blocks: the hook's read used to wait for ever. It is an error at once now.
+#[test]
+fn a_drop_hook_that_reads_while_a_coroutine_reads_gets_an_error_not_a_hang() {
+    let out = output_within(
+        r#"import net
+
+class Guard { conn: net.Conn }
+
+impl Drop for Guard {
+    fn drop(self) {
+        match self.conn.read_line() {
+            ok(line) => print("drop hook read: {line}")
+            err(e) => {
+                print("drop hook: {e.as[net.Error]().expect("a net error")}")
+                print(e.message().contains("already waiting in another coroutine"))
+                print(e.message().contains("`Drop` hook"))
+            }
+        }
+    }
+}
+
+fn reader(c: net.Conn) {
+    print("coroutine read: {c.read_line()}")
+}
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let c = net.connect(l.addr())?
+    let s = l.accept()?
+    let r = go reader(c)
+    task.tick(0.0)
+    s.write("one\ntwo\n")?
+    var g: Option[Guard] = some(Guard { conn: c })
+    g = none
+    r.join()
+    // Nothing was lost: the coroutine got the first line, the next read gets the second.
+    print("then: {c.read_line()}")
+    print("done")
+    return ok(())
+}
+"#
+        .to_string(),
+        LIMIT,
+    );
+    assert_eq!(
+        out,
+        "drop hook: Other\ntrue\ntrue\ncoroutine read: ok(some(\"one\"))\nthen: ok(some(\"two\"))\ndone\n"
+    );
+}
+
+/// The same for `accept`: a hook cannot take a connection while a coroutine waits in `accept` on
+/// the same listener (the coroutine's `accept` still works afterwards).
+#[test]
+fn a_drop_hook_that_accepts_while_a_coroutine_accepts_gets_an_error_not_a_hang() {
+    let out = output_within(
+        r#"import net
+
+class Guard { listener: net.Listener }
+
+impl Drop for Guard {
+    fn drop(self) {
+        match self.listener.accept() {
+            ok(_) => print("drop hook accepted")
+            err(e) => {
+                print("drop hook: {e.as[net.Error]().expect("a net error")}")
+                print(e.message().contains("already waiting in another coroutine"))
+            }
+        }
+    }
+}
+
+fn acceptor(l: net.Listener) {
+    let c = l.accept().expect("accepted")
+    c.write("hello\n").expect("written")
+    c.close()
+}
+
+fn main() -> Result[()] {
+    let l = net.listen("127.0.0.1:0")?
+    let r = go acceptor(l)
+    task.tick(0.0)
+    var g: Option[Guard] = some(Guard { listener: l })
+    g = none
+    let c = net.connect(l.addr())?
+    r.join()
+    print(c.read_line()?)
+    print("done")
+    return ok(())
+}
+"#
+        .to_string(),
+        LIMIT,
+    );
+    assert_eq!(out, "drop hook: Other\ntrue\nsome(\"hello\")\ndone\n");
+}
+
+/// The controls: with no coroutine read outstanding the hook reads normally, and a write in the
+/// hook works while a coroutine reads (writes have their own queue, and their turn is given back
+/// on the worker).
+#[test]
+fn a_drop_hook_reads_normally_when_nothing_waits_and_writes_while_a_coroutine_reads() {
+    let hook = |body: &str, spawned: &str, after: &str| {
+        format!(
+            r#"import net
+
+class Guard {{ conn: net.Conn }}
+
+impl Drop for Guard {{
+    fn drop(self) {{
+        {body}
+    }}
+}}
+
+fn reader(c: net.Conn) {{
+    print("coroutine read: {{c.read_line()}}")
+}}
+
+fn main() -> Result[()] {{
+    let l = net.listen("127.0.0.1:0")?
+    let c = net.connect(l.addr())?
+    let s = l.accept()?
+    let r = go {spawned}
+    task.tick(0.0)
+    s.write("one\ntwo\n")?
+    var g: Option[Guard] = some(Guard {{ conn: c }})
+    g = none
+    r.join()
+    {after}
+    print("done")
+    return ok(())
+}}
+"#
+        )
+    };
+    let out = output_within(
+        hook(
+            r#"print("drop hook reads: {self.conn.read_line()}")"#,
+            r#"fn() { print("no read here") }()"#,
+            "",
+        ),
+        LIMIT,
+    );
+    assert_eq!(
+        out,
+        "no read here\ndrop hook reads: ok(some(\"one\"))\ndone\n"
+    );
+    // A hook that writes while a coroutine reads: the write goes out whole and in order.
+    let out = output_within(
+        hook(
+            r#"print("drop hook writes: {self.conn.write("x\n").is_ok()}")"#,
+            "reader(c)",
+            r#"print("peer got: {s.read_line()}")"#,
+        ),
+        LIMIT,
+    );
+    assert_eq!(
+        out,
+        "drop hook writes: true\ncoroutine read: ok(some(\"one\"))\npeer got: ok(some(\"x\"))\ndone\n"
+    );
+}

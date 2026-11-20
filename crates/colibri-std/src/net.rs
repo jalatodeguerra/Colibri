@@ -45,6 +45,15 @@
 //! condition variable until the turn comes, the object is closed, its coroutine is cancelled
 //! (a hook of the cancel token wakes it) or its deadline passes: it does not tick.
 //!
+//! # Where nothing else can run
+//!
+//! A call made from a `Drop` hook or a callback of a host function cannot suspend: it blocks the
+//! interpreter thread (`Ctx::can_suspend` is `false`). A read (or accept) holds its turn until
+//! its coroutine has resumed and taken the result, so one that is called there while an earlier
+//! read (accept) is outstanding would wait for a coroutine that can never resume. It returns a
+//! `net.Error.Other` at once instead. A write takes no turn that outlives its worker, and
+//! `close_write` waits only for writes, so neither has the problem.
+//!
 //! # A write that stops part way breaks the write side
 //!
 //! A write that is cancelled, times out or fails after it sent some of its data but not all
@@ -638,6 +647,12 @@ impl Turns {
     fn wake(&self) {
         drop(self.lock());
         self.advanced.notify_all();
+    }
+
+    /// Whether an operation holds the queue or waits in it.
+    fn busy(&self) -> bool {
+        let st = self.lock();
+        st.next != st.serving
     }
 
     /// A ticket that has its turn already, if nobody is ahead of it.
@@ -1308,6 +1323,15 @@ fn on_read<R>(
             Probe::Pending(_) => {}
         }
     }
+    // A read that cannot suspend (a `Drop` hook, a callback) blocks the interpreter thread, so a
+    // coroutine that waits ahead of it can never resume and give up its turn: the two would wait
+    // for each other for ever. It is refused instead.
+    if !cx.can_suspend() && !sh.closed.load(Ordering::SeqCst) && sh.reads.busy() {
+        return Err(Kind::Other.error(format!(
+            "cannot read from `{}`: a read of this connection is already waiting in another coroutine, and it cannot finish while a `Drop` hook or a callback waits (read in the coroutine, or before that read starts)",
+            sh.peer
+        )));
+    }
     let ticket = sh.reads.ticket();
     let limit = sh.limit();
     let worker = Arc::clone(&sh);
@@ -1739,8 +1763,19 @@ impl HostType for Listener {
         // the next `accept`.
         d.method("accept", [], |cx: &mut Ctx, this: &Listener| {
             let sh = Arc::clone(&this.sh);
+            // As for a read: an accept that blocks the interpreter thread cannot wait for a
+            // coroutine that holds its turn until it resumes.
+            if !cx.can_suspend() && !sh.closed.load(Ordering::SeqCst) && sh.accepts.busy() {
+                return Err(Kind::Other.error(format!(
+                    "cannot accept on `{}`: an accept on this listener is already waiting in another coroutine, and it cannot finish while a `Drop` hook or a callback waits (accept in the coroutine, or before that accept starts)",
+                    sh.addr
+                )));
+            }
             let ticket = sh.accepts.ticket();
-            let accepted = cx.run_async_cancellable(move |token| sh.accept(ticket, token))?;
+            let addr = sh.addr.clone();
+            let accepted = cx
+                .try_run_async_cancellable(move |token| sh.accept(ticket, token))
+                .map_err(|why| no_thread("accept on", &addr, &why))??;
             Ok::<Conn, TypedError>(Conn::new(accepted.into_stream()))
         });
         // Stops listening: the port is free again, and an `accept` that waits ends with
