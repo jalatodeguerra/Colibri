@@ -361,3 +361,69 @@ fn a_definition_that_is_left_out_here_cannot_replace_the_one_that_is_in_the_prog
     assert_eq!(err, "");
     assert_eq!(out, "= 1 : int\n", "{out}");
 }
+
+/// Runs `colibri repl <args>` with `input` on its standard input.
+fn repl_with(args: &[&str], input: &str) -> (bool, String, String) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+        .arg("repl")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("colibri starts");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.as_bytes())
+        .expect("input");
+    let out = child.wait_with_output().expect("colibri ends");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn the_repl_takes_the_build_flags_of_run() {
+    let program = "@when(fast)\nfn speed() -> str => \"fast\"\n@when(!fast)\nfn speed() -> str => \"slow\"\n@when(debug)\nfn mode() -> str => \"debug\"\n@when(!debug)\nfn mode() -> str => \"release\"\nspeed()\nmode()\n";
+    // Without the flags `fast` is not a name at all, and the build is a debug build.
+    let (ok, out, err) = repl_with(&[], "@when(debug)\nfn mode() -> str => \"debug\"\nmode()\n");
+    assert!(ok, "{err}");
+    assert_eq!(out, "= \"debug\" : str\n", "{err}");
+    let (ok, out, err) = repl_with(&["--feature", "fast", "--release"], program);
+    assert!(ok, "{err}");
+    assert_eq!(out, "= \"fast\" : str\n= \"release\" : str\n", "{err}");
+    // More than once, and with the `=` form; no manifest, so any name is a feature.
+    let (ok, out, err) = repl_with(
+        &[
+            "--feature=fast",
+            "--feature",
+            "other",
+            "--no-default-features",
+        ],
+        "@when(other)\nfn o() -> int => 1\no()\n",
+    );
+    assert!(ok, "{err}");
+    assert_eq!(out, "= 1 : int\n", "{err}");
+}
+
+#[test]
+fn the_hint_for_a_missing_feature_works_in_the_repl() {
+    let (_, _, err) = repl_with(&[], "@when(fast)\nfn f() -> int => 1\nf()\n");
+    assert!(err.contains("pass `--feature fast`"), "{err}");
+    let (_, out, err) = repl_with(
+        &["--feature", "fast"],
+        "@when(fast)\nfn f() -> int => 1\nf()\n",
+    );
+    assert_eq!(out, "= 1 : int\n", "{err}");
+    // A name that means something already is refused as it is for `run`.
+    let out = Command::new(env!("CARGO_BIN_EXE_colibri"))
+        .args(["repl", "--feature", "debug"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}

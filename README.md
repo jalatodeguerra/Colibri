@@ -438,7 +438,7 @@ fn sum(n: int) -> int {
 fn main() {
     log("starting")
     print(sum(100)) // 5050
-    print(double(4)) // 8, and a warning on the line above
+    print(double(4)) // 8, with a warning on this line
 }
 ```
 
@@ -476,7 +476,7 @@ colibri> sq(7)
 
 `:help` lists the commands, such as `:type <expr>` and `:load <file>`. A `@deprecated` or
 `@when` line waits for the declaration under it, a use of a deprecated item warns with its
-entry, and two `@when` variants of one name are both kept.
+entry, and two `@when` variants of one name are both kept. `colibri repl` takes `--feature NAME`, `--no-default-features` and `--release`, as `run` does.
 
 ## Commands
 

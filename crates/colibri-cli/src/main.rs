@@ -134,7 +134,10 @@ enum Command {
     /// Start an interactive session: type statements, expressions and declarations; values
     /// and declarations persist (`:help` lists the commands; input piped to stdin is read
     /// line by line without a prompt)
-    Repl,
+    Repl {
+        #[command(flatten)]
+        build: BuildFlags,
+    },
     /// Run the language server (LSP) on stdin and stdout
     Lsp,
 }
@@ -215,7 +218,10 @@ fn main() -> ExitCode {
         Command::Update { names, path, deps } => depscmd::update(&path, names, deps),
         Command::Fmt { paths, check } => colibri_lang::fmt::run(&paths, check),
         Command::New { name } => colibri_lang::newcmd::run(&name),
-        Command::Repl => colibri_lang::repl::run(),
+        Command::Repl { build } => {
+            colibri_lang::set_build_cfg(build.cfg());
+            colibri_lang::repl::run()
+        }
         Command::Lsp => lsp(),
     })
 }
