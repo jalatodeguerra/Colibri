@@ -110,10 +110,7 @@ impl Stacks {
             self.slots[slot as usize].co.is_none(),
             "a stack slot was freed while it still holds a stack"
         );
-        debug_assert!(
-            !self.free.contains(&slot),
-            "a stack slot was freed twice"
-        );
+        debug_assert!(!self.free.contains(&slot), "a stack slot was freed twice");
         self.free.push(slot);
     }
 
@@ -990,9 +987,7 @@ mod tests {
     #[should_panic(expected = "freed twice")]
     fn freeing_a_slot_twice_is_caught() {
         let mut stacks = super::Stacks::default();
-        let co = super::Coroutine::new(|_y: &super::Y, _r: super::Resume| {
-            super::Finish::Cancelled
-        });
+        let co = super::Coroutine::new(|_y: &super::Y, _r: super::Resume| super::Finish::Cancelled);
         let slot = stacks.insert(Box::new(co), 0);
         drop(stacks.take(slot));
         stacks.free(slot);
@@ -1016,7 +1011,9 @@ mod tests {
         assert_eq!(interp.coroutine_count(), 1);
         let lost = interp.stacks.take(0).expect("the worker's stack").0;
         std::mem::forget(lost);
-        let failure = interp.tick(&mut fiber, 2.0).expect_err("the tick reports it");
+        let failure = interp
+            .tick(&mut fiber, 2.0)
+            .expect_err("the tick reports it");
         assert!(
             failure.message.contains("internal error"),
             "{}",
