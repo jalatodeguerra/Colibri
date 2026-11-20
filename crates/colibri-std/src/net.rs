@@ -2578,10 +2578,7 @@ mod tests {
         let mut r = reader(&vec![0u8; 8 * GROW_STEP], false);
         r.make_room(MAX_EXACT, GROW_STEP).unwrap();
         let cap = r.data.capacity();
-        assert!(
-            cap >= 16 * GROW_STEP && cap <= 16 * GROW_STEP + GROW_STEP,
-            "{cap}"
-        );
+        assert!((16 * GROW_STEP..=17 * GROW_STEP).contains(&cap), "{cap}");
         // A small request is exact: nothing is reserved beyond it.
         let mut r = reader(b"x", false);
         r.make_room(100, 100).unwrap();
