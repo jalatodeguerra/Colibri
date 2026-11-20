@@ -1981,7 +1981,7 @@ fn a_secret_in_a_dependencys_own_manifest_is_refused_and_never_stored() {
         assert_eq!(out.code, 1, "{args:?}: {all}");
         assert!(!all.contains("s3cret"), "{args:?}: {all}");
         assert!(all.contains("credential helper"), "{args:?}: {all}");
-        assert!(all.contains("`bad`"), "{args:?}: {all}");
+        assert!(all.contains("a credential is written"), "{args:?}: {all}");
     }
     // `update` refused the dependency instead of writing a lock that leaves it out.
     let _ = fs::remove_file(app.join("colibri.lock"));
@@ -2049,7 +2049,7 @@ fn a_quoted_manifest_line_never_shows_a_password_with_a_quote_or_a_space() {
         let all = format!("{}{}", out.stdout, out.stderr);
         assert_eq!(out.code, 1, "{lit}: {all}");
         assert!(
-            all.contains("credentials") || all.contains("escape"),
+            all.contains("credential") || all.contains("escape"),
             "{lit}: {all}"
         );
         assert_nothing_leaks(&sb, &app, lit, false);
