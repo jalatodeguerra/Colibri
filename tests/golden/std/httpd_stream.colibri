@@ -1,0 +1,68 @@
+// caps: net, os
+// A streamed response: chunked on HTTP/1.1, one chunk for each write, ended by a bare last
+// chunk, and close-delimited, with no framing header, on HTTP/1.0. The Date line varies, so it
+// is replaced.
+import httpd
+import net
+
+fn app(r: httpd.Request) -> Result[httpd.Response] {
+    return ok(httpd.stream(200, "text/plain", fn(w: httpd.BodyWriter) -> Result[()] {
+        w.write_str("one")?
+        w.write_str("")?
+        w.write_str("two!")?
+        return ok(())
+    }))
+}
+
+fn run(server: httpd.Server) -> Result[()] => server.serve(app)
+
+fn show(c: net.Conn) -> Result[()] {
+    while true {
+        let line = c.read_line()? or {
+            break
+        }
+        if line.starts_with("Date: ") {
+            print("Date: <date>")
+        } else {
+            print(line)
+        }
+    }
+    return ok(())
+}
+
+fn main() -> Result[()] {
+    let server = httpd.listen("127.0.0.1:0")?
+    let serving = go run(server)
+    let c = net.connect(server.addr())?
+    c.write("GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")?
+    show(c)?
+    c.close()
+    print("--")
+    let old = net.connect(server.addr())?
+    old.write("GET / HTTP/1.0\r\n\r\n")?
+    show(old)?
+    old.close()
+    server.stop(1.0)
+    serving.join()?
+    return ok(())
+}
+
+// expect: HTTP/1.1 200 OK
+// expect: Content-Type: text/plain
+// expect: Transfer-Encoding: chunked
+// expect: Date: <date>
+// expect: Connection: close
+// expect: 
+// expect: 3
+// expect: one
+// expect: 4
+// expect: two!
+// expect: 0
+// expect: 
+// expect: --
+// expect: HTTP/1.1 200 OK
+// expect: Content-Type: text/plain
+// expect: Date: <date>
+// expect: Connection: close
+// expect: 
+// expect: onetwo!
