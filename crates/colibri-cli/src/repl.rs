@@ -330,6 +330,28 @@ impl Session {
             if key.starts_with("import:") {
                 continue;
             }
+            // The definition that is part of the program now (its condition holds): the new one
+            // takes its place, so the order of the program stays what it was; when none holds,
+            // the first.
+            let holding: Vec<usize> = same
+                .iter()
+                .copied()
+                .filter(|&p| self.holds(&items[p].cond))
+                .collect();
+            let at = holding.first().copied().unwrap_or(first);
+            // A new definition that is left out here replaces the one that is in the program:
+            // the name would vanish. Refuse it, and keep the old one.
+            if !holding.is_empty() && !self.holds(&item.cond) {
+                let name = key
+                    .strip_prefix("fn:")
+                    .or_else(|| key.strip_prefix("val:"))
+                    .unwrap_or(&key);
+                let cond = item.cond.as_ref().map_or(String::new(), |c| c.attr.clone());
+                eprintln!(
+                    "error: `{name}` would no longer exist: the new definition is left out here by `{cond}` (its condition is false here), and a definition replaces every stored one of its name unless both have a `@when`; the old definition is kept"
+                );
+                return false;
+            }
             // Only a definition whose condition holds is part of the program, so only it
             // replaces a function or starts a module-level value over.
             if self.holds(&item.cond) {
@@ -339,9 +361,11 @@ impl Session {
                     reinit.push(name.to_string());
                 }
             }
-            items[first] = item;
-            for &p in same[1..].iter().rev() {
-                items.remove(p);
+            items[at] = item;
+            for &p in same.iter().rev() {
+                if p != at {
+                    items.remove(p);
+                }
             }
         }
         // An expression entry: `let __last = (expr)` gives its type and value in one go.

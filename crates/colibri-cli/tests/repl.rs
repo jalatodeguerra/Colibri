@@ -326,3 +326,38 @@ fn redefining_the_left_out_variant_leaves_the_active_one_alone() {
     assert_eq!(err, "");
     assert!(out.contains("= 1 : int"), "{out}");
 }
+
+#[test]
+fn a_plain_redefinition_takes_the_place_of_the_variant_that_is_in_the_program() {
+    // The variant that holds is the second of `a`: the new `a` goes there, behind `b`, so
+    // nothing is renumbered.
+    let (out, err) =
+        repl("@when(!debug)\nvar a = 0\nvar b = 9\n@when(debug)\nvar a = 1\nvar a = 2\na\nb\n");
+    assert_eq!(err, "");
+    assert_eq!(out, "= 2 : int\n= 9 : int\n", "{out}");
+    let (out, err) = repl(
+        "@when(!debug)\nfn g() -> int => 0\nfn h() -> int => 9\n@when(debug)\nfn g() -> int => 1\nfn g() -> int => 2\ng()\nh()\n",
+    );
+    assert_eq!(err, "");
+    assert_eq!(out, "= 2 : int\n= 9 : int\n", "{out}");
+}
+
+#[test]
+fn a_definition_that_is_left_out_here_cannot_replace_the_one_that_is_in_the_program() {
+    let (out, err) = repl("fn f() -> int => 1\n@when(!debug)\nfn f() -> int => 2\nf()\n");
+    assert!(
+        err.contains("`f` would no longer exist") && err.contains("the old definition is kept"),
+        "{err}"
+    );
+    assert!(!err.contains("changed their order"), "{err}");
+    assert_eq!(out, "= 1 : int\n", "{out}");
+    let (out, err) = repl("var x = 1\n@when(!debug)\nvar x = 2\nx\n");
+    assert!(err.contains("`x` would no longer exist"), "{err}");
+    assert!(!err.contains("removes module-level"), "{err}");
+    assert_eq!(out, "= 1 : int\n", "{out}");
+    // Two variants with a condition each are independent of each other.
+    let (out, err) =
+        repl("@when(debug)\nfn f() -> int => 1\n@when(!debug)\nfn f() -> int => 2\nf()\n");
+    assert_eq!(err, "");
+    assert_eq!(out, "= 1 : int\n", "{out}");
+}
