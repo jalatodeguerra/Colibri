@@ -49,6 +49,8 @@ impl Package {
     fn load(&self) -> colibri::Vm {
         let mut vm = colibri::Vm::builder()
             .stdout(Box::new(colibri::SharedBuffer::new()))
+            .allow(colibri::Cap::Net)
+            .allow(colibri::Cap::Os)
             .build();
         colibri_std::install(&mut vm).expect("the standard library installs");
         if let Err(e) = vm.load_tests(&self.0) {
@@ -191,7 +193,11 @@ failing!(router_registration, request_misuse);
 #[test]
 fn a_program_imports_the_module_and_tests_its_handlers_without_sockets() {
     let out = colibri::SharedBuffer::new();
-    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .allow(colibri::Cap::Net)
+        .allow(colibri::Cap::Os)
+        .build();
     colibri_std::install(&mut vm).expect("the standard library installs");
     vm.load_source(
         "app/main.colibri",

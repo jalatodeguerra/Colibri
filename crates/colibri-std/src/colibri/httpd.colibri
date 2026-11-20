@@ -23,9 +23,13 @@
 //   Rust, and never by a loop over bytes in Colibri, which costs about half a microsecond a byte.
 //   The exceptions are the digits of a chunk size (at most 15) and the escapes of a percent-encoded
 //   text, which are looked at only where a `%` is.
+import std.datetime
+import std.io
 import std.json as json_codec
+import std.net
 import std.regex
 import std.str
+import std.time
 
 /// A function that answers a request. An `err` becomes an error response: a `Failure` (see
 /// `fail`) gives its status, any other error gives 500.
@@ -379,6 +383,8 @@ class Grammar {
     element: regex.Regex
     /// A run of token characters, for the elements of a `Connection` value.
     tokens: regex.Regex
+    /// A header value of a response: no control character but HTAB (RFC 9112 11.1).
+    value_chars: regex.Regex
     /// A `Content-Length` value: 1 to 18 digits, which cannot overflow an `int` (RFC 9110 8.6).
     digits: regex.Regex
     /// A chunk-size line: at most 15 hex digits (they cannot overflow an `int`), optional
@@ -403,6 +409,7 @@ fn grammar() -> Grammar {
         absolute: pattern(r"^[A-Za-z][A-Za-z0-9+.-]*://([^/?#]*)([^?#]*)(?:\?([^#]*))?$"),
         element: pattern(r"^[ \t]*([!#$%&'*+.^_`|~0-9A-Za-z-]*)[ \t]*$"),
         tokens: pattern(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"),
+        value_chars: pattern(r"^[\t\x20-\x7e\x{80}-\x{10FFFF}]*$"),
         digits: pattern(r"^[0-9]{1,18}$"),
         chunk: pattern(r"^([0-9A-Fa-f]{1,15})[ \t]*(?:;[\t\x20-\x7e]*)?$"),
     }
@@ -827,6 +834,9 @@ class BodyReader {
     first_read: fn() -> Result[()] = no_hook
     started: bool = false
     delivered: int = 0
+    /// A read failed or the body was refused: where the next request starts is unknown, so
+    /// the connection must close (`unread` is then `none`).
+    broken: bool = false
 }
 
 fn body_reader(framing: Framing, limit: int, pull: fn(int) -> Result[Bytes]) -> BodyReader {
@@ -854,6 +864,7 @@ impl BodyReader {
 
     fn read_length(self, n: int, max: int) -> Result[Bytes] {
         if n > self.limit {
+            self.broken = true
             return err(fail(413, "the request body is larger than {self.limit} bytes"))
         }
         let remaining = n - self.delivered
@@ -862,15 +873,23 @@ impl BodyReader {
         }
         if !self.started {
             self.started = true
-            (self.first_read)()?
+            (self.first_read)() or |e| {
+                self.broken = true
+                return err(e)
+            }
         }
         let want = max.min(remaining).min(65536)
-        let piece = (self.pull)(want)?
+        let piece = (self.pull)(want) or |e| {
+            self.broken = true
+            return err(e)
+        }
         if piece.is_empty() {
+            self.broken = true
             return err(fail(400, "the request body ended before its Content-Length"))
         }
         // A piece past `want` would be bytes of the next request.
         if piece.len() > want {
+            self.broken = true
             return err(fail(500, "the body source gave more bytes than were asked for"))
         }
         self.delivered += piece.len()
@@ -904,6 +923,9 @@ impl BodyReader {
     /// read to its end, the rest of a `Content-Length`, and `none` for a chunked body that has
     /// not been read to its end. The connection decides from it whether to drain.
     fn unread(self) -> int? {
+        if self.broken {
+            return none
+        }
         return match self.framing {
             NoBody    => some(0)
             Length(n) => some((n - self.delivered).max(0))
@@ -1313,4 +1335,708 @@ fn allow_value(methods: List[str]) -> str {
     }
     all.sort()
     return all.join(", ")
+}
+
+// ---------------------------------------------------------------------------------------------
+// The response writer
+// ---------------------------------------------------------------------------------------------
+
+/// The reason phrase of a status (RFC 9110 15); "" for a code that is not in the table, which
+/// RFC 9112 4 allows (the space after the code is still written).
+fn reason(code: int) -> str {
+    return match code {
+        100 => "Continue"
+        101 => "Switching Protocols"
+        200 => "OK"
+        201 => "Created"
+        202 => "Accepted"
+        203 => "Non-Authoritative Information"
+        204 => "No Content"
+        205 => "Reset Content"
+        206 => "Partial Content"
+        300 => "Multiple Choices"
+        301 => "Moved Permanently"
+        302 => "Found"
+        303 => "See Other"
+        304 => "Not Modified"
+        305 => "Use Proxy"
+        307 => "Temporary Redirect"
+        308 => "Permanent Redirect"
+        400 => "Bad Request"
+        401 => "Unauthorized"
+        402 => "Payment Required"
+        403 => "Forbidden"
+        404 => "Not Found"
+        405 => "Method Not Allowed"
+        406 => "Not Acceptable"
+        407 => "Proxy Authentication Required"
+        408 => "Request Timeout"
+        409 => "Conflict"
+        410 => "Gone"
+        411 => "Length Required"
+        412 => "Precondition Failed"
+        413 => "Content Too Large"
+        414 => "URI Too Long"
+        415 => "Unsupported Media Type"
+        416 => "Range Not Satisfiable"
+        417 => "Expectation Failed"
+        418 => "I'm a teapot"
+        421 => "Misdirected Request"
+        422 => "Unprocessable Content"
+        426 => "Upgrade Required"
+        428 => "Precondition Required"
+        429 => "Too Many Requests"
+        431 => "Request Header Fields Too Large"
+        451 => "Unavailable For Legal Reasons"
+        500 => "Internal Server Error"
+        501 => "Not Implemented"
+        502 => "Bad Gateway"
+        503 => "Service Unavailable"
+        504 => "Gateway Timeout"
+        505 => "HTTP Version Not Supported"
+        _   => ""
+    }
+}
+
+/// An error response the server writes itself (3.10): `<code> <reason>: <what was wrong>`.
+fn error_response(status: int, why: str) -> Response {
+    return text(status, "{status} {reason(status)}: {why}\n")
+}
+
+/// Why a response cannot be sent as it is, or `none`: a status outside 200 to 599, a header
+/// that could split the response or that the server owns (RFC 9112 11.1, plan 2.6), or a body
+/// this server cannot send yet.
+fn response_fault(g: Grammar, response: Response) -> str? {
+    if response.status < 200 || response.status > 599 {
+        return some("the status {response.status} is not between 200 and 599")
+    }
+    if let some(why) = body_fault(response) {
+        return some(why)
+    }
+    for (name, value) in response.headers.lines() {
+        if !is_token(g, name) {
+            return some("the header name `{name}` is not a token")
+        }
+        if !g.value_chars.is_match(value) {
+            return some("the value of the header `{name}` has a control character")
+        }
+        let key = name.to_lower()
+        if key == "content-length" || key == "transfer-encoding" {
+            return some("the header `{name}` is set by the server, not by a handler")
+        }
+        if key == "connection" && value.to_lower() != "close" {
+            return some("the header Connection can only be `close` in a response of a handler")
+        }
+    }
+    return none
+}
+
+fn body_fault(response: Response) -> str? {
+    return match response.body {
+        Stream(_, _) => some("a streamed body is not supported by this server yet")
+        _            => none
+    }
+}
+
+/// Whether a response of this status has no body and no `Content-Length` (RFC 9112 6.2, 6.1).
+fn bodyless(status: int) -> bool => status < 200 || status == 204 || status == 304
+
+/// The size of a response's body in bytes.
+fn body_size(response: Response) -> int {
+    return match response.body {
+        Empty        => 0
+        Text(s)      => s.len()
+        Data(b)      => b.len()
+        Stream(_, n) => n or 0
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------------------------
+
+/// What a connection is doing, for `stop`: an idle one is closed at once, any other finishes its
+/// response first.
+enum Phase {
+    Idle
+    Head
+    Handler
+    Writing
+}
+
+class ConnState {
+    conn: net.Conn
+    phase: Phase = .Idle
+}
+
+/// The result of reading one line of a head.
+enum Line {
+    Text(str)
+    /// The end of the stream, a reset, a timeout where none is answered, or a closed connection:
+    /// there is nobody to answer, so the connection ends silently.
+    Gone
+    Refuse(Reject)
+}
+
+/// What a read of a line gave: its text, the end of the connection, or why the request is
+/// refused. A timeout is `Gone` unless `timeout_answers`, a line over 1 MiB is 414 and a line
+/// that is not UTF-8 is 400.
+fn read_head_line(conn: net.Conn, timeout_answers: bool) -> Line {
+    let got = conn.read_line() or |e| {
+        if let some(ne) = e.as[net.Error]() {
+            return match ne {
+                LineTooLong => .Refuse(reject(414, "a line is longer than 1 MiB"))
+                InvalidData => .Refuse(reject(400, "a line is not UTF-8 text"))
+                Timeout => if timeout_answers {
+                    .Refuse(reject(408, "the request head did not arrive in time"))
+                } else {
+                    .Gone
+                }
+                _ => .Gone
+            }
+        }
+        return .Gone
+    }
+    if let some(text) = got {
+        return .Text(text)
+    }
+    return .Gone
+}
+
+/// An error of a read of a body as the `Failure` a handler returns with `?`.
+fn body_failure(e: Error) -> Error {
+    if let some(ne) = e.as[net.Error]() {
+        let timed_out = match ne {
+            Timeout => true
+            _       => false
+        }
+        if timed_out {
+            return fail(408, "the request body did not arrive in time")
+        }
+    }
+    return fail(400, "the connection ended before the request body")
+}
+
+/// An unread body of at most this many bytes is read and thrown away so that the connection can
+/// carry the next request (3.10).
+const DRAIN_BYTES: int = 262144
+
+/// An HTTP server. `listen` makes one, `serve` runs it and `stop` ends it.
+pub class Server {
+    listener: net.Listener
+    options: Options
+    grammar: Grammar
+    conns: Map[int, ConnState] = {:}
+    group: CoGroup = CoGroup()
+    timer: Coroutine[()]? = none
+    next_id: int = 0
+    serving: bool = false
+    stopping: bool = false
+    date_second: int = 0
+    date_text: str = ""
+}
+
+fn limit_fault(name: str, value: int) -> str? {
+    if value < 0 {
+        return some("httpd: Options.{name} is {value}: it cannot be negative")
+    }
+    return none
+}
+
+fn time_fault(name: str, value: float) -> str? {
+    if value.is_nan() || value < 0.0 || value >= 1.0e9 {
+        return some(
+            "httpd: Options.{name} is {value}: use 0 or more and under 1e9 seconds (0 is none)",
+        )
+    }
+    return none
+}
+
+/// The first thing wrong with `options`, naming the field, or `none`.
+fn options_fault(o: Options) -> str? {
+    let found = [
+        limit_fault("max_request_line", o.max_request_line),
+        limit_fault("max_header_bytes", o.max_header_bytes),
+        limit_fault("max_headers", o.max_headers),
+        limit_fault("max_body_bytes", o.max_body_bytes),
+        time_fault("header_timeout", o.header_timeout),
+        time_fault("idle_timeout", o.idle_timeout),
+        time_fault("body_timeout", o.body_timeout),
+        time_fault("write_timeout", o.write_timeout),
+        time_fault("handler_timeout", o.handler_timeout),
+    ]
+    for fault in found {
+        if fault != none {
+            return fault
+        }
+    }
+    if o.max_connections < 1 {
+        return some("httpd: Options.max_connections is {o.max_connections}: it must be at least 1")
+    }
+    return none
+}
+
+/// Starts listening on `addr` (`host:port`; port 0 lets the system pick, and `server.addr()`
+/// says which). The error is the `net` error (`AddrInUse` and the rest), or a message that names
+/// the field of `options` that is not valid.
+pub fn listen(addr: str, options: Options = Options {}) -> Result[Server] {
+    if let some(why) = options_fault(options) {
+        return err(error(why))
+    }
+    let listener = net.listen(addr)?
+    return ok(Server { listener: listener, options: options, grammar: grammar() })
+}
+
+/// `listen` and then `serve`.
+pub fn serve(addr: str, handler: Handler, options: Options = Options {}) -> Result[()] {
+    let server = listen(addr, options: options)?
+    return server.serve(handler)
+}
+
+/// Ends a server after `grace` seconds: what is left of its connections is cancelled.
+fn grace_timer(server: Server, grace: float) {
+    wait(grace)
+    server.group.cancel()
+}
+
+/// A connection's coroutine: what runs `Server.connection` and always lets the connection go.
+fn connection_task(server: Server, state: ConnState, id: int, handler: Handler) {
+    defer {
+        state.conn.close()
+        let _ = server.conns.remove(id)
+    }
+    server.connection(state, handler)
+}
+
+/// Calls a handler. It is the one place a handler runs, so that it can be wrapped (to contain a
+/// panic, to bound its time) without touching the connection loop.
+fn call_handler(handler: Handler, request: Request) -> Result[Response] => handler(request)
+
+impl Server {
+    /// The address the server listens on, with the port the system picked.
+    pub fn addr(self) -> str => self.listener.addr()
+
+    /// The number of open connections.
+    pub fn connections(self) -> int => self.conns.len()
+
+    /// Accepts connections and answers their requests with `handler`, until `stop`; then it
+    /// returns `ok(())` once every connection has ended. An `err` if the server is already
+    /// serving or was stopped. It can be called on the main fiber or in a coroutine.
+    pub fn serve(self, handler: Handler) -> Result[()] {
+        if self.serving {
+            return err(error("httpd: the server is already serving"))
+        }
+        if self.stopping {
+            return err(error("httpd: the server was stopped"))
+        }
+        self.serving = true
+        while !self.stopping {
+            // At the cap the server stops accepting: the backlog holds the connections that
+            // wait. It looks again every few milliseconds (an event wait is not allowed on the
+            // main fiber).
+            while self.conns.len() >= self.options.max_connections && !self.stopping {
+                wait(0.005)
+            }
+            if self.stopping {
+                break
+            }
+            let conn = self.listener.accept() or |e| {
+                if self.stopping || is_closed(e) {
+                    break
+                }
+                // Out of descriptors, a connection reset in the backlog: logged, and tried
+                // again after a moment, so that it never ends `serve`.
+                self.log("accept failed: {e}")
+                wait(0.1)
+                continue
+            }
+            if self.stopping {
+                conn.close()
+                break
+            }
+            let id = self.next_id
+            self.next_id += 1
+            let state = ConnState { conn: conn }
+            self.conns[id] = state
+            self.group.go(connection_task(self, state, id, handler))
+        }
+        // Waits for the connections to end. This is polled (an event wait is not allowed on the
+        // main fiber), but only while the server shuts down.
+        self.group.join_all()
+        if let some(timer) = self.timer {
+            timer.cancel()
+        }
+        return ok(())
+    }
+
+    /// Stops the server. It never suspends, so a handler may call it, and calling it twice is
+    /// fine. The listener is closed and idle connections are closed; a connection that is busy
+    /// finishes its response, which then says `Connection: close`. After `grace` seconds the
+    /// connections that are left are cancelled.
+    pub fn stop(self, grace: float = 10.0) {
+        if self.stopping {
+            return
+        }
+        self.stopping = true
+        self.listener.close()
+        for state in self.conns.values() {
+            let idle = match state.phase {
+                Idle => true
+                _    => false
+            }
+            if idle {
+                state.conn.close()
+            }
+        }
+        if self.serving {
+            self.timer = some(go grace_timer(self, grace.max(0.0)))
+        }
+    }
+
+    fn log(self, message: str) {
+        if self.options.log_errors {
+            io.eprintln("httpd: {message}")
+        }
+    }
+
+    /// The `Date` header value: formatted once a second.
+    fn date(self) -> str {
+        let now = int(time.unix())
+        if now != self.date_second {
+            self.date_second = now
+            self.date_text = datetime.format(
+                datetime.from_unix(float(now)),
+                "%a, %d %b %Y %H:%M:%S GMT",
+            )
+        }
+        return self.date_text
+    }
+
+    /// Writes a response head and body. The head and a body of at most 64 KiB go in one write; a
+    /// larger body follows in pieces of 256 KiB. `closing` puts `Connection: close` on it, and
+    /// `keep_alive_word` puts `Connection: keep-alive` (HTTP/1.0). The error is the write's.
+    fn write_response(
+        self,
+        conn: net.Conn,
+        response: Response,
+        head_only: bool,
+        closing: bool,
+        keep_alive_word: bool,
+    ) -> Result[()] {
+        let head = StrBuilder()
+        head.push("HTTP/1.1 {response.status} {reason(response.status)}\r\n")
+        var has_date = false
+        for (name, value) in response.headers.lines() {
+            let key = name.to_lower()
+            if key == "connection" {
+                continue
+            }
+            if key == "date" {
+                has_date = true
+            }
+            head.push(name)
+            head.push(": ")
+            head.push(value)
+            head.push("\r\n")
+        }
+        let size = body_size(response)
+        let has_body = !bodyless(response.status)
+        if has_body {
+            head.push("Content-Length: {size}\r\n")
+        }
+        if !has_date {
+            head.push("Date: {self.date()}\r\n")
+        }
+        if self.options.server_name != "" && !response.headers.has("server") {
+            head.push("Server: {self.options.server_name}\r\n")
+        }
+        if closing {
+            head.push("Connection: close\r\n")
+        } else if keep_alive_word {
+            head.push("Connection: keep-alive\r\n")
+        }
+        head.push("\r\n")
+        let send_body = has_body && !head_only && size > 0
+        conn.set_timeout(self.options.write_timeout)
+        if !send_body {
+            return conn.write(head.to_str())
+        }
+        if size <= 65536 {
+            return match response.body {
+                Text(s) => {
+                    head.push(s)
+                    conn.write(head.to_str())
+                }
+                Data(b) => {
+                    let all = BytesBuilder()
+                    all.push_str(head.to_str())
+                    all.push_bytes(b)
+                    conn.write_bytes(all.to_bytes())
+                }
+                _ => conn.write(head.to_str())
+            }
+        }
+        conn.write(head.to_str())?
+        let data = match response.body {
+            Text(s) => s.to_bytes()
+            Data(b) => b
+            _       => Bytes()
+        }
+        var at = 0
+        while at < data.len() {
+            let end = (at + 262144).min(data.len())
+            conn.set_timeout(self.options.write_timeout)
+            conn.write_bytes(data.slice(at, end))?
+            at = end
+        }
+        return ok(())
+    }
+
+    /// Answers with an error the server found in the request and ends the connection (the
+    /// lingering close of 3.10 follows in the caller's return).
+    fn refuse(self, conn: net.Conn, why: Reject) {
+        let sent = self.write_response(
+            conn,
+            error_response(why.status, why.why),
+            false,
+            true,
+            false,
+        )
+        if sent.is_ok() {
+            self.linger(conn)
+        }
+    }
+
+    /// The lingering close (RFC 9112 9.6): tell the peer that nothing more comes, then read and
+    /// throw away what it still sends until it closes, for at most 2 seconds or 256 KiB, so that
+    /// closing with unread input does not reset the connection and lose the response.
+    fn linger(self, conn: net.Conn) {
+        let _ = conn.close_write()
+        let started = time.now()
+        var total = 0
+        while total < DRAIN_BYTES && time.now() - started < 2.0 {
+            conn.set_timeout(1.0)
+            let piece = conn.read(65536) or {
+                return
+            }
+            if piece.is_empty() {
+                return
+            }
+            total += piece.len()
+        }
+    }
+
+    /// Reads and throws away `count` bytes of the body, within one second. `false` when it
+    /// could not.
+    fn drain(self, conn: net.Conn, count: int) -> bool {
+        let started = time.now()
+        var left = count
+        while left > 0 {
+            let spent = time.now() - started
+            if spent >= 1.0 {
+                return false
+            }
+            conn.set_timeout(1.0 - spent)
+            let piece = conn.read(left.min(65536)) or {
+                return false
+            }
+            if piece.is_empty() {
+                return false
+            }
+            left -= piece.len()
+        }
+        return true
+    }
+
+    /// The response for what a handler returned: its response when it can be sent, else the
+    /// error response of a `Failure`, or a 500.
+    fn answer(self, request: Request, result: Result[Response]) -> Response {
+        return match result {
+            ok(response) => match response_fault(self.grammar, response) {
+                some(why) => {
+                    self.log("{request.method} {request.target}: 500: {why}")
+                    error_response(500, "the handler's response cannot be sent")
+                }
+                none => response
+            }
+            err(e) => match e.as[Failure]() {
+                some(f) => if f.status >= 400 && f.status <= 599 {
+                    text(f.status, f.message + "\n")
+                } else {
+                    self.log("{request.method} {request.target}: 500: {f}")
+                    error_response(500, "the handler failed")
+                }
+                none => {
+                    self.log("{request.method} {request.target}: 500: {e}")
+                    error_response(500, "the handler failed")
+                }
+            }
+        }
+    }
+
+    /// The body reader of a request: its bytes come from the connection, under `body_timeout`
+    /// for each read, and `100 Continue` is written when the handler first reads, if the client
+    /// asked for it.
+    fn body_for(self, conn: net.Conn, head: Head) -> BodyReader {
+        let timeout = self.options.body_timeout
+        let pull = fn(n: int) -> Result[Bytes] {
+            conn.set_timeout(timeout)
+            return match conn.read(n) {
+                ok(data) => ok(data)
+                err(e)   => err(body_failure(e))
+            }
+        }
+        let reader = body_reader(head.framing, self.options.max_body_bytes, pull)
+        if head.expect_continue {
+            let write_timeout = self.options.write_timeout
+            reader.first_read = fn() -> Result[()] {
+                conn.set_timeout(write_timeout)
+                return match conn.write("HTTP/1.1 100 Continue\r\n\r\n") {
+                    ok(_)  => ok(())
+                    err(e) => err(body_failure(e))
+                }
+            }
+        }
+        return reader
+    }
+
+    /// Reads the request line, which may follow some empty lines (RFC 9112 2.2); they count
+    /// against `max_header_bytes`.
+    fn request_line(self, conn: net.Conn) -> Line {
+        var skipped = 0
+        while true {
+            let line = read_head_line(conn, false)
+            match line {
+                Text(t) => {
+                    if !t.is_empty() {
+                        return line
+                    }
+                    skipped += 2
+                    if skipped > self.options.max_header_bytes {
+                        return .Refuse(reject(431, "too many empty lines before the request"))
+                    }
+                }
+                _ => return line
+            }
+        }
+    }
+
+    /// One connection: requests are read and answered one after the other, in order, until
+    /// either side ends it.
+    fn connection(self, state: ConnState, handler: Handler) {
+        let conn = state.conn
+        let o = self.options
+        let peer = conn.peer_addr()
+        var first = true
+        while !self.stopping {
+            state.phase = .Idle
+            conn.set_timeout(if first { o.header_timeout } else { o.idle_timeout })
+            // TODO(set_line_limit): once `net.Conn.set_line_limit` exists, set it here, to the
+            // larger of `max_request_line` and the longest field line, so that a huge line is
+            // not buffered before it is refused. Until then a line is read whole (at most 1 MiB)
+            // and the parser refuses it.
+            first = false
+            let started = self.request_line(conn)
+            let first_line = match started {
+                Text(t) => t
+                Gone    => return
+                Refuse(r) => {
+                    self.refuse(conn, r)
+                    return
+                }
+            }
+            state.phase = .Head
+            let parser = head_parser(self.grammar, o)
+            parser.request_line(first_line) or |r| {
+                self.refuse(conn, r)
+                return
+            }
+            // The rest of the head has `header_timeout` for each line, and the whole of it is
+            // checked after each line, so a client that trickles lines is cut off at the latest
+            // after two such periods.
+            conn.set_timeout(o.header_timeout)
+            let head_started = time.now()
+            var ended = false
+            while !ended {
+                let line = read_head_line(conn, true)
+                match line {
+                    Text(t) => {
+                        ended = parser.field_line(t) or |r| {
+                            self.refuse(conn, r)
+                            return
+                        }
+                    }
+                    Gone => return
+                    Refuse(r) => {
+                        self.refuse(conn, r)
+                        return
+                    }
+                }
+                if !ended
+                    && o.header_timeout > 0.0
+                    && time.now() - head_started > o.header_timeout {
+                    self.refuse(conn, reject(408, "the request head did not arrive in time"))
+                    return
+                }
+            }
+            let head = parser.finish() or |r| {
+                self.refuse(conn, r)
+                return
+            }
+            state.phase = .Handler
+            let reader = self.body_for(conn, head)
+            let request = request(head, reader, peer)
+            let result = call_handler(handler, request)
+            state.phase = .Writing
+            let response = self.answer(request, result)
+            // Whether the connection stays open after the response (3.8, 3.10).
+            var closing = !head.keep_alive || self.stopping
+            if response.headers.get("connection") != none {
+                closing = true
+            }
+            var drain = 0
+            if head.expect_continue && !reader.started {
+                // The client may be waiting to send, or may have started: not drained.
+                closing = true
+            } else {
+                match reader.unread() {
+                    some(n) => {
+                        if n > DRAIN_BYTES {
+                            closing = true
+                        }
+                        drain = n
+                    }
+                    none => closing = true
+                }
+            }
+            let keep_alive_word = !closing && head.version == "HTTP/1.0"
+            let sent = self.write_response(
+                conn,
+                response,
+                head.method == "HEAD",
+                closing,
+                keep_alive_word,
+            )
+            if sent.is_err() {
+                return
+            }
+            if closing {
+                self.linger(conn)
+                return
+            }
+            if drain > 0 && !self.drain(conn, drain) {
+                return
+            }
+        }
+    }
+}
+
+fn is_closed(e: Error) -> bool {
+    if let some(ne) = e.as[net.Error]() {
+        return match ne {
+            Closed => true
+            _      => false
+        }
+    }
+    return false
 }

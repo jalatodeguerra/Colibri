@@ -210,6 +210,8 @@ mod tests {
     fn every_source_module_checks_with_no_warnings() {
         let config = colibri_runtime::CheckConfig {
             interfaces: interfaces(),
+            // A source module may use any capability; its program asks for the ones it needs.
+            caps: colibri_runtime::CapSet::all(),
             ..colibri_runtime::CheckConfig::default()
         };
         for source in sources() {
