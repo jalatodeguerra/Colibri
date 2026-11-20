@@ -26,8 +26,9 @@ use crate::value::{CellObj, Value};
 pub(crate) use colibri_core::stack_position;
 pub(crate) use colibri_core::value::{unwrap_cell, unwrap_cell_ref};
 
-/// The interpreter: the loaded code, the module-level state and the [`Core`] it shares with the engine-neutral runtime code. Everything
-/// about a running computation is in the [`Fiber`] passed to each method.
+/// The interpreter: the loaded code, the module-level state and the `colibri-core` state it
+/// shares with every engine (`core`). Everything about a running computation is in the
+/// [`Fiber`] passed to each method.
 pub struct Interp {
     /// Looked up at call time, so a patched function takes effect at its next call.
     pub(crate) fns: Vec<Rc<Body>>,

@@ -491,14 +491,15 @@ mod tests {
         let guard = core
             .host_borrow(Some(Rc::clone(&holder)), i, g, any(), true)
             .unwrap();
+        let in_use = HostBorrowError::InUse {
+            name: "Noisy".into(),
+            holder: Some(holder.name.clone()),
+        };
         let busy = core.host_borrow(None, i, g, any(), false).err().unwrap();
-        assert_eq!(
-            busy,
-            HostBorrowError::InUse {
-                name: "Noisy".into(),
-                holder: Some(holder.name.clone()),
-            }
-        );
+        assert_eq!(busy, in_use);
+        // Reporting the holder must not take it away: a second refusal names it too.
+        let again = core.host_borrow(None, i, g, any(), true).err().unwrap();
+        assert_eq!(again, in_use);
         drop(guard);
         assert!(core.host_borrow(None, i, g, any(), false).is_ok());
     }
