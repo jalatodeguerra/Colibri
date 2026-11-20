@@ -2749,6 +2749,8 @@ mod tests {
         drop(first);
         assert_eq!(rx3.recv_timeout(ceiling).unwrap(), Why::Turn);
         assert!(rx2.try_recv().is_err());
+        // Nothing of the dropped ticket is left in the queue.
+        assert_eq!(parked(&turns), 0);
         drop(c2);
     }
 

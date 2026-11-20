@@ -43,10 +43,11 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::io;
 use std::num::NonZeroUsize;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::thread::JoinHandle;
-use std::time::Instant;
+use std::thread::{JoinHandle, ThreadId};
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
@@ -72,6 +73,10 @@ pub(super) enum Why {
     Turn,
     /// The waiting coroutine was cancelled: nobody reads this, the wait is only being removed.
     Cancelled,
+    /// The poller is gone (stopped, or broken by a failed wait or a panic) and this wait will
+    /// never be answered: the waiter makes its system call and, finding it still blocked, arms
+    /// again and gets the error that a gone poller gives.
+    Failed,
 }
 
 /// Which way a wait looks at its socket.
@@ -100,7 +105,13 @@ struct CellState {
 
 impl Cell {
     /// A cell whose callback is `wake`. It runs at most once, on the thread that resolves the
-    /// cell, after the clean-ups.
+    /// cell (possibly the poller's own), after the clean-ups.
+    ///
+    /// The rule for everything that is given to the poller: the callback, the clean-ups and the
+    /// sources must not own the [`Poller`] (an `Arc<Poller>`), directly or through a connection's
+    /// shared state. Their drops may run on the poller thread, and the poller is stopped by its
+    /// owner (`NetState`), not by the last reference going; a closure that holds the poller would
+    /// keep it alive past the `Vm` and could be the one that drops it on its own thread.
     pub(super) fn new(wake: impl FnOnce(Why) + Send + 'static) -> Arc<Cell> {
         Arc::new(Cell {
             state: Mutex::new(CellState {
@@ -121,10 +132,20 @@ impl Cell {
                 None => return false,
             }
         };
+        // A clean-up that panics must not keep the callback from running (the waiter would never
+        // wake): run everything, then pass the first panic on.
+        let mut panic = None;
         for cleanup in cleanups {
-            cleanup();
+            if let Err(p) = catch_unwind(AssertUnwindSafe(cleanup)) {
+                panic.get_or_insert(p);
+            }
         }
-        wake(why);
+        if let Err(p) = catch_unwind(AssertUnwindSafe(|| wake(why))) {
+            panic.get_or_insert(p);
+        }
+        if let Some(p) = panic {
+            resume_unwind(p);
+        }
         true
     }
 
@@ -189,14 +210,14 @@ struct Reg {
     raw: u64,
     /// The waiters (by id) that wait for the socket to become readable and writable. At most
     /// one each: the queues of turns of the objects allow one read and one write at a time.
-    read: Option<u64>,
-    write: Option<u64>,
+    read: Option<usize>,
+    write: Option<usize>,
 }
 
 struct Waiter {
     cell: Arc<Cell>,
     /// The registration this waits on; `None` for a timer.
-    reg: Option<u64>,
+    reg: Option<usize>,
     dir: Dir,
     deadline: Option<Instant>,
 }
@@ -210,23 +231,34 @@ enum Halt {
     Failed(String),
 }
 
+/// What a locked operation takes out of the table and must not drop under the lock: dropping
+/// it can run arbitrary code (a callback's captures, the close of a socket).
+#[allow(dead_code)] // the fields are held only to be dropped
+enum Trash {
+    Socket(Arc<dyn Source>),
+    Cell(Arc<Cell>),
+}
+
 struct Table {
     halt: Option<Halt>,
-    /// The next key of a registration or a waiter (one counter, never reused).
-    next: u64,
-    regs: HashMap<u64, Reg>,
-    by_raw: HashMap<u64, u64>,
-    waiters: HashMap<u64, Waiter>,
+    /// The next key of a registration or a waiter (one counter, never reused; a `usize` because
+    /// it travels through the system's poller as an event's user data).
+    next: usize,
+    regs: HashMap<usize, Reg>,
+    by_raw: HashMap<u64, usize>,
+    waiters: HashMap<usize, Waiter>,
     /// `(deadline, waiter)` of the waiters with a deadline, plus stale entries of waiters that
     /// ended another way (skipped when they come up; the heap is rebuilt when they outnumber the
     /// live ones).
-    heap: BinaryHeap<Reverse<(Instant, u64)>>,
+    heap: BinaryHeap<Reverse<(Instant, usize)>>,
     live_deadlines: usize,
     /// The deadline the thread is sleeping towards (`None`: no deadline, or not asleep yet): an
     /// arm with an earlier deadline wakes it so that it plans again.
     planned: Option<Instant>,
     /// Cells to resolve once the lock is released.
     to_fire: Vec<(Arc<Cell>, Why)>,
+    /// To drop once the lock is released.
+    trash: Vec<Trash>,
 }
 
 struct Shared {
@@ -237,11 +269,40 @@ struct Shared {
     loops: AtomicU64,
 }
 
-/// Resolves the cells that a locked operation collected, after the lock is gone.
-fn fire_all(to_fire: Vec<(Arc<Cell>, Why)>) {
-    for (cell, why) in to_fire {
-        cell.fire(why);
+impl Drop for Shared {
+    fn drop(&mut self) {
+        // The last owner is gone with the table possibly not empty (a poller that was never run
+        // to its end): delete what is registered before the sockets are released, as every other
+        // path does, whatever the order in which the fields drop.
+        let table = self.table.get_mut().unwrap_or_else(PoisonError::into_inner);
+        for (_, reg) in table.regs.drain() {
+            let _ = self.os.delete(borrowed(&*reg.socket));
+        }
     }
+}
+
+/// The longest the thread sleeps in one `wait`, whatever its next deadline is; the loop plans
+/// again after every wake, so a farther deadline costs one wake per bound and nothing else.
+/// Some systems refuse or mangle a very long timeout: macOS's `kevent` fails with `EINVAL` for
+/// more than about three years (taken from a reading of the XNU source and from Go's netpoller,
+/// not run here), and Windows turns more than 49.7 days (`u32::MAX` ms) into "no timeout".
+const MAX_SLEEP: Duration = Duration::from_secs(3600);
+
+/// What the thread passes to the system's `wait`.
+fn sleep_for(planned: Option<Instant>, now: Instant) -> Option<Duration> {
+    planned.map(|d| d.saturating_duration_since(now).min(MAX_SLEEP))
+}
+
+/// Resolves the cells that a locked operation collected, after the lock is gone: every one of
+/// them, also when a callback panics; the first panic is given back for the caller to deal with.
+fn fire_all(to_fire: Vec<(Arc<Cell>, Why)>) -> Option<Box<dyn std::any::Any + Send>> {
+    let mut panic = None;
+    for (cell, why) in to_fire {
+        if let Err(p) = catch_unwind(AssertUnwindSafe(|| cell.fire(why))) {
+            panic.get_or_insert(p);
+        }
+    }
+    panic
 }
 
 impl Shared {
@@ -249,10 +310,25 @@ impl Shared {
         lock(&self.table)
     }
 
-    fn unlock_and_fire(&self, mut table: MutexGuard<'_, Table>) {
+    /// Releases the lock, drops what was thrown away under it, and resolves the cells that were
+    /// collected. A panic of a callback is given back (every cell was resolved first).
+    fn unlock_and_fire(
+        &self,
+        mut table: MutexGuard<'_, Table>,
+    ) -> Option<Box<dyn std::any::Any + Send>> {
         let to_fire = std::mem::take(&mut table.to_fire);
+        let trash = std::mem::take(&mut table.trash);
         drop(table);
-        fire_all(to_fire);
+        drop(trash);
+        fire_all(to_fire)
+    }
+
+    /// As `unlock_and_fire` for a caller that is not the poller thread: a panic of a callback
+    /// is the caller's panic.
+    fn unlock_and_fire_here(&self, table: MutexGuard<'_, Table>) {
+        if let Some(p) = self.unlock_and_fire(table) {
+            resume_unwind(p);
+        }
     }
 
     fn notify(&self) {
@@ -260,36 +336,49 @@ impl Shared {
     }
 
     /// Takes a waiter out of the table, and its socket's registration along with it when it was
-    /// the last waiter there. Idempotent: the id of a waiter that is gone does nothing.
-    fn remove_waiter(&self, t: &mut Table, id: u64) -> Option<Waiter> {
-        let waiter = t.waiters.remove(&id)?;
-        if waiter.deadline.is_some() {
-            t.live_deadlines -= 1;
-            if t.heap.len() > 64 && t.heap.len() > 2 * t.live_deadlines {
-                let live: Vec<_> = t
-                    .waiters
-                    .iter()
-                    .filter_map(|(id, w)| w.deadline.map(|d| Reverse((d, *id))))
-                    .collect();
-                t.heap = live.into();
-            }
-        }
-        if let Some(reg) = waiter.reg {
+    /// the last waiter there. Idempotent: the id of a waiter that is gone does nothing. The
+    /// waiter's cell is thrown away (dropped after the unlock).
+    fn remove_waiter(&self, t: &mut Table, id: usize) {
+        let Some(waiter) = t.waiters.remove(&id) else {
+            return;
+        };
+        let reg = waiter.reg;
+        let dir = waiter.dir;
+        self.ended(t, &waiter);
+        t.trash.push(Trash::Cell(waiter.cell));
+        if let Some(reg) = reg {
             if let Some(r) = t.regs.get_mut(&reg) {
-                match waiter.dir {
+                match dir {
                     Dir::Read => r.read = None,
                     Dir::Write => r.write = None,
                 }
             }
             self.rearm(t, reg);
         }
-        Some(waiter)
+    }
+
+    /// A waiter has left the table by any path: its deadline no longer counts, and the heap is
+    /// rebuilt when the entries that nobody is waiting for outnumber the live ones (one live
+    /// early deadline at the top would otherwise pin every stale entry behind it).
+    fn ended(&self, t: &mut Table, waiter: &Waiter) {
+        if waiter.deadline.is_none() {
+            return;
+        }
+        t.live_deadlines -= 1;
+        if t.heap.len() > 64 && t.heap.len() > 2 * t.live_deadlines {
+            let live: Vec<_> = t
+                .waiters
+                .iter()
+                .filter_map(|(id, w)| w.deadline.map(|d| Reverse((d, *id))))
+                .collect();
+            t.heap = live.into();
+        }
     }
 
     /// After the interest of a registration changed or an event used up its one shot: deletes
     /// the registration when nothing waits on it any more (and only then releases the socket
-    /// reference), otherwise arms what remains.
-    fn rearm(&self, t: &mut Table, key: u64) {
+    /// reference, after the unlock), otherwise arms what remains.
+    fn rearm(&self, t: &mut Table, key: usize) {
         let Some(reg) = t.regs.get(&key) else { return };
         if reg.read.is_none() && reg.write.is_none() {
             let reg = t.regs.remove(&key).expect("looked up above");
@@ -297,25 +386,24 @@ impl Shared {
             // Failing here means the system has dropped the registration already; there is
             // nothing left to undo. The reference is released after the call, never before.
             let _ = self.os.delete(borrowed(&*reg.socket));
-            drop(reg);
+            t.trash.push(Trash::Socket(reg.socket));
             return;
         }
-        let event = polling::Event::new(key as usize, reg.read.is_some(), reg.write.is_some());
+        let event = polling::Event::new(key, reg.read.is_some(), reg.write.is_some());
         if self.os.modify(borrowed(&*reg.socket), event).is_err() {
             // The remaining waiters cannot be armed: wake them, so that they try their system
             // call and find out why (and fail to arm again, with an error of their own).
             let ids = [reg.read, reg.write];
             for id in ids.into_iter().flatten() {
                 if let Some(w) = t.waiters.remove(&id) {
-                    if w.deadline.is_some() {
-                        t.live_deadlines -= 1;
-                    }
+                    self.ended(t, &w);
                     t.to_fire.push((w.cell, Why::Ready));
                 }
             }
             let reg = t.regs.remove(&key).expect("looked up above");
             t.by_raw.remove(&reg.raw);
             let _ = self.os.delete(borrowed(&*reg.socket));
+            t.trash.push(Trash::Socket(reg.socket));
         }
     }
 
@@ -330,15 +418,16 @@ impl Shared {
                 return Some(deadline);
             }
             t.heap.pop();
-            if live && let Some(waiter) = self.remove_waiter(t, id) {
-                t.to_fire.push((waiter.cell, Why::TimedOut));
+            if live && let Some(cell) = t.waiters.get(&id).map(|w| Arc::clone(&w.cell)) {
+                t.to_fire.push((cell, Why::TimedOut));
+                self.remove_waiter(t, id);
             }
         }
         None
     }
 
     /// An event of the operating system's poller for the registration `key`.
-    fn event(&self, t: &mut Table, key: u64, readable: bool, writable: bool) {
+    fn event(&self, t: &mut Table, key: usize, readable: bool, writable: bool) {
         let Some(reg) = t.regs.get_mut(&key) else {
             // Its registration was deleted after the event was queued: stale.
             return;
@@ -352,61 +441,101 @@ impl Shared {
         }
         for id in ids {
             if let Some(w) = t.waiters.remove(&id) {
-                if w.deadline.is_some() {
-                    t.live_deadlines -= 1;
-                }
+                self.ended(t, &w);
                 t.to_fire.push((w.cell, Why::Ready));
             }
         }
         // The one shot is used up whatever came: arm what is left, or delete.
         self.rearm(t, key);
     }
+
+    /// The thread's loop, until the poller is halted or something panics.
+    fn run_loop(&self) {
+        let mut events =
+            polling::Events::with_capacity(NonZeroUsize::new(EVENTS).expect("not zero"));
+        loop {
+            self.loops.fetch_add(1, Ordering::Relaxed);
+            let planned = {
+                let mut t = self.lock();
+                if t.halt.is_some() {
+                    return;
+                }
+                let planned = self.expire(&mut t, Instant::now());
+                t.planned = planned;
+                if let Some(p) = self.unlock_and_fire(t) {
+                    resume_unwind(p);
+                }
+                planned
+            };
+            events.clear();
+            if let Err(e) = self
+                .os
+                .wait(&mut events, sleep_for(planned, Instant::now()))
+            {
+                let mut t = self.lock();
+                if t.halt.is_none() {
+                    t.halt = Some(Halt::Failed(e.to_string()));
+                }
+                return;
+            }
+            let mut t = self.lock();
+            for event in events.iter() {
+                self.event(&mut t, event.key, event.readable, event.writable);
+            }
+            if let Some(p) = self.unlock_and_fire(t) {
+                resume_unwind(p);
+            }
+        }
+    }
+
+    /// The thread's end, whatever the reason (a stop, a failed wait, a panic): marks the poller
+    /// halted so that nothing is armed on it from now on, deletes every registration, and then
+    /// resolves every waiter that is left with `Why::Failed`, also those whose cell is held
+    /// elsewhere (a cancel hook, an object's slot), which would otherwise never be woken. The
+    /// sockets are released and the cells let go after the lock is gone.
+    fn leave(&self) {
+        let (regs, waiters, to_fire, trash) = {
+            let mut t = self.lock();
+            if t.halt.is_none() {
+                t.halt = Some(Halt::Failed("the poller thread ended".to_string()));
+            }
+            for reg in t.regs.values() {
+                let _ = self.os.delete(borrowed(&*reg.socket));
+            }
+            t.by_raw.clear();
+            t.heap.clear();
+            t.live_deadlines = 0;
+            (
+                std::mem::take(&mut t.regs),
+                std::mem::take(&mut t.waiters),
+                std::mem::take(&mut t.to_fire),
+                std::mem::take(&mut t.trash),
+            )
+        };
+        let cells = to_fire
+            .into_iter()
+            .chain(waiters.into_values().map(|w| (w.cell, Why::Failed)));
+        // A callback that panics here is lost with the thread; the others still run.
+        let _ = fire_all(cells.collect());
+        drop(trash);
+        drop(regs);
+    }
 }
 
-/// The thread's loop.
+/// The thread's body.
 fn run(shared: &Shared) {
-    let mut events = polling::Events::with_capacity(NonZeroUsize::new(EVENTS).expect("not zero"));
-    loop {
-        shared.loops.fetch_add(1, Ordering::Relaxed);
-        let planned = {
-            let mut t = shared.lock();
-            if t.halt.is_some() {
-                break;
-            }
-            let planned = shared.expire(&mut t, Instant::now());
-            t.planned = planned;
-            shared.unlock_and_fire(t);
-            planned
-        };
-        events.clear();
-        let timeout = planned.map(|d| d.saturating_duration_since(Instant::now()));
-        if let Err(e) = shared.os.wait(&mut events, timeout) {
-            let mut t = shared.lock();
-            if t.halt.is_none() {
-                t.halt = Some(Halt::Failed(e.to_string()));
-            }
-            break;
-        }
+    if let Err(panic) = catch_unwind(AssertUnwindSafe(|| shared.run_loop())) {
         let mut t = shared.lock();
-        for event in events.iter() {
-            shared.event(&mut t, event.key as u64, event.readable, event.writable);
+        if t.halt.is_none() {
+            let why = panic
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "(no message)".to_string());
+            t.halt = Some(Halt::Failed(format!("the poller thread panicked: {why}")));
         }
-        shared.unlock_and_fire(t);
     }
-    // Leaving: delete every registration before its socket reference is released, then drop the
-    // waiters unresolved (their callbacks are dropped with them: a waiter that holds a
-    // completer is woken by that with "ended without a result", and every other holder finds
-    // the cell empty).
-    let mut t = shared.lock();
-    let regs: Vec<Reg> = t.regs.drain().map(|(_, r)| r).collect();
-    t.by_raw.clear();
-    for reg in regs {
-        let _ = shared.os.delete(borrowed(&*reg.socket));
-    }
-    t.waiters.clear();
-    t.heap.clear();
-    t.live_deadlines = 0;
-    t.to_fire.clear();
+    shared.leave();
 }
 
 /// Why a poller could not be started.
@@ -418,10 +547,12 @@ pub(super) enum StartError {
     Thread(io::Error),
 }
 
-/// The poller thread of one `Vm`. Dropping it stops the thread and joins it.
+/// The poller thread of one `Vm`. Its owner (`NetState`) stops it with [`Poller::stop`]; being
+/// dropped does the same, and never joins from the poller's own thread.
 pub(super) struct Poller {
     shared: Arc<Shared>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    thread_id: ThreadId,
 }
 
 impl Poller {
@@ -441,6 +572,7 @@ impl Poller {
                 live_deadlines: 0,
                 planned: None,
                 to_fire: Vec::new(),
+                trash: Vec::new(),
             }),
             loops: AtomicU64::new(0),
         });
@@ -453,11 +585,13 @@ impl Poller {
         };
         Ok(Poller {
             shared,
+            thread_id: thread.thread().id(),
             thread: Mutex::new(Some(thread)),
         })
     }
 
-    /// Whether the thread runs and takes waits (not stopped, not broken by a failed wait).
+    /// Whether the thread runs and takes waits (not stopped, not broken by a failed wait or a
+    /// panic).
     pub(super) fn is_alive(&self) -> bool {
         self.shared.lock().halt.is_none()
             && lock(&self.thread)
@@ -465,15 +599,39 @@ impl Poller {
                 .is_some_and(|t| !t.is_finished())
     }
 
+    /// Stops the thread and joins it (unless this is the poller's own thread, which cannot join
+    /// itself): every wait that is still armed is resolved with [`Why::Failed`] before this
+    /// returns, and no wait can be armed afterwards. Calling it again does nothing.
+    pub(super) fn stop(&self) {
+        {
+            let mut t = self.shared.lock();
+            if t.halt.is_none() {
+                t.halt = Some(Halt::Stopped);
+            }
+        }
+        self.shared.notify();
+        if std::thread::current().id() == self.thread_id {
+            return;
+        }
+        if let Some(thread) = lock(&self.thread).take() {
+            // A thread that panicked has nothing more to say here.
+            let _ = thread.join();
+        }
+    }
+
     /// Waits for `source` to be readable or writable (`dir`) until `deadline`, and resolves
     /// `cell` with [`Why::Ready`] or [`Why::TimedOut`]. If the socket is ready already it
     /// reports at once (through the thread, not from this call). The poller holds a reference to
     /// `source` until the wait ends, whichever way it ends. Does nothing if `cell` is resolved
-    /// already. An `Err` means nothing was armed and the cell is still unresolved; the caller makes
-    /// its system call to learn why, or fails.
+    /// already. An `Err` means nothing was armed and the cell is still unresolved, with nothing
+    /// left on it; the caller makes its system call to learn why, or fails. A poller that has
+    /// stopped or whose thread is gone refuses every arm.
     ///
     /// At most one wait per direction on one socket: a second is an error (the queues of turns
     /// of the objects never allow it).
+    ///
+    /// `source` and `cell` (its callback and clean-ups) must not own the `Poller`: see
+    /// [`Cell::new`].
     pub(super) fn arm<S: Source>(
         &self,
         source: &Arc<S>,
@@ -481,6 +639,9 @@ impl Poller {
         deadline: Option<Instant>,
         cell: &Arc<Cell>,
     ) -> io::Result<()> {
+        if cell.is_resolved() {
+            return Ok(());
+        }
         let source: Arc<dyn Source> = Arc::clone(source) as Arc<dyn Source>;
         let raw = raw_id(&*source);
         let mut t = self.shared.lock();
@@ -502,17 +663,6 @@ impl Poller {
         }
         let id = t.next;
         t.next += 1;
-        let weak = Arc::downgrade(&self.shared);
-        let removal = move || {
-            if let Some(shared) = weak.upgrade() {
-                let mut t = shared.lock();
-                shared.remove_waiter(&mut t, id);
-                shared.unlock_and_fire(t);
-            }
-        };
-        if !cell.on_resolve(removal) {
-            return Ok(());
-        }
         let reg_key = match key {
             Some(k) => {
                 let reg = t.regs.get_mut(&k).expect("by_raw and regs agree");
@@ -520,8 +670,7 @@ impl Poller {
                     Dir::Read => reg.read = Some(id),
                     Dir::Write => reg.write = Some(id),
                 }
-                let event =
-                    polling::Event::new(k as usize, reg.read.is_some(), reg.write.is_some());
+                let event = polling::Event::new(k, reg.read.is_some(), reg.write.is_some());
                 if let Err(e) = self.shared.os.modify(borrowed(&*reg.socket), event) {
                     match dir {
                         Dir::Read => reg.read = None,
@@ -534,11 +683,13 @@ impl Poller {
             None => {
                 let k = t.next;
                 t.next += 1;
-                let event = polling::Event::new(k as usize, dir == Dir::Read, dir == Dir::Write);
+                let event = polling::Event::new(k, dir == Dir::Read, dir == Dir::Write);
                 // SAFETY: the table owns `source` (an `Arc`) from here until the registration
-                // is deleted, and every path that removes a `Reg` from the table (`rearm`,
-                // the exit of the thread) calls `delete` before it drops the `Reg`, so the
-                // socket is open and the same one for as long as it is registered.
+                // is deleted. Every path that removes a `Reg` from the table calls `delete`
+                // before the socket reference is released: `rearm` (both of its branches), the
+                // thread's `leave`, and `Drop for Shared` (a table that is not empty when the
+                // last owner goes). So the socket is open, and the same one, for as long as it
+                // is registered.
                 unsafe { self.shared.os.add(raw_for_add(&*source), event)? };
                 t.regs.insert(
                     k,
@@ -563,6 +714,13 @@ impl Poller {
             },
         );
         let wake = self.note_deadline(&mut t, id, deadline);
+        // Only now, with nothing that can fail left, does the cell learn how to remove this
+        // wait. If it was resolved in between, the wait is taken out again.
+        if !cell.on_resolve(self.removal(id)) {
+            self.shared.remove_waiter(&mut t, id);
+            self.shared.unlock_and_fire_here(t);
+            return Ok(());
+        }
         drop(t);
         // Windows needs the thread woken for every change (see the module comment).
         if cfg!(windows) || wake {
@@ -571,26 +729,31 @@ impl Poller {
         Ok(())
     }
 
+    /// The clean-up that takes the wait `id` out of the table when its cell is resolved.
+    fn removal(&self, id: usize) -> impl FnOnce() + Send + use<> {
+        let weak = Arc::downgrade(&self.shared);
+        move || {
+            if let Some(shared) = weak.upgrade() {
+                let mut t = shared.lock();
+                shared.remove_waiter(&mut t, id);
+                shared.unlock_and_fire_here(t);
+            }
+        }
+    }
+
     /// Resolves `cell` with [`Why::TimedOut`] at `deadline`, with no socket involved. Does
-    /// nothing if `cell` is resolved already.
+    /// nothing if `cell` is resolved already; refuses on a poller that has stopped. The same rule
+    /// as for `arm`: the cell must not own the `Poller`.
     pub(super) fn timer(&self, deadline: Instant, cell: &Arc<Cell>) -> io::Result<()> {
+        if cell.is_resolved() {
+            return Ok(());
+        }
         let mut t = self.shared.lock();
         if let Some(halt) = &t.halt {
             return Err(halt_error(halt));
         }
         let id = t.next;
         t.next += 1;
-        let weak = Arc::downgrade(&self.shared);
-        let removal = move || {
-            if let Some(shared) = weak.upgrade() {
-                let mut t = shared.lock();
-                shared.remove_waiter(&mut t, id);
-                shared.unlock_and_fire(t);
-            }
-        };
-        if !cell.on_resolve(removal) {
-            return Ok(());
-        }
         t.waiters.insert(
             id,
             Waiter {
@@ -601,6 +764,11 @@ impl Poller {
             },
         );
         let wake = self.note_deadline(&mut t, id, Some(deadline));
+        if !cell.on_resolve(self.removal(id)) {
+            self.shared.remove_waiter(&mut t, id);
+            self.shared.unlock_and_fire_here(t);
+            return Ok(());
+        }
         drop(t);
         if wake {
             self.shared.notify();
@@ -610,7 +778,7 @@ impl Poller {
 
     /// Records the deadline of a new waiter; whether the thread must be woken to plan again
     /// (the deadline is earlier than the one it sleeps towards, or it sleeps without one).
-    fn note_deadline(&self, t: &mut Table, id: u64, deadline: Option<Instant>) -> bool {
+    fn note_deadline(&self, t: &mut Table, id: usize, deadline: Option<Instant>) -> bool {
         let Some(deadline) = deadline else {
             return false;
         };
@@ -666,22 +834,13 @@ fn raw_for_add(source: &dyn Source) -> std::os::windows::io::RawSocket {
 
 impl Drop for Poller {
     fn drop(&mut self) {
-        {
-            let mut t = self.shared.lock();
-            if t.halt.is_none() {
-                t.halt = Some(Halt::Stopped);
-            }
-        }
-        self.shared.notify();
-        if let Some(thread) = lock(&self.thread).take() {
-            // A thread that panicked has nothing more to say here.
-            let _ = thread.join();
-        }
+        self.stop();
     }
 }
 
-/// What the `Vm` keeps for `net`: the poller, made by the first wait that needs it and joined
-/// when the `Vm` is dropped (the `Vm`'s host state drops with it).
+/// What the `Vm` keeps for `net`: the poller, made by the first wait that needs it, stopped and
+/// joined when the `Vm` is dropped (the `Vm`'s host state drops with it), whoever else still
+/// holds an `Arc` of it.
 #[derive(Default)]
 pub(super) struct NetState {
     poller: Option<Arc<Poller>>,
@@ -702,10 +861,19 @@ impl NetState {
     }
 }
 
+impl Drop for NetState {
+    fn drop(&mut self) {
+        if let Some(poller) = self.poller.take() {
+            poller.stop();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{ErrorKind, Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::atomic::AtomicUsize;
     use std::sync::{Barrier, mpsc};
     use std::time::Duration;
@@ -1159,10 +1327,10 @@ mod tests {
         }
     }
 
-    /// Dropping the poller stops its thread and joins it, and releases every socket reference
-    /// and every callback of the waits that were still armed.
+    /// Dropping the poller stops its thread and joins it, resolves every wait that was still
+    /// armed with `Why::Failed`, and releases every socket reference.
     #[test]
-    fn dropping_the_poller_joins_the_thread_and_releases_what_it_held() {
+    fn dropping_the_poller_joins_the_thread_and_resolves_and_releases_what_it_held() {
         let p = poller();
         let gone = p.gone_probe();
         let (a, _b) = pair();
@@ -1181,39 +1349,281 @@ mod tests {
         p.timer(Instant::now() + Duration::from_secs(3600), &timer)
             .unwrap();
         assert!(!gone());
-        // Only the table holds the cells from here on.
-        drop((read, write, timer));
         drop(p);
         assert!(gone(), "the thread still holds the poller's state");
         assert_eq!(Arc::strong_count(&a), 1);
         assert_eq!(Arc::strong_count(&c), 1);
         for rx in [&read_rx, &write_rx, &timer_rx] {
-            // Unresolved: the callbacks were dropped, not run.
-            assert!(matches!(
-                rx.recv_timeout(CEILING),
-                Err(mpsc::RecvTimeoutError::Disconnected)
-            ));
+            assert_eq!(expect(rx), Why::Failed);
         }
+        // The cells are still held here, as a cancel hook would hold them: resolved already.
+        assert!(read.is_resolved() && write.is_resolved() && timer.is_resolved());
     }
 
     /// A stopped poller refuses new waits instead of keeping them for ever.
     #[test]
     fn a_wait_cannot_be_armed_on_a_poller_that_has_stopped() {
         let p = poller();
-        let shared = Arc::clone(&p.shared);
         let (a, _b) = pair();
-        drop(p);
+        p.stop();
         let (cell, rx) = cell();
-        let stopped = Poller {
-            shared,
-            thread: Mutex::new(None),
-        };
-        assert!(stopped.arm(&a, Dir::Read, None, &cell).is_err());
-        assert!(stopped.timer(Instant::now(), &cell).is_err());
-        assert!(!stopped.is_alive());
+        assert!(p.arm(&a, Dir::Read, None, &cell).is_err());
+        assert!(p.timer(Instant::now(), &cell).is_err());
+        assert!(!p.is_alive());
+        assert!(!cell.is_resolved());
         assert_quiet(&rx);
-        // Dropping the stand-in is harmless.
-        drop(stopped);
+        assert_eq!(p.counts(), (0, 0));
+        // Stopping again does nothing.
+        p.stop();
+    }
+
+    /// M1: when the thread leaves because its wait failed, a waiter whose cell is held
+    /// elsewhere as well (the cancel hook of its suspension, an object's slot) is resolved, not
+    /// left hanging with the poller replaced behind its back.
+    #[test]
+    fn a_poller_whose_wait_failed_resolves_waiters_whose_cell_is_held_elsewhere() {
+        let mut state = NetState::default();
+        let p = state.poller().unwrap();
+        let (a, _b) = pair();
+        let (c, rx) = cell();
+        let held_by_the_hook = Arc::clone(&c);
+        p.arm(&a, Dir::Read, None, &c).unwrap();
+        drop(c);
+        // What a failed `wait` does: the thread records the failure and leaves.
+        p.shared.lock().halt = Some(Halt::Failed("simulated".into()));
+        p.shared.notify();
+        assert_eq!(expect(&rx), Why::Failed);
+        assert!(held_by_the_hook.is_resolved());
+        let began = Instant::now();
+        while p.is_alive() || lock(&p.thread).as_ref().is_some_and(|t| !t.is_finished()) {
+            assert!(began.elapsed() < CEILING);
+            std::thread::yield_now();
+        }
+        assert_eq!(p.counts(), (0, 0));
+        assert_eq!(Arc::strong_count(&a), 1);
+        // The next wait gets a new poller, and the old one refuses.
+        let q = state.poller().unwrap();
+        assert!(!Arc::ptr_eq(&p, &q));
+        assert!(p.timer(Instant::now(), &held_by_the_hook).is_ok());
+        let (d, _drx) = self::cell();
+        assert!(p.timer(Instant::now(), &d).is_err());
+    }
+
+    /// M2: a callback that panics does not kill the thread silently. The others in the same batch
+    /// and every other waiter are resolved (`Why::Failed` for the ones that were not due), and the
+    /// poller refuses new waits.
+    #[test]
+    fn a_panicking_callback_fails_the_poller_and_resolves_everything_else() {
+        let p = poller();
+        let (a, mut ap) = pair();
+        let (b, _bp) = pair();
+        let (c, mut cp) = pair();
+        let bad = Cell::new(|_why| panic!("callback panics"));
+        p.arm(&a, Dir::Read, None, &bad).unwrap();
+        let (other, other_rx) = cell();
+        p.arm(&b, Dir::Read, None, &other).unwrap();
+        // Due in the same batch as the bad one, after it.
+        let (same_batch, same_batch_rx) = self::cell();
+        p.arm(&c, Dir::Read, None, &same_batch).unwrap();
+        ap.write_all(b"x").unwrap();
+        cp.write_all(b"x").unwrap();
+        // Both are resolved, whichever order the system reported them in.
+        assert!(matches!(expect(&same_batch_rx), Why::Ready | Why::Failed));
+        assert_eq!(expect(&other_rx), Why::Failed);
+        let began = Instant::now();
+        while p.is_alive() {
+            assert!(began.elapsed() < CEILING);
+            std::thread::yield_now();
+        }
+        let (late, _late_rx) = self::cell();
+        assert!(p.arm(&c, Dir::Read, None, &late).is_err());
+        assert!(!late.is_resolved());
+        assert_eq!(p.counts(), (0, 0));
+        assert_eq!(Arc::strong_count(&b), 1);
+        assert_eq!(Arc::strong_count(&c), 1);
+    }
+
+    /// A clean-up that panics does not keep the callback from running.
+    #[test]
+    fn a_cleanup_that_panics_does_not_keep_the_callback_from_running() {
+        let (cell, rx) = cell();
+        assert!(cell.on_resolve(|| panic!("clean-up panics")));
+        let outcome = catch_unwind(AssertUnwindSafe(|| cell.fire(Why::Closed)));
+        assert!(outcome.is_err(), "the panic is passed on");
+        assert_eq!(expect(&rx), Why::Closed);
+    }
+
+    /// The callback runs after the clean-ups: when it runs, the registrations of its wait are gone.
+    #[test]
+    fn the_callback_runs_after_the_cleanups() {
+        let cleaned = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(AtomicUsize::new(usize::MAX));
+        let cell = {
+            let (cleaned, seen) = (Arc::clone(&cleaned), Arc::clone(&seen));
+            Cell::new(move |_| seen.store(cleaned.load(Ordering::SeqCst), Ordering::SeqCst))
+        };
+        for _ in 0..3 {
+            let cleaned = Arc::clone(&cleaned);
+            assert!(cell.on_resolve(move || {
+                cleaned.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        assert!(cell.fire(Why::Ready));
+        assert_eq!(seen.load(Ordering::SeqCst), 3);
+    }
+
+    /// A refused arm leaves no clean-up on the cell, and a resolved cell armed again does
+    /// nothing, also where the direction is taken.
+    #[test]
+    fn a_refused_or_resolved_arm_leaves_nothing_on_the_cell() {
+        let p = poller();
+        let (a, _b) = pair();
+        let (first, _first_rx) = cell();
+        p.arm(&a, Dir::Read, None, &first).unwrap();
+        let (second, second_rx) = self::cell();
+        assert!(p.arm(&a, Dir::Read, None, &second).is_err());
+        assert_eq!(lock(&second.state).cleanups.len(), 0);
+        assert!(p.arm(&a, Dir::Write, None, &second).is_ok());
+        assert_eq!(lock(&second.state).cleanups.len(), 1);
+        assert!(second.fire(Why::Cancelled));
+        assert_eq!(expect(&second_rx), Why::Cancelled);
+        assert!(
+            p.arm(&a, Dir::Read, None, &second).is_ok(),
+            "resolved: does nothing"
+        );
+        assert_eq!(p.counts(), (1, 1));
+        assert!(first.fire(Why::Closed));
+    }
+
+    /// S1: waits that end by an event leave no stale deadline behind, also while one live early
+    /// deadline sits at the top of the heap.
+    #[test]
+    fn deadlines_of_waits_ended_by_events_do_not_pile_up_either() {
+        let p = poller();
+        let (a, _ap) = pair();
+        let (pin, _pin_rx) = cell();
+        p.arm(
+            &a,
+            Dir::Read,
+            Some(Instant::now() + Duration::from_secs(3600)),
+            &pin,
+        )
+        .unwrap();
+        let (b, mut bp) = pair();
+        let mut byte = [0u8; 1];
+        for _ in 0..500 {
+            let (c, rx) = self::cell();
+            p.arm(
+                &b,
+                Dir::Read,
+                Some(Instant::now() + Duration::from_secs(7200)),
+                &c,
+            )
+            .unwrap();
+            bp.write_all(b"x").unwrap();
+            assert_eq!(expect(&rx), Why::Ready);
+            let began = Instant::now();
+            while (&*b).read(&mut byte).is_err() {
+                assert!(began.elapsed() < CEILING);
+                std::thread::yield_now();
+            }
+        }
+        assert!(
+            p.heap_len() <= 64 + 2,
+            "{} entries for one live deadline",
+            p.heap_len()
+        );
+        assert_eq!(p.counts(), (1, 1));
+    }
+
+    /// S2: what the thread asks the system to sleep is bounded, however far the deadline is.
+    #[test]
+    fn the_sleep_asked_of_the_system_is_bounded() {
+        let now = Instant::now();
+        assert_eq!(sleep_for(None, now), None);
+        let short = now + Duration::from_millis(50);
+        assert_eq!(sleep_for(Some(short), now), Some(Duration::from_millis(50)));
+        let years = now
+            .checked_add(Duration::from_secs(10 * 365 * 86_400))
+            .unwrap_or(now + Duration::from_secs(100 * 86_400));
+        assert_eq!(sleep_for(Some(years), now), Some(MAX_SLEEP));
+        assert_eq!(
+            sleep_for(Some(now), now + Duration::from_secs(1)),
+            Some(Duration::ZERO)
+        );
+    }
+
+    /// A wait with a deadline of years next to a short one: both are planned, the short one
+    /// fires, and the poller goes on to hold the long one.
+    #[test]
+    fn a_deadline_of_years_does_not_disturb_a_short_one() {
+        let p = poller();
+        let (a, _ap) = pair();
+        let (c, _cp) = pair();
+        let far = Instant::now()
+            .checked_add(Duration::from_secs(10 * 365 * 86_400))
+            .unwrap_or(Instant::now() + Duration::from_secs(100 * 86_400));
+        let (long, long_rx) = cell();
+        p.arm(&a, Dir::Read, Some(far), &long).unwrap();
+        let (short, short_rx) = self::cell();
+        p.arm(
+            &c,
+            Dir::Read,
+            Some(Instant::now() + Duration::from_millis(50)),
+            &short,
+        )
+        .unwrap();
+        assert_eq!(expect(&short_rx), Why::TimedOut);
+        assert!(p.is_alive());
+        assert_quiet(&long_rx);
+        assert_eq!(p.counts(), (1, 1));
+    }
+
+    /// S4: the state of the `Vm` stops the thread, whoever else holds the poller; a closure that
+    /// holds the poller (against the rule) is dropped on the poller's own thread without a join of
+    /// itself, and the thread is gone after the state is dropped.
+    #[test]
+    fn the_state_stops_the_thread_even_if_someone_else_holds_the_poller() {
+        let mut state = NetState::default();
+        let held = state.poller().unwrap();
+        let (a, _b) = pair();
+        // Against the rule on purpose: the callback owns the poller, so the last reference is
+        // dropped on the poller thread when the wait is resolved there.
+        let (tx, rx) = mpsc::channel();
+        let owner = Arc::clone(&held);
+        let cell = Cell::new(move |why| {
+            let _ = tx.send(why);
+            drop(owner);
+        });
+        held.arm(&a, Dir::Read, None, &cell).unwrap();
+        drop(cell);
+        let gone = held.gone_probe();
+        drop(state);
+        assert_eq!(expect(&rx), Why::Failed);
+        assert!(!held.is_alive(), "the thread outlived the state");
+        let (late, _late_rx) = self::cell();
+        assert!(held.timer(Instant::now(), &late).is_err());
+        assert!(!gone());
+        drop(held);
+        assert!(gone());
+    }
+
+    /// A read and a write waiting together on a socket whose peer resets it: both are told.
+    #[test]
+    fn a_peer_reset_ends_a_read_and_a_write_waiting_together() {
+        let p = poller();
+        let (a, b) = pair();
+        fill(&a);
+        let (write_cell, write_rx) = cell();
+        let (read_cell, read_rx) = self::cell();
+        p.arm(&a, Dir::Write, None, &write_cell).unwrap();
+        p.arm(&a, Dir::Read, None, &read_cell).unwrap();
+        assert_eq!(p.counts(), (1, 2));
+        SockRef::from(&b).set_linger(Some(Duration::ZERO)).unwrap();
+        drop(b);
+        assert_eq!(expect(&read_rx), Why::Ready);
+        assert_eq!(expect(&write_rx), Why::Ready);
+        assert_clean(&p, &a);
     }
 
     #[test]
