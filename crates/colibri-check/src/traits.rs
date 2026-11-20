@@ -344,6 +344,61 @@ impl Env<'_> {
         }
     }
 
+    /// The narrow integer that makes `ty` fail `iface` (an operator interface), when that is
+    /// the reason: `ty` is one, or an impl of `ty` that matches in everything else needs an
+    /// operator bound of its own on one (`impl[T: Add] Add for W[T]` with `W[i32]`). `None`
+    /// when the impl is simply missing.
+    pub fn narrow_blocker(&self, ty: &Ty, iface: TypeId, args: &[Ty], depth: usize) -> Option<Ty> {
+        if !crate::types::is_operator(iface) || depth > 64 {
+            return None;
+        }
+        if matches!(ty, Ty::Int(t) if !matches!(t, IntTy::I64 | IntTy::U64)) {
+            return Some(ty.clone());
+        }
+        let key = key_of(ty)?;
+        let ids: Vec<ImplId> = if is_binary_operator(iface) {
+            self.op_impls
+                .get(&(key, iface))
+                .map(|l| l.iter().map(|(_, id)| *id).collect())
+                .unwrap_or_default()
+        } else {
+            self.by_key
+                .get(&(key, iface))
+                .copied()
+                .into_iter()
+                .collect()
+        };
+        for id in ids {
+            let info = &self.impls[id.0 as usize];
+            let params: Vec<ParamId> = info.generics.iter().map(|g| g.id).collect();
+            let mut subst = Vec::new();
+            if !match_ty(&info.target, ty, &params, &mut subst) {
+                continue;
+            }
+            let wanted: Vec<Ty> = info.iface_args.iter().map(|a| a.subst(&subst)).collect();
+            let agree = wanted.len() == args.len()
+                && wanted
+                    .iter()
+                    .zip(args)
+                    .all(|(w, a)| matches!(a, Ty::Infer(_) | Ty::Error) || w == a);
+            if !agree {
+                continue;
+            }
+            for g in &info.generics {
+                let Some((_, arg)) = subst.iter().find(|(q, _)| *q == g.id) else {
+                    continue;
+                };
+                for b in &g.bounds {
+                    let bargs: Vec<Ty> = b.args.iter().map(|a| a.subst(&subst)).collect();
+                    if let Some(n) = self.narrow_blocker(arg, b.iface, &bargs, depth + 1) {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// [`Env::user`] for one particular impl.
     fn user_with(&self, id: ImplId, ty: &Ty, args: &[Ty]) -> Result<Source, Ty> {
         let info = &self.impls[id.0 as usize];

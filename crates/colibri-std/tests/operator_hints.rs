@@ -163,14 +163,29 @@ fn a_narrow_integer_inside_a_generic_impl_gets_the_cannot_be_used_message() {
 }
 
 #[test]
-fn a_narrow_right_operand_with_a_wide_left_one_points_at_the_narrow_operand() {
+fn a_bound_naming_i32_with_an_int_left_operand_is_a_plain_missing_impl() {
     let (message, hint) = first_error(
         "fn named[T: Mul[i32, T]](a: T, k: i32) -> T => a * k\nlet x = named(int(2), i32(3))\n",
     );
-    assert_eq!(
-        message,
-        "`i32` cannot be used as the right-hand type of `T: Mul` yet"
+    assert_eq!(message, "`int` does not implement `Mul[i32, int]`");
+    assert!(
+        hint.contains("`int` and `i32` are different types"),
+        "{hint}"
     );
-    assert!(hint.contains("convert that operand to `int`"), "{hint}");
     assert!(!hint.contains("use a type of your own"), "{hint}");
+}
+
+#[test]
+fn a_missing_impl_is_not_blamed_on_a_narrow_integer() {
+    // `Money` has `Mul[int]` but no `Mul[i32]`: the impl is missing, nothing is narrow.
+    let (message, hint) = first_error(
+        "struct Money { c: int }\nimpl Mul[int] for Money {\n    fn mul(self, k: int) -> Money => Money { c: self.c * k }\n}\nfn named[T: Mul[i32, T]](a: T, k: i32) -> T => a * k\nlet x = named(Money { c: 2 }, i32(3))\n",
+    );
+    assert_eq!(message, "`Money` does not implement `Mul[i32, Money]`");
+    assert_eq!(hint, "add `impl Mul[i32, Money] for Money { ... }`");
+    // `W[T]` has no `Add` at all.
+    let (message, _) = first_error(
+        "struct W[T] { v: T }\nfn twice[T: Add](a: T) -> T => a + a\nlet x = twice(W { v: i32(2) })\n",
+    );
+    assert_eq!(message, "`W[i32]` does not implement `Add[W[i32], W[i32]]`");
 }

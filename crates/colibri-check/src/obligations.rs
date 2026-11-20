@@ -61,18 +61,6 @@ fn is_narrow(ty: &Ty) -> bool {
     matches!(ty, Ty::Int(t) if !matches!(t, crate::types::IntTy::I64 | crate::types::IntTy::U64))
 }
 
-/// A narrow integer type in `ty`, at its top or among the type arguments inside it.
-fn find_narrow(ty: &Ty) -> Option<Ty> {
-    if is_narrow(ty) {
-        return Some(ty.clone());
-    }
-    match ty {
-        Ty::Adt(_, args) => args.iter().find_map(find_narrow),
-        Ty::Tuple(items) => items.iter().find_map(find_narrow),
-        _ => None,
-    }
-}
-
 /// The narrow integer an operator bound would hand to run-time dispatch: the bounded type
 /// itself, or the right-hand type when the bound leaves it to a type parameter.
 fn narrow_operand(ob: &Obligation) -> Option<Ty> {
@@ -205,15 +193,11 @@ impl Checker<'_> {
             },
             Err(blame) => blame,
         };
-        // An operator bound failing because of a narrow integer in the type (`W[i32]`) or in the
-        // right-hand type: say so, instead of "does not implement" with a hint to add an impl.
-        let blame = if crate::types::is_operator(ob.iface)
-            && matches!(ob.origin, Origin::Bound { .. })
-            && !is_narrow(&blame)
-        {
-            std::iter::once(&ob.ty)
-                .chain(ob.args.iter())
-                .find_map(find_narrow)
+        // An operator bound that fails because a narrow integer is in the way (`W[i32]` through
+        // `impl[T: Add] Add for W[T]`) says so; one that fails because an impl is missing does not.
+        let blame = if matches!(ob.origin, Origin::Bound { .. }) && !is_narrow(&blame) {
+            self.env()
+                .narrow_blocker(&ob.ty, ob.iface, &ob.args, 0)
                 .unwrap_or(blame)
         } else {
             blame
@@ -383,6 +367,15 @@ impl Checker<'_> {
                 };
                 format!(
                     "{kind} is ordered by its parts, and this one has a part that cannot be ordered; implement `Ord` for it: `impl Ord for {blamed} {{ fn cmp(self, other: {blamed}) -> int {{ ... }} }}`"
+                )
+            }
+            Ty::Int(_) | Ty::Float | Ty::F32
+                if crate::types::is_operator(ob.iface)
+                    && matches!(ob.args.first(), Some(a @ (Ty::Int(_) | Ty::Float | Ty::F32)) if a != blame) =>
+            {
+                let other = ob.args.first().map(|a| self.render(a)).unwrap_or_default();
+                format!(
+                    "`{blamed}` and `{other}` are different types, and an arithmetic operator takes two operands of one type: convert one of them, for example `{blamed}(x)`"
                 )
             }
             Ty::Int(_) | Ty::Float | Ty::F32 | Ty::Str | Ty::Bytes | Ty::Bool | Ty::Char
