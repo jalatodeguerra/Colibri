@@ -1825,7 +1825,8 @@ fn loopback_for(addr: SocketAddr) -> SocketAddr {
 }
 
 /// Makes a listener at `addr` readable by connecting to it (on loopback when it listens on every
-/// interface), without waiting for the connection to complete.
+/// interface). It returns when the handshake is over (or after `WAKE_PATIENCE`), and the
+/// connection is dropped.
 fn wake_listener(addr: &str) {
     let Ok(addr) = addr.parse::<SocketAddr>().map(loopback_for) else {
         return;
@@ -1833,11 +1834,27 @@ fn wake_listener(addr: &str) {
     let Ok(sock) = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP)) else {
         return;
     };
-    if sock.set_nonblocking(true).is_ok() {
-        // Started and dropped: on loopback the system finishes the handshake by itself.
-        let _ = sock.connect(&SockAddr::from(addr));
+    if sock.set_nonblocking(true).is_err() {
+        return;
+    }
+    match sock.connect(&SockAddr::from(addr)) {
+        Ok(()) => {}
+        // The socket is kept until the handshake is over, because a socket that is closed
+        // while it still waits for the answer to its first packet takes the connection with
+        // it. Linux hands loopback packets on inside the `connect` call itself, so there the
+        // handshake is over when the call returns; macOS queues them for another thread, and
+        // the listener then only ever sees a connection that was withdrawn (it never becomes
+        // readable). The wait is short and bounded: on loopback the handshake takes
+        // microseconds, and `close` must not wait for more.
+        Err(e) if in_progress(&e) => {
+            let _ = sys::wait_ready(&sock, true, WAKE_PATIENCE);
+        }
+        Err(_) => {}
     }
 }
+
+/// The longest `wake_listener` waits for the handshake of its connection to finish.
+const WAKE_PATIENCE: Duration = Duration::from_millis(200);
 
 impl HostType for Listener {
     const NAME: &'static str = "Listener";
