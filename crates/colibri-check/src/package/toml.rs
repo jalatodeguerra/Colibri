@@ -103,18 +103,20 @@ pub fn read_config(file: FileId, text: &str, name: &str) -> Config {
                 let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
                 super::git::last_at_like(&text[start..end]).is_some()
             };
-            if has_at(error.span.start as usize)
-                || error.labels.iter().any(|(s, _)| has_at(s.start as usize))
-            {
-                // Only the part of the message that does not depend on the text is kept (a
-                // hint is fixed text too: the parser writes none that quotes); the labels
-                // quote the text, and are dropped.
+            // The message is decided by the line of the error alone: a line with an `@`
+            // is not shown, so only the part of the message that does not depend on the
+            // text is said (a hint is fixed text too: the parser writes none that quotes).
+            // The quoted detail of a message is on that line (the key that is defined twice
+            // is written on the primary line as well as on the first one), so when the
+            // primary line is shown, quoting is no leak even if the label's line is hidden.
+            if has_at(error.span.start as usize) {
                 let what = fixed.unwrap_or_else(|| format!("this line of `{name}` cannot be read"));
                 error.message = format!(
                     "{what} (the text of this line is not shown: the file does not parse and the line has an `@` in it, so it may hold a credential)"
                 );
-                error.labels.clear();
             }
+            // A label that points into a hidden line is dropped, whatever the message is.
+            error.labels.retain(|(s, _)| !has_at(s.start as usize));
             Config {
                 display: mask_lines_with_at(text),
                 tables: Err(vec![error]),
@@ -949,5 +951,36 @@ mod tests {
             // Eight times the text: about eight times the time, not sixty-four.
             assert!(big < 20.0 * small.max(0.002), "{shape}: {small} {big}");
         }
+    }
+
+    #[test]
+    fn the_message_follows_the_line_of_the_error_and_a_label_follows_its_own_line() {
+        let say = |text: &str| {
+            let c = read(text);
+            let e = c.tables.expect_err("does not parse").remove(0);
+            (e, c.display)
+        };
+        // The first definition is on a hidden line, the error is on a shown one.
+        let (e, display) = say("[package]\nname = \"app\" # me@x\nname = \"b\"\n");
+        assert_eq!(e.message, "the key `name` is defined more than once");
+        assert!(e.labels.is_empty());
+        assert!(display.contains("name = \"b\"") && !display.contains("me@x"));
+        // The reverse: the error is on a hidden line, the label's line is shown.
+        let (e, _) = say("[package]\nname = \"a\"\nname = \"b@c\"\n");
+        assert!(
+            e.message
+                .starts_with("a key is defined more than once (the text of this line is not shown"),
+            "{}",
+            e.message
+        );
+        assert!(!e.message.contains("name"));
+        assert_eq!(e.labels.len(), 1);
+        // Both lines have an at-sign.
+        let (e, _) = say("[package]\nname = \"a@b\"\nname = \"b@c\"\n");
+        assert!(
+            e.message
+                .starts_with("a key is defined more than once (the text")
+        );
+        assert!(e.labels.is_empty());
     }
 }
