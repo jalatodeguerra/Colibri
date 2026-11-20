@@ -939,7 +939,7 @@ mod tests {
         ] {
             let e = dep_errs(&format!("foo = {{ git = \"{url}\" }}"));
             assert_eq!(e.len(), 1, "{url}: {e:?}");
-            assert!(e[0].contains("credential"), "{}", e[0]);
+            assert!(e[0].contains("user name and password"), "{}", e[0]);
             assert!(!e[0].contains("s3cret"), "{}", e[0]);
         }
         let d = parse(
