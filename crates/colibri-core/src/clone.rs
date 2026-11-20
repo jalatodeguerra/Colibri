@@ -15,7 +15,8 @@ use crate::ordered::OrderedMap;
 use crate::value::Value;
 
 /// One deep copy in progress.
-pub(crate) struct Cloner {
+#[doc(hidden)]
+pub struct Cloner {
     /// Copies by the address of the original reference object.
     memo: HashMap<usize, Value>,
     stack_base: usize,
@@ -25,7 +26,8 @@ pub(crate) struct Cloner {
 impl Cloner {
     /// A cloner that gives up (rather than overflow the native stack) once the recursion has
     /// used `budget` bytes below `stack_base`.
-    pub(crate) fn new(stack_base: usize, budget: usize) -> Self {
+    #[doc(hidden)]
+    pub fn new(stack_base: usize, budget: usize) -> Self {
         Cloner {
             memo: HashMap::new(),
             stack_base,
@@ -34,12 +36,14 @@ impl Cloner {
     }
 
     /// The objects made so far, to be taken apart when the copy is abandoned.
-    pub(crate) fn into_copies(self) -> Vec<Value> {
+    #[doc(hidden)]
+    pub fn into_copies(self) -> Vec<Value> {
         self.memo.into_values().collect()
     }
 
-    pub(crate) fn clone_value(&mut self, v: &Value, ov: &mut dyn Overrides) -> Result<Value, Stop> {
-        if crate::eval::stack_position().abs_diff(self.stack_base) > self.budget {
+    #[doc(hidden)]
+    pub fn clone_value(&mut self, v: &Value, ov: &mut dyn Overrides) -> Result<Value, Stop> {
+        if crate::stack_position().abs_diff(self.stack_base) > self.budget {
             return Err(Stop::TooDeep);
         }
         if matches!(v, Value::Struct(_) | Value::Enum(_) | Value::Obj(_))

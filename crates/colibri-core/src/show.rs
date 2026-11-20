@@ -35,7 +35,7 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
         Value::F32(x) => Cow::Owned(show_f32(*x)),
         Value::Char(c) => Cow::Owned(c.to_string()),
         Value::Str(s) => Cow::Borrowed(s),
-        Value::Bytes(b) => Cow::Owned(crate::bytesfn::show_bytes(b)),
+        Value::Bytes(b) => Cow::Owned(crate::layout::show_bytes(b)),
         Value::ByteBuf(_) => Cow::Borrowed("<buffer>"),
         Value::Struct(_)
         | Value::Tuple(_)
@@ -71,11 +71,8 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
 
 /// The `Show` form of a value, where a user-written `Show` (found through `ov`) replaces the
 /// structural form of the values it covers, also nested inside others.
-pub(crate) fn show_with(
-    types: &[TypeDef],
-    v: &Value,
-    ov: &mut dyn Overrides,
-) -> Result<String, Stop> {
+#[doc(hidden)]
+pub fn show_with(types: &[TypeDef], v: &Value, ov: &mut dyn Overrides) -> Result<String, Stop> {
     if let Value::Dyn(d) = v {
         return show_with(types, &d.val, ov);
     }
@@ -332,7 +329,7 @@ impl<'t> Writer<'t> {
                 s.chars().for_each(|c| escape(&mut self.out, c, '"'));
                 self.out.push('"');
             }
-            Value::Bytes(b) => self.out.push_str(&crate::bytesfn::show_bytes(b)),
+            Value::Bytes(b) => self.out.push_str(&crate::layout::show_bytes(b)),
             Value::Char(c) => {
                 self.out.push('\'');
                 escape(&mut self.out, *c, '\'');
@@ -356,10 +353,10 @@ impl<'t> Writer<'t> {
         } else if ty == colibri_check::types::COGROUP_TYPE {
             self.out.push_str("<CoGroup>");
         } else if ty == colibri_check::types::STR_BUILDER_TYPE {
-            self.out.push_str(&crate::strfn::builder_text(obj));
+            self.out.push_str(&crate::layout::builder_text(obj));
         } else if ty == colibri_check::types::BYTES_BUILDER_TYPE {
-            let bytes = crate::bytesfn::builder_bytes(obj);
-            self.out.push_str(&crate::bytesfn::show_bytes(&bytes));
+            let bytes = crate::layout::builder_bytes(obj);
+            self.out.push_str(&crate::layout::show_bytes(&bytes));
         } else if ty == colibri_check::types::SIGNAL_TYPE {
             self.out.push_str("<Signal>");
         } else {
@@ -392,17 +389,17 @@ impl<'t> Writer<'t> {
     fn error(&mut self, obj: &Rc<ClassObj>, depth: u32) {
         let mut cur = Rc::clone(obj);
         loop {
-            match crate::results::link(&cur) {
-                crate::results::Link::Context(message, cause) => {
+            match crate::layout::link(&cur) {
+                crate::layout::Link::Context(message, cause) => {
                     self.out.push_str(&message);
                     self.out.push_str(": ");
                     cur = cause;
                 }
-                crate::results::Link::Root(_, _, Some(message)) => {
+                crate::layout::Link::Root(_, _, Some(message)) => {
                     self.out.push_str(&message);
                     return;
                 }
-                crate::results::Link::Root(value, impl_id, None) => {
+                crate::layout::Link::Root(value, impl_id, None) => {
                     match self.ov.error_message(&value, impl_id) {
                         Some(Ok(text)) => self.out.push_str(&text),
                         Some(Err(stop)) => self.stop = Some(stop),

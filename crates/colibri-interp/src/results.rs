@@ -28,42 +28,13 @@ use crate::fiber::Fiber;
 use crate::heap::ClassObj;
 use crate::value::Value;
 
-const VALUE: usize = 0;
-const IMPL: usize = 1;
-const CONTEXT: usize = 2;
-const CAUSE: usize = 3;
+pub(crate) use colibri_core::layout::{Link, link};
 
 /// The `Error` object a value is, if it is one.
 pub(crate) fn error_obj(v: &Value) -> Option<&Rc<ClassObj>> {
     match v {
         Value::Obj(o) if o.ty() == ERROR_TYPE => Some(o),
         _ => None,
-    }
-}
-
-/// What one link of an error chain contributes.
-pub(crate) enum Link {
-    /// A message added by `context`, and the error it wraps.
-    Context(Rc<str>, Rc<ClassObj>),
-    /// The root: the kept value, the index of its `IntoError` implementation (`-1`: none) and
-    /// the message the host gave it, if any (a host error keeps a typed value, an enum, and
-    /// says what happened in words: the message wins over the `Show` of the value).
-    Root(Value, i64, Option<Rc<str>>),
-}
-
-/// Reads one link of an error object.
-pub(crate) fn link(obj: &ClassObj) -> Link {
-    let field = |i| obj.field(i).unwrap_or(Value::Unit);
-    match (field(CONTEXT), field(CAUSE)) {
-        (Value::Str(message), Value::Obj(cause)) => Link::Context(message, cause),
-        (Value::Str(message), Value::Unit) => Link::Root(field(VALUE), -1, Some(message)),
-        _ => {
-            let imp = match field(IMPL) {
-                Value::Int(i) => i,
-                _ => -1,
-            };
-            Link::Root(field(VALUE), imp, None)
-        }
     }
 }
 

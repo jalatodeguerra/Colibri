@@ -21,22 +21,8 @@ use crate::ordered::OrderedMap;
 use crate::place::project;
 use crate::value::{CellObj, Value};
 
-/// The value of a variable slot, looking through a cell.
-pub(crate) fn unwrap_cell_ref(v: &Value) -> Value {
-    match v {
-        Value::Cell(c) => c.get(),
-        other => other.clone(),
-    }
-}
-
-/// The value a cell holds, for a variable that is handed back to its owner.
-pub(crate) fn unwrap_cell(v: Value) -> Value {
-    match v {
-        Value::Cell(c) if Rc::strong_count(&c) == 1 => c.take(),
-        Value::Cell(c) => c.get(),
-        other => other,
-    }
-}
+pub(crate) use colibri_core::stack_position;
+pub(crate) use colibri_core::value::{unwrap_cell, unwrap_cell_ref};
 
 /// The interpreter: the loaded code, the module-level state and the output writer. Everything
 /// about a running computation is in the [`Fiber`] passed to each method.
@@ -89,12 +75,6 @@ pub struct Interp {
 
 /// The default for [`Interp::set_native_stack_budget`]: small enough for a default test thread.
 pub const DEFAULT_NATIVE_STACK_BUDGET: usize = 1 << 20;
-
-/// The current position on the native stack (it only has to be comparable with another one).
-pub(crate) fn stack_position() -> usize {
-    let marker = 0u8;
-    std::hint::black_box(&marker) as *const u8 as usize
-}
 
 /// A fault in integer arithmetic.
 enum Fault {

@@ -26,14 +26,7 @@ use colibri_check::types::TypeId;
 
 use crate::fiber::Fiber;
 
-/// What a script value holds for a host object.
-#[derive(Debug)]
-pub struct HostRef {
-    /// The host class, in the loaded program.
-    pub ty: TypeId,
-    pub index: u32,
-    pub generation: u32,
-}
+pub use colibri_core::hostheap::HostRef;
 
 /// The storage of one object, shared with the guards that borrow it.
 struct HostCell {

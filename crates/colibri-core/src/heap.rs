@@ -603,7 +603,8 @@ impl ClassObj {
     }
 
     /// Marks the `Drop` hook as run; `true` if it had run before.
-    pub(crate) fn mark_hooked(&self) -> bool {
+    #[doc(hidden)]
+    pub fn mark_hooked(&self) -> bool {
         self.hooked.replace(true)
     }
 

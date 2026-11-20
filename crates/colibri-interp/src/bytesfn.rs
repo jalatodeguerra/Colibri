@@ -13,36 +13,7 @@ use colibri_syntax::Span;
 use crate::ctl::Eval;
 use crate::eval::Interp;
 use crate::fiber::Fiber;
-use crate::heap::ClassObj;
 use crate::value::Value;
-
-/// How a `Bytes` shows (`print`, `"{b}"`): `b"hello\x00\xff"`, with printable ASCII as it is,
-/// `\\`, `\"`, `\n`, `\r` and `\t` escaped, and every other byte as `\xNN`.
-pub(crate) fn show_bytes(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() + 3);
-    out.push_str("b\"");
-    for &b in bytes {
-        match b {
-            b'\\' => out.push_str("\\\\"),
-            b'"' => out.push_str("\\\""),
-            b'\n' => out.push_str("\\n"),
-            b'\r' => out.push_str("\\r"),
-            b'\t' => out.push_str("\\t"),
-            0x20..=0x7e => out.push(char::from(b)),
-            _ => out.push_str(&format!("\\x{b:02x}")),
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// The bytes a `BytesBuilder` holds so far.
-pub(crate) fn builder_bytes(obj: &ClassObj) -> Vec<u8> {
-    match obj.field(0) {
-        Some(Value::ByteBuf(buf)) => buf.borrow().clone(),
-        _ => Vec::new(),
-    }
-}
 
 /// The error text for bytes that are not UTF-8: where the first bad byte is.
 pub(crate) fn utf8_message(e: &std::str::Utf8Error) -> String {

@@ -9,34 +9,28 @@ mod budget;
 mod builtin;
 mod bytesfn;
 mod cffi;
-mod clone;
 mod closure;
-mod compare;
 mod coro;
-mod ctl;
 mod dispatch;
 mod eval;
 mod fiber;
 mod forloop;
-mod format;
-mod heap;
-mod hooks;
 mod host;
 mod hostheap;
 mod iter;
 mod leaks;
 mod listfn;
-mod num;
-mod ordered;
 mod pattern;
 mod place;
 mod release;
 mod results;
 mod scope;
 mod session;
-mod show;
 mod strfn;
-mod value;
+
+pub(crate) use colibri_core::{
+    clone, compare, ctl, format, heap, hooks, num, ordered, show, value,
+};
 
 pub use budget::GRACE_STEPS;
 pub use compare::{TooDeep, values_cmp, values_equal};

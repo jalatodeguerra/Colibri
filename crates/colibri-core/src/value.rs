@@ -14,6 +14,7 @@ use colibri_check::types::TypeId;
 
 pub use crate::closure::{CellObj, ClosureObj};
 pub use crate::heap::{ClassObj, ListObj, MapObj, SetObj};
+pub use crate::hostheap::HostRef;
 pub use crate::iter::IterObj;
 
 /// A Colibri value.
@@ -50,7 +51,7 @@ pub enum Value {
     Obj(Rc<ClassObj>),
     /// An object of the embedding program, held through the host heap (EMBEDDING §3). Equal
     /// when it names the same slot and generation.
-    Host(Rc<crate::hostheap::HostRef>),
+    Host(Rc<HostRef>),
     /// The content of a `weak` class field; an empty `Weak` stands for a cleared reference.
     Weak(Weak<ClassObj>),
     /// An interface value: a value boxed with the implementation that dispatches its methods
@@ -110,7 +111,7 @@ pub struct DynVal {
 
 impl PartialEq for Value {
     /// Scalars, strings, structs, tuples and enums by content; reference types and weak
-    /// references by identity. (Colibri's own `==` is [`crate::values_equal`].)
+    /// references by identity. (Colibri's own `==` is [`crate::compare::values_equal`].)
     fn eq(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::Unit, Value::Unit) => true,
@@ -214,6 +215,23 @@ impl Value {
             self,
             Value::Struct(_) | Value::Tuple(_) | Value::Enum(_) | Value::Dyn(_)
         )
+    }
+}
+
+/// The value of a variable slot, looking through a cell.
+pub fn unwrap_cell_ref(v: &Value) -> Value {
+    match v {
+        Value::Cell(c) => c.get(),
+        other => other.clone(),
+    }
+}
+
+/// The value a cell holds, for a variable that is handed back to its owner.
+pub fn unwrap_cell(v: Value) -> Value {
+    match v {
+        Value::Cell(c) if Rc::strong_count(&c) == 1 => c.take(),
+        Value::Cell(c) => c.get(),
+        other => other,
     }
 }
 
