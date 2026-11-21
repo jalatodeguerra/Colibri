@@ -72,11 +72,12 @@ impl FnCompiler<'_> {
                 self.jump_int_cmp(*c, l, r, sense, target, span);
             }
             _ => {
-                let m = self.mark();
+                // The condition is a group of its own: its temporaries die, and a hook panic of
+                // theirs surfaces, before the branch runs.
+                let m = self.begin_group();
                 let t = self.alloc_for(&e.ty);
                 self.expr(e, t);
-                // The condition's temporaries die before the branch.
-                self.drop_above_keeping(m, t, span);
+                self.drop_above_keeping(m, span);
                 let op = if sense {
                     Op::JmpIf { r: t, off: 0 }
                 } else {
@@ -133,9 +134,10 @@ impl FnCompiler<'_> {
         self.abandon(m);
     }
 
-    /// Emits the drops of everything above `m` except the register `keep`, and forgets it.
-    fn drop_above_keeping(&mut self, m: super::Mark, keep: u16, span: colibri_syntax::Span) {
-        self.emit_exit(m.cleanups, Some(keep), span);
+    /// Emits the end of the condition's group: the drops of everything above `m` and the
+    /// check for panics of `Drop` hooks. The result is a `bool`, which owns nothing.
+    fn drop_above_keeping(&mut self, m: super::Mark, span: colibri_syntax::Span) {
+        self.emit_exit(m.cleanups, None, span);
     }
 }
 

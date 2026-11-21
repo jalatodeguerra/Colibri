@@ -1,0 +1,43 @@
+// allow: unused
+class T { name: str }
+impl Drop for T {
+    fn drop(self) { print("drop {self.name}") }
+}
+class Bad { name: str }
+impl Drop for Bad {
+    fn drop(self) {
+        print("bad hook {self.name}")
+        let z = 0
+        print(1 / z)
+    }
+}
+fn mk(n: str) -> T => T { name: n }
+fn n_of(s: str) -> int => 3
+fn helper() {
+    print("helper one")
+    print("helper two")
+}
+
+// A bound's temporary lives for the whole loop: its hook runs when the loop ends.
+fn main() {
+    let a = mk("a")
+    for i in 0..n_of(Bad { name: "src" }.name) {
+        print("i{i}")
+        helper()
+    }
+    print("after")
+}
+
+// expect: i0
+// expect: helper one
+// expect: helper two
+// expect: i1
+// expect: helper one
+// expect: helper two
+// expect: i2
+// expect: helper one
+// expect: helper two
+// expect: bad hook src
+// expect: drop a
+// panic: division by zero
+// drops: src, a
