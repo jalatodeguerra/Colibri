@@ -158,6 +158,13 @@ pub(crate) enum Item {
     Fold(u32),
     /// A `var self` receiver moved into a call window: written back into its local.
     Recv { l: Reg, r: Reg },
+    /// A mutation guard held on the fiber's hold stack, released at the exit.
+    Hold,
+    /// A `var self` receiver copied out of a place: written back (unguarded) through the place
+    /// whose operands are in `a` and `b`, with the site naming it.
+    Place { site: u16, a: Reg, b: Reg, r: Reg },
+    /// The binding of a `for var` iteration: its final value goes back into the list.
+    ForBack { l: Reg, a: Reg },
 }
 
 /// The stack of items as a path in a trie, so equal stacks share one node and the landing pad
@@ -227,6 +234,8 @@ fn cannot_fail(op: &Op) -> bool {
             | Op::LoadK { .. }
             | Op::Jmp { .. }
             | Op::UnwrapCell { .. }
+            | Op::Unhold
+            | Op::ForWriteBack { .. }
             | Op::SkipIfDead { .. }
             | Op::FoldHooks
             | Op::Resume
@@ -551,7 +560,7 @@ impl<'a> FnCompiler<'a> {
         self.alloc(kind_of(ty))
     }
 
-    fn temp_kind(&self, r: Reg) -> Option<Kind> {
+    pub(crate) fn temp_kind(&self, r: Reg) -> Option<Kind> {
         let idx = usize::from(r).checked_sub(self.nlocals)?;
         self.temps.get(idx).map(|t| t.kind)
     }
@@ -574,6 +583,28 @@ impl<'a> FnCompiler<'a> {
         if usize::from(r) + 1 == self.next_reg() {
             self.temps.pop();
         }
+    }
+
+    /// Drops the value a register owns right now (it has a cleanup item), and forgets the item.
+    /// A register without one holds nothing to drop.
+    pub(crate) fn drop_now(&mut self, r: Reg) {
+        let Some(i) = self
+            .stack
+            .items
+            .iter()
+            .rposition(|&c| c == Item::Reg(r) || c == Item::Plain(r))
+        else {
+            return;
+        };
+        let op = match self.stack.items[i] {
+            Item::Plain(_) => Op::DropInert { r },
+            _ => {
+                self.releases += 1;
+                Op::Drop { r }
+            }
+        };
+        self.emit(op, self.body.span);
+        self.forget_cleanup(r);
     }
 
     /// Frees a temporary whose value was moved out (an instruction took it): no drop.
@@ -756,6 +787,21 @@ impl<'a> FnCompiler<'a> {
                 Item::Recv { l, r } => {
                     self.emit(Op::Move { d: l, s: r }, span);
                 }
+                Item::Hold => {
+                    self.emit(Op::Unhold, span);
+                }
+                Item::Place { site, a, b, r } => {
+                    let node = below(self);
+                    self.state_override = Some(node);
+                    self.emit(Op::PlaceSet { a, b, v: r }, span);
+                    self.emit(Op::Site { site }, span);
+                    self.state_override = None;
+                    self.releases += 1;
+                }
+                Item::ForBack { l, a } => {
+                    self.emit(Op::ForWriteBack { l, a }, span);
+                    self.releases += 1;
+                }
             }
         }
     }
@@ -891,6 +937,16 @@ impl<'a> FnCompiler<'a> {
                     }
                     Item::Recv { l, r } => {
                         self.emit(Op::Move { d: l, s: r }, span);
+                    }
+                    Item::Hold => {
+                        self.emit(Op::Unhold, span);
+                    }
+                    Item::Place { site, a, b, r } => {
+                        self.emit(Op::PlaceSet { a, b, v: r }, span);
+                        self.emit(Op::Site { site }, span);
+                    }
+                    Item::ForBack { l, a } => {
+                        self.emit(Op::ForWriteBack { l, a }, span);
                     }
                 }
                 self.state_override = None;

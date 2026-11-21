@@ -1,11 +1,13 @@
 //! Calls: the window of consecutive argument registers, intrinsics.
 
+use std::rc::Rc;
+
 use colibri_check::hir::{Anchor, Arg, Call, Callee, Expr, FnId, Intrinsic, Place, Storage};
 use colibri_check::types::Ty;
 use colibri_syntax::Span;
 
 use super::{FnCompiler, Item, Kind};
-use crate::bytecode::{Op, Reg, Site};
+use crate::bytecode::{AnchorKind, Op, PlaceSite, Reg, Site};
 
 /// Registers `base..` that a call's callee sees as its first locals.
 pub(super) struct Window {
@@ -21,6 +23,19 @@ impl FnCompiler<'_> {
     /// (moved, for `consume`) into a fresh window above everything: the originals stay where
     /// they are and die in the order the tree-walker's temporaries stack would drop them.
     pub(super) fn eval_window(&mut self, reserve: usize, args: &[&Expr], consume: bool) -> Window {
+        self.eval_window_then(reserve, args, consume, |_| ()).0
+    }
+
+    /// [`FnCompiler::eval_window`] that runs `after` once the arguments are evaluated and before
+    /// the window's layout is settled: what it leaves alive above them (the anchor operands of a
+    /// `var self` receiver, evaluated after the arguments) pushes the window up.
+    pub(super) fn eval_window_then<T>(
+        &mut self,
+        reserve: usize,
+        args: &[&Expr],
+        consume: bool,
+        after: impl FnOnce(&mut Self) -> T,
+    ) -> (Window, T) {
         let first = self.next_reg();
         let mut allocated = Vec::new();
         for _ in 0..reserve {
@@ -34,6 +49,7 @@ impl FnCompiler<'_> {
             allocated.push(t);
             arg_regs.push(t);
         }
+        let extra = after(self);
         // The values must sit side by side, and nothing may be alive above the last of them: a
         // callee's window starts at the first value and covers every register above it.
         let contiguous = self.next_reg() == first + reserve + args.len()
@@ -42,10 +58,13 @@ impl FnCompiler<'_> {
                 .enumerate()
                 .all(|(i, &r)| usize::from(r) == first + reserve + i);
         if contiguous {
-            return Window {
-                base: first as Reg,
-                allocated,
-            };
+            return (
+                Window {
+                    base: first as Reg,
+                    allocated,
+                },
+                extra,
+            );
         }
         let base = self.next_reg() as Reg;
         for _ in 0..reserve {
@@ -62,13 +81,24 @@ impl FnCompiler<'_> {
             self.own(d);
             allocated.push(d);
         }
-        Window { base, allocated }
+        (Window { base, allocated }, extra)
     }
 
     /// Frees the registers of a window whose arguments the callee only borrowed.
     pub(super) fn free_window(&mut self, w: Window, span: Span) {
         for r in w.allocated.into_iter().rev() {
             self.free(r, span);
+        }
+    }
+
+    /// Drops the values of a window now, last first, because the callee that borrowed them is
+    /// done (the tree-walker's callee releases its parameters when it returns).
+    pub(super) fn drop_window(&mut self, w: Window) {
+        for r in w.allocated.into_iter().rev() {
+            self.drop_now(r);
+            if self.temp_kind(r).is_some() && usize::from(r) + 1 == self.next_reg() {
+                self.temps.pop();
+            }
         }
     }
 
@@ -119,8 +149,7 @@ impl FnCompiler<'_> {
             Some(p) => match (&p.anchor, p.path.is_empty()) {
                 (Anchor::Local(l), true) if self.storage(*l) == Storage::Slot => Some(*l),
                 _ => {
-                    self.unsupported("`var self` calls on this place", span);
-                    return;
+                    return self.call_fn_on_place(f, args, p, ret, dst, span);
                 }
             },
         };
@@ -150,6 +179,91 @@ impl FnCompiler<'_> {
             let depth = self.cleanup_depth();
             self.truncate_stack(depth - 1);
         }
+        self.free_window(w, span);
+        if dst.is_none() {
+            self.own(d);
+            self.free(d, span);
+        }
+    }
+
+    /// A `var self` call on any place but a whole local: the arguments first, then the place's
+    /// operands, once. The receiver is copied in (a plain local's field is moved out), the
+    /// collection a place is an element of stays guarded for the whole call, and the callee's
+    /// final value is written back, unguarded, on every way out, a panic included
+    /// (ARCHITECTURE §4, DESIGN §11.6).
+    fn call_fn_on_place(
+        &mut self,
+        f: FnId,
+        args: &[&Expr],
+        place: &Place,
+        ret: &Ty,
+        dst: Option<Reg>,
+        span: Span,
+    ) {
+        let d = match dst {
+            Some(d) => d,
+            None => self.alloc_for(ret),
+        };
+        let (w, res) =
+            self.eval_window_then(1, args, false, |c| c.resolve_anchor(place, false, span));
+        self.emit_hold(&res, span);
+        // A field of a plain local is moved out, so the callee owns it uniquely and changes it in
+        // place; everything else is copied.
+        if res.kind == AnchorKind::Local {
+            let site = self.add_site(Site::Place(Box::new(PlaceSite {
+                anchor: res.kind,
+                path: place.path.clone().into_boxed_slice(),
+                name: Rc::clone(&res.name),
+                guarded: false,
+            })));
+            self.emit(
+                Op::PlaceTake {
+                    d: w.base,
+                    a: res.a,
+                    b: res.b,
+                },
+                span,
+            );
+            self.emit(Op::Site { site }, span);
+        } else {
+            self.emit_place_get(&res, &place.path, w.base, span);
+        }
+        let back = self.add_site(Site::Place(Box::new(PlaceSite {
+            anchor: res.kind,
+            path: place.path.clone().into_boxed_slice(),
+            name: Rc::clone(&res.name),
+            guarded: false,
+        })));
+        self.push_item(Item::Place {
+            site: back,
+            a: res.a,
+            b: res.b,
+            r: w.base,
+        });
+        let site = self.add_site(Site::Call(f));
+        self.emit(
+            Op::Call {
+                d,
+                base: w.base,
+                site,
+            },
+            span,
+        );
+        // The write-back is the last thing the call does; a failure in it is one of the
+        // statement, with the receiver already handed over.
+        let depth = self.cleanup_depth();
+        self.truncate_stack(depth - 1);
+        self.emit(
+            Op::PlaceSet {
+                a: res.a,
+                b: res.b,
+                v: w.base,
+            },
+            span,
+        );
+        self.emit(Op::Site { site: back }, span);
+        self.note_release(&place.ty);
+        self.emit_unhold(&res, span);
         self.free_window(w, span);
         if dst.is_none() {
             self.own(d);

@@ -3,11 +3,22 @@
 use colibri_check::hir::{
     Block, Expr, ForBinding, ForLoop, ForSource, LoopId, Stmt, StmtKind, Storage,
 };
+use std::rc::Rc;
+
 use colibri_check::types::{IntTy, Ty};
 use colibri_syntax::Span;
 
 use super::{FnCompiler, Item, Kind, Label, LoopCtx, is_scalar, kind_of};
-use crate::bytecode::{Op, Reg};
+use crate::bytecode::{Op, Reg, Site};
+
+/// What a `for` loop that is not over a range steps through.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Each {
+    List,
+    Map,
+    Set,
+    Iter,
+}
 
 impl FnCompiler<'_> {
     /// The whole body.
@@ -257,8 +268,111 @@ impl FnCompiler<'_> {
         self.bind(brk);
     }
 
-    /// `for i in a..b` and `a..=b`. Other sources are not compiled yet.
+    /// `for` loops: over an integer range, a list, a map, a set or an iterator.
     pub(super) fn for_expr(&mut self, f: &ForLoop, span: Span) {
+        match &f.source {
+            ForSource::Range { .. } => self.for_range(f, span),
+            ForSource::List { list, name } => {
+                self.for_each(f, list, Each::List, Some(name.as_str()), span);
+            }
+            ForSource::Map(e) => self.for_each(f, e, Each::Map, None, span),
+            ForSource::Set(e) => self.for_each(f, e, Each::Set, None, span),
+            ForSource::Iter(e) => self.for_each(f, e, Each::Iter, None, span),
+        }
+    }
+
+    /// A loop over a collection or an iterator. The source lives in the first of a few
+    /// consecutive registers `a..`: with it a position (`a + 1`) and, for `for var`, a copy of
+    /// the element in flight (`a + 2`). The loop holds the collection's guard for its whole
+    /// duration (the place guard for `for var`); each trip binds a fresh item, and `for var`
+    /// writes the binding's final value back on every way out of the trip (DESIGN §11.6).
+    fn for_each(&mut self, f: &ForLoop, source: &Expr, each: Each, name: Option<&str>, span: Span) {
+        if matches!(f.binding, ForBinding::Pat(_)) {
+            return self.unsupported("`for` with a pattern binding", span);
+        }
+        let m = self.mark();
+        let places = f.places && each == Each::List;
+        let a = self.alloc(Kind::Owned);
+        if each != Each::Iter {
+            self.alloc(Kind::Scalar);
+        }
+        if places {
+            self.alloc(Kind::Scalar);
+        }
+        self.expr(source, a);
+        self.own(a);
+        if each != Each::Iter {
+            self.emit(Op::LoadInt { d: a + 1, i: 0 }, span);
+            if places {
+                let n = Rc::<str>::from(name.unwrap_or(""));
+                let site = self.add_site(Site::Name(n));
+                self.emit(Op::HoldListPlace { r: a, site }, span);
+            } else {
+                self.emit(Op::HoldIter { r: a }, span);
+            }
+            self.push_item(Item::Hold);
+        }
+        let head = self.new_label();
+        let cont = self.new_label();
+        let exit = self.new_label();
+        self.bind(head);
+        // The trip's scope: the binding, and for `for var` its write-back.
+        let cleanups = self.cleanup_depth();
+        self.push_fold();
+        // Where the item goes: straight into a plain binding, else into a temporary.
+        let (item, cell) = match f.binding {
+            ForBinding::Local(l) if self.storage(l) == Storage::Slot => (self.local(l), None),
+            ForBinding::Local(l) => (self.alloc(Kind::Scalar), Some(self.local(l))),
+            _ => (self.alloc(Kind::Scalar), None),
+        };
+        let next = match (each, places) {
+            (Each::List, false) => Op::ForListNext { d: item, a },
+            (Each::List, true) => Op::ForListNextVar { d: item, a },
+            (Each::Map, _) => Op::ForMapNext { d: item, a },
+            (Each::Set, _) => Op::ForSetNext { d: item, a },
+            (Each::Iter, _) => Op::ForIterNext { d: item, a },
+        };
+        self.emit(next, span);
+        self.emit_to(Op::Jmp { off: 0 }, span, exit);
+        match f.binding {
+            ForBinding::Local(l) => {
+                if let Some(lr) = cell {
+                    self.emit(Op::NewCell { l: lr, s: item }, span);
+                }
+                if places {
+                    self.push_item(Item::ForBack {
+                        l: self.local(l),
+                        a,
+                    });
+                } else {
+                    let ty = self.local_ty(l);
+                    self.bind_local_cleanup(self.local(l), ty);
+                }
+            }
+            _ => {
+                // `for _ in ..` binds nothing: the item dies at once.
+                self.releases += 1;
+                self.emit(Op::Drop { r: item }, span);
+            }
+        }
+        self.loops.push(LoopCtx {
+            id: f.id,
+            cleanups,
+            brk: exit,
+            cont,
+        });
+        self.block(&f.body, None);
+        self.end_scope(cleanups, None, span);
+        self.bind(cont);
+        self.jmp(head, span);
+        self.loops.pop();
+        self.bind(exit);
+        // The guard is let go of, then the source.
+        self.end_group(m, span);
+    }
+
+    /// `for i in a..b` and `a..=b`.
+    fn for_range(&mut self, f: &ForLoop, span: Span) {
         let ForSource::Range {
             start,
             end,

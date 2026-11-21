@@ -16,7 +16,7 @@ use crate::fiber::VmFiber;
 use crate::machine::Machine;
 
 /// The part of `v` a projection selects.
-fn project(v: &Value, proj: ValueProj) -> Option<&Value> {
+pub(crate) fn project(v: &Value, proj: ValueProj) -> Option<&Value> {
     match (v, proj) {
         (Value::Struct(s), ValueProj::Field(i)) => s.fields.get(i.0 as usize),
         (Value::Tuple(items), ValueProj::TupleIdx(i)) => items.get(i as usize),

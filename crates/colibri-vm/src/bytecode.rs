@@ -444,6 +444,97 @@ pub enum Op {
         s: Reg,
     },
 
+    // ---- places and the mutation guard (vm-plan §1.3, §2.5) ----
+    /// `d = the part of the place that the next instruction's site names`, a clone. The anchor
+    /// operands are registers: `a` is the local, object, list or map, `b` the list index or map
+    /// key, as the anchor kind of the site says.
+    PlaceGet {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    /// Like `PlaceGet`, but the part is moved out and `()` is left behind (a `var self`
+    /// receiver on a path of a local).
+    PlaceTake {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    /// Writes `take(v)` into the place the next instruction's site names, and releases what it
+    /// replaced. A guarded site refuses to write while the collection is iterated or has a place
+    /// held; a map entry that does not exist yet is added when the path is empty.
+    PlaceSet {
+        a: Reg,
+        b: Reg,
+        v: Reg,
+    },
+    /// Takes the place hold of the collection the next instruction's site names: it pushes a guard
+    /// token on the fiber's hold stack.
+    PlaceHold {
+        a: Reg,
+        b: Reg,
+    },
+    /// Releases the newest hold of the fiber's hold stack.
+    Unhold,
+    /// `l.<path of the site> = take(s)` on a local that is a plain slot: the struct or tuple is
+    /// made unique along the path, the old part is released.
+    SetPath {
+        l: Reg,
+        s: Reg,
+        site: u16,
+    },
+    /// `d = the key the map in `m` stores for the key in `k``: another key when a user `Eq` says
+    /// the two are equal, else a clone of `k`.
+    CanonKey {
+        d: Reg,
+        m: Reg,
+        k: Reg,
+    },
+    /// Holds the iteration guard of the list, map or set in `r` (a `for` loop's).
+    HoldIter {
+        r: Reg,
+    },
+    /// Holds the place guard of the list in `r`, named by the site (a `for var` loop's).
+    HoldListPlace {
+        r: Reg,
+        site: u16,
+    },
+
+    // ---- `for` over collections and iterators ----
+    // Each loop keeps its source in `a` and its position in `a + 1`. When an item is there, the
+    // instruction charges a budget step, puts the item in `d` and skips the next instruction
+    // (a jump to the end of the loop); else the next instruction runs.
+    ForListNext {
+        d: Reg,
+        a: Reg,
+    },
+    /// `for var` over a list: also leaves a clone of the item in `a + 2`.
+    ForListNextVar {
+        d: Reg,
+        a: Reg,
+    },
+    /// The item is the tuple `(key, value)`.
+    ForMapNext {
+        d: Reg,
+        a: Reg,
+    },
+    ForSetNext {
+        d: Reg,
+        a: Reg,
+    },
+    /// The source is an iterator value (position unused).
+    ForIterNext {
+        d: Reg,
+        a: Reg,
+    },
+    /// The end of an iteration of `for var`: takes the final value of the binding `l`, and
+    /// writes it into the list `a` at the index before the one in `a + 1` unless it is the
+    /// element `a + 2` already is; releases both.
+    ForWriteBack {
+        l: Reg,
+        a: Reg,
+    },
+
     // ---- unwinding (vm-plan §2.4) ----
     /// Jumps over a deferred statement when the budget grace is used up.
     SkipIfDead {
@@ -473,9 +564,40 @@ pub struct UnwindEntry {
     pub pad: u32,
 }
 
+/// Where a place starts, for the instructions that read and write places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorKind {
+    /// A local that is a plain slot: register `a`.
+    Local,
+    /// A local that lives in a cell: the cell is in register `a`.
+    Cell,
+    Global(u32),
+    /// A field of the class object in `a`.
+    Field(u16),
+    /// The element of the list in `a` at the index in `b`.
+    Elem,
+    /// The entry of the map in `a` for the key in `b`.
+    Entry,
+}
+
+/// A place: its anchor, the path of struct and tuple projections inside it, and the text that
+/// guard messages call the collection.
+#[derive(Debug, Clone)]
+pub struct PlaceSite {
+    pub anchor: AnchorKind,
+    pub path: Box<[ValueProj]>,
+    pub name: Rc<str>,
+    /// A write from user code is refused while the collection is held; the write-back of a place
+    /// that holds the guard itself is not.
+    pub guarded: bool,
+}
+
 /// What an instruction needs beyond its operands.
 #[derive(Debug, Clone)]
 pub enum Site {
+    Place(Box<PlaceSite>),
+    /// A collection's name for a guard message.
+    Name(Rc<str>),
     /// The registers whose values a constructor clones, in order, and what it builds.
     Struct(TypeId, Box<[Reg]>),
     Object(TypeId, Box<[Reg]>),
@@ -648,6 +770,23 @@ impl Chunk {
             Op::ObjGet { d, o, idx } => format!("ObjGet r{d} r{o} .{idx}"),
             Op::ToWeak { d, s } => format!("ToWeak r{d} r{s}"),
             Op::FromWeak { d, s } => format!("FromWeak r{d} r{s}"),
+            Op::PlaceGet { d, a, b } => format!("PlaceGet r{d} r{a} r{b}"),
+            Op::PlaceTake { d, a, b } => format!("PlaceTake r{d} r{a} r{b}"),
+            Op::PlaceSet { a, b, v } => format!("PlaceSet r{a} r{b} r{v}"),
+            Op::PlaceHold { a, b } => format!("PlaceHold r{a} r{b}"),
+            Op::Unhold => "Unhold".to_string(),
+            Op::SetPath { l, s, site } => format!("SetPath r{l} r{s} {}", self.site_text(site)),
+            Op::CanonKey { d, m, k } => format!("CanonKey r{d} map=r{m} r{k}"),
+            Op::HoldIter { r } => format!("HoldIter r{r}"),
+            Op::HoldListPlace { r, site } => {
+                format!("HoldListPlace r{r} {}", self.site_text(site))
+            }
+            Op::ForListNext { d, a } => format!("ForListNext r{d} src=r{a}"),
+            Op::ForListNextVar { d, a } => format!("ForListNextVar r{d} src=r{a}"),
+            Op::ForMapNext { d, a } => format!("ForMapNext r{d} src=r{a}"),
+            Op::ForSetNext { d, a } => format!("ForSetNext r{d} src=r{a}"),
+            Op::ForIterNext { d, a } => format!("ForIterNext r{d} src=r{a}"),
+            Op::ForWriteBack { l, a } => format!("ForWriteBack r{l} src=r{a}"),
             Op::SkipIfDead { off } => format!("SkipIfDead -> {:04}", target(off.into())),
             Op::CheckHooks => "CheckHooks".to_string(),
             Op::FoldHooks => "FoldHooks".to_string(),
@@ -684,6 +823,13 @@ impl Chunk {
             }
             Some(Site::Regs(regs)) => regs_text(regs),
             Some(Site::Path(path)) => format!("{path:?}"),
+            Some(Site::Place(p)) => format!(
+                "{:?}{:?}{}",
+                p.anchor,
+                p.path,
+                if p.guarded { "" } else { " unguarded" }
+            ),
+            Some(Site::Name(n)) => format!("{n:?}"),
             Some(Site::Unsupported(what)) => what.clone(),
             None => "?".to_string(),
         }

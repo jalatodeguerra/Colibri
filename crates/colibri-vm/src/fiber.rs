@@ -5,6 +5,7 @@
 use std::rc::Rc;
 
 use colibri_core::fiber::FiberState;
+use colibri_core::heap::GuardToken;
 use colibri_core::value::Value;
 use colibri_syntax::Span;
 
@@ -57,6 +58,9 @@ pub struct VmFiber {
     pub(crate) frames: Vec<Frame>,
     /// Values kept alive for `Engine::hold_temp`: what core code holds across user code.
     pub(crate) temps: Vec<Value>,
+    /// The mutation guards held by running code, newest last: a `for` loop's iteration hold, a
+    /// `for var` loop's or a `var self` call's place hold. Released by `Unhold`, in pads too.
+    pub(crate) holds: Vec<GuardToken>,
     pub(crate) state: FiberState,
     /// The native stack position when the host called in, to bound native re-entry.
     pub(crate) stack_base: usize,
@@ -90,6 +94,7 @@ impl VmFiber {
             regs: Vec::new(),
             frames: Vec::new(),
             temps: Vec::new(),
+            holds: Vec::new(),
             state: FiberState::default(),
             stack_base: 0,
             unwinding: Vec::new(),
