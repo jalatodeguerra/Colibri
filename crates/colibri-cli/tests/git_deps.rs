@@ -112,7 +112,7 @@ impl Sandbox {
     }
 
     fn colibri_env(&self, args: &[&str], env: &[(&str, &str)]) -> Out {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_colibri"));
+        let mut cmd = colibri_command();
         git_env(&mut cmd)
             .env("COLIBRI_HOME", self.home())
             .args(args);
@@ -1293,7 +1293,7 @@ fn run_together(sb: &Sandbox, command: &str, apps: &[PathBuf]) -> Vec<Out> {
     let children: Vec<_> = apps
         .iter()
         .map(|app| {
-            let mut cmd = Command::new(env!("CARGO_BIN_EXE_colibri"));
+            let mut cmd = colibri_command();
             git_env(&mut cmd)
                 .env("COLIBRI_HOME", sb.home())
                 .args([command, app.to_str().unwrap()])
@@ -2324,7 +2324,7 @@ fn a_second_process_says_it_is_waiting_for_the_lock() {
         .open(&lock_path)
         .unwrap();
     held.lock().unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_colibri"));
+    let mut cmd = colibri_command();
     git_env(&mut cmd)
         .env("COLIBRI_HOME", sb.home())
         .args(["run", app.to_str().unwrap()])
@@ -3110,4 +3110,13 @@ fn a_git_dependency_takes_features_and_the_lock_does_not_know_them() {
         out.stderr
     );
     assert!(out.stderr.contains("colibri.toml"), "{}", out.stderr);
+}
+
+/// The binary under test, pinned to the tree-walker: these tests are about the command line,
+/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+fn colibri_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    // vm-pin: 2c
+    cmd.env_remove("COLIBRI_ENGINE");
+    cmd
 }

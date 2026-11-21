@@ -227,6 +227,9 @@ pub enum Outcome {
     Compiled {
         stdout: String,
         panic: Option<String>,
+        /// Where the panic happened and the call stack, innermost first, as `line` and
+        /// `function line` strings (columns and files are left out). Empty without a panic.
+        trace: Vec<String>,
         /// The error chain if `main` returned `err(e)` (`Error::MainReturnedErr`).
         main_err: Option<String>,
         /// The compile warnings.
@@ -249,6 +252,12 @@ pub enum Outcome {
 /// load the file, then call `main` if it has one. Run it on a thread with a big stack (see
 /// [`crate::on_big_stack`]) so deep recursion reaches the call-depth limit.
 pub fn run_golden(path: &Path, source: &str) -> Outcome {
+    run_golden_on(path, source, None)
+}
+
+/// [`run_golden`] on a chosen engine (`None`: the process's, see [`crate::set_engine`] and
+/// `COLIBRI_ENGINE`).
+pub fn run_golden_on(path: &Path, source: &str, engine: Option<colibri::EngineKind>) -> Outcome {
     let name = path.display().to_string();
     let d = parse_directives(source);
     run_with(
@@ -257,12 +266,18 @@ pub fn run_golden(path: &Path, source: &str) -> Outcome {
         &name,
         &d.caps,
         &d.features,
+        engine,
     )
 }
 
 /// Runs a golden test that is a folder: the files in it are one program, started from
 /// `main.colibri` (see `Vm::load_file`, which makes the folder its implicit package).
 pub fn run_golden_package(dir: &Path) -> Outcome {
+    run_golden_package_on(dir, None)
+}
+
+/// [`run_golden_package`] on a chosen engine.
+pub fn run_golden_package_on(dir: &Path, engine: Option<colibri::EngineKind>) -> Outcome {
     let main = dir.join("main.colibri");
     let d = std::fs::read_to_string(&main)
         .map(|text| parse_directives(&text))
@@ -273,6 +288,7 @@ pub fn run_golden_package(dir: &Path) -> Outcome {
         "",
         &d.caps,
         &d.features,
+        engine,
     )
 }
 
@@ -354,9 +370,18 @@ fn run_with(
     blank: &str,
     caps: &[String],
     features: &[String],
+    engine: Option<colibri::EngineKind>,
 ) -> Outcome {
     let out = colibri::SharedBuffer::new();
-    let mut builder = crate::vm_builder()
+    let mut builder = crate::vm_builder();
+    if let Some(kind) = engine {
+        builder = builder.engine(kind);
+        // A runaway program on the VM fails its test instead of hanging the run.
+        if kind == colibri::EngineKind::Bytecode {
+            builder = builder.instruction_budget(2_000_000_000);
+        }
+    }
+    let mut builder = builder
         .trace_drops(true)
         .track_leaks(true)
         .stdout(Box::new(out.clone()));
@@ -412,13 +437,25 @@ fn run_with(
         },
         other => {
             let mut main_err = None;
+            let mut trace = Vec::new();
             let panic = match other {
                 Ok(()) => None,
                 Err(colibri::Error::MainReturnedErr { message }) => {
                     main_err = Some(message);
                     None
                 }
-                Err(colibri::Error::Panic { message, notes, .. }) => {
+                Err(colibri::Error::Panic {
+                    message,
+                    notes,
+                    location,
+                    stack,
+                }) => {
+                    trace.extend(location.iter().map(|l| format!("at line {}", l.line)));
+                    trace.extend(
+                        stack
+                            .iter()
+                            .map(|f| format!("{} line {}", f.function, f.location.line)),
+                    );
                     // Notes ride along with the message so a golden file can match them.
                     Some(notes.iter().fold(message, |m, n| format!("{m}\nnote: {n}")))
                 }
@@ -427,6 +464,7 @@ fn run_with(
             Outcome::Compiled {
                 stdout: out.contents(),
                 panic,
+                trace,
                 main_err,
                 warnings: located(vm.sources(), vm.warnings(), false),
                 drops,
@@ -596,6 +634,7 @@ pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), Str
             warnings,
             drops,
             leaks,
+            ..
         } => {
             let mut problems = Vec::new();
             for (file, line, text) in &errors_wanted {
@@ -726,6 +765,57 @@ fn finish(problems: Vec<String>) -> Result<(), String> {
     }
 }
 
+/// How two engines' outcomes of one golden test differ (stdout, panic text and trace, main's error, the
+/// drop trace, the warnings), or `None` when they agree. The leak report is not compared: a
+/// cycle's shape is an engine detail.
+pub fn diff_outcomes(tree: &Outcome, vm: &Outcome) -> Option<String> {
+    match (tree, vm) {
+        (
+            Outcome::Compiled {
+                stdout: s1,
+                panic: p1,
+                trace: t1,
+                main_err: m1,
+                warnings: w1,
+                drops: d1,
+                ..
+            },
+            Outcome::Compiled {
+                stdout: s2,
+                panic: p2,
+                trace: t2,
+                main_err: m2,
+                warnings: w2,
+                drops: d2,
+                ..
+            },
+        ) => {
+            let mut parts = Vec::new();
+            if s1 != s2 {
+                parts.push(format!("stdout:\n  tree: {s1:?}\n  vm:   {s2:?}"));
+            }
+            if p1 != p2 {
+                parts.push(format!("panic:\n  tree: {p1:?}\n  vm:   {p2:?}"));
+            }
+            if t1 != t2 {
+                parts.push(format!("panic trace:\n  tree: {t1:?}\n  vm:   {t2:?}"));
+            }
+            if m1 != m2 {
+                parts.push(format!("main error:\n  tree: {m1:?}\n  vm:   {m2:?}"));
+            }
+            if d1 != d2 {
+                parts.push(format!("drop trace:\n  tree: {d1:?}\n  vm:   {d2:?}"));
+            }
+            if w1 != w2 {
+                parts.push(format!("warnings:\n  tree: {w1:?}\n  vm:   {w2:?}"));
+            }
+            (!parts.is_empty()).then(|| parts.join("\n"))
+        }
+        (a, b) if a == b => None,
+        (a, b) => Some(format!("outcome kind:\n  tree: {a:?}\n  vm:   {b:?}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,6 +824,7 @@ mod tests {
         Outcome::Compiled {
             stdout: stdout.into(),
             panic: panic.map(Into::into),
+            trace: Vec::new(),
             main_err: None,
             warnings: Vec::new(),
             drops: Vec::new(),
@@ -745,6 +836,7 @@ mod tests {
         Outcome::Compiled {
             stdout: String::new(),
             panic: None,
+            trace: Vec::new(),
             main_err: None,
             warnings: Vec::new(),
             drops: labels.iter().map(|s| s.to_string()).collect(),
@@ -756,6 +848,7 @@ mod tests {
         Outcome::Compiled {
             stdout: String::new(),
             panic: None,
+            trace: Vec::new(),
             main_err: None,
             warnings: warnings
                 .iter()
@@ -764,6 +857,37 @@ mod tests {
             drops: Vec::new(),
             leaks: Vec::new(),
         }
+    }
+
+    #[test]
+    fn the_engines_differ_when_their_panic_traces_do() {
+        let with_trace = |lines: &[&str]| match compiled("", Some("boom")) {
+            Outcome::Compiled {
+                stdout,
+                panic,
+                main_err,
+                warnings,
+                drops,
+                leaks,
+                ..
+            } => Outcome::Compiled {
+                stdout,
+                panic,
+                trace: lines.iter().map(|s| s.to_string()).collect(),
+                main_err,
+                warnings,
+                drops,
+                leaks,
+            },
+            other => other,
+        };
+        let a = with_trace(&["at line 3", "main line 3"]);
+        assert_eq!(
+            diff_outcomes(&a, &with_trace(&["at line 3", "main line 3"])),
+            None
+        );
+        let diff = diff_outcomes(&a, &with_trace(&["at line 4", "main line 3"])).expect("differs");
+        assert!(diff.contains("panic trace"), "{diff}");
     }
 
     #[test]

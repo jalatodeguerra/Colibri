@@ -1,10 +1,10 @@
 //! End-to-end tests of `colibri test`.
 
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn colibri(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_colibri"))
+    colibri_command()
         .args(args)
         .output()
         .expect("the colibri binary runs")
@@ -91,7 +91,7 @@ fn a_passing_package_reports_every_test_and_exits_zero() {
 #[test]
 fn a_package_without_a_path_uses_the_current_folder() {
     let dir = folder("cwd", PACKAGE);
-    let out = Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let out = colibri_command()
         .arg("test")
         .current_dir(&dir)
         .output()
@@ -490,4 +490,13 @@ fn check_still_finds_errors_in_a_script_modules_statements_and_initialisers() {
     let err = stderr(&out);
     assert!(err.contains("gen.colibri:1"), "{err}");
     assert!(err.contains("gen.colibri:2"), "{err}");
+}
+
+/// The binary under test, pinned to the tree-walker: these tests are about the command line,
+/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+fn colibri_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    // vm-pin: 2c
+    cmd.env_remove("COLIBRI_ENGINE");
+    cmd
 }

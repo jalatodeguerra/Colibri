@@ -49,7 +49,11 @@ fn raise_descriptor_limit() {}
 fn vm() -> (colibri::Vm, colibri::SharedBuffer) {
     raise_descriptor_limit();
     let out = colibri::SharedBuffer::new();
+    // Pinned to the tree-walker: this tests the standard library, not the engine, and host
+    // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
     let mut vm = colibri::Vm::builder()
+        // vm-pin: 2c
+        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Net)
         .build();
@@ -740,6 +744,8 @@ fn a_fake_clock_does_not_advance_while_a_coroutine_waits_on_the_network() {
     let time = Rc::new(Cell::new(0.0));
     let out = colibri::SharedBuffer::new();
     let mut vm = colibri::Vm::builder()
+        // vm-pin: 2c
+        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Net)
         .clock(Fake(Rc::clone(&time)))
@@ -3025,6 +3031,8 @@ fn main() -> Result[()] {{
 #[test]
 fn the_interface_has_connect_timeout_and_no_cancelled() {
     let mut vm = colibri::Vm::builder()
+        // vm-pin: 2c
+        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(std::io::sink()))
         .build();
     colibri_std::install(&mut vm).unwrap();

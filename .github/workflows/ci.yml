@@ -33,3 +33,35 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Every crate runs even after one fails, so a run shows all that is broken on a system.
       - run: cargo test --workspace --no-fail-fast
+
+  # The bytecode VM against the same goldens and the runtime's tests. Tests it cannot pass yet
+  # are listed in `tests/golden/vm_pending.txt` and `crates/colibri-runtime/tests/vm_pending.txt`;
+  # one that starts to pass fails the run until it is taken off the list.
+  test-vm:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows has the small main-thread stack; macOS adds nothing the VM tests need.
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-vm
+      - name: Golden tests on the VM
+        run: cargo test -p colibri-lang --test golden
+        env:
+          COLIBRI_ENGINE: vm
+      # Each step runs even when an earlier one failed, to show everything that is broken.
+      - name: Runtime tests on the VM
+        if: ${{ !cancelled() }}
+        run: cargo test -p colibri-runtime -p colibri-vm --no-fail-fast
+        env:
+          COLIBRI_ENGINE: vm
+      - name: Golden tests on both engines, outcomes compared
+        if: ${{ !cancelled() }}
+        run: cargo test -p colibri-lang --test golden
+        env:
+          COLIBRI_ENGINE: both

@@ -1,6 +1,9 @@
 //! Packages and `import` (ARCHITECTURE §11): loading from disk and from memory, `colibri.toml`,
 //! path dependencies and named host modules.
 
+mod common;
+use common::vm_pending;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -341,24 +344,31 @@ fn run_source(vm: &mut colibri::Vm, src: &str) -> Result<(), colibri::Error> {
 
 #[test]
 fn a_named_host_module_is_imported() {
-    let (mut vm, out) = physics_vm();
-    run_source(
+    vm_pending("a_named_host_module_is_imported", || {
+        let (mut vm, out) = physics_vm();
+        run_source(
         &mut vm,
         "import physics\nfn main() {\n    let b = physics.Body.new(3)\n    print(\"{physics.gravity()} {b.mass()}\")\n}\n",
     )
     .unwrap();
-    assert_eq!(out.contents(), "10 3\n");
+        assert_eq!(out.contents(), "10 3\n");
+    })
 }
 
 #[test]
 fn a_host_module_supports_selective_imports_and_aliases() {
-    let (mut vm, out) = physics_vm();
-    run_source(
+    vm_pending(
+        "a_host_module_supports_selective_imports_and_aliases",
+        || {
+            let (mut vm, out) = physics_vm();
+            run_source(
         &mut vm,
         "import physics.{gravity, Body}\nimport physics as p\nfn main() {\n    let b = Body.new(2)\n    print(\"{gravity()} {p.gravity()} {b.mass()}\")\n}\n",
     )
     .unwrap();
-    assert_eq!(out.contents(), "10 10 2\n");
+            assert_eq!(out.contents(), "10 10 2\n");
+        },
+    )
 }
 
 #[test]
@@ -372,10 +382,12 @@ fn a_named_host_module_is_not_in_scope_without_import() {
 
 #[test]
 fn the_default_host_module_needs_no_import() {
-    let (mut vm, out) = vm();
-    vm.register_fn("answer", || 42i64).unwrap();
-    run_source(&mut vm, "fn main() { print(\"{answer()}\") }\n").unwrap();
-    assert_eq!(out.contents(), "42\n");
+    vm_pending("the_default_host_module_needs_no_import", || {
+        let (mut vm, out) = vm();
+        vm.register_fn("answer", || 42i64).unwrap();
+        run_source(&mut vm, "fn main() { print(\"{answer()}\") }\n").unwrap();
+        assert_eq!(out.contents(), "42\n");
+    })
 }
 
 #[test]

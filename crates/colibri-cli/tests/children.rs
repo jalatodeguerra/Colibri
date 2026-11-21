@@ -7,7 +7,6 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 /// The program: three coroutines each run a program that writes its process number into a
@@ -63,7 +62,7 @@ fn alive(pid: &str) -> bool {
 /// (`S`, `R`, `Z` for a zombie...) and nothing for a process that is gone.
 #[cfg(not(target_os = "linux"))]
 fn alive(pid: &str) -> bool {
-    let out = Command::new("ps")
+    let out = std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", pid])
         .output()
         .expect("`ps` runs");
@@ -80,7 +79,7 @@ fn check_no_child_is_left(name: &str, ending: &str, code: i32) {
     let file = dir.join("main.colibri");
     fs::write(&file, program(dir.to_str().unwrap(), ending)).unwrap();
     let started = Instant::now();
-    let out = Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let out = colibri_command()
         .args(["run", file.to_str().unwrap()])
         .output()
         .unwrap();
@@ -112,4 +111,13 @@ fn a_panic_leaves_no_child_behind() {
 #[test]
 fn os_exit_leaves_no_child_behind() {
     check_no_child_is_left("exit", "os.exit(3)", 3);
+}
+
+/// The binary under test, pinned to the tree-walker: these tests are about the command line,
+/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+fn colibri_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    // vm-pin: 2c
+    cmd.env_remove("COLIBRI_ENGINE");
+    cmd
 }

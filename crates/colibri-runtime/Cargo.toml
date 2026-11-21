@@ -11,6 +11,7 @@ colibri-syntax = { path = "../colibri-syntax" }
 colibri-check = { path = "../colibri-check" }
 colibri-core = { path = "../colibri-core" }
 colibri-interp = { path = "../colibri-interp" }
+colibri-vm = { path = "../colibri-vm" }
 colibri-bind = { path = "../colibri-bind" }
 ariadne = "0.6.0"
 

@@ -316,7 +316,11 @@ impl Server {
         let (done_tx, done) = mpsc::channel();
         thread::spawn(move || {
             let out = colibri::SharedBuffer::new();
+            // Pinned to the tree-walker: this tests the standard library, not the engine, and host
+            // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
             let mut vm = colibri::Vm::builder()
+                // vm-pin: 2c
+                .engine(colibri::EngineKind::Tree)
                 .stdout(Box::new(out.clone()))
                 .allow(colibri::Cap::Net)
                 .allow(colibri::Cap::Os)
@@ -1971,7 +1975,11 @@ fn a_stop_during_a_request_lets_it_finish_and_the_answer_says_close() {
     assert!(last.says_close());
     drop(waiting);
     drop(releaser);
-    assert_eq!(server.wait().seen, ["GET /wait", "POST /release"]);
+    // The two requests were sent from two connections without waiting for each other, so the
+    // server may read either line first (seen on a loaded macOS runner): compare them unordered.
+    let mut seen = server.wait().seen;
+    seen.sort();
+    assert_eq!(seen, ["GET /wait", "POST /release"]);
 }
 
 #[test]
@@ -2059,7 +2067,10 @@ fn a_client_that_sends_half_a_head_does_not_hold_up_another_one() {
 
 /// What loading a program that calls `httpd.listen` says when the host grants only `caps`.
 fn load_error_with(caps: &[colibri::Cap]) -> String {
-    let mut builder = colibri::Vm::builder().stdout(Box::new(std::io::sink()));
+    let mut builder = colibri::Vm::builder()
+        // vm-pin: 2c
+        .engine(colibri::EngineKind::Tree)
+        .stdout(Box::new(std::io::sink()));
     for cap in caps {
         builder = builder.allow(*cap);
     }

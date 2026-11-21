@@ -191,7 +191,11 @@ fn a_thousand_idle_blocked_reads() {
 
     let marks = Arc::new(Mutex::new(Vec::<(Instant, f64, usize)>::new()));
     let out = colibri::SharedBuffer::new();
+    // Pinned to the tree-walker: this tests the standard library, not the engine, and host
+    // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
     let mut vm = colibri::Vm::builder()
+        // vm-pin: 2c
+        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Net)
         .build();
@@ -288,6 +292,8 @@ fn a_thousand_idle_accepts() {
     let marks = Arc::new(Mutex::new(Vec::<(Instant, f64, usize)>::new()));
     let out = colibri::SharedBuffer::new();
     let mut vm = colibri::Vm::builder()
+        // vm-pin: 2c
+        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Net)
         .build();
@@ -459,6 +465,8 @@ fn a_thousand_writes_blocked_on_full_buffers() {
     let marks = Arc::new(Mutex::new(Vec::<(Instant, f64, usize)>::new()));
     let out = colibri::SharedBuffer::new();
     let mut vm = colibri::Vm::builder()
+        // vm-pin: 2c
+        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Net)
         .build();

@@ -13,6 +13,7 @@
 
 pub mod bytecode;
 mod compile;
+mod embed;
 mod engine;
 mod fiber;
 mod load;

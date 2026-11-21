@@ -4,10 +4,10 @@
 //! `target` and `node_modules` are ordinary folders. An `import` reaches into any of them.
 
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn colibri(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_colibri"))
+    colibri_command()
         .args(args)
         .env(
             "COLIBRI_HOME",
@@ -107,4 +107,13 @@ fn a_cachedir_tag_without_the_signature_is_not_a_cache() {
         "{t}"
     );
     assert!(!t.contains("real.bad"), "{t}");
+}
+
+/// The binary under test, pinned to the tree-walker: these tests are about the command line,
+/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+fn colibri_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    // vm-pin: 2c
+    cmd.env_remove("COLIBRI_ENGINE");
+    cmd
 }

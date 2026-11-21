@@ -15,7 +15,7 @@ fn scripts() -> PathBuf {
 }
 
 fn colibri(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_colibri"))
+    colibri_command()
         .args(args)
         .output()
         .expect("the colibri binary runs")
@@ -508,7 +508,7 @@ fn report_git_flag_adds_the_commit_inside_a_repository() {
     );
     // Outside a repository the flag is silently ignored.
     let dir = temp_dir("nogit");
-    let out = Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let out = colibri_command()
         .current_dir(&dir)
         .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap())
         .args([
@@ -639,7 +639,7 @@ impl Kv {
     fn start(extra: &[&str]) -> Kv {
         use std::io::BufRead;
         let script = scripts().join("kvserver/kvserver.colibri");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+        let mut child = colibri_command()
             .args(["run", script.to_str().unwrap(), "--"])
             .args(extra)
             .stdout(std::process::Stdio::piped())
@@ -905,6 +905,9 @@ fn kvserver_survives_running_out_of_descriptors() {
     use std::io::BufRead;
     let script = scripts().join("kvserver/kvserver.colibri");
     let mut child = Command::new("sh")
+        // About the descriptor limit, not the engine: pinned to the tree-walker.
+        // vm-pin: 2c
+        .env_remove("COLIBRI_ENGINE")
         .args(["-c", "ulimit -n 40; exec \"$0\" run \"$1\" --"])
         .arg(env!("CARGO_BIN_EXE_colibri"))
         .arg(&script)
@@ -1007,7 +1010,7 @@ impl Notes {
     fn start(extra: &[&str]) -> Notes {
         use std::io::BufRead;
         let script = scripts().join("notes/notes.colibri");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+        let mut child = colibri_command()
             .args(["run", script.to_str().unwrap(), "--"])
             .args(extra)
             .stdout(std::process::Stdio::piped())
@@ -1199,4 +1202,13 @@ fn notes_reports_a_bad_address() {
         "{}",
         text(&out.stderr)
     );
+}
+
+/// The binary under test, pinned to the tree-walker: these tests are about the command line,
+/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+fn colibri_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    // vm-pin: 2c
+    cmd.env_remove("COLIBRI_ENGINE");
+    cmd
 }

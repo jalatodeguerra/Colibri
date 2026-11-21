@@ -1,5 +1,8 @@
 //! Capabilities (EMBEDDING §5): what scripts may reach is granted by the host.
 
+mod common;
+use common::vm_pending;
+
 use colibri::{Cap, CapSet};
 use colibri_runtime as colibri;
 
@@ -21,26 +24,30 @@ const SCRIPT: &str = "fn main() {\n    print(read_save(2))\n}\n";
 
 #[test]
 fn a_granted_capability_lets_the_call_run() {
-    let (mut vm, out) = vm_with(&[Cap::Fs]);
-    vm.load_source("a.colibri", SCRIPT).unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "slot 2\n");
+    vm_pending("a_granted_capability_lets_the_call_run", || {
+        let (mut vm, out) = vm_with(&[Cap::Fs]);
+        vm.load_source("a.colibri", SCRIPT).unwrap();
+        vm.run_main().unwrap();
+        assert_eq!(out.contents(), "slot 2\n");
+    })
 }
 
 #[test]
 fn allow_all_grants_every_capability() {
-    let out = colibri::SharedBuffer::new();
-    let mut vm = colibri::Vm::builder()
-        .stdout(Box::new(out.clone()))
-        .allow_all()
-        .build();
-    vm.register_fn("read_save", |slot: i64| slot)
-        .unwrap()
-        .requires(Cap::Net);
-    vm.load_source("a.colibri", "fn main() {\n    print(read_save(5))\n}\n")
-        .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "5\n");
+    vm_pending("allow_all_grants_every_capability", || {
+        let out = colibri::SharedBuffer::new();
+        let mut vm = colibri::Vm::builder()
+            .stdout(Box::new(out.clone()))
+            .allow_all()
+            .build();
+        vm.register_fn("read_save", |slot: i64| slot)
+            .unwrap()
+            .requires(Cap::Net);
+        vm.load_source("a.colibri", "fn main() {\n    print(read_save(5))\n}\n")
+            .unwrap();
+        vm.run_main().unwrap();
+        assert_eq!(out.contents(), "5\n");
+    })
 }
 
 #[test]
@@ -57,11 +64,16 @@ fn an_ungranted_call_is_a_checker_error_at_the_use_site() {
 
 #[test]
 fn a_function_with_no_requirement_is_unaffected_by_the_missing_grant() {
-    let (mut vm, out) = vm_with(&[]);
-    vm.load_source("a.colibri", "fn main() {\n    print(tick())\n}\n")
-        .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "1\n");
+    vm_pending(
+        "a_function_with_no_requirement_is_unaffected_by_the_missing_grant",
+        || {
+            let (mut vm, out) = vm_with(&[]);
+            vm.load_source("a.colibri", "fn main() {\n    print(tick())\n}\n")
+                .unwrap();
+            vm.run_main().unwrap();
+            assert_eq!(out.contents(), "1\n");
+        },
+    )
 }
 
 #[test]

@@ -1,6 +1,9 @@
 //! Hot reload (DESIGN §16.3, ARCHITECTURE §17): `Vm::reload_changed` patches function bodies,
 //! restarts on anything else, and keeps the old program when the new one does not check.
 
+mod common;
+use common::vm_pending;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -158,28 +161,33 @@ fn a_patch_does_not_rerun_initialisers_and_keeps_module_state() {
 
 #[test]
 fn a_coroutine_in_an_old_body_finishes_on_it_and_new_calls_use_the_new_one() {
-    let src = |tag: &str| {
-        format!(
-            "fn worker() {{\n    wait(1.0)\n    print(\"worker {tag}\")\n}}\nfn main() {{\n    go worker()\n}}\nfn spawn() {{\n    go worker()\n}}\n"
-        )
-    };
-    let dir = tree("coro", &[("a.colibri", &src("v1"))]);
-    let (mut vm, out) = vm();
-    vm.load_file(dir.join("a.colibri")).unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(vm.coroutine_count(), 1);
-    write(&dir, "a.colibri", &src("v2"));
-    assert!(matches!(
-        vm.reload_changed().unwrap(),
-        ReloadOutcome::Patched { functions: 1 }
-    ));
-    vm.get_fn::<(), ()>("spawn")
-        .unwrap()
-        .call(&mut vm, ())
-        .unwrap();
-    assert_eq!(vm.coroutine_count(), 2);
-    vm.tick(1.5).unwrap();
-    assert_eq!(out.contents(), "worker v1\nworker v2\n");
+    vm_pending(
+        "a_coroutine_in_an_old_body_finishes_on_it_and_new_calls_use_the_new_one",
+        || {
+            let src = |tag: &str| {
+                format!(
+                    "fn worker() {{\n    wait(1.0)\n    print(\"worker {tag}\")\n}}\nfn main() {{\n    go worker()\n}}\nfn spawn() {{\n    go worker()\n}}\n"
+                )
+            };
+            let dir = tree("coro", &[("a.colibri", &src("v1"))]);
+            let (mut vm, out) = vm();
+            vm.load_file(dir.join("a.colibri")).unwrap();
+            vm.run_main().unwrap();
+            assert_eq!(vm.coroutine_count(), 1);
+            write(&dir, "a.colibri", &src("v2"));
+            assert!(matches!(
+                vm.reload_changed().unwrap(),
+                ReloadOutcome::Patched { functions: 1 }
+            ));
+            vm.get_fn::<(), ()>("spawn")
+                .unwrap()
+                .call(&mut vm, ())
+                .unwrap();
+            assert_eq!(vm.coroutine_count(), 2);
+            vm.tick(1.5).unwrap();
+            assert_eq!(out.contents(), "worker v1\nworker v2\n");
+        },
+    )
 }
 
 #[test]
@@ -295,32 +303,39 @@ fn what_forces_a_restart() {
 /// default restarts.
 #[test]
 fn a_changed_field_default_restarts_instead_of_patching() {
-    let v1 = "struct P {\n    x: int = 1\n}\nfn literal() -> int => P {}.x\n";
-    let dir = tree("default-change", &[("a.colibri", v1)]);
-    let (mut vm, _) = vm();
-    vm.load_file(dir.join("a.colibri")).unwrap();
-    write(&dir, "a.colibri", &v1.replace("x: int = 1", "x: int = 2"));
-    match vm.reload_changed().unwrap() {
-        ReloadOutcome::Restarted { reason, .. } => assert!(reason.contains("struct"), "{reason}"),
-        other => panic!("{other:?}"),
-    }
-    let now: i64 = vm
-        .get_fn::<(), i64>("literal")
-        .unwrap()
-        .call(&mut vm, ())
-        .unwrap();
-    assert_eq!(now, 2);
-    // A body that is not a default still patches.
-    write(
-        &dir,
-        "a.colibri",
-        &v1.replace("x: int = 1", "x: int = 2")
-            .replace("P {}.x", "P {}.x + 0"),
-    );
-    assert!(matches!(
-        vm.reload_changed().unwrap(),
-        ReloadOutcome::Patched { .. }
-    ));
+    vm_pending(
+        "a_changed_field_default_restarts_instead_of_patching",
+        || {
+            let v1 = "struct P {\n    x: int = 1\n}\nfn literal() -> int => P {}.x\n";
+            let dir = tree("default-change", &[("a.colibri", v1)]);
+            let (mut vm, _) = vm();
+            vm.load_file(dir.join("a.colibri")).unwrap();
+            write(&dir, "a.colibri", &v1.replace("x: int = 1", "x: int = 2"));
+            match vm.reload_changed().unwrap() {
+                ReloadOutcome::Restarted { reason, .. } => {
+                    assert!(reason.contains("struct"), "{reason}")
+                }
+                other => panic!("{other:?}"),
+            }
+            let now: i64 = vm
+                .get_fn::<(), i64>("literal")
+                .unwrap()
+                .call(&mut vm, ())
+                .unwrap();
+            assert_eq!(now, 2);
+            // A body that is not a default still patches.
+            write(
+                &dir,
+                "a.colibri",
+                &v1.replace("x: int = 1", "x: int = 2")
+                    .replace("P {}.x", "P {}.x + 0"),
+            );
+            assert!(matches!(
+                vm.reload_changed().unwrap(),
+                ReloadOutcome::Patched { .. }
+            ));
+        },
+    )
 }
 
 #[test]
@@ -469,27 +484,32 @@ fn forcing_a_restart_reinitialises_module_state() {
 
 #[test]
 fn host_functions_budget_and_capabilities_survive_a_restart() {
-    let src = |extra: &str| {
-        format!(
-            "fn twice(n: int) -> int => double(n)\nfn spin() {{\n    while true {{\n    }}\n}}\n{extra}"
-        )
-    };
-    let dir = tree("host", &[("a.colibri", &src(""))]);
-    let mut vm = colibri::Vm::builder().instruction_budget(10_000).build();
-    vm.register_fn("double", |n: i64| n * 2).unwrap();
-    vm.load_file(dir.join("a.colibri")).unwrap();
-    write(&dir, "a.colibri", &src("fn added() -> int => 1\n"));
-    assert!(matches!(
-        vm.reload_changed().unwrap(),
-        ReloadOutcome::Restarted { .. }
-    ));
-    let twice = vm.get_fn::<(i64,), i64>("twice").unwrap();
-    assert_eq!(twice.call(&mut vm, (4,)).unwrap(), 8);
-    let spin = vm.get_fn::<(), ()>("spin").unwrap();
-    assert!(matches!(
-        spin.call(&mut vm, ()),
-        Err(colibri::Error::BudgetExhausted { .. })
-    ));
+    vm_pending(
+        "host_functions_budget_and_capabilities_survive_a_restart",
+        || {
+            let src = |extra: &str| {
+                format!(
+                    "fn twice(n: int) -> int => double(n)\nfn spin() {{\n    while true {{\n    }}\n}}\n{extra}"
+                )
+            };
+            let dir = tree("host", &[("a.colibri", &src(""))]);
+            let mut vm = colibri::Vm::builder().instruction_budget(10_000).build();
+            vm.register_fn("double", |n: i64| n * 2).unwrap();
+            vm.load_file(dir.join("a.colibri")).unwrap();
+            write(&dir, "a.colibri", &src("fn added() -> int => 1\n"));
+            assert!(matches!(
+                vm.reload_changed().unwrap(),
+                ReloadOutcome::Restarted { .. }
+            ));
+            let twice = vm.get_fn::<(i64,), i64>("twice").unwrap();
+            assert_eq!(twice.call(&mut vm, (4,)).unwrap(), 8);
+            let spin = vm.get_fn::<(), ()>("spin").unwrap();
+            assert!(matches!(
+                spin.call(&mut vm, ()),
+                Err(colibri::Error::BudgetExhausted { .. })
+            ));
+        },
+    )
 }
 
 #[test]
@@ -504,20 +524,23 @@ fn programs_from_memory_have_nothing_to_reload() {
 
 #[test]
 fn the_watching_event_loop_calls_the_hook_between_ticks() {
-    let dir = tree(
-        "loop",
-        &[(
-            "a.colibri",
-            "fn msg() -> str => \"one\"\nfn ticker() {\n    var i = 0\n    while i < 6 {\n        print(msg())\n        i += 1\n        wait_real(0.02)\n    }\n}\nfn main() {\n    go ticker()\n}\n",
-        )],
-    );
-    let (mut vm, out) = vm();
-    vm.load_file(dir.join("a.colibri")).unwrap();
-    vm.run_main().unwrap();
-    let mut calls = 0;
-    let mut patched = 0;
-    let path = dir.clone();
-    vm.run_event_loop_watching(0.001, 0.01, |vm| {
+    vm_pending(
+        "the_watching_event_loop_calls_the_hook_between_ticks",
+        || {
+            let dir = tree(
+                "loop",
+                &[(
+                    "a.colibri",
+                    "fn msg() -> str => \"one\"\nfn ticker() {\n    var i = 0\n    while i < 6 {\n        print(msg())\n        i += 1\n        wait_real(0.02)\n    }\n}\nfn main() {\n    go ticker()\n}\n",
+                )],
+            );
+            let (mut vm, out) = vm();
+            vm.load_file(dir.join("a.colibri")).unwrap();
+            vm.run_main().unwrap();
+            let mut calls = 0;
+            let mut patched = 0;
+            let path = dir.clone();
+            vm.run_event_loop_watching(0.001, 0.01, |vm| {
         calls += 1;
         if calls == 3 {
             write(
@@ -532,11 +555,13 @@ fn the_watching_event_loop_calls_the_hook_between_ticks() {
         Ok(())
     })
     .unwrap();
-    assert_eq!(patched, 1);
-    let text = out.contents();
-    assert!(text.starts_with("one\n"), "{text}");
-    assert!(text.ends_with("two\n"), "{text}");
-    assert_eq!(text.lines().count(), 6);
+            assert_eq!(patched, 1);
+            let text = out.contents();
+            assert!(text.starts_with("one\n"), "{text}");
+            assert!(text.ends_with("two\n"), "{text}");
+            assert_eq!(text.lines().count(), 6);
+        },
+    )
 }
 
 /// A generated program of about 10 000 lines, patched once. Prints the time; the bound is

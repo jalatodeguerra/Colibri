@@ -608,3 +608,36 @@ fn a_captured_for_binding_is_dropped_on_every_way_out_of_the_iteration() {
 }";
     assert_eq!(run_ok(src), "1\n3\n9\n");
 }
+
+#[test]
+fn an_exhausted_budget_at_a_back_edge_names_the_loop_not_its_first_statement() {
+    // The edge that runs out is the loop's (line 3); the statements it jumps to are on 4 and 5.
+    let counted = "fn main() {
+    var s = 0
+    for i in 0..1000000 {
+        s += i
+        s += 1
+    }
+}";
+    let unbounded = "fn main() {
+    var n = 0
+    while true {
+        n += 1
+        n += 2
+    }
+}";
+    for src in [counted, unbounded] {
+        let o = run_source_with(
+            src,
+            &Options {
+                instruction_budget: Some(5_000),
+                ..Options::default()
+            },
+        );
+        assert_eq!(
+            o.panic.as_deref(),
+            Some("the instruction budget is exhausted")
+        );
+        assert_eq!(o.trace[0], ("main".to_string(), 3), "{:?}", o.trace);
+    }
+}

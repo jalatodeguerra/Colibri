@@ -86,6 +86,9 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
     std::fs::write(&script, SERVER).unwrap();
     let mut child = Server(
         Command::new("sh")
+            // About the descriptor limit, not the engine: pinned to the tree-walker.
+            // vm-pin: 2c
+            .env_remove("COLIBRI_ENGINE")
             .args(["-c", "ulimit -n 40; exec \"$0\" run \"$1\""])
             .arg(env!("CARGO_BIN_EXE_colibri"))
             .arg(&script)

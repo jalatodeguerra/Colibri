@@ -30,6 +30,11 @@ The two programs in `coroutines/` (`many`: many short coroutines; `pingpong`: tw
 that hand control back and forth) have no Python version and are not run by `run.sh`. Count their
 instructions with `valgrind --tool=cachegrind --cache-sim=no target/release/colibri run benchmarks/coroutines/many.colibri`.
 
+`benchmarks/cg.sh` prints the instructions (cachegrind `I refs`) each engine executes for `fib`
+and `loop` (or the benchmarks named on the command line), where wall time is too noisy to
+compare: `COLIBRI_ENGINE=vm colibri run` picks the bytecode VM, which runs only the programs
+its features cover so far.
+
 ## Baseline
 
 The tree-walking interpreter on 2026-11-19 (Linux x86-64, CPython 3.13), in milliseconds:
