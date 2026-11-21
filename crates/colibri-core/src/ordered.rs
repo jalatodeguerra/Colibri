@@ -878,7 +878,10 @@ mod tests {
             assert_eq!(m.remove_hashed(7, &int(k)), Some((int(k), int(k))));
         }
         for k in (1..300).step_by(2) {
-            assert!(m.find(7, &int(k)).is_some(), "lost {k} behind a removed slot");
+            assert!(
+                m.find(7, &int(k)).is_some(),
+                "lost {k} behind a removed slot"
+            );
         }
         // A replaced key keeps its place; a removed key comes back at the end.
         assert_eq!(m.insert_hashed(7, int(1), int(-1)).0, Some(int(1)));
