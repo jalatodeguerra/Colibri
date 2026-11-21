@@ -1,6 +1,17 @@
 //! Disassembly snapshots of small functions, and behaviour of the first slice end to end.
 
-use colibri_vm::{Options, Outcome, compile_source, run_source, run_source_with};
+use colibri_vm::{Options, Outcome, compile_source, run_source_with};
+
+/// Runs with a budget, so a runaway program fails its test instead of hanging the run.
+fn run_source(src: &str) -> Outcome {
+    run_source_with(
+        src,
+        &Options {
+            instruction_budget: Some(20_000_000),
+            ..Options::default()
+        },
+    )
+}
 
 fn dis(src: &str, name: &str) -> String {
     let all = compile_source(src).expect("the program compiles");
@@ -360,7 +371,7 @@ fn main() {
 }";
     assert_eq!(
         run_ok(src),
-        "<1><3>\n<1><3><5><7><9>\n<0>\nfalse\n12.5truec\n".replace("false", "true")
+        "<1><3>\n<1><3><5><7><9>\n<0>\ntrue\n12.5truec\n"
     );
 }
 
@@ -523,22 +534,22 @@ fn panic_and_assert_intrinsics() {
 #[test]
 fn numeric_conversions_and_methods_run_through_the_intrinsic_instruction() {
     let src = "fn main() {
+    let x = 200
+    print(u8(x))
+    print(int(2.9))
+    print(f32(7) / f32(2))
+    let w = u8(250)
+    print(w.wrapping_add(10))
+    print(9.0.sqrt())
     let big = 300
-    print(big as u8)
-    print(2.9 as int)
-    print((7 as f32) / (2 as f32))
-    print(7.wrapping_add(250) as u8)
+    print(u8(big))
 }";
     let o = run_source(src);
-    // What exactly prints is core's business; the point is that the program compiles and runs
-    // on the VM without an "unsupported" panic.
-    assert!(
-        !o.panic
-            .as_deref()
-            .unwrap_or("")
-            .contains("does not support"),
-        "{o:?}"
-    );
+    assert!(!o.compile_error, "{o:?}");
+    assert_eq!(o.stdout, "200\n2\n3.5\n4\n3.0\n");
+    let msg = o.panic.expect("the last conversion panics");
+    assert!(msg.contains("value 300 does not fit in `u8`"), "{msg}");
+    assert_eq!(o.trace[0].1, 10, "{:?}", o.trace);
 }
 
 #[test]

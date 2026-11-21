@@ -168,3 +168,74 @@ fn the_call_depth_limit_counts_nested_entries_too() {
     m.call(&mut fiber, main, Vec::new()).expect("main runs");
     assert!(refused.get());
 }
+
+#[test]
+fn a_panic_inside_a_native_entry_leaves_no_value_in_any_register() {
+    let src = "
+fn bad(s: str, z: int) -> int {
+    let t = s + \"x\"
+    let u = t + \"y\"
+    return 10 / z
+}
+fn main() { print(1) }
+";
+    let (mut m, program, _out) = load(src);
+    let bad = fn_id(&program, "bad");
+    let ran = Rc::new(Cell::new(false));
+    {
+        let ran = Rc::clone(&ran);
+        m.print_hook = Some(Rc::new(move |m: &mut Machine, fiber: &mut VmFiber| {
+            let r = m.call_fn(fiber, bad, vec![Value::Str(Rc::from("s")), Value::Int(0)]);
+            assert!(matches!(r, Err(colibri_core::ctl::Ctl::Panic(_))));
+            assert!(
+                fiber.regs.iter().all(crate::fiber::is_scalar_value),
+                "a register still owns a value after the unwind: {:?}",
+                fiber.regs
+            );
+            ran.set(true);
+        }));
+    }
+    let mut fiber = VmFiber::new();
+    m.run_module(&mut fiber).expect("the module runs");
+    let main = fn_id(&program, "main");
+    m.call(&mut fiber, main, Vec::new()).expect("main runs");
+    assert!(ran.get());
+}
+
+#[test]
+fn a_script_value_used_through_a_function_before_its_line_panics_at_run_time() {
+    // The checker rejects a direct use, so the use is made from outside the program's text:
+    // the print hook calls `get` while the script is still before the line of `late`.
+    let src = "fn get() -> int => late
+print(1)
+let late = 5
+print(late)
+";
+    let (mut m, program, out) = load(src);
+    let get = fn_id(&program, "get");
+    let msgs = Rc::new(RefCell::new(Vec::new()));
+    {
+        let msgs = Rc::clone(&msgs);
+        m.print_hook = Some(Rc::new(
+            move |m: &mut Machine, fiber: &mut VmFiber| match m.call_fn(fiber, get, Vec::new()) {
+                Err(colibri_core::ctl::Ctl::Panic(info)) => {
+                    msgs.borrow_mut().push(info.message.clone());
+                }
+                Ok(v) => msgs.borrow_mut().push(format!("returned {v:?}")),
+                Err(_) => msgs.borrow_mut().push("other".to_string()),
+            },
+        ));
+    }
+    let mut fiber = VmFiber::new();
+    m.run_module(&mut fiber).expect("the module runs");
+    let msgs = msgs.borrow();
+    // The first print runs before `late` has its value, the second after.
+    assert_eq!(msgs.len(), 2, "{msgs:?}");
+    assert!(
+        msgs[0].contains("`late` is used before it is initialised")
+            && msgs[0].contains("the script has not reached its line"),
+        "{msgs:?}"
+    );
+    assert!(msgs[1].starts_with("returned"), "{msgs:?}");
+    assert_eq!(String::from_utf8_lossy(&out.0.borrow()), "1\n5\n");
+}

@@ -142,6 +142,8 @@ fn run_one(source: &str, d: &Directives) -> Result<(), String> {
     }
     let options = Options {
         trace_drops: true,
+        // A runaway program fails the test instead of hanging it.
+        instruction_budget: Some(20_000_000),
         ..Options::default()
     };
     let outcome = run_source_with(source, &options);
@@ -215,26 +217,78 @@ fn golden_run() -> String {
             not_applicable += 1;
             continue;
         }
-        let pending = PENDING.iter().find(|(p, _)| *p == name);
-        let result = run_one(&source, &d);
-        match (result, pending) {
-            (Ok(()), None) => passed += 1,
-            (Ok(()), Some((_, reason))) => report.push_str(&format!(
-                "{name}: passes now but is listed as pending ({reason}); remove it from PENDING\n"
-            )),
-            (Err(_), Some(_)) => pending_seen += 1,
-            (Err(why), None) => report.push_str(&format!("{name}: FAILS\n{why}\n")),
+        match classify(&name, run_one(&source, &d), PENDING) {
+            Verdict::Passed => passed += 1,
+            Verdict::Pending => pending_seen += 1,
+            Verdict::Report(text) => report.push_str(&text),
         }
     }
-    for (p, _) in PENDING {
-        if !files.iter().any(|f| rel(f) == *p) {
-            report.push_str(&format!("PENDING names a file that is not run: {p}\n"));
-        }
-    }
+    let ran: Vec<String> = files.iter().map(|f| rel(f)).collect();
+    report.push_str(&stale_entries(&ran, PENDING));
     eprintln!(
         "golden on the VM: {passed} passed, {pending_seen} pending, {not_applicable} not applicable"
     );
     report
+}
+
+/// What the ratchet makes of one file.
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    Passed,
+    Pending,
+    /// A problem, as text for the failure message.
+    Report(String),
+}
+
+/// A file that passes must not be listed; a file that fails must be listed.
+fn classify(name: &str, result: Result<(), String>, pending: &[(&str, &str)]) -> Verdict {
+    let listed = pending.iter().find(|(p, _)| *p == name);
+    match (result, listed) {
+        (Ok(()), None) => Verdict::Passed,
+        (Ok(()), Some((_, reason))) => Verdict::Report(format!(
+            "{name}: passes now but is listed as pending ({reason}); remove it from PENDING\n"
+        )),
+        (Err(_), Some(_)) => Verdict::Pending,
+        (Err(why), None) => Verdict::Report(format!("{name}: FAILS\n{why}\n")),
+    }
+}
+
+/// Pending entries that name a file that was not run.
+fn stale_entries(ran: &[String], pending: &[(&str, &str)]) -> String {
+    let mut report = String::new();
+    for (p, _) in pending {
+        if !ran.iter().any(|f| f == p) {
+            report.push_str(&format!("PENDING names a file that is not run: {p}\n"));
+        }
+    }
+    report
+}
+
+#[test]
+fn the_ratchet_fails_a_pending_file_that_passes() {
+    let pending = [("a/x.colibri", "lists")];
+    let v = classify("a/x.colibri", Ok(()), &pending);
+    assert!(
+        matches!(&v, Verdict::Report(t) if t.contains("passes now but is listed")),
+        "{v:?}"
+    );
+    assert_eq!(
+        classify("a/x.colibri", Err("no".into()), &pending),
+        Verdict::Pending
+    );
+    assert_eq!(classify("a/y.colibri", Ok(()), &pending), Verdict::Passed);
+}
+
+#[test]
+fn the_ratchet_fails_an_unlisted_failure_and_a_stale_entry() {
+    let v = classify("a/y.colibri", Err("boom".into()), &[]);
+    assert!(
+        matches!(&v, Verdict::Report(t) if t.contains("FAILS") && t.contains("boom")),
+        "{v:?}"
+    );
+    let ran = vec!["a/x.colibri".to_string()];
+    assert_eq!(stale_entries(&ran, &[("a/x.colibri", "w")]), "");
+    assert!(stale_entries(&ran, &[("gone.colibri", "w")]).contains("not run: gone.colibri"));
 }
 
 #[test]
