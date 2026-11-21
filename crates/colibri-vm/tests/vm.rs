@@ -252,8 +252,9 @@ fn each(ps: List[P]) {
 }";
     // The source (r3), its position (r4) and the copy of the element in flight (r5) are
     // consecutive registers. `ForListNextVar` skips the `Jmp` that ends the loop when it
-    // produced an item. The write-back is the last act of a trip, on the way round and in the
-    // pad (0030); the pad then lets go of the guard and drops the source (0024-0025).
+    // produced an item. The write-back is the last act of a trip, after the trip's hook check
+    // (in the pad: `FoldHooks` at 0025, then `ForWriteBack` at 0026); the pad then lets go of
+    // the guard and drops the source (0027-0028).
     let expected = "\
 0000  Step 2
 0001  Copy r1 r0
@@ -261,41 +262,38 @@ fn each(ps: List[P]) {
 0003  LoadInt r4 0
 0004  HoldListPlace r3 \"xs\"
 0005  ForListNextVar r2 src=r3
-0006  Jmp -> 0015
+0006  Jmp -> 0014
 0007  Step 1
 0008  LoadInt r7 1
 0009  GetPath r8 r2 [Field(FieldIdx(0))]
 0010  AddI r6 r8 r7
 0011  SetPath r2 r6 [Field(FieldIdx(0))]
 0012  ForWriteBack r2 src=r3
-0013  CheckHooks
-0014  Jmp -> 0005
-0015  Unhold
-0016  Drop r3
-0017  CheckHooks
-0018  Drop r1
-0019  CheckHooks
-0020  ReturnUnit
-0021  Drop r1
-0022  FoldHooks
-0023  Jmp -> 0033
-0024  Unhold
-0025  Drop r3
-0026  FoldHooks
-0027  Jmp -> 0021
-0028  FoldHooks
+0013  Jmp -> 0005
+0014  Unhold
+0015  Drop r3
+0016  CheckHooks
+0017  Drop r1
+0018  CheckHooks
+0019  ReturnUnit
+0020  Drop r1
+0021  FoldHooks
+0022  Jmp -> 0031
+0023  FoldHooks
+0024  FoldHooks
+0025  FoldHooks
+0026  ForWriteBack r2 src=r3
+0027  Unhold
+0028  Drop r3
 0029  FoldHooks
-0030  ForWriteBack r2 src=r3
-0031  FoldHooks
-0032  Jmp -> 0024
-0033  Resume
-unwind [0000, 0001) -> 0022
-unwind [0004, 0005) -> 0025
-unwind [0005, 0006) -> 0031
-unwind [0007, 0008) -> 0029
-unwind [0009, 0012) -> 0028
-unwind [0013, 0014) -> 0024
-unwind [0017, 0018) -> 0021
+0030  Jmp -> 0020
+0031  Resume
+unwind [0000, 0001) -> 0021
+unwind [0004, 0005) -> 0028
+unwind [0005, 0006) -> 0027
+unwind [0007, 0008) -> 0024
+unwind [0009, 0012) -> 0023
+unwind [0016, 0017) -> 0020
 ";
     assert_eq!(dis(src, "each"), expected);
 }

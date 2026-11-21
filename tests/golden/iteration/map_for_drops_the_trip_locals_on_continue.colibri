@@ -1,0 +1,19 @@
+// allow: unused
+class T { name: str }
+
+fn main() {
+    let m = {1: T { name: "m1" }, 2: T { name: "m2" }}
+    for e in m {
+        let t = T { name: "t{e.0}" }
+        print(e.1.name)
+        if e.0 == 1 {
+            continue
+        }
+    }
+    print("end")
+}
+
+// expect: m1
+// expect: m2
+// expect: end
+// drops: t1, t2, m1, m2

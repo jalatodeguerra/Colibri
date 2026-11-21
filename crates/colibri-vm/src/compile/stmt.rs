@@ -316,16 +316,18 @@ impl FnCompiler<'_> {
         let cont = self.new_label();
         let exit = self.new_label();
         self.bind(head);
-        // The trip's scope: the binding, and for `for var` its write-back.
+        // The trip's scope starts after the step: a failing step (a budget, an iterator's `next`)
+        // is outside it, as in the tree-walker's `run_iteration`.
         let cleanups = self.cleanup_depth();
-        self.push_fold();
+        // `for var` writes back through its binding; `for var _` has none and only holds the guard.
+        let write_back = places && matches!(f.binding, ForBinding::Local(_));
         // Where the item goes: straight into a plain binding, else into a temporary.
         let (item, cell) = match f.binding {
             ForBinding::Local(l) if self.storage(l) == Storage::Slot => (self.local(l), None),
             ForBinding::Local(l) => (self.alloc(Kind::Scalar), Some(self.local(l))),
             _ => (self.alloc(Kind::Scalar), None),
         };
-        let next = match (each, places) {
+        let next = match (each, write_back) {
             (Each::List, false) => Op::ForListNext { d: item, a },
             (Each::List, true) => Op::ForListNextVar { d: item, a },
             (Each::Map, _) => Op::ForMapNext { d: item, a },
@@ -339,17 +341,27 @@ impl FnCompiler<'_> {
                 if let Some(lr) = cell {
                     self.emit(Op::NewCell { l: lr, s: item }, span);
                 }
-                if places {
+                if write_back {
+                    // The write-back runs after the trip's hook check, as `run_iteration` writes
+                    // back after `exit_scope` has folded the hook panics.
                     self.push_item(Item::ForBack {
                         l: self.local(l),
                         a,
                     });
+                    self.push_fold();
                 } else {
-                    let ty = self.local_ty(l);
-                    self.bind_local_cleanup(self.local(l), ty);
+                    self.push_fold();
+                    if cell.is_some() {
+                        // A cell holds a value whatever the type of the item is.
+                        self.push_item(Item::Reg(self.local(l)));
+                    } else {
+                        let ty = self.local_ty(l);
+                        self.bind_local_cleanup(self.local(l), ty);
+                    }
                 }
             }
             _ => {
+                self.push_fold();
                 // `for _ in ..` binds nothing: the item dies at once.
                 self.releases += 1;
                 self.emit(Op::Drop { r: item }, span);
