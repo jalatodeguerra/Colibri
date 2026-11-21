@@ -1122,11 +1122,14 @@ mod tests {
     /// A coroutine cancelled while suspended runs to its end through its unwinding (its `defer`
     /// runs), so its stack is pooled like any other and the next start reuses it. (A stack that
     /// never ran to its end is not pooled: it is forgotten, see
-    /// `a_lost_stack_ends_its_coroutine_as_an_internal_error`.)
+    /// `a_lost_stack_ends_its_coroutine_as_an_internal_error`.) The recursion stays shallow:
+    /// an unoptimised build spends some 17 KiB of native stack per Colibri call on Linux and
+    /// more on macOS and Windows, and on Windows a stack that went below the hot window is
+    /// dropped rather than pooled.
     #[test]
     fn a_cancelled_coroutines_stack_is_pooled_and_reused() {
         use crate::Fiber;
-        let src = "fn deep(n: int) -> int {\n    if n == 0 {\n        wait(100.0)\n        return 0\n    }\n    return 1 + deep(n - 1)\n}\nfn sleeper() {\n    defer print(\"cleaned\")\n    let _x = deep(50)\n}\nfn quick() -> int {\n    return 7\n}\nfn first() {\n    let h = go sleeper()\n    h.cancel()\n}\nfn second() {\n    let h = go quick()\n    print(h.join())\n}\n";
+        let src = "fn deep(n: int) -> int {\n    if n == 0 {\n        wait(100.0)\n        return 0\n    }\n    return 1 + deep(n - 1)\n}\nfn sleeper() {\n    defer print(\"cleaned\")\n    let _x = deep(3)\n}\nfn quick() -> int {\n    return 7\n}\nfn first() {\n    let h = go sleeper()\n    h.cancel()\n}\nfn second() {\n    let h = go quick()\n    print(h.join())\n}\n";
         let out = Out::default();
         let (mut interp, program) = loaded(src, Box::new(out.clone()));
         let mut fiber = Fiber::new();
@@ -1151,11 +1154,14 @@ mod tests {
     /// Deep recursion in a coroutine that runs on a reused stack (one that a deeper run already
     /// dirtied) still ends in the interpreter's "native stack budget" panic, run after run: the
     /// budget is measured from the stack's base, not from what the memory holds. (The hardware
-    /// guard page is not exercised: touching it kills the process.)
+    /// guard page is not exercised: touching it kills the process.) The stack is the size of the
+    /// hot window, so Windows pools it too, and the shallow run stays a few calls deep: an
+    /// unoptimised build spends some 17 KiB of native stack per Colibri call on Linux and more
+    /// on macOS and Windows, against a budget of 192 KiB here.
     #[test]
     fn stack_overflow_is_reported_on_a_reused_stack() {
         use crate::Fiber;
-        let src = "fn d(n: int) -> int {\n    if n == 0 {\n        return 0\n    }\n    return 1 + d(n - 1)\n}\nfn shallow() -> int {\n    return d(10)\n}\nfn main() {\n    let a = go shallow()\n    print(a.join())\n    let b = go d(100000)\n    print(b.join())\n}\n";
+        let src = "fn d(n: int) -> int {\n    if n == 0 {\n        return 0\n    }\n    return 1 + d(n - 1)\n}\nfn shallow() -> int {\n    return d(2)\n}\nfn main() {\n    let a = go shallow()\n    print(a.join())\n    let b = go d(100000)\n    print(b.join())\n}\n";
         let out = Out::default();
         let (mut interp, program) = loaded(src, Box::new(out.clone()));
         interp.core.sched.set_stack_size(256 * 1024);
@@ -1174,7 +1180,7 @@ mod tests {
                 "round {round}: one stack throughout"
             );
         }
-        assert_eq!(out.text(), "10\n".repeat(3));
+        assert_eq!(out.text(), "2\n".repeat(3));
     }
 
     /// Starts a coroutine of `size` bytes on a stack from `stacks`, runs it to its end by hand
