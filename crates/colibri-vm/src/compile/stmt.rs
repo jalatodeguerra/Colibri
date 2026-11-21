@@ -15,8 +15,13 @@ impl FnCompiler<'_> {
         let body = self.body;
         let span = body.span;
         // A parameter that is captured and assigned lives in a cell, made on entry.
-        for i in 0..body.param_count as usize {
-            if body.locals[i].storage == Storage::Cell {
+        for (i, local) in body
+            .locals
+            .iter()
+            .enumerate()
+            .take(body.param_count as usize)
+        {
+            if local.storage == Storage::Cell {
                 let r = i as Reg;
                 self.emit(Op::NewCell { l: r, s: r }, span);
             }

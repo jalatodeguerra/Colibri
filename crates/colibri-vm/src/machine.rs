@@ -37,6 +37,10 @@ impl Slot {
     }
 }
 
+/// Test-only callback run at every `print`.
+#[cfg(test)]
+pub(crate) type PrintHook = Rc<dyn Fn(&mut Machine, &mut crate::fiber::VmFiber)>;
+
 /// The bytecode virtual machine: the engine behind `colibri_core::engine::Engine`.
 pub struct Machine {
     /// Looked up at call time, so a patched function takes effect at its next call.
@@ -59,7 +63,7 @@ pub struct Machine {
     /// Tests only: runs at every `print`, so a test can call back into Colibri from inside the
     /// dispatch loop (a native re-entry, like a user `Show` or a `Drop` hook would).
     #[cfg(test)]
-    pub(crate) print_hook: Option<Rc<dyn Fn(&mut Machine, &mut crate::fiber::VmFiber)>>,
+    pub(crate) print_hook: Option<PrintHook>,
 }
 
 /// The default for [`Machine::set_native_stack_budget`].

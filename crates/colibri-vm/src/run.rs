@@ -80,6 +80,19 @@ impl Machine {
                 fiber.regs[base + usize::from($i)]
             };
         }
+        // Writes a scalar result. The old value of a result register is a scalar too (the Unit
+        // invariant), so it is forgotten rather than dropped: no drop-glue call per instruction.
+        macro_rules! put {
+            ($i:expr, $v:expr) => {{
+                let v = $v;
+                let slot = &mut reg!($i);
+                if is_scalar_value(slot) {
+                    std::mem::forget(std::mem::replace(slot, v));
+                } else {
+                    *slot = v;
+                }
+            }};
+        }
         macro_rules! sync {
             () => {
                 if let Some(f) = fiber.frames.last_mut() {
@@ -122,7 +135,7 @@ impl Machine {
             ($d:expr, $a:expr, $b:expr, $f:expr, $msg:expr) => {{
                 let (x, y) = int2!($a, $b);
                 match $f(x, y) {
-                    Some(v) => reg!($d) = Value::Int(v),
+                    Some(v) => put!($d, Value::Int(v)),
                     None => fault!($msg),
                 }
             }};
@@ -154,19 +167,19 @@ impl Machine {
         macro_rules! cmp_i {
             ($d:expr, $a:expr, $b:expr, $cmp:tt) => {{
                 let (x, y) = int2!($a, $b);
-                reg!($d) = Value::Bool(x $cmp y);
+                put!($d, Value::Bool(x $cmp y));
             }};
         }
         macro_rules! cmp_f {
             ($d:expr, $a:expr, $b:expr, $cmp:tt) => {{
                 let (x, y) = float2!($a, $b);
-                reg!($d) = Value::Bool(x $cmp y);
+                put!($d, Value::Bool(x $cmp y));
             }};
         }
         macro_rules! arith_f {
             ($d:expr, $a:expr, $b:expr, $op:tt) => {{
                 let (x, y) = float2!($a, $b);
-                reg!($d) = Value::Float(x $op y);
+                put!($d, Value::Float(x $op y));
             }};
         }
 
@@ -175,8 +188,8 @@ impl Machine {
             pc += 1;
             match op {
                 Op::LoadUnit { d } => reg!(d) = Value::Unit,
-                Op::LoadBool { d, b } => reg!(d) = Value::Bool(b),
-                Op::LoadInt { d, i } => reg!(d) = Value::Int(i64::from(i)),
+                Op::LoadBool { d, b } => put!(d, Value::Bool(b)),
+                Op::LoadInt { d, i } => put!(d, Value::Int(i64::from(i))),
                 Op::LoadK { d, k } => reg!(d) = chunk.consts[k as usize].clone(),
                 Op::Copy { d, s } => {
                     let v = reg!(s).clone();
@@ -292,7 +305,7 @@ impl Machine {
                         fault!("division by zero");
                     }
                     match x.checked_div(y) {
-                        Some(v) => reg!(d) = Value::Int(v),
+                        Some(v) => put!(d, Value::Int(v)),
                         None => fault!("integer overflow"),
                     }
                 }
@@ -302,7 +315,7 @@ impl Machine {
                         fault!("modulo by zero");
                     }
                     match x.checked_rem(y) {
-                        Some(v) => reg!(d) = Value::Int(v),
+                        Some(v) => put!(d, Value::Int(v)),
                         None => fault!("integer overflow"),
                     }
                 }
@@ -311,7 +324,7 @@ impl Machine {
                         internal!("ill-typed integer operation")
                     };
                     match x.checked_add(i64::from(i)) {
-                        Some(v) => reg!(d) = Value::Int(v),
+                        Some(v) => put!(d, Value::Int(v)),
                         None => fault!("integer overflow"),
                     }
                 }
@@ -320,7 +333,7 @@ impl Machine {
                         internal!("ill-typed negation")
                     };
                     match x.checked_neg() {
-                        Some(v) => reg!(d) = Value::Int(v),
+                        Some(v) => put!(d, Value::Int(v)),
                         None => fault!("integer overflow"),
                     }
                 }
@@ -337,7 +350,7 @@ impl Machine {
                     let Value::Float(x) = &reg!(a) else {
                         internal!("ill-typed negation")
                     };
-                    reg!(d) = Value::Float(-*x);
+                    put!(d, Value::Float(-*x));
                 }
                 Op::LtF { d, a, b } => cmp_f!(d, a, b, <),
                 Op::LeF { d, a, b } => cmp_f!(d, a, b, <=),
@@ -348,7 +361,7 @@ impl Machine {
                     let Value::Bool(x) = &reg!(a) else {
                         internal!("ill-typed `not`")
                     };
-                    reg!(d) = Value::Bool(!*x);
+                    put!(d, Value::Bool(!*x));
                 }
                 Op::Binary { d, a, b } => {
                     let Op::Site { site } = chunk.code[pc] else {
@@ -418,7 +431,7 @@ impl Machine {
                     let (x, e) = int2!(i, end);
                     // `x < e` held before the step (the loop only runs then), so no overflow.
                     let next = x + 1;
-                    reg!(i) = Value::Int(next);
+                    put!(i, Value::Int(next));
                     if next < e {
                         self.core.budget.left -= 1;
                         if self.core.budget.left < 0 {
@@ -433,7 +446,7 @@ impl Machine {
                     let (x, e) = int2!(i, end);
                     // An inclusive range must not step past its end (it may be `i64::MAX`).
                     if x != e {
-                        reg!(i) = Value::Int(x + 1);
+                        put!(i, Value::Int(x + 1));
                         self.core.budget.left -= 1;
                         if self.core.budget.left < 0 {
                             sync!();
@@ -574,7 +587,7 @@ impl Machine {
                     let Value::F32(x) = &reg!(s) else {
                         internal!("ill-typed `f32` coercion")
                     };
-                    reg!(d) = Value::Float(f64::from(*x));
+                    put!(d, Value::Float(f64::from(*x)));
                 }
 
                 Op::Site { .. } => internal!("an operand word was executed"),
@@ -659,7 +672,13 @@ impl Machine {
         match frame.kind {
             FrameKind::NativeEntry => Some(v),
             FrameKind::Colibri => {
-                fiber.regs[frame.ret as usize] = v;
+                // The result register is empty (Unit invariant): skip its drop glue.
+                let slot = &mut fiber.regs[frame.ret as usize];
+                if is_scalar_value(slot) {
+                    std::mem::forget(std::mem::replace(slot, v));
+                } else {
+                    *slot = v;
+                }
                 None
             }
         }
