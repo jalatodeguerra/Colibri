@@ -62,7 +62,7 @@ fn alive(pid: &str) -> bool {
 /// (`S`, `R`, `Z` for a zombie...) and nothing for a process that is gone.
 #[cfg(not(target_os = "linux"))]
 fn alive(pid: &str) -> bool {
-    let out = Command::new("ps")
+    let out = std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", pid])
         .output()
         .expect("`ps` runs");
