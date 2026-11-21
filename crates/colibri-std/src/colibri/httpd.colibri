@@ -2189,7 +2189,9 @@ fn grace_timer(server: Server, grace: float) {
 fn connection_task(server: Server, state: ConnState, id: int, handler: Handler) {
     defer {
         // The user code of the connection ends first (its own `defer`s run), then the socket
-        // goes and the slot is free.
+        // goes and the slot is free. The cancel is needed: `run_connection` runs as a child of
+        // this group and holds `state`, so the group is never dropped on its own, and a handler
+        // or a stream closure would outlive the connection.
         state.group.cancel()
         state.conn.close()
         let _ = server.conns.remove(id)
