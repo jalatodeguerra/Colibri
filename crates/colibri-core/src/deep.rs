@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use colibri_check::hir::{CmpOp, FnId};
 use colibri_check::types::TypeId;
-use colibri_syntax::Span;
+use colibri_syntax::{FileId, Span};
 
 use crate::clone::Cloner;
 use crate::compare::{Guard, cmp_with, equal_with};
@@ -77,7 +77,10 @@ impl<E: Engine> Hooks<'_, E> {
             return Err(Stop::TooDeep);
         }
         // A call like any other: a panic in the method shows the line it was called from.
-        E::note_position(self.fiber, self.span);
+        // (A hook run for the host, with no source position, leaves the frame's alone.)
+        if self.span != Span::new(FileId(0), 0, 0) {
+            E::note_position(self.fiber, self.span);
+        }
         self.engine
             .call_fn(self.fiber, f, args)
             .map_err(|c| Stop::Ctl(Box::new(c)))
