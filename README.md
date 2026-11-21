@@ -56,6 +56,17 @@ $ rm notes.txt && colibri run words.colibri
 error: reading notes.txt: cannot read `notes.txt`: no such file or directory
 ```
 
+## Learn Colibri
+
+- [`guide/tutorial.md`](guide/tutorial.md): a hands-on tutorial, from installing to tests,
+  coroutines and a small HTTP service.
+- [`guide/tour.md`](guide/tour.md): the whole language in short sections, for programmers who
+  know others.
+- [`guide/builtins.md`](guide/builtins.md): the types and functions that need no `import`.
+- [`guide/std`](guide/std/README.md): the standard library reference, one page for each module.
+
+Every sample in the guide is checked, formatted and, where it shows output, run by the test suite.
+
 ## Highlights
 
 - **Simple syntax.** Braces, no semicolons, string interpolation (`"{name}"`), a small set of
@@ -897,6 +908,8 @@ whose logic comes from Colibri scripts (host classes, handles, callbacks and a s
 | `math`, `rand` | math functions; random numbers |
 | `vec` | 2D, 3D and 4D vector types of `f32` and `i32`, written in Colibri (a library on top of operator interfaces, not part of the language) |
 
+Every module has a page in the [standard library reference](guide/std/README.md).
+
 Paths are `/`-separated text on every system, Windows included. `path.from_native` converts a path
 that came from outside (a command-line argument, a file's content) from the system's own spelling,
 and on Windows, and only there, `C:/` and `//host/share/` are roots.
@@ -957,6 +970,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 Most language behaviour is pinned by golden tests in `tests/golden`: each `.colibri` file lists
 its expected output (`// expect:`), diagnostics (`// error:`) or drop order (`// drops:`).
+
+The guide in `guide/` is tested too (`crates/colibri-cli/tests/guide.rs`): each ` ```colibri `
+sample must pass `colibri check` and `colibri fmt --check`, and one followed by an ` ```output `
+block must print exactly that. A fence word says more (`no-run`, `test`, `error`, `pkg=NAME,file=PATH`; the
+test's header lists them). The pages in `guide/std` are generated from the standard library's
+interfaces and the doc comments of `vec` and `httpd`; after a change to a signature, write them
+again with `colibri doc --std guide/std`, and the test fails until you do.
 
 ## License
 
