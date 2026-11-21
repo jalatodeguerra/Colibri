@@ -5,6 +5,12 @@
 # the run, so delete its line when it starts to pass. Regenerate the whole list with
 #   COLIBRI_ENGINE=vm COLIBRI_VM_PENDING_REPORT=1 cargo test -p colibri-lang --test golden
 # only when a step lands that makes many tests pass at once.
+#
+# Tests that only run on one system (`// only: windows`) are listed too, so `both` and the VM run
+# on that system see them as pending; here they are ignored and the ratchet leaves them be, but a
+# path that names no test still fails. Their reasons were taken from the same program run on Linux
+# with the `only:` line removed, and from the twin for the other system. The regeneration above
+# skips them: add or keep them by hand.
 bitwise/bitwise_on_bytes_of_a_string.colibri  # `for` over this kind of value
 bitwise/compound_bitwise_on_fields_and_elements.colibri  # struct values
 bitwise/fnv1a_hash_with_wrapping_multiplication.colibri  # `for` over this kind of value
@@ -388,6 +394,7 @@ ffi/libc_pointers.colibri  # `extern` functions
 ffi/libc_posix_integers.colibri  # `extern` functions
 ffi/libc_strings.colibri  # `extern` functions
 ffi/libc_struct_by_value.colibri  # `extern` functions
+ffi/libc_windows_integers.colibri  # `extern` functions
 ffi/libm_fabsf.colibri  # `extern` functions
 ffi/libm_functions.colibri  # `extern` functions
 ffi/null_where_not_allowed.colibri  # `extern` functions
@@ -785,15 +792,22 @@ std/os_exit_runs_defers.colibri  # `defer`
 std/os_temp_dir_is_the_tests_own.colibri  # host functions
 std/path_from_native.colibri  # host functions
 std/path_from_native_unix.colibri  # host functions
+std/path_from_native_windows.colibri  # host functions
 std/path_operations.colibri  # host functions
 std/path_roots_unix.colibri  # host functions
+std/path_roots_windows.colibri  # host functions
 std/process_error_failed.colibri  # projections
+std/process_error_failed_windows.colibri  # projections
 std/process_error_not_found.colibri  # `match`
 std/process_errors.colibri  # `match`
 std/process_names_do_not_clash.colibri  # struct values
 std/process_polling_in_a_coroutine.colibri  # `go`
+std/process_polling_windows.colibri  # `go`
 std/process_run.colibri  # `match`
+std/process_shell_windows.colibri  # `match`
 std/process_spawn.colibri  # `match`
+std/process_spawn_windows.colibri  # `match`
+std/process_windows.colibri  # `match`
 std/rand_choice_and_shuffle.colibri  # host functions
 std/rand_empty_range_panics.colibri  # host functions
 std/rand_independent_generators.colibri  # host functions
