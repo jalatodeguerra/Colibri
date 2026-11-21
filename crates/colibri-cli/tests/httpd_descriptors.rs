@@ -7,8 +7,23 @@
 
 use std::io::{BufRead, Read, Write};
 use std::net::TcpStream;
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+/// How long the test waits for the server to say something or to end.
+const PATIENCE: Duration = Duration::from_secs(30);
+
+/// The server process; it is killed and waited for when the test ends, so that a failure leaves
+/// no orphan behind.
+struct Server(Child);
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 
 const SERVER: &str = r#"import httpd
 import io
@@ -60,17 +75,37 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
     std::fs::create_dir_all(&dir).unwrap();
     let script = dir.join("server.colibri");
     std::fs::write(&script, SERVER).unwrap();
-    let mut child = Command::new("sh")
-        .args(["-c", "ulimit -n 40; exec \"$0\" run \"$1\""])
-        .arg(env!("CARGO_BIN_EXE_colibri"))
-        .arg(&script)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("sh runs");
-    let mut first = String::new();
-    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
-    out.read_line(&mut first).unwrap();
+    let mut child = Server(
+        Command::new("sh")
+            .args(["-c", "ulimit -n 40; exec \"$0\" run \"$1\""])
+            .arg(env!("CARGO_BIN_EXE_colibri"))
+            .arg(&script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("sh runs"),
+    );
+    // The pipes are read on threads, so that a server that says nothing, or never ends, fails the
+    // test after `PATIENCE` instead of hanging it.
+    let (first_tx, first_rx) = mpsc::channel();
+    let stdout = child.0.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        let mut out = std::io::BufReader::new(stdout);
+        let mut first = String::new();
+        let _ = out.read_line(&mut first);
+        let _ = first_tx.send(first);
+        let _ = std::io::copy(&mut out, &mut std::io::sink());
+    });
+    let (log_tx, log_rx) = mpsc::channel();
+    let mut stderr = child.0.stderr.take().unwrap();
+    std::thread::spawn(move || {
+        let mut log = String::new();
+        let _ = stderr.read_to_string(&mut log);
+        let _ = log_tx.send(log);
+    });
+    let first = first_rx
+        .recv_timeout(PATIENCE)
+        .expect("the server printed its address in time");
     let addr = first
         .trim()
         .strip_prefix("listening on ")
@@ -97,14 +132,20 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
     );
     assert!(answer.ends_with("bye\n"), "{answer}");
     drop(b);
-    let mut log = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut log)
-        .unwrap();
-    let status = child.wait().unwrap();
+    let log = log_rx
+        .recv_timeout(PATIENCE)
+        .expect("the server closed its stderr in time");
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            started.elapsed() < PATIENCE,
+            "the server did not end: {log}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert_eq!(status.code(), Some(0), "{log}");
     assert!(log.contains("accept failed"), "nothing was logged: {log:?}");
     let _ = std::fs::remove_dir_all(&dir);
