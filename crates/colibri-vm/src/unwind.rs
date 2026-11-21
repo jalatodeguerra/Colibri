@@ -14,6 +14,7 @@ use colibri_core::value::Value;
 use crate::fiber::{FrameKind, VmFiber, is_scalar_value};
 use crate::machine::Machine;
 
+// vm-pin: refusal (the leaks that keep a refused run silent go when no feature is refused)
 /// What every refusal of an unsupported feature starts with.
 const REFUSAL: &str = "the bytecode VM does not support";
 
@@ -75,6 +76,13 @@ impl Machine {
             }
             if frame.kind == FrameKind::NativeEntry {
                 self.refused |= refusal;
+                if refusal {
+                    // Leaked on purpose, like the registers.
+                    for v in fiber.temps.drain(frame.temps_mark as usize..) {
+                        std::mem::forget(v);
+                    }
+                    return Err(ctl);
+                }
                 self.release_temps(fiber, frame.temps_mark as usize);
                 return Err(ctl);
             }

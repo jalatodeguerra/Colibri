@@ -110,3 +110,35 @@ fn both_engines_agree_on_a_small_program() {
     assert!(tree.0.is_ok() && vm.0.is_ok());
     assert_eq!(tree.1, vm.1);
 }
+
+#[test]
+fn a_refusal_does_not_silence_the_module_values_of_later_tests() {
+    // One Vm, three tests: the middle one needs a closure, which the VM refuses. The refusal
+    // leaks what its own run holds, but the test after it must still see the module value's
+    // `Drop` hook run, as on the tree-walker.
+    let src = "class G {\n    name: str\n}\n\nimpl Drop for G {\n    fn drop(self) {\n        print(\"drop {self.name}\")\n    }\n}\n\nlet g = G { name: \"module\" }\n\ntest \"plain\" {\n    print(\"plain body\")\n}\n\ntest \"refused\" {\n    let f = fn(x: int) => x\n    print(f(1))\n}\n\ntest \"plain again\" {\n    print(\"again body\")\n}\n";
+    let run = |kind: EngineKind| {
+        let out = colibri::SharedBuffer::new();
+        let mut vm = Vm::builder()
+            .engine(kind)
+            .stdout(Box::new(out.clone()))
+            .build();
+        vm.load_source("t.colibri", src).unwrap();
+        let mut seen = Vec::new();
+        for i in 0..3 {
+            let result = vm.run_test(i);
+            seen.push((result.is_ok(), out.take()));
+        }
+        seen
+    };
+    let tree = run(EngineKind::Tree);
+    assert_eq!(
+        tree.last().unwrap(),
+        &(true, "again body\ndrop module\n".to_string()),
+        "{tree:?}"
+    );
+    let vm = run(EngineKind::Bytecode);
+    assert_eq!(vm[0], tree[0], "{vm:?}");
+    assert!(!vm[1].0, "the closure is refused: {vm:?}");
+    assert_eq!(vm[2], tree[2], "{vm:?}");
+}
