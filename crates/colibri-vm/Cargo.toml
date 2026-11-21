@@ -1,0 +1,13 @@
+[package]
+name = "colibri-vm"
+description = "Colibri bytecode compiler and virtual machine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+colibri-syntax = { path = "../colibri-syntax" }
+colibri-check = { path = "../colibri-check" }
+colibri-core = { path = "../colibri-core" }
