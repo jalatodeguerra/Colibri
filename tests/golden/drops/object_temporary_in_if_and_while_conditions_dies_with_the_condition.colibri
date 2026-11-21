@@ -1,0 +1,36 @@
+// allow: unused
+class T { name: str, n: int }
+impl Drop for T {
+    fn drop(self) { print("drop {self.name}") }
+}
+fn mk(s: str) -> T => T { name: s, n: 2 }
+fn id(n: int) -> int => n
+
+// A class field read from a temporary object: the object lives to the end of the condition
+// even when the comparison is on integers.
+fn main() {
+    if mk("a").n > 1 {
+        print("in if")
+    }
+    if id(mk("b").n) > 1 {
+        print("in if 2")
+    }
+    var i = 0
+    while i < mk("w{i}").n {
+        print("body {i}")
+        i += 1
+    }
+    print("after")
+}
+
+// expect: drop a
+// expect: in if
+// expect: drop b
+// expect: in if 2
+// expect: drop w0
+// expect: body 0
+// expect: drop w1
+// expect: body 1
+// expect: drop w2
+// expect: after
+// drops: a, b, w0, w1, w2

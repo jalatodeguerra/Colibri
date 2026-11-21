@@ -314,6 +314,9 @@ impl FnCompiler<'_> {
         self.range_next(cur, end_reg, *inclusive, head, exit, span);
         self.loops.pop();
         self.bind(exit);
+        // The temporaries of the bounds live for the whole loop, like the source of the
+        // tree-walker's iteration.
+        self.emit_exit(m.cleanups, None, span);
         self.abandon(m);
     }
 

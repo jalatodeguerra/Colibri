@@ -1,6 +1,6 @@
 //! Conditions: jumping on a boolean expression, with compare-and-branch for integers.
 
-use colibri_check::hir::{Arg, BinOp, CmpOp, Expr, ExprKind, Lit, Operand, UnOp};
+use colibri_check::hir::{Anchor, Arg, BinOp, CmpOp, Expr, ExprKind, Lit, Operand, UnOp};
 use colibri_check::types::IntTy;
 
 use super::expr::writes_locals;
@@ -15,7 +15,10 @@ fn clean(e: &Expr) -> bool {
         return false;
     }
     match &e.kind {
-        ExprKind::Lit(_) | ExprKind::Read(_) => true,
+        ExprKind::Lit(_) => true,
+        // A local or a global is read in place. The object of a class field (and the
+        // collection of an element) is a temporary that lives to the statement end.
+        ExprKind::Read(p) => matches!(p.anchor, Anchor::Local(_) | Anchor::Global(_)),
         ExprKind::Unary(_, x) | ExprKind::Coerce(x, _) => clean(x),
         ExprKind::Binary(_, a, b) | ExprKind::And(a, b) | ExprKind::Or(a, b) => {
             clean(a) && clean(b)

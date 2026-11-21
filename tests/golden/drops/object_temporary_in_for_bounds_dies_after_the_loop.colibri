@@ -1,0 +1,31 @@
+// allow: unused
+class T { name: str, n: int }
+impl Drop for T {
+    fn drop(self) { print("drop {self.name}") }
+}
+fn mk(s: str) -> T => T { name: s, n: 2 }
+fn id(n: int) -> int => n
+
+// The temporaries of the bounds live for the whole loop, and die on every way out of it.
+fn main() {
+    for i in 0..mk("src").n {
+        print("i{i}")
+    }
+    for i in id(mk("end").n)..5 {
+        if i == 3 { break }
+        print("j{i}")
+    }
+    for i in 0..id(mk("empty").n) - 2 {
+        print("never {i}")
+    }
+    print("done")
+}
+
+// expect: i0
+// expect: i1
+// expect: drop src
+// expect: j2
+// expect: drop end
+// expect: drop empty
+// expect: done
+// drops: src, end, empty
