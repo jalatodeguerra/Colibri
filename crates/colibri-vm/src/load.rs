@@ -102,6 +102,7 @@ impl Machine {
         }
         let result = f(self, fiber);
         fiber.frames.truncate(frames);
+        debug_assert!(fiber.unwinding.iter().all(|&(i, _)| (i as usize) < frames));
         self.release_temps(fiber, temps);
         // A script that swallowed the exhaustion (through a host function that returned
         // normally) still ran out of budget.

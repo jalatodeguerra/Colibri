@@ -38,15 +38,16 @@ impl Machine {
                 let at = frame.pc.saturating_sub(1);
                 if let Some(pad) = frame.chunk.pad_for(at) {
                     // A failure inside a pad joins the one already on its way out.
-                    let ctl = match frame.unwinding.take() {
+                    let idx = fiber.frames.len() - 1;
+                    let ctl = match fiber.take_unwinding(idx) {
                         Some(inflight) => match self.fold_cleanup_failure(Err(*inflight), ctl) {
                             Err(folded) => folded,
                             Ok(_) => unreachable!("a folded failure is an error"),
                         },
                         None => ctl,
                     };
+                    fiber.set_unwinding(idx, Box::new(ctl));
                     let frame = fiber.frames.last_mut().expect("a frame to unwind");
-                    frame.unwinding = Some(Box::new(ctl));
                     frame.pc = pad;
                     return Ok(());
                 }
@@ -55,6 +56,7 @@ impl Machine {
             // No pad: the frame owns nothing. (A compiler bug would leave values in its window;
             // debug builds assert it, release builds release them rather than leak.)
             let frame = fiber.frames.pop().expect("a frame to unwind");
+            let inflight = fiber.take_unwinding(fiber.frames.len());
             let base = frame.base as usize;
             let chunk = &frame.chunk;
             let (from, to) = (base + chunk.nparams as usize, base + chunk.nregs as usize);
@@ -88,7 +90,7 @@ impl Machine {
             }
             // The caller continues unwinding from the call it made. (A failure in a pad that no
             // further pad covers still joins the one on its way out.)
-            if let Some(inflight) = frame.unwinding {
+            if let Some(inflight) = inflight {
                 ctl = match self.fold_cleanup_failure(Err(*inflight), ctl) {
                     Err(folded) => folded,
                     Ok(_) => unreachable!("a folded failure is an error"),

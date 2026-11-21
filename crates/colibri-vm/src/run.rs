@@ -549,8 +549,8 @@ impl Machine {
                 }
                 Op::Resume => {
                     sync!();
-                    let frame = fiber.frames.last_mut().expect("a frame");
-                    let Some(ctl) = frame.unwinding.take() else {
+                    let idx = fiber.frames.len() - 1;
+                    let Some(ctl) = fiber.take_unwinding(idx) else {
                         internal!("a landing pad ended with nothing to resume")
                     };
                     match self.catch(fiber, *ctl, true) {
@@ -577,14 +577,14 @@ impl Machine {
     #[cold]
     #[inline(never)]
     fn op_fold_hooks(&mut self, fiber: &mut VmFiber, chunk: &Chunk, pc: usize) -> Result<(), Ctl> {
-        let frame = fiber.frames.last_mut().expect("a frame");
-        let Some(inflight) = frame.unwinding.take() else {
+        let idx = fiber.frames.len() - 1;
+        let Some(inflight) = fiber.take_unwinding(idx) else {
             let span = chunk.spans[pc - 1];
             return Err(self.internal(fiber, span, "a hook fold outside a landing pad"));
         };
         let folded = self.fold_hook_panics(Err(*inflight));
-        if let Some(frame) = fiber.frames.last_mut() {
-            frame.unwinding = folded.err().map(Box::new);
+        if let Err(ctl) = folded {
+            fiber.set_unwinding(idx, Box::new(ctl));
         }
         Ok(())
     }
@@ -936,7 +936,6 @@ impl Machine {
             kind: FrameKind::Colibri,
             noted: None,
             temps_mark: fiber.temps.len() as u32,
-            unwinding: None,
         });
         Ok(())
     }

@@ -81,7 +81,6 @@ impl Machine {
             kind: FrameKind::NativeEntry,
             noted: None,
             temps_mark: fiber.temps.len() as u32,
-            unwinding: None,
         });
         let result = self.run(fiber);
         // The receiver of a `var self` method goes back to the caller; every other parameter

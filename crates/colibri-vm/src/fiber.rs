@@ -35,8 +35,6 @@ pub(crate) struct Frame {
     pub noted: Option<(u32, Span)>,
     /// How many `Engine::hold_temp` values were alive when the frame began.
     pub temps_mark: u32,
-    /// The panic or cancellation this frame's landing pad is running for; `Resume` hands it on.
-    pub unwinding: Option<Box<colibri_core::ctl::Ctl>>,
 }
 
 impl Frame {
@@ -62,9 +60,31 @@ pub struct VmFiber {
     pub(crate) state: FiberState,
     /// The native stack position when the host called in, to bound native re-entry.
     pub(crate) stack_base: usize,
+    /// The panic or cancellation that a frame's landing pad is running for (`Resume` hands it
+    /// on), by the frame's index, lowest first. Off the frame so a call and a return do not
+    /// touch it.
+    pub(crate) unwinding: Vec<(u32, Box<colibri_core::ctl::Ctl>)>,
 }
 
 impl VmFiber {
+    /// Takes the failure the pad of frame `idx` is running for.
+    pub(crate) fn take_unwinding(&mut self, idx: usize) -> Option<Box<colibri_core::ctl::Ctl>> {
+        match self.unwinding.last() {
+            Some(&(i, _)) if i as usize == idx => self.unwinding.pop().map(|(_, c)| c),
+            _ => None,
+        }
+    }
+
+    /// Records the failure the pad of frame `idx` is running for.
+    pub(crate) fn set_unwinding(&mut self, idx: usize, ctl: Box<colibri_core::ctl::Ctl>) {
+        debug_assert!(
+            self.unwinding
+                .last()
+                .is_none_or(|&(i, _)| (i as usize) < idx)
+        );
+        self.unwinding.push((idx as u32, ctl));
+    }
+
     pub fn new() -> Self {
         VmFiber {
             regs: Vec::new(),
@@ -72,6 +92,7 @@ impl VmFiber {
             temps: Vec::new(),
             state: FiberState::default(),
             stack_base: 0,
+            unwinding: Vec::new(),
         }
     }
 
