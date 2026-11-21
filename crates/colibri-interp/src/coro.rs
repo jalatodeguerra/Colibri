@@ -123,9 +123,9 @@ impl Stacks {
     /// when the pool is full) and frees the slot. Only a coroutine that finished gets here:
     /// `into_stack` panics for one that did not, and a stack that is forgotten (`forget_all`,
     /// a lost stack) never comes through here.
-    pub(crate) fn recycle(&mut self, slot: u32, co: Box<Co>) {
+    pub(crate) fn recycle(&mut self, slot: u32, co: Co) {
         let size = self.slots[slot as usize].size;
-        let stack = (*co).into_stack();
+        let stack = co.into_stack();
         if size == self.pool_size && self.pool.len() < STACK_POOL_CAP {
             self.pool.push(stack);
         }
@@ -752,7 +752,7 @@ impl Interp {
             CoroutineResult::Return(finish) => {
                 // The coroutine ran to its end (it returned, also when cancelled): only now
                 // is its stack freed, into the pool.
-                self.stacks.recycle(slot.0, co);
+                self.stacks.recycle(slot.0, *co);
                 Resumed::Finished(finish)
             }
         }
@@ -1133,7 +1133,7 @@ mod tests {
         });
         assert!(matches!(r, super::CoroutineResult::Return(_)));
         drop(stacks.take(slot));
-        stacks.recycle(slot, co);
+        stacks.recycle(slot, *co);
         assert_eq!(stacks.pool.len(), 1);
         let _b = stacks.acquire(128 * 1024).expect("stack");
         assert_eq!(stacks.pool.len(), 0, "the old size was dropped");
