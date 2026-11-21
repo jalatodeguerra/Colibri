@@ -57,7 +57,11 @@ impl<E: Engine> Hooks<'_, E> {
         if !self.engine.core().host_hook_set(r.ty)?.has(hook) {
             return None;
         }
-        // A host hook is a call like any other: one step (EMBEDDING §5).
+        // A host hook is a call like any other: a panic in it shows the line it was called
+        // from, and it costs one step (EMBEDDING §5).
+        if self.span != Span::new(FileId(0), 0, 0) {
+            E::note_position(self.fiber, self.span);
+        }
         if let Err(ctl) = self.engine.step(self.fiber, self.span) {
             return Some(Err(Stop::Ctl(Box::new(ctl))));
         }
