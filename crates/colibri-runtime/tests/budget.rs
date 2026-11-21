@@ -326,65 +326,61 @@ fn run_main_is_one_entry() {
 
 #[test]
 fn reentrant_calls_share_the_entrys_budget() {
-    vm_pending("reentrant_calls_share_the_entrys_budget", || {
-        let (mut vm, _) = vm_with(5_000);
-        let handle: Rc<Cell<Option<colibri::Fn<(), i64>>>> = Rc::new(Cell::new(None));
-        let h = Rc::clone(&handle);
-        let swallowed = Rc::new(Cell::new(0));
-        let s = Rc::clone(&swallowed);
-        vm.register_fn("again", move |cx: &mut colibri::Ctx| -> i64 {
-            // Each reentrant call is cheap, but they all draw from one allotment.
-            for _ in 0..100_000 {
-                match h.get().unwrap().call(cx, ()) {
-                    Ok(_) => {}
-                    Err(colibri::Error::BudgetExhausted { .. }) => {
-                        s.set(s.get() + 1);
-                        return -1;
-                    }
-                    Err(other) => panic!("unexpected {other:?}"),
+    let (mut vm, _) = vm_with(5_000);
+    let handle: Rc<Cell<Option<colibri::Fn<(), i64>>>> = Rc::new(Cell::new(None));
+    let h = Rc::clone(&handle);
+    let swallowed = Rc::new(Cell::new(0));
+    let s = Rc::clone(&swallowed);
+    vm.register_fn("again", move |cx: &mut colibri::Ctx| -> i64 {
+        // Each reentrant call is cheap, but they all draw from one allotment.
+        for _ in 0..100_000 {
+            match h.get().unwrap().call(cx, ()) {
+                Ok(_) => {}
+                Err(colibri::Error::BudgetExhausted { .. }) => {
+                    s.set(s.get() + 1);
+                    return -1;
                 }
+                Err(other) => panic!("unexpected {other:?}"),
             }
-            0
-        })
-        .unwrap();
-        vm.load_source(
-            "r.colibri",
-            "fn one() -> int => 1\nfn run_it() -> int => again()\n",
-        )
-        .unwrap();
-        handle.set(Some(vm.get_fn::<(), i64>("one").unwrap()));
-        let run_it = vm.get_fn::<(), i64>("run_it").unwrap();
-        // The host function swallowed the exhaustion and returned normally, but the entry as a
-        // whole still ran out: the script cannot hide it.
-        let err = run_it.call(&mut vm, ()).unwrap_err();
-        exhausted(&err);
-        assert_eq!(swallowed.get(), 1);
-        // A reentrant call only shares: the next entry starts afresh.
-        let one = vm.get_fn::<(), i64>("one").unwrap();
-        assert_eq!(one.call(&mut vm, ()).unwrap(), 1);
+        }
+        0
     })
+    .unwrap();
+    vm.load_source(
+        "r.colibri",
+        "fn one() -> int => 1\nfn run_it() -> int => again()\n",
+    )
+    .unwrap();
+    handle.set(Some(vm.get_fn::<(), i64>("one").unwrap()));
+    let run_it = vm.get_fn::<(), i64>("run_it").unwrap();
+    // The host function swallowed the exhaustion and returned normally, but the entry as a
+    // whole still ran out: the script cannot hide it.
+    let err = run_it.call(&mut vm, ()).unwrap_err();
+    exhausted(&err);
+    assert_eq!(swallowed.get(), 1);
+    // A reentrant call only shares: the next entry starts afresh.
+    let one = vm.get_fn::<(), i64>("one").unwrap();
+    assert_eq!(one.call(&mut vm, ()).unwrap(), 1);
 }
 
 #[test]
 fn a_host_function_sees_the_steps_so_far() {
-    vm_pending("a_host_function_sees_the_steps_so_far", || {
-        let (mut vm, _) = vm_with(100_000);
-        let seen = Rc::new(Cell::new(0u64));
-        let s = Rc::clone(&seen);
-        vm.register_fn("probe", move |cx: &mut colibri::Ctx| {
-            s.set(cx.steps_used());
-        })
-        .unwrap();
-        vm.load_source(
-            "p.colibri",
-            "fn f() {\n    for i in 0..10 {\n        let x = i\n    }\n    probe()\n}\n",
-        )
-        .unwrap();
-        let f = vm.get_fn::<(), ()>("f").unwrap();
-        f.call(&mut vm, ()).unwrap();
-        assert!(seen.get() >= 20, "{}", seen.get());
-        assert!(vm.steps_used() >= seen.get());
+    let (mut vm, _) = vm_with(100_000);
+    let seen = Rc::new(Cell::new(0u64));
+    let s = Rc::clone(&seen);
+    vm.register_fn("probe", move |cx: &mut colibri::Ctx| {
+        s.set(cx.steps_used());
     })
+    .unwrap();
+    vm.load_source(
+        "p.colibri",
+        "fn f() {\n    for i in 0..10 {\n        let x = i\n    }\n    probe()\n}\n",
+    )
+    .unwrap();
+    let f = vm.get_fn::<(), ()>("f").unwrap();
+    f.call(&mut vm, ()).unwrap();
+    assert!(seen.get() >= 20, "{}", seen.get());
+    assert!(vm.steps_used() >= seen.get());
 }
 
 #[test]

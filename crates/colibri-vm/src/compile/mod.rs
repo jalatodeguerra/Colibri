@@ -48,6 +48,10 @@ pub struct CompileEnv {
     /// of earlier hooks may be pending, and the tree-walker folds them at its next statement
     /// end, so every statement of a hook checks.
     pub hook_fns: Vec<bool>,
+    /// By host function id: the function is declared to return a bare type parameter (`fn
+    /// pair[T](a: T, b: T) -> T`). The host decides what it returns (a `Value` can be anything),
+    /// so the result may own more than the type the call site instantiates `T` with says.
+    pub host_returns_param: Vec<bool>,
 }
 
 impl CompileEnv {
@@ -68,9 +72,20 @@ impl CompileEnv {
                 *slot = true;
             }
         }
+        let host_returns_param = program
+            .host_fns
+            .iter()
+            .map(|h| {
+                matches!(
+                    program.fns[h.f.0 as usize].sig.ret,
+                    colibri_check::types::Ty::Param(..)
+                )
+            })
+            .collect();
         CompileEnv {
             checked_globals,
             hook_fns,
+            host_returns_param,
         }
     }
 }

@@ -1,9 +1,6 @@
 //! One Rust type registered by several modules is one Colibri type that each of them can name;
 //! two Rust types of the same shape are two types (EMBEDDING §1).
 
-mod common;
-use common::vm_pending;
-
 use colibri::{CheckConfig, Ctx, Interface};
 use colibri_runtime as colibri;
 
@@ -39,34 +36,29 @@ mod ui {
 
 #[test]
 fn s1_a_different_rust_type_of_the_same_shape_is_the_modules_own_type() {
-    vm_pending(
-        "s1_a_different_rust_type_of_the_same_shape_is_the_modules_own_type",
-        || {
-            let (mut vm, out) = vm();
-            vm.module("physics")
-                .register_fn("make", |x: i64| Pos { x })
-                .unwrap();
-            vm.module("render")
-                .register_fn("draw", |p: ui::Pos| p.x * 10)
-                .unwrap();
-            // A render-only script needs no `import physics` to name the argument.
-            let text = run(
-                &mut vm,
-                &out,
-                "import render\nfn main() { print(render.draw(render.Pos { x: 2 })) }\n",
-            );
-            assert_eq!(text, "20\n");
-            let render = vm.module("render").interface_text();
-            assert!(render.contains("struct Pos { x: int }"), "{render}");
-            assert!(!render.contains("uses"), "{render}");
-            // And they are two types: physics's Pos is not render's.
-            vm.load_source(
-                "n.colibri",
-                "import physics\nimport render\nfn main() { render.draw(physics.make(1)) }\n",
-            )
-            .expect_err("physics.Pos is not render.Pos");
-        },
+    let (mut vm, out) = vm();
+    vm.module("physics")
+        .register_fn("make", |x: i64| Pos { x })
+        .unwrap();
+    vm.module("render")
+        .register_fn("draw", |p: ui::Pos| p.x * 10)
+        .unwrap();
+    // A render-only script needs no `import physics` to name the argument.
+    let text = run(
+        &mut vm,
+        &out,
+        "import render\nfn main() { print(render.draw(render.Pos { x: 2 })) }\n",
+    );
+    assert_eq!(text, "20\n");
+    let render = vm.module("render").interface_text();
+    assert!(render.contains("struct Pos { x: int }"), "{render}");
+    assert!(!render.contains("uses"), "{render}");
+    // And they are two types: physics's Pos is not render's.
+    vm.load_source(
+        "n.colibri",
+        "import physics\nimport render\nfn main() { render.draw(physics.make(1)) }\n",
     )
+    .expect_err("physics.Pos is not render.Pos");
 }
 
 fn registered(physics_first: bool) -> (colibri::Vm, colibri::SharedBuffer) {
@@ -93,16 +85,11 @@ const BOTH_NAMES: &str = "import physics\nimport render\nfn a(p: physics.Pos) ->
 
 #[test]
 fn s2_every_module_names_the_type_whichever_registered_first() {
-    vm_pending(
-        "s2_every_module_names_the_type_whichever_registered_first",
-        || {
-            for physics_first in [true, false] {
-                let (mut vm, out) = registered(physics_first);
-                let text = run(&mut vm, &out, BOTH_NAMES);
-                assert_eq!(text, "10\n20\n30\n40\n", "physics first: {physics_first}");
-            }
-        },
-    )
+    for physics_first in [true, false] {
+        let (mut vm, out) = registered(physics_first);
+        let text = run(&mut vm, &out, BOTH_NAMES);
+        assert_eq!(text, "10\n20\n30\n40\n", "physics first: {physics_first}");
+    }
 }
 
 #[test]
@@ -165,85 +152,78 @@ fn the_interfaces_are_written_and_verified_as_files() {
 
 #[test]
 fn s3_the_default_module_wins_in_any_order() {
-    vm_pending("s3_the_default_module_wins_in_any_order", || {
-        for default_first in [false, true] {
-            let (mut vm, out) = vm();
-            let register_default = |vm: &mut colibri::Vm| {
-                vm.register_fn("dflt", |p: Pos| p.x + 2).unwrap();
-            };
-            if default_first {
-                register_default(&mut vm);
-            }
-            vm.module("a")
-                .register_fn("make", |x: i64| Pos { x })
-                .unwrap();
-            vm.module("b").register_fn("take", |p: Pos| p.x).unwrap();
-            vm.module("c")
-                .register_fn("take", |p: Pos| p.x + 1)
-                .unwrap();
-            if !default_first {
-                register_default(&mut vm);
-            }
-            // One type, with the default module's bare name, and every module's name for it.
-            let text = run(
-                &mut vm,
-                &out,
-                "import a\nimport b\nimport c\nfn f(p: Pos) -> int => p.x\nfn g(p: b.Pos) -> int => p.x\nfn main() {\n    let p = a.make(1)\n    let q: Pos = p\n    let r: b.Pos = p\n    let s: c.Pos = p\n    let t: a.Pos = p\n    print(b.take(q) + c.take(r) + dflt(s) + t.x)\n}\n",
-            );
-            assert_eq!(text, "7\n", "default first: {default_first}");
-            let dflt = vm.interface_text();
-            assert!(dflt.contains("struct Pos { x: int }"), "{dflt}");
-            let a = vm.module("a").interface_text();
-            assert!(a.contains("type Pos = Pos"), "{a}");
-            assert!(!a.contains("struct Pos"), "{a}");
-            // The interface text, read back, checks the same script.
-            let config = CheckConfig {
-                interfaces: [
-                    vm.interface_text(),
-                    vm.module("a").interface_text(),
-                    vm.module("b").interface_text(),
-                    vm.module("c").interface_text(),
-                ]
-                .iter()
-                .map(|t| Interface::from_text("x.cbi", t).unwrap())
-                .collect(),
-                ..CheckConfig::default()
-            };
-            let src = "import a\nimport b\nimport c\nfn f(p: Pos) -> int => p.x\nfn g(p: b.Pos) -> int => p.x\nfn h(p: a.Pos) -> int => p.x + c.take(p)\n";
-            let report = colibri::check_source_with("main.colibri", src, &config);
-            assert!(!report.has_errors(), "{}", report.render(false));
-            for name in ["f", "g"] {
-                let f = vm.get_fn::<(Pos,), i64>(name).unwrap();
-                assert_eq!(f.call(&mut vm, (Pos { x: 9 },)).unwrap(), 9);
-            }
+    for default_first in [false, true] {
+        let (mut vm, out) = vm();
+        let register_default = |vm: &mut colibri::Vm| {
+            vm.register_fn("dflt", |p: Pos| p.x + 2).unwrap();
+        };
+        if default_first {
+            register_default(&mut vm);
         }
-    })
+        vm.module("a")
+            .register_fn("make", |x: i64| Pos { x })
+            .unwrap();
+        vm.module("b").register_fn("take", |p: Pos| p.x).unwrap();
+        vm.module("c")
+            .register_fn("take", |p: Pos| p.x + 1)
+            .unwrap();
+        if !default_first {
+            register_default(&mut vm);
+        }
+        // One type, with the default module's bare name, and every module's name for it.
+        let text = run(
+            &mut vm,
+            &out,
+            "import a\nimport b\nimport c\nfn f(p: Pos) -> int => p.x\nfn g(p: b.Pos) -> int => p.x\nfn main() {\n    let p = a.make(1)\n    let q: Pos = p\n    let r: b.Pos = p\n    let s: c.Pos = p\n    let t: a.Pos = p\n    print(b.take(q) + c.take(r) + dflt(s) + t.x)\n}\n",
+        );
+        assert_eq!(text, "7\n", "default first: {default_first}");
+        let dflt = vm.interface_text();
+        assert!(dflt.contains("struct Pos { x: int }"), "{dflt}");
+        let a = vm.module("a").interface_text();
+        assert!(a.contains("type Pos = Pos"), "{a}");
+        assert!(!a.contains("struct Pos"), "{a}");
+        // The interface text, read back, checks the same script.
+        let config = CheckConfig {
+            interfaces: [
+                vm.interface_text(),
+                vm.module("a").interface_text(),
+                vm.module("b").interface_text(),
+                vm.module("c").interface_text(),
+            ]
+            .iter()
+            .map(|t| Interface::from_text("x.cbi", t).unwrap())
+            .collect(),
+            ..CheckConfig::default()
+        };
+        let src = "import a\nimport b\nimport c\nfn f(p: Pos) -> int => p.x\nfn g(p: b.Pos) -> int => p.x\nfn h(p: a.Pos) -> int => p.x + c.take(p)\n";
+        let report = colibri::check_source_with("main.colibri", src, &config);
+        assert!(!report.has_errors(), "{}", report.render(false));
+        for name in ["f", "g"] {
+            let f = vm.get_fn::<(Pos,), i64>(name).unwrap();
+            assert_eq!(f.call(&mut vm, (Pos { x: 9 },)).unwrap(), 9);
+        }
+    }
 }
 
 #[test]
 fn new_struct_in_accepts_the_owner_or_any_module_that_registered_the_type() {
-    vm_pending(
-        "new_struct_in_accepts_the_owner_or_any_module_that_registered_the_type",
-        || {
-            let (mut vm, out) = registered(true);
-            vm.module("render")
-                .register_fn("mk", |cx: &mut Ctx| -> colibri::Value {
-                    let x = colibri::IntoColibri::into_colibri(7i64, cx);
-                    cx.new_struct_in("render", "Pos", vec![x])
-                })
-                .unwrap();
-            vm.module("physics")
-                .register_fn("mk", |cx: &mut Ctx| -> colibri::Value {
-                    let x = colibri::IntoColibri::into_colibri(8i64, cx);
-                    cx.new_struct_in("physics", "Pos", vec![x])
-                })
-                .unwrap();
-            let text = run(
-                &mut vm,
-                &out,
-                "import physics\nimport render\nfn main() {\n    print(render.draw(render.mk()))\n    print(render.draw(physics.mk()))\n}\n",
-            );
-            assert_eq!(text, "70\n80\n");
-        },
-    )
+    let (mut vm, out) = registered(true);
+    vm.module("render")
+        .register_fn("mk", |cx: &mut Ctx| -> colibri::Value {
+            let x = colibri::IntoColibri::into_colibri(7i64, cx);
+            cx.new_struct_in("render", "Pos", vec![x])
+        })
+        .unwrap();
+    vm.module("physics")
+        .register_fn("mk", |cx: &mut Ctx| -> colibri::Value {
+            let x = colibri::IntoColibri::into_colibri(8i64, cx);
+            cx.new_struct_in("physics", "Pos", vec![x])
+        })
+        .unwrap();
+    let text = run(
+        &mut vm,
+        &out,
+        "import physics\nimport render\nfn main() {\n    print(render.draw(render.mk()))\n    print(render.draw(physics.mk()))\n}\n",
+    );
+    assert_eq!(text, "70\n80\n");
 }

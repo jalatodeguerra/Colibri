@@ -1,8 +1,5 @@
 //! Interface files (`.cbi`, EMBEDDING §3): printing, parsing, hashing, verifying, and value types.
 
-mod common;
-use common::vm_pending;
-
 use colibri::{
     Cap, Cx, FromColibri, Handle, HostType, Interface, IntoColibri, TypeBuilder, TypeDesc,
     TypeRegistry, Value,
@@ -226,22 +223,20 @@ fn a_script_checks_against_a_parsed_interface() {
 
 #[test]
 fn value_types_cross_the_boundary() {
-    vm_pending("value_types_cross_the_boundary", || {
-        let out = colibri::SharedBuffer::new();
-        let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
-        vm.register_fn("move_by", |p: Vec3, d: Dir| match d {
-            Dir::North => Vec3 { z: p.z + 1.0, ..p },
-            Dir::South => Vec3 { z: p.z - 1.0, ..p },
-        })
-        .unwrap();
-        vm.load_source(
-        "a.colibri",
-        "fn main() {\n    let p = move_by(Vec3 { x: 1.0, y: 2.0, z: 3.0 }, Dir.North)\n    print(p.z)\n}\n",
-    )
-    .unwrap();
-        vm.run_main().unwrap();
-        assert_eq!(out.contents(), "4.0\n");
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    vm.register_fn("move_by", |p: Vec3, d: Dir| match d {
+        Dir::North => Vec3 { z: p.z + 1.0, ..p },
+        Dir::South => Vec3 { z: p.z - 1.0, ..p },
     })
+    .unwrap();
+    vm.load_source(
+    "a.colibri",
+    "fn main() {\n    let p = move_by(Vec3 { x: 1.0, y: 2.0, z: 3.0 }, Dir.North)\n    print(p.z)\n}\n",
+)
+.unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "4.0\n");
 }
 
 #[test]

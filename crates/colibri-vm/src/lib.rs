@@ -14,10 +14,10 @@
 #![deny(unsafe_code)]
 
 pub mod bytecode;
-mod compile;
-mod embed;
 #[allow(unsafe_code)]
 mod cffi;
+mod compile;
+mod embed;
 mod engine;
 mod fiber;
 mod heap;
