@@ -558,3 +558,24 @@ fn a_program_that_does_not_compile_reports_its_errors() {
     assert!(o.compile_error);
     assert!(o.panic.unwrap_or_default().contains("nope"));
 }
+
+#[test]
+fn compound_assignment_reads_the_old_value_after_the_right_hand_side() {
+    // The right-hand side changes the place; the old value is read afterwards (as the
+    // tree-walker does): 1 + 100 first, then + 5.
+    let src = "var g = 1
+fn bump() -> int {
+    g = g + 100
+    return 5
+}
+g += bump()
+print(g)
+var name = \"a\"
+fn touch() -> str {
+    name = name + \"r\"
+    return \"T\"
+}
+name += touch()
+print(name)";
+    assert_eq!(run_ok(src), "106\narT\n");
+}

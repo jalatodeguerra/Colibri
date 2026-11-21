@@ -70,32 +70,32 @@ impl FnCompiler<'_> {
         }
     }
 
-    /// The value a store writes: `rhs`, or the old value combined with it (`old` is the register
-    /// that already holds the place's value for `op=`). Returns the register with the result.
+    /// The value a store writes. For `op=` the right-hand side is evaluated first and the old
+    /// value is read afterwards (`read` emits that read into a register), as the tree-walker
+    /// does: the right-hand side may change the place. Returns the register with the result.
     fn new_value(
         &mut self,
-        old: Option<Reg>,
+        read: &dyn Fn(&mut Self, Reg),
         op: Option<BinOp>,
         place: &Place,
         rhs: &Expr,
         span: Span,
     ) -> Reg {
-        match (op, old) {
-            (Some(op), Some(old)) => {
-                let t = self.alloc_for(&place.ty);
+        let t = self.alloc_for(&place.ty);
+        match op {
+            Some(op) => {
                 let b = self.operand(rhs, false);
+                let old = self.alloc_for(&place.ty);
+                read(self, old);
+                self.own(old);
                 self.binary_regs(op, old, b, t, span);
+                self.free(old, span);
                 self.free(b, span);
-                self.own(t);
-                t
             }
-            _ => {
-                let t = self.alloc_for(&place.ty);
-                self.expr(rhs, t);
-                self.own(t);
-                t
-            }
+            None => self.expr(rhs, t),
         }
+        self.own(t);
+        t
     }
 
     fn assign_slot(
@@ -157,18 +157,12 @@ impl FnCompiler<'_> {
         span: Span,
     ) {
         let lr = self.local(l);
-        let old = op.map(|_| {
-            let t = self.alloc_for(&place.ty);
-            self.emit(Op::CellGet { d: t, l: lr }, span);
-            self.own(t);
-            t
-        });
-        let new = self.new_value(old, op, place, rhs, span);
+        let read = move |c: &mut Self, d: Reg| {
+            c.emit(Op::CellGet { d, l: lr }, span);
+        };
+        let new = self.new_value(&read, op, place, rhs, span);
         self.emit(Op::CellSet { l: lr, s: new }, span);
         self.free_moved(new);
-        if let Some(old) = old {
-            self.free(old, span);
-        }
     }
 
     fn assign_global(
@@ -182,18 +176,12 @@ impl FnCompiler<'_> {
         if self.env.checked_globals.get(g.0 as usize).copied() == Some(true) {
             self.emit(Op::CheckGlobal { g: g.0 }, span);
         }
-        let old = op.map(|_| {
-            let t = self.alloc_for(&place.ty);
-            self.emit(Op::GetGlobal { d: t, g: g.0 }, span);
-            self.own(t);
-            t
-        });
-        let new = self.new_value(old, op, place, rhs, span);
+        let read = move |c: &mut Self, d: Reg| {
+            c.emit(Op::GetGlobal { d, g: g.0 }, span);
+        };
+        let new = self.new_value(&read, op, place, rhs, span);
         self.emit(Op::SetGlobal { g: g.0, s: new }, span);
         self.free_moved(new);
-        if let Some(old) = old {
-            self.free(old, span);
-        }
     }
 }
 
