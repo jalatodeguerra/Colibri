@@ -27,7 +27,7 @@ use colibri_core::external::{
 use colibri_core::prelude::*;
 use colibri_core::sched::*;
 use colibri_syntax::Span;
-use corosensei::stack::DefaultStack;
+use corosensei::stack::{DefaultStack, Stack};
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 
 use crate::ctl::{Ctl, Eval, PanicInfo};
@@ -59,11 +59,61 @@ struct StackSlot {
 /// How many finished stacks the pool keeps. A server that starts one short coroutine per
 /// request has one or a few alive at a time, so a handful already turns every start after the
 /// first into a reuse. Sixteen covers a burst of that size and bounds what idles: each pooled
-/// stack is `DEFAULT_COROUTINE_STACK` (16 MiB) of address space (256 MiB at most, never
-/// committed beyond what the coroutines touched) and keeps the pages its deepest run dirtied
-/// resident, so a larger pool would hold more memory for a rare peak. Beyond the cap a
-/// finished stack is unmapped as before.
+/// stack is `DEFAULT_COROUTINE_STACK` (16 MiB) of address space, 256 MiB at most per `Interp`.
+/// That address space stays reserved, and under strict overcommit (`vm.overcommit_memory=2`)
+/// it is also charged against the commit limit, so a larger pool would cost more there. The
+/// pages a deep run touched are given back when the stack is pooled (see `trim_stack`), so an
+/// idle pool holds only the hot top of each stack. Beyond the cap a finished stack is
+/// unmapped as before.
 const STACK_POOL_CAP: usize = 16;
+
+/// The part of a pooled stack, at its top, that keeps its pages: a typical short coroutine
+/// stays within it, so reuse neither faults nor calls the system. Below it, the pages a deep
+/// run touched are given back.
+const STACK_HOT_WINDOW: usize = 256 * 1024;
+
+/// Gives the pages of a finished coroutine's stack below the hot window back to the system, so
+/// that a pooled stack does not keep the memory of its deepest run. Returns whether the stack
+/// may go into the pool.
+#[cfg(unix)]
+fn trim_stack(stack: &DefaultStack) -> bool {
+    let base = stack.base().get();
+    let limit = stack.limit().get();
+    let Some(len) = (base - limit).checked_sub(STACK_HOT_WINDOW) else {
+        return true;
+    };
+    // Linux drops the pages at once. Where `MADV_FREE` exists they are reclaimed lazily, when
+    // the system is short of memory.
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+    let advice = libc::MADV_FREE;
+    #[cfg(not(any(target_vendor = "apple", target_os = "freebsd")))]
+    let advice = libc::MADV_DONTNEED;
+    // SAFETY: `[limit, limit + len)` lies inside the mapping that `DefaultStack` owns, and
+    // page-aligned: `limit` is the start of the mapping, and `base` its page-aligned end, less
+    // a multiple of every page size in use. The coroutine that used the stack ended (the
+    // caller holds the stack by value), so nothing on it is live. The advice keeps the mapping
+    // and its protections (the guard page included): it only discards the contents, which
+    // nothing reads, because a start rewrites the top of the stack and the rest is written
+    // before it is read. A failure leaves the pages as they were; it is ignored.
+    unsafe {
+        libc::madvise(limit as *mut libc::c_void, len, advice);
+    }
+    true
+}
+
+/// On Windows the committed part of the stack grows through a chain of guard pages, which
+/// decommitting would break, so a stack that went deeper than the hot window is dropped (and
+/// unmapped) instead of pooled.
+#[cfg(windows)]
+fn trim_stack(stack: &DefaultStack) -> bool {
+    let teb = stack.teb_fields();
+    teb.StackBase.saturating_sub(teb.StackLimit) <= STACK_HOT_WINDOW
+}
+
+#[cfg(not(any(unix, windows)))]
+fn trim_stack(_stack: &DefaultStack) -> bool {
+    true
+}
 
 /// The native stacks of the coroutines that have not ended: a slab of slots, each holding its
 /// stack while its coroutine is suspended and nothing while it runs (the stack is moved out
@@ -112,6 +162,10 @@ impl Stacks {
             self.pool_size = size;
         }
         if let Some(stack) = self.pool.pop() {
+            debug_assert!(
+                stack.base().get() - stack.limit().get() >= size,
+                "a pooled stack is smaller than the requested size"
+            );
             return Ok(stack);
         }
         let stack = DefaultStack::new(size)?;
@@ -126,7 +180,7 @@ impl Stacks {
     pub(crate) fn recycle(&mut self, slot: u32, co: Co) {
         let size = self.slots[slot as usize].size;
         let stack = co.into_stack();
-        if size == self.pool_size && self.pool.len() < STACK_POOL_CAP {
+        if size == self.pool_size && self.pool.len() < STACK_POOL_CAP && trim_stack(&stack) {
             self.pool.push(stack);
         }
         self.free(slot);
@@ -1059,7 +1113,8 @@ mod tests {
 
     /// A coroutine cancelled while suspended runs to its end through its unwinding (its `defer`
     /// runs), so its stack is pooled like any other and the next start reuses it. (A stack that
-    /// never ran to its end is not pooled: it is forgotten, see the next test.)
+    /// never ran to its end is not pooled: it is forgotten, see
+    /// `a_lost_stack_ends_its_coroutine_as_an_internal_error`.)
     #[test]
     fn a_cancelled_coroutines_stack_is_pooled_and_reused() {
         use crate::Fiber;
@@ -1086,58 +1141,147 @@ mod tests {
     }
 
     /// Deep recursion in a coroutine that runs on a reused stack (one that a deeper run already
-    /// dirtied) still ends in the clean "stack overflow" panic, run after run: the budget is
-    /// measured from the stack's base, not from what the memory holds, and the guard page
-    /// survives reuse.
+    /// dirtied) still ends in the interpreter's "native stack budget" panic, run after run: the
+    /// budget is measured from the stack's base, not from what the memory holds. (The hardware
+    /// guard page is not exercised: touching it kills the process.)
     #[test]
     fn stack_overflow_is_reported_on_a_reused_stack() {
         use crate::Fiber;
-        let src = "fn d(n: int) -> int {\n    if n == 0 {\n        return 0\n    }\n    return 1 + d(n - 1)\n}\nfn shallow() -> int {\n    return d(10)\n}\nfn main() {\n    let a = go shallow()\n    print(a.join())\n    let b = go d(100000)\n    print(b.join_result().is_err())\n}\n";
+        let src = "fn d(n: int) -> int {\n    if n == 0 {\n        return 0\n    }\n    return 1 + d(n - 1)\n}\nfn shallow() -> int {\n    return d(10)\n}\nfn main() {\n    let a = go shallow()\n    print(a.join())\n    let b = go d(100000)\n    print(b.join())\n}\n";
         let out = Out::default();
         let (mut interp, program) = loaded(src, Box::new(out.clone()));
         interp.core.sched.set_stack_size(256 * 1024);
         let mut fiber = Fiber::new();
         for round in 0..3 {
-            let _ = interp.call(&mut fiber, program.fn_by_name("main").unwrap(), vec![]);
+            let err = interp
+                .call(&mut fiber, program.fn_by_name("main").unwrap(), vec![])
+                .expect_err("the deep coroutine overflows");
+            assert!(
+                format!("{err:?}").contains("native stack budget"),
+                "round {round}: {err:?}"
+            );
             assert_eq!(
                 interp.coroutine_stacks_allocated(),
                 1,
                 "round {round}: one stack throughout"
             );
         }
-        assert_eq!(out.text(), "10\ntrue\n".repeat(3));
+        assert_eq!(out.text(), "10\n".repeat(3));
     }
 
-    /// A stack that is lost (forgotten) is not pooled, and a changed stack size drops the pooled
-    /// stacks of the old size.
+    /// Starts a coroutine of `size` bytes on a stack from `stacks`, runs it to its end by hand
+    /// and returns it with its slot, like `resume_native_stack` before it recycles.
+    fn finished_coroutine(
+        stacks: &mut super::Stacks,
+        stack: super::DefaultStack,
+        size: usize,
+        touch: usize,
+    ) -> (u32, super::Co) {
+        let co = super::Coroutine::with_stack(stack, move |_y: &super::Y, _r: super::Resume| {
+            if touch > 0 {
+                touch_stack(touch);
+            }
+            super::Finish::Cancelled
+        });
+        let slot = stacks.insert(Box::new(co), 0, size);
+        let (mut co, _) = stacks.take(slot).expect("the stack");
+        let r = co.resume(super::Resume {
+            interp: std::ptr::null_mut(),
+            cancel: false,
+        });
+        assert!(matches!(r, super::CoroutineResult::Return(_)));
+        (slot, *co)
+    }
+
+    /// Writes to `levels` times 64 KiB of the native stack, one level per call.
+    #[inline(never)]
+    fn touch_stack(levels: usize) {
+        if levels == 0 {
+            return;
+        }
+        let mut buf = [0u8; 64 * 1024];
+        buf.fill(levels as u8);
+        std::hint::black_box(&mut buf);
+        touch_stack(levels - 1);
+        std::hint::black_box(&mut buf);
+    }
+
+    /// A changed stack size drops the pooled stacks of the old size.
     #[test]
     fn a_new_stack_size_drops_pooled_stacks_of_the_old_one() {
         let mut stacks = super::Stacks::default();
         let a = stacks.acquire(64 * 1024).expect("stack");
         assert_eq!(stacks.allocated, 1);
-        let co = super::Coroutine::with_stack(a, |_y: &super::Y, _r: super::Resume| {
-            super::Finish::Cancelled
-        });
-        let mut co = Box::new(co);
-        let slot = stacks.insert(
-            Box::new(super::Coroutine::new(|_y: &super::Y, _r: super::Resume| {
-                super::Finish::Cancelled
-            })),
-            0,
-            64 * 1024,
-        );
-        // Run the first coroutine to its end by hand, then recycle it under the slot.
-        let r = Box::as_mut(&mut co).resume(super::Resume {
-            interp: std::ptr::null_mut(),
-            cancel: false,
-        });
-        assert!(matches!(r, super::CoroutineResult::Return(_)));
-        drop(stacks.take(slot));
-        stacks.recycle(slot, *co);
+        let (slot, co) = finished_coroutine(&mut stacks, a, 64 * 1024, 0);
+        stacks.recycle(slot, co);
         assert_eq!(stacks.pool.len(), 1);
         let _b = stacks.acquire(128 * 1024).expect("stack");
         assert_eq!(stacks.pool.len(), 0, "the old size was dropped");
         assert_eq!(stacks.allocated, 2);
+    }
+
+    /// A coroutine that was started at one size and ends after the size changed must not put
+    /// its stack into the pool of the new size: the next start would get a stack smaller than
+    /// its budget assumes (and run into the guard page).
+    #[test]
+    fn a_stack_of_the_old_size_that_ends_late_is_not_pooled() {
+        use super::Stack;
+        let mut stacks = super::Stacks::default();
+        let small = stacks.acquire(64 * 1024).expect("stack");
+        // The size changes while the small coroutine is alive: the next start asks for more.
+        let big = stacks.acquire(8 << 20).expect("stack");
+        let (slot, co) = finished_coroutine(&mut stacks, small, 64 * 1024, 0);
+        stacks.recycle(slot, co);
+        assert_eq!(
+            stacks.pool.len(),
+            0,
+            "the small stack was unmapped, not pooled"
+        );
+        let (slot, co) = finished_coroutine(&mut stacks, big, 8 << 20, 0);
+        stacks.recycle(slot, co);
+        assert_eq!(stacks.pool.len(), 1);
+        let again = stacks.acquire(8 << 20).expect("stack");
+        assert!(again.base().get() - again.limit().get() >= 8 << 20);
+    }
+
+    /// A stack that a coroutine used about 10 MiB of gives those pages back when it is
+    /// recycled, and keeps the hot top. Linux only: it counts resident pages with `mincore`,
+    /// and only Linux's `MADV_DONTNEED` drops them at once (macOS's `MADV_FREE` is lazy).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_deep_stack_gives_its_pages_back_when_it_is_pooled() {
+        use super::Stack;
+        fn resident_pages(stack: &super::DefaultStack) -> usize {
+            let len = stack.base().get() - stack.limit().get();
+            let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+            let mut vec = vec![0u8; len.div_ceil(page)];
+            // SAFETY: the range is the stack's own mapping, and `vec` has one byte per page.
+            let rc = unsafe {
+                libc::mincore(
+                    stack.limit().get() as *mut libc::c_void,
+                    len,
+                    vec.as_mut_ptr(),
+                )
+            };
+            assert_eq!(rc, 0);
+            vec.iter().filter(|b| **b & 1 != 0).count() * page
+        }
+        let mut stacks = super::Stacks::default();
+        let stack = stacks.acquire(16 << 20).expect("stack");
+        let (slot, co) = finished_coroutine(&mut stacks, stack, 16 << 20, 160);
+        let stack = co.into_stack();
+        let deep = resident_pages(&stack);
+        assert!(deep >= 9 << 20, "the run dirtied {deep} bytes");
+        // Put it back through the real path: wrap it again in a finished coroutine.
+        let (slot2, co) = finished_coroutine(&mut stacks, stack, 16 << 20, 0);
+        stacks.recycle(slot2, co);
+        stacks.free(slot);
+        assert_eq!(stacks.pool.len(), 1);
+        let kept = resident_pages(&stacks.pool[0]);
+        assert!(
+            kept <= super::STACK_HOT_WINDOW + (64 << 10),
+            "{kept} bytes stayed resident of {deep}"
+        );
     }
 
     /// Freeing a slot twice would hand it to two coroutines: debug builds stop it at the second
@@ -1203,6 +1347,11 @@ mod tests {
         assert_eq!(out.text(), "");
         interp.cancel_all_coroutines();
         done.store(1, Ordering::SeqCst);
+        assert_eq!(
+            interp.coroutine_stacks_pooled(),
+            0,
+            "a lost stack is forgotten, never pooled"
+        );
     }
 
     /// Asking the scheduler to resume a coroutine that already finished (its entry is not yet

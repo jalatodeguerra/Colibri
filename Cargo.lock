@@ -229,6 +229,7 @@ dependencies = [
  "colibri-ffi",
  "colibri-syntax",
  "corosensei",
+ "libc",
 ]
 
 [[package]]

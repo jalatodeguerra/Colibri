@@ -13,6 +13,10 @@ colibri-core = { path = "../colibri-core" }
 colibri-ffi = { path = "../colibri-ffi", optional = true }
 corosensei = "0.3.4"
 
+# `madvise`, to give a pooled coroutine stack's deep pages back to the system (Unix only).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 # Calls into C libraries (`extern` blocks, `ptr[T]`): libffi and dlopen. Without it, a program
 # with an `extern` block fails to load with a message that says so.
