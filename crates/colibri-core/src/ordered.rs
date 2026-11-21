@@ -1,7 +1,8 @@
 //! An insertion-ordered hash map of values, the storage of `Map` and `Set` (DESIGN §5.2).
 //!
-//! Entries live in a vector in insertion order; a hash index maps the hash of a key to the
-//! positions of the entries with that hash. Removing an entry leaves a tombstone so the other
+//! Entries live in a vector in insertion order, each with the hash of its key; an open-addressing
+//! index (linear probing over `u32` positions, like CPython's dict) finds the position of the
+//! entry for a hash. Removing an entry leaves a tombstone so the other
 //! positions stay valid (an iteration holds positions while the mutation guard blocks any
 //! removal); the vector is compacted when tombstones outnumber live entries. Lookup, insert and
 //! remove are O(1) on average. Keys are compared with the structural equality of
@@ -10,8 +11,7 @@
 //!
 //! This module is pure data structure code: it never runs Colibri code.
 
-use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::compare::equal_or_give_up;
@@ -47,9 +47,9 @@ pub(crate) fn hash_value_with(v: &Value, host: &mut dyn FnMut(&Value) -> Option<
 /// upward, so a change in the top byte of one 8-byte chunk could be cancelled by the next
 /// chunk's low byte, and it collided on ordinary strings that cross an 8-byte boundary; a
 /// 64-bit multiply followed by `x ^ (x >> 32)` still left a few pairs of 15-byte strings
-/// equal. The inner table below uses the hash as it is, so [`KeyHasher::finish`] runs a
-/// full-avalanche finalizer (the MurmurHash3 64-bit mix) to spread the low bits that pick a
-/// table slot and the high bits that tag it. The hash is not a secret: `x.hash()` returns it
+/// equal. The index below uses the hash as it is, so [`KeyHasher::finish`] runs a
+/// full-avalanche finalizer (the MurmurHash3 64-bit mix) to spread the low bits that pick an
+/// index slot. The hash is not a secret: `x.hash()` returns it
 /// to scripts, and nothing here defends against keys chosen to collide (a collision only costs
 /// speed, because buckets compare keys with [`values_equal`]). The tests below count full
 /// 64-bit collisions and slot loads for several families of keys.
@@ -149,32 +149,6 @@ impl Hasher for KeyHasher {
     }
 }
 
-/// The inner table's hasher: the key is already a well-mixed 64-bit hash, so it is used as it
-/// is instead of being hashed a second time.
-#[derive(Default)]
-struct PassThrough(u64);
-
-impl Hasher for PassThrough {
-    fn write(&mut self, bytes: &[u8]) {
-        // Only `u64` keys are ever used; fold anything else in so the hasher stays correct.
-        for b in bytes {
-            self.0 = self.0.rotate_left(8) ^ u64::from(*b);
-        }
-    }
-
-    #[inline]
-    fn write_u64(&mut self, i: u64) {
-        self.0 = i;
-    }
-
-    #[inline]
-    fn finish(&self) -> u64 {
-        self.0
-    }
-}
-
-type IndexMap = HashMap<u64, Bucket, BuildHasherDefault<PassThrough>>;
-
 fn feed(v: &Value, h: &mut KeyHasher, depth: u32, host: &mut dyn FnMut(&Value) -> Option<u64>) {
     if depth > MAX_HASH_DEPTH {
         return;
@@ -224,27 +198,30 @@ fn feed(v: &Value, h: &mut KeyHasher, depth: u32, host: &mut dyn FnMut(&Value) -
     }
 }
 
-/// The entry positions with one hash.
-#[derive(Debug)]
-enum Bucket {
-    One(usize),
-    Many(Vec<usize>),
-}
+/// An index slot that has never held a position.
+const EMPTY: u32 = u32::MAX;
+/// An index slot whose entry was removed; probing continues past it.
+const DUMMY: u32 = u32::MAX - 1;
 
-impl Bucket {
-    fn positions(&self) -> &[usize] {
-        match self {
-            Bucket::One(p) => std::slice::from_ref(p),
-            Bucket::Many(v) => v,
-        }
-    }
+/// One position of the entry vector: the key's hash, and the pair unless it was removed.
+#[derive(Debug)]
+struct Entry {
+    hash: u64,
+    kv: Option<(Value, Value)>,
 }
 
 /// An insertion-ordered map from values to values.
+///
+/// `index` is empty or a power-of-two number of slots, each [`EMPTY`], [`DUMMY`] or a position
+/// in `entries`. Every position of `entries` (live or removed) owns one slot that is not
+/// `EMPTY` until the index is rebuilt, and `used` counts those, so the index is never more than
+/// two thirds full and a probe always ends at an `EMPTY` slot.
 #[derive(Debug, Default)]
 pub struct OrderedMap {
-    entries: Vec<Option<(Value, Value)>>,
-    index: IndexMap,
+    entries: Vec<Entry>,
+    index: Vec<u32>,
+    /// Slots that are not `EMPTY`: live entries plus `DUMMY`s.
+    used: usize,
     live: usize,
 }
 
@@ -274,29 +251,55 @@ impl OrderedMap {
     /// The entry at a position, if it is live.
     #[inline]
     pub(crate) fn entry_at(&self, slot: usize) -> Option<&(Value, Value)> {
-        self.entries.get(slot).and_then(Option::as_ref)
+        self.entries.get(slot).and_then(|e| e.kv.as_ref())
+    }
+
+    /// The position of the entry for `key`, or the index slot where it would be inserted.
+    #[inline]
+    fn probe(&self, hash: u64, key: &Value) -> Result<usize, usize> {
+        let mask = self.index.len().wrapping_sub(1);
+        if self.index.is_empty() {
+            return Err(0);
+        }
+        let mut i = hash as usize & mask;
+        let mut free = usize::MAX;
+        loop {
+            match self.index[i] {
+                EMPTY => return Err(if free == usize::MAX { i } else { free }),
+                DUMMY => {
+                    if free == usize::MAX {
+                        free = i;
+                    }
+                }
+                p => {
+                    let e = &self.entries[p as usize];
+                    if e.hash == hash
+                        && let Some((k, _)) = &e.kv
+                        && equal_or_give_up(k, key)
+                    {
+                        return Ok(p as usize);
+                    }
+                }
+            }
+            i = (i + 1) & mask;
+        }
     }
 
     #[inline]
     fn find(&self, hash: u64, key: &Value) -> Option<usize> {
-        let bucket = self.index.get(&hash)?;
-        bucket.positions().iter().copied().find(|&p| {
-            self.entries[p]
-                .as_ref()
-                .is_some_and(|(k, _)| equal_or_give_up(k, key))
-        })
+        self.probe(hash, key).ok()
     }
 
     #[inline]
     pub fn get(&self, key: &Value) -> Option<&Value> {
         let p = self.find(hash_value(key), key)?;
-        self.entries[p].as_ref().map(|(_, v)| v)
+        self.entries[p].kv.as_ref().map(|(_, v)| v)
     }
 
     #[inline]
     pub fn get_mut(&mut self, key: &Value) -> Option<&mut Value> {
         let p = self.find(hash_value(key), key)?;
-        self.entries[p].as_mut().map(|(_, v)| v)
+        self.entries[p].kv.as_mut().map(|(_, v)| v)
     }
 
     #[inline]
@@ -307,45 +310,98 @@ impl OrderedMap {
     /// Adds or replaces an entry. A replaced entry keeps its position and its original key.
     /// Returns the previous value and, in that case, the new key that was not needed; the
     /// caller releases both.
+    #[inline]
     pub fn insert(&mut self, key: Value, value: Value) -> (Option<Value>, Option<Value>) {
         let hash = hash_value(&key);
-        if let Some(p) = self.find(hash, &key)
-            && let Some((_, slot)) = self.entries[p].as_mut()
-        {
-            let old = std::mem::replace(slot, value);
-            return (Some(old), Some(key));
+        self.insert_hashed(hash, key, value)
+    }
+
+    /// [`OrderedMap::insert`] with the hash of `key` already computed (tests pass chosen
+    /// hashes to force collisions).
+    fn insert_hashed(
+        &mut self,
+        hash: u64,
+        key: Value,
+        value: Value,
+    ) -> (Option<Value>, Option<Value>) {
+        let mut slot = match self.probe(hash, &key) {
+            Ok(p) => {
+                if let Some((_, old)) = self.entries[p].kv.as_mut() {
+                    return (Some(std::mem::replace(old, value)), Some(key));
+                }
+                unreachable!("the index names a removed entry");
+            }
+            Err(slot) => slot,
+        };
+        if (self.used + 1) * 3 > self.index.len() * 2 {
+            self.rebuild_index();
+            slot = self.free_slot(hash);
         }
         let pos = self.entries.len();
-        self.entries.push(Some((key, value)));
-        self.live += 1;
-        match self.index.get_mut(&hash) {
-            None => {
-                self.index.insert(hash, Bucket::One(pos));
-            }
-            Some(bucket) => match bucket {
-                Bucket::One(first) => *bucket = Bucket::Many(vec![*first, pos]),
-                Bucket::Many(v) => v.push(pos),
-            },
+        assert!(pos < DUMMY as usize, "map too large");
+        if self.index.get(slot) == Some(&EMPTY) {
+            self.used += 1;
         }
+        self.index[slot] = pos as u32;
+        self.entries.push(Entry {
+            hash,
+            kv: Some((key, value)),
+        });
+        self.live += 1;
         (None, None)
     }
 
-    /// Removes an entry, returning its key and value.
-    pub fn remove(&mut self, key: &Value) -> Option<(Value, Value)> {
-        let hash = hash_value(key);
-        let p = self.find(hash, key)?;
-        let removed = self.entries[p].take();
-        self.live -= 1;
-        let emptied = match self.index.get_mut(&hash) {
-            Some(Bucket::One(_)) | None => true,
-            Some(Bucket::Many(v)) => {
-                v.retain(|&q| q != p);
-                v.is_empty()
-            }
-        };
-        if emptied {
-            self.index.remove(&hash);
+    /// The first non-live slot on the probe path of `hash` (the key is known to be absent).
+    #[inline]
+    fn free_slot(&self, hash: u64) -> usize {
+        let mask = self.index.len() - 1;
+        let mut i = hash as usize & mask;
+        while self.index[i] < DUMMY {
+            i = (i + 1) & mask;
         }
+        i
+    }
+
+    /// Makes an index sized for the live entries (at most half full after it), dropping the
+    /// `DUMMY`s. Positions do not change.
+    fn rebuild_index(&mut self) {
+        let cap = ((self.live + 1) * 2).next_power_of_two().max(8);
+        self.fill_index(cap);
+    }
+
+    fn fill_index(&mut self, cap: usize) {
+        self.index.clear();
+        self.index.resize(cap, EMPTY);
+        let mask = cap - 1;
+        for (p, e) in self.entries.iter().enumerate() {
+            if e.kv.is_some() {
+                let mut i = e.hash as usize & mask;
+                while self.index[i] != EMPTY {
+                    i = (i + 1) & mask;
+                }
+                self.index[i] = p as u32;
+            }
+        }
+        self.used = self.live;
+    }
+
+    /// Removes an entry, returning its key and value.
+    #[inline]
+    pub fn remove(&mut self, key: &Value) -> Option<(Value, Value)> {
+        self.remove_hashed(hash_value(key), key)
+    }
+
+    fn remove_hashed(&mut self, hash: u64, key: &Value) -> Option<(Value, Value)> {
+        let p = self.find(hash, key)?;
+        let removed = self.entries[p].kv.take();
+        self.live -= 1;
+        // Turn the slot that names `p` into a DUMMY.
+        let mask = self.index.len() - 1;
+        let mut i = hash as usize & mask;
+        while self.index[i] != p as u32 {
+            i = (i + 1) & mask;
+        }
+        self.index[i] = DUMMY;
         if self.entries.len() - self.live > COMPACT_MIN && self.entries.len() > 2 * self.live {
             self.compact();
         }
@@ -354,48 +410,34 @@ impl OrderedMap {
 
     /// Drops the tombstones and renumbers the index.
     fn compact(&mut self) {
-        let old = std::mem::take(&mut self.entries);
-        self.index.clear();
-        for (k, v) in old.into_iter().flatten() {
-            let hash = hash_value(&k);
-            let pos = self.entries.len();
-            self.entries.push(Some((k, v)));
-            match self.index.get_mut(&hash) {
-                None => {
-                    self.index.insert(hash, Bucket::One(pos));
-                }
-                Some(bucket) => match bucket {
-                    Bucket::One(first) => *bucket = Bucket::Many(vec![*first, pos]),
-                    Bucket::Many(v) => v.push(pos),
-                },
-            }
-        }
+        self.entries.retain(|e| e.kv.is_some());
+        let cap = ((self.live + 1) * 2).next_power_of_two().max(8);
+        self.fill_index(cap);
     }
 
-    /// Tests: how many distinct hashes the index holds and the most entries sharing one.
+    /// Tests: how many distinct hashes the entries hold and the most entries sharing one.
     #[cfg(test)]
     fn collision_stats(&self) -> (usize, usize) {
-        let longest = self
-            .index
-            .values()
-            .map(|b| b.positions().len())
-            .max()
-            .unwrap_or(0);
-        (self.index.len(), longest)
+        let mut counts = std::collections::HashMap::new();
+        for e in self.entries.iter().filter(|e| e.kv.is_some()) {
+            *counts.entry(e.hash).or_insert(0usize) += 1;
+        }
+        (counts.len(), counts.values().copied().max().unwrap_or(0))
     }
 
     /// Live entries in insertion order.
     pub fn iter(&self) -> impl Iterator<Item = &(Value, Value)> {
-        self.entries.iter().flatten()
+        self.entries.iter().filter_map(|e| e.kv.as_ref())
     }
 
     /// Removes and returns every entry in insertion order.
     pub(crate) fn take_all(&mut self) -> Vec<(Value, Value)> {
-        self.index.clear();
+        self.index = Vec::new();
+        self.used = 0;
         self.live = 0;
         std::mem::take(&mut self.entries)
             .into_iter()
-            .flatten()
+            .filter_map(|e| e.kv)
             .collect()
     }
 }
@@ -728,5 +770,186 @@ mod tests {
         assert_eq!(m.take_all().len(), 101);
         assert_eq!(m.len(), 0);
         assert_eq!(m.get(&string("k0")), None);
+    }
+
+    /// A reference model: a vector of pairs in insertion order, searched linearly.
+    #[derive(Default)]
+    struct Model(Vec<(i64, i64)>);
+
+    impl Model {
+        fn insert(&mut self, k: i64, v: i64) -> Option<i64> {
+            match self.0.iter_mut().find(|(a, _)| *a == k) {
+                Some(e) => Some(std::mem::replace(&mut e.1, v)),
+                None => {
+                    self.0.push((k, v));
+                    None
+                }
+            }
+        }
+        fn remove(&mut self, k: i64) -> Option<i64> {
+            let i = self.0.iter().position(|(a, _)| *a == k)?;
+            Some(self.0.remove(i).1)
+        }
+        fn get(&self, k: i64) -> Option<i64> {
+            self.0.iter().find(|(a, _)| *a == k).map(|e| e.1)
+        }
+    }
+
+    fn pairs_of(m: &OrderedMap) -> Vec<(i64, i64)> {
+        m.iter()
+            .map(|(k, v)| match (k, v) {
+                (Value::Int(k), Value::Int(v)) => (*k, *v),
+                _ => panic!("not ints"),
+            })
+            .collect()
+    }
+
+    /// Checks the index invariants: every live entry is reachable from its own hash, `used`
+    /// counts the non-empty slots, and the index is at most two thirds full.
+    fn check_invariants(m: &OrderedMap) {
+        let non_empty = m.index.iter().filter(|&&s| s != EMPTY).count();
+        assert_eq!(non_empty, m.used);
+        assert!(m.index.is_empty() || m.used * 3 <= m.index.len() * 2);
+        assert_eq!(m.entries.iter().filter(|e| e.kv.is_some()).count(), m.live);
+        for (p, e) in m.entries.iter().enumerate() {
+            if let Some((k, _)) = &e.kv {
+                assert_eq!(m.find(e.hash, k), Some(p));
+            }
+        }
+    }
+
+    /// Deterministic xorshift, so the test is the same on every run.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+    }
+
+    #[test]
+    fn random_operations_match_a_reference_model() {
+        for (seed, key_space) in [(1u64, 16u64), (2, 100), (3, 1000), (4, 5)] {
+            let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ seed);
+            let mut m = OrderedMap::new();
+            let mut model = Model::default();
+            for step in 0..20_000 {
+                let k = (rng.next() % key_space) as i64;
+                let v = rng.next() as i64;
+                match rng.next() % 10 {
+                    0..=4 => {
+                        let (old, spare) = m.insert(int(k), int(v));
+                        assert_eq!(old, model.insert(k, v).map(int), "insert {k}");
+                        assert_eq!(spare.is_some(), old.is_some());
+                    }
+                    5..=7 => {
+                        let got = m.remove(&int(k)).map(|(_, v)| v);
+                        assert_eq!(got, model.remove(k).map(int), "remove {k}");
+                    }
+                    _ => assert_eq!(m.get(&int(k)), model.get(k).map(int).as_ref()),
+                }
+                assert_eq!(m.len(), model.0.len());
+                if step % 997 == 0 {
+                    assert_eq!(pairs_of(&m), model.0);
+                    check_invariants(&m);
+                }
+            }
+            assert_eq!(pairs_of(&m), model.0);
+            check_invariants(&m);
+        }
+    }
+
+    #[test]
+    fn every_key_with_one_hash_is_still_found_removed_and_ordered() {
+        // All 300 keys hash alike: one probe run of 300 slots, with removals in the middle.
+        let mut m = OrderedMap::new();
+        for k in 0..300 {
+            assert_eq!(m.insert_hashed(7, int(k), int(k)), (None, None));
+        }
+        check_invariants(&m);
+        for k in 0..300 {
+            assert_eq!(m.find(7, &int(k)), Some(k as usize));
+        }
+        assert_eq!(m.find(7, &int(300)), None);
+        // Remove every other key (not through `remove`, so the hash stays 7).
+        for k in (0..300).step_by(2) {
+            assert_eq!(m.remove_hashed(7, &int(k)), Some((int(k), int(k))));
+        }
+        for k in (1..300).step_by(2) {
+            assert!(m.find(7, &int(k)).is_some(), "lost {k} behind a removed slot");
+        }
+        // A replaced key keeps its place; a removed key comes back at the end.
+        assert_eq!(m.insert_hashed(7, int(1), int(-1)).0, Some(int(1)));
+        m.insert_hashed(7, int(0), int(0));
+        assert_eq!(m.iter().last().map(|(k, _)| k.clone()), Some(int(0)));
+        assert_eq!(m.iter().next().map(|(k, _)| k.clone()), Some(int(1)));
+        check_invariants(&m);
+    }
+
+    #[test]
+    fn index_grows_and_keeps_every_key_through_each_size() {
+        let mut m = OrderedMap::new();
+        let mut sizes = std::collections::BTreeSet::new();
+        for k in 0..5000 {
+            m.insert(int(k), int(k));
+            sizes.insert(m.index.len());
+            if k % 61 == 0 {
+                check_invariants(&m);
+            }
+        }
+        // 8, 16, ... 8192 slots: grown by doubling, never above two thirds full.
+        assert!(sizes.len() >= 9, "{sizes:?}");
+        assert!(sizes.iter().all(|n| n.is_power_of_two()));
+        for k in 0..5000 {
+            assert_eq!(m.get(&int(k)), Some(&int(k)));
+        }
+    }
+
+    #[test]
+    fn heavy_churn_without_growth_keeps_the_index_usable() {
+        // A window of 20 live keys that slides over 100,000 keys: thousands of removals and
+        // insertions. Dummies must be reclaimed (rebuilds or compaction) so that the index
+        // never fills and a probe for an absent key always ends.
+        let mut m = OrderedMap::new();
+        for k in 0..20 {
+            m.insert(int(k), int(k));
+        }
+        for k in 20..100_000 {
+            assert!(m.remove(&int(k - 20)).is_some());
+            m.insert(int(k), int(k));
+            assert_eq!(m.get(&int(k - 20)), None);
+            if k % 5003 == 0 {
+                check_invariants(&m);
+            }
+        }
+        assert_eq!(m.len(), 20);
+        assert!(m.index.len() <= 64, "index grew to {}", m.index.len());
+        assert!(m.slots() <= 100, "entries grew to {}", m.slots());
+        let keys: Vec<i64> = pairs_of(&m).into_iter().map(|p| p.0).collect();
+        assert_eq!(keys, (99_980..100_000).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn emptying_and_refilling_a_map_works() {
+        let mut m = OrderedMap::new();
+        for round in 0..3 {
+            for k in 0..100 {
+                m.insert(int(k), int(round));
+            }
+            assert_eq!(m.len(), 100);
+            if round == 1 {
+                assert_eq!(m.take_all().len(), 100);
+            } else {
+                for k in 0..100 {
+                    assert!(m.remove(&int(k)).is_some());
+                }
+            }
+            assert!(m.is_empty());
+            assert_eq!(m.get(&int(5)), None);
+            assert_eq!(m.remove(&int(5)), None);
+            check_invariants(&m);
+        }
     }
 }
