@@ -1,0 +1,25 @@
+// allow: unused
+class T { name: str }
+impl Drop for T {
+    fn drop(self) { print("drop {self.name}") }
+}
+fn mk(s: str) -> T => T { name: s }
+
+// The value is released once its parts are bound: the part no name takes dies at the `let`.
+fn main() {
+    let (kept, _) = (mk("kept"), mk("ignored"))
+    print("after let")
+    for (a, _) in [(mk("a"), mk("b"))] {
+        print("in trip")
+    }
+    print("end")
+}
+
+// expect: drop ignored
+// expect: after let
+// expect: in trip
+// expect: drop b
+// expect: drop a
+// expect: end
+// expect: drop kept
+// drops: ignored, b, a, kept

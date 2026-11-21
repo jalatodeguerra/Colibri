@@ -1,0 +1,33 @@
+// allow: unused
+class T { name: str }
+impl Drop for T {
+    fn drop(self) { print("drop {self.name}") }
+}
+fn mk(s: str) -> T => T { name: s }
+
+enum Pair { Left(T, int), Right(int, T) }
+
+// The first alternative binds `t` and then fails on the `7`; what it bound must not stay behind
+// when the second one binds `t` again.
+fn describe(p: Pair) -> str {
+    return match p {
+        .Left(t, 7) | .Left(t, 2) | .Right(7, t) => "hit {t.name}"
+        _ => "miss"
+    }
+}
+
+fn main() {
+    print(describe(.Left(mk("l"), 2)))
+    print(describe(.Left(mk("m"), 3)))
+    print(describe(.Right(7, mk("r"))))
+    print("end")
+}
+
+// expect: hit l
+// expect: drop l
+// expect: miss
+// expect: drop m
+// expect: hit r
+// expect: drop r
+// expect: end
+// drops: l, m, r

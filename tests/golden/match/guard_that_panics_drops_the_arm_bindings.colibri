@@ -1,0 +1,22 @@
+// allow: unused
+class T { name: str }
+impl Drop for T {
+    fn drop(self) { print("drop {self.name}") }
+}
+fn mk(s: str) -> T => T { name: s }
+
+// The bindings are clones: the scrutinee dies last, after the arm's scope has been left by the
+// panic of its guard.
+fn main() {
+    let zero = 0
+    match (mk("left"), mk("right"), 3) {
+        (a, b, n) if n / zero > 0 => print("body")
+        _ => print("other")
+    }
+    print("not reached")
+}
+
+// expect: drop right
+// expect: drop left
+// panic: division by zero
+// drops: right, left
