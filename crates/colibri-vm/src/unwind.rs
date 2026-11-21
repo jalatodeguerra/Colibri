@@ -14,6 +14,9 @@ use colibri_core::value::Value;
 use crate::fiber::{FrameKind, VmFiber, is_scalar_value};
 use crate::machine::Machine;
 
+/// What every refusal of an unsupported feature starts with.
+const REFUSAL: &str = "the bytecode VM does not support";
+
 impl Machine {
     /// Continues unwinding `ctl` from the top frame: into its pad when the instruction it is at
     /// has one (`Ok`: the dispatch loop reloads and runs the pad), else out of the frame into
@@ -25,9 +28,12 @@ impl Machine {
         mut ctl: Ctl,
         mut skip_top: bool,
     ) -> Result<(), Ctl> {
+        // The VM's refusal of a feature is not the program's own panic: nothing the program
+        // wrote (a `defer`, a `Drop` hook) runs for it, so output stops where the refusal is.
+        let refusal = matches!(&ctl, Ctl::Panic(info) if info.message.starts_with(REFUSAL));
         loop {
             let frame = fiber.frames.last_mut().expect("a frame to unwind");
-            if !skip_top {
+            if !skip_top && !refusal {
                 let at = frame.pc.saturating_sub(1);
                 if let Some(pad) = frame.chunk.pad_for(at) {
                     // A failure inside a pad joins the one already on its way out.
@@ -52,7 +58,10 @@ impl Machine {
             let chunk = &frame.chunk;
             let (from, to) = (base + chunk.nparams as usize, base + chunk.nregs as usize);
             for i in (from..to).rev() {
-                if !is_scalar_value(&fiber.regs[i]) {
+                if refusal {
+                    // Leaked on purpose: releasing would run hooks.
+                    std::mem::forget(std::mem::replace(&mut fiber.regs[i], Value::Unit));
+                } else if !is_scalar_value(&fiber.regs[i]) {
                     debug_assert!(
                         false,
                         "register r{} of `{}` still owns {:?} after unwinding",
@@ -65,6 +74,7 @@ impl Machine {
                 }
             }
             if frame.kind == FrameKind::NativeEntry {
+                self.refused |= refusal;
                 self.release_temps(fiber, frame.temps_mark as usize);
                 return Err(ctl);
             }

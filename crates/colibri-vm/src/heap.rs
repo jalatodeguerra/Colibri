@@ -182,9 +182,7 @@ impl Machine {
         chunk: &Chunk,
         base: usize,
         pc: usize,
-        m: u16,
-        k: u16,
-        v: u16,
+        [m, k, v]: [u16; 3],
     ) -> Result<(), Ctl> {
         let span = chunk.spans[pc - 1];
         let Value::Map(map) = &fiber.regs[base + usize::from(m)] else {

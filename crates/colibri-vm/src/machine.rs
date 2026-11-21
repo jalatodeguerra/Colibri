@@ -57,6 +57,8 @@ pub struct Machine {
     pub(crate) uninit: Vec<Option<Rc<str>>>,
     pub(crate) global_names: Vec<Rc<str>>,
     pub(crate) released: bool,
+    /// A feature the VM lacks stopped a run: no program code (a `Drop` hook) runs after it.
+    pub(crate) refused: bool,
     pub(crate) env: CompileEnv,
     pub(crate) max_depth: usize,
     pub(crate) native_stack_budget: usize,
@@ -82,6 +84,7 @@ impl Machine {
             uninit: Vec::new(),
             global_names: Vec::new(),
             released: false,
+            refused: false,
             env: CompileEnv::default(),
             max_depth: max_call_depth,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,

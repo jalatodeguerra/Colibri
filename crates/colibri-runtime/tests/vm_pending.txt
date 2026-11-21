@@ -10,8 +10,8 @@ async_ops::a_completed_parked_waiter_gets_its_value_once  # `go`
 async_ops::a_completer_dropped_by_its_holder_wakes_a_parked_waiter_with_an_error  # `go`
 async_ops::a_completer_dropped_without_a_result_is_an_error_not_a_hang  # `go`
 async_ops::a_completion_from_another_thread_wakes_coroutines_that_overlap  # `NewCoGroup`
-async_ops::a_completion_in_a_drop_hook_blocks_until_it_is_done  # class objects
-async_ops::a_completion_made_inside_start_works_where_the_wait_blocks  # class objects
+async_ops::a_completion_in_a_drop_hook_blocks_until_it_is_done  # host functions
+async_ops::a_completion_made_inside_start_works_where_the_wait_blocks  # host functions
 async_ops::a_completion_made_inside_start_yields_once_and_gives_its_value  # `NewCoGroup`
 async_ops::a_completion_on_the_main_fiber_runs_the_loop_meanwhile  # `go`
 async_ops::a_completion_that_arrives_before_the_waiter_suspends_is_not_lost  # host functions
@@ -20,7 +20,7 @@ async_ops::a_host_driven_loop_is_not_blocked_by_an_operation  # `go`
 async_ops::a_panicking_worker_is_a_panic_of_the_caller  # host functions
 async_ops::a_start_that_fails_is_an_error_and_nothing_waits  # `go`
 async_ops::a_start_that_panics_is_a_panic_of_the_call_and_the_vm_goes_on  # host functions
-async_ops::an_operation_cancelled_while_running_is_dropped  # lists
+async_ops::an_operation_cancelled_while_running_is_dropped  # the built-in `ListPush`
 async_ops::background_operations_overlap_inside_coroutines  # `NewCoGroup`
 async_ops::blocked_operations_never_hold_back_the_one_that_unblocks_them  # `NewCoGroup`
 async_ops::cancelling_a_waiting_coroutine_unwinds_it  # `go`
@@ -32,9 +32,9 @@ async_ops::thousands_of_operations_reuse_threads  # `NewCoGroup`
 async_ops::waiting_on_the_main_fiber_is_refused_inside_a_host_callback  # host functions
 async_ops::waits_carry_unit_and_string_results  # host functions
 budget::a_host_function_sees_the_steps_so_far  # host functions
-budget::host_eq_hooks_and_key_scans_are_charged  # lists
+budget::host_eq_hooks_and_key_scans_are_charged  # the built-in `ListPush`
 budget::iter_on_a_huge_range_is_cheap_and_what_it_yields_is_charged  # `for` over this kind of value
-budget::looping_builtins_cost_a_step_per_element  # lists
+budget::looping_builtins_cost_a_step_per_element  # the built-in `ListPush`
 budget::reentrant_calls_share_the_entrys_budget  # host functions
 budget::set_algebra_by_a_user_eq_charges_the_comparisons  # the built-in `SetFromList`
 budget::set_algebra_on_ints_ignores_an_unrelated_user_eq  # the built-in `SetFromList`
@@ -44,24 +44,24 @@ bytes::get_fn_checks_and_moves_bytes  # the built-in `StrToBytes`
 callbacks::a_callback_belongs_to_its_vm  # host functions
 callbacks::a_callback_goes_stale_when_the_program_goes  # host functions
 callbacks::a_callback_panic_is_an_error_and_the_vm_stays_usable  # host functions
-callbacks::a_dropped_callback_releases_its_closure_at_the_next_entry  # class objects
+callbacks::a_dropped_callback_releases_its_closure_at_the_next_entry  # host functions
 callbacks::a_host_function_calls_a_callback_through_its_context  # host functions
 callbacks::closures_and_functions_outlive_the_call_that_registered_them  # host functions
 capabilities::a_function_with_no_requirement_is_unaffected_by_the_missing_grant  # host functions
 capabilities::a_granted_capability_lets_the_call_run  # host functions
 capabilities::allow_all_grants_every_capability  # host functions
 coroutines::a_configured_stack_size_bounds_recursion_in_a_coroutine  # `go`
-coroutines::a_go_child_whose_local_and_capture_hooks_both_panic_is_the_only_failure  # class objects
-coroutines::a_go_closure_stopped_by_the_instruction_budget_still_releases_its_capture  # class objects
-coroutines::a_go_closure_that_finishes_releases_the_object_only_it_holds  # class objects
-coroutines::a_go_closure_that_is_cancelled_releases_the_object_only_it_holds  # class objects
-coroutines::a_go_closure_that_panics_releases_the_object_only_it_holds  # class objects
-coroutines::a_go_closure_with_arguments_releases_what_it_captured_and_what_it_got  # class objects
-coroutines::a_go_of_a_closure_held_in_a_variable_releases_it_after_the_other_owners_die  # class objects
+coroutines::a_go_child_whose_local_and_capture_hooks_both_panic_is_the_only_failure  # `go`
+coroutines::a_go_closure_stopped_by_the_instruction_budget_still_releases_its_capture  # `go`
+coroutines::a_go_closure_that_finishes_releases_the_object_only_it_holds  # `go`
+coroutines::a_go_closure_that_is_cancelled_releases_the_object_only_it_holds  # `go`
+coroutines::a_go_closure_that_panics_releases_the_object_only_it_holds  # `go`
+coroutines::a_go_closure_with_arguments_releases_what_it_captured_and_what_it_got  # `go`
+coroutines::a_go_of_a_closure_held_in_a_variable_releases_it_after_the_other_owners_die  # closures
 coroutines::a_group_go_closure_releases_its_capture_when_it_ends_and_when_the_group_dies  # `NewCoGroup`
-coroutines::a_hook_panic_of_a_cancelled_go_closure_does_not_stop_the_canceller  # class objects
-coroutines::a_hook_panic_of_a_finished_go_closure_does_not_stop_another_coroutine  # class objects
-coroutines::a_hook_panic_of_a_finished_go_closure_is_reported_by_its_tick_not_the_next_host_call  # class objects
+coroutines::a_hook_panic_of_a_cancelled_go_closure_does_not_stop_the_canceller  # `go`
+coroutines::a_hook_panic_of_a_finished_go_closure_does_not_stop_another_coroutine  # `go`
+coroutines::a_hook_panic_of_a_finished_go_closure_is_reported_by_its_tick_not_the_next_host_call  # `go`
 coroutines::a_host_loop_drives_coroutines_with_tick  # `go`
 coroutines::a_panic_handed_to_join_result_is_not_a_failure_of_the_event_loop  # `go`
 coroutines::a_panic_in_a_coroutine_is_an_err_from_tick_and_the_vm_survives  # `go`
@@ -107,7 +107,7 @@ ffi::symbols_of_the_process_need_no_link_attribute  # `extern` functions
 host_classes::a_busy_object_gives_the_documented_panic_when_the_script_reenters_it  # host functions
 host_classes::a_class_can_customise_show_and_equality  # host functions
 host_classes::a_dead_receiver_and_a_dead_argument_both_say_so  # host functions
-host_classes::a_host_object_dying_with_a_list_dies_in_element_order  # lists
+host_classes::a_host_object_dying_with_a_list_dies_in_element_order  # host functions
 host_classes::a_host_owned_object_survives_every_script_reference  # host functions
 host_classes::a_panic_in_the_rust_drop_of_a_script_owned_object_is_a_panic_of_the_script  # host functions
 host_classes::a_returned_object_is_script_owned_and_dies_with_its_last_reference  # host functions
@@ -115,14 +115,14 @@ host_classes::a_rust_panic_in_a_method_releases_the_borrow  # host functions
 host_classes::a_script_that_still_holds_a_removed_object_is_told_so  # host functions
 host_classes::an_option_of_a_stale_handle_is_none_for_the_script  # `match`
 host_classes::equal_host_objects_hash_equally_and_one_without_a_hash_is_a_clean_error  # host functions
-host_classes::objects_are_dropped_in_index_order_when_the_vm_goes  # class objects
-host_classes::objects_cross_functions_collections_and_tuples  # lists
+host_classes::objects_are_dropped_in_index_order_when_the_vm_goes  # host functions
+host_classes::objects_cross_functions_collections_and_tuples  # host functions
 host_classes::objects_have_identity_equality_hash_and_show  # host functions
 host_classes::reading_methods_may_nest_but_not_inside_a_writing_one  # host functions
 host_classes::removing_a_borrowed_object_is_an_error_not_a_free  # host functions
 host_classes::the_host_cannot_borrow_what_a_running_method_holds  # host functions
 host_classes::the_host_cannot_remove_what_the_script_owns  # host functions
-host_classes::the_rust_drop_runs_after_the_class_drop_hook_that_held_it  # class objects
+host_classes::the_rust_drop_runs_after_the_class_drop_hook_that_held_it  # host functions
 host_fns::a_display_error_keeps_a_str_and_a_typed_error_keeps_none  # the built-in `OptionExpect`
 host_fns::a_host_error_keeps_a_typed_value_that_is_and_as_recover  # `for` over this kind of value
 host_fns::a_host_function_calls_back_into_the_script  # host functions
@@ -153,7 +153,7 @@ host_modules::a_session_keeps_module_values_between_steps  # REPL sessions
 host_modules::imported_names_and_aliases_name_a_module_type_too  # host functions
 host_modules::importing_a_module_registers_the_module_it_uses_first  # host functions
 host_modules::one_rust_struct_registered_by_two_modules_is_one_type  # host functions
-host_modules::the_host_calls_a_function_that_takes_a_struct_of_a_named_module  # projections
+host_modules::the_host_calls_a_function_that_takes_a_struct_of_a_named_module  # host functions
 host_modules::the_host_calls_a_stored_callback_that_takes_a_struct_of_a_named_module  # host functions
 host_modules::two_modules_each_declare_a_struct_of_the_same_name  # host functions
 host_modules::two_modules_each_declare_an_item  # host functions
@@ -165,7 +165,7 @@ host_sharing_order::every_registration_order_gives_every_module_the_same_interfa
 interface::value_types_cross_the_boundary  # host functions
 iter_release::a_for_loop_over_the_only_reference_to_a_list_releases_it_at_the_end  # the built-in `Iter`
 iter_release::a_map_iterator_advanced_with_next_releases_its_map_at_the_end  # the built-in `Iter`
-iter_release::enumerate_releases_its_inner_iterator_when_that_ends  # struct values
+iter_release::enumerate_releases_its_inner_iterator_when_that_ends  # `for` over this kind of value
 join_failures::a_budget_panic_is_not_held_for_a_woken_join_result_waiter  # `go`
 join_failures::a_budget_panic_is_not_hidden_by_a_later_join_result_in_the_tick  # `go`
 join_failures::a_budget_panic_is_not_hidden_by_join_result_on_the_main_fiber  # `go`
@@ -174,15 +174,15 @@ join_failures::a_waiter_that_runs_takes_the_panic_from_the_queue  # `NewSignal`
 join_failures::cancelling_everything_leaves_no_waiter_registered  # `NewSignal`
 join_failures::join_of_a_budget_panicked_coroutine_reports_the_budget_error  # `go`
 join_failures::when_only_join_waiters_are_left_nothing_polls_and_nothing_resumes  # `NewSignal`
-leaks::a_big_graph_is_found_quickly  # class objects
+leaks::a_big_graph_is_found_quickly  # class fields
 leaks::a_cancelled_coroutine_leaks_what_only_it_held  # `go`
-leaks::a_cycle_nothing_reaches_is_found_mid_run  # class objects
-leaks::a_cycle_that_is_still_held_is_not_a_leak  # lists
-leaks::a_cycle_through_a_closure_names_the_captured_variable  # class objects
+leaks::a_cycle_nothing_reaches_is_found_mid_run  # class fields
+leaks::a_cycle_that_is_still_held_is_not_a_leak  # class fields
+leaks::a_cycle_through_a_closure_names_the_captured_variable  # class fields
 leaks::a_suspended_coroutine_keeps_its_cycle_alive  # `go`
-leaks::objects_a_leaked_cycle_owns_are_counted_as_retained  # class objects
-leaks::weak_references_are_not_edges  # class objects
-leaks::without_tracking_there_is_nothing_to_report  # class objects
+leaks::objects_a_leaked_cycle_owns_are_counted_as_retained  # class fields
+leaks::weak_references_are_not_edges  # class fields
+leaks::without_tracking_there_is_nothing_to_report  # class fields
 packages::a_host_module_supports_selective_imports_and_aliases  # host functions
 packages::a_named_host_module_is_imported  # host functions
 packages::the_default_host_module_needs_no_import  # host functions
@@ -199,15 +199,15 @@ std_modules::lazy::a_session_has_every_module  # REPL sessions
 std_modules::lazy::an_embedder_type_of_the_modules_name_registered_after_it_coexists  # host functions
 std_modules::lazy::an_embedder_type_of_the_modules_name_registered_before_it_coexists  # host functions
 std_modules::lazy::an_import_registers_the_module_once  # host functions
-std_modules::raise_is_a_panic_with_exactly_this_message_and_defers_run  # `defer`
+std_modules::raise_is_a_panic_with_exactly_this_message_and_defers_run  # host functions
 std_modules::the_write_function_of_a_context_goes_where_print_goes  # host functions
 std_modules::values_can_be_read_and_built_without_a_static_type  # host functions
 tests_api::a_hook_set_inside_the_hook_replaces_it  # host functions
-tests_api::a_panicking_hook_stays_registered  # lists
-tests_api::a_script_function_called_from_the_hook_that_reads_a_module_value_panics_clearly  # lists
-tests_api::a_test_run_from_inside_the_hook_runs_without_the_hook  # lists
+tests_api::a_panicking_hook_stays_registered  # the built-in `ListPush`
+tests_api::a_script_function_called_from_the_hook_that_reads_a_module_value_panics_clearly  # the built-in `ListLen`
+tests_api::a_test_run_from_inside_the_hook_runs_without_the_hook  # the built-in `ListLen`
 tests_api::host_state_leaks_from_one_test_to_the_next_without_the_hook  # host functions
-tests_api::load_tests_runs_nothing_and_finds_modules_nobody_imports  # lists
+tests_api::load_tests_runs_nothing_and_finds_modules_nobody_imports  # the built-in `ListLen`
 tests_api::on_test_start_lets_the_host_reset_its_state_before_each_test  # host functions
-tests_api::run_test_reports_success_and_each_kind_of_failure  # enum values (test wrapper)
+tests_api::run_test_reports_success_and_each_kind_of_failure  # `match`
 tests_api::the_hook_does_not_run_for_an_unknown_test_or_a_plain_load  # host functions

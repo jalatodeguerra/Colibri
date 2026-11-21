@@ -1,8 +1,6 @@
 //! Operators on user types, through the embedding API: where a panic inside an operator shows
 //! in the trace, and that an operator impl is patched by a hot reload like any other function.
 
-mod common;
-
 use std::fs;
 use std::path::PathBuf;
 

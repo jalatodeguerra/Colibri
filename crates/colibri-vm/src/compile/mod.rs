@@ -888,9 +888,8 @@ impl<'a> FnCompiler<'a> {
                 }
                 self.state_override = None;
                 // The pad of the node below follows directly.
-                if !pads.contains_key(&parent) {
-                    let l = self.new_label();
-                    pads.insert(parent, l);
+                if let std::collections::hash_map::Entry::Vacant(e) = pads.entry(parent) {
+                    e.insert(self.new_label());
                 }
                 cur = parent;
             }

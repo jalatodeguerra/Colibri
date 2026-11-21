@@ -9,7 +9,6 @@ const VM_PENDING: &[&str] = &[
     "a_script_without_on_progress_is_skipped_by_the_hook_lookup",
     "the_log_matches_the_golden_file",
     "script_tests_see_a_fresh_queue_each",
-    "the_run_is_deterministic",
 ];
 
 fn vm_pending(name: &str, body: impl FnOnce()) {

@@ -131,7 +131,12 @@ impl Machine {
         for g in order.into_iter().rev() {
             if let Some(slot) = self.globals.get_mut(g) {
                 let v = std::mem::replace(slot, Value::Unit);
-                self.release(v);
+                if self.refused {
+                    // Leaked on purpose: releasing would run hooks after the refusal.
+                    std::mem::forget(v);
+                } else {
+                    self.release(v);
+                }
             }
         }
         // A `Drop` hook that panics while the program is shutting down has nobody to tell.

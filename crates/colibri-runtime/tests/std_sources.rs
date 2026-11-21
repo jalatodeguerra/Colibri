@@ -2,8 +2,6 @@
 //! `import name` and `import std.name`, virtual files named `<std>/name.colibri`, no warnings
 //! from them, and an ordinary program around them.
 
-mod common;
-
 use std::fs;
 use std::path::PathBuf;
 

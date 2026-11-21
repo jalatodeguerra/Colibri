@@ -525,7 +525,7 @@ impl Machine {
                 }
                 Op::MapInsert { m, k, v } => {
                     sync!();
-                    tri!(self.op_map_insert(fiber, &chunk, base, pc, m, k, v));
+                    tri!(self.op_map_insert(fiber, &chunk, base, pc, [m, k, v]));
                 }
 
                 Op::SkipIfDead { off } => {

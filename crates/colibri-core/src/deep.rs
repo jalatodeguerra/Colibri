@@ -76,6 +76,8 @@ impl<E: Engine> Hooks<'_, E> {
         if self.engine.fn_span(f).is_none() {
             return Err(Stop::TooDeep);
         }
+        // A call like any other: a panic in the method shows the line it was called from.
+        E::note_position(self.fiber, self.span);
         self.engine
             .call_fn(self.fiber, f, args)
             .map_err(|c| Stop::Ctl(Box::new(c)))
