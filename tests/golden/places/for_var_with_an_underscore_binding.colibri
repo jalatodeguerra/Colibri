@@ -1,0 +1,14 @@
+class Res { name: str }
+
+fn main() {
+    var xs = [Res { name: "a" }, Res { name: "b" }]
+    for var _ in xs {
+        print("trip")
+    }
+    print("end")
+}
+
+// expect: trip
+// expect: trip
+// expect: end
+// drops: a, b

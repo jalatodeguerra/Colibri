@@ -36,7 +36,6 @@ const PENDING: &[(&str, &str)] = &[
     ),
     ("numbers/match_on_sized_integers.colibri", "match"),
     ("numbers/methods_checked.colibri", "match"),
-    ("numbers/methods_wrapping_in_a_checksum.colibri", "lists"),
     (
         "numbers/sized_integers_are_hashable_and_ordered.colibri",
         "builtins",

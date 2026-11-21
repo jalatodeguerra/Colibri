@@ -1,0 +1,13 @@
+class T { name: str }
+
+fn main() {
+    var m: Map[int, T] = {1: T { name: "old" }}
+    m[1] = T { name: "new" }
+    print("replaced")
+    m[2] = T { name: "two" }
+    print("end")
+}
+
+// expect: replaced
+// expect: end
+// drops: old, new, two

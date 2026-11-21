@@ -1,0 +1,10 @@
+fn main() {
+    var m: Map[str, int] = {"a": 1, "b": 2}
+    for e in m {
+        print(e)
+        m["a"] = 5
+    }
+}
+
+// expect: ("a", 1)
+// panic: map modified during iteration

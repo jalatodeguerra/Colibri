@@ -1,0 +1,31 @@
+struct P { n: int }
+struct Q { p: P }
+
+impl P {
+    fn bump(var self) -> int {
+        self.n += 100
+        return 1
+    }
+}
+
+fn main() {
+    // The index is read before the call; storing the result into it must not move the write-back.
+    var xs = [P { n: 0 }, P { n: 10 }]
+    var i = 0
+    i = xs[i].bump()
+    print(xs)
+    print(i)
+    var m: Map[int, P] = {0: P { n: 0 }, 1: P { n: 10 }}
+    var k = 0
+    k = m[k].bump()
+    print(m)
+    var qs = [Q { p: P { n: 0 } }, Q { p: P { n: 10 } }]
+    var j = 0
+    j = qs[j].p.bump()
+    print(qs)
+}
+
+// expect: [P { n: 100 }, P { n: 10 }]
+// expect: 1
+// expect: {0: P { n: 100 }, 1: P { n: 10 }}
+// expect: [Q { p: P { n: 100 } }, Q { p: P { n: 10 } }]

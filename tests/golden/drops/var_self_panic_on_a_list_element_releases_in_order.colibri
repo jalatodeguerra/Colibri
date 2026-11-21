@@ -1,0 +1,21 @@
+// allow: unused
+class Res { name: str }
+struct Slot { r: Res }
+var slots = [Slot { r: Res { name: "old" } }]
+
+impl Slot {
+    fn replace_then_fail(var self, tag: Res) {
+        let mine = Res { name: "mine" }
+        self.r = Res { name: "replaced" }
+        let zero = 0
+        print(1 / zero)
+    }
+}
+
+fn main() {
+    let arg = Res { name: "arg" }
+    slots[0].replace_then_fail(Res { name: "tmp" })
+}
+
+// panic: division by zero
+// drops: mine, old, tmp, arg, replaced

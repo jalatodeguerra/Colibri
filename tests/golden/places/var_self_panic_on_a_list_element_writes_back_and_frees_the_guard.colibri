@@ -1,0 +1,26 @@
+struct Acc { n: int }
+var xs = [Acc { n: 0 }, Acc { n: 5 }]
+
+impl Acc {
+    fn add_then_fail(var self) {
+        self.n += 10
+        let zero = self.n - 10
+        print(1 / zero)
+    }
+}
+
+fn after() {
+    // The panic has written the element back and let go of the list: writing is allowed again.
+    print("element 0 holds {xs[0].n}")
+    xs[1] = Acc { n: 9 }
+    print("element 1 holds {xs[1].n}")
+}
+
+fn main() {
+    defer after()
+    xs[0].add_then_fail()
+}
+
+// expect: element 0 holds 10
+// expect: element 1 holds 9
+// panic: division by zero

@@ -528,6 +528,53 @@ impl Machine {
                     tri!(self.op_map_insert(fiber, &chunk, base, pc, [m, k, v]));
                 }
 
+                Op::PlaceGet { .. }
+                | Op::PlaceTake { .. }
+                | Op::PlaceSet { .. }
+                | Op::PlaceHold { .. } => {
+                    pc += 1; // the site word
+                    sync!();
+                    tri!(self.op_place(fiber, &chunk, base, pc, op));
+                }
+                Op::ListGetAt { .. }
+                | Op::ListSetAt { .. }
+                | Op::MapGetAt { .. }
+                | Op::MapSetAt { .. } => {
+                    sync!();
+                    tri!(self.op_elem(fiber, &chunk, base, pc, op));
+                }
+                Op::Unhold => {
+                    let held = fiber.holds.pop();
+                    debug_assert!(held.is_some(), "a hold released that was never taken");
+                }
+                Op::SetPath { l, s, site } => {
+                    sync!();
+                    tri!(self.op_set_path(fiber, &chunk, base, pc, [l, s, site]));
+                }
+                Op::CanonKey { d, m, k } => {
+                    sync!();
+                    tri!(self.op_canon_key(fiber, &chunk, base, pc, [d, m, k]));
+                }
+                Op::HoldIter { .. } | Op::HoldListPlace { .. } => {
+                    sync!();
+                    tri!(self.op_hold(fiber, &chunk, base, pc, op));
+                }
+                Op::ForListNext { .. }
+                | Op::ForListNextVar { .. }
+                | Op::ForMapNext { .. }
+                | Op::ForSetNext { .. }
+                | Op::ForIterNext { .. } => {
+                    sync!();
+                    // An item skips the jump that ends the loop.
+                    if tri!(self.op_for_next(fiber, &chunk, base, pc, op)) {
+                        pc += 1;
+                    }
+                }
+                Op::ForWriteBack { l, a } => {
+                    sync!();
+                    self.op_for_write_back(fiber, base, l, a);
+                }
+
                 Op::SkipIfDead { off } => {
                     if self.core.budget_is_dead() {
                         jump!(off);

@@ -1,0 +1,39 @@
+var xs = [1, 2]
+var ys = [3, 4]
+
+fn find(target: int) -> int {
+    for x in xs {
+        for y in ys {
+            if x + y == target {
+                return y
+            }
+        }
+    }
+    return 0
+}
+
+fn main() {
+    for x in xs {
+        for y in ys {
+            if y == 3 {
+                break
+            }
+        }
+        // The inner loop is over: `ys` is free, `xs` is still being iterated.
+        ys[0] = ys[0] + 1
+    }
+    print(ys[0])
+    print(find(5))
+    // Both lists are free again after the return from inside both loops.
+    xs[0] = 7
+    ys[1] = 8
+    print(xs[0] + ys[1])
+    for x in xs {
+        xs[1] = 0
+    }
+}
+
+// expect: 5
+// expect: 4
+// expect: 15
+// panic: list modified during iteration
