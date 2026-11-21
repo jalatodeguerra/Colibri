@@ -6,7 +6,7 @@ use colibri_check::hir::{
 use colibri_check::types::{IntTy, Ty};
 use colibri_syntax::Span;
 
-use super::{FnCompiler, Item, Kind, Label, LoopCtx, is_scalar};
+use super::{FnCompiler, Item, Kind, Label, LoopCtx, is_scalar, kind_of};
 use crate::bytecode::{Op, Reg};
 
 impl FnCompiler<'_> {
@@ -99,6 +99,10 @@ impl FnCompiler<'_> {
         let span = s.span;
         if let StmtKind::Defer(deferred) = &s.kind {
             self.register_defer(deferred);
+            // A statement like any other: a hook panic that is pending (inside a `Drop` hook)
+            // surfaces here, with the defer already registered.
+            let m = self.begin_group();
+            self.end_group(m, span);
             return;
         }
         let m = self.begin_group();
@@ -111,11 +115,16 @@ impl FnCompiler<'_> {
                     self.expr(init, t);
                     self.emit(Op::NewCell { l, s: t }, span);
                     self.free_moved(t);
-                    self.end_group(m, span);
+                    // The local exists when the statement's hook check runs: it dies first.
+                    self.end_group_keeping(m, l, span);
                     self.push_item(Item::Reg(l));
                 } else {
                     self.expr(init, l);
-                    self.end_group(m, span);
+                    if kind_of(ty) == Kind::Scalar {
+                        self.end_group(m, span);
+                    } else {
+                        self.end_group_keeping(m, l, span);
+                    }
                     self.bind_local_cleanup(l, ty);
                 }
             }

@@ -1,0 +1,32 @@
+// allow: unused
+class T { name: str }
+impl Drop for T {
+    fn drop(self) { print("drop {self.name}") }
+}
+fn boom(tag: str) -> int {
+    print("boom {tag}")
+    let z = 0
+    return 1 / z
+}
+class H { name: str }
+impl Drop for H {
+    fn drop(self) {
+        defer print("hook defer {self.name}")
+        let t = T { name: "hook local {self.name}" }
+        let x = boom("hook {self.name}")
+    }
+}
+
+// Inside a hook the panic of an earlier hook is pending: the `defer` statement is where it
+// surfaces, before `t` exists.
+fn main() {
+    let a = H { name: "a" }
+    let b = H { name: "b" }
+}
+
+// expect: boom hook b
+// expect: drop hook local b
+// expect: hook defer b
+// expect: hook defer a
+// panic: division by zero
+// drops: hook local b, b, a

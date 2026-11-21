@@ -662,6 +662,13 @@ impl<'a> FnCompiler<'a> {
         self.abandon(m);
     }
 
+    /// [`Self::end_group`] for a `let`: the new local `l` is not on the stack yet, but a hook
+    /// panic at the statement end must drop it with the rest.
+    pub(crate) fn end_group_keeping(&mut self, m: Mark, l: Reg, span: Span) {
+        self.emit_exit(m.cleanups, Some(l), span);
+        self.abandon(m);
+    }
+
     /// Resets the compile-time state to `m` without emitting drops (the code that follows is
     /// unreachable, or the registers were consumed).
     pub(crate) fn abandon(&mut self, m: Mark) {

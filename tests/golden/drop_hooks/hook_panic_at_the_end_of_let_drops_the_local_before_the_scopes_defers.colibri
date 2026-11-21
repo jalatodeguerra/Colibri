@@ -1,0 +1,29 @@
+// allow: unused
+class T { name: str }
+impl Drop for T {
+    fn drop(self) { print("drop {self.name}") }
+}
+class Bad { name: str }
+impl Drop for Bad {
+    fn drop(self) {
+        print("bad hook {self.name}")
+        let z = 0
+        print(1 / z)
+    }
+}
+fn mk(n: str) -> T => T { name: n }
+fn with(t: T, s: str) -> T => t
+
+// The `let` has bound `t` when its statement ends and the temporary's hook panics: `t` dies
+// first, then the defer runs.
+fn main() {
+    defer print("main defer")
+    let t = with(mk("t"), Bad { name: "tmp" }.name)
+    print("unreachable")
+}
+
+// expect: bad hook tmp
+// expect: drop t
+// expect: main defer
+// panic: division by zero
+// drops: tmp, t
