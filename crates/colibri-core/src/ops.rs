@@ -7,8 +7,8 @@
 
 use std::rc::Rc;
 
-use colibri_check::hir::{ArithOp, BinOp, CmpOp, Lit, Num, Operand, UnOp};
-use colibri_check::types::IntTy;
+use colibri_check::hir::{ArithOp, BinOp, CmpOp, Coercion, Lit, Num, Operand, TypeKey, UnOp};
+use colibri_check::types::{ADD, DIV, IntTy, MUL, NEG, SUB, TypeId};
 use colibri_syntax::Span;
 
 use crate::compare::values_identical;
@@ -16,7 +16,7 @@ use crate::ctl::Eval;
 use crate::engine::Engine;
 use crate::num;
 use crate::prelude::*;
-use crate::value::Value;
+use crate::value::{DynVal, Value};
 
 /// A fault in integer arithmetic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +64,100 @@ pub trait Operators: Engine {
         self.release(l);
         self.release(r);
         result
+    }
+
+    // ---- interface values and operators reached through a bound ----
+
+    /// A value converted to an interface value.
+    fn coerce(&mut self, value: Value, how: &Coercion) -> Value {
+        let impl_id = match how {
+            Coercion::IntoError(conv) => return self.convert_to_error(value, *conv),
+            Coercion::ResultIntoError(conv) => return self.result_into_error(value, *conv),
+            Coercion::F32ToFloat => {
+                return match value {
+                    Value::F32(x) => Value::Float(f64::from(x)),
+                    other => other,
+                };
+            }
+            Coercion::ToDyn(id) => id.0,
+            Coercion::ToDynBound(iface) => {
+                if let Value::Dyn(d) = &value
+                    && self
+                        .core()
+                        .dispatch
+                        .impl_def(d.impl_id)
+                        .is_some_and(|i| i.iface == *iface)
+                {
+                    return value;
+                }
+                match self.impl_for(&value, *iface) {
+                    Some(i) => i,
+                    None => return value,
+                }
+            }
+        };
+        Value::Dyn(Rc::new(DynVal {
+            impl_id,
+            val: value,
+        }))
+    }
+
+    /// `a + b`, `-a`, ... where the left operand has the type of a bounded type parameter: the
+    /// impl is found from the runtime types, `rhs` being the right-hand head when the bound
+    /// fixes it. Numbers have no impl; they run the built-in operation, with the width of the
+    /// value (`int` and `u64`: the narrow integers cannot satisfy the bound).
+    fn call_operator(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        iface: TypeId,
+        rhs: Option<TypeKey>,
+        values: Vec<Value>,
+        span: Span,
+    ) -> Eval {
+        if let Some(f) = self.operator_target(iface, rhs, &values) {
+            Self::note_position(fiber, span);
+            return self.call_fn(fiber, f, values);
+        }
+        self.builtin_operator(fiber, iface, values, span)
+    }
+
+    /// The operator of a number or a string reached through a bound.
+    fn builtin_operator(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        iface: TypeId,
+        mut values: Vec<Value>,
+        span: Span,
+    ) -> Eval {
+        let num = match values.first() {
+            Some(Value::Int(_)) => Some(Num::Int(IntTy::I64)),
+            Some(Value::U64(_)) => Some(Num::Int(IntTy::U64)),
+            Some(Value::Float(_)) => Some(Num::Float),
+            Some(Value::F32(_)) => Some(Num::F32),
+            _ => None,
+        };
+        if iface == NEG {
+            return match (values.pop(), num) {
+                (Some(v), Some(n)) => self.unary(fiber, UnOp::Neg(n), v, span),
+                _ => Err(self.internal(fiber, span, "an operator without an implementation")),
+            };
+        }
+        let arith = match iface {
+            ADD => ArithOp::Add,
+            SUB => ArithOp::Sub,
+            MUL => ArithOp::Mul,
+            DIV => ArithOp::Div,
+            _ => return Err(self.internal(fiber, span, "not an operator interface")),
+        };
+        let op = match (&values.first(), num) {
+            (Some(Value::Str(_) | Value::Bytes(_)), _) if iface == ADD => BinOp::Concat,
+            (_, Some(n)) => BinOp::Arith(arith, n),
+            _ => return Err(self.internal(fiber, span, "an operator without an implementation")),
+        };
+        let (Some(r), Some(l)) = (values.pop(), values.pop()) else {
+            return Err(self.internal(fiber, span, "an operator without operands"));
+        };
+        self.binary(fiber, op, l, r, span)
     }
 }
 
