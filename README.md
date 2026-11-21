@@ -975,7 +975,7 @@ its expected output (`// expect:`), diagnostics (`// error:`) or drop order (`//
 
 The guide in `guide/` is tested too (`crates/colibri-cli/tests/guide.rs`): each ` ```colibri `
 sample must pass `colibri check` and `colibri fmt --check`, and one followed by an ` ```output `
-block must print exactly that. A fence word says more (`no-run`, `test`, `error`, `pkg=NAME,file=PATH`; the
+block must print exactly that. A fence word says more (`no-run`, `test`, `error`, `panics`, `pkg=NAME,file=PATH`; the
 test's header lists them). The pages in `guide/std` are generated from the standard library's
 interfaces and the doc comments of `vec` and `httpd`; after a change to a signature, write them
 again with `colibri doc --std guide/std`, and the test fails until you do.
