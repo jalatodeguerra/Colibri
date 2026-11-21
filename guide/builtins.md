@@ -22,14 +22,15 @@ An optional result, `T?`, is `none` when there is nothing to return.
 | Function | What it does |
 |----------|--------------|
 | `print(value)` | writes the value, shown as text, and a newline to standard output |
-| `panic(message) -> !` | ends the program (or the coroutine, or the test) with a message and a stack trace |
+| `panic(message) -> !` | ends the program (or the test) with a message and a stack trace; a panic in a coroutine ends the program too, unless a `join_result` receives it |
 | `assert(condition)`, `assert(condition, message)` | panics when the condition is false |
 | `assert_eq(left, right)` | panics when the two are not equal, and shows both |
 | `compare(a, b) -> int` | -1, 0 or 1 for two values of an ordered type (tuples work too) |
 | `error(message) -> Error` | an `Error` made from a message |
 | `some(x)`, `none`, `ok(x)`, `err(e)` | the cases of `T?` and `Result` |
 | `int(x)`, `float(x)`, `u8(x)`, `i32(x)`, `f32(x)`, ... | convert between number types |
-| `wait(seconds)`, `wait_real(seconds)`, `wait_until(condition)`, `wait_for(signal)` | pause a coroutine |
+| `wait(seconds)` | pause the coroutine, or the program when called in `main` |
+| `wait_real(seconds)`, `wait_until(condition)`, `wait_for(signal)` | pause a coroutine; they panic when not called from a coroutine started with `go`, `main` included |
 | `Map[K, V]()`, `Set[T]()`, `StrBuilder()`, `BytesBuilder()`, `Bytes(list)`, `CoGroup()`, `Signal()` | make a value of a built-in type |
 
 ```colibri
@@ -491,7 +492,7 @@ true
 | Type | Method | What it does |
 |------|--------|--------------|
 | `Coroutine[T]` | `join() -> T` | wait for the result |
-| `Coroutine[T]` | `join_result() -> Result[T]` | wait; a panic or a cancel is an `err` |
+| `Coroutine[T]` | `join_result() -> Result[T]` | wait; a panic or a cancel is an `err`, if this call is already waiting when the coroutine panics or is made before the caller has waited for anything; otherwise a panic ends the program |
 | `Coroutine[T]` | `cancel()`, `done() -> bool` | stop it at its next pause; whether it ended |
 | `CoGroup` | `go(call)` | start a coroutine that the group owns, as in `group.go(work(1))` |
 | `CoGroup` | `join_all()`, `cancel()`, `count() -> int` | wait for all, cancel all, how many are running |

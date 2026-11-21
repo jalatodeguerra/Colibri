@@ -8,6 +8,8 @@
 //! - ```` ```output ```` right after it: the sample is run, and its standard output must be this.
 //! - `no-run`: the sample is checked but never run (it serves for ever, or reads a terminal).
 //! - `test`: the sample is run with `colibri test`, and the `output` block is what that prints.
+//! - `panics`: the sample is run and must end with a panic (exit code 101) after printing exactly
+//!   what the `output` block after it says.
 //! - `error`: the sample must fail `colibri check`, and each line of the `output` block after it
 //!   must be part of the diagnostics.
 //! - `pkg=NAME` and `file=PATH`: the sample is a file of a package that all the blocks of this
@@ -119,7 +121,7 @@ fn fence_problems(page: &str, blocks: &[Block]) -> Vec<String> {
         }
         for w in &b.words {
             let known = match b.lang.as_str() {
-                "colibri" => ["no-run", "test", "error"].contains(&w.as_str()),
+                "colibri" => ["no-run", "test", "error", "panics"].contains(&w.as_str()),
                 _ => false,
             } || w.starts_with("pkg=") && (b.lang == "colibri" || b.lang == "toml")
                 || w.starts_with("file=") && (b.lang == "colibri" || b.lang == "toml");
@@ -267,8 +269,12 @@ struct Job {
     no_run: bool,
     test: bool,
     error: bool,
+    /// The sample ends with a panic (exit code 101), after printing the `output` block.
+    panics: bool,
     /// The `output` block that follows, if there is one.
     expected: Option<String>,
+    /// The package the sample belongs to, if it is a file of one.
+    package: Option<PathBuf>,
 }
 
 /// Writes the samples of one page and says what to do with each. A package's blocks are written
@@ -301,11 +307,13 @@ fn plan(root: &Path, page: &str, blocks: &[Block]) -> Vec<Job> {
                 jobs.push(Job {
                     block_place: b.place(),
                     target: dir.clone(),
-                    cwd: dir,
+                    cwd: dir.clone(),
                     no_run: b.has("no-run") || next.is_none(),
                     test: b.has("test"),
                     error: b.has("error"),
+                    panics: b.has("panics"),
                     expected: next.map(|n| n.code.clone()),
+                    package: Some(dir.clone()),
                 });
             }
             continue;
@@ -321,8 +329,26 @@ fn plan(root: &Path, page: &str, blocks: &[Block]) -> Vec<Job> {
             no_run: b.has("no-run") || next.is_none(),
             test: b.has("test"),
             error: b.has("error"),
+            panics: b.has("panics"),
             expected: next.map(|n| n.code.clone()),
+            package: None,
         });
+    }
+    // A package is checked as a whole, so when one of its blocks must fail to compile, the
+    // package is expected to fail with that block's diagnostics.
+    let failing: Vec<(PathBuf, Option<String>)> = jobs
+        .iter()
+        .filter(|j| j.error && j.package.is_some())
+        .map(|j| (j.package.clone().unwrap(), j.expected.clone()))
+        .collect();
+    for job in &mut jobs {
+        if let Some((_, expected)) = failing
+            .iter()
+            .find(|(p, _)| Some(p) == job.package.as_ref())
+        {
+            job.error = true;
+            job.expected = expected.clone();
+        }
     }
     jobs
 }
@@ -336,6 +362,7 @@ fn check_all(test: &str, run: bool) -> Vec<String> {
     let scratch = Scratch::new(test);
     let mut problems = Vec::new();
     let mut count = 0;
+    let mut checked: Vec<PathBuf> = Vec::new();
     for (page, text) in pages() {
         let blocks = blocks_of(&page, &text);
         for job in plan(&scratch.0, &page, &blocks) {
@@ -343,6 +370,13 @@ fn check_all(test: &str, run: bool) -> Vec<String> {
             let place = &job.block_place;
             let target = s(&job.target);
             if !run {
+                // A package is checked once, whatever the number of its blocks.
+                if let Some(package) = &job.package {
+                    if checked.contains(package) {
+                        continue;
+                    }
+                    checked.push(package.clone());
+                }
                 let fmt = colibri(&job.cwd, &["fmt", "--check", target]);
                 if fmt.code != Some(0) {
                     problems.push(format!(
@@ -381,6 +415,16 @@ fn check_all(test: &str, run: bool) -> Vec<String> {
             };
             let ran = colibri(&job.cwd, &args);
             let want = job.expected.as_deref().unwrap_or("");
+            if job.panics {
+                let want = job.expected.as_deref().unwrap_or("");
+                if ran.code != Some(101) || !ran.stderr.contains("panic:") || ran.stdout != want {
+                    problems.push(format!(
+                        "{place}: expected a panic (exit 101) after the output {want:?}, got {:?}, {:?}, {:?}",
+                        ran.code, ran.stdout, ran.stderr
+                    ));
+                }
+                continue;
+            }
             if !ran.stderr.is_empty() {
                 problems.push(format!("{place}: it wrote to stderr:\n{}", ran.stderr));
             }

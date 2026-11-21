@@ -325,7 +325,9 @@ fn main() {
 
 Both coroutines wait at the same time, so the program takes 0.2 seconds, not 0.3.
 `slow.join_result()` is `join` that returns a `Result`: a panic or a cancel of the coroutine arrives
-as `err(e)` instead of panicking in the joiner, which is how a server survives a handler's panic.
+as `err(e)` instead of panicking in the joiner, but only if `join_result` is already waiting for it
+when it panics, or is called before the caller has waited for anything. A panic nobody is joining
+ends the program. That is how a server survives a handler's panic: it waits for each handler at once.
 
 ### Bytes and files
 

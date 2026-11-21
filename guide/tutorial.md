@@ -181,7 +181,8 @@ fn main() {
 expected `int`, found `str`
 ```
 
-A tuple groups a few values, and you take it apart with a pattern:
+A tuple groups a few values, and you take it apart with a pattern. (This sample uses a list, a
+`for` loop and an `if`, which the next sections explain; it should read well enough now.)
 
 ```colibri
 fn min_max(xs: List[int]) -> (int, int) {
@@ -562,7 +563,8 @@ shape
 An interface used as a type, like `List[Shape]`, holds any implementing value and calls are
 dispatched at run time. Used as a bound on a type parameter, it is checked at compile time.
 
-Generics use square brackets. A function or a type takes type parameters, and a bound says what
+Generics use square brackets. (`items.first()?` below is explained in the next section: it
+returns `none` from the function when the list is empty.) A function or a type takes type parameters, and a bound says what
 the parameter must be able to do:
 
 ```colibri
@@ -719,20 +721,21 @@ stops the program with a message when the error cannot happen in a correct progr
 
 ```colibri
 import fs
+import str
 
 fn main() {
     match fs.read("missing.txt") {
         ok(text) => print(text)
         err(e)   => print("could not read: {e}")
     }
-    let n = "42".len()
-    print(n)
+    let n = str.parse_int("42").expect("a literal number")
+    print(n + 1)
 }
 ```
 
 ```output
 could not read: cannot read `missing.txt`: no such file or directory
-2
+43
 ```
 
 You can add what you were doing to an error with `.context(...)`, and the error keeps its
@@ -1142,15 +1145,18 @@ slow done
 
 `go fetch(...)` starts the call and gives back a handle at once. `join()` waits for the answer.
 Both functions wait at the same time, so the program takes 0.2 seconds, not 0.3. `wait` pauses
-only the coroutine that calls it. The same is true of `fs`, `net` and `http` calls: while one
-coroutine waits for the network, others run.
+only the coroutine that calls it. Calls on the network (`net`, `http`), on subprocesses
+(`process`) and on open file handles (`fs.File`) pause only the coroutine that makes them too, so
+while one waits for an answer, others run. Not everything does: the whole-file functions
+(`fs.read`, `fs.write`, ...) and `time.sleep` hold the thread until they finish and give no one else
+a turn. Inside a coroutine, use `wait` to pause and `fs.File` for big files.
 
 Coroutines never run in parallel with each other, so they can share a `class` object with no
 locks. A coroutine runs until it waits, so keep long computations out of the ones that serve
 requests.
 
 What if the coroutine panics? `join` would panic too. `join_result()` returns a `Result`
-instead, so you can decide:
+instead, so you can decide. Here each coroutine is joined as soon as it is started:
 
 ```colibri
 fn risky(n: int) -> int {
@@ -1161,10 +1167,8 @@ fn risky(n: int) -> int {
 }
 
 fn main() {
-    let good = go risky(5)
-    let bad = go risky(0)
-    print(good.join_result())
-    match bad.join_result() {
+    print((go risky(5)).join_result())
+    match (go risky(0)).join_result() {
         ok(v)  => print("value {v}")
         err(e) => print("failed: {e.message()}")
     }
@@ -1176,7 +1180,33 @@ ok(20)
 failed: the coroutine `risky` panicked: zero is not allowed
 ```
 
-This is how a server survives a handler that panics. To run several things and wait for all of
+There is a condition. A panic reaches `join_result` only if `join_result` is already waiting for
+that coroutine when it panics, or if you call it before your own code has waited for anything
+(a panic is reported at the end of the turn in which it happens). A coroutine that panics while
+nobody is joining it ends the program with exit code 101, even if you would have called
+`join_result` later:
+
+```colibri,panics
+fn risky() -> int {
+    panic("zero is not allowed")
+}
+
+fn main() {
+    print("started")
+    let handle = go risky()
+    wait(0.1)
+    print("not reached")
+    print(handle.join_result())
+}
+```
+
+```output
+started
+```
+
+So start the coroutines you will join and join them straight away, or join each one from a
+coroutine that is already waiting. That is how `httpd` survives a handler that panics: it starts
+each handler and waits for it at once. To run several things and wait for all of
 them, use a `CoGroup`. It also cancels whatever is still running when it is dropped:
 
 ```colibri
@@ -1347,7 +1377,8 @@ fn main() -> Result[()] {
 ```
 
 To run a real service, drop the client and serve on an address you choose. `serve` runs until
-`stop` is called:
+`stop` is called. The package now has two files with a `main`; `colibri run` runs the one named
+`main.colibri`, and `colibri run serve.colibri` runs this one:
 
 ```colibri,no-run,pkg=notes,file=serve.colibri
 import httpd

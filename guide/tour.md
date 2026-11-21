@@ -472,8 +472,9 @@ true
 
 Methods are declared in `impl` blocks, apart from the data. `self` reads, and `var self` mutates
 a struct in place (the caller needs a `var`). A function without `self` is called on the type.
-Methods can be added to a type only in the package that declares it, or to implement an
-interface.
+You cannot add methods to the built-in types (`List`, `str`, the numbers, ...). Today an `impl`
+can be written for any other type your program can name, including a type from a dependency;
+the rules about who may add what to a type are expected to get stricter.
 
 ```colibri
 struct Counter {
@@ -506,8 +507,9 @@ fn main() {
 
 Structs, enums and tuples get `Eq`, `Hash`, `Show`, `Clone` and `Ord` from their fields when each
 field has them, so they can be printed, compared, used as map keys and sorted with no code.
-Structs compare field by field and enums by case first. Classes derive `Show` and `Clone` only;
-their `==` is identity unless you implement `Eq`.
+Structs compare field by field and enums by case first. Classes derive `Show` and `Clone`; they
+compare and hash by identity unless you implement `Eq` and `Hash`, and are not ordered unless
+you implement `Ord`.
 
 ```colibri
 struct Version {
@@ -536,8 +538,9 @@ true
 
 An interface lists methods, and can give defaults. Types implement it explicitly. Used as a type
 (`List[Shape]`) it is dispatched at run time; used as a bound (`T: Shape`) it is checked at
-compile time. An interface of your own can be implemented for any type, and a built-in interface
-(`Show`, `Eq`, ...) only for your own types.
+compile time. An interface of your own can be implemented for any type. A built-in interface (`Show`, `Eq`, ...)
+cannot be implemented for a built-in type or a type of the standard library, only for types
+written in Colibri outside it.
 
 ```colibri
 interface Shape {
@@ -882,9 +885,9 @@ release a
 
 ## Modules and packages
 
-One file is one module and one folder is a package. `import shop.cart` makes `cart` available;
-`import shop.cart as c` renames it and `import shop.cart.{Cart, new_cart}` brings names in
-directly. `import std.math` names the standard library when a local module has the same name.
+One file is one module and one folder is a package. `import store.cart` (the file
+`store/cart.colibri`) makes `cart` available; `import store.cart as c` renames it and
+`import store.cart.{Cart, new_cart}` brings names in directly. `import std.math` names the standard library when a local module has the same name.
 A folder with a `colibri.toml` is a package that starts at `fn main()`, and the manifest lists
 dependencies from a path or from git:
 
@@ -898,21 +901,25 @@ greet = { git = "https://example.com/me/greet.git", tag = "v1.2.0" }
 ```
 
 Imports between files of one package may form cycles, between packages they may not. The
-exact commits of git dependencies go into `colibri.lock`. A registry is **planned**. The
+exact commits of git dependencies go into `colibri.lock`. There is no package registry, and none is planned for v1. The
 [tutorial](tutorial.md#10-a-real-program-counting-words) builds a package.
 
 ## Visibility
 
-Without `pub`, a name is visible to every file of its own package. `pub` exports it from the
-package. A struct with a private field can only be built inside its package, so a library offers
-a `pub fn` to build it.
+Visibility is decided per package, and **a folder is a package**: the files in one folder see each
+other's names whether or not they say `pub`. A subfolder is another package, so a name it wants
+to share with its parent needs `pub`. A struct with a private field can only be built inside its
+own package, so a library offers a `pub fn` to build it.
+
+Here `main.colibri` is in the package at the root, and `store/cart.colibri` is a module of the
+package `store` (the import path is the folder and the file):
 
 ```toml,pkg=shop,file=colibri.toml
 [package]
 name = "shop"
 ```
 
-```colibri,pkg=shop,file=cart.colibri
+```colibri,pkg=shop,file=store/cart.colibri
 pub struct Cart {
     pub owner: str
     items: int
@@ -920,13 +927,15 @@ pub struct Cart {
 
 pub fn new_cart(owner: str) -> Cart => Cart { owner: owner, items: 0 }
 
+fn secret() -> int => 42
+
 impl Cart {
     pub fn describe(self) -> str => "{self.owner}: {self.items} items"
 }
 ```
 
 ```colibri,pkg=shop,file=main.colibri
-import cart
+import store.cart
 
 fn main() {
     let c = cart.new_cart("Ana")
@@ -938,11 +947,42 @@ fn main() {
 Ana: 0 items
 ```
 
+From the root package, `cart.Cart { owner: "Ana", items: 3 }` and `cart.secret()` do not compile:
+
+```toml,pkg=shopbad,file=colibri.toml
+[package]
+name = "shopbad"
+```
+
+```colibri,pkg=shopbad,file=store/cart.colibri
+pub struct Cart {
+    pub owner: str
+    items: int
+}
+
+fn secret() -> int => 42
+```
+
+```colibri,error,pkg=shopbad,file=main.colibri
+import store.cart
+
+fn main() {
+    let c = cart.Cart { owner: "Ana", items: 3 }
+    print(c.owner)
+    print(cart.secret())
+}
+```
+
+```output
+the field `items` is not exported from the package `store`
+`cart.secret` is private to the package `store`
+```
+
 ## Conditional code and deprecation
 
 `@when(condition)` keeps an item only where the condition holds. It can test `os`, `arch`,
 `debug` and feature flags declared in `colibri.toml`, with `!`, `&&`, `||` and parentheses. A
-condition that can never be true is an error, not a quiet `false`. `@deprecated("message")` makes
+condition with a misspelt name, or a value that no system has (`os == "win"`), is an error and not a quiet `false`. `@deprecated("message")` makes
 each use of an item warn.
 
 ```colibri
@@ -977,8 +1017,8 @@ true
 
 `go f(args)` starts a coroutine on the current thread and returns a handle at once. Any
 function can pause with `wait(seconds)`; there is no `async` or `await`. `join()` waits for the
-result, `join_result()` gives a `Result` so a panic or a cancel does not end the joiner,
-`cancel()` stops it at its next pause (running its `defer`s), and `done()` says whether it ended.
+result, `join_result()` gives a `Result` so that a panic or a cancel does not end the joiner (see the
+condition below), `cancel()` stops it at its next pause (running its `defer`s), and `done()` says whether it ended.
 A `CoGroup` starts several and `join_all()` waits for them, and cancels what is left when dropped. A
 `Signal` wakes coroutines that `wait_for` it.
 
@@ -1021,9 +1061,17 @@ the coroutine `boom` panicked: no good
 signalled
 ```
 
+A panic in a coroutine reaches `join_result` as an `err` only if `join_result` is already waiting
+for that coroutine when it panics, or you call it before your own code has waited for anything.
+Otherwise the panic ends the program (exit code 101), even if you would call `join_result` later.
+
+`wait(seconds)` works anywhere, in `main` too. `wait_until`, `wait_for` and `wait_real` panic
+when called outside a coroutine started with `go`, `main` included.
+
 Coroutines never run at the same time, so they share objects without locks, and a coroutine runs
-until it waits. File, network and subprocess calls in the standard library wait without blocking
-the others. Thread tasks and channels are **planned**.
+until it waits. `net`, `http`, `process` and `fs.File` calls pause only the calling coroutine. The
+whole-file functions (`fs.read`, `fs.write`, ...) and `time.sleep` hold the thread until they
+finish. Thread tasks and channels are **planned**.
 
 ## Bytes and JSON
 
