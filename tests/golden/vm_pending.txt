@@ -523,10 +523,10 @@ std/process_names_do_not_clash.colibri  # host functions
 std/process_polling_in_a_coroutine.colibri  # `go`
 std/process_polling_windows.colibri  # `go`
 std/process_run.colibri  # host functions
-std/process_shell_windows.colibri  # `match`
+std/process_shell_windows.colibri  # host functions
 std/process_spawn.colibri  # host functions
-std/process_spawn_windows.colibri  # `match`
-std/process_windows.colibri  # `match`
+std/process_spawn_windows.colibri  # host functions
+std/process_windows.colibri  # host functions
 std/rand_choice_and_shuffle.colibri  # host functions
 std/rand_empty_range_panics.colibri  # host functions
 std/rand_independent_generators.colibri  # host functions
