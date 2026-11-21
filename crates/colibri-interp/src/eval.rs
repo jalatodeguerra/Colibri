@@ -30,6 +30,10 @@ pub(crate) use colibri_core::value::{unwrap_cell, unwrap_cell_ref};
 /// shares with every engine (`core`). Everything about a running computation is in the
 /// [`Fiber`] passed to each method.
 pub struct Interp {
+    /// The buffer `eval_concat` builds a string in, kept between calls so that a string built
+    /// from parts costs one allocation (the result's). Taken while in use, so a nested concat
+    /// (or another coroutine's) starts with an empty one.
+    concat_buf: String,
     /// Looked up at call time, so a patched function takes effect at its next call.
     pub(crate) fns: Vec<Rc<Body>>,
     pub(crate) globals: Vec<Value>,
@@ -88,6 +92,7 @@ impl Interp {
             host_impls: crate::host::HostImpls::default(),
             stacks: Default::default(),
             cffi: crate::cffi::CffiState::default(),
+            concat_buf: String::new(),
         }
     }
 
@@ -742,19 +747,27 @@ impl Interp {
 
     #[inline(never)]
     fn eval_concat(&mut self, fiber: &mut Fiber, parts: &[Expr], span: Span) -> Eval {
-        let values = self.eval_values(fiber, parts)?;
-        let mut out = String::new();
+        let mut values = Vec::with_capacity(parts.len());
+        for part in parts {
+            values.push(self.eval_twin(fiber, part)?);
+        }
+        let mut out = std::mem::take(&mut self.concat_buf);
         for v in &values {
-            match self.show_deep(fiber, v, span) {
-                Ok(text) => out.push_str(&text),
-                Err(ctl) => {
-                    self.release_all(values);
-                    return Err(ctl);
-                }
+            if let Err(ctl) = self.show_deep_into(fiber, v, span, &mut out) {
+                self.release_all(values);
+                out.clear();
+                self.concat_buf = out;
+                return Err(ctl);
             }
         }
         self.release_all(values);
-        Ok(Value::Str(Rc::from(out)))
+        let result = Rc::from(out.as_str());
+        out.clear();
+        // Do not keep a huge buffer alive for a string that is built once.
+        if out.capacity() <= 1 << 16 {
+            self.concat_buf = out;
+        }
+        Ok(Value::Str(result))
     }
 
     #[inline(never)]
@@ -1153,8 +1166,8 @@ impl Interp {
                 let _ = writeln!(self.core.out, "{text}");
                 Value::Unit
             }
-            Intrinsic::Show => match self.show_deep(fiber, &arg, span) {
-                Ok(text) => Value::Str(Rc::from(text)),
+            Intrinsic::Show => match self.show_deep_rc(fiber, &arg, span) {
+                Ok(text) => Value::Str(text),
                 Err(ctl) => {
                     self.release(arg);
                     return Err(ctl);
