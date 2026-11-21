@@ -137,17 +137,28 @@ fn string_temporaries_are_dropped_right_after_their_use_and_locals_at_return() {
 0001  LoadK r3 k0 (\"x\")
 0002  Binary r2 r0 r3
 0003    site Concat
-0004  Drop r3
+0004  DropInert r3
 0005  LoadK r4 k1 (\"v\")
 0006  Copy r5 r2
 0007  Show r6 r1
 0008  StrConcat r3 base=r4 n=3
-0009  Drop r6
-0010  Drop r5
-0011  Drop r4
-0012  Drop r2
+0009  DropInert r6
+0010  DropInert r5
+0011  DropInert r4
+0012  DropInert r2
 0013  Return r3
 0014  ReturnUnit
+0015  Drop r6
+0016  Drop r5
+0017  Drop r4
+0018  Drop r2
+0019  Jmp -> 0022
+0020  Drop r3
+0021  Jmp -> 0019
+0022  Resume
+unwind [0002, 0004) -> 0020
+unwind [0007, 0008) -> 0016
+unwind [0008, 0009) -> 0015
 ";
     assert_eq!(dis(src, "f"), expected);
 }
@@ -164,13 +175,26 @@ fn run() {
     // callee's register 0 (the window starts at r2) and is moved back after the call.
     let expected = "\
 0000  Step 2
-0001  Unsupported the bytecode VM does not support struct values yet
-0002  LoadInt r3 3
-0003  Move r2 r0
-0004  Call r1 base=r2 fn#1
-0005  Move r0 r2
-0006  Drop r0
-0007  ReturnUnit
+0001  LoadInt r1 0
+0002  NewStruct r0 struct#22 [r1]
+0003  LoadInt r3 3
+0004  Move r2 r0
+0005  Call r1 base=r2 fn#1
+0006  Move r0 r2
+0007  Drop r0
+0008  CheckHooks
+0009  ReturnUnit
+0010  Move r0 r2
+0011  FoldHooks
+0012  Drop r0
+0013  FoldHooks
+0014  Jmp -> 0017
+0015  FoldHooks
+0016  Jmp -> 0013
+0017  Resume
+unwind [0000, 0001) -> 0013
+unwind [0002, 0003) -> 0015
+unwind [0005, 0006) -> 0010
 ";
     assert_eq!(dis(src, "run"), expected);
 }
@@ -215,26 +239,38 @@ print(get())";
 #[test]
 fn an_argument_that_leaves_a_value_to_the_statement_end_is_copied_into_the_window() {
     // A struct argument is not inert, so it lives to the statement end; the call window is
-    // then built above it with copies. (Struct values do not run yet, only compile.)
+    // then built above it with copies.
     let src = "struct P { x: int }
 fn mk(a: P, n: int) -> P => a
 fn two(a: P, n: int) -> int => n
 fn run() -> int => two(mk(P { x: 1 }, 3), 4)";
     let d = dis(src, "run");
-    // Register 1 holds mk's result and r2 the unsupported struct temp; the call to `two` gets
-    // a fresh window (r4..) with copies, and the statement-end drops run newest first.
+    // Register 1 holds mk's result and r2 the struct temp; the call to `two` gets a fresh window
+    // (r4..) with copies, and the statement-end drops run newest first. The landing pads below
+    // the code drop what is alive at each call, in the same order.
     let expected = "\
-0000  Unsupported the bytecode VM does not support struct values yet
-0001  LoadInt r3 3
-0002  Call r1 base=r2 fn#1
-0003  LoadInt r3 4
-0004  Copy r4 r1
-0005  Copy r5 r3
-0006  Call r0 base=r4 fn#2
-0007  Drop r4
-0008  Drop r1
-0009  Drop r2
-0010  Return r0
+0000  LoadInt r3 1
+0001  NewStruct r2 struct#22 [r3]
+0002  LoadInt r3 3
+0003  Call r1 base=r2 fn#1
+0004  LoadInt r3 4
+0005  Copy r4 r1
+0006  Copy r5 r3
+0007  Call r0 base=r4 fn#2
+0008  Drop r4
+0009  Drop r1
+0010  Drop r2
+0011  CheckHooks
+0012  Return r0
+0013  Drop r4
+0014  Drop r1
+0015  Drop r2
+0016  FoldHooks
+0017  Jmp -> 0018
+0018  Resume
+unwind [0001, 0002) -> 0016
+unwind [0003, 0004) -> 0015
+unwind [0007, 0008) -> 0013
 ";
     assert_eq!(d, expected);
 }
@@ -554,11 +590,11 @@ fn numeric_conversions_and_methods_run_through_the_intrinsic_instruction() {
 
 #[test]
 fn anything_not_compiled_yet_is_a_clean_panic_naming_the_node() {
-    let o = run_panic("fn main() { print(\"before\")\n let xs = [1, 2]\n print(\"after\") }");
+    let o = run_panic("fn main() { print(\"before\")\n let f = fn() => 1\n print(\"after\") }");
     assert_eq!(o.stdout, "before\n");
     assert_eq!(
         o.panic.as_deref(),
-        Some("the bytecode VM does not support lists yet")
+        Some("the bytecode VM does not support closures yet")
     );
     assert_eq!(o.trace, vec![("main".to_string(), 2)]);
 }

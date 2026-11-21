@@ -246,37 +246,35 @@ fn value_types_cross_the_boundary() {
 
 #[test]
 fn get_fn_carries_value_types() {
-    vm_pending("get_fn_carries_value_types", || {
-        let mut vm = colibri::Vm::builder().build();
-        vm.register_type::<Vec3>().unwrap();
-        vm.register_type::<Dir>().unwrap();
-        vm.load_source(
+    let mut vm = colibri::Vm::builder().build();
+    vm.register_type::<Vec3>().unwrap();
+    vm.register_type::<Dir>().unwrap();
+    vm.load_source(
         "a.colibri",
         "fn lift(p: Vec3) -> Vec3 {\n    return Vec3 { x: p.x, y: p.y + 1.0, z: p.z }\n}\nfn flip(d: Dir) -> Dir {\n    if d == Dir.North {\n        return Dir.South\n    }\n    return Dir.North\n}\nfn main() {}\n",
     )
     .unwrap();
-        let lift = vm.get_fn::<(Vec3,), Vec3>("lift").unwrap();
-        let p = lift
-            .call(
-                &mut vm,
-                (Vec3 {
-                    x: 1.0,
-                    y: 2.0,
-                    z: 3.0,
-                },),
-            )
-            .unwrap();
-        assert_eq!(
-            p,
-            Vec3 {
+    let lift = vm.get_fn::<(Vec3,), Vec3>("lift").unwrap();
+    let p = lift
+        .call(
+            &mut vm,
+            (Vec3 {
                 x: 1.0,
-                y: 3.0,
-                z: 3.0
-            }
-        );
-        let flip = vm.get_fn::<(Dir,), Dir>("flip").unwrap();
-        assert_eq!(flip.call(&mut vm, (Dir::North,)).unwrap(), Dir::South);
-    })
+                y: 2.0,
+                z: 3.0,
+            },),
+        )
+        .unwrap();
+    assert_eq!(
+        p,
+        Vec3 {
+            x: 1.0,
+            y: 3.0,
+            z: 3.0
+        }
+    );
+    let flip = vm.get_fn::<(Dir,), Dir>("flip").unwrap();
+    assert_eq!(flip.call(&mut vm, (Dir::North,)).unwrap(), Dir::South);
 }
 
 #[test]

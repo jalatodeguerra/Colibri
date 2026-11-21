@@ -1,0 +1,20 @@
+// allow: unused
+class T { name: str }
+
+fn make() -> T {
+    let local = T { name: "local" }
+    defer print("first defer")
+    defer print(1 / 0)
+    defer print("last defer")
+    return T { name: "returned" }
+}
+
+fn main() {
+    let t = make()
+    print("unreachable")
+}
+
+// expect: last defer
+// expect: first defer
+// panic: division by zero
+// drops: returned, local

@@ -98,6 +98,8 @@ impl Machine {
             let v = std::mem::replace(&mut fiber.regs[base + i], Value::Unit);
             self.release(v);
         }
+        // The end of the call's scope: the panics of `Drop` hooks that ran meanwhile fold in.
+        let result = self.fold_hook_panics(result);
         (result, receiver)
     }
 }

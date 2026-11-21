@@ -64,6 +64,10 @@ fn the_run_is_deterministic() {
         let a = host_with_scripts().run(300);
         let b = host_with_scripts().run(300);
         assert_eq!(a, b);
+        // Two identical logs of refusals would agree too: the run must have done real work.
+        let log = a.join("\n");
+        assert!(!log.contains("script error"), "{log}");
+        assert!(!a.is_empty(), "the run logged nothing");
     })
 }
 

@@ -17,6 +17,8 @@ impl Machine {
         // The initialisers and the top-level statements share one allotment.
         let outermost = self.core.begin_entry();
         if outermost {
+            // A refusal ends with the run it stopped, not with the Vm.
+            self.refused = false;
             self.drain_root_drops();
         }
         let result = self.run_module_parts(fiber);
@@ -93,12 +95,16 @@ impl Machine {
         }
         let outermost = self.core.begin_entry();
         if outermost {
+            self.refused = false;
             self.drain_root_drops();
             // What the host compared before this entry is not this script's failure.
             colibri_core::compare::take_gave_up();
         }
         let result = f(self, fiber);
         fiber.frames.truncate(frames);
+        debug_assert!(fiber.unwinding.iter().all(|&(i, _)| (i as usize) < frames));
+        // Only a bug could leave one; it must not leak into a later failure at the same index.
+        fiber.unwinding.retain(|&(i, _)| (i as usize) < frames);
         self.release_temps(fiber, temps);
         // A script that swallowed the exhaustion (through a host function that returned
         // normally) still ran out of budget.
@@ -131,7 +137,12 @@ impl Machine {
         for g in order.into_iter().rev() {
             if let Some(slot) = self.globals.get_mut(g) {
                 let v = std::mem::replace(slot, Value::Unit);
-                self.release(v);
+                if self.refused {
+                    // Leaked on purpose: releasing would run hooks after the refusal.
+                    std::mem::forget(v);
+                } else {
+                    self.release(v);
+                }
             }
         }
         // A `Drop` hook that panics while the program is shutting down has nobody to tell.

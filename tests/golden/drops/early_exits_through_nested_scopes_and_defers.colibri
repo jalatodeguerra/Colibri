@@ -1,0 +1,70 @@
+// allow: unused
+class T { name: str }
+
+// A return from the third scope down: every scope on the way out drops its locals and runs
+// its defers newest first, and the value being returned is computed before any of them.
+fn deep(limit: int) -> int {
+    let outer = T { name: "outer" }
+    defer print("defer outer")
+    var i = 0
+    while true {
+        let a = T { name: "a{i}" }
+        defer print("defer a{i}")
+        if i == limit {
+            let inner = T { name: "inner" }
+            defer print("defer inner")
+            if i == limit {
+                let deepest = T { name: "deepest" }
+                defer print("defer deepest")
+                return i * 10
+            }
+        }
+        i += 1
+        if i % 2 == 0 {
+            continue
+        }
+        let b = T { name: "b{i}" }
+        defer print("defer b{i}")
+        if i > 100 {
+            break
+        }
+    }
+    return -1
+}
+
+// break and continue leave the iteration scope only; the loop's own locals live on.
+fn loops() -> int {
+    let keep = T { name: "keep" }
+    var total = 0
+    for n in 0..4 {
+        let each = T { name: "each{n}" }
+        defer print("end {n}")
+        if n == 1 {
+            continue
+        }
+        let more = T { name: "more{n}" }
+        if n == 2 {
+            break
+        }
+        total += 1
+    }
+    return total
+}
+
+fn main() {
+    print(deep(1))
+    print(loops())
+}
+
+// expect: defer b1
+// expect: defer a1
+// expect: defer deepest
+// expect: defer inner
+// expect: defer a1
+// expect: defer outer
+// expect: 10
+// expect: end 0
+// expect: end 1
+// expect: end 2
+// expect: 1
+// drops: b1, a0, deepest, inner, a1, outer, more0, each0, each1, more2, each2, keep

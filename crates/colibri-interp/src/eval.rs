@@ -783,6 +783,8 @@ impl Interp {
         let mark = fiber.temps.len();
         let held = self.eval(fiber, cond)?;
         self.release_temps(fiber, mark);
+        // A `Drop` hook of those temporaries that panicked is thrown now, before any branch.
+        let held = self.fold_hook_panics(Ok(held))?;
         let Value::Bool(taken) = held else {
             return Err(self.internal(fiber, span, "`if` condition is not a bool"));
         };

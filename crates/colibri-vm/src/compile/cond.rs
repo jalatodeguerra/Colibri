@@ -1,6 +1,6 @@
 //! Conditions: jumping on a boolean expression, with compare-and-branch for integers.
 
-use colibri_check::hir::{Arg, BinOp, CmpOp, Expr, ExprKind, Lit, Operand, UnOp};
+use colibri_check::hir::{Anchor, Arg, BinOp, CmpOp, Expr, ExprKind, Lit, Operand, UnOp};
 use colibri_check::types::IntTy;
 
 use super::expr::writes_locals;
@@ -15,7 +15,10 @@ fn clean(e: &Expr) -> bool {
         return false;
     }
     match &e.kind {
-        ExprKind::Lit(_) | ExprKind::Read(_) => true,
+        ExprKind::Lit(_) => true,
+        // A local or a global is read in place. The object of a class field (and the
+        // collection of an element) is a temporary that lives to the statement end.
+        ExprKind::Read(p) => matches!(p.anchor, Anchor::Local(_) | Anchor::Global(_)),
         ExprKind::Unary(_, x) | ExprKind::Coerce(x, _) => clean(x),
         ExprKind::Binary(_, a, b) | ExprKind::And(a, b) | ExprKind::Or(a, b) => {
             clean(a) && clean(b)
@@ -69,11 +72,12 @@ impl FnCompiler<'_> {
                 self.jump_int_cmp(*c, l, r, sense, target, span);
             }
             _ => {
-                let m = self.mark();
+                // The condition is a group of its own: its temporaries die, and a hook panic of
+                // theirs surfaces, before the branch runs.
+                let m = self.begin_group();
                 let t = self.alloc_for(&e.ty);
                 self.expr(e, t);
-                // The condition's temporaries die before the branch.
-                self.drop_above_keeping(m, t, span);
+                self.drop_above_keeping(m, span);
                 let op = if sense {
                     Op::JmpIf { r: t, off: 0 }
                 } else {
@@ -130,9 +134,10 @@ impl FnCompiler<'_> {
         self.abandon(m);
     }
 
-    /// Emits the drops of everything above `m` except the register `keep`, and forgets it.
-    fn drop_above_keeping(&mut self, m: super::Mark, keep: u16, span: colibri_syntax::Span) {
-        self.emit_drops_above(m.cleanups, Some(keep), span);
+    /// Emits the end of the condition's group: the drops of everything above `m` and the
+    /// check for panics of `Drop` hooks. The result is a `bool`, which owns nothing.
+    fn drop_above_keeping(&mut self, m: super::Mark, span: colibri_syntax::Span) {
+        self.emit_exit(m.cleanups, None, span);
     }
 }
 

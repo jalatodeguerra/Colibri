@@ -109,12 +109,7 @@ pub(crate) fn check_source(src: &str) -> Result<(Program, SourceMap), String> {
 /// program order. For tests of the compiler.
 pub fn compile_source(src: &str) -> Result<Vec<(String, String)>, String> {
     let (program, _) = check_source(src)?;
-    let mut env = CompileEnv {
-        checked_globals: vec![false; program.globals.len()],
-    };
-    for g in &program.init_order[program.script_from..] {
-        env.checked_globals[g.0 as usize] = true;
-    }
+    let env = CompileEnv::for_program(&program);
     let mut out = Vec::new();
     for (i, f) in program.fns.iter().enumerate() {
         let id = colibri_check::hir::FnId(i as u32);

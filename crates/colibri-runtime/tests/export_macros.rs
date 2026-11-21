@@ -237,34 +237,32 @@ fn the_text_a_macro_class_prints_checks_a_script_without_a_vm() {
 
 #[test]
 fn value_types_convert_both_ways_through_get_fn() {
-    vm_pending("value_types_convert_both_ways_through_get_fn", || {
-        let (mut vm, _) = engine();
-        vm.load_source(
+    let (mut vm, _) = engine();
+    vm.load_source(
         "game.colibri",
         "fn lift(v: Vec3) -> Vec3 => Vec3 { x: v.x, y: v.y + 1.0, z: v.z }\nfn heavy(m: Material) -> bool => m == Material.Steel\n",
     )
     .unwrap();
-        let lift = vm.get_fn::<(Vec3,), Vec3>("lift").unwrap();
-        assert_eq!(
-            lift.call(
-                &mut vm,
-                (Vec3 {
-                    x: 1.0,
-                    y: 2.0,
-                    z: 3.0
-                },)
-            )
-            .unwrap(),
-            Vec3 {
+    let lift = vm.get_fn::<(Vec3,), Vec3>("lift").unwrap();
+    assert_eq!(
+        lift.call(
+            &mut vm,
+            (Vec3 {
                 x: 1.0,
-                y: 3.0,
+                y: 2.0,
                 z: 3.0
-            }
-        );
-        let heavy = vm.get_fn::<(Material,), bool>("heavy").unwrap();
-        assert!(heavy.call(&mut vm, (Material::Steel,)).unwrap());
-        assert!(!heavy.call(&mut vm, (Material::Wood,)).unwrap());
-    })
+            },)
+        )
+        .unwrap(),
+        Vec3 {
+            x: 1.0,
+            y: 3.0,
+            z: 3.0
+        }
+    );
+    let heavy = vm.get_fn::<(Material,), bool>("heavy").unwrap();
+    assert!(heavy.call(&mut vm, (Material::Steel,)).unwrap());
+    assert!(!heavy.call(&mut vm, (Material::Wood,)).unwrap());
 }
 
 #[test]

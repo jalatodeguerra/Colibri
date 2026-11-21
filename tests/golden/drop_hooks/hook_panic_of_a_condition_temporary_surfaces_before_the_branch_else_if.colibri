@@ -1,0 +1,34 @@
+// allow: unused
+class T { name: str }
+impl Drop for T {
+    fn drop(self) { print("drop {self.name}") }
+}
+class Bad { name: str }
+impl Drop for Bad {
+    fn drop(self) {
+        print("bad hook {self.name}")
+        let z = 0
+        print(1 / z)
+    }
+}
+fn mk(n: str) -> T => T { name: n }
+fn n_of(s: str) -> int => 3
+fn helper() {
+    print("helper one")
+    print("helper two")
+}
+
+fn main() {
+    let a = mk("a")
+    if n_of(Bad { name: "c" }.name) > 5 {
+        print("in if")
+    } else if n_of(Bad { name: "e" }.name) > 1 {
+        helper()
+    }
+    print("after")
+}
+
+// expect: bad hook c
+// expect: drop a
+// panic: division by zero
+// drops: c, a

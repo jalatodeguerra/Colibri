@@ -669,42 +669,37 @@ fn the_host_calls_a_stored_callback_that_takes_a_struct_of_a_named_module() {
 
 #[test]
 fn two_rust_structs_of_one_name_are_told_apart_by_their_rust_type() {
-    vm_pending(
-        "two_rust_structs_of_one_name_are_told_apart_by_their_rust_type",
-        || {
-            // Two different structs called `Gem`: each Rust type is the Gem of the module that
-            // registered it, so `get_fn` needs no module name to tell them apart.
-            mod other {
-                use colibri_runtime as colibri;
-                #[colibri::export(value)]
-                #[derive(Clone, Copy, Debug, PartialEq)]
-                pub struct Gem {
-                    pub n: i64,
-                    pub weight: f64,
-                }
-            }
-            let (mut vm, _) = vm();
-            vm.module("a")
-                .register_fn("make", |n: i64| Gem { n })
-                .unwrap();
-            vm.module("b")
-                .register_fn("make", |n: i64| other::Gem { n, weight: 1.0 })
-                .unwrap();
-            vm.load_source(
+    // Two different structs called `Gem`: each Rust type is the Gem of the module that
+    // registered it, so `get_fn` needs no module name to tell them apart.
+    mod other {
+        use colibri_runtime as colibri;
+        #[colibri::export(value)]
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        pub struct Gem {
+            pub n: i64,
+            pub weight: f64,
+        }
+    }
+    let (mut vm, _) = vm();
+    vm.module("a")
+        .register_fn("make", |n: i64| Gem { n })
+        .unwrap();
+    vm.module("b")
+        .register_fn("make", |n: i64| other::Gem { n, weight: 1.0 })
+        .unwrap();
+    vm.load_source(
         "main.colibri",
         "import a\nimport b\nfn show(i: a.Gem) -> int => i.n\nfn show_b(i: b.Gem) -> int => i.n\n",
     )
     .unwrap();
-            let show = vm.get_fn::<(Gem,), i64>("show").unwrap();
-            assert_eq!(show.call(&mut vm, (Gem { n: 5 },)).unwrap(), 5);
-            let show_b = vm.get_fn::<(other::Gem,), i64>("show_b").unwrap();
-            let gem = other::Gem { n: 6, weight: 2.0 };
-            assert_eq!(show_b.call(&mut vm, (gem,)).unwrap(), 6);
-            // The wrong Rust type for a function is a mismatch naming both.
-            let err = vm.get_fn::<(other::Gem,), i64>("show").err().unwrap();
-            assert!(err.to_string().contains("a.Gem"), "{err}");
-        },
-    )
+    let show = vm.get_fn::<(Gem,), i64>("show").unwrap();
+    assert_eq!(show.call(&mut vm, (Gem { n: 5 },)).unwrap(), 5);
+    let show_b = vm.get_fn::<(other::Gem,), i64>("show_b").unwrap();
+    let gem = other::Gem { n: 6, weight: 2.0 };
+    assert_eq!(show_b.call(&mut vm, (gem,)).unwrap(), 6);
+    // The wrong Rust type for a function is a mismatch naming both.
+    let err = vm.get_fn::<(other::Gem,), i64>("show").err().unwrap();
+    assert!(err.to_string().contains("a.Gem"), "{err}");
 }
 
 #[test]

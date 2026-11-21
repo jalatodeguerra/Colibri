@@ -4,7 +4,7 @@ use colibri_check::hir::{Anchor, Arg, Call, Callee, Expr, FnId, Intrinsic, Place
 use colibri_check::types::Ty;
 use colibri_syntax::Span;
 
-use super::{FnCompiler, Kind};
+use super::{FnCompiler, Item, Kind};
 use crate::bytecode::{Op, Reg, Site};
 
 /// Registers `base..` that a call's callee sees as its first locals.
@@ -34,10 +34,13 @@ impl FnCompiler<'_> {
             allocated.push(t);
             arg_regs.push(t);
         }
-        let contiguous = arg_regs
-            .iter()
-            .enumerate()
-            .all(|(i, &r)| usize::from(r) == first + reserve + i);
+        // The values must sit side by side, and nothing may be alive above the last of them: a
+        // callee's window starts at the first value and covers every register above it.
+        let contiguous = self.next_reg() == first + reserve + args.len()
+            && arg_regs
+                .iter()
+                .enumerate()
+                .all(|(i, &r)| usize::from(r) == first + reserve + i);
         if contiguous {
             return Window {
                 base: first as Reg,
@@ -129,6 +132,8 @@ impl FnCompiler<'_> {
         if let Some(l) = recv_local {
             let l = self.local(l);
             self.emit(Op::Move { d: w.base, s: l }, span);
+            // If the call panics, the receiver goes back to its local before anything dies.
+            self.push_item(Item::Recv { l, r: w.base });
         }
         let site = self.add_site(Site::Call(f));
         self.emit(
@@ -142,6 +147,8 @@ impl FnCompiler<'_> {
         if let Some(l) = recv_local {
             let l = self.local(l);
             self.emit(Op::Move { d: l, s: w.base }, span);
+            let depth = self.cleanup_depth();
+            self.truncate_stack(depth - 1);
         }
         self.free_window(w, span);
         if dst.is_none() {
@@ -224,6 +231,10 @@ impl FnCompiler<'_> {
                     },
                     span,
                 );
+                // The intrinsic consumes (and releases) its arguments.
+                for a in &args {
+                    self.note_release(&a.ty);
+                }
                 self.free_window_moved(w);
                 if dst.is_none() {
                     self.own(d);

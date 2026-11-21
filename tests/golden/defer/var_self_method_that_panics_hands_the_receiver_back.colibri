@@ -1,0 +1,17 @@
+struct C { n: int }
+
+impl C {
+    fn boom(var self) {
+        let z = 0
+        print(1 / z)
+    }
+}
+
+fn main() {
+    var c = C { n: 7 }
+    defer print("n is {c.n}")
+    c.boom()
+}
+
+// expect: n is 7
+// panic: division by zero

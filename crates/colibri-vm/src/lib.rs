@@ -16,10 +16,12 @@ mod compile;
 mod embed;
 mod engine;
 mod fiber;
+mod heap;
 mod load;
 mod machine;
 mod run;
 mod source;
+mod unwind;
 
 pub use compile::{CompileEnv, compile_body};
 pub use fiber::VmFiber;
