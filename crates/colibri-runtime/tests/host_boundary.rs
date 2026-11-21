@@ -306,3 +306,53 @@ fn the_arguments_of_a_host_call_die_at_the_callers_statement_end_not_inside_the_
         "in the host function\nsay\ndrop a\nafter 2\n--\nok"
     );
 }
+
+#[test]
+fn a_host_call_at_the_depth_limit_is_a_stack_overflow() {
+    let outcome = both(
+        &Scenario {
+            before: &|vm, _| {
+                vm.register_fn("noop", || {}).unwrap();
+            },
+            after: &|_, _| {},
+            depth: 3,
+        },
+        "fn b() {\n    noop()\n}\nfn a() {\n    b()\n}\nfn main() {\n    noop()\n    a()\n}\n",
+    );
+    // Two frames deep a host call fits (`main`, `a`, and the host function's own); from `b` it
+    // does not.
+    assert_eq!(
+        outcome,
+        "--\npanic `stack overflow: more than 3 nested calls` at Some(2), stack [\"b:2\", \"a:5\", \"main:9\"], notes []"
+    );
+}
+
+/// The steps one entry used running `body` 50 times.
+fn steps_of(kind: EngineKind, body: &str) -> u64 {
+    let mut vm = colibri::Vm::builder()
+        .engine(kind)
+        .instruction_budget(1_000_000)
+        .build();
+    vm.register_fn("noop", || {}).unwrap();
+    vm.load_source(
+        "a.colibri",
+        &format!("fn f() {{\n    for i in 0..50 {{\n        {body}\n    }}\n}}\n"),
+    )
+    .unwrap();
+    let f = vm.get_fn::<(), ()>("f").unwrap();
+    f.call(&mut vm, ()).unwrap();
+    vm.steps_used()
+}
+
+#[test]
+fn every_host_call_costs_a_budget_step() {
+    for kind in [EngineKind::Tree, EngineKind::Bytecode] {
+        let with = steps_of(kind, "noop()");
+        let without = steps_of(kind, "let x = i");
+        // The calls are 50 statements like the `let`s, and each also costs the step of the call.
+        assert!(
+            with >= without + 50,
+            "{kind:?}: {with} steps against {without}"
+        );
+    }
+}
