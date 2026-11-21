@@ -69,6 +69,34 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
     }
 }
 
+/// The decimal digits of `i` in `buf`, without going through `core::fmt`.
+#[inline]
+pub fn int_text(buf: &mut [u8; 20], i: i64) -> &str {
+    let mut n = i.unsigned_abs();
+    let mut at = buf.len();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    if i < 0 {
+        // `i64::MIN` has 19 digits, so there is always a byte left for the sign.
+        at -= 1;
+        buf[at] = b'-';
+    }
+    // The bytes are ASCII digits and a sign.
+    std::str::from_utf8(&buf[at..]).unwrap_or("")
+}
+
+/// Appends the `Show` form of an integer to `out`.
+#[inline]
+pub fn push_int(out: &mut String, i: i64) {
+    out.push_str(int_text(&mut [0; 20], i));
+}
+
 /// The `Show` form of a value, where a user-written `Show` (found through `ov`) replaces the
 /// structural form of the values it covers, also nested inside others.
 pub(crate) fn show_with(
@@ -676,5 +704,17 @@ mod tests {
     #[test]
     fn very_deep_named_variants_are_elided_within_one_megabyte_of_stack() {
         deep_on_one_megabyte(|v| Value::variant(TypeId(1), 0, vec![v]));
+    }
+
+    #[test]
+    fn int_text_matches_to_string_at_the_edges() {
+        let mut cases = vec![0, 1, -1, 9, 10, -10, 99, 100, 12345, i64::MAX, i64::MIN];
+        cases.extend((0..19).flat_map(|p| [10i64.pow(p), -(10i64.pow(p)), 10i64.pow(p) - 1]));
+        for i in cases {
+            assert_eq!(int_text(&mut [0; 20], i), i.to_string(), "{i}");
+            let mut out = String::from("<");
+            push_int(&mut out, i);
+            assert_eq!(out, format!("<{i}"));
+        }
     }
 }

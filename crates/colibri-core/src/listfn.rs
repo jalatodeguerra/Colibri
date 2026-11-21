@@ -404,8 +404,32 @@ pub trait ListFnOps: Engine {
                 let Some(Value::Str(sep)) = args.get(1) else {
                     return Err(self.internal(fiber, span, "ill-typed `join`"));
                 };
-                let parts: Vec<String> = list.snapshot().iter().map(|v| self.shown(v)).collect();
-                Ok(Value::Str(Rc::from(parts.join(sep))))
+                // One buffer, sized for the strings in it (an integer or other value takes a
+                // guess), and no copy of the list or per-item `String`.
+                let types = &self.core().types;
+                let text = list.with(|items| {
+                    let guess: usize = items
+                        .iter()
+                        .map(|v| match v {
+                            Value::Str(s) => s.len(),
+                            _ => 8,
+                        })
+                        .sum::<usize>()
+                        + sep.len() * items.len().saturating_sub(1);
+                    let mut out = String::with_capacity(guess);
+                    for (i, v) in items.iter().enumerate() {
+                        if i > 0 {
+                            out.push_str(sep);
+                        }
+                        match v {
+                            Value::Str(s) => out.push_str(s),
+                            Value::Int(n) => crate::show::push_int(&mut out, *n),
+                            other => out.push_str(&crate::show::show(types, other)),
+                        }
+                    }
+                    out
+                });
+                Ok(Value::Str(Rc::from(text)))
             }
             Builtin::ListSlice => self.list_slice(fiber, list, args, span),
             _ => Err(self.internal(fiber, span, "ill-typed built-in call")),

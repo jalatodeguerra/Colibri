@@ -303,6 +303,33 @@ pub trait Deep: Engine {
         result.map_err(|stop| self.stop_to_ctl(fiber, stop, span, "show"))
     }
 
+    /// Appends the `Show` text of a value to `out`: strings and integers are written straight
+    /// in, so building a string from parts makes no temporary `String` for them.
+    fn show_deep_into(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        v: &Value,
+        span: Span,
+        out: &mut String,
+    ) -> Eval<()> {
+        match v {
+            Value::Str(s) => out.push_str(s),
+            Value::Int(i) => crate::show::push_int(out, *i),
+            _ => out.push_str(&self.show_deep(fiber, v, span)?),
+        }
+        Ok(())
+    }
+
+    /// The `Show` text of a value as a `str` value: a string is shared, an integer is formatted
+    /// on the stack and copied once into its final allocation.
+    fn show_deep_rc(&mut self, fiber: &mut Self::Fiber, v: &Value, span: Span) -> Eval<Rc<str>> {
+        Ok(match v {
+            Value::Str(s) => Rc::clone(s),
+            Value::Int(i) => Rc::from(crate::show::int_text(&mut [0; 20], *i)),
+            _ => Rc::from(self.show_deep(fiber, v, span)?),
+        })
+    }
+
     /// A deep copy honouring a user-written `impl Clone` at every level.
     fn clone_deep(&mut self, fiber: &mut Self::Fiber, v: &Value, span: Span) -> Eval {
         let mut cloner = Cloner::new(Self::stack_base(fiber), self.native_stack_budget());

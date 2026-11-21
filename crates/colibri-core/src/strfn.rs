@@ -165,7 +165,15 @@ pub trait StrOps: Engine {
                         "`split` needs a separator that is not empty",
                     ));
                 }
-                Value::list(text.split(&*sep).map(Value::str).collect())
+                // A one-byte ASCII separator splits on a `char`, which searches by byte
+                // instead of running the general substring searcher.
+                let mut one = sep.chars();
+                match (one.next(), one.next()) {
+                    (Some(c), None) if c.is_ascii() => {
+                        Value::list(text.split(c).map(Value::str).collect())
+                    }
+                    _ => Value::list(text.split(&*sep).map(Value::str).collect()),
+                }
             }
             Builtin::StrTrim => Value::str(text.trim()),
             Builtin::StrToUpper => Value::str(&text.to_uppercase()),
