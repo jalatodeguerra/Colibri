@@ -1,0 +1,550 @@
+//! The bytecode: [`Op`], [`Chunk`], [`Site`] and a disassembler (vm-plan §2.1, §2.3).
+//!
+//! A chunk is the compiled form of one HIR body. Registers are addressed relative to the frame's
+//! window; locals keep their HIR index (`LocalId(i)` is register `i`, parameters first) and
+//! temporaries follow them. Jumps are relative to the instruction after the jump.
+
+use std::fmt::Write;
+use std::rc::Rc;
+
+use colibri_check::hir::{BinOp, Body, FnId, FormatSpec, Intrinsic, UnOp};
+use colibri_core::value::Value;
+use colibri_syntax::Span;
+
+/// A register of the running frame.
+pub type Reg = u16;
+
+/// One instruction: eight bytes (asserted below). Operands are registers (`u16`), constant
+/// indices (`u32`), site indices (`u16`) and relative jumps (`i32`, or `i16` for the fused
+/// compare-and-branch forms; the compiler falls back to unfused code when a jump is too far).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Op {
+    // ---- loads, moves, drops ----
+    /// `d = ()`.
+    LoadUnit {
+        d: Reg,
+    },
+    LoadBool {
+        d: Reg,
+        b: bool,
+    },
+    LoadInt {
+        d: Reg,
+        i: i32,
+    },
+    /// `d = consts[k]`.
+    LoadK {
+        d: Reg,
+        k: u32,
+    },
+    /// `d = s.clone()` (a reference bump for heap values).
+    Copy {
+        d: Reg,
+        s: Reg,
+    },
+    /// `d = take(s)`: `s` is left `()`.
+    Move {
+        d: Reg,
+        s: Reg,
+    },
+    /// Releases the value in `r` and leaves `()`.
+    Drop {
+        r: Reg,
+    },
+
+    // ---- locals and cells ----
+    /// `l = take(s)`, releasing the value `l` held.
+    StoreLocal {
+        l: Reg,
+        s: Reg,
+    },
+    /// `l = Cell(take(s))`: binds a local whose storage is a cell.
+    NewCell {
+        l: Reg,
+        s: Reg,
+    },
+    /// `d = clone of the cell in l`.
+    CellGet {
+        d: Reg,
+        l: Reg,
+    },
+    /// Writes `take(s)` into the cell in `l`, releasing the old content.
+    CellSet {
+        l: Reg,
+        s: Reg,
+    },
+    /// Replaces the cell in `r` by its content (a `var self` parameter that was captured).
+    UnwrapCell {
+        r: Reg,
+    },
+
+    // ---- globals ----
+    GetGlobal {
+        d: Reg,
+        g: u32,
+    },
+    /// Like `GetGlobal` for a script value that may not be initialised yet.
+    GetGlobalChecked {
+        d: Reg,
+        g: u32,
+    },
+    /// Panics when the script value `g` is not initialised (the use of a global as a place).
+    CheckGlobal {
+        g: u32,
+    },
+    /// `globals[g] = take(s)`, releasing the old value.
+    SetGlobal {
+        g: u32,
+        s: Reg,
+    },
+    /// Stores the initial value of the script value `g` and marks it initialised.
+    InitGlobal {
+        g: u32,
+        s: Reg,
+    },
+    /// Calls the initialiser body of global `g` with no arguments; the window starts at `base`.
+    CallInit {
+        d: Reg,
+        base: Reg,
+        g: u16,
+    },
+
+    // ---- integer fast path (`int`, 64 bits, checked) ----
+    AddI {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    SubI {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    MulI {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    DivI {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    RemI {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    AddIK {
+        d: Reg,
+        a: Reg,
+        i: i16,
+    },
+    NegI {
+        d: Reg,
+        a: Reg,
+    },
+    LtI {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    LeI {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    EqI {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    NeI {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+
+    // ---- float fast path ----
+    AddF {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    SubF {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    MulF {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    DivF {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    NegF {
+        d: Reg,
+        a: Reg,
+    },
+    LtF {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    LeF {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    EqF {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    NeF {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+
+    // ---- generic operators (core `Operators`) ----
+    Not {
+        d: Reg,
+        a: Reg,
+    },
+    /// `d = a op b` for the `BinOp` of the site named by the next instruction (`Site`), through
+    /// core (operands are cloned). Four 16-bit operands do not fit one instruction.
+    Binary {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    /// The operand word of the instruction before it; never executed on its own.
+    Site {
+        site: u16,
+    },
+    Unary {
+        d: Reg,
+        a: Reg,
+        site: u16,
+    },
+
+    // ---- control ----
+    Jmp {
+        off: i32,
+    },
+    JmpIf {
+        r: Reg,
+        off: i32,
+    },
+    JmpIfNot {
+        r: Reg,
+        off: i32,
+    },
+    /// A back edge: one budget step, then a jump.
+    Loop {
+        off: i32,
+    },
+    /// Charges `n` budget steps (one per statement of a straight-line run).
+    Step {
+        n: u32,
+    },
+    /// Fused compare and branch: jumps unless the comparison holds.
+    JmpNotLtI {
+        a: Reg,
+        b: Reg,
+        off: i16,
+    },
+    JmpNotLeI {
+        a: Reg,
+        b: Reg,
+        off: i16,
+    },
+    JmpNotEqI {
+        a: Reg,
+        b: Reg,
+        off: i16,
+    },
+    JmpNotNeI {
+        a: Reg,
+        b: Reg,
+        off: i16,
+    },
+    /// The same against a small constant.
+    JmpNotLtIK {
+        a: Reg,
+        k: i16,
+        off: i16,
+    },
+    JmpNotLeIK {
+        a: Reg,
+        k: i16,
+        off: i16,
+    },
+    JmpNotGtIK {
+        a: Reg,
+        k: i16,
+        off: i16,
+    },
+    JmpNotGeIK {
+        a: Reg,
+        k: i16,
+        off: i16,
+    },
+    JmpNotEqIK {
+        a: Reg,
+        k: i16,
+        off: i16,
+    },
+    JmpNotNeIK {
+        a: Reg,
+        k: i16,
+        off: i16,
+    },
+
+    // ---- `for` over an integer range ----
+    /// `i += 1`; if `i < end`, budget step and jump back by `off`. (`end` is not stepped past.)
+    ForRangeNext {
+        i: Reg,
+        end: Reg,
+        off: i16,
+    },
+    /// Inclusive: if `i == end` the loop is over, else `i += 1`, budget step and jump back.
+    ForRangeNextIncl {
+        i: Reg,
+        end: Reg,
+        off: i16,
+    },
+
+    // ---- calls ----
+    /// Calls the function of the site with the window starting at register `base` (the
+    /// arguments are `base..`); the result goes to `d`.
+    Call {
+        d: Reg,
+        base: Reg,
+        site: u16,
+    },
+    /// Returns the value in `s` (moved).
+    Return {
+        s: Reg,
+    },
+    ReturnUnit,
+
+    // ---- output and strings ----
+    /// Prints the value in `r` and a newline (the value stays in `r`).
+    Print {
+        r: Reg,
+    },
+    /// `d = show(r)`.
+    Show {
+        d: Reg,
+        r: Reg,
+    },
+    /// `d = format(r, spec of the site)`.
+    Format {
+        d: Reg,
+        r: Reg,
+        site: u16,
+    },
+    /// `d = show(base) ++ show(base+1) ++ .. ++ show(base+n-1)`.
+    StrConcat {
+        d: Reg,
+        base: Reg,
+        n: u16,
+    },
+
+    // ---- intrinsics and conversions ----
+    /// The intrinsic of the site on the arguments `base..base+argc`, which it consumes.
+    Intrinsic {
+        d: Reg,
+        base: Reg,
+        site: u16,
+    },
+    /// `d = coerce(s)` for the coercion of the site.
+    Coerce {
+        d: Reg,
+        s: Reg,
+        site: u16,
+    },
+
+    /// A node the VM does not compile yet: panics with the site's message when executed.
+    Unsupported {
+        site: u16,
+    },
+}
+
+const _: () = assert!(std::mem::size_of::<Op>() == 8);
+
+/// What an instruction needs beyond its operands.
+#[derive(Debug, Clone)]
+pub enum Site {
+    Binary(BinOp),
+    Unary(UnOp),
+    Call(FnId),
+    Format(Box<FormatSpec>),
+    Intrinsic { which: Intrinsic, argc: u16 },
+    F32ToFloat,
+    Unsupported(String),
+}
+
+/// The compiled form of one body.
+#[derive(Debug)]
+pub struct Chunk {
+    /// The function, for a function body (`None` for initialisers and the script).
+    pub fn_id: Option<FnId>,
+    /// The body: its name is in stack traces, and it says whether `self` is handed back.
+    pub body: Rc<Body>,
+    pub code: Box<[Op]>,
+    /// Parallel to `code`: the span a panic at that instruction reports (for a call, the span
+    /// of the call expression).
+    pub spans: Box<[Span]>,
+    pub consts: Box<[Value]>,
+    pub sites: Box<[Site]>,
+    /// Registers of one frame: the locals, then the most temporaries alive at once.
+    pub nregs: u16,
+    pub nparams: u16,
+}
+
+impl Chunk {
+    /// The instructions, one per line (`pc  op`), for tests and debugging.
+    pub fn disassemble(&self) -> String {
+        let mut out = String::new();
+        for (pc, op) in self.code.iter().enumerate() {
+            let _ = writeln!(out, "{pc:04}  {}", self.describe(pc, op));
+        }
+        out
+    }
+
+    fn describe(&self, pc: usize, op: &Op) -> String {
+        let target = |off: i64| pc as i64 + 1 + off;
+        match *op {
+            Op::LoadUnit { d } => format!("LoadUnit r{d}"),
+            Op::LoadBool { d, b } => format!("LoadBool r{d} {b}"),
+            Op::LoadInt { d, i } => format!("LoadInt r{d} {i}"),
+            Op::LoadK { d, k } => format!("LoadK r{d} k{k} ({})", self.const_text(k)),
+            Op::Copy { d, s } => format!("Copy r{d} r{s}"),
+            Op::Move { d, s } => format!("Move r{d} r{s}"),
+            Op::Drop { r } => format!("Drop r{r}"),
+            Op::StoreLocal { l, s } => format!("StoreLocal r{l} r{s}"),
+            Op::NewCell { l, s } => format!("NewCell r{l} r{s}"),
+            Op::CellGet { d, l } => format!("CellGet r{d} r{l}"),
+            Op::CellSet { l, s } => format!("CellSet r{l} r{s}"),
+            Op::UnwrapCell { r } => format!("UnwrapCell r{r}"),
+            Op::GetGlobal { d, g } => format!("GetGlobal r{d} g{g}"),
+            Op::GetGlobalChecked { d, g } => format!("GetGlobalChecked r{d} g{g}"),
+            Op::CheckGlobal { g } => format!("CheckGlobal g{g}"),
+            Op::SetGlobal { g, s } => format!("SetGlobal g{g} r{s}"),
+            Op::InitGlobal { g, s } => format!("InitGlobal g{g} r{s}"),
+            Op::CallInit { d, base, g } => format!("CallInit r{d} base=r{base} g{g}"),
+            Op::AddI { d, a, b } => format!("AddI r{d} r{a} r{b}"),
+            Op::SubI { d, a, b } => format!("SubI r{d} r{a} r{b}"),
+            Op::MulI { d, a, b } => format!("MulI r{d} r{a} r{b}"),
+            Op::DivI { d, a, b } => format!("DivI r{d} r{a} r{b}"),
+            Op::RemI { d, a, b } => format!("RemI r{d} r{a} r{b}"),
+            Op::AddIK { d, a, i } => format!("AddIK r{d} r{a} {i}"),
+            Op::NegI { d, a } => format!("NegI r{d} r{a}"),
+            Op::LtI { d, a, b } => format!("LtI r{d} r{a} r{b}"),
+            Op::LeI { d, a, b } => format!("LeI r{d} r{a} r{b}"),
+            Op::EqI { d, a, b } => format!("EqI r{d} r{a} r{b}"),
+            Op::NeI { d, a, b } => format!("NeI r{d} r{a} r{b}"),
+            Op::AddF { d, a, b } => format!("AddF r{d} r{a} r{b}"),
+            Op::SubF { d, a, b } => format!("SubF r{d} r{a} r{b}"),
+            Op::MulF { d, a, b } => format!("MulF r{d} r{a} r{b}"),
+            Op::DivF { d, a, b } => format!("DivF r{d} r{a} r{b}"),
+            Op::NegF { d, a } => format!("NegF r{d} r{a}"),
+            Op::LtF { d, a, b } => format!("LtF r{d} r{a} r{b}"),
+            Op::LeF { d, a, b } => format!("LeF r{d} r{a} r{b}"),
+            Op::EqF { d, a, b } => format!("EqF r{d} r{a} r{b}"),
+            Op::NeF { d, a, b } => format!("NeF r{d} r{a} r{b}"),
+            Op::Not { d, a } => format!("Not r{d} r{a}"),
+            Op::Binary { d, a, b } => format!("Binary r{d} r{a} r{b}"),
+            Op::Site { site } => format!("  site {}", self.site_text(site)),
+            Op::Unary { d, a, site } => format!("Unary r{d} r{a} {}", self.site_text(site)),
+            Op::Jmp { off } => format!("Jmp -> {:04}", target(off.into())),
+            Op::JmpIf { r, off } => format!("JmpIf r{r} -> {:04}", target(off.into())),
+            Op::JmpIfNot { r, off } => format!("JmpIfNot r{r} -> {:04}", target(off.into())),
+            Op::Loop { off } => format!("Loop -> {:04}", target(off.into())),
+            Op::Step { n } => format!("Step {n}"),
+            Op::JmpNotLtI { a, b, off } => {
+                format!("JmpNotLtI r{a} r{b} -> {:04}", target(off.into()))
+            }
+            Op::JmpNotLeI { a, b, off } => {
+                format!("JmpNotLeI r{a} r{b} -> {:04}", target(off.into()))
+            }
+            Op::JmpNotEqI { a, b, off } => {
+                format!("JmpNotEqI r{a} r{b} -> {:04}", target(off.into()))
+            }
+            Op::JmpNotNeI { a, b, off } => {
+                format!("JmpNotNeI r{a} r{b} -> {:04}", target(off.into()))
+            }
+            Op::JmpNotLtIK { a, k, off } => {
+                format!("JmpNotLtIK r{a} {k} -> {:04}", target(off.into()))
+            }
+            Op::JmpNotLeIK { a, k, off } => {
+                format!("JmpNotLeIK r{a} {k} -> {:04}", target(off.into()))
+            }
+            Op::JmpNotGtIK { a, k, off } => {
+                format!("JmpNotGtIK r{a} {k} -> {:04}", target(off.into()))
+            }
+            Op::JmpNotGeIK { a, k, off } => {
+                format!("JmpNotGeIK r{a} {k} -> {:04}", target(off.into()))
+            }
+            Op::JmpNotEqIK { a, k, off } => {
+                format!("JmpNotEqIK r{a} {k} -> {:04}", target(off.into()))
+            }
+            Op::JmpNotNeIK { a, k, off } => {
+                format!("JmpNotNeIK r{a} {k} -> {:04}", target(off.into()))
+            }
+            Op::ForRangeNext { i, end, off } => {
+                format!("ForRangeNext r{i} r{end} -> {:04}", target(off.into()))
+            }
+            Op::ForRangeNextIncl { i, end, off } => {
+                format!("ForRangeNextIncl r{i} r{end} -> {:04}", target(off.into()))
+            }
+            Op::Call { d, base, site } => {
+                format!("Call r{d} base=r{base} {}", self.site_text(site))
+            }
+            Op::Return { s } => format!("Return r{s}"),
+            Op::ReturnUnit => "ReturnUnit".to_string(),
+            Op::Print { r } => format!("Print r{r}"),
+            Op::Show { d, r } => format!("Show r{d} r{r}"),
+            Op::Format { d, r, site } => format!("Format r{d} r{r} {}", self.site_text(site)),
+            Op::StrConcat { d, base, n } => format!("StrConcat r{d} base=r{base} n={n}"),
+            Op::Intrinsic { d, base, site } => {
+                format!("Intrinsic r{d} base=r{base} {}", self.site_text(site))
+            }
+            Op::Coerce { d, s, site } => format!("Coerce r{d} r{s} {}", self.site_text(site)),
+            Op::Unsupported { site } => format!("Unsupported {}", self.site_text(site)),
+        }
+    }
+
+    fn const_text(&self, k: u32) -> String {
+        match self.consts.get(k as usize) {
+            Some(Value::Str(s)) => format!("{s:?}"),
+            Some(Value::Float(x)) => format!("{x}"),
+            Some(Value::Int(i)) => format!("{i}"),
+            Some(Value::U64(u)) => format!("{u}u64"),
+            Some(Value::Char(c)) => format!("{c:?}"),
+            Some(Value::F32(x)) => format!("{x}f32"),
+            Some(other) => format!("{other:?}"),
+            None => "?".to_string(),
+        }
+    }
+
+    fn site_text(&self, site: u16) -> String {
+        match self.sites.get(site as usize) {
+            Some(Site::Binary(op)) => format!("{op:?}"),
+            Some(Site::Unary(op)) => format!("{op:?}"),
+            Some(Site::Call(f)) => format!("fn#{}", f.0),
+            Some(Site::Format(spec)) => format!("{spec:?}"),
+            Some(Site::Intrinsic { which, argc }) => format!("{which:?}/{argc}"),
+            Some(Site::F32ToFloat) => "F32ToFloat".to_string(),
+            Some(Site::Unsupported(what)) => what.clone(),
+            None => "?".to_string(),
+        }
+    }
+}
