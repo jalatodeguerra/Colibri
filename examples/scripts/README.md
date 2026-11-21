@@ -1,8 +1,8 @@
 # Automation scripts
 
-Three real programs written in Colibri, run with `colibri run`.
+Four real programs written in Colibri, run with `colibri run`.
 They use the scripting std (`args`, `fs`, `path`, `json`, `regex`, `datetime`, `http`, `process`,
-`io`, `os`, `net`), coroutines, `Result`/`?`/`.context`, typed JSON decoding and exit codes.
+`io`, `os`, `net`, `httpd`), coroutines, `Result`/`?`/`.context`, typed JSON decoding and exit codes.
 
 | Script | Lines | What it does |
 |--------|-------|--------------|
@@ -10,11 +10,13 @@ They use the scripting std (`args`, `fs`, `path`, `json`, `regex`, `datetime`, `
 | [`report/report.colibri`](report/report.colibri) | 327 | fetches a JSON index and its items over HTTP or from files, writes a Markdown report |
 | [`kvserver/kvserver.colibri`](kvserver/kvserver.colibri) | 131 | a key-value store served over TCP with a line protocol, one coroutine per connection |
 | [`kvserver/kvclient.colibri`](kvserver/kvclient.colibri) | 31 | sends request lines to the key-value server and prints the answers (no `nc` needed) |
+| [`notes/notes.colibri`](notes/notes.colibri) | 112 | a small JSON API served with `httpd`: a router, a path parameter, a typed JSON body, `fail`, a streamed export and a graceful stop |
 
 Tests: `cargo test -p colibri-lang --test scripts` (`crates/colibri-cli/tests/scripts.rs`) runs
 all three through the real `colibri` binary on a temporary tree and a local `127.0.0.1` HTTP server,
 starts the key-value server and talks to it over a socket (with a Rust client and with `kvclient`), compares the report with [`report/expected.md`](report/expected.md) (`UPDATE_EXPECTED=1`
-rewrites it) and runs `colibri check` on both. Nothing touches the network.
+rewrites it) and runs `colibri check` on both. `notes` is started and called over a socket from
+Rust, and checked and formatted too. Nothing touches the network.
 
 ## organize
 
@@ -111,6 +113,52 @@ BYE
 it; it exits 1 when the server cannot be reached or goes away. Any other TCP client speaks the
 protocol too: `nc 127.0.0.1 7000` on Linux and macOS (type the requests, one per line), or
 `telnet 127.0.0.1 7000` on a system that has it.
+
+## notes
+
+```sh
+colibri run notes/notes.colibri -- [--addr 127.0.0.1:0]
+```
+
+A notes service over HTTP, written with the `httpd` module. The first line it prints is
+`listening on HOST:PORT` (port 0 lets the system pick). The notes live in memory.
+
+| Request | Answer |
+|---------|--------|
+| `GET /notes` | every note, as a JSON array |
+| `POST /notes` with `{"text": "..."}` | 201, the note, and a `Location` header; 400 for a body that is not that, 422 for empty text |
+| `GET /notes/export` | every note, one JSON object per line, streamed in chunks as it is written |
+| `GET /notes/:id` | one note, or 404 |
+| `DELETE /notes/:id` | 204, or 404 |
+| `POST /shutdown` | `stopping`, then the server stops: busy connections finish, then the program exits 0 |
+
+What it shows: `httpd.Router` with a path parameter (`:id`, where the literal `export` wins over
+it), the body decoded with `json.decode[NewNote]`, `httpd.fail(404, ..)` as the way a handler
+says "this is an error with a status", `httpd.stream` for a response written while it is sent,
+and `server.stop`, which never waits and so can be called from a handler. The router answers
+405 with an `Allow` header for a method the path does not have. Handlers run in coroutines of one
+thread and stop only where they wait, so the store needs no lock. Exit codes: 0 stopped
+by `/shutdown`, 1 the address cannot be used.
+
+```
+$ colibri run notes/notes.colibri -- --addr 127.0.0.1:7001
+listening on 127.0.0.1:7001
+```
+
+```
+$ curl -i -d '{"text":"buy milk"}' http://127.0.0.1:7001/notes
+HTTP/1.1 201 Created
+Content-Type: application/json
+Location: /notes/1
+Content-Length: 26
+Date: Sat, 21 Nov 2026 00:42:09 GMT
+
+{"id":1,"text":"buy milk"}
+$ curl http://127.0.0.1:7001/notes/export
+{"id":1,"text":"buy milk"}
+$ curl -X POST http://127.0.0.1:7001/shutdown
+stopping
+```
 
 ## report
 
