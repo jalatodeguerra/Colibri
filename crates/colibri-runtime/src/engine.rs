@@ -67,14 +67,6 @@ impl EngineKind {
             )),
         }
     }
-
-    /// Why this engine cannot run a program, if it cannot.
-    pub(crate) fn unavailable(self) -> Option<&'static str> {
-        match self {
-            EngineKind::Tree => None,
-            EngineKind::Bytecode => Some("the bytecode VM is not built yet"),
-        }
-    }
 }
 
 /// What a host function may use of the engine that is running it: the shared state, the fiber
@@ -155,6 +147,11 @@ impl dyn HostCx + '_ {
 
 /// What a [`crate::Vm`] asks of an engine. Each engine owns its main fiber.
 pub(crate) trait RuntimeEngine: HostCx {
+    /// Whether the REPL session entry points work on this engine.
+    fn supports_sessions(&self) -> bool {
+        true
+    }
+
     /// Puts a checked program to work: the code tables, the host function slots. Module
     /// initialisers do not run yet.
     fn load(&mut self, program: &Program);

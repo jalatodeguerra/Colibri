@@ -41,7 +41,11 @@ impl Machine {
         Ok(())
     }
 
-    fn run_global_init(&mut self, fiber: &mut VmFiber, g: usize) -> Result<Value, Box<PanicInfo>> {
+    pub(crate) fn run_global_init(
+        &mut self,
+        fiber: &mut VmFiber,
+        g: usize,
+    ) -> Result<Value, Box<PanicInfo>> {
         let slot: &Slot = &self.global_inits[g];
         let chunk = slot
             .chunk(None, &self.env)

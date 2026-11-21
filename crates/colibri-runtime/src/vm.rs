@@ -22,6 +22,7 @@ use crate::convert::{Args, FromColibri, Value};
 use crate::ctx::{Caller, Ctx, panic_error};
 use crate::engine::{ClassHooks, EngineKind, HostCx, HostFnImpl, RuntimeEngine};
 use crate::engine_tree::{self, DEFAULT_NATIVE_STACK_BUDGET};
+use crate::engine_vm;
 use crate::error::{Error, Report};
 use crate::func::Fn;
 use crate::host::{HostFn, Registration, payload_message};
@@ -225,13 +226,14 @@ impl VmBuilder {
 
     pub fn build(self) -> Vm {
         let out = self.stdout.unwrap_or_else(|| Box::new(std::io::stdout()));
-        // Until the bytecode VM exists, a `Vm` built for it holds the interpreter, and every
-        // load fails with the reason (see `Vm::check_engine`).
-        let engine_unavailable = self
-            .engine_error
-            .or_else(|| self.engine.unavailable().map(str::to_string));
-        let mut engine =
-            engine_tree::new_engine(out, self.max_call_depth, self.native_stack_budget);
+        // An unknown engine name (`COLIBRI_ENGINE`) fails every load with the reason (see
+        // `Vm::check_engine`); the interpreter stands in meanwhile.
+        let engine_unavailable = self.engine_error;
+        let new_engine = match self.engine {
+            EngineKind::Tree => engine_tree::new_engine,
+            EngineKind::Bytecode => engine_vm::new_engine,
+        };
+        let mut engine = new_engine(out, self.max_call_depth, self.native_stack_budget);
         engine.core_mut().set_trace_drops(self.trace_drops);
         engine.core_mut().set_track_leaks(self.track_leaks);
         engine

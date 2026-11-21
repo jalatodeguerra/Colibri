@@ -1,5 +1,4 @@
-//! `COLIBRI_ENGINE` and `colibri run --engine` choose the engine; the bytecode VM is not built
-//! yet, so asking for it fails with a clear message and the tree-walker still runs.
+//! `COLIBRI_ENGINE` and `colibri run --engine` choose the engine.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -42,14 +41,14 @@ fn the_default_is_the_tree_walker() {
 }
 
 #[test]
-fn the_vm_is_refused_with_a_clear_message() {
+fn the_vm_runs_the_program_from_the_flag_and_from_the_environment() {
     let file = script("flag");
     let out = run(&file, Some("--engine=vm"), None);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert!(stderr(&out).contains("the bytecode VM is not built yet"));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ran\n");
     let out = run(&file, None, Some("vm"));
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert!(stderr(&out).contains("the bytecode VM is not built yet"));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ran\n");
 }
 
 #[test]

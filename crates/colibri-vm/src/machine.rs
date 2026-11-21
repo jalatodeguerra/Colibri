@@ -100,6 +100,7 @@ impl Machine {
     pub fn load(&mut self, program: &Program) {
         self.shutdown();
         self.core.closure_maps.clear();
+        self.core.load_host(program);
         self.fns = program
             .fns
             .iter()

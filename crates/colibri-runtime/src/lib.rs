@@ -70,6 +70,7 @@ mod convert;
 mod ctx;
 mod engine;
 mod engine_tree;
+mod engine_vm;
 mod error;
 mod func;
 mod handle;

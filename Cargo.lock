@@ -272,6 +272,7 @@ dependencies = [
  "colibri-ffi-testlib",
  "colibri-interp",
  "colibri-syntax",
+ "colibri-vm",
 ]
 
 [[package]]
