@@ -626,17 +626,17 @@ impl Interp {
             ExprKind::Loop { id, body } => self.eval_loop(fiber, *id, body),
             ExprKind::For(f) => self.eval_for(fiber, f, e.span),
             ExprKind::Struct { ty, fields } => {
-                let values = self.eval_values(fiber, fields)?;
+                let values = self.eval_values::<colibri_core::value::Fields>(fiber, fields)?;
                 Ok(Value::strukt(*ty, values))
             }
             ExprKind::Object { ty, fields } => {
-                let values = self.eval_values(fiber, fields)?;
+                let values = self.eval_values::<colibri_core::value::Fields>(fiber, fields)?;
                 let obj = ClassObj::new(*ty, values);
                 self.core.track_object(&obj, Some(e.span));
                 Ok(Value::Obj(obj))
             }
             ExprKind::Variant { ty, variant, args } => {
-                let values = self.eval_values(fiber, args)?;
+                let values = self.eval_values::<colibri_core::value::Fields>(fiber, args)?;
                 Ok(Value::variant(*ty, *variant, values))
             }
             ExprKind::Tuple(items) => {
@@ -850,7 +850,7 @@ impl Interp {
     #[inline(never)]
     fn eval_from_weak(&mut self, fiber: &mut Fiber, inner: &Expr, span: Span) -> Eval {
         match self.eval(fiber, inner)? {
-            Value::Weak(w) => Ok(Value::option(w.upgrade().map(Value::Obj))),
+            Value::Weak(w) => Ok(self.core.option(w.upgrade().map(Value::Obj))),
             _ => Err(self.internal(fiber, span, "a weak read of a strong value")),
         }
     }
@@ -917,7 +917,11 @@ impl Interp {
 
     /// Evaluates expressions left to right into one vector of values. Each value also stays
     /// on the temporaries stack until the statement ends (see [`Interp::eval_twin`]).
-    fn eval_values(&mut self, fiber: &mut Fiber, exprs: &[Expr]) -> Eval<Vec<Value>> {
+    fn eval_values<C: FromIterator<Value>>(
+        &mut self,
+        fiber: &mut Fiber,
+        exprs: &[Expr],
+    ) -> Eval<C> {
         exprs.iter().map(|e| self.eval_twin(fiber, e)).collect()
     }
 

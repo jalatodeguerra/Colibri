@@ -19,7 +19,8 @@ use crate::prelude::*;
 use crate::value::Value;
 
 /// A fault in integer arithmetic.
-enum Fault {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
     Overflow,
     DivByZero,
     ModByZero,
@@ -149,7 +150,7 @@ pub fn literal(lit: &Lit) -> Value {
 /// Checked 64-bit integer arithmetic: overflow and division by zero are faults, `/` truncates
 /// toward zero and `%` takes the sign of the dividend.
 #[inline]
-fn int_arith(op: ArithOp, a: i64, b: i64) -> Result<i64, Fault> {
+pub fn int_arith(op: ArithOp, a: i64, b: i64) -> Result<i64, Fault> {
     match op {
         ArithOp::Add => a.checked_add(b).ok_or(Fault::Overflow),
         ArithOp::Sub => a.checked_sub(b).ok_or(Fault::Overflow),

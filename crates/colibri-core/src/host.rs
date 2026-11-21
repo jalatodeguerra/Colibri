@@ -456,13 +456,13 @@ pub fn typed_error_value(value: Value, message: &str) -> Value {
 /// `err(e)` of the prelude `Result`.
 pub fn err_variant(error: Value) -> Value {
     use colibri_check::types::{RESULT_TYPE, VARIANT_ERR};
-    Value::variant(RESULT_TYPE, VARIANT_ERR, vec![error])
+    Value::variant(RESULT_TYPE, VARIANT_ERR, crate::value::one(error))
 }
 
 /// `ok(v)` of the prelude `Result`.
 pub fn ok_variant(v: Value) -> Value {
     use colibri_check::types::{RESULT_TYPE, VARIANT_OK};
-    Value::variant(RESULT_TYPE, VARIANT_OK, vec![v])
+    Value::variant(RESULT_TYPE, VARIANT_OK, crate::value::one(v))
 }
 
 /// A `Map` value with these entries in order (a repeated key keeps the last value).

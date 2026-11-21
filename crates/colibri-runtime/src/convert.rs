@@ -140,7 +140,13 @@ impl Value {
 
     /// A struct of type `ty` with its fields in declaration order (see [`Ctx::type_defs`]).
     pub fn new_struct(ty: TypeId, fields: Vec<Value>) -> Value {
-        Value(Inner::strukt(ty, fields.into_iter().map(|v| v.0).collect()))
+        Value(Inner::strukt(
+            ty,
+            fields
+                .into_iter()
+                .map(|v| v.0)
+                .collect::<colibri_core::value::Fields>(),
+        ))
     }
 
     /// A value of the enum `ty`: its `variant`th variant with a payload.
@@ -148,7 +154,10 @@ impl Value {
         Value(Inner::variant(
             ty,
             variant,
-            payload.into_iter().map(|v| v.0).collect(),
+            payload
+                .into_iter()
+                .map(|v| v.0)
+                .collect::<colibri_core::value::Fields>(),
         ))
     }
 

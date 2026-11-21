@@ -96,7 +96,7 @@ pub trait BytesOps: Engine {
                 let Some(i) = int_arg(1) else {
                     return Err(self.internal(fiber, span, "ill-typed `get`"));
                 };
-                Value::option(
+                self.core().option(
                     usize::try_from(i)
                         .ok()
                         .and_then(|i| b.get(i))
@@ -144,7 +144,7 @@ pub trait BytesOps: Engine {
                         if op == Builtin::BytesContains {
                             Value::Bool(at.is_some())
                         } else {
-                            Value::option(at.map(|i| Value::Int(i as i64)))
+                            self.core().option(at.map(|i| Value::Int(i as i64)))
                         }
                     }
                 }

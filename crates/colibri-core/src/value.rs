@@ -9,6 +9,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
+use smallvec::SmallVec;
+
 use colibri_check::hir::FnId;
 use colibri_check::types::TypeId;
 
@@ -148,11 +150,23 @@ impl PartialEq for Value {
     }
 }
 
+/// The fields of a struct, the payload of an enum value or the fields of an object: up to four
+/// values stored inline, so a small value is one allocation.
+pub type Fields = SmallVec<[Value; 4]>;
+
+/// A payload of one value, built inline.
+#[inline]
+pub fn one(v: Value) -> Fields {
+    let mut fields = Fields::new();
+    fields.push(v);
+    fields
+}
+
 /// A struct value: its type and its fields in declaration order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StructVal {
     pub ty: TypeId,
-    pub fields: Box<[Value]>,
+    pub fields: Fields,
 }
 
 /// An enum value: its type, which variant, and the variant's payload.
@@ -160,7 +174,7 @@ pub struct StructVal {
 pub struct EnumVal {
     pub ty: TypeId,
     pub variant: u32,
-    pub payload: Box<[Value]>,
+    pub payload: Fields,
 }
 
 impl Value {
@@ -189,19 +203,19 @@ impl Value {
     }
 
     #[inline]
-    pub fn strukt(ty: TypeId, fields: Vec<Value>) -> Value {
+    pub fn strukt(ty: TypeId, fields: impl Into<Fields>) -> Value {
         Value::Struct(Rc::new(StructVal {
             ty,
-            fields: fields.into_boxed_slice(),
+            fields: fields.into(),
         }))
     }
 
     #[inline]
-    pub fn variant(ty: TypeId, variant: u32, payload: Vec<Value>) -> Value {
+    pub fn variant(ty: TypeId, variant: u32, payload: impl Into<Fields>) -> Value {
         Value::Enum(Rc::new(EnumVal {
             ty,
             variant,
-            payload: payload.into_boxed_slice(),
+            payload: payload.into(),
         }))
     }
 
@@ -215,9 +229,14 @@ impl Value {
     pub fn option(inner: Option<Value>) -> Value {
         use colibri_check::types::{OPTION_TYPE, VARIANT_NONE, VARIANT_SOME};
         match inner {
-            Some(v) => Value::variant(OPTION_TYPE, VARIANT_SOME, vec![v]),
-            None => Value::variant(OPTION_TYPE, VARIANT_NONE, Vec::new()),
+            Some(v) => Value::variant(OPTION_TYPE, VARIANT_SOME, one(v)),
+            None => Value::variant(OPTION_TYPE, VARIANT_NONE, Fields::new()),
         }
+    }
+
+    /// A fresh `none`.
+    pub(crate) fn option_none() -> Value {
+        Value::option(None)
     }
 
     /// Whether the value owns other values.
@@ -262,10 +281,17 @@ thread_local! {
 }
 
 /// Destroys the children of a struct or enum that is being dropped.
-fn drop_children(children: Box<[Value]>) {
+#[inline]
+fn drop_children(children: &mut Fields) {
     if !children.iter().any(Value::is_composite) {
         return;
     }
+    drop_deep(std::mem::take(children));
+}
+
+/// The part of [`drop_children`] for children that own composites.
+#[cold]
+fn drop_deep(children: Fields) {
     let depth = DROP_DEPTH.with(Cell::get);
     if depth < MAX_DROP_DEPTH {
         DROP_DEPTH.with(|d| d.set(depth + 1));
@@ -319,13 +345,13 @@ fn dismantle(mut value: Value, work: &mut Vec<Value>) {
 
 impl Drop for StructVal {
     fn drop(&mut self) {
-        drop_children(std::mem::take(&mut self.fields));
+        drop_children(&mut self.fields);
     }
 }
 
 impl Drop for EnumVal {
     fn drop(&mut self) {
-        drop_children(std::mem::take(&mut self.payload));
+        drop_children(&mut self.payload);
     }
 }
 
@@ -358,5 +384,31 @@ mod tests {
         let outer = Value::tuple(vec![inner.clone(), inner.clone()]);
         drop(outer);
         assert!(matches!(inner, Value::Struct(_)));
+    }
+
+    #[test]
+    fn make_mut_on_a_shared_struct_copies_it_once() {
+        let inner = Value::str("kept");
+        let a = Value::strukt(TypeId(0), vec![Value::Int(1), inner.clone()]);
+        let Value::Struct(mut one) = a.clone() else {
+            unreachable!()
+        };
+        let Value::Struct(shared) = &a else {
+            unreachable!()
+        };
+        let Value::Str(text) = &inner else {
+            unreachable!()
+        };
+        // `inner`, and the field of `a`.
+        assert_eq!(Rc::strong_count(text), 2);
+        Rc::make_mut(&mut one).fields[0] = Value::Int(2);
+        // The copy holds the string too (one more reference); the original is untouched.
+        assert_eq!(Rc::strong_count(text), 3);
+        assert_eq!(Rc::strong_count(shared), 1);
+        assert_eq!(shared.fields[0], Value::Int(1));
+        assert_eq!(one.fields[0], Value::Int(2));
+        // Now unshared: a second write does not copy again.
+        Rc::make_mut(&mut one).fields[0] = Value::Int(3);
+        assert_eq!(Rc::strong_count(text), 3);
     }
 }

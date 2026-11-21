@@ -67,9 +67,9 @@ impl Cloner {
             // There is one host object, however many references name it.
             | Value::Host(_) => v.clone(),
             Value::ByteBuf(b) => Value::ByteBuf(Rc::new(std::cell::RefCell::new(b.borrow().clone()))),
-            Value::Struct(s) => Value::strukt(s.ty, self.clone_all(&s.fields, ov)?),
+            Value::Struct(s) => Value::strukt(s.ty, self.clone_all::<crate::value::Fields>(&s.fields, ov)?),
             Value::Tuple(items) => Value::tuple(self.clone_all(items, ov)?),
-            Value::Enum(e) => Value::variant(e.ty, e.variant, self.clone_all(&e.payload, ov)?),
+            Value::Enum(e) => Value::variant(e.ty, e.variant, self.clone_all::<crate::value::Fields>(&e.payload, ov)?),
             Value::Weak(w) => self.clone_weak(w),
             Value::Dyn(d) => Value::Dyn(Rc::new(crate::value::DynVal {
                 impl_id: d.impl_id,
@@ -81,7 +81,7 @@ impl Cloner {
                     return Ok(done.clone());
                 }
                 let fields = src.snapshot();
-                let copy = ClassObj::new(src.ty(), vec![Value::Unit; fields.len()]);
+                let copy = ClassObj::new(src.ty(), crate::value::Fields::from_elem(Value::Unit, fields.len()));
                 self.memo.insert(key, Value::Obj(Rc::clone(&copy)));
                 for (i, field) in fields.iter().enumerate() {
                     let new = self.clone_value(field, ov)?;
@@ -131,7 +131,11 @@ impl Cloner {
         })
     }
 
-    fn clone_all(&mut self, items: &[Value], ov: &mut dyn Overrides) -> Result<Vec<Value>, Stop> {
+    fn clone_all<C: FromIterator<Value>>(
+        &mut self,
+        items: &[Value],
+        ov: &mut dyn Overrides,
+    ) -> Result<C, Stop> {
         items.iter().map(|v| self.clone_value(v, ov)).collect()
     }
 

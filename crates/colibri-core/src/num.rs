@@ -12,10 +12,11 @@ use crate::show::{show_f32, show_float};
 use crate::value::Value;
 
 /// A numeric failure: the panic message.
-pub(crate) type Trap = String;
+pub type Trap = String;
 
 /// The integer in `v` (of any integer type), exactly.
 #[doc(hidden)]
+#[inline]
 pub fn int_of(v: &Value) -> Option<i128> {
     match v {
         Value::Int(i) => Some(i128::from(*i)),
@@ -25,7 +26,8 @@ pub fn int_of(v: &Value) -> Option<i128> {
 }
 
 /// The value of integer type `ty` that is `v`; `v` must be in range.
-pub(crate) fn make_int(ty: IntTy, v: i128) -> Value {
+#[inline]
+pub fn make_int(ty: IntTy, v: i128) -> Value {
     debug_assert!(ty.fits(v));
     if ty == IntTy::U64 {
         Value::U64(v as u64)
@@ -35,6 +37,7 @@ pub(crate) fn make_int(ty: IntTy, v: i128) -> Value {
 }
 
 /// `v` as a value of `ty`, or the overflow trap.
+#[inline]
 fn checked(ty: IntTy, v: Option<i128>) -> Result<i128, Trap> {
     match v {
         Some(v) if ty.fits(v) => Ok(v),
@@ -43,6 +46,7 @@ fn checked(ty: IntTy, v: Option<i128>) -> Result<i128, Trap> {
 }
 
 /// `v` reduced to `ty` by wrapping around (two's complement).
+#[inline]
 fn wrap(ty: IntTy, v: i128) -> i128 {
     let bits = ty.bits();
     let unsigned = ((v as u128) & ((1u128 << bits) - 1)) as i128;
@@ -55,7 +59,8 @@ fn wrap(ty: IntTy, v: i128) -> i128 {
 
 /// `a op b` on integers of type `ty`: traps on overflow and on division by zero; `/`
 /// truncates toward zero and `%` takes the sign of the dividend.
-pub(crate) fn int_arith(op: ArithOp, ty: IntTy, a: i128, b: i128) -> Result<i128, Trap> {
+#[inline]
+pub fn int_arith(op: ArithOp, ty: IntTy, a: i128, b: i128) -> Result<i128, Trap> {
     match op {
         ArithOp::Add => checked(ty, a.checked_add(b)),
         ArithOp::Sub => checked(ty, a.checked_sub(b)),
@@ -70,11 +75,13 @@ pub(crate) fn int_arith(op: ArithOp, ty: IntTy, a: i128, b: i128) -> Result<i128
 }
 
 /// `-a` on an integer of type `ty`.
+#[inline]
 pub(crate) fn int_neg(ty: IntTy, a: i128) -> Result<i128, Trap> {
     checked(ty, a.checked_neg())
 }
 
 /// `~a` on an integer of type `ty`.
+#[inline]
 pub(crate) fn int_not(ty: IntTy, a: i128) -> i128 {
     wrap(ty, !a)
 }
@@ -101,6 +108,7 @@ pub(crate) fn int_bit(op: BitOp, ty: IntTy, a: i128, b: i128) -> Result<i128, Tr
 }
 
 /// `a op b` on `f64`s (IEEE).
+#[inline]
 pub(crate) fn float_arith(op: ArithOp, a: f64, b: f64) -> f64 {
     match op {
         ArithOp::Add => a + b,
@@ -112,6 +120,7 @@ pub(crate) fn float_arith(op: ArithOp, a: f64, b: f64) -> f64 {
 }
 
 /// `a op b` on `f32`s: computed in single precision, so every result is rounded to `f32`.
+#[inline]
 pub(crate) fn f32_arith(op: ArithOp, a: f32, b: f32) -> f32 {
     match op {
         ArithOp::Add => a + b,
