@@ -8,7 +8,7 @@ use colibri_check::hir::{
     Arg, Arm, BinOp, Block, Body, Callee, Expr, ExprKind, FnId, GlobalId, Intrinsic, LoopId, Place,
     Program, Stmt, StmtKind, UnOp, UserOp,
 };
-use colibri_check::types::Ty;
+use colibri_check::types::{Ty, TypeId};
 use colibri_syntax::Span;
 
 use colibri_core::Core;
@@ -625,19 +625,10 @@ impl Interp {
             ExprKind::Block(block) => self.eval_block(fiber, block),
             ExprKind::Loop { id, body } => self.eval_loop(fiber, *id, body),
             ExprKind::For(f) => self.eval_for(fiber, f, e.span),
-            ExprKind::Struct { ty, fields } => {
-                let values = self.eval_values::<colibri_core::value::Fields>(fiber, fields)?;
-                Ok(Value::strukt(*ty, values))
-            }
-            ExprKind::Object { ty, fields } => {
-                let values = self.eval_values::<colibri_core::value::Fields>(fiber, fields)?;
-                let obj = ClassObj::new(*ty, values);
-                self.core.track_object(&obj, Some(e.span));
-                Ok(Value::Obj(obj))
-            }
+            ExprKind::Struct { ty, fields } => self.eval_struct(fiber, *ty, fields),
+            ExprKind::Object { ty, fields } => self.eval_object(fiber, *ty, fields, e.span),
             ExprKind::Variant { ty, variant, args } => {
-                let values = self.eval_values::<colibri_core::value::Fields>(fiber, args)?;
-                Ok(Value::variant(*ty, *variant, values))
+                self.eval_variant(fiber, *ty, *variant, args)
             }
             ExprKind::Tuple(items) => {
                 let values = self.eval_values(fiber, items)?;
@@ -917,6 +908,28 @@ impl Interp {
 
     /// Evaluates expressions left to right into one vector of values. Each value also stays
     /// on the temporaries stack until the statement ends (see [`Interp::eval_twin`]).
+    // The inline field storage lives in these frames, not in the one of `eval`, which every
+    // nested expression pays for.
+    #[inline(never)]
+    fn eval_struct(&mut self, fiber: &mut Fiber, ty: TypeId, fields: &[Expr]) -> Eval {
+        let values = self.eval_values::<colibri_core::value::Fields>(fiber, fields)?;
+        Ok(Value::strukt(ty, values))
+    }
+
+    #[inline(never)]
+    fn eval_object(&mut self, fiber: &mut Fiber, ty: TypeId, fields: &[Expr], span: Span) -> Eval {
+        let values = self.eval_values::<colibri_core::value::Fields>(fiber, fields)?;
+        let obj = ClassObj::new(ty, values);
+        self.core.track_object(&obj, Some(span));
+        Ok(Value::Obj(obj))
+    }
+
+    #[inline(never)]
+    fn eval_variant(&mut self, fiber: &mut Fiber, ty: TypeId, variant: u32, args: &[Expr]) -> Eval {
+        let values = self.eval_values::<colibri_core::value::Fields>(fiber, args)?;
+        Ok(Value::variant(ty, variant, values))
+    }
+
     fn eval_values<C: FromIterator<Value>>(
         &mut self,
         fiber: &mut Fiber,
