@@ -373,6 +373,10 @@ fn run_with(
     let mut builder = crate::vm_builder();
     if let Some(kind) = engine {
         builder = builder.engine(kind);
+        // A runaway program on the VM fails its test instead of hanging the run.
+        if kind == colibri::EngineKind::Bytecode {
+            builder = builder.instruction_budget(2_000_000_000);
+        }
     }
     let mut builder = builder
         .trace_drops(true)
@@ -744,6 +748,52 @@ fn finish(problems: Vec<String>) -> Result<(), String> {
     }
 }
 
+/// How two engines' outcomes of one golden test differ (stdout, panic text, main's error, the
+/// drop trace, the warnings), or `None` when they agree. The leak report is not compared: a
+/// cycle's shape is an engine detail.
+pub fn diff_outcomes(tree: &Outcome, vm: &Outcome) -> Option<String> {
+    match (tree, vm) {
+        (
+            Outcome::Compiled {
+                stdout: s1,
+                panic: p1,
+                main_err: m1,
+                warnings: w1,
+                drops: d1,
+                ..
+            },
+            Outcome::Compiled {
+                stdout: s2,
+                panic: p2,
+                main_err: m2,
+                warnings: w2,
+                drops: d2,
+                ..
+            },
+        ) => {
+            let mut parts = Vec::new();
+            if s1 != s2 {
+                parts.push(format!("stdout:\n  tree: {s1:?}\n  vm:   {s2:?}"));
+            }
+            if p1 != p2 {
+                parts.push(format!("panic:\n  tree: {p1:?}\n  vm:   {p2:?}"));
+            }
+            if m1 != m2 {
+                parts.push(format!("main error:\n  tree: {m1:?}\n  vm:   {m2:?}"));
+            }
+            if d1 != d2 {
+                parts.push(format!("drop trace:\n  tree: {d1:?}\n  vm:   {d2:?}"));
+            }
+            if w1 != w2 {
+                parts.push(format!("warnings:\n  tree: {w1:?}\n  vm:   {w2:?}"));
+            }
+            (!parts.is_empty()).then(|| parts.join("\n"))
+        }
+        (a, b) if a == b => None,
+        (a, b) => Some(format!("outcome kind:\n  tree: {a:?}\n  vm:   {b:?}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1037,51 +1087,5 @@ mod tests {
         assert!(check(&d, &both).is_ok());
         let no_warning = errors(&[(1, "bad thing")]);
         assert!(check(&d, &no_warning).is_err());
-    }
-}
-
-/// How two engines' outcomes of one golden test differ (stdout, panic text, main's error, the
-/// drop trace, the warnings), or `None` when they agree. The leak report is not compared: a
-/// cycle's shape is an engine detail.
-pub fn diff_outcomes(tree: &Outcome, vm: &Outcome) -> Option<String> {
-    match (tree, vm) {
-        (
-            Outcome::Compiled {
-                stdout: s1,
-                panic: p1,
-                main_err: m1,
-                warnings: w1,
-                drops: d1,
-                ..
-            },
-            Outcome::Compiled {
-                stdout: s2,
-                panic: p2,
-                main_err: m2,
-                warnings: w2,
-                drops: d2,
-                ..
-            },
-        ) => {
-            let mut parts = Vec::new();
-            if s1 != s2 {
-                parts.push(format!("stdout:\n  tree: {s1:?}\n  vm:   {s2:?}"));
-            }
-            if p1 != p2 {
-                parts.push(format!("panic:\n  tree: {p1:?}\n  vm:   {p2:?}"));
-            }
-            if m1 != m2 {
-                parts.push(format!("main error:\n  tree: {m1:?}\n  vm:   {m2:?}"));
-            }
-            if d1 != d2 {
-                parts.push(format!("drop trace:\n  tree: {d1:?}\n  vm:   {d2:?}"));
-            }
-            if w1 != w2 {
-                parts.push(format!("warnings:\n  tree: {w1:?}\n  vm:   {w2:?}"));
-            }
-            (!parts.is_empty()).then(|| parts.join("\n"))
-        }
-        (a, b) if a == b => None,
-        (a, b) => Some(format!("outcome kind:\n  tree: {a:?}\n  vm:   {b:?}")),
     }
 }

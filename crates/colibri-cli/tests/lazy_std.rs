@@ -14,7 +14,9 @@ fn temp_file(name: &str, source: &str) -> PathBuf {
 
 fn run_registered(name: &str, source: &str) -> Vec<String> {
     let path = temp_file(name, source);
+    // About which modules get registered, not the engine: pinned to the tree-walker.
     let builder = colibri_lang::vm_builder()
+        .engine(colibri_runtime::EngineKind::Tree)
         .allow_all()
         .stdout(Box::new(std::io::sink()));
     let mut vm = colibri_lang::build_vm(builder, Vec::new());

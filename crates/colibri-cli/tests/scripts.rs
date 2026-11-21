@@ -905,6 +905,8 @@ fn kvserver_survives_running_out_of_descriptors() {
     use std::io::BufRead;
     let script = scripts().join("kvserver/kvserver.colibri");
     let mut child = Command::new("sh")
+        // About the descriptor limit, not the engine: pinned to the tree-walker.
+        .env_remove("COLIBRI_ENGINE")
         .args(["-c", "ulimit -n 40; exec \"$0\" run \"$1\" --"])
         .arg(env!("CARGO_BIN_EXE_colibri"))
         .arg(&script)

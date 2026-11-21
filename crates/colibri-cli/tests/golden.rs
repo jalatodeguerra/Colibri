@@ -47,7 +47,7 @@ enum Source {
     File {
         path: PathBuf,
         source: String,
-        directives: Directives,
+        directives: Box<Directives>,
     },
     Package {
         dir: PathBuf,
@@ -208,7 +208,7 @@ fn main() {
                         source: Source::File {
                             path,
                             source,
-                            directives,
+                            directives: Box::new(directives),
                         },
                     }
                 }
