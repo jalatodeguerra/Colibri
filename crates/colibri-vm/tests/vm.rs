@@ -579,3 +579,21 @@ name += touch()
 print(name)";
     assert_eq!(run_ok(src), "106\narT\n");
 }
+
+#[test]
+fn a_captured_for_binding_is_dropped_on_every_way_out_of_the_iteration() {
+    // `i` is assigned and captured, so it lives in a cell made per iteration. The closure is
+    // never created at run time here, which is enough: the cell must still be dropped at
+    // the end of the iteration, at `continue` and at `break`.
+    let src = "fn main() {
+    for var i in 0..5 {
+        if i > 100 { let f = fn() => print(i) }
+        i += 1
+        if i == 2 { continue }
+        if i == 4 { break }
+        print(i)
+    }
+    print(9)
+}";
+    assert_eq!(run_ok(src), "1\n3\n9\n");
+}

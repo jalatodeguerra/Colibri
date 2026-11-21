@@ -277,6 +277,8 @@ impl FnCompiler<'_> {
         let cont = self.new_label();
         self.jump_unless_in_range(cur, end_reg, *inclusive, exit, span);
         self.bind(head);
+        // The per-iteration scope: a cell binding is dropped at every exit from the iteration.
+        let cleanups = self.cleanup_depth();
         if let ForBinding::Local(l) = f.binding
             && !direct
         {
@@ -291,7 +293,6 @@ impl FnCompiler<'_> {
                 self.emit(Op::Copy { d: lr, s: cur }, span);
             }
         }
-        let cleanups = self.cleanup_depth();
         self.loops.push(LoopCtx {
             id: f.id,
             cleanups,
@@ -299,6 +300,7 @@ impl FnCompiler<'_> {
             cont,
         });
         self.block(&f.body, None);
+        self.end_scope(cleanups, span);
         self.bind(cont);
         self.range_next(cur, end_reg, *inclusive, head, exit, span);
         self.loops.pop();
