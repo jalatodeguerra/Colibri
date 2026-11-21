@@ -5,6 +5,9 @@
 // (`/proc` on Linux, `ps` elsewhere). Windows has no `sh` to rely on.
 #![cfg(unix)]
 
+mod common;
+use common::vm_pending;
+
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -105,19 +108,20 @@ fn check_no_child_is_left(name: &str, ending: &str, code: i32) {
 
 #[test]
 fn a_panic_leaves_no_child_behind() {
-    check_no_child_is_left("panic", "panic(\"stop\")", 101);
+    vm_pending("a_panic_leaves_no_child_behind", || {
+        check_no_child_is_left("panic", "panic(\"stop\")", 101);
+    })
 }
 
 #[test]
 fn os_exit_leaves_no_child_behind() {
-    check_no_child_is_left("exit", "os.exit(3)", 3);
+    vm_pending("os_exit_leaves_no_child_behind", || {
+        check_no_child_is_left("exit", "os.exit(3)", 3);
+    })
 }
 
-/// The binary under test, pinned to the tree-walker: these tests are about the command line,
-/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
+/// spawn on the VM (see `vm_pending.txt` for the ones that cannot pass there yet).
 fn colibri_command() -> std::process::Command {
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
-    // vm-pin: 2c
-    cmd.env_remove("COLIBRI_ENGINE");
-    cmd
+    std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

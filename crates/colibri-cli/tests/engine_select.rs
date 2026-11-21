@@ -22,7 +22,7 @@ fn run(file: &PathBuf, flag: Option<&str>, env: Option<&str>) -> Output {
         cmd.arg(flag);
     }
     cmd.arg(file);
-    // vm-pin: 2c
+    // The engine is what these tests are about: start from none, then set what a test names.
     cmd.env_remove("COLIBRI_ENGINE");
     if let Some(env) = env {
         cmd.env("COLIBRI_ENGINE", env);

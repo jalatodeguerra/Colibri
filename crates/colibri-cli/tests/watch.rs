@@ -2,6 +2,9 @@
 //! prints. Every wait has a generous timeout and polls, so a slow machine only makes the tests
 //! slower, not flaky.
 
+mod common;
+use common::vm_pending;
+
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::path::PathBuf;
@@ -93,19 +96,21 @@ fn temp_file(name: &str, source: &str) -> PathBuf {
 
 #[test]
 fn a_running_event_loop_is_patched_in_place() {
-    let src = |tag: &str| {
-        format!(
-            "fn msg() -> str => \"{tag}\"\nfn ticker() {{\n    while true {{\n        print(msg())\n        wait_real(0.05)\n    }}\n}}\nfn main() {{\n    print(\"main\")\n    go ticker()\n}}\n"
-        )
-    };
-    let path = temp_file("patch", &src("one"));
-    let mut w = Watch::start(&path);
-    w.wait_for(false, "one");
-    std::fs::write(&path, src("two")).unwrap();
-    w.wait_for(true, "patched 1 function");
-    let out = w.wait_for(false, "two");
-    // `main` ran once: a patch does not start the program again.
-    assert_eq!(out.iter().filter(|l| *l == "main").count(), 1, "{out:?}");
+    vm_pending("a_running_event_loop_is_patched_in_place", || {
+        let src = |tag: &str| {
+            format!(
+                "fn msg() -> str => \"{tag}\"\nfn ticker() {{\n    while true {{\n        print(msg())\n        wait_real(0.05)\n    }}\n}}\nfn main() {{\n    print(\"main\")\n    go ticker()\n}}\n"
+            )
+        };
+        let path = temp_file("patch", &src("one"));
+        let mut w = Watch::start(&path);
+        w.wait_for(false, "one");
+        std::fs::write(&path, src("two")).unwrap();
+        w.wait_for(true, "patched 1 function");
+        let out = w.wait_for(false, "two");
+        // `main` ran once: a patch does not start the program again.
+        assert_eq!(out.iter().filter(|l| *l == "main").count(), 1, "{out:?}");
+    })
 }
 
 #[test]
@@ -178,11 +183,8 @@ fn warnings_are_printed_before_the_top_level_code_runs() {
     );
 }
 
-/// The binary under test, pinned to the tree-walker: these tests are about the command line,
-/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
+/// spawn on the VM (see `vm_pending.txt` for the ones that cannot pass there yet).
 fn colibri_command() -> std::process::Command {
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
-    // vm-pin: 2c
-    cmd.env_remove("COLIBRI_ENGINE");
-    cmd
+    std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

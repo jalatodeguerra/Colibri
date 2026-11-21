@@ -4184,10 +4184,7 @@ mod tests {
             let _ = tx.send(f(cx));
         }));
         let out = colibri_runtime::SharedBuffer::new();
-        // Pinned to the tree-walker: this tests the standard library, not the engine, and host
-        // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
         let mut vm = Vm::builder()
-            .engine(colibri_runtime::EngineKind::Tree)
             .stdout(Box::new(out))
             .allow(Cap::Net)
             .build();
