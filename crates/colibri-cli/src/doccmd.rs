@@ -40,7 +40,7 @@ const SUMMARIES: &[(&str, &str)] = &[
     ("datetime", "Dates, times and their formatting."),
     (
         "fs",
-        "Files and folders: whole-file reads and writes, listing, metadata, and `File` handles that read or write piece by piece.",
+        "Files and folders: whole-file reads and writes, listing, metadata, and `File` handles that read or write piece by piece. The whole-file functions hold the thread until they finish and give other coroutines no turn; the methods of `File` wait without blocking.",
     ),
     ("hash", "SHA-256 of text and of `Bytes`."),
     (
@@ -77,7 +77,10 @@ const SUMMARIES: &[(&str, &str)] = &[
     ("rand", "Random numbers."),
     ("regex", "Regular expressions."),
     ("str", "String helpers and parsing."),
-    ("time", "Clocks and sleeping."),
+    (
+        "time",
+        "Clocks and sleeping. `sleep` holds the whole thread until it ends; in a coroutine, use `wait`, which lets the others run.",
+    ),
     (
         "toml",
         "`toml.parse` into a `json.Value`, and typed `toml.decode[T]`.",
@@ -101,6 +104,22 @@ struct Module {
     name: String,
     caps: Vec<String>,
     origin: Origin,
+    /// How the capabilities are spread over the items.
+    spread: Spread,
+}
+
+/// Which items of a module need its capabilities. The checker asks for a capability at each
+/// call of a function that carries it, so a module can have both kinds.
+#[derive(Clone, Copy, PartialEq)]
+enum Spread {
+    /// No item needs one.
+    None,
+    /// Every function of the module needs one (the methods of its types do not need their own).
+    EveryFunction,
+    /// Some functions need one, and each says so.
+    SomeFunctions,
+    /// A module written in Colibri: it may need what the modules it imports need.
+    ThroughImports,
 }
 
 fn modules() -> Vec<Module> {
@@ -108,10 +127,12 @@ fn modules() -> Vec<Module> {
     for name in colibri_std::MODULES {
         let interface = colibri_std::interface(name).expect("a listed module has an interface");
         let (caps, text) = split_header(&interface.canonical_text());
+        let spread = spread_of(&text);
         out.push(Module {
             name: name.to_string(),
             caps,
             origin: Origin::Interface(text),
+            spread,
         });
     }
     // A module written in Colibri needs what the modules it imports need.
@@ -137,14 +158,42 @@ fn modules() -> Vec<Module> {
             }
         }
         caps.sort();
+        let spread = if caps.is_empty() {
+            Spread::None
+        } else {
+            Spread::ThroughImports
+        };
         out.push(Module {
             name: source.name.to_string(),
             caps,
             origin: Origin::Source(source.text.to_string()),
+            spread,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// How the `@requires(..)` attributes of an interface are spread over its top-level functions.
+fn spread_of(text: &str) -> Spread {
+    let (file, _) = parse_interface_file(FileId(0), text);
+    let (mut with, mut without) = (0, 0);
+    for top in &file.items {
+        if let TopLevel::Item(item) = top
+            && matches!(item.kind, ItemKind::Fn(_))
+        {
+            if item.attrs.iter().any(|a| a.name.name == "requires") {
+                with += 1;
+            } else {
+                without += 1;
+            }
+        }
+    }
+    match (with, without) {
+        (0, _) => Spread::None,
+        (_, 0) => Spread::EveryFunction,
+        _ => Spread::SomeFunctions,
+    }
 }
 
 /// The capabilities named by the `@interface(..)` header line, and the text with that line
@@ -182,6 +231,12 @@ pub fn std_pages() -> Vec<(String, String)> {
             m.name
         );
     }
+    for (name, _) in SUMMARIES {
+        assert!(
+            modules.iter().any(|m| m.name == *name),
+            "doccmd::SUMMARIES has an entry for `{name}`, which is not a standard module"
+        );
+    }
     let mut pages = vec![(INDEX.to_string(), index(&modules))];
     for m in &modules {
         pages.push((format!("{}.md", m.name), module_page(m)));
@@ -216,14 +271,17 @@ fn index(modules: &[Module]) -> String {
             Origin::Interface(_) => "Rust",
             Origin::Source(_) => "Colibri",
         };
-        let caps = if m.caps.is_empty() {
-            "nothing".to_string()
-        } else {
-            m.caps
-                .iter()
-                .map(|c| format!("`{c}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
+        let list = m
+            .caps
+            .iter()
+            .map(|c| format!("`{c}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let caps = match m.spread {
+            Spread::None => "nothing".to_string(),
+            Spread::EveryFunction => list,
+            Spread::SomeFunctions => format!("{list} (some functions)"),
+            Spread::ThroughImports => format!("{list} (may, through its imports)"),
         };
         let _ = writeln!(
             out,
@@ -240,18 +298,15 @@ fn index(modules: &[Module]) -> String {
          - `Option[T]` in a signature is the optional type, written `T?` in your own code.\n\
          - `Result[T]` is a result whose error is the language's `Error`. A module's own error \
            type is `Error` on its page, and `fs.Error` in your code.\n\
-         - **Needs** is the capability a program must be granted to use the module. `colibri run` \
-           grants all of them; a Rust program that embeds Colibri chooses which its scripts get.\n\
+         - **Needs** is the capability a program must be granted to call a function: the checker \
+           asks for it at each call of a function that says it needs one. `colibri run` grants \
+           all of them; a Rust program that embeds Colibri chooses which its scripts get.\n\
          - `List`, `Map`, `Set`, `str`, `Result` and the functions that need no `import` are not \
            modules: see [built-in types and functions](../builtins.md).\n\
          - Methods of a type are listed under the type. `self` is the value the method is called on.\n\
          - The modules written in Rust have signatures only for now; their doc comments are \
            still to be written.\n\n\
-         ## Regenerating\n\n\
-         ```sh\n\
-         colibri doc --std guide/std\n\
-         ```\n\n\
-         The test suite fails when these pages differ from what the command writes.\n",
+         These pages are generated: do not edit them by hand.\n",
     );
     out
 }
@@ -409,6 +464,32 @@ fn module_page(m: &Module) -> String {
         }
     }
 
+    // The impls for a type the module does not declare (`impl Mul[vec2, vec2] for float`) belong
+    // to no type's section, so they get one of their own.
+    let declared: Vec<String> = items
+        .iter()
+        .filter_map(|i| match &i.kind {
+            ItemKind::Struct(d) => Some(d.name.name.clone()),
+            ItemKind::Enum(d) => Some(d.name.name.clone()),
+            ItemKind::Interface(d) => Some(d.name.name.clone()),
+            ItemKind::TypeAlias(d) => Some(d.name.name.clone()),
+            _ => None,
+        })
+        .collect();
+    let foreign: Vec<&Item> = items
+        .iter()
+        .copied()
+        .filter(|i| match &i.kind {
+            ItemKind::Impl(d) => match &d.target.kind {
+                TypeKind::Named { path, .. } => {
+                    path.last().is_none_or(|l| !declared.contains(&l.name))
+                }
+                _ => true,
+            },
+            _ => false,
+        })
+        .collect();
+
     let mut out = String::new();
     let _ = writeln!(out, "{GENERATED}\n");
     let _ = writeln!(out, "# `{}`\n", m.name);
@@ -416,16 +497,29 @@ fn module_page(m: &Module) -> String {
     let _ = writeln!(out, "```colibri\nimport {}\n```\n", m.name);
     if !m.caps.is_empty() {
         let caps: Vec<String> = m.caps.iter().map(|c| format!("`{c}`")).collect();
-        let _ = writeln!(
-            out,
-            "Needs the {} {}.\n",
+        let (list, noun) = (
             caps.join(" and "),
             if caps.len() > 1 {
                 "capabilities"
             } else {
                 "capability"
-            }
+            },
         );
+        let _ = match m.spread {
+            Spread::EveryFunction => writeln!(
+                out,
+                "Every function of this module needs the {list} {noun}; the methods of its types need none of their own.\n"
+            ),
+            Spread::SomeFunctions => writeln!(
+                out,
+                "Some functions of this module need the {list} {noun}, and each of them says so.\n"
+            ),
+            Spread::ThroughImports => writeln!(
+                out,
+                "This module is written in Colibri on top of modules that need the {list} {noun}, so what a call needs depends on what it does.\n"
+            ),
+            Spread::None => Ok(()),
+        };
     }
     let _ = writeln!(out, "Back to the [standard library index]({INDEX}).\n");
 
@@ -439,7 +533,7 @@ fn module_page(m: &Module) -> String {
         }
         let _ = writeln!(out, "## {title}\n");
         for item in chosen {
-            render_item(out, &page, item, &by_type, m);
+            render_item(out, &page, item, &by_type);
         }
     };
     section(&mut out, "Constants", &|i| {
@@ -457,6 +551,29 @@ fn module_page(m: &Module) -> String {
     section(&mut out, "Functions", &|i| {
         matches!(i.kind, ItemKind::Fn(_))
     });
+    if !foreign.is_empty() {
+        let _ = writeln!(out, "## Implementations for other types\n");
+        let _ = writeln!(
+            out,
+            "These are written in this module for types it does not declare, so that, for example, a number can be the left side of an operator.\n"
+        );
+        for item in foreign {
+            let ItemKind::Impl(decl) = &item.kind else {
+                continue;
+            };
+            let mut text = decl_head(&page, item);
+            text.push_str(" {\n");
+            for method in &decl.items {
+                if let ItemKind::Fn(_) = method.kind {
+                    for line in page.fn_head(method).lines() {
+                        let _ = writeln!(text, "    {line}");
+                    }
+                }
+            }
+            text.push('}');
+            code(&mut out, &text);
+        }
+    }
     while out.ends_with("\n\n") {
         out.pop();
     }
@@ -474,13 +591,7 @@ fn name_of(item: &Item) -> String {
     }
 }
 
-fn render_item(
-    out: &mut String,
-    page: &Page,
-    item: &Item,
-    by_type: &BTreeMap<String, TypeEntry>,
-    m: &Module,
-) {
+fn render_item(out: &mut String, page: &Page, item: &Item, by_type: &BTreeMap<String, TypeEntry>) {
     match &item.kind {
         ItemKind::Binding(_) => {
             let head = page.head(item, item.span.end);
@@ -493,22 +604,22 @@ fn render_item(
                 .to_string();
             let _ = writeln!(out, "### `{name}`\n");
             code(out, &head);
-            notes(out, page, item, m);
+            notes(out, page, item);
         }
         ItemKind::Fn(decl) => {
             let _ = writeln!(out, "### `{}`\n", decl.name.name);
             code(out, &page.fn_head(item));
-            notes(out, page, item, m);
+            notes(out, page, item);
         }
         ItemKind::TypeAlias(_) => {
             let _ = writeln!(out, "### `{}`\n", name_of(item));
             code(out, &page.head(item, item.span.end));
-            notes(out, page, item, m);
+            notes(out, page, item);
         }
         ItemKind::Struct(decl) => {
             let _ = writeln!(out, "### `{}`\n", decl.name.name);
             code(out, &struct_head(page, item, decl));
-            notes(out, page, item, m);
+            notes(out, page, item);
             for field in decl.fields.iter().filter(|f| page.host || f.public) {
                 if let Some(doc) = &field.doc {
                     let _ = writeln!(
@@ -526,7 +637,7 @@ fn render_item(
             {
                 out.push('\n');
             }
-            type_members(out, page, &decl.name.name, by_type, m);
+            type_members(out, page, &decl.name.name, by_type);
         }
         ItemKind::Enum(decl) => {
             let _ = writeln!(out, "### `{}`\n", decl.name.name);
@@ -537,7 +648,7 @@ fn render_item(
             }
             text.push('}');
             code(out, &text);
-            notes(out, page, item, m);
+            notes(out, page, item);
             let documented: Vec<_> = decl.variants.iter().filter(|v| v.doc.is_some()).collect();
             for v in &documented {
                 let _ = writeln!(
@@ -550,7 +661,7 @@ fn render_item(
             if !documented.is_empty() {
                 out.push('\n');
             }
-            type_members(out, page, &decl.name.name, by_type, m);
+            type_members(out, page, &decl.name.name, by_type);
         }
         ItemKind::Interface(decl) => {
             let _ = writeln!(out, "### `{}`\n", decl.name.name);
@@ -565,7 +676,7 @@ fn render_item(
             }
             text.push('}');
             code(out, &text);
-            notes(out, page, item, m);
+            notes(out, page, item);
             for method in decl.items.iter().filter(|i| i.doc.is_some()) {
                 let _ = writeln!(
                     out,
@@ -621,13 +732,7 @@ fn struct_head(page: &Page, item: &Item, decl: &StructDecl) -> String {
 }
 
 /// What a type implements, and its methods.
-fn type_members(
-    out: &mut String,
-    page: &Page,
-    name: &str,
-    by_type: &BTreeMap<String, TypeEntry>,
-    m: &Module,
-) {
+fn type_members(out: &mut String, page: &Page, name: &str, by_type: &BTreeMap<String, TypeEntry>) {
     let Some(entry) = by_type.get(name) else {
         return;
     };
@@ -641,12 +746,12 @@ fn type_members(
         };
         let _ = writeln!(out, "#### `{name}.{}`\n", decl.name.name);
         code(out, &page.fn_head(method));
-        notes(out, page, method, m);
+        notes(out, page, method);
     }
 }
 
 /// The doc comment of an item, then its deprecation and capability notes.
-fn notes(out: &mut String, page: &Page, item: &Item, m: &Module) {
+fn notes(out: &mut String, page: &Page, item: &Item) {
     let doc = doc_text(&item.doc);
     if !doc.is_empty() {
         out.push_str(&doc);
@@ -655,10 +760,8 @@ fn notes(out: &mut String, page: &Page, item: &Item, m: &Module) {
     if let Some(message) = attr_text(page, item, "deprecated") {
         let _ = writeln!(out, "**Deprecated:** {message}\n");
     }
-    // A module that needs several capabilities says which one each item needs.
-    if m.caps.len() > 1
-        && let Some(cap) = attr_text(page, item, "requires")
-    {
+    // The capability is asked for at each call, so each function that needs one says which.
+    if let Some(cap) = attr_text(page, item, "requires") {
         let _ = writeln!(out, "Needs the `{cap}` capability.\n");
     }
 }
@@ -667,8 +770,17 @@ fn code(out: &mut String, text: &str) {
     let _ = writeln!(out, "```text\n{text}\n```\n");
 }
 
+/// Whether a file's text starts with the marker of a generated page.
+fn is_generated(text: &str) -> bool {
+    text.replace("\r\n", "\n").starts_with(GENERATED)
+}
+
 /// `colibri doc --std DIR`: writes the pages into `dir`, creating it. With `check`, writes
 /// nothing and fails when a page differs, is missing or is not one the generator makes.
+///
+/// It only ever overwrites or deletes a file that starts with the marker of a generated page.
+/// When a file it would overwrite or delete (a `.md` that is not a page) has no marker, it
+/// touches nothing and fails: `--std guide` instead of `--std guide/std` must not eat a README.
 pub fn run(dir: &Path, check: bool) -> ExitCode {
     let pages = std_pages();
     if check {
@@ -692,6 +804,25 @@ pub fn run(dir: &Path, check: bool) -> ExitCode {
         );
         return ExitCode::from(1);
     }
+    // Everything it would overwrite or delete must be one of its own pages.
+    let mut touched: Vec<String> = pages.iter().map(|(n, _)| n.clone()).collect();
+    touched.extend(extra_files(dir, &pages));
+    let foreign: Vec<&String> = touched
+        .iter()
+        .filter(|n| fs::read_to_string(dir.join(n)).is_ok_and(|text| !is_generated(&text)))
+        .collect();
+    if !foreign.is_empty() {
+        eprintln!(
+            "error: `{}` holds files that `colibri doc --std` did not generate: {}\nnothing was written or deleted; use an empty folder, or one that only holds the generated pages",
+            dir.display(),
+            foreign
+                .iter()
+                .map(|n| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return ExitCode::from(1);
+    }
     if let Err(e) = fs::create_dir_all(dir) {
         eprintln!("error: cannot create `{}`: {e}", dir.display());
         return ExitCode::from(1);
@@ -708,9 +839,7 @@ pub fn run(dir: &Path, check: bool) -> ExitCode {
     }
     // A page of a module that no longer exists is removed.
     for extra in extra_files(dir, &pages) {
-        if extra.ends_with(".md") {
-            let _ = fs::remove_file(dir.join(extra));
-        }
+        let _ = fs::remove_file(dir.join(extra));
     }
     ExitCode::SUCCESS
 }
@@ -722,13 +851,17 @@ fn read_page(path: &Path) -> Option<String> {
         .map(|t| t.replace("\r\n", "\n"))
 }
 
-/// The files of `dir` that are not among `pages`.
+/// The `.md` files of `dir` that are not among `pages` (dotfiles such as `.DS_Store` and other
+/// kinds of file are not the reference's business).
 pub fn extra_files(dir: &Path, pages: &[(String, String)]) -> Vec<String> {
     let mut extra = Vec::new();
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if !pages.iter().any(|(n, _)| *n == name) {
+            if name.ends_with(".md")
+                && !name.starts_with('.')
+                && !pages.iter().any(|(n, _)| *n == name)
+            {
                 extra.push(name);
             }
         }
@@ -760,6 +893,28 @@ mod tests {
         assert!(
             !httpd.contains("`Headers.lines`"),
             "a private method is not documented"
+        );
+    }
+
+    #[test]
+    fn impls_for_other_types_are_on_the_page() {
+        let pages = std_pages();
+        let vec = &pages.iter().find(|(n, _)| n == "vec.md").unwrap().1;
+        assert!(vec.contains("impl Mul[vec2, vec2] for float"), "{vec}");
+        assert!(vec.contains("impl Mul[ivec2, ivec2] for i32"));
+    }
+
+    #[test]
+    fn what_needs_a_capability_is_said_per_function() {
+        let pages = std_pages();
+        let page = |n: &str| &pages.iter().find(|(p, _)| p == n).unwrap().1;
+        // `datetime.now` needs `os`, `datetime.parse` does not.
+        assert!(page("datetime.md").contains("Some functions of this module need"));
+        assert!(page("time.md").contains("Some functions of this module need"));
+        assert!(page("math.md").find("Needs the").is_none());
+        assert!(
+            page("httpd.md").contains("may be")
+                || page("httpd.md").contains("depends on what it does")
         );
     }
 }

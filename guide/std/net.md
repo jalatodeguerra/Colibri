@@ -8,7 +8,7 @@ TCP sockets over IPv4 and IPv6 that read and write lines, bytes and text without
 import net
 ```
 
-Needs the `net` capability.
+Every function of this module needs the `net` capability; the methods of its types need none of their own.
 
 Back to the [standard library index](README.md).
 
@@ -146,14 +146,20 @@ fn close(self)
 fn listen(addr: str) -> Result[Listener]
 ```
 
+Needs the `net` capability.
+
 ### `connect`
 
 ```text
 fn connect(addr: str) -> Result[Conn]
 ```
 
+Needs the `net` capability.
+
 ### `connect_timeout`
 
 ```text
 fn connect_timeout(addr: str, seconds: float) -> Result[Conn]
 ```
+
+Needs the `net` capability.

@@ -8,7 +8,7 @@ A blocking HTTP client that does not block other coroutines.
 import http
 ```
 
-Needs the `net` capability.
+Every function of this module needs the `net` capability; the methods of its types need none of their own.
 
 Back to the [standard library index](README.md).
 
@@ -56,11 +56,15 @@ struct BytesResponse {
 fn get(url: str) -> Result[Response]
 ```
 
+Needs the `net` capability.
+
 ### `post`
 
 ```text
 fn post(url: str, body: str) -> Result[Response]
 ```
+
+Needs the `net` capability.
 
 ### `post_as`
 
@@ -68,11 +72,15 @@ fn post(url: str, body: str) -> Result[Response]
 fn post_as(url: str, body: str, content_type: str) -> Result[Response]
 ```
 
+Needs the `net` capability.
+
 ### `request`
 
 ```text
 fn request(method: str, url: str, headers: Map[str, str], body: str) -> Result[Response]
 ```
+
+Needs the `net` capability.
 
 ### `get_bytes`
 
@@ -80,11 +88,15 @@ fn request(method: str, url: str, headers: Map[str, str], body: str) -> Result[R
 fn get_bytes(url: str) -> Result[BytesResponse]
 ```
 
+Needs the `net` capability.
+
 ### `request_bytes`
 
 ```text
 fn request_bytes(method: str, url: str, headers: Map[str, str], data: Bytes) -> Result[BytesResponse]
 ```
+
+Needs the `net` capability.
 
 ### `to_text`
 
@@ -92,8 +104,12 @@ fn request_bytes(method: str, url: str, headers: Map[str, str], data: Bytes) -> 
 fn to_text(response: BytesResponse) -> Response
 ```
 
+Needs the `net` capability.
+
 ### `set_timeout`
 
 ```text
 fn set_timeout(seconds: float)
 ```
+
+Needs the `net` capability.

@@ -8,7 +8,7 @@ Running subprocesses, with pipes.
 import process
 ```
 
-Needs the `os` capability.
+Every function of this module needs the `os` capability; the methods of its types need none of their own.
 
 Back to the [standard library index](README.md).
 
@@ -85,11 +85,15 @@ struct Options {
 fn options() -> Options
 ```
 
+Needs the `os` capability.
+
 ### `run`
 
 ```text
 fn run(program: str, args: List[str]) -> Result[Output]
 ```
+
+Needs the `os` capability.
 
 ### `run_with`
 
@@ -97,11 +101,15 @@ fn run(program: str, args: List[str]) -> Result[Output]
 fn run_with(program: str, args: List[str], options: Options) -> Result[Output]
 ```
 
+Needs the `os` capability.
+
 ### `output`
 
 ```text
 fn output(program: str, args: List[str]) -> Result[str]
 ```
+
+Needs the `os` capability.
 
 ### `status`
 
@@ -109,11 +117,15 @@ fn output(program: str, args: List[str]) -> Result[str]
 fn status(program: str, args: List[str]) -> Result[int]
 ```
 
+Needs the `os` capability.
+
 ### `shell`
 
 ```text
 fn shell(line: str) -> Result[Output]
 ```
+
+Needs the `os` capability.
 
 ### `spawn`
 
@@ -121,8 +133,12 @@ fn shell(line: str) -> Result[Output]
 fn spawn(program: str, args: List[str]) -> Result[Child]
 ```
 
+Needs the `os` capability.
+
 ### `spawn_with`
 
 ```text
 fn spawn_with(program: str, args: List[str], options: Options) -> Result[Child]
 ```
+
+Needs the `os` capability.

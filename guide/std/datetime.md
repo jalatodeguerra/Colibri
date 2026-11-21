@@ -8,7 +8,7 @@ Dates, times and their formatting.
 import datetime
 ```
 
-Needs the `os` capability.
+Some functions of this module need the `os` capability, and each of them says so.
 
 Back to the [standard library index](README.md).
 
@@ -73,11 +73,15 @@ struct DateTime {
 fn now() -> DateTime
 ```
 
+Needs the `os` capability.
+
 ### `now_local`
 
 ```text
 fn now_local() -> DateTime
 ```
+
+Needs the `os` capability.
 
 ### `new`
 

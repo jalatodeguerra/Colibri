@@ -2,13 +2,13 @@
 
 # `time`
 
-Clocks and sleeping.
+Clocks and sleeping. `sleep` holds the whole thread until it ends; in a coroutine, use `wait`, which lets the others run.
 
 ```colibri
 import time
 ```
 
-Needs the `os` capability.
+Some functions of this module need the `os` capability, and each of them says so.
 
 Back to the [standard library index](README.md).
 
@@ -32,8 +32,12 @@ fn monotonic() -> int
 fn unix() -> float
 ```
 
+Needs the `os` capability.
+
 ### `sleep`
 
 ```text
 fn sleep(seconds: float)
 ```
+
+Needs the `os` capability.

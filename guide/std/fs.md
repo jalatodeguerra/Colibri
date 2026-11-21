@@ -2,13 +2,13 @@
 
 # `fs`
 
-Files and folders: whole-file reads and writes, listing, metadata, and `File` handles that read or write piece by piece.
+Files and folders: whole-file reads and writes, listing, metadata, and `File` handles that read or write piece by piece. The whole-file functions hold the thread until they finish and give other coroutines no turn; the methods of `File` wait without blocking.
 
 ```colibri
 import fs
 ```
 
-Needs the `fs` capability.
+Every function of this module needs the `fs` capability; the methods of its types need none of their own.
 
 Back to the [standard library index](README.md).
 
@@ -111,11 +111,15 @@ fn close(self) -> Result[()]
 fn read(path: str) -> Result[str]
 ```
 
+Needs the `fs` capability.
+
 ### `read_bytes`
 
 ```text
 fn read_bytes(path: str) -> Result[Bytes]
 ```
+
+Needs the `fs` capability.
 
 ### `write`
 
@@ -123,11 +127,15 @@ fn read_bytes(path: str) -> Result[Bytes]
 fn write(path: str, text: str) -> Result[()]
 ```
 
+Needs the `fs` capability.
+
 ### `write_bytes`
 
 ```text
 fn write_bytes(path: str, data: Bytes) -> Result[()]
 ```
+
+Needs the `fs` capability.
 
 ### `append`
 
@@ -135,11 +143,15 @@ fn write_bytes(path: str, data: Bytes) -> Result[()]
 fn append(path: str, text: str) -> Result[()]
 ```
 
+Needs the `fs` capability.
+
 ### `append_bytes`
 
 ```text
 fn append_bytes(path: str, data: Bytes) -> Result[()]
 ```
+
+Needs the `fs` capability.
 
 ### `exists`
 
@@ -147,11 +159,15 @@ fn append_bytes(path: str, data: Bytes) -> Result[()]
 fn exists(path: str) -> bool
 ```
 
+Needs the `fs` capability.
+
 ### `is_file`
 
 ```text
 fn is_file(path: str) -> bool
 ```
+
+Needs the `fs` capability.
 
 ### `is_dir`
 
@@ -159,11 +175,15 @@ fn is_file(path: str) -> bool
 fn is_dir(path: str) -> bool
 ```
 
+Needs the `fs` capability.
+
 ### `list`
 
 ```text
 fn list(path: str) -> Result[List[str]]
 ```
+
+Needs the `fs` capability.
 
 ### `create_dir`
 
@@ -171,11 +191,15 @@ fn list(path: str) -> Result[List[str]]
 fn create_dir(path: str) -> Result[()]
 ```
 
+Needs the `fs` capability.
+
 ### `remove`
 
 ```text
 fn remove(path: str) -> Result[()]
 ```
+
+Needs the `fs` capability.
 
 ### `remove_dir`
 
@@ -183,11 +207,15 @@ fn remove(path: str) -> Result[()]
 fn remove_dir(path: str) -> Result[()]
 ```
 
+Needs the `fs` capability.
+
 ### `remove_tree`
 
 ```text
 fn remove_tree(path: str) -> Result[()]
 ```
+
+Needs the `fs` capability.
 
 ### `walk`
 
@@ -195,11 +223,15 @@ fn remove_tree(path: str) -> Result[()]
 fn walk(path: str) -> Result[List[str]]
 ```
 
+Needs the `fs` capability.
+
 ### `stat`
 
 ```text
 fn stat(path: str) -> Result[Stat]
 ```
+
+Needs the `fs` capability.
 
 ### `stat_follow`
 
@@ -207,11 +239,15 @@ fn stat(path: str) -> Result[Stat]
 fn stat_follow(path: str) -> Result[Stat]
 ```
 
+Needs the `fs` capability.
+
 ### `set_modified`
 
 ```text
 fn set_modified(path: str, unix_seconds: float) -> Result[()]
 ```
+
+Needs the `fs` capability.
 
 ### `copy`
 
@@ -219,11 +255,15 @@ fn set_modified(path: str, unix_seconds: float) -> Result[()]
 fn copy(from: str, to: str) -> Result[()]
 ```
 
+Needs the `fs` capability.
+
 ### `rename`
 
 ```text
 fn rename(from: str, to: str) -> Result[()]
 ```
+
+Needs the `fs` capability.
 
 ### `open`
 
@@ -231,14 +271,20 @@ fn rename(from: str, to: str) -> Result[()]
 fn open(path: str) -> Result[File]
 ```
 
+Needs the `fs` capability.
+
 ### `create`
 
 ```text
 fn create(path: str) -> Result[File]
 ```
 
+Needs the `fs` capability.
+
 ### `open_append`
 
 ```text
 fn open_append(path: str) -> Result[File]
 ```
+
+Needs the `fs` capability.

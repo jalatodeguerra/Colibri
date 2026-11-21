@@ -9,23 +9,23 @@ One page for each module of the standard library. A page lists the constants, ty
 | [`args`](args.md) | Command-line argument parsing. | Rust | nothing |
 | [`base64`](base64.md) | Base64 encoding and decoding of text and of `Bytes`. | Rust | nothing |
 | [`csv`](csv.md) | CSV text to records or to rows with a header, and back. | Rust | nothing |
-| [`datetime`](datetime.md) | Dates, times and their formatting. | Rust | `os` |
-| [`fs`](fs.md) | Files and folders: whole-file reads and writes, listing, metadata, and `File` handles that read or write piece by piece. | Rust | `fs` |
+| [`datetime`](datetime.md) | Dates, times and their formatting. | Rust | `os` (some functions) |
+| [`fs`](fs.md) | Files and folders: whole-file reads and writes, listing, metadata, and `File` handles that read or write piece by piece. The whole-file functions hold the thread until they finish and give other coroutines no turn; the methods of `File` wait without blocking. | Rust | `fs` |
 | [`hash`](hash.md) | SHA-256 of text and of `Bytes`. | Rust | nothing |
 | [`hex`](hex.md) | Hexadecimal encoding and decoding of text and of `Bytes`. | Rust | nothing |
 | [`http`](http.md) | A blocking HTTP client that does not block other coroutines. | Rust | `net` |
-| [`httpd`](httpd.md) | An HTTP/1.1 server written in Colibri on top of `net`: a router, request bodies, streamed responses, limits and timeouts, and a graceful stop. | Colibri | `net`, `os` |
-| [`io`](io.md) | Standard input and output. | Rust | `os` |
+| [`httpd`](httpd.md) | An HTTP/1.1 server written in Colibri on top of `net`: a router, request bodies, streamed responses, limits and timeouts, and a graceful stop. | Colibri | `net`, `os` (may, through its imports) |
+| [`io`](io.md) | Standard input and output. | Rust | `os` (some functions) |
 | [`json`](json.md) | JSON: `encode`, typed `decode[T]`, and `Value` for a document of unknown shape. | Rust | nothing |
 | [`math`](math.md) | Math functions and constants. | Rust | nothing |
 | [`net`](net.md) | TCP sockets over IPv4 and IPv6 that read and write lines, bytes and text without blocking other coroutines. | Rust | `net` |
-| [`os`](os.md) | Environment variables, the program's arguments and `exit`. | Rust | `os` |
+| [`os`](os.md) | Environment variables, the program's arguments and `exit`. | Rust | `os` (some functions) |
 | [`path`](path.md) | Path manipulation. Paths are `/`-separated text on every system. | Rust | nothing |
 | [`process`](process.md) | Running subprocesses, with pipes. | Rust | `os` |
 | [`rand`](rand.md) | Random numbers. | Rust | nothing |
 | [`regex`](regex.md) | Regular expressions. | Rust | nothing |
 | [`str`](str.md) | String helpers and parsing. | Rust | nothing |
-| [`time`](time.md) | Clocks and sleeping. | Rust | `os` |
+| [`time`](time.md) | Clocks and sleeping. `sleep` holds the whole thread until it ends; in a coroutine, use `wait`, which lets the others run. | Rust | `os` (some functions) |
 | [`toml`](toml.md) | `toml.parse` into a `json.Value`, and typed `toml.decode[T]`. | Rust | nothing |
 | [`vec`](vec.md) | Vectors of 2, 3 and 4 components of `f32` and `i32`, written in Colibri on top of the operator interfaces. | Colibri | nothing |
 
@@ -34,15 +34,9 @@ One page for each module of the standard library. A page lists the constants, ty
 - `import fs` makes the module's names available as `fs.read`, `fs.Error` and so on.
 - `Option[T]` in a signature is the optional type, written `T?` in your own code.
 - `Result[T]` is a result whose error is the language's `Error`. A module's own error type is `Error` on its page, and `fs.Error` in your code.
-- **Needs** is the capability a program must be granted to use the module. `colibri run` grants all of them; a Rust program that embeds Colibri chooses which its scripts get.
+- **Needs** is the capability a program must be granted to call a function: the checker asks for it at each call of a function that says it needs one. `colibri run` grants all of them; a Rust program that embeds Colibri chooses which its scripts get.
 - `List`, `Map`, `Set`, `str`, `Result` and the functions that need no `import` are not modules: see [built-in types and functions](../builtins.md).
 - Methods of a type are listed under the type. `self` is the value the method is called on.
 - The modules written in Rust have signatures only for now; their doc comments are still to be written.
 
-## Regenerating
-
-```sh
-colibri doc --std guide/std
-```
-
-The test suite fails when these pages differ from what the command writes.
+These pages are generated: do not edit them by hand.

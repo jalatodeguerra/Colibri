@@ -645,3 +645,43 @@ fn angle(v: vec2) -> f32
 ```
 
 The angle of a vector from the x axis, in radians, in `-PI..=PI` (`0` for the zero vector).
+
+## Implementations for other types
+
+These are written in this module for types it does not declare, so that, for example, a number can be the left side of an operator.
+
+```text
+impl Mul[vec2, vec2] for float {
+    fn mul(self, v: vec2) -> vec2
+}
+```
+
+```text
+impl Mul[ivec2, ivec2] for i32 {
+    fn mul(self, v: ivec2) -> ivec2
+}
+```
+
+```text
+impl Mul[vec3, vec3] for float {
+    fn mul(self, v: vec3) -> vec3
+}
+```
+
+```text
+impl Mul[ivec3, ivec3] for i32 {
+    fn mul(self, v: ivec3) -> ivec3
+}
+```
+
+```text
+impl Mul[vec4, vec4] for float {
+    fn mul(self, v: vec4) -> vec4
+}
+```
+
+```text
+impl Mul[ivec4, ivec4] for i32 {
+    fn mul(self, v: ivec4) -> ivec4
+}
+```

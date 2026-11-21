@@ -8,7 +8,7 @@ Standard input and output.
 import io
 ```
 
-Needs the `os` capability.
+Some functions of this module need the `os` capability, and each of them says so.
 
 Back to the [standard library index](README.md).
 
@@ -49,8 +49,12 @@ fn eprintln(text: str)
 fn read_line() -> Result[Option[str]]
 ```
 
+Needs the `os` capability.
+
 ### `read_all`
 
 ```text
 fn read_all() -> Result[str]
 ```
+
+Needs the `os` capability.

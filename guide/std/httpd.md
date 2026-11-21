@@ -8,7 +8,7 @@ An HTTP/1.1 server written in Colibri on top of `net`: a router, request bodies,
 import httpd
 ```
 
-Needs the `net` and `os` capabilities.
+This module is written in Colibri on top of modules that need the `net` and `os` capabilities, so what a call needs depends on what it does.
 
 Back to the [standard library index](README.md).
 

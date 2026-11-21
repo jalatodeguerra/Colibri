@@ -8,7 +8,7 @@ Environment variables, the program's arguments and `exit`.
 import os
 ```
 
-Needs the `os` capability.
+Some functions of this module need the `os` capability, and each of them says so.
 
 Back to the [standard library index](README.md).
 
@@ -32,17 +32,23 @@ enum Error {
 fn env(name: str) -> Option[str]
 ```
 
+Needs the `os` capability.
+
 ### `vars`
 
 ```text
 fn vars() -> Map[str, str]
 ```
 
+Needs the `os` capability.
+
 ### `set_env`
 
 ```text
 fn set_env(name: str, value: str)
 ```
+
+Needs the `os` capability.
 
 ### `args`
 
@@ -56,11 +62,15 @@ fn args() -> List[str]
 fn temp_dir() -> str
 ```
 
+Needs the `os` capability.
+
 ### `cwd`
 
 ```text
 fn cwd() -> Result[str]
 ```
+
+Needs the `os` capability.
 
 ### `platform`
 
@@ -73,3 +83,5 @@ fn platform() -> str
 ```text
 fn exit(code: int) -> !
 ```
+
+Needs the `os` capability.

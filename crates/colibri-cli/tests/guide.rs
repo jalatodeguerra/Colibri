@@ -62,21 +62,25 @@ impl Block {
 /// The fenced blocks of a Markdown text, in order. Only fences that start a line count.
 fn blocks_of(page: &str, text: &str) -> Vec<Block> {
     let mut out = Vec::new();
-    let mut open: Option<(usize, String, Vec<String>, String)> = None;
+    // The line, the language, the other words, the code and the indentation of the fence: a
+    // fence inside a list item is indented, and is a sample all the same.
+    let mut open: Option<(usize, String, Vec<String>, String, usize)> = None;
     for (i, line) in text.replace("\r\n", "\n").lines().enumerate() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
         match &mut open {
             None => {
-                if let Some(info) = line.strip_prefix("```") {
+                if let Some(info) = trimmed.strip_prefix("```") {
                     let mut words = info
                         .split([',', ' '])
                         .filter(|w| !w.is_empty())
                         .map(str::to_string);
                     let lang = words.next().unwrap_or_default();
-                    open = Some((i + 1, lang, words.collect(), String::new()));
+                    open = Some((i + 1, lang, words.collect(), String::new(), indent));
                 }
             }
-            Some((start, lang, words, code)) => {
-                if line.trim_end() == "```" {
+            Some((start, lang, words, code, fence_indent)) => {
+                if trimmed.trim_end() == "```" {
                     out.push(Block {
                         page: page.to_string(),
                         line: *start,
@@ -86,7 +90,8 @@ fn blocks_of(page: &str, text: &str) -> Vec<Block> {
                     });
                     open = None;
                 } else {
-                    code.push_str(line);
+                    let strip = line.len() - line.trim_start_matches(' ').len();
+                    code.push_str(&line[strip.min(*fence_indent)..]);
                     code.push('\n');
                 }
             }
@@ -94,6 +99,52 @@ fn blocks_of(page: &str, text: &str) -> Vec<Block> {
     }
     assert!(open.is_none(), "{page}: a fence is never closed");
     out
+}
+
+/// The languages a fence may name. Anything else (a misspelt `colibri`, a fence with no
+/// language) is a mistake that would let a sample escape the checks.
+const LANGUAGES: &[&str] = &["colibri", "output", "toml", "sh", "console", "text"];
+
+/// What is wrong with the fences of a page, as messages with their places.
+fn fence_problems(page: &str, blocks: &[Block]) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (i, b) in blocks.iter().enumerate() {
+        let place = b.place();
+        if !LANGUAGES.contains(&b.lang.as_str()) {
+            problems.push(format!(
+                "{place}: the fence language `{}` is not one of {LANGUAGES:?}",
+                b.lang
+            ));
+            continue;
+        }
+        for w in &b.words {
+            let known = match b.lang.as_str() {
+                "colibri" => ["no-run", "test", "error"].contains(&w.as_str()),
+                _ => false,
+            } || w.starts_with("pkg=") && (b.lang == "colibri" || b.lang == "toml")
+                || w.starts_with("file=") && (b.lang == "colibri" || b.lang == "toml");
+            if !known {
+                problems.push(format!("{place}: the fence word `{w}` means nothing here"));
+            }
+        }
+        if b.value("pkg").is_some() != b.value("file").is_some() {
+            problems.push(format!("{place}: `pkg=` and `file=` go together"));
+        }
+        if b.lang == "output" {
+            let before = i.checked_sub(1).map(|j| &blocks[j]);
+            match before {
+                Some(p) if p.lang == "colibri" && !p.has("no-run") => {}
+                Some(p) if p.lang == "colibri" => problems.push(format!(
+                    "{place}: an `output` block after a `no-run` sample is never compared"
+                )),
+                _ => problems.push(format!(
+                    "{place}: an `output` block must follow a colibri sample"
+                )),
+            }
+        }
+    }
+    let _ = page;
+    problems
 }
 
 /// The Markdown pages of `guide/` itself (the reference in `guide/std` is generated and has
@@ -134,6 +185,17 @@ fn colibri(dir: &Path, args: &[&str]) -> Ran {
     let child = Command::new(env!("CARGO_BIN_EXE_colibri"))
         .args(args)
         .current_dir(dir)
+        // The `http` client follows the proxy variables and does not exempt loopback, so a
+        // proxy in the environment would take the guide's loopback requests away from the
+        // machine. The samples must not depend on whose machine they run on.
+        .env_remove("HTTP_PROXY")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY")
+        .env_remove("NO_PROXY")
+        .env_remove("http_proxy")
+        .env_remove("https_proxy")
+        .env_remove("all_proxy")
+        .env_remove("no_proxy")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -319,6 +381,9 @@ fn check_all(test: &str, run: bool) -> Vec<String> {
             };
             let ran = colibri(&job.cwd, &args);
             let want = job.expected.as_deref().unwrap_or("");
+            if !ran.stderr.is_empty() {
+                problems.push(format!("{place}: it wrote to stderr:\n{}", ran.stderr));
+            }
             if ran.code != Some(0) {
                 problems.push(format!(
                     "{place}: `colibri {}` ended with {:?}\n{}{}",
@@ -361,17 +426,8 @@ fn the_guide_has_its_pages_and_samples() {
         if name != "README.md" {
             assert!(samples >= 10, "{name} has only {samples} colibri samples");
         }
-        // An `output` block is the expected output of the sample before it.
-        for (i, b) in blocks.iter().enumerate() {
-            if b.lang == "output" {
-                let before = i.checked_sub(1).map(|j| &blocks[j]);
-                assert!(
-                    before.is_some_and(|p| p.lang == "colibri"),
-                    "{}: an `output` block must follow a colibri sample",
-                    b.place()
-                );
-            }
-        }
+        let problems = fence_problems(name, &blocks);
+        assert!(problems.is_empty(), "\n{}", problems.join("\n"));
     }
 }
 
@@ -438,4 +494,150 @@ fn colibri_doc_writes_and_checks_the_reference() {
     std::fs::write(dir.join("fs.md"), "edited by hand\n").unwrap();
     let ran = check(1);
     assert!(ran.stderr.contains("fs.md"), "{}", ran.stderr);
+}
+
+#[test]
+fn the_fence_rules_catch_what_would_escape_the_checks() {
+    let check = |md: &str| fence_problems("x.md", &blocks_of("x.md", md));
+    assert!(
+        check(
+            "```colibri
+fn main() {}
+```
+"
+        )
+        .is_empty()
+    );
+    // An indented fence in a list item is a sample, and is read.
+    let blocks = blocks_of(
+        "x.md",
+        "- item
+
+  ```colibri
+  let x = 1
+  ```
+",
+    );
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].code, "let x = 1\n");
+    // A misspelt language, a fence with no language, an unknown word.
+    assert_eq!(
+        check(
+            "```Colibri
+let x = 1
+```
+"
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        check(
+            "```colibri-
+let x = 1
+```
+"
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        check(
+            "```
+let x = 1
+```
+"
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        check(
+            "```colibri,norun
+let x = 1
+```
+"
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        check(
+            "```colibri,pkg=a
+let x = 1
+```
+"
+        )
+        .len(),
+        1
+    );
+    // An output after a `no-run` sample, or after nothing.
+    assert_eq!(
+        check(
+            "```colibri,no-run
+let x = 1
+```
+```output
+1
+```
+"
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        check(
+            "```output
+1
+```
+"
+        )
+        .len(),
+        1
+    );
+    assert!(
+        check(
+            "```colibri,error
+let x = 1
+```
+```output
+m
+```
+"
+        )
+        .is_empty()
+    );
+}
+
+/// `colibri doc --std` writes only files it generated: a folder with a hand-written page is
+/// refused whole, and nothing in it changes.
+#[test]
+fn colibri_doc_refuses_a_folder_with_pages_it_did_not_write() {
+    let scratch = Scratch::new("doc-refuse");
+    let dir = scratch.0.join("guide");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mine = dir.join("tutorial.md");
+    std::fs::write(&mine, "# my tutorial\n").unwrap();
+    let readme = dir.join("README.md");
+    std::fs::write(&readme, "# my readme\n").unwrap();
+    let ran = colibri(&scratch.0, &["doc", "--std", s(&dir)]);
+    assert_eq!(ran.code, Some(1), "{}", ran.stderr);
+    assert!(ran.stderr.contains("tutorial.md"), "{}", ran.stderr);
+    assert!(ran.stderr.contains("README.md"), "{}", ran.stderr);
+    assert_eq!(std::fs::read_to_string(&mine).unwrap(), "# my tutorial\n");
+    assert_eq!(std::fs::read_to_string(&readme).unwrap(), "# my readme\n");
+    // Nothing was created beside them either.
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+    // A marked page that is no longer one of the modules is removed, an unmarked one is not
+    // touched, and a dotfile is left alone.
+    let empty = scratch.0.join("std");
+    let ran = colibri(&scratch.0, &["doc", "--std", s(&empty)]);
+    assert_eq!(ran.code, Some(0), "{}", ran.stderr);
+    std::fs::write(empty.join(".DS_Store"), "x").unwrap();
+    let old = std::fs::read_to_string(empty.join("fs.md")).unwrap();
+    std::fs::write(empty.join("gone.md"), old).unwrap();
+    let ran = colibri(&scratch.0, &["doc", "--std", s(&empty)]);
+    assert_eq!(ran.code, Some(0), "{}", ran.stderr);
+    assert!(!empty.join("gone.md").exists());
+    assert!(empty.join(".DS_Store").exists());
 }
