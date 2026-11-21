@@ -207,7 +207,7 @@ fn elem(xs: List[P], i: int) {
     xs[i].bump(2)
 }";
     // The list and the index are parameters, so they are the anchor as they are. The element is
-    // copied into the callee's register 0 (`PlaceGet r3`), the callee changes it in place, and
+    // copied into the callee's register 0 (`ListGetAt r3`), the callee changes it in place, and
     // the write-back (unguarded) comes before the hold is released. The landing pad of the call
     // does the same two steps in the same order.
     let expected = "\
@@ -215,29 +215,28 @@ fn elem(xs: List[P], i: int) {
 0001  LoadInt r4 2
 0002  PlaceHold r0 r1
 0003    site Elem[]
-0004  PlaceGet r3 r0 r1
-0005    site Elem[] unguarded
-0006  Call r2 base=r3 fn#1
-0007  PlaceSet r0 r1 r3
-0008    site Elem[] unguarded
-0009  Unhold
+0004  ListGetAt r3 r0[r1]
+0005  Call r2 base=r3 fn#1
+0006  PlaceSet r0 r1 r3
+0007    site Elem[] unguarded
+0008  Unhold
+0009  CheckHooks
 0010  CheckHooks
-0011  CheckHooks
-0012  ReturnUnit
-0013  PlaceSet r0 r1 r3
-0014    site Elem[] unguarded
-0015  Unhold
+0011  ReturnUnit
+0012  PlaceSet r0 r1 r3
+0013    site Elem[] unguarded
+0014  Unhold
+0015  FoldHooks
 0016  FoldHooks
-0017  FoldHooks
-0018  Jmp -> 0019
-0019  Resume
-unwind [0000, 0001) -> 0017
-unwind [0002, 0004) -> 0016
-unwind [0004, 0006) -> 0015
-unwind [0006, 0007) -> 0013
-unwind [0007, 0009) -> 0015
-unwind [0010, 0011) -> 0017
-unwind [0013, 0015) -> 0015
+0017  Jmp -> 0018
+0018  Resume
+unwind [0000, 0001) -> 0016
+unwind [0002, 0004) -> 0015
+unwind [0004, 0005) -> 0014
+unwind [0005, 0006) -> 0012
+unwind [0006, 0008) -> 0014
+unwind [0009, 0010) -> 0016
+unwind [0012, 0014) -> 0014
 ";
     assert_eq!(dis(src, "elem"), expected);
 }

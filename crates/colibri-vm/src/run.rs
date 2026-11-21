@@ -536,6 +536,13 @@ impl Machine {
                     sync!();
                     tri!(self.op_place(fiber, &chunk, base, pc, op));
                 }
+                Op::ListGetAt { .. }
+                | Op::ListSetAt { .. }
+                | Op::MapGetAt { .. }
+                | Op::MapSetAt { .. } => {
+                    sync!();
+                    tri!(self.op_elem(fiber, &chunk, base, pc, op));
+                }
                 Op::Unhold => {
                     fiber.holds.pop();
                 }

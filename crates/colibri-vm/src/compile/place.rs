@@ -156,6 +156,22 @@ impl FnCompiler<'_> {
                 let site = self.add_site(Site::Path(path.into()));
                 self.emit(Op::GetPath { d, s: res.a, site }, span);
             }
+            AnchorKind::Elem if path.is_empty() => {
+                let op = Op::ListGetAt {
+                    d,
+                    l: res.a,
+                    i: res.b,
+                };
+                self.emit(op, span);
+            }
+            AnchorKind::Entry if path.is_empty() => {
+                let op = Op::MapGetAt {
+                    d,
+                    m: res.a,
+                    k: res.b,
+                };
+                self.emit(op, span);
+            }
             _ => {
                 let site = self.place_site(res, path, false);
                 self.emit(
@@ -190,6 +206,20 @@ impl FnCompiler<'_> {
                 },
                 span,
             );
+        } else if guarded && path.is_empty() && res.kind == AnchorKind::Elem {
+            let op = Op::ListSetAt {
+                l: res.a,
+                i: res.b,
+                v,
+            };
+            self.emit(op, span);
+        } else if guarded && path.is_empty() && res.kind == AnchorKind::Entry {
+            let op = Op::MapSetAt {
+                m: res.a,
+                k: res.b,
+                v,
+            };
+            self.emit(op, span);
         } else {
             let site = self.place_site(res, path, guarded);
             self.emit(

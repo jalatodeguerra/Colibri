@@ -476,6 +476,32 @@ pub enum Op {
     },
     /// Releases the newest hold of the fiber's hold stack.
     Unhold,
+    /// `d = xs[i]` for the list in `l` and the integer in `i`: a clone of the element, a panic
+    /// when the index is out of bounds. (`PlaceGet` with an empty path, without the site.)
+    ListGetAt {
+        d: Reg,
+        l: Reg,
+        i: Reg,
+    },
+    /// `xs[i] = take(v)`: refused while the list is held, a panic out of bounds; the old element
+    /// is released.
+    ListSetAt {
+        l: Reg,
+        i: Reg,
+        v: Reg,
+    },
+    /// `d = m[k]`: a clone of the value, a panic when the key is missing.
+    MapGetAt {
+        d: Reg,
+        m: Reg,
+        k: Reg,
+    },
+    /// `m[k] = take(v)`: refused while the map is held; adds the entry when the key is missing.
+    MapSetAt {
+        m: Reg,
+        k: Reg,
+        v: Reg,
+    },
     /// `l.<path of the site> = take(s)` on a local that is a plain slot: the struct or tuple is
     /// made unique along the path, the old part is released.
     SetPath {
@@ -770,6 +796,10 @@ impl Chunk {
             Op::ObjGet { d, o, idx } => format!("ObjGet r{d} r{o} .{idx}"),
             Op::ToWeak { d, s } => format!("ToWeak r{d} r{s}"),
             Op::FromWeak { d, s } => format!("FromWeak r{d} r{s}"),
+            Op::ListGetAt { d, l, i } => format!("ListGetAt r{d} r{l}[r{i}]"),
+            Op::ListSetAt { l, i, v } => format!("ListSetAt r{l}[r{i}] r{v}"),
+            Op::MapGetAt { d, m, k } => format!("MapGetAt r{d} r{m}[r{k}]"),
+            Op::MapSetAt { m, k, v } => format!("MapSetAt r{m}[r{k}] r{v}"),
             Op::PlaceGet { d, a, b } => format!("PlaceGet r{d} r{a} r{b}"),
             Op::PlaceTake { d, a, b } => format!("PlaceTake r{d} r{a} r{b}"),
             Op::PlaceSet { a, b, v } => format!("PlaceSet r{a} r{b} r{v}"),

@@ -312,6 +312,95 @@ impl Machine {
         }
     }
 
+    /// `xs[i]` and `m[k]` with an empty path: the instructions of the commonest places, which
+    /// need no site (they do what `place_read` and `try_write` do for the same anchors).
+    #[inline(never)]
+    pub(crate) fn op_elem(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        op: Op,
+    ) -> Result<(), Ctl> {
+        let span = chunk.spans[pc - 1];
+        let r = |i: u16| base + usize::from(i);
+        match op {
+            Op::ListGetAt { d, l, i } => {
+                let got = match (&fiber.regs[r(l)], &fiber.regs[r(i)]) {
+                    (Value::List(l), Value::Int(i)) => l.get(*i),
+                    _ => return Err(self.internal(fiber, span, "an ill-typed list index")),
+                };
+                match got {
+                    Ok(v) => Self::put_reg(fiber, r(d), v),
+                    Err(e) => return Err(self.bounds_panic(fiber, span, "index", e)),
+                }
+            }
+            Op::ListSetAt { l, i, v } => {
+                let value = std::mem::replace(&mut fiber.regs[r(v)], Value::Unit);
+                let done = match (&fiber.regs[r(l)], &fiber.regs[r(i)]) {
+                    (Value::List(l), Value::Int(i)) => l.assign(*i, value),
+                    _ => {
+                        self.release(value);
+                        return Err(self.internal(fiber, span, "an ill-typed list index"));
+                    }
+                };
+                match done {
+                    Ok(old) => {
+                        if !is_scalar_value(&old) {
+                            self.release(old);
+                        }
+                    }
+                    Err((e, unplaced)) => {
+                        self.release(unplaced);
+                        return Err(self.list_error(fiber, span, "index", e));
+                    }
+                }
+            }
+            Op::MapGetAt { d, m, k } => {
+                let got = match (&fiber.regs[r(m)], &fiber.regs[r(k)]) {
+                    (Value::Map(m), key) => m.get(key).ok_or_else(|| self.shown_key(key)),
+                    _ => return Err(self.internal(fiber, span, "an ill-typed map index")),
+                };
+                match got {
+                    Ok(v) => Self::put_reg(fiber, r(d), v),
+                    Err(key) => {
+                        let message = format!("key {key} not found in map");
+                        return Err(self.panic(fiber, span, message));
+                    }
+                }
+            }
+            Op::MapSetAt { m, k, v } => {
+                let value = std::mem::replace(&mut fiber.regs[r(v)], Value::Unit);
+                let (map, key) = match (&fiber.regs[r(m)], &fiber.regs[r(k)]) {
+                    (Value::Map(m), key) => (Rc::clone(m), key.clone()),
+                    _ => {
+                        self.release(value);
+                        return Err(self.internal(fiber, span, "an ill-typed map index"));
+                    }
+                };
+                let mut new = Some(value);
+                let updated = map.update(&key, true, |slot| {
+                    std::mem::replace(slot, new.take().unwrap_or(Value::Unit))
+                });
+                let old = match updated {
+                    Ok(Some(old)) => Ok(old),
+                    Ok(None) => self.insert_entry(fiber, &map, key, &mut new, span),
+                    Err(violation) => Err(self.panic(fiber, span, violation.0)),
+                };
+                if let Some(unused) = new {
+                    self.release(unused);
+                }
+                let old = old?;
+                if !is_scalar_value(&old) {
+                    self.release(old);
+                }
+            }
+            _ => return Err(self.internal(fiber, span, "not an element instruction")),
+        }
+        Ok(())
+    }
+
     /// `l.<path> = s` on a plain local slot.
     #[inline(never)]
     pub(crate) fn op_set_path(
