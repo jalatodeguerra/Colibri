@@ -7,7 +7,8 @@
 use std::fmt::Write;
 use std::rc::Rc;
 
-use colibri_check::hir::{BinOp, Body, FnId, FormatSpec, Intrinsic, UnOp};
+use colibri_check::hir::{BinOp, Body, FnId, FormatSpec, Intrinsic, UnOp, ValueProj};
+use colibri_check::types::TypeId;
 use colibri_core::value::Value;
 use colibri_syntax::Span;
 
@@ -50,6 +51,15 @@ pub enum Op {
     /// Releases the value in `r` and leaves `()`.
     Drop {
         r: Reg,
+    },
+    /// Drops a string or bytes value: nothing can observe when it dies, so no `release`.
+    DropInert {
+        r: Reg,
+    },
+    /// Releases `r+n-1` down to `r`, newest first (a run of temporaries at a statement end).
+    DropN {
+        r: Reg,
+        n: u16,
     },
 
     // ---- locals and cells ----
@@ -371,22 +381,115 @@ pub enum Op {
         site: u16,
     },
 
+    // ---- heap values ----
+    /// `d = Struct { site fields }`: the fields are cloned from the registers of the site.
+    NewStruct {
+        d: Reg,
+        site: u16,
+    },
+    /// `d = new class object` (tracked for the leak detector).
+    NewObject {
+        d: Reg,
+        site: u16,
+    },
+    NewVariant {
+        d: Reg,
+        site: u16,
+    },
+    NewTuple {
+        d: Reg,
+        site: u16,
+    },
+    NewList {
+        d: Reg,
+        site: u16,
+    },
+    /// `d = {}`: an empty map, filled by `MapInsert`.
+    NewMap {
+        d: Reg,
+    },
+    /// Inserts the entry `k: v` into the map in `m` the way a map literal does (a key that a
+    /// user `Eq` calls equal to a stored one is that key).
+    MapInsert {
+        m: Reg,
+        k: Reg,
+        v: Reg,
+    },
+    NewRange {
+        d: Reg,
+        a: Reg,
+        b: Reg,
+        incl: bool,
+    },
+    /// `d = s.<path of the site>`: a clone of the part a struct or tuple projection selects.
+    GetPath {
+        d: Reg,
+        s: Reg,
+        site: u16,
+    },
+    /// `d = field idx of the class object in o`.
+    ObjGet {
+        d: Reg,
+        o: Reg,
+        idx: u16,
+    },
+    /// `d = weak(take(s))`: the strong value is released.
+    ToWeak {
+        d: Reg,
+        s: Reg,
+    },
+    /// `d = upgrade of the weak value in s` as `T?`.
+    FromWeak {
+        d: Reg,
+        s: Reg,
+    },
+
+    // ---- unwinding (vm-plan §2.4) ----
+    /// Jumps over a deferred statement when the budget grace is used up.
+    SkipIfDead {
+        off: i32,
+    },
+    /// Statement end: folds the panics of `Drop` hooks that ran meanwhile into a panic.
+    CheckHooks,
+    /// The same inside a landing pad: folds them into the panic on its way out.
+    FoldHooks,
+    /// The end of a landing pad: the frame's panic goes on to its caller.
+    Resume,
+
     /// A node the VM does not compile yet: panics with the site's message when executed.
     Unsupported {
         site: u16,
     },
 }
 
-const _: () = assert!(std::mem::size_of::<Op>() == 8);
+/// One range of instructions and the landing pad a panic inside it goes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnwindEntry {
+    /// The first instruction covered.
+    pub start: u32,
+    /// One past the last instruction covered.
+    pub end: u32,
+    /// Where the pad starts.
+    pub pad: u32,
+}
 
 /// What an instruction needs beyond its operands.
 #[derive(Debug, Clone)]
 pub enum Site {
+    /// The registers whose values a constructor clones, in order, and what it builds.
+    Struct(TypeId, Box<[Reg]>),
+    Object(TypeId, Box<[Reg]>),
+    Variant(TypeId, u32, Box<[Reg]>),
+    Regs(Box<[Reg]>),
+    Path(Box<[ValueProj]>),
     Binary(BinOp),
     Unary(UnOp),
     Call(FnId),
     Format(Box<FormatSpec>),
-    Intrinsic { which: Intrinsic, argc: u16 },
+    Intrinsic {
+        which: Intrinsic,
+        argc: u16,
+    },
     F32ToFloat,
     Unsupported(String),
 }
@@ -404,17 +507,30 @@ pub struct Chunk {
     pub spans: Box<[Span]>,
     pub consts: Box<[Value]>,
     pub sites: Box<[Site]>,
+    /// Landing pads, sorted by `start`: a panic at an instruction inside `[start, end)` continues
+    /// at `pad` (vm-plan §2.4). An instruction outside every range has nothing to clean up.
+    pub unwind: Box<[UnwindEntry]>,
     /// Registers of one frame: the locals, then the most temporaries alive at once.
     pub nregs: u16,
     pub nparams: u16,
 }
 
 impl Chunk {
+    /// The landing pad of the instruction at `pc`, if one covers it.
+    pub fn pad_for(&self, pc: u32) -> Option<u32> {
+        let i = self.unwind.partition_point(|e| e.start <= pc);
+        let e = self.unwind.get(i.checked_sub(1)?)?;
+        (pc < e.end).then_some(e.pad)
+    }
+
     /// The instructions, one per line (`pc  op`), for tests and debugging.
     pub fn disassemble(&self) -> String {
         let mut out = String::new();
         for (pc, op) in self.code.iter().enumerate() {
             let _ = writeln!(out, "{pc:04}  {}", self.describe(pc, op));
+        }
+        for e in self.unwind.iter() {
+            let _ = writeln!(out, "unwind [{:04}, {:04}) -> {:04}", e.start, e.end, e.pad);
         }
         out
     }
@@ -429,6 +545,8 @@ impl Chunk {
             Op::Copy { d, s } => format!("Copy r{d} r{s}"),
             Op::Move { d, s } => format!("Move r{d} r{s}"),
             Op::Drop { r } => format!("Drop r{r}"),
+            Op::DropN { r, n } => format!("DropN r{r} n={n}"),
+            Op::DropInert { r } => format!("DropInert r{r}"),
             Op::StoreLocal { l, s } => format!("StoreLocal r{l} r{s}"),
             Op::NewCell { l, s } => format!("NewCell r{l} r{s}"),
             Op::CellGet { d, l } => format!("CellGet r{d} r{l}"),
@@ -518,6 +636,22 @@ impl Chunk {
                 format!("Intrinsic r{d} base=r{base} {}", self.site_text(site))
             }
             Op::Coerce { d, s, site } => format!("Coerce r{d} r{s} {}", self.site_text(site)),
+            Op::NewStruct { d, site } => format!("NewStruct r{d} {}", self.site_text(site)),
+            Op::NewObject { d, site } => format!("NewObject r{d} {}", self.site_text(site)),
+            Op::NewVariant { d, site } => format!("NewVariant r{d} {}", self.site_text(site)),
+            Op::NewTuple { d, site } => format!("NewTuple r{d} {}", self.site_text(site)),
+            Op::NewList { d, site } => format!("NewList r{d} {}", self.site_text(site)),
+            Op::NewMap { d } => format!("NewMap r{d}"),
+            Op::MapInsert { m, k, v } => format!("MapInsert r{m} r{k} r{v}"),
+            Op::NewRange { d, a, b, incl } => format!("NewRange r{d} r{a} r{b} incl={incl}"),
+            Op::GetPath { d, s, site } => format!("GetPath r{d} r{s} {}", self.site_text(site)),
+            Op::ObjGet { d, o, idx } => format!("ObjGet r{d} r{o} .{idx}"),
+            Op::ToWeak { d, s } => format!("ToWeak r{d} r{s}"),
+            Op::FromWeak { d, s } => format!("FromWeak r{d} r{s}"),
+            Op::SkipIfDead { off } => format!("SkipIfDead -> {:04}", target(off.into())),
+            Op::CheckHooks => "CheckHooks".to_string(),
+            Op::FoldHooks => "FoldHooks".to_string(),
+            Op::Resume => "Resume".to_string(),
             Op::Unsupported { site } => format!("Unsupported {}", self.site_text(site)),
         }
     }
@@ -543,8 +677,20 @@ impl Chunk {
             Some(Site::Format(spec)) => format!("{spec:?}"),
             Some(Site::Intrinsic { which, argc }) => format!("{which:?}/{argc}"),
             Some(Site::F32ToFloat) => "F32ToFloat".to_string(),
+            Some(Site::Struct(ty, regs)) => format!("struct#{} {}", ty.0, regs_text(regs)),
+            Some(Site::Object(ty, regs)) => format!("class#{} {}", ty.0, regs_text(regs)),
+            Some(Site::Variant(ty, v, regs)) => {
+                format!("enum#{}.{v} {}", ty.0, regs_text(regs))
+            }
+            Some(Site::Regs(regs)) => regs_text(regs),
+            Some(Site::Path(path)) => format!("{path:?}"),
             Some(Site::Unsupported(what)) => what.clone(),
             None => "?".to_string(),
         }
     }
+}
+
+fn regs_text(regs: &[Reg]) -> String {
+    let list: Vec<String> = regs.iter().map(|r| format!("r{r}")).collect();
+    format!("[{}]", list.join(" "))
 }

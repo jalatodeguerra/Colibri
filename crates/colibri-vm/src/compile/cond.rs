@@ -132,7 +132,7 @@ impl FnCompiler<'_> {
 
     /// Emits the drops of everything above `m` except the register `keep`, and forgets it.
     fn drop_above_keeping(&mut self, m: super::Mark, keep: u16, span: colibri_syntax::Span) {
-        self.emit_drops_above(m.cleanups, Some(keep), span);
+        self.emit_exit(m.cleanups, Some(keep), span);
     }
 }
 

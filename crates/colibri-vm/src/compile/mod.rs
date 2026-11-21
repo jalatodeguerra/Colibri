@@ -12,6 +12,13 @@
 //!   eagerly too, right after the operation that used them;
 //! * every other value is kept alive until the end of the statement and dropped newest first
 //!   (ARCHITECTURE §2 rule 2), which is what the tree-walker's temporaries stack does.
+//!
+//! What has to die when control leaves is one compile-time stack of [`Item`]s: registers to
+//! drop, registered `defer`s, a hook-folding mark at every statement and scope, and `var self`
+//! receivers to write back. A normal exit (a block's end, `break`, `continue`, `return`) emits
+//! the items above its depth, newest first. A panic does the same from a landing pad: every
+//! instruction is tagged with the stack node it runs under, and the unwind table maps a range
+//! of instructions to the pad of its node (`unwind.rs` of the runtime side, vm-plan §2.4).
 
 mod call;
 mod cond;
@@ -19,14 +26,15 @@ mod expr;
 mod place;
 mod stmt;
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
-use colibri_check::hir::{Body, FnId, Storage};
+use colibri_check::hir::{Body, FnId, Program, Stmt, Storage};
 use colibri_check::types::Ty;
 use colibri_core::value::Value;
 use colibri_syntax::Span;
 
-use crate::bytecode::{Chunk, Op, Reg, Site};
+use crate::bytecode::{Chunk, Op, Reg, Site, UnwindEntry};
 
 /// What the compiler needs to know about the loaded program.
 #[derive(Debug, Default, Clone)]
@@ -34,6 +42,35 @@ pub struct CompileEnv {
     /// By global id: the global is a script value, which may be used before its line has run,
     /// so reads and writes check that it is initialised.
     pub checked_globals: Vec<bool>,
+    /// By function id: the function is the `Drop` hook of a class. A hook runs while the panics
+    /// of earlier hooks may be pending, and the tree-walker folds them at its next statement
+    /// end, so every statement of a hook checks.
+    pub hook_fns: Vec<bool>,
+}
+
+impl CompileEnv {
+    /// What the compiler needs from a checked program.
+    pub fn for_program(program: &Program) -> CompileEnv {
+        let mut checked_globals = vec![false; program.globals.len()];
+        for g in &program.init_order[program.script_from.min(program.init_order.len())..] {
+            checked_globals[g.0 as usize] = true;
+        }
+        let mut hook_fns = vec![false; program.fns.len()];
+        for imp in &program.impls {
+            if imp.iface == colibri_check::types::DROP
+                && !imp.derived
+                && matches!(imp.key, colibri_check::hir::TypeKey::Adt(_))
+                && let Some(Some(f)) = imp.methods.first()
+                && let Some(slot) = hook_fns.get_mut(f.0 as usize)
+            {
+                *slot = true;
+            }
+        }
+        CompileEnv {
+            checked_globals,
+            hook_fns,
+        }
+    }
 }
 
 /// Why a body did not compile.
@@ -107,6 +144,112 @@ struct Temp {
     kind: Kind,
 }
 
+/// Something that has to happen when control leaves the code that registered it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Item {
+    /// A register that owns a value to drop: a temporary or a bound local.
+    Reg(Reg),
+    /// A register that owns a string or bytes value: dropping it cannot run a `Drop` hook.
+    Plain(Reg),
+    /// A `defer` statement (index into the compiler's list), run at the exit.
+    Defer(u32),
+    /// The end of a statement or scope, where `Drop` hook panics fold into the outcome. The
+    /// payload is how many releases had been emitted when the group began.
+    Fold(u32),
+    /// A `var self` receiver moved into a call window: written back into its local.
+    Recv { l: Reg, r: Reg },
+}
+
+/// The stack of items as a path in a trie, so equal stacks share one node and the landing pad
+/// of a node is built once. Node 0 is the empty stack.
+struct Trie {
+    nodes: Vec<(u32, Item)>,
+    index: HashMap<(u32, Item), u32>,
+}
+
+impl Trie {
+    fn new() -> Trie {
+        Trie {
+            nodes: vec![(0, Item::Fold(0))],
+            index: HashMap::new(),
+        }
+    }
+
+    fn child(&mut self, parent: u32, item: Item) -> u32 {
+        if let Some(&n) = self.index.get(&(parent, item)) {
+            return n;
+        }
+        let n = self.nodes.len() as u32;
+        self.nodes.push((parent, item));
+        self.index.insert((parent, item), n);
+        n
+    }
+
+    /// The items of the stack a node stands for, bottom first.
+    fn items(&self, mut node: u32) -> Vec<Item> {
+        let mut out = Vec::new();
+        while node != 0 {
+            let (parent, item) = self.nodes[node as usize];
+            out.push(item);
+            node = parent;
+        }
+        out.reverse();
+        out
+    }
+}
+
+/// The compile-time stack: `nodes[i]` is the trie node of `items[..=i]`.
+#[derive(Default)]
+struct Stack {
+    items: Vec<Item>,
+    nodes: Vec<u32>,
+}
+
+impl Stack {
+    fn top(&self) -> u32 {
+        self.nodes.last().copied().unwrap_or(0)
+    }
+}
+
+/// Instructions that cannot raise a panic, so no landing pad covers them. (A `Drop` runs hooks,
+/// but their panics wait for the statement end.)
+fn cannot_fail(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Drop { .. }
+            | Op::DropN { .. }
+            | Op::DropInert { .. }
+            | Op::Move { .. }
+            | Op::Copy { .. }
+            | Op::LoadUnit { .. }
+            | Op::LoadBool { .. }
+            | Op::LoadInt { .. }
+            | Op::LoadK { .. }
+            | Op::Jmp { .. }
+            | Op::UnwrapCell { .. }
+            | Op::SkipIfDead { .. }
+            | Op::FoldHooks
+            | Op::Resume
+            | Op::Return { .. }
+            | Op::ReturnUnit
+    )
+}
+
+/// Whether `items` holds the register `r`.
+fn holds(items: &[Item], r: Reg) -> bool {
+    items
+        .iter()
+        .any(|&i| i == Item::Reg(r) || i == Item::Plain(r))
+}
+
+/// A registered `defer`.
+struct DeferInfo {
+    stmt: Rc<Stmt>,
+    /// How many temporaries were live when it was registered: its code uses the registers
+    /// above them.
+    temps: usize,
+}
+
 /// Where a statement's temporaries start.
 #[derive(Clone, Copy)]
 pub(crate) struct Mark {
@@ -117,11 +260,14 @@ pub(crate) struct Mark {
 /// An enclosing loop, for `break` and `continue`.
 pub(crate) struct LoopCtx {
     pub id: colibri_check::hir::LoopId,
-    /// How many cleanups were live when the loop began.
+    /// How many items were on the stack when the loop began.
     pub cleanups: usize,
     pub brk: Label,
     pub cont: Label,
 }
+
+/// The state of an instruction that no pad covers.
+const NO_STATE: u32 = u32::MAX;
 
 pub(crate) struct FnCompiler<'a> {
     pub env: &'a CompileEnv,
@@ -129,19 +275,31 @@ pub(crate) struct FnCompiler<'a> {
     pub fuse: bool,
     code: Vec<Op>,
     spans: Vec<Span>,
+    /// Parallel to `code`: the trie node the instruction runs under.
+    states: Vec<u32>,
     consts: Vec<Value>,
     sites: Vec<Site>,
     nlocals: usize,
     temps: Vec<Temp>,
     max_temps: usize,
-    /// Registers that hold a value to drop at an exit, innermost last: droppable temporaries
-    /// and bound non-scalar locals.
-    cleanups: Vec<Reg>,
+    stack: Stack,
+    trie: Trie,
+    defers: Vec<DeferInfo>,
+    /// Instructions run under this node instead of the stack's (an exit sequence in progress).
+    state_override: Option<u32>,
+    /// Compiling a landing pad: the empty stack is a state of its own there.
+    in_pad: bool,
+    /// Every statement ends with a hook check (a `Drop` hook, a deferred statement).
+    always_check: bool,
+    /// How many instructions that can release a value (and so run a `Drop` hook) were emitted.
+    releases: u32,
     labels: Vec<LabelState>,
     pub loops: Vec<LoopCtx>,
     /// The `Step` instruction of the straight-line run being emitted.
     step_at: Option<usize>,
     failure: Option<Fail>,
+    /// The pad of each node that has one, once the pads are emitted.
+    pad_labels: HashMap<u32, Label>,
 }
 
 impl<'a> FnCompiler<'a> {
@@ -157,18 +315,28 @@ impl<'a> FnCompiler<'a> {
             fuse,
             code: Vec::new(),
             spans: Vec::new(),
+            states: Vec::new(),
             consts: Vec::new(),
             sites: Vec::new(),
             nlocals: body.locals.len(),
             temps: Vec::new(),
             max_temps: 0,
-            cleanups: Vec::new(),
+            stack: Stack::default(),
+            trie: Trie::new(),
+            defers: Vec::new(),
+            state_override: None,
+            in_pad: false,
+            always_check: fn_id
+                .is_some_and(|f| env.hook_fns.get(f.0 as usize).copied() == Some(true)),
+            releases: 0,
             labels: Vec::new(),
             loops: Vec::new(),
             step_at: None,
             failure: None,
+            pad_labels: HashMap::new(),
         };
         c.function();
+        c.emit_pads();
         if let Some(f) = c.failure.take() {
             return Err(f);
         }
@@ -179,6 +347,7 @@ impl<'a> FnCompiler<'a> {
                 body.name
             )));
         }
+        let unwind = c.unwind_table();
         Ok(Chunk {
             fn_id,
             body: Rc::clone(body),
@@ -186,6 +355,7 @@ impl<'a> FnCompiler<'a> {
             spans: c.spans.into_boxed_slice(),
             consts: c.consts.into_boxed_slice(),
             sites: c.sites.into_boxed_slice(),
+            unwind,
             nregs: nregs as u16,
             nparams: body.param_count as u16,
         })
@@ -200,9 +370,28 @@ impl<'a> FnCompiler<'a> {
     // ---- emitting ----
 
     pub(crate) fn emit(&mut self, op: Op, span: Span) -> usize {
+        let node = self.state_override.unwrap_or_else(|| self.stack.top());
+        // Without a pad or a receiver to hand back, the empty stack has nothing to run.
+        let state = if (node == 0 && !self.in_pad && !self.root_is_real()) || cannot_fail(&op) {
+            NO_STATE
+        } else {
+            node
+        };
         self.code.push(op);
         self.spans.push(span);
+        self.states.push(state);
         self.code.len() - 1
+    }
+
+    /// Whether a panic with nothing to clean up still has to run the end of the function: a
+    /// `var self` parameter in a cell is unwrapped before it goes back to the caller.
+    fn root_is_real(&self) -> bool {
+        self.body.mutates_self
+            && self
+                .body
+                .locals
+                .first()
+                .is_some_and(|l| l.storage == Storage::Cell)
     }
 
     pub(crate) fn add_const(&mut self, v: Value) -> u32 {
@@ -261,6 +450,7 @@ impl<'a> FnCompiler<'a> {
         let mut too_far = false;
         match &mut self.code[at] {
             Op::Jmp { off: o }
+            | Op::SkipIfDead { off: o }
             | Op::JmpIf { off: o, .. }
             | Op::JmpIfNot { off: o, .. }
             | Op::Loop { off: o } => match wide {
@@ -350,8 +540,10 @@ impl<'a> FnCompiler<'a> {
     /// order they were made (a result register is allocated before the operands that produce
     /// it, but the value comes after theirs).
     pub(crate) fn own(&mut self, r: Reg) {
-        if matches!(self.temp_kind(r), Some(Kind::Inert | Kind::Owned)) {
-            self.cleanups.push(r);
+        match self.temp_kind(r) {
+            Some(Kind::Owned) => self.push_item(Item::Reg(r)),
+            Some(Kind::Inert) => self.push_item(Item::Plain(r)),
+            _ => {}
         }
     }
 
@@ -374,7 +566,7 @@ impl<'a> FnCompiler<'a> {
         match kind {
             Kind::Scalar => {}
             Kind::Inert => {
-                self.emit(Op::Drop { r }, span);
+                self.emit(Op::DropInert { r }, span);
                 self.forget_cleanup(r);
             }
             Kind::Owned => return,
@@ -395,61 +587,368 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    // ---- the item stack ----
+
+    pub(crate) fn push_item(&mut self, item: Item) {
+        let node = self.trie.child(self.stack.top(), item);
+        self.stack.items.push(item);
+        self.stack.nodes.push(node);
+    }
+
+    pub(crate) fn truncate_stack(&mut self, len: usize) {
+        self.stack.items.truncate(len);
+        self.stack.nodes.truncate(len);
+    }
+
+    /// Removes the newest item that is the register `r`, wherever it sits.
     fn forget_cleanup(&mut self, r: Reg) {
-        if let Some(i) = self.cleanups.iter().rposition(|&c| c == r) {
-            self.cleanups.remove(i);
+        let Some(i) = self
+            .stack
+            .items
+            .iter()
+            .rposition(|&c| c == Item::Reg(r) || c == Item::Plain(r))
+        else {
+            return;
+        };
+        self.stack.items.remove(i);
+        self.stack.nodes.truncate(i);
+        for j in i..self.stack.items.len() {
+            let item = self.stack.items[j];
+            let node = self.trie.child(self.stack.top(), item);
+            self.stack.nodes.push(node);
         }
+    }
+
+    /// The node of `items` followed by `extra`.
+    fn node_of(&mut self, items: &[Item], extra: Option<Item>) -> u32 {
+        let mut node = 0;
+        for &item in items.iter().chain(extra.iter()) {
+            node = self.trie.child(node, item);
+        }
+        node
     }
 
     pub(crate) fn mark(&self) -> Mark {
         Mark {
             temps: self.temps.len(),
-            cleanups: self.cleanups.len(),
+            cleanups: self.stack.items.len(),
         }
     }
 
-    /// Ends a statement: whatever it left alive is dropped, newest first.
-    pub(crate) fn end_stmt(&mut self, m: Mark, span: Span) {
-        let drops: Vec<Reg> = self.cleanups[m.cleanups..].iter().rev().copied().collect();
-        for r in drops {
-            self.emit(Op::Drop { r }, span);
+    /// Opens a statement: whatever it leaves alive is dropped at its end, newest first, and the
+    /// panics of `Drop` hooks that ran meanwhile fold in there.
+    pub(crate) fn begin_group(&mut self) -> Mark {
+        let m = self.mark();
+        self.push_fold();
+        m
+    }
+
+    /// Marks a group end on the stack (a statement's or a scope's).
+    pub(crate) fn push_fold(&mut self) {
+        self.push_item(Item::Fold(self.releases));
+    }
+
+    /// An instruction that can release a value of type `ty` was emitted: if it is a class
+    /// object (or holds one), a `Drop` hook may run and panic.
+    pub(crate) fn note_release(&mut self, ty: &Ty) {
+        if kind_of(ty) == Kind::Owned {
+            self.releases += 1;
         }
+    }
+
+    /// Ends a statement or tail: the items above `m` run, newest first.
+    pub(crate) fn end_group(&mut self, m: Mark, span: Span) {
+        self.emit_exit(m.cleanups, None, span);
         self.abandon(m);
     }
 
     /// Resets the compile-time state to `m` without emitting drops (the code that follows is
     /// unreachable, or the registers were consumed).
     pub(crate) fn abandon(&mut self, m: Mark) {
-        self.cleanups.truncate(m.cleanups);
+        self.truncate_stack(m.cleanups);
         self.temps.truncate(m.temps);
     }
 
     /// Binds a non-scalar local: it is dropped when its scope ends.
     pub(crate) fn bind_local_cleanup(&mut self, r: Reg, ty: &Ty) {
-        if !is_scalar(ty) {
-            self.cleanups.push(r);
+        match kind_of(ty) {
+            Kind::Scalar => {}
+            Kind::Inert => self.push_item(Item::Plain(r)),
+            Kind::Owned => self.push_item(Item::Reg(r)),
         }
     }
 
     pub(crate) fn cleanup_depth(&self) -> usize {
-        self.cleanups.len()
+        self.stack.items.len()
     }
 
-    /// Emits the drops of every cleanup above `depth`, newest first, without forgetting them
+    /// Whether the group that began when `releases` stood at `start` can have released a
+    /// value, so a hook may have panicked in it.
+    fn may_have_released(&self, start: u32) -> bool {
+        self.always_check || self.releases != start
+    }
+
+    /// Emits what leaving down to `depth` does: the registers above it dropped, defers run,
+    /// receivers written back, hook panics folded, newest first, without forgetting any of it
     /// (a `break` leaves the scope on one path only). `keep` is a register that must survive
-    /// (the value being returned).
-    pub(crate) fn emit_drops_above(&mut self, depth: usize, keep: Option<Reg>, span: Span) {
-        let drops: Vec<Reg> = self.cleanups[depth..].iter().rev().copied().collect();
-        for r in drops {
-            if Some(r) != keep {
-                self.emit(Op::Drop { r }, span);
+    /// (the value being returned or the value of a block); a panic raised on the way drops it.
+    pub(crate) fn emit_exit(&mut self, depth: usize, keep: Option<Reg>, span: Span) {
+        let items = self.stack.items.clone();
+        let mut i = items.len();
+        while i > depth {
+            i -= 1;
+            // What a panic raised by the code of item `i` still has to clean up: everything
+            // below it, and the value being kept.
+            let below = |c: &mut Self| {
+                let extra = keep.filter(|&k| !holds(&items[..i], k)).map(Item::Reg);
+                c.node_of(&items[..i], extra)
+            };
+            match items[i] {
+                Item::Reg(r) | Item::Plain(r) if Some(r) == keep => {}
+                Item::Plain(r) => {
+                    self.emit(Op::DropInert { r }, span);
+                }
+                Item::Reg(r) => {
+                    // A run of consecutive registers is one instruction.
+                    let mut lo = r;
+                    while i > depth
+                        && let Item::Reg(q) = items[i - 1]
+                        && Some(q) != keep
+                        && q + 1 == lo
+                    {
+                        lo = q;
+                        i -= 1;
+                    }
+                    self.releases += 1;
+                    if lo == r {
+                        self.emit(Op::Drop { r }, span);
+                    } else {
+                        self.emit(
+                            Op::DropN {
+                                r: lo,
+                                n: r - lo + 1,
+                            },
+                            span,
+                        );
+                    }
+                }
+                Item::Defer(idx) => {
+                    let node = below(self);
+                    let mut prefix = items[..i].to_vec();
+                    prefix.extend(keep.filter(|&k| !holds(&items[..i], k)).map(Item::Reg));
+                    self.emit_defer(idx, &prefix, node, span, self.temps.len());
+                }
+                Item::Fold(start) => {
+                    if self.may_have_released(start) {
+                        let node = below(self);
+                        self.state_override = Some(node);
+                        self.emit(Op::CheckHooks, span);
+                        self.state_override = None;
+                    }
+                }
+                Item::Recv { l, r } => {
+                    self.emit(Op::Move { d: l, s: r }, span);
+                }
             }
         }
     }
 
-    /// Ends a block scope: drops what it bound and forgets it.
-    pub(crate) fn end_scope(&mut self, depth: usize, span: Span) {
-        self.emit_drops_above(depth, None, span);
-        self.cleanups.truncate(depth);
+    /// Ends a block scope: runs what it registered and forgets it. `keep` holds the value of
+    /// the block.
+    pub(crate) fn end_scope(&mut self, depth: usize, keep: Option<Reg>, span: Span) {
+        self.emit_exit(depth, keep, span);
+        self.truncate_stack(depth);
+    }
+
+    // ---- defer ----
+
+    /// Whether a `defer` is registered where the code being emitted is.
+    pub(crate) fn has_defer(&self) -> bool {
+        self.stack.items.iter().any(|i| matches!(i, Item::Defer(_)))
+    }
+
+    /// Registers a `defer` statement; it runs at every exit of the scope it is in.
+    pub(crate) fn register_defer(&mut self, stmt: &Rc<Stmt>) {
+        let idx = self.defers.len() as u32;
+        self.defers.push(DeferInfo {
+            stmt: Rc::clone(stmt),
+            temps: self.temps.len(),
+        });
+        self.push_item(Item::Defer(idx));
+    }
+
+    /// The code of a deferred statement, skipped past the grace of an exhausted budget. It runs
+    /// with `prefix` on the stack (what is still to be cleaned up if it panics) and, as a
+    /// statement, folds hook panics at its end.
+    fn emit_defer(&mut self, idx: u32, prefix: &[Item], node: u32, span: Span, floor: usize) {
+        let stmt = Rc::clone(&self.defers[idx as usize].stmt);
+        // Its registers start above the temporaries live where it was registered, and above any
+        // the exit it runs for keeps alive (`floor`).
+        let temps = self.defers[idx as usize].temps.max(floor);
+        let skip = self.new_label();
+        self.state_override = Some(node);
+        self.emit_to(Op::SkipIfDead { off: 0 }, span, skip);
+        self.state_override = None;
+        // Its own statements see the stack as it is once the defer has been taken off.
+        let mut stack = Stack::default();
+        for &item in prefix {
+            let n = self.trie.child(stack.top(), item);
+            stack.items.push(item);
+            stack.nodes.push(n);
+        }
+        let saved_stack = std::mem::replace(&mut self.stack, stack);
+        let dummy = Temp { kind: Kind::Scalar };
+        let saved_temps = std::mem::replace(&mut self.temps, vec![dummy; temps]);
+        let saved_check = std::mem::replace(&mut self.always_check, true);
+        self.step_at = None;
+        self.stmt(&stmt);
+        self.step_at = None;
+        self.always_check = saved_check;
+        self.temps = saved_temps;
+        self.stack = saved_stack;
+        self.bind(skip);
+    }
+
+    // ---- landing pads and the unwind table ----
+
+    /// Emits the landing pads after the body: one per stack node that an instruction runs
+    /// under, each doing the work of its top item and then jumping to the pad of the node
+    /// below, down to the end that resumes the panic in the caller.
+    fn emit_pads(&mut self) {
+        if self.failure.is_some() {
+            return;
+        }
+        let has_release = self.releases > 0 || !self.defers.is_empty();
+        let mut pads: HashMap<u32, Label> = HashMap::new();
+        let mut emitted: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut work: Vec<u32> = Vec::new();
+        let mut scanned = 0;
+        self.in_pad = true;
+        let mut root_needed = self.root_is_real();
+        loop {
+            while scanned < self.states.len() {
+                let st = self.states[scanned];
+                scanned += 1;
+                if st == NO_STATE || pads.contains_key(&st) {
+                    continue;
+                }
+                if !self.pad_needed(st, has_release) {
+                    self.states[scanned - 1] = NO_STATE;
+                    continue;
+                }
+                let l = self.new_label();
+                pads.insert(st, l);
+                work.push(st);
+            }
+            let Some(n) = work.pop() else { break };
+            if emitted.contains(&n) {
+                continue;
+            }
+            let mut cur = n;
+            loop {
+                if emitted.contains(&cur) || cur == 0 {
+                    // The rest is emitted elsewhere (or is the end): jump to it.
+                    root_needed |= cur == 0;
+                    let span = self.body.span;
+                    self.state_override = Some(NO_STATE);
+                    self.emit_to(Op::Jmp { off: 0 }, span, pads[&cur]);
+                    self.state_override = None;
+                    break;
+                }
+                emitted.insert(cur);
+                let (parent, item) = self.trie.nodes[cur as usize];
+                let label = match pads.get(&cur) {
+                    Some(&l) => l,
+                    None => {
+                        let l = self.new_label();
+                        pads.insert(cur, l);
+                        l
+                    }
+                };
+                self.bind(label);
+                let span = self.body.span;
+                self.state_override = Some(parent);
+                match item {
+                    Item::Reg(r) | Item::Plain(r) => {
+                        self.emit(Op::Drop { r }, span);
+                    }
+                    Item::Defer(idx) => {
+                        let prefix = self.trie.items(parent);
+                        self.emit_defer(idx, &prefix, parent, span, 0);
+                    }
+                    Item::Fold(_) => {
+                        // Nothing in this body can release a value, so no hook ran in it.
+                        if has_release || self.always_check {
+                            self.emit(Op::FoldHooks, span);
+                        }
+                    }
+                    Item::Recv { l, r } => {
+                        self.emit(Op::Move { d: l, s: r }, span);
+                    }
+                }
+                self.state_override = None;
+                // The pad of the node below follows directly.
+                if !pads.contains_key(&parent) {
+                    let l = self.new_label();
+                    pads.insert(parent, l);
+                }
+                cur = parent;
+            }
+        }
+        if root_needed || pads.contains_key(&0) {
+            let l = match pads.get(&0) {
+                Some(&l) => l,
+                None => self.new_label(),
+            };
+            pads.insert(0, l);
+            self.bind(l);
+            let span = self.body.span;
+            if self.root_is_real() {
+                self.emit(Op::UnwrapCell { r: 0 }, span);
+            }
+            self.emit(Op::Resume, span);
+        }
+        self.pad_labels = pads;
+    }
+
+    /// Whether an instruction under node `n` needs a landing pad: not when nothing it could
+    /// have to run is more than a hook fold in a body that never releases anything.
+    fn pad_needed(&self, n: u32, has_release: bool) -> bool {
+        if n == 0 || has_release || self.root_is_real() {
+            return true;
+        }
+        let mut node = n;
+        while node != 0 {
+            let (parent, item) = self.trie.nodes[node as usize];
+            if !matches!(item, Item::Fold(_)) {
+                return true;
+            }
+            node = parent;
+        }
+        false
+    }
+
+    /// The unwind table: runs of instructions under the same node, with the pc of its pad.
+    fn unwind_table(&self) -> Box<[UnwindEntry]> {
+        let mut out: Vec<UnwindEntry> = Vec::new();
+        let mut pc = 0;
+        while pc < self.states.len() {
+            let st = self.states[pc];
+            if st == NO_STATE {
+                pc += 1;
+                continue;
+            }
+            let start = pc;
+            while pc < self.states.len() && self.states[pc] == st {
+                pc += 1;
+            }
+            let pad = self.labels[self.pad_labels[&st].0].pos.unwrap_or(0) as u32;
+            out.push(UnwindEntry {
+                start: start as u32,
+                end: pc as u32,
+                pad,
+            });
+        }
+        out.into_boxed_slice()
     }
 }

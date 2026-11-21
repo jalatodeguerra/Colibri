@@ -31,16 +31,13 @@ bytes/to_str.colibri  # the built-in `BytesToStr`
 classes/class_as_map_key.colibri  # class objects
 classes/class_equality_in_collections.colibri  # class objects
 classes/class_in_struct_shares.colibri  # class objects
-classes/construct_with_defaults.colibri  # class objects
 classes/error_assign_to_let_field_ok.colibri  # class objects
 classes/field_of_struct_in_class.colibri  # class objects
 classes/methods_change_fields.colibri  # class objects
 classes/node_tree_example.colibri  # class objects
 classes/reference_semantics.colibri  # class objects
-classes/returned_from_function.colibri  # class objects
 classes/shared_through_function.colibri  # class objects
 classes/show_guards_cycles.colibri  # class objects
-classes/show_prints_fields.colibri  # class objects
 closures/basic_closure.colibri  # closures
 closures/block_body_needs_return.colibri  # closures
 closures/block_body_without_value.colibri  # closures
@@ -113,7 +110,6 @@ collections/list_index_read_write.colibri  # lists
 collections/list_insert_remove.colibri  # lists
 collections/list_is_shared.colibri  # lists
 collections/list_join.colibri  # the built-in `ListJoin`
-collections/list_literals_and_show.colibri  # lists
 collections/list_map_closure_cannot_change_the_list.colibri  # lists
 collections/list_map_filter.colibri  # lists
 collections/list_methods_chain.colibri  # the built-in `ListMap`
@@ -139,7 +135,6 @@ collections/list_sort_user_ord.colibri  # lists
 collections/list_sort_with_nan_panics.colibri  # lists
 collections/list_sorted.colibri  # lists
 collections/list_sorted_comparator_cannot_change_the_list.colibri  # lists
-collections/list_structural_equality.colibri  # lists
 collections/list_sum.colibri  # the built-in `ListSum`
 collections/list_sum_overflow_panics.colibri  # the built-in `ListSum`
 collections/list_zip.colibri  # lists
@@ -188,7 +183,6 @@ compare/compare_user_ord_and_shadowing.colibri  # `Compare`
 compare/struct_derives_ord.colibri  # struct values
 compare/struct_ord_user_override.colibri  # lists
 compare/user_ord_with_derived_eq.colibri  # struct values
-conversions/constants_of_a_shadowed_name.colibri  # struct values
 conversions/conversion_calls_in_expressions.colibri  # lists
 coroutines/cancel_at_shutdown.colibri  # `go`
 coroutines/cancel_self.colibri  # class objects
@@ -242,29 +236,13 @@ coroutines/wait_orders_ticks.colibri  # `go`
 coroutines/wait_real_clock.colibri  # `go`
 coroutines/wait_until.colibri  # class objects
 defer/defer_assignment_and_method_call.colibri  # class objects
-defer/defer_in_loop_runs_each_iteration.colibri  # `defer`
-defer/defer_with_if_statement.colibri  # `defer`
-defer/drops_and_defers_in_one_order.colibri  # class objects
 defer/interleaves_with_drops.colibri  # class objects
-defer/lifo_order.colibri  # `defer`
 defer/panic_in_defer_after_normal_exit.colibri  # `defer`
-defer/remaining_cleanups_run_after_a_panicking_defer.colibri  # class objects
-defer/return_value_is_computed_before_defers.colibri  # `defer`
-defer/runs_at_block_not_function_end.colibri  # `defer`
-defer/runs_at_scope_exit.colibri  # `defer`
-defer/runs_on_break_and_continue.colibri  # `defer`
-defer/runs_on_panic.colibri  # `defer`
-defer/runs_on_return.colibri  # `defer`
 defer/second_panic_becomes_a_note.colibri  # `defer`
-defer/sees_later_assignments.colibri  # `defer`
-defer/unregistered_defer_does_not_run.colibri  # `defer`
-deprecated/field_in_own_impl_and_impl_of_deprecated_type.colibri  # struct values
 deprecated/function_and_method.colibri  # struct values
 deprecated/interface_methods.colibri  # struct values
 deprecated/types.colibri  # struct values
-deprecated/values_and_fields.colibri  # struct values
 dispatch/class_in_interface_is_shared.colibri  # class objects
-dispatch/class_with_impl_eq_uses_it.colibri  # class objects
 dispatch/derived_interfaces_through_bounds.colibri  # struct values
 dispatch/derived_methods_called_directly.colibri  # struct values
 dispatch/interface_dispatch_on_generic_receiver_types.colibri  # calls through interfaces
@@ -280,87 +258,36 @@ dispatch/total_area_static_and_dynamic.colibri  # lists
 dispatch/user_clone_overrides.colibri  # struct values
 dispatch/user_eq_and_hash_for_map_keys.colibri  # maps
 dispatch/user_eq_overrides_derived.colibri  # struct values
-dispatch/user_ord_overrides.colibri  # struct values
-dispatch/user_show_calling_default_show_of_fields.colibri  # struct values
-dispatch/user_show_used_by_print_and_interpolation.colibri  # struct values
 drop_hooks/drop_through_interface_value.colibri  # lists
 drop_hooks/drops_in_loop_iterations.colibri  # `for` over this kind of value
-drop_hooks/fields_drop_in_declaration_order_after_hook.colibri  # class objects
-drop_hooks/hook_runs_before_fields_are_released.colibri  # class objects
-drop_hooks/hook_runs_during_panic_unwinding.colibri  # class objects
-drop_hooks/hook_runs_when_object_dies.colibri  # class objects
 drop_hooks/hook_sees_the_final_field_values.colibri  # class objects
-drop_hooks/hook_that_drops_other_objects.colibri  # class objects
-drop_hooks/hooks_and_defers_share_one_order.colibri  # class objects
 drop_hooks/list_elements_drop_by_index.colibri  # lists
-drop_hooks/locals_drop_in_reverse_declaration_order.colibri  # class objects
-drop_hooks/module_level_objects_drop_at_shutdown.colibri  # class objects
-drop_hooks/overwriting_a_variable_runs_the_hook.colibri  # class objects
-drop_hooks/panic_in_hook_is_a_panic.colibri  # class objects
 drop_hooks/resurrected_object_does_not_run_the_hook_twice.colibri  # lists
 drop_hooks/resurrection_keeps_the_object_alive.colibri  # lists
 drop_hooks/second_panic_during_unwinding_is_a_note.colibri  # class objects
-drop_hooks/shared_object_dies_with_last_reference.colibri  # class objects
-drops/argument_object_outlives_the_call.colibri  # class objects
 drops/assignment_to_field_drops_old_value.colibri  # class objects
-drops/break_drops_loop_locals.colibri  # class objects
 drops/clone_makes_distinct_objects.colibri  # class objects
-drops/continue_drops_loop_locals.colibri  # class objects
 drops/deep_list_nesting_drops.colibri  # class objects
-drops/fields_die_in_declaration_order.colibri  # class objects
 drops/for_loop_source_lives_for_the_loop.colibri  # `for` over this kind of value
 drops/for_over_map_and_set_sources.colibri  # maps
-drops/if_condition_temporaries_die_before_the_body.colibri  # class fields
 drops/if_let_scrutinee_lives_for_the_construct.colibri  # `match`
 drops/kept_removed_value_lives.colibri  # lists
 drops/list_clear_and_remove.colibri  # lists
-drops/long_chain_does_not_overflow_the_stack.colibri  # enum values
-drops/loop_body_drops_each_iteration.colibri  # class objects
 drops/map_values_die_in_insertion_order.colibri  # maps
 drops/match_scrutinee_lives_for_the_construct.colibri  # `match`
-drops/method_receivers_are_not_consumed.colibri  # class objects
-drops/module_initialisers_run_in_dependency_order.colibri  # class objects
-drops/module_values_die_after_a_panic.colibri  # class objects
-drops/module_values_die_after_main_in_reverse_order.colibri  # class objects
-drops/nested_objects_die_depth_first.colibri  # class objects
-drops/nested_scopes.colibri  # class objects
-drops/no_objects_no_drops.colibri  # lists
 drops/object_kept_alive_by_two_owners.colibri  # lists
 drops/objects_in_lists_die_by_index.colibri  # lists
-drops/objects_in_option_and_tuple.colibri  # enum values
-drops/overwrite_drops_old_at_the_store.colibri  # class objects
 drops/overwrite_observed_with_weak.colibri  # class objects
 drops/overwriting_an_element_drops_the_old_one.colibri  # lists
-drops/panic_unwinds_and_drops.colibri  # class objects
-drops/return_drops_all_scopes.colibri  # class objects
-drops/return_transfers_ownership.colibri  # class objects
-drops/reverse_declaration_order.colibri  # class objects
-drops/script_statements_and_globals.colibri  # class objects
 drops/set_elements_and_class_keys.colibri  # class objects
-drops/shadowing_keeps_both_alive.colibri  # class objects
-drops/temporaries_die_in_reverse_creation_order.colibri  # class objects
-drops/temporary_argument_dies_after_the_call.colibri  # class objects
 drops/temporary_dies_at_statement_end.colibri  # class fields
-drops/unnamed_class_label.colibri  # class objects
-drops/value_struct_sharing_an_object.colibri  # class objects
-drops/while_condition_temporaries_die_each_round.colibri  # class fields
 drops/while_let_pops_and_drops.colibri  # lists
 enums/deep_recursive_value_is_dropped.colibri  # enum values
 enums/enum_value_semantics.colibri  # struct values
-enums/named_payload.colibri  # enum values
-enums/ord_for_unit_enums.colibri  # enum values
-enums/panic_comparing_too_deep_values.colibri  # enum values
-enums/payload_with_structs_and_tuples.colibri  # enum values
-enums/positional_payload.colibri  # enum values
 enums/recursive_chain.colibri  # enum values
 enums/recursive_evaluator.colibri  # enum values
 enums/recursive_tree.colibri  # enum values
 enums/shorthand_in_arguments.colibri  # enum values
-enums/shorthand_in_if_branches.colibri  # enum values
-enums/shorthand_in_let_and_return.colibri  # enum values
-enums/shorthand_in_struct_field.colibri  # struct values
-enums/show_of_nested_composites.colibri  # enum values
-enums/structural_equality.colibri  # enum values
 enums/unit_variants.colibri  # enum values
 errors/error_function.colibri  # this coercion
 errors_values/as_returns_a_struct_value_intact.colibri  # this coercion
@@ -380,10 +307,8 @@ errors_values/into_error_for_generic_struct.colibri  # this coercion
 errors_values/is_and_as_keep_the_typed_value.colibri  # `match`
 errors_values/main_err_prints_the_whole_chain.colibri  # `match`
 errors_values/main_err_runs_drops_first.colibri  # class objects
-errors_values/main_err_with_typed_error.colibri  # enum values
 errors_values/main_panics_in_result_fn.colibri  # lists
 errors_values/main_returns_err.colibri  # enum values
-errors_values/main_returns_ok.colibri  # enum values
 errors_values/result_context.colibri  # `match`
 errors_values/result_context_on_str_and_error_results.colibri  # the built-in `ResultContext`
 errors_values/show_of_nested_error_in_result.colibri  # enum values
@@ -421,21 +346,13 @@ generics/generic_enum_maybe.colibri  # lists
 generics/generic_enum_tree.colibri  # enum values
 generics/generic_function_calls_generic.colibri  # tuples
 generics/generic_map_keys_with_bounds.colibri  # lists
-generics/generic_method_with_own_parameter.colibri  # struct values
-generics/generic_nested_instances.colibri  # struct values
 generics/generic_recursion.colibri  # lists
 generics/generic_struct_from_expected_type.colibri  # struct values
-generics/generic_struct_inferred.colibri  # struct values
-generics/generic_struct_with_bounded_impl.colibri  # struct values
-generics/generic_tuple_swap.colibri  # tuples
-generics/identity_function.colibri  # lists
 generics/multiple_bounds.colibri  # lists
 generics/type_bounds.colibri  # struct values
 globals/generic_call_reaches_only_the_bound_method.colibri  # struct values
 globals/generic_call_reads_globals_of_a_show_impl.colibri  # struct values
 globals/script_runs_top_to_bottom.colibri  # lists
-globals/script_value_read_too_early_through_show.colibri  # struct values
-interfaces/basic_impl.colibri  # struct values
 interfaces/cast_with_as.colibri  # this coercion
 interfaces/default_method.colibri  # struct values
 interfaces/default_type_param.colibri  # projections
@@ -541,36 +458,23 @@ match/warning_unreachable_after_bool_catch_all.colibri  # `match`
 match/warning_unreachable_arm.colibri  # `match`
 match/warning_unreachable_duplicate_variant.colibri  # `match`
 match/wildcard_inside_variant.colibri  # enum values
-methods/chained_calls.colibri  # struct values
 methods/method_on_enum.colibri  # enum values
 methods/method_on_tuple_field_struct.colibri  # tuples
-methods/methods_call_each_other.colibri  # struct values
-methods/named_and_default_arguments.colibri  # struct values
 methods/panic_in_var_self_method.colibri  # struct values
-methods/self_method.colibri  # struct values
-methods/self_whole_assignment.colibri  # struct values
-methods/several_impl_blocks.colibri  # struct values
-methods/static_function.colibri  # struct values
 methods/var_self_early_return.colibri  # struct values
 methods/var_self_in_loop.colibri  # struct values
 methods/var_self_is_a_copy_for_others.colibri  # struct values
 methods/var_self_method.colibri  # struct values
-methods/var_self_on_enum.colibri  # enum values
 methods/var_self_on_field.colibri  # struct values
 methods/var_self_on_module_var.colibri  # struct values
 methods/var_self_returns_value.colibri  # struct values
-modules/basic_import/  # struct values
-modules/init_and_drop_order/  # class objects
-modules/selective_import/  # struct values
 modules/std_import_forms/  # host functions
 modules/std_prefix_beats_local_file/  # host functions
 never/chained_and_infinite.colibri  # `for` over this kind of value
 never/never_in_function_types.colibri  # function values
 never/os_exit_helper.colibri  # `match`
 never/usage_error_helper.colibri  # `match`
-numbers/f32_show_in_composites.colibri  # lists
 numbers/f32_widens_in_more_places.colibri  # enum values
-numbers/f32_widens_where_float_is_expected.colibri  # struct values
 numbers/interface_values_over_sized_numbers.colibri  # lists
 numbers/match_on_sized_integers.colibri  # `match`
 numbers/methods_checked.colibri  # `match`
@@ -578,13 +482,9 @@ numbers/methods_wrapping_in_a_checksum.colibri  # lists
 numbers/sized_integers_are_hashable_and_ordered.colibri  # the built-in `SetFromList`
 numbers/sized_ints_as_closure_captures_and_returns.colibri  # closures
 numbers/sized_numbers_in_options_and_results.colibri  # lists
-numbers/structs_with_sized_fields.colibri  # struct values
-operators/comparisons_stay_on_eq_and_ord.colibri  # struct values
 operators/compound_assign_guard.colibri  # lists
 operators/compound_assign_places.colibri  # struct values
-operators/explicit_method_call.colibri  # struct values
 operators/generic_add_on_bytes_and_str.colibri  # operators on type parameters
-operators/generic_and_narrow_impls.colibri  # struct values
 operators/generic_call_in_initialiser_follows_bounds_to_any_depth.colibri  # struct values
 operators/generic_call_in_initialiser_reads_globals_of_nested_impl.colibri  # struct values
 operators/generic_call_in_initialiser_reads_impl_globals.colibri  # struct values
@@ -596,14 +496,9 @@ operators/generic_sum.colibri  # lists
 operators/global_initialiser.colibri  # struct values
 operators/money_add_sub.colibri  # struct values
 operators/operator_in_coroutine_waits.colibri  # `go`
-operators/scalar_both_sides.colibri  # struct values
-operators/when_and_deprecated.colibri  # struct values
-options/equality.colibri  # enum values
 options/if_let.colibri  # enum values
-options/in_struct_field.colibri  # struct values
 options/match_exhaustive.colibri  # enum values
 options/option_of_class.colibri  # `match`
-options/show_nested.colibri  # enum values
 options/some_and_none.colibri  # lists
 options/while_let.colibri  # lists
 or/chain_option_into_option.colibri  # `match`
@@ -664,12 +559,8 @@ places/var_self_method_on_map_entry.colibri  # maps
 places/var_self_on_nested_place.colibri  # class objects
 places/var_self_sees_old_value_until_write_back.colibri  # lists
 places/var_self_writes_back_on_panic.colibri  # lists
-results/construct_and_show.colibri  # enum values
-results/equality.colibri  # enum values
 results/generic_functions_over_results.colibri  # lists
 results/if_let.colibri  # enum values
-results/infer_from_expected_type.colibri  # enum values
-results/let_underscore_silences.colibri  # enum values
 results/match_ok_and_err.colibri  # enum values
 results/methods_expect_err_panics.colibri  # the built-in `ResultExpect`
 results/methods_expect_err_shows_the_error_type.colibri  # the built-in `ResultExpect`
@@ -682,10 +573,8 @@ results/option_methods.colibri  # enum values
 results/result_as_struct_field.colibri  # lists
 results/result_hashing_and_map_keys.colibri  # enum values
 results/result_in_collections.colibri  # lists
-results/result_unit_falls_off_the_end.colibri  # enum values
 results/result_unit_with_loop_and_defer.colibri  # `defer`
 results/shorthand_is_error_type.colibri  # enum values
-results/unused_option_does_not_warn.colibri  # enum values
 results/unused_result_warns.colibri  # enum values
 slicing/list_slice_inclusive_end_out_of_range.colibri  # lists
 slicing/list_slice_inclusive_max_does_not_overflow.colibri  # lists
@@ -768,7 +657,6 @@ std/json_value.colibri  # the built-in `ResultExpect`
 std/json_value_errors.colibri  # `match`
 std/json_value_hash.colibri  # the built-in `ResultExpect`
 std/json_value_show_and_equality.colibri  # the built-in `ResultExpect`
-std/library_type_with_an_operator_for_our_type.colibri  # struct values
 std/math_empty_clamp_range_panics.colibri  # host functions
 std/math_floor_div_by_zero_panics.colibri  # host functions
 std/math_functions.colibri  # host functions
@@ -830,17 +718,8 @@ std/toml_parse.colibri  # the built-in `ResultExpect`
 std/vec_arithmetic.colibri  # struct values
 std/vec_basics.colibri  # struct values
 std/vec_components.colibri  # struct values
-std/vec_conversion_traps.colibri  # struct values
-std/vec_import_names.colibri  # struct values
-std/vec_ivec_division.colibri  # struct values
-std/vec_ivec_len_does_not_overflow.colibri  # struct values
-std/vec_ivec_neg_overflow.colibri  # struct values
-std/vec_ivec_overflow.colibri  # struct values
-std/vec_ivec_scalar_overflow.colibri  # struct values
 std/vec_json_encodes.colibri  # host functions
 std/vec_library_is_ordinary.colibri  # struct values
-std/vec_methods.colibri  # struct values
-std/vec_out_of_range_conversion.colibri  # struct values
 std/vec_truncations.colibri  # struct values
 strings/case_conversion.colibri  # the built-in `StrToUpper`
 strings/chars_and_bytes_count.colibri  # `for` over this kind of value
@@ -867,21 +746,11 @@ structs/copy_into_function.colibri  # struct values
 structs/deep_value_copy_independent.colibri  # struct values
 structs/design_2_apply_command.colibri  # struct values
 structs/design_7_1_value_semantics.colibri  # struct values
-structs/field_defaults.colibri  # struct values
-structs/field_order_is_free.colibri  # struct values
-structs/field_shorthand.colibri  # struct values
-structs/literal_and_field_read.colibri  # struct values
 structs/module_var_fields.colibri  # struct values
 structs/nested_field_assignment.colibri  # struct values
-structs/nested_structs.colibri  # struct values
-structs/show_of_structs.colibri  # struct values
 structs/struct_in_loop.colibri  # struct values
-structs/struct_returned_from_function.colibri  # struct values
-structs/structural_equality.colibri  # struct values
-structs/type_alias.colibri  # struct values
 structs/value_semantics.colibri  # struct values
 tests/assert_eq_shows_both_values.colibri  # lists
-tests/assert_eq_uses_a_custom_eq_and_show.colibri  # struct values
 try/converts_into_error.colibri  # `match`
 try/converts_str_errors.colibri  # `match`
 try/drops_in_nested_scopes.colibri  # class objects
@@ -901,22 +770,12 @@ tuples/destructuring_let.colibri  # `let` with a pattern
 tuples/destructuring_var.colibri  # `let` with a pattern
 tuples/destructuring_with_wildcard.colibri  # `let` with a pattern
 tuples/element_assignment.colibri  # tuples
-tuples/equality.colibri  # tuples
-tuples/literal_and_index.colibri  # tuples
 tuples/module_var_tuple.colibri  # tuples
 tuples/multiple_returns.colibri  # `let` with a pattern
 tuples/nested_destructuring.colibri  # `let` with a pattern
 tuples/nested_element_assignment.colibri  # tuples
-tuples/ordering.colibri  # tuples
-tuples/show_with_strings_and_chars.colibri  # tuples
-tuples/tuple_as_argument.colibri  # tuples
-tuples/tuple_in_struct_and_enum.colibri  # struct values
-tuples/tuple_types.colibri  # tuples
 tuples/value_semantics.colibri  # tuples
 weak/assign_none_to_weak.colibri  # class objects
 weak/clone_follows_weak_into_copy.colibri  # class objects
 weak/target_dies_reads_none.colibri  # class objects
-weak/weak_does_not_keep_alive.colibri  # class objects
 weak/weak_reads_as_option.colibri  # class objects
-weak/weak_with_default.colibri  # class objects
-when/taken_and_not_taken.colibri  # struct values

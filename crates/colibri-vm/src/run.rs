@@ -28,32 +28,10 @@ pub(crate) enum Exit {
 
 impl Machine {
     /// Runs the entry frame on top of `fiber` to its end. On a panic every frame down to and
-    /// including the entry frame is popped and every value they own is released.
+    /// including the entry frame has run its landing pads and been popped (`catch`).
     pub(crate) fn run(&mut self, fiber: &mut VmFiber) -> Eval {
-        let depth = fiber.frames.len();
-        match self.exec(fiber) {
-            Ok(Exit::Return(v)) => Ok(v),
-            Err(ctl) => {
-                self.unwind(fiber, depth);
-                Err(ctl)
-            }
-        }
-    }
-
-    /// Unwinding as of this step: pop the frames of the failed run and release everything
-    /// above the entry frame's parameters, highest register first. Step 4 replaces the sweep by
-    /// the compiler's landing pads, which run `defer`s and drop in scope order.
-    fn unwind(&mut self, fiber: &mut VmFiber, depth: usize) {
-        let entry = &fiber.frames[depth - 1];
-        let first = entry.base as usize + entry.chunk.nparams as usize;
-        let mark = entry.temps_mark as usize;
-        fiber.frames.truncate(depth - 1);
-        self.release_temps(fiber, mark);
-        for i in (first..fiber.regs.len()).rev() {
-            let v = std::mem::replace(&mut fiber.regs[i], Value::Unit);
-            if !is_scalar_value(&v) {
-                self.release(v);
-            }
+        match self.exec(fiber)? {
+            Exit::Return(v) => Ok(v),
         }
     }
 
@@ -112,11 +90,18 @@ impl Machine {
                 }
             };
         }
-        // The single way to leave `exec` with an error.
+        // The single way to fail: the failure goes to the landing pad of the instruction, or
+        // out of the frames that have none; it leaves `exec` only when the entry frame is gone.
         macro_rules! throw {
             ($ctl:expr) => {{
                 let ctl = $ctl;
-                return Err(ctl);
+                match self.catch(fiber, ctl, false) {
+                    Ok(()) => {
+                        reload!();
+                        continue;
+                    }
+                    Err(ctl) => return Err(ctl),
+                }
             }};
         }
         // Unwraps a fallible step, throwing its error.
@@ -267,6 +252,20 @@ impl Machine {
                     if !is_scalar_value(&v) {
                         sync!();
                         self.release(v);
+                    }
+                }
+
+                Op::DropInert { r } => {
+                    // A string or bytes value: the plain drop is all it needs.
+                    reg!(r) = Value::Unit;
+                }
+                Op::DropN { r, n } => {
+                    sync!();
+                    for i in (0..n).rev() {
+                        let v = std::mem::replace(&mut reg!(r + i), Value::Unit);
+                        if !is_scalar_value(&v) {
+                            self.release(v);
+                        }
                     }
                 }
 
@@ -507,6 +506,62 @@ impl Machine {
                     put!(d, Value::Float(f64::from(*x)));
                 }
 
+                Op::NewStruct { .. }
+                | Op::NewObject { .. }
+                | Op::NewVariant { .. }
+                | Op::NewTuple { .. }
+                | Op::NewList { .. }
+                | Op::NewMap { .. }
+                | Op::NewRange { .. }
+                | Op::GetPath { .. }
+                | Op::ObjGet { .. }
+                | Op::FromWeak { .. } => {
+                    sync!();
+                    tri!(self.op_new(fiber, &chunk, base, pc, op));
+                }
+                Op::ToWeak { d, s } => {
+                    sync!();
+                    tri!(self.op_to_weak(fiber, &chunk, base, pc, d, s));
+                }
+                Op::MapInsert { m, k, v } => {
+                    sync!();
+                    tri!(self.op_map_insert(fiber, &chunk, base, pc, m, k, v));
+                }
+
+                Op::SkipIfDead { off } => {
+                    if self.core.budget_is_dead() {
+                        jump!(off);
+                    }
+                }
+                Op::CheckHooks => {
+                    if !self.core.hook_panics.is_empty() {
+                        sync!();
+                        if let Err(ctl) = self.fold_hook_panics(Ok(Value::Unit)) {
+                            throw!(ctl);
+                        }
+                    }
+                }
+                Op::FoldHooks => {
+                    if !self.core.hook_panics.is_empty() {
+                        sync!();
+                        tri!(self.op_fold_hooks(fiber, &chunk, pc));
+                    }
+                }
+                Op::Resume => {
+                    sync!();
+                    let frame = fiber.frames.last_mut().expect("a frame");
+                    let Some(ctl) = frame.unwinding.take() else {
+                        internal!("a landing pad ended with nothing to resume")
+                    };
+                    match self.catch(fiber, *ctl, true) {
+                        Ok(()) => {
+                            reload!();
+                            continue;
+                        }
+                        Err(ctl) => return Err(ctl),
+                    }
+                }
+
                 Op::Site { .. } => internal!("an operand word was executed"),
                 Op::Unsupported { site } => {
                     let Site::Unsupported(msg) = &chunk.sites[usize::from(site)] else {
@@ -516,6 +571,22 @@ impl Machine {
                 }
             }
         }
+    }
+
+    /// Folds the panics of `Drop` hooks into the panic this frame's pad is running for.
+    #[cold]
+    #[inline(never)]
+    fn op_fold_hooks(&mut self, fiber: &mut VmFiber, chunk: &Chunk, pc: usize) -> Result<(), Ctl> {
+        let frame = fiber.frames.last_mut().expect("a frame");
+        let Some(inflight) = frame.unwinding.take() else {
+            let span = chunk.spans[pc - 1];
+            return Err(self.internal(fiber, span, "a hook fold outside a landing pad"));
+        };
+        let folded = self.fold_hook_panics(Err(*inflight));
+        if let Some(frame) = fiber.frames.last_mut() {
+            frame.unwinding = folded.err().map(Box::new);
+        }
+        Ok(())
     }
 
     // ---- the cold arms of `exec`, out of line so the loop's state stays in registers ----
@@ -571,7 +642,7 @@ impl Machine {
 
     /// Writes a result into an empty absolute register (see `put!`).
     #[inline]
-    fn put_reg(fiber: &mut VmFiber, at: usize, v: Value) {
+    pub(crate) fn put_reg(fiber: &mut VmFiber, at: usize, v: Value) {
         let slot = &mut fiber.regs[at];
         debug_assert!(
             is_scalar_value(slot),
@@ -865,6 +936,7 @@ impl Machine {
             kind: FrameKind::Colibri,
             noted: None,
             temps_mark: fiber.temps.len() as u32,
+            unwinding: None,
         });
         Ok(())
     }

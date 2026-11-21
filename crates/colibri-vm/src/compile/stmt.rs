@@ -6,7 +6,7 @@ use colibri_check::hir::{
 use colibri_check::types::{IntTy, Ty};
 use colibri_syntax::Span;
 
-use super::{FnCompiler, Kind, Label, LoopCtx};
+use super::{FnCompiler, Item, Kind, Label, LoopCtx, is_scalar};
 use crate::bytecode::{Op, Reg};
 
 impl FnCompiler<'_> {
@@ -42,7 +42,7 @@ impl FnCompiler<'_> {
     /// Leaves the function: every live cleanup runs, newest first, except the register being
     /// returned.
     fn emit_return(&mut self, value: Option<Reg>, span: Span) {
-        self.emit_drops_above(0, value, span);
+        self.emit_exit(0, value, span);
         let body = self.body;
         if body.mutates_self
             && body
@@ -62,6 +62,7 @@ impl FnCompiler<'_> {
     /// the tail goes to `dst`; its temporaries die once it has its value.
     pub(super) fn block(&mut self, b: &Block, dst: Option<Reg>) {
         let depth = self.cleanup_depth();
+        self.push_fold();
         for s in &b.stmts {
             self.stmt(s);
         }
@@ -72,7 +73,7 @@ impl FnCompiler<'_> {
                     Some(d) => self.expr(tail, d),
                     None => self.expr_discard(tail),
                 }
-                self.end_stmt(m, tail.span);
+                self.end_group(m, tail.span);
             }
             None => {
                 // A block that cannot end normally (it returns or breaks) has no value.
@@ -85,16 +86,22 @@ impl FnCompiler<'_> {
         }
         if b.ty == Ty::Never {
             // The block cannot end normally: its exits (`return`, `break`) already dropped.
-            self.cleanups.truncate(depth);
+            self.truncate_stack(depth);
         } else {
-            self.end_scope(depth, b.span);
+            // The value of the block, if it has one, survives the scope's cleanups.
+            let keep = dst.filter(|_| !is_scalar(&b.ty));
+            self.end_scope(depth, keep, b.span);
         }
     }
 
-    fn stmt(&mut self, s: &Stmt) {
+    pub(super) fn stmt(&mut self, s: &Stmt) {
         self.count_statement(s.span);
-        let m = self.mark();
         let span = s.span;
+        if let StmtKind::Defer(deferred) = &s.kind {
+            self.register_defer(deferred);
+            return;
+        }
+        let m = self.begin_group();
         match &s.kind {
             StmtKind::Let { local, init } => {
                 let l = self.local(*local);
@@ -104,21 +111,21 @@ impl FnCompiler<'_> {
                     self.expr(init, t);
                     self.emit(Op::NewCell { l, s: t }, span);
                     self.free_moved(t);
-                    self.end_stmt(m, span);
-                    self.cleanups.push(l);
+                    self.end_group(m, span);
+                    self.push_item(Item::Reg(l));
                 } else {
                     self.expr(init, l);
-                    self.end_stmt(m, span);
+                    self.end_group(m, span);
                     self.bind_local_cleanup(l, ty);
                 }
             }
             StmtKind::Expr(e) => {
                 self.expr_discard(e);
-                self.end_stmt(m, span);
+                self.end_group(m, span);
             }
             StmtKind::Assign { place, op, rhs } => {
                 self.assign(place, *op, rhs, span);
-                self.end_stmt(m, span);
+                self.end_group(m, span);
             }
             StmtKind::Return(value) => {
                 self.return_stmt(value.as_ref(), span);
@@ -146,16 +153,14 @@ impl FnCompiler<'_> {
                 );
                 self.emit(Op::InitGlobal { g: global.0, s: t }, span);
                 self.free_moved(t);
-                self.end_stmt(m, span);
+                self.note_release(&init.ret);
+                self.end_group(m, span);
             }
             StmtKind::LetPat { .. } => {
                 self.unsupported("`let` with a pattern", span);
-                self.end_stmt(m, span);
+                self.end_group(m, span);
             }
-            StmtKind::Defer(_) => {
-                self.unsupported("`defer`", span);
-                self.end_stmt(m, span);
-            }
+            StmtKind::Defer(_) => unreachable!("handled above"),
         }
     }
 
@@ -167,10 +172,13 @@ impl FnCompiler<'_> {
             self.expr_discard(e);
             return self.emit_return(None, span);
         }
-        // Return moves the register out, so a parameter (the caller's) is copied first.
+        // Return moves the register out, so a parameter (the caller's) is copied first, and so
+        // is any local when a `defer` is still to run: it may read or change the variable, and
+        // the value returned is the one computed here.
         let nparams = self.body.param_count as usize;
         let s = self.operand(e, false);
-        let s = if usize::from(s) < nparams {
+        let deferred = self.has_defer();
+        let s = if usize::from(s) < nparams || (deferred && usize::from(s) < self.nlocals) {
             let t = self.alloc_for(&e.ty);
             self.emit(Op::Copy { d: t, s }, span);
             self.own(t);
@@ -188,7 +196,7 @@ impl FnCompiler<'_> {
             return;
         };
         let (depth, target) = (ctx.cleanups, if is_break { ctx.brk } else { ctx.cont });
-        self.emit_drops_above(depth, None, span);
+        self.emit_exit(depth, None, span);
         self.jmp(target, span);
     }
 
@@ -279,6 +287,7 @@ impl FnCompiler<'_> {
         self.bind(head);
         // The per-iteration scope: a cell binding is dropped at every exit from the iteration.
         let cleanups = self.cleanup_depth();
+        self.push_fold();
         if let ForBinding::Local(l) = f.binding
             && !direct
         {
@@ -288,7 +297,7 @@ impl FnCompiler<'_> {
                 self.emit(Op::Copy { d: t, s: cur }, span);
                 self.emit(Op::NewCell { l: lr, s: t }, span);
                 self.free_moved(t);
-                self.cleanups.push(lr);
+                self.push_item(Item::Reg(lr));
             } else {
                 self.emit(Op::Copy { d: lr, s: cur }, span);
             }
@@ -300,7 +309,7 @@ impl FnCompiler<'_> {
             cont,
         });
         self.block(&f.body, None);
-        self.end_scope(cleanups, span);
+        self.end_scope(cleanups, None, span);
         self.bind(cont);
         self.range_next(cur, end_reg, *inclusive, head, exit, span);
         self.loops.pop();

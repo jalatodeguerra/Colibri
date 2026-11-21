@@ -123,15 +123,12 @@ impl Machine {
             .map(|g| Rc::from(g.name.as_str()))
             .collect();
         self.uninit = Vec::new();
-        self.env = CompileEnv {
-            checked_globals: vec![false; program.globals.len()],
-        };
+        self.env = CompileEnv::for_program(program);
         if program.script_from < program.init_order.len() {
             self.uninit = vec![None; program.globals.len()];
             for g in &program.init_order[program.script_from..] {
                 let i = g.0 as usize;
                 self.uninit[i] = Some(Rc::from(program.globals[i].name.as_str()));
-                self.env.checked_globals[i] = true;
             }
         }
         self.script = Some(Slot::new(Rc::clone(&program.script)));

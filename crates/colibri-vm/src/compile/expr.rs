@@ -46,19 +46,10 @@ pub(super) fn dst_safe(e: &Expr) -> bool {
 fn node_name(e: &ExprKind) -> &'static str {
     match e {
         ExprKind::Go(_) | ExprKind::GoIn(..) => "`go`",
-        ExprKind::Struct { .. } => "struct values",
-        ExprKind::Object { .. } => "class objects",
-        ExprKind::Variant { .. } => "enum values",
-        ExprKind::Tuple(_) => "tuples",
-        ExprKind::ListLit(_) => "lists",
-        ExprKind::MapLit(_) => "maps",
-        ExprKind::ToWeak(_) | ExprKind::FromWeak(_) => "weak references",
-        ExprKind::Project(..) => "projections",
         ExprKind::Match { .. } => "`match`",
         ExprKind::Coerce(..) => "this coercion",
         ExprKind::FnRef { .. } => "function values",
         ExprKind::Closure(_) => "closures",
-        ExprKind::Range { .. } => "range values",
         ExprKind::Error => "unchecked expressions",
         _ => "this expression",
     }
@@ -120,8 +111,132 @@ impl FnCompiler<'_> {
                 self.emit(Op::Coerce { d: dst, s, site }, span);
                 self.free(s, span);
             }
+            ExprKind::Struct { ty, fields } => {
+                self.construct(fields.iter().collect(), dst, span, |regs| {
+                    (Site::Struct(*ty, regs), |d, site| Op::NewStruct { d, site })
+                });
+            }
+            ExprKind::Object { ty, fields } => {
+                self.construct(fields.iter().collect(), dst, span, |regs| {
+                    (Site::Object(*ty, regs), |d, site| Op::NewObject { d, site })
+                });
+            }
+            ExprKind::Variant { ty, variant, args } => {
+                self.construct(args.iter().collect(), dst, span, |regs| {
+                    (Site::Variant(*ty, *variant, regs), |d, site| {
+                        Op::NewVariant { d, site }
+                    })
+                });
+            }
+            ExprKind::Tuple(items) => {
+                self.construct(items.iter().collect(), dst, span, |regs| {
+                    (Site::Regs(regs), |d, site| Op::NewTuple { d, site })
+                });
+            }
+            ExprKind::ListLit(items) => {
+                self.construct(items.iter().collect(), dst, span, |regs| {
+                    (Site::Regs(regs), |d, site| Op::NewList { d, site })
+                });
+            }
+            ExprKind::MapLit(entries) => self.map_lit(entries, dst, span),
+            ExprKind::ToWeak(inner) => {
+                // The strong value is released as soon as the weak one exists.
+                let s = self.alloc_for(&inner.ty);
+                self.expr(inner, s);
+                self.emit(Op::ToWeak { d: dst, s }, span);
+                self.free_moved(s);
+                self.releases += 1;
+            }
+            ExprKind::FromWeak(inner) => {
+                let s = self.operand(inner, false);
+                self.emit(Op::FromWeak { d: dst, s }, span);
+                self.free(s, span);
+            }
+            ExprKind::Project(base, proj) => {
+                // The projected-from value is a temporary: it dies at the end of the statement.
+                let t = self.alloc_for(&base.ty);
+                self.expr(base, t);
+                self.own(t);
+                let site = self.add_site(Site::Path(Box::new([*proj])));
+                self.emit(Op::GetPath { d: dst, s: t, site }, span);
+            }
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                let a = self.operand(start, writes_locals(end));
+                let b = self.operand(end, false);
+                self.emit(
+                    Op::NewRange {
+                        d: dst,
+                        a,
+                        b,
+                        incl: *inclusive,
+                    },
+                    span,
+                );
+                self.free(b, span);
+                self.free(a, span);
+            }
             other => self.unsupported(node_name(other), span),
         }
+    }
+
+    /// A value built from the values of `items`, evaluated left to right into temporaries that
+    /// live to the statement end (the tree-walker keeps a second reference on its temporaries
+    /// stack for each, and `Drop` order depends on it). `make` turns their registers into the
+    /// site and the instruction.
+    pub(super) fn construct(
+        &mut self,
+        items: Vec<&Expr>,
+        dst: Reg,
+        span: Span,
+        make: impl FnOnce(Box<[Reg]>) -> (Site, fn(Reg, u16) -> Op),
+    ) {
+        let regs = self.eval_each(&items);
+        let (site, op) = make(regs.clone().into_boxed_slice());
+        let site = self.add_site(site);
+        self.emit(op(dst, site), span);
+        for r in regs.into_iter().rev() {
+            self.free(r, span);
+        }
+    }
+
+    /// Evaluates `items` left to right, each into a temporary of its own that stays alive.
+    pub(super) fn eval_each(&mut self, items: &[&Expr]) -> Vec<Reg> {
+        let mut regs = Vec::with_capacity(items.len());
+        for e in items {
+            let t = self.alloc_for(&e.ty);
+            self.expr(e, t);
+            self.own(t);
+            regs.push(t);
+        }
+        regs
+    }
+
+    /// `{k: v, ..}`: built in a temporary of its own, so a panic in a later entry leaves
+    /// nothing half-made in `dst`.
+    fn map_lit(&mut self, entries: &[(Expr, Expr)], dst: Reg, span: Span) {
+        if entries.is_empty() {
+            self.emit(Op::NewMap { d: dst }, span);
+            return;
+        }
+        let m = self.alloc(Kind::Owned);
+        self.emit(Op::NewMap { d: m }, span);
+        self.own(m);
+        for (k, v) in entries {
+            let regs = self.eval_each(&[k, v]);
+            let (kr, vr) = (regs[0], regs[1]);
+            self.emit(Op::MapInsert { m, k: kr, v: vr }, k.span);
+            // A repeated key releases the value it replaces.
+            self.note_release(&v.ty);
+            for r in regs.into_iter().rev() {
+                self.free(r, span);
+            }
+        }
+        self.emit(Op::Move { d: dst, s: m }, span);
+        self.free_moved(m);
     }
 
     /// Evaluates `e` for its effect only.

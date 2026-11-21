@@ -29,16 +29,7 @@ const PENDING: &[(&str, &str)] = &[
         "structs",
     ),
     ("globals/script_runs_top_to_bottom.colibri", "lists"),
-    (
-        "globals/script_value_read_too_early_through_show.colibri",
-        "structs",
-    ),
-    ("numbers/f32_show_in_composites.colibri", "lists"),
     ("numbers/f32_widens_in_more_places.colibri", "enums"),
-    (
-        "numbers/f32_widens_where_float_is_expected.colibri",
-        "structs",
-    ),
     (
         "numbers/interface_values_over_sized_numbers.colibri",
         "lists",
@@ -58,7 +49,6 @@ const PENDING: &[(&str, &str)] = &[
         "numbers/sized_numbers_in_options_and_results.colibri",
         "lists",
     ),
-    ("numbers/structs_with_sized_fields.colibri", "structs"),
 ];
 
 #[derive(Default)]

@@ -35,6 +35,8 @@ pub(crate) struct Frame {
     pub noted: Option<(u32, Span)>,
     /// How many `Engine::hold_temp` values were alive when the frame began.
     pub temps_mark: u32,
+    /// The panic or cancellation this frame's landing pad is running for; `Resume` hands it on.
+    pub unwinding: Option<Box<colibri_core::ctl::Ctl>>,
 }
 
 impl Frame {

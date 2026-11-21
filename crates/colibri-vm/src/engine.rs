@@ -81,6 +81,7 @@ impl Machine {
             kind: FrameKind::NativeEntry,
             noted: None,
             temps_mark: fiber.temps.len() as u32,
+            unwinding: None,
         });
         let result = self.run(fiber);
         // The receiver of a `var self` method goes back to the caller; every other parameter
@@ -98,6 +99,8 @@ impl Machine {
             let v = std::mem::replace(&mut fiber.regs[base + i], Value::Unit);
             self.release(v);
         }
+        // The end of the call's scope: the panics of `Drop` hooks that ran meanwhile fold in.
+        let result = self.fold_hook_panics(result);
         (result, receiver)
     }
 }
