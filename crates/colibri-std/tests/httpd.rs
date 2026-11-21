@@ -1915,7 +1915,11 @@ fn stopping_closes_the_idle_connections_and_ends_serve_and_nothing_listens_any_m
 }
 
 #[test]
-fn a_request_that_is_completed_after_stop_is_not_started() {
+fn a_stop_closes_idle_connections_and_what_they_send_afterwards_is_not_handled() {
+    // This shows that `stop` closes a connection that is waiting for its next request, a half
+    // sent line included, and that nothing is handled afterwards. It does not reach the check
+    // in `Server.connection` that drops a request whose line was read after `stop`: that window
+    // is one scheduler step wide, and the idle close comes first.
     let server = Server::hello();
     let mut half = server.connect();
     // Half a request line: the connection is idle as far as the server can tell.
