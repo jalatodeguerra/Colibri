@@ -5,7 +5,7 @@
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -32,7 +32,7 @@ fn pump(reader: impl std::io::Read + Send + 'static) -> Receiver<String> {
 
 impl Watch {
     fn start(path: &Path) -> Watch {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+        let mut child = colibri_command()
             .args(["run", "--watch", path.to_str().unwrap()])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -166,7 +166,7 @@ fn warnings_are_printed_before_the_top_level_code_runs() {
         "warnfirst",
         "import os\nfn main() {\n    let x = 1\n    let x = 2\n    print(x)\n}\nos.exit(3)\n",
     );
-    let out = Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let out = colibri_command()
         .args(["run", "--watch", path.to_str().unwrap()])
         .output()
         .expect("the colibri binary runs");
@@ -176,4 +176,12 @@ fn warnings_are_printed_before_the_top_level_code_runs() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+/// The binary under test, pinned to the tree-walker: these tests are about the command line,
+/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+fn colibri_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    cmd.env_remove("COLIBRI_ENGINE");
+    cmd
 }

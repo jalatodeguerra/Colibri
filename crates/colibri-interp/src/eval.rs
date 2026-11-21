@@ -529,6 +529,10 @@ impl Interp {
                 Ok(())
             }
             StmtKind::InitGlobal { global, init } => {
+                // The initialiser runs as a call from this line: a panic in it names the line.
+                if let Some(frame) = fiber.frames.last_mut() {
+                    frame.span = stmt.span;
+                }
                 let value = self.call_body(fiber, Rc::clone(init), Vec::new())?;
                 let old = std::mem::replace(&mut self.globals[global.0 as usize], value);
                 self.release(old);

@@ -1,6 +1,9 @@
 //! `#[colibri::export]` used for real (EMBEDDING §2): a value struct and enum, opaque classes
 //! with methods, and free functions with their own parameter names.
 
+mod common;
+use common::vm_pending;
+
 use colibri::{Cap, Ctx, Handle, Interface, Ref};
 use colibri_runtime as colibri;
 
@@ -122,10 +125,13 @@ fn engine() -> (colibri::Vm, colibri::SharedBuffer) {
 
 #[test]
 fn a_script_uses_exported_classes_value_types_and_functions() {
-    let (mut vm, out) = engine();
-    vm.load_source(
-        "game.colibri",
-        r#"
+    vm_pending(
+        "a_script_uses_exported_classes_value_types_and_functions",
+        || {
+            let (mut vm, out) = engine();
+            vm.load_source(
+                "game.colibri",
+                r#"
 fn main() {
     let world = World.new(Vec3 { x: 0.0, y: -10.0, z: 0.0 })
     let body = spawn_body(1.0, 2.0, 3.0)
@@ -141,21 +147,26 @@ fn main() {
     print(world.find(3))
 }
 "#,
+            )
+            .unwrap();
+            vm.run_main().unwrap();
+            assert_eq!(
+                out.contents(),
+                "Vec3 { x: 1.0, y: -8.0, z: 3.0 }\n1.0\n1.0\nWood\n3.5\n1\n41\nnone\n"
+            );
+        },
     )
-    .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(
-        out.contents(),
-        "Vec3 { x: 1.0, y: -8.0, z: 3.0 }\n1.0\n1.0\nWood\n3.5\n1\n41\nnone\n"
-    );
 }
 
 #[test]
 fn parameter_names_are_the_rust_ones_so_arguments_can_be_named() {
-    let (mut vm, out) = engine();
-    vm.load_source(
-        "game.colibri",
-        r#"
+    vm_pending(
+        "parameter_names_are_the_rust_ones_so_arguments_can_be_named",
+        || {
+            let (mut vm, out) = engine();
+            vm.load_source(
+                "game.colibri",
+                r#"
 fn main() {
     let body = spawn_body(z: 3.0, x: 1.0, y: 2.0)
     let world = World.new(gravity: Vec3 { x: 1.0, y: 1.0, z: 1.0 })
@@ -163,10 +174,12 @@ fn main() {
     print(world.position(body: body))
 }
 "#,
+            )
+            .unwrap();
+            vm.run_main().unwrap();
+            assert_eq!(out.contents(), "Vec3 { x: 3.0, y: 4.0, z: 5.0 }\n");
+        },
     )
-    .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "Vec3 { x: 3.0, y: 4.0, z: 5.0 }\n");
 }
 
 #[test]
@@ -224,58 +237,62 @@ fn the_text_a_macro_class_prints_checks_a_script_without_a_vm() {
 
 #[test]
 fn value_types_convert_both_ways_through_get_fn() {
-    let (mut vm, _) = engine();
-    vm.load_source(
+    vm_pending("value_types_convert_both_ways_through_get_fn", || {
+        let (mut vm, _) = engine();
+        vm.load_source(
         "game.colibri",
         "fn lift(v: Vec3) -> Vec3 => Vec3 { x: v.x, y: v.y + 1.0, z: v.z }\nfn heavy(m: Material) -> bool => m == Material.Steel\n",
     )
     .unwrap();
-    let lift = vm.get_fn::<(Vec3,), Vec3>("lift").unwrap();
-    assert_eq!(
-        lift.call(
-            &mut vm,
-            (Vec3 {
+        let lift = vm.get_fn::<(Vec3,), Vec3>("lift").unwrap();
+        assert_eq!(
+            lift.call(
+                &mut vm,
+                (Vec3 {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0
+                },)
+            )
+            .unwrap(),
+            Vec3 {
                 x: 1.0,
-                y: 2.0,
+                y: 3.0,
                 z: 3.0
-            },)
-        )
-        .unwrap(),
-        Vec3 {
-            x: 1.0,
-            y: 3.0,
-            z: 3.0
-        }
-    );
-    let heavy = vm.get_fn::<(Material,), bool>("heavy").unwrap();
-    assert!(heavy.call(&mut vm, (Material::Steel,)).unwrap());
-    assert!(!heavy.call(&mut vm, (Material::Wood,)).unwrap());
+            }
+        );
+        let heavy = vm.get_fn::<(Material,), bool>("heavy").unwrap();
+        assert!(heavy.call(&mut vm, (Material::Steel,)).unwrap());
+        assert!(!heavy.call(&mut vm, (Material::Wood,)).unwrap());
+    })
 }
 
 #[test]
 fn a_host_class_is_passed_by_handle_to_get_fn() {
-    let (mut vm, _) = engine();
-    let body = vm.insert(RigidBody::new(
-        Vec3 {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        },
-        4.0,
-        Material::Steel,
-    ));
-    vm.load_source(
-        "game.colibri",
-        "fn weight(b: RigidBody) -> f32 => b.mass()\n",
-    )
-    .unwrap();
-    let weight = vm.get_fn::<(Handle<RigidBody>,), f32>("weight").unwrap();
-    assert_eq!(weight.call(&mut vm, (body,)).unwrap(), 4.0);
-    vm.remove(body).unwrap();
-    let err = weight.call(&mut vm, (body,)).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("`RigidBody` was destroyed by the host"),
-        "{err}"
-    );
+    vm_pending("a_host_class_is_passed_by_handle_to_get_fn", || {
+        let (mut vm, _) = engine();
+        let body = vm.insert(RigidBody::new(
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            4.0,
+            Material::Steel,
+        ));
+        vm.load_source(
+            "game.colibri",
+            "fn weight(b: RigidBody) -> f32 => b.mass()\n",
+        )
+        .unwrap();
+        let weight = vm.get_fn::<(Handle<RigidBody>,), f32>("weight").unwrap();
+        assert_eq!(weight.call(&mut vm, (body,)).unwrap(), 4.0);
+        vm.remove(body).unwrap();
+        let err = weight.call(&mut vm, (body,)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("`RigidBody` was destroyed by the host"),
+            "{err}"
+        );
+    })
 }

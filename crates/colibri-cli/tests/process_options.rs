@@ -5,7 +5,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// The contents of a Colibri string literal for a path: `\` starts an escape in Colibri
 /// and `{` an interpolation, so a native path pasted into Colibri source has to be escaped.
@@ -32,7 +31,7 @@ fn folder(name: &str) -> PathBuf {
 fn run_script(dir: &Path, parent: &str) -> String {
     let file = dir.join("parent.colibri");
     fs::write(&file, parent).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let out = colibri_command()
         .args(["run", file.to_str().unwrap()])
         .output()
         .unwrap();
@@ -145,4 +144,12 @@ fn main() {{
         "0\n0\ncwd: work folder\nfile: true\ninput: 23 bytes\nfirst line\nsecond line\n"
     );
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// The binary under test, pinned to the tree-walker: these tests are about the command line,
+/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+fn colibri_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    cmd.env_remove("COLIBRI_ENGINE");
+    cmd
 }

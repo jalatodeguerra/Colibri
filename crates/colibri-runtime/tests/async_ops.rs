@@ -1,6 +1,9 @@
 //! Waiting on the main fiber and background operations (`Ctx::run_async`), ARCHITECTURE §22.
 //! These use the real clock: the operations are real threads that sleep.
 
+mod common;
+use common::vm_pending;
+
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -27,10 +30,11 @@ fn vm() -> (colibri::Vm, colibri::SharedBuffer) {
 
 #[test]
 fn background_operations_overlap_inside_coroutines() {
-    let (mut vm, out) = vm();
-    vm.load_source(
-        "a.colibri",
-        r#"
+    vm_pending("background_operations_overlap_inside_coroutines", || {
+        let (mut vm, out) = vm();
+        vm.load_source(
+            "a.colibri",
+            r#"
 fn job(i: int) -> int {
     let v = slow(300, i * 10)
     print("job {i} got {v}")
@@ -50,58 +54,63 @@ fn main() {
     print("total {total}")
 }
 "#,
-    )
-    .unwrap();
-    let start = Instant::now();
-    vm.run_main().unwrap();
-    let took = start.elapsed();
-    assert!(
-        took >= Duration::from_millis(280) && took < Duration::from_millis(800),
-        "four 300 ms operations should overlap, took {took:?}"
-    );
-    let text = out.contents();
-    assert!(text.ends_with("total 60\n"), "{text}");
-    assert_eq!(text.lines().count(), 5, "{text}");
-    assert_eq!(vm.coroutine_count(), 0);
+        )
+        .unwrap();
+        let start = Instant::now();
+        vm.run_main().unwrap();
+        let took = start.elapsed();
+        assert!(
+            took >= Duration::from_millis(280) && took < Duration::from_millis(800),
+            "four 300 ms operations should overlap, took {took:?}"
+        );
+        let text = out.contents();
+        assert!(text.ends_with("total 60\n"), "{text}");
+        assert_eq!(text.lines().count(), 5, "{text}");
+        assert_eq!(vm.coroutine_count(), 0);
+    })
 }
 
 #[test]
 fn a_host_driven_loop_is_not_blocked_by_an_operation() {
-    let (mut vm, out) = vm();
-    vm.load_source(
-        "a.colibri",
-        "fn job() {\n let v = slow(150, 5)\n print(\"got {v}\")\n}\nfn main() { go job() }\n",
-    )
-    .unwrap();
-    let start = Instant::now();
-    vm.run_main().unwrap();
-    // `go` returned at once: the coroutine is suspended on the operation.
-    assert!(start.elapsed() < Duration::from_millis(100));
-    assert_eq!(vm.coroutine_count(), 1);
-    let mut ticks = 0;
-    while vm.coroutine_count() > 0 {
-        vm.tick(0.001).unwrap();
-        ticks += 1;
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert!(ticks > 5, "the host kept ticking meanwhile ({ticks})");
-    assert_eq!(out.contents(), "got 5\n");
+    vm_pending("a_host_driven_loop_is_not_blocked_by_an_operation", || {
+        let (mut vm, out) = vm();
+        vm.load_source(
+            "a.colibri",
+            "fn job() {\n let v = slow(150, 5)\n print(\"got {v}\")\n}\nfn main() { go job() }\n",
+        )
+        .unwrap();
+        let start = Instant::now();
+        vm.run_main().unwrap();
+        // `go` returned at once: the coroutine is suspended on the operation.
+        assert!(start.elapsed() < Duration::from_millis(100));
+        assert_eq!(vm.coroutine_count(), 1);
+        let mut ticks = 0;
+        while vm.coroutine_count() > 0 {
+            vm.tick(0.001).unwrap();
+            ticks += 1;
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(ticks > 5, "the host kept ticking meanwhile ({ticks})");
+        assert_eq!(out.contents(), "got 5\n");
+    })
 }
 
 #[test]
 fn the_event_loop_sleeps_until_a_completion() {
-    let (mut vm, out) = vm();
-    vm.load_source(
-        "a.colibri",
-        "fn job() {\n let v = slow(100, 9)\n print(\"got {v}\")\n}\nfn main() { go job() }\n",
-    )
-    .unwrap();
-    vm.run_main().unwrap();
-    let before = vm.coroutine_resumptions();
-    vm.run_event_loop().unwrap();
-    assert_eq!(out.contents(), "got 9\n");
-    // One resumption to finish: the loop did not poll the coroutine while it waited.
-    assert_eq!(vm.coroutine_resumptions() - before, 1);
+    vm_pending("the_event_loop_sleeps_until_a_completion", || {
+        let (mut vm, out) = vm();
+        vm.load_source(
+            "a.colibri",
+            "fn job() {\n let v = slow(100, 9)\n print(\"got {v}\")\n}\nfn main() { go job() }\n",
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        let before = vm.coroutine_resumptions();
+        vm.run_event_loop().unwrap();
+        assert_eq!(out.contents(), "got 9\n");
+        // One resumption to finish: the loop did not poll the coroutine while it waited.
+        assert_eq!(vm.coroutine_resumptions() - before, 1);
+    })
 }
 
 /// While the main fiber waits for an operation, the loop keeps running the coroutines. The
@@ -111,36 +120,37 @@ fn the_event_loop_sleeps_until_a_completion() {
 /// longer than asked).
 #[test]
 fn on_the_main_fiber_the_wait_runs_the_loop() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicI64, Ordering};
-    let (mut vm, out) = vm();
-    let ticks = Arc::new(AtomicI64::new(0));
-    let counter = Arc::clone(&ticks);
-    vm.register_fn("ticked", move |_cx: &mut colibri::Ctx| -> i64 {
-        counter.fetch_add(1, Ordering::SeqCst) + 1
-    })
-    .unwrap();
-    // A monotonic clock for the script, in microseconds since the test began.
-    let began = Instant::now();
-    vm.register_fn("micros", move |_cx: &mut colibri::Ctx| -> i64 {
-        i64::try_from(began.elapsed().as_micros()).unwrap_or(i64::MAX)
-    })
-    .unwrap();
-    let watched = Arc::clone(&ticks);
-    vm.register_fn("until_ticks", move |cx: &mut colibri::Ctx, want: i64| {
-        let watched = Arc::clone(&watched);
-        cx.run_async(move || {
-            let limit = Instant::now() + Duration::from_secs(20);
-            while watched.load(Ordering::SeqCst) < want && Instant::now() < limit {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            watched.load(Ordering::SeqCst)
+    vm_pending("on_the_main_fiber_the_wait_runs_the_loop", || {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicI64, Ordering};
+        let (mut vm, out) = vm();
+        let ticks = Arc::new(AtomicI64::new(0));
+        let counter = Arc::clone(&ticks);
+        vm.register_fn("ticked", move |_cx: &mut colibri::Ctx| -> i64 {
+            counter.fetch_add(1, Ordering::SeqCst) + 1
         })
-    })
-    .unwrap();
-    vm.load_source(
-        "a.colibri",
-        r#"
+        .unwrap();
+        // A monotonic clock for the script, in microseconds since the test began.
+        let began = Instant::now();
+        vm.register_fn("micros", move |_cx: &mut colibri::Ctx| -> i64 {
+            i64::try_from(began.elapsed().as_micros()).unwrap_or(i64::MAX)
+        })
+        .unwrap();
+        let watched = Arc::clone(&ticks);
+        vm.register_fn("until_ticks", move |cx: &mut colibri::Ctx, want: i64| {
+            let watched = Arc::clone(&watched);
+            cx.run_async(move || {
+                let limit = Instant::now() + Duration::from_secs(20);
+                while watched.load(Ordering::SeqCst) < want && Instant::now() < limit {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                watched.load(Ordering::SeqCst)
+            })
+        })
+        .unwrap();
+        vm.load_source(
+            "a.colibri",
+            r#"
 fn ticker() {
     for _ in 0..100000 {
         let _ = ticked()
@@ -163,22 +173,24 @@ fn main() {
     print("waited long enough {waited >= 200000}")
 }
 "#,
-    )
-    .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(
-        out.contents(),
-        "seen true\ngot 3\nkept going true\nwaited long enough true\n"
-    );
-    vm.cancel_coroutines();
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        assert_eq!(
+            out.contents(),
+            "seen true\ngot 3\nkept going true\nwaited long enough true\n"
+        );
+        vm.cancel_coroutines();
+    })
 }
 
 #[test]
 fn cancelling_a_waiting_coroutine_unwinds_it() {
-    let (mut vm, out) = vm();
-    vm.load_source(
-        "a.colibri",
-        r#"
+    vm_pending("cancelling_a_waiting_coroutine_unwinds_it", || {
+        let (mut vm, out) = vm();
+        vm.load_source(
+            "a.colibri",
+            r#"
 fn job() {
     defer print("cleanup")
     let v = slow(200, 1)
@@ -191,45 +203,53 @@ fn main() {
     print("cancelled {c.done()}")
 }
 "#,
-    )
-    .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "cleanup\ncancelled true\n");
-    assert_eq!(vm.coroutine_count(), 0);
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        assert_eq!(out.contents(), "cleanup\ncancelled true\n");
+        assert_eq!(vm.coroutine_count(), 0);
+    })
 }
 
 #[test]
 fn a_panicking_worker_is_a_panic_of_the_caller() {
-    let (mut vm, _) = vm();
-    vm.load_source("a.colibri", "fn main() { let _ = explode() }\n")
-        .unwrap();
-    let Err(colibri::Error::Panic { message, .. }) = vm.run_main() else {
-        panic!("expected a panic");
-    };
-    assert!(message.contains("worker blew up"), "{message}");
+    vm_pending("a_panicking_worker_is_a_panic_of_the_caller", || {
+        let (mut vm, _) = vm();
+        vm.load_source("a.colibri", "fn main() { let _ = explode() }\n")
+            .unwrap();
+        let Err(colibri::Error::Panic { message, .. }) = vm.run_main() else {
+            panic!("expected a panic");
+        };
+        assert!(message.contains("worker blew up"), "{message}");
+    })
 }
 
 #[test]
 fn waiting_on_the_main_fiber_is_refused_inside_a_host_callback() {
-    let (mut vm, _) = vm();
-    let handle: Rc<Cell<Option<colibri::Fn<(), ()>>>> = Rc::new(Cell::new(None));
-    let seen = Rc::new(Cell::new(false));
-    let (h, s) = (Rc::clone(&handle), Rc::clone(&seen));
-    vm.register_fn("call_back", move |cx: &mut colibri::Ctx| {
-        if let Err(colibri::Error::Panic { message, .. }) = h.get().unwrap().call(cx, ()) {
-            assert!(message.contains("host function's callback"), "{message}");
-            s.set(true);
-        }
-    })
-    .unwrap();
-    vm.load_source(
-        "a.colibri",
-        "fn pauses() { wait(1.0) }\nfn main() { call_back() }\n",
+    vm_pending(
+        "waiting_on_the_main_fiber_is_refused_inside_a_host_callback",
+        || {
+            let (mut vm, _) = vm();
+            let handle: Rc<Cell<Option<colibri::Fn<(), ()>>>> = Rc::new(Cell::new(None));
+            let seen = Rc::new(Cell::new(false));
+            let (h, s) = (Rc::clone(&handle), Rc::clone(&seen));
+            vm.register_fn("call_back", move |cx: &mut colibri::Ctx| {
+                if let Err(colibri::Error::Panic { message, .. }) = h.get().unwrap().call(cx, ()) {
+                    assert!(message.contains("host function's callback"), "{message}");
+                    s.set(true);
+                }
+            })
+            .unwrap();
+            vm.load_source(
+                "a.colibri",
+                "fn pauses() { wait(1.0) }\nfn main() { call_back() }\n",
+            )
+            .unwrap();
+            handle.set(Some(vm.get_fn::<(), ()>("pauses").unwrap()));
+            vm.run_main().unwrap();
+            assert!(seen.get());
+        },
     )
-    .unwrap();
-    handle.set(Some(vm.get_fn::<(), ()>("pauses").unwrap()));
-    vm.run_main().unwrap();
-    assert!(seen.get());
 }
 
 // ---- the pool ----
@@ -271,10 +291,11 @@ fn tracked_vm() -> (
 
 #[test]
 fn thousands_of_operations_reuse_threads() {
-    let (mut vm, out, peak, started) = tracked_vm();
-    vm.load_source(
-        "a.colibri",
-        r#"
+    vm_pending("thousands_of_operations_reuse_threads", || {
+        let (mut vm, out, peak, started) = tracked_vm();
+        vm.load_source(
+            "a.colibri",
+            r#"
 fn job(i: int) -> int {
     return tracked(2, i)
 }
@@ -292,24 +313,26 @@ fn main() {
     print("total {total}")
 }
 "#,
-    )
-    .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(
-        out.contents(),
-        format!("total {}\n", (0..2000).sum::<i64>())
-    );
-    assert_eq!(started.load(Ordering::SeqCst), 2000);
-    let peak = peak.load(Ordering::SeqCst);
-    assert!(peak >= 2, "operations overlap: peak {peak}");
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        assert_eq!(
+            out.contents(),
+            format!("total {}\n", (0..2000).sum::<i64>())
+        );
+        assert_eq!(started.load(Ordering::SeqCst), 2000);
+        let peak = peak.load(Ordering::SeqCst);
+        assert!(peak >= 2, "operations overlap: peak {peak}");
+    })
 }
 
 #[test]
 fn an_operation_cancelled_while_running_is_dropped() {
-    let (mut vm, out, _, started) = tracked_vm();
-    vm.load_source(
-        "a.colibri",
-        r#"
+    vm_pending("an_operation_cancelled_while_running_is_dropped", || {
+        let (mut vm, out, _, started) = tracked_vm();
+        vm.load_source(
+            "a.colibri",
+            r#"
 fn job(i: int) {
     defer print("cleanup")
     let v = tracked(300, i)
@@ -327,46 +350,50 @@ fn main() {
     wait(0.5)
 }
 "#,
-    )
-    .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(out.contents().matches("cleanup").count(), 64);
-    assert!(!out.contents().contains("never"));
-    assert!(started.load(Ordering::SeqCst) <= 64);
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        assert_eq!(out.contents().matches("cleanup").count(), 64);
+        assert!(!out.contents().contains("never"));
+        assert!(started.load(Ordering::SeqCst) <= 64);
+    })
 }
 
 /// Operations that block until a later operation releases them: with a fixed pool the
 /// releasing one would queue behind the blocked ones forever.
 #[test]
 fn blocked_operations_never_hold_back_the_one_that_unblocks_them() {
-    let out = colibri::SharedBuffer::new();
-    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
-    let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let g = gate.clone();
-    vm.register_fn("wait_gate", move |cx: &mut colibri::Ctx| {
-        let g = g.clone();
-        cx.run_async(move || {
-            // Bounded, so a regression fails the test instead of hanging it.
-            let start = std::time::Instant::now();
-            while !g.load(Ordering::SeqCst) {
-                if start.elapsed() > Duration::from_secs(30) {
-                    return false;
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            true
-        })
-    })
-    .unwrap();
-    let g = gate.clone();
-    vm.register_fn("open_gate", move |cx: &mut colibri::Ctx| {
-        let g = g.clone();
-        cx.run_async(move || g.store(true, Ordering::SeqCst))
-    })
-    .unwrap();
-    vm.load_source(
-        "a.colibri",
-        r#"
+    vm_pending(
+        "blocked_operations_never_hold_back_the_one_that_unblocks_them",
+        || {
+            let out = colibri::SharedBuffer::new();
+            let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+            let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let g = gate.clone();
+            vm.register_fn("wait_gate", move |cx: &mut colibri::Ctx| {
+                let g = g.clone();
+                cx.run_async(move || {
+                    // Bounded, so a regression fails the test instead of hanging it.
+                    let start = std::time::Instant::now();
+                    while !g.load(Ordering::SeqCst) {
+                        if start.elapsed() > Duration::from_secs(30) {
+                            return false;
+                        }
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    true
+                })
+            })
+            .unwrap();
+            let g = gate.clone();
+            vm.register_fn("open_gate", move |cx: &mut colibri::Ctx| {
+                let g = g.clone();
+                cx.run_async(move || g.store(true, Ordering::SeqCst))
+            })
+            .unwrap();
+            vm.load_source(
+                "a.colibri",
+                r#"
 fn blocked() -> bool {
     return wait_gate()
 }
@@ -389,38 +416,41 @@ fn main() {
     print("released {count}")
 }
 "#,
+            )
+            .unwrap();
+            vm.run_main().unwrap();
+            assert_eq!(out.contents(), "released 48\n");
+        },
     )
-    .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "released 48\n");
 }
 
 /// Cancelling runs the operation's hooks before `cancel()` returns, however far the
 /// operation is (here: it has not looked at anything for 30 s).
 #[test]
 fn a_cancel_hook_has_run_when_cancel_returns() {
-    let out = colibri::SharedBuffer::new();
-    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
-    let hooked = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let h = hooked.clone();
-    vm.register_fn("hang", move |cx: &mut colibri::Ctx| {
-        let h = h.clone();
-        cx.run_async_cancellable(move |token| {
+    vm_pending("a_cancel_hook_has_run_when_cancel_returns", || {
+        let out = colibri::SharedBuffer::new();
+        let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+        let hooked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let h = hooked.clone();
+        vm.register_fn("hang", move |cx: &mut colibri::Ctx| {
             let h = h.clone();
-            token.on_cancel(move || h.store(true, Ordering::SeqCst));
-            let start = std::time::Instant::now();
-            while !token.is_cancelled() && start.elapsed() < Duration::from_secs(30) {
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            cx.run_async_cancellable(move |token| {
+                let h = h.clone();
+                token.on_cancel(move || h.store(true, Ordering::SeqCst));
+                let start = std::time::Instant::now();
+                while !token.is_cancelled() && start.elapsed() < Duration::from_secs(30) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
         })
-    })
-    .unwrap();
-    let h = hooked.clone();
-    vm.register_fn("hooked", move || h.load(Ordering::SeqCst))
         .unwrap();
-    vm.load_source(
-        "a.colibri",
-        r#"
+        let h = hooked.clone();
+        vm.register_fn("hooked", move || h.load(Ordering::SeqCst))
+            .unwrap();
+        vm.load_source(
+            "a.colibri",
+            r#"
 fn waiter() {
     hang()
 }
@@ -431,79 +461,87 @@ fn main() {
     print("hook ran: {hooked()}")
 }
 "#,
-    )
-    .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "hook ran: true\n");
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        assert_eq!(out.contents(), "hook ran: true\n");
+    })
 }
 
 /// Ending the `Vm` cancels what still runs.
 #[test]
 fn dropping_the_vm_cancels_running_operations() {
-    let mut vm = colibri::Vm::builder().build();
-    let hooked = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (h, s) = (hooked.clone(), started.clone());
-    vm.register_fn("hang", move |cx: &mut colibri::Ctx| {
-        let (h, s) = (h.clone(), s.clone());
-        cx.run_async_cancellable(move |token| {
-            let h = h.clone();
-            token.on_cancel(move || h.store(true, Ordering::SeqCst));
-            s.store(true, Ordering::SeqCst);
-            let start = std::time::Instant::now();
-            while !token.is_cancelled() && start.elapsed() < Duration::from_secs(30) {
-                std::thread::sleep(Duration::from_millis(1));
-            }
+    vm_pending("dropping_the_vm_cancels_running_operations", || {
+        let mut vm = colibri::Vm::builder().build();
+        let hooked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (h, s) = (hooked.clone(), started.clone());
+        vm.register_fn("hang", move |cx: &mut colibri::Ctx| {
+            let (h, s) = (h.clone(), s.clone());
+            cx.run_async_cancellable(move |token| {
+                let h = h.clone();
+                token.on_cancel(move || h.store(true, Ordering::SeqCst));
+                s.store(true, Ordering::SeqCst);
+                let start = std::time::Instant::now();
+                while !token.is_cancelled() && start.elapsed() < Duration::from_secs(30) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
         })
+        .unwrap();
+        vm.load_source(
+            "a.colibri",
+            "fn waiter() { hang() }\nfn main() {\n    go waiter()\n    wait(0.1)\n}\n",
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        assert!(started.load(Ordering::SeqCst));
+        assert!(!hooked.load(Ordering::SeqCst));
+        drop(vm);
+        assert!(hooked.load(Ordering::SeqCst));
     })
-    .unwrap();
-    vm.load_source(
-        "a.colibri",
-        "fn waiter() { hang() }\nfn main() {\n    go waiter()\n    wait(0.1)\n}\n",
-    )
-    .unwrap();
-    vm.run_main().unwrap();
-    assert!(started.load(Ordering::SeqCst));
-    assert!(!hooked.load(Ordering::SeqCst));
-    drop(vm);
-    assert!(hooked.load(Ordering::SeqCst));
 }
 
 /// A fake clock does not move while the loop waits for an operation, so what a program does
 /// at a fake time does not depend on how long the operation really takes.
 #[test]
 fn a_fake_clock_does_not_advance_while_an_operation_runs() {
-    struct Fake(Rc<Cell<f64>>);
-    impl colibri::Clock for Fake {
-        fn now(&mut self) -> f64 {
-            self.0.get()
-        }
-        fn sleep(&mut self, s: f64) {
-            self.0.set(self.0.get() + s);
-        }
-    }
-    for real_ms in [50, 200, 400] {
-        let time = Rc::new(Cell::new(0.0));
-        let out = colibri::SharedBuffer::new();
-        let mut vm = colibri::Vm::builder()
-            .stdout(Box::new(out.clone()))
-            .clock(Fake(Rc::clone(&time)))
-            .build();
-        vm.register_fn("slow", |cx: &mut colibri::Ctx, ms: i64| {
-            cx.run_async(move || std::thread::sleep(Duration::from_millis(ms as u64)))
-        })
-        .unwrap();
-        vm.load_source(
+    vm_pending(
+        "a_fake_clock_does_not_advance_while_an_operation_runs",
+        || {
+            struct Fake(Rc<Cell<f64>>);
+            impl colibri::Clock for Fake {
+                fn now(&mut self) -> f64 {
+                    self.0.get()
+                }
+                fn sleep(&mut self, s: f64) {
+                    self.0.set(self.0.get() + s);
+                }
+            }
+            for real_ms in [50, 200, 400] {
+                let time = Rc::new(Cell::new(0.0));
+                let out = colibri::SharedBuffer::new();
+                let mut vm = colibri::Vm::builder()
+                    .stdout(Box::new(out.clone()))
+                    .clock(Fake(Rc::clone(&time)))
+                    .build();
+                vm.register_fn("slow", |cx: &mut colibri::Ctx, ms: i64| {
+                    cx.run_async(move || std::thread::sleep(Duration::from_millis(ms as u64)))
+                })
+                .unwrap();
+                vm.load_source(
             "a.colibri",
             &format!(
                 "var ticks = 0\nfn counter() {{\n    while true {{\n        ticks += 1\n        wait(0.01)\n    }}\n}}\nfn main() {{\n    let c = go counter()\n    slow({real_ms})\n    print(\"ticks {{ticks}}\")\n    c.cancel()\n}}\n"
             ),
         )
         .unwrap();
-        vm.run_main().unwrap();
-        assert_eq!(out.contents(), "ticks 1\n", "after {real_ms} ms");
-        assert_eq!(time.get(), 0.0);
-    }
+                vm.run_main().unwrap();
+                assert_eq!(out.contents(), "ticks 1\n", "after {real_ms} ms");
+                assert_eq!(time.get(), 0.0);
+            }
+        },
+    )
 }
 
 // ---- operations that another thread completes (`Ctx::try_await_completion`) ----
@@ -656,8 +694,11 @@ fn run_completion(source: &str) -> String {
 
 #[test]
 fn a_completion_from_another_thread_wakes_coroutines_that_overlap() {
-    let text = run_completion(
-        r#"
+    vm_pending(
+        "a_completion_from_another_thread_wakes_coroutines_that_overlap",
+        || {
+            let text = run_completion(
+                r#"
 fn job(i: int) -> str { return now(i * 10) }
 fn main() {
     let group = CoGroup()
@@ -671,16 +712,21 @@ fn main() {
     }
 }
 "#,
-    );
-    assert_eq!(text, "ok 0\nok 10\nok 20\nok 30\n");
+            );
+            assert_eq!(text, "ok 0\nok 10\nok 20\nok 30\n");
+        },
+    )
 }
 
 /// On the main fiber the wait runs the event loop: the coroutine that opens the gate only runs
 /// if it does, and the thread that completes only does after the gate is open.
 #[test]
 fn a_completion_on_the_main_fiber_runs_the_loop_meanwhile() {
-    let text = run_completion(
-        r#"
+    vm_pending(
+        "a_completion_on_the_main_fiber_runs_the_loop_meanwhile",
+        || {
+            let text = run_completion(
+                r#"
 fn opener() {
     wait(0.001)
     open()
@@ -690,24 +736,34 @@ fn main() {
     print(gated(7))
 }
 "#,
-    );
-    assert_eq!(text, "ok 7\n");
+            );
+            assert_eq!(text, "ok 7\n");
+        },
+    )
 }
 
 /// The thread that completes may finish before the coroutine has suspended; the wait looks at
 /// what has completed before it sleeps.
 #[test]
 fn a_completion_that_arrives_before_the_waiter_suspends_is_not_lost() {
-    for _ in 0..200 {
-        let text = run_completion("fn main() { print(now(1)) }\n");
-        assert_eq!(text, "ok 1\n");
-    }
+    vm_pending(
+        "a_completion_that_arrives_before_the_waiter_suspends_is_not_lost",
+        || {
+            for _ in 0..200 {
+                let text = run_completion("fn main() { print(now(1)) }\n");
+                assert_eq!(text, "ok 1\n");
+            }
+        },
+    )
 }
 
 #[test]
 fn a_completion_in_a_drop_hook_blocks_until_it_is_done() {
-    let text = run_completion(
-        r#"
+    vm_pending(
+        "a_completion_in_a_drop_hook_blocks_until_it_is_done",
+        || {
+            let text = run_completion(
+                r#"
 class Res { label: str }
 
 impl Drop for Res {
@@ -719,15 +775,20 @@ fn main() {
     print("end of main")
 }
 "#,
-    );
-    assert_eq!(text, "end of main\ndrop r ok 3\n");
+            );
+            assert_eq!(text, "end of main\ndrop r ok 3\n");
+        },
+    )
 }
 
 #[test]
 fn a_completer_dropped_without_a_result_is_an_error_not_a_hang() {
-    // In a coroutine, on the main fiber, and where the wait blocks (a drop hook).
-    let text = run_completion(
-        r#"
+    vm_pending(
+        "a_completer_dropped_without_a_result_is_an_error_not_a_hang",
+        || {
+            // In a coroutine, on the main fiber, and where the wait blocks (a drop hook).
+            let text = run_completion(
+                r#"
 class Res { label: str }
 
 impl Drop for Res {
@@ -742,29 +803,33 @@ fn main() {
     let r = Res { label: "r" }
 }
 "#,
-    );
-    let none = "dropped: the operation ended without a result";
-    assert_eq!(
-        text,
-        format!("main {none}\ncoroutine {none}\nhook {none}\n")
-    );
+            );
+            let none = "dropped: the operation ended without a result";
+            assert_eq!(
+                text,
+                format!("main {none}\ncoroutine {none}\nhook {none}\n")
+            );
+        },
+    )
 }
 
 #[test]
 fn a_start_that_fails_is_an_error_and_nothing_waits() {
-    let (mut vm, out, shared) = completion_vm();
-    vm.load_source(
+    vm_pending("a_start_that_fails_is_an_error_and_nothing_waits", || {
+        let (mut vm, out, shared) = completion_vm();
+        vm.load_source(
         "a.colibri",
         "fn job() -> str { return refuse() }\nfn main() {\n    let c = go job()\n    print(c.join())\n    print(refuse())\n}\n",
     )
     .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(
-        out.contents(),
-        "not started: no thread\nnot started: no thread\n"
-    );
-    assert_eq!(vm.coroutine_count(), 0);
-    assert!(shared.slots.lock().unwrap().is_empty());
+        vm.run_main().unwrap();
+        assert_eq!(
+            out.contents(),
+            "not started: no thread\nnot started: no thread\n"
+        );
+        assert_eq!(vm.coroutine_count(), 0);
+        assert!(shared.slots.lock().unwrap().is_empty());
+    })
 }
 
 /// A parked operation that is cancelled: its hook has run when `cancel()` returns, the
@@ -772,10 +837,13 @@ fn a_start_that_fails_is_an_error_and_nothing_waits() {
 /// its value.
 #[test]
 fn a_cancelled_completion_has_run_its_hook_and_ignores_a_late_complete() {
-    let (mut vm, out, shared) = completion_vm();
-    vm.load_source(
-        "a.colibri",
-        r#"
+    vm_pending(
+        "a_cancelled_completion_has_run_its_hook_and_ignores_a_late_complete",
+        || {
+            let (mut vm, out, shared) = completion_vm();
+            vm.load_source(
+                "a.colibri",
+                r#"
 fn waiter() {
     defer print("cleanup")
     let v = park()
@@ -792,19 +860,24 @@ fn main() {
     wait(0.01)
 }
 "#,
+            )
+            .unwrap();
+            vm.run_main().unwrap();
+            assert_eq!(out.contents(), "cleanup\ncancelled true hooks 1\nlate 1\n");
+            assert_eq!(vm.coroutine_count(), 0);
+            // The late value was dropped on the completing thread, not kept.
+            assert_eq!(shared.probe_drops.load(Ordering::SeqCst), 1);
+        },
     )
-    .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "cleanup\ncancelled true hooks 1\nlate 1\n");
-    assert_eq!(vm.coroutine_count(), 0);
-    // The late value was dropped on the completing thread, not kept.
-    assert_eq!(shared.probe_drops.load(Ordering::SeqCst), 1);
 }
 
 #[test]
 fn a_completer_dropped_by_its_holder_wakes_a_parked_waiter_with_an_error() {
-    let text = run_completion(
-        r#"
+    vm_pending(
+        "a_completer_dropped_by_its_holder_wakes_a_parked_waiter_with_an_error",
+        || {
+            let text = run_completion(
+                r#"
 fn waiter() -> str { return park() }
 fn main() {
     let c = go waiter()
@@ -815,19 +888,22 @@ fn main() {
     print(c.join())
 }
 "#,
-    );
-    assert_eq!(
-        text,
-        "dropped 1\ndropped: the operation ended without a result\n"
-    );
+            );
+            assert_eq!(
+                text,
+                "dropped 1\ndropped: the operation ended without a result\n"
+            );
+        },
+    )
 }
 
 #[test]
 fn a_completed_parked_waiter_gets_its_value_once() {
-    let (mut vm, out, shared) = completion_vm();
-    vm.load_source(
-        "a.colibri",
-        r#"
+    vm_pending("a_completed_parked_waiter_gets_its_value_once", || {
+        let (mut vm, out, shared) = completion_vm();
+        vm.load_source(
+            "a.colibri",
+            r#"
 fn waiter() -> str { return park() }
 fn main() {
     let a = go waiter()
@@ -840,12 +916,13 @@ fn main() {
     print(b.join())
 }
 "#,
-    )
-    .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "released 2\nok 1\nok 1\n");
-    assert_eq!(shared.hooks.load(Ordering::SeqCst), 0);
-    assert_eq!(shared.probe_drops.load(Ordering::SeqCst), 2);
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        assert_eq!(out.contents(), "released 2\nok 1\nok 1\n");
+        assert_eq!(shared.hooks.load(Ordering::SeqCst), 0);
+        assert_eq!(shared.probe_drops.load(Ordering::SeqCst), 2);
+    })
 }
 
 /// Ending the `Vm` with a completer outstanding is prompt, cancels its token (the hook runs),
@@ -853,10 +930,13 @@ fn main() {
 /// else.
 #[test]
 fn dropping_the_vm_with_a_completer_outstanding_cancels_its_token() {
-    let (mut vm, _out, shared) = completion_vm();
-    vm.load_source(
-        "a.colibri",
-        r#"
+    vm_pending(
+        "dropping_the_vm_with_a_completer_outstanding_cancels_its_token",
+        || {
+            let (mut vm, _out, shared) = completion_vm();
+            vm.load_source(
+                "a.colibri",
+                r#"
 fn waiter() { let v = park() }
 fn main() {
     go waiter()
@@ -865,21 +945,23 @@ fn main() {
     }
 }
 "#,
+            )
+            .unwrap();
+            vm.run_main().unwrap();
+            assert_eq!(shared.hooks.load(Ordering::SeqCst), 0);
+            let began = Instant::now();
+            drop(vm);
+            assert!(began.elapsed() < CEILING, "dropping the Vm was not prompt");
+            assert_eq!(shared.hooks.load(Ordering::SeqCst), 1);
+            let slots = std::mem::take(&mut *shared.slots.lock().unwrap());
+            assert_eq!(slots.len(), 1);
+            for completer in slots {
+                assert!(completer.token().is_cancelled());
+                completer.complete(Probe(Arc::clone(&shared.probe_drops)));
+            }
+            assert_eq!(shared.probe_drops.load(Ordering::SeqCst), 1);
+        },
     )
-    .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(shared.hooks.load(Ordering::SeqCst), 0);
-    let began = Instant::now();
-    drop(vm);
-    assert!(began.elapsed() < CEILING, "dropping the Vm was not prompt");
-    assert_eq!(shared.hooks.load(Ordering::SeqCst), 1);
-    let slots = std::mem::take(&mut *shared.slots.lock().unwrap());
-    assert_eq!(slots.len(), 1);
-    for completer in slots {
-        assert!(completer.token().is_cancelled());
-        completer.complete(Probe(Arc::clone(&shared.probe_drops)));
-    }
-    assert_eq!(shared.probe_drops.load(Ordering::SeqCst), 1);
 }
 
 /// A completer that `start` completes itself is a plain yield: the call gives the result at
@@ -887,8 +969,11 @@ fn main() {
 /// is how a call that could proceed yields after its burst budget; see the poller's notes.)
 #[test]
 fn a_completion_made_inside_start_yields_once_and_gives_its_value() {
-    let text = run_completion(
-        r#"
+    vm_pending(
+        "a_completion_made_inside_start_yields_once_and_gives_its_value",
+        || {
+            let text = run_completion(
+                r#"
 fn first() {
     print("first begins")
     print("first got {inline(5)}")
@@ -902,17 +987,22 @@ fn main() {
     print("main got {inline(6)}")
 }
 "#,
-    );
-    assert_eq!(
-        text,
-        "first begins\nsecond runs\nfirst got ok 5\nmain got ok 6\n"
-    );
+            );
+            assert_eq!(
+                text,
+                "first begins\nsecond runs\nfirst got ok 5\nmain got ok 6\n"
+            );
+        },
+    )
 }
 
 #[test]
 fn a_completion_made_inside_start_works_where_the_wait_blocks() {
-    let text = run_completion(
-        r#"
+    vm_pending(
+        "a_completion_made_inside_start_works_where_the_wait_blocks",
+        || {
+            let text = run_completion(
+                r#"
 class Res { label: str }
 
 impl Drop for Res {
@@ -923,47 +1013,54 @@ fn main() {
     let r = Res { label: "r" }
 }
 "#,
-    );
-    assert_eq!(text, "drop r ok 8\n");
+            );
+            assert_eq!(text, "drop r ok 8\n");
+        },
+    )
 }
 
 /// A `start` that panics is a panic of the host function (the program sees it), leaves nothing of
 /// the operation behind (its hook has run, not at the end of the `Vm`), and the `Vm` goes on.
 #[test]
 fn a_start_that_panics_is_a_panic_of_the_call_and_the_vm_goes_on() {
-    let (mut vm, out, shared) = completion_vm();
-    let hooks = Arc::clone(&shared.hooks);
-    vm.register_fn("bad_start", move |cx: &mut colibri::Ctx| -> String {
-        let hooks = Arc::clone(&hooks);
-        describe(
-            cx.try_await_completion(move |completer: colibri::Completer<i64>| {
-                completer.token().on_cancel(move || {
-                    hooks.fetch_add(1, Ordering::SeqCst);
-                });
-                panic!("start blew up")
-            }),
-        )
-    })
-    .unwrap();
-    vm.load_source(
-        "a.colibri",
-        "fn main() { print(bad_start()) }\nfn again() { print(now(4)) }\n",
+    vm_pending(
+        "a_start_that_panics_is_a_panic_of_the_call_and_the_vm_goes_on",
+        || {
+            let (mut vm, out, shared) = completion_vm();
+            let hooks = Arc::clone(&shared.hooks);
+            vm.register_fn("bad_start", move |cx: &mut colibri::Ctx| -> String {
+                let hooks = Arc::clone(&hooks);
+                describe(
+                    cx.try_await_completion(move |completer: colibri::Completer<i64>| {
+                        completer.token().on_cancel(move || {
+                            hooks.fetch_add(1, Ordering::SeqCst);
+                        });
+                        panic!("start blew up")
+                    }),
+                )
+            })
+            .unwrap();
+            vm.load_source(
+                "a.colibri",
+                "fn main() { print(bad_start()) }\nfn again() { print(now(4)) }\n",
+            )
+            .unwrap();
+            let again = vm.get_fn::<(), ()>("again").unwrap();
+            let Err(colibri::Error::Panic { message, .. }) = vm.run_main() else {
+                panic!("expected a panic");
+            };
+            assert!(message.contains("start blew up"), "{message}");
+            assert_eq!(
+                shared.hooks.load(Ordering::SeqCst),
+                1,
+                "the hook ran at once"
+            );
+            // `again` is called through the same `Vm` after the panic: the wait works.
+            again.call(&mut vm, ()).unwrap();
+            assert_eq!(out.contents(), "ok 4\n");
+            assert_eq!(vm.coroutine_count(), 0);
+        },
     )
-    .unwrap();
-    let again = vm.get_fn::<(), ()>("again").unwrap();
-    let Err(colibri::Error::Panic { message, .. }) = vm.run_main() else {
-        panic!("expected a panic");
-    };
-    assert!(message.contains("start blew up"), "{message}");
-    assert_eq!(
-        shared.hooks.load(Ordering::SeqCst),
-        1,
-        "the hook ran at once"
-    );
-    // `again` is called through the same `Vm` after the panic: the wait works.
-    again.call(&mut vm, ()).unwrap();
-    assert_eq!(out.contents(), "ok 4\n");
-    assert_eq!(vm.coroutine_count(), 0);
 }
 
 // ---- the result types a wait can carry: the wait is not specific to one of them ----
@@ -972,42 +1069,43 @@ fn a_start_that_panics_is_a_panic_of_the_call_and_the_vm_goes_on() {
 /// and inside a coroutine (where the wait suspends instead of driving the loop).
 #[test]
 fn waits_carry_unit_and_string_results() {
-    let out = colibri::SharedBuffer::new();
-    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
-    vm.register_fn("unit_job", |cx: &mut colibri::Ctx, ms: i64| {
-        cx.run_async(move || std::thread::sleep(Duration::from_millis(ms as u64)))
-    })
-    .unwrap();
-    vm.register_fn("text_job", |cx: &mut colibri::Ctx, s: String| -> String {
-        cx.run_async(move || format!("{s}-done"))
-    })
-    .unwrap();
-    vm.register_fn("text_cancellable", |cx: &mut colibri::Ctx, s: String| {
-        cx.run_async_cancellable(move |_token| s.to_uppercase())
-    })
-    .unwrap();
-    vm.register_fn("text_completion", |cx: &mut colibri::Ctx, s: String| {
-        let outcome = cx.try_await_completion(move |completer: colibri::Completer<String>| {
-            std::thread::spawn(move || completer.complete(format!("{s}!")));
-            Ok(())
-        });
-        match outcome {
-            Ok(text) => text,
-            Err(_) => "failed".to_string(),
-        }
-    })
-    .unwrap();
-    vm.register_fn("unit_completion", |cx: &mut colibri::Ctx| {
-        let outcome = cx.try_await_completion(|completer: colibri::Completer<()>| {
-            std::thread::spawn(move || completer.complete(()));
-            Ok(())
-        });
-        assert!(outcome.is_ok());
-    })
-    .unwrap();
-    vm.load_source(
-        "a.colibri",
-        r#"
+    vm_pending("waits_carry_unit_and_string_results", || {
+        let out = colibri::SharedBuffer::new();
+        let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+        vm.register_fn("unit_job", |cx: &mut colibri::Ctx, ms: i64| {
+            cx.run_async(move || std::thread::sleep(Duration::from_millis(ms as u64)))
+        })
+        .unwrap();
+        vm.register_fn("text_job", |cx: &mut colibri::Ctx, s: String| -> String {
+            cx.run_async(move || format!("{s}-done"))
+        })
+        .unwrap();
+        vm.register_fn("text_cancellable", |cx: &mut colibri::Ctx, s: String| {
+            cx.run_async_cancellable(move |_token| s.to_uppercase())
+        })
+        .unwrap();
+        vm.register_fn("text_completion", |cx: &mut colibri::Ctx, s: String| {
+            let outcome = cx.try_await_completion(move |completer: colibri::Completer<String>| {
+                std::thread::spawn(move || completer.complete(format!("{s}!")));
+                Ok(())
+            });
+            match outcome {
+                Ok(text) => text,
+                Err(_) => "failed".to_string(),
+            }
+        })
+        .unwrap();
+        vm.register_fn("unit_completion", |cx: &mut colibri::Ctx| {
+            let outcome = cx.try_await_completion(|completer: colibri::Completer<()>| {
+                std::thread::spawn(move || completer.complete(()));
+                Ok(())
+            });
+            assert!(outcome.is_ok());
+        })
+        .unwrap();
+        vm.load_source(
+            "a.colibri",
+            r#"
 fn both(tag: str) {
     unit_job(5)
     unit_completion()
@@ -1020,11 +1118,12 @@ fn main() {
     g.join_all()
 }
 "#,
-    )
-    .unwrap();
-    vm.run_main().unwrap();
-    vm.run_event_loop().unwrap();
-    let text = out.contents();
-    assert!(text.contains("main a-done B c!\n"), "{text}");
-    assert!(text.contains("coroutine a-done B c!\n"), "{text}");
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        vm.run_event_loop().unwrap();
+        let text = out.contents();
+        assert!(text.contains("main a-done B c!\n"), "{text}");
+        assert!(text.contains("coroutine a-done B c!\n"), "{text}");
+    })
 }

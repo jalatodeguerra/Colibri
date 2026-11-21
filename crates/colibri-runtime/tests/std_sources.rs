@@ -2,6 +2,9 @@
 //! `import name` and `import std.name`, virtual files named `<std>/name.colibri`, no warnings
 //! from them, and an ordinary program around them.
 
+mod common;
+use common::vm_pending;
+
 use std::fs;
 use std::path::PathBuf;
 
@@ -34,24 +37,31 @@ fn vm() -> (Vm, colibri::SharedBuffer) {
 
 #[test]
 fn import_finds_the_module_by_its_short_and_its_full_name() {
-    let (mut vm, out) = vm();
-    vm.load_source(
+    vm_pending(
+        "import_finds_the_module_by_its_short_and_its_full_name",
+        || {
+            let (mut vm, out) = vm();
+            vm.load_source(
         "main.colibri",
         "import demo\nimport std.demo as again\nprint(demo.double(21))\nprint(again.double(4))\nlet p = demo.pair(1, 2) + demo.pair(10, 20)\nprint(\"{p.a} {p.b}\")\n",
     )
     .unwrap();
-    assert_eq!(out.contents(), "42\n8\n11 22\n");
+            assert_eq!(out.contents(), "42\n8\n11 22\n");
+        },
+    )
 }
 
 #[test]
 fn names_can_be_imported_from_it() {
-    let (mut vm, out) = vm();
-    vm.load_source(
-        "main.colibri",
-        "import demo.{double, Pair}\nlet p: Pair = Pair { a: 1, b: 2 }\nprint(double(p.b))\n",
-    )
-    .unwrap();
-    assert_eq!(out.contents(), "4\n");
+    vm_pending("names_can_be_imported_from_it", || {
+        let (mut vm, out) = vm();
+        vm.load_source(
+            "main.colibri",
+            "import demo.{double, Pair}\nlet p: Pair = Pair { a: 1, b: 2 }\nprint(double(p.b))\n",
+        )
+        .unwrap();
+        assert_eq!(out.contents(), "4\n");
+    })
 }
 
 #[test]

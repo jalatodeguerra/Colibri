@@ -1,6 +1,9 @@
 //! Host classes: Rust objects that scripts hold (EMBEDDING §2, §3), written by hand with
 //! `HostType` (the `export` macros have their own tests).
 
+mod common;
+use common::vm_pending;
+
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -118,9 +121,12 @@ fn panic_message(result: Result<(), colibri::Error>) -> String {
 
 #[test]
 fn a_returned_object_is_script_owned_and_dies_with_its_last_reference() {
-    let mut f = fixture();
-    f.run(
-        r#"
+    vm_pending(
+        "a_returned_object_is_script_owned_and_dies_with_its_last_reference",
+        || {
+            let mut f = fixture();
+            f.run(
+                r#"
 fn scope() {
     let e = spawn("orc")
     let same = e
@@ -132,20 +138,25 @@ fn main() {
     log("after")
 }
 "#,
+            )
+            .unwrap();
+            assert_eq!(
+                *f.log.borrow(),
+                ["made orc with 10 hp", "rust drop orc", "after"]
+            );
+            assert_eq!(f.vm.host_object_count(), 0);
+        },
     )
-    .unwrap();
-    assert_eq!(
-        *f.log.borrow(),
-        ["made orc with 10 hp", "rust drop orc", "after"]
-    );
-    assert_eq!(f.vm.host_object_count(), 0);
 }
 
 #[test]
 fn the_rust_drop_runs_after_the_class_drop_hook_that_held_it() {
-    let mut f = fixture();
-    f.run(
-        r#"
+    vm_pending(
+        "the_rust_drop_runs_after_the_class_drop_hook_that_held_it",
+        || {
+            let mut f = fixture();
+            f.run(
+                r#"
 class Holder { name: str, enemy: Enemy }
 
 impl Drop for Holder {
@@ -162,21 +173,26 @@ fn main() {
     log("after")
 }
 "#,
+            )
+            .unwrap();
+            assert_eq!(
+                *f.log.borrow(),
+                ["made", "hook holder sees orc", "rust drop orc", "after"]
+            );
+            // The drop trace names the class object by its `name` field and the host object by type.
+            assert_eq!(f.vm.take_drop_trace(), ["holder", "Enemy"]);
+        },
     )
-    .unwrap();
-    assert_eq!(
-        *f.log.borrow(),
-        ["made", "hook holder sees orc", "rust drop orc", "after"]
-    );
-    // The drop trace names the class object by its `name` field and the host object by type.
-    assert_eq!(f.vm.take_drop_trace(), ["holder", "Enemy"]);
 }
 
 #[test]
 fn a_host_object_dying_with_a_list_dies_in_element_order() {
-    let mut f = fixture();
-    f.run(
-        r#"
+    vm_pending(
+        "a_host_object_dying_with_a_list_dies_in_element_order",
+        || {
+            let mut f = fixture();
+            f.run(
+                r#"
 fn main() {
     let list = [spawn("a"), spawn("b"), spawn("c")]
     log("count {list.len()}")
@@ -184,32 +200,37 @@ fn main() {
     log("cleared")
 }
 "#,
+            )
+            .unwrap();
+            assert_eq!(
+                *f.log.borrow(),
+                [
+                    "count 3",
+                    "rust drop a",
+                    "rust drop b",
+                    "rust drop c",
+                    "cleared"
+                ]
+            );
+        },
     )
-    .unwrap();
-    assert_eq!(
-        *f.log.borrow(),
-        [
-            "count 3",
-            "rust drop a",
-            "rust drop b",
-            "rust drop c",
-            "cleared"
-        ]
-    );
 }
 
 #[test]
 fn a_host_owned_object_survives_every_script_reference() {
-    let mut f = fixture();
-    f.vm.register_type::<Enemy>().unwrap();
-    let boss = f.vm.insert(Enemy {
-        name: "boss".into(),
-        hp: 100,
-        log: Rc::clone(&f.log),
-    });
-    f.vm.register_fn("boss", move || boss).unwrap();
-    f.run(
-        r#"
+    vm_pending(
+        "a_host_owned_object_survives_every_script_reference",
+        || {
+            let mut f = fixture();
+            f.vm.register_type::<Enemy>().unwrap();
+            let boss = f.vm.insert(Enemy {
+                name: "boss".into(),
+                hp: 100,
+                log: Rc::clone(&f.log),
+            });
+            f.vm.register_fn("boss", move || boss).unwrap();
+            f.run(
+                r#"
 fn scope() {
     let b = boss()
     let c = b
@@ -222,62 +243,69 @@ fn main() {
     log("after")
 }
 "#,
+            )
+            .unwrap();
+            assert_eq!(*f.log.borrow(), ["hit to 70", "hit to 40", "after"]);
+            assert!(f.vm.is_alive(boss));
+            assert_eq!(f.vm.get(boss).unwrap().hp, 40);
+            f.vm.get_mut(boss).unwrap().hp = 5;
+            assert_eq!(f.vm.get(boss).unwrap().hp, 5);
+            let taken =
+                f.vm.remove(boss)
+                    .unwrap()
+                    .expect("the host removes its own");
+            assert_eq!(taken.name, "boss");
+            // It is the host's object now: no Rust drop yet.
+            assert_eq!(*f.log.borrow(), ["hit to 70", "hit to 40", "after"]);
+            drop(taken);
+            assert_eq!(f.log.borrow().last().unwrap(), "rust drop boss");
+        },
     )
-    .unwrap();
-    assert_eq!(*f.log.borrow(), ["hit to 70", "hit to 40", "after"]);
-    assert!(f.vm.is_alive(boss));
-    assert_eq!(f.vm.get(boss).unwrap().hp, 40);
-    f.vm.get_mut(boss).unwrap().hp = 5;
-    assert_eq!(f.vm.get(boss).unwrap().hp, 5);
-    let taken =
-        f.vm.remove(boss)
-            .unwrap()
-            .expect("the host removes its own");
-    assert_eq!(taken.name, "boss");
-    // It is the host's object now: no Rust drop yet.
-    assert_eq!(*f.log.borrow(), ["hit to 70", "hit to 40", "after"]);
-    drop(taken);
-    assert_eq!(f.log.borrow().last().unwrap(), "rust drop boss");
 }
 
 #[test]
 fn a_script_that_still_holds_a_removed_object_is_told_so() {
-    let mut f = fixture();
-    f.vm.register_type::<Enemy>().unwrap();
-    let boss = f.vm.insert(Enemy {
-        name: "boss".into(),
-        hp: 100,
-        log: Rc::clone(&f.log),
-    });
-    f.vm.register_fn("boss", move || boss).unwrap();
-    f.vm.load_source(
-        "game.colibri",
-        r#"
+    vm_pending(
+        "a_script_that_still_holds_a_removed_object_is_told_so",
+        || {
+            let mut f = fixture();
+            f.vm.register_type::<Enemy>().unwrap();
+            let boss = f.vm.insert(Enemy {
+                name: "boss".into(),
+                hp: 100,
+                log: Rc::clone(&f.log),
+            });
+            f.vm.register_fn("boss", move || boss).unwrap();
+            f.vm.load_source(
+                "game.colibri",
+                r#"
 let kept = boss()
 
 fn check() -> bool => kept.alive()
 fn poke() -> int => kept.hp()
 "#,
+            )
+            .unwrap();
+            let check = f.vm.get_fn::<(), bool>("check").unwrap();
+            assert!(check.call(&mut f.vm, ()).unwrap());
+            f.vm.remove(boss).unwrap();
+            assert!(!f.vm.is_alive(boss));
+            assert!(!check.call(&mut f.vm, ()).unwrap());
+            let poke = f.vm.get_fn::<(), i64>("poke").unwrap();
+            match poke.call(&mut f.vm, ()) {
+                Err(colibri::Error::Panic { message, .. }) => {
+                    assert_eq!(message, "`Enemy` was destroyed by the host");
+                }
+                other => panic!("{other:?}"),
+            }
+            // The host side reports it too, and a second removal finds nothing.
+            assert!(matches!(
+                f.vm.get(boss),
+                Err(colibri::Error::HostObject(m)) if m == "`Enemy` was destroyed by the host"
+            ));
+            assert!(f.vm.remove(boss).unwrap().is_none());
+        },
     )
-    .unwrap();
-    let check = f.vm.get_fn::<(), bool>("check").unwrap();
-    assert!(check.call(&mut f.vm, ()).unwrap());
-    f.vm.remove(boss).unwrap();
-    assert!(!f.vm.is_alive(boss));
-    assert!(!check.call(&mut f.vm, ()).unwrap());
-    let poke = f.vm.get_fn::<(), i64>("poke").unwrap();
-    match poke.call(&mut f.vm, ()) {
-        Err(colibri::Error::Panic { message, .. }) => {
-            assert_eq!(message, "`Enemy` was destroyed by the host");
-        }
-        other => panic!("{other:?}"),
-    }
-    // The host side reports it too, and a second removal finds nothing.
-    assert!(matches!(
-        f.vm.get(boss),
-        Err(colibri::Error::HostObject(m)) if m == "`Enemy` was destroyed by the host"
-    ));
-    assert!(f.vm.remove(boss).unwrap().is_none());
 }
 
 #[test]
@@ -302,29 +330,30 @@ fn a_reused_slot_does_not_revive_an_old_handle() {
 
 #[test]
 fn an_option_of_a_stale_handle_is_none_for_the_script() {
-    let mut f = fixture();
-    f.vm.register_type::<Enemy>().unwrap();
-    let live = f.vm.insert(Enemy {
-        name: "live".into(),
-        hp: 1,
-        log: Rc::clone(&f.log),
-    });
-    let dead = f.vm.insert(Enemy {
-        name: "dead".into(),
-        hp: 1,
-        log: Rc::clone(&f.log),
-    });
-    f.vm.remove(dead).unwrap();
-    f.vm.register_fn("lookup", move |which: i64| -> Option<Handle<Enemy>> {
-        match which {
-            0 => Some(live),
-            1 => Some(dead),
-            _ => None,
-        }
-    })
-    .unwrap();
-    f.run(
-        r#"
+    vm_pending("an_option_of_a_stale_handle_is_none_for_the_script", || {
+        let mut f = fixture();
+        f.vm.register_type::<Enemy>().unwrap();
+        let live = f.vm.insert(Enemy {
+            name: "live".into(),
+            hp: 1,
+            log: Rc::clone(&f.log),
+        });
+        let dead = f.vm.insert(Enemy {
+            name: "dead".into(),
+            hp: 1,
+            log: Rc::clone(&f.log),
+        });
+        f.vm.remove(dead).unwrap();
+        f.vm.register_fn("lookup", move |which: i64| -> Option<Handle<Enemy>> {
+            match which {
+                0 => Some(live),
+                1 => Some(dead),
+                _ => None,
+            }
+        })
+        .unwrap();
+        f.run(
+            r#"
 fn show(i: int) {
     match lookup(i) {
         some(e) => log("found {e.name()}"),
@@ -338,140 +367,156 @@ fn main() {
     show(2)
 }
 "#,
-    )
-    .unwrap();
-    assert_eq!(
-        *f.log.borrow(),
-        [
-            // `remove` handed the object back and the host dropped it.
-            "rust drop dead",
-            "found live",
-            "nothing for 1",
-            "nothing for 2"
-        ]
-    );
+        )
+        .unwrap();
+        assert_eq!(
+            *f.log.borrow(),
+            [
+                // `remove` handed the object back and the host dropped it.
+                "rust drop dead",
+                "found live",
+                "nothing for 1",
+                "nothing for 2"
+            ]
+        );
+    })
 }
 
 #[test]
 fn a_busy_object_gives_the_documented_panic_when_the_script_reenters_it() {
-    let mut f = fixture();
-    f.vm.register_type::<World>().unwrap();
-    // `step` holds the world exclusively; the callback asks it for its ticks.
-    let err = f
-        .run(
-            r#"
+    vm_pending(
+        "a_busy_object_gives_the_documented_panic_when_the_script_reenters_it",
+        || {
+            let mut f = fixture();
+            f.vm.register_type::<World>().unwrap();
+            // `step` holds the world exclusively; the callback asks it for its ticks.
+            let err = f
+                .run(
+                    r#"
 fn main() {
     let w = World.new()
     w.step(fn() { log("ticks {w.ticks()}") }).expect("step")
 }
 "#,
-        )
-        .unwrap_err();
-    let message = match &err {
-        colibri::Error::Panic { message, .. } => message.clone(),
-        other => panic!("{other:?}"),
-    };
-    // The callback's panic travels out of `step` as an `err` result string the script did not
-    // handle; the first line is the busy-object text.
-    assert!(
-        message
-            .contains("host object `World` is already in use by an enclosing call (`World.step`)"),
-        "{message}"
-    );
+                )
+                .unwrap_err();
+            let message = match &err {
+                colibri::Error::Panic { message, .. } => message.clone(),
+                other => panic!("{other:?}"),
+            };
+            // The callback's panic travels out of `step` as an `err` result string the script did not
+            // handle; the first line is the busy-object text.
+            assert!(
+                message.contains(
+                    "host object `World` is already in use by an enclosing call (`World.step`)"
+                ),
+                "{message}"
+            );
+        },
+    )
 }
 
 #[test]
 fn reading_methods_may_nest_but_not_inside_a_writing_one() {
-    let mut f = fixture();
-    f.vm.register_type::<World>().unwrap();
-    // `watch` is `&self`: the callback may read again.
-    f.run(
-        r#"
+    vm_pending(
+        "reading_methods_may_nest_but_not_inside_a_writing_one",
+        || {
+            let mut f = fixture();
+            f.vm.register_type::<World>().unwrap();
+            // `watch` is `&self`: the callback may read again.
+            f.run(
+                r#"
 fn main() {
     let w = World.new()
     w.watch(fn() { log("ticks {w.ticks()}") }).expect("watch")
 }
 "#,
-    )
-    .unwrap();
-    assert_eq!(*f.log.borrow(), ["ticks 0"]);
-    // But a writing method reached through a reading one is busy, and says which call holds it.
-    let mut f = fixture();
-    f.vm.register_type::<World>().unwrap();
-    let err = f
-        .run(
-            r#"
+            )
+            .unwrap();
+            assert_eq!(*f.log.borrow(), ["ticks 0"]);
+            // But a writing method reached through a reading one is busy, and says which call holds it.
+            let mut f = fixture();
+            f.vm.register_type::<World>().unwrap();
+            let err = f
+                .run(
+                    r#"
 fn main() {
     let w = World.new()
     w.watch(fn() { w.poke(fn() { }).expect("poke") }).expect("watch")
 }
 "#,
-        )
-        .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("host object `World` is already in use by an enclosing call (`World.watch`)"),
-        "{err}"
-    );
+                )
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(
+                    "host object `World` is already in use by an enclosing call (`World.watch`)"
+                ),
+                "{err}"
+            );
+        },
+    )
 }
 
 #[test]
 fn removing_a_borrowed_object_is_an_error_not_a_free() {
-    let mut f = fixture();
-    f.vm.register_type::<World>().unwrap();
-    let world = f.vm.insert(World { ticks: 0 });
-    let verdict = Rc::new(RefCell::new(String::new()));
-    let seen = Rc::clone(&verdict);
-    f.vm.register_fn("the_world", move || world).unwrap();
-    f.vm.register_fn("remove_it", move |cx: &mut Ctx, w: Handle<World>| {
-        let result = cx.remove(w);
-        *seen.borrow_mut() = match result {
-            Ok(_) => "removed".to_string(),
-            Err(e) => e.to_string(),
-        };
-    })
-    .unwrap();
-    f.run(
-        r#"
+    vm_pending("removing_a_borrowed_object_is_an_error_not_a_free", || {
+        let mut f = fixture();
+        f.vm.register_type::<World>().unwrap();
+        let world = f.vm.insert(World { ticks: 0 });
+        let verdict = Rc::new(RefCell::new(String::new()));
+        let seen = Rc::clone(&verdict);
+        f.vm.register_fn("the_world", move || world).unwrap();
+        f.vm.register_fn("remove_it", move |cx: &mut Ctx, w: Handle<World>| {
+            let result = cx.remove(w);
+            *seen.borrow_mut() = match result {
+                Ok(_) => "removed".to_string(),
+                Err(e) => e.to_string(),
+            };
+        })
+        .unwrap();
+        f.run(
+            r#"
 fn main() {
     let w = the_world()
     w.step(fn() { remove_it(w) })
     log("alive {w.alive()}")
 }
 "#,
-    )
-    .unwrap();
-    assert_eq!(
-        *verdict.borrow(),
-        "cannot remove the host object `World`: it is in use by an enclosing call (`World.step`)"
-    );
-    assert_eq!(*f.log.borrow(), ["alive true"]);
-    assert!(f.vm.is_alive(world));
-    // Between calls nothing holds it, so now it can go.
-    assert!(f.vm.remove(world).unwrap().is_some());
+        )
+        .unwrap();
+        assert_eq!(
+            *verdict.borrow(),
+            "cannot remove the host object `World`: it is in use by an enclosing call (`World.step`)"
+        );
+        assert_eq!(*f.log.borrow(), ["alive true"]);
+        assert!(f.vm.is_alive(world));
+        // Between calls nothing holds it, so now it can go.
+        assert!(f.vm.remove(world).unwrap().is_some());
+    })
 }
 
 #[test]
 fn the_host_cannot_borrow_what_a_running_method_holds() {
-    let mut f = fixture();
-    f.vm.register_type::<World>().unwrap();
-    let world = f.vm.insert(World { ticks: 0 });
-    let reply = Rc::new(RefCell::new(Vec::<String>::new()));
-    let seen = Rc::clone(&reply);
-    f.vm.register_fn("the_world", move || world).unwrap();
-    f.vm.register_fn("peek", move |cx: &mut Ctx, w: Handle<World>| {
-        seen.borrow_mut().push(match cx.get(w) {
-            Ok(r) => format!("read {}", r.ticks),
-            Err(e) => e.to_string(),
-        });
-        seen.borrow_mut().push(match cx.get_mut(w) {
-            Ok(_) => "wrote".to_string(),
-            Err(e) => e.to_string(),
-        });
-    })
-    .unwrap();
-    f.run(
-        r#"
+    vm_pending("the_host_cannot_borrow_what_a_running_method_holds", || {
+        let mut f = fixture();
+        f.vm.register_type::<World>().unwrap();
+        let world = f.vm.insert(World { ticks: 0 });
+        let reply = Rc::new(RefCell::new(Vec::<String>::new()));
+        let seen = Rc::clone(&reply);
+        f.vm.register_fn("the_world", move || world).unwrap();
+        f.vm.register_fn("peek", move |cx: &mut Ctx, w: Handle<World>| {
+            seen.borrow_mut().push(match cx.get(w) {
+                Ok(r) => format!("read {}", r.ticks),
+                Err(e) => e.to_string(),
+            });
+            seen.borrow_mut().push(match cx.get_mut(w) {
+                Ok(_) => "wrote".to_string(),
+                Err(e) => e.to_string(),
+            });
+        })
+        .unwrap();
+        f.run(
+            r#"
 fn main() {
     let w = the_world()
     w.step(fn() { peek(w) })
@@ -479,59 +524,63 @@ fn main() {
     peek(w)
 }
 "#,
-    )
-    .unwrap();
-    let busy = |holder: &str| {
-        format!("host object `World` is already in use by an enclosing call (`{holder}`)")
-    };
-    assert_eq!(
-        *reply.borrow(),
-        [
-            busy("World.step"),
-            busy("World.step"),
-            "read 1".to_string(),
-            busy("World.watch"),
-            "read 1".to_string(),
-            "wrote".to_string()
-        ]
-    );
+        )
+        .unwrap();
+        let busy = |holder: &str| {
+            format!("host object `World` is already in use by an enclosing call (`{holder}`)")
+        };
+        assert_eq!(
+            *reply.borrow(),
+            [
+                busy("World.step"),
+                busy("World.step"),
+                "read 1".to_string(),
+                busy("World.watch"),
+                "read 1".to_string(),
+                "wrote".to_string()
+            ]
+        );
+    })
 }
 
 #[test]
 fn a_rust_panic_in_a_method_releases_the_borrow() {
-    struct Fragile;
-    impl HostType for Fragile {
-        const NAME: &'static str = "Fragile";
-        fn describe(d: &mut TypeBuilder<'_, Self>) {
-            d.static_fn("new", [], || Fragile);
-            d.method_mut("snap", [], |_: &mut Fragile| -> i64 { panic!("snapped") });
-            d.method("fine", [], |_: &Fragile| 1i64);
+    vm_pending("a_rust_panic_in_a_method_releases_the_borrow", || {
+        struct Fragile;
+        impl HostType for Fragile {
+            const NAME: &'static str = "Fragile";
+            fn describe(d: &mut TypeBuilder<'_, Self>) {
+                d.static_fn("new", [], || Fragile);
+                d.method_mut("snap", [], |_: &mut Fragile| -> i64 { panic!("snapped") });
+                d.method("fine", [], |_: &Fragile| 1i64);
+            }
         }
-    }
-    let mut f = fixture();
-    f.vm.register_type::<Fragile>().unwrap();
-    f.vm.load_source(
-        "game.colibri",
-        "let f = Fragile.new()\nfn snap() { f.snap() }\nfn fine() -> int => f.fine()\n",
-    )
-    .unwrap();
-    let snap = f.vm.get_fn::<(), ()>("snap").unwrap();
-    let err = snap.call(&mut f.vm, ()).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("host function `Fragile.snap` panicked: snapped"),
-        "{err}"
-    );
-    // The exclusive borrow was released on the way out, so the object is usable again.
-    let fine = f.vm.get_fn::<(), i64>("fine").unwrap();
-    assert_eq!(fine.call(&mut f.vm, ()).unwrap(), 1);
+        let mut f = fixture();
+        f.vm.register_type::<Fragile>().unwrap();
+        f.vm.load_source(
+            "game.colibri",
+            "let f = Fragile.new()\nfn snap() { f.snap() }\nfn fine() -> int => f.fine()\n",
+        )
+        .unwrap();
+        let snap = f.vm.get_fn::<(), ()>("snap").unwrap();
+        let err = snap.call(&mut f.vm, ()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("host function `Fragile.snap` panicked: snapped"),
+            "{err}"
+        );
+        // The exclusive borrow was released on the way out, so the object is usable again.
+        let fine = f.vm.get_fn::<(), i64>("fine").unwrap();
+        assert_eq!(fine.call(&mut f.vm, ()).unwrap(), 1);
+    })
 }
 
 #[test]
 fn objects_have_identity_equality_hash_and_show() {
-    let mut f = fixture();
-    f.run(
-        r#"
+    vm_pending("objects_have_identity_equality_hash_and_show", || {
+        let mut f = fixture();
+        f.run(
+            r#"
 fn main() {
     let a = spawn("a")
     let b = spawn("b")
@@ -550,12 +599,13 @@ fn main() {
     print(list)
 }
 "#,
-    )
-    .unwrap();
-    assert_eq!(
-        f.out.contents(),
-        "true\nfalse\ntrue\nfalse\n<Enemy #0>\n<Enemy #1>\n<Enemy #0> and <Enemy #1>\nfirst\n2\n[<Enemy #0>, <Enemy #1>]\n"
-    );
+        )
+        .unwrap();
+        assert_eq!(
+            f.out.contents(),
+            "true\nfalse\ntrue\nfalse\n<Enemy #0>\n<Enemy #1>\n<Enemy #0> and <Enemy #1>\nfirst\n2\n[<Enemy #0>, <Enemy #1>]\n"
+        );
+    })
 }
 
 #[test]
@@ -595,9 +645,10 @@ fn a_host_class_cannot_be_cloned_built_or_opened() {
 
 #[test]
 fn objects_cross_functions_collections_and_tuples() {
-    let mut f = fixture();
-    f.run(
-        r#"
+    vm_pending("objects_cross_functions_collections_and_tuples", || {
+        let mut f = fixture();
+        f.run(
+            r#"
 fn pick(es: List[Enemy], i: int) -> Enemy => es[i]
 
 fn main() {
@@ -609,56 +660,62 @@ fn main() {
     print(best)
 }
 "#,
-    )
-    .unwrap();
-    assert_eq!(f.out.contents(), "false\ntrue\n2\n");
-    assert_eq!(*f.log.borrow(), ["rust drop a", "rust drop b"]);
+        )
+        .unwrap();
+        assert_eq!(f.out.contents(), "false\ntrue\n2\n");
+        assert_eq!(*f.log.borrow(), ["rust drop a", "rust drop b"]);
+    })
 }
 
 #[test]
 fn a_dead_receiver_and_a_dead_argument_both_say_so() {
-    let mut f = fixture();
-    f.vm.register_type::<Enemy>().unwrap();
-    let make = |name: &str, log: &Log| Enemy {
-        name: name.into(),
-        hp: 1,
-        log: Rc::clone(log),
-    };
-    let a = f.vm.insert(make("a", &f.log));
-    let b = f.vm.insert(make("b", &f.log));
-    f.vm.register_fn("get_a", move || a).unwrap();
-    f.vm.register_fn("get_b", move || b).unwrap();
-    f.vm.remove(b).unwrap();
-    let message = panic_message(f.run("fn main() {\n    get_a().same_name(get_b())\n}\n"));
-    assert_eq!(message, "`Enemy` was destroyed by the host");
+    vm_pending("a_dead_receiver_and_a_dead_argument_both_say_so", || {
+        let mut f = fixture();
+        f.vm.register_type::<Enemy>().unwrap();
+        let make = |name: &str, log: &Log| Enemy {
+            name: name.into(),
+            hp: 1,
+            log: Rc::clone(log),
+        };
+        let a = f.vm.insert(make("a", &f.log));
+        let b = f.vm.insert(make("b", &f.log));
+        f.vm.register_fn("get_a", move || a).unwrap();
+        f.vm.register_fn("get_b", move || b).unwrap();
+        f.vm.remove(b).unwrap();
+        let message = panic_message(f.run("fn main() {\n    get_a().same_name(get_b())\n}\n"));
+        assert_eq!(message, "`Enemy` was destroyed by the host");
+    })
 }
 
 #[test]
 fn objects_are_dropped_in_index_order_when_the_vm_goes() {
-    // Order: roots (a callback's closure), module values (reverse of initialisation), then
-    // whatever is left in the host heap by index. Drop hooks may still use host objects.
-    let log: Log = Rc::default();
-    let make = |name: &str| Enemy {
-        name: name.into(),
-        hp: 1,
-        log: Rc::clone(&log),
-    };
-    let out = colibri::SharedBuffer::new();
-    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
-    let sink = Rc::clone(&log);
-    vm.register_fn("log", move |text: String| push(&sink, text))
-        .unwrap();
-    vm.register_type::<Enemy>().unwrap();
-    let first = vm.insert(make("host first"));
-    let second = vm.insert(make("host second"));
-    vm.register_fn("first", move || first).unwrap();
-    let maker = make("script owned");
-    let slot = Cell::new(Some(maker));
-    vm.register_fn("script_owned", move || slot.take().unwrap())
-        .unwrap();
-    vm.load_source(
-        "game.colibri",
-        r#"
+    vm_pending(
+        "objects_are_dropped_in_index_order_when_the_vm_goes",
+        || {
+            // Order: roots (a callback's closure), module values (reverse of initialisation), then
+            // whatever is left in the host heap by index. Drop hooks may still use host objects.
+            let log: Log = Rc::default();
+            let make = |name: &str| Enemy {
+                name: name.into(),
+                hp: 1,
+                log: Rc::clone(&log),
+            };
+            let out = colibri::SharedBuffer::new();
+            let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+            let sink = Rc::clone(&log);
+            vm.register_fn("log", move |text: String| push(&sink, text))
+                .unwrap();
+            vm.register_type::<Enemy>().unwrap();
+            let first = vm.insert(make("host first"));
+            let second = vm.insert(make("host second"));
+            vm.register_fn("first", move || first).unwrap();
+            let maker = make("script owned");
+            let slot = Cell::new(Some(maker));
+            vm.register_fn("script_owned", move || slot.take().unwrap())
+                .unwrap();
+            vm.load_source(
+                "game.colibri",
+                r#"
 class Marker { name: str, partner: Enemy }
 
 impl Drop for Marker {
@@ -676,30 +733,32 @@ fn rooted() -> fn() {
     return fn() { log("closure {m.name}") }
 }
 "#,
+            )
+            .unwrap();
+            let rooted = vm.get_fn::<(), Callback<(), ()>>("rooted").unwrap();
+            let keep = rooted.call(&mut vm, ()).unwrap();
+            keep.call(&mut vm, ()).unwrap();
+            assert_eq!(*log.borrow(), ["closure root"]);
+            // Keep the callback (a root) alive across the drop of the Vm.
+            let _ = (second, &keep);
+            drop(vm);
+            assert_eq!(
+                *log.borrow(),
+                [
+                    "closure root",
+                    // 1. roots
+                    "hook root sees host first",
+                    // 2. module values, in reverse initialisation order: `late`, `owned`, `early`
+                    "hook late sees host first",
+                    "rust drop script owned",
+                    "hook early sees host first",
+                    // 3. what is left in the host heap, by index
+                    "rust drop host first",
+                    "rust drop host second",
+                ]
+            );
+        },
     )
-    .unwrap();
-    let rooted = vm.get_fn::<(), Callback<(), ()>>("rooted").unwrap();
-    let keep = rooted.call(&mut vm, ()).unwrap();
-    keep.call(&mut vm, ()).unwrap();
-    assert_eq!(*log.borrow(), ["closure root"]);
-    // Keep the callback (a root) alive across the drop of the Vm.
-    let _ = (second, &keep);
-    drop(vm);
-    assert_eq!(
-        *log.borrow(),
-        [
-            "closure root",
-            // 1. roots
-            "hook root sees host first",
-            // 2. module values, in reverse initialisation order: `late`, `owned`, `early`
-            "hook late sees host first",
-            "rust drop script owned",
-            "hook early sees host first",
-            // 3. what is left in the host heap, by index
-            "rust drop host first",
-            "rust drop host second",
-        ]
-    );
 }
 
 #[test]
@@ -805,74 +864,81 @@ fn a_method_name_the_language_reserves_is_refused_at_registration() {
 
 #[test]
 fn the_host_cannot_remove_what_the_script_owns() {
-    let mut f = fixture();
-    f.vm.register_type::<Enemy>().unwrap();
-    f.vm.insert_state(None::<Handle<Enemy>>);
-    f.vm.register_fn("grab", |cx: &mut Ctx, e: Handle<Enemy>| {
-        cx.state_mut::<Option<Handle<Enemy>>>().unwrap().replace(e);
-    })
-    .unwrap();
-    f.vm.load_source(
-        "game.colibri",
-        "let kept = spawn(\"mine\")\nfn setup() {\n    grab(kept)\n}\n",
-    )
-    .unwrap();
-    f.vm.get_fn::<(), ()>("setup")
-        .unwrap()
-        .call(&mut f.vm, ())
+    vm_pending("the_host_cannot_remove_what_the_script_owns", || {
+        let mut f = fixture();
+        f.vm.register_type::<Enemy>().unwrap();
+        f.vm.insert_state(None::<Handle<Enemy>>);
+        f.vm.register_fn("grab", |cx: &mut Ctx, e: Handle<Enemy>| {
+            cx.state_mut::<Option<Handle<Enemy>>>().unwrap().replace(e);
+        })
         .unwrap();
-    let handle =
-        f.vm.state_mut::<Option<Handle<Enemy>>>()
+        f.vm.load_source(
+            "game.colibri",
+            "let kept = spawn(\"mine\")\nfn setup() {\n    grab(kept)\n}\n",
+        )
+        .unwrap();
+        f.vm.get_fn::<(), ()>("setup")
             .unwrap()
-            .take()
+            .call(&mut f.vm, ())
             .unwrap();
-    // The host can look at it, but it is the script's to free.
-    assert_eq!(f.vm.get(handle).unwrap().name, "mine");
-    let err = f.vm.remove(handle).err().expect("the script owns it");
-    assert!(
-        err.to_string()
-            .contains("this `Enemy` is owned by the script"),
-        "{err}"
-    );
-    assert!(f.vm.is_alive(handle));
-    // Once the script lets go, the handle is stale.
-    f.vm.shutdown();
-    assert!(!f.vm.is_alive(handle));
-    assert_eq!(*f.log.borrow(), ["rust drop mine"]);
+        let handle =
+            f.vm.state_mut::<Option<Handle<Enemy>>>()
+                .unwrap()
+                .take()
+                .unwrap();
+        // The host can look at it, but it is the script's to free.
+        assert_eq!(f.vm.get(handle).unwrap().name, "mine");
+        let err = f.vm.remove(handle).err().expect("the script owns it");
+        assert!(
+            err.to_string()
+                .contains("this `Enemy` is owned by the script"),
+            "{err}"
+        );
+        assert!(f.vm.is_alive(handle));
+        // Once the script lets go, the handle is stale.
+        f.vm.shutdown();
+        assert!(!f.vm.is_alive(handle));
+        assert_eq!(*f.log.borrow(), ["rust drop mine"]);
+    })
 }
 
 #[test]
 fn a_panic_in_the_rust_drop_of_a_script_owned_object_is_a_panic_of_the_script() {
-    struct Boom;
-    impl Drop for Boom {
-        fn drop(&mut self) {
-            panic!("boom");
-        }
-    }
-    impl HostType for Boom {
-        const NAME: &'static str = "Boom";
-        fn describe(d: &mut TypeBuilder<'_, Self>) {
-            d.static_fn("new", [], || Boom);
-        }
-    }
-    let mut f = fixture();
-    f.vm.register_type::<Boom>().unwrap();
-    f.vm.load_source(
-        "game.colibri",
-        "fn scope() {\n    let b = Boom.new()\n}\nfn after() -> int => 7\n",
+    vm_pending(
+        "a_panic_in_the_rust_drop_of_a_script_owned_object_is_a_panic_of_the_script",
+        || {
+            struct Boom;
+            impl Drop for Boom {
+                fn drop(&mut self) {
+                    panic!("boom");
+                }
+            }
+            impl HostType for Boom {
+                const NAME: &'static str = "Boom";
+                fn describe(d: &mut TypeBuilder<'_, Self>) {
+                    d.static_fn("new", [], || Boom);
+                }
+            }
+            let mut f = fixture();
+            f.vm.register_type::<Boom>().unwrap();
+            f.vm.load_source(
+                "game.colibri",
+                "fn scope() {\n    let b = Boom.new()\n}\nfn after() -> int => 7\n",
+            )
+            .unwrap();
+            let scope = f.vm.get_fn::<(), ()>("scope").unwrap();
+            let err = scope.call(&mut f.vm, ()).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("dropping the host object `Boom` panicked: boom"),
+                "{err}"
+            );
+            // The Vm is intact and the object is gone.
+            assert_eq!(f.vm.host_object_count(), 0);
+            let after = f.vm.get_fn::<(), i64>("after").unwrap();
+            assert_eq!(after.call(&mut f.vm, ()).unwrap(), 7);
+        },
     )
-    .unwrap();
-    let scope = f.vm.get_fn::<(), ()>("scope").unwrap();
-    let err = scope.call(&mut f.vm, ()).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("dropping the host object `Boom` panicked: boom"),
-        "{err}"
-    );
-    // The Vm is intact and the object is gone.
-    assert_eq!(f.vm.host_object_count(), 0);
-    let after = f.vm.get_fn::<(), i64>("after").unwrap();
-    assert_eq!(after.call(&mut f.vm, ()).unwrap(), 7);
 }
 
 /// A class that customises how it shows and what `==` means.
@@ -900,13 +966,14 @@ impl HostType for Plain {
 
 #[test]
 fn a_class_can_customise_show_and_equality() {
-    let out = colibri::SharedBuffer::new();
-    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
-    vm.register_type::<Pt>().unwrap();
-    vm.register_type::<Plain>().unwrap();
-    vm.load_source(
-        "game.colibri",
-        r#"fn main() {
+    vm_pending("a_class_can_customise_show_and_equality", || {
+        let out = colibri::SharedBuffer::new();
+        let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+        vm.register_type::<Pt>().unwrap();
+        vm.register_type::<Plain>().unwrap();
+        vm.load_source(
+            "game.colibri",
+            r#"fn main() {
     let a = Pt.new(1, 2)
     let b = Pt.new(1, 2)
     let c = Pt.new(3, 4)
@@ -930,41 +997,42 @@ fn a_class_can_customise_show_and_equality() {
     print(p == q)
 }
 "#,
-    )
-    .unwrap_or_else(|e| panic!("{}", e.render(false)));
-    vm.run_main().unwrap();
-    let text = out.contents();
-    let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(
-        lines[..5],
-        [
-            "(1, 2)",
-            "(1, 2) (3, 4)",
-            "[(1, 2), (3, 4)]",
-            "some((1, 2))",
-            "true"
-        ]
-    );
-    assert_eq!(
-        lines[5..],
-        [
-            "false",
-            "true",
-            "true",
-            "false",
-            "1",
-            "some(\"two\")",
-            "2",
-            "true",
-            "false"
-        ]
-    );
-    // Nothing is added to the module's interface for the two hooks.
-    let interface = vm.interface_text();
-    assert!(
-        !interface.contains("show") && !interface.contains("eq"),
-        "{interface}"
-    );
+        )
+        .unwrap_or_else(|e| panic!("{}", e.render(false)));
+        vm.run_main().unwrap();
+        let text = out.contents();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[..5],
+            [
+                "(1, 2)",
+                "(1, 2) (3, 4)",
+                "[(1, 2), (3, 4)]",
+                "some((1, 2))",
+                "true"
+            ]
+        );
+        assert_eq!(
+            lines[5..],
+            [
+                "false",
+                "true",
+                "true",
+                "false",
+                "1",
+                "some(\"two\")",
+                "2",
+                "true",
+                "false"
+            ]
+        );
+        // Nothing is added to the module's interface for the two hooks.
+        let interface = vm.interface_text();
+        assert!(
+            !interface.contains("show") && !interface.contains("eq"),
+            "{interface}"
+        );
+    })
 }
 
 /// A class that compares by its first field only, and hashes by it.
@@ -982,14 +1050,17 @@ impl HostType for Key {
 
 #[test]
 fn equal_host_objects_hash_equally_and_one_without_a_hash_is_a_clean_error() {
-    let out = colibri::SharedBuffer::new();
-    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
-    vm.register_type::<Key>().unwrap();
-    vm.register_type::<Pt>().unwrap();
-    vm.register_type::<Plain>().unwrap();
-    vm.load_source(
-        "game.colibri",
-        r#"fn main() {
+    vm_pending(
+        "equal_host_objects_hash_equally_and_one_without_a_hash_is_a_clean_error",
+        || {
+            let out = colibri::SharedBuffer::new();
+            let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+            vm.register_type::<Key>().unwrap();
+            vm.register_type::<Pt>().unwrap();
+            vm.register_type::<Plain>().unwrap();
+            vm.load_source(
+                "game.colibri",
+                r#"fn main() {
     let a = Key.new(1, 10)
     let b = Key.new(1, 20)
     let c = Key.new(2, 10)
@@ -1002,18 +1073,20 @@ fn equal_host_objects_hash_equally_and_one_without_a_hash_is_a_clean_error() {
 }
 fn no_hash() -> int => Pt.new(1, 2).hash()
 "#,
+            )
+            .unwrap_or_else(|e| panic!("{}", e.render(false)));
+            vm.run_main().unwrap();
+            assert_eq!(out.contents(), "true\ntrue\nfalse\ntrue\ntrue\n");
+            let f = vm.get_fn::<(), i64>("no_hash").unwrap();
+            let err = f.call(&mut vm, ()).unwrap_err().to_string();
+            assert!(
+                err.contains("`Pt` compares with its own `==` but gives no hash"),
+                "{err}"
+            );
+            // Nothing is added to the module's interface for the hook.
+            assert!(!vm.interface_text().contains("fn hash"));
+        },
     )
-    .unwrap_or_else(|e| panic!("{}", e.render(false)));
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "true\ntrue\nfalse\ntrue\ntrue\n");
-    let f = vm.get_fn::<(), i64>("no_hash").unwrap();
-    let err = f.call(&mut vm, ()).unwrap_err().to_string();
-    assert!(
-        err.contains("`Pt` compares with its own `==` but gives no hash"),
-        "{err}"
-    );
-    // Nothing is added to the module's interface for the hook.
-    assert!(!vm.interface_text().contains("fn hash"));
 }
 
 #[test]

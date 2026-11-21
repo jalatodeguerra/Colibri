@@ -1,5 +1,8 @@
 //! The instruction budget (EMBEDDING §5).
 
+mod common;
+use common::vm_pending;
+
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -54,10 +57,11 @@ fn an_infinite_loop_runs_out_and_the_vm_stays_usable() {
 
 #[test]
 fn defers_and_drop_hooks_run_while_it_unwinds() {
-    let (mut vm, out) = vm_with(5_000);
-    vm.load_source(
-        "spin.colibri",
-        r#"
+    vm_pending("defers_and_drop_hooks_run_while_it_unwinds", || {
+        let (mut vm, out) = vm_with(5_000);
+        vm.load_source(
+            "spin.colibri",
+            r#"
 class Res { label: str }
 
 impl Drop for Res {
@@ -71,21 +75,23 @@ fn spin() {
     }
 }
 "#,
-    )
-    .unwrap();
-    let spin = vm.get_fn::<(), ()>("spin").unwrap();
-    let err = spin.call(&mut vm, ()).unwrap_err();
-    exhausted(&err);
-    // Last in, first out: the binding, then the defer.
-    assert_eq!(out.contents(), "drop r\ndeferred\n");
+        )
+        .unwrap();
+        let spin = vm.get_fn::<(), ()>("spin").unwrap();
+        let err = spin.call(&mut vm, ()).unwrap_err();
+        exhausted(&err);
+        // Last in, first out: the binding, then the defer.
+        assert_eq!(out.contents(), "drop r\ndeferred\n");
+    })
 }
 
 #[test]
 fn cleanups_get_a_grace_and_then_are_skipped() {
-    let (mut vm, out) = vm_with(2_000);
-    vm.load_source(
-        "spin.colibri",
-        r#"
+    vm_pending("cleanups_get_a_grace_and_then_are_skipped", || {
+        let (mut vm, out) = vm_with(2_000);
+        vm.load_source(
+            "spin.colibri",
+            r#"
 class Res { label: str }
 
 impl Drop for Res {
@@ -109,28 +115,29 @@ fn spin() {
     }
 }
 "#,
-    )
-    .unwrap();
-    let spin = vm.get_fn::<(), ()>("spin").unwrap();
-    let err = spin.call(&mut vm, ()).unwrap_err();
-    exhausted(&err);
-    // The first defer ran (it loops until the grace is gone); after that the hooks and the
-    // defer below it were skipped, but the call ended: no hang, no hook output.
-    let printed = out.contents();
-    assert!(printed.starts_with("deferred loop\n"), "{printed}");
-    assert!(!printed.contains("never printed"), "{printed}");
-    assert!(!printed.contains("hook"), "{printed}");
-    // The whole thing is bounded: allotment plus the grace of 10 000.
-    assert!(
-        vm.steps_used() < 2_000 + 10_000 + 200,
-        "{}",
-        vm.steps_used()
-    );
-    // And the Vm is fine: the same call runs out again the same way.
-    assert!(matches!(
-        spin.call(&mut vm, ()),
-        Err(colibri::Error::BudgetExhausted { .. })
-    ));
+        )
+        .unwrap();
+        let spin = vm.get_fn::<(), ()>("spin").unwrap();
+        let err = spin.call(&mut vm, ()).unwrap_err();
+        exhausted(&err);
+        // The first defer ran (it loops until the grace is gone); after that the hooks and the
+        // defer below it were skipped, but the call ended: no hang, no hook output.
+        let printed = out.contents();
+        assert!(printed.starts_with("deferred loop\n"), "{printed}");
+        assert!(!printed.contains("never printed"), "{printed}");
+        assert!(!printed.contains("hook"), "{printed}");
+        // The whole thing is bounded: allotment plus the grace of 10 000.
+        assert!(
+            vm.steps_used() < 2_000 + 10_000 + 200,
+            "{}",
+            vm.steps_used()
+        );
+        // And the Vm is fine: the same call runs out again the same way.
+        assert!(matches!(
+            spin.call(&mut vm, ()),
+            Err(colibri::Error::BudgetExhausted { .. })
+        ));
+    })
 }
 
 #[test]
@@ -187,10 +194,11 @@ fn the_budget_can_be_changed_or_lifted_at_any_time() {
 
 #[test]
 fn looping_builtins_cost_a_step_per_element() {
-    let (mut vm, _) = vm_with(1_000_000);
-    vm.load_source(
-        "b.colibri",
-        r#"
+    vm_pending("looping_builtins_cost_a_step_per_element", || {
+        let (mut vm, _) = vm_with(1_000_000);
+        vm.load_source(
+            "b.colibri",
+            r#"
 var big: List[int] = []
 fn fill() {
     for i in 0..50000 {
@@ -203,33 +211,37 @@ fn sorted() -> int {
     return big[0]
 }
 "#,
-    )
-    .unwrap();
-    let fill = vm.get_fn::<(), ()>("fill").unwrap();
-    let search = vm.get_fn::<(), bool>("search").unwrap();
-    let sorted = vm.get_fn::<(), i64>("sorted").unwrap();
-    fill.call(&mut vm, ()).unwrap();
-    vm.set_instruction_budget(Some(10_000));
-    // One built-in call, but it looks at 50 000 elements.
-    assert!(matches!(
-        search.call(&mut vm, ()),
-        Err(colibri::Error::BudgetExhausted { .. })
-    ));
-    assert!(matches!(
-        sorted.call(&mut vm, ()),
-        Err(colibri::Error::BudgetExhausted { .. })
-    ));
-    vm.set_instruction_budget(Some(1_000_000));
-    assert!(!search.call(&mut vm, ()).unwrap());
-    assert!(vm.steps_used() >= 50_000);
+        )
+        .unwrap();
+        let fill = vm.get_fn::<(), ()>("fill").unwrap();
+        let search = vm.get_fn::<(), bool>("search").unwrap();
+        let sorted = vm.get_fn::<(), i64>("sorted").unwrap();
+        fill.call(&mut vm, ()).unwrap();
+        vm.set_instruction_budget(Some(10_000));
+        // One built-in call, but it looks at 50 000 elements.
+        assert!(matches!(
+            search.call(&mut vm, ()),
+            Err(colibri::Error::BudgetExhausted { .. })
+        ));
+        assert!(matches!(
+            sorted.call(&mut vm, ()),
+            Err(colibri::Error::BudgetExhausted { .. })
+        ));
+        vm.set_instruction_budget(Some(1_000_000));
+        assert!(!search.call(&mut vm, ()).unwrap());
+        assert!(vm.steps_used() >= 50_000);
+    })
 }
 
 #[test]
 fn iter_on_a_huge_range_is_cheap_and_what_it_yields_is_charged() {
-    let (mut vm, _) = vm_with(10_000);
-    vm.load_source(
-        "r.colibri",
-        r#"
+    vm_pending(
+        "iter_on_a_huge_range_is_cheap_and_what_it_yields_is_charged",
+        || {
+            let (mut vm, _) = vm_with(10_000);
+            vm.load_source(
+                "r.colibri",
+                r#"
 fn first() -> int {
     for x in (0..9223372036854775807).iter() {
         return x
@@ -260,31 +272,33 @@ fn empty_body() {
 }
 fn to_list() -> int => (0..9223372036854775807).to_list().len()
 "#,
+            )
+            .unwrap();
+            // Creating the iterator is constant work.
+            let first = vm.get_fn::<(), i64>("first").unwrap();
+            assert_eq!(first.call(&mut vm, ()).unwrap(), 0);
+            assert!(vm.steps_used() < 100, "{}", vm.steps_used());
+            // The elements are charged as they are consumed.
+            let consume = vm.get_fn::<(), i64>("consume").unwrap();
+            assert!(matches!(
+                consume.call(&mut vm, ()),
+                Err(colibri::Error::BudgetExhausted { .. })
+            ));
+            let empty_body = vm.get_fn::<(), ()>("empty_body").unwrap();
+            assert!(matches!(
+                empty_body.call(&mut vm, ()),
+                Err(colibri::Error::BudgetExhausted { .. })
+            ));
+            let stepping = vm.get_fn::<(), i64>("stepping").unwrap();
+            assert!(matches!(
+                stepping.call(&mut vm, ()),
+                Err(colibri::Error::BudgetExhausted { .. })
+            ));
+            // `to_list` is still charged its length up front (or refused as too long).
+            let to_list = vm.get_fn::<(), i64>("to_list").unwrap();
+            assert!(to_list.call(&mut vm, ()).is_err());
+        },
     )
-    .unwrap();
-    // Creating the iterator is constant work.
-    let first = vm.get_fn::<(), i64>("first").unwrap();
-    assert_eq!(first.call(&mut vm, ()).unwrap(), 0);
-    assert!(vm.steps_used() < 100, "{}", vm.steps_used());
-    // The elements are charged as they are consumed.
-    let consume = vm.get_fn::<(), i64>("consume").unwrap();
-    assert!(matches!(
-        consume.call(&mut vm, ()),
-        Err(colibri::Error::BudgetExhausted { .. })
-    ));
-    let empty_body = vm.get_fn::<(), ()>("empty_body").unwrap();
-    assert!(matches!(
-        empty_body.call(&mut vm, ()),
-        Err(colibri::Error::BudgetExhausted { .. })
-    ));
-    let stepping = vm.get_fn::<(), i64>("stepping").unwrap();
-    assert!(matches!(
-        stepping.call(&mut vm, ()),
-        Err(colibri::Error::BudgetExhausted { .. })
-    ));
-    // `to_list` is still charged its length up front (or refused as too long).
-    let to_list = vm.get_fn::<(), i64>("to_list").unwrap();
-    assert!(to_list.call(&mut vm, ()).is_err());
 }
 
 #[test]
@@ -316,61 +330,65 @@ fn run_main_is_one_entry() {
 
 #[test]
 fn reentrant_calls_share_the_entrys_budget() {
-    let (mut vm, _) = vm_with(5_000);
-    let handle: Rc<Cell<Option<colibri::Fn<(), i64>>>> = Rc::new(Cell::new(None));
-    let h = Rc::clone(&handle);
-    let swallowed = Rc::new(Cell::new(0));
-    let s = Rc::clone(&swallowed);
-    vm.register_fn("again", move |cx: &mut colibri::Ctx| -> i64 {
-        // Each reentrant call is cheap, but they all draw from one allotment.
-        for _ in 0..100_000 {
-            match h.get().unwrap().call(cx, ()) {
-                Ok(_) => {}
-                Err(colibri::Error::BudgetExhausted { .. }) => {
-                    s.set(s.get() + 1);
-                    return -1;
+    vm_pending("reentrant_calls_share_the_entrys_budget", || {
+        let (mut vm, _) = vm_with(5_000);
+        let handle: Rc<Cell<Option<colibri::Fn<(), i64>>>> = Rc::new(Cell::new(None));
+        let h = Rc::clone(&handle);
+        let swallowed = Rc::new(Cell::new(0));
+        let s = Rc::clone(&swallowed);
+        vm.register_fn("again", move |cx: &mut colibri::Ctx| -> i64 {
+            // Each reentrant call is cheap, but they all draw from one allotment.
+            for _ in 0..100_000 {
+                match h.get().unwrap().call(cx, ()) {
+                    Ok(_) => {}
+                    Err(colibri::Error::BudgetExhausted { .. }) => {
+                        s.set(s.get() + 1);
+                        return -1;
+                    }
+                    Err(other) => panic!("unexpected {other:?}"),
                 }
-                Err(other) => panic!("unexpected {other:?}"),
             }
-        }
-        0
+            0
+        })
+        .unwrap();
+        vm.load_source(
+            "r.colibri",
+            "fn one() -> int => 1\nfn run_it() -> int => again()\n",
+        )
+        .unwrap();
+        handle.set(Some(vm.get_fn::<(), i64>("one").unwrap()));
+        let run_it = vm.get_fn::<(), i64>("run_it").unwrap();
+        // The host function swallowed the exhaustion and returned normally, but the entry as a
+        // whole still ran out: the script cannot hide it.
+        let err = run_it.call(&mut vm, ()).unwrap_err();
+        exhausted(&err);
+        assert_eq!(swallowed.get(), 1);
+        // A reentrant call only shares: the next entry starts afresh.
+        let one = vm.get_fn::<(), i64>("one").unwrap();
+        assert_eq!(one.call(&mut vm, ()).unwrap(), 1);
     })
-    .unwrap();
-    vm.load_source(
-        "r.colibri",
-        "fn one() -> int => 1\nfn run_it() -> int => again()\n",
-    )
-    .unwrap();
-    handle.set(Some(vm.get_fn::<(), i64>("one").unwrap()));
-    let run_it = vm.get_fn::<(), i64>("run_it").unwrap();
-    // The host function swallowed the exhaustion and returned normally, but the entry as a
-    // whole still ran out: the script cannot hide it.
-    let err = run_it.call(&mut vm, ()).unwrap_err();
-    exhausted(&err);
-    assert_eq!(swallowed.get(), 1);
-    // A reentrant call only shares: the next entry starts afresh.
-    let one = vm.get_fn::<(), i64>("one").unwrap();
-    assert_eq!(one.call(&mut vm, ()).unwrap(), 1);
 }
 
 #[test]
 fn a_host_function_sees_the_steps_so_far() {
-    let (mut vm, _) = vm_with(100_000);
-    let seen = Rc::new(Cell::new(0u64));
-    let s = Rc::clone(&seen);
-    vm.register_fn("probe", move |cx: &mut colibri::Ctx| {
-        s.set(cx.steps_used());
+    vm_pending("a_host_function_sees_the_steps_so_far", || {
+        let (mut vm, _) = vm_with(100_000);
+        let seen = Rc::new(Cell::new(0u64));
+        let s = Rc::clone(&seen);
+        vm.register_fn("probe", move |cx: &mut colibri::Ctx| {
+            s.set(cx.steps_used());
+        })
+        .unwrap();
+        vm.load_source(
+            "p.colibri",
+            "fn f() {\n    for i in 0..10 {\n        let x = i\n    }\n    probe()\n}\n",
+        )
+        .unwrap();
+        let f = vm.get_fn::<(), ()>("f").unwrap();
+        f.call(&mut vm, ()).unwrap();
+        assert!(seen.get() >= 20, "{}", seen.get());
+        assert!(vm.steps_used() >= seen.get());
     })
-    .unwrap();
-    vm.load_source(
-        "p.colibri",
-        "fn f() {\n    for i in 0..10 {\n        let x = i\n    }\n    probe()\n}\n",
-    )
-    .unwrap();
-    let f = vm.get_fn::<(), ()>("f").unwrap();
-    f.call(&mut vm, ()).unwrap();
-    assert!(seen.get() >= 20, "{}", seen.get());
-    assert!(vm.steps_used() >= seen.get());
 }
 
 #[test]
@@ -404,25 +422,29 @@ fn ks() -> int {
 
 #[test]
 fn set_algebra_on_ints_ignores_an_unrelated_user_eq() {
-    // A scan per element would take about 25 million steps.
-    let (mut vm, _) = vm_with(500_000);
-    vm.load_source("sets.colibri", SET_ALGEBRA).unwrap();
-    let ints = vm.get_fn::<(), i64>("ints").unwrap();
-    assert_eq!(ints.call(&mut vm, ()).unwrap(), 7500);
+    vm_pending("set_algebra_on_ints_ignores_an_unrelated_user_eq", || {
+        // A scan per element would take about 25 million steps.
+        let (mut vm, _) = vm_with(500_000);
+        vm.load_source("sets.colibri", SET_ALGEBRA).unwrap();
+        let ints = vm.get_fn::<(), i64>("ints").unwrap();
+        assert_eq!(ints.call(&mut vm, ()).unwrap(), 7500);
+    })
 }
 
 #[test]
 fn set_algebra_by_a_user_eq_charges_the_comparisons() {
-    let (mut vm, _) = vm_with(50_000);
-    vm.load_source("sets.colibri", SET_ALGEBRA).unwrap();
-    let ks = vm.get_fn::<(), i64>("ks").unwrap();
-    // 400 x 400 comparisons do not fit in 50 000 steps.
-    let err = ks.call(&mut vm, ()).unwrap_err();
-    exhausted(&err);
-    let (mut vm, _) = vm_with(5_000_000);
-    vm.load_source("sets.colibri", SET_ALGEBRA).unwrap();
-    let ks = vm.get_fn::<(), i64>("ks").unwrap();
-    assert_eq!(ks.call(&mut vm, ()).unwrap(), 600);
+    vm_pending("set_algebra_by_a_user_eq_charges_the_comparisons", || {
+        let (mut vm, _) = vm_with(50_000);
+        vm.load_source("sets.colibri", SET_ALGEBRA).unwrap();
+        let ks = vm.get_fn::<(), i64>("ks").unwrap();
+        // 400 x 400 comparisons do not fit in 50 000 steps.
+        let err = ks.call(&mut vm, ()).unwrap_err();
+        exhausted(&err);
+        let (mut vm, _) = vm_with(5_000_000);
+        vm.load_source("sets.colibri", SET_ALGEBRA).unwrap();
+        let ks = vm.get_fn::<(), i64>("ks").unwrap();
+        assert_eq!(ks.call(&mut vm, ()).unwrap(), 600);
+    })
 }
 
 struct Pt {
@@ -442,21 +464,23 @@ const PT_SET: &str = "fn main() {\n    let xs: List[Pt] = []\n    var i = 0\n   
 
 #[test]
 fn host_eq_hooks_and_key_scans_are_charged() {
-    // 4 000 objects with an `eq` hook make about 8 million comparisons; a budget of 200 000
-    // steps must stop that (a hook call and a scanned key are a step each, EMBEDDING §5).
-    let (mut vm, _) = vm_with(200_000);
-    vm.register_type::<Pt>().unwrap();
-    vm.load_source("pts.colibri", PT_SET).unwrap();
-    let err = vm.run_main().unwrap_err();
-    exhausted(&err);
-    assert!(vm.steps_used() < 200_000 + 10_100, "{}", vm.steps_used());
-    // Within a big enough budget the same program completes, and costs at least the
-    // comparisons it made.
-    let (mut vm, out) = vm_with(100_000_000);
-    vm.register_type::<Pt>().unwrap();
-    vm.load_source("pts.colibri", &PT_SET.replace("4000", "300"))
-        .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "300\n");
-    assert!(vm.steps_used() > 300 * 299 / 2, "{}", vm.steps_used());
+    vm_pending("host_eq_hooks_and_key_scans_are_charged", || {
+        // 4 000 objects with an `eq` hook make about 8 million comparisons; a budget of 200 000
+        // steps must stop that (a hook call and a scanned key are a step each, EMBEDDING §5).
+        let (mut vm, _) = vm_with(200_000);
+        vm.register_type::<Pt>().unwrap();
+        vm.load_source("pts.colibri", PT_SET).unwrap();
+        let err = vm.run_main().unwrap_err();
+        exhausted(&err);
+        assert!(vm.steps_used() < 200_000 + 10_100, "{}", vm.steps_used());
+        // Within a big enough budget the same program completes, and costs at least the
+        // comparisons it made.
+        let (mut vm, out) = vm_with(100_000_000);
+        vm.register_type::<Pt>().unwrap();
+        vm.load_source("pts.colibri", &PT_SET.replace("4000", "300"))
+            .unwrap();
+        vm.run_main().unwrap();
+        assert_eq!(out.contents(), "300\n");
+        assert!(vm.steps_used() > 300 * 299 / 2, "{}", vm.steps_used());
+    })
 }

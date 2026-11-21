@@ -188,13 +188,15 @@ impl Machine {
         // `Step` that opens the target's run, which it then skips.
         macro_rules! back_edge {
             ($off:expr) => {{
-                jump!($off);
+                let mut next = (pc as isize + $off as isize) as usize;
                 let mut n = 1;
-                if let Op::Step { n: run } = chunk.code[pc] {
+                if let Op::Step { n: run } = chunk.code[next] {
                     n += run;
-                    pc += 1;
+                    next += 1;
                 }
+                // Charged before the jump, so that a failure names the edge, not its target.
                 charge!(n);
+                pc = next;
             }};
         }
         // Compare an integer register with a constant and jump unless it holds.

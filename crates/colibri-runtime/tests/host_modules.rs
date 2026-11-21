@@ -2,6 +2,9 @@
 //! each declare an `Item`, a module's interface may name another module's type once it says
 //! it uses that module, and the interface text of all of it round-trips.
 
+mod common;
+use common::vm_pending;
+
 use colibri::{Cx, FromColibri, HostType, Interface, IntoColibri, TypeBuilder, TypeDesc};
 use colibri::{Handle, TypeRegistry, Value};
 use colibri_runtime as colibri;
@@ -45,42 +48,46 @@ fn vm_with_both() -> (colibri::Vm, colibri::SharedBuffer) {
 
 #[test]
 fn two_modules_each_declare_an_item() {
-    let (mut vm, out) = vm_with_both();
-    // Neither is in scope by its bare name; each is the module's.
-    let err = vm
-        .load_source("main.colibri", "fn main() {\n    let x: Item = none\n}\n")
-        .unwrap_err()
-        .render(false);
-    assert!(err.contains("unknown type `Item`"), "{err}");
-    run(
+    vm_pending("two_modules_each_declare_an_item", || {
+        let (mut vm, out) = vm_with_both();
+        // Neither is in scope by its bare name; each is the module's.
+        let err = vm
+            .load_source("main.colibri", "fn main() {\n    let x: Item = none\n}\n")
+            .unwrap_err()
+            .render(false);
+        assert!(err.contains("unknown type `Item`"), "{err}");
+        run(
         &mut vm,
         "import a\nimport b\nfn word(x: a.Item) -> str => x.word()\nfn main() {\n    let x = a.Item.new(1)\n    let y = b.Item.new(2)\n    print(word(x) + y.word() + \"{x.n() + y.n()}\")\n}\n",
     )
     .unwrap();
-    assert_eq!(out.contents(), "ab3\n");
-    // And they are different types.
-    let (mut vm, _) = vm_with_both();
-    let err = vm
+        assert_eq!(out.contents(), "ab3\n");
+        // And they are different types.
+        let (mut vm, _) = vm_with_both();
+        let err = vm
         .load_source(
             "other.colibri",
             "import a\nimport b\nfn take(x: a.Item) {}\nfn main() {\n    take(b.Item.new(1))\n}\n",
         )
         .unwrap_err()
         .render(false);
-    assert!(err.contains("a.Item") && err.contains("b.Item"), "{err}");
+        assert!(err.contains("a.Item") && err.contains("b.Item"), "{err}");
+    })
 }
 
 #[test]
 fn imported_names_and_aliases_name_a_module_type_too() {
-    let (mut vm, out) = vm();
-    vm.module("a").register_type::<AItem>().unwrap();
-    vm.module("b").register_type::<BItem>().unwrap();
-    run(
+    vm_pending("imported_names_and_aliases_name_a_module_type_too", || {
+        let (mut vm, out) = vm();
+        vm.module("a").register_type::<AItem>().unwrap();
+        vm.module("b").register_type::<BItem>().unwrap();
+        run(
         &mut vm,
         "import a.{Item}\nimport b as other\nfn main() {\n    let x: Item = Item.new(1)\n    let y: other.Item = other.Item.new(2)\n    print(x.word() + y.word())\n}\n",
     )
     .unwrap();
-    assert_eq!(out.contents(), "ab\n");
+        assert_eq!(out.contents(), "ab\n");
+    })
 }
 
 #[test]
@@ -129,15 +136,20 @@ item_class!(DefaultItem, "default");
 
 #[test]
 fn a_default_module_type_keeps_its_bare_name_beside_module_types() {
-    let (mut vm, out) = vm();
-    vm.register_type::<DefaultItem>().unwrap();
-    vm.module("a").register_type::<AItem>().unwrap();
-    run(
-        &mut vm,
-        "import a\nfn main() {\n    print(Item.new(1).word() + a.Item.new(1).word())\n}\n",
+    vm_pending(
+        "a_default_module_type_keeps_its_bare_name_beside_module_types",
+        || {
+            let (mut vm, out) = vm();
+            vm.register_type::<DefaultItem>().unwrap();
+            vm.module("a").register_type::<AItem>().unwrap();
+            run(
+                &mut vm,
+                "import a\nfn main() {\n    print(Item.new(1).word() + a.Item.new(1).word())\n}\n",
+            )
+            .unwrap();
+            assert_eq!(out.contents(), "defaulta\n");
+        },
     )
-    .unwrap();
-    assert_eq!(out.contents(), "defaulta\n");
 }
 
 // ---- value structs of the same name ----
@@ -179,17 +191,19 @@ impl IntoColibri for PointB {
 
 #[test]
 fn two_modules_each_declare_a_struct_of_the_same_name() {
-    let (mut vm, out) = vm();
-    vm.module("a").register_fn("point", || PointA(3)).unwrap();
-    vm.module("b").register_fn("point", || PointB(1.5)).unwrap();
-    run(
+    vm_pending("two_modules_each_declare_a_struct_of_the_same_name", || {
+        let (mut vm, out) = vm();
+        vm.module("a").register_fn("point", || PointA(3)).unwrap();
+        vm.module("b").register_fn("point", || PointB(1.5)).unwrap();
+        run(
         &mut vm,
         "import a\nimport b\nfn main() {\n    let p = a.point()\n    let q = b.point()\n    print(p.v + 1)\n    print(q.v + 1.0)\n}\n",
     )
     .unwrap();
-    assert_eq!(out.contents(), "4\n2.5\n");
-    let shown = vm.module("a").interface_text();
-    assert!(shown.contains("struct Point { v: int }"), "{shown}");
+        assert_eq!(out.contents(), "4\n2.5\n");
+        let shown = vm.module("a").interface_text();
+        assert!(shown.contains("struct Point { v: int }"), "{shown}");
+    })
 }
 
 /// A struct described from interface-like text (`define_struct`), with no Rust type behind
@@ -285,22 +299,27 @@ fn register_toml(vm: &mut colibri::Vm) -> Result<(), colibri::Error> {
 
 #[test]
 fn a_module_returns_the_type_of_another_it_declares_it_uses() {
-    let (mut vm, out) = vm();
-    register_json(&mut vm).unwrap();
-    register_toml(&mut vm).unwrap();
-    let toml = vm.module("toml2").interface_text();
-    assert!(toml.contains("uses = [\"json2\"]"), "{toml}");
-    assert!(
-        toml.contains("fn parse(text: str) -> json2.Value"),
-        "{toml}"
-    );
-    assert!(!toml.contains("@host class"), "{toml}");
-    run(
+    vm_pending(
+        "a_module_returns_the_type_of_another_it_declares_it_uses",
+        || {
+            let (mut vm, out) = vm();
+            register_json(&mut vm).unwrap();
+            register_toml(&mut vm).unwrap();
+            let toml = vm.module("toml2").interface_text();
+            assert!(toml.contains("uses = [\"json2\"]"), "{toml}");
+            assert!(
+                toml.contains("fn parse(text: str) -> json2.Value"),
+                "{toml}"
+            );
+            assert!(!toml.contains("@host class"), "{toml}");
+            run(
         &mut vm,
         "import json2\nimport toml2\nfn int_of(v: json2.Value) -> int => v.int()\nfn main() {\n    print(int_of(toml2.parse(\"ab\")))\n    print(int_of(json2.parse(\"abc\")))\n    print(toml2.parse(\"abc\").int())\n}\n",
     )
     .unwrap();
-    assert_eq!(out.contents(), "20\n3\n30\n");
+            assert_eq!(out.contents(), "20\n3\n30\n");
+        },
+    )
 }
 
 #[test]
@@ -408,19 +427,24 @@ fn register_lazy_toml(vm: &mut colibri::Vm) -> Result<(), colibri::Error> {
 
 #[test]
 fn importing_a_module_registers_the_module_it_uses_first() {
-    let (mut vm, out) = vm();
-    vm.lazy_std_module("ltoml", register_lazy_toml);
-    vm.lazy_std_module("ljson", register_lazy_json);
-    // Nothing is registered until something imports it.
-    assert!(!vm.module_names().is_empty());
-    run(
-        &mut vm,
-        "import ltoml\nfn main() {\n    print(ltoml.parse(\"abcd\").int())\n}\n",
+    vm_pending(
+        "importing_a_module_registers_the_module_it_uses_first",
+        || {
+            let (mut vm, out) = vm();
+            vm.lazy_std_module("ltoml", register_lazy_toml);
+            vm.lazy_std_module("ljson", register_lazy_json);
+            // Nothing is registered until something imports it.
+            assert!(!vm.module_names().is_empty());
+            run(
+                &mut vm,
+                "import ltoml\nfn main() {\n    print(ltoml.parse(\"abcd\").int())\n}\n",
+            )
+            .unwrap();
+            assert_eq!(out.contents(), "4\n");
+            let names = vm.module_names();
+            assert!(names.contains(&"std.ljson".to_string()), "{names:?}");
+        },
     )
-    .unwrap();
-    assert_eq!(out.contents(), "4\n");
-    let names = vm.module_names();
-    assert!(names.contains(&"std.ljson".to_string()), "{names:?}");
 }
 
 #[test]
@@ -485,86 +509,98 @@ fn a_method_may_take_a_class_of_a_used_module() {
 
 #[test]
 fn a_module_type_keeps_its_identity_across_a_patch_and_a_restart() {
-    use colibri::ReloadOutcome;
-    let dir = std::env::temp_dir().join(format!("colibri-modtypes-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("app.colibri");
-    let source = |word: &str, extra: &str| {
-        format!(
-            "import a\nimport b\nfn make() -> a.Item => a.Item.new(1)\nfn greet() -> str => make().word() + b.Item.new(2).word() + \"{word}\"\n{extra}"
-        )
-    };
-    std::fs::write(&file, source("1", "")).unwrap();
-    let (mut vm, _) = vm_with_both();
-    vm.load_file(&file).unwrap();
-    let greet = vm.get_fn::<(), String>("greet").unwrap();
-    assert_eq!(greet.call(&mut vm, ()).unwrap(), "ab1");
-    // `make` returns an `a.Item` and a `b.Item` is not one: the signature is what get_fn reads.
-    assert!(vm.get_fn::<(), Handle<AItem>>("make").is_ok());
-    assert!(vm.get_fn::<(), Handle<BItem>>("make").is_err());
-    std::fs::write(&file, source("22", "")).unwrap();
-    assert!(matches!(
-        vm.reload_changed().unwrap(),
-        ReloadOutcome::Patched { .. }
-    ));
-    assert_eq!(greet.call(&mut vm, ()).unwrap(), "ab22");
-    std::fs::write(&file, source("3", "fn more() -> b.Item => b.Item.new(5)\n")).unwrap();
-    assert!(matches!(
-        vm.reload_changed().unwrap(),
-        ReloadOutcome::Restarted { .. }
-    ));
-    let greet = vm.get_fn::<(), String>("greet").unwrap();
-    assert_eq!(greet.call(&mut vm, ()).unwrap(), "ab3");
-    assert!(vm.get_fn::<(), Handle<BItem>>("more").is_ok());
-    let _ = std::fs::remove_dir_all(&dir);
+    vm_pending(
+        "a_module_type_keeps_its_identity_across_a_patch_and_a_restart",
+        || {
+            use colibri::ReloadOutcome;
+            let dir = std::env::temp_dir().join(format!("colibri-modtypes-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("app.colibri");
+            let source = |word: &str, extra: &str| {
+                format!(
+                    "import a\nimport b\nfn make() -> a.Item => a.Item.new(1)\nfn greet() -> str => make().word() + b.Item.new(2).word() + \"{word}\"\n{extra}"
+                )
+            };
+            std::fs::write(&file, source("1", "")).unwrap();
+            let (mut vm, _) = vm_with_both();
+            vm.load_file(&file).unwrap();
+            let greet = vm.get_fn::<(), String>("greet").unwrap();
+            assert_eq!(greet.call(&mut vm, ()).unwrap(), "ab1");
+            // `make` returns an `a.Item` and a `b.Item` is not one: the signature is what get_fn reads.
+            assert!(vm.get_fn::<(), Handle<AItem>>("make").is_ok());
+            assert!(vm.get_fn::<(), Handle<BItem>>("make").is_err());
+            std::fs::write(&file, source("22", "")).unwrap();
+            assert!(matches!(
+                vm.reload_changed().unwrap(),
+                ReloadOutcome::Patched { .. }
+            ));
+            assert_eq!(greet.call(&mut vm, ()).unwrap(), "ab22");
+            std::fs::write(&file, source("3", "fn more() -> b.Item => b.Item.new(5)\n")).unwrap();
+            assert!(matches!(
+                vm.reload_changed().unwrap(),
+                ReloadOutcome::Restarted { .. }
+            ));
+            let greet = vm.get_fn::<(), String>("greet").unwrap();
+            assert_eq!(greet.call(&mut vm, ()).unwrap(), "ab3");
+            assert!(vm.get_fn::<(), Handle<BItem>>("more").is_ok());
+            let _ = std::fs::remove_dir_all(&dir);
+        },
+    )
 }
 
 #[test]
 fn a_session_keeps_module_values_between_steps() {
-    let (mut vm, _) = vm_with_both();
-    vm.session_start().unwrap();
-    let check = vm
-        .session_check("import a\nimport b\nlet x = a.Item.new(1)\nlet y = b.Item.new(2)\n")
-        .unwrap();
-    vm.session_commit(check, &[], &[]).unwrap();
-    // Later steps use the earlier values with the right types.
-    let check = vm
+    vm_pending("a_session_keeps_module_values_between_steps", || {
+        let (mut vm, _) = vm_with_both();
+        vm.session_start().unwrap();
+        let check = vm
+            .session_check("import a\nimport b\nlet x = a.Item.new(1)\nlet y = b.Item.new(2)\n")
+            .unwrap();
+        vm.session_commit(check, &[], &[]).unwrap();
+        // Later steps use the earlier values with the right types.
+        let check = vm
         .session_check("import a\nimport b\nlet x = a.Item.new(1)\nlet y = b.Item.new(2)\nprint(x.word() + y.word())\nlet z: a.Item = x\n")
         .unwrap();
-    vm.session_commit(check, &[], &[]).unwrap();
-    let err = vm
+        vm.session_commit(check, &[], &[]).unwrap();
+        let err = vm
         .session_check("import a\nimport b\nlet x = a.Item.new(1)\nlet y = b.Item.new(2)\nprint(x.word() + y.word())\nlet z: a.Item = x\nlet w: b.Item = x\n")
         .err()
         .expect("a.Item is not b.Item");
-    assert!(err.to_string().contains("b.Item"), "{err}");
+        assert!(err.to_string().contains("b.Item"), "{err}");
+    })
 }
 
 // ---- a named module and the default module's types ----
 
 #[test]
 fn a_named_module_may_name_the_default_modules_types_as_before() {
-    let (mut vm, out) = vm();
-    vm.register_type::<DefaultItem>().unwrap();
-    vm.register_fn("point", || PointA(1)).unwrap();
-    let mut m = vm.module("game");
-    // The class and the struct are the default module's: bare in the interface, and the same
-    // types in a program.
-    m.register_fn_named("twice", ["i"], |i: Handle<DefaultItem>| i)
-        .unwrap();
-    m.register_fn_named("shift", ["p"], |p: PointA| PointA(p.0 + 10))
-        .unwrap();
-    let text = m.interface_text();
-    assert!(text.contains("fn twice(i: Item) -> Item"), "{text}");
-    assert!(text.contains("fn shift(p: Point) -> Point"), "{text}");
-    assert!(!text.contains("@host class"), "{text}");
-    assert!(!text.contains("struct Point"), "{text}");
-    run(
+    vm_pending(
+        "a_named_module_may_name_the_default_modules_types_as_before",
+        || {
+            let (mut vm, out) = vm();
+            vm.register_type::<DefaultItem>().unwrap();
+            vm.register_fn("point", || PointA(1)).unwrap();
+            let mut m = vm.module("game");
+            // The class and the struct are the default module's: bare in the interface, and the same
+            // types in a program.
+            m.register_fn_named("twice", ["i"], |i: Handle<DefaultItem>| i)
+                .unwrap();
+            m.register_fn_named("shift", ["p"], |p: PointA| PointA(p.0 + 10))
+                .unwrap();
+            let text = m.interface_text();
+            assert!(text.contains("fn twice(i: Item) -> Item"), "{text}");
+            assert!(text.contains("fn shift(p: Point) -> Point"), "{text}");
+            assert!(!text.contains("@host class"), "{text}");
+            assert!(!text.contains("struct Point"), "{text}");
+            run(
         &mut vm,
         "import game\nfn main() {\n    let i: Item = game.twice(Item.new(4))\n    let p: Point = game.shift(point())\n    print(i.n() + p.v)\n}\n",
     )
     .unwrap();
-    assert_eq!(out.contents(), "15\n");
+            assert_eq!(out.contents(), "15\n");
+        },
+    )
 }
 
 // ---- the host calling into a module's types, and one Rust struct in two modules ----
@@ -585,18 +621,23 @@ pub struct Pos {
 
 #[test]
 fn the_host_calls_a_function_that_takes_a_struct_of_a_named_module() {
-    let (mut vm, out) = vm();
-    vm.module("game")
-        .register_fn("make", |n: i64| Gem { n })
-        .unwrap();
-    run(
+    vm_pending(
+        "the_host_calls_a_function_that_takes_a_struct_of_a_named_module",
+        || {
+            let (mut vm, out) = vm();
+            vm.module("game")
+                .register_fn("make", |n: i64| Gem { n })
+                .unwrap();
+            run(
         &mut vm,
         "import game\nfn show(i: game.Gem) -> int => i.n\nfn main() { print(game.make(3).n) }\n",
     )
     .unwrap();
-    assert_eq!(out.contents(), "3\n");
-    let show = vm.get_fn::<(Gem,), i64>("show").unwrap();
-    assert_eq!(show.call(&mut vm, (Gem { n: 5 },)).unwrap(), 5);
+            assert_eq!(out.contents(), "3\n");
+            let show = vm.get_fn::<(Gem,), i64>("show").unwrap();
+            assert_eq!(show.call(&mut vm, (Gem { n: 5 },)).unwrap(), 5);
+        },
+    )
 }
 
 thread_local! {
@@ -605,95 +646,110 @@ thread_local! {
 
 #[test]
 fn the_host_calls_a_stored_callback_that_takes_a_struct_of_a_named_module() {
-    let (mut vm, _) = vm();
-    let mut game = vm.module("game");
-    game.register_fn("make", |n: i64| Gem { n }).unwrap();
-    game.register_fn("on", |cb: colibri::Callback<(Gem,), i64>| {
-        STORED.with(|c| *c.borrow_mut() = Some(cb));
-    })
-    .unwrap();
-    run(
-        &mut vm,
-        "import game\nfn main() { game.on(fn(i: game.Gem) -> int => i.n * 2) }\n",
+    vm_pending(
+        "the_host_calls_a_stored_callback_that_takes_a_struct_of_a_named_module",
+        || {
+            let (mut vm, _) = vm();
+            let mut game = vm.module("game");
+            game.register_fn("make", |n: i64| Gem { n }).unwrap();
+            game.register_fn("on", |cb: colibri::Callback<(Gem,), i64>| {
+                STORED.with(|c| *c.borrow_mut() = Some(cb));
+            })
+            .unwrap();
+            run(
+                &mut vm,
+                "import game\nfn main() { game.on(fn(i: game.Gem) -> int => i.n * 2) }\n",
+            )
+            .unwrap();
+            let cb = STORED.with(|c| c.borrow_mut().take()).unwrap();
+            assert_eq!(cb.call(&mut vm, (Gem { n: 5 },)).unwrap(), 10);
+        },
     )
-    .unwrap();
-    let cb = STORED.with(|c| c.borrow_mut().take()).unwrap();
-    assert_eq!(cb.call(&mut vm, (Gem { n: 5 },)).unwrap(), 10);
 }
 
 #[test]
 fn two_rust_structs_of_one_name_are_told_apart_by_their_rust_type() {
-    // Two different structs called `Gem`: each Rust type is the Gem of the module that
-    // registered it, so `get_fn` needs no module name to tell them apart.
-    mod other {
-        use colibri_runtime as colibri;
-        #[colibri::export(value)]
-        #[derive(Clone, Copy, Debug, PartialEq)]
-        pub struct Gem {
-            pub n: i64,
-            pub weight: f64,
-        }
-    }
-    let (mut vm, _) = vm();
-    vm.module("a")
-        .register_fn("make", |n: i64| Gem { n })
-        .unwrap();
-    vm.module("b")
-        .register_fn("make", |n: i64| other::Gem { n, weight: 1.0 })
-        .unwrap();
-    vm.load_source(
+    vm_pending(
+        "two_rust_structs_of_one_name_are_told_apart_by_their_rust_type",
+        || {
+            // Two different structs called `Gem`: each Rust type is the Gem of the module that
+            // registered it, so `get_fn` needs no module name to tell them apart.
+            mod other {
+                use colibri_runtime as colibri;
+                #[colibri::export(value)]
+                #[derive(Clone, Copy, Debug, PartialEq)]
+                pub struct Gem {
+                    pub n: i64,
+                    pub weight: f64,
+                }
+            }
+            let (mut vm, _) = vm();
+            vm.module("a")
+                .register_fn("make", |n: i64| Gem { n })
+                .unwrap();
+            vm.module("b")
+                .register_fn("make", |n: i64| other::Gem { n, weight: 1.0 })
+                .unwrap();
+            vm.load_source(
         "main.colibri",
         "import a\nimport b\nfn show(i: a.Gem) -> int => i.n\nfn show_b(i: b.Gem) -> int => i.n\n",
     )
     .unwrap();
-    let show = vm.get_fn::<(Gem,), i64>("show").unwrap();
-    assert_eq!(show.call(&mut vm, (Gem { n: 5 },)).unwrap(), 5);
-    let show_b = vm.get_fn::<(other::Gem,), i64>("show_b").unwrap();
-    let gem = other::Gem { n: 6, weight: 2.0 };
-    assert_eq!(show_b.call(&mut vm, (gem,)).unwrap(), 6);
-    // The wrong Rust type for a function is a mismatch naming both.
-    let err = vm.get_fn::<(other::Gem,), i64>("show").err().unwrap();
-    assert!(err.to_string().contains("a.Gem"), "{err}");
+            let show = vm.get_fn::<(Gem,), i64>("show").unwrap();
+            assert_eq!(show.call(&mut vm, (Gem { n: 5 },)).unwrap(), 5);
+            let show_b = vm.get_fn::<(other::Gem,), i64>("show_b").unwrap();
+            let gem = other::Gem { n: 6, weight: 2.0 };
+            assert_eq!(show_b.call(&mut vm, (gem,)).unwrap(), 6);
+            // The wrong Rust type for a function is a mismatch naming both.
+            let err = vm.get_fn::<(other::Gem,), i64>("show").err().unwrap();
+            assert!(err.to_string().contains("a.Gem"), "{err}");
+        },
+    )
 }
 
 #[test]
 fn one_rust_struct_registered_by_two_modules_is_one_type() {
-    let (mut vm, out) = vm();
-    vm.module("physics")
-        .register_fn("make", |x: i64| Pos { x })
-        .unwrap();
-    vm.module("render")
-        .register_fn("draw", |p: Pos| p.x * 10)
-        .unwrap();
-    // The first module to declare it owns it; the other names it `physics.Pos` and says so.
-    let physics = vm.module("physics").interface_text();
-    let render = vm.module("render").interface_text();
-    assert!(physics.contains("struct Pos { x: int }"), "{physics}");
-    assert!(!render.contains("struct Pos"), "{render}");
-    assert!(
-        render.contains("fn draw(a: physics.Pos) -> int"),
-        "{render}"
-    );
-    assert!(render.contains("uses = [\"physics\"]"), "{render}");
-    // The files read back, and a program checks against them without a `Vm`.
-    let interfaces: Vec<Interface> = [&physics, &render]
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let parsed = Interface::from_text(&format!("{i}.cbi"), t).unwrap();
-            assert_eq!(&parsed.canonical_text(), *t);
-            parsed
-        })
-        .collect();
-    let config = colibri::CheckConfig {
-        interfaces,
-        ..colibri::CheckConfig::default()
-    };
-    let src = "import physics\nimport render\nfn main() { print(render.draw(physics.make(4))) }\n";
-    let report = colibri::check_source_with("main.colibri", src, &config);
-    assert!(!report.has_errors(), "{}", report.render(false));
-    run(&mut vm, src).unwrap();
-    assert_eq!(out.contents(), "40\n");
+    vm_pending(
+        "one_rust_struct_registered_by_two_modules_is_one_type",
+        || {
+            let (mut vm, out) = vm();
+            vm.module("physics")
+                .register_fn("make", |x: i64| Pos { x })
+                .unwrap();
+            vm.module("render")
+                .register_fn("draw", |p: Pos| p.x * 10)
+                .unwrap();
+            // The first module to declare it owns it; the other names it `physics.Pos` and says so.
+            let physics = vm.module("physics").interface_text();
+            let render = vm.module("render").interface_text();
+            assert!(physics.contains("struct Pos { x: int }"), "{physics}");
+            assert!(!render.contains("struct Pos"), "{render}");
+            assert!(
+                render.contains("fn draw(a: physics.Pos) -> int"),
+                "{render}"
+            );
+            assert!(render.contains("uses = [\"physics\"]"), "{render}");
+            // The files read back, and a program checks against them without a `Vm`.
+            let interfaces: Vec<Interface> = [&physics, &render]
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let parsed = Interface::from_text(&format!("{i}.cbi"), t).unwrap();
+                    assert_eq!(&parsed.canonical_text(), *t);
+                    parsed
+                })
+                .collect();
+            let config = colibri::CheckConfig {
+                interfaces,
+                ..colibri::CheckConfig::default()
+            };
+            let src = "import physics\nimport render\nfn main() { print(render.draw(physics.make(4))) }\n";
+            let report = colibri::check_source_with("main.colibri", src, &config);
+            assert!(!report.has_errors(), "{}", report.render(false));
+            run(&mut vm, src).unwrap();
+            assert_eq!(out.contents(), "40\n");
+        },
+    )
 }
 
 #[test]
@@ -752,45 +808,47 @@ fn modules_that_use_each_other_are_a_cycle_with_its_own_message() {
 
 #[test]
 fn a_deprecated_host_function_warns_where_it_is_used() {
-    let (mut vm, out) = vm();
-    vm.register_fn("old_add", |a: i64, b: i64| a + b)
-        .unwrap()
-        .deprecated("use add instead \"now\" {x}");
-    vm.register_fn("bare_old", || 1_i64).unwrap().deprecated("");
-    vm.register_fn("add", |a: i64, b: i64| a + b).unwrap();
-    // The text carries the attribute, and reads back.
-    let text = vm.interface_text();
-    assert!(
-        text.contains("@deprecated(\"use add instead \\\"now\\\" \\{x\\}\")"),
-        "{text}"
-    );
-    assert!(
-        text.contains("@deprecated @positional fn bare_old"),
-        "{text}"
-    );
-    let parsed = Interface::from_text("engine.cbi", &text).unwrap();
-    assert_eq!(parsed.canonical_text(), text);
-    // A program checked against the file (no `Vm`) gets the warning too.
-    let config = colibri::CheckConfig {
-        interfaces: vec![parsed],
-        ..colibri::CheckConfig::default()
-    };
-    let src = "fn main() {\n    print(old_add(1, 2) + bare_old() + add(1, 1))\n}\n";
-    let report = colibri::check_source_with("main.colibri", src, &config);
-    assert!(!report.has_errors(), "{}", report.render(false));
-    let shown = report.render(false);
-    assert!(
-        shown.contains("`old_add` is deprecated: use add instead \"now\" {x}"),
-        "{shown}"
-    );
-    assert!(shown.contains("`bare_old` is deprecated"), "{shown}");
-    assert!(!shown.contains("`add` is deprecated"), "{shown}");
-    // The program still loads and runs; the warnings are the `Vm`'s.
-    vm.load_source("main.colibri", src).unwrap();
-    assert!(
-        vm.render_warnings(false)
-            .contains("`old_add` is deprecated")
-    );
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "6\n");
+    vm_pending("a_deprecated_host_function_warns_where_it_is_used", || {
+        let (mut vm, out) = vm();
+        vm.register_fn("old_add", |a: i64, b: i64| a + b)
+            .unwrap()
+            .deprecated("use add instead \"now\" {x}");
+        vm.register_fn("bare_old", || 1_i64).unwrap().deprecated("");
+        vm.register_fn("add", |a: i64, b: i64| a + b).unwrap();
+        // The text carries the attribute, and reads back.
+        let text = vm.interface_text();
+        assert!(
+            text.contains("@deprecated(\"use add instead \\\"now\\\" \\{x\\}\")"),
+            "{text}"
+        );
+        assert!(
+            text.contains("@deprecated @positional fn bare_old"),
+            "{text}"
+        );
+        let parsed = Interface::from_text("engine.cbi", &text).unwrap();
+        assert_eq!(parsed.canonical_text(), text);
+        // A program checked against the file (no `Vm`) gets the warning too.
+        let config = colibri::CheckConfig {
+            interfaces: vec![parsed],
+            ..colibri::CheckConfig::default()
+        };
+        let src = "fn main() {\n    print(old_add(1, 2) + bare_old() + add(1, 1))\n}\n";
+        let report = colibri::check_source_with("main.colibri", src, &config);
+        assert!(!report.has_errors(), "{}", report.render(false));
+        let shown = report.render(false);
+        assert!(
+            shown.contains("`old_add` is deprecated: use add instead \"now\" {x}"),
+            "{shown}"
+        );
+        assert!(shown.contains("`bare_old` is deprecated"), "{shown}");
+        assert!(!shown.contains("`add` is deprecated"), "{shown}");
+        // The program still loads and runs; the warnings are the `Vm`'s.
+        vm.load_source("main.colibri", src).unwrap();
+        assert!(
+            vm.render_warnings(false)
+                .contains("`old_add` is deprecated")
+        );
+        vm.run_main().unwrap();
+        assert_eq!(out.contents(), "6\n");
+    })
 }

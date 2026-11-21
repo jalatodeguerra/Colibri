@@ -1,10 +1,10 @@
 //! End-to-end tests of the `colibri` binary.
 
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn colibri(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_colibri"))
+    colibri_command()
         .args(args)
         .output()
         .expect("the colibri binary runs")
@@ -110,7 +110,7 @@ fn deep_recursion_is_a_stack_overflow_panic_not_a_crash() {
         "long traces are elided: {stderr}"
     );
     assert!(stderr.lines().count() < 40, "{stderr}");
-    let full = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let full = colibri_command()
         .args(["run", path.to_str().unwrap()])
         .env("COLIBRI_FULL_TRACE", "1")
         .output()
@@ -447,7 +447,7 @@ fn run_and_check_without_a_file_use_the_current_folder() {
         ],
     );
     let run = |arg: &str| {
-        Command::new(env!("CARGO_BIN_EXE_colibri"))
+        colibri_command()
             .arg(arg)
             .current_dir(&dir)
             .output()
@@ -594,7 +594,7 @@ fn fmt_walks_directories_but_skips_target_and_hidden_ones() {
 fn fmt_without_a_path_formats_the_current_directory() {
     let dir = temp_dir("cwd");
     let path = write(&dir, "x/a.colibri", MESSY);
-    let out = Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let out = colibri_command()
         .arg("fmt")
         .current_dir(&dir)
         .output()
@@ -618,7 +618,7 @@ fn fmt_refuses_files_with_syntax_errors_and_leaves_them_alone() {
 
 #[test]
 fn fmt_dash_formats_stdin_to_stdout() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let mut child = colibri_command()
         .args(["fmt", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1093,4 +1093,12 @@ fn a_panic_inside_vec_names_the_library_in_the_trace() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("division by zero"), "{stderr}");
     assert!(stderr.contains("<std>/vec.colibri"), "{stderr}");
+}
+
+/// The binary under test, pinned to the tree-walker: these tests are about the command line,
+/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+fn colibri_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    cmd.env_remove("COLIBRI_ENGINE");
+    cmd
 }

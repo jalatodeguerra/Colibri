@@ -25,7 +25,12 @@ pub fn scale(v: Vec3, by: f32) -> Vec3 {
 
 fn vm() -> (colibri::Vm, colibri::SharedBuffer) {
     let out = colibri::SharedBuffer::new();
-    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    // Pinned to the tree-walker: this tests the standard library, not the engine, and host
+    // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
+    let mut vm = colibri::Vm::builder()
+        .engine(colibri::EngineKind::Tree)
+        .stdout(Box::new(out.clone()))
+        .build();
     colibri_std::install_vec(&mut vm).unwrap();
     (vm, out)
 }
@@ -123,6 +128,7 @@ fn install_vec_gives_import_vec_and_math_without_the_rest_of_std() {
     assert_eq!(out.contents(), "vec2(1.0, 0.0)\ntrue\n");
     // Without `install_vec` the module does not exist.
     let mut other = colibri::Vm::builder()
+        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(std::io::sink()))
         .build();
     let err = other
@@ -146,7 +152,10 @@ fn install_vec_gives_import_vec_and_math_without_the_rest_of_std() {
 #[test]
 fn a_host_module_named_math_does_not_break_import_vec() {
     let out = colibri::SharedBuffer::new();
-    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    let mut vm = colibri::Vm::builder()
+        .engine(colibri::EngineKind::Tree)
+        .stdout(Box::new(out.clone()))
+        .build();
     colibri_std::install(&mut vm).unwrap();
     vm.module("math")
         .register_fn("twice", |x: i64| x * 2)

@@ -71,13 +71,13 @@ fn check_of_a_program_importing_nothing_builds_no_interface() {
 #[test]
 fn run_prints_warnings_before_the_top_level_code_runs() {
     use std::io::{BufRead, BufReader, Write};
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     let path = temp_file(
         "warn_first.colibri",
         "import io\nfn f() {\n    let unused = 1\n}\nf()\nlet line = io.read_line()\nprint(\"got\")\n",
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let mut child = colibri_command()
         .args(["run", path.to_str().unwrap()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -146,4 +146,12 @@ fn check_of_toml_gets_the_json_interface_it_names_and_json_alone_never_asks_for_
     );
     assert!(ok);
     assert_eq!(asked, ["std.json"]);
+}
+
+/// The binary under test, pinned to the tree-walker: these tests are about the command line,
+/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+fn colibri_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    cmd.env_remove("COLIBRI_ENGINE");
+    cmd
 }

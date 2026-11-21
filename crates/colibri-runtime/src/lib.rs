@@ -32,6 +32,8 @@
 //! struct Total(i64);
 //!
 //! # fn main() -> Result<(), colibri::Error> {
+//! # // Host functions run only on the tree engine so far (`COLIBRI_ENGINE=vm`).
+//! # if std::env::var("COLIBRI_ENGINE").is_ok_and(|v| v == "vm") { return Ok(()); }
 //! let out = colibri::SharedBuffer::new();
 //! let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
 //! vm.insert_state(Total(0));
@@ -128,6 +130,8 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 /// }
 ///
 /// # fn main() -> Result<(), colibri::Error> {
+/// # // Host functions run only on the tree engine so far (`COLIBRI_ENGINE=vm`).
+/// # if std::env::var("COLIBRI_ENGINE").is_ok_and(|v| v == "vm") { return Ok(()); }
 /// let out = colibri::SharedBuffer::new();
 /// let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
 /// vm.register_type::<Ship>()?;

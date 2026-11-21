@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -226,7 +226,7 @@ struct Ran {
 
 /// Runs `colibri args` in `dir` with no stdin, and gives up on it after [`LIMIT`].
 fn colibri(dir: &Path, args: &[&str]) -> Ran {
-    let child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let child = colibri_command()
         .args(args)
         .current_dir(dir)
         // The `http` client follows the proxy variables and does not exempt loopback, so a
@@ -838,4 +838,12 @@ fn colibri_doc_refuses_a_folder_with_pages_it_did_not_write() {
     assert_eq!(ran.code, Some(0), "{}", ran.stderr);
     assert!(!empty.join("gone.md").exists());
     assert!(empty.join(".DS_Store").exists());
+}
+
+/// The binary under test, pinned to the tree-walker: these tests are about the command line,
+/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+fn colibri_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    cmd.env_remove("COLIBRI_ENGINE");
+    cmd
 }

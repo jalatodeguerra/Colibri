@@ -173,7 +173,10 @@ fn a_thousand_idle_connections_use_a_few_threads_and_no_cpu_and_are_all_served_a
     let (addr_tx, addr_rx) = mpsc::channel::<String>();
     let (done_tx, done) = mpsc::channel();
     thread::spawn(move || {
+        // Pinned to the tree-walker: this tests the standard library, not the engine, and host
+        // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
         let mut vm = colibri::Vm::builder()
+            .engine(colibri::EngineKind::Tree)
             .stdout(Box::new(colibri::SharedBuffer::new()))
             .allow(colibri::Cap::Net)
             .allow(colibri::Cap::Os)

@@ -1,11 +1,11 @@
 //! `colibri repl` with piped input (no prompt, no line editor).
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Runs the REPL on `input`; stdout and stderr.
 fn repl(input: &str) -> (String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let mut child = colibri_command()
         .arg("repl")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -382,7 +382,7 @@ fn a_definition_that_is_left_out_here_cannot_replace_the_one_that_is_in_the_prog
 
 /// Runs `colibri repl <args>` with `input` on its standard input.
 fn repl_with(args: &[&str], input: &str) -> (bool, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let mut child = colibri_command()
         .arg("repl")
         .args(args)
         .stdin(Stdio::piped())
@@ -438,10 +438,18 @@ fn the_hint_for_a_missing_feature_works_in_the_repl() {
     );
     assert_eq!(out, "= 1 : int\n", "{err}");
     // A name that means something already is refused as it is for `run`.
-    let out = Command::new(env!("CARGO_BIN_EXE_colibri"))
+    let out = colibri_command()
         .args(["repl", "--feature", "debug"])
         .stdin(Stdio::null())
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
+}
+
+/// The binary under test, pinned to the tree-walker: these tests are about the command line,
+/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+fn colibri_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    cmd.env_remove("COLIBRI_ENGINE");
+    cmd
 }
