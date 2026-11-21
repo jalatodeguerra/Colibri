@@ -3,6 +3,9 @@
 //! [`StdConfig`]. The behaviour of each module is covered by the golden tests in
 //! `tests/golden/std`.
 
+mod common;
+use common::vm_pending;
+
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
@@ -11,12 +14,7 @@ use colibri_std::{EnvSource, MODULES, ManualClock, StdConfig};
 
 fn vm(caps: &[colibri::Cap]) -> (colibri::Vm, colibri::SharedBuffer) {
     let out = colibri::SharedBuffer::new();
-    // Pinned to the tree-walker: this tests the standard library, not the engine, and host
-    // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
-    let mut builder = colibri::Vm::builder()
-        // vm-pin: 2c
-        .engine(colibri::EngineKind::Tree)
-        .stdout(Box::new(out.clone()));
+    let mut builder = colibri::Vm::builder().stdout(Box::new(out.clone()));
     for cap in caps {
         builder = builder.allow(*cap);
     }
@@ -86,10 +84,7 @@ fn installing_twice_is_an_error() {
 
 #[test]
 fn without_install_there_is_no_standard_library() {
-    let mut vm = colibri::Vm::builder()
-        // vm-pin: 2c
-        .engine(colibri::EngineKind::Tree)
-        .build();
+    let mut vm = colibri::Vm::builder().build();
     let err = compile_error(&mut vm, "import math\nfn main() {}\n");
     assert!(err.contains("no module `math`"), "{err}");
 }
@@ -444,8 +439,6 @@ fn a_program_checks_against_the_interfaces_without_a_vm() {
 fn a_config_replaces_the_world() {
     let out = colibri::SharedBuffer::new();
     let mut vm = colibri::Vm::builder()
-        // vm-pin: 2c
-        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Os)
         .build();
@@ -551,49 +544,53 @@ impl Drop for Scratch {
 
 #[test]
 fn files_are_written_and_read_in_a_scratch_folder() {
-    let scratch = Scratch::new("files");
-    let (mut vm, out) = vm(&[colibri::Cap::Fs]);
-    let dir = scratch.0.to_string_lossy().replace('\\', "/");
-    run(
+    vm_pending("files_are_written_and_read_in_a_scratch_folder", || {
+        let scratch = Scratch::new("files");
+        let (mut vm, out) = vm(&[colibri::Cap::Fs]);
+        let dir = scratch.0.to_string_lossy().replace('\\', "/");
+        run(
         &mut vm,
         &format!(
             "import fs\nimport path\nfn main() -> Result[()] {{\n    let file = path.join(\"{dir}\", \"a.txt\")\n    fs.write(file, \"héllo\")?\n    print(fs.read(file)?)\n    print(fs.stat(file)?.size)\n    print(fs.read(path.join(\"{dir}\", \"nope\")).is_err())\n    return ok(())\n}}\n"
         ),
     )
     .unwrap();
-    assert_eq!(out.contents(), "héllo\n6\ntrue\n");
-    assert_eq!(
-        std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(),
-        "héllo"
-    );
+        assert_eq!(out.contents(), "héllo\n6\ntrue\n");
+        assert_eq!(
+            std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(),
+            "héllo"
+        );
+    })
 }
 
 #[test]
 fn a_missing_file_is_an_err_with_the_path_and_the_reason() {
-    let scratch = Scratch::new("missing");
-    let (mut vm, out) = vm(&[colibri::Cap::Fs]);
-    let dir = scratch.0.to_string_lossy().replace('\\', "/");
-    run(
+    vm_pending(
+        "a_missing_file_is_an_err_with_the_path_and_the_reason",
+        || {
+            let scratch = Scratch::new("missing");
+            let (mut vm, out) = vm(&[colibri::Cap::Fs]);
+            let dir = scratch.0.to_string_lossy().replace('\\', "/");
+            run(
         &mut vm,
         &format!(
             "import fs\nfn main() {{\n    match fs.read(\"{dir}/gone.txt\") {{\n        ok(t) => print(t)\n        err(e) => print(e.message())\n    }}\n}}\n"
         ),
     )
     .unwrap();
-    assert_eq!(
-        out.contents(),
-        format!("cannot read `{dir}/gone.txt`: no such file or directory\n")
-    );
+            assert_eq!(
+                out.contents(),
+                format!("cannot read `{dir}/gone.txt`: no such file or directory\n")
+            );
+        },
+    )
 }
 
 // ---- args, process and datetime under other configurations ----
 
 fn vm_with(config: StdConfig, caps: &[colibri::Cap]) -> (colibri::Vm, colibri::SharedBuffer) {
     let out = colibri::SharedBuffer::new();
-    let mut builder = colibri::Vm::builder()
-        // vm-pin: 2c
-        .engine(colibri::EngineKind::Tree)
-        .stdout(Box::new(out.clone()));
+    let mut builder = colibri::Vm::builder().stdout(Box::new(out.clone()));
     for cap in caps {
         builder = builder.allow(*cap);
     }
@@ -611,31 +608,36 @@ fn with_args(args: &[&str]) -> StdConfig {
 
 #[test]
 fn args_reads_flags_values_positionals_and_the_terminator() {
-    let (mut vm, out) = vm_with(
-        with_args(&[
-            "-vq",
-            "--out",
-            "result.txt",
-            "--level=3",
-            "input.txt",
-            "-5",
-            "--",
-            "--not-a-flag",
-            "-v",
-        ]),
-        &[],
-    );
-    run(
+    vm_pending(
+        "args_reads_flags_values_positionals_and_the_terminator",
+        || {
+            let (mut vm, out) = vm_with(
+                with_args(&[
+                    "-vq",
+                    "--out",
+                    "result.txt",
+                    "--level=3",
+                    "input.txt",
+                    "-5",
+                    "--",
+                    "--not-a-flag",
+                    "-v",
+                ]),
+                &[],
+            );
+            run(
         &mut vm,
         "import args\nfn main() {\n    print(args.flag(\"v\"))\n    print(args.flag(\"q\"))\n    print(args.flag(\"out\"))  // present, whether or not it takes a value\n    print(args.flag(\"not-a-flag\"))\n    print(args.value(\"out\"))\n    print(args.value(\"level\"))\n    print(args.value(\"missing\"))\n    print(args.positional())\n    print(args.positional_with([\"out\"]))\n    print(args.list().len())\n}\n",
     )
     .unwrap();
-    assert_eq!(
-        out.contents(),
-        "true\ntrue\ntrue\nfalse\nsome(\"result.txt\")\nsome(\"3\")\nnone\n\
+            assert_eq!(
+                out.contents(),
+                "true\ntrue\ntrue\nfalse\nsome(\"result.txt\")\nsome(\"3\")\nnone\n\
          [\"result.txt\", \"input.txt\", \"-5\", \"--not-a-flag\", \"-v\"]\n\
          [\"input.txt\", \"-5\", \"--not-a-flag\", \"-v\"]\n9\n"
-    );
+            );
+        },
+    )
 }
 
 #[test]
@@ -661,52 +663,61 @@ fn the_local_time_zone_comes_from_the_config() {
 #[cfg(unix)]
 #[test]
 fn a_child_gets_the_variables_the_script_set_and_its_own_folder() {
-    let scratch = Scratch::new("child");
-    let dir = scratch.0.to_string_lossy().replace('\\', "/");
-    let (mut vm, out) = vm(&[colibri::Cap::Os]);
-    run(
+    vm_pending(
+        "a_child_gets_the_variables_the_script_set_and_its_own_folder",
+        || {
+            let scratch = Scratch::new("child");
+            let dir = scratch.0.to_string_lossy().replace('\\', "/");
+            let (mut vm, out) = vm(&[colibri::Cap::Os]);
+            run(
         &mut vm,
         &format!(
             "import process\nimport os\nfn main() {{\n    os.set_env(\"A\", \"from-set-env\")\n    let mut o = process.options()\n    o.cwd = some(\"{dir}\")\n    o.env = {{ \"B\": \"from-options\" }}\n    let r = process.run_with(\"sh\", [\"-c\", \"echo $A $B; pwd -P\"], o) or |e| {{ panic(e.message()) }}\n    print(r.stdout)\n}}\n"
         ),
     )
     .unwrap();
-    let real = std::fs::canonicalize(&scratch.0).unwrap();
-    assert_eq!(
-        out.contents(),
-        format!("from-set-env from-options\n{}\n\n", real.display())
-    );
+            let real = std::fs::canonicalize(&scratch.0).unwrap();
+            assert_eq!(
+                out.contents(),
+                format!("from-set-env from-options\n{}\n\n", real.display())
+            );
+        },
+    )
 }
 
 // Unix only: a signal that ends a program exists only on Unix (Windows has exit codes only).
 #[cfg(unix)]
 #[test]
 fn a_child_killed_by_a_signal_has_a_negative_status() {
-    let (mut vm, out) = vm(&[colibri::Cap::Os]);
-    run(
+    vm_pending("a_child_killed_by_a_signal_has_a_negative_status", || {
+        let (mut vm, out) = vm(&[colibri::Cap::Os]);
+        run(
         &mut vm,
         "import process\nfn main() {\n    let r = process.shell(\"kill -9 $$\") or |e| { panic(e.message()) }\n    print(r.status)\n}\n",
     )
     .unwrap();
-    assert_eq!(out.contents(), "-9\n");
+        assert_eq!(out.contents(), "-9\n");
+    })
 }
 
 #[test]
 fn an_unfinished_child_is_killed_when_it_is_dropped() {
-    let scratch = Scratch::new("dropped");
-    let marker = scratch.0.join("marker");
-    // The child waits about a second and then creates the marker, unless it was killed.
-    let (program, args) = sleep_then_touch("1", 2, &marker);
-    let (mut vm, _) = vm(&[colibri::Cap::Os]);
-    run(
+    vm_pending("an_unfinished_child_is_killed_when_it_is_dropped", || {
+        let scratch = Scratch::new("dropped");
+        let marker = scratch.0.join("marker");
+        // The child waits about a second and then creates the marker, unless it was killed.
+        let (program, args) = sleep_then_touch("1", 2, &marker);
+        let (mut vm, _) = vm(&[colibri::Cap::Os]);
+        run(
         &mut vm,
         &format!(
             "import process\nfn start() {{\n    let c = process.spawn(\"{program}\", {args}) or |e| {{ panic(e.message()) }}\n    print(c.id() > 0)\n}}\nfn main() {{\n    start()\n}}\n"
         ),
     )
     .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    assert!(!marker.exists(), "the child outlived its handle");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(!marker.exists(), "the child outlived its handle");
+    })
 }
 
 // ---- process in coroutines ----
@@ -717,18 +728,21 @@ fn an_unfinished_child_is_killed_when_it_is_dropped() {
 #[cfg(unix)]
 #[test]
 fn coroutines_make_progress_while_a_child_process_runs() {
-    // The child ends when the ticker has written a marker after its tenth tick, so the test
-    // waits for a condition and not for a duration (timers on a loaded macOS runner sleep far
-    // longer than asked). A blocked `Vm` never writes the marker: the child gives up after
-    // twenty seconds and the count stays at one.
-    let scratch = Scratch::new("progress");
-    let marker = scratch
-        .0
-        .join("marker")
-        .to_string_lossy()
-        .replace('\\', "/");
-    let (mut vm, out) = vm(&[colibri::Cap::Os, colibri::Cap::Fs]);
-    run(
+    vm_pending(
+        "coroutines_make_progress_while_a_child_process_runs",
+        || {
+            // The child ends when the ticker has written a marker after its tenth tick, so the test
+            // waits for a condition and not for a duration (timers on a loaded macOS runner sleep far
+            // longer than asked). A blocked `Vm` never writes the marker: the child gives up after
+            // twenty seconds and the count stays at one.
+            let scratch = Scratch::new("progress");
+            let marker = scratch
+                .0
+                .join("marker")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let (mut vm, out) = vm(&[colibri::Cap::Os, colibri::Cap::Fs]);
+            run(
         &mut vm,
         &format!(
             r#"import process
@@ -765,26 +779,29 @@ fn main() {{
         ),
     )
     .unwrap();
-    assert_eq!(out.contents(), "0\ntrue\n");
+            assert_eq!(out.contents(), "0\ntrue\n");
+        },
+    )
 }
 
 /// Two children started by two coroutines run at the same time.
 #[test]
 fn child_processes_of_different_coroutines_overlap() {
-    // Each child sleeps `nap` seconds (`ping -n 5` is the four seconds a Windows console-less
-    // `cmd` can sleep for, long enough that starting two `cmd`s on a busy machine does not
-    // eat the margin); run one after the other they would take twice that.
-    let (line, nap) = if cfg!(windows) {
-        ("ping -n 5 127.0.0.1 >nul & echo {n}", 4.0)
-    } else {
-        ("sleep 0.4; echo {n}", 0.4)
-    };
-    let (mut vm, out) = vm(&[colibri::Cap::Os]);
-    let start = std::time::Instant::now();
-    run(
-        &mut vm,
-        &format!(
-            r#"import process
+    vm_pending("child_processes_of_different_coroutines_overlap", || {
+        // Each child sleeps `nap` seconds (`ping -n 5` is the four seconds a Windows console-less
+        // `cmd` can sleep for, long enough that starting two `cmd`s on a busy machine does not
+        // eat the margin); run one after the other they would take twice that.
+        let (line, nap) = if cfg!(windows) {
+            ("ping -n 5 127.0.0.1 >nul & echo {n}", 4.0)
+        } else {
+            ("sleep 0.4; echo {n}", 0.4)
+        };
+        let (mut vm, out) = vm(&[colibri::Cap::Os]);
+        let start = std::time::Instant::now();
+        run(
+            &mut vm,
+            &format!(
+                r#"import process
 
 fn one(n: int) -> str {{
     let r = process.shell("{line}") or |e| {{ panic(e.message()) }}
@@ -797,33 +814,35 @@ fn main() {{
     print(a.join() + b.join())
 }}
 "#
-        ),
-    )
-    .unwrap();
-    assert_eq!(out.contents(), "12\n");
-    let took = start.elapsed();
-    let limit = std::time::Duration::from_secs_f64(nap * 1.875);
-    assert!(
-        took < limit,
-        "two {nap} s programs should overlap, took {took:?}"
-    );
+            ),
+        )
+        .unwrap();
+        assert_eq!(out.contents(), "12\n");
+        let took = start.elapsed();
+        let limit = std::time::Duration::from_secs_f64(nap * 1.875);
+        assert!(
+            took < limit,
+            "two {nap} s programs should overlap, took {took:?}"
+        );
+    })
 }
 
 /// Cancelling the coroutine that waits for a program stops the program.
 #[test]
 fn cancelling_a_coroutine_stops_its_child_process() {
-    let scratch = Scratch::new("cancel-child");
-    let marker = scratch.0.join("marker");
-    // The child waits and then creates the marker, unless it was stopped; the script looks
-    // once the child would have been done.
-    let (program, args) = sleep_then_touch("0.5", 2, &marker);
-    let settle = if cfg!(windows) { 1.5 } else { 0.8 };
-    let marker = colibri_text(&marker.to_string_lossy());
-    let (mut vm, out) = vm(&[colibri::Cap::Os, colibri::Cap::Fs]);
-    run(
-        &mut vm,
-        &format!(
-            r#"import process
+    vm_pending("cancelling_a_coroutine_stops_its_child_process", || {
+        let scratch = Scratch::new("cancel-child");
+        let marker = scratch.0.join("marker");
+        // The child waits and then creates the marker, unless it was stopped; the script looks
+        // once the child would have been done.
+        let (program, args) = sleep_then_touch("0.5", 2, &marker);
+        let settle = if cfg!(windows) { 1.5 } else { 0.8 };
+        let marker = colibri_text(&marker.to_string_lossy());
+        let (mut vm, out) = vm(&[colibri::Cap::Os, colibri::Cap::Fs]);
+        run(
+            &mut vm,
+            &format!(
+                r#"import process
 import fs
 
 fn job() {{
@@ -839,10 +858,11 @@ fn main() {{
     print(fs.exists("{marker}"))
 }}
 "#
-        ),
-    )
-    .unwrap();
-    assert_eq!(out.contents(), "false\n");
+            ),
+        )
+        .unwrap();
+        assert_eq!(out.contents(), "false\n");
+    })
 }
 
 // ---- removed functions say what replaced them ----
@@ -880,20 +900,27 @@ fn a_removed_function_names_its_replacement() {
 #[cfg(unix)]
 #[test]
 fn stat_follow_looks_through_a_symlink_and_stat_does_not() {
-    let scratch = Scratch::new("stat-follow");
-    let dir = scratch.0.to_string_lossy().replace('\\', "/");
-    std::fs::write(scratch.0.join("target.txt"), "twelve bytes").unwrap();
-    std::os::unix::fs::symlink(scratch.0.join("target.txt"), scratch.0.join("link")).unwrap();
-    std::os::unix::fs::symlink(scratch.0.join("missing"), scratch.0.join("dangling")).unwrap();
-    let (mut vm, out) = vm(&[colibri::Cap::Fs]);
-    run(
+    vm_pending(
+        "stat_follow_looks_through_a_symlink_and_stat_does_not",
+        || {
+            let scratch = Scratch::new("stat-follow");
+            let dir = scratch.0.to_string_lossy().replace('\\', "/");
+            std::fs::write(scratch.0.join("target.txt"), "twelve bytes").unwrap();
+            std::os::unix::fs::symlink(scratch.0.join("target.txt"), scratch.0.join("link"))
+                .unwrap();
+            std::os::unix::fs::symlink(scratch.0.join("missing"), scratch.0.join("dangling"))
+                .unwrap();
+            let (mut vm, out) = vm(&[colibri::Cap::Fs]);
+            run(
         &mut vm,
         &format!(
             "import fs\nfn main() -> Result[()] {{\n    let direct = fs.stat(\"{dir}/link\")?\n    let through = fs.stat_follow(\"{dir}/link\")?\n    print(\"{{direct.kind}} {{through.kind}} {{through.size}}\")\n    print(fs.stat_follow(\"{dir}/dangling\").is_err())\n    print(fs.stat(\"{dir}/dangling\")?.kind)\n    return ok(())\n}}\n"
         ),
     )
     .unwrap();
-    assert_eq!(out.contents(), "symlink file 12\ntrue\nsymlink\n");
+            assert_eq!(out.contents(), "symlink file 12\ntrue\nsymlink\n");
+        },
+    )
 }
 
 // ---- typed errors (DESIGN §10.2) ----
@@ -959,10 +986,13 @@ fn the_error_enums_check_without_a_vm() {
 
 #[test]
 fn modules_with_the_same_error_name_are_different_types() {
-    let (mut vm, out) = vm(&[colibri::Cap::Fs, colibri::Cap::Os]);
-    run(
-        &mut vm,
-        r#"import fs
+    vm_pending(
+        "modules_with_the_same_error_name_are_different_types",
+        || {
+            let (mut vm, out) = vm(&[colibri::Cap::Fs, colibri::Cap::Os]);
+            run(
+                &mut vm,
+                r#"import fs
 import os
 import process
 
@@ -975,52 +1005,62 @@ fn main() {
     print("{a.as[fs.Error]()} {b.as[process.Error]()}")
 }
 "#,
+            )
+            .unwrap();
+            assert_eq!(
+                out.contents(),
+                "true false false\nfalse true false\nsome(NotFound) some(NotFound)\n"
+            );
+        },
     )
-    .unwrap();
-    assert_eq!(
-        out.contents(),
-        "true false false\nfalse true false\nsome(NotFound) some(NotFound)\n"
-    );
 }
 
 #[test]
 fn a_typed_error_survives_context_and_main_prints_the_message() {
-    let (mut vm, _) = vm(&[colibri::Cap::Fs]);
-    let err = run(
+    vm_pending(
+        "a_typed_error_survives_context_and_main_prints_the_message",
+        || {
+            let (mut vm, _) = vm(&[colibri::Cap::Fs]);
+            let err = run(
         &mut vm,
         "import fs\nfn main() -> Result[()] {\n    let t = fs.read(\"/colibri/no/such/file\").context(\"loading\")?\n    print(t)\n    return ok(())\n}\n",
     )
     .unwrap_err();
-    assert_eq!(
-        err.render(false),
-        "error: loading: cannot read `/colibri/no/such/file`: no such file or directory\n"
-    );
+            assert_eq!(
+                err.render(false),
+                "error: loading: cannot read `/colibri/no/such/file`: no such file or directory\n"
+            );
+        },
+    )
 }
 
 #[test]
 fn reading_input_that_is_not_text_is_an_io_invalid_data_error() {
-    let out = colibri::SharedBuffer::new();
-    let mut vm = colibri::Vm::builder()
-        // vm-pin: 2c
-        .engine(colibri::EngineKind::Tree)
-        .stdout(Box::new(out.clone()))
-        .allow(colibri::Cap::Os)
-        .build();
-    colibri_std::install_with(
-        &mut vm,
-        StdConfig {
-            stdin: Some(Box::new(Cursor::new(vec![0xff, 0xfe, b'\n']))),
-            ..StdConfig::default()
-        },
-    )
-    .unwrap();
-    run(
+    vm_pending(
+        "reading_input_that_is_not_text_is_an_io_invalid_data_error",
+        || {
+            let out = colibri::SharedBuffer::new();
+            let mut vm = colibri::Vm::builder()
+                .stdout(Box::new(out.clone()))
+                .allow(colibri::Cap::Os)
+                .build();
+            colibri_std::install_with(
+                &mut vm,
+                StdConfig {
+                    stdin: Some(Box::new(Cursor::new(vec![0xff, 0xfe, b'\n']))),
+                    ..StdConfig::default()
+                },
+            )
+            .unwrap();
+            run(
         &mut vm,
         "import io\nfn main() {\n    let e = io.read_line().err().expect(\"not text\")\n    print(e.as[io.Error]().expect(\"an io error\") == io.Error.InvalidData)\n    print(e.message())\n}\n",
     )
     .unwrap();
-    assert_eq!(
-        out.contents(),
-        "true\ncannot read standard input: the data is not valid UTF-8 text\n"
-    );
+            assert_eq!(
+                out.contents(),
+                "true\ncannot read standard input: the data is not valid UTF-8 text\n"
+            );
+        },
+    )
 }

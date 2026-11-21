@@ -1,0 +1,239 @@
+# Standard library tests that do not pass on the bytecode VM yet (COLIBRI_ENGINE=vm).
+#
+# `test_binary::test  # reason`, the reason being the feature the VM lacks. Each listed test
+# wraps its body in `vm_pending` (tests/common/mod.rs): on the VM it is expected to fail with
+# the VM's refusal of that feature, and one that passes fails the run, so delete its line (and
+# the wrapper) when it starts to pass. `vm_pending_list.rs` checks that every entry names a
+# wrapped test.
+embedder_types::an_embedder_value_and_item_registered_after_the_library_coexist_with_json_value  # the built-in `ResultExpect`
+embedder_types::an_embedder_value_and_item_registered_before_the_library_coexist_with_json_value  # the built-in `ResultExpect`
+embedder_types::embedder_types_registered_after_the_library_coexist_with_its_own  # the built-in `ResultExpect`
+embedder_types::embedder_types_registered_before_the_library_coexist_with_its_own  # the built-in `ResultExpect`
+embedder_types::json_decode_does_not_mistake_an_embedder_value_for_json_value  # `match`
+fs_file::a_drop_hook_reads_a_handle_while_a_coroutine_reads_it_without_a_hang  # `match`
+fs_file::a_file_is_written_by_one_handle_and_checked_by_rust  # `match`
+fs_file::a_file_much_bigger_than_the_buffers_is_read_line_by_line  # `match`
+fs_file::a_handle_that_is_still_open_when_the_program_ends_is_flushed  # the built-in `ResultExpect`
+fs_file::appending_line_by_line_across_two_opens  # `match`
+fs_file::blocking::a_blocked_read_lets_other_coroutines_run_and_can_be_cancelled  # `match`
+fs_file::blocking::a_cancelled_queued_read_never_runs_and_the_ones_behind_it_do  # `match`
+fs_file::blocking::a_second_coroutine_on_a_busy_handle_waits_its_turn  # `match`
+fs_file::blocking::cancelling_a_coroutine_stuck_in_open_returns_at_once  # `go`
+fs_file::blocking::ending_the_program_with_queued_operations_does_not_hang  # `match`
+fs_file::order::a_small_write_never_overtakes_a_big_one_issued_before_it  # the built-in `BytesBuilderNew`
+fs_file::order::close_waits_for_the_writes_issued_before_it  # the built-in `BytesBuilderNew`
+fs_file::order::flush_on_a_handle_opened_for_reading_does_nothing  # `match`
+fs_file::order::writes_of_different_sizes_land_in_the_order_they_were_issued  # the built-in `BytesBuilderNew`
+fs_file::two_coroutines_writing_one_handle_never_mix_their_lines  # `match`
+fs_sync::a_host_call_that_touches_a_file_does_not_advance_coroutines  # `go`
+fs_sync::coroutines_using_whole_file_functions_finish_in_a_fixed_order  # `go`
+http::a_binary_body_comes_back_as_bytes_without_loss  # `match`
+http::a_body_that_is_not_utf8_is_decoded_lossily  # `match`
+http::a_response_encodes_as_json_and_has_only_status_headers_and_body  # `match`
+http::an_error_status_is_a_response_not_an_err  # `match`
+http::bytes_are_sent_as_they_are  # the built-in `BytesFromList`
+http::failures_are_errs_with_a_message  # `match`
+http::failures_carry_an_http_error_to_branch_on  # `ErrorAs(Adt(TypeId(24)))`
+http::get_returns_status_headers_and_body  # `match`
+http::https_to_a_closed_port_fails_cleanly  # `match`
+http::json_decode_reads_a_response_body  # `match`
+http::post_and_request_send_the_method_headers_and_body  # `match`
+http::redirects_are_followed  # `match`
+http::requests_to_one_host_reuse_the_connection  # `match`
+http::speaking_tls_to_a_server_that_does_not_is_a_tls_error  # `match`
+http::the_timeout_is_configurable  # `match`
+httpd::a_204_and_a_304_have_no_length_and_no_body  # the built-in `ResultExpect`
+httpd::a_body_length_that_is_wrong_or_unclear_is_refused_and_nothing_after_it_is_handled  # the built-in `ResultExpect`
+httpd::a_body_over_the_limit_is_a_413_for_the_handler_that_reads_it  # the built-in `ResultExpect`
+httpd::a_body_sent_a_byte_at_a_time_gets_a_408_after_the_body_timeout  # the built-in `ResultExpect`
+httpd::a_body_that_arrives_in_pieces_within_the_timeout_is_read_whole  # the built-in `ResultExpect`
+httpd::a_body_within_the_limit_is_read_whole  # the built-in `ResultExpect`
+httpd::a_chunked_body_of_three_megabytes_in_chunks_of_random_sizes_arrives_whole  # the built-in `ResultExpect`
+httpd::a_chunked_body_over_the_limit_is_a_413_before_the_bytes_past_it_are_sent  # the built-in `ResultExpect`
+httpd::a_chunked_body_that_ends_early_is_a_400_not_the_end_of_the_body  # the built-in `ResultExpect`
+httpd::a_chunked_body_that_is_wrong_is_refused_and_nothing_after_it_is_handled  # the built-in `ResultExpect`
+httpd::a_chunked_body_the_handler_does_not_read_closes_the_connection  # the built-in `ResultExpect`
+httpd::a_client_that_leaves_during_a_stream_gets_the_closure_an_error_and_a_closure_that_goes_on_is_cancelled  # the built-in `ResultExpect`
+httpd::a_client_that_leaves_in_the_middle_of_a_head_is_forgotten_and_the_server_goes_on  # the built-in `ResultExpect`
+httpd::a_client_that_never_reads_a_large_answer_is_cut_off_by_the_write_timeout  # the built-in `ResultExpect`
+httpd::a_client_that_never_reads_a_stream_is_cut_off_by_the_write_timeout  # the built-in `ResultExpect`
+httpd::a_client_that_sends_half_a_head_does_not_hold_up_another_one  # the built-in `ResultExpect`
+httpd::a_connection_that_sends_nothing_is_closed_without_a_word_after_the_header_timeout  # the built-in `ResultExpect`
+httpd::a_connection_that_waits_too_long_for_its_next_request_is_closed_without_a_word  # the built-in `ResultExpect`
+httpd::a_failure_with_a_status_is_answered_with_that_status_and_its_message  # the built-in `ResultExpect`
+httpd::a_field_line_between_8_and_64_kib_is_served  # the built-in `ResultExpect`
+httpd::a_field_line_over_its_limit_is_a_431_before_its_end_arrives  # the built-in `ResultExpect`
+httpd::a_get_is_answered_with_a_length_and_a_date  # the built-in `ResultExpect`
+httpd::a_handler_out_of_time_is_cancelled_with_a_503_and_a_close_and_its_defer_ran  # the built-in `ResultExpect`
+httpd::a_handler_that_answers_without_reading_sends_no_100_and_the_connection_closes  # the built-in `ResultExpect`
+httpd::a_handler_that_fails_with_a_plain_error_gets_a_500_with_a_generic_body_and_keeps_the_connection  # the built-in `ResultExpect`
+httpd::a_handler_that_reads_the_body_makes_the_server_send_100_continue_first  # the built-in `ResultExpect`
+httpd::a_handler_that_sets_the_content_length_gets_a_500  # the built-in `ResultExpect`
+httpd::a_handler_timeout_of_zero_is_none  # the built-in `ResultExpect`
+httpd::a_head_that_stops_halfway_is_answered_408_after_the_header_timeout  # the built-in `ResultExpect`
+httpd::a_head_trickled_a_line_at_a_time_is_cut_off_by_the_time_of_the_whole_head  # the built-in `ResultExpect`
+httpd::a_header_field_that_is_wrong_is_refused_and_nothing_after_it_is_handled  # the built-in `ResultExpect`
+httpd::a_host_that_is_missing_or_repeated_is_refused  # the built-in `ResultExpect`
+httpd::a_hundred_requests_in_turn_share_one_connection  # the built-in `ResultExpect`
+httpd::a_known_path_under_another_method_is_405_with_allow_and_the_connection_stays  # the built-in `ResultExpect`
+httpd::a_large_write_goes_out_in_chunks_of_at_most_256_kib_and_an_empty_one_not_at_all  # the built-in `ResultExpect`
+httpd::a_method_nobody_knows_is_501_and_an_unknown_path_is_404  # the built-in `ResultExpect`
+httpd::a_panic_in_a_coroutine_a_handler_started_and_never_joined_still_ends_the_server  # the built-in `ResultExpect`
+httpd::a_panic_in_a_stream_closure_cuts_that_connection_and_the_server_goes_on  # the built-in `ResultExpect`
+httpd::a_panicking_handler_is_a_500_and_a_close_and_the_server_goes_on_and_ends_normally  # the built-in `ResultExpect`
+httpd::a_refusal_of_a_head_request_has_no_body  # the built-in `ResultExpect`
+httpd::a_request_line_of_exactly_its_limit_is_served  # the built-in `ResultExpect`
+httpd::a_request_line_over_its_limit_is_a_414_before_its_end_arrives  # the built-in `ResultExpect`
+httpd::a_request_line_sent_a_byte_at_a_time_is_cut_off_by_the_same_deadline  # the built-in `ResultExpect`
+httpd::a_request_line_that_is_wrong_is_refused_and_nothing_after_it_is_handled  # the built-in `ResultExpect`
+httpd::a_reset_during_a_body_read_fails_the_handlers_read_and_the_server_goes_on  # the built-in `ResultExpect`
+httpd::a_response_header_with_a_cr_is_a_500_and_never_goes_out_as_written  # the built-in `ResultExpect`
+httpd::a_stop_closes_idle_connections_and_what_they_send_afterwards_is_not_handled  # the built-in `ResultExpect`
+httpd::a_stop_during_a_request_lets_it_finish_and_the_answer_says_close  # the built-in `ResultExpect`
+httpd::a_stop_from_a_handler_still_delivers_that_handlers_response  # the built-in `ResultExpect`
+httpd::a_stream_for_an_http_1_0_request_is_close_delimited  # the built-in `ResultExpect`
+httpd::a_stream_is_not_under_the_handler_timeout  # the built-in `ResultExpect`
+httpd::a_stream_that_ends_short_of_its_length_or_goes_past_it_or_fails_cuts_the_connection  # the built-in `ResultExpect`
+httpd::a_stream_with_a_length_has_content_length_and_no_chunks  # the built-in `ResultExpect`
+httpd::a_stream_without_a_length_is_chunked_and_ends_with_a_bare_last_chunk  # the built-in `ResultExpect`
+httpd::a_write_in_flight_when_the_closure_returns_never_follows_the_end_of_the_response  # the built-in `ResultExpect`
+httpd::a_writer_kept_after_its_response_cannot_write_into_the_next_one  # the built-in `ResultExpect`
+httpd::an_expectation_that_is_not_100_continue_is_a_417  # the built-in `ResultExpect`
+httpd::an_http_1_0_request_with_expect_gets_no_100  # the built-in `ResultExpect`
+httpd::an_unread_body_declared_a_megabyte_long_ends_the_connection  # the built-in `ResultExpect`
+httpd::an_unread_body_of_a_kilobyte_is_drained_and_the_connection_goes_on  # the built-in `ResultExpect`
+httpd::at_the_cap_a_new_connection_waits_until_one_ends  # the built-in `ResultExpect`
+httpd::chunk_extensions_and_trailers_are_ignored_and_the_next_request_is_answered  # the built-in `ResultExpect`
+httpd::chunk_extensions_count_against_the_body_limit  # the built-in `ResultExpect`
+httpd::connection_close_ends_it_and_a_request_behind_it_is_neither_answered_nor_handled  # the built-in `ResultExpect`
+httpd::dot_segments_and_escaped_control_characters_are_400_and_never_reach_a_handler  # the built-in `ResultExpect`
+httpd::empty_lines_before_a_request_line_are_skipped  # the built-in `ResultExpect`
+httpd::empty_lines_sent_slowly_do_not_extend_the_header_timeout_of_a_new_connection  # the built-in `ResultExpect`
+httpd::empty_lines_sent_slowly_do_not_extend_the_idle_timeout_of_a_kept_alive_connection  # the built-in `ResultExpect`
+httpd::endless_empty_lines_are_cut_off_by_the_header_byte_limit  # the built-in `ResultExpect`
+httpd::expect_100_continue_with_a_chunked_body_is_sent_when_the_handler_reads  # the built-in `ResultExpect`
+httpd::fifty_pipelined_requests_are_answered_in_order  # the built-in `ResultExpect`
+httpd::half_a_body_ends_in_a_408_for_the_handler_that_reads_it_and_the_connection_closes  # the built-in `ResultExpect`
+httpd::head_gets_the_length_of_a_get_and_no_body_and_the_next_request_is_parsed  # the built-in `ResultExpect`
+httpd::head_goes_through_the_route_of_get_and_has_no_body  # the built-in `ResultExpect`
+httpd::head_of_a_stream_never_runs_the_closure_and_sends_the_length_only_when_it_is_known  # the built-in `ResultExpect`
+httpd::http_1_0_with_keep_alive_says_so_and_stays_open  # the built-in `ResultExpect`
+httpd::http_1_0_without_keep_alive_closes_after_the_answer  # the built-in `ResultExpect`
+httpd::options_is_answered_by_the_router_with_allow  # the built-in `ResultExpect`
+httpd::stopping_closes_the_idle_connections_and_ends_serve_and_nothing_listens_any_more  # the built-in `ResultExpect`
+httpd::the_answer_to_a_refused_request_arrives_although_the_client_goes_on_sending  # the built-in `ResultExpect`
+httpd::the_date_is_an_imf_fixdate_and_the_server_header_is_sent_only_when_named  # the built-in `ResultExpect`
+httpd::the_end_of_the_grace_cancels_a_handler_that_is_asleep_and_serve_ends_with_it  # the built-in `ResultExpect`
+httpd::the_router_reads_the_path_as_it_came_and_decodes_only_parameters  # the built-in `ResultExpect`
+httpd::two_hundred_keep_alive_clients_of_twenty_requests_in_waves_of_fifty_are_all_answered_once  # the built-in `ResultExpect`
+httpd_colibri::a_program_imports_the_module_and_tests_its_handlers_without_sockets  # the built-in `ResultExpect`
+httpd_colibri::body  # the built-in `ResultExpect`
+httpd_colibri::chunk  # the built-in `ResultExpect`
+httpd_colibri::chunked  # the built-in `ResultExpect`
+httpd_colibri::fields  # the built-in `ResultExpect`
+httpd_colibri::framing  # the built-in `ResultExpect`
+httpd_colibri::headers  # the built-in `ResultExpect`
+httpd_colibri::host  # the built-in `ResultExpect`
+httpd_colibri::options  # the built-in `ResultExpect`
+httpd_colibri::percent  # the built-in `ResultExpect`
+httpd_colibri::request_line  # the built-in `ResultExpect`
+httpd_colibri::request_misuse  # the built-in `ResultExpect`
+httpd_colibri::response  # the built-in `ResultExpect`
+httpd_colibri::router  # the built-in `ResultExpect`
+httpd_colibri::router_registration  # the built-in `ResultExpect`
+httpd_colibri::stream  # the built-in `ResultExpect`
+httpd_colibri::writer  # the built-in `ResultExpect`
+httpd_idle::a_thousand_idle_connections_use_a_few_threads_and_no_cpu_and_are_all_served_again  # the built-in `ResultExpect`
+json::a_non_finite_toml_float_is_not_stored_in_a_json_value  # `match`
+json::a_value_as_a_map_key_or_set_element_is_found_by_structure  # the built-in `ResultExpect`
+json::a_value_shows_as_compact_json_and_compares_structurally  # the built-in `ResultExpect`
+json::a_very_deep_value_drops_and_encodes_cleanly_in_a_coroutine  # `go`
+json::decoding_an_object_with_many_keys_is_fast  # the built-in `ResultExpect`
+json::enums_with_data_use_one_key_objects  # the built-in `ResultExpect`
+json::parse_reports_a_float_out_of_range_as_a_syntax_error_with_a_position  # `match`
+json::rename_changes_the_key_both_ways  # the built-in `ResultExpect`
+json::showing_and_comparing_a_very_deep_value_is_safe  # `go`
+json::skip_is_not_written_and_not_read  # the built-in `ResultExpect`
+json::value_equals_and_double_equals_are_both_structural  # the built-in `ResultExpect`
+json::value_keeps_integers_exactly_and_key_order  # the built-in `ResultExpect`
+net::a_big_read_exact_over_loopback_is_correct_and_linear  # `match`
+net::a_big_transfer_with_a_slow_reader_arrives_intact  # the built-in `BytesBuilderNew`
+net::a_big_write_stops_at_its_deadline_and_when_cancelled  # the built-in `BytesBuilderNew`
+net::a_cancelled_queued_read_is_skipped  # `match`
+net::a_cancelled_read_until_loses_no_data  # `match`
+net::a_changed_line_limit_applies_to_a_waiting_read_line_at_its_next_look  # `match`
+net::a_child_writing_through_a_captured_object_releases_it_when_it_ends  # the built-in `BytesBuilderNew`
+net::a_close_from_a_hook_while_another_coroutine_is_writing_cuts_its_write  # `match`
+net::a_colibri_client_talks_to_a_rust_server  # `match`
+net::a_connect_by_name_finds_the_listener  # `match`
+net::a_connect_from_a_drop_hook_connects_and_is_refused  # `match`
+net::a_connect_that_does_not_finish_is_bounded_and_cancellable  # `match`
+net::a_connection_is_full_duplex  # `match`
+net::a_delimiter_of_a_thousand_and_twenty_four_bytes_is_the_longest  # `match`
+net::a_drop_hook_gets_an_error_for_a_write_and_a_scheduled_end_for_close_write  # `match`
+net::a_drop_hook_reads_normally_when_nothing_waits_and_writes_while_a_coroutine_reads  # `match`
+net::a_drop_hook_that_accepts_while_a_coroutine_accepts_gets_an_error_not_a_hang  # `match`
+net::a_drop_hook_that_calls_read_until_while_a_coroutine_reads_gets_an_error_not_a_hang  # `match`
+net::a_drop_hook_that_reads_while_a_coroutine_reads_gets_an_error_not_a_hang  # `match`
+net::a_fake_clock_does_not_advance_while_a_coroutine_waits_on_the_network  # `match`
+net::a_loop_of_accepts_that_never_wait_still_lets_the_other_coroutines_run  # `match`
+net::a_loop_of_calls_that_never_wait_still_lets_the_other_coroutines_run  # `match`
+net::a_loop_of_read_until_calls_that_never_wait_still_lets_the_other_coroutines_run  # `match`
+net::a_peer_that_resets_the_connection_is_reset  # `match`
+net::a_port_can_be_listened_on_again_after_the_server_closed_a_connection_first  # `match`
+net::a_port_can_be_listened_on_again_at_once_after_a_close_with_an_accept_waiting  # `match`
+net::a_read_that_finished_before_its_coroutine_was_cancelled_loses_no_data  # `match`
+net::a_read_until_is_served_in_call_order_with_the_other_reads  # `match`
+net::a_read_until_that_times_out_leaves_the_half_match_for_the_next_call  # `match`
+net::a_ready_wake_that_resumes_after_the_deadline_still_gets_its_read  # `match`
+net::a_rust_client_gets_back_a_large_echo  # `match`
+net::a_rust_client_talks_to_a_colibri_server  # `match`
+net::a_scheduled_close_write_runs_when_the_write_ahead_is_cancelled_or_fails  # `match`
+net::a_specific_address_of_a_port_held_on_the_wildcard_is_in_use  # `match`
+net::a_timeout_in_the_middle_of_a_line_says_it_did_not_finish  # `match`
+net::a_vm_that_ends_with_a_scheduled_close_write_does_not_hang  # `match`
+net::a_write_cancelled_before_it_sent_anything_leaves_the_connection_usable  # `match`
+net::a_write_cancelled_part_way_breaks_the_write_side_and_not_the_read_side  # `match`
+net::a_write_that_times_out_says_how_much_was_sent  # `match`
+net::a_write_to_a_peer_that_reset_is_a_broken_pipe_and_a_read_is_a_reset  # `match`
+net::an_accept_that_finished_before_its_coroutine_was_cancelled_loses_no_connection  # `match`
+net::cancelling_a_blocked_accept_or_read_is_prompt_and_leaves_the_object_usable  # `match`
+net::close_before_a_scheduled_close_write_runs_skips_it  # `match`
+net::close_in_a_defer_of_a_cancelled_reader_runs_to_the_end  # `match`
+net::close_is_not_a_scheduling_point  # `match`
+net::close_write_after_a_cut_write_still_ends_the_stream  # `match`
+net::close_write_waits_for_the_writes_called_before_it  # `match`
+net::closing_a_listener_closes_the_connections_it_kept  # `match`
+net::closing_ends_a_blocked_accept_and_a_blocked_read  # `match`
+net::closing_two_hundred_sockets_with_waiters_does_not_wait_for_any_slice  # `match`
+net::concurrent_reads_and_writes_on_one_connection_are_serialized  # `match`
+net::connect_timeout_connects_fails_and_checks_its_argument  # `match`
+net::counts_lines_at_the_limit_and_big_blocks  # `match`
+net::dropping_the_vm_with_blocked_operations_is_prompt_and_closes_the_sockets  # `match`
+net::many_blocked_reads_end_when_their_connections_are_closed  # `match`
+net::one_read_among_a_thousand_ends_promptly_on_cancel  # `match`
+net::one_read_among_a_thousand_ends_promptly_on_data  # `match`
+net::one_read_among_a_thousand_ends_promptly_on_its_timeout  # `match`
+net::one_read_among_a_thousand_ends_promptly_on_the_close_of_the_peer  # `match`
+net::operations_on_one_connection_are_served_in_call_order  # `match`
+net::read_line_refuses_a_huge_line_and_bad_utf8  # `match`
+net::read_until_and_set_line_limit_check_their_arguments  # `match`
+net::read_until_takes_the_bytes_before_a_delimiter_and_tells_a_limit_from_the_end  # `match`
+net::the_line_limit_is_at_one_byte_more_than_it_says_and_read_until_has_its_own  # `match`
+net::two_hundred_connections_each_exchange_data  # `match`
+net::two_scheduled_close_writes_and_a_write_called_after_them  # `match`
+net_idle_cpu::a_thousand_idle_blocked_reads_use_a_fraction_of_a_core  # `match`
+net_idle_threads::a_thousand_idle_waits_use_a_few_threads_and_no_cpu  # `match`
+std::a_child_gets_the_variables_the_script_set_and_its_own_folder  # `match`
+std::a_child_killed_by_a_signal_has_a_negative_status  # `match`
+std::a_missing_file_is_an_err_with_the_path_and_the_reason  # `match`
+std::a_typed_error_survives_context_and_main_prints_the_message  # `match`
+std::an_unfinished_child_is_killed_when_it_is_dropped  # `match`
+std::args_reads_flags_values_positionals_and_the_terminator  # the built-in `ListLen`
+std::cancelling_a_coroutine_stops_its_child_process  # `go`
+std::child_processes_of_different_coroutines_overlap  # `go`
+std::coroutines_make_progress_while_a_child_process_runs  # `go`
+std::files_are_written_and_read_in_a_scratch_folder  # `match`
+std::modules_with_the_same_error_name_are_different_types  # the built-in `OptionExpect`
+std::reading_input_that_is_not_text_is_an_io_invalid_data_error  # the built-in `OptionExpect`
+std::stat_follow_looks_through_a_symlink_and_stat_does_not  # `match`

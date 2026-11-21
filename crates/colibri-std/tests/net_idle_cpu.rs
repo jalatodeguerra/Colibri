@@ -3,6 +3,9 @@
 //! process) would pollute. The process's CPU time is read with `getrusage` on Unix and with
 //! `GetProcessTimes` on Windows: no portable call gives it.
 
+mod common;
+use common::vm_pending;
+
 use std::io::Read;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -82,41 +85,40 @@ fn raise_descriptor_limit() {
 
 #[test]
 fn a_thousand_idle_blocked_reads_use_a_fraction_of_a_core() {
-    raise_descriptor_limit();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
-    // The peer holds every connection open and silent until the script has closed its ends.
-    let peer = thread::spawn(move || {
-        let mut held = Vec::new();
-        for _ in 0..READERS {
-            held.push(listener.accept().unwrap().0);
-        }
-        for s in &mut held {
-            s.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
-            assert_eq!(s.read(&mut [0u8; 1]).unwrap(), 0);
-        }
-    });
+    vm_pending(
+        "a_thousand_idle_blocked_reads_use_a_fraction_of_a_core",
+        || {
+            raise_descriptor_limit();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            // The peer holds every connection open and silent until the script has closed its ends.
+            let peer = thread::spawn(move || {
+                let mut held = Vec::new();
+                for _ in 0..READERS {
+                    held.push(listener.accept().unwrap().0);
+                }
+                for s in &mut held {
+                    s.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+                    assert_eq!(s.read(&mut [0u8; 1]).unwrap(), 0);
+                }
+            });
 
-    let marks = Arc::new(Mutex::new(Vec::<(Instant, f64)>::new()));
-    let out = colibri::SharedBuffer::new();
-    // Pinned to the tree-walker: this tests the standard library, not the engine, and host
-    // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
-    let mut vm = colibri::Vm::builder()
-        // vm-pin: 2c
-        .engine(colibri::EngineKind::Tree)
-        .stdout(Box::new(out.clone()))
-        .allow(colibri::Cap::Net)
-        .build();
-    colibri_std::install(&mut vm).unwrap();
-    let m = Arc::clone(&marks);
-    vm.register_fn("mark", move || {
-        m.lock().unwrap().push((Instant::now(), cpu_seconds()));
-    })
-    .unwrap();
-    vm.load_source(
-        "app/main.colibri",
-        &format!(
-            r#"import net
+            let marks = Arc::new(Mutex::new(Vec::<(Instant, f64)>::new()));
+            let out = colibri::SharedBuffer::new();
+            let mut vm = colibri::Vm::builder()
+                .stdout(Box::new(out.clone()))
+                .allow(colibri::Cap::Net)
+                .build();
+            colibri_std::install(&mut vm).unwrap();
+            let m = Arc::clone(&marks);
+            vm.register_fn("mark", move || {
+                m.lock().unwrap().push((Instant::now(), cpu_seconds()));
+            })
+            .unwrap();
+            vm.load_source(
+                "app/main.colibri",
+                &format!(
+                    r#"import net
 
 fn reading(c: net.Conn) -> str {{
     match c.read(1) {{
@@ -151,23 +153,25 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-        ),
-    )
-    .unwrap();
-    vm.run_main().unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(out.contents(), format!("closed {READERS}\n"));
-    peer.join().unwrap();
+                ),
+            )
+            .unwrap();
+            vm.run_main().unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(out.contents(), format!("closed {READERS}\n"));
+            peer.join().unwrap();
 
-    let marks = marks.lock().unwrap();
-    let ((t0, c0), (t1, c1)) = (marks[0], marks[1]);
-    let cores = (c1 - c0) / t1.duration_since(t0).as_secs_f64();
-    println!("{READERS} idle blocked reads: {cores:.3} cores");
-    // Before the fix 1,000 idle reads used 1.9 cores in a debug build and 0.32 in a release
-    // build (every 50 ms slice zero-filled a buffer, and queued operations woke every 10 ms);
-    // now about 0.23 in both, which is the wake-ups themselves. The bound is far above that,
-    // for a slow machine, and below what the old code used in a debug build.
-    assert!(
-        cores < 0.9,
-        "{READERS} idle blocked reads used {cores:.3} cores"
-    );
+            let marks = marks.lock().unwrap();
+            let ((t0, c0), (t1, c1)) = (marks[0], marks[1]);
+            let cores = (c1 - c0) / t1.duration_since(t0).as_secs_f64();
+            println!("{READERS} idle blocked reads: {cores:.3} cores");
+            // Before the fix 1,000 idle reads used 1.9 cores in a debug build and 0.32 in a release
+            // build (every 50 ms slice zero-filled a buffer, and queued operations woke every 10 ms);
+            // now about 0.23 in both, which is the wake-ups themselves. The bound is far above that,
+            // for a slow machine, and below what the old code used in a debug build.
+            assert!(
+                cores < 0.9,
+                "{READERS} idle blocked reads used {cores:.3} cores"
+            );
+        },
+    )
 }
