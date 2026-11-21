@@ -7,7 +7,7 @@
 use std::fmt::Write;
 use std::rc::Rc;
 
-use colibri_check::hir::{BinOp, Body, FnId, FormatSpec, Intrinsic, UnOp, ValueProj};
+use colibri_check::hir::{BinOp, Body, FnId, FormatSpec, Intrinsic, Lit, UnOp, ValueProj};
 use colibri_check::types::TypeId;
 use colibri_core::value::Value;
 use colibri_syntax::Span;
@@ -560,6 +560,42 @@ pub enum Op {
         a: Reg,
     },
 
+    // ---- patterns (vm-plan §2.7) ----
+    // A test is followed by a `Jmp` to where a failed test goes: a test that holds skips it.
+    /// The enum value in `r` is the variant `v`.
+    TestVariant {
+        r: Reg,
+        v: u32,
+    },
+    /// The integer in `r` equals `k` (a `u64` too, when `k` is not negative).
+    TestInt {
+        r: Reg,
+        k: i32,
+    },
+    /// The value in `r` matches the literal of the site.
+    TestLit {
+        r: Reg,
+        site: u16,
+    },
+    /// The value in `r` lies in the range of the site.
+    TestRange {
+        r: Reg,
+        site: u16,
+    },
+    /// The value in `r` equals the module-level constant `g`. Panics when the comparison gave up
+    /// (the values nest too deeply).
+    TestConst {
+        r: Reg,
+        g: u32,
+    },
+    /// `d = part i of s`: a clone of the field of a struct or class object, the element of a
+    /// tuple, or the payload of an enum value.
+    Unpack {
+        d: Reg,
+        s: Reg,
+        i: u16,
+    },
+
     // ---- unwinding (vm-plan §2.4) ----
     /// Jumps over a deferred statement when the budget grace is used up.
     SkipIfDead {
@@ -638,6 +674,14 @@ pub enum Site {
         argc: u16,
     },
     F32ToFloat,
+    /// A literal pattern.
+    Lit(Lit),
+    /// A range pattern; a missing bound is open.
+    Range {
+        lo: Option<Lit>,
+        hi: Option<Lit>,
+        inclusive: bool,
+    },
     Unsupported(String),
 }
 
@@ -816,6 +860,12 @@ impl Chunk {
             Op::ForSetNext { d, a } => format!("ForSetNext r{d} src=r{a}"),
             Op::ForIterNext { d, a } => format!("ForIterNext r{d} src=r{a}"),
             Op::ForWriteBack { l, a } => format!("ForWriteBack r{l} src=r{a}"),
+            Op::TestVariant { r, v } => format!("TestVariant r{r} .{v}"),
+            Op::TestInt { r, k } => format!("TestInt r{r} {k}"),
+            Op::TestLit { r, site } => format!("TestLit r{r} {}", self.site_text(site)),
+            Op::TestRange { r, site } => format!("TestRange r{r} {}", self.site_text(site)),
+            Op::TestConst { r, g } => format!("TestConst r{r} g{g}"),
+            Op::Unpack { d, s, i } => format!("Unpack r{d} r{s} .{i}"),
             Op::SkipIfDead { off } => format!("SkipIfDead -> {:04}", target(off.into())),
             Op::CheckHooks => "CheckHooks".to_string(),
             Op::FoldHooks => "FoldHooks".to_string(),
@@ -859,6 +909,10 @@ impl Chunk {
                 if p.guarded { "" } else { " unguarded" }
             ),
             Some(Site::Name(n)) => format!("{n:?}"),
+            Some(Site::Lit(l)) => format!("{l:?}"),
+            Some(Site::Range { lo, hi, inclusive }) => {
+                format!("{lo:?}{}{hi:?}", if *inclusive { "..=" } else { ".." })
+            }
             Some(Site::Unsupported(what)) => what.clone(),
             None => "?".to_string(),
         }
