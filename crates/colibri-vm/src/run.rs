@@ -496,6 +496,10 @@ impl Machine {
                 Op::Print { r } => {
                     sync!();
                     let span = chunk.spans[pc - 1];
+                    #[cfg(test)]
+                    if let Some(hook) = self.print_hook.clone() {
+                        hook(self, fiber);
+                    }
                     match &reg!(r) {
                         Value::Int(i) => {
                             let _ = writeln!(self.core.out, "{i}");

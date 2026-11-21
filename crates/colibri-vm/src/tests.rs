@@ -1,0 +1,170 @@
+//! Tests that need the machine's internals: calls from Rust into Colibri while the dispatch
+//! loop is running (`NativeEntry` frames), and the frame and window model.
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use colibri_check::hir::FnId;
+use colibri_core::engine::Engine;
+use colibri_core::value::Value;
+
+use crate::fiber::VmFiber;
+use crate::machine::Machine;
+use crate::source::check_source;
+
+#[derive(Clone, Default)]
+struct Out(Rc<RefCell<Vec<u8>>>);
+
+impl std::io::Write for Out {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn load(src: &str) -> (Machine, colibri_check::hir::Program, Out) {
+    let (program, _) = check_source(src).expect("the program checks");
+    let out = Out::default();
+    let mut m = Machine::new(Box::new(out.clone()), 1000);
+    m.load(&program);
+    (m, program, out)
+}
+
+fn fn_id(p: &colibri_check::hir::Program, name: &str) -> FnId {
+    p.fn_by_name(name).expect("the function exists")
+}
+
+#[test]
+fn native_entries_nest_inside_the_dispatch_loop() {
+    let src = "
+fn inner(n: int) -> int => n * 2
+fn boom(n: int) -> int => 10 / n
+fn echo(s: str) -> str => s + \"!\"
+fn work(a: int) -> int {
+    let b = a + 1
+    let tag = \"t\" + \"ag\"
+    print(b)
+    print(tag)
+    return a + b
+}
+fn main() { print(work(5)) }
+";
+    let (mut m, program, out) = load(src);
+    let (inner, boom, echo) = (
+        fn_id(&program, "inner"),
+        fn_id(&program, "boom"),
+        fn_id(&program, "echo"),
+    );
+    let fired = Rc::new(Cell::new(0));
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    {
+        let (fired, seen) = (Rc::clone(&fired), Rc::clone(&seen));
+        m.print_hook = Some(Rc::new(move |m: &mut Machine, fiber: &mut VmFiber| {
+            fired.set(fired.get() + 1);
+            // `main -> work` are running for the two prints in `work`, `main` for the last:
+            // the nested entries sit above every live window.
+            let depth = fiber.depth();
+            assert!(depth == 1 || depth == 2);
+            let top = fiber.top();
+            let r = m.call_fn(fiber, inner, vec![Value::Int(21)]);
+            assert!(matches!(r, Ok(Value::Int(42))), "{r:?}");
+            assert_eq!(fiber.depth(), depth, "the nested frame popped");
+            // A string argument is owned by the entry and released by it.
+            let r = m.call_fn(fiber, echo, vec![Value::Str(Rc::from("hi"))]);
+            assert!(matches!(&r, Ok(Value::Str(s)) if &**s == "hi!"), "{r:?}");
+            // A panic in the nested call unwinds only the nested frames.
+            let Err(colibri_core::ctl::Ctl::Panic(info)) =
+                m.call_fn(fiber, boom, vec![Value::Int(0)])
+            else {
+                panic!("expected a panic")
+            };
+            seen.borrow_mut().push((
+                info.message.clone(),
+                info.stack
+                    .iter()
+                    .map(|t| t.function.clone())
+                    .collect::<Vec<_>>(),
+            ));
+            assert_eq!(fiber.depth(), depth);
+            assert_eq!(fiber.top(), top, "no window was left behind");
+            // Re-entering twice deep: a nested call that is itself running while we call again
+            // is covered by `inner` being entered on top of `work`'s window, not main's.
+        }));
+    }
+    let mut fiber = VmFiber::new();
+    m.run_module(&mut fiber).expect("the module runs");
+    let main = fn_id(&program, "main");
+    m.call(&mut fiber, main, Vec::new()).expect("main runs");
+    assert_eq!(fired.get(), 3, "print ran in work twice and in main once");
+    assert_eq!(String::from_utf8_lossy(&out.0.borrow()), "6\ntag\n11\n");
+    let seen = seen.borrow();
+    assert_eq!(seen[0].0, "division by zero");
+    assert_eq!(seen[0].1, ["boom", "work", "main"]);
+    assert_eq!(seen[2].1, ["boom", "main"]);
+}
+
+#[test]
+fn a_nested_entry_starts_above_the_live_window_and_leaves_it_untouched() {
+    // `work` keeps a string alive in a register while the hook enters Colibri from Rust: the
+    // string must survive and still be dropped by `work` itself (the debug check of the
+    // Unit invariant fails the test otherwise).
+    let src = "
+fn echo(s: str) -> str => s + \"?\"
+fn work(a: str) -> str {
+    let b = a + \"1\"
+    print(b)
+    let c = b + \"2\"
+    return c + a
+}
+print(work(\"x\"))
+";
+    let (mut m, program, out) = load(src);
+    let echo = fn_id(&program, "echo");
+    let bases = Rc::new(RefCell::new(Vec::new()));
+    {
+        let bases = Rc::clone(&bases);
+        m.print_hook = Some(Rc::new(move |m: &mut Machine, fiber: &mut VmFiber| {
+            bases.borrow_mut().push(fiber.top());
+            for _ in 0..3 {
+                let r = m.call_fn(fiber, echo, vec![Value::Str(Rc::from("p"))]);
+                assert!(matches!(&r, Ok(Value::Str(s)) if &**s == "p?"), "{r:?}");
+            }
+        }));
+    }
+    let mut fiber = VmFiber::new();
+    m.run_module(&mut fiber).expect("the module runs");
+    assert_eq!(String::from_utf8_lossy(&out.0.borrow()), "x1\nx12x\n");
+    // The registers above every frame hold nothing that owns a value.
+    assert!(fiber.regs.iter().all(crate::fiber::is_scalar_value));
+    assert!(!bases.borrow().is_empty());
+}
+
+#[test]
+fn the_call_depth_limit_counts_nested_entries_too() {
+    let src = "fn f(n: int) -> int => n\nfn main() { print(1) }\n";
+    let (mut m, program, _out) = load(src);
+    // `main` is one frame; a call from Rust on top of it would be the second.
+    m.max_depth = 1;
+    let f = fn_id(&program, "f");
+    let refused = Rc::new(Cell::new(false));
+    {
+        let refused = Rc::clone(&refused);
+        m.print_hook = Some(Rc::new(move |m: &mut Machine, fiber: &mut VmFiber| {
+            let Err(colibri_core::ctl::Ctl::Panic(info)) = m.call_fn(fiber, f, vec![Value::Int(1)])
+            else {
+                panic!("the nested call should be refused")
+            };
+            assert_eq!(info.message, "stack overflow: more than 1 nested calls");
+            assert_eq!(fiber.depth(), 1);
+            refused.set(true);
+        }));
+    }
+    let mut fiber = VmFiber::new();
+    m.run_module(&mut fiber).expect("the module runs");
+    let main = fn_id(&program, "main");
+    m.call(&mut fiber, main, Vec::new()).expect("main runs");
+    assert!(refused.get());
+}

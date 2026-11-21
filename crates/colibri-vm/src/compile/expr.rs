@@ -138,6 +138,7 @@ impl FnCompiler<'_> {
             _ => {
                 let t = self.alloc_for(&e.ty);
                 self.expr(e, t);
+                self.own(t);
                 self.free(t, span);
             }
         }
@@ -157,6 +158,7 @@ impl FnCompiler<'_> {
         }
         let t = self.alloc_for(&e.ty);
         self.expr(e, t);
+        self.own(t);
         t
     }
 

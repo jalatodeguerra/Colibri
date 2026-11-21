@@ -86,11 +86,13 @@ impl FnCompiler<'_> {
                 let b = self.operand(rhs, false);
                 self.binary_regs(op, old, b, t, span);
                 self.free(b, span);
+                self.own(t);
                 t
             }
             _ => {
                 let t = self.alloc_for(&place.ty);
                 self.expr(rhs, t);
+                self.own(t);
                 t
             }
         }
@@ -158,6 +160,7 @@ impl FnCompiler<'_> {
         let old = op.map(|_| {
             let t = self.alloc_for(&place.ty);
             self.emit(Op::CellGet { d: t, l: lr }, span);
+            self.own(t);
             t
         });
         let new = self.new_value(old, op, place, rhs, span);
@@ -182,6 +185,7 @@ impl FnCompiler<'_> {
         let old = op.map(|_| {
             let t = self.alloc_for(&place.ty);
             self.emit(Op::GetGlobal { d: t, g: g.0 }, span);
+            self.own(t);
             t
         });
         let new = self.new_value(old, op, place, rhs, span);

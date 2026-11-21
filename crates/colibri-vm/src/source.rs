@@ -66,7 +66,7 @@ impl Write for Shared {
 
 /// Reads and checks one source text, as the runtime's `load_source` does for a program with
 /// no host modules. `Err` holds the error diagnostics, one per line.
-fn check_source(src: &str) -> Result<(Program, SourceMap), String> {
+pub(crate) fn check_source(src: &str) -> Result<(Program, SourceMap), String> {
     let mut fs = MemoryFs::new();
     fs.insert("main.colibri", src);
     let mut sources = SourceMap::new();

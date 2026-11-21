@@ -76,7 +76,7 @@ struct LabelState {
 pub(crate) enum Kind {
     /// No drop is ever needed.
     Scalar,
-    /// A string or bytes: dropped eagerly.
+    /// A string or bytes: dropped eagerly (right after the operation that used it).
     Inert,
     /// Anything else: dropped at the end of the statement.
     Owned,
@@ -342,10 +342,17 @@ impl<'a> FnCompiler<'a> {
         }
         self.temps.push(Temp { kind });
         self.max_temps = self.max_temps.max(self.temps.len());
-        if kind != Kind::Scalar {
-            self.cleanups.push(r as Reg);
-        }
         r as Reg
+    }
+
+    /// Registers a temporary's value for dropping at an exit. Called when the value has been
+    /// written, not when the register was allocated, so that values die newest first in the
+    /// order they were made (a result register is allocated before the operands that produce
+    /// it, but the value comes after theirs).
+    pub(crate) fn own(&mut self, r: Reg) {
+        if matches!(self.temp_kind(r), Some(Kind::Inert | Kind::Owned)) {
+            self.cleanups.push(r);
+        }
     }
 
     pub(crate) fn alloc_for(&mut self, ty: &Ty) -> Reg {

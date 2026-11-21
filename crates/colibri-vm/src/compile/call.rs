@@ -30,6 +30,7 @@ impl FnCompiler<'_> {
         for a in args {
             let t = self.alloc_for(&a.ty);
             self.expr(a, t);
+            self.own(t);
             allocated.push(t);
             arg_regs.push(t);
         }
@@ -55,6 +56,7 @@ impl FnCompiler<'_> {
                 Op::Copy { d, s }
             };
             self.emit(op, a.span);
+            self.own(d);
             allocated.push(d);
         }
         Window { base, allocated }
@@ -143,6 +145,7 @@ impl FnCompiler<'_> {
         }
         self.free_window(w, span);
         if dst.is_none() {
+            self.own(d);
             self.free(d, span);
         }
     }
@@ -177,6 +180,7 @@ impl FnCompiler<'_> {
                 self.emit(Op::Show { d, r }, span);
                 self.free(r, span);
                 if dst.is_none() {
+                    self.own(d);
                     self.free(d, span);
                 }
             }
@@ -190,6 +194,7 @@ impl FnCompiler<'_> {
                 self.emit(Op::Format { d, r, site }, span);
                 self.free(r, span);
                 if dst.is_none() {
+                    self.own(d);
                     self.free(d, span);
                 }
             }
@@ -221,6 +226,7 @@ impl FnCompiler<'_> {
                 );
                 self.free_window_moved(w);
                 if dst.is_none() {
+                    self.own(d);
                     self.free(d, span);
                 }
             }

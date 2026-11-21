@@ -22,3 +22,6 @@ pub use compile::{CompileEnv, compile_body};
 pub use fiber::VmFiber;
 pub use machine::{DEFAULT_NATIVE_STACK_BUDGET, Machine};
 pub use source::{Options, Outcome, compile_source, run_source, run_source_with};
+
+#[cfg(test)]
+mod tests;

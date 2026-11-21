@@ -21,12 +21,15 @@ impl FnCompiler<'_> {
                 self.emit(Op::NewCell { l: r, s: r }, span);
             }
         }
-        if matches!(body.ret, Ty::Unit | Ty::Never) {
+        if matches!(body.ret, Ty::Unit | Ty::Never) || body.block.tail.is_none() {
+            // Without a tail the value, if any, is returned by a `return` statement; falling
+            // off the end is only possible for `()`.
             self.block(&body.block, None);
             self.emit_return(None, span);
         } else {
             let t = self.alloc_for(&body.ret);
             self.block(&body.block, Some(t));
+            self.own(t);
             self.emit_return(Some(t), span);
         }
     }
@@ -67,12 +70,20 @@ impl FnCompiler<'_> {
                 self.end_stmt(m, tail.span);
             }
             None => {
-                if let Some(d) = dst {
+                // A block that cannot end normally (it returns or breaks) has no value.
+                if let Some(d) = dst
+                    && b.ty != Ty::Never
+                {
                     self.emit(Op::LoadUnit { d }, b.span);
                 }
             }
         }
-        self.end_scope(depth, b.span);
+        if b.ty == Ty::Never {
+            // The block cannot end normally: its exits (`return`, `break`) already dropped.
+            self.cleanups.truncate(depth);
+        } else {
+            self.end_scope(depth, b.span);
+        }
     }
 
     fn stmt(&mut self, s: &Stmt) {
@@ -157,6 +168,7 @@ impl FnCompiler<'_> {
         let s = if usize::from(s) < nparams {
             let t = self.alloc_for(&e.ty);
             self.emit(Op::Copy { d: t, s }, span);
+            self.own(t);
             t
         } else {
             s

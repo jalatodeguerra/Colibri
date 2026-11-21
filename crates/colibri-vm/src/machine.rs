@@ -56,6 +56,10 @@ pub struct Machine {
     pub(crate) env: CompileEnv,
     pub(crate) max_depth: usize,
     pub(crate) native_stack_budget: usize,
+    /// Tests only: runs at every `print`, so a test can call back into Colibri from inside the
+    /// dispatch loop (a native re-entry, like a user `Show` or a `Drop` hook would).
+    #[cfg(test)]
+    pub(crate) print_hook: Option<Rc<dyn Fn(&mut Machine, &mut crate::fiber::VmFiber)>>,
 }
 
 /// The default for [`Machine::set_native_stack_budget`].
@@ -77,6 +81,8 @@ impl Machine {
             env: CompileEnv::default(),
             max_depth: max_call_depth,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
+            #[cfg(test)]
+            print_hook: None,
         }
     }
 
