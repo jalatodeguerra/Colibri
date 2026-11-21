@@ -14,16 +14,12 @@
 //! into it); the runtime keeps it in a `Box`.
 
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::mpsc;
 
 use colibri_check::hir::{Builtin, Callee, Expr, ExprKind, Intrinsic};
 use colibri_check::types::{COGROUP_TYPE, COROUTINE_TYPE, SIGNAL_TYPE, Ty};
 use colibri_core::coro::Sched;
 use colibri_core::engine::Resumed;
-use colibri_core::external::{
-    CancelToken, Completer, ExternalError, panic_message, unwrap_outcome,
-};
+use colibri_core::external::{CancelToken, Completer, ExternalError, Waited};
 use colibri_core::prelude::*;
 use colibri_core::sched::*;
 use colibri_syntax::Span;
@@ -668,26 +664,8 @@ impl Interp {
         fiber: &mut Fiber,
         work: impl FnOnce(&CancelToken) -> R + Send + 'static,
     ) -> Result<R, ExternalError> {
-        let (completer, result_rx) = self.begin_completion::<R>();
-        let op = completer.op();
-        let token = Arc::clone(completer.token());
-        let queued = self.core.sched.ext().submit(Box::new(move || {
-            // Set when the waiter gives up, so an operation still in the queue is not run.
-            if completer.token().is_cancelled() {
-                return;
-            }
-            let token = Arc::clone(completer.token());
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&token)));
-            match outcome {
-                Ok(value) => completer.complete(value),
-                Err(payload) => completer.fail(panic_message(payload.as_ref())),
-            }
-        }));
-        if let Err(message) = queued {
-            self.core.sched.ext().forget(op);
-            return Err(ExternalError::CannotStart(message));
-        }
-        self.wait_completion(fiber, op, &token, result_rx)
+        let pending = self.core.sched.submit_work(work)?;
+        self.wait_completion(fiber, pending)
     }
 
     /// Waits for an operation that some other thread completes. `start` runs at once on the
@@ -707,34 +685,8 @@ impl Interp {
         fiber: &mut Fiber,
         start: impl FnOnce(Completer<R>) -> Result<(), String>,
     ) -> Result<R, ExternalError> {
-        let (completer, result_rx) = self.begin_completion::<R>();
-        let op = completer.op();
-        let token = Arc::clone(completer.token());
-        // A `start` that fails or panics leaves nothing of the operation behind: its entries in
-        // the scheduler go, and the hooks it registered on the token run.
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| start(completer))) {
-            Ok(Ok(())) => {}
-            Ok(Err(message)) => {
-                self.core.sched.ext().forget(op);
-                token.cancel();
-                return Err(ExternalError::CannotStart(message));
-            }
-            Err(payload) => {
-                self.core.sched.ext().forget(op);
-                // The dropped completer has posted its id; collecting it later finds the
-                // operation no longer pending and ignores it. A hook that panics too does not
-                // replace the panic of `start`, which is the one that is passed on.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| token.cancel()));
-                std::panic::resume_unwind(payload);
-            }
-        }
-        self.wait_completion(fiber, op, &token, result_rx)
-    }
-
-    /// Registers a new operation with the scheduler and makes the end that completes it.
-    fn begin_completion<R>(&mut self) -> (Completer<R>, mpsc::Receiver<Result<R, String>>) {
-        let op = self.core.sched.alloc_id();
-        self.core.sched.ext().begin(op)
+        let pending = self.core.sched.start_completion(start)?;
+        self.wait_completion(fiber, pending)
     }
 
     /// Runs the cancel hooks of an operation whose waiter is giving up. A hook that panics must
@@ -753,10 +705,21 @@ impl Interp {
     fn wait_completion<R>(
         &mut self,
         fiber: &mut Fiber,
+        pending: Pending<R>,
+    ) -> Result<R, ExternalError> {
+        let waited = self.wait_for_completion(fiber, pending.op, &pending.token)?;
+        self.core.sched.collect(pending, waited)
+    }
+
+    /// The part of the wait that depends on the engine and not on the type of the result:
+    /// suspend the coroutine, or drive the event loop, until operation `op` is completed.
+    /// `Blocked` means neither was possible, and the caller blocks on its receiver.
+    pub fn wait_for_completion(
+        &mut self,
+        fiber: &mut Fiber,
         op: u64,
         token: &CancelToken,
-        result_rx: mpsc::Receiver<Result<R, String>>,
-    ) -> Result<R, ExternalError> {
+    ) -> Result<Waited, ExternalError> {
         let coro = fiber.state.coro;
         let waited = if let (Some(id), true) = (coro, self.can_suspend_for_external(fiber)) {
             let mut outcome = Ok(());
@@ -772,15 +735,11 @@ impl Interp {
             self.drive(None, false, &mut |me| me.core.sched.ext().is_completed(op));
             Ok(())
         } else {
-            // Nothing can run meanwhile: block this thread until the result is there. Every
-            // end of a completer sends or drops the result's sender, so this does not hang.
-            let blocked = result_rx.recv();
-            self.core.sched.ext().forget(op);
-            return unwrap_outcome(blocked.map_err(|_| ()));
+            return Ok(Waited::Blocked);
         };
         self.core.sched.ext().finish(op);
         waited?;
-        unwrap_outcome(result_rx.try_recv().map_err(|_| ()))
+        Ok(Waited::Finished)
     }
 
     // ---- the engine's half of resuming and the built-ins that pause ----
@@ -971,7 +930,7 @@ mod tests {
     fn a_cancel_hook_that_panics_still_forgets_the_operation() {
         use crate::Interp;
         let mut interp = Interp::new(Box::new(std::io::sink()), 100);
-        let (completer, _result_rx) = interp.begin_completion::<u8>();
+        let (completer, _pending) = interp.core.sched.begin_completion::<u8>();
         let op = completer.op();
         let token = Arc::clone(completer.token());
         token.on_cancel(|| panic!("the hook panics"));

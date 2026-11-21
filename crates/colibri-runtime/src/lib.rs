@@ -68,6 +68,8 @@ mod cap;
 mod class;
 mod convert;
 mod ctx;
+mod engine;
+mod engine_tree;
 mod error;
 mod func;
 mod handle;
@@ -174,12 +176,14 @@ pub use colibri_core::external::CancelToken;
 #[doc(hidden)]
 pub use colibri_core::external::Completer;
 pub use colibri_core::leaks::Leak;
-pub use colibri_interp::DEFAULT_NATIVE_STACK_BUDGET;
 pub use colibri_syntax::{Diagnostic, Severity, SourceMap, Span};
 pub use convert::{Args, Bytes, FromColibri, IntoColibri, Never, TypedError, Value, ValueKind};
 #[doc(hidden)]
 pub use ctx::Incomplete;
 pub use ctx::{Caller, Ctx, Cx};
+#[doc(hidden)]
+pub use engine::EngineKind;
+pub use engine_tree::DEFAULT_NATIVE_STACK_BUDGET;
 pub use error::{Error, Location, Report, StackFrame};
 pub use func::Fn;
 pub use handle::{Handle, Ref, RefMut};

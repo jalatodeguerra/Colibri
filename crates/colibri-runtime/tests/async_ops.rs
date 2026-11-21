@@ -965,3 +965,66 @@ fn a_start_that_panics_is_a_panic_of_the_call_and_the_vm_goes_on() {
     assert_eq!(out.contents(), "ok 4\n");
     assert_eq!(vm.coroutine_count(), 0);
 }
+
+// ---- the result types a wait can carry: the wait is not specific to one of them ----
+
+/// `run_async` and its relatives return `()`, a `String` and an `i64` alike, on the main fiber
+/// and inside a coroutine (where the wait suspends instead of driving the loop).
+#[test]
+fn waits_carry_unit_and_string_results() {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    vm.register_fn("unit_job", |cx: &mut colibri::Ctx, ms: i64| {
+        cx.run_async(move || std::thread::sleep(Duration::from_millis(ms as u64)))
+    })
+    .unwrap();
+    vm.register_fn("text_job", |cx: &mut colibri::Ctx, s: String| -> String {
+        cx.run_async(move || format!("{s}-done"))
+    })
+    .unwrap();
+    vm.register_fn("text_cancellable", |cx: &mut colibri::Ctx, s: String| {
+        cx.run_async_cancellable(move |_token| s.to_uppercase())
+    })
+    .unwrap();
+    vm.register_fn("text_completion", |cx: &mut colibri::Ctx, s: String| {
+        let outcome = cx.try_await_completion(move |completer: colibri::Completer<String>| {
+            std::thread::spawn(move || completer.complete(format!("{s}!")));
+            Ok(())
+        });
+        match outcome {
+            Ok(text) => text,
+            Err(_) => "failed".to_string(),
+        }
+    })
+    .unwrap();
+    vm.register_fn("unit_completion", |cx: &mut colibri::Ctx| {
+        let outcome = cx.try_await_completion(|completer: colibri::Completer<()>| {
+            std::thread::spawn(move || completer.complete(()));
+            Ok(())
+        });
+        assert!(outcome.is_ok());
+    })
+    .unwrap();
+    vm.load_source(
+        "a.colibri",
+        r#"
+fn both(tag: str) {
+    unit_job(5)
+    unit_completion()
+    print("{tag} {text_job("a")} {text_cancellable("b")} {text_completion("c")}")
+}
+fn main() {
+    both("main")
+    let g = CoGroup()
+    g.go(both("coroutine"))
+    g.join_all()
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    vm.run_event_loop().unwrap();
+    let text = out.contents();
+    assert!(text.contains("main a-done B c!\n"), "{text}");
+    assert!(text.contains("coroutine a-done B c!\n"), "{text}");
+}

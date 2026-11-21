@@ -39,9 +39,22 @@ pub fn build_cfg() -> colibri_runtime::BuildCfg {
     BUILD_CFG.get().cloned().unwrap_or_default()
 }
 
+static ENGINE: std::sync::OnceLock<colibri_runtime::EngineKind> = std::sync::OnceLock::new();
+
+/// Chooses the engine for this process (`colibri run --engine`), over `COLIBRI_ENGINE`;
+/// `main` calls it once, before anything is loaded.
+pub fn set_engine(kind: colibri_runtime::EngineKind) {
+    let _ = ENGINE.set(kind);
+}
+
 /// A `Vm` builder set up for a thread made by [`on_big_stack`].
 pub fn vm_builder() -> colibri_runtime::VmBuilder {
-    colibri_runtime::Vm::builder()
+    let builder = colibri_runtime::Vm::builder();
+    let builder = match ENGINE.get() {
+        Some(kind) => builder.engine(*kind),
+        None => builder,
+    };
+    builder
         .build_cfg(build_cfg())
         .max_call_depth(colibri_runtime::DEFAULT_MAX_CALL_DEPTH)
         .native_stack_budget(NATIVE_STACK_BUDGET)

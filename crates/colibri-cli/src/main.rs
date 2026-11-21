@@ -42,6 +42,13 @@ impl BuildFlags {
     }
 }
 
+/// The engines `colibri run --engine` names.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum EngineArg {
+    Tree,
+    Vm,
+}
+
 #[derive(Parser)]
 #[command(name = "colibri", version, about = "The Colibri programming language")]
 struct Cli {
@@ -68,6 +75,9 @@ enum Command {
         /// were never freed to stderr; `--leaks=error` also exits with 1
         #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
+        /// The engine that runs the program (default: `COLIBRI_ENGINE`, else `tree`)
+        #[arg(long, value_enum, value_name = "ENGINE", hide = true)]
+        engine: Option<EngineArg>,
         #[command(flatten)]
         build: BuildFlags,
         #[command(flatten)]
@@ -195,10 +205,17 @@ fn main() -> ExitCode {
             watch,
             args,
             leaks,
+            engine,
             build,
             deps,
         } => {
             colibri_lang::set_build_cfg(build.cfg());
+            if let Some(engine) = engine {
+                colibri_lang::set_engine(match engine {
+                    EngineArg::Tree => colibri_runtime::EngineKind::Tree,
+                    EngineArg::Vm => colibri_runtime::EngineKind::Bytecode,
+                });
+            }
             let file = file.unwrap_or_else(|| PathBuf::from("."));
             if watch {
                 match depscmd::prepare(&file, deps) {
