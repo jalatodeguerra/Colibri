@@ -52,7 +52,18 @@ pub(crate) struct Resume {
 struct StackSlot {
     co: Option<Box<Co>>,
     budget: usize,
+    /// The size the stack was requested with, to pool it under that size when it ends.
+    size: usize,
 }
+
+/// How many finished stacks the pool keeps. A server that starts one short coroutine per
+/// request has one or a few alive at a time, so a handful already turns every start after the
+/// first into a reuse. Sixteen covers a burst of that size and bounds what idles: each pooled
+/// stack is `DEFAULT_COROUTINE_STACK` (16 MiB) of address space (256 MiB at most, never
+/// committed beyond what the coroutines touched) and keeps the pages its deepest run dirtied
+/// resident, so a larger pool would hold more memory for a rare peak. Beyond the cap a
+/// finished stack is unmapped as before.
+const STACK_POOL_CAP: usize = 16;
 
 /// The native stacks of the coroutines that have not ended: a slab of slots, each holding its
 /// stack while its coroutine is suspended and nothing while it runs (the stack is moved out
@@ -65,14 +76,21 @@ struct StackSlot {
 pub(crate) struct Stacks {
     slots: Vec<StackSlot>,
     free: Vec<u32>,
+    /// Stacks of coroutines that ran to their end, ready for the next start. All have size
+    /// `pool_size` (the pool is emptied when a start asks for another size).
+    pool: Vec<DefaultStack>,
+    pool_size: usize,
+    /// How many stacks were mapped (not taken from the pool), for tests.
+    allocated: usize,
 }
 
 impl Stacks {
     /// Stores the stack of a new coroutine with its native stack budget and returns its slot.
-    pub(crate) fn insert(&mut self, co: Box<Co>, budget: usize) -> u32 {
+    pub(crate) fn insert(&mut self, co: Box<Co>, budget: usize, size: usize) -> u32 {
         let fresh = StackSlot {
             co: Some(co),
             budget,
+            size,
         };
         match self.free.pop() {
             Some(index) => {
@@ -84,6 +102,34 @@ impl Stacks {
                 (self.slots.len() - 1) as u32
             }
         }
+    }
+
+    /// A stack of `size` bytes for a new coroutine: a pooled one, or a newly mapped one. Pooled
+    /// stacks of another size (the size was changed) are unmapped first.
+    pub(crate) fn acquire(&mut self, size: usize) -> std::io::Result<DefaultStack> {
+        if self.pool_size != size {
+            self.pool.clear();
+            self.pool_size = size;
+        }
+        if let Some(stack) = self.pool.pop() {
+            return Ok(stack);
+        }
+        let stack = DefaultStack::new(size)?;
+        self.allocated += 1;
+        Ok(stack)
+    }
+
+    /// The coroutine of `slot` ran to its end: takes its stack back into the pool (or unmaps it
+    /// when the pool is full) and frees the slot. Only a coroutine that finished gets here:
+    /// `into_stack` panics for one that did not, and a stack that is forgotten (`forget_all`,
+    /// a lost stack) never comes through here.
+    pub(crate) fn recycle(&mut self, slot: u32, co: Box<Co>) {
+        let size = self.slots[slot as usize].size;
+        let stack = (*co).into_stack();
+        if size == self.pool_size && self.pool.len() < STACK_POOL_CAP {
+            self.pool.push(stack);
+        }
+        self.free(slot);
     }
 
     /// Moves the stack out of `slot` for a resumption, with its budget; `None` if it is not
@@ -133,6 +179,8 @@ impl Stacks {
             }
         }
         self.free.clear();
+        // Pooled stacks hold no coroutine: they are simply unmapped.
+        self.pool.clear();
     }
 }
 
@@ -140,6 +188,19 @@ pub(crate) type Y = Yielder<Resume, *mut Interp>;
 pub(crate) type Co = Coroutine<Resume, *mut Interp, Finish, DefaultStack>;
 
 impl Interp {
+    /// How many coroutine stacks were mapped from the OS so far, as opposed to taken from the
+    /// pool of finished ones. For tests of the pool.
+    #[doc(hidden)]
+    pub fn coroutine_stacks_allocated(&self) -> usize {
+        self.stacks.allocated
+    }
+
+    /// How many finished coroutine stacks wait in the pool. For tests of the pool.
+    #[doc(hidden)]
+    pub fn coroutine_stacks_pooled(&self) -> usize {
+        self.stacks.pool.len()
+    }
+
     // ---- the scheduler's calls for the host ----
     //
     // `next_wake`, `tick` and `take_coroutine_failure` forward to `Core`/`Sched` on purpose: the
@@ -289,7 +350,7 @@ impl Interp {
         }
         let handle = ClassObj::new(COROUTINE_TYPE, fields);
         let size = self.core.sched.stack_size();
-        let stack = match DefaultStack::new(size) {
+        let stack = match self.stacks.acquire(size) {
             Ok(s) => s,
             Err(e) => {
                 self.release_all(values);
@@ -339,7 +400,7 @@ impl Interp {
         };
         let co: Co = Coroutine::with_stack(stack, body);
         let budget = size * STACK_USABLE_NUM / STACK_USABLE_DEN;
-        let index = self.stacks.insert(Box::new(co), budget);
+        let index = self.stacks.insert(Box::new(co), budget, size);
         self.core
             .sched
             .register(id, Rc::downgrade(&handle), group, EngineSlot(index));
@@ -689,9 +750,9 @@ impl Interp {
                 Resumed::Suspended
             }
             CoroutineResult::Return(finish) => {
-                // The coroutine ran to its end: only now is its stack freed.
-                drop(co);
-                self.stacks.free(slot.0);
+                // The coroutine ran to its end (it returned, also when cancelled): only now
+                // is its stack freed, into the pool.
+                self.stacks.recycle(slot.0, co);
                 Resumed::Finished(finish)
             }
         }
@@ -966,6 +1027,119 @@ mod tests {
         );
     }
 
+    /// Many sequential start, join cycles map one stack and reuse it; with the pool full (more
+    /// alive at once than the cap) the extra stacks are unmapped when they end.
+    #[test]
+    fn finished_stacks_are_reused_and_the_pool_is_capped() {
+        use crate::Fiber;
+        let src = "fn work(n: int) -> int {\n    wait(0.0)\n    return n\n}\nfn seq() {\n    var i = 0\n    while i < 200 {\n        let h = go work(i)\n        h.join()\n        i = i + 1\n    }\n}\nfn burst() {\n    var i = 0\n    while i < 40 {\n        let _h = go work(i)\n        i = i + 1\n    }\n}\n";
+        let (mut interp, program) = loaded(src, Box::new(std::io::sink()));
+        let mut fiber = Fiber::new();
+        interp
+            .call(&mut fiber, program.fn_by_name("seq").unwrap(), vec![])
+            .expect("seq");
+        assert_eq!(
+            interp.coroutine_stacks_allocated(),
+            1,
+            "one stack for 200 starts"
+        );
+        assert_eq!(interp.coroutine_stacks_pooled(), 1);
+        interp
+            .call(&mut fiber, program.fn_by_name("burst").unwrap(), vec![])
+            .expect("burst");
+        assert_eq!(
+            interp.coroutine_stacks_allocated(),
+            40,
+            "39 more were needed at once"
+        );
+        interp.tick(&mut fiber, 0.1).expect("tick");
+        assert_eq!(interp.stacks.live(), 0);
+        assert_eq!(interp.coroutine_stacks_pooled(), super::STACK_POOL_CAP);
+    }
+
+    /// A coroutine cancelled while suspended runs to its end through its unwinding (its `defer`
+    /// runs), so its stack is pooled like any other and the next start reuses it. (A stack that
+    /// never ran to its end is not pooled: it is forgotten, see the next test.)
+    #[test]
+    fn a_cancelled_coroutines_stack_is_pooled_and_reused() {
+        use crate::Fiber;
+        let src = "fn deep(n: int) -> int {\n    if n == 0 {\n        wait(100.0)\n        return 0\n    }\n    return 1 + deep(n - 1)\n}\nfn sleeper() {\n    defer print(\"cleaned\")\n    let _x = deep(50)\n}\nfn quick() -> int {\n    return 7\n}\nfn first() {\n    let h = go sleeper()\n    h.cancel()\n}\nfn second() {\n    let h = go quick()\n    print(h.join())\n}\n";
+        let out = Out::default();
+        let (mut interp, program) = loaded(src, Box::new(out.clone()));
+        let mut fiber = Fiber::new();
+        interp
+            .call(&mut fiber, program.fn_by_name("first").unwrap(), vec![])
+            .expect("first");
+        interp.tick(&mut fiber, 0.1).expect("tick");
+        assert_eq!(out.text(), "cleaned\n", "the cancelled coroutine unwound");
+        assert_eq!(interp.stacks.live(), 0);
+        assert_eq!(interp.coroutine_stacks_pooled(), 1);
+        interp
+            .call(&mut fiber, program.fn_by_name("second").unwrap(), vec![])
+            .expect("second");
+        assert_eq!(out.text(), "cleaned\n7\n");
+        assert_eq!(
+            interp.coroutine_stacks_allocated(),
+            1,
+            "the cancelled one's stack was reused"
+        );
+    }
+
+    /// Deep recursion in a coroutine that runs on a reused stack (one that a deeper run already
+    /// dirtied) still ends in the clean "stack overflow" panic, run after run: the budget is
+    /// measured from the stack's base, not from what the memory holds, and the guard page
+    /// survives reuse.
+    #[test]
+    fn stack_overflow_is_reported_on_a_reused_stack() {
+        use crate::Fiber;
+        let src = "fn d(n: int) -> int {\n    if n == 0 {\n        return 0\n    }\n    return 1 + d(n - 1)\n}\nfn shallow() -> int {\n    return d(10)\n}\nfn main() {\n    let a = go shallow()\n    print(a.join())\n    let b = go d(100000)\n    print(b.join_result().is_err())\n}\n";
+        let out = Out::default();
+        let (mut interp, program) = loaded(src, Box::new(out.clone()));
+        interp.core.sched.set_stack_size(256 * 1024);
+        let mut fiber = Fiber::new();
+        for round in 0..3 {
+            let _ = interp.call(&mut fiber, program.fn_by_name("main").unwrap(), vec![]);
+            assert_eq!(
+                interp.coroutine_stacks_allocated(),
+                1,
+                "round {round}: one stack throughout"
+            );
+        }
+        assert_eq!(out.text(), "10\ntrue\n".repeat(3));
+    }
+
+    /// A stack that is lost (forgotten) is not pooled, and a changed stack size drops the pooled
+    /// stacks of the old size.
+    #[test]
+    fn a_new_stack_size_drops_pooled_stacks_of_the_old_one() {
+        let mut stacks = super::Stacks::default();
+        let a = stacks.acquire(64 * 1024).expect("stack");
+        assert_eq!(stacks.allocated, 1);
+        let co = super::Coroutine::with_stack(a, |_y: &super::Y, _r: super::Resume| {
+            super::Finish::Cancelled
+        });
+        let mut co = Box::new(co);
+        let slot = stacks.insert(
+            Box::new(super::Coroutine::new(|_y: &super::Y, _r: super::Resume| {
+                super::Finish::Cancelled
+            })),
+            0,
+            64 * 1024,
+        );
+        // Run the first coroutine to its end by hand, then recycle it under the slot.
+        let r = Box::as_mut(&mut co).resume(super::Resume {
+            interp: std::ptr::null_mut(),
+            cancel: false,
+        });
+        assert!(matches!(r, super::CoroutineResult::Return(_)));
+        drop(stacks.take(slot));
+        stacks.recycle(slot, co);
+        assert_eq!(stacks.pool.len(), 1);
+        let _b = stacks.acquire(128 * 1024).expect("stack");
+        assert_eq!(stacks.pool.len(), 0, "the old size was dropped");
+        assert_eq!(stacks.allocated, 2);
+    }
+
     /// Freeing a slot twice would hand it to two coroutines: debug builds stop it at the second
     /// `free`.
     #[cfg(debug_assertions)]
@@ -974,7 +1148,7 @@ mod tests {
     fn freeing_a_slot_twice_is_caught() {
         let mut stacks = super::Stacks::default();
         let co = super::Coroutine::new(|_y: &super::Y, _r: super::Resume| super::Finish::Cancelled);
-        let slot = stacks.insert(Box::new(co), 0);
+        let slot = stacks.insert(Box::new(co), 0, 0);
         drop(stacks.take(slot));
         stacks.free(slot);
         stacks.free(slot);
