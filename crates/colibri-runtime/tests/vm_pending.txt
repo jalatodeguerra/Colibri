@@ -33,7 +33,7 @@ async_ops::waiting_on_the_main_fiber_is_refused_inside_a_host_callback  # host f
 async_ops::waits_carry_unit_and_string_results  # host functions
 budget::a_host_function_sees_the_steps_so_far  # host functions
 budget::host_eq_hooks_and_key_scans_are_charged  # the built-in `ListPush`
-budget::iter_on_a_huge_range_is_cheap_and_what_it_yields_is_charged  # `for` over this kind of value
+budget::iter_on_a_huge_range_is_cheap_and_what_it_yields_is_charged  # the built-in `Iter`
 budget::looping_builtins_cost_a_step_per_element  # the built-in `ListPush`
 budget::reentrant_calls_share_the_entrys_budget  # host functions
 budget::set_algebra_by_a_user_eq_charges_the_comparisons  # the built-in `SetFromList`
@@ -124,7 +124,7 @@ host_classes::the_host_cannot_borrow_what_a_running_method_holds  # host functio
 host_classes::the_host_cannot_remove_what_the_script_owns  # host functions
 host_classes::the_rust_drop_runs_after_the_class_drop_hook_that_held_it  # host functions
 host_fns::a_display_error_keeps_a_str_and_a_typed_error_keeps_none  # the built-in `OptionExpect`
-host_fns::a_host_error_keeps_a_typed_value_that_is_and_as_recover  # `for` over this kind of value
+host_fns::a_host_error_keeps_a_typed_value_that_is_and_as_recover  # `match`
 host_fns::a_host_function_calls_back_into_the_script  # host functions
 host_fns::a_host_function_that_cannot_read_its_argument_panics_cleanly  # host functions
 host_fns::a_leading_context_gives_access_to_host_state  # host functions
@@ -136,7 +136,7 @@ host_fns::a_typed_error_comes_back_to_rust_as_its_message  # host functions
 host_fns::a_typed_error_names_its_variant_and_the_name_is_checked  # host functions
 host_fns::a_typed_error_of_an_undeclared_enum_is_a_bug_of_the_host  # host functions
 host_fns::an_embedders_module_enum_converts_to_error_without_an_impl  # the built-in `OptionExpect`
-host_fns::an_unconsumed_host_value_is_released_properly  # `for` over this kind of value
+host_fns::an_unconsumed_host_value_is_released_properly  # host functions
 host_fns::closure_parameters_are_unnamed_and_named_arguments_are_rejected  # host functions
 host_fns::closures_may_capture_what_they_like  # host functions
 host_fns::collections_cross_both_ways  # host functions
@@ -165,7 +165,7 @@ host_sharing_order::every_registration_order_gives_every_module_the_same_interfa
 interface::value_types_cross_the_boundary  # host functions
 iter_release::a_for_loop_over_the_only_reference_to_a_list_releases_it_at_the_end  # the built-in `Iter`
 iter_release::a_map_iterator_advanced_with_next_releases_its_map_at_the_end  # the built-in `Iter`
-iter_release::enumerate_releases_its_inner_iterator_when_that_ends  # `for` over this kind of value
+iter_release::enumerate_releases_its_inner_iterator_when_that_ends  # the built-in `IterEnumerate`
 join_failures::a_budget_panic_is_not_held_for_a_woken_join_result_waiter  # `go`
 join_failures::a_budget_panic_is_not_hidden_by_a_later_join_result_in_the_tick  # `go`
 join_failures::a_budget_panic_is_not_hidden_by_join_result_on_the_main_fiber  # `go`
@@ -174,15 +174,11 @@ join_failures::a_waiter_that_runs_takes_the_panic_from_the_queue  # `NewSignal`
 join_failures::cancelling_everything_leaves_no_waiter_registered  # `NewSignal`
 join_failures::join_of_a_budget_panicked_coroutine_reports_the_budget_error  # `go`
 join_failures::when_only_join_waiters_are_left_nothing_polls_and_nothing_resumes  # `NewSignal`
-leaks::a_big_graph_is_found_quickly  # class fields
 leaks::a_cancelled_coroutine_leaks_what_only_it_held  # `go`
-leaks::a_cycle_nothing_reaches_is_found_mid_run  # class fields
-leaks::a_cycle_that_is_still_held_is_not_a_leak  # class fields
-leaks::a_cycle_through_a_closure_names_the_captured_variable  # class fields
+leaks::a_cycle_that_is_still_held_is_not_a_leak  # the built-in `ListPush`
+leaks::a_cycle_through_a_closure_names_the_captured_variable  # closures
 leaks::a_suspended_coroutine_keeps_its_cycle_alive  # `go`
-leaks::objects_a_leaked_cycle_owns_are_counted_as_retained  # class fields
-leaks::weak_references_are_not_edges  # class fields
-leaks::without_tracking_there_is_nothing_to_report  # class fields
+leaks::objects_a_leaked_cycle_owns_are_counted_as_retained  # the built-in `ListPush`
 packages::a_host_module_supports_selective_imports_and_aliases  # host functions
 packages::a_named_host_module_is_imported  # host functions
 packages::the_default_host_module_needs_no_import  # host functions

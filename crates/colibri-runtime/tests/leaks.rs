@@ -26,45 +26,43 @@ fn call(vm: &mut colibri::Vm, name: &str) {
 
 #[test]
 fn a_cycle_nothing_reaches_is_found_mid_run() {
-    vm_pending("a_cycle_nothing_reaches_is_found_mid_run", || {
-        let (mut vm, _) = vm(
-            true,
-            r#"
+    let (mut vm, _) = vm(
+        true,
+        r#"
 fn leak() {
-    let a = Node { name: "a" }
-    let b = Node { name: "b" }
-    a.next = some(b)
-    b.next = some(a)
+let a = Node { name: "a" }
+let b = Node { name: "b" }
+a.next = some(b)
+b.next = some(a)
 }
 fn main() {}
 "#,
-        );
-        vm.run_main().unwrap();
-        assert!(vm.find_leaks().is_empty());
-        call(&mut vm, "leak");
-        let leaks = vm.find_leaks();
-        assert_eq!(leaks.len(), 1);
-        assert_eq!(leaks[0].objects, ["Node", "Node"]);
-        assert_eq!(
-            leaks[0].path,
-            r#"Node(name: "a") -> next -> Node(name: "b") -> next -> Node(name: "a")"#
-        );
-        assert_eq!(leaks[0].retained, 0);
-        // Where each object was made.
-        assert_eq!(leaks[0].sites.len(), 2);
-        assert!(
-            leaks[0].sites[0].ends_with("leaks.colibri:7"),
-            "{:?}",
-            leaks[0].sites
-        );
-        assert!(
-            leaks[0].sites[1].ends_with("leaks.colibri:8"),
-            "{:?}",
-            leaks[0].sites
-        );
-        // Asking again changes nothing, and nothing was freed.
-        assert_eq!(vm.find_leaks(), leaks);
-    })
+    );
+    vm.run_main().unwrap();
+    assert!(vm.find_leaks().is_empty());
+    call(&mut vm, "leak");
+    let leaks = vm.find_leaks();
+    assert_eq!(leaks.len(), 1);
+    assert_eq!(leaks[0].objects, ["Node", "Node"]);
+    assert_eq!(
+        leaks[0].path,
+        r#"Node(name: "a") -> next -> Node(name: "b") -> next -> Node(name: "a")"#
+    );
+    assert_eq!(leaks[0].retained, 0);
+    // Where each object was made.
+    assert_eq!(leaks[0].sites.len(), 2);
+    assert!(
+        leaks[0].sites[0].ends_with("leaks.colibri:7"),
+        "{:?}",
+        leaks[0].sites
+    );
+    assert!(
+        leaks[0].sites[1].ends_with("leaks.colibri:8"),
+        "{:?}",
+        leaks[0].sites
+    );
+    // Asking again changes nothing, and nothing was freed.
+    assert_eq!(vm.find_leaks(), leaks);
 }
 
 #[test]
@@ -200,67 +198,61 @@ fn main() { leak() }
 
 #[test]
 fn weak_references_are_not_edges() {
-    vm_pending("weak_references_are_not_edges", || {
-        let (mut vm, _) = vm(
-            true,
-            r#"
+    let (mut vm, _) = vm(
+        true,
+        r#"
 class Child { parent: weak Parent }
 class Parent { child: Child? = none }
 fn make() {
-    let p = Parent {}
-    p.child = some(Child { parent: p })
+let p = Parent {}
+p.child = some(Child { parent: p })
 }
 fn main() { make() }
 "#,
-        );
-        vm.run_main().unwrap();
-        assert!(vm.find_leaks().is_empty());
-    })
+    );
+    vm.run_main().unwrap();
+    assert!(vm.find_leaks().is_empty());
 }
 
 #[test]
 fn without_tracking_there_is_nothing_to_report() {
-    vm_pending("without_tracking_there_is_nothing_to_report", || {
-        let (mut vm, _) = vm(
-            false,
-            r#"
+    let (mut vm, _) = vm(
+        false,
+        r#"
 fn main() {
-    let a = Node { name: "a" }
-    a.next = some(a)
+let a = Node { name: "a" }
+a.next = some(a)
 }
 "#,
-        );
-        vm.run_main().unwrap();
-        assert!(vm.find_leaks().is_empty());
-    })
+    );
+    vm.run_main().unwrap();
+    assert!(vm.find_leaks().is_empty());
 }
 
 #[test]
 fn a_big_graph_is_found_quickly() {
-    vm_pending("a_big_graph_is_found_quickly", || {
-        let (mut vm, _) = vm(
-            true,
-            r#"
+    let (mut vm, _) = vm(
+        true,
+        r#"
 fn main() {
-    let first = Node { name: "0" }
-    var last = first
-    for i in 1..20000 {
-        let n = Node { name: "n" }
-        last.next = some(n)
-        last = n
-    }
-    last.next = some(first)
+let first = Node { name: "0" }
+var last = first
+for i in 1..20000 {
+    let n = Node { name: "n" }
+    last.next = some(n)
+    last = n
+}
+last.next = some(first)
 }
 "#,
-        );
-        vm.run_main().unwrap();
-        let start = std::time::Instant::now();
-        let leaks = vm.find_leaks();
-        let took = start.elapsed();
-        assert_eq!(leaks.len(), 1);
-        assert_eq!(leaks[0].objects.len(), 20000);
-        assert!(took.as_secs_f64() < 5.0, "took {took:?}");
-    })
+    );
+    vm.run_main().unwrap();
+    let start = std::time::Instant::now();
+    let leaks = vm.find_leaks();
+    let took = start.elapsed();
+    assert_eq!(leaks.len(), 1);
+    assert_eq!(leaks[0].objects.len(), 20000);
+    assert!(took.as_secs_f64() < 5.0, "took {took:?}");
 }
 
 #[test]
