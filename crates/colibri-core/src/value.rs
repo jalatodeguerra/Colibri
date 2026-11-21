@@ -151,7 +151,7 @@ impl PartialEq for Value {
 }
 
 // Small values keep their fields inline, so a struct, an enum value or an object is one
-// allocation. The inline sizes are per kind (what the benchmarks showed: see the step 3
+// allocation. The inline sizes are per kind (chosen by measurement, see the step 3
 // notes): an `Option`/`Result` payload is one value, structs and objects are mostly small.
 /// The fields of a struct.
 pub type StructFields = SmallVec<StructInline>;
@@ -162,7 +162,7 @@ pub type ObjFields = SmallVec<ObjInline>;
 /// The inline storage of each kind.
 pub type StructInline = [Value; 4];
 pub type PayloadInline = [Value; 1];
-pub type ObjInline = [Value; 4];
+pub type ObjInline = [Value; 2];
 
 /// A payload of one value, built inline.
 #[inline]
