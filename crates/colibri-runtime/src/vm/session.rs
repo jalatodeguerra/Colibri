@@ -55,6 +55,7 @@ pub enum SessionError {
 impl Vm {
     /// Starts (or restarts) a session: an empty program is loaded.
     pub fn session_start(&mut self) -> Result<(), Error> {
+        self.check_engine()?;
         self.reload = None;
         self.teardown();
         // Later entries may import anything: have every module registered, so the host types
@@ -107,26 +108,26 @@ impl Vm {
             .collect();
         let new_from = old.globals.len();
         let old_sources = Rc::clone(&self.sources);
-        let undo = self.interp.session_extend(&program, map, &reinit_ids);
+        let undo = self.engine.session_extend(&program, map, &reinit_ids);
         self.sources = Rc::new(sources);
-        self.interp
+        self.engine
             .core_mut()
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
         let outcome = self
-            .interp
-            .session_run(&mut self.fiber, &program, new_from, &reinit_ids);
-        self.interp.core_mut().flush();
+            .engine
+            .session_run(&program, new_from, &reinit_ids);
+        self.engine.core_mut().flush();
         match outcome {
             Ok(()) => {
-                self.interp.session_commit(undo);
+                self.engine.session_commit(undo);
                 self.program = Some(Rc::new(program));
                 Ok(())
             }
             Err(info) => {
-                let error = panic_error(&self.interp, *info);
-                self.interp.session_rollback(undo, &old);
+                let error = panic_error(self.engine.core(), *info);
+                self.engine.session_rollback(undo, &old);
                 self.sources = old_sources;
-                self.interp.core_mut().set_owner(
+                self.engine.core_mut().set_owner(
                     (self.id, self.epoch),
                     true,
                     Rc::clone(&self.sources),
@@ -143,7 +144,7 @@ impl Vm {
         let ty = program.globals[i].ty.clone();
         let type_text = ty.render(&program.types);
         let id = colibri_check::hir::GlobalId(i as u32);
-        let text = match self.interp.session_show(&mut self.fiber, id) {
+        let text = match self.engine.session_show(id) {
             Ok(t) => t,
             Err(_) => "<error while showing the value>".to_string(),
         };

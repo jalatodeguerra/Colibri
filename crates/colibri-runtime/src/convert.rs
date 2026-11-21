@@ -7,7 +7,6 @@
 //! is how a function signature becomes interface text and how `get_fn` checks a Rust signature
 //! against a script's.
 
-use colibri_core::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use std::hash::Hash;
@@ -657,7 +656,7 @@ impl<T: FromColibri> FromColibri for Result<T, String> {
                 None => Err(wrong(&Self::ty(&mut TypeRegistry::new()), &value.0)),
             },
             Inner::Enum(e) => match e.payload.first() {
-                Some(error) => Ok(Err(cx.interp.error_report(cx.fiber, error))),
+                Some(error) => Ok(Err(cx.eng.error_report(error))),
                 None => Err(wrong(&Self::ty(&mut TypeRegistry::new()), &value.0)),
             },
             other => Err(wrong(&Self::ty(&mut TypeRegistry::new()), other)),
@@ -775,16 +774,17 @@ args!(A, B, C, D, E, F, G, H);
 
 #[cfg(test)]
 mod tests {
-    use colibri_interp::{Fiber, Interp};
-
     use super::*;
     use crate::ctx::Ctx;
 
     /// Runs `f` with a context over a bare interpreter (no program is loaded).
     fn with_cx<T>(f: impl FnOnce(&mut Cx<'_>) -> T) -> T {
-        let mut interp = Interp::new(Box::new(std::io::sink()), 100);
-        let mut fiber = Fiber::new();
-        f(&mut Ctx::new(&mut interp, &mut fiber))
+        let mut engine = crate::engine_tree::new_engine(
+            Box::new(std::io::sink()),
+            100,
+            crate::engine_tree::DEFAULT_NATIVE_STACK_BUDGET,
+        );
+        f(&mut Ctx::new(&mut *engine))
     }
 
     fn round<T: IntoColibri + FromColibri>(v: T) -> Result<T, Error> {

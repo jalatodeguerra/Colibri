@@ -1,6 +1,5 @@
 //! The virtual machine a host embeds.
 
-use colibri_core::prelude::*;
 use std::collections::HashMap;
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -16,12 +15,13 @@ use colibri_check::types::{RESULT_TYPE, Ty, VARIANT_ERR};
 use colibri_core::clock::Clock;
 use colibri_core::host::HostFault;
 use colibri_core::value::Value as InterpValue;
-use colibri_interp::{DEFAULT_NATIVE_STACK_BUDGET, Fiber, HostImpl, Interp};
 use colibri_syntax::{Diagnostic, SourceMap};
 
 use crate::cap::{Cap, CapSet};
 use crate::convert::{Args, FromColibri, Value};
 use crate::ctx::{Caller, Ctx, panic_error};
+use crate::engine::{ClassHooks, EngineKind, HostCx, HostFnImpl, RuntimeEngine};
+use crate::engine_tree::{self, DEFAULT_NATIVE_STACK_BUDGET};
 use crate::error::{Error, Report};
 use crate::func::Fn;
 use crate::host::{HostFn, Registration, payload_message};
@@ -108,6 +108,9 @@ pub struct VmBuilder {
     coroutine_stack_size: Option<usize>,
     clock: Option<Box<dyn Clock>>,
     cfg: BuildCfg,
+    engine: EngineKind,
+    /// Why the engine the environment names cannot be used (an unknown `COLIBRI_ENGINE`).
+    engine_error: Option<String>,
 }
 
 impl VmBuilder {
@@ -211,28 +214,41 @@ impl VmBuilder {
         self
     }
 
+    /// Chooses the engine that runs the program, over what `COLIBRI_ENGINE` says. Not part of
+    /// the embedding API yet.
+    #[doc(hidden)]
+    pub fn engine(mut self, kind: EngineKind) -> Self {
+        self.engine = kind;
+        self.engine_error = None;
+        self
+    }
+
     pub fn build(self) -> Vm {
         let out = self.stdout.unwrap_or_else(|| Box::new(std::io::stdout()));
-        // Boxed because suspended coroutines point into it: it must never move.
-        let mut interp = Box::new(Interp::new(out, self.max_call_depth));
-        interp.set_native_stack_budget(self.native_stack_budget);
-        interp.core_mut().set_trace_drops(self.trace_drops);
-        interp.core_mut().set_track_leaks(self.track_leaks);
-        interp
+        // Until the bytecode VM exists, a `Vm` built for it holds the interpreter, and every
+        // load fails with the reason (see `Vm::check_engine`).
+        let engine_unavailable = self
+            .engine_error
+            .or_else(|| self.engine.unavailable().map(str::to_string));
+        let mut engine =
+            engine_tree::new_engine(out, self.max_call_depth, self.native_stack_budget);
+        engine.core_mut().set_trace_drops(self.trace_drops);
+        engine.core_mut().set_track_leaks(self.track_leaks);
+        engine
             .core_mut()
             .set_instruction_budget(self.instruction_budget);
         if let Some(size) = self.coroutine_stack_size {
-            interp.core_mut().sched.set_stack_size(size);
+            engine.core_mut().sched.set_stack_size(size);
         }
         if let Some(clock) = self.clock {
-            interp.core_mut().sched.set_clock(clock);
+            engine.core_mut().sched.set_clock(clock);
         }
         let id = NEXT_VM_ID.fetch_add(1, Ordering::Relaxed);
-        interp.core_mut().set_vm_id(id);
+        engine.core_mut().set_vm_id(id);
         Vm {
             sources: Rc::new(SourceMap::new()),
-            interp,
-            fiber: Fiber::new(),
+            engine,
+            engine_unavailable,
             program: None,
             warnings: Vec::new(),
             warning_hook: None,
@@ -259,8 +275,9 @@ impl VmBuilder {
 /// A Colibri virtual machine: one loaded program, its module-level state and an output writer.
 pub struct Vm {
     sources: Rc<SourceMap>,
-    interp: Box<Interp>,
-    fiber: Fiber,
+    engine: Box<dyn RuntimeEngine>,
+    /// Why the chosen engine cannot run a program, if it cannot.
+    engine_unavailable: Option<String>,
     program: Option<Rc<Program>>,
     warnings: Vec<Diagnostic>,
     /// Called by a load with the warnings of a program that checked, before any of its code runs.
@@ -349,12 +366,17 @@ impl Default for Vm {
 
 impl Caller for Vm {
     fn ctx(&mut self) -> Ctx<'_> {
-        Ctx::new(&mut self.interp, &mut self.fiber)
+        Ctx::new(&mut *self.engine)
     }
 }
 
 impl Vm {
     pub fn builder() -> VmBuilder {
+        // Read once, here: the engine of a `Vm` does not change after it is built.
+        let (engine, engine_error) = match EngineKind::from_env() {
+            Ok(kind) => (kind, None),
+            Err(why) => (EngineKind::default(), Some(why)),
+        };
         VmBuilder {
             stdout: None,
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
@@ -366,6 +388,8 @@ impl Vm {
             coroutine_stack_size: None,
             clock: None,
             cfg: BuildCfg::default(),
+            engine,
+            engine_error,
         }
     }
 
@@ -957,12 +981,20 @@ impl Vm {
         Ok(())
     }
 
-    pub(crate) fn interp(&self) -> &Interp {
-        &self.interp
+    pub(crate) fn eng(&self) -> &dyn HostCx {
+        &*self.engine
     }
 
-    pub(crate) fn interp_mut(&mut self) -> &mut Interp {
-        &mut self.interp
+    pub(crate) fn eng_mut(&mut self) -> &mut dyn HostCx {
+        &mut *self.engine
+    }
+
+    /// Fails when the engine chosen for this `Vm` cannot run programs.
+    fn check_engine(&self) -> Result<(), Error> {
+        match &self.engine_unavailable {
+            Some(why) => Err(Error::Internal(why.clone())),
+            None => Ok(()),
+        }
     }
 
     /// The raw function that implements the host function or method `name` (`World.step`),
@@ -1071,17 +1103,17 @@ impl Vm {
     /// Stores host state of type `T`, which host functions reach through `cx.state_mut::<T>()`
     /// and the host between calls through [`Vm::state_mut`]. Returns the state it replaces.
     pub fn insert_state<T: 'static>(&mut self, value: T) -> Option<T> {
-        self.interp.core_mut().insert_state(value)
+        self.engine.core_mut().insert_state(value)
     }
 
     /// The host state of type `T`.
     pub fn state_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        self.interp.core_mut().state_mut::<T>()
+        self.engine.core_mut().state_mut::<T>()
     }
 
     /// Takes host state of type `T` out of the `Vm`.
     pub fn remove_state<T: 'static>(&mut self) -> Option<T> {
-        self.interp.core_mut().remove_state::<T>()
+        self.engine.core_mut().remove_state::<T>()
     }
 
     // ---- interface files ----
@@ -1159,7 +1191,7 @@ impl Vm {
                 let owner = self.registry.owner_of(j);
                 Some((
                     any,
-                    self.interp
+                    self.engine
                         .core()
                         .host_type_in(owner, self.registry.decls[j].name())?,
                 ))
@@ -1171,11 +1203,11 @@ impl Vm {
             .iter()
             .filter_map(|c| {
                 let module = c.module.as_deref().unwrap_or(DEFAULT_MODULE);
-                Some((c.any, self.interp.core().host_type_in(module, &c.name)?))
+                Some((c.any, self.engine.core().host_type_in(module, &c.name)?))
             })
             .chain(values)
             .collect();
-        self.interp.core_mut().set_host_classes(classes);
+        self.engine.core_mut().set_host_classes(classes);
         // A type of a module that another named module shares (or uses) is its bare name
         // there too: the type a host function of `render` means by `Pos` is `physics.Pos`.
         let mut aliases = HashMap::new();
@@ -1192,7 +1224,7 @@ impl Vm {
                     {
                         continue;
                     }
-                    if let Some(id) = self.interp.core().host_type_in(home, name) {
+                    if let Some(id) = self.engine.core().host_type_in(home, name) {
                         aliases
                             .entry((user.clone(), name.to_string()))
                             .or_insert(id);
@@ -1203,26 +1235,26 @@ impl Vm {
         // The same Rust type registered by several modules: each names it by its own module.
         for (user, name, j, _) in &self.registry.aliases {
             let owner = self.registry.owner_of(*j);
-            if let Some(id) = self.interp.core().host_type_in(owner, name) {
+            if let Some(id) = self.engine.core().host_type_in(owner, name) {
                 aliases.insert((user.clone(), name.clone()), id);
             }
         }
-        self.interp.core_mut().set_host_type_aliases(aliases);
+        self.engine.core_mut().set_host_type_aliases(aliases);
         for c in &self.registry.classes {
             if c.hooks.show.is_none() && c.hooks.eq.is_none() && c.hooks.hash.is_none() {
                 continue;
             }
             let module = c.module.as_deref().unwrap_or(DEFAULT_MODULE);
-            let Some(ty) = self.interp.core().host_type_in(module, &c.name) else {
+            let Some(ty) = self.engine.core().host_type_in(module, &c.name) else {
                 continue;
             };
             let wrap = |what: &str, raw: &Option<crate::host::RawHostFn>| {
                 raw.as_ref()
                     .map(|raw| trampoline(&format!("{}.{what}", c.name), module, raw.clone()))
             };
-            self.interp.set_host_class_hooks(
+            self.engine.set_host_class_hooks(
                 ty,
-                colibri_interp::HostClassHooks {
+                ClassHooks {
                     show: wrap("show", &c.hooks.show),
                     eq: wrap("eq", &c.hooks.eq),
                     hash: wrap("hash", &c.hooks.hash),
@@ -1242,7 +1274,7 @@ impl Vm {
                     continue;
                 }
                 let name = program.fns[def.f.0 as usize].name.clone();
-                self.interp
+                self.engine
                     .bind_extern(HostFnId(i as u32), &name, ext)
                     .map_err(Error::Ffi)?;
                 continue;
@@ -1254,7 +1286,7 @@ impl Vm {
                 continue;
             }
             let imp = trampoline(&def.name, &def.module, raw);
-            self.interp.set_host_fn(HostFnId(i as u32), imp);
+            self.engine.set_host_fn(HostFnId(i as u32), imp);
         }
         Ok(())
     }
@@ -1267,12 +1299,12 @@ impl Vm {
     /// panic (so `defer` statements and `Drop` hooks run, for a grace of 10 000 more steps) and
     /// the call returns [`Error::BudgetExhausted`]; the `Vm` stays usable.
     pub fn set_instruction_budget(&mut self, steps: Option<u64>) {
-        self.interp.core_mut().set_instruction_budget(steps);
+        self.engine.core_mut().set_instruction_budget(steps);
     }
 
     /// The steps the latest entry from the host used (including the grace after running out).
     pub fn steps_used(&self) -> u64 {
-        self.interp.core().steps_used()
+        self.engine.core().steps_used()
     }
 
     // ---- loading and running ----
@@ -1370,6 +1402,7 @@ impl Vm {
         mode: LoadMode,
         watch: Option<OwnedEntry>,
     ) -> Result<(), Error> {
+        self.check_engine()?;
         if self.program.is_some() {
             return Err(Error::AlreadyLoaded);
         }
@@ -1478,36 +1511,36 @@ impl Vm {
         self.sources = Rc::new(sources);
         self.warnings = warnings;
         self.epoch += 1;
-        self.interp.load(&program);
+        self.engine.load(&program);
         self.install_host_classes();
         if let Err(error) = self.install_host_fns(&program) {
             self.epoch += 1;
-            self.interp.shutdown();
-            self.interp.core_mut().set_owner(
+            self.engine.shutdown();
+            self.engine.core_mut().set_owner(
                 (self.id, self.epoch),
                 false,
                 Rc::clone(&self.sources),
             );
             return Err(error);
         }
-        self.interp
+        self.engine
             .core_mut()
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
         let outcome = match mode {
-            LoadMode::Run => self.interp.run_module(&mut self.fiber),
+            LoadMode::Run => self.engine.run_module(),
             LoadMode::Tests | LoadMode::Session => Ok(()),
         };
-        self.interp.core_mut().flush();
+        self.engine.core_mut().flush();
         match outcome {
             Ok(()) => {
                 self.program = Some(Rc::new(program));
                 Ok(())
             }
             Err(info) => {
-                let error = panic_error(&self.interp, *info);
+                let error = panic_error(self.engine.core(), *info);
                 self.epoch += 1;
-                self.interp.shutdown();
-                self.interp.core_mut().set_owner(
+                self.engine.shutdown();
+                self.engine.core_mut().set_owner(
                     (self.id, self.epoch),
                     false,
                     Rc::clone(&self.sources),
@@ -1602,17 +1635,17 @@ impl Vm {
         }
         let functions = current.changed_bodies(&fingerprint);
         // Swap in every body, also the unchanged ones: their spans point into the new sources.
-        self.interp.patch(&checked.program);
+        self.engine.patch(&checked.program);
         self.sources = Rc::new(checked.sources);
         self.warnings = checked.warnings;
-        self.interp
+        self.engine
             .core_mut()
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
         self.program = Some(Rc::new(checked.program));
         if let Some(r) = self.reload.as_mut() {
             r.fingerprint = Some(fingerprint);
         }
-        self.interp.core_mut().flush();
+        self.engine.core_mut().flush();
         Ok(if functions == 0 {
             ReloadOutcome::Unchanged
         } else {
@@ -1677,19 +1710,19 @@ impl Vm {
             &program.fns[main.0 as usize].sig.ret,
             Ty::Adt(RESULT_TYPE, _)
         );
-        let result = self.interp.call(&mut self.fiber, main, Vec::new());
-        self.interp.core_mut().flush();
-        let value = result.map_err(|info| panic_error(&self.interp, *info))?;
+        let result = self.engine.call(main, Vec::new());
+        self.engine.core_mut().flush();
+        let value = result.map_err(|info| panic_error(self.engine.core(), *info))?;
         if returns_result
             && let InterpValue::Enum(e) = &value
             && e.variant == VARIANT_ERR
             && let Some(payload) = e.payload.first()
         {
-            let message = self.interp.error_report(&mut self.fiber, payload);
-            self.interp.release_in_entry(value);
+            let message = self.engine.error_report(payload);
+            self.engine.release_in_entry(value);
             return Err(Error::MainReturnedErr { message });
         }
-        self.interp.release_in_entry(value);
+        self.engine.release_in_entry(value);
         Ok(())
     }
 
@@ -1704,34 +1737,34 @@ impl Vm {
     /// the first panic is returned as [`Error::Panic`] (the rest ride along as notes). The `Vm`
     /// stays usable. Each resumption gets a fresh instruction budget.
     pub fn tick(&mut self, dt: f64) -> Result<(), Error> {
-        let result = self.interp.tick(&mut self.fiber, dt);
-        self.interp.core_mut().flush();
-        result.map_err(|info| panic_error(&self.interp, *info))
+        let result = self.engine.tick(dt);
+        self.engine.core_mut().flush();
+        result.map_err(|info| panic_error(self.engine.core(), *info))
     }
 
     /// How many coroutines are alive: started and neither finished nor cancelled.
     pub fn coroutine_count(&self) -> usize {
-        self.interp.core().sched.coroutine_count()
+        self.engine.core().sched.coroutine_count()
     }
 
     /// How many times a coroutine has been resumed so far (starts, ticks and cancellations).
     /// A coroutine waiting for a `Signal` is not resumed until the signal is emitted.
     pub fn coroutine_resumptions(&self) -> u64 {
-        self.interp.core().sched.resumptions()
+        self.engine.core().sched.resumptions()
     }
 
     /// How many coroutines are registered as waiting for a signal, a coroutine or a group
     /// (for tests).
     #[doc(hidden)]
     pub fn coroutine_waiters(&self) -> usize {
-        self.interp.core().sched.waiter_count()
+        self.engine.core().sched.waiter_count()
     }
 
     /// Cancels every live coroutine, newest first, running their `defer`s and drops. Done
     /// automatically by [`Vm::shutdown`] and when the `Vm` is dropped.
     pub fn cancel_coroutines(&mut self) {
-        self.interp.cancel_all_coroutines();
-        self.interp.core_mut().flush();
+        self.engine.cancel_all_coroutines();
+        self.engine.core_mut().flush();
     }
 
     /// Runs the event loop until no coroutine is alive, or until every live one waits for an
@@ -1752,19 +1785,19 @@ impl Vm {
 
     /// [`Vm::run_event_loop`] with a chosen polling interval in seconds.
     pub fn run_event_loop_polling(&mut self, poll: f64) -> Result<(), Error> {
-        let mut last = self.interp.core_mut().sched.clock_now();
+        let mut last = self.engine.core_mut().sched.clock_now();
         loop {
-            if self.interp.core().sched.coroutine_count() == 0 {
+            if self.engine.core().sched.coroutine_count() == 0 {
                 return self.collect_failure();
             }
-            let now = self.interp.core_mut().sched.clock_now();
+            let now = self.engine.core_mut().sched.clock_now();
             let dt = (now - last).max(0.0);
             last = now;
             self.tick(dt)?;
-            let Some(delay) = self.interp.next_wake(poll) else {
+            let Some(delay) = self.engine.next_wake(poll) else {
                 return self.collect_failure();
             };
-            self.interp.core_mut().sched.clock_sleep(delay);
+            self.engine.core_mut().sched.clock_sleep(delay);
         }
     }
 
@@ -1779,32 +1812,32 @@ impl Vm {
         max_sleep: f64,
         mut between_ticks: impl FnMut(&mut Vm) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        let mut last = self.interp.core_mut().sched.clock_now();
+        let mut last = self.engine.core_mut().sched.clock_now();
         loop {
             between_ticks(self)?;
-            if self.interp.core().sched.coroutine_count() == 0 {
+            if self.engine.core().sched.coroutine_count() == 0 {
                 return self.collect_failure();
             }
-            let now = self.interp.core_mut().sched.clock_now();
+            let now = self.engine.core_mut().sched.clock_now();
             let dt = (now - last).max(0.0);
             last = now;
             self.tick(dt)?;
-            let delay = match self.interp.next_wake(poll) {
+            let delay = match self.engine.next_wake(poll) {
                 Some(delay) => delay.min(max_sleep),
-                None if self.interp.core().sched.coroutine_count() == 0 => {
+                None if self.engine.core().sched.coroutine_count() == 0 => {
                     return self.collect_failure();
                 }
                 None => max_sleep,
             };
-            self.interp.core_mut().sched.clock_sleep(delay);
+            self.engine.core_mut().sched.clock_sleep(delay);
         }
     }
 
     /// A panic of a coroutine that no tick reported (it failed while starting or while being
     /// cancelled).
     fn collect_failure(&mut self) -> Result<(), Error> {
-        match self.interp.take_coroutine_failure() {
-            Some(info) => Err(panic_error(&self.interp, *info)),
+        match self.engine.take_coroutine_failure() {
+            Some(info) => Err(panic_error(self.engine.core(), *info)),
             None => Ok(()),
         }
     }
@@ -1914,7 +1947,7 @@ impl Vm {
             name: format!("test #{id}"),
         })?;
         let mut f = def.f;
-        self.interp.release_globals();
+        self.engine.release_globals();
         if let Some(mut hook) = self.test_start_hook.take() {
             let info = self.test_info(id, def);
             // The hook goes back even when it panics (the panic then goes on), so later tests
@@ -1946,22 +1979,22 @@ impl Vm {
                     })?
                     .f;
                 // A restart initialised the new program's module values; a test starts fresh.
-                self.interp.release_globals();
+                self.engine.release_globals();
             }
         }
-        let outcome = match self.interp.run_initialisers(&mut self.fiber) {
-            Err(info) => Err(panic_error(&self.interp, *info)),
-            Ok(()) => match self.interp.call(&mut self.fiber, f, Vec::new()) {
-                Err(info) => Err(panic_error(&self.interp, *info)),
+        let outcome = match self.engine.run_initialisers() {
+            Err(info) => Err(panic_error(self.engine.core(), *info)),
+            Ok(()) => match self.engine.call(f, Vec::new()) {
+                Err(info) => Err(panic_error(self.engine.core(), *info)),
                 Ok(value) => {
                     let failed = match &value {
                         InterpValue::Enum(e) if e.variant == VARIANT_ERR => e
                             .payload
                             .first()
-                            .map(|p| self.interp.error_report(&mut self.fiber, p)),
+                            .map(|p| self.engine.error_report(p)),
                         _ => None,
                     };
-                    self.interp.release_in_entry(value);
+                    self.engine.release_in_entry(value);
                     match failed {
                         Some(message) => Err(Error::TestReturnedErr { message }),
                         None => Ok(()),
@@ -1969,8 +2002,8 @@ impl Vm {
                 }
             },
         };
-        self.interp.release_globals();
-        self.interp.core_mut().flush();
+        self.engine.release_globals();
+        self.engine.core_mut().flush();
         outcome
     }
 
@@ -2066,12 +2099,12 @@ impl Vm {
     }
 
     fn teardown(&mut self) {
-        self.interp.shutdown();
-        self.interp.core_mut().flush();
+        self.engine.shutdown();
+        self.engine.core_mut().flush();
         if self.program.take().is_some() {
             self.epoch += 1;
         }
-        self.interp
+        self.engine
             .core_mut()
             .set_owner((self.id, self.epoch), false, Rc::clone(&self.sources));
     }
@@ -2084,26 +2117,26 @@ impl Vm {
     /// and finds only objects made while [`VmBuilder::track_leaks`] was on; without it the
     /// result is empty. The cost is linear in the live objects. See ARCHITECTURE §18.
     pub fn find_leaks(&self) -> Vec<Leak> {
-        self.interp.find_leaks()
+        self.engine.find_leaks()
     }
 
     /// The labels of the class objects destroyed so far, in order, when the `Vm` was built
     /// with [`VmBuilder::trace_drops`]; the trace is emptied. Test support.
     #[doc(hidden)]
     pub fn take_drop_trace(&mut self) -> Vec<String> {
-        self.interp.core_mut().take_trace()
+        self.engine.core_mut().take_trace()
     }
 }
 
 /// Wraps a host function for the interpreter: arguments are handed over as a slice, panics
 /// become Colibri panics, and the references the interpreter passed are released afterwards.
-fn trampoline(name: &str, module: &str, raw: crate::host::RawHostFn) -> HostImpl {
+fn trampoline(name: &str, module: &str, raw: crate::host::RawHostFn) -> HostFnImpl {
     let name = name.to_string();
     let module: Rc<str> = Rc::from(module);
     Rc::new(
-        move |interp: &mut Interp, fiber: &mut Fiber, args: Vec<InterpValue>| {
+        move |eng: &mut dyn HostCx, args: Vec<InterpValue>| {
             let args: Vec<Value> = args.into_iter().map(Value).collect();
-            let mut cx = Ctx::in_module(interp, fiber, Rc::clone(&module));
+            let mut cx = Ctx::in_module(eng, Rc::clone(&module));
             let outcome = catch_unwind(AssertUnwindSafe(|| raw(&mut cx, &args)));
             for arg in args {
                 cx.release(arg);

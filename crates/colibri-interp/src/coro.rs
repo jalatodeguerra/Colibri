@@ -932,7 +932,7 @@ mod tests {
     fn a_cancel_hook_that_panics_still_forgets_the_operation() {
         use crate::Interp;
         let mut interp = Interp::new(Box::new(std::io::sink()), 100);
-        let (completer, _result_rx) = interp.begin_completion::<u8>();
+        let (completer, _pending) = interp.core.sched.begin_completion::<u8>();
         let op = completer.op();
         let token = Arc::clone(completer.token());
         token.on_cancel(|| panic!("the hook panics"));

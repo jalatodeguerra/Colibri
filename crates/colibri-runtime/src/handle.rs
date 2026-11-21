@@ -7,7 +7,6 @@
 //! stale one is an error on the host side and a panic (```Job` was destroyed by the host``)
 //! in a script.
 
-use colibri_core::prelude::*;
 use std::any::TypeId as AnyTypeId;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -17,11 +16,11 @@ use std::ops::{Deref, DerefMut};
 use colibri_core::host::HostFault;
 use colibri_core::hostheap::{HostBorrowError, HostGuard};
 use colibri_core::value::Value as Inner;
-use colibri_interp::{Fiber, Interp};
 
 use crate::class::HostType;
 use crate::convert::{FromColibri, IntoColibri, Value, wrong};
 use crate::ctx::{Ctx, Cx};
+use crate::engine::HostCx;
 use crate::error::Error;
 use crate::types::{TypeDesc, TypeRegistry};
 
@@ -159,9 +158,9 @@ pub(crate) fn borrow_receiver<T: HostType>(
             T::NAME
         )));
     };
-    cx.interp
+    cx.eng
         .host_borrow(
-            Some(&*cx.fiber),
+            true,
             r.index,
             r.generation,
             AnyTypeId::of::<T>(),
@@ -171,8 +170,8 @@ pub(crate) fn borrow_receiver<T: HostType>(
 }
 
 fn borrow<T: HostType>(
-    interp: &Interp,
-    fiber: Option<&Fiber>,
+    interp: &dyn HostCx,
+    in_call: bool,
     h: Handle<T>,
     exclusive: bool,
 ) -> Result<HostGuard, Error> {
@@ -181,7 +180,7 @@ fn borrow<T: HostType>(
     }
     interp
         .host_borrow(
-            fiber,
+            in_call,
             h.index,
             h.generation,
             AnyTypeId::of::<T>(),
@@ -190,7 +189,7 @@ fn borrow<T: HostType>(
         .map_err(borrow_error)
 }
 
-fn insert<T: HostType>(interp: &mut Interp, obj: T) -> Handle<T> {
+fn insert<T: HostType>(interp: &mut dyn HostCx, obj: T) -> Handle<T> {
     let (index, generation) =
         interp
             .core_mut()
@@ -198,7 +197,7 @@ fn insert<T: HostType>(interp: &mut Interp, obj: T) -> Handle<T> {
     Handle::new(index, generation, interp.core().vm_id())
 }
 
-fn remove<T: HostType>(interp: &mut Interp, h: Handle<T>) -> Result<Option<T>, Error> {
+fn remove<T: HostType>(interp: &mut dyn HostCx, h: Handle<T>) -> Result<Option<T>, Error> {
     if h.vm != interp.core().vm_id() {
         return Err(Error::StaleHandle);
     }
@@ -223,7 +222,7 @@ fn remove<T: HostType>(interp: &mut Interp, h: Handle<T>) -> Result<Option<T>, E
     }
 }
 
-fn is_alive<T>(interp: &Interp, h: Handle<T>) -> bool {
+fn is_alive<T>(interp: &dyn HostCx, h: Handle<T>) -> bool {
     h.vm == interp.core().vm_id() && interp.core().host_alive(h.index, h.generation)
 }
 
@@ -232,20 +231,20 @@ impl crate::Vm {
     /// function can hand out the handle) but never free it. Register the type first
     /// ([`crate::Vm::register_type`]) so scripts can name it.
     pub fn insert<T: HostType>(&mut self, obj: T) -> Handle<T> {
-        insert(self.interp_mut(), obj)
+        insert(self.eng_mut(), obj)
     }
 
     /// Takes the object out of the host heap and returns it. Every handle and every script
     /// reference to it is stale afterwards. `Ok(None)` if it was removed before; an error if it
     /// is borrowed right now, or if the script owns it (it came out of a host function by value).
     pub fn remove<T: HostType>(&mut self, h: Handle<T>) -> Result<Option<T>, Error> {
-        remove(self.interp_mut(), h)
+        remove(self.eng_mut(), h)
     }
 
     /// Borrows the object for reading. An error if it was destroyed, or is borrowed exclusively
     /// (an enclosing call holds it).
     pub fn get<T: HostType>(&self, h: Handle<T>) -> Result<Ref<T>, Error> {
-        borrow(self.interp(), None, h, false).map(|guard| Ref {
+        borrow(self.eng(), false, h, false).map(|guard| Ref {
             guard,
             _class: PhantomData,
         })
@@ -253,7 +252,7 @@ impl crate::Vm {
 
     /// Borrows the object for changing it. An error if it was destroyed or is borrowed at all.
     pub fn get_mut<T: HostType>(&mut self, h: Handle<T>) -> Result<RefMut<T>, Error> {
-        borrow(self.interp(), None, h, true).map(|guard| RefMut {
+        borrow(self.eng(), false, h, true).map(|guard| RefMut {
             guard,
             _class: PhantomData,
         })
@@ -261,30 +260,30 @@ impl crate::Vm {
 
     /// Whether the host still has the object `h` names.
     pub fn is_alive<T: HostType>(&self, h: Handle<T>) -> bool {
-        is_alive(self.interp(), h)
+        is_alive(self.eng(), h)
     }
 
     /// How many host objects exist (script-owned and host-owned): a diagnostic for tests and
     /// leak hunts.
     pub fn host_object_count(&self) -> usize {
-        self.interp().core().host_object_count()
+        self.eng().core().host_object_count()
     }
 }
 
 impl Ctx<'_> {
     /// Like [`crate::Vm::insert`], from inside a host function.
     pub fn insert<T: HostType>(&mut self, obj: T) -> Handle<T> {
-        insert(self.interp, obj)
+        insert(&mut *self.eng, obj)
     }
 
     /// Like [`crate::Vm::remove`], from inside a host function.
     pub fn remove<T: HostType>(&mut self, h: Handle<T>) -> Result<Option<T>, Error> {
-        remove(self.interp, h)
+        remove(&mut *self.eng, h)
     }
 
     /// Like [`crate::Vm::get`]; a conflict names the host function that is running.
     pub fn get<T: HostType>(&self, h: Handle<T>) -> Result<Ref<T>, Error> {
-        borrow(&*self.interp, Some(&*self.fiber), h, false).map(|guard| Ref {
+        borrow(&*self.eng, true, h, false).map(|guard| Ref {
             guard,
             _class: PhantomData,
         })
@@ -292,7 +291,7 @@ impl Ctx<'_> {
 
     /// Like [`crate::Vm::get_mut`]; a conflict names the host function that is running.
     pub fn get_mut<T: HostType>(&mut self, h: Handle<T>) -> Result<RefMut<T>, Error> {
-        borrow(&*self.interp, Some(&*self.fiber), h, true).map(|guard| RefMut {
+        borrow(&*self.eng, true, h, true).map(|guard| RefMut {
             guard,
             _class: PhantomData,
         })
@@ -300,7 +299,7 @@ impl Ctx<'_> {
 
     /// Whether the host still has the object `h` names.
     pub fn is_alive<T: HostType>(&self, h: Handle<T>) -> bool {
-        is_alive(&*self.interp, h)
+        is_alive(&*self.eng, h)
     }
 }
 
@@ -314,7 +313,7 @@ impl<T: HostType> IntoColibri for T {
     }
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
         let ty = cx.host_class::<T>();
-        Value(cx.interp.core_mut().host_new_object(
+        Value(cx.eng.core_mut().host_new_object(
             ty,
             AnyTypeId::of::<T>(),
             T::NAME,
@@ -332,16 +331,16 @@ impl<T: HostType> IntoColibri for Handle<T> {
     /// If the handle belongs to another `Vm`.
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
         assert!(
-            self.vm == cx.interp.core().vm_id(),
+            self.vm == cx.eng.core().vm_id(),
             "a `Handle<{}>` of another Vm cannot be passed to this one",
             T::NAME
         );
         let ty = cx.host_class::<T>();
-        Value(cx.interp.core().host_value(ty, self.index, self.generation))
+        Value(cx.eng.core().host_value(ty, self.index, self.generation))
     }
 
     fn is_live(&self, cx: &Cx<'_>) -> bool {
-        is_alive(&*cx.interp, *self)
+        is_alive(&*cx.eng, *self)
     }
 }
 
@@ -351,7 +350,7 @@ impl<T: HostType> FromColibri for Handle<T> {
     }
     fn from_colibri(value: &Value, cx: &mut Cx<'_>) -> Result<Self, Error> {
         match &value.0 {
-            Inner::Host(r) => Ok(Handle::new(r.index, r.generation, cx.interp.core().vm_id())),
+            Inner::Host(r) => Ok(Handle::new(r.index, r.generation, cx.eng.core().vm_id())),
             other => Err(wrong(&TypeDesc::Host(T::NAME.to_string()), other)),
         }
     }
@@ -365,9 +364,9 @@ impl<T: HostType> FromColibri for Ref<T> {
         let Inner::Host(r) = &value.0 else {
             return Err(wrong(&TypeDesc::Host(T::NAME.to_string()), &value.0));
         };
-        cx.interp
+        cx.eng
             .host_borrow(
-                Some(&*cx.fiber),
+                true,
                 r.index,
                 r.generation,
                 AnyTypeId::of::<T>(),

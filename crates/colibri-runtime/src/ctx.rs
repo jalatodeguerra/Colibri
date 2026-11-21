@@ -4,11 +4,10 @@
 use colibri_check::hir::{FnId, TypeDef};
 use colibri_check::types::{Ty, TypeId};
 use colibri_core::ctl::PanicInfo;
-use colibri_core::prelude::*;
-use colibri_interp::{Fiber, Interp};
 use colibri_syntax::Span;
 
 use crate::convert::Value;
+use crate::engine::HostCx;
 use crate::error::{Error, Location, StackFrame};
 
 /// What a host function (and every conversion) may use: the interpreter, the running fiber,
@@ -16,8 +15,7 @@ use crate::error::{Error, Location, StackFrame};
 ///
 /// A host function takes it as an optional first parameter: `|cx: &mut Ctx, x: i64| ..`.
 pub struct Ctx<'a> {
-    pub(crate) interp: &'a mut Interp,
-    pub(crate) fiber: &'a mut Fiber,
+    pub(crate) eng: &'a mut dyn HostCx,
     /// The host module of the function this context was made for: what a bare type name
     /// (`new_struct("Response", ..)`) means is that module's own type. `None` for the host
     /// calling into the script, where it means the default module's.
@@ -55,31 +53,24 @@ pub trait Caller {
 impl Caller for Ctx<'_> {
     fn ctx(&mut self) -> Ctx<'_> {
         Ctx {
-            interp: &mut *self.interp,
-            fiber: &mut *self.fiber,
+            eng: &mut *self.eng,
             module: self.module.clone(),
         }
     }
 }
 
 impl<'a> Ctx<'a> {
-    pub(crate) fn new(interp: &'a mut Interp, fiber: &'a mut Fiber) -> Self {
+    pub(crate) fn new(eng: &'a mut dyn HostCx) -> Self {
         Ctx {
-            interp,
-            fiber,
+            eng,
             module: None,
         }
     }
 
     /// The context of a function of host module `module`.
-    pub(crate) fn in_module(
-        interp: &'a mut Interp,
-        fiber: &'a mut Fiber,
-        module: std::rc::Rc<str>,
-    ) -> Self {
+    pub(crate) fn in_module(eng: &'a mut dyn HostCx, module: std::rc::Rc<str>) -> Self {
         Ctx {
-            interp,
-            fiber,
+            eng,
             module: Some(module),
         }
     }
@@ -89,34 +80,34 @@ impl<'a> Ctx<'a> {
     /// The borrow lasts as long as `&mut self`, so a host function cannot hold it across a call
     /// back into Colibri: the borrow checker enforces it.
     pub fn state_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        self.interp.core_mut().state_mut::<T>()
+        self.eng.core_mut().state_mut::<T>()
     }
 
     /// Stores host state of type `T`, returning the value it replaces.
     pub fn insert_state<T: 'static>(&mut self, value: T) -> Option<T> {
-        self.interp.core_mut().insert_state(value)
+        self.eng.core_mut().insert_state(value)
     }
 
     /// Takes host state of type `T` out.
     pub fn remove_state<T: 'static>(&mut self) -> Option<T> {
-        self.interp.core_mut().remove_state::<T>()
+        self.eng.core_mut().remove_state::<T>()
     }
 
     /// How many host functions are running, one inside another (at least 1 inside a host
     /// function).
     pub fn host_depth(&self) -> u32 {
-        self.fiber.host_depth()
+        self.eng.host_depth()
     }
 
     /// The steps the current outermost entry has used so far (see
     /// [`crate::Vm::set_instruction_budget`]).
     pub fn steps_used(&self) -> u64 {
-        self.interp.core().steps_used()
+        self.eng.core().steps_used()
     }
 
     /// Writes text to the `Vm`'s standard output, where `print` writes. It adds no newline.
     pub fn write_stdout(&mut self, text: &str) {
-        self.interp.core_mut().write_stdout(text);
+        self.eng.core_mut().write_stdout(text);
     }
 
     /// Ends the running program with a Colibri panic whose message is exactly `message`, from
@@ -148,7 +139,7 @@ impl<'a> Ctx<'a> {
     /// destructors run) and the result is discarded; `work` that already started runs to the
     /// end, one whose thread has not begun it never runs. A panic of `work` becomes a Colibri panic of the caller.
     pub fn run_async<R: Send + 'static>(&mut self, work: impl FnOnce() -> R + Send + 'static) -> R {
-        match self.interp.await_external(self.fiber, work) {
+        match self.eng.await_external_with(move |_| work()) {
             Ok(r) => r,
             Err(colibri_core::external::ExternalError::Cancelled) => {
                 std::panic::resume_unwind(Box::new(RaisedCancel))
@@ -167,7 +158,7 @@ impl<'a> Ctx<'a> {
     /// something that only another coroutine can do (a turn that a suspended coroutine still
     /// holds) must not start that work when this is `false`: nothing could ever finish it.
     pub fn can_suspend(&self) -> bool {
-        self.interp.external_wait_runs_others(self.fiber)
+        self.eng.external_wait_runs_others()
     }
 
     /// [`Ctx::run_async`] for work that can stop early: `work` is given a [`CancelToken`]
@@ -179,7 +170,7 @@ impl<'a> Ctx<'a> {
         &mut self,
         work: impl FnOnce(&colibri_core::external::CancelToken) -> R + Send + 'static,
     ) -> R {
-        match self.interp.await_external_with(self.fiber, work) {
+        match self.eng.await_external_with(work) {
             Ok(r) => r,
             Err(colibri_core::external::ExternalError::Cancelled) => {
                 std::panic::resume_unwind(Box::new(RaisedCancel))
@@ -199,7 +190,7 @@ impl<'a> Ctx<'a> {
         &mut self,
         work: impl FnOnce(&colibri_core::external::CancelToken) -> R + Send + 'static,
     ) -> Result<R, String> {
-        match self.interp.await_external_with(self.fiber, work) {
+        match self.eng.await_external_with(work) {
             Ok(r) => Ok(r),
             Err(colibri_core::external::ExternalError::Cancelled) => {
                 std::panic::resume_unwind(Box::new(RaisedCancel))
@@ -228,7 +219,7 @@ impl<'a> Ctx<'a> {
         &mut self,
         start: impl FnOnce(colibri_core::external::Completer<R>) -> Result<(), String>,
     ) -> Result<R, Incomplete> {
-        match self.interp.await_completion(self.fiber, start) {
+        match self.eng.await_completion(start) {
             Ok(r) => Ok(r),
             Err(colibri_core::external::ExternalError::Cancelled) => {
                 std::panic::resume_unwind(Box::new(RaisedCancel))
@@ -247,19 +238,19 @@ impl<'a> Ctx<'a> {
     /// not generic. Only a function registered with [`crate::Registration::typed`] can count
     /// on them being concrete types.
     pub fn type_args(&self) -> &[Ty] {
-        self.interp.core().host_type_args()
+        self.eng.core().host_type_args()
     }
 
     /// Every struct, enum and class of the loaded program, indexed by [`TypeId`]: the type
     /// descriptors a serializer reads (DESIGN §7.5).
     pub fn type_defs(&self) -> &[TypeDef] {
-        self.interp.core().type_defs()
+        self.eng.core().type_defs()
     }
 
     /// [`Ctx::type_defs`], shared, so a serializer can read them while it calls
     /// [`Ctx::call_field_default`].
     pub fn type_defs_shared(&self) -> std::rc::Rc<[TypeDef]> {
-        self.interp.core().type_defs_shared()
+        self.eng.core().type_defs_shared()
     }
 
     /// Computes the default value of a struct field: `f` is [`FieldDef::default`]
@@ -267,7 +258,7 @@ impl<'a> Ctx<'a> {
     /// so does a `f` that is not a function of the loaded program or takes parameters (a
     /// default never does).
     pub fn call_field_default(&mut self, f: FnId) -> Result<Value, Error> {
-        match self.interp.fn_param_count(f) {
+        match self.eng.fn_param_count(f) {
             Some(0) => {}
             Some(n) => {
                 return Err(Error::Convert(format!(
@@ -282,11 +273,11 @@ impl<'a> Ctx<'a> {
                 )));
             }
         }
-        let result = self.interp.call(self.fiber, f, Vec::new());
-        self.interp.core_mut().flush();
+        let result = self.eng.call(f, Vec::new());
+        self.eng.core_mut().flush();
         match result {
             Ok(v) => Ok(Value(v)),
-            Err(info) => Err(panic_error(self.interp, *info)),
+            Err(info) => Err(panic_error(self.eng.core(), *info)),
         }
     }
 
@@ -294,7 +285,7 @@ impl<'a> Ctx<'a> {
     /// uses: its own module's type of that name, else the default module's.
     pub(crate) fn host_type(&self, name: &str) -> TypeId {
         match self
-            .interp
+            .eng
             .core()
             .host_type_here(self.module.as_deref(), name)
         {
@@ -305,7 +296,7 @@ impl<'a> Ctx<'a> {
 
     /// The type id of the host class that the Rust type `T` implements.
     pub(crate) fn host_class<T: crate::HostType>(&self) -> TypeId {
-        match self.interp.core().host_class(std::any::TypeId::of::<T>()) {
+        match self.eng.core().host_class(std::any::TypeId::of::<T>()) {
             Some(id) => id,
             None => panic!(
                 "the host class `{}` is not part of the loaded host interface (register it with `Vm::register_type` before loading)",
@@ -326,7 +317,7 @@ impl<'a> Ctx<'a> {
         variant: &str,
     ) -> (TypeId, u32) {
         match self
-            .interp
+            .eng
             .core()
             .module_enum_variant(module, enum_name, variant)
         {
@@ -355,7 +346,7 @@ impl<'a> Ctx<'a> {
     /// (`#[colibri::export(value)]`): found by the Rust type, so it does not depend on which
     /// module's function is running; `name` is used when the Rust type is not registered.
     pub fn new_struct_of(&self, rust: std::any::TypeId, name: &str, fields: Vec<Value>) -> Value {
-        let ty = match self.interp.core().host_class(rust) {
+        let ty = match self.eng.core().host_class(rust) {
             Some(id) => id,
             None => self.host_type(name),
         };
@@ -367,7 +358,7 @@ impl<'a> Ctx<'a> {
 
     /// [`Ctx::new_variant`] for the enum that the Rust type `rust` converts to.
     pub fn new_variant_of(&self, rust: std::any::TypeId, name: &str, variant: u32) -> Value {
-        let ty = match self.interp.core().host_class(rust) {
+        let ty = match self.eng.core().host_class(rust) {
             Some(id) => id,
             None => self.host_type(name),
         };
@@ -380,7 +371,7 @@ impl<'a> Ctx<'a> {
     /// # Panics
     /// As [`Ctx::new_struct`].
     pub fn new_struct_in(&self, module: &str, name: &str, fields: Vec<Value>) -> Value {
-        let ty = match self.interp.core().host_type_in(module, name) {
+        let ty = match self.eng.core().host_type_in(module, name) {
             Some(id) => id,
             None => panic!(
                 "the type `{name}` of the module `{module}` is not part of the loaded host interface (register it before loading)"
@@ -403,7 +394,7 @@ impl<'a> Ctx<'a> {
 
     /// Lets go of a value the host owns, so a `Drop` hook it was the last owner of can run.
     pub(crate) fn release(&mut self, value: Value) {
-        self.interp.release(value.0);
+        self.eng.release(value.0);
     }
 
     /// Calls a function of the loaded program. `owner` is what the function handle says it
@@ -414,37 +405,37 @@ impl<'a> Ctx<'a> {
         owner: (u64, u32),
         args: Vec<Value>,
     ) -> Result<Value, Error> {
-        if self.interp.core().owner() != owner {
+        if self.eng.core().owner() != owner {
             return Err(Error::StaleHandle);
         }
-        if !self.interp.core().is_loaded() {
+        if !self.eng.core().is_loaded() {
             return Err(Error::NotLoaded);
         }
         let args = args.into_iter().map(|v| v.0).collect();
-        let result = self.interp.call(self.fiber, id, args);
-        self.interp.core_mut().flush();
+        let result = self.eng.call(id, args);
+        self.eng.core_mut().flush();
         match result {
             Ok(v) => Ok(Value(v)),
-            Err(info) => Err(panic_error(self.interp, *info)),
+            Err(info) => Err(panic_error(self.eng.core(), *info)),
         }
     }
 
     /// Calls a function or closure value.
     pub(crate) fn call_value(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, Error> {
         let args = args.into_iter().map(|v| v.0).collect();
-        let result = self.interp.call_function(self.fiber, &f.0, args);
-        self.interp.core_mut().flush();
+        let result = self.eng.call_function(&f.0, args);
+        self.eng.core_mut().flush();
         match result {
             Ok(v) => Ok(Value(v)),
-            Err(info) => Err(panic_error(self.interp, *info)),
+            Err(info) => Err(panic_error(self.eng.core(), *info)),
         }
     }
 }
 
-/// A panic of the interpreter as the error a host sees, with the locations looked up in the
+/// A panic of the engine as the error a host sees, with the locations looked up in the
 /// program's sources.
-pub(crate) fn panic_error(interp: &Interp, info: PanicInfo) -> Error {
-    let sources = interp.core().sources();
+pub(crate) fn panic_error(core: &colibri_core::Core, info: PanicInfo) -> Error {
+    let sources = core.sources();
     let locate = |span: Span| {
         if !sources.contains(span.file) {
             return Location {
