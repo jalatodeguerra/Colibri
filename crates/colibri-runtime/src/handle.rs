@@ -159,13 +159,7 @@ pub(crate) fn borrow_receiver<T: HostType>(
         )));
     };
     cx.eng
-        .host_borrow(
-            true,
-            r.index,
-            r.generation,
-            AnyTypeId::of::<T>(),
-            exclusive,
-        )
+        .host_borrow(true, r.index, r.generation, AnyTypeId::of::<T>(), exclusive)
         .map_err(|e| HostFault::Message(e.message()))
 }
 
@@ -313,12 +307,11 @@ impl<T: HostType> IntoColibri for T {
     }
     fn into_colibri(self, cx: &mut Cx<'_>) -> Value {
         let ty = cx.host_class::<T>();
-        Value(cx.eng.core_mut().host_new_object(
-            ty,
-            AnyTypeId::of::<T>(),
-            T::NAME,
-            Box::new(self),
-        ))
+        Value(
+            cx.eng
+                .core_mut()
+                .host_new_object(ty, AnyTypeId::of::<T>(), T::NAME, Box::new(self)),
+        )
     }
 }
 
@@ -365,13 +358,7 @@ impl<T: HostType> FromColibri for Ref<T> {
             return Err(wrong(&TypeDesc::Host(T::NAME.to_string()), &value.0));
         };
         cx.eng
-            .host_borrow(
-                true,
-                r.index,
-                r.generation,
-                AnyTypeId::of::<T>(),
-                false,
-            )
+            .host_borrow(true, r.index, r.generation, AnyTypeId::of::<T>(), false)
             .map(|guard| Ref {
                 guard,
                 _class: PhantomData,

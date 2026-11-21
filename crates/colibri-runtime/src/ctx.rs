@@ -61,10 +61,7 @@ impl Caller for Ctx<'_> {
 
 impl<'a> Ctx<'a> {
     pub(crate) fn new(eng: &'a mut dyn HostCx) -> Self {
-        Ctx {
-            eng,
-            module: None,
-        }
+        Ctx { eng, module: None }
     }
 
     /// The context of a function of host module `module`.
@@ -284,11 +281,7 @@ impl<'a> Ctx<'a> {
     /// The type id of a struct or enum the host declared, by the bare name a host function
     /// uses: its own module's type of that name, else the default module's.
     pub(crate) fn host_type(&self, name: &str) -> TypeId {
-        match self
-            .eng
-            .core()
-            .host_type_here(self.module.as_deref(), name)
-        {
+        match self.eng.core().host_type_here(self.module.as_deref(), name) {
             Ok(id) => id,
             Err(message) => panic!("{message}"),
         }

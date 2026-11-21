@@ -1988,10 +1988,9 @@ impl Vm {
                 Err(info) => Err(panic_error(self.engine.core(), *info)),
                 Ok(value) => {
                     let failed = match &value {
-                        InterpValue::Enum(e) if e.variant == VARIANT_ERR => e
-                            .payload
-                            .first()
-                            .map(|p| self.engine.error_report(p)),
+                        InterpValue::Enum(e) if e.variant == VARIANT_ERR => {
+                            e.payload.first().map(|p| self.engine.error_report(p))
+                        }
                         _ => None,
                     };
                     self.engine.release_in_entry(value);
@@ -2133,37 +2132,35 @@ impl Vm {
 fn trampoline(name: &str, module: &str, raw: crate::host::RawHostFn) -> HostFnImpl {
     let name = name.to_string();
     let module: Rc<str> = Rc::from(module);
-    Rc::new(
-        move |eng: &mut dyn HostCx, args: Vec<InterpValue>| {
-            let args: Vec<Value> = args.into_iter().map(Value).collect();
-            let mut cx = Ctx::in_module(eng, Rc::clone(&module));
-            let outcome = catch_unwind(AssertUnwindSafe(|| raw(&mut cx, &args)));
-            for arg in args {
-                cx.release(arg);
-            }
-            match outcome {
-                Ok(Ok(value)) => Ok(value.0),
-                Ok(Err(fault)) => Err(match fault {
-                    HostFault::Panic(message) => {
-                        HostFault::Panic(format!("host function `{name}`: {message}"))
-                    }
-                    // Worded by the host layer, shown as is.
-                    HostFault::Message(message) => HostFault::Message(message),
-                    HostFault::Cancel => HostFault::Cancel,
-                }),
-                Err(payload) => Err(match payload.downcast::<crate::ctx::RaisedPanic>() {
-                    Ok(raised) => HostFault::Message(raised.0),
-                    Err(payload) => match payload.downcast::<crate::ctx::RaisedCancel>() {
-                        Ok(_) => HostFault::Cancel,
-                        Err(payload) => HostFault::Panic(format!(
-                            "host function `{name}` panicked: {}",
-                            payload_message(payload.as_ref())
-                        )),
-                    },
-                }),
-            }
-        },
-    )
+    Rc::new(move |eng: &mut dyn HostCx, args: Vec<InterpValue>| {
+        let args: Vec<Value> = args.into_iter().map(Value).collect();
+        let mut cx = Ctx::in_module(eng, Rc::clone(&module));
+        let outcome = catch_unwind(AssertUnwindSafe(|| raw(&mut cx, &args)));
+        for arg in args {
+            cx.release(arg);
+        }
+        match outcome {
+            Ok(Ok(value)) => Ok(value.0),
+            Ok(Err(fault)) => Err(match fault {
+                HostFault::Panic(message) => {
+                    HostFault::Panic(format!("host function `{name}`: {message}"))
+                }
+                // Worded by the host layer, shown as is.
+                HostFault::Message(message) => HostFault::Message(message),
+                HostFault::Cancel => HostFault::Cancel,
+            }),
+            Err(payload) => Err(match payload.downcast::<crate::ctx::RaisedPanic>() {
+                Ok(raised) => HostFault::Message(raised.0),
+                Err(payload) => match payload.downcast::<crate::ctx::RaisedCancel>() {
+                    Ok(_) => HostFault::Cancel,
+                    Err(payload) => HostFault::Panic(format!(
+                        "host function `{name}` panicked: {}",
+                        payload_message(payload.as_ref())
+                    )),
+                },
+            }),
+        }
+    })
 }
 
 /// A host module: a namespace of functions and types that scripts reach with `import`

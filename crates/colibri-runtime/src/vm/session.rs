@@ -113,9 +113,7 @@ impl Vm {
         self.engine
             .core_mut()
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
-        let outcome = self
-            .engine
-            .session_run(&program, new_from, &reinit_ids);
+        let outcome = self.engine.session_run(&program, new_from, &reinit_ids);
         self.engine.core_mut().flush();
         match outcome {
             Ok(()) => {

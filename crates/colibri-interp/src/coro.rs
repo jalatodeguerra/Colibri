@@ -19,9 +19,7 @@ use colibri_check::hir::{Builtin, Callee, Expr, ExprKind, Intrinsic};
 use colibri_check::types::{COGROUP_TYPE, COROUTINE_TYPE, SIGNAL_TYPE, Ty};
 use colibri_core::coro::Sched;
 use colibri_core::engine::Resumed;
-use colibri_core::external::{
-    CancelToken, Completer, ExternalError, Waited,
-};
+use colibri_core::external::{CancelToken, Completer, ExternalError, Waited};
 use colibri_core::prelude::*;
 use colibri_core::sched::*;
 use colibri_syntax::Span;

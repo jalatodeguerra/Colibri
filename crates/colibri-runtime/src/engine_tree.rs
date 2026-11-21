@@ -19,6 +19,7 @@ use colibri_interp::{Fiber, HostClassHooks, HostImpl, Interp, SessionUndo};
 
 use crate::engine::{ClassHooks, HostCx, HostFnImpl, RuntimeEngine};
 
+#[doc(hidden)]
 pub use colibri_interp::DEFAULT_NATIVE_STACK_BUDGET;
 
 /// The interpreter with its main fiber.
