@@ -4184,10 +4184,7 @@ mod tests {
             let _ = tx.send(f(cx));
         }));
         let out = colibri_runtime::SharedBuffer::new();
-        let mut vm = Vm::builder()
-            .stdout(Box::new(out))
-            .allow(Cap::Net)
-            .build();
+        let mut vm = Vm::builder().stdout(Box::new(out)).allow(Cap::Net).build();
         register(&mut vm).unwrap();
         vm.std_module("probe")
             .register_fn_named("run", [], move |cx: &mut Ctx| {
