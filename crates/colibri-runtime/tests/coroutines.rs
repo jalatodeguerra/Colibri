@@ -499,3 +499,351 @@ fn main() {
     assert_eq!(out.contents(), "7\n7\n");
     assert!(sleeps.get() <= 4, "{} sleeps", sleeps.get());
 }
+
+/// A closure started with `go` is a temporary: when its coroutine ends, the coroutine holds the
+/// last reference to what the closure captured, so the captured object's `Drop` hook must run
+/// then (the object is released, never just dropped by Rust: a debug build stops on that).
+const GUARD: &str = r#"
+class Guard {
+    name: str
+}
+impl Drop for Guard {
+    fn drop(self) {
+        print("drop {self.name}")
+    }
+}
+"#;
+
+fn run_with_guard(body: &str) -> (colibri::Vm, colibri::SharedBuffer) {
+    let (mut vm, out) = vm();
+    vm.load_source("guard.colibri", &format!("{GUARD}{body}"))
+        .unwrap();
+    vm.run_main().unwrap();
+    (vm, out)
+}
+
+#[test]
+fn a_go_closure_that_finishes_releases_the_object_only_it_holds() {
+    let (mut vm, out) = run_with_guard(
+        r#"
+fn start() {
+    let g = Guard { name: "g" }
+    let _child = go fn() {
+        wait(0.5)
+        print("child uses {g.name}")
+    }()
+    print("start returns")
+}
+fn main() {
+    start()
+    print("main returns")
+}
+"#,
+    );
+    assert_eq!(out.contents(), "start returns\nmain returns\n");
+    vm.tick(0.5).unwrap();
+    assert_eq!(
+        out.contents(),
+        "start returns\nmain returns\nchild uses g\ndrop g\n"
+    );
+    assert_eq!(vm.coroutine_count(), 0);
+}
+
+#[test]
+fn a_go_closure_that_is_cancelled_releases_the_object_only_it_holds() {
+    let (_vm, out) = run_with_guard(
+        r#"
+fn start() -> Coroutine[()] {
+    let g = Guard { name: "g" }
+    return go fn() {
+        wait(5.0)
+        print("never {g.name}")
+    }()
+}
+fn main() {
+    let h = start()
+    h.cancel()
+    print("cancelled")
+}
+"#,
+    );
+    assert_eq!(out.contents(), "drop g\ncancelled\n");
+}
+
+#[test]
+fn a_go_closure_that_panics_releases_the_object_only_it_holds() {
+    let (mut vm, out) = run_with_guard(
+        r#"
+fn start() {
+    let g = Guard { name: "g" }
+    let _child = go fn() {
+        wait(0.5)
+        let xs: List[int] = []
+        print("{g.name} {xs[3]}")
+    }()
+}
+fn main() {
+    start()
+}
+"#,
+    );
+    assert!(vm.tick(0.5).is_err(), "the child's panic is reported");
+    assert_eq!(out.contents(), "drop g\n");
+}
+
+#[test]
+fn a_go_closure_with_arguments_releases_what_it_captured_and_what_it_got() {
+    let (mut vm, out) = run_with_guard(
+        r#"
+fn start() {
+    let a = Guard { name: "captured" }
+    let b = Guard { name: "argument" }
+    let _child = go fn(x: Guard) {
+        wait(0.5)
+        print("{a.name} {x.name}")
+    }(b)
+}
+fn main() {
+    start()
+}
+"#,
+    );
+    vm.tick(0.5).unwrap();
+    assert_eq!(
+        out.contents(),
+        "captured argument\ndrop argument\ndrop captured\n"
+    );
+}
+
+/// A `Drop` hook that panics when the last reference to a go closure's capture goes away is the
+/// failure of that child, and of nobody else: not another coroutine of the same tick, not the
+/// host's next call, not the coroutine that cancelled the child.
+const BOMB: &str = r#"
+class Bomb {
+    name: str
+}
+impl Drop for Bomb {
+    fn drop(self) {
+        print("hook {self.name}")
+        panic("boom {self.name}")
+    }
+}
+"#;
+
+fn run_with_bomb(body: &str) -> (colibri::Vm, colibri::SharedBuffer) {
+    let (mut vm, out) = vm();
+    vm.load_source("bomb.colibri", &format!("{BOMB}{body}"))
+        .unwrap();
+    (vm, out)
+}
+
+#[test]
+fn a_hook_panic_of_a_finished_go_closure_does_not_stop_another_coroutine() {
+    let (mut vm, out) = run_with_bomb(
+        r#"
+fn start() {
+    let b = Bomb { name: "b" }
+    let _c = go fn() {
+        wait(0.5)
+        print("child {b.name}")
+    }()
+}
+fn other() {
+    wait(0.5)
+    print("other 1")
+    print("other 2")
+}
+fn ping() {
+    print("ping")
+}
+fn main() {
+    start()
+    let _o = go other()
+}
+"#,
+    );
+    vm.run_main().unwrap();
+    let err = vm.tick(0.5).expect_err("the child's hook panicked");
+    assert!(err.to_string().contains("boom b"), "{err}");
+    assert_eq!(
+        out.contents(),
+        "child b\nhook b\nother 1\nother 2\n",
+        "the other coroutine ran to its end"
+    );
+    let ping = vm.get_fn::<(), ()>("ping").unwrap();
+    ping.call(&mut vm, ())
+        .expect("the host's next call is not charged");
+}
+
+#[test]
+fn a_hook_panic_of_a_finished_go_closure_is_reported_by_its_tick_not_the_next_host_call() {
+    let (mut vm, out) = run_with_bomb(
+        r#"
+fn start() {
+    let b = Bomb { name: "b" }
+    let _c = go fn() {
+        wait(0.5)
+        print("child {b.name}")
+    }()
+}
+fn ping() {
+    print("ping")
+}
+fn main() {
+    start()
+}
+"#,
+    );
+    vm.run_main().unwrap();
+    let err = vm.tick(0.5).expect_err("tick reports the child's failure");
+    assert!(err.to_string().contains("boom b"), "{err}");
+    let ping = vm.get_fn::<(), ()>("ping").unwrap();
+    ping.call(&mut vm, ()).expect("ping is not charged");
+    assert_eq!(out.contents(), "child b\nhook b\nping\n");
+}
+
+#[test]
+fn a_hook_panic_of_a_cancelled_go_closure_does_not_stop_the_canceller() {
+    let (mut vm, out) = run_with_bomb(
+        r#"
+fn start() -> Coroutine[()] {
+    let b = Bomb { name: "b" }
+    return go fn() {
+        wait(5.0)
+        print("never {b.name}")
+    }()
+}
+fn main() {
+    let h = start()
+    h.cancel()
+    print("main after cancel")
+}
+"#,
+    );
+    vm.run_main()
+        .expect("main is not charged with the child's hook");
+    assert_eq!(out.contents(), "hook b\nmain after cancel\n");
+    let err = vm.tick(0.0).expect_err("the child's failure is reported");
+    assert!(err.to_string().contains("boom b"), "{err}");
+}
+
+#[test]
+fn a_go_child_whose_local_and_capture_hooks_both_panic_is_the_only_failure() {
+    // The child's own local panics in its hook, and so does its capture: both are the child's.
+    let (mut vm, out) = run_with_bomb(
+        r#"
+fn start() {
+    let b = Bomb { name: "captured" }
+    let _c = go fn() {
+        let l = Bomb { name: "local" }
+        wait(0.5)
+        print("child {b.name} {l.name}")
+    }()
+}
+fn main() {
+    start()
+}
+"#,
+    );
+    vm.run_main().unwrap();
+    let err = vm.tick(0.5).expect_err("the child failed");
+    assert!(err.to_string().contains("boom"), "{err}");
+    assert_eq!(
+        out.contents(),
+        "child captured local\nhook local\nhook captured\n"
+    );
+    assert_eq!(vm.coroutine_count(), 0);
+    vm.tick(0.0)
+        .expect("nothing is left over for the next tick");
+}
+
+#[test]
+fn a_go_closure_stopped_by_the_instruction_budget_still_releases_its_capture() {
+    let (mut vm, out) = vm();
+    vm.set_instruction_budget(Some(20_000));
+    vm.load_source(
+        "budget.colibri",
+        &format!(
+            "{GUARD}{}",
+            r#"
+fn start() {
+    let g = Guard { name: "g" }
+    let _c = go fn() {
+        wait(0.5)
+        print("child {g.name}")
+        spin()
+    }()
+}
+fn spin() {
+    while true { }
+}
+fn main() {
+    start()
+}
+"#
+        ),
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    let err = vm.tick(0.5).unwrap_err();
+    assert!(
+        matches!(err, colibri::Error::BudgetExhausted { .. }),
+        "{err:?}"
+    );
+    assert_eq!(out.contents(), "child g\ndrop g\n");
+    assert_eq!(vm.coroutine_count(), 0);
+}
+
+#[test]
+fn a_group_go_closure_releases_its_capture_when_it_ends_and_when_the_group_dies() {
+    let (mut vm, out) = run_with_guard(
+        r#"
+fn start() {
+    let group = CoGroup()
+    let a = Guard { name: "a" }
+    let b = Guard { name: "b" }
+    let _ha = group.go(fn() {
+        wait(0.5)
+        print("a {a.name}")
+    }())
+    let _hb = group.go(fn() {
+        wait(5.0)
+        print("never {b.name}")
+    }())
+}
+fn main() {
+    start()
+    print("main returns")
+}
+"#,
+    );
+    // `start` returned, so the group died and cancelled both children; `b` and `a` are only held
+    // by their closures.
+    assert_eq!(out.contents(), "drop b\ndrop a\nmain returns\n");
+    assert_eq!(vm.coroutine_count(), 0);
+    vm.tick(1.0).unwrap();
+}
+
+#[test]
+fn a_go_of_a_closure_held_in_a_variable_releases_it_after_the_other_owners_die() {
+    let (mut vm, out) = run_with_guard(
+        r#"
+fn start() {
+    let g = Guard { name: "g" }
+    let f = fn() {
+        wait(0.5)
+        print("child {g.name}")
+    }
+    let _c = go f()
+}
+fn main() {
+    start()
+    print("main returns")
+}
+"#,
+    );
+    assert_eq!(out.contents(), "main returns\n");
+    vm.tick(0.5).unwrap();
+    assert_eq!(out.contents(), "main returns\nchild g\ndrop g\n");
+    assert_eq!(vm.coroutine_count(), 0);
+}

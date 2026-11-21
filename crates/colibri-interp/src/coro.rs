@@ -322,6 +322,10 @@ impl Interp {
             };
             fiber.frames.clear();
             interp.release_temps(&mut fiber, 0);
+            // The last releases of this coroutine (its closure and what it captured, its
+            // arguments) may have run `Drop` hooks: their panics are this coroutine's failure,
+            // not the next fiber's or the host's.
+            let result = interp.fold_hook_panics(result);
             match result {
                 Ok(v) | Err(Ctl::Return(v)) => Finish::Done(v),
                 Err(Ctl::Cancel) => Finish::Cancelled,

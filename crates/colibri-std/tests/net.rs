@@ -4070,3 +4070,99 @@ fn main() -> Result[()] {{
     peer.join().unwrap();
     assert_eq!(out, "Other\ntrue\n4\n4\n");
 }
+
+/// The `httpd` shape that stopped the interpreter: a closure hands a big write to a child
+/// (`go fn() {..}()`) and returns while the write is in flight, so the child is the last holder
+/// of the object it captured (here a `Guard` around the connection). When the child's write
+/// ends, the closure it ran is dropped and the guard must be released, so its `Drop` hook runs.
+///
+/// The write must still be in flight when the starter returns, whatever the kernel's buffers
+/// are: the peer does not read until a while after the starter has returned, its receive
+/// buffer is pinned small (on Unix, which also stops its autotuning), and the payload is
+/// 64 MiB, far above any send buffer a loopback socket autotunes to (`tcp_wmem` tops out at a
+/// few MiB by default).
+#[test]
+fn a_child_writing_through_a_captured_object_releases_it_when_it_ends() {
+    const PAYLOAD: usize = 64 * 1024 * 1024;
+    let (listener, addr) = rust_listener();
+    #[cfg(unix)]
+    pin_small_receive_buffer(&listener);
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        // Reads late, so the child's write is still in flight when the starter has returned.
+        thread::sleep(Duration::from_millis(300));
+        let mut total = 0;
+        let mut buf = [0u8; 65536];
+        while total < PAYLOAD {
+            match s.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => total += n,
+            }
+        }
+        total
+    });
+    let out = output(&format!(
+        r#"import net
+
+class Guard {{
+    conn: net.Conn
+}}
+
+impl Drop for Guard {{
+    fn drop(self) {{
+        print("guard dropped")
+    }}
+}}
+
+fn start(conn: net.Conn, data: Bytes) -> Coroutine[()] {{
+    let g = Guard {{ conn: conn }}
+    let child = go fn() {{
+        let res = g.conn.write_bytes(data)
+        print("write {{res.is_ok()}}")
+    }}()
+    wait(0.05)
+    print("start returns")
+    return child
+}}
+
+fn main() -> Result[()] {{
+    let seed = BytesBuilder()
+    for _ in 0..65536 {{
+        seed.push(u8(7))
+    }}
+    let piece = seed.to_bytes()
+    let b = BytesBuilder()
+    for _ in 0..1024 {{
+        b.push_bytes(piece)
+    }}
+    let c = net.connect("{addr}")?
+    let child = start(c, b.to_bytes())
+    child.join()
+    c.close()
+    return ok(())
+}}
+"#
+    ));
+    assert_eq!(out, "start returns\nwrite true\nguard dropped\n");
+    assert_eq!(peer.join().unwrap(), PAYLOAD);
+}
+
+/// Sets a small `SO_RCVBUF` on a listening socket, which the connections accepted from it
+/// inherit: the sender then cannot park much of a big write in the peer's buffer.
+#[cfg(unix)]
+fn pin_small_receive_buffer(listener: &TcpListener) {
+    use std::os::fd::AsRawFd;
+    let size: libc::c_int = 64 * 1024;
+    // SAFETY: the descriptor is open for the whole call and `size` is a valid `c_int`.
+    let rc = unsafe {
+        libc::setsockopt(
+            listener.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            (&raw const size).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    assert_eq!(rc, 0, "SO_RCVBUF is set");
+}
