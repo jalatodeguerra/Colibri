@@ -1217,8 +1217,8 @@ fn work(name: str, secs: float) {
 
 fn main() {
     let group = CoGroup()
-    group.go(work("b", 0.2))
     group.go(work("a", 0.1))
+    group.go(work("b", 0.2))
     group.join_all()
     print("all done")
 }
