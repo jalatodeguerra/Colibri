@@ -1,0 +1,31 @@
+struct Cell2 { n: int }
+var cells = [Cell2 { n: 1 }, Cell2 { n: 2 }, Cell2 { n: 3 }]
+
+impl Cell2 {
+    fn bump(var self, by: int) { self.n += by }
+}
+
+fn index() -> int {
+    print("index")
+    return 1
+}
+
+fn amount() -> int {
+    print("amount")
+    return 5
+}
+
+fn main() {
+    // The arguments are evaluated first, the receiver's index after them, and once.
+    cells[index()].bump(amount())
+    print(cells[1].n)
+    cells[index()].n += amount()
+    print(cells[1].n)
+}
+
+// expect: amount
+// expect: index
+// expect: 7
+// expect: index
+// expect: amount
+// expect: 12

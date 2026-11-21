@@ -1,0 +1,20 @@
+struct Cell2 { v: int }
+struct Row { cells: List[Cell2] }
+
+fn main() {
+    var grid = [Row { cells: [Cell2 { v: 1 }, Cell2 { v: 2 }] }, Row { cells: [Cell2 { v: 3 }] }]
+    // Only the list being iterated is held: another row's list is free.
+    for var c in grid[0].cells {
+        grid[1].cells[0].v += c.v
+        c.v += 100
+    }
+    print(grid[1].cells[0].v)
+    print(grid[0].cells[1].v)
+    for var c in grid[0].cells {
+        grid[0].cells[0].v = 7
+    }
+}
+
+// expect: 6
+// expect: 102
+// panic: `grid[0].cells` modified while an element is being updated; collect the changes in a separate list and apply them afterwards

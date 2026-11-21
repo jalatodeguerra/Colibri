@@ -1,0 +1,19 @@
+// allow: unused
+struct V { x: int }
+var vs = [V { x: 1 }, V { x: 2 }]
+
+impl Add for V {
+    fn add(self, other: V) -> V {
+        // The element being updated is held while the operator runs.
+        print("adding")
+        vs[1] = V { x: 99 }
+        return V { x: self.x + other.x }
+    }
+}
+
+fn main() {
+    vs[0] += V { x: 10 }
+}
+
+// expect: adding
+// panic: `vs` modified while an element is being updated; collect the changes in a separate list and apply them afterwards
