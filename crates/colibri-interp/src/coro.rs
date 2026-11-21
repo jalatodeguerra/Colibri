@@ -97,11 +97,12 @@ fn trim_stack(stack: &DefaultStack) -> bool {
     let advice = libc::MADV_DONTNEED;
     // SAFETY: `[limit + page, limit + page + len)` lies inside the mapping that `DefaultStack`
     // owns, and is page-aligned: `limit` is the start of the mapping, and `base` its
-    // page-aligned end, less a multiple of every page size in use. The coroutine that used the stack ended (the
-    // caller holds the stack by value), so nothing on it is live. The advice keeps the mapping
-    // and its protections: it only discards the contents, which nothing reads, because a start
-    // rewrites the top of the stack and the rest is written before it is read. A failure
-    // leaves the pages as they were, so a release build ignores it; a debug build asserts.
+    // page-aligned end, less a multiple of every page size in use. The coroutine that used the
+    // stack ended (the caller holds the stack by value), so nothing on it is live. The advice
+    // keeps the mapping and its protections: it only discards the contents, which nothing
+    // reads, because a start rewrites the top of the stack and the rest is written before it
+    // is read. A failure leaves the pages as they were, so a release build ignores it; a debug
+    // build asserts.
     let rc = unsafe { libc::madvise((limit + page) as *mut libc::c_void, len, advice) };
     debug_assert_eq!(rc, 0, "madvise rejected the range of a coroutine stack");
     true
