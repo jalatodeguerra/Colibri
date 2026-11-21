@@ -1,0 +1,106 @@
+import httpd_impl
+import str
+
+fn faulty(response: httpd_impl.Response) -> bool {
+    return httpd_impl.response_fault(httpd_impl.grammar(), response) != none
+}
+
+fn fault_text(response: httpd_impl.Response) -> str {
+    return httpd_impl.response_fault(httpd_impl.grammar(), response).expect("a fault")
+}
+
+test "the reason table names the common statuses" {
+    assert_eq(httpd_impl.reason(200), "OK")
+    assert_eq(httpd_impl.reason(404), "Not Found")
+    assert_eq(httpd_impl.reason(413), "Content Too Large")
+    assert_eq(httpd_impl.reason(431), "Request Header Fields Too Large")
+    assert_eq(httpd_impl.reason(500), "Internal Server Error")
+    assert_eq(httpd_impl.reason(505), "HTTP Version Not Supported")
+}
+
+test "a status that is not in the table has an empty reason" {
+    assert_eq(httpd_impl.reason(299), "")
+    assert_eq(httpd_impl.reason(599), "")
+    assert_eq(httpd_impl.reason(0), "")
+}
+
+test "an error response is the status, its reason and what was wrong, as text" {
+    let r = httpd_impl.error_response(414, "too long")
+    assert_eq(r.status, 414)
+    assert_eq(r.headers.get("content-type"), some("text/plain; charset=utf-8"))
+    match r.body {
+        Text(s) => assert_eq(s, "414 URI Too Long: too long\n")
+        _ => panic("the body is not text")
+    }
+}
+
+test "responses with a status from 200 to 599 are sent" {
+    assert(!faulty(httpd_impl.text(200, "x")))
+    assert(!faulty(httpd_impl.status(204)))
+    assert(!faulty(httpd_impl.text(599, "x")))
+    assert(!faulty(httpd_impl.redirect(302, "/elsewhere")))
+}
+
+test "a status below 200 or above 599 is a fault" {
+    assert(faulty(httpd_impl.status(100)))
+    assert(faulty(httpd_impl.status(199)))
+    assert(faulty(httpd_impl.status(600)))
+    assert(faulty(httpd_impl.status(-1)))
+    assert(fault_text(httpd_impl.status(100)).contains("100"))
+}
+
+test "a header value with a control character is a fault, and a tab is not" {
+    assert(faulty(httpd_impl.text(200, "x").header("X-A", "a\rb")))
+    assert(faulty(httpd_impl.text(200, "x").header("X-A", "a\nb")))
+    assert(faulty(httpd_impl.text(200, "x").header("X-A", "a\0b")))
+    assert(!faulty(httpd_impl.text(200, "x").header("X-A", "a\tb")))
+    assert(fault_text(httpd_impl.text(200, "x").header("X-A", "a\rb")).contains("X-A"))
+}
+
+test "a header name that is not a token is a fault" {
+    assert(faulty(httpd_impl.text(200, "x").header("X A", "1")))
+    assert(faulty(httpd_impl.text(200, "x").header("X:A", "1")))
+    assert(faulty(httpd_impl.text(200, "x").header("", "1")))
+    assert(!faulty(httpd_impl.text(200, "x").header("X-A_b.c", "1")))
+}
+
+test "the headers the server owns are a fault, whatever the case" {
+    assert(faulty(httpd_impl.text(200, "x").header("Content-Length", "1")))
+    assert(faulty(httpd_impl.text(200, "x").header("content-length", "1")))
+    assert(faulty(httpd_impl.text(200, "x").header("Transfer-Encoding", "chunked")))
+}
+
+test "Connection can only be close" {
+    assert(!faulty(httpd_impl.text(200, "x").header("Connection", "close")))
+    assert(!faulty(httpd_impl.text(200, "x").header("Connection", "Close")))
+    assert(faulty(httpd_impl.text(200, "x").header("Connection", "keep-alive")))
+    assert(faulty(httpd_impl.text(200, "x").header("Connection", "upgrade")))
+}
+
+test "a streamed body is fine, with no length or a length of 0 or more, but not a negative one" {
+    let body = fn(w: httpd_impl.BodyWriter) -> Result[()] {
+        return ok(())
+    }
+    assert(!faulty(httpd_impl.stream(200, "text/plain", body)))
+    assert(!faulty(httpd_impl.stream(200, "text/plain", body, length: some(0))))
+    assert(!faulty(httpd_impl.stream(200, "text/plain", body, length: some(10))))
+    assert(faulty(httpd_impl.stream(200, "text/plain", body, length: some(-1))))
+}
+
+test "a response of 1xx, 204 or 304 has no body" {
+    assert(httpd_impl.bodyless(100))
+    assert(httpd_impl.bodyless(199))
+    assert(httpd_impl.bodyless(204))
+    assert(httpd_impl.bodyless(304))
+    assert(!httpd_impl.bodyless(200))
+    assert(!httpd_impl.bodyless(205))
+    assert(!httpd_impl.bodyless(404))
+    assert(!httpd_impl.bodyless(500))
+}
+
+test "the size of a body is its bytes, not its characters" {
+    assert_eq(httpd_impl.body_size(httpd_impl.status(204)), 0)
+    assert_eq(httpd_impl.body_size(httpd_impl.text(200, "abc")), 3)
+    assert_eq(httpd_impl.body_size(httpd_impl.text(200, "\u{e9}\u{20ac}")), 5)
+    assert_eq(httpd_impl.body_size(httpd_impl.bytes(200, "hello".to_bytes())), 5)
+}

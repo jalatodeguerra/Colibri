@@ -1,0 +1,35 @@
+// caps: net, os
+// A bad option is an `err` from `listen`, found before anything listens, and it names the
+// field. A good one listens, and the address says which port the system picked.
+import httpd
+
+fn main() {
+    let bad = [
+        httpd.Options { max_request_line: -1 },
+        httpd.Options { max_headers: -1 },
+        httpd.Options { header_timeout: -0.5 },
+        httpd.Options { write_timeout: 2.0e9 },
+        httpd.Options { max_connections: 0 },
+        httpd.Options { max_request_line: 0 },
+        httpd.Options { max_header_bytes: 2000000000 },
+    ]
+    for options in bad {
+        match httpd.listen("127.0.0.1:0", options) {
+            ok(_) => print("listening")
+            err(e) => print(e.message())
+        }
+    }
+    match httpd.listen("127.0.0.1:0", httpd.Options { handler_timeout: 0.0, max_body_bytes: 0 }) {
+        ok(server) => print("listening: {server.addr().starts_with("127.0.0.1:")}")
+        err(e) => print(e.message())
+    }
+}
+
+// expect: httpd: Options.max_request_line is -1: use 1 to 1073741824 bytes
+// expect: httpd: Options.max_headers is -1: it cannot be negative
+// expect: httpd: Options.header_timeout is -0.5: use 0 or more and under 1e9 seconds (0 is none)
+// expect: httpd: Options.write_timeout is 2000000000.0: use 0 or more and under 1e9 seconds (0 is none)
+// expect: httpd: Options.max_connections is 0: it must be at least 1
+// expect: httpd: Options.max_request_line is 0: use 1 to 1073741824 bytes
+// expect: httpd: Options.max_header_bytes is 2000000000: use 1 to 1073741824 bytes
+// expect: listening: true

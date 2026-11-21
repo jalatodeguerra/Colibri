@@ -1,0 +1,2914 @@
+// The `httpd` module of the standard library: an HTTP/1.1 server written in Colibri. This file is
+// Colibri source embedded in the toolchain and loaded like any module of the program
+// (`import httpd`); it uses nothing a program could not write itself.
+//
+// This part of the module has no sockets. It holds the types a handler sees (`Request`,
+// `Response`, `Headers`, `Options`, `Failure`), the response constructors, the parser of a request
+// head and the rules that frame a request body, percent-decoding and the query parser, the
+// `Router` and `test_request`, which builds a request without a connection so that a handler can
+// be tested. The server proper (`listen`, `serve`, the connection loop and the response writer)
+// is added on top of it.
+//
+// How it is built, for whoever adds the connection:
+//
+// - The head parser is fed one line at a time and knows nothing of a connection: `HeadParser`.
+//   The connection loop reads the lines (with its limits and deadlines), feeds them, and turns a
+//   `Reject` into an error response and a close.
+// - The body of a request is read through a `BodyReader`. It owns the framing, the body limit and
+//   the count of bytes handed out. Where its bytes come from is one function, `pull`, so a
+//   connection attaches with `body_reader(framing, limit, fn(n) => ..)`; `test_request` attaches
+//   an in-memory body the same way. A chunked body is the part not written here, see
+//   `BodyReader.read`.
+// - Every scan of client bytes is done by a `regex`, `split`, `find` or `contains`, which run in
+//   Rust, and never by a loop over bytes in Colibri, which costs about half a microsecond a byte.
+//   The exception is the digits of a chunk size (at most 15). The escapes of a percent-encoded
+//   text are found by one `regex` call for the whole text, and each run of escapes is decoded by
+//   one call of `hex.decode`.
+import std.datetime
+import std.hex
+import std.io
+import std.json as json_codec
+import std.net
+import std.regex
+import std.str
+import std.time
+
+/// A function that answers a request. An `err` becomes an error response: a `Failure` (see
+/// `fail`) gives its status, any other error gives 500.
+pub type Handler = fn(Request) -> Result[Response]
+
+/// The limits and timeouts of a server. A timeout is in seconds, and a limit in bytes unless it
+/// says otherwise. `listen` is given one and refuses a negative limit, and a line limit outside 1 to 1 GiB.
+pub struct Options {
+    /// The request line without its line end. A longer line is answered with 414.
+    pub max_request_line: int = 8192
+    /// All the field lines (and trailer lines) of one request, each with its CRLF. More is 431.
+    pub max_header_bytes: int = 65536
+    /// The field lines of one request. More is 431.
+    pub max_headers: int = 100
+    /// The bytes of a body a handler may read; `Request.set_body_limit` changes it for one request.
+    /// For a chunked body the total counts the data and also the bytes of the size lines after
+    /// their hex digits (whitespace and chunk extensions), so that many small chunks with large
+    /// extensions cannot make the server read without bound; a total over the limit is 413. A
+    /// handler that calls `Request.body` holds up to this many bytes for each such request.
+    pub max_body_bytes: int = 10485760
+    /// The whole head of a request: its fields have this long from the end of the request line,
+    /// and on a new connection the empty lines and the request line have this long from the
+    /// accept. No sequence of bytes extends a deadline.
+    pub header_timeout: float = 10.0
+    /// How long a kept-alive connection may wait for its next request: one deadline for the
+    /// empty lines and the request line together (the server cannot tell when the first byte
+    /// of a request arrived, so `header_timeout` starts only after the request line).
+    pub idle_timeout: float = 60.0
+    /// Each read of a body piece (at most 64 KiB, or what is left of the body, or the `max` a
+    /// handler gave `Request.read`) must deliver the whole piece within this time. A client
+    /// that sends a byte at a time does not extend it.
+    pub body_timeout: float = 30.0
+    /// Each write of a response (a piece of at most 256 KiB).
+    pub write_timeout: float = 30.0
+    /// From the call of the handler to its `Response`; 0 is none. A handler that is out of time
+    /// is cancelled (its `defer`s run, up to the first point where one would wait: the runtime
+    /// abandons a `defer` that suspends while its coroutine is being cancelled, so a cleanup
+    /// that does I/O is cut there) and the client gets `503 Service Unavailable` with
+    /// `Connection: close`; the event is logged. A sweeper looks at most every quarter of a
+    /// second while some handler runs, so the precision is that, and a server with no handler
+    /// running has nothing on a timer. A handler that computes without ever suspending cannot be
+    /// bounded: nothing else runs while it does. A panic of the handler (or of the closure of a
+    /// stream) is contained: 500 and a close, or a cut stream, and a log line. A coroutine that
+    /// a handler starts and never joins is not covered: its panic still ends `serve` and the
+    /// program, as does the budget panic of a host that sets an instruction budget (it always
+    /// reaches the host). The closure of a streamed response is not
+    /// counted (a stream may be long): each of its writes has `write_timeout`, and it ends at
+    /// `stop` after the grace period.
+    pub handler_timeout: float = 60.0
+    /// Open connections. At the cap the server stops accepting until one ends. What a
+    /// connection costs (measured with the defaults, in a debug build; a release build
+    /// measured about 40 KiB for an idle one, with 10,000 of them taking about 400 MiB): about
+    /// 100 KiB for the connection itself (its coroutine, stack and socket objects), about
+    /// 107 KiB with a request line of 8,000 bytes pending, and about 143 KiB at worst, with fields kept up to `max_header_bytes`
+    /// and a field line of that size pending; plus 64 KiB while it lingers or drains. A
+    /// handler that calls `Request.body` or `Request.text` holds up to `max_body_bytes` more for
+    /// its request (10 MiB by default), which is the application's choice: the server itself
+    /// never holds a body. So 1,024 connections take about 100 MiB idle and about 145 MiB with
+    /// requests in flight, and more when handlers hold bodies.
+    pub max_connections: int = 1024
+    /// The `Server` header of every response; "" sends none.
+    pub server_name: str = ""
+    /// Whether handler errors, panics and timeouts are written to stderr.
+    pub log_errors: bool = true
+}
+
+// ---------------------------------------------------------------------------------------------
+// Failures: an error that becomes a status
+// ---------------------------------------------------------------------------------------------
+
+/// An error with an HTTP status. A handler returns `err(httpd.fail(404, "no item 7"))` and the
+/// client gets 404 with `message` as the body.
+pub struct Failure {
+    pub status: int
+    pub message: str
+}
+
+impl Show for Failure {
+    fn show(self) -> str => "{self.status}: {self.message}"
+}
+
+impl IntoError for Failure {}
+
+/// The error `err(httpd.fail(status, message))` returns from a handler. A status outside 400 to
+/// 599 is answered as 500. `e.as[httpd.Failure]()` gives the `Failure` back.
+pub fn fail(status: int, message: str) -> Error => Error.from(
+    Failure { status: status, message: message },
+)
+
+// ---------------------------------------------------------------------------------------------
+// Headers
+// ---------------------------------------------------------------------------------------------
+
+/// The field lines of one name: the name as it was first written, and a value for each line.
+class Entry {
+    name: str
+    values: List[str]
+}
+
+/// The header fields of a request or a response. Names compare without regard to case. A name
+/// can have several lines (`Set-Cookie`); `get` joins them with `, `, `get_all` keeps them apart.
+pub class Headers {
+    entries: Map[str, Entry] = {:}
+}
+
+pub fn Headers() -> Headers => Headers {}
+
+impl Headers {
+    /// Every value of the name joined with `, `, or `none` when there is none.
+    pub fn get(self, name: str) -> str? {
+        let entry = self.entries.get(name.to_lower())?
+        return some(entry.values.join(", "))
+    }
+
+    /// One item for each field line of the name.
+    pub fn get_all(self, name: str) -> List[str] {
+        let entry = self.entries.get(name.to_lower()) or {
+            return []
+        }
+        return entry.values.clone()
+    }
+
+    pub fn has(self, name: str) -> bool => self.entries.contains_key(name.to_lower())
+
+    /// Replaces every line of the name with one.
+    pub fn set(self, name: str, value: str) {
+        self.entries[name.to_lower()] = Entry { name: name, values: [value] }
+    }
+
+    /// One more line of the name; the name keeps the spelling of its first line.
+    pub fn add(self, name: str, value: str) {
+        let key = name.to_lower()
+        if let some(entry) = self.entries.get(key) {
+            entry.values.push(value)
+        } else {
+            self.entries[key] = Entry { name: name, values: [value] }
+        }
+    }
+
+    pub fn remove(self, name: str) {
+        let _ = self.entries.remove(name.to_lower())
+    }
+
+    /// The names in lower case, in the order each was first set or added.
+    pub fn names(self) -> List[str] => self.entries.keys()
+
+    /// The number of field lines.
+    pub fn len(self) -> int {
+        var n = 0
+        for entry in self.entries.values() {
+            n += entry.values.len()
+        }
+        return n
+    }
+
+    /// Every field line as it is written: the name as first spelled, and the value. The lines are
+    /// grouped by name, in the order the names were first set, and not in the order the lines
+    /// were added: it is what a response writes, not a record of what came over the wire.
+    fn lines(self) -> List[(str, str)] {
+        let out: List[(str, str)] = []
+        for entry in self.entries.values() {
+            for value in entry.values {
+                out.push((entry.name, value))
+            }
+        }
+        return out
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Responses
+// ---------------------------------------------------------------------------------------------
+
+/// What a response carries.
+pub enum Body {
+    Empty
+    Text(str)
+    Data(Bytes)
+    /// A body produced while it is sent. `length` is its size when that is known.
+    Stream(write: fn(BodyWriter) -> Result[()], length: int?)
+}
+
+pub class Response {
+    pub status: int
+    pub headers: Headers
+    pub body: Body
+}
+
+impl Response {
+    /// Sets a header and returns the response, so that calls chain.
+    pub fn header(self, name: str, value: str) -> Response {
+        self.headers.set(name, value)
+        return self
+    }
+}
+
+fn no_note(message: str) {}
+
+/// The most a write puts in one piece on the connection (and in one chunk): a larger write is
+/// split, each piece under its own `write_timeout`.
+const WRITE_PIECE: int = 262144
+
+/// Where a streamed body is written. A connection gives one to the closure of `stream`.
+pub class BodyWriter {
+    /// Sends bytes to the peer under the write timeout: the connection.
+    send: fn(Bytes) -> Result[()]
+    /// Chunked framing (HTTP/1.1 and no length): each write is one or more chunks.
+    chunked: bool
+    /// The length the response promised, when it did.
+    length: int?
+    /// The coroutine the closure runs in, so that a write after an error can cancel it.
+    co: Coroutine[Result[()]]?
+    written: int = 0
+    /// The first error of a write: after it the peer has half a body, and nothing more is sent.
+    failed: Error? = none
+    /// The failure was a write past `length`, which is a mistake of the program.
+    over: bool = false
+    /// The closure has returned and the response is over: the connection carries the next
+    /// response, so a late write (from a writer the closure kept) must not reach it.
+    done: bool = false
+    /// The writes that are running (a write waits when the peer reads slowly): the closure may
+    /// return, or hand the writer to another coroutine, while one is.
+    busy: int = 0
+    /// Where a misuse is logged.
+    note: fn(str) = no_note
+}
+
+impl BodyWriter {
+    /// Writes `data`; empty data writes nothing. An `Err` means the peer is gone or too slow, or
+    /// the write went past the response's length, and the closure should pass it up with `?`. A
+    /// closure that writes again after an error is cancelled at that write: it stops there and
+    /// its `defer`s run, so a stream that ignores errors cannot spin.
+    pub fn write(self, data: Bytes) -> Result[()] {
+        if self.done {
+            (self.note)("a write to a stream whose response has ended")
+            return err(error("httpd: the stream's response has ended"))
+        }
+        if let some(e) = self.failed {
+            if let some(co) = self.co {
+                co.cancel()
+            }
+            return err(e)
+        }
+        if data.is_empty() {
+            return ok(())
+        }
+        if let some(n) = self.length {
+            if self.written + data.len() > n {
+                self.over = true
+                let e = error("httpd: the stream wrote past its length of {n} bytes")
+                self.failed = some(e)
+                return err(e)
+            }
+        }
+        var at = 0
+        self.busy += 1
+        while at < data.len() {
+            // The response may have ended while an earlier piece waited: nothing more goes out.
+            if self.done {
+                self.busy -= 1
+                return err(error("httpd: the stream's response has ended"))
+            }
+            let end = (at + WRITE_PIECE).min(data.len())
+            let piece = if at == 0 && end == data.len() { data } else { data.slice(at, end) }
+            var out = piece
+            if self.chunked {
+                // One write for a chunk: its size line, its data and its CRLF.
+                let frame = BytesBuilder()
+                frame.push_str("{piece.len():x}\r\n")
+                frame.push_bytes(piece)
+                frame.push_str("\r\n")
+                out = frame.to_bytes()
+            }
+            (self.send)(out) or |e| {
+                self.busy -= 1
+                self.failed = some(e)
+                return err(e)
+            }
+            self.written += piece.len()
+            at = end
+        }
+        self.busy -= 1
+        return ok(())
+    }
+
+    pub fn write_str(self, text: str) -> Result[()] => self.write(text.to_bytes())
+}
+
+fn typed(status: int, content_type: str, body: Body) -> Response {
+    let r = Response { status: status, headers: Headers(), body: body }
+    r.headers.set("Content-Type", content_type)
+    return r
+}
+
+fn bare(code: int) -> Response => Response { status: code, headers: Headers(), body: .Empty }
+
+/// A response with no body: 204, 304, a bare 200.
+pub fn status(code: int) -> Response => bare(code)
+
+/// A `text/plain; charset=utf-8` response.
+pub fn text(status: int, body: str) -> Response => typed(
+    status,
+    "text/plain; charset=utf-8",
+    .Text(body),
+)
+
+/// A `text/html; charset=utf-8` response.
+pub fn html(status: int, body: str) -> Response => typed(
+    status,
+    "text/html; charset=utf-8",
+    .Text(body),
+)
+
+/// A response with a body that is not text.
+pub fn bytes(
+    status: int,
+    body: Bytes,
+    content_type: str = "application/octet-stream",
+) -> Response => typed(status, content_type, .Data(body))
+
+/// An `application/json` response with the JSON of `value`; the error is the one `json.encode`
+/// gives.
+pub fn json[T](status: int, value: T) -> Result[Response] {
+    return ok(typed(status, "application/json", .Text(json_codec.encode(value)?)))
+}
+
+/// A response with a `Location` header and no body (301, 302, 303, 307 or 308). The status is
+/// not checked here: the server answers a status outside 200 to 599 with 500.
+pub fn redirect(status: int, location: str) -> Response => bare(status).header(
+    "Location",
+    location,
+)
+
+/// A response whose body is written by `write` while it is sent: chunked when `length` is `none`,
+/// and exactly `length` bytes otherwise. `write` runs in a coroutine of its own, and a panic or an
+/// error of it ends the response where it is: the connection is closed without a last chunk, so
+/// that a client sees a body that was cut. For an HTTP/1.0 request with no `length` the body
+/// ends with the connection, so a stream that fails ends with an ordinary close, and the client
+/// cannot tell that the body was cut (`net` has no way to reset a connection): give such a
+/// stream a `length` if the client may be HTTP/1.0 and needs to know.
+pub fn stream(
+    status: int,
+    content_type: str,
+    write: fn(BodyWriter) -> Result[()],
+    length: int? = none,
+) -> Response => typed(status, content_type, .Stream(write, length))
+
+// ---------------------------------------------------------------------------------------------
+// Percent-decoding and the query
+// ---------------------------------------------------------------------------------------------
+
+fn hex_value(b: int) -> int {
+    if b >= 48 && b <= 57 {
+        return b - 48
+    }
+    if b >= 97 && b <= 102 {
+        return b - 87
+    }
+    if b >= 65 && b <= 70 {
+        return b - 55
+    }
+    return -1
+}
+
+/// A run of one or more `%XX` escapes.
+const ESCAPE_RUNS: str = r"(?:%[0-9A-Fa-f]{2})+"
+
+/// The pattern `ESCAPE_RUNS`, compiled once when the module loads.
+const ESCAPES: regex.Regex = pattern(ESCAPE_RUNS)
+
+/// The bytes of `text` with its `%XX` escapes decoded, and its `+` read as a space when
+/// `plus_is_space`. `escapes` is the pattern `ESCAPE_RUNS`. A bad escape (a `%` not followed by
+/// two hex digits) is `none` when `strict`, and is kept as written otherwise. A `+` is replaced
+/// before the escapes are read, so `%2B` stays a plus sign. The cost is the same few host calls
+/// whatever the number of escapes: the runs of escapes are found at once, and each run is decoded
+/// as one string of hex digits.
+fn decode_percent(escapes: regex.Regex, text: str, plus_is_space: bool, strict: bool) -> Bytes? {
+    let src = if plus_is_space && text.contains("+") { text.replace("+", " ") } else { text }
+    if !src.contains("%") {
+        return some(src.to_bytes())
+    }
+    let runs = escapes.find_all(src)
+    let plains = escapes.split(src)
+    let out = BytesBuilder()
+    for i in 0..plains.len() {
+        let plain = plains[i]
+        // A `%` between runs is not the start of an escape.
+        if strict && plain.contains("%") {
+            return none
+        }
+        out.push_str(plain)
+        if i < runs.len() {
+            let digits = runs[i].text.replace("%", "")
+            out.push_bytes(hex.decode(digits) or Bytes())
+        }
+    }
+    return some(out.to_bytes())
+}
+
+/// `text` with its `%XX` escapes decoded and, with `plus_is_space`, its `+` as a space. `none`
+/// when an escape is bad or the result is not UTF-8: for a path segment, where either is a
+/// mistake of the client.
+fn percent_decode(escapes: regex.Regex, text: str, plus_is_space: bool) -> str? {
+    if !text.contains("%") && !(plus_is_space && text.contains("+")) {
+        return some(text)
+    }
+    let decoded = decode_percent(escapes, text, plus_is_space, true)?
+    return decoded.to_str().ok()
+}
+
+/// Like `percent_decode`, with nothing refused: a bad escape stays as written and bytes that are
+/// not UTF-8 become U+FFFD. For a query, which a browser or a script may write loosely.
+fn percent_decode_lossy(escapes: regex.Regex, text: str, plus_is_space: bool) -> str {
+    if !text.contains("%") && !(plus_is_space && text.contains("+")) {
+        return text
+    }
+    let decoded = decode_percent(escapes, text, plus_is_space, false) or Bytes()
+    return decoded.to_str_lossy()
+}
+
+/// The parameters of a query string (or of an `application/x-www-form-urlencoded` body), each
+/// name with all its values in the order they came. Names and values are decoded: `+` is a
+/// space, a `%XX` escape is the byte, a bad escape stays as written, and bytes that are not UTF-8
+/// become U+FFFD. A parameter with no `=` has the value "", and empty pairs (`a=1&&b=2`) are
+/// skipped. More than `max_pairs` pairs is a 400 `Failure`: the work and the memory of a query
+/// grow with its pairs, and a form handler should also lower `Request.set_body_limit` to what a
+/// form of its own needs (the default allows 10 MiB).
+pub fn parse_query(text: str, max_pairs: int = 1000) -> Result[Map[str, List[str]]] {
+    return query_pairs(ESCAPES, text, max_pairs)
+}
+
+fn query_pairs(
+    escapes: regex.Regex,
+    text: str,
+    max_pairs: int,
+) -> Result[Map[str, List[str]]] {
+    let out: Map[str, List[str]] = {:}
+    if text.is_empty() {
+        return ok(out)
+    }
+    var pairs = 0
+    for pair in text.split("&") {
+        if pair.is_empty() {
+            continue
+        }
+        pairs += 1
+        if pairs > max_pairs {
+            return err(fail(400, "the query has more than {max_pairs} parameters"))
+        }
+        let (raw_key, raw_value) = pair.split_once("=") or (pair, "")
+        let key = percent_decode_lossy(escapes, raw_key, true)
+        let value = percent_decode_lossy(escapes, raw_value, true)
+        if let some(values) = out.get(key) {
+            values.push(value)
+        } else {
+            out[key] = [value]
+        }
+    }
+    return ok(out)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Grammar: the patterns, compiled once
+// ---------------------------------------------------------------------------------------------
+
+/// The compiled patterns the parser checks bytes with (RFC 9110 and RFC 9112). Made once by
+/// `grammar()`: a server makes one when it starts, and a test makes one.
+class Grammar {
+    /// `method SP request-target SP HTTP-version`, one space between the parts (RFC 9112 3).
+    request_line: regex.Regex
+    /// A field line: a token (group 1), a colon, and a value with no control character but HTAB
+    /// (group 2), with the optional whitespace around the value left out (RFC 9112 5, RFC 9110
+    /// 5.5 and 5.6.2).
+    field_line: regex.Regex
+    /// `uri-host [":" port]` (RFC 9112 3.2, RFC 3986 3.2.2): a name (empty allowed, no comma and
+    /// no escape), an IPv4 address (which is a name) or a bracketed IPv6 literal, and a port of 1
+    /// to 5 digits.
+    host: regex.Regex
+    /// `uri-host ":" port`, the target of a CONNECT (RFC 9112 3.2.3).
+    authority: regex.Regex
+    /// `scheme "://" authority path-abempty ["?" query]`, with the four parts as groups
+    /// (RFC 9112 3.2.2).
+    absolute: regex.Regex
+    /// One element of a list: optional whitespace, a token, optional whitespace, as group 1.
+    element: regex.Regex
+    /// A run of token characters, to tell whether a text is a token.
+    tokens: regex.Regex
+    /// A run of `%XX` escapes (`ESCAPE_RUNS`).
+    escapes: regex.Regex
+    /// A `%` that does not start an escape (it is followed by fewer than two hex digits).
+    bad_escape: regex.Regex
+    /// An escape of a control character: `%00` to `%1F`, `%7F`.
+    control_escape: regex.Regex
+    /// A path segment that is `.` or `..`, written with dots or with `%2E`.
+    dot_segment: regex.Regex
+    /// A `.` or `..` piece of a decoded value (`a/../b`), after splitting on `/`.
+    decoded_dot: regex.Regex
+    /// A C1 control character (U+0080 to U+009F), which some loggers treat as a line end.
+    c1_control: regex.Regex
+    /// What a literal segment of a route may be: path characters and escapes (RFC 3986 3.3).
+    path_literal: regex.Regex
+    /// `close` as a token of a `Connection` value: after the start or a comma, before a comma or
+    /// the end, with optional white space around it. The letters are spelled in both cases so
+    /// that no case folding of Unicode (the long s) takes part.
+    close_token: regex.Regex
+    /// `keep-alive` as a token of a `Connection` value, like `close_token`.
+    keep_token: regex.Regex
+    /// A header value of a response: no control character but HTAB (RFC 9112 11.1).
+    value_chars: regex.Regex
+    /// A `Content-Length` value: 1 to 18 digits, which cannot overflow an `int` (RFC 9110 8.6).
+    digits: regex.Regex
+    /// A chunk-size line: at most 15 hex digits (they cannot overflow an `int`), and extensions
+    /// with no control character, after optional whitespace and a `;` (RFC 9112 7.1.1: the
+    /// whitespace is only allowed before the `;`).
+    chunk: regex.Regex
+}
+
+fn pattern(source: str) -> regex.Regex => regex.compile(source).expect(
+    "httpd: a built-in pattern does not compile",
+)
+
+fn grammar() -> Grammar {
+    return Grammar {
+        request_line: pattern(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+ [^\x00-\x20\x7f]+ HTTP/[0-9]\.[0-9]$"),
+        field_line: pattern(
+            r"^([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*([\t\x20-\x7e\x{80}-\x{10FFFF}]*?)[ \t]*$",
+        ),
+        host: pattern(r"^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._~!$&'()*+;=-]*)(:[0-9]{1,5})?$"),
+        authority: pattern(
+            r"^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._~!$&'()*+;=-]+):[0-9]{1,5}$",
+        ),
+        absolute: pattern(
+            r"^([A-Za-z][A-Za-z0-9+.-]*)://([^/?#]*)([^?#]*)(?:\?([^#]*))?$",
+        ),
+        element: pattern(r"^[ \t]*([!#$%&'*+.^_`|~0-9A-Za-z-]*)[ \t]*$"),
+        tokens: pattern(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"),
+        escapes: pattern(ESCAPE_RUNS),
+        bad_escape: pattern(r"%(?:[0-9A-Fa-f]?[^0-9A-Fa-f]|[0-9A-Fa-f]?$)"),
+        control_escape: pattern(r"%(?:[01][0-9A-Fa-f]|7[Ff])"),
+        dot_segment: pattern(r"(?:^|/)(?:\.|%2[Ee])(?:\.|%2[Ee])?(?:/|$)"),
+        decoded_dot: pattern(r"(?:^|/)\.\.?(?:/|$)"),
+        c1_control: pattern(r"[\x{80}-\x{9f}]"),
+        path_literal: pattern(r"^(?:[A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-Fa-f]{2})*$"),
+        close_token: pattern(r"(?:^|,)[ \t]*[Cc][Ll][Oo][Ss][Ee][ \t]*(?:,|$)"),
+        keep_token: pattern(
+            r"(?:^|,)[ \t]*[Kk][Ee][Ee][Pp]-[Aa][Ll][Ii][Vv][Ee][ \t]*(?:,|$)",
+        ),
+        value_chars: pattern(r"^[\t\x20-\x7e\x{80}-\x{10FFFF}]*$"),
+        digits: pattern(r"^[0-9]{1,18}$"),
+        chunk: pattern(r"^([0-9A-Fa-f]{1,15})(?:[ \t]*;[\t\x20-\x7e]*)?$"),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The head parser
+// ---------------------------------------------------------------------------------------------
+
+/// Why a request is refused: the status of the error response, and what was wrong with the
+/// request's syntax (never data of the program). Not an `Error`: the connection loop turns it
+/// into a response and closes the connection.
+struct Reject {
+    status: int
+    why: str
+}
+
+fn reject(status: int, why: str) -> Reject => Reject { status: status, why: why }
+
+/// How the body of a request is delimited (RFC 9112 6).
+enum Framing {
+    NoBody
+    Length(int)
+    Chunked
+}
+
+/// A request head that passed every rule: the fields of a `Request` that come from the head, and
+/// what the connection loop needs to know after it.
+struct Head {
+    method: str
+    target: str
+    path: str
+    query: str
+    /// `HTTP/1.1` or `HTTP/1.0`; a higher minor version is served as 1.1.
+    version: str
+    headers: Headers
+    /// The host the request was addressed to: the authority of an absolute-form target, else the
+    /// `Host` field.
+    host: str
+    framing: Framing
+    /// The client waits for `100 Continue` before it sends the body.
+    expect_continue: bool
+    /// The connection stays open after the response (RFC 9112 9.3).
+    keep_alive: bool
+    /// The patterns the parser used, which the request goes on using for its query.
+    grammar: Grammar
+}
+
+/// Reads a request head one line at a time: `request_line`, then `field_line` for each field
+/// line until it says the head has ended, then `finish`. The lines come without their line end.
+class HeadParser {
+    grammar: Grammar
+    options: Options
+    method: str = ""
+    target: str = ""
+    path: str = ""
+    query: str = ""
+    authority: str = ""
+    scheme: str = ""
+    version: str = "HTTP/1.1"
+    http10: bool = false
+    asterisk: bool = false
+    headers: Headers = Headers()
+    field_lines: int = 0
+    field_bytes: int = 0
+}
+
+fn head_parser(g: Grammar, options: Options) -> HeadParser {
+    return HeadParser { grammar: g, options: options }
+}
+
+/// `text` without the default port of `scheme` (`:80` for http, `:443` for https), so that
+/// `a` and `a:80` are the same host. Both sides of a comparison are cut the same way.
+fn without_default_port(text: str, scheme: str) -> str {
+    let port = if scheme == "https" { ":443" } else { ":80" }
+    if scheme != "" && text.ends_with(port) {
+        return text[..text.len() - port.len()]
+    }
+    return text
+}
+
+/// Why a request line did not match its pattern: a message for the error response. It runs only
+/// for a line that is refused, so it is free to be slow.
+fn request_line_fault(line: str) -> str {
+    let parts = line.split(" ")
+    if parts.len() != 3 {
+        return "the request line must be a method, a target and a version, each after a single space"
+    }
+    if parts[2].len() != 8 || !parts[2].starts_with("HTTP/") {
+        return "the HTTP version is not of the form HTTP/<digit>.<digit>"
+    }
+    return "the method is not a token, or the target or the version has a character that is not allowed"
+}
+
+fn is_token(g: Grammar, text: str) -> bool {
+    if let some(m) = g.tokens.find(text) {
+        return m.text == text
+    }
+    return false
+}
+
+/// Why a field line did not match its pattern, like `request_line_fault`.
+fn field_line_fault(g: Grammar, line: str) -> str {
+    let (name, _) = line.split_once(":") or {
+        return "a header field has no colon"
+    }
+    if name.is_empty() {
+        return "a header field has no name"
+    }
+    if name.ends_with(" ") || name.ends_with("\t") {
+        return "whitespace before the colon of a header field"
+    }
+    if !is_token(g, name) {
+        return "the name of a header field is not a token"
+    }
+    return "the value of a header field has a control character"
+}
+
+impl HeadParser {
+    /// The request line (RFC 9112 3): the method, the target and the version.
+    fn request_line(self, line: str) -> Result[(), Reject] {
+        let g = self.grammar
+        if line.len() > self.options.max_request_line {
+            return err(
+                reject(
+                    414,
+                    "the request line is longer than {self.options.max_request_line} bytes",
+                ),
+            )
+        }
+        if !g.request_line.is_match(line) {
+            return err(reject(400, request_line_fault(line)))
+        }
+        // The pattern allows exactly one space between the three parts.
+        let parts = line.split(" ")
+        let method = parts[0]
+        let target = parts[1]
+        let version = parts[2]
+        if version != "HTTP/1.1" {
+            // The pattern has checked that it is HTTP/<digit>.<digit>.
+            if version[5..6] != "1" {
+                return err(reject(505, "{version} is not supported: only HTTP/1.0 and HTTP/1.1"))
+            }
+            self.http10 = version[7..8] == "0"
+        }
+        self.version = if self.http10 { "HTTP/1.0" } else { "HTTP/1.1" }
+        self.method = method
+        self.target = target
+        if target.starts_with("/") {
+            if target.contains("#") {
+                return err(reject(400, "a fragment (#) in the request target"))
+            }
+            if let some((path, query)) = target.split_once("?") {
+                self.path = path
+                self.query = query
+            } else {
+                self.path = target
+            }
+        } else if target == "*" {
+            if method != "OPTIONS" {
+                return err(reject(400, "the target * is only for OPTIONS"))
+            }
+            self.path = "*"
+        } else if let some(c) = g.absolute.captures(target) {
+            // Only the schemes of this server (RFC 9112 3.2.2 allows any, and a proxy may
+            // forward the others; this server is none).
+            let scheme = (c.get(1) or "").to_lower()
+            if scheme != "http" && scheme != "https" {
+                return err(reject(400, "the scheme of the request target is not http or https"))
+            }
+            // A recipient must reject an http URI with an empty host (RFC 9110 4.2.1): `Host`
+            // must not stand in for it.
+            let authority = c.get(2) or ""
+            if authority.is_empty() || !g.host.is_match(authority) {
+                return err(reject(400, "the authority of the request target is not valid"))
+            }
+            self.authority = authority
+            self.scheme = scheme
+            let path = c.get(3) or ""
+            self.path = if path.is_empty() { "/" } else { path }
+            self.query = c.get(4) or ""
+        } else if g.authority.is_match(target) {
+            if method != "CONNECT" {
+                return err(reject(400, "a target of the form host:port is only for CONNECT"))
+            }
+            self.authority = target
+        } else {
+            return err(reject(400, "the request target is not a path, an absolute URI or *"))
+        }
+        if method == "CONNECT" && self.path != "" {
+            return err(reject(400, "CONNECT needs a target of the form host:port"))
+        }
+        return ok(())
+    }
+
+    /// An empty line before the request line, which a server skips (RFC 9112 2.2). It counts
+    /// against `max_header_bytes` like the field lines, with its line end, so that a client
+    /// cannot send empty lines for ever. A line that is not empty is not for this entry.
+    fn leading_line(self, line: str) -> Result[(), Reject] {
+        if !line.is_empty() {
+            return err(reject(400, "a line before the request line is not empty"))
+        }
+        if self.field_bytes + 2 > self.options.max_header_bytes {
+            return err(
+                reject(
+                    431,
+                    "the empty lines and header fields are longer than {self.options.max_header_bytes} bytes",
+                ),
+            )
+        }
+        self.field_bytes += 2
+        return ok(())
+    }
+
+    /// One line after the request line. `true` is the empty line that ends the head.
+    fn field_line(self, line: str) -> Result[bool, Reject] {
+        if line.is_empty() {
+            return ok(true)
+        }
+        // A line that starts with a space or a tab continues the line before it, or has no line
+        // to continue (RFC 9112 2.2, 5.2): both are refused.
+        if line.starts_with(" ") || line.starts_with("\t") {
+            if self.field_lines == 0 {
+                return err(
+                    reject(400, "whitespace between the request line and the first header field"),
+                )
+            }
+            return err(reject(400, "obsolete line folding of a header field is not accepted"))
+        }
+        // Each limit is checked as the line arrives, so that none is checked late. The bytes
+        // are those of the lines with their CRLF.
+        if self.field_lines + 1 > self.options.max_headers {
+            return err(reject(431, "more than {self.options.max_headers} header fields"))
+        }
+        if self.field_bytes + line.len() + 2 > self.options.max_header_bytes {
+            return err(
+                reject(
+                    431,
+                    "the header fields are longer than {self.options.max_header_bytes} bytes",
+                ),
+            )
+        }
+        let c = self.grammar.field_line.captures(line) or {
+            return err(reject(400, field_line_fault(self.grammar, line)))
+        }
+        self.field_lines += 1
+        self.field_bytes += line.len() + 2
+        self.headers.add(c.get(1) or "", c.get(2) or "")
+        return ok(false)
+    }
+
+    /// The end of the head: the rules about `Host`, the methods the server answers itself, and
+    /// how the body is framed. The head is complete or refused.
+    fn finish(self) -> Result[Head, Reject] {
+        let g = self.grammar
+        let hosts = self.headers.get_all("host")
+        if hosts.len() > 1 {
+            return err(reject(400, "more than one Host header field"))
+        }
+        if hosts.is_empty() && !self.http10 {
+            return err(reject(400, "an HTTP/1.1 request needs a Host header field"))
+        }
+        var host = self.authority
+        if let some(value) = hosts.first() {
+            if !g.host.is_match(value) {
+                return err(reject(400, "the Host header field is not a host and a port"))
+            }
+            if host.is_empty() {
+                host = value
+            } else if without_default_port(value.to_lower(), self.scheme) != without_default_port(
+                host.to_lower(),
+                self.scheme,
+            ) {
+                // RFC 9112 3.2.2 says to ignore `Host` when the target has an authority. This
+                // server is stricter: a front end that routes by `Host` and one that routes by
+                // the target would otherwise disagree about the request, so a difference is 400
+                // (compared as lower-case text, with the default port of the scheme cut off).
+                return err(
+                    reject(
+                        400,
+                        "the Host header field differs from the authority of the request target",
+                    ),
+                )
+            }
+        }
+        // This server is no proxy: a 2xx for CONNECT would mean a tunnel.
+        if self.method == "CONNECT" {
+            return err(reject(501, "CONNECT is not supported"))
+        }
+        let framing = framing_of(g, self.headers, self.http10)?
+        // `Expect` is for HTTP/1.1 only; in 1.0 it is ignored (RFC 9110 10.1.1).
+        var expect_continue = false
+        if !self.http10 {
+            if let some(value) = self.headers.get("expect") {
+                if value.to_lower() != "100-continue" {
+                    return err(reject(417, "the Expect header field is not 100-continue"))
+                }
+                expect_continue = match framing {
+                    NoBody    => false
+                    Length(n) => n > 0
+                    Chunked   => true
+                }
+            }
+        }
+        return ok(
+            Head {
+                method: self.method,
+                target: self.target,
+                path: self.path,
+                query: self.query,
+                version: self.version,
+                headers: self.headers,
+                host: host,
+                framing: framing,
+                expect_continue: expect_continue,
+                keep_alive: keeps_alive(g, self.headers, self.http10),
+                grammar: g,
+            },
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Body framing (RFC 9112 6)
+// ---------------------------------------------------------------------------------------------
+
+/// How the body of a request is delimited, or why the request is refused. A framing error
+/// always ends the connection: nothing after it is read.
+fn framing_of(g: Grammar, headers: Headers, http10: bool) -> Result[Framing, Reject] {
+    let te = headers.get_all("transfer-encoding")
+    let cl = headers.get_all("content-length")
+    if !te.is_empty() {
+        // RFC 9112 6.1: in a request of HTTP/1.0 it is faulty framing, even with a length.
+        if http10 {
+            return err(reject(400, "Transfer-Encoding in an HTTP/1.0 request"))
+        }
+        // RFC 9112 6.3 and 11.2: a message with both is an attempt to smuggle a request.
+        if !cl.is_empty() {
+            return err(reject(400, "both Transfer-Encoding and Content-Length"))
+        }
+        let chunked = parse_te(g, te)?
+        if chunked {
+            return ok(.Chunked)
+        }
+    }
+    let length = parse_cl(g, cl)?
+    if let some(n) = length {
+        return ok(.Length(n))
+    }
+    return ok(.NoBody)
+}
+
+/// The `Transfer-Encoding` of a request: `true` when the body is chunked. There must be one
+/// field line, and its list must be exactly `chunked` (ASCII case aside): a second line, an empty
+/// element (`chunked,` or `, chunked`), parameters, or anything that is not a token is 400, as
+/// is a list of more than 8 codings, so that a front end that reads a different line or ignores a
+/// different element cannot be made to disagree about where the body ends (RFC 9112 6.3, 11.2;
+/// RFC 9110 5.6.1 would allow the empty elements). A list of real codings that ends in `chunked`
+/// (`gzip, chunked`) is 501, because this server knows no other coding.
+fn parse_te(g: Grammar, values: List[str]) -> Result[bool, Reject] {
+    if values.is_empty() {
+        return ok(false)
+    }
+    if values.len() > 1 {
+        return err(reject(400, "Transfer-Encoding is given more than once"))
+    }
+    let elements = values[0].split(",")
+    if elements.len() > 8 {
+        return err(reject(400, "Transfer-Encoding lists more than 8 codings"))
+    }
+    let codings: List[str] = []
+    for element in elements {
+        let c = g.element.captures(element) or {
+            return err(reject(400, "Transfer-Encoding has a coding that is not a token"))
+        }
+        let coding = (c.get(1) or "").to_lower()
+        if coding.is_empty() {
+            return err(reject(400, "Transfer-Encoding has an empty coding"))
+        }
+        codings.push(coding)
+    }
+    var chunked = 0
+    for coding in codings {
+        if coding == "chunked" {
+            chunked += 1
+        }
+    }
+    if chunked > 1 {
+        return err(reject(400, "the coding chunked is applied more than once"))
+    }
+    if codings[codings.len() - 1] != "chunked" {
+        return err(reject(400, "the last coding of Transfer-Encoding is not chunked"))
+    }
+    if codings.len() > 1 {
+        return err(
+            reject(
+                501,
+                "the Transfer-Encoding {codings.join(", ")} is not supported: only chunked",
+            ),
+        )
+    }
+    return ok(true)
+}
+
+/// The `Content-Length` lines of a request: `none` when there are none. A request with more than
+/// one value is refused, also when they are equal (RFC 9112 6.3 allows either; refusing is the
+/// stricter), and so is a value that is not 1 to 18 digits: `str.parse_int` would take a sign,
+/// and 19 digits can overflow (RFC 9110 8.6).
+fn parse_cl(g: Grammar, values: List[str]) -> Result[int?, Reject] {
+    if values.is_empty() {
+        return ok(none)
+    }
+    if values.len() > 1 || values[0].contains(",") {
+        return err(reject(400, "Content-Length is given more than once"))
+    }
+    if !g.digits.is_match(values[0]) {
+        return err(reject(400, "Content-Length is not a number of 1 to 18 digits"))
+    }
+    let n = str.parse_int(values[0]) or {
+        return err(reject(400, "Content-Length is not a number"))
+    }
+    return ok(some(n))
+}
+
+/// Whether the connection stays open after the response (RFC 9112 9.3): never with a `close`
+/// token in `Connection`; otherwise in HTTP/1.1 always, and in 1.0 only with `keep-alive`.
+fn keeps_alive(g: Grammar, headers: Headers, http10: bool) -> bool {
+    var keep = false
+    if let some(value) = headers.get("connection") {
+        // Two calls, whatever the length of the value (it can be 64 KiB of commas).
+        if g.close_token.is_match(value) {
+            return false
+        }
+        keep = g.keep_token.is_match(value)
+    }
+    return if http10 { keep } else { true }
+}
+
+/// The size in a chunk-size line of a chunked body, which comes without its CRLF (RFC 9112
+/// 7.1): 1 to 15 hex digits, then optional whitespace and extensions, which are ignored and hold
+/// no control character. 15 digits cannot overflow an `int`.
+fn chunk_size(g: Grammar, line: Bytes) -> Result[int, Reject] {
+    let (size, _) = chunk_head(g, line)?
+    return ok(size)
+}
+
+/// `chunk_size`, and the bytes of the line that are not the hex digits (the whitespace and the
+/// extensions), which count against the body limit like data.
+fn chunk_head(g: Grammar, line: Bytes) -> Result[(int, int), Reject] {
+    if line.len() > 4096 {
+        return err(reject(400, "a chunk-size line is longer than 4096 bytes"))
+    }
+    let text = line.to_str() or {
+        return err(reject(400, "a chunk-size line is not text"))
+    }
+    let c = g.chunk.captures(text) or {
+        return err(reject(400, "a chunk-size line is not a hex size and extensions"))
+    }
+    // At most 15 digits, and once for each chunk, so a loop is cheap here.
+    let digits = c.get(1) or ""
+    var size = 0
+    var zeros = 0
+    var leading = true
+    for b in digits.bytes() {
+        size = size * 16 + hex_value(b)
+        if leading && b == 48 {
+            zeros += 1
+        } else {
+            leading = false
+        }
+    }
+    // Leading zeros past the first digit are padding, like extensions: a size of `0` is one
+    // digit, and `000` has two bytes too many.
+    let padding = if zeros == digits.len() { zeros - 1 } else { zeros }
+    return ok((size, line.len() - digits.len() + padding))
+}
+
+// ---------------------------------------------------------------------------------------------
+// The body of a request
+// ---------------------------------------------------------------------------------------------
+
+fn no_hook() -> Result[()] => ok(())
+
+/// What a read of a line of a chunked body gave (`read_until` with CRLF). `End` and an empty
+/// `Line` must never be merged: the end of the stream is a truncated body, an empty line is the
+/// end of the trailers (plan 3.5).
+enum ChunkLine {
+    Line(Bytes)
+    /// The stream ended, with or without bytes of a line pending.
+    End
+    /// More than the allowed bytes before the CRLF.
+    TooLong
+}
+
+fn no_line(max: int) -> Result[ChunkLine] {
+    return err(fail(500, "a chunked request body has no source of lines"))
+}
+
+/// Reads the body of one request. It owns the framing, the body limit and what has been handed
+/// out; the bytes come from `pull`, which reads at most `n` bytes from wherever the body is
+/// (a connection) and gives empty `Bytes` when that has ended. The errors of `pull` are the
+/// errors of the reads, so it gives `err(fail(408, ..))` for a timeout and `err(fail(400, ..))`
+/// for a peer that has gone: the reader passes them up as they are.
+class BodyReader {
+    framing: Framing
+    pull: fn(int) -> Result[Bytes]
+    limit: int
+    /// Runs once, before the first bytes of a body that exists are pulled: where a connection
+    /// writes `100 Continue` for a request that asked for it (RFC 9110 10.1.1). Not run when the
+    /// body is refused for its size.
+    first_read: fn() -> Result[()] = no_hook
+    started: bool = false
+    delivered: int = 0
+    /// A read failed or the body was refused: where the next request starts is unknown, so
+    /// the connection must close (`unread` is then `none`).
+    broken: bool = false
+    /// The first error of a chunked body: a read after it gives it again, and reads nothing.
+    fault: Error? = none
+    /// Chunked bodies: the next line ending in CRLF, of at most `n` bytes before it.
+    line: fn(int) -> Result[ChunkLine] = no_line
+    grammar: Grammar? = none
+    /// The limits of the trailers: `max_headers` lines and `max_header_bytes` bytes with their
+    /// CRLFs, as for the fields of a head.
+    max_headers: int = 100
+    max_header_bytes: int = 65536
+    /// The bytes of the size lines after their digits (extensions): they count against the
+    /// limit with the data, so a body of small chunks with large extensions is bounded too.
+    extension_bytes: int = 0
+    /// The bytes of the current chunk not handed out yet.
+    chunk_left: int = 0
+    /// The CRLF after the data of a chunk is read at the next read.
+    crlf_pending: bool = false
+    /// The last chunk and the trailers have been read.
+    finished: bool = false
+}
+
+fn body_reader(framing: Framing, limit: int, pull: fn(int) -> Result[Bytes]) -> BodyReader {
+    return BodyReader { framing: framing, pull: pull, limit: limit }
+}
+
+/// The reader of a chunked body: `pull` reads exactly `n` bytes, `line` reads up to the next
+/// CRLF (see `ChunkLine`), and the trailers are held to `o.max_headers` and `o.max_header_bytes`.
+fn chunked_reader(
+    g: Grammar,
+    o: Options,
+    pull: fn(int) -> Result[Bytes],
+    line: fn(int) -> Result[ChunkLine],
+) -> BodyReader {
+    return BodyReader {
+        framing: .Chunked,
+        pull: pull,
+        line: line,
+        limit: o.max_body_bytes,
+        grammar: some(g),
+        max_headers: o.max_headers,
+        max_header_bytes: o.max_header_bytes,
+    }
+}
+
+impl BodyReader {
+    /// The next piece of the body, 1 to `max` bytes, and at most 64 KiB so that a timeout bounds
+    /// each read; empty at the end.
+    fn read(self, max: int) -> Result[Bytes] {
+        if max < 1 {
+            panic(
+                "httpd: Request.read needs a maximum of at least 1: an empty result means the end",
+            )
+        }
+        return match self.framing {
+            NoBody    => ok(Bytes())
+            Length(n) => self.read_length(n, max)
+            Chunked   => self.read_chunked(max)
+        }
+    }
+
+    /// Ends a chunked body in error: it is remembered, and the connection must close.
+    fn halt(self, e: Error) -> Error {
+        self.broken = true
+        if self.fault.is_none() {
+            self.fault = some(e)
+        }
+        return e
+    }
+
+    /// The next piece of a chunked body. The size lines and the trailers are read with `line`,
+    /// where only CRLF ends a line (a bare LF in a size line is no line end and is 400, as in
+    /// CVE-2025-22871), the data with `pull`. The running total is held to the limit when a
+    /// chunk's size is known, before its bytes are read.
+    fn read_chunked(self, max: int) -> Result[Bytes] {
+        if let some(e) = self.fault {
+            return err(e)
+        }
+        if self.finished {
+            return ok(Bytes())
+        }
+        let g = self.grammar or {
+            return err(self.halt(fail(500, "a chunked body has no grammar")))
+        }
+        if !self.started {
+            self.started = true
+            (self.first_read)() or |e| {
+                return err(self.halt(e))
+            }
+        }
+        if self.chunk_left == 0 {
+            if self.crlf_pending {
+                let end = (self.pull)(2) or |e| {
+                    return err(self.halt(e))
+                }
+                if end != "\r\n".to_bytes() {
+                    return err(self.halt(fail(400, "the data of a chunk is not followed by CRLF")))
+                }
+                self.crlf_pending = false
+            }
+            let got = (self.line)(4096) or |e| {
+                return err(self.halt(e))
+            }
+            var extra = 0
+            let size = match got {
+                Line(b) => {
+                    let (n, e) = chunk_head(g, b) or |r| {
+                        return err(self.halt(fail(r.status, r.why)))
+                    }
+                    extra = e
+                    n
+                }
+                End => return err(
+                    self.halt(fail(400, "the request body ended inside a chunked body")),
+                )
+                TooLong => return err(
+                    self.halt(fail(400, "a chunk-size line is longer than 4096 bytes")),
+                )
+            }
+            // The data, and the whitespace and extensions of the size lines, are one total.
+            self.extension_bytes += extra
+            if self.extension_bytes > self.limit - self.delivered {
+                return err(self.halt(fail(413, self.over_limit(true))))
+            }
+            if size == 0 {
+                self.trailers(g)?
+                self.finished = true
+                return ok(Bytes())
+            }
+            if size > self.limit - self.delivered - self.extension_bytes {
+                return err(
+                    self.halt(fail(413, self.over_limit(size <= self.limit - self.delivered))),
+                )
+            }
+            self.chunk_left = size
+        }
+        let want = max.min(self.chunk_left).min(65536)
+        let piece = (self.pull)(want) or |e| {
+            return err(self.halt(e))
+        }
+        if piece.is_empty() {
+            return err(self.halt(fail(400, "the request body ended inside a chunk")))
+        }
+        if piece.len() > want {
+            return err(self.halt(fail(500, "the body source gave more bytes than were asked for")))
+        }
+        self.delivered += piece.len()
+        self.chunk_left -= piece.len()
+        if self.chunk_left == 0 {
+            self.crlf_pending = true
+        }
+        return ok(piece)
+    }
+
+    /// The 413 text: when the data alone is within the limit, the extensions and padding of the
+    /// size lines are what tipped it over, and it says so.
+    fn over_limit(self, data_fits: bool) -> str {
+        if data_fits {
+            return "the request body and the extensions of its chunks are larger than {self.limit} bytes"
+        }
+        return "the request body is larger than {self.limit} bytes"
+    }
+
+    /// The trailer fields after the last chunk, up to the empty line: each is checked like a
+    /// field line, they count against `max_headers` and `max_header_bytes`, and they are
+    /// discarded (RFC 9112 7.1.2).
+    fn trailers(self, g: Grammar) -> Result[()] {
+        var lines = 0
+        var used = 0
+        while true {
+            // `max` leaves out the CRLF, which is counted with the line.
+            let room = (self.max_header_bytes - used - 2).max(0)
+            let got = (self.line)(room) or |e| {
+                return err(self.halt(e))
+            }
+            match got {
+                End => {
+                    return err(
+                        self.halt(fail(400, "the request body ended inside the trailer fields")),
+                    )
+                }
+                TooLong => {
+                    return err(
+                        self.halt(
+                            fail(
+                                431,
+                                "the trailer fields are longer than {self.max_header_bytes} bytes",
+                            ),
+                        ),
+                    )
+                }
+                Line(b) => {
+                    if b.is_empty() {
+                        return ok(())
+                    }
+                    lines += 1
+                    if lines > self.max_headers {
+                        return err(
+                            self.halt(fail(431, "more than {self.max_headers} trailer fields")),
+                        )
+                    }
+                    used += b.len() + 2
+                    let text = b.to_str() or {
+                        return err(self.halt(fail(400, "a trailer field is not text")))
+                    }
+                    if text.starts_with(" ")
+                        || text.starts_with("\t")
+                        || !g.field_line.is_match(text) {
+                        return err(self.halt(fail(400, "a trailer field is not a header field")))
+                    }
+                }
+            }
+        }
+    }
+
+    fn read_length(self, n: int, max: int) -> Result[Bytes] {
+        if n > self.limit {
+            self.broken = true
+            return err(fail(413, "the request body is larger than {self.limit} bytes"))
+        }
+        let remaining = n - self.delivered
+        if remaining <= 0 {
+            return ok(Bytes())
+        }
+        if !self.started {
+            self.started = true
+            (self.first_read)() or |e| {
+                self.broken = true
+                return err(e)
+            }
+        }
+        let want = max.min(remaining).min(65536)
+        let piece = (self.pull)(want) or |e| {
+            self.broken = true
+            return err(e)
+        }
+        if piece.is_empty() {
+            self.broken = true
+            return err(fail(400, "the request body ended before its Content-Length"))
+        }
+        // A piece past `want` would be bytes of the next request.
+        if piece.len() > want {
+            self.broken = true
+            return err(fail(500, "the body source gave more bytes than were asked for"))
+        }
+        self.delivered += piece.len()
+        return ok(piece)
+    }
+
+    /// The rest of the body.
+    fn all(self) -> Result[Bytes] {
+        let first = self.read(65536)?
+        if first.is_empty() {
+            return ok(first)
+        }
+        let second = self.read(65536)?
+        if second.is_empty() {
+            return ok(first)
+        }
+        let out = BytesBuilder()
+        out.push_bytes(first)
+        out.push_bytes(second)
+        while true {
+            let piece = self.read(65536)?
+            if piece.is_empty() {
+                break
+            }
+            out.push_bytes(piece)
+        }
+        return ok(out.to_bytes())
+    }
+
+    /// The bytes of the body not read yet when that is known: 0 when there is none or it has been
+    /// read to its end, the rest of a `Content-Length`, and `none` for a chunked body that has
+    /// not been read to its end. The connection decides from it whether to drain.
+    fn unread(self) -> int? {
+        if self.broken {
+            return none
+        }
+        return match self.framing {
+            NoBody    => some(0)
+            Length(n) => some((n - self.delivered).max(0))
+            Chunked   => if self.finished { some(0) } else { none }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The request
+// ---------------------------------------------------------------------------------------------
+
+/// A request, as a handler sees it. A program cannot build one (it has fields of the module):
+/// the server makes them, and `test_request` makes one for a test.
+pub class Request {
+    /// As sent; methods are case-sensitive (RFC 9110 9.1).
+    pub method: str
+    /// The request-target as sent: `/items/7?x=1`.
+    pub target: str
+    /// The path, not decoded: `/items/7`, and `*` for `OPTIONS *`.
+    pub path: str
+    /// What follows the `?`, not decoded; "" when there is none.
+    pub query: str
+    /// `HTTP/1.1` or `HTTP/1.0`.
+    pub version: str
+    pub headers: Headers
+    /// The peer's `host:port`.
+    pub remote_addr: str
+    host_name: str
+    params: Map[str, str] = {:}
+    reader: BodyReader
+    parsed_query: Map[str, List[str]]? = none
+    grammar: Grammar
+}
+
+fn request(head: Head, reader: BodyReader, remote_addr: str) -> Request {
+    return Request {
+        method: head.method,
+        target: head.target,
+        path: head.path,
+        query: head.query,
+        version: head.version,
+        headers: head.headers,
+        remote_addr: remote_addr,
+        host_name: head.host,
+        reader: reader,
+        grammar: head.grammar,
+    }
+}
+
+impl Request {
+    /// A header field: every value of the name joined with `, `.
+    pub fn header(self, name: str) -> str? => self.headers.get(name)
+
+    /// The host the request is addressed to: the authority of an absolute-form target, else the
+    /// `Host` field; "" in an HTTP/1.0 request that has neither.
+    pub fn host(self) -> str => self.host_name
+
+    /// A parameter of the route that matched, percent-decoded: `:id` or `*rest` of the pattern.
+    /// The value is what the client wrote, decoded once: `%2F` gives a `/` inside the value, and
+    /// a program that uses it as a file name or a key must check it itself. A `.` or `..`
+    /// segment, and an escape of a control character, never reach a handler: the router answers
+    /// 400 for them.
+    pub fn param(self, name: str) -> str? => self.params.get(name)
+
+    /// All the parameters of the query, decoded; see `parse_query` for how. The query is already
+    /// bounded by `max_request_line`, so it is parsed whole, without a cap on its pairs.
+    pub fn query_values(self) -> Map[str, List[str]] {
+        if let some(parsed) = self.parsed_query {
+            return parsed
+        }
+        let empty: Map[str, List[str]] = {:}
+        let parsed = query_pairs(self.grammar.escapes, self.query, self.query.len() + 1) or empty
+        self.parsed_query = some(parsed)
+        return parsed
+    }
+
+    /// The first value of a parameter of the query, decoded.
+    pub fn query_value(self, name: str) -> str? {
+        let values = self.query_values().get(name)?
+        return values.first()
+    }
+
+    /// The length the body is declared to have: 0 when there is no body, `none` when it is
+    /// chunked.
+    pub fn content_length(self) -> int? {
+        return match self.reader.framing {
+            NoBody    => some(0)
+            Length(n) => some(n)
+            Chunked   => none
+        }
+    }
+
+    /// Replaces `max_body_bytes` for this request. Call it before the first read.
+    pub fn set_body_limit(self, bytes: int) {
+        self.reader.limit = bytes
+    }
+
+    /// The next piece of the body, 1 to `max` bytes, empty at the end. A body over the limit is a
+    /// 413 `Failure`, a body that stops short a 400, a timeout a 408.
+    pub fn read(self, max: int) -> Result[Bytes] => self.reader.read(max)
+
+    /// The rest of the body, whole.
+    pub fn body(self) -> Result[Bytes] => self.reader.all()
+
+    /// The rest of the body as UTF-8; text that is not is a 400 `Failure`.
+    pub fn text(self) -> Result[str] {
+        let data = self.reader.all()?
+        return match data.to_str() {
+            ok(s)  => ok(s)
+            err(_) => err(fail(400, "the request body is not UTF-8 text"))
+        }
+    }
+}
+
+/// A request with an in-memory body and no connection, to test a handler: `test_request("POST",
+/// "/items?x=1", [("Content-Type", "application/json")], body)`. The version is HTTP/1.1, and
+/// the body limit is the default of `Options`; `version` can be `HTTP/1.0`, and `remote_addr` is
+/// what `Request.remote_addr` says. A `Content-Length` is added when there is a body and no such
+/// header is given, and one that is given and differs from the length of the body is a mistake of
+/// the test and panics, like a `version` that is neither `HTTP/1.1` nor `HTTP/1.0`; a
+/// `Transfer-Encoding` header is not acted on, the body is delivered as it is. A target that is
+/// not a path or `*` is a mistake of the test and panics.
+pub fn test_request(
+    method: str,
+    target: str,
+    headers: List[(str, str)] = [],
+    body: Bytes = Bytes(),
+    version: str = "HTTP/1.1",
+    remote_addr: str = "127.0.0.1:0",
+) -> Request {
+    if version != "HTTP/1.1" && version != "HTTP/1.0" {
+        panic("httpd.test_request: the version `{version}` must be HTTP/1.1 or HTTP/1.0")
+    }
+    if method.is_empty() {
+        panic("httpd.test_request: the method is empty")
+    }
+    if !target.starts_with("/") && target != "*" {
+        panic("httpd.test_request: the target `{target}` must start with `/`, or be `*`")
+    }
+    let fields = Headers()
+    for (name, value) in headers {
+        fields.add(name, value)
+    }
+    var path = target
+    var query = ""
+    if let some((p, q)) = target.split_once("?") {
+        path = p
+        query = q
+    }
+    var framing: Framing = .NoBody
+    if let some(given) = fields.get("content-length") {
+        if given != "{body.len()}" {
+            panic(
+                "httpd.test_request: the Content-Length `{given}` is not the length of the body, {body.len()}",
+            )
+        }
+    }
+    if !body.is_empty() {
+        framing = .Length(body.len())
+        if !fields.has("content-length") {
+            fields.add("Content-Length", "{body.len()}")
+        }
+    }
+    var pos = 0
+    let pull = fn(n: int) -> Result[Bytes] {
+        let end = (pos + n).min(body.len())
+        let piece = body.slice(pos, end)
+        pos = end
+        return ok(piece)
+    }
+    let head = Head {
+        method: method,
+        target: target,
+        path: path,
+        query: query,
+        version: version,
+        headers: fields,
+        host: fields.get("host") or "",
+        framing: framing,
+        expect_continue: false,
+        keep_alive: version == "HTTP/1.1",
+        grammar: grammar(),
+    }
+    return request(head, body_reader(framing, Options {}.max_body_bytes, pull), remote_addr)
+}
+
+// ---------------------------------------------------------------------------------------------
+// The router
+// ---------------------------------------------------------------------------------------------
+
+/// What one route is: the handler, and the names of its parameters in order (`wild` is the name
+/// of a final `*rest`).
+class Route {
+    method: str
+    pattern: str
+    names: List[str]
+    wild: str?
+    handler: Handler
+}
+
+/// A node of the tree of patterns: one for each segment. A literal segment, the `:name` segment
+/// and the `*name` ending are the three kinds of child, tried in that order.
+class Node {
+    literal: Map[str, Node] = {:}
+    param: Node? = none
+    /// The routes that end here, by method.
+    leaves: Map[str, Route] = {:}
+    /// The routes that end here with a `*name`, by method.
+    wild: Map[str, Route] = {:}
+}
+
+/// The methods RFC 9110 9.1 defines, and PATCH (RFC 5789): a request with one of them that no
+/// route answers is 405 or 404, and a request with any other is 501.
+const KNOWN_METHODS: List[str] = [
+    "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH",
+]
+
+/// Sends a request to the handler of the first pattern that fits its method and path. Build one
+/// with `Router()`, add routes with `get`, `post` and the others, and serve `router.handler()`.
+///
+/// A pattern is `/`-separated segments: a literal (`items`), `:name` (one non-empty segment,
+/// decoded into `req.param(name)`) and a last `*name` (the rest of the path, one or more
+/// segments joined with `/`, the last possibly empty: `/files/*rest` takes `/files/a/b` and
+/// `/files/`, not `/files`). A literal beats `:name`, which beats `*name`, decided segment by
+/// segment from the left and whatever the order of registration. There is no trailing-slash
+/// redirect. A literal is compared with the segment as it came on the wire, so it matches what
+/// `Request.path` says: `/admin` does not match `/%61dmin`. Only the values of `:name` and
+/// `*name` are percent-decoded. A literal is written as it appears in a URL, so it may hold
+/// `%XX` escapes and then matches exactly that text, byte for byte: `%2f` and `%2F` are two
+/// different literals, and a client that writes the other one gets a 404. A pattern that is malformed, that has a
+/// literal that is not valid path text (a space, a control character, `?`, `#`, a bad escape, a
+/// `.` or `..`), that repeats a method and pattern, or that has a method that is not a token or
+/// is a lower-case spelling of a standard method, panics where it is added.
+///
+/// The router answers by itself: 404 when no pattern fits the path, 405 with `Allow` when the
+/// path fits under other methods, 501 for a method that is neither one of the standard methods
+/// nor used by a route, 400 for a bad percent-escape in the path, for an escape of a control
+/// character, and for a `.` or `..` segment (written with dots or `%2E`), which a proxy in front
+/// resolves before it routes, HEAD by the route of GET when there is no route of HEAD (a route
+/// of HEAD, even a `:name` one, comes first), and OPTIONS by 204 with `Allow` when there is no
+/// route of OPTIONS.
+pub class Router {
+    grammar: Grammar
+    root: Node = Node {}
+    methods: List[str] = []
+}
+
+pub fn Router() -> Router => Router { grammar: grammar() }
+
+impl Router {
+    /// Adds a route; panics when the pattern is malformed or the route exists.
+    pub fn handle(self, method: str, pattern: str, handler: Handler) {
+        if !is_token(self.grammar, method) {
+            panic("httpd.Router: `{method}` is not a method: a method is a token such as GET")
+        }
+        let upper = method.to_upper()
+        if upper != method && KNOWN_METHODS.contains(upper) {
+            panic(
+                "httpd.Router: `{method}` is never reached: methods are case-sensitive, write {upper}",
+            )
+        }
+        if !pattern.starts_with("/") {
+            panic("httpd.Router: the pattern `{pattern}` must start with `/`")
+        }
+        let segments = pattern[1..].split("/")
+        let names: List[str] = []
+        var wild: str? = none
+        var node = self.root
+        for i in 0..segments.len() {
+            let segment = segments[i]
+            if segment.starts_with("*") {
+                let name = segment[1..]
+                if name.is_empty() {
+                    panic("httpd.Router: the pattern `{pattern}` has a `*` with no name")
+                }
+                if i != segments.len() - 1 {
+                    panic("httpd.Router: the pattern `{pattern}` has `*{name}` before its end")
+                }
+                if names.contains(name) {
+                    panic("httpd.Router: the pattern `{pattern}` names `{name}` twice")
+                }
+                wild = some(name)
+            } else if segment.starts_with(":") {
+                let name = segment[1..]
+                if name.is_empty() {
+                    panic("httpd.Router: the pattern `{pattern}` has a `:` with no name")
+                }
+                if names.contains(name) {
+                    panic("httpd.Router: the pattern `{pattern}` names `{name}` twice")
+                }
+                names.push(name)
+                if let some(child) = node.param {
+                    node = child
+                } else {
+                    let child = Node {}
+                    node.param = some(child)
+                    node = child
+                }
+            } else if let some(child) = node.literal.get(segment) {
+                node = child
+            } else {
+                self.check_literal(pattern, segment)
+                let child = Node {}
+                node.literal[segment] = child
+                node = child
+            }
+        }
+        let ends = if wild == none { node.leaves } else { node.wild }
+        if ends.contains_key(method) {
+            panic("httpd.Router: {method} {pattern} is already registered")
+        }
+        ends[method] = Route {
+            method: method,
+            pattern: pattern,
+            names: names,
+            wild: wild,
+            handler: handler,
+        }
+        if !self.methods.contains(method) {
+            self.methods.push(method)
+        }
+    }
+
+    /// Panics unless `segment` can be the literal of a route: valid path text that the router
+    /// can ever be asked for.
+    fn check_literal(self, pattern: str, segment: str) {
+        let g = self.grammar
+        if !g.path_literal.is_match(segment) {
+            panic(
+                "httpd.Router: the segment `{segment}` of `{pattern}` is not valid path text: use letters, digits, -._~!$&'()*+,;=:@ and %XX escapes",
+            )
+        }
+        if g.control_escape.is_match(segment) {
+            panic(
+                "httpd.Router: the segment `{segment}` of `{pattern}` has an escape of a control character, which the server refuses",
+            )
+        }
+        if g.dot_segment.is_match(segment) {
+            panic(
+                "httpd.Router: the segment `{segment}` of `{pattern}` is a dot segment, which the server refuses with 400",
+            )
+        }
+    }
+
+    pub fn get(self, pattern: str, handler: Handler) => self.handle("GET", pattern, handler)
+
+    pub fn post(self, pattern: str, handler: Handler) => self.handle("POST", pattern, handler)
+
+    pub fn put(self, pattern: str, handler: Handler) => self.handle("PUT", pattern, handler)
+
+    pub fn patch(self, pattern: str, handler: Handler) => self.handle("PATCH", pattern, handler)
+
+    pub fn delete(self, pattern: str, handler: Handler) => self.handle("DELETE", pattern, handler)
+
+    /// The router as a handler, for `server.serve`.
+    pub fn handler(self) -> Handler {
+        return fn(req: Request) -> Result[Response] => self.dispatch(req)
+    }
+
+    fn dispatch(self, req: Request) -> Result[Response] {
+        if req.path == "*" {
+            if req.method == "OPTIONS" {
+                return ok(status(204).header("Allow", allow_value(self.methods)))
+            }
+            return ok(text(404, "404 Not Found\n"))
+        }
+        // The path is matched as it came, segment by segment, and only the values of parameters
+        // are decoded: `req.path` and the router then agree on what the path is. A path that a
+        // proxy in front would read differently is refused (3 patterns at most, whatever its
+        // length).
+        let g = self.grammar
+        let path = req.path
+        if path.contains("%") {
+            if g.bad_escape.is_match(path) {
+                return ok(text(400, "400 Bad Request: a bad percent-escape in the path\n"))
+            }
+            if g.control_escape.is_match(path) {
+                return ok(text(400, "400 Bad Request: a control character in the path\n"))
+            }
+        }
+        if g.dot_segment.is_match(path) {
+            return ok(text(400, "400 Bad Request: a dot segment in the path\n"))
+        }
+        // The first segment is the empty one before the first `/`.
+        let segments = path.split("/")
+        let values: List[str] = []
+        var route = find_route(self.root, segments, 1, req.method, values)
+        if route == none && req.method == "HEAD" {
+            values.clear()
+            route = find_route(self.root, segments, 1, "GET", values)
+        }
+        if let some(r) = route {
+            for i in 0..values.len() {
+                let value = percent_decode(g.escapes, values[i], false) or {
+                    return ok(text(400, "400 Bad Request: a parameter that is not valid text\n"))
+                }
+                // `%2F` is allowed inside a value, so a dot segment can hide in one
+                // (`a%2F..%2Fb`): the decoded value is checked as the path was, and for a C1
+                // control character, which the escape check on the path does not see.
+                if value.contains(".") && g.decoded_dot.is_match(value) {
+                    return ok(text(400, "400 Bad Request: a dot segment in a parameter\n"))
+                }
+                if g.c1_control.is_match(value) {
+                    return ok(text(400, "400 Bad Request: a control character in a parameter\n"))
+                }
+                values[i] = value
+            }
+            let params: Map[str, str] = {:}
+            for i in 0..r.names.len() {
+                params[r.names[i]] = values[i]
+            }
+            if let some(name) = r.wild {
+                params[name] = values[r.names.len()]
+            }
+            req.params = params
+            return (r.handler)(req)
+        }
+        let allowed: List[str] = []
+        collect_methods(self.root, segments, 1, allowed)
+        if req.method == "OPTIONS" && !allowed.is_empty() {
+            return ok(status(204).header("Allow", allow_value(allowed)))
+        }
+        if !KNOWN_METHODS.contains(req.method) && !self.methods.contains(req.method) {
+            return ok(text(501, "501 Not Implemented\n"))
+        }
+        if !allowed.is_empty() {
+            return ok(text(405, "405 Method Not Allowed\n").header("Allow", allow_value(allowed)))
+        }
+        return ok(text(404, "404 Not Found\n"))
+    }
+}
+
+/// The route for `method` that fits `segments` from index `i`, trying a literal, then `:name`,
+/// then `*name` at each segment, and going back when a branch fits no route. `values` collects
+/// the parameters in order (the `*name` last) and holds those of the route found.
+fn find_route(node: Node, segments: List[str], i: int, method: str, values: List[str]) -> Route? {
+    if i == segments.len() {
+        return node.leaves.get(method)
+    }
+    let segment = segments[i]
+    if let some(child) = node.literal.get(segment) {
+        if let some(r) = find_route(child, segments, i + 1, method, values) {
+            return some(r)
+        }
+    }
+    if let some(child) = node.param {
+        if !segment.is_empty() {
+            values.push(segment)
+            if let some(r) = find_route(child, segments, i + 1, method, values) {
+                return some(r)
+            }
+            let _ = values.pop()
+        }
+    }
+    if let some(r) = node.wild.get(method) {
+        values.push(segments[i..].join("/"))
+        return some(r)
+    }
+    return none
+}
+
+/// Adds to `out` the method of every route that fits `segments` from `i`, whatever its method:
+/// what a 405 and an OPTIONS answer put in `Allow`.
+fn collect_methods(node: Node, segments: List[str], i: int, out: List[str]) {
+    if i == segments.len() {
+        out.extend(node.leaves.keys())
+        return
+    }
+    let segment = segments[i]
+    if let some(child) = node.literal.get(segment) {
+        collect_methods(child, segments, i + 1, out)
+    }
+    if let some(child) = node.param {
+        if !segment.is_empty() {
+            collect_methods(child, segments, i + 1, out)
+        }
+    }
+    out.extend(node.wild.keys())
+}
+
+/// The value of an `Allow` header for routes with these methods: GET brings HEAD, and OPTIONS is
+/// always allowed because the router answers it. Each once, in alphabetical order.
+fn allow_value(methods: List[str]) -> str {
+    let all: List[str] = ["OPTIONS"]
+    for method in methods {
+        if !all.contains(method) {
+            all.push(method)
+        }
+    }
+    if all.contains("GET") && !all.contains("HEAD") {
+        all.push("HEAD")
+    }
+    all.sort()
+    return all.join(", ")
+}
+
+// ---------------------------------------------------------------------------------------------
+// The response writer
+// ---------------------------------------------------------------------------------------------
+
+/// The reason phrase of a status (RFC 9110 15); "" for a code that is not in the table, which
+/// RFC 9112 4 allows (the space after the code is still written).
+fn reason(code: int) -> str {
+    return match code {
+        100 => "Continue"
+        101 => "Switching Protocols"
+        200 => "OK"
+        201 => "Created"
+        202 => "Accepted"
+        203 => "Non-Authoritative Information"
+        204 => "No Content"
+        205 => "Reset Content"
+        206 => "Partial Content"
+        300 => "Multiple Choices"
+        301 => "Moved Permanently"
+        302 => "Found"
+        303 => "See Other"
+        304 => "Not Modified"
+        305 => "Use Proxy"
+        307 => "Temporary Redirect"
+        308 => "Permanent Redirect"
+        400 => "Bad Request"
+        401 => "Unauthorized"
+        402 => "Payment Required"
+        403 => "Forbidden"
+        404 => "Not Found"
+        405 => "Method Not Allowed"
+        406 => "Not Acceptable"
+        407 => "Proxy Authentication Required"
+        408 => "Request Timeout"
+        409 => "Conflict"
+        410 => "Gone"
+        411 => "Length Required"
+        412 => "Precondition Failed"
+        413 => "Content Too Large"
+        414 => "URI Too Long"
+        415 => "Unsupported Media Type"
+        416 => "Range Not Satisfiable"
+        417 => "Expectation Failed"
+        418 => "I'm a teapot"
+        421 => "Misdirected Request"
+        422 => "Unprocessable Content"
+        426 => "Upgrade Required"
+        428 => "Precondition Required"
+        429 => "Too Many Requests"
+        431 => "Request Header Fields Too Large"
+        451 => "Unavailable For Legal Reasons"
+        500 => "Internal Server Error"
+        501 => "Not Implemented"
+        502 => "Bad Gateway"
+        503 => "Service Unavailable"
+        504 => "Gateway Timeout"
+        505 => "HTTP Version Not Supported"
+        _   => ""
+    }
+}
+
+/// An error response the server writes itself (3.10): `<code> <reason>: <what was wrong>`.
+fn error_response(status: int, why: str) -> Response {
+    return text(status, "{status} {reason(status)}: {why}\n")
+}
+
+/// Why a response cannot be sent as it is, or `none`: a status outside 200 to 599, a header
+/// that could split the response or that the server owns (RFC 9112 11.1, plan 2.6), or a
+/// stream with a negative length.
+fn response_fault(g: Grammar, response: Response) -> str? {
+    if response.status < 200 || response.status > 599 {
+        return some("the status {response.status} is not between 200 and 599")
+    }
+    if let some(why) = body_fault(response) {
+        return some(why)
+    }
+    for (name, value) in response.headers.lines() {
+        if !is_token(g, name) {
+            return some("the header name `{name}` is not a token")
+        }
+        if !g.value_chars.is_match(value) {
+            return some("the value of the header `{name}` has a control character")
+        }
+        let key = name.to_lower()
+        if key == "content-length" || key == "transfer-encoding" {
+            return some("the header `{name}` is set by the server, not by a handler")
+        }
+        if key == "connection" && value.to_lower() != "close" {
+            return some("the header Connection can only be `close` in a response of a handler")
+        }
+    }
+    return none
+}
+
+fn body_fault(response: Response) -> str? {
+    return match response.body {
+        Stream(_, length) => if (length or 0) < 0 {
+            some("the length of a streamed body cannot be negative")
+        } else {
+            none
+        }
+        _ => none
+    }
+}
+
+/// Whether a response of this status has no body and no `Content-Length` (RFC 9112 6.2, 6.1).
+fn bodyless(status: int) -> bool => status < 200 || status == 204 || status == 304
+
+/// The size of a response's body in bytes.
+fn body_size(response: Response) -> int {
+    return match response.body {
+        Empty        => 0
+        Text(s)      => s.len()
+        Data(b)      => b.len()
+        Stream(_, n) => n or 0
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------------------------
+
+/// What a connection is doing, for `stop`: an idle one is closed at once, any other finishes its
+/// response first.
+enum Phase {
+    Idle
+    Head
+    Handler
+    Writing
+}
+
+class ConnState {
+    conn: net.Conn
+    id: int
+    phase: Phase = .Idle
+    /// The coroutines of the connection's user code: the handler of a request, then the closure
+    /// of a stream. The connection's coroutine keeps the protocol and waits for them with
+    /// `join_result`, so a panic or a timeout of user code is a value it answers, and it ends
+    /// them when it ends.
+    group: CoGroup = CoGroup()
+    /// The running handler and when it is out of time (0: no limit), for the sweeper.
+    handler: Coroutine[Result[Response]]? = none
+    deadline: float = 0.0
+    timed_out: bool = false
+}
+
+/// How a handler ended, seen from its connection.
+enum Outcome {
+    Done(Result[Response])
+    /// A panic (or, in `Server.connection`, any end that is not a result): the message.
+    Panicked(str)
+    /// Cancelled by the sweeper after `handler_timeout`.
+    TimedOut
+}
+
+/// The result of reading one line of a head.
+enum Line {
+    Text(str)
+    /// The end of the stream, a reset, a timeout where none is answered, or a closed connection:
+    /// there is nobody to answer, so the connection ends silently.
+    Gone
+    Refuse(Reject)
+}
+
+/// What a read of a line gave: its text, the end of the connection, or why the request is
+/// refused. A timeout is `Gone` unless `timeout_answers`, a line over the limit set on the
+/// connection is 414 (431 for a field line, `field`) and a line that is not UTF-8 is 400.
+fn read_head_line(conn: net.Conn, o: Options, timeout_answers: bool, field: bool) -> Line {
+    let got = conn.read_line() or |e| {
+        if let some(ne) = e.as[net.Error]() {
+            return match ne {
+                LineTooLong => if field {
+                    .Refuse(
+                        reject(
+                            431,
+                            "a header field line is longer than {o.max_header_bytes} bytes",
+                        ),
+                    )
+                } else {
+                    .Refuse(
+                        reject(414, "the request line is longer than {o.max_request_line} bytes"),
+                    )
+                }
+                InvalidData => .Refuse(reject(400, "a line is not UTF-8 text"))
+                Timeout => if timeout_answers {
+                    .Refuse(reject(408, "the request head did not arrive in time"))
+                } else {
+                    .Gone
+                }
+                _ => .Gone
+            }
+        }
+        return .Gone
+    }
+    if let some(text) = got {
+        return .Text(text)
+    }
+    return .Gone
+}
+
+/// An error of a read of a body as the `Failure` a handler returns with `?`.
+fn body_failure(e: Error) -> Error {
+    if let some(ne) = e.as[net.Error]() {
+        let timed_out = match ne {
+            Timeout => true
+            _       => false
+        }
+        if timed_out {
+            return fail(408, "the request body did not arrive in time")
+        }
+    }
+    return fail(400, "the connection ended before the request body")
+}
+
+/// An unread body of at most this many bytes is read and thrown away so that the connection can
+/// carry the next request (3.10).
+const DRAIN_BYTES: int = 262144
+
+/// An HTTP server. `listen` makes one, `serve` runs it and `stop` ends it.
+pub class Server {
+    listener: net.Listener
+    options: Options
+    grammar: Grammar
+    conns: Map[int, ConnState] = {:}
+    group: CoGroup = CoGroup()
+    timer: Coroutine[()]? = none
+    /// The connections with a handler that is under `handler_timeout`, and what wakes the
+    /// sweeper when the first one comes. A server with no such handler has nothing waiting on a
+    /// timer.
+    busy: Map[int, ConnState] = {:}
+    sweep_wake: Signal = Signal()
+    /// Emitted when a connection ends or the server stops: what the accept loop waits on at the
+    /// cap.
+    slot_freed: Signal = Signal()
+    next_id: int = 0
+    serving: bool = false
+    stopping: bool = false
+    date_second: int = 0
+    date_text: str = ""
+}
+
+fn limit_fault(name: str, value: int) -> str? {
+    if value < 0 {
+        return some("httpd: Options.{name} is {value}: it cannot be negative")
+    }
+    return none
+}
+
+/// The most `net.Conn.set_line_limit` takes, which the two line limits are given to.
+const MAX_LINE_LIMIT: int = 1073741824
+
+/// A limit that is the line limit of a connection: 1 to `MAX_LINE_LIMIT`.
+fn line_limit_fault(name: str, value: int) -> str? {
+    if value < 1 || value > MAX_LINE_LIMIT {
+        return some("httpd: Options.{name} is {value}: use 1 to {MAX_LINE_LIMIT} bytes")
+    }
+    return none
+}
+
+fn time_fault(name: str, value: float) -> str? {
+    if value.is_nan() || value < 0.0 || value >= 1.0e9 {
+        return some(
+            "httpd: Options.{name} is {value}: use 0 or more and under 1e9 seconds (0 is none)",
+        )
+    }
+    return none
+}
+
+/// The first thing wrong with `options`, naming the field, or `none`.
+fn options_fault(o: Options) -> str? {
+    let found = [
+        line_limit_fault("max_request_line", o.max_request_line),
+        line_limit_fault("max_header_bytes", o.max_header_bytes),
+        limit_fault("max_headers", o.max_headers),
+        limit_fault("max_body_bytes", o.max_body_bytes),
+        time_fault("header_timeout", o.header_timeout),
+        time_fault("idle_timeout", o.idle_timeout),
+        time_fault("body_timeout", o.body_timeout),
+        time_fault("write_timeout", o.write_timeout),
+        time_fault("handler_timeout", o.handler_timeout),
+    ]
+    for fault in found {
+        if fault != none {
+            return fault
+        }
+    }
+    if o.max_connections < 1 {
+        return some("httpd: Options.max_connections is {o.max_connections}: it must be at least 1")
+    }
+    return none
+}
+
+/// Starts listening on `addr` (`host:port`; port 0 lets the system pick, and `server.addr()`
+/// says which). The error is the `net` error (`AddrInUse` and the rest), or a message that names
+/// the field of `options` that is not valid.
+pub fn listen(addr: str, options: Options = Options {}) -> Result[Server] {
+    if let some(why) = options_fault(options) {
+        return err(error(why))
+    }
+    let listener = net.listen(addr)?
+    return ok(Server { listener: listener, options: options, grammar: grammar() })
+}
+
+/// `listen` and then `serve`.
+pub fn serve(addr: str, handler: Handler, options: Options = Options {}) -> Result[()] {
+    let server = listen(addr, options: options)?
+    return server.serve(handler)
+}
+
+/// Ends a server after `grace` seconds: what is left of its connections is cancelled.
+fn grace_timer(server: Server, grace: float) {
+    wait(grace)
+    server.group.cancel()
+}
+
+/// A connection's coroutine: what runs `Server.connection` and always lets the connection go.
+fn connection_task(server: Server, state: ConnState, id: int, handler: Handler) {
+    defer {
+        // The user code of the connection ends first (its own `defer`s run), then the socket
+        // goes and the slot is free. The cancel is needed: `run_connection` runs as a child of
+        // this group and holds `state`, so the group is never dropped on its own, and a handler
+        // or a stream closure would outlive the connection.
+        state.group.cancel()
+        state.conn.close()
+        let _ = server.conns.remove(id)
+        let _ = server.busy.remove(id)
+        server.slot_freed.emit()
+    }
+    // The connection's own code runs in a child that is joined with `join_result`, so that a
+    // panic in it (a bug of this module) closes this connection and is logged, and the server
+    // goes on. One coroutine for each connection, not for each request.
+    let run = state.group.go(run_connection(server, state, handler))
+    if let err(e) = run.join_result() {
+        server.log("a connection ended by a panic in the server: {e.message()}")
+    }
+}
+
+fn run_connection(server: Server, state: ConnState, handler: Handler) {
+    server.connection(state, handler)
+}
+
+/// Calls a handler. It is the one place a handler runs: in a coroutine of its own, so that a
+/// panic or a timeout of it is a value for the connection.
+fn call_handler(handler: Handler, request: Request) -> Result[Response] => handler(request)
+
+/// The closure of a stream, in a coroutine of its own. It pauses once first, so that the writer
+/// has the handle of this coroutine (which a write after an error cancels) before the closure
+/// runs.
+fn call_stream(write: fn(BodyWriter) -> Result[()], writer: BodyWriter) -> Result[()] {
+    wait(0.0)
+    return write(writer)
+}
+
+/// The sweeper: one coroutine for each serving server. It waits on a signal while no handler is
+/// under `handler_timeout`, which costs nothing, and looks at most every quarter of a second
+/// while some are, cancelling each handler that is out of time. A handler that never suspends
+/// cannot be bounded: nothing else runs while it does.
+fn sweep(server: Server) {
+    while true {
+        if server.busy.is_empty() {
+            wait_for(server.sweep_wake)
+            continue
+        }
+        let now = time.now()
+        var next = 0.25
+        let expired: List[ConnState] = []
+        for state in server.busy.values() {
+            let left = state.deadline - now
+            if left <= 0.0 {
+                expired.push(state)
+            } else if left < next {
+                next = left
+            }
+        }
+        for state in expired {
+            let _ = server.busy.remove(state.id)
+            state.timed_out = true
+            if let some(co) = state.handler {
+                co.cancel()
+            }
+        }
+        wait(next.max(0.005))
+    }
+}
+
+/// The accept loop: a connection for each accepted socket, until `stop` closes the listener.
+fn accept_loop(server: Server, handler: Handler) {
+    while !server.stopping {
+        // At the cap the server stops accepting: the backlog holds the connections that wait,
+        // and a connection that ends (or `stop`) wakes this loop.
+        while server.conns.len() >= server.options.max_connections && !server.stopping {
+            wait_for(server.slot_freed)
+        }
+        if server.stopping {
+            break
+        }
+        let conn = server.listener.accept() or |e| {
+            if server.stopping || is_closed(e) {
+                break
+            }
+            // Out of descriptors, a connection reset in the backlog: logged, and tried again
+            // after a moment, so that it never ends `serve`.
+            server.log("accept failed: {e}")
+            wait(0.1)
+            continue
+        }
+        if server.stopping {
+            conn.close()
+            break
+        }
+        let id = server.next_id
+        server.next_id += 1
+        let state = ConnState { conn: conn, id: id }
+        server.conns[id] = state
+        server.group.go(connection_task(server, state, id, handler))
+    }
+}
+
+impl Server {
+    /// The address the server listens on, with the port the system picked.
+    pub fn addr(self) -> str => self.listener.addr()
+
+    /// The number of open connections.
+    pub fn connections(self) -> int => self.conns.len()
+
+    /// Accepts connections and answers their requests with `handler`, until `stop`; then it
+    /// returns `ok(())` once every connection has ended. An `err` if the server is already
+    /// serving or was stopped. It can be called on the main fiber or in a coroutine.
+    pub fn serve(self, handler: Handler) -> Result[()] {
+        if self.serving {
+            return err(error("httpd: the server is already serving"))
+        }
+        if self.stopping {
+            return err(error("httpd: the server was stopped"))
+        }
+        self.serving = true
+        let sweeper = go sweep(self)
+        let acceptor = go accept_loop(self, handler)
+        let ended = acceptor.join_result()
+        // Waits for the connections to end, which an event wakes (`join_all` on the main fiber
+        // sleeps to the next event too).
+        self.group.join_all()
+        if let some(timer) = self.timer {
+            timer.cancel()
+        }
+        sweeper.cancel()
+        if let err(e) = ended {
+            return err(e)
+        }
+        return ok(())
+    }
+
+    /// Stops the server. It never suspends, so a handler may call it, and calling it twice is
+    /// fine. The listener is closed and idle connections are closed; a connection that is busy
+    /// finishes its response, which then says `Connection: close`. After `grace` seconds the
+    /// connections that are left are cancelled: their handlers and stream closures end, and
+    /// their `defer`s run up to the first point where one would wait (the runtime abandons a
+    /// `defer` that suspends while its coroutine is being cancelled).
+    pub fn stop(self, grace: float = 10.0) {
+        if self.stopping {
+            return
+        }
+        self.stopping = true
+        self.listener.close()
+        for state in self.conns.values() {
+            let idle = match state.phase {
+                Idle => true
+                _    => false
+            }
+            if idle {
+                state.conn.close()
+            }
+        }
+        self.slot_freed.emit()
+        if self.serving {
+            self.timer = some(go grace_timer(self, grace.max(0.0)))
+        }
+    }
+
+    fn log(self, message: str) {
+        if self.options.log_errors {
+            io.eprintln("httpd: {message}")
+        }
+    }
+
+    /// Runs a handler in a child coroutine of the connection and waits for it with
+    /// `join_result`: its result, or what ended it. While it runs it is under `handler_timeout`
+    /// (0 is none), which the sweeper enforces.
+    fn run_handler(self, state: ConnState, handler: Handler, request: Request) -> Outcome {
+        let timeout = self.options.handler_timeout
+        state.timed_out = false
+        let co = state.group.go(call_handler(handler, request))
+        state.handler = some(co)
+        if timeout > 0.0 && !co.done() {
+            state.deadline = time.now() + timeout
+            self.busy[state.id] = state
+            if self.busy.len() == 1 {
+                self.sweep_wake.emit()
+            }
+        }
+        let joined = co.join_result()
+        let _ = self.busy.remove(state.id)
+        state.handler = none
+        state.deadline = 0.0
+        return match joined {
+            ok(result) => .Done(result)
+            err(e) => if state.timed_out {
+                state.timed_out = false
+                .TimedOut
+            } else {
+                .Panicked(e.message())
+            }
+        }
+    }
+
+    /// The `Date` header value: formatted once a second.
+    fn date(self) -> str {
+        let now = int(time.unix())
+        if now != self.date_second {
+            self.date_second = now
+            self.date_text = datetime.format(
+                datetime.from_unix(float(now)),
+                "%a, %d %b %Y %H:%M:%S GMT",
+            )
+        }
+        return self.date_text
+    }
+
+    /// Writes a response head and body. The head and a body of at most 64 KiB go in one write; a
+    /// larger body follows in pieces of 256 KiB. `closing` puts `Connection: close` on it, and
+    /// `keep_alive_word` puts `Connection: keep-alive` (HTTP/1.0). A streamed body is written
+    /// as its closure produces it: chunked, unless it has a length or the request is HTTP/1.0,
+    /// where it ends with the connection (the caller then closes). The error is the write's, or
+    /// the stream's: either way the connection ends, without a lingering close. `what` names
+    /// the request in the log.
+    fn write_response(
+        self,
+        state: ConnState,
+        what: str,
+        version: str,
+        response: Response,
+        head_only: bool,
+        closing: bool,
+        keep_alive_word: bool,
+    ) -> Result[()] {
+        let conn = state.conn
+        let head = StrBuilder()
+        head.push("HTTP/1.1 {response.status} {reason(response.status)}\r\n")
+        var has_date = false
+        for (name, value) in response.headers.lines() {
+            let key = name.to_lower()
+            if key == "connection" {
+                continue
+            }
+            if key == "date" {
+                has_date = true
+            }
+            head.push(name)
+            head.push(": ")
+            head.push(value)
+            head.push("\r\n")
+        }
+        let size = body_size(response)
+        let has_body = !bodyless(response.status)
+        var chunked = false
+        var streamed = false
+        if has_body {
+            match response.body {
+                Stream(_, length) => {
+                    streamed = true
+                    if let some(n) = length {
+                        head.push("Content-Length: {n}\r\n")
+                    } else if version != "HTTP/1.0" && !head_only {
+                        chunked = true
+                        head.push("Transfer-Encoding: chunked\r\n")
+                    }
+                }
+                _ => head.push("Content-Length: {size}\r\n")
+            }
+        }
+        if !has_date {
+            head.push("Date: {self.date()}\r\n")
+        }
+        if self.options.server_name != "" && !response.headers.has("server") {
+            head.push("Server: {self.options.server_name}\r\n")
+        }
+        if closing {
+            head.push("Connection: close\r\n")
+        } else if keep_alive_word {
+            head.push("Connection: keep-alive\r\n")
+        }
+        head.push("\r\n")
+        let send_body = has_body && !head_only && (size > 0 || streamed)
+        conn.set_timeout(self.options.write_timeout)
+        if !send_body {
+            return conn.write(head.to_str())
+        }
+        if streamed {
+            return match response.body {
+                Stream(write, length) => self.stream_body(
+                    state,
+                    what,
+                    head.to_str(),
+                    write,
+                    length,
+                    chunked,
+                )
+                _ => ok(())
+            }
+        }
+        if size <= 65536 {
+            return match response.body {
+                Text(s) => {
+                    head.push(s)
+                    conn.write(head.to_str())
+                }
+                Data(b) => {
+                    let all = BytesBuilder()
+                    all.push_str(head.to_str())
+                    all.push_bytes(b)
+                    conn.write_bytes(all.to_bytes())
+                }
+                _ => conn.write(head.to_str())
+            }
+        }
+        conn.write(head.to_str())?
+        let data = match response.body {
+            Text(s) => s.to_bytes()
+            Data(b) => b
+            _       => Bytes()
+        }
+        var at = 0
+        while at < data.len() {
+            let end = (at + 262144).min(data.len())
+            conn.set_timeout(self.options.write_timeout)
+            conn.write_bytes(data.slice(at, end))?
+            at = end
+        }
+        return ok(())
+    }
+
+    /// Sends the head of a streamed response and then runs its closure, which writes the body.
+    /// It ends with the final chunk when the framing is chunked. The head is out when the
+    /// closure starts, so a failure of the closure cannot change the status: the connection is
+    /// closed without the final chunk, and the peer sees a body that was cut (RFC 9112 8). An
+    /// error of the peer is not logged (browsers leave); one of the closure is.
+    fn stream_body(
+        self,
+        state: ConnState,
+        what: str,
+        head: str,
+        write: fn(BodyWriter) -> Result[()],
+        length: int?,
+        chunked: bool,
+    ) -> Result[()] {
+        let conn = state.conn
+        let timeout = self.options.write_timeout
+        conn.set_timeout(timeout)
+        conn.write(head)?
+        let send = fn(data: Bytes) -> Result[()] {
+            conn.set_timeout(timeout)
+            return conn.write_bytes(data)
+        }
+        let note = fn(message: str) {
+            self.log("{what}: {message}")
+        }
+        let writer = BodyWriter {
+            send: send,
+            chunked: chunked,
+            length: length,
+            co: none,
+            note: note,
+        }
+        // The closure runs in a coroutine of its own: a panic of it is a value here, and
+        // cancelling it (a write after an error) does not end the connection's coroutine.
+        // A stream is not under `handler_timeout`: it may be long, and each write has the
+        // `write_timeout`.
+        let child = state.group.go(call_stream(write, writer))
+        writer.co = some(child)
+        let joined = child.join_result()
+        let outcome = match joined {
+            ok(r)  => r
+            err(e) => err(e)
+        }
+        writer.done = true
+        if writer.busy > 0 {
+            // A write is still waiting on the connection (the closure gave the writer to
+            // another coroutine and returned): what it sends would land after the end of the
+            // response, so the connection ends here, without a final chunk.
+            self.log("{what}: the stream returned while a write was in flight")
+            return err(error("httpd: the stream returned while a write was in flight"))
+        }
+        if let some(e) = writer.failed {
+            if writer.over {
+                self.log("{what}: {e}")
+            }
+            return err(e)
+        }
+        if let err(e) = outcome {
+            self.log("{what}: the stream failed: {e}")
+            return err(e)
+        }
+        if let some(n) = length {
+            if writer.written != n {
+                self.log("{what}: the stream ended after {writer.written} of {n} bytes")
+                return err(error("httpd: the stream is shorter than its length"))
+            }
+        }
+        if chunked {
+            conn.set_timeout(timeout)
+            return conn.write("0\r\n\r\n")
+        }
+        return ok(())
+    }
+
+    /// Answers with an error the server found in the request and ends the connection (the
+    /// lingering close of 3.10 follows in the caller's return).
+    fn refuse(self, state: ConnState, why: Reject, head_only: bool) {
+        let conn = state.conn
+        let sent = self.write_response(
+            state,
+            "",
+            "HTTP/1.1",
+            error_response(why.status, why.why),
+            head_only,
+            true,
+            false,
+        )
+        if sent.is_ok() {
+            self.linger(conn)
+        }
+    }
+
+    /// The lingering close (RFC 9112 9.6): tell the peer that nothing more comes, then read and
+    /// throw away what it still sends until it closes, for at most 2 seconds or 256 KiB, so that
+    /// closing with unread input does not reset the connection and lose the response.
+    fn linger(self, conn: net.Conn) {
+        let _ = conn.close_write()
+        let started = time.now()
+        var total = 0
+        while total < DRAIN_BYTES && time.now() - started < 2.0 {
+            conn.set_timeout(1.0)
+            let piece = conn.read(65536) or {
+                return
+            }
+            if piece.is_empty() {
+                return
+            }
+            total += piece.len()
+        }
+    }
+
+    /// Reads and throws away `count` bytes of the body, within one second. `false` when it
+    /// could not.
+    fn drain(self, conn: net.Conn, count: int) -> bool {
+        let started = time.now()
+        var left = count
+        while left > 0 {
+            let spent = time.now() - started
+            if spent >= 1.0 {
+                return false
+            }
+            conn.set_timeout(1.0 - spent)
+            let piece = conn.read(left.min(65536)) or {
+                return false
+            }
+            if piece.is_empty() {
+                return false
+            }
+            left -= piece.len()
+        }
+        return true
+    }
+
+    /// The response for what a handler returned: its response when it can be sent, else the
+    /// error response of a `Failure`, or a 500.
+    fn answer(self, request: Request, result: Result[Response]) -> Response {
+        return match result {
+            ok(response) => match response_fault(self.grammar, response) {
+                some(why) => {
+                    self.log("{request.method} {request.target}: 500: {why}")
+                    error_response(500, "the handler's response cannot be sent")
+                }
+                none => response
+            }
+            err(e) => match e.as[Failure]() {
+                some(f) => if f.status >= 400 && f.status <= 599 {
+                    text(f.status, f.message + "\n")
+                } else {
+                    self.log("{request.method} {request.target}: 500: {f}")
+                    error_response(500, "the handler failed")
+                }
+                none => {
+                    self.log("{request.method} {request.target}: 500: {e}")
+                    error_response(500, "the handler failed")
+                }
+            }
+        }
+    }
+
+    /// The body reader of a request: its bytes come from the connection, under `body_timeout`
+    /// for each read, and `100 Continue` is written when the handler first reads, if the client
+    /// asked for it.
+    fn body_for(self, conn: net.Conn, head: Head) -> BodyReader {
+        let timeout = self.options.body_timeout
+        // Each piece is read whole, under one deadline for the call: `read_exact` waits for all
+        // `n` bytes, and a client that sends one byte at a time cannot extend `set_timeout`.
+        let pull = fn(n: int) -> Result[Bytes] {
+            conn.set_timeout(timeout)
+            return match conn.read_exact(n) {
+                ok(data) => ok(data)
+                err(e)   => err(body_failure(e))
+            }
+        }
+        let reader = match head.framing {
+            Chunked => {
+                // Only CRLF ends a line of a chunked body: `read_until` is used, not
+                // `read_line`, which also takes a bare LF (CVE-2025-22871). `max` leaves out the
+                // CRLF. The whole call has `body_timeout`, as a piece of data has.
+                let line = fn(max: int) -> Result[ChunkLine] {
+                    conn.set_timeout(timeout)
+                    return match conn.read_until("\r\n".to_bytes(), max) {
+                        ok(got) => match got {
+                            some(b) => ok(.Line(b))
+                            none    => ok(.End)
+                        }
+                        err(e) => if let some(ne) = e.as[net.Error]() {
+                            match ne {
+                                LineTooLong   => ok(.TooLong)
+                                UnexpectedEnd => ok(.End)
+                                _             => err(body_failure(e))
+                            }
+                        } else {
+                            err(body_failure(e))
+                        }
+                    }
+                }
+                chunked_reader(self.grammar, self.options, pull, line)
+            }
+            _ => body_reader(head.framing, self.options.max_body_bytes, pull)
+        }
+        if head.expect_continue {
+            let write_timeout = self.options.write_timeout
+            reader.first_read = fn() -> Result[()] {
+                conn.set_timeout(write_timeout)
+                return match conn.write("HTTP/1.1 100 Continue\r\n\r\n") {
+                    ok(_)  => ok(())
+                    err(e) => err(body_failure(e))
+                }
+            }
+        }
+        return reader
+    }
+
+    /// Reads the request line, which may follow some empty lines (RFC 9112 2.2); the parser
+    /// counts them against `max_header_bytes`. They and the request line have one deadline of
+    /// `limit` seconds from the call (0 is none): each read gets what is left of it, so no
+    /// sequence of empty lines extends it. The deadline passing is a silent close, as an idle
+    /// timeout is.
+    fn request_line(self, conn: net.Conn, parser: HeadParser, limit: float) -> Line {
+        let deadline = time.now() + limit
+        while true {
+            if limit > 0.0 {
+                let left = deadline - time.now()
+                if left <= 0.0 {
+                    return .Gone
+                }
+                conn.set_timeout(left)
+            }
+            let line = read_head_line(conn, self.options, false, false)
+            match line {
+                Text(t) => {
+                    if !t.is_empty() {
+                        return line
+                    }
+                    parser.leading_line(t) or |r| {
+                        return .Refuse(r)
+                    }
+                }
+                _ => return line
+            }
+        }
+    }
+
+    /// One connection: requests are read and answered one after the other, in order, until
+    /// either side ends it.
+    fn connection(self, state: ConnState, handler: Handler) {
+        let conn = state.conn
+        let o = self.options
+        let peer = conn.peer_addr()
+        var first = true
+        while !self.stopping {
+            state.phase = .Idle
+            let wait_limit = if first { o.header_timeout } else { o.idle_timeout }
+            conn.set_timeout(wait_limit)
+            // A line longer than the limit is refused (414) as soon as the bytes show it, and is
+            // not buffered further: the request line has `max_request_line`, a field line
+            // (below) has `max_header_bytes`.
+            conn.set_line_limit(o.max_request_line)
+            first = false
+            let parser = head_parser(self.grammar, o)
+            let started = self.request_line(conn, parser, wait_limit)
+            let first_line = match started {
+                Text(t) => t
+                Gone    => return
+                Refuse(r) => {
+                    self.refuse(state, r, parser.method == "HEAD")
+                    return
+                }
+            }
+            // A request whose line arrives after `stop` is not started (RFC 9112 9.3.1 lets the
+            // client retry it): `stop` has closed this connection while it was idle, and the
+            // line was read before the coroutine could see that.
+            if self.stopping {
+                return
+            }
+            state.phase = .Head
+            parser.request_line(first_line) or |r| {
+                self.refuse(state, r, parser.method == "HEAD")
+                return
+            }
+            // The rest of the head has `header_timeout` for each line, and the whole of it is
+            // checked after each line, so a client that trickles lines is cut off at the latest
+            // after two such periods.
+            conn.set_timeout(o.header_timeout)
+            conn.set_line_limit(o.max_header_bytes)
+            let head_started = time.now()
+            var ended = false
+            while !ended {
+                let line = read_head_line(conn, o, true, true)
+                match line {
+                    Text(t) => {
+                        ended = parser.field_line(t) or |r| {
+                            self.refuse(state, r, parser.method == "HEAD")
+                            return
+                        }
+                    }
+                    Gone => return
+                    Refuse(r) => {
+                        self.refuse(state, r, parser.method == "HEAD")
+                        return
+                    }
+                }
+                if !ended
+                    && o.header_timeout > 0.0
+                    && time.now() - head_started > o.header_timeout {
+                    self.refuse(
+                        state,
+                        reject(408, "the request head did not arrive in time"),
+                        parser.method == "HEAD",
+                    )
+                    return
+                }
+            }
+            let head = parser.finish() or |r| {
+                self.refuse(state, r, parser.method == "HEAD")
+                return
+            }
+            state.phase = .Handler
+            let reader = self.body_for(conn, head)
+            let request = request(head, reader, peer)
+            let what = "{request.method} {request.target}"
+            // A panic or a timeout of the handler leaves its state and the body unknown: the
+            // answer says so, and the connection closes after it.
+            var broken = false
+            let result = match self.run_handler(state, handler, request) {
+                Done(r) => r
+                Panicked(message) => {
+                    self.log("{what}: 500: the handler panicked: {message}")
+                    broken = true
+                    ok(error_response(500, "the handler failed"))
+                }
+                TimedOut => {
+                    self.log("{what}: 503: the handler did not answer within the handler_timeout")
+                    broken = true
+                    ok(error_response(503, "the handler did not answer in time"))
+                }
+            }
+            state.phase = .Writing
+            let response = self.answer(request, result)
+            // Whether the connection stays open after the response (3.8, 3.10).
+            var closing = !head.keep_alive || self.stopping || broken
+            if response.headers.get("connection") != none {
+                closing = true
+            }
+            // The end of a stream with no length, in HTTP/1.0, is the close.
+            if head.version == "HTTP/1.0" && !bodyless(response.status) {
+                match response.body {
+                    Stream(_, length) => if length == none {
+                        closing = true
+                    }
+                    _ => {}
+                }
+            }
+            var drain = 0
+            if head.expect_continue && !reader.started {
+                // The client may be waiting to send, or may have started: not drained.
+                closing = true
+            } else {
+                match reader.unread() {
+                    some(n) => {
+                        if n > DRAIN_BYTES {
+                            closing = true
+                        }
+                        drain = n
+                    }
+                    none => closing = true
+                }
+            }
+            let keep_alive_word = !closing && head.version == "HTTP/1.0"
+            let sent = self.write_response(
+                state,
+                what,
+                head.version,
+                response,
+                head.method == "HEAD",
+                closing,
+                keep_alive_word,
+            )
+            if sent.is_err() {
+                return
+            }
+            if closing {
+                self.linger(conn)
+                return
+            }
+            if drain > 0 && !self.drain(conn, drain) {
+                return
+            }
+        }
+    }
+}
+
+fn is_closed(e: Error) -> bool {
+    if let some(ne) = e.as[net.Error]() {
+        return match ne {
+            Closed => true
+            _      => false
+        }
+    }
+    return false
+}

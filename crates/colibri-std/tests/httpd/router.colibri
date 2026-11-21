@@ -1,0 +1,579 @@
+import httpd_impl
+
+/// A handler that answers 200 with `label`, and the route's parameters.
+fn labelled(label: str) -> httpd_impl.Handler {
+    return fn(req: httpd_impl.Request) -> Result[httpd_impl.Response] {
+        let id = req.param("id") or "-"
+        let rest = req.param("rest") or "-"
+        return ok(httpd_impl.text(200, "{label} id={id} rest={rest}"))
+    }
+}
+
+fn body_of(r: httpd_impl.Response) -> str {
+    return match r.body {
+        Text(s) => s
+        _ => "(not text)"
+    }
+}
+
+/// Sends a request through the router and gives the response.
+fn call(router: httpd_impl.Router, method: str, target: str) -> httpd_impl.Response {
+    let handler = router.handler()
+    return handler(httpd_impl.test_request(method, target)) or |e| {
+        panic("the router returned an error: {e}")
+    }
+}
+
+/// The answer as `status body`.
+fn answer(router: httpd_impl.Router, method: str, target: str) -> str {
+    let r = call(router, method, target)
+    return "{r.status} {body_of(r)}"
+}
+
+fn allow(r: httpd_impl.Response) -> str => r.headers.get("allow") or "(no Allow)"
+
+// ---- the basics ----
+
+test "a route answers its method and path" {
+    let r = httpd_impl.Router()
+    r.get("/hello", labelled("hello"))
+    assert_eq(answer(r, "GET", "/hello"), "200 hello id=- rest=-")
+}
+
+test "the shortcuts are GET, POST, PUT, PATCH and DELETE" {
+    let r = httpd_impl.Router()
+    r.get("/x", labelled("get"))
+    r.post("/x", labelled("post"))
+    r.put("/x", labelled("put"))
+    r.patch("/x", labelled("patch"))
+    r.delete("/x", labelled("delete"))
+    for method in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+        assert_eq(answer(r, method, "/x"), "200 {method.to_lower()} id=- rest=-")
+    }
+}
+
+test "handle takes any method" {
+    let r = httpd_impl.Router()
+    r.handle("PROPFIND", "/dav", labelled("propfind"))
+    assert_eq(answer(r, "PROPFIND", "/dav"), "200 propfind id=- rest=-")
+}
+
+test "the root path is a pattern" {
+    let r = httpd_impl.Router()
+    r.get("/", labelled("root"))
+    r.get("/a", labelled("a"))
+    assert_eq(answer(r, "GET", "/"), "200 root id=- rest=-")
+    assert_eq(answer(r, "GET", "/a"), "200 a id=- rest=-")
+}
+
+test "the query is not part of the path" {
+    let r = httpd_impl.Router()
+    r.get("/items", labelled("items"))
+    assert_eq(answer(r, "GET", "/items?page=2"), "200 items id=- rest=-")
+}
+
+test "the same path under two methods goes to two handlers" {
+    let r = httpd_impl.Router()
+    r.get("/items", labelled("list"))
+    r.post("/items", labelled("create"))
+    assert_eq(answer(r, "GET", "/items"), "200 list id=- rest=-")
+    assert_eq(answer(r, "POST", "/items"), "200 create id=- rest=-")
+}
+
+test "the handler's error is the router's error" {
+    let r = httpd_impl.Router()
+    r.get("/gone", fn(req: httpd_impl.Request) -> Result[httpd_impl.Response] {
+        return err(httpd_impl.fail(410, "gone"))
+    })
+    let handler = r.handler()
+    let result = handler(httpd_impl.test_request("GET", "/gone"))
+    match result {
+        ok(_) => panic("an error was expected")
+        err(e) => assert_eq(e.as[httpd_impl.Failure]().expect("a Failure").status, 410)
+    }
+}
+
+test "the request the handler sees is the one that was sent" {
+    let r = httpd_impl.Router()
+    r.post("/items/:id", fn(req: httpd_impl.Request) -> Result[httpd_impl.Response] {
+        return ok(httpd_impl.text(200, "{req.method} {req.path} {req.query} {req.param("id") or "none"}"))
+    })
+    assert_eq(answer(r, "POST", "/items/7?x=1"), "200 POST /items/7 x=1 7")
+}
+
+// ---- parameters ----
+
+test "a :name segment is one segment and is a parameter" {
+    let r = httpd_impl.Router()
+    r.get("/items/:id", labelled("item"))
+    assert_eq(answer(r, "GET", "/items/7"), "200 item id=7 rest=-")
+    assert_eq(answer(r, "GET", "/items/seven"), "200 item id=seven rest=-")
+    assert_eq(answer(r, "GET", "/items/7/more"), "404 404 Not Found\n")
+    assert_eq(answer(r, "GET", "/items"), "404 404 Not Found\n")
+}
+
+test "a :name segment is not empty" {
+    let r = httpd_impl.Router()
+    r.get("/items/:id", labelled("item"))
+    assert_eq(answer(r, "GET", "/items/"), "404 404 Not Found\n")
+}
+
+test "several parameters are bound by name" {
+    let r = httpd_impl.Router()
+    r.get("/users/:user/posts/:post", fn(req: httpd_impl.Request) -> Result[httpd_impl.Response] {
+        return ok(httpd_impl.text(200, "{req.param("user") or "?"}/{req.param("post") or "?"}"))
+    })
+    assert_eq(answer(r, "GET", "/users/ann/posts/9"), "200 ann/9")
+}
+
+test "a parameter is percent-decoded and a plus stays a plus" {
+    let r = httpd_impl.Router()
+    r.get("/items/:id", labelled("item"))
+    assert_eq(answer(r, "GET", "/items/a%20b"), "200 item id=a b rest=-")
+    assert_eq(answer(r, "GET", "/items/a+b"), "200 item id=a+b rest=-")
+    assert_eq(answer(r, "GET", "/items/caf%C3%A9"), "200 item id=café rest=-")
+}
+
+test "an escaped slash stays inside its segment" {
+    let r = httpd_impl.Router()
+    r.get("/items/:id", labelled("item"))
+    assert_eq(answer(r, "GET", "/items/a%2Fb"), "200 item id=a/b rest=-")
+}
+
+test "a parameter with a plus and an escape is decoded by the escape alone" {
+    let r = httpd_impl.Router()
+    r.get("/items/:id", labelled("item"))
+    assert_eq(answer(r, "GET", "/items/a+b%20c"), "200 item id=a+b c rest=-")
+    assert_eq(answer(r, "GET", "/items/a%2Bb+c"), "200 item id=a+b+c rest=-")
+}
+
+test "a literal is compared with the segment as it came: /%61dmin is not /admin" {
+    let r = httpd_impl.Router()
+    r.get("/admin", labelled("admin"))
+    r.get("/items", labelled("items"))
+    assert_eq(answer(r, "GET", "/%61dmin"), "404 404 Not Found\n")
+    assert_eq(answer(r, "GET", "/it%65ms"), "404 404 Not Found\n")
+    assert_eq(answer(r, "GET", "/admin"), "200 admin id=- rest=-")
+    // The router and `Request.path` agree: a check on the path sees what the router matched.
+    var seen = ""
+    let h = r.handler()
+    let req = httpd_impl.test_request("GET", "/%61dmin")
+    let _ = h(req)
+    seen = req.path
+    assert_eq(seen, "/%61dmin")
+}
+
+test "a literal with an escape matches exactly that text" {
+    let r = httpd_impl.Router()
+    r.get("/a%20b", labelled("escaped"))
+    assert_eq(answer(r, "GET", "/a%20b"), "200 escaped id=- rest=-")
+    assert_eq(answer(r, "GET", "/a%2520b"), "404 404 Not Found\n")
+    assert_eq(answer(r, "GET", "/a%20c"), "404 404 Not Found\n")
+    assert_eq(answer(r, "GET", "/a%2ob"), "400 400 Bad Request: a bad percent-escape in the path\n")
+}
+
+test "a literal can hold the characters of a path" {
+    let r = httpd_impl.Router()
+    r.get("/v1.2/a-b_c~d/x:y/@me/(a)/!$&'*+,;=", labelled("chars"))
+    assert_eq(answer(r, "GET", "/v1.2/a-b_c~d/x:y/@me/(a)/!$&'*+,;="), "200 chars id=- rest=-")
+}
+
+test "a bad escape in the path is 400" {
+    let r = httpd_impl.Router()
+    r.get("/items/:id", labelled("item"))
+    r.get("/other", labelled("other"))
+    let bad = call(r, "GET", "/items/100%")
+    assert_eq(bad.status, 400)
+    assert(body_of(bad).contains("percent-escape"))
+    assert_eq(call(r, "GET", "/items/%zz").status, 400)
+    // in a segment no pattern asks for, too
+    assert_eq(call(r, "GET", "/other%zz").status, 400)
+    assert_eq(call(r, "GET", "/nothing/%").status, 400)
+    // and bytes that are not UTF-8
+    assert_eq(call(r, "GET", "/items/%FF").status, 400)
+}
+
+test "a parameter does not carry over to the next request" {
+    let r = httpd_impl.Router()
+    r.get("/items/:id", labelled("item"))
+    r.get("/plain", labelled("plain"))
+    assert_eq(answer(r, "GET", "/items/7"), "200 item id=7 rest=-")
+    assert_eq(answer(r, "GET", "/plain"), "200 plain id=- rest=-")
+}
+
+// ---- *rest ----
+
+test "a *name takes the rest of the path" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", labelled("files"))
+    assert_eq(answer(r, "GET", "/files/a"), "200 files id=- rest=a")
+    assert_eq(answer(r, "GET", "/files/a/b/c"), "200 files id=- rest=a/b/c")
+    assert_eq(answer(r, "GET", "/files/a/b/"), "200 files id=- rest=a/b/")
+}
+
+test "a *name may be empty, with the slash before it" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", labelled("files"))
+    assert_eq(answer(r, "GET", "/files/"), "200 files id=- rest=")
+    assert_eq(answer(r, "GET", "/files"), "404 404 Not Found\n")
+}
+
+test "a *name at the root takes every path" {
+    let r = httpd_impl.Router()
+    r.get("/*rest", labelled("all"))
+    assert_eq(answer(r, "GET", "/"), "200 all id=- rest=")
+    assert_eq(answer(r, "GET", "/a/b"), "200 all id=- rest=a/b")
+}
+
+test "the segments of a *name are decoded one by one" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", labelled("files"))
+    assert_eq(answer(r, "GET", "/files/a%20b/c%2Fd"), "200 files id=- rest=a b/c/d")
+}
+
+test "a parameter and a *name together" {
+    let r = httpd_impl.Router()
+    r.get("/repos/:id/tree/*rest", labelled("tree"))
+    assert_eq(answer(r, "GET", "/repos/7/tree/src/main"), "200 tree id=7 rest=src/main")
+}
+
+// ---- precedence ----
+
+test "a literal beats :id whatever the order of registration" {
+    let a = httpd_impl.Router()
+    a.get("/items/new", labelled("new"))
+    a.get("/items/:id", labelled("item"))
+    let b = httpd_impl.Router()
+    b.get("/items/:id", labelled("item"))
+    b.get("/items/new", labelled("new"))
+    for r in [a, b] {
+        assert_eq(answer(r, "GET", "/items/new"), "200 new id=- rest=-")
+        assert_eq(answer(r, "GET", "/items/7"), "200 item id=7 rest=-")
+    }
+}
+
+test ":id beats *rest whatever the order of registration" {
+    let a = httpd_impl.Router()
+    a.get("/x/:id", labelled("param"))
+    a.get("/x/*rest", labelled("wild"))
+    let b = httpd_impl.Router()
+    b.get("/x/*rest", labelled("wild"))
+    b.get("/x/:id", labelled("param"))
+    for r in [a, b] {
+        assert_eq(answer(r, "GET", "/x/7"), "200 param id=7 rest=-")
+        assert_eq(answer(r, "GET", "/x/7/8"), "200 wild id=- rest=7/8")
+    }
+}
+
+test "a literal beats *rest, and *rest is the last resort" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", labelled("wild"))
+    r.get("/files/readme", labelled("readme"))
+    assert_eq(answer(r, "GET", "/files/readme"), "200 readme id=- rest=-")
+    assert_eq(answer(r, "GET", "/files/readme/more"), "200 wild id=- rest=readme/more")
+}
+
+test "the choice is made segment by segment from the left" {
+    // /a/b/c fits both patterns; the literal `b` at the second segment wins over `:x`
+    let a = httpd_impl.Router()
+    a.get("/a/:x/c", labelled("x"))
+    a.get("/a/b/:y", labelled("y"))
+    let b = httpd_impl.Router()
+    b.get("/a/b/:y", labelled("y"))
+    b.get("/a/:x/c", labelled("x"))
+    for r in [a, b] {
+        assert_eq(answer(r, "GET", "/a/b/c"), "200 y id=- rest=-")
+        assert_eq(answer(r, "GET", "/a/q/c"), "200 x id=- rest=-")
+    }
+}
+
+test "a branch that leads nowhere is left for the next" {
+    let r = httpd_impl.Router()
+    r.get("/items/new", labelled("new"))
+    r.get("/items/:id/edit", labelled("edit"))
+    assert_eq(answer(r, "GET", "/items/new/edit"), "200 edit id=new rest=-")
+    assert_eq(answer(r, "GET", "/items/new"), "200 new id=- rest=-")
+}
+
+test "the method is part of the choice: another method's literal does not hide a parameter" {
+    let r = httpd_impl.Router()
+    r.post("/items/new", labelled("create"))
+    r.get("/items/:id", labelled("item"))
+    assert_eq(answer(r, "GET", "/items/new"), "200 item id=new rest=-")
+    assert_eq(answer(r, "POST", "/items/new"), "200 create id=- rest=-")
+}
+
+// ---- trailing slash and dots ----
+
+test "there is no trailing-slash redirect: /items/ is not /items" {
+    let r = httpd_impl.Router()
+    r.get("/items", labelled("items"))
+    assert_eq(answer(r, "GET", "/items/"), "404 404 Not Found\n")
+    let s = httpd_impl.Router()
+    s.get("/items/", labelled("slash"))
+    assert_eq(answer(s, "GET", "/items/"), "200 slash id=- rest=-")
+    assert_eq(answer(s, "GET", "/items"), "404 404 Not Found\n")
+}
+
+fn is_400(r: httpd_impl.Router, target: str) -> bool => call(r, "GET", target).status == 400
+
+test "a path with a . or .. segment is 400, written with dots or with %2E, whatever routes exist" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", labelled("files"))
+    r.get("/admin/:id", labelled("admin"))
+    r.get("/b", labelled("b"))
+    for target in [
+        "/files/../../etc/passwd", "/files/a/..", "/files/./a", "/admin/%2e%2e", "/admin/%2E%2E",
+        "/admin/.%2e", "/admin/%2e.", "/admin/..", "/admin/.", "/%2e", "/a/../b", "/..", "/.",
+        "/nothing/../b", "/files/a/%2e/b",
+    ] {
+        assert(is_400(r, target))
+    }
+    assert(body_of(call(r, "GET", "/a/../b")).contains("dot segment"))
+}
+
+test "a segment that only starts or ends with a dot, or has three, is not a dot segment" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", labelled("files"))
+    for target in ["/files/.hidden", "/files/a.b", "/files/...", "/files/a./b", "/files/.a/b", "/files/%2ea"] {
+        assert_eq(call(r, "GET", target).status, 200)
+    }
+}
+
+test "an escape of a control character in the path is 400, in a parameter or anywhere" {
+    let r = httpd_impl.Router()
+    r.get("/admin/:id", labelled("admin"))
+    r.get("/files/*rest", labelled("files"))
+    for target in [
+        "/admin/%00", "/admin/a%0Ab", "/admin/%0D%0A", "/admin/%1f", "/admin/%7F", "/admin/%7f",
+        "/files/a/%00", "/nothing/%00", "/%0a",
+    ] {
+        assert(is_400(r, target))
+    }
+    assert(body_of(call(r, "GET", "/admin/%00")).contains("control character"))
+}
+
+test "an escape that is not a control character is a value like any other" {
+    let r = httpd_impl.Router()
+    r.get("/admin/:id", labelled("admin"))
+    assert_eq(answer(r, "GET", "/admin/%20"), "200 admin id=  rest=-")
+    assert_eq(answer(r, "GET", "/admin/%2F"), "200 admin id=/ rest=-")
+    assert_eq(answer(r, "GET", "/admin/%7E"), "200 admin id=~ rest=-")
+    assert_eq(answer(r, "GET", "/admin/%80"), "400 400 Bad Request: a parameter that is not valid text\n")
+}
+
+test "paths are case-sensitive" {
+    let r = httpd_impl.Router()
+    r.get("/Items", labelled("items"))
+    assert_eq(answer(r, "GET", "/items"), "404 404 Not Found\n")
+}
+
+// ---- the router's own answers ----
+
+test "404 when no pattern fits the path" {
+    let r = httpd_impl.Router()
+    r.get("/items", labelled("items"))
+    let missing = call(r, "GET", "/nothing")
+    assert_eq(missing.status, 404)
+    assert_eq(body_of(missing), "404 Not Found\n")
+    assert_eq(missing.headers.get("content-type"), some("text/plain; charset=utf-8"))
+    assert(!missing.headers.has("allow"))
+}
+
+test "404 with no routes at all" {
+    let r = httpd_impl.Router()
+    assert_eq(call(r, "GET", "/").status, 404)
+}
+
+test "405 with the exact Allow when the path fits under other methods" {
+    let r = httpd_impl.Router()
+    r.get("/items", labelled("list"))
+    r.post("/items", labelled("create"))
+    let denied = call(r, "PUT", "/items")
+    assert_eq(denied.status, 405)
+    assert_eq(allow(denied), "GET, HEAD, OPTIONS, POST")
+    assert_eq(body_of(denied), "405 Method Not Allowed\n")
+}
+
+test "Allow has each method once, in alphabetical order, with HEAD only because of GET" {
+    let r = httpd_impl.Router()
+    r.delete("/x", labelled("d"))
+    r.put("/x", labelled("p"))
+    let denied = call(r, "POST", "/x")
+    assert_eq(denied.status, 405)
+    assert_eq(allow(denied), "DELETE, OPTIONS, PUT")
+}
+
+test "Allow takes the methods of every pattern the path fits" {
+    let r = httpd_impl.Router()
+    r.post("/items/new", labelled("create"))
+    r.get("/items/:id", labelled("item"))
+    r.delete("/items/:id", labelled("remove"))
+    r.put("/items/*rest", labelled("wild"))
+    let denied = call(r, "PATCH", "/items/new")
+    assert_eq(denied.status, 405)
+    assert_eq(allow(denied), "DELETE, GET, HEAD, OPTIONS, POST, PUT")
+}
+
+test "Allow of a path with a parameter" {
+    let r = httpd_impl.Router()
+    r.get("/items/:id", labelled("item"))
+    assert_eq(allow(call(r, "POST", "/items/7")), "GET, HEAD, OPTIONS")
+    assert_eq(call(r, "POST", "/items/7/x").status, 404)
+}
+
+test "a method used by no route and that is no standard method is 501" {
+    let r = httpd_impl.Router()
+    r.get("/items", labelled("items"))
+    let unknown = call(r, "BREW", "/items")
+    assert_eq(unknown.status, 501)
+    assert_eq(body_of(unknown), "501 Not Implemented\n")
+    assert_eq(call(r, "BREW", "/nothing").status, 501)
+    // methods are case-sensitive
+    assert_eq(call(r, "get", "/items").status, 501)
+}
+
+test "a standard method that no route uses is 405 on a path that exists and 404 on one that does not" {
+    let r = httpd_impl.Router()
+    r.get("/items", labelled("items"))
+    assert_eq(call(r, "POST", "/items").status, 405)
+    assert_eq(call(r, "POST", "/nothing").status, 404)
+    assert_eq(call(r, "DELETE", "/nothing").status, 404)
+    assert_eq(call(r, "TRACE", "/items").status, 405)
+    assert_eq(call(r, "PATCH", "/items").status, 405)
+}
+
+test "a method a route registered is known on every path" {
+    let r = httpd_impl.Router()
+    r.handle("PROPFIND", "/dav", labelled("dav"))
+    r.get("/items", labelled("items"))
+    assert_eq(call(r, "PROPFIND", "/items").status, 405)
+    assert_eq(call(r, "PROPFIND", "/nothing").status, 404)
+}
+
+// ---- HEAD ----
+
+test "HEAD runs the route of GET when there is none for HEAD" {
+    let r = httpd_impl.Router()
+    r.get("/items/:id", labelled("item"))
+    assert_eq(answer(r, "HEAD", "/items/7"), "200 item id=7 rest=-")
+}
+
+test "an explicit HEAD route wins even when it is a :name route and GET has a literal" {
+    let r = httpd_impl.Router()
+    r.handle("HEAD", "/items/:id", labelled("head-id"))
+    r.get("/items/new", labelled("get-new"))
+    assert_eq(answer(r, "HEAD", "/items/new"), "200 head-id id=new rest=-")
+    assert_eq(answer(r, "GET", "/items/new"), "200 get-new id=- rest=-")
+    assert_eq(answer(r, "HEAD", "/items/other"), "200 head-id id=other rest=-")
+}
+
+test "a route of HEAD is preferred to the route of GET" {
+    let r = httpd_impl.Router()
+    r.get("/items", labelled("get"))
+    r.handle("HEAD", "/items", labelled("head"))
+    assert_eq(answer(r, "HEAD", "/items"), "200 head id=- rest=-")
+    assert_eq(answer(r, "GET", "/items"), "200 get id=- rest=-")
+}
+
+test "HEAD uses GET with the precedence of GET" {
+    let r = httpd_impl.Router()
+    r.get("/items/:id", labelled("item"))
+    r.get("/items/new", labelled("new"))
+    assert_eq(answer(r, "HEAD", "/items/new"), "200 new id=- rest=-")
+}
+
+test "HEAD of a path that has no GET is 405, and HEAD of nothing is 404" {
+    let r = httpd_impl.Router()
+    r.post("/items", labelled("create"))
+    let denied = call(r, "HEAD", "/items")
+    assert_eq(denied.status, 405)
+    assert_eq(allow(denied), "OPTIONS, POST")
+    assert_eq(call(r, "HEAD", "/nothing").status, 404)
+}
+
+// ---- OPTIONS ----
+
+test "OPTIONS with no route of OPTIONS is 204 with Allow" {
+    let r = httpd_impl.Router()
+    r.get("/items", labelled("list"))
+    r.post("/items", labelled("create"))
+    let options = call(r, "OPTIONS", "/items")
+    assert_eq(options.status, 204)
+    assert_eq(allow(options), "GET, HEAD, OPTIONS, POST")
+    assert_eq(body_of(options), "(not text)")
+}
+
+test "OPTIONS on a path that fits nothing is 404" {
+    let r = httpd_impl.Router()
+    r.get("/items", labelled("list"))
+    assert_eq(call(r, "OPTIONS", "/nothing").status, 404)
+}
+
+test "a route of OPTIONS is used" {
+    let r = httpd_impl.Router()
+    r.get("/items", labelled("list"))
+    r.handle("OPTIONS", "/items", labelled("custom"))
+    assert_eq(answer(r, "OPTIONS", "/items"), "200 custom id=- rest=-")
+}
+
+test "OPTIONS * is 204 with every method the router has" {
+    let r = httpd_impl.Router()
+    r.get("/a", labelled("a"))
+    r.delete("/b", labelled("b"))
+    r.post("/c/:id", labelled("c"))
+    let all = call(r, "OPTIONS", "*")
+    assert_eq(all.status, 204)
+    assert_eq(allow(all), "DELETE, GET, HEAD, OPTIONS, POST")
+}
+
+test "OPTIONS * with no routes allows OPTIONS only" {
+    let r = httpd_impl.Router()
+    assert_eq(allow(call(r, "OPTIONS", "*")), "OPTIONS")
+}
+
+test "a * path with another method is 404" {
+    let r = httpd_impl.Router()
+    r.get("/a", labelled("a"))
+    assert_eq(call(r, "GET", "*").status, 404)
+}
+
+test "a dot segment hidden in a decoded value is 400: %2F is a separator after decoding" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", labelled("files"))
+    r.get("/admin/:id", labelled("admin"))
+    for target in [
+        "/files/%2e%2e%2f", "/files/a%2F..%2F..%2Fetc%2Fpasswd", "/admin/x%2F..%2F..%2Fpublic",
+        "/admin/%2e%2e", "/admin/a%2F%2e%2e", "/admin/..%2Fa", "/admin/%2E%2E%2f%2e", "/admin/a%2f.",
+    ] {
+        assert(is_400(r, target))
+    }
+}
+
+test "a legitimate encoded slash or dot in a value still passes" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", labelled("files"))
+    r.get("/admin/:id", labelled("admin"))
+    assert_eq(answer(r, "GET", "/admin/a%2Fb"), "200 admin id=a/b rest=-")
+    assert_eq(answer(r, "GET", "/admin/a.b%2Fc.d"), "200 admin id=a.b/c.d rest=-")
+    assert_eq(answer(r, "GET", "/admin/%2e%2ex"), "200 admin id=..x rest=-")
+    assert_eq(answer(r, "GET", "/admin/...%2Fx"), "200 admin id=.../x rest=-")
+    assert_eq(answer(r, "GET", "/files/a/b%2Fc"), "200 files id=- rest=a/b/c")
+}
+
+test "a decoded C1 control character in a value is 400, a printable one is not" {
+    let r = httpd_impl.Router()
+    r.get("/admin/:id", labelled("admin"))
+    assert(is_400(r, "/admin/%C2%85"))
+    assert(is_400(r, "/admin/a%C2%80b"))
+    assert(is_400(r, "/admin/%C2%9F"))
+    assert_eq(answer(r, "GET", "/admin/%C2%A0"), "200 admin id=\u{a0} rest=-")
+    assert_eq(answer(r, "GET", "/admin/%C3%A9"), "200 admin id=\u{e9} rest=-")
+}
+
+test "literals are compared byte for byte: %2f and %2F are different" {
+    let r = httpd_impl.Router()
+    r.get("/a%2Fb", labelled("upper"))
+    assert_eq(answer(r, "GET", "/a%2Fb"), "200 upper id=- rest=-")
+    assert_eq(answer(r, "GET", "/a%2fb"), "404 404 Not Found\n")
+}

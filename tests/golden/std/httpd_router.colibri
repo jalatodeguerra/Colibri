@@ -1,0 +1,61 @@
+// caps: net, os
+// The router over a connection: a parameter, a 404, a 405 that says which methods the path
+// allows, and OPTIONS. Each answer is shown by its status line and its `Allow` header, if any,
+// and the one line of its body.
+import httpd
+import net
+
+fn item(r: httpd.Request) -> Result[httpd.Response] {
+    return ok(httpd.text(200, "item {r.param("id") or "-"}\n"))
+}
+
+fn run(server: httpd.Server, router: httpd.Router) -> Result[()] => server.serve(router.handler())
+
+fn ask(c: net.Conn, method: str, target: str) -> Result[()] {
+    c.write("{method} {target} HTTP/1.1\r\nHost: example.test\r\n\r\n")?
+    print(c.read_line()?.expect("a status line"))
+    var length = 0
+    while true {
+        let line = c.read_line()?.expect("a header line")
+        if line == "" {
+            break
+        }
+        if line.starts_with("Allow: ") {
+            print(line)
+        }
+        if line.starts_with("Content-Length: ") {
+            length = 1
+        }
+    }
+    if length > 0 {
+        print(c.read_line()?.expect("a body"))
+    }
+    return ok(())
+}
+
+fn main() -> Result[()] {
+    let router = httpd.Router()
+    router.get("/items/:id", item)
+    router.post("/items/:id", item)
+    let server = httpd.listen("127.0.0.1:0")?
+    let serving = go run(server, router)
+    let c = net.connect(server.addr())?
+    ask(c, "GET", "/items/42")?
+    ask(c, "GET", "/nothing")?
+    ask(c, "DELETE", "/items/42")?
+    ask(c, "OPTIONS", "/items/42")?
+    c.close()
+    server.stop(1.0)
+    serving.join()?
+    return ok(())
+}
+
+// expect: HTTP/1.1 200 OK
+// expect: item 42
+// expect: HTTP/1.1 404 Not Found
+// expect: 404 Not Found
+// expect: HTTP/1.1 405 Method Not Allowed
+// expect: Allow: GET, HEAD, OPTIONS, POST
+// expect: 405 Method Not Allowed
+// expect: HTTP/1.1 204 No Content
+// expect: Allow: GET, HEAD, OPTIONS, POST

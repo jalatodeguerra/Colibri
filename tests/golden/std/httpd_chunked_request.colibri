@@ -1,0 +1,46 @@
+// caps: net, os
+// A chunked request body: two chunks (one with an extension) and a trailer field, which the
+// server reads and discards. The handler sees the body as one piece; the answer carries its
+// size. The Date line varies, so it is replaced.
+import httpd
+import net
+
+fn app(r: httpd.Request) -> Result[httpd.Response] {
+    let body = r.text()?
+    return ok(httpd.text(200, "{body.len()} bytes: {body}\n"))
+}
+
+fn run(server: httpd.Server) -> Result[()] => server.serve(app)
+
+fn main() -> Result[()] {
+    let server = httpd.listen("127.0.0.1:0")?
+    let serving = go run(server)
+    let c = net.connect(server.addr())?
+    c.write("POST /up HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n")?
+    c.write("Connection: close\r\n\r\n")?
+    c.write("5;note=first\r\nhello\r\n")?
+    c.write("7\r\n, world\r\n")?
+    c.write("0\r\nX-Checksum: 42\r\n\r\n")?
+    while true {
+        let line = c.read_line()? or {
+            break
+        }
+        if line.starts_with("Date: ") {
+            print("Date: <date>")
+        } else {
+            print(line)
+        }
+    }
+    c.close()
+    server.stop(1.0)
+    serving.join()?
+    return ok(())
+}
+
+// expect: HTTP/1.1 200 OK
+// expect: Content-Type: text/plain; charset=utf-8
+// expect: Content-Length: 23
+// expect: Date: <date>
+// expect: Connection: close
+// expect: 
+// expect: 12 bytes: hello, world

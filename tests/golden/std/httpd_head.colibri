@@ -1,0 +1,45 @@
+// caps: net, os
+// A HEAD request gets the head of the answer to a GET and no body: the next line the client
+// reads is the status line of the answer to the next request, sent in the same write.
+import httpd
+import net
+
+fn app(r: httpd.Request) -> Result[httpd.Response] {
+    return ok(httpd.text(200, "twelve bytes"))
+}
+
+fn run(server: httpd.Server) -> Result[()] => server.serve(app)
+
+fn main() -> Result[()] {
+    let server = httpd.listen("127.0.0.1:0")?
+    let serving = go run(server)
+    let c = net.connect(server.addr())?
+    c.write("HEAD / HTTP/1.1\r\nHost: example.test\r\n\r\nGET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")?
+    while true {
+        let line = c.read_line()? or {
+            break
+        }
+        if line.starts_with("Date: ") {
+            print("Date: <date>")
+        } else {
+            print(line)
+        }
+    }
+    c.close()
+    server.stop(1.0)
+    serving.join()?
+    return ok(())
+}
+
+// expect: HTTP/1.1 200 OK
+// expect: Content-Type: text/plain; charset=utf-8
+// expect: Content-Length: 12
+// expect: Date: <date>
+// expect: 
+// expect: HTTP/1.1 200 OK
+// expect: Content-Type: text/plain; charset=utf-8
+// expect: Content-Length: 12
+// expect: Date: <date>
+// expect: Connection: close
+// expect: 
+// expect: twelve bytes

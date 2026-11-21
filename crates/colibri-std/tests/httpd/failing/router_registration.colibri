@@ -1,0 +1,135 @@
+import httpd_impl
+
+fn nothing() -> httpd_impl.Handler {
+    return fn(req: httpd_impl.Request) -> Result[httpd_impl.Response] {
+        return ok(httpd_impl.status(204))
+    }
+}
+
+test "the same method and pattern twice => GET /items is already registered" {
+    let r = httpd_impl.Router()
+    r.get("/items", nothing())
+    r.get("/items", nothing())
+}
+
+test "the same method and a pattern of the same shape twice => already registered" {
+    let r = httpd_impl.Router()
+    r.get("/items/:id", nothing())
+    r.get("/items/:name", nothing())
+}
+
+test "the same wildcard pattern twice => already registered" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest", nothing())
+    r.get("/files/*other", nothing())
+}
+
+test "a * that is not last => before its end" {
+    let r = httpd_impl.Router()
+    r.get("/files/*rest/more", nothing())
+}
+
+test "a : with no name => has a `:` with no name" {
+    let r = httpd_impl.Router()
+    r.get("/items/:", nothing())
+}
+
+test "a * with no name => has a `*` with no name" {
+    let r = httpd_impl.Router()
+    r.get("/files/*", nothing())
+}
+
+test "a parameter named twice => names `id` twice" {
+    let r = httpd_impl.Router()
+    r.get("/a/:id/b/:id", nothing())
+}
+
+test "a wildcard named like a parameter => names `id` twice" {
+    let r = httpd_impl.Router()
+    r.get("/a/:id/*id", nothing())
+}
+
+test "a pattern that does not start with a slash => must start with `/`" {
+    let r = httpd_impl.Router()
+    r.get("items", nothing())
+}
+
+test "an empty pattern => must start with `/`" {
+    let r = httpd_impl.Router()
+    r.get("", nothing())
+}
+
+test "an empty method => is not a method" {
+    let r = httpd_impl.Router()
+    r.handle("", "/a", nothing())
+}
+
+test "a method with a space => is not a method" {
+    let r = httpd_impl.Router()
+    r.handle("GET POST", "/a", nothing())
+}
+
+test "a method with a separator => is not a method" {
+    let r = httpd_impl.Router()
+    r.handle("GET,POST", "/x", nothing())
+}
+
+test "a lower-case spelling of a standard method => never reached" {
+    let r = httpd_impl.Router()
+    r.handle("get", "/x", nothing())
+}
+
+test "a mixed-case spelling of a standard method => never reached" {
+    let r = httpd_impl.Router()
+    r.handle("Post", "/x", nothing())
+}
+
+test "a literal with a space => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/a b", nothing())
+}
+
+test "a literal with a question mark => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/a?b", nothing())
+}
+
+test "a literal with a hash => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/a#b", nothing())
+}
+
+test "a literal with a control character => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/a\tb", nothing())
+}
+
+test "a literal with a bad escape => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/a%zzb", nothing())
+}
+
+test "a literal that ends in a lone percent sign => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/a%", nothing())
+}
+
+test "a literal with an escape of a control character => escape of a control character" {
+    let r = httpd_impl.Router()
+    r.get("/a%0Ab", nothing())
+}
+
+test "a literal that is .. => is a dot segment" {
+    let r = httpd_impl.Router()
+    r.get("/a/..", nothing())
+}
+
+test "a literal that is a dot written as an escape => is a dot segment" {
+    let r = httpd_impl.Router()
+    r.get("/a/%2e", nothing())
+}
+
+test "a literal with non-ASCII text => is not valid path text" {
+    let r = httpd_impl.Router()
+    r.get("/caf\u{e9}", nothing())
+}

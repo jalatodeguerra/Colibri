@@ -161,10 +161,22 @@ fn a_host_module_named_math_does_not_break_import_vec() {
 }
 
 #[test]
-fn the_interface_files_of_std_do_not_include_vec_and_the_sources_do() {
-    assert!(colibri_std::interface("std.vec").is_none());
-    assert!(!colibri_std::MODULES.contains(&"vec"));
-    let sources = colibri_std::sources();
-    assert_eq!(sources.len(), 1);
-    assert_eq!(sources[0].name, "vec");
+fn the_interface_files_of_std_do_not_include_the_source_modules_and_the_sources_do() {
+    for name in ["vec", "httpd"] {
+        assert!(colibri_std::interface(&format!("std.{name}")).is_none());
+        assert!(!colibri_std::MODULES.contains(&name));
+    }
+    let names: Vec<&str> = colibri_std::sources().iter().map(|s| s.name).collect();
+    assert_eq!(names, ["vec", "httpd"]);
+}
+
+#[test]
+fn install_vec_registers_vec_only_not_the_other_source_modules() {
+    let (mut vm, _) = vm();
+    let error = vm
+        .load_source("h.colibri", "import httpd\nfn main() {}\n")
+        .expect_err("`httpd` is not part of what install_vec gives")
+        .render(false);
+    // not "found, but its own imports are missing": the module is not registered at all
+    assert!(error.contains("no module `httpd`"), "{error}");
 }

@@ -1,0 +1,40 @@
+// caps: net, os
+// A server and a client in one program: the client asks for `/` and reads the whole answer,
+// which ends with the connection (`Connection: close`). The Date line varies, so it is replaced.
+import httpd
+import net
+
+fn hello(r: httpd.Request) -> Result[httpd.Response] {
+    return ok(httpd.text(200, "hello, {r.method} {r.target}\n"))
+}
+
+fn run(server: httpd.Server) -> Result[()] => server.serve(hello)
+
+fn main() -> Result[()] {
+    let server = httpd.listen("127.0.0.1:0")?
+    let serving = go run(server)
+    let c = net.connect(server.addr())?
+    c.write("GET /greeting?to=you HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")?
+    while true {
+        let line = c.read_line()? or {
+            break
+        }
+        if line.starts_with("Date: ") {
+            print("Date: <date>")
+        } else {
+            print(line)
+        }
+    }
+    c.close()
+    server.stop(1.0)
+    serving.join()?
+    return ok(())
+}
+
+// expect: HTTP/1.1 200 OK
+// expect: Content-Type: text/plain; charset=utf-8
+// expect: Content-Length: 28
+// expect: Date: <date>
+// expect: Connection: close
+// expect: 
+// expect: hello, GET /greeting?to=you

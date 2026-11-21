@@ -1,0 +1,39 @@
+import httpd_impl
+
+test "read with a maximum of 0 => a maximum of at least 1" {
+    let req = httpd_impl.test_request("POST", "/", [], "x".to_bytes())
+    let _ = req.read(0)
+}
+
+test "read with a negative maximum => a maximum of at least 1" {
+    let req = httpd_impl.test_request("POST", "/", [], "x".to_bytes())
+    let _ = req.read(-5)
+}
+
+test "test_request with a target that is not a path => must start with `/`" {
+    let _ = httpd_impl.test_request("GET", "items")
+}
+
+test "test_request with an absolute target => must start with `/`" {
+    let _ = httpd_impl.test_request("GET", "http://example.com/")
+}
+
+test "test_request with no method => the method is empty" {
+    let _ = httpd_impl.test_request("", "/")
+}
+
+test "a Content-Length longer than the body => is not the length of the body" {
+    let _ = httpd_impl.test_request("POST", "/x", [("Content-Length", "50")], "hello".to_bytes())
+}
+
+test "a Content-Length shorter than the body => is not the length of the body" {
+    let _ = httpd_impl.test_request("POST", "/x", [("Content-Length", "2")], "hello".to_bytes())
+}
+
+test "a Content-Length with no body => is not the length of the body" {
+    let _ = httpd_impl.test_request("POST", "/x", [("Content-Length", "3")])
+}
+
+test "a version that is neither 1.1 nor 1.0 => must be HTTP/1.1 or HTTP/1.0" {
+    let _ = httpd_impl.test_request("GET", "/x", version: "HTTP/2.0")
+}

@@ -71,14 +71,23 @@ pub const MODULES: &[&str] = &[
 /// The text of the `vec` module (`import vec`): Colibri source, not a host module.
 const VEC: &str = include_str!("colibri/vec.colibri");
 
+/// The text of the `httpd` module (`import httpd`): an HTTP/1.1 server written in Colibri.
+const HTTPD: &str = include_str!("colibri/httpd.colibri");
+
 /// The standard library modules that are written in Colibri and embedded in the toolchain, for
 /// the tools that check a program without a [`Vm`] (`colibri check`, the language server). A
-/// [`Vm`] gets them from [`install`]: `vec`.
+/// [`Vm`] gets them from [`install`]: `vec` and `httpd`.
 pub fn sources() -> Vec<colibri_runtime::SourceModule> {
-    vec![colibri_runtime::SourceModule {
-        name: "vec",
-        text: VEC,
-    }]
+    vec![
+        colibri_runtime::SourceModule {
+            name: "vec",
+            text: VEC,
+        },
+        colibri_runtime::SourceModule {
+            name: "httpd",
+            text: HTTPD,
+        },
+    ]
 }
 
 /// Gives scripts `import vec` in a [`Vm`] that does not use the rest of the standard library:
@@ -86,9 +95,7 @@ pub fn sources() -> Vec<colibri_runtime::SourceModule> {
 /// `from_angle` and `angle`). It must happen before a program is loaded. Do not call it after
 /// [`install`], which does the same.
 pub fn install_vec(vm: &mut Vm) -> Result<(), Error> {
-    for source in sources() {
-        vm.std_source_module(source.name, source.text);
-    }
+    vm.std_source_module("vec", VEC);
     vm.lazy_std_module("math", math::register);
     Ok(())
 }
@@ -197,26 +204,34 @@ pub(crate) fn plain(r: Result<Registration<'_>, Error>) -> Result<(), Error> {
 mod tests {
     use super::*;
 
-    /// The embedded `vec` is checked as an ordinary program here, because a std source module
-    /// has its warnings dropped: it must have none to drop.
+    /// Each embedded source module is checked as an ordinary program here, because a std source
+    /// module has its warnings dropped: it must have none to drop.
     #[test]
-    fn vec_colibri_checks_with_no_warnings() {
+    fn every_source_module_checks_with_no_warnings() {
         let config = colibri_runtime::CheckConfig {
             interfaces: interfaces(),
+            // A source module may use any capability; its program asks for the ones it needs.
+            caps: colibri_runtime::CapSet::all(),
             ..colibri_runtime::CheckConfig::default()
         };
-        let report = colibri_runtime::check_source_with("vec.colibri", VEC, &config);
-        assert!(
-            report.diagnostics.is_empty(),
-            "{}",
-            colibri_runtime::render_diagnostics(&report.diagnostics, &report.sources, false)
-        );
+        for source in sources() {
+            let file = format!("{}.colibri", source.name);
+            let report = colibri_runtime::check_source_with(&file, source.text, &config);
+            assert!(
+                report.diagnostics.is_empty(),
+                "{file}:\n{}",
+                colibri_runtime::render_diagnostics(&report.diagnostics, &report.sources, false)
+            );
+        }
     }
 
     #[test]
-    fn vec_colibri_is_formatted() {
-        let formatted = colibri_syntax::fmt::format_source("vec.colibri", VEC).unwrap();
-        assert_eq!(formatted, VEC, "run `colibri fmt` on vec.colibri");
+    fn every_source_module_is_formatted() {
+        for source in sources() {
+            let file = format!("{}.colibri", source.name);
+            let formatted = colibri_syntax::fmt::format_source(&file, source.text).unwrap();
+            assert_eq!(formatted, source.text, "run `colibri fmt` on {file}");
+        }
     }
 
     #[test]
@@ -230,6 +245,16 @@ mod tests {
                 assert!(
                     line.starts_with("import std."),
                     "{}: `{line}` must name `std.<module>`",
+                    source.name
+                );
+                // ... and a module that exists: a host module, or another source module.
+                let named = line["import std.".len()..]
+                    .split([' ', '.'])
+                    .next()
+                    .unwrap_or_default();
+                assert!(
+                    MODULES.contains(&named) || sources().iter().any(|s| s.name == named),
+                    "{}: `{line}` names a module the standard library does not have",
                     source.name
                 );
             }

@@ -1,0 +1,56 @@
+// caps: net, os
+// What a handler's `err` becomes: a `fail` gives its status and message, any other error gives
+// a 500 with a body that says nothing of the error. Both answers keep the connection, which the
+// third request shows.
+import httpd
+import net
+
+fn app(r: httpd.Request) -> Result[httpd.Response] {
+    if r.path == "/gone" {
+        return err(httpd.fail(410, "the item is gone"))
+    }
+    if r.path == "/boom" {
+        return err(error("the disk is on fire"))
+    }
+    return ok(httpd.text(200, "fine\n"))
+}
+
+fn run(server: httpd.Server) -> Result[()] => server.serve(app)
+
+/// Sends a request and prints the status line, the connection header if there is one, and the
+/// one line of body.
+fn ask(c: net.Conn, target: str) -> Result[()] {
+    c.write("GET {target} HTTP/1.1\r\nHost: example.test\r\n\r\n")?
+    print(c.read_line()?.expect("a status line"))
+    while true {
+        let line = c.read_line()?.expect("a header line")
+        if line == "" {
+            break
+        }
+        if line.starts_with("Connection: ") {
+            print(line)
+        }
+    }
+    print(c.read_line()?.expect("a body"))
+    return ok(())
+}
+
+fn main() -> Result[()] {
+    let server = httpd.listen("127.0.0.1:0", httpd.Options { log_errors: false })?
+    let serving = go run(server)
+    let c = net.connect(server.addr())?
+    ask(c, "/gone")?
+    ask(c, "/boom")?
+    ask(c, "/")?
+    c.close()
+    server.stop(1.0)
+    serving.join()?
+    return ok(())
+}
+
+// expect: HTTP/1.1 410 Gone
+// expect: the item is gone
+// expect: HTTP/1.1 500 Internal Server Error
+// expect: 500 Internal Server Error: the handler failed
+// expect: HTTP/1.1 200 OK
+// expect: fine

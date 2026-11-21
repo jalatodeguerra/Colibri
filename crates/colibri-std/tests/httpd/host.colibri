@@ -1,0 +1,117 @@
+import common
+import httpd_impl
+
+test "an HTTP/1.1 request without Host is 400" {
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Accept: */*"])), 400)
+    assert(common.why_of(common.head(["GET / HTTP/1.1"])).contains("Host"))
+}
+
+test "an HTTP/1.0 request without Host is accepted and has an empty host" {
+    let h = common.accepted(common.head(["GET / HTTP/1.0"]))
+    assert_eq(h.host, "")
+}
+
+test "a higher minor version needs Host like 1.1 does" {
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.7"])), 400)
+}
+
+test "two Host lines are 400 in any version" {
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a", "Host: b"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.0", "Host: a", "Host: b"])), 400)
+    // also when they are the same, and when the name is spelled differently
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a", "Host: a"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a", "HOST: b"])), 400)
+}
+
+test "a Host that is not a host and a port is 400" {
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a b"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a/b"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a@b"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a:b"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a:80:90"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: [zz]"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: ex\u{e9}"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.0", "Host: a b"])), 400)
+}
+
+test "a host with a port, and an IPv6 literal, are accepted" {
+    assert_eq(common.accepted(common.head(["GET / HTTP/1.1", "Host: example.com:8080"])).host, "example.com:8080")
+    assert_eq(common.accepted(common.head(["GET / HTTP/1.1", "Host: 127.0.0.1"])).host, "127.0.0.1")
+    assert_eq(common.accepted(common.head(["GET / HTTP/1.1", "Host: [::1]"])).host, "[::1]")
+    assert_eq(common.accepted(common.head(["GET / HTTP/1.1", "Host: [::1]:8080"])).host, "[::1]:8080")
+    assert_eq(common.accepted(common.head(["GET / HTTP/1.1", "Host: localhost:65535"])).host, "localhost:65535")
+    assert_eq(common.accepted(common.head(["GET / HTTP/1.1", "Host: a:99999"])).host, "a:99999")
+    assert_eq(common.accepted(common.head(["GET / HTTP/1.1", "Host: a:0"])).host, "a:0")
+}
+
+test "a port of no digits, or of more than five, is refused" {
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: localhost:"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a:100000"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a:999999999"])), 400)
+}
+
+test "a Host with a comma or a percent escape is refused" {
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a,b"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a, b"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: %00"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a%2fb"])), 400)
+    assert_eq(common.status_of(common.head(["GET / HTTP/1.1", "Host: a:80,b:80"])), 400)
+}
+
+test "an empty Host is valid" {
+    assert_eq(common.accepted(common.head(["GET / HTTP/1.1", "Host:"])).host, "")
+    assert_eq(common.accepted(common.head(["GET / HTTP/1.1", "Host: "])).host, "")
+}
+
+test "an absolute-form target gives the host, and Host is still required in HTTP/1.1" {
+    let h = common.accepted(common.head(["GET http://a.example/x HTTP/1.1", "Host: a.example"]))
+    assert_eq(h.host, "a.example")
+    assert_eq(common.status_of(common.head(["GET http://a.example/x HTTP/1.1"])), 400)
+    let old = common.accepted(common.head(["GET http://a.example/x HTTP/1.0"]))
+    assert_eq(old.host, "a.example")
+}
+
+test "a Host that differs from the authority of an absolute-form target is 400" {
+    assert_eq(common.status_of(common.head(["GET http://a.example/x HTTP/1.1", "Host: b.example"])), 400)
+    assert_eq(common.status_of(common.head(["GET http://a.example:8080/x HTTP/1.1", "Host: a.example"])), 400)
+    assert_eq(common.status_of(common.head(["GET http://a.example/x HTTP/1.1", "Host: a.example:8080"])), 400)
+    assert_eq(common.status_of(common.head(["GET http://a.example:443/x HTTP/1.1", "Host: a.example"])), 400)
+    assert_eq(common.status_of(common.head(["GET https://a.example:80/x HTTP/1.1", "Host: a.example"])), 400)
+    assert_eq(common.status_of(common.head(["GET http://a.example:80/x HTTP/1.1", "Host: a.example:81"])), 400)
+    assert_eq(common.status_of(common.head(["GET http://a.example/x HTTP/1.1", "Host:"])), 400)
+}
+
+test "the comparison of Host with the authority ignores ASCII case, and nothing else" {
+    let h = common.accepted(common.head(["GET http://A.Example:8080/x HTTP/1.1", "Host: a.EXAMPLE:8080"]))
+    assert_eq(h.host, "A.Example:8080")
+}
+
+test "an absolute-form target with an empty authority is 400, Host or not" {
+    assert_eq(common.status_of(common.head(["GET http:///admin HTTP/1.1", "Host: evil.example"])), 400)
+    assert_eq(common.status_of(common.head(["GET http:///admin HTTP/1.1", "Host:"])), 400)
+    assert_eq(common.status_of(common.head(["GET https://?x=1 HTTP/1.1", "Host: x"])), 400)
+    assert_eq(common.status_of(common.head(["GET http:///admin HTTP/1.0"])), 400)
+}
+
+test "an absolute-form target has the scheme http or https, in any case" {
+    assert_eq(common.status_of(common.head(["GET http://a/x HTTP/1.1", "Host: a"])), 0)
+    assert_eq(common.status_of(common.head(["GET https://a/x HTTP/1.1", "Host: a"])), 0)
+    assert_eq(common.status_of(common.head(["GET HTTP://a/x HTTP/1.1", "Host: a"])), 0)
+    assert_eq(common.status_of(common.head(["GET ftp://a/x HTTP/1.1", "Host: a"])), 400)
+    assert_eq(common.status_of(common.head(["GET foo+bar://a/x HTTP/1.1", "Host: a"])), 400)
+    assert_eq(common.status_of(common.head(["GET ws://a/x HTTP/1.1", "Host: a"])), 400)
+}
+
+test "a Host that is invalid is refused also when the target is absolute" {
+    assert_eq(common.status_of(common.head(["GET http://a.example/x HTTP/1.1", "Host: a b"])), 400)
+}
+
+test "the default port of the scheme is the same host as no port, on either side" {
+    assert_eq(common.status_of(common.head(["GET http://a.example:80/x HTTP/1.1", "Host: a.example"])), 0)
+    assert_eq(common.status_of(common.head(["GET http://a.example/x HTTP/1.1", "Host: a.example:80"])), 0)
+    assert_eq(common.status_of(common.head(["GET https://a.example:443/x HTTP/1.1", "Host: a.example"])), 0)
+    assert_eq(common.status_of(common.head(["GET https://a.example/x HTTP/1.1", "Host: A.Example:443"])), 0)
+    assert_eq(common.status_of(common.head(["GET http://[::1]:80/x HTTP/1.1", "Host: [::1]"])), 0)
+    assert_eq(common.status_of(common.head(["GET http://a.example:80/x HTTP/1.1", "Host: a.example:80"])), 0)
+}

@@ -1,0 +1,177 @@
+import httpd_impl
+
+struct Item {
+    id: int
+    name: str
+}
+
+fn text_of(r: httpd_impl.Response) -> str {
+    return match r.body {
+        Text(s) => s
+        _ => "(not text)"
+    }
+}
+
+fn is_empty(r: httpd_impl.Response) -> bool {
+    return match r.body {
+        Empty => true
+        _ => false
+    }
+}
+
+test "text is text/plain with its body" {
+    let r = httpd_impl.text(200, "hello")
+    assert_eq(r.status, 200)
+    assert_eq(text_of(r), "hello")
+    assert_eq(r.headers.get("content-type"), some("text/plain; charset=utf-8"))
+    assert_eq(r.headers.len(), 1)
+}
+
+test "text keeps the status it is given" {
+    assert_eq(httpd_impl.text(404, "no").status, 404)
+    assert_eq(httpd_impl.text(500, "no").status, 500)
+}
+
+test "html is text/html" {
+    let r = httpd_impl.html(200, "<p>hi</p>")
+    assert_eq(r.headers.get("content-type"), some("text/html; charset=utf-8"))
+    assert_eq(text_of(r), "<p>hi</p>")
+}
+
+test "bytes is application/octet-stream unless told" {
+    let r = httpd_impl.bytes(200, Bytes([1, 2, 3]))
+    assert_eq(r.headers.get("content-type"), some("application/octet-stream"))
+    let body = match r.body {
+        Data(b) => b
+        _ => Bytes()
+    }
+    assert_eq(body, Bytes([1, 2, 3]))
+    let png = httpd_impl.bytes(200, Bytes([137, 80]), "image/png")
+    assert_eq(png.headers.get("content-type"), some("image/png"))
+    let named = httpd_impl.bytes(201, Bytes(), content_type: "application/pdf")
+    assert_eq(named.headers.get("content-type"), some("application/pdf"))
+    assert_eq(named.status, 201)
+}
+
+test "json encodes the value and says application/json" {
+    let r = httpd_impl.json(201, Item { id: 7, name: "pen" }).expect("encodes")
+    assert_eq(r.status, 201)
+    assert_eq(r.headers.get("content-type"), some("application/json"))
+    assert_eq(text_of(r), r#"{"id":7,"name":"pen"}"#)
+}
+
+test "json encodes lists and maps" {
+    assert_eq(text_of(httpd_impl.json(200, [1, 2, 3]).expect("encodes")), "[1,2,3]")
+    assert_eq(text_of(httpd_impl.json(200, [Item { id: 1, name: "a" }]).expect("encodes")), r#"[{"id":1,"name":"a"}]"#)
+}
+
+test "json gives the error of the encoder for a value that is not JSON" {
+    assert(httpd_impl.json(200, Bytes([1])).is_err())
+}
+
+test "status has no body and no headers" {
+    let r = httpd_impl.status(204)
+    assert_eq(r.status, 204)
+    assert(is_empty(r))
+    assert_eq(r.headers.len(), 0)
+    assert_eq(httpd_impl.status(200).status, 200)
+}
+
+test "redirect has a Location and no body" {
+    let r = httpd_impl.redirect(302, "/elsewhere")
+    assert_eq(r.status, 302)
+    assert_eq(r.headers.get("location"), some("/elsewhere"))
+    assert(is_empty(r))
+    assert_eq(httpd_impl.redirect(308, "https://example.com/a?b=c").status, 308)
+}
+
+test "header sets a header and returns the response, so calls chain" {
+    let r = httpd_impl.text(200, "x").header("X-A", "1").header("X-B", "2")
+    assert_eq(r.headers.get("x-a"), some("1"))
+    assert_eq(r.headers.get("x-b"), some("2"))
+    assert_eq(r.status, 200)
+}
+
+test "header replaces a value, also the Content-Type" {
+    let r = httpd_impl.text(200, "x").header("content-type", "text/csv")
+    assert_eq(r.headers.get_all("Content-Type"), ["text/csv"])
+}
+
+test "stream holds the closure and its length" {
+    let r = httpd_impl.stream(
+        200,
+        "text/plain",
+        fn(w: httpd_impl.BodyWriter) -> Result[()] {
+            return w.write_str("hi")
+        },
+        length: some(2),
+    )
+    assert_eq(r.headers.get("content-type"), some("text/plain"))
+    let length = match r.body {
+        Stream(_, n) => n
+        _ => none
+    }
+    assert_eq(length, some(2))
+    let unknown = httpd_impl.stream(200, "text/plain", fn(w: httpd_impl.BodyWriter) -> Result[()] {
+        return ok(())
+    })
+    let none_length = match unknown.body {
+        Stream(_, n) => n
+        _ => some(-1)
+    }
+    assert_eq(none_length, none)
+}
+
+test "a response built twice does not share its headers" {
+    let a = httpd_impl.text(200, "a")
+    let b = httpd_impl.text(200, "b")
+    a.headers.set("X-Only", "a")
+    assert(!b.headers.has("x-only"))
+}
+
+// ---- Failure ----
+
+test "fail carries its status and message through an Error" {
+    let e = httpd_impl.fail(404, "no item 7")
+    let f = e.as[httpd_impl.Failure]().expect("a Failure")
+    assert_eq(f.status, 404)
+    assert_eq(f.message, "no item 7")
+}
+
+test "a Failure shows as status and message, and so does the Error" {
+    let f = httpd_impl.Failure { status: 404, message: "no item 7" }
+    assert_eq("{f}", "404: no item 7")
+    assert_eq("{httpd_impl.fail(404, "no item 7")}", "404: no item 7")
+    assert_eq(httpd_impl.fail(400, "bad").message(), "400: bad")
+}
+
+test "a Failure survives ? in a function that returns a Result" {
+    let found = look(7)
+    match found {
+        ok(_) => panic("an error was expected")
+        err(e) => {
+            assert(e.is[httpd_impl.Failure]())
+            assert_eq(e.as[httpd_impl.Failure]().expect("a Failure").status, 404)
+        }
+    }
+}
+
+fn find(id: int) -> Result[int] {
+    return err(httpd_impl.fail(404, "no item {id}"))
+}
+
+fn look(id: int) -> Result[int] {
+    let item = find(id)?
+    return ok(item)
+}
+
+test "an error that is not a Failure is not one" {
+    let e = error("boom")
+    assert(!e.is[httpd_impl.Failure]())
+    assert_eq(e.as[httpd_impl.Failure](), none)
+}
+
+test "a Failure keeps its context in the chain and is still a Failure" {
+    let e = httpd_impl.fail(403, "no").context("while reading")
+    assert(e.is[httpd_impl.Failure]())
+}
