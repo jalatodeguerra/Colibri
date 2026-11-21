@@ -472,7 +472,6 @@ pub enum Op {
     /// token on the fiber's hold stack.
     PlaceHold {
         a: Reg,
-        b: Reg,
     },
     /// Releases the newest hold of the fiber's hold stack.
     Unhold,
@@ -803,7 +802,7 @@ impl Chunk {
             Op::PlaceGet { d, a, b } => format!("PlaceGet r{d} r{a} r{b}"),
             Op::PlaceTake { d, a, b } => format!("PlaceTake r{d} r{a} r{b}"),
             Op::PlaceSet { a, b, v } => format!("PlaceSet r{a} r{b} r{v}"),
-            Op::PlaceHold { a, b } => format!("PlaceHold r{a} r{b}"),
+            Op::PlaceHold { a } => format!("PlaceHold r{a}"),
             Op::Unhold => "Unhold".to_string(),
             Op::SetPath { l, s, site } => format!("SetPath r{l} r{s} {}", self.site_text(site)),
             Op::CanonKey { d, m, k } => format!("CanonKey r{d} map=r{m} r{k}"),

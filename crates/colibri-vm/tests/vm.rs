@@ -213,7 +213,7 @@ fn elem(xs: List[P], i: int) {
     let expected = "\
 0000  Step 1
 0001  LoadInt r4 2
-0002  PlaceHold r0 r1
+0002  PlaceHold r0
 0003    site Elem[]
 0004  ListGetAt r3 r0[r1]
 0005  Call r2 base=r3 fn#1

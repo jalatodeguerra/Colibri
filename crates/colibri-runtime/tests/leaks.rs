@@ -30,10 +30,10 @@ fn a_cycle_nothing_reaches_is_found_mid_run() {
         true,
         r#"
 fn leak() {
-let a = Node { name: "a" }
-let b = Node { name: "b" }
-a.next = some(b)
-b.next = some(a)
+    let a = Node { name: "a" }
+    let b = Node { name: "b" }
+    a.next = some(b)
+    b.next = some(a)
 }
 fn main() {}
 "#,
@@ -204,8 +204,8 @@ fn weak_references_are_not_edges() {
 class Child { parent: weak Parent }
 class Parent { child: Child? = none }
 fn make() {
-let p = Parent {}
-p.child = some(Child { parent: p })
+    let p = Parent {}
+    p.child = some(Child { parent: p })
 }
 fn main() { make() }
 "#,
@@ -220,8 +220,8 @@ fn without_tracking_there_is_nothing_to_report() {
         false,
         r#"
 fn main() {
-let a = Node { name: "a" }
-a.next = some(a)
+    let a = Node { name: "a" }
+    a.next = some(a)
 }
 "#,
     );
@@ -235,14 +235,14 @@ fn a_big_graph_is_found_quickly() {
         true,
         r#"
 fn main() {
-let first = Node { name: "0" }
-var last = first
-for i in 1..20000 {
-    let n = Node { name: "n" }
-    last.next = some(n)
-    last = n
-}
-last.next = some(first)
+    let first = Node { name: "0" }
+    var last = first
+    for i in 1..20000 {
+        let n = Node { name: "n" }
+        last.next = some(n)
+        last = n
+    }
+    last.next = some(first)
 }
 "#,
     );

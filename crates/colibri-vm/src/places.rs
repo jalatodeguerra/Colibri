@@ -127,7 +127,7 @@ impl Machine {
                     self.release(old);
                 }
             }
-            Op::PlaceHold { a, b } => {
+            Op::PlaceHold { a } => {
                 let token = match (site.anchor, &fiber.regs[r(a)]) {
                     (AnchorKind::Elem, Value::List(l)) => l.place_hold(&site.name),
                     (AnchorKind::Entry, Value::Map(m)) => m.place_hold(&site.name),
@@ -139,7 +139,6 @@ impl Machine {
                         ));
                     }
                 };
-                let _ = b;
                 fiber.holds.push(token);
             }
             _ => return Err(self.internal(fiber, span, "not a place instruction")),
@@ -372,28 +371,33 @@ impl Machine {
             }
             Op::MapSetAt { m, k, v } => {
                 let value = std::mem::replace(&mut fiber.regs[r(v)], Value::Unit);
-                let (map, key) = match (&fiber.regs[r(m)], &fiber.regs[r(k)]) {
-                    (Value::Map(m), key) => (Rc::clone(m), key.clone()),
+                // One lookup: `insert` checks the guard first, replaces the value of a key the
+                // map has (keeping its stored key, and handing the new one back as `spare_key`,
+                // a clone of the key in `k`), and adds a key it has not.
+                let inserted = match (&fiber.regs[r(m)], &fiber.regs[r(k)]) {
+                    (Value::Map(map), key) => map.insert(key.clone(), value),
                     _ => {
                         self.release(value);
                         return Err(self.internal(fiber, span, "an ill-typed map index"));
                     }
                 };
-                let mut new = Some(value);
-                let updated = map.update(&key, true, |slot| {
-                    std::mem::replace(slot, new.take().unwrap_or(Value::Unit))
-                });
-                let old = match updated {
-                    Ok(Some(old)) => Ok(old),
-                    Ok(None) => self.insert_entry(fiber, &map, key, &mut new, span),
-                    Err(violation) => Err(self.panic(fiber, span, violation.0)),
-                };
-                if let Some(unused) = new {
-                    self.release(unused);
-                }
-                let old = old?;
-                if !is_scalar_value(&old) {
-                    self.release(old);
+                match inserted {
+                    Ok(replaced) => {
+                        if let Some(spare) = replaced.spare_key {
+                            self.release(spare);
+                        }
+                        if let Some(old) = replaced.old
+                            && !is_scalar_value(&old)
+                        {
+                            self.release(old);
+                        }
+                    }
+                    Err(rejected) => {
+                        let (key, value) = rejected.args;
+                        self.release(key);
+                        self.release(value);
+                        return Err(self.panic(fiber, span, rejected.violation.0));
+                    }
                 }
             }
             _ => return Err(self.internal(fiber, span, "not an element instruction")),

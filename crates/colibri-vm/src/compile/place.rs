@@ -240,7 +240,7 @@ impl FnCompiler<'_> {
             return;
         }
         let site = self.place_site(res, &[], true);
-        self.emit(Op::PlaceHold { a: res.a, b: res.b }, span);
+        self.emit(Op::PlaceHold { a: res.a }, span);
         self.emit(Op::Site { site }, span);
         self.push_item(Item::Hold);
     }
