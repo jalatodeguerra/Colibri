@@ -14,10 +14,12 @@ They use the scripting std (`args`, `fs`, `path`, `json`, `regex`, `datetime`, `
 | [`notes/notes_client.colibri`](notes/notes_client.colibri) | 55 | adds notes to the notes server with the `http` client, lists them and reads the streamed export |
 
 Tests: `cargo test -p colibri-lang --test scripts` (`crates/colibri-cli/tests/scripts.rs`) runs
-all three through the real `colibri` binary on a temporary tree and a local `127.0.0.1` HTTP server,
-starts the key-value server and talks to it over a socket (with a Rust client and with `kvclient`), compares the report with [`report/expected.md`](report/expected.md) (`UPDATE_EXPECTED=1`
-rewrites it) and runs `colibri check` on both. `notes` is started and called over a socket from
-Rust, and checked and formatted too. Nothing touches the network.
+`organize` and `report` through the real `colibri` binary, `organize` on a temporary tree and
+`report` against a local `127.0.0.1` HTTP server, and compares the report with
+[`report/expected.md`](report/expected.md) (`UPDATE_EXPECTED=1` rewrites it). It starts the
+key-value server and talks to it over a socket (with a Rust client and with `kvclient`), and
+starts `notes` and calls it from Rust and with `notes_client`. It runs `colibri check` on every
+script here, and `colibri fmt --check` on the `notes` programs. Nothing touches the network.
 
 ## organize
 

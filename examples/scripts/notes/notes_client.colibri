@@ -43,7 +43,7 @@ fn main() -> Result[()] {
     let listed = http.get("{base}/notes").context("cannot reach the server")?
     let notes = json.decode[List[Note]](listed.body)?
     print("{notes.len()} notes")
-    let export = http.get("{base}/notes/export")?
+    let export = http.get("{base}/notes/export").context("cannot reach the server")?
     for line in export.body.split("\n") {
         if line == "" {
             continue

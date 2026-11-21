@@ -522,7 +522,7 @@ on `POST /stop`:
 import httpd
 
 fn hello(r: httpd.Request) -> Result[httpd.Response] {
-    let name = r.param("name") or { "world" }
+    let name = r.param("name").expect("the route has a :name")
     return ok(httpd.text(200, "Hello, {name}!\n"))
 }
 
