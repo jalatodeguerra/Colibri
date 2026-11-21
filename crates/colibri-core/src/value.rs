@@ -9,7 +9,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use smallvec::SmallVec;
+pub use smallvec::{Array, SmallVec};
 
 use colibri_check::hir::FnId;
 use colibri_check::types::TypeId;
@@ -150,23 +150,44 @@ impl PartialEq for Value {
     }
 }
 
-/// The fields of a struct, the payload of an enum value or the fields of an object: up to four
-/// values stored inline, so a small value is one allocation.
-pub type Fields = SmallVec<[Value; 4]>;
+// Small values keep their fields inline, so a struct, an enum value or an object is one
+// allocation. The inline sizes are per kind (what the benchmarks showed: see the step 3
+// notes): an `Option`/`Result` payload is one value, structs and objects are mostly small.
+/// The fields of a struct.
+pub type StructFields = SmallVec<StructInline>;
+/// The payload of an enum value.
+pub type Payload = SmallVec<PayloadInline>;
+/// The fields of a class object.
+pub type ObjFields = SmallVec<ObjInline>;
+/// The inline storage of each kind.
+pub type StructInline = [Value; 4];
+pub type PayloadInline = [Value; 1];
+pub type ObjInline = [Value; 4];
 
 /// A payload of one value, built inline.
 #[inline]
-pub fn one(v: Value) -> Fields {
-    let mut fields = Fields::new();
-    fields.push(v);
-    fields
+pub fn one(v: Value) -> Payload {
+    let mut payload = Payload::new();
+    payload.push(v);
+    payload
+}
+
+/// A small vector of exactly the length of `iter`: no slack is kept for a value that lives
+/// as long as its owner.
+#[inline]
+pub fn exact<A: smallvec::Array<Item = Value>>(
+    iter: impl ExactSizeIterator<Item = Value>,
+) -> SmallVec<A> {
+    let mut out = SmallVec::with_capacity(iter.len());
+    out.extend(iter);
+    out
 }
 
 /// A struct value: its type and its fields in declaration order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StructVal {
     pub ty: TypeId,
-    pub fields: Fields,
+    pub fields: StructFields,
 }
 
 /// An enum value: its type, which variant, and the variant's payload.
@@ -174,7 +195,7 @@ pub struct StructVal {
 pub struct EnumVal {
     pub ty: TypeId,
     pub variant: u32,
-    pub payload: Fields,
+    pub payload: Payload,
 }
 
 impl Value {
@@ -203,19 +224,20 @@ impl Value {
     }
 
     #[inline]
-    pub fn strukt(ty: TypeId, fields: impl Into<Fields>) -> Value {
-        Value::Struct(Rc::new(StructVal {
-            ty,
-            fields: fields.into(),
-        }))
+    pub fn strukt(ty: TypeId, fields: impl Into<StructFields>) -> Value {
+        let mut fields = fields.into();
+        fields.shrink_to_fit();
+        Value::Struct(Rc::new(StructVal { ty, fields }))
     }
 
     #[inline]
-    pub fn variant(ty: TypeId, variant: u32, payload: impl Into<Fields>) -> Value {
+    pub fn variant(ty: TypeId, variant: u32, payload: impl Into<Payload>) -> Value {
+        let mut payload = payload.into();
+        payload.shrink_to_fit();
         Value::Enum(Rc::new(EnumVal {
             ty,
             variant,
-            payload: payload.into(),
+            payload,
         }))
     }
 
@@ -230,13 +252,8 @@ impl Value {
         use colibri_check::types::{OPTION_TYPE, VARIANT_NONE, VARIANT_SOME};
         match inner {
             Some(v) => Value::variant(OPTION_TYPE, VARIANT_SOME, one(v)),
-            None => Value::variant(OPTION_TYPE, VARIANT_NONE, Fields::new()),
+            None => Value::variant(OPTION_TYPE, VARIANT_NONE, Payload::new()),
         }
-    }
-
-    /// A fresh `none`.
-    pub(crate) fn option_none() -> Value {
-        Value::option(None)
     }
 
     /// Whether the value owns other values.
@@ -282,7 +299,7 @@ thread_local! {
 
 /// Destroys the children of a struct or enum that is being dropped.
 #[inline]
-fn drop_children(children: &mut Fields) {
+fn drop_children<A: smallvec::Array<Item = Value>>(children: &mut SmallVec<A>) {
     if !children.iter().any(Value::is_composite) {
         return;
     }
@@ -291,7 +308,7 @@ fn drop_children(children: &mut Fields) {
 
 /// The part of [`drop_children`] for children that own composites.
 #[cold]
-fn drop_deep(children: Fields) {
+fn drop_deep<A: smallvec::Array<Item = Value>>(children: SmallVec<A>) {
     let depth = DROP_DEPTH.with(Cell::get);
     if depth < MAX_DROP_DEPTH {
         DROP_DEPTH.with(|d| d.set(depth + 1));

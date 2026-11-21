@@ -20,7 +20,7 @@ use std::rc::Rc;
 use colibri_check::types::TypeId;
 
 use crate::ordered::OrderedMap;
-use crate::value::{Fields, Value};
+use crate::value::{ObjFields, Value};
 
 // ---- the guard ----
 
@@ -636,7 +636,7 @@ impl fmt::Debug for SetObj {
 /// fields out first. A debug build asserts that an object is never dropped any other way.
 pub struct ClassObj {
     ty: TypeId,
-    fields: RefCell<Fields>,
+    fields: RefCell<ObjFields>,
     released: Cell<bool>,
     /// The object's `Drop` hook has run (or is running); it runs at most once.
     hooked: Cell<bool>,
@@ -644,10 +644,12 @@ pub struct ClassObj {
 
 impl ClassObj {
     #[inline]
-    pub fn new(ty: TypeId, fields: impl Into<Fields>) -> Rc<ClassObj> {
+    pub fn new(ty: TypeId, fields: impl Into<ObjFields>) -> Rc<ClassObj> {
+        let mut fields = fields.into();
+        fields.shrink_to_fit();
         Rc::new(ClassObj {
             ty,
-            fields: RefCell::new(fields.into()),
+            fields: RefCell::new(fields),
             released: Cell::new(false),
             hooked: Cell::new(false),
         })
@@ -698,7 +700,7 @@ impl ClassObj {
 
     /// Takes the fields out and marks the object destroyed. Only `release` calls this.
     #[inline]
-    pub(crate) fn take_fields(&self) -> Fields {
+    pub(crate) fn take_fields(&self) -> ObjFields {
         self.released.set(true);
         std::mem::take(&mut *self.fields.borrow_mut())
     }

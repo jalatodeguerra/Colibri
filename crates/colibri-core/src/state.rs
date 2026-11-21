@@ -80,7 +80,7 @@ impl Core {
             host: HostSide::default(),
             leaks: None,
             sched: Scheduler::new(),
-            none: Value::option_none(),
+            none: Value::option(None),
         }
     }
 

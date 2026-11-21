@@ -906,19 +906,17 @@ impl Interp {
         Err(self.internal(fiber, span, "no `match` arm matched"))
     }
 
-    /// Evaluates expressions left to right into one vector of values. Each value also stays
-    /// on the temporaries stack until the statement ends (see [`Interp::eval_twin`]).
     // The inline field storage lives in these frames, not in the one of `eval`, which every
     // nested expression pays for.
     #[inline(never)]
     fn eval_struct(&mut self, fiber: &mut Fiber, ty: TypeId, fields: &[Expr]) -> Eval {
-        let values = self.eval_values::<colibri_core::value::Fields>(fiber, fields)?;
+        let values = self.eval_fields::<colibri_core::value::StructInline>(fiber, fields)?;
         Ok(Value::strukt(ty, values))
     }
 
     #[inline(never)]
     fn eval_object(&mut self, fiber: &mut Fiber, ty: TypeId, fields: &[Expr], span: Span) -> Eval {
-        let values = self.eval_values::<colibri_core::value::Fields>(fiber, fields)?;
+        let values = self.eval_fields::<colibri_core::value::ObjInline>(fiber, fields)?;
         let obj = ClassObj::new(ty, values);
         self.core.track_object(&obj, Some(span));
         Ok(Value::Obj(obj))
@@ -926,10 +924,31 @@ impl Interp {
 
     #[inline(never)]
     fn eval_variant(&mut self, fiber: &mut Fiber, ty: TypeId, variant: u32, args: &[Expr]) -> Eval {
-        let values = self.eval_values::<colibri_core::value::Fields>(fiber, args)?;
+        if args.is_empty()
+            && ty == colibri_check::types::OPTION_TYPE
+            && variant == colibri_check::types::VARIANT_NONE
+        {
+            return Ok(self.core.none());
+        }
+        let values = self.eval_fields::<colibri_core::value::PayloadInline>(fiber, args)?;
         Ok(Value::variant(ty, variant, values))
     }
 
+    /// [`Interp::eval_values`] into inline storage of exactly the needed capacity.
+    fn eval_fields<A: colibri_core::value::Array<Item = Value>>(
+        &mut self,
+        fiber: &mut Fiber,
+        exprs: &[Expr],
+    ) -> Eval<colibri_core::value::SmallVec<A>> {
+        let mut out = colibri_core::value::SmallVec::with_capacity(exprs.len());
+        for e in exprs {
+            out.push(self.eval_twin(fiber, e)?);
+        }
+        Ok(out)
+    }
+
+    /// Evaluates expressions left to right into one vector of values. Each value also stays
+    /// on the temporaries stack until the statement ends (see [`Interp::eval_twin`]).
     fn eval_values<C: FromIterator<Value>>(
         &mut self,
         fiber: &mut Fiber,

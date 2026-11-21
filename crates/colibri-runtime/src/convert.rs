@@ -142,10 +142,7 @@ impl Value {
     pub fn new_struct(ty: TypeId, fields: Vec<Value>) -> Value {
         Value(Inner::strukt(
             ty,
-            fields
-                .into_iter()
-                .map(|v| v.0)
-                .collect::<colibri_core::value::Fields>(),
+            colibri_core::value::exact(fields.into_iter().map(|v| v.0)),
         ))
     }
 
@@ -154,10 +151,7 @@ impl Value {
         Value(Inner::variant(
             ty,
             variant,
-            payload
-                .into_iter()
-                .map(|v| v.0)
-                .collect::<colibri_core::value::Fields>(),
+            colibri_core::value::exact(payload.into_iter().map(|v| v.0)),
         ))
     }
 

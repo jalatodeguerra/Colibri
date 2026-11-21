@@ -129,7 +129,9 @@ pub trait Release: Engine {
             return;
         }
         // The worklist allocates on its first push, so a container with no container
-        // children (a leaf) is taken apart without allocating.
+        // children (a leaf) is taken apart without allocating (a map still collects its
+        // entries into one `Vec`). `is_shared` only saves the call: an unshared-check inside
+        // `dismantle` would do nothing for such a value, so no test can tell it apart.
         let mut work = Vec::new();
         self.dismantle(value, &mut work);
         while let Some(v) = work.pop() {
@@ -341,7 +343,7 @@ mod tests {
     use crate::fiber::FiberState;
     use crate::host::{HostFault, HostHook};
     use crate::sched::EngineSlot;
-    use crate::value::{Fields, one};
+    use crate::value::{ObjFields, StructFields, StructInline, exact, one};
 
     thread_local! {
         static ALLOCS: Cell<usize> = const { Cell::new(0) };
@@ -366,6 +368,8 @@ mod tests {
         }
     }
 
+    // This counts the allocations of every test in this crate's unit-test binary; another
+    // allocator for these tests would need to replace it.
     #[global_allocator]
     static COUNTING: Counting = Counting;
 
@@ -470,7 +474,7 @@ mod tests {
             Value::variant(TypeId(0), 1, one(inner.clone())),
             Value::tuple(vec![inner.clone(), Value::Int(2)]),
             Value::list(vec![inner.clone()]),
-            Value::Obj(ClassObj::new(TypeId(1), Fields::from_elem(inner, 2))),
+            Value::Obj(ClassObj::new(TypeId(1), ObjFields::from_elem(inner, 2))),
         ]
     }
 
@@ -496,7 +500,7 @@ mod tests {
             Value::list(vec![Value::Int(1), Value::Int(2)]),
             Value::Obj(ClassObj::new(
                 TypeId(1),
-                Fields::from_elem(Value::Bool(true), 3),
+                ObjFields::from_elem(Value::Bool(true), 3),
             )),
         ];
         for leaf in leaves {
@@ -505,27 +509,88 @@ mod tests {
         }
     }
 
+    /// A class `name` with no fields, as type `id`.
+    fn class(name: &str) -> colibri_check::hir::TypeDef {
+        colibri_check::hir::TypeDef {
+            name: name.to_string(),
+            span: Span {
+                file: colibri_syntax::FileId(0),
+                start: 0,
+                end: 0,
+            },
+            params: Vec::new(),
+            kind: colibri_check::hir::TypeDefKind::Class { fields: Vec::new() },
+            module: None,
+            open: false,
+        }
+    }
+
+    fn object(ty: u32) -> Value {
+        Value::Obj(ClassObj::new(TypeId(ty), ObjFields::new()))
+    }
+
+    /// The last reference to a struct dies, and the objects it owned die in field order, the
+    /// ones in nested values first-come: the trace shows it. A release that never took the
+    /// value apart would leave the objects to the plain drop (which the debug check in
+    /// `ClassObj` rejects) and the trace empty.
     #[test]
-    fn the_last_reference_still_releases_the_children() {
+    fn the_last_reference_releases_the_children_in_order() {
         let mut engine = Bare::new();
-        let shared = Value::Obj(ClassObj::new(TypeId(1), Fields::new()));
-        let Value::Obj(probe) = shared.clone() else {
-            unreachable!()
-        };
-        let outer = Value::strukt(TypeId(0), vec![Value::tuple(vec![shared]), Value::Int(1)]);
-        assert_eq!(Rc::strong_count(&probe), 2);
+        engine.core.types = Rc::from(vec![class("A"), class("B"), class("C")]);
+        engine.core.set_trace_drops(true);
+        let outer = Value::strukt(
+            TypeId(0),
+            vec![
+                Value::tuple(vec![object(0), Value::Int(1)]),
+                object(1),
+                Value::variant(TypeId(0), 0, one(object(2))),
+            ],
+        );
         engine.release(outer);
-        assert_eq!(Rc::strong_count(&probe), 1);
-        probe.take_fields();
+        assert_eq!(engine.core.take_trace(), ["A", "B", "C"]);
+    }
+
+    /// A reference that is not the last one destroys nothing; the last one does.
+    #[test]
+    fn a_shared_reference_destroys_nothing() {
+        let mut engine = Bare::new();
+        engine.core.types = Rc::from(vec![class("A")]);
+        engine.core.set_trace_drops(true);
+        let kept = Value::tuple(vec![object(0)]);
+        engine.release(kept.clone());
+        assert!(engine.core.take_trace().is_empty());
+        engine.release(kept);
+        assert_eq!(engine.core.take_trace(), ["A"]);
     }
 
     #[test]
     fn a_small_struct_is_one_allocation() {
+        let inline = StructFields::new().inline_size();
         let n = allocations(|| {
-            let mut fields = Fields::new();
-            fields.extend([Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)]);
+            let mut fields = StructFields::new();
+            fields.extend((0..inline).map(|i| Value::Int(i as i64)));
             drop(Value::strukt(TypeId(0), fields));
         });
         assert_eq!(n, 1);
+    }
+
+    /// A value with more fields than the inline storage holds keeps no spare room, however the
+    /// fields were collected.
+    #[test]
+    fn a_struct_past_the_inline_size_has_no_spare_capacity() {
+        let len = StructFields::new().inline_size() + 1;
+        let items = || (0..len).map(|i| Value::Int(i as i64));
+        let mut roomy = Vec::with_capacity(64);
+        roomy.extend(items());
+        let from_vec = Value::strukt(TypeId(0), roomy);
+        let from_exact = Value::strukt(TypeId(0), exact::<StructInline>(items()));
+        let mut grown = StructFields::new();
+        grown.extend(items());
+        let from_grown = Value::strukt(TypeId(0), grown);
+        for v in [from_vec, from_exact, from_grown] {
+            let Value::Struct(s) = &v else { unreachable!() };
+            assert_eq!(s.fields.len(), len);
+            assert_eq!(s.fields.capacity(), len);
+        }
     }
 }
