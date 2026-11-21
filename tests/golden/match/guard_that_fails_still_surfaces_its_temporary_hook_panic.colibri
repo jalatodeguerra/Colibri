@@ -1,0 +1,26 @@
+// allow: unused
+class Bad { name: str, n: int }
+
+impl Drop for Bad {
+    fn drop(self) {
+        print("drop {self.name}")
+        let zero = 0
+        print(1 / zero)
+    }
+}
+
+fn mk() -> Bad => Bad { name: "guard", n: 1 }
+
+// A guard that is false has its temporary's panic thrown as well: no later arm is tried.
+fn main() {
+    match 5 {
+        n if mk().n > 5 => print("first {n}")
+        n if n > 0 => print("second {n}")
+        _ => print("other")
+    }
+    print("not reached")
+}
+
+// expect: drop guard
+// panic: division by zero
+// drops: guard

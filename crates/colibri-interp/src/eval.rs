@@ -909,6 +909,9 @@ impl Interp {
                 let temps = fiber.temps.len();
                 let held = self.eval(fiber, guard);
                 self.release_temps(fiber, temps);
+                // A `Drop` hook of the guard's temporaries that panicked is thrown now, before
+                // the arm body (or the next arm) runs.
+                let held = self.fold_hook_panics(held);
                 match held {
                     Ok(Value::Bool(true)) => {}
                     Ok(other) => {

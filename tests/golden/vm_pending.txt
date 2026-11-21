@@ -393,6 +393,8 @@ match/const_patterns.colibri  # `match`
 match/design_8_2_area.colibri  # `match`
 match/design_8_2_guards_and_or_patterns.colibri  # `match`
 match/guard_does_not_count_for_exhaustiveness.colibri  # `match`
+match/guard_temporary_hook_panic_surfaces_before_the_arm_body.colibri  # `match`
+match/guard_that_fails_still_surfaces_its_temporary_hook_panic.colibri  # `match`
 match/guard_uses_payload.colibri  # `match`
 match/guards.colibri  # `match`
 match/literal_inside_variant.colibri  # `match`
