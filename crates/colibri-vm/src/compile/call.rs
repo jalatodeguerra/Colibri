@@ -200,9 +200,12 @@ impl FnCompiler<'_> {
         dst: Option<Reg>,
         span: Span,
     ) {
+        // A result stored straight into a local could overwrite an index or key register that the
+        // write-back below still reads (`i = xs[i].bump()`): it goes through a temporary.
+        let via_temp = matches!(dst, Some(d) if usize::from(d) < self.nlocals);
         let d = match dst {
-            Some(d) => d,
-            None => self.alloc_for(ret),
+            Some(d) if !via_temp => d,
+            _ => self.alloc_for(ret),
         };
         let (w, res) =
             self.eval_window_then(1, args, false, |c| c.resolve_anchor(place, false, span));
@@ -265,7 +268,11 @@ impl FnCompiler<'_> {
         self.note_release(&place.ty);
         self.emit_unhold(&res, span);
         self.free_window(w, span);
-        if dst.is_none() {
+        if let (true, Some(local)) = (via_temp, dst) {
+            self.own(d);
+            self.emit(Op::Move { d: local, s: d }, span);
+            self.free_moved(d);
+        } else if dst.is_none() {
             self.own(d);
             self.free(d, span);
         }
