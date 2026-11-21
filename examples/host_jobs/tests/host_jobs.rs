@@ -1,20 +1,24 @@
 //! The example runs in-process: its log is compared with a golden file, the committed
 //! `host.cbi` must be current, and a misbehaving script must not take the host down.
 
-/// Tests that do not pass on the bytecode VM yet (`COLIBRI_ENGINE=vm`), with the reason: the
-/// example's host functions cannot be called from the VM so far. On the VM such a test is
-/// expected to fail, and one that passes fails the run, so the list only shrinks.
-const VM_PENDING: &[&str] = &[
-    "a_panic_in_update_is_logged_and_the_host_goes_on",
-    "a_script_without_on_progress_is_skipped_by_the_hook_lookup",
-    "the_log_matches_the_golden_file",
-    "script_tests_see_a_fresh_queue_each",
-    "the_run_is_deterministic",
+/// Tests that do not pass on the bytecode VM yet (`COLIBRI_ENGINE=vm`), with the feature the VM
+/// refuses. On the VM such a test is expected to fail by that refusal, and one that passes fails
+/// the run, so the list only shrinks.
+const VM_PENDING: &[(&str, &str)] = &[
+    ("the_log_matches_the_golden_file", "closures"),
+    (
+        "script_tests_see_a_fresh_queue_each",
+        "the built-in `ListLen`",
+    ),
+    ("the_run_is_deterministic", "closures"),
 ];
 
 fn vm_pending(name: &str, body: impl FnOnce()) {
     let on_vm = std::env::var("COLIBRI_ENGINE").is_ok_and(|v| v == "vm");
-    if !on_vm || !VM_PENDING.contains(&name) {
+    let Some((_, reason)) = VM_PENDING.iter().find(|(n, _)| *n == name) else {
+        return body();
+    };
+    if !on_vm {
         return body();
     }
     let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) else {
@@ -27,8 +31,8 @@ fn vm_pending(name: &str, body: impl FnOnce()) {
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_default();
     assert!(
-        text.contains("the bytecode VM does not support"),
-        "{name} is listed as pending but failed another way: {text}"
+        text.contains(&format!("the bytecode VM does not support {reason}")),
+        "{name} is listed as pending ({reason}) but failed another way: {text}"
     );
 }
 
@@ -84,43 +88,41 @@ fn the_committed_interface_is_current() {
 
 #[test]
 fn a_panic_in_update_is_logged_and_the_host_goes_on() {
-    vm_pending("a_panic_in_update_is_logged_and_the_host_goes_on", || {
-        let mut host = JobHost::new().unwrap();
-        host.load_source(
-            "panicky.colibri",
-            r#"
-let mut ticks = 0
+    let mut host = JobHost::new().unwrap();
+    host.load_source(
+        "panicky.colibri",
+        r#"
+var ticks = 0
 
 fn update(dt: f32) {
-    ticks += 1
-    if ticks == 5 {
-        panic("boom at tick {ticks}")
-    }
-    if ticks == 8 {
-        log("still running at tick {ticks}")
-    }
+ticks += 1
+if ticks == 5 {
+    panic("boom at tick {ticks}")
+}
+if ticks == 8 {
+    log("still running at tick {ticks}")
+}
 }
 "#,
-        )
-        .unwrap();
-        let log = host.run(10);
-        let errors: Vec<&String> = log.iter().filter(|l| l.contains("script error")).collect();
-        assert_eq!(errors.len(), 1, "{log:#?}");
-        assert!(
-            errors[0].starts_with("[0005] script error in update: ")
-                && errors[0].contains("boom at tick 5"),
-            "{}",
-            errors[0]
-        );
-        // Ticks 1-4 and 6-10 ran: the script kept its state and the scheduler kept its clock.
-        assert!(
-            log.iter()
-                .any(|l| l == "[0008] script: still running at tick 8"),
-            "{log:#?}"
-        );
-        assert!(log.last().unwrap().starts_with("summary: ticks=10 "));
-        assert!(log.last().unwrap().contains("script_errors=1"));
-    })
+    )
+    .unwrap();
+    let log = host.run(10);
+    let errors: Vec<&String> = log.iter().filter(|l| l.contains("script error")).collect();
+    assert_eq!(errors.len(), 1, "{log:#?}");
+    assert!(
+        errors[0].starts_with("[0005] script error in update: ")
+            && errors[0].contains("boom at tick 5"),
+        "{}",
+        errors[0]
+    );
+    // Ticks 1-4 and 6-10 ran: the script kept its state and the scheduler kept its clock.
+    assert!(
+        log.iter()
+            .any(|l| l == "[0008] script: still running at tick 8"),
+        "{log:#?}"
+    );
+    assert!(log.last().unwrap().starts_with("summary: ticks=10 "));
+    assert!(log.last().unwrap().contains("script_errors=1"));
 }
 
 #[test]
@@ -150,37 +152,32 @@ fn a_runaway_script_runs_out_of_budget_and_the_host_goes_on() {
 
 #[test]
 fn a_script_without_on_progress_is_skipped_by_the_hook_lookup() {
-    vm_pending(
-        "a_script_without_on_progress_is_skipped_by_the_hook_lookup",
-        || {
-            let mut host = JobHost::new().unwrap();
-            host.load_source(
-                "no_hook.colibri",
-                r#"
+    let mut host = JobHost::new().unwrap();
+    host.load_source(
+        "no_hook.colibri",
+        r#"
 fn init() {
-    submit(Load { cpu: 3.0, io: 0.0 })
+submit(Load { cpu: 3.0, io: 0.0 })
 }
 
 fn update(dt: f32) {}
 "#,
-            )
-            .unwrap();
-            let log = host.run(60);
-            // The worker still works (the host logs it), nobody finishes the job, no error.
-            assert_eq!(
-                log.iter().filter(|l| l.contains("host: worked #1")).count(),
-                2,
-                "{log:#?}"
-            );
-            assert!(log.iter().all(|l| !l.contains("script error")), "{log:#?}");
-            assert!(
-                log.last()
-                    .unwrap()
-                    .contains("worked=2 balance=0 script_errors=0"),
-                "{log:#?}"
-            );
-        },
     )
+    .unwrap();
+    let log = host.run(60);
+    // The worker still works (the host logs it), nobody finishes the job, no error.
+    assert_eq!(
+        log.iter().filter(|l| l.contains("host: worked #1")).count(),
+        2,
+        "{log:#?}"
+    );
+    assert!(log.iter().all(|l| !l.contains("script error")), "{log:#?}");
+    assert!(
+        log.last()
+            .unwrap()
+            .contains("worked=2 balance=0 script_errors=0"),
+        "{log:#?}"
+    );
 }
 
 #[test]
