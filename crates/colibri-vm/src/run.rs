@@ -544,7 +544,8 @@ impl Machine {
                     tri!(self.op_elem(fiber, &chunk, base, pc, op));
                 }
                 Op::Unhold => {
-                    fiber.holds.pop();
+                    let held = fiber.holds.pop();
+                    debug_assert!(held.is_some(), "a hold released that was never taken");
                 }
                 Op::SetPath { l, s, site } => {
                     sync!();

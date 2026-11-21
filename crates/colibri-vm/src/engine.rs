@@ -85,6 +85,10 @@ impl Machine {
         let holds_mark = fiber.holds.len();
         let result = self.run(fiber);
         // Landing pads release their holds. Only a refusal, which runs no pads, leaves any.
+        debug_assert!(
+            fiber.holds.len() == holds_mark || self.refused,
+            "a call left a mutation guard held"
+        );
         fiber.holds.truncate(holds_mark);
         // The receiver of a `var self` method goes back to the caller; every other parameter
         // is released, last first.
