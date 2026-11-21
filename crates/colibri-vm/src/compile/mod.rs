@@ -23,6 +23,7 @@
 mod call;
 mod cond;
 mod expr;
+mod host;
 mod pattern;
 mod place;
 mod stmt;

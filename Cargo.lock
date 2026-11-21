@@ -303,6 +303,7 @@ version = "0.1.0"
 dependencies = [
  "colibri-check",
  "colibri-core",
+ "colibri-ffi",
  "colibri-syntax",
 ]
 

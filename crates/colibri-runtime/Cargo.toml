@@ -20,7 +20,7 @@ default = ["ffi"]
 # Lets scripts call C libraries through `extern` blocks (libffi and dlopen; EMBEDDING §5). Turn it
 # off (`default-features = false`) to build without the bundled libffi and its C compiler step:
 # a program with an `extern` block then fails to load with an error that says why.
-ffi = ["colibri-interp/ffi"]
+ffi = ["colibri-interp/ffi", "colibri-vm/ffi"]
 
 [dev-dependencies]
 colibri-ffi-testlib = { path = "../colibri-ffi-testlib" }

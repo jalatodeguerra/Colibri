@@ -123,7 +123,7 @@ impl FnCompiler<'_> {
                 self.call_fn(*f, &values, receiver, &e.ty, dst, e.span);
             }
             Callee::Intrinsic(which) => self.intrinsic(which, c, e, dst),
-            Callee::Host(_) => self.unsupported("host functions", e.span),
+            Callee::Host(id) => self.call_host_fn(*id, c, e, dst),
             Callee::Value => self.unsupported("calls of function values", e.span),
             Callee::Bound { .. } | Callee::Dyn { .. } => {
                 self.unsupported("calls through interfaces", e.span);
@@ -330,6 +330,7 @@ impl FnCompiler<'_> {
             | Intrinsic::Assert
             | Intrinsic::AssertEq
             | Intrinsic::Convert { .. }
+            | Intrinsic::Ptr(_)
             | Intrinsic::NumMethod(..) => {
                 let d = match dst {
                     Some(d) => d,
@@ -357,6 +358,31 @@ impl FnCompiler<'_> {
                     self.note_release(&a.ty);
                 }
                 self.free_window_moved(w);
+                if dst.is_none() {
+                    self.own(d);
+                    self.free(d, span);
+                }
+            }
+            // The receiver is only looked at: it dies with the caller's statement.
+            Intrinsic::HostAlive if args.len() == 1 => {
+                let d = match dst {
+                    Some(d) => d,
+                    None => self.alloc_for(&Ty::Bool),
+                };
+                let w = self.eval_window(0, &args, false);
+                let site = self.add_site(Site::Intrinsic {
+                    which: which.clone(),
+                    argc: 1,
+                });
+                self.emit(
+                    Op::Intrinsic {
+                        d,
+                        base: w.base,
+                        site,
+                    },
+                    span,
+                );
+                self.free_window(w, span);
                 if dst.is_none() {
                     self.own(d);
                     self.free(d, span);

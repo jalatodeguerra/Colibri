@@ -2,12 +2,13 @@
 //! names `colibri_vm`.
 //!
 //! The VM runs a growing part of the language (see its crate docs); what it does not run yet
-//! is a clean panic naming the missing feature. Host functions are recorded but cannot be
-//! called from Colibri code yet, the REPL session entry points and host async waits refuse
-//! with a message, and a closure value cannot be called from the host.
+//! is a clean panic naming the missing feature. The REPL session entry points refuse with a
+//! message, a closure value cannot be called from the host, and a host function that waits for
+//! a background operation blocks (there are no coroutines to run meanwhile).
 
 use std::any::{Any, TypeId as AnyTypeId};
 use std::io::Write;
+use std::rc::Rc;
 
 use colibri_check::hir::{ExternDef, FnId, GlobalId, HostFnId, Program};
 use colibri_check::types::TypeId;
@@ -19,7 +20,7 @@ use colibri_core::hostheap::{HostBorrowError, HostGuard};
 use colibri_core::leaks::Leak;
 use colibri_core::prelude::*;
 use colibri_core::value::Value as CoreValue;
-use colibri_vm::{Machine, VmFiber};
+use colibri_vm::{HostClassHooks, HostImpl, Machine, VmFiber};
 
 use crate::engine::{ClassHooks, HostCx, HostFnImpl, RuntimeEngine};
 
@@ -29,71 +30,118 @@ pub(crate) struct VmEngine {
     fiber: VmFiber,
 }
 
-impl HostCx for VmEngine {
-    fn core(&self) -> &Core {
-        Engine::core(&self.machine)
-    }
+/// The context of a host function the VM is calling: its machine and the fiber it runs on.
+struct VmCx<'a> {
+    machine: &'a mut Machine,
+    fiber: &'a mut VmFiber,
+}
 
-    fn core_mut(&mut self) -> &mut Core {
-        Engine::core_mut(&mut self.machine)
-    }
+/// Where a context finds the machine and the fiber.
+trait Parts {
+    fn parts(&mut self) -> (&mut Machine, &mut VmFiber);
+    fn shared(&self) -> (&Machine, &VmFiber);
+}
 
-    fn host_depth(&self) -> u32 {
-        // No host function runs on the VM yet.
-        0
+impl Parts for VmEngine {
+    fn parts(&mut self) -> (&mut Machine, &mut VmFiber) {
+        (&mut self.machine, &mut self.fiber)
     }
+    fn shared(&self) -> (&Machine, &VmFiber) {
+        (&self.machine, &self.fiber)
+    }
+}
 
-    fn release(&mut self, value: CoreValue) {
-        self.machine.release(value);
+impl Parts for VmCx<'_> {
+    fn parts(&mut self) -> (&mut Machine, &mut VmFiber) {
+        (&mut *self.machine, &mut *self.fiber)
     }
+    fn shared(&self) -> (&Machine, &VmFiber) {
+        (&*self.machine, &*self.fiber)
+    }
+}
 
-    fn error_report(&mut self, error: &CoreValue) -> String {
-        let (machine, fiber) = (&mut self.machine, &mut self.fiber);
-        machine.error_report(fiber, error)
-    }
+// Two types share one body: a blanket impl over `Parts` would clash with the tree engine's.
+macro_rules! host_cx {
+    ($ty:ty) => {
+        impl HostCx for $ty {
+            fn core(&self) -> &Core {
+                Engine::core(self.shared().0)
+            }
 
-    fn fn_param_count(&self, f: FnId) -> Option<u32> {
-        self.machine.fn_param_count(f)
-    }
+            fn core_mut(&mut self) -> &mut Core {
+                Engine::core_mut(self.parts().0)
+            }
 
-    fn call(&mut self, f: FnId, args: Vec<CoreValue>) -> Result<CoreValue, Box<PanicInfo>> {
-        let (machine, fiber) = (&mut self.machine, &mut self.fiber);
-        machine.call(fiber, f, args)
-    }
+            fn host_depth(&self) -> u32 {
+                self.shared().1.host_depth()
+            }
 
-    fn call_function(
-        &mut self,
-        f: &CoreValue,
-        args: Vec<CoreValue>,
-    ) -> Result<CoreValue, Box<PanicInfo>> {
-        let (machine, fiber) = (&mut self.machine, &mut self.fiber);
-        machine.call_function(fiber, f, args)
-    }
+            fn release(&mut self, value: CoreValue) {
+                self.parts().0.release(value);
+            }
 
-    fn host_borrow(
-        &self,
-        in_call: bool,
-        index: u32,
-        generation: u32,
-        any: AnyTypeId,
-        exclusive: bool,
-    ) -> Result<HostGuard, HostBorrowError> {
-        let (machine, fiber) = (&self.machine, &self.fiber);
-        machine.host_borrow(in_call.then_some(fiber), index, generation, any, exclusive)
-    }
+            fn error_report(&mut self, error: &CoreValue) -> String {
+                let (machine, fiber) = self.parts();
+                machine.error_report(fiber, error)
+            }
 
-    fn external_wait_runs_others(&self) -> bool {
-        false
-    }
+            fn fn_param_count(&self, f: FnId) -> Option<u32> {
+                self.shared().0.fn_param_count(f)
+            }
 
-    fn wait_for_completion(
-        &mut self,
-        _op: u64,
-        _token: &CancelToken,
-    ) -> Result<Waited, ExternalError> {
-        // Nothing else can run meanwhile on the VM yet: the caller blocks.
-        Ok(Waited::Blocked)
-    }
+            fn call(&mut self, f: FnId, args: Vec<CoreValue>) -> Result<CoreValue, Box<PanicInfo>> {
+                let (machine, fiber) = self.parts();
+                machine.call(fiber, f, args)
+            }
+
+            fn call_function(
+                &mut self,
+                f: &CoreValue,
+                args: Vec<CoreValue>,
+            ) -> Result<CoreValue, Box<PanicInfo>> {
+                let (machine, fiber) = self.parts();
+                machine.call_function(fiber, f, args)
+            }
+
+            fn host_borrow(
+                &self,
+                in_call: bool,
+                index: u32,
+                generation: u32,
+                any: AnyTypeId,
+                exclusive: bool,
+            ) -> Result<HostGuard, HostBorrowError> {
+                let (machine, fiber) = self.shared();
+                machine.host_borrow(in_call.then_some(fiber), index, generation, any, exclusive)
+            }
+
+            fn external_wait_runs_others(&self) -> bool {
+                false
+            }
+
+            fn wait_for_completion(
+                &mut self,
+                _op: u64,
+                _token: &CancelToken,
+            ) -> Result<Waited, ExternalError> {
+                // Nothing else can run meanwhile on the VM yet (coroutines, vm-plan steps 11 and 12):
+                // the caller blocks.
+                Ok(Waited::Blocked)
+            }
+        }
+    };
+}
+
+host_cx!(VmEngine);
+host_cx!(VmCx<'_>);
+
+/// A host function of the runtime as the VM installs it.
+fn adapt(imp: HostFnImpl) -> HostImpl {
+    Rc::new(
+        move |machine: &mut Machine, fiber: &mut VmFiber, args: Vec<CoreValue>| {
+            imp(&mut VmCx { machine, fiber }, args)
+        },
+    )
 }
 
 /// The VM as the engine of a [`crate::Vm`].
@@ -143,23 +191,23 @@ impl RuntimeEngine for VmEngine {
         self.machine.run_initialisers(&mut self.fiber)
     }
 
-    fn set_host_fn(&mut self, _id: HostFnId, _imp: HostFnImpl) {
-        // Recorded nowhere: a call of a host function is a clean panic on the VM yet.
+    fn set_host_fn(&mut self, id: HostFnId, imp: HostFnImpl) {
+        self.machine.set_host_fn(id, adapt(imp));
     }
 
     fn set_host_class_hooks(&mut self, ty: TypeId, hooks: ClassHooks) {
-        Engine::core_mut(&mut self.machine).set_host_hook_set(
+        self.machine.set_host_class_hooks(
             ty,
-            colibri_core::host::HookSet {
-                show: hooks.show.is_some(),
-                eq: hooks.eq.is_some(),
-                hash: hooks.hash.is_some(),
+            HostClassHooks {
+                show: hooks.show.map(adapt),
+                eq: hooks.eq.map(adapt),
+                hash: hooks.hash.map(adapt),
             },
         );
     }
 
-    fn bind_extern(&mut self, _id: HostFnId, _name: &str, _def: &ExternDef) -> Result<(), String> {
-        Err("the bytecode VM does not support `extern` functions yet".to_string())
+    fn bind_extern(&mut self, id: HostFnId, name: &str, def: &ExternDef) -> Result<(), String> {
+        self.machine.bind_extern(id, name, def)
     }
 
     // The `Vm` methods check `supports_sessions` first, so none of these is reached; they

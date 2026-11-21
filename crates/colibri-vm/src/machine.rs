@@ -10,7 +10,9 @@ use colibri_core::dispatch::Tables;
 use colibri_core::value::Value;
 
 use crate::bytecode::Chunk;
+use crate::cffi::CffiState;
 use crate::compile::{CompileEnv, compile_body};
+use crate::host::HostImpls;
 
 /// A body and its chunk, compiled the first time it is called.
 pub(crate) struct Slot {
@@ -62,6 +64,10 @@ pub struct Machine {
     pub(crate) env: CompileEnv,
     pub(crate) max_depth: usize,
     pub(crate) native_stack_budget: usize,
+    /// The host functions and class hooks the runtime installed.
+    pub(crate) host_impls: HostImpls,
+    /// The layouts of the C structs of the program and the libraries it uses.
+    pub(crate) cffi: CffiState,
     /// Tests only: runs at every `print`, so a test can call back into Colibri from inside the
     /// dispatch loop (a native re-entry, like a user `Show` or a `Drop` hook would).
     #[cfg(test)]
@@ -88,6 +94,8 @@ impl Machine {
             env: CompileEnv::default(),
             max_depth: max_call_depth,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
+            host_impls: HostImpls::default(),
+            cffi: CffiState::default(),
             #[cfg(test)]
             print_hook: None,
         }
@@ -104,6 +112,8 @@ impl Machine {
         self.shutdown();
         self.core.closure_maps.clear();
         self.core.load_host(program);
+        self.load_host_impls(program);
+        self.cffi.load(program);
         self.fns = program
             .fns
             .iter()
