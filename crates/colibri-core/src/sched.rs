@@ -5,12 +5,15 @@
 
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 
 use colibri_check::types::{COGROUP_TYPE, COROUTINE_TYPE, SIGNAL_TYPE};
 
 use crate::clock::{Clock, SystemClock};
 use crate::ctl::PanicInfo;
-use crate::external::Externals;
+use crate::external::{
+    CancelToken, Completer, ExternalError, Externals, Waited, panic_message, unwrap_outcome,
+};
 use crate::fiber::FiberState;
 use crate::heap::ClassObj;
 use crate::value::Value;
@@ -222,6 +225,14 @@ impl Scheduler {
     }
 }
 
+/// What the caller of a background operation waits on: the operation's id, its token and the
+/// receiver of its result.
+pub struct Pending<R> {
+    pub op: u64,
+    pub token: Arc<CancelToken>,
+    rx: std::sync::mpsc::Receiver<Result<R, String>>,
+}
+
 impl Scheduler {
     // ---- configuration and inspection ----
 
@@ -260,6 +271,89 @@ impl Scheduler {
     /// The background operations: the pool, the tokens and the completions.
     pub fn ext(&mut self) -> &mut Externals {
         &mut self.ext
+    }
+
+    // ---- the engine-neutral half of waiting for a background operation ----
+    //
+    // The wait itself (suspend, drive the event loop, block) is the engine's; what comes before
+    // and after it is here, so every engine and the runtime's `Ctx` share it.
+
+    /// Registers a new operation and makes the end that completes it.
+    pub fn begin_completion<R>(&mut self) -> (Completer<R>, Pending<R>) {
+        let op = self.alloc_id();
+        let (completer, rx) = self.ext.begin::<R>(op);
+        let token = Arc::clone(completer.token());
+        (completer, Pending { op, token, rx })
+    }
+
+    /// Runs `work` on a background thread (an idle one of the pool, or a new one) and returns
+    /// what the caller waits on. `Err(CannotStart)`: the pool would not take it.
+    pub fn submit_work<R: Send + 'static>(
+        &mut self,
+        work: impl FnOnce(&CancelToken) -> R + Send + 'static,
+    ) -> Result<Pending<R>, ExternalError> {
+        let (completer, pending) = self.begin_completion::<R>();
+        let op = pending.op;
+        let queued = self.ext.submit(Box::new(move || {
+            // Set when the waiter gives up, so an operation still in the queue is not run.
+            if completer.token().is_cancelled() {
+                return;
+            }
+            let token = Arc::clone(completer.token());
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&token)));
+            match outcome {
+                Ok(value) => completer.complete(value),
+                Err(payload) => completer.fail(panic_message(payload.as_ref())),
+            }
+        }));
+        if let Err(message) = queued {
+            self.ext.forget(op);
+            return Err(ExternalError::CannotStart(message));
+        }
+        Ok(pending)
+    }
+
+    /// Makes an operation that some other thread completes: `start` runs at once and is given
+    /// the [`Completer`]. A `start` that fails or panics leaves nothing of the operation
+    /// behind: its entries go, and the hooks it registered on the token run (a panic goes on).
+    pub fn start_completion<R: Send + 'static>(
+        &mut self,
+        start: impl FnOnce(Completer<R>) -> Result<(), String>,
+    ) -> Result<Pending<R>, ExternalError> {
+        let (completer, pending) = self.begin_completion::<R>();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| start(completer))) {
+            Ok(Ok(())) => Ok(pending),
+            Ok(Err(message)) => {
+                self.ext.forget(pending.op);
+                pending.token.cancel();
+                Err(ExternalError::CannotStart(message))
+            }
+            Err(payload) => {
+                self.ext.forget(pending.op);
+                // The dropped completer has posted its id; collecting it later finds the
+                // operation no longer pending and ignores it. A hook that panics too does not
+                // replace the panic of `start`, which is the one that is passed on.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    pending.token.cancel()
+                }));
+                std::panic::resume_unwind(payload);
+            }
+        }
+    }
+
+    /// The result of `pending` once the engine's wait has ended with `waited`.
+    pub fn collect<R>(&mut self, pending: Pending<R>, waited: Waited) -> Result<R, ExternalError> {
+        match waited {
+            Waited::Blocked => {
+                // Nothing could run meanwhile: block this thread until the result is there.
+                // Every end of a completer sends or drops the result's sender, so this does not
+                // hang.
+                let blocked = pending.rx.recv();
+                self.ext.forget(pending.op);
+                unwrap_outcome(blocked.map_err(|_| ()))
+            }
+            Waited::Finished => unwrap_outcome(pending.rx.try_recv().map_err(|_| ())),
+        }
     }
 
     /// How many coroutines are registered as waiting for a signal, a coroutine or a group

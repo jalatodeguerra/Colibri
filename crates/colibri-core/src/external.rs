@@ -21,6 +21,18 @@ pub enum ExternalError {
     CannotStart(String),
 }
 
+/// How a wait for a background operation ended, when it did not fail: the engine's half of the
+/// wait is over and the caller collects the result from the operation's receiver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waited {
+    /// Nothing could run meanwhile: the caller blocks on the receiver, then calls
+    /// [`Externals::forget`].
+    Blocked,
+    /// The operation finished and the engine has already collected it
+    /// ([`Externals::finish`]): the result is in the receiver.
+    Finished,
+}
+
 /// Tells a background operation that nobody waits for its result any more. Cancelling is
 /// synchronous: the hooks given to [`CancelToken::on_cancel`] run on the cancelling side,
 /// before it goes on. An operation that holds something that must not outlive its waiter (a
