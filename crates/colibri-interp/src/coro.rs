@@ -79,7 +79,14 @@ const STACK_HOT_WINDOW: usize = 256 * 1024;
 fn trim_stack(stack: &DefaultStack) -> bool {
     let base = stack.base().get();
     let limit = stack.limit().get();
-    let Some(len) = (base - limit).checked_sub(STACK_HOT_WINDOW) else {
+    // The guard page is the lowest page of the mapping: the advice starts above it, so that
+    // the range holds only the stack's usable pages.
+    // SAFETY: `sysconf` has no preconditions.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+    let Some(len) = (base - limit)
+        .checked_sub(STACK_HOT_WINDOW)
+        .and_then(|n| n.checked_sub(page))
+    else {
         return true;
     };
     // Linux drops the pages at once. Where `MADV_FREE` exists they are reclaimed lazily, when
@@ -88,22 +95,22 @@ fn trim_stack(stack: &DefaultStack) -> bool {
     let advice = libc::MADV_FREE;
     #[cfg(not(any(target_vendor = "apple", target_os = "freebsd")))]
     let advice = libc::MADV_DONTNEED;
-    // SAFETY: `[limit, limit + len)` lies inside the mapping that `DefaultStack` owns, and
-    // page-aligned: `limit` is the start of the mapping, and `base` its page-aligned end, less
-    // a multiple of every page size in use. The coroutine that used the stack ended (the
+    // SAFETY: `[limit + page, limit + page + len)` lies inside the mapping that `DefaultStack`
+    // owns, and is page-aligned: `limit` is the start of the mapping, and `base` its
+    // page-aligned end, less a multiple of every page size in use. The coroutine that used the stack ended (the
     // caller holds the stack by value), so nothing on it is live. The advice keeps the mapping
-    // and its protections (the guard page included): it only discards the contents, which
-    // nothing reads, because a start rewrites the top of the stack and the rest is written
-    // before it is read. A failure leaves the pages as they were; it is ignored.
-    unsafe {
-        libc::madvise(limit as *mut libc::c_void, len, advice);
-    }
+    // and its protections: it only discards the contents, which nothing reads, because a start
+    // rewrites the top of the stack and the rest is written before it is read. A failure
+    // leaves the pages as they were, so a release build ignores it; a debug build asserts.
+    let rc = unsafe { libc::madvise((limit + page) as *mut libc::c_void, len, advice) };
+    debug_assert_eq!(rc, 0, "madvise rejected the range of a coroutine stack");
     true
 }
 
 /// On Windows the committed part of the stack grows through a chain of guard pages, which
 /// decommitting would break, so a stack that went deeper than the hot window is dropped (and
-/// unmapped) instead of pooled.
+/// unmapped) instead of pooled: only stacks that stayed within the 256 KiB window are pooled
+/// there.
 #[cfg(windows)]
 fn trim_stack(stack: &DefaultStack) -> bool {
     let teb = stack.teb_fields();
@@ -1281,6 +1288,11 @@ mod tests {
         assert!(
             kept <= super::STACK_HOT_WINDOW + (64 << 10),
             "{kept} bytes stayed resident of {deep}"
+        );
+        // The hot window was written by the run (four 64 KiB levels) and must not be eaten.
+        assert!(
+            kept >= super::STACK_HOT_WINDOW - (64 << 10),
+            "only {kept} bytes of the hot window stayed resident"
         );
     }
 
