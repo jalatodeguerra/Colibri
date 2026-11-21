@@ -265,23 +265,18 @@ fn main() {
 
 #[test]
 fn many_short_lived_objects_do_not_pile_up_in_the_registry() {
-    vm_pending(
-        "many_short_lived_objects_do_not_pile_up_in_the_registry",
-        || {
-            // Objects that die normally leave no leak and do not grow the registry without bound
-            // (the registry drops dead entries as it grows).
-            let (mut vm, _) = vm(
-                true,
-                r#"
+    // Objects that die normally leave no leak and do not grow the registry without bound
+    // (the registry drops dead entries as it grows).
+    let (mut vm, _) = vm(
+        true,
+        r#"
 fn main() {
     for i in 0..50000 {
         let n = Node { name: "n" }
     }
 }
 "#,
-            );
-            vm.run_main().unwrap();
-            assert!(vm.find_leaks().is_empty());
-        },
-    )
+    );
+    vm.run_main().unwrap();
+    assert!(vm.find_leaks().is_empty());
 }

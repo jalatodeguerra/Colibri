@@ -1,0 +1,24 @@
+fn boom(what: int) {
+    let z = 0
+    print(what / z)
+}
+
+fn inner(z: int) {
+    defer print("inner defer")
+    defer boom(2)
+    print(1 / z)
+}
+
+fn main() {
+    defer boom(4)
+    defer print("main defer")
+    defer boom(3)
+    inner(0)
+}
+
+// expect: inner defer
+// expect: main defer
+// panic: division by zero
+// panic: note: a deferred statement also panicked: division by zero
+// panic: note: a deferred statement also panicked: division by zero
+// panic: note: a deferred statement also panicked: division by zero

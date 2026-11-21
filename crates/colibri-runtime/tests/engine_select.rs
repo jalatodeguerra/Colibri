@@ -48,9 +48,9 @@ fn the_bytecode_engine_reports_a_panic_with_its_stack() {
 fn what_the_bytecode_engine_lacks_is_a_clean_panic_naming_it() {
     let (result, _) = run_on(
         EngineKind::Bytecode,
-        "fn main() {\n    let xs = [1, 2, 3]\n    print(xs)\n}",
+        "fn main() {\n    let f = fn(x: int) => x\n    print(f(1))\n}",
     );
-    let text = message(&result.expect_err("lists are not on the VM yet"));
+    let text = message(&result.expect_err("closures are not on the VM yet"));
     assert!(text.contains("the bytecode VM does not support"), "{text}");
 }
 

@@ -160,25 +160,23 @@ fn an_unknown_test_id_is_an_error_and_nothing_loaded_is_not_loaded() {
 
 #[test]
 fn the_instruction_budget_is_per_test() {
-    vm_pending("the_instruction_budget_is_per_test", || {
-        let out = colibri::SharedBuffer::new();
-        let mut vm = vm_with(&out);
-        let source = "test \"a\" {\n    var n = 0\n    for i in 0..1000 {\n        n += i\n    }\n}\n\ntest \"b\" {\n    var n = 0\n    for i in 0..1000 {\n        n += i\n    }\n}\n";
-        vm.load_source("t.colibri", source).unwrap();
-        // One test fits, so a shared allotment would run out during the second one.
-        vm.set_instruction_budget(Some(6_000));
-        for round in 0..3 {
-            for id in 0..2 {
-                vm.run_test(id)
-                    .unwrap_or_else(|e| panic!("round {round} test {id}: {e}"));
-            }
+    let out = colibri::SharedBuffer::new();
+    let mut vm = vm_with(&out);
+    let source = "test \"a\" {\n    var n = 0\n    for i in 0..1000 {\n        n += i\n    }\n}\n\ntest \"b\" {\n    var n = 0\n    for i in 0..1000 {\n        n += i\n    }\n}\n";
+    vm.load_source("t.colibri", source).unwrap();
+    // One test fits, so a shared allotment would run out during the second one.
+    vm.set_instruction_budget(Some(6_000));
+    for round in 0..3 {
+        for id in 0..2 {
+            vm.run_test(id)
+                .unwrap_or_else(|e| panic!("round {round} test {id}: {e}"));
         }
-        vm.set_instruction_budget(Some(100));
-        assert!(matches!(
-            vm.run_test(0),
-            Err(colibri::Error::BudgetExhausted { .. })
-        ));
-    })
+    }
+    vm.set_instruction_budget(Some(100));
+    assert!(matches!(
+        vm.run_test(0),
+        Err(colibri::Error::BudgetExhausted { .. })
+    ));
 }
 
 /// A fresh folder holding `files`.
@@ -287,33 +285,26 @@ fn a_panicking_initialiser_fails_the_test_that_needs_it() {
 
 #[test]
 fn drop_hooks_of_module_values_run_after_each_test() {
-    vm_pending("drop_hooks_of_module_values_run_after_each_test", || {
-        let out = colibri::SharedBuffer::new();
-        let mut vm = vm_with(&out);
-        let source = "class G {\n    name: str\n}\n\nimpl Drop for G {\n    fn drop(self) {\n        print(\"drop {self.name}\")\n    }\n}\n\nlet g = G { name: \"module\" }\n\ntest \"t\" {\n    print(\"body\")\n}\n";
-        let dir = folder("drops", &[("t.colibri", source)]);
-        vm.load_tests(dir.join("t.colibri")).unwrap();
-        vm.run_test(0).unwrap();
-        assert_eq!(out.take(), "body\ndrop module\n");
-        vm.run_test(0).unwrap();
-        assert_eq!(out.take(), "body\ndrop module\n");
-    })
+    let out = colibri::SharedBuffer::new();
+    let mut vm = vm_with(&out);
+    let source = "class G {\n    name: str\n}\n\nimpl Drop for G {\n    fn drop(self) {\n        print(\"drop {self.name}\")\n    }\n}\n\nlet g = G { name: \"module\" }\n\ntest \"t\" {\n    print(\"body\")\n}\n";
+    let dir = folder("drops", &[("t.colibri", source)]);
+    vm.load_tests(dir.join("t.colibri")).unwrap();
+    vm.run_test(0).unwrap();
+    assert_eq!(out.take(), "body\ndrop module\n");
+    vm.run_test(0).unwrap();
+    assert_eq!(out.take(), "body\ndrop module\n");
 }
 
 #[test]
 fn a_tests_script_values_are_initialised_in_source_order_without_the_statements() {
-    vm_pending(
-        "a_tests_script_values_are_initialised_in_source_order_without_the_statements",
-        || {
-            let out = colibri::SharedBuffer::new();
-            let mut vm = vm_with(&out);
-            let src = "fn noisy(s: str) -> int {\n    print(s)\n    return 1\n}\nprint(\"statement\")\nlet a = noisy(\"a\")\nlet b = noisy(\"b\") + a\ntest \"sees both\" {\n    assert(b == 2)\n}\n";
-            vm.load_source("script.colibri", src).unwrap();
-            assert_eq!(out.take(), "statement\na\nb\n");
-            vm.run_test(0).expect("the test passes");
-            assert_eq!(out.take(), "a\nb\n");
-        },
-    )
+    let out = colibri::SharedBuffer::new();
+    let mut vm = vm_with(&out);
+    let src = "fn noisy(s: str) -> int {\n    print(s)\n    return 1\n}\nprint(\"statement\")\nlet a = noisy(\"a\")\nlet b = noisy(\"b\") + a\ntest \"sees both\" {\n    assert(b == 2)\n}\n";
+    vm.load_source("script.colibri", src).unwrap();
+    assert_eq!(out.take(), "statement\na\nb\n");
+    assert!(vm.run_test(0).is_ok());
+    assert_eq!(out.take(), "a\nb\n");
 }
 
 // ---- the per-test host hook (EMBEDDING §9) ----
@@ -444,19 +435,16 @@ fn hook_dir(name: &str, text: &str) -> std::path::PathBuf {
 
 #[test]
 fn a_hook_that_reloads_the_program_runs_the_test_of_the_new_program() {
-    vm_pending(
-        "a_hook_that_reloads_the_program_runs_the_test_of_the_new_program",
-        || {
-            let dir = hook_dir(
-                "reload",
-                "test \"one\" { print(\"old one\") }\ntest \"two\" { print(\"old two\") }\n",
-            );
-            let path = dir.join("main.colibri");
-            let out = colibri::SharedBuffer::new();
-            let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
-            vm.load_file(&path).unwrap();
-            let rewrite = path.clone();
-            vm.on_test_start(move |vm, _| {
+    let dir = hook_dir(
+        "reload",
+        "test \"one\" { print(\"old one\") }\ntest \"two\" { print(\"old two\") }\n",
+    );
+    let path = dir.join("main.colibri");
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    vm.load_file(&path).unwrap();
+    let rewrite = path.clone();
+    vm.on_test_start(move |vm, _| {
         // More functions than before: the old index of `two` would be out of range in the new
         // program, and the old function id would name another function.
         std::fs::write(
@@ -466,27 +454,22 @@ fn a_hook_that_reloads_the_program_runs_the_test_of_the_new_program() {
         .unwrap();
         vm.reload_changed().unwrap();
     });
-            vm.run_test(1).unwrap();
-            assert_eq!(out.contents(), "new two\n");
-        },
-    )
+    vm.run_test(1).unwrap();
+    assert_eq!(out.contents(), "new two\n");
 }
 
 #[test]
 fn a_hook_that_reloads_with_a_test_inserted_earlier_runs_the_same_test() {
-    vm_pending(
-        "a_hook_that_reloads_with_a_test_inserted_earlier_runs_the_same_test",
-        || {
-            let dir = hook_dir(
-                "inserted",
-                "test \"one\" { print(\"old one\") }\ntest \"two\" { print(\"old two\") }\n",
-            );
-            let path = dir.join("main.colibri");
-            let out = colibri::SharedBuffer::new();
-            let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
-            vm.load_file(&path).unwrap();
-            let rewrite = path.clone();
-            vm.on_test_start(move |vm, _| {
+    let dir = hook_dir(
+        "inserted",
+        "test \"one\" { print(\"old one\") }\ntest \"two\" { print(\"old two\") }\n",
+    );
+    let path = dir.join("main.colibri");
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    vm.load_file(&path).unwrap();
+    let rewrite = path.clone();
+    vm.on_test_start(move |vm, _| {
         // A new first test: by position, id 1 is now `one`.
         std::fs::write(
             &rewrite,
@@ -495,31 +478,26 @@ fn a_hook_that_reloads_with_a_test_inserted_earlier_runs_the_same_test() {
         .unwrap();
         vm.reload_changed().unwrap();
     });
-            vm.run_test(1).unwrap();
-            assert_eq!(out.contents(), "new two\n");
-        },
-    )
+    vm.run_test(1).unwrap();
+    assert_eq!(out.contents(), "new two\n");
 }
 
 #[test]
 fn going_by_name_runs_every_test_once_when_the_hook_reloads() {
-    vm_pending(
-        "going_by_name_runs_every_test_once_when_the_hook_reloads",
-        || {
-            let dir = hook_dir(
-                "byname",
-                "test \"a\" { print(\"a\") }\ntest \"b\" { print(\"b\") }\n",
-            );
-            let path = dir.join("main.colibri");
-            let out = colibri::SharedBuffer::new();
-            let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
-            vm.load_file(&path).unwrap();
-            let names: Vec<String> = vm.tests().into_iter().map(|t| t.name).collect();
-            let rewrite = path.clone();
-            let done = std::cell::Cell::new(false);
-            let done = std::rc::Rc::new(done);
-            let once = done.clone();
-            vm.on_test_start(move |vm, _| {
+    let dir = hook_dir(
+        "byname",
+        "test \"a\" { print(\"a\") }\ntest \"b\" { print(\"b\") }\n",
+    );
+    let path = dir.join("main.colibri");
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    vm.load_file(&path).unwrap();
+    let names: Vec<String> = vm.tests().into_iter().map(|t| t.name).collect();
+    let rewrite = path.clone();
+    let done = std::cell::Cell::new(false);
+    let done = std::rc::Rc::new(done);
+    let once = done.clone();
+    vm.on_test_start(move |vm, _| {
         if !once.replace(true) {
             // A new first test: the ids taken before are stale from here on.
             std::fs::write(
@@ -530,13 +508,11 @@ fn going_by_name_runs_every_test_once_when_the_hook_reloads() {
             vm.reload_changed().unwrap();
         }
     });
-            for name in names {
-                let id = vm.tests().iter().find(|t| t.name == name).map(|t| t.id);
-                vm.run_test(id.expect("the test is still there")).unwrap();
-            }
-            assert_eq!(out.contents(), "a\nb\n");
-        },
-    )
+    for name in names {
+        let id = vm.tests().iter().find(|t| t.name == name).map(|t| t.id);
+        vm.run_test(id.expect("the test is still there")).unwrap();
+    }
+    assert_eq!(out.contents(), "a\nb\n");
 }
 
 #[test]

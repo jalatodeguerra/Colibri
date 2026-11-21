@@ -1,0 +1,23 @@
+// allow: unused
+class T { name: str }
+
+fn make(n: str) -> T => T { name: n }
+fn three(a: T, b: T, c: int) -> int => c
+
+// The statement has built two objects when its third argument panics: both die, newest
+// first, before the locals of the scope, and the defer runs between them.
+fn work(z: int) -> int {
+    let early = T { name: "early" }
+    defer print("defer work")
+    let late = T { name: "late" }
+    return three(make("first"), make("second"), 10 / z)
+}
+
+fn main() {
+    let m = T { name: "main" }
+    print(work(0))
+}
+
+// expect: defer work
+// panic: division by zero
+// drops: second, first, late, early, main

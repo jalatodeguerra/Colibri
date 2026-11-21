@@ -32,8 +32,6 @@ async_ops::thousands_of_operations_reuse_threads  # `NewCoGroup`
 async_ops::waiting_on_the_main_fiber_is_refused_inside_a_host_callback  # host functions
 async_ops::waits_carry_unit_and_string_results  # host functions
 budget::a_host_function_sees_the_steps_so_far  # host functions
-budget::cleanups_get_a_grace_and_then_are_skipped  # `defer`
-budget::defers_and_drop_hooks_run_while_it_unwinds  # `defer`
 budget::host_eq_hooks_and_key_scans_are_charged  # lists
 budget::iter_on_a_huge_range_is_cheap_and_what_it_yields_is_charged  # `for` over this kind of value
 budget::looping_builtins_cost_a_step_per_element  # lists
@@ -83,7 +81,6 @@ embed::a_function_can_use_structs_enums_and_match_internally  # `match`
 export_macros::a_host_class_is_passed_by_handle_to_get_fn  # host functions
 export_macros::a_script_uses_exported_classes_value_types_and_functions  # host functions
 export_macros::parameter_names_are_the_rust_ones_so_arguments_can_be_named  # host functions
-export_macros::value_types_convert_both_ways_through_get_fn  # struct values
 ffi::a_dependency_cannot_link_c_without_declaring_ffi  # `extern` functions
 ffi::a_missing_library_or_symbol_is_a_load_error  # `extern` functions
 ffi::a_null_pointer_where_none_is_not_declared_panics  # `extern` functions
@@ -160,13 +157,11 @@ host_modules::the_host_calls_a_function_that_takes_a_struct_of_a_named_module  #
 host_modules::the_host_calls_a_stored_callback_that_takes_a_struct_of_a_named_module  # host functions
 host_modules::two_modules_each_declare_a_struct_of_the_same_name  # host functions
 host_modules::two_modules_each_declare_an_item  # host functions
-host_modules::two_rust_structs_of_one_name_are_told_apart_by_their_rust_type  # struct and tuple fields
 host_sharing::new_struct_in_accepts_the_owner_or_any_module_that_registered_the_type  # host functions
 host_sharing::s1_a_different_rust_type_of_the_same_shape_is_the_modules_own_type  # host functions
 host_sharing::s2_every_module_names_the_type_whichever_registered_first  # host functions
 host_sharing::s3_the_default_module_wins_in_any_order  # host functions
 host_sharing_order::every_registration_order_gives_every_module_the_same_interface_and_the_same_run  # host functions
-interface::get_fn_carries_value_types  # struct values
 interface::value_types_cross_the_boundary  # host functions
 iter_release::a_for_loop_over_the_only_reference_to_a_list_releases_it_at_the_end  # the built-in `Iter`
 iter_release::a_map_iterator_advanced_with_next_releases_its_map_at_the_end  # the built-in `Iter`
@@ -185,16 +180,12 @@ leaks::a_cycle_nothing_reaches_is_found_mid_run  # class objects
 leaks::a_cycle_that_is_still_held_is_not_a_leak  # lists
 leaks::a_cycle_through_a_closure_names_the_captured_variable  # class objects
 leaks::a_suspended_coroutine_keeps_its_cycle_alive  # `go`
-leaks::many_short_lived_objects_do_not_pile_up_in_the_registry  # class objects
 leaks::objects_a_leaked_cycle_owns_are_counted_as_retained  # class objects
 leaks::weak_references_are_not_edges  # class objects
 leaks::without_tracking_there_is_nothing_to_report  # class objects
-operators::a_panic_inside_an_operator_names_the_impl_in_the_trace  # projections
-operators::an_operator_impl_is_patched_by_a_hot_reload  # projections
 packages::a_host_module_supports_selective_imports_and_aliases  # host functions
 packages::a_named_host_module_is_imported  # host functions
 packages::the_default_host_module_needs_no_import  # host functions
-reload::a_changed_field_default_restarts_instead_of_patching  # projections
 reload::a_coroutine_in_an_old_body_finishes_on_it_and_new_calls_use_the_new_one  # `go`
 reload::host_functions_budget_and_capabilities_survive_a_restart  # host functions
 reload::the_watching_event_loop_calls_the_hook_between_ticks  # `go`
@@ -211,20 +202,12 @@ std_modules::lazy::an_import_registers_the_module_once  # host functions
 std_modules::raise_is_a_panic_with_exactly_this_message_and_defers_run  # `defer`
 std_modules::the_write_function_of_a_context_goes_where_print_goes  # host functions
 std_modules::values_can_be_read_and_built_without_a_static_type  # host functions
-std_sources::import_finds_the_module_by_its_short_and_its_full_name  # struct values
-std_sources::names_can_be_imported_from_it  # struct values
 tests_api::a_hook_set_inside_the_hook_replaces_it  # host functions
-tests_api::a_hook_that_reloads_the_program_runs_the_test_of_the_new_program  # enum values
-tests_api::a_hook_that_reloads_with_a_test_inserted_earlier_runs_the_same_test  # enum values
 tests_api::a_panicking_hook_stays_registered  # lists
 tests_api::a_script_function_called_from_the_hook_that_reads_a_module_value_panics_clearly  # lists
 tests_api::a_test_run_from_inside_the_hook_runs_without_the_hook  # lists
-tests_api::a_tests_script_values_are_initialised_in_source_order_without_the_statements  # enum values (test wrapper)
-tests_api::drop_hooks_of_module_values_run_after_each_test  # class objects
-tests_api::going_by_name_runs_every_test_once_when_the_hook_reloads  # enum values
 tests_api::host_state_leaks_from_one_test_to_the_next_without_the_hook  # host functions
 tests_api::load_tests_runs_nothing_and_finds_modules_nobody_imports  # lists
 tests_api::on_test_start_lets_the_host_reset_its_state_before_each_test  # host functions
 tests_api::run_test_reports_success_and_each_kind_of_failure  # enum values (test wrapper)
 tests_api::the_hook_does_not_run_for_an_unknown_test_or_a_plain_load  # host functions
-tests_api::the_instruction_budget_is_per_test  # enum values

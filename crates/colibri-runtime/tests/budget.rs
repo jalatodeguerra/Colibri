@@ -57,11 +57,10 @@ fn an_infinite_loop_runs_out_and_the_vm_stays_usable() {
 
 #[test]
 fn defers_and_drop_hooks_run_while_it_unwinds() {
-    vm_pending("defers_and_drop_hooks_run_while_it_unwinds", || {
-        let (mut vm, out) = vm_with(5_000);
-        vm.load_source(
-            "spin.colibri",
-            r#"
+    let (mut vm, out) = vm_with(5_000);
+    vm.load_source(
+        "spin.colibri",
+        r#"
 class Res { label: str }
 
 impl Drop for Res {
@@ -75,23 +74,21 @@ fn spin() {
     }
 }
 "#,
-        )
-        .unwrap();
-        let spin = vm.get_fn::<(), ()>("spin").unwrap();
-        let err = spin.call(&mut vm, ()).unwrap_err();
-        exhausted(&err);
-        // Last in, first out: the binding, then the defer.
-        assert_eq!(out.contents(), "drop r\ndeferred\n");
-    })
+    )
+    .unwrap();
+    let spin = vm.get_fn::<(), ()>("spin").unwrap();
+    let err = spin.call(&mut vm, ()).unwrap_err();
+    exhausted(&err);
+    // Last in, first out: the binding, then the defer.
+    assert_eq!(out.contents(), "drop r\ndeferred\n");
 }
 
 #[test]
 fn cleanups_get_a_grace_and_then_are_skipped() {
-    vm_pending("cleanups_get_a_grace_and_then_are_skipped", || {
-        let (mut vm, out) = vm_with(2_000);
-        vm.load_source(
-            "spin.colibri",
-            r#"
+    let (mut vm, out) = vm_with(2_000);
+    vm.load_source(
+        "spin.colibri",
+        r#"
 class Res { label: str }
 
 impl Drop for Res {
@@ -115,29 +112,28 @@ fn spin() {
     }
 }
 "#,
-        )
-        .unwrap();
-        let spin = vm.get_fn::<(), ()>("spin").unwrap();
-        let err = spin.call(&mut vm, ()).unwrap_err();
-        exhausted(&err);
-        // The first defer ran (it loops until the grace is gone); after that the hooks and the
-        // defer below it were skipped, but the call ended: no hang, no hook output.
-        let printed = out.contents();
-        assert!(printed.starts_with("deferred loop\n"), "{printed}");
-        assert!(!printed.contains("never printed"), "{printed}");
-        assert!(!printed.contains("hook"), "{printed}");
-        // The whole thing is bounded: allotment plus the grace of 10 000.
-        assert!(
-            vm.steps_used() < 2_000 + 10_000 + 200,
-            "{}",
-            vm.steps_used()
-        );
-        // And the Vm is fine: the same call runs out again the same way.
-        assert!(matches!(
-            spin.call(&mut vm, ()),
-            Err(colibri::Error::BudgetExhausted { .. })
-        ));
-    })
+    )
+    .unwrap();
+    let spin = vm.get_fn::<(), ()>("spin").unwrap();
+    let err = spin.call(&mut vm, ()).unwrap_err();
+    exhausted(&err);
+    // The first defer ran (it loops until the grace is gone); after that the hooks and the
+    // defer below it were skipped, but the call ended: no hang, no hook output.
+    let printed = out.contents();
+    assert!(printed.starts_with("deferred loop\n"), "{printed}");
+    assert!(!printed.contains("never printed"), "{printed}");
+    assert!(!printed.contains("hook"), "{printed}");
+    // The whole thing is bounded: allotment plus the grace of 10 000.
+    assert!(
+        vm.steps_used() < 2_000 + 10_000 + 200,
+        "{}",
+        vm.steps_used()
+    );
+    // And the Vm is fine: the same call runs out again the same way.
+    assert!(matches!(
+        spin.call(&mut vm, ()),
+        Err(colibri::Error::BudgetExhausted { .. })
+    ));
 }
 
 #[test]

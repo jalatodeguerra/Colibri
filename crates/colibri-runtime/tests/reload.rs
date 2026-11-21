@@ -303,39 +303,34 @@ fn what_forces_a_restart() {
 /// default restarts.
 #[test]
 fn a_changed_field_default_restarts_instead_of_patching() {
-    vm_pending(
-        "a_changed_field_default_restarts_instead_of_patching",
-        || {
-            let v1 = "struct P {\n    x: int = 1\n}\nfn literal() -> int => P {}.x\n";
-            let dir = tree("default-change", &[("a.colibri", v1)]);
-            let (mut vm, _) = vm();
-            vm.load_file(dir.join("a.colibri")).unwrap();
-            write(&dir, "a.colibri", &v1.replace("x: int = 1", "x: int = 2"));
-            match vm.reload_changed().unwrap() {
-                ReloadOutcome::Restarted { reason, .. } => {
-                    assert!(reason.contains("struct"), "{reason}")
-                }
-                other => panic!("{other:?}"),
-            }
-            let now: i64 = vm
-                .get_fn::<(), i64>("literal")
-                .unwrap()
-                .call(&mut vm, ())
-                .unwrap();
-            assert_eq!(now, 2);
-            // A body that is not a default still patches.
-            write(
-                &dir,
-                "a.colibri",
-                &v1.replace("x: int = 1", "x: int = 2")
-                    .replace("P {}.x", "P {}.x + 0"),
-            );
-            assert!(matches!(
-                vm.reload_changed().unwrap(),
-                ReloadOutcome::Patched { .. }
-            ));
-        },
-    )
+    let v1 = "struct P {\n    x: int = 1\n}\nfn literal() -> int => P {}.x\n";
+    let dir = tree("default-change", &[("a.colibri", v1)]);
+    let (mut vm, _) = vm();
+    vm.load_file(dir.join("a.colibri")).unwrap();
+    write(&dir, "a.colibri", &v1.replace("x: int = 1", "x: int = 2"));
+    match vm.reload_changed().unwrap() {
+        ReloadOutcome::Restarted { reason, .. } => {
+            assert!(reason.contains("struct"), "{reason}")
+        }
+        other => panic!("{other:?}"),
+    }
+    let now: i64 = vm
+        .get_fn::<(), i64>("literal")
+        .unwrap()
+        .call(&mut vm, ())
+        .unwrap();
+    assert_eq!(now, 2);
+    // A body that is not a default still patches.
+    write(
+        &dir,
+        "a.colibri",
+        &v1.replace("x: int = 1", "x: int = 2")
+            .replace("P {}.x", "P {}.x + 0"),
+    );
+    assert!(matches!(
+        vm.reload_changed().unwrap(),
+        ReloadOutcome::Patched { .. }
+    ));
 }
 
 #[test]
