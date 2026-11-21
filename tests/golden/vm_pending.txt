@@ -685,7 +685,7 @@ std/path_operations.colibri  # host functions
 std/path_roots_unix.colibri  # host functions
 std/path_roots_windows.colibri  # host functions
 std/process_error_failed.colibri  # the built-in `ResultExpect`
-std/process_error_failed_windows.colibri  # projections
+std/process_error_failed_windows.colibri  # the built-in `ResultExpect`
 std/process_error_not_found.colibri  # `match`
 std/process_errors.colibri  # `match`
 std/process_names_do_not_clash.colibri  # host functions
