@@ -48,6 +48,7 @@ fn both_scripts_check() {
         "kvserver/kvserver.colibri",
         "kvserver/kvclient.colibri",
         "notes/notes.colibri",
+        "notes/notes_client.colibri",
     ] {
         let path = scripts().join(script);
         let out = colibri(&["check", path.to_str().unwrap()]);
@@ -1077,9 +1078,43 @@ impl Drop for Notes {
 
 #[test]
 fn notes_is_formatted() {
-    let path = scripts().join("notes/notes.colibri");
-    let out = colibri(&["fmt", "--check", path.to_str().unwrap()]);
+    for file in ["notes/notes.colibri", "notes/notes_client.colibri"] {
+        let path = scripts().join(file);
+        let out = colibri(&["fmt", "--check", path.to_str().unwrap()]);
+        assert_eq!(out.status.code(), Some(0), "{file}: {}", text(&out.stderr));
+    }
+}
+
+/// The client adds notes with the `http` client, lists them and reads the streamed export, and
+/// reports a server that is not there and a bad command line.
+#[test]
+fn notes_client_talks_to_notes_and_reports_a_missing_server() {
+    let mut notes = Notes::start(&[]);
+    let client = scripts().join("notes/notes_client.colibri");
+    let out = run_script(&client, &[&notes.addr, "buy milk", "call mom"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        "added 1: buy milk\nadded 2: call mom\n2 notes\nexport 1 buy milk\nexport 2 call mom\n"
+    );
+    // What the client added is on the server.
+    assert!(
+        notes
+            .call("GET", "/notes/2", "")
+            .ends_with(r#"{"id":2,"text":"call mom"}"#)
+    );
+    notes.call("POST", "/shutdown", "");
+    assert_eq!(notes.exit_code(), Some(0));
+    // The server has stopped: its port refuses.
+    let out = run_script(&client, &[&notes.addr, "x"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("cannot reach the server"),
+        "{}",
+        text(&out.stderr)
+    );
+    let out = run_script(&client, &[&notes.addr]);
+    assert_eq!(out.status.code(), Some(2));
 }
 
 #[test]

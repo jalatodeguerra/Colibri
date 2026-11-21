@@ -11,6 +11,7 @@ They use the scripting std (`args`, `fs`, `path`, `json`, `regex`, `datetime`, `
 | [`kvserver/kvserver.colibri`](kvserver/kvserver.colibri) | 131 | a key-value store served over TCP with a line protocol, one coroutine per connection |
 | [`kvserver/kvclient.colibri`](kvserver/kvclient.colibri) | 31 | sends request lines to the key-value server and prints the answers (no `nc` needed) |
 | [`notes/notes.colibri`](notes/notes.colibri) | 112 | a small JSON API served with `httpd`: a router, a path parameter, a typed JSON body, `fail`, a streamed export and a graceful stop |
+| [`notes/notes_client.colibri`](notes/notes_client.colibri) | 55 | adds notes to the notes server with the `http` client, lists them and reads the streamed export |
 
 Tests: `cargo test -p colibri-lang --test scripts` (`crates/colibri-cli/tests/scripts.rs`) runs
 all three through the real `colibri` binary on a temporary tree and a local `127.0.0.1` HTTP server,
@@ -139,6 +140,10 @@ and `server.stop`, which never waits and so can be called from a handler. The ro
 405 with an `Allow` header for a method the path does not have. Handlers run in coroutines of one
 thread and stop only where they wait, so the store needs no lock. Exit codes: 0 stopped
 by `/shutdown`, 1 the address cannot be used.
+
+`notes/notes_client.colibri -- HOST:PORT TEXT...` is a client that uses the `http` module: it adds a
+note for each TEXT, prints the count the server lists and the lines of the streamed export (exit 1
+when the server cannot be reached or answers an error, 2 for a bad command line).
 
 ```
 $ colibri run notes/notes.colibri -- --addr 127.0.0.1:7001
