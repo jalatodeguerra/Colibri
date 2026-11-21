@@ -18,6 +18,15 @@ const PATIENCE: Duration = Duration::from_secs(30);
 /// no orphan behind.
 struct Server(Child);
 
+/// The folder of the script, removed when the test ends, also when it fails.
+struct TempDir(std::path::PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -73,6 +82,7 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
     let dir = std::env::temp_dir().join(format!("colibri-httpd-fds-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    let _cleanup = TempDir(dir.clone());
     let script = dir.join("server.colibri");
     std::fs::write(&script, SERVER).unwrap();
     let mut child = Server(
@@ -148,5 +158,4 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
     };
     assert_eq!(status.code(), Some(0), "{log}");
     assert!(log.contains("accept failed"), "nothing was logged: {log:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
