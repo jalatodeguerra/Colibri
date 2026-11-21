@@ -42,7 +42,13 @@ impl Machine {
     /// a call made from now on runs the new body, and frames already running keep their chunk.
     pub fn patch(&mut self, program: &Program) {
         debug_assert_eq!(self.fns.len(), program.fns.len());
-        self.core.load_host(program);
+        // Only the host functions' (empty) bodies: `load_host` would also forget the host
+        // classes and hooks the runtime installed after loading, which a reload keeps.
+        self.core.host.bodies = program
+            .host_fns
+            .iter()
+            .map(|h| Rc::clone(&program.fns[h.f.0 as usize].body))
+            .collect();
         self.fns = program
             .fns
             .iter()
@@ -154,5 +160,31 @@ impl Machine {
             .map(|frame| Rc::clone(&frame.chunk.body));
         self.core
             .host_borrow(holder, index, generation, any, exclusive)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::any::TypeId as AnyTypeId;
+    use std::collections::HashMap;
+
+    use colibri_check::types::TypeId;
+    use colibri_core::engine::Engine;
+
+    use super::*;
+
+    #[test]
+    fn a_patch_keeps_the_host_classes_the_runtime_installed() {
+        let (program, _) = crate::source::check_source("fn main() {}").expect("checks");
+        let mut machine = Machine::new(Box::new(std::io::sink()), 100);
+        machine.load(&program);
+        // The runtime installs these after loading, and a hot reload does not redo it.
+        let classes = HashMap::from([(AnyTypeId::of::<u8>(), TypeId(40))]);
+        Engine::core_mut(&mut machine).set_host_classes(classes);
+        machine.patch(&program);
+        assert_eq!(
+            Engine::core(&machine).host_class(AnyTypeId::of::<u8>()),
+            Some(TypeId(40))
+        );
     }
 }

@@ -182,6 +182,7 @@ fn warnings_are_printed_before_the_top_level_code_runs() {
 /// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
 fn colibri_command() -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    // vm-pin: 2c
     cmd.env_remove("COLIBRI_ENGINE");
     cmd
 }

@@ -154,6 +154,7 @@ fn check_of_toml_gets_the_json_interface_it_names_and_json_alone_never_asks_for_
 /// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
 fn colibri_command() -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    // vm-pin: 2c
     cmd.env_remove("COLIBRI_ENGINE");
     cmd
 }

@@ -844,6 +844,7 @@ fn colibri_doc_refuses_a_folder_with_pages_it_did_not_write() {
 /// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
 fn colibri_command() -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    // vm-pin: 2c
     cmd.env_remove("COLIBRI_ENGINE");
     cmd
 }

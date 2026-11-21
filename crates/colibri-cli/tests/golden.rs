@@ -38,7 +38,8 @@ impl Mode {
         match std::env::var("COLIBRI_ENGINE").as_deref() {
             Ok("vm") => Mode::Vm,
             Ok("both") => Mode::Both,
-            _ => Mode::Tree,
+            Ok("tree") | Err(_) => Mode::Tree,
+            Ok(other) => panic!("COLIBRI_ENGINE={other}: expected `tree`, `vm` or `both`"),
         }
     }
 }
@@ -94,7 +95,9 @@ impl Case {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.judge(&self.outcome(engine))
         }));
-        result.unwrap_or_else(|_| Err("the engine crashed".to_string()))
+        result.unwrap_or_else(|payload| {
+            Err(format!("the engine crashed: {}", payload_text(&payload)))
+        })
     }
 
     /// Both engines: the tree-walker against the directives, the VM against the tree-walker.
@@ -104,12 +107,57 @@ impl Case {
         let vm = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.outcome(EngineKind::Bytecode)
         }))
-        .map_err(|_| "the VM crashed".to_string())?;
+        .map_err(|payload| format!("the engine crashed: {}", payload_text(&payload)))?;
         match diff_outcomes(&tree, &vm) {
             Some(diff) => Err(format!("the engines differ:\n{diff}")),
             None => Ok(()),
         }
     }
+}
+
+impl Case {
+    /// A test the VM cannot run yet, on both engines: the tree-walker against the directives,
+    /// and the VM only partly: what it printed before it stopped must be what the tree-walker
+    /// printed first, and it must stop with its refusal of the listed feature.
+    fn run_both_pending(&self, reason: &str) -> Result<(), String> {
+        let tree = self.outcome(EngineKind::Tree);
+        self.judge(&tree)?;
+        let vm = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.outcome(EngineKind::Bytecode)
+        }))
+        .map_err(|payload| format!("the engine crashed: {}", payload_text(&payload)))?;
+        if diff_outcomes(&tree, &vm).is_none() {
+            return Ok(());
+        }
+        let (Outcome::Compiled { stdout: want, .. }, Outcome::Compiled { stdout, panic, .. }) =
+            (&tree, &vm)
+        else {
+            return Err(format!(
+                "the VM's outcome has another kind than the tree's: {vm:?}"
+            ));
+        };
+        if !want.starts_with(stdout.as_str()) {
+            return Err(format!(
+                "the VM printed what the tree-walker did not:\n  tree: {want:?}\n  vm:   {stdout:?}"
+            ));
+        }
+        let refusal = format!("the bytecode VM does not support {reason}");
+        match panic {
+            Some(p) if p.contains(&refusal) => Ok(()),
+            other => Err(format!(
+                "expected the VM to refuse {reason}, it ended with {other:?}"
+            )),
+        }
+    }
+}
+
+/// The text of a caught Rust panic.
+fn payload_text(payload: &Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "(no message)".to_string())
 }
 
 /// `tests/golden/vm_pending.txt`: test name (as the trial is named) to its reason.
@@ -131,13 +179,14 @@ fn read_pending(root: &Path) -> Vec<(String, String)> {
 /// names one.
 fn reason_of(failure: &str) -> String {
     const KEY: &str = "the bytecode VM does not support ";
+    // A Rust panic inside an engine is never a clean refusal, whatever its text says.
+    if failure.starts_with("the engine crashed") {
+        return "crash".to_string();
+    }
     if let Some(at) = failure.find(KEY) {
         let rest = &failure[at + KEY.len()..];
         let end = rest.find(" yet").unwrap_or(rest.len());
         return rest[..end].replace('\n', " ");
-    }
-    if failure.contains("crashed") {
-        return "crash".to_string();
     }
     "differs".to_string()
 }
@@ -247,8 +296,13 @@ fn main() {
     let cases: Vec<std::sync::Arc<Case>> = cases.into_iter().map(std::sync::Arc::new).collect();
     let mut trials: Vec<Trial> = Vec::new();
     for case in &cases {
-        // In `both` mode a test the VM cannot run yet is still run on the tree-walker.
+        // In `both` mode a test the VM cannot run yet is also run on the VM, to see that it refuses.
         let vm_pending = is_pending(&case.name);
+        let reason = pending
+            .iter()
+            .find(|(p, _)| *p == case.name)
+            .map(|(_, r)| r.clone())
+            .unwrap_or_default();
         let ignored = case.not_run_here() || (vm_pending && mode == Mode::Vm);
         let name = case.name.clone();
         let case = std::sync::Arc::clone(case);
@@ -256,7 +310,7 @@ fn main() {
             let result = match mode {
                 Mode::Tree => case.run_on(EngineKind::Tree),
                 Mode::Vm => case.run_on(EngineKind::Bytecode),
-                Mode::Both if vm_pending => case.run_on(EngineKind::Tree),
+                Mode::Both if vm_pending => case.run_both_pending(&reason),
                 Mode::Both => case.run_both(),
             };
             result.map_err(Failed::from)
@@ -278,10 +332,19 @@ fn main() {
                     None => report.push_str(&format!("vm_pending.txt names no test: {name}\n")),
                     Some(case) if case.not_run_here() => {}
                     Some(case) => {
-                        if case.run_on(EngineKind::Bytecode).is_ok() {
-                            report.push_str(&format!(
+                        match case.run_on(EngineKind::Bytecode) {
+                            Ok(()) => report.push_str(&format!(
                                 "{name}: passes on the VM now but is listed as pending ({reason}); remove it from vm_pending.txt\n"
-                            ));
+                            )),
+                            // It must fail the way the list says: by the VM's refusal of
+                            // that feature, not by a crash or a wrong answer.
+                            Err(failure) if reason_of(&failure) != *reason => {
+                                report.push_str(&format!(
+                                    "{name}: listed as pending ({reason}) but it fails differently: {}\n",
+                                    failure.lines().next().unwrap_or("")
+                                ));
+                            }
+                            Err(_) => {}
                         }
                     }
                 }

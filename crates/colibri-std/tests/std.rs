@@ -14,6 +14,7 @@ fn vm(caps: &[colibri::Cap]) -> (colibri::Vm, colibri::SharedBuffer) {
     // Pinned to the tree-walker: this tests the standard library, not the engine, and host
     // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
     let mut builder = colibri::Vm::builder()
+        // vm-pin: 2c
         .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()));
     for cap in caps {
@@ -86,7 +87,7 @@ fn installing_twice_is_an_error() {
 #[test]
 fn without_install_there_is_no_standard_library() {
     let mut vm = colibri::Vm::builder()
-        .engine(colibri::EngineKind::Tree)
+        // vm-pin: 2c
         .engine(colibri::EngineKind::Tree)
         .build();
     let err = compile_error(&mut vm, "import math\nfn main() {}\n");
@@ -443,6 +444,7 @@ fn a_program_checks_against_the_interfaces_without_a_vm() {
 fn a_config_replaces_the_world() {
     let out = colibri::SharedBuffer::new();
     let mut vm = colibri::Vm::builder()
+        // vm-pin: 2c
         .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Os)
@@ -589,6 +591,7 @@ fn a_missing_file_is_an_err_with_the_path_and_the_reason() {
 fn vm_with(config: StdConfig, caps: &[colibri::Cap]) -> (colibri::Vm, colibri::SharedBuffer) {
     let out = colibri::SharedBuffer::new();
     let mut builder = colibri::Vm::builder()
+        // vm-pin: 2c
         .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()));
     for cap in caps {
@@ -998,6 +1001,7 @@ fn a_typed_error_survives_context_and_main_prints_the_message() {
 fn reading_input_that_is_not_text_is_an_io_invalid_data_error() {
     let out = colibri::SharedBuffer::new();
     let mut vm = colibri::Vm::builder()
+        // vm-pin: 2c
         .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Os)

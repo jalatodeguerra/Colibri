@@ -65,6 +65,36 @@ fn a_repl_session_is_refused_on_the_bytecode_engine() {
     );
 }
 
+/// What a commit without a running session says, on an engine.
+fn commit_without_a_session(kind: EngineKind, load: bool) -> String {
+    let mut vm = Vm::builder().engine(kind).build();
+    if load {
+        vm.load_source("a.colibri", "let x = 1\n").unwrap();
+    }
+    let check = vm.session_check("let x = 1\n").expect("checks");
+    match vm.session_commit(check, &[], &[]) {
+        Err(colibri::SessionError::Conflict(text)) => text,
+        Err(other) => panic!("expected a conflict, got {other:?}"),
+        Ok(()) => panic!("committed without a session"),
+    }
+}
+
+#[test]
+fn a_session_commit_without_a_session_is_the_same_error_on_both_engines() {
+    let tree = commit_without_a_session(EngineKind::Tree, false);
+    assert_eq!(commit_without_a_session(EngineKind::Bytecode, false), tree);
+    // A program loaded the ordinary way is no session on the VM either.
+    assert_eq!(commit_without_a_session(EngineKind::Bytecode, true), tree);
+}
+
+#[test]
+fn a_session_display_after_an_ordinary_load_does_not_panic_on_the_bytecode_engine() {
+    let mut vm = Vm::builder().engine(EngineKind::Bytecode).build();
+    vm.load_source("a.colibri", "let x = 1\n").unwrap();
+    assert!(vm.session_display("x").is_none());
+    assert!(vm.session_display("nobody").is_none());
+}
+
 #[test]
 fn the_tree_engine_runs_programs() {
     let (result, out) = run_on(EngineKind::Tree, "fn main() { print(\"tree\") }");

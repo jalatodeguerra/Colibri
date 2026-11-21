@@ -1099,6 +1099,7 @@ fn a_panic_inside_vec_names_the_library_in_the_trace() {
 /// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
 fn colibri_command() -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
+    // vm-pin: 2c
     cmd.env_remove("COLIBRI_ENGINE");
     cmd
 }

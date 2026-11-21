@@ -8,6 +8,7 @@ fn run(source: &str) -> String {
     // Pinned to the tree-walker: this tests the standard library, not the engine, and host
     // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
     let mut vm = colibri::Vm::builder()
+        // vm-pin: 2c
         .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .build();
@@ -20,6 +21,7 @@ fn run(source: &str) -> String {
 
 fn compile_error(source: &str) -> String {
     let mut vm = colibri::Vm::builder()
+        // vm-pin: 2c
         .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(std::io::sink()))
         .build();
@@ -115,6 +117,7 @@ fn main() {
 #[test]
 fn value_is_declared_in_the_interface() {
     let mut vm = colibri::Vm::builder()
+        // vm-pin: 2c
         .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(std::io::sink()))
         .build();

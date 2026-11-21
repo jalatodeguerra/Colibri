@@ -105,11 +105,11 @@ fn run_test_reports_success_and_each_kind_of_failure() {
         vm.load_source("game.colibri", SOURCE).unwrap();
         out.take();
 
-        assert!(vm.run_test(0).is_ok());
+        vm.run_test(0).expect("the test passes");
         assert_eq!(out.take(), "in passes\n");
 
         // Module state is fresh for every test: `hits` is 0 again.
-        assert!(vm.run_test(1).is_ok());
+        vm.run_test(1).expect("the test passes");
 
         match vm.run_test(2) {
             Err(colibri::Error::Panic {
@@ -141,8 +141,8 @@ fn run_test_reports_success_and_each_kind_of_failure() {
             Err(colibri::Error::BudgetExhausted { .. })
         ));
         // The Vm is still usable after every kind of failure.
-        assert!(vm.run_test(6).is_ok());
-        assert!(vm.run_test(0).is_ok());
+        vm.run_test(6).expect("the test passes");
+        vm.run_test(0).expect("the test passes");
     })
 }
 
@@ -310,7 +310,7 @@ fn a_tests_script_values_are_initialised_in_source_order_without_the_statements(
             let src = "fn noisy(s: str) -> int {\n    print(s)\n    return 1\n}\nprint(\"statement\")\nlet a = noisy(\"a\")\nlet b = noisy(\"b\") + a\ntest \"sees both\" {\n    assert(b == 2)\n}\n";
             vm.load_source("script.colibri", src).unwrap();
             assert_eq!(out.take(), "statement\na\nb\n");
-            assert!(vm.run_test(0).is_ok());
+            vm.run_test(0).expect("the test passes");
             assert_eq!(out.take(), "a\nb\n");
         },
     )
@@ -356,7 +356,9 @@ fn host_state_leaks_from_one_test_to_the_next_without_the_hook() {
         "host_state_leaks_from_one_test_to_the_next_without_the_hook",
         || {
             let mut vm = vm_with_counter();
-            let results: Vec<bool> = (0..3).map(|id| vm.run_test(id).is_ok()).collect();
+            let results: Vec<_> = (0..3).map(|id| vm.run_test(id)).collect();
+            results[0].as_ref().expect("the first test passes");
+            let results: Vec<bool> = results.iter().map(|r| r.is_ok()).collect();
             assert_eq!(results, [true, false, false]);
             assert_eq!(vm.state_mut::<Calls>().unwrap().0, 3);
         },

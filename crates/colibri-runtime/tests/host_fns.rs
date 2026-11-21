@@ -170,7 +170,7 @@ fn a_rust_err_is_a_colibri_err_not_a_panic() {
             }
         })
         .unwrap();
-        run(
+        let err = run(
             &mut vm,
             r#"
 fn main() -> Result[()] {
@@ -187,6 +187,9 @@ fn main() -> Result[()] {
 "#,
         )
         .unwrap_err();
+        if let colibri::Error::Panic { message, .. } = &err {
+            panic!("the script panicked instead of returning the error: {message}");
+        }
         assert_eq!(
             out.contents(),
             "ok(42)\nerr: invalid digit found in string\n8\n"

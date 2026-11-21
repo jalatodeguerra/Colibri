@@ -227,6 +227,9 @@ pub enum Outcome {
     Compiled {
         stdout: String,
         panic: Option<String>,
+        /// Where the panic happened and the call stack, innermost first, as `line` and
+        /// `function line` strings (columns and files are left out). Empty without a panic.
+        trace: Vec<String>,
         /// The error chain if `main` returned `err(e)` (`Error::MainReturnedErr`).
         main_err: Option<String>,
         /// The compile warnings.
@@ -434,13 +437,25 @@ fn run_with(
         },
         other => {
             let mut main_err = None;
+            let mut trace = Vec::new();
             let panic = match other {
                 Ok(()) => None,
                 Err(colibri::Error::MainReturnedErr { message }) => {
                     main_err = Some(message);
                     None
                 }
-                Err(colibri::Error::Panic { message, notes, .. }) => {
+                Err(colibri::Error::Panic {
+                    message,
+                    notes,
+                    location,
+                    stack,
+                }) => {
+                    trace.extend(location.iter().map(|l| format!("at line {}", l.line)));
+                    trace.extend(
+                        stack
+                            .iter()
+                            .map(|f| format!("{} line {}", f.function, f.location.line)),
+                    );
                     // Notes ride along with the message so a golden file can match them.
                     Some(notes.iter().fold(message, |m, n| format!("{m}\nnote: {n}")))
                 }
@@ -449,6 +464,7 @@ fn run_with(
             Outcome::Compiled {
                 stdout: out.contents(),
                 panic,
+                trace,
                 main_err,
                 warnings: located(vm.sources(), vm.warnings(), false),
                 drops,
@@ -618,6 +634,7 @@ pub fn check_package(p: &PackageDirectives, outcome: &Outcome) -> Result<(), Str
             warnings,
             drops,
             leaks,
+            ..
         } => {
             let mut problems = Vec::new();
             for (file, line, text) in &errors_wanted {
@@ -748,7 +765,7 @@ fn finish(problems: Vec<String>) -> Result<(), String> {
     }
 }
 
-/// How two engines' outcomes of one golden test differ (stdout, panic text, main's error, the
+/// How two engines' outcomes of one golden test differ (stdout, panic text and trace, main's error, the
 /// drop trace, the warnings), or `None` when they agree. The leak report is not compared: a
 /// cycle's shape is an engine detail.
 pub fn diff_outcomes(tree: &Outcome, vm: &Outcome) -> Option<String> {
@@ -757,6 +774,7 @@ pub fn diff_outcomes(tree: &Outcome, vm: &Outcome) -> Option<String> {
             Outcome::Compiled {
                 stdout: s1,
                 panic: p1,
+                trace: t1,
                 main_err: m1,
                 warnings: w1,
                 drops: d1,
@@ -765,6 +783,7 @@ pub fn diff_outcomes(tree: &Outcome, vm: &Outcome) -> Option<String> {
             Outcome::Compiled {
                 stdout: s2,
                 panic: p2,
+                trace: t2,
                 main_err: m2,
                 warnings: w2,
                 drops: d2,
@@ -777,6 +796,9 @@ pub fn diff_outcomes(tree: &Outcome, vm: &Outcome) -> Option<String> {
             }
             if p1 != p2 {
                 parts.push(format!("panic:\n  tree: {p1:?}\n  vm:   {p2:?}"));
+            }
+            if t1 != t2 {
+                parts.push(format!("panic trace:\n  tree: {t1:?}\n  vm:   {t2:?}"));
             }
             if m1 != m2 {
                 parts.push(format!("main error:\n  tree: {m1:?}\n  vm:   {m2:?}"));
@@ -802,6 +824,7 @@ mod tests {
         Outcome::Compiled {
             stdout: stdout.into(),
             panic: panic.map(Into::into),
+            trace: Vec::new(),
             main_err: None,
             warnings: Vec::new(),
             drops: Vec::new(),
@@ -813,6 +836,7 @@ mod tests {
         Outcome::Compiled {
             stdout: String::new(),
             panic: None,
+            trace: Vec::new(),
             main_err: None,
             warnings: Vec::new(),
             drops: labels.iter().map(|s| s.to_string()).collect(),
@@ -824,6 +848,7 @@ mod tests {
         Outcome::Compiled {
             stdout: String::new(),
             panic: None,
+            trace: Vec::new(),
             main_err: None,
             warnings: warnings
                 .iter()
@@ -832,6 +857,37 @@ mod tests {
             drops: Vec::new(),
             leaks: Vec::new(),
         }
+    }
+
+    #[test]
+    fn the_engines_differ_when_their_panic_traces_do() {
+        let with_trace = |lines: &[&str]| match compiled("", Some("boom")) {
+            Outcome::Compiled {
+                stdout,
+                panic,
+                main_err,
+                warnings,
+                drops,
+                leaks,
+                ..
+            } => Outcome::Compiled {
+                stdout,
+                panic,
+                trace: lines.iter().map(|s| s.to_string()).collect(),
+                main_err,
+                warnings,
+                drops,
+                leaks,
+            },
+            other => other,
+        };
+        let a = with_trace(&["at line 3", "main line 3"]);
+        assert_eq!(
+            diff_outcomes(&a, &with_trace(&["at line 3", "main line 3"])),
+            None
+        );
+        let diff = diff_outcomes(&a, &with_trace(&["at line 4", "main line 3"])).expect("differs");
+        assert!(diff.contains("panic trace"), "{diff}");
     }
 
     #[test]

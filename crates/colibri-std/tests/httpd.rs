@@ -319,6 +319,7 @@ impl Server {
             // Pinned to the tree-walker: this tests the standard library, not the engine, and host
             // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
             let mut vm = colibri::Vm::builder()
+                // vm-pin: 2c
                 .engine(colibri::EngineKind::Tree)
                 .stdout(Box::new(out.clone()))
                 .allow(colibri::Cap::Net)
@@ -2063,6 +2064,7 @@ fn a_client_that_sends_half_a_head_does_not_hold_up_another_one() {
 /// What loading a program that calls `httpd.listen` says when the host grants only `caps`.
 fn load_error_with(caps: &[colibri::Cap]) -> String {
     let mut builder = colibri::Vm::builder()
+        // vm-pin: 2c
         .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(std::io::sink()));
     for cap in caps {

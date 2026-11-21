@@ -17,10 +17,18 @@ fn vm_pending(name: &str, body: impl FnOnce()) {
     if !on_vm || !VM_PENDING.contains(&name) {
         return body();
     }
-    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).is_err();
+    let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) else {
+        panic!("{name} passes on the VM now; remove it from VM_PENDING");
+    };
+    // It must fail by the VM's refusal of the missing feature, not another way.
+    let text = payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_default();
     assert!(
-        failed,
-        "{name} passes on the VM now; remove it from VM_PENDING"
+        text.contains("the bytecode VM does not support"),
+        "{name} is listed as pending but failed another way: {text}"
     );
 }
 
@@ -40,7 +48,9 @@ fn the_log_matches_the_golden_file() {
     vm_pending("the_log_matches_the_golden_file", || {
         let log = host_with_scripts().run(DEFAULT_TICKS).join("\n") + "\n";
         let path = scripts_dir().join("../tests/expected.txt");
-        if std::env::var_os("UPDATE_EXPECTED").is_some() {
+        // Never from the VM: its log is not the reference.
+        let on_vm = std::env::var("COLIBRI_ENGINE").is_ok_and(|v| v == "vm");
+        if std::env::var_os("UPDATE_EXPECTED").is_some() && !on_vm {
             fs::write(&path, &log).unwrap();
         }
         let expected = fs::read_to_string(&path).expect("tests/expected.txt");

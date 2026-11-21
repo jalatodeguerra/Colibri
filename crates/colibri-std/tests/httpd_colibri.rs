@@ -50,6 +50,7 @@ impl Package {
         // Pinned to the tree-walker: this tests the standard library, not the engine, and host
         // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
         let mut vm = colibri::Vm::builder()
+            // vm-pin: 2c
             .engine(colibri::EngineKind::Tree)
             .stdout(Box::new(colibri::SharedBuffer::new()))
             .allow(colibri::Cap::Net)
@@ -201,6 +202,7 @@ failing!(router_registration, request_misuse);
 fn a_program_imports_the_module_and_tests_its_handlers_without_sockets() {
     let out = colibri::SharedBuffer::new();
     let mut vm = colibri::Vm::builder()
+        // vm-pin: 2c
         .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Net)

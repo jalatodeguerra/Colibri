@@ -22,6 +22,7 @@ fn run(file: &PathBuf, flag: Option<&str>, env: Option<&str>) -> Output {
         cmd.arg(flag);
     }
     cmd.arg(file);
+    // vm-pin: 2c
     cmd.env_remove("COLIBRI_ENGINE");
     if let Some(env) = env {
         cmd.env("COLIBRI_ENGINE", env);

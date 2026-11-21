@@ -112,6 +112,16 @@ pub(crate) fn new_engine(
 
 const NO_SESSIONS: &str = "the bytecode VM does not support REPL sessions yet";
 
+fn no_sessions() -> Box<PanicInfo> {
+    Box::new(PanicInfo {
+        message: NO_SESSIONS.to_string(),
+        span: colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),
+        stack: Vec::new(),
+        notes: Vec::new(),
+        budget: false,
+    })
+}
+
 impl RuntimeEngine for VmEngine {
     fn supports_sessions(&self) -> bool {
         false
@@ -152,24 +162,22 @@ impl RuntimeEngine for VmEngine {
         Err("the bytecode VM does not support `extern` functions yet".to_string())
     }
 
+    // The `Vm` methods check `supports_sessions` first, so none of these is reached; they
+    // still answer cleanly instead of panicking, should one be.
     fn session_extend(&mut self, _: &Program, _: Vec<u32>, _: &[GlobalId]) -> Box<dyn Any> {
-        unreachable!("{NO_SESSIONS}: `supports_sessions` is false")
+        Box::new(())
     }
 
     fn session_run(&mut self, _: &Program, _: usize, _: &[GlobalId]) -> Result<(), Box<PanicInfo>> {
-        unreachable!("{NO_SESSIONS}: `supports_sessions` is false")
+        Err(no_sessions())
     }
 
-    fn session_commit(&mut self, _: Box<dyn Any>) {
-        unreachable!("{NO_SESSIONS}: `supports_sessions` is false")
-    }
+    fn session_commit(&mut self, _: Box<dyn Any>) {}
 
-    fn session_rollback(&mut self, _: Box<dyn Any>, _: &Program) {
-        unreachable!("{NO_SESSIONS}: `supports_sessions` is false")
-    }
+    fn session_rollback(&mut self, _: Box<dyn Any>, _: &Program) {}
 
     fn session_show(&mut self, _: GlobalId) -> Result<String, Box<PanicInfo>> {
-        unreachable!("{NO_SESSIONS}: `supports_sessions` is false")
+        Err(no_sessions())
     }
 
     fn release_globals(&mut self) {

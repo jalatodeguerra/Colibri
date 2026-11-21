@@ -7,9 +7,12 @@
 # Build the binary first with `cargo build --release`. The default benchmarks are the ones
 # the bytecode VM can run.
 set -euo pipefail
-cd "$(dirname "$0")"
-COLIBRI="${1:-../target/release/colibri}"
+here="$(cd "$(dirname "$0")" && pwd)"
+# A binary given as a relative path is relative to where the script was run from.
+COLIBRI="${1:-$here/../target/release/colibri}"
+case "$COLIBRI" in /*) ;; *) COLIBRI="$PWD/$COLIBRI" ;; esac
 shift || true
+cd "$here"
 NAMES=("$@")
 if [ ${#NAMES[@]} -eq 0 ]; then NAMES=(fib loop); fi
 
@@ -29,11 +32,18 @@ ir() {
         sed -n 's/.*I *refs: *//p' | tr -d ','
 }
 
+status=0
 printf '%-10s %16s %16s %8s\n' benchmark "tree Ir" "vm Ir" "vm/tree"
 for name in "${NAMES[@]}"; do
     src="$name.colibri"
-    tree=$(ir tree "$src")
-    vm=$(ir vm "$src")
+    tree=$(ir tree "$src") || tree=""
+    vm=$(ir vm "$src") || vm=""
+    if [ -z "$tree" ] || [ -z "$vm" ]; then
+        printf '%-10s %16s %16s %8s\n' "$name" "${tree:-failed}" "${vm:-failed}" "-"
+        status=1
+        continue
+    fi
     ratio=$(awk -v a="$vm" -v b="$tree" 'BEGIN { printf "%.2f", a / b }')
     printf '%-10s %16s %16s %8s\n' "$name" "$tree" "$vm" "$ratio"
 done
+exit $status
