@@ -1975,7 +1975,11 @@ fn a_stop_during_a_request_lets_it_finish_and_the_answer_says_close() {
     assert!(last.says_close());
     drop(waiting);
     drop(releaser);
-    assert_eq!(server.wait().seen, ["GET /wait", "POST /release"]);
+    // The two requests were sent from two connections without waiting for each other, so the
+    // server may read either line first (seen on a loaded macOS runner): compare them unordered.
+    let mut seen = server.wait().seen;
+    seen.sort();
+    assert_eq!(seen, ["GET /wait", "POST /release"]);
 }
 
 #[test]
