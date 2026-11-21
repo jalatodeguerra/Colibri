@@ -1,0 +1,112 @@
+// notes: a small JSON API served with the `httpd` standard module.
+//
+//   colibri run notes.colibri -- [--addr 127.0.0.1:0]
+//
+//   GET    /notes          every note, as a JSON array
+//   POST   /notes          {"text": "..."} adds a note: 201, the note, and its `Location`
+//   GET    /notes/export   every note, one JSON object per line, streamed as it is produced
+//   GET    /notes/:id      one note, or 404
+//   DELETE /notes/:id      removes it (204), or 404
+//   POST   /shutdown       answers, then stops the server: connections that are busy finish
+//
+// The router, a path parameter, a request body decoded as typed JSON, `httpd.fail` for an
+// answer that is an error, a streamed response and a graceful stop are what this program shows.
+// The first line printed is `listening on HOST:PORT` (with port 0 the system picks the port).
+// Everything runs in one thread and a handler stops only where it waits, so the store needs no
+// lock.
+//
+// Exit codes: 0 stopped by /shutdown, 1 the address could not be used.
+import args
+import httpd
+import json
+import str
+
+struct Note {
+    id: int
+    text: str
+}
+
+struct NewNote {
+    text: str
+}
+
+class Store {
+    notes: List[Note]
+    next_id: int
+}
+
+fn find(store: Store, text: str) -> Result[int] {
+    let id = str.parse_int(text) or |e| {
+        return err(httpd.fail(400, "`{text}` is not a note number"))
+    }
+    for i in 0..store.notes.len() {
+        if store.notes[i].id == id {
+            return ok(i)
+        }
+    }
+    return err(httpd.fail(404, "there is no note {id}"))
+}
+
+fn list_notes(store: Store, r: httpd.Request) -> Result[httpd.Response] {
+    return httpd.json(200, store.notes)
+}
+
+fn add_note(store: Store, r: httpd.Request) -> Result[httpd.Response] {
+    let body = r.text()?
+    let new = json.decode[NewNote](body) or |e| {
+        return err(httpd.fail(400, "the body must be a JSON object with a `text`: {e.message()}"))
+    }
+    if new.text.trim() == "" {
+        return err(httpd.fail(422, "a note cannot be empty"))
+    }
+    let note = Note { id: store.next_id, text: new.text }
+    store.next_id += 1
+    store.notes.push(note)
+    let response = httpd.json(201, note)?
+    return ok(response.header("Location", "/notes/{note.id}"))
+}
+
+fn get_note(store: Store, r: httpd.Request) -> Result[httpd.Response] {
+    let i = find(store, r.param("id") or { "" })?
+    return httpd.json(200, store.notes[i])
+}
+
+fn delete_note(store: Store, r: httpd.Request) -> Result[httpd.Response] {
+    let i = find(store, r.param("id") or { "" })?
+    store.notes.remove(i)
+    return ok(httpd.status(204))
+}
+
+// The closure writes while the response is sent: a note, then `wait(0.0)` so that other
+// connections are served between notes however many there are.
+fn export_notes(store: Store, r: httpd.Request) -> Result[httpd.Response] {
+    let snapshot = store.notes.clone()
+    return ok(httpd.stream(200, "application/x-ndjson", fn(w: httpd.BodyWriter) -> Result[()] {
+        for note in snapshot {
+            w.write_str("{json.encode(note)?}\n")?
+            wait(0.0)
+        }
+        return ok(())
+    }))
+}
+
+fn main() -> Result[()] {
+    let store = Store { notes: [], next_id: 1 }
+    let server = httpd.listen(args.value("addr") or { "127.0.0.1:0" })?
+    print("listening on {server.addr()}")
+
+    let router = httpd.Router()
+    router.get("/notes", fn(r) => list_notes(store, r))
+    router.post("/notes", fn(r) => add_note(store, r))
+    // A literal beats `:id`, so `export` is never taken for a note number.
+    router.get("/notes/export", fn(r) => export_notes(store, r))
+    router.get("/notes/:id", fn(r) => get_note(store, r))
+    router.delete("/notes/:id", fn(r) => delete_note(store, r))
+    router.post("/shutdown", fn(r) {
+        // `stop` never waits, so it is safe here: this response is still written, with
+        // `Connection: close`, and `serve` returns when the last connection has ended.
+        server.stop(5.0)
+        return ok(httpd.text(200, "stopping\n"))
+    })
+    return server.serve(router.handler())
+}

@@ -1,0 +1,55 @@
+// notes_client: talks to a running `notes` server with the `http` client.
+//
+//   colibri run notes_client.colibri -- HOST:PORT TEXT...
+//
+// Adds one note for each TEXT (quote the ones with spaces), then prints the notes as the server
+// lists them and the lines of its streamed export.
+//
+// Exit codes: 0 done, 1 the server cannot be reached or answered with an error, 2 bad command
+// line.
+import args
+import http
+import io
+import json
+import os
+
+struct Note {
+    id: int
+    text: str
+}
+
+struct NewNote {
+    text: str
+}
+
+fn main() -> Result[()] {
+    let given = args.positional()
+    if given.len() < 2 {
+        io.eprintln("usage: colibri run notes_client.colibri -- HOST:PORT TEXT...")
+        os.exit(2)
+    }
+    let base = "http://{given[0]}"
+    for text in given[1..] {
+        let body = json.encode(NewNote { text: text })?
+        let r = http
+            .request("POST", "{base}/notes", {"Content-Type": "application/json"}, body)
+            .context("cannot reach the server")?
+        if r.status != 201 {
+            return err(error("the server answered {r.status}: {r.body.trim()}"))
+        }
+        let note = json.decode[Note](r.body)?
+        print("added {note.id}: {note.text}")
+    }
+    let listed = http.get("{base}/notes").context("cannot reach the server")?
+    let notes = json.decode[List[Note]](listed.body)?
+    print("{notes.len()} notes")
+    let export = http.get("{base}/notes/export").context("cannot reach the server")?
+    for line in export.body.split("\n") {
+        if line == "" {
+            continue
+        }
+        let note = json.decode[Note](line)?
+        print("export {note.id} {note.text}")
+    }
+    return ok(())
+}

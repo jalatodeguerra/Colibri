@@ -18,6 +18,15 @@ const PATIENCE: Duration = Duration::from_secs(30);
 /// no orphan behind.
 struct Server(Child);
 
+/// The folder of the script, removed when the test ends, also when it fails.
+struct TempDir(std::path::PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -26,7 +35,6 @@ impl Drop for Server {
 }
 
 const SERVER: &str = r#"import httpd
-import io
 
 fn main() -> Result[()] {
     let server = httpd.listen("127.0.0.1:0")?
@@ -73,6 +81,7 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
     let dir = std::env::temp_dir().join(format!("colibri-httpd-fds-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    let _cleanup = TempDir(dir.clone());
     let script = dir.join("server.colibri");
     std::fs::write(&script, SERVER).unwrap();
     let mut child = Server(
@@ -96,13 +105,19 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
         let _ = first_tx.send(first);
         let _ = std::io::copy(&mut out, &mut std::io::sink());
     });
-    let (log_tx, log_rx) = mpsc::channel();
-    let mut stderr = child.0.stderr.take().unwrap();
+    // Each line of the log is sent as it comes, so the test can wait for the failure itself
+    // instead of guessing when the server has tried to accept past its limit.
+    let (log_tx, log_rx) = mpsc::channel::<String>();
+    let stderr = child.0.stderr.take().unwrap();
     std::thread::spawn(move || {
-        let mut log = String::new();
-        let _ = stderr.read_to_string(&mut log);
-        let _ = log_tx.send(log);
+        for line in std::io::BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            if log_tx.send(line).is_err() {
+                break;
+            }
+        }
     });
+    let mut log = String::new();
     let first = first_rx
         .recv_timeout(PATIENCE)
         .expect("the server printed its address in time");
@@ -117,6 +132,21 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
     let mut crowd: Vec<TcpStream> = (0..80)
         .map(|_| TcpStream::connect(&addr).expect("connects"))
         .collect();
+    // The server accepts until its table is full and then logs the failure; nothing goes away
+    // before that, so the failure cannot be missed however the scheduler orders the accepts.
+    let started = Instant::now();
+    while !log.contains("accept failed") {
+        let left = PATIENCE
+            .checked_sub(started.elapsed())
+            .unwrap_or_else(|| panic!("nothing was logged in time: {log:?}"));
+        match log_rx.recv_timeout(left) {
+            Ok(line) => {
+                log.push_str(&line);
+                log.push('\n');
+            }
+            Err(_) => panic!("nothing was logged in time: {log:?}"),
+        }
+    }
     let mut a = crowd.remove(0);
     let answer = ask(&mut a, "GET / HTTP/1.1\r\nHost: t\r\n\r\n");
     assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
@@ -132,9 +162,6 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
     );
     assert!(answer.ends_with("bye\n"), "{answer}");
     drop(b);
-    let log = log_rx
-        .recv_timeout(PATIENCE)
-        .expect("the server closed its stderr in time");
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.0.try_wait().unwrap() {
@@ -146,7 +173,10 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
         );
         std::thread::sleep(Duration::from_millis(20));
     };
+    // The rest of the log, which ends when the server closes its stderr.
+    while let Ok(line) = log_rx.recv_timeout(Duration::from_secs(5)) {
+        log.push_str(&line);
+        log.push('\n');
+    }
     assert_eq!(status.code(), Some(0), "{log}");
-    assert!(log.contains("accept failed"), "nothing was logged: {log:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

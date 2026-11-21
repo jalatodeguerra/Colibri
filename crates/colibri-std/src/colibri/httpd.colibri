@@ -82,15 +82,17 @@ pub struct Options {
     /// `stop` after the grace period.
     pub handler_timeout: float = 60.0
     /// Open connections. At the cap the server stops accepting until one ends. What a
-    /// connection costs (measured with the defaults, in a debug build; a release build
-    /// measured about 40 KiB for an idle one, with 10,000 of them taking about 400 MiB): about
-    /// 100 KiB for the connection itself (its coroutine, stack and socket objects), about
-    /// 107 KiB with a request line of 8,000 bytes pending, and about 143 KiB at worst, with fields kept up to `max_header_bytes`
-    /// and a field line of that size pending; plus 64 KiB while it lingers or drains. A
-    /// handler that calls `Request.body` or `Request.text` holds up to `max_body_bytes` more for
-    /// its request (10 MiB by default), which is the application's choice: the server itself
-    /// never holds a body. So 1,024 connections take about 100 MiB idle and about 145 MiB with
-    /// requests in flight, and more when handlers hold bodies.
+    /// connection costs (measured with the defaults): in a release build an idle one takes about
+    /// 46 to 48 KiB, so a server holds about 16 MiB with none, about 61 MiB with 1,000 and about
+    /// 490 MiB with 10,000. A debug build takes more: about 100 KiB for an idle one (measured
+    /// before a connection got its own child coroutine, so a little more today), about 107 KiB
+    /// with a request line of 8,000 bytes pending, and about 143 KiB at worst, with fields kept
+    /// up to `max_header_bytes` and a field line of that size pending; plus 64 KiB while it
+    /// lingers or drains. A handler that calls `Request.body` or `Request.text` holds up to
+    /// `max_body_bytes` more for its request (10 MiB by default), which is the application's
+    /// choice: the server itself never holds a body. So the default 1,024 connections take about
+    /// 16 MiB plus 46 to 48 MiB idle in a release build, and more with requests in flight or when
+    /// handlers hold bodies.
     pub max_connections: int = 1024
     /// The `Server` header of every response; "" sends none.
     pub server_name: str = ""

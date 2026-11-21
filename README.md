@@ -74,10 +74,10 @@ error: reading notes.txt: cannot read `notes.txt`: no such file or directory
   any code.
 - **Coroutines without colored functions.** `go f()` starts a coroutine and `wait(secs)`,
   `join()`, groups and signals suspend it. There is no `async`/`await`, so any function can wait.
-- **Batteries for scripting.** 21 standard library modules, including files (whole or streamed
+- **Batteries for scripting.** 22 standard library modules, including files (whole or streamed
   through a handle) and paths, JSON, TOML and CSV, regular expressions, subprocesses,
-  command-line arguments, dates, an HTTP client and TCP sockets, and `Bytes` for data that is not
-  text.
+  command-line arguments, dates, an HTTP client, TCP sockets and an HTTP server, and `Bytes` for
+  data that is not text.
 - **Conditional code.** `@when(os == "windows")`, `@when(debug)` and feature flags from
   `colibri.toml` decide which items exist; `@deprecated` makes a use of an old item warn.
 - **One binary for the whole workflow:** run, check, test, format, a REPL, a language server,
@@ -313,6 +313,8 @@ fn main() {
 ```
 
 Both coroutines wait at the same time, so the program takes 0.2 seconds, not 0.3.
+`slow.join_result()` is `join` that returns a `Result`: a panic or a cancel of the coroutine arrives
+as `err(e)` instead of panicking in the joiner, which is how a server survives a handler's panic.
 
 ### Bytes and files
 
@@ -505,9 +507,68 @@ call that waits on that object with `net.Error.Closed`.
   and is the same on Linux, macOS and Windows; only `Other` shows the system's words.
 
 `net` needs the `net` capability, like `http`: `colibri run` grants it, and a program that embeds
-Colibri decides whether its scripts have it (`Cap::Net`). There is no HTTP server in the
-standard library yet; [`examples/scripts/kvserver`](examples/scripts/kvserver/kvserver.colibri)
-is a key-value server over a line protocol, written with `net`.
+Colibri decides whether its scripts have it (`Cap::Net`).
+[`examples/scripts/kvserver`](examples/scripts/kvserver/kvserver.colibri) is a key-value server over
+a line protocol, written with `net`.
+
+### HTTP server
+
+`httpd` is an HTTP/1.1 server written in Colibri on top of `net`. It is source that ships with the
+toolchain, so it uses nothing a program could not write itself. Every connection is a coroutine,
+so many slow clients cost memory and no threads. This server answers `GET /hello/<name>` and ends
+on `POST /stop`:
+
+```colibri
+import httpd
+
+fn hello(r: httpd.Request) -> Result[httpd.Response] {
+    let name = r.param("name").expect("the route has a :name")
+    return ok(httpd.text(200, "Hello, {name}!\n"))
+}
+
+fn main() -> Result[()] {
+    let server = httpd.listen("127.0.0.1:0")? // port 0: the system picks a free port
+    print("listening on {server.addr()}")
+
+    let router = httpd.Router()
+    router.get("/hello/:name", hello)
+    router.post("/stop", fn(r) {
+        server.stop() // never waits, so it is safe here; this answer is still sent
+        return ok(httpd.text(200, "bye\n"))
+    })
+    return server.serve(router.handler())
+}
+```
+
+`curl http://127.0.0.1:PORT/hello/Colibri` answers `Hello, Colibri!`. A handler is a function from
+`httpd.Request` to `Result[httpd.Response]`:
+
+- **Routing.** `Router` matches a method and a path with literals, `:name` parameters and a last
+  `*rest`, and answers 404, 405 (with `Allow`), `HEAD` and `OPTIONS` itself. A handler can also be
+  any function, with no router at all.
+- **Requests.** Headers, the query (`query_value`), and a body that is read on demand with
+  `text()`, `body()` or `read(n)`; bodies with a `Content-Length` and chunked ones both work.
+  `httpd.parse_query` reads a URL-encoded form.
+- **Responses.** `httpd.text`, `html`, `json`, `bytes`, `redirect` and `status`, with `.header(..)`
+  to add a field, and `httpd.stream` for a body that a function writes while it is sent (chunked,
+  or with a length).
+- **Errors.** `err(httpd.fail(404, "no such note"))` answers with that status and message. Any
+  other `err` is a 500 with a fixed body, and a handler that panics is a 500 too: the server keeps
+  serving, the connection closes and the panic is logged to stderr.
+- **Limits.** `httpd.Options` bounds the request line, the header bytes and fields, the body, the
+  time for a head, for a body read, for a write, for an idle connection and for a handler (a
+  handler that is out of time is cancelled and the client gets a 503), and the number of open
+  connections. The defaults are listed on the type. A request that breaks the syntax or tries to
+  smuggle one is refused with 400 and the connection closed.
+- **Stopping.** `server.stop(grace)` closes the listener and the idle connections, lets requests
+  in flight finish, and cancels what is left after `grace` seconds; `serve` then returns.
+- **Testing.** `httpd.test_request(..)` builds a request without a socket, so a handler or a router
+  is tested as a function.
+
+What is not built: TLS (https), HTTP/2, `Upgrade` and WebSockets, and compression. `httpd` needs
+the `net` and `os` capabilities (the clock of the `Date` header), which `colibri run` grants.
+[`examples/scripts/notes`](examples/scripts/notes/notes.colibri) is a small JSON API with a
+router, a body, `fail`, a streamed export and a graceful stop.
 
 ### Tests
 
@@ -831,6 +892,7 @@ whose logic comes from Colibri scripts (host classes, handles, callbacks and a s
 | `regex` | regular expressions |
 | `http` | a blocking HTTP client that does not block other coroutines; `get_bytes` and `request_bytes` for bodies that are not text |
 | `net` | TCP sockets: `net.listen`, `net.connect` and `net.connect_timeout` give a `net.Listener` or a `net.Conn` that read and write lines, bytes and text without blocking other coroutines |
+| `httpd` | an HTTP/1.1 server written in Colibri on `net`: a router, request bodies (also chunked), streamed responses, keep-alive, limits and timeouts, and a graceful stop |
 | `time`, `datetime` | clocks and sleeping; dates, times and formatting |
 | `math`, `rand` | math functions; random numbers |
 | `vec` | 2D, 3D and 4D vector types of `f32` and `i32`, written in Colibri (a library on top of operator interfaces, not part of the language) |
@@ -852,7 +914,7 @@ they have.
   ordering, `@deprecated` and conditional code with `@when` and features.
 - A tree-walking interpreter over a typed intermediate representation, with a deterministic
   drop order.
-- The embedding API, the C FFI, coroutines, the 21 std modules above (TCP sockets included),
+- The embedding API, the C FFI, coroutines, the 22 std modules above (TCP sockets and an HTTP/1.1 server included),
   `Bytes` and file handles.
 - Operator interfaces (`Add`, `Sub`, `Mul`, `Div`, `Neg`) with default type parameters, which
   let a library such as `vec` define its own arithmetic.
@@ -869,6 +931,8 @@ they have.
 **Later:**
 
 - Thread tasks with channels, a debugger (DAP) and a profiler.
+- TLS for `net` and `httpd` (https), HTTP/2, WebSockets, response compression, and UDP and Unix
+  domain sockets in `net`: none of them is built yet.
 - Using Rust crates from Colibri through generated bindings.
 
 **Not planned:** a JIT, exceptions, inheritance, macros, `async`/`await` and a package registry
@@ -876,8 +940,8 @@ in v1.
 
 ## Examples
 
-- [`examples/scripts`](examples/scripts/README.md): three real automation programs, a file
-  organiser, a JSON/HTTP report generator and a TCP key-value server.
+- [`examples/scripts`](examples/scripts/README.md): four real programs, a file organiser, a
+  JSON/HTTP report generator, a TCP key-value server and a JSON API served with `httpd`.
 - [`examples/host_jobs`](examples/host_jobs/README.md): a Rust job runner that takes its job
   logic from Colibri scripts (host classes, handles, callbacks and the scheduler).
 - [`benchmarks`](benchmarks/README.md): eight small programs in Colibri and Python, with the

@@ -47,6 +47,8 @@ fn both_scripts_check() {
         "report/report.colibri",
         "kvserver/kvserver.colibri",
         "kvserver/kvclient.colibri",
+        "notes/notes.colibri",
+        "notes/notes_client.colibri",
     ] {
         let path = scripts().join(script);
         let out = colibri(&["check", path.to_str().unwrap()]);
@@ -988,6 +990,213 @@ fn example_scripts_are_formatted() {
         out.status.success(),
         "run `colibri fmt examples/scripts`:\n{}{}",
         text(&out.stdout),
+        text(&out.stderr)
+    );
+}
+
+// ---------------------------------------------------------------- notes
+
+/// A running `notes` server and the address it printed. It is killed when the test ends, so a
+/// failure leaves no server behind.
+struct Notes {
+    child: std::process::Child,
+    addr: String,
+}
+
+impl Notes {
+    fn start(extra: &[&str]) -> Notes {
+        use std::io::BufRead;
+        let script = scripts().join("notes/notes.colibri");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+            .args(["run", script.to_str().unwrap(), "--"])
+            .args(extra)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the colibri binary runs");
+        // The address is read on a thread, so that a server that prints nothing fails the test
+        // after a while and does not hang it.
+        let stdout = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let mut first = String::new();
+            let mut out = std::io::BufReader::new(stdout);
+            let _ = out.read_line(&mut first);
+            let _ = tx.send(first);
+            let _ = std::io::copy(&mut out, &mut std::io::sink());
+        });
+        let first = rx.recv_timeout(Duration::from_secs(30));
+        let mut notes = Notes {
+            child,
+            addr: String::new(),
+        };
+        let first = first.expect("the server printed its address");
+        notes.addr = first
+            .trim()
+            .strip_prefix("listening on ")
+            .unwrap_or_else(|| panic!("unexpected first line {first:?}"))
+            .to_string();
+        notes
+    }
+
+    /// One request on its own connection (`Connection: close`), and everything the server sends
+    /// back until it closes.
+    fn call(&self, method: &str, target: &str, body: &str) -> String {
+        let mut stream = TcpStream::connect(&self.addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        let request = format!(
+            "{method} {target} HTTP/1.1\r\nHost: notes.test\r\nConnection: close\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut got = Vec::new();
+        stream.read_to_end(&mut got).expect("the whole answer");
+        text(&got)
+    }
+
+    /// The server's exit code, within a time bound.
+    fn exit_code(&mut self) -> Option<i32> {
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status.code();
+            }
+            assert!(started.elapsed() < Duration::from_secs(30), "no exit");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+impl Drop for Notes {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn notes_is_formatted() {
+    for file in ["notes/notes.colibri", "notes/notes_client.colibri"] {
+        let path = scripts().join(file);
+        let out = colibri(&["fmt", "--check", path.to_str().unwrap()]);
+        assert_eq!(out.status.code(), Some(0), "{file}: {}", text(&out.stderr));
+    }
+}
+
+/// The client adds notes with the `http` client, lists them and reads the streamed export, and
+/// reports a server that is not there and a bad command line.
+#[test]
+fn notes_client_talks_to_notes_and_reports_a_missing_server() {
+    let mut notes = Notes::start(&[]);
+    let client = scripts().join("notes/notes_client.colibri");
+    let out = run_script(&client, &[&notes.addr, "buy milk", "call mom"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        "added 1: buy milk\nadded 2: call mom\n2 notes\nexport 1 buy milk\nexport 2 call mom\n"
+    );
+    // What the client added is on the server.
+    assert!(
+        notes
+            .call("GET", "/notes/2", "")
+            .ends_with(r#"{"id":2,"text":"call mom"}"#)
+    );
+    notes.call("POST", "/shutdown", "");
+    assert_eq!(notes.exit_code(), Some(0));
+    // The server has stopped: its port refuses.
+    let out = run_script(&client, &[&notes.addr, "x"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("cannot reach the server"),
+        "{}",
+        text(&out.stderr)
+    );
+    let out = run_script(&client, &[&notes.addr]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn notes_serves_a_json_api_streams_its_export_and_stops_on_shutdown() {
+    let mut notes = Notes::start(&[]);
+    let r = notes.call("POST", "/notes", r#"{"text":"buy milk"}"#);
+    assert!(r.starts_with("HTTP/1.1 201 Created\r\n"), "{r}");
+    assert!(r.contains("\r\nLocation: /notes/1\r\n"), "{r}");
+    assert!(r.ends_with(r#"{"id":1,"text":"buy milk"}"#), "{r}");
+    notes.call("POST", "/notes", r#"{"text":"call mom"}"#);
+
+    let r = notes.call("GET", "/notes/2", "");
+    assert!(r.starts_with("HTTP/1.1 200 OK\r\n"), "{r}");
+    assert!(r.ends_with(r#"{"id":2,"text":"call mom"}"#), "{r}");
+    let r = notes.call("GET", "/notes", "");
+    assert!(
+        r.ends_with(r#"[{"id":1,"text":"buy milk"},{"id":2,"text":"call mom"}]"#),
+        "{r}"
+    );
+
+    // `fail` gives the status and its message; `export` is a literal, not a note number.
+    let r = notes.call("GET", "/notes/9", "");
+    assert!(r.starts_with("HTTP/1.1 404 Not Found\r\n"), "{r}");
+    assert!(r.ends_with("there is no note 9\n"), "{r}");
+    assert!(
+        notes
+            .call("GET", "/notes/x", "")
+            .starts_with("HTTP/1.1 400 ")
+    );
+    assert!(
+        notes
+            .call("POST", "/notes", r#"{"text":"  "}"#)
+            .starts_with("HTTP/1.1 422 ")
+    );
+    assert!(
+        notes
+            .call("POST", "/notes", "not json")
+            .starts_with("HTTP/1.1 400 ")
+    );
+    let r = notes.call("PUT", "/notes", "");
+    assert!(r.starts_with("HTTP/1.1 405 "), "{r}");
+    assert!(r.contains("\r\nAllow: GET, HEAD, OPTIONS, POST\r\n"), "{r}");
+
+    // The export is chunked: each note is one line of the body, in two chunks.
+    let r = notes.call("GET", "/notes/export", "");
+    assert!(r.starts_with("HTTP/1.1 200 OK\r\n"), "{r}");
+    assert!(r.contains("\r\nTransfer-Encoding: chunked\r\n"), "{r}");
+    assert!(
+        r.contains("\r\nContent-Type: application/x-ndjson\r\n"),
+        "{r}"
+    );
+    assert!(
+        r.ends_with(
+            "1b\r\n{\"id\":1,\"text\":\"buy milk\"}\n\r\n1b\r\n{\"id\":2,\"text\":\"call mom\"}\n\r\n0\r\n\r\n"
+        ),
+        "{r:?}"
+    );
+
+    let r = notes.call("DELETE", "/notes/1", "");
+    assert!(r.starts_with("HTTP/1.1 204 No Content\r\n"), "{r}");
+    assert!(
+        notes
+            .call("GET", "/notes/1", "")
+            .starts_with("HTTP/1.1 404 ")
+    );
+
+    // The stop answers first, then the server ends and the port is closed.
+    let r = notes.call("POST", "/shutdown", "");
+    assert!(r.starts_with("HTTP/1.1 200 OK\r\n"), "{r}");
+    assert!(r.contains("\r\nConnection: close\r\n"), "{r}");
+    assert!(r.ends_with("stopping\n"), "{r}");
+    assert_eq!(notes.exit_code(), Some(0));
+}
+
+#[test]
+fn notes_reports_a_bad_address() {
+    let script = scripts().join("notes/notes.colibri");
+    let out = run_script(&script, &["--addr", "not an address"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("is not an address"),
+        "{}",
         text(&out.stderr)
     );
 }
