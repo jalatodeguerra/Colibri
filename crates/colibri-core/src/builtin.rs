@@ -431,7 +431,7 @@ pub trait Builtins: Engine {
                 }
             },
             Builtin::ListPop => match list.pop() {
-                Ok(v) => Value::option(v),
+                Ok(v) => self.core().option(v),
                 Err(v) => return Err(self.violation(fiber, span, v)),
             },
             Builtin::ListInsert => match list.insert(index(args), take(args, 2)) {
@@ -474,10 +474,10 @@ pub trait Builtins: Engine {
                     }
                 }
                 self.release(item);
-                Value::option(at.map(|i| Value::Int(i as i64)))
+                self.core().option(at.map(|i| Value::Int(i as i64)))
             }
-            Builtin::ListFirst => Value::option(list.first()),
-            Builtin::ListLast => Value::option(list.last()),
+            Builtin::ListFirst => self.core().option(list.first()),
+            Builtin::ListLast => self.core().option(list.last()),
             Builtin::ListReverse => match list.reverse() {
                 Ok(()) => Value::Unit,
                 Err(v) => return Err(self.violation(fiber, span, v)),
@@ -495,7 +495,7 @@ pub trait Builtins: Engine {
                     }
                 }
             }
-            Builtin::ListGet => Value::option(list.get(index(args)).ok()),
+            Builtin::ListGet => self.core().option(list.get(index(args)).ok()),
             _ => return Err(self.internal(fiber, span, "ill-typed built-in call")),
         })
     }
@@ -527,7 +527,7 @@ pub trait Builtins: Engine {
         Ok(match op {
             Builtin::MapLen => Value::Int(map.len() as i64),
             Builtin::MapIsEmpty => Value::Bool(map.is_empty()),
-            Builtin::MapGet => Value::option(args.get(1).and_then(|k| map.get(k))),
+            Builtin::MapGet => self.core().option(args.get(1).and_then(|k| map.get(k))),
             Builtin::MapGetOr => match args.get(1).and_then(|k| map.get(k)) {
                 Some(v) => v,
                 None => args.get(2).cloned().unwrap_or(Value::Unit),
@@ -565,9 +565,9 @@ pub trait Builtins: Engine {
                 match map.remove(key) {
                     Ok(Some((k, v))) => {
                         self.release(k);
-                        Value::option(Some(v))
+                        self.core().option(Some(v))
                     }
-                    Ok(None) => Value::option(None),
+                    Ok(None) => self.core().option(None),
                     Err(v) => return Err(self.violation(fiber, span, v)),
                 }
             }

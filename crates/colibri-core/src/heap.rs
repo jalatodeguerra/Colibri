@@ -20,7 +20,7 @@ use std::rc::Rc;
 use colibri_check::types::TypeId;
 
 use crate::ordered::OrderedMap;
-use crate::value::Value;
+use crate::value::{ObjFields, Value};
 
 // ---- the guard ----
 
@@ -636,7 +636,7 @@ impl fmt::Debug for SetObj {
 /// fields out first. A debug build asserts that an object is never dropped any other way.
 pub struct ClassObj {
     ty: TypeId,
-    fields: RefCell<Box<[Value]>>,
+    fields: RefCell<ObjFields>,
     released: Cell<bool>,
     /// The object's `Drop` hook has run (or is running); it runs at most once.
     hooked: Cell<bool>,
@@ -644,10 +644,12 @@ pub struct ClassObj {
 
 impl ClassObj {
     #[inline]
-    pub fn new(ty: TypeId, fields: Vec<Value>) -> Rc<ClassObj> {
+    pub fn new(ty: TypeId, fields: impl Into<ObjFields>) -> Rc<ClassObj> {
+        let mut fields = fields.into();
+        fields.shrink_to_fit();
         Rc::new(ClassObj {
             ty,
-            fields: RefCell::new(fields.into_boxed_slice()),
+            fields: RefCell::new(fields),
             released: Cell::new(false),
             hooked: Cell::new(false),
         })
@@ -683,7 +685,7 @@ impl ClassObj {
     /// Stores a field and returns the old value, or hands the value back when there is no
     /// such field.
     #[inline]
-    pub(crate) fn set_field(&self, idx: usize, v: Value) -> Result<Value, Value> {
+    pub fn set_field(&self, idx: usize, v: Value) -> Result<Value, Value> {
         let mut fields = self.fields.borrow_mut();
         match fields.get_mut(idx) {
             Some(slot) => Ok(std::mem::replace(slot, v)),
@@ -698,9 +700,9 @@ impl ClassObj {
 
     /// Takes the fields out and marks the object destroyed. Only `release` calls this.
     #[inline]
-    pub(crate) fn take_fields(&self) -> Vec<Value> {
+    pub(crate) fn take_fields(&self) -> ObjFields {
         self.released.set(true);
-        std::mem::take(&mut *self.fields.borrow_mut()).into_vec()
+        std::mem::take(&mut *self.fields.borrow_mut())
     }
 }
 
@@ -800,7 +802,7 @@ mod tests {
     #[test]
     fn taking_the_fields_marks_an_object_destroyed() {
         let obj = ClassObj::new(TypeId(1), ints(&[1, 2]));
-        assert_eq!(obj.take_fields(), ints(&[1, 2]));
+        assert_eq!(obj.take_fields().into_vec(), ints(&[1, 2]));
         assert!(obj.field(0).is_none());
     }
 }

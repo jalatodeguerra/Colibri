@@ -42,7 +42,29 @@ fn is_container(v: &Value) -> bool {
     )
 }
 
+/// Whether the value is a counted reference to something that another reference keeps alive:
+/// dropping it cannot run a hook, trace anything or release a child.
+#[inline]
+fn is_shared(v: &Value) -> bool {
+    match v {
+        Value::Struct(rc) => Rc::strong_count(rc) > 1,
+        Value::Tuple(rc) => Rc::strong_count(rc) > 1,
+        Value::Enum(rc) => Rc::strong_count(rc) > 1,
+        Value::List(rc) => Rc::strong_count(rc) > 1,
+        Value::Map(rc) => Rc::strong_count(rc) > 1,
+        Value::Set(rc) => Rc::strong_count(rc) > 1,
+        Value::Obj(rc) => Rc::strong_count(rc) > 1,
+        Value::Host(rc) => Rc::strong_count(rc) > 1,
+        Value::Dyn(rc) => Rc::strong_count(rc) > 1,
+        Value::Closure(rc) => Rc::strong_count(rc) > 1,
+        Value::Cell(rc) => Rc::strong_count(rc) > 1,
+        Value::Iter(rc) => Rc::strong_count(rc) > 1,
+        _ => false,
+    }
+}
+
 /// Moves the container children of `items` onto `work` so that they pop in index order.
+#[inline]
 fn push_children(work: &mut Vec<Value>, items: &mut [Value]) {
     for item in items.iter_mut().rev() {
         if is_container(item) {
@@ -102,7 +124,16 @@ pub trait Release: Engine {
         if !is_container(&value) {
             return;
         }
-        let mut work = vec![value];
+        // A reference that is not the last one only lets the count go down.
+        if is_shared(&value) {
+            return;
+        }
+        // The worklist allocates on its first push, so a container with no container
+        // children (a leaf) is taken apart without allocating (a map still collects its
+        // entries into one `Vec`). `is_shared` only saves the call: an unshared-check inside
+        // `dismantle` would do nothing for such a value, so no test can tell it apart.
+        let mut work = Vec::new();
+        self.dismantle(value, &mut work);
         while let Some(v) = work.pop() {
             self.dismantle(v, &mut work);
         }
@@ -297,3 +328,269 @@ pub trait Release: Engine {
 }
 
 impl<E: Engine> Release for E {}
+
+#[cfg(test)]
+mod tests {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    use colibri_check::hir::{Builtin, FnId};
+    use colibri_check::types::TypeId;
+    use colibri_syntax::Span;
+
+    use super::*;
+    use crate::ctl::TraceEntry;
+    use crate::fiber::FiberState;
+    use crate::host::{HostFault, HostHook};
+    use crate::sched::EngineSlot;
+    use crate::value::{ObjFields, StructFields, StructInline, exact, one};
+
+    thread_local! {
+        static ALLOCS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Counts the allocations of the thread that runs the test, so that tests running side
+    /// by side do not see each other's.
+    struct Counting;
+
+    // SAFETY: every call is forwarded to the system allocator unchanged.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            ALLOCS.with(|c| c.set(c.get() + 1));
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            ALLOCS.with(|c| c.set(c.get() + 1));
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    // This counts the allocations of every test in this crate's unit-test binary; another
+    // allocator for these tests would need to replace it.
+    #[global_allocator]
+    static COUNTING: Counting = Counting;
+
+    /// How many allocations `f` makes on this thread.
+    fn allocations(f: impl FnOnce()) -> usize {
+        let before = ALLOCS.with(Cell::get);
+        f();
+        ALLOCS.with(Cell::get) - before
+    }
+
+    /// An engine with nothing to run: enough for `release`, which only calls a hook for an
+    /// object whose class has one.
+    struct Bare {
+        core: Core,
+    }
+
+    impl Bare {
+        fn new() -> Bare {
+            Bare {
+                core: Core::new(Box::new(std::io::sink())),
+            }
+        }
+    }
+
+    impl Engine for Bare {
+        type Fiber = FiberState;
+        fn core(&self) -> &Core {
+            &self.core
+        }
+        fn core_mut(&mut self) -> &mut Core {
+            &mut self.core
+        }
+        fn fiber_state(fiber: &FiberState) -> &FiberState {
+            fiber
+        }
+        fn fiber_state_mut(fiber: &mut FiberState) -> &mut FiberState {
+            fiber
+        }
+        fn note_position(_: &mut FiberState, _: Span) {}
+        fn position(_: &FiberState) -> Option<Span> {
+            None
+        }
+        fn stack_trace(&self, _: &FiberState) -> Vec<TraceEntry> {
+            Vec::new()
+        }
+        fn stack_base(_: &FiberState) -> usize {
+            0
+        }
+        fn native_stack_budget(&self) -> usize {
+            usize::MAX
+        }
+        fn call_fn_inout(
+            &mut self,
+            _: &mut FiberState,
+            _: FnId,
+            _: Vec<Value>,
+        ) -> (Eval, Option<Value>) {
+            unreachable!("no function runs in these tests")
+        }
+        fn call_value(&mut self, _: &mut FiberState, _: &Value, _: Vec<Value>, _: Span) -> Eval {
+            unreachable!("no function runs in these tests")
+        }
+        fn call_detached(&mut self, _: FnId, _: Vec<Value>) -> Eval {
+            unreachable!("no function runs in these tests")
+        }
+        fn fn_span(&self, _: FnId) -> Option<Span> {
+            None
+        }
+        fn fn_mutates_self(&self, _: FnId) -> bool {
+            false
+        }
+        fn call_host_hook(
+            &mut self,
+            _: &mut FiberState,
+            _: TypeId,
+            _: HostHook,
+            _: Vec<Value>,
+        ) -> Result<Value, HostFault> {
+            unreachable!("no host hook runs in these tests")
+        }
+        fn temp_mark(_: &FiberState) -> usize {
+            0
+        }
+        fn hold_temp(_: &mut FiberState, _: Value) {}
+        fn release_temps(&mut self, _: &mut FiberState, _: usize) {}
+        fn resume_stack(&mut self, _: u64, _: EngineSlot, _: bool) -> Resumed {
+            Resumed::Gone
+        }
+        fn pausing_builtin(&mut self, _: &mut FiberState, _: Builtin, _: &Value, _: Span) -> Eval {
+            unreachable!("nothing pauses in these tests")
+        }
+    }
+
+    use crate::engine::Resumed;
+
+    /// One of every container the worklist knows, each holding other containers so that the
+    /// last-reference path would have work to do.
+    fn containers() -> Vec<Value> {
+        let inner = Value::strukt(TypeId(0), vec![Value::Int(1)]);
+        vec![
+            Value::strukt(TypeId(0), vec![Value::Int(1), inner.clone()]),
+            Value::variant(TypeId(0), 1, one(inner.clone())),
+            Value::tuple(vec![inner.clone(), Value::Int(2)]),
+            Value::list(vec![inner.clone()]),
+            Value::Obj(ClassObj::new(TypeId(1), ObjFields::from_elem(inner, 2))),
+        ]
+    }
+
+    #[test]
+    fn releasing_a_shared_container_does_not_allocate() {
+        let mut engine = Bare::new();
+        for kept in containers() {
+            let extra = kept.clone();
+            let n = allocations(|| engine.release(extra));
+            assert_eq!(n, 0, "releasing a shared {kept:?} allocated");
+            // The last reference still goes through the worklist.
+            engine.release(kept);
+        }
+    }
+
+    #[test]
+    fn releasing_a_leaf_container_does_not_allocate() {
+        let mut engine = Bare::new();
+        let leaves = vec![
+            Value::strukt(TypeId(0), vec![Value::Int(1), Value::Float(2.0)]),
+            Value::variant(TypeId(0), 1, one(Value::Int(1))),
+            Value::tuple(vec![Value::Int(1), Value::str("a")]),
+            Value::list(vec![Value::Int(1), Value::Int(2)]),
+            Value::Obj(ClassObj::new(
+                TypeId(1),
+                ObjFields::from_elem(Value::Bool(true), 3),
+            )),
+        ];
+        for leaf in leaves {
+            let n = allocations(|| engine.release(leaf));
+            assert_eq!(n, 0, "releasing a leaf allocated");
+        }
+    }
+
+    /// A class `name` with no fields, as type `id`.
+    fn class(name: &str) -> colibri_check::hir::TypeDef {
+        colibri_check::hir::TypeDef {
+            name: name.to_string(),
+            span: Span {
+                file: colibri_syntax::FileId(0),
+                start: 0,
+                end: 0,
+            },
+            params: Vec::new(),
+            kind: colibri_check::hir::TypeDefKind::Class { fields: Vec::new() },
+            module: None,
+            open: false,
+        }
+    }
+
+    fn object(ty: u32) -> Value {
+        Value::Obj(ClassObj::new(TypeId(ty), ObjFields::new()))
+    }
+
+    /// The last reference to a struct dies, and the objects it owned die in field order, the
+    /// ones in nested values first-come: the trace shows it. A release that never took the
+    /// value apart would leave the objects to the plain drop (which the debug check in
+    /// `ClassObj` rejects) and the trace empty.
+    #[test]
+    fn the_last_reference_releases_the_children_in_order() {
+        let mut engine = Bare::new();
+        engine.core.types = Rc::from(vec![class("A"), class("B"), class("C")]);
+        engine.core.set_trace_drops(true);
+        let outer = Value::strukt(
+            TypeId(0),
+            vec![
+                Value::tuple(vec![object(0), Value::Int(1)]),
+                object(1),
+                Value::variant(TypeId(0), 0, one(object(2))),
+            ],
+        );
+        engine.release(outer);
+        assert_eq!(engine.core.take_trace(), ["A", "B", "C"]);
+    }
+
+    /// A reference that is not the last one destroys nothing; the last one does.
+    #[test]
+    fn a_shared_reference_destroys_nothing() {
+        let mut engine = Bare::new();
+        engine.core.types = Rc::from(vec![class("A")]);
+        engine.core.set_trace_drops(true);
+        let kept = Value::tuple(vec![object(0)]);
+        engine.release(kept.clone());
+        assert!(engine.core.take_trace().is_empty());
+        engine.release(kept);
+        assert_eq!(engine.core.take_trace(), ["A"]);
+    }
+
+    #[test]
+    fn a_small_struct_is_one_allocation() {
+        let inline = StructFields::new().inline_size();
+        let n = allocations(|| {
+            let mut fields = StructFields::new();
+            fields.extend((0..inline).map(|i| Value::Int(i as i64)));
+            drop(Value::strukt(TypeId(0), fields));
+        });
+        assert_eq!(n, 1);
+    }
+
+    /// A value with more fields than the inline storage holds keeps no spare room, however the
+    /// fields were collected.
+    #[test]
+    fn a_struct_past_the_inline_size_has_no_spare_capacity() {
+        let len = StructFields::new().inline_size() + 1;
+        let items = || (0..len).map(|i| Value::Int(i as i64));
+        let mut roomy = Vec::with_capacity(64);
+        roomy.extend(items());
+        let from_vec = Value::strukt(TypeId(0), roomy);
+        let from_exact = Value::strukt(TypeId(0), exact::<StructInline>(items()));
+        let mut grown = StructFields::new();
+        grown.extend(items());
+        let from_grown = Value::strukt(TypeId(0), grown);
+        for v in [from_vec, from_exact, from_grown] {
+            let Value::Struct(s) = &v else { unreachable!() };
+            assert_eq!(s.fields.len(), len);
+            assert_eq!(s.fields.capacity(), len);
+        }
+    }
+}

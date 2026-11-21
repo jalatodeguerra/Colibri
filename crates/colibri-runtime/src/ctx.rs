@@ -331,7 +331,7 @@ impl<'a> Ctx<'a> {
         let ty = self.host_type(name);
         Value(colibri_core::value::Value::strukt(
             ty,
-            fields.into_iter().map(|v| v.0).collect(),
+            colibri_core::value::exact(fields.into_iter().map(|v| v.0)),
         ))
     }
 
@@ -345,7 +345,7 @@ impl<'a> Ctx<'a> {
         };
         Value(colibri_core::value::Value::strukt(
             ty,
-            fields.into_iter().map(|v| v.0).collect(),
+            colibri_core::value::exact(fields.into_iter().map(|v| v.0)),
         ))
     }
 
@@ -372,7 +372,7 @@ impl<'a> Ctx<'a> {
         };
         Value(colibri_core::value::Value::strukt(
             ty,
-            fields.into_iter().map(|v| v.0).collect(),
+            colibri_core::value::exact(fields.into_iter().map(|v| v.0)),
         ))
     }
 

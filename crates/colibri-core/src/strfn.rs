@@ -105,11 +105,11 @@ pub trait StrOps: Engine {
             Builtin::StrContains => Value::Bool(text.contains(&*need(self, fiber)?)),
             Builtin::StrStartsWith => Value::Bool(text.starts_with(&*need(self, fiber)?)),
             Builtin::StrEndsWith => Value::Bool(text.ends_with(&*need(self, fiber)?)),
-            Builtin::StrFind => Value::option(
+            Builtin::StrFind => self.core().option(
                 text.find(&*need(self, fiber)?)
                     .map(|i| Value::Int(i as i64)),
             ),
-            Builtin::StrRFind => Value::option(
+            Builtin::StrRFind => self.core().option(
                 text.rfind(&*need(self, fiber)?)
                     .map(|i| Value::Int(i as i64)),
             ),
@@ -127,7 +127,8 @@ pub trait StrOps: Engine {
                 } else {
                     text.rsplit_once(&*sep)
                 };
-                Value::option(found.map(|(a, b)| Value::tuple(vec![Value::str(a), Value::str(b)])))
+                self.core()
+                    .option(found.map(|(a, b)| Value::tuple(vec![Value::str(a), Value::str(b)])))
             }
             Builtin::StrPadLeft | Builtin::StrPadRight => {
                 let Some(Value::Int(width)) = args.get(1) else {

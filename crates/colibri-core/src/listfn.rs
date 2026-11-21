@@ -189,14 +189,14 @@ pub trait ListFnOps: Engine {
                 while let Some(item) = list.at(i) {
                     if self.test(fiber, &f, item.clone(), span)? {
                         return Ok(if op == Builtin::ListFind {
-                            Value::option(Some(item))
+                            self.core().option(Some(item))
                         } else {
-                            Value::option(Some(Value::Int(i as i64)))
+                            self.core().option(Some(Value::Int(i as i64)))
                         });
                     }
                     i += 1;
                 }
-                Ok(Value::option(None))
+                Ok(self.core().option(None))
             }
             Builtin::ListFold => {
                 let (mut acc, f) = (arg(args, 1), arg(args, 2));
@@ -382,7 +382,7 @@ pub trait ListFnOps: Engine {
                 }
                 let found = best.map(|b| items[b].clone());
                 self.release_all(items);
-                Ok(Value::option(found))
+                Ok(self.core().option(found))
             }
             Builtin::ListSum => {
                 let items = list.snapshot();

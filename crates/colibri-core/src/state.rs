@@ -12,6 +12,7 @@ use crate::dispatch::Tables;
 use crate::host::HostSide;
 use crate::leaks::LeakTracker;
 use crate::sched::Scheduler;
+use crate::value::Value;
 
 /// What an engine and the engine-neutral runtime code share: the output writer, the drop trace,
 /// the `Drop` hooks' panics, the instruction budget, and the tables of the loaded program.
@@ -48,6 +49,9 @@ pub struct Core {
     /// the background operations that are still pending, which is the last thing that happens
     /// to an engine.
     pub sched: Scheduler,
+    /// The prelude's `none`, shared by every `T?` that has no value: enum values are
+    /// immutable and nothing can tell two empty enum values apart, so one is enough.
+    none: Value,
 }
 
 impl Core {
@@ -76,6 +80,22 @@ impl Core {
             host: HostSide::default(),
             leaks: None,
             sched: Scheduler::new(),
+            none: Value::option(None),
+        }
+    }
+
+    /// `none`, without an allocation.
+    #[inline]
+    pub fn none(&self) -> Value {
+        self.none.clone()
+    }
+
+    /// The prelude `Option`: the shared `none`, or `some(v)`.
+    #[inline]
+    pub fn option(&self, inner: Option<Value>) -> Value {
+        match inner {
+            Some(v) => Value::option(Some(v)),
+            None => self.none(),
         }
     }
 

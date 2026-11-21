@@ -55,11 +55,11 @@ fn payload_of(v: &Value, variant: u32) -> Option<Value> {
 }
 
 fn ok_value(v: Value) -> Value {
-    Value::variant(RESULT_TYPE, VARIANT_OK, vec![v])
+    Value::variant(RESULT_TYPE, VARIANT_OK, crate::value::one(v))
 }
 
 fn err_value(v: Value) -> Value {
-    Value::variant(RESULT_TYPE, VARIANT_ERR, vec![v])
+    Value::variant(RESULT_TYPE, VARIANT_ERR, crate::value::one(v))
 }
 
 #[doc(hidden)]
@@ -146,8 +146,8 @@ pub trait ResultOps: Engine {
             Builtin::OptionIsNone => Value::Bool(is_variant(&recv, VARIANT_SOME).is_none()),
             Builtin::ResultIsOk => Value::Bool(is_variant(&recv, VARIANT_OK).is_some()),
             Builtin::ResultIsErr => Value::Bool(is_variant(&recv, VARIANT_ERR).is_some()),
-            Builtin::ResultOk => Value::option(payload_of(&recv, VARIANT_OK)),
-            Builtin::ResultErr => Value::option(payload_of(&recv, VARIANT_ERR)),
+            Builtin::ResultOk => self.core().option(payload_of(&recv, VARIANT_OK)),
+            Builtin::ResultErr => self.core().option(payload_of(&recv, VARIANT_ERR)),
             Builtin::OptionExpect => match payload_of(&recv, VARIANT_SOME) {
                 Some(v) => v,
                 None => {
@@ -170,7 +170,7 @@ pub trait ResultOps: Engine {
             Builtin::OptionMap => match payload_of(&recv, VARIANT_SOME) {
                 Some(v) => {
                     let mapped = self.call_value_at(fiber, &arg(args, 1), vec![v], span)?;
-                    Value::option(Some(mapped))
+                    self.core().option(Some(mapped))
                 }
                 None => recv,
             },
@@ -207,8 +207,8 @@ pub trait ResultOps: Engine {
                 new_context_error(recv, self.message_arg(args, 1))
             }
             Builtin::ErrorCause => match error_obj(&recv).map(|e| link(e)) {
-                Some(Link::Context(_, cause)) => Value::option(Some(Value::Obj(cause))),
-                Some(Link::Root(..)) => Value::option(None),
+                Some(Link::Context(_, cause)) => self.core().option(Some(Value::Obj(cause))),
+                Some(Link::Root(..)) => self.core().option(None),
                 None => return Err(bad(self, fiber)),
             },
             _ => return Err(bad(self, fiber)),
@@ -252,7 +252,7 @@ pub trait ResultOps: Engine {
                 let matches = crate::dispatch::runtime_key(&value) == Some(*key);
                 Ok(match intrinsic {
                     Intrinsic::ErrorIs(_) => Value::Bool(matches),
-                    _ => Value::option(matches.then_some(value)),
+                    _ => self.core().option(matches.then_some(value)),
                 })
             }
             _ => Err(self.internal(fiber, span, "not an error intrinsic")),
