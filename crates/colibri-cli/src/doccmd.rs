@@ -106,6 +106,8 @@ struct Module {
     origin: Origin,
     /// How the capabilities are spread over the items.
     spread: Spread,
+    /// Whether a method of one of its types carries a capability of its own.
+    methods_need: bool,
 }
 
 /// Which items of a module need its capabilities. The checker asks for a capability at each
@@ -127,12 +129,13 @@ fn modules() -> Vec<Module> {
     for name in colibri_std::MODULES {
         let interface = colibri_std::interface(name).expect("a listed module has an interface");
         let (caps, text) = split_header(&interface.canonical_text());
-        let spread = spread_of(&text);
+        let (spread, methods_need) = spread_of(&text);
         out.push(Module {
             name: name.to_string(),
             caps,
             origin: Origin::Interface(text),
             spread,
+            methods_need,
         });
     }
     // A module written in Colibri needs what the modules it imports need.
@@ -168,17 +171,41 @@ fn modules() -> Vec<Module> {
             caps,
             origin: Origin::Source(source.text.to_string()),
             spread,
+            methods_need: false,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 
+/// What a module written in Colibri needs, said exactly: a short tag for the index and a
+/// sentence for the page. The checker asks for a capability where a call is written, and the
+/// calls inside such a module are not visible in its interface, so this is written by hand and
+/// checked against the checker by a test in `colibri-std` (`httpd_needs_net_and_os_and_nothing_else`).
+fn through_imports(module: &str) -> (&'static str, &'static str) {
+    match module {
+        "httpd" => (
+            "to import",
+            "`listen` starts listening with `net.listen` (`net`), and every response reads the clock for its `Date` header with `time.unix` (`os`). The checker looks at the whole module, so a program that imports `httpd` needs a host that grants both, even if it only builds responses.",
+        ),
+        other => panic!("doccmd::through_imports has no description for `{other}`"),
+    }
+}
+
 /// How the `@requires(..)` attributes of an interface are spread over its top-level functions.
-fn spread_of(text: &str) -> Spread {
+fn spread_of(text: &str) -> (Spread, bool) {
     let (file, _) = parse_interface_file(FileId(0), text);
     let (mut with, mut without) = (0, 0);
+    let mut methods_need = false;
     for top in &file.items {
+        if let TopLevel::Item(item) = top
+            && let ItemKind::Impl(decl) = &item.kind
+        {
+            methods_need |= decl
+                .items
+                .iter()
+                .any(|m| m.attrs.iter().any(|a| a.name.name == "requires"));
+        }
         if let TopLevel::Item(item) = top
             && matches!(item.kind, ItemKind::Fn(_))
         {
@@ -189,11 +216,12 @@ fn spread_of(text: &str) -> Spread {
             }
         }
     }
-    match (with, without) {
+    let spread = match (with, without) {
         (0, _) => Spread::None,
         (_, 0) => Spread::EveryFunction,
         _ => Spread::SomeFunctions,
-    }
+    };
+    (spread, methods_need)
 }
 
 /// The capabilities named by the `@interface(..)` header line, and the text with that line
@@ -281,7 +309,7 @@ fn index(modules: &[Module]) -> String {
             Spread::None => "nothing".to_string(),
             Spread::EveryFunction => list,
             Spread::SomeFunctions => format!("{list} (some functions)"),
-            Spread::ThroughImports => format!("{list} (may, through its imports)"),
+            Spread::ThroughImports => format!("{list} ({})", through_imports(&m.name).0),
         };
         let _ = writeln!(
             out,
@@ -508,7 +536,12 @@ fn module_page(m: &Module) -> String {
         let _ = match m.spread {
             Spread::EveryFunction => writeln!(
                 out,
-                "Every function of this module needs the {list} {noun}; the methods of its types need none of their own.\n"
+                "Every function of this module needs the {list} {noun}{}.\n",
+                if m.methods_need {
+                    "; some methods of its types say what they need"
+                } else {
+                    "; the methods of its types need none of their own"
+                }
             ),
             Spread::SomeFunctions => writeln!(
                 out,
@@ -516,7 +549,8 @@ fn module_page(m: &Module) -> String {
             ),
             Spread::ThroughImports => writeln!(
                 out,
-                "This module is written in Colibri on top of modules that need the {list} {noun}, so what a call needs depends on what it does.\n"
+                "This module is written in Colibri on top of modules that need the {list} {noun}. {}\n",
+                through_imports(&m.name).1
             ),
             Spread::None => Ok(()),
         };

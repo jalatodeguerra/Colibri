@@ -8,7 +8,7 @@ An HTTP/1.1 server written in Colibri on top of `net`: a router, request bodies,
 import httpd
 ```
 
-This module is written in Colibri on top of modules that need the `net` and `os` capabilities, so what a call needs depends on what it does.
+This module is written in Colibri on top of modules that need the `net` and `os` capabilities. `listen` starts listening with `net.listen` (`net`), and every response reads the clock for its `Date` header with `time.unix` (`os`). The checker looks at the whole module, so a program that imports `httpd` needs a host that grants both, even if it only builds responses.
 
 Back to the [standard library index](README.md).
 

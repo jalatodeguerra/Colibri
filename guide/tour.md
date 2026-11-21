@@ -1061,9 +1061,11 @@ the coroutine `boom` panicked: no good
 signalled
 ```
 
-A panic in a coroutine reaches `join_result` as an `err` only if `join_result` is already waiting
-for that coroutine when it panics, or you call it before your own code has waited for anything.
-Otherwise the panic ends the program (exit code 101), even if you would call `join_result` later.
+`go` runs the new coroutine at once, up to its first pause. A panic that no `join_result` has
+received ends the program (exit code 101) as soon as the code that started the coroutine pauses.
+So `join_result` receives a panic when it is already waiting for that coroutine, or, for a
+coroutine that panics before its first pause, when you call it before you pause again after the
+`go`. A coroutine that panics later, while you wait for something else, ends the program.
 
 `wait(seconds)` works anywhere, in `main` too. `wait_until`, `wait_for` and `wait_real` panic
 when called outside a coroutine started with `go`, `main` included.

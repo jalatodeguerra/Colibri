@@ -14,7 +14,7 @@ One page for each module of the standard library. A page lists the constants, ty
 | [`hash`](hash.md) | SHA-256 of text and of `Bytes`. | Rust | nothing |
 | [`hex`](hex.md) | Hexadecimal encoding and decoding of text and of `Bytes`. | Rust | nothing |
 | [`http`](http.md) | A blocking HTTP client that does not block other coroutines. | Rust | `net` |
-| [`httpd`](httpd.md) | An HTTP/1.1 server written in Colibri on top of `net`: a router, request bodies, streamed responses, limits and timeouts, and a graceful stop. | Colibri | `net`, `os` (may, through its imports) |
+| [`httpd`](httpd.md) | An HTTP/1.1 server written in Colibri on top of `net`: a router, request bodies, streamed responses, limits and timeouts, and a graceful stop. | Colibri | `net`, `os` (to import) |
 | [`io`](io.md) | Standard input and output. | Rust | `os` (some functions) |
 | [`json`](json.md) | JSON: `encode`, typed `decode[T]`, and `Value` for a document of unknown shape. | Rust | nothing |
 | [`math`](math.md) | Math functions and constants. | Rust | nothing |

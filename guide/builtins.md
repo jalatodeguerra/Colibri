@@ -492,7 +492,7 @@ true
 | Type | Method | What it does |
 |------|--------|--------------|
 | `Coroutine[T]` | `join() -> T` | wait for the result |
-| `Coroutine[T]` | `join_result() -> Result[T]` | wait; a panic or a cancel is an `err`, if this call is already waiting when the coroutine panics or is made before the caller has waited for anything; otherwise a panic ends the program |
+| `Coroutine[T]` | `join_result() -> Result[T]` | wait; a panic or a cancel is an `err`, if this call is already waiting when the coroutine panics, or the coroutine panicked before its first pause and this call comes before the caller pauses again; otherwise a panic ends the program |
 | `Coroutine[T]` | `cancel()`, `done() -> bool` | stop it at its next pause; whether it ended |
 | `CoGroup` | `go(call)` | start a coroutine that the group owns, as in `group.go(work(1))` |
 | `CoGroup` | `join_all()`, `cancel()`, `count() -> int` | wait for all, cancel all, how many are running |

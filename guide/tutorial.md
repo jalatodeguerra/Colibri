@@ -1180,11 +1180,12 @@ ok(20)
 failed: the coroutine `risky` panicked: zero is not allowed
 ```
 
-There is a condition. A panic reaches `join_result` only if `join_result` is already waiting for
-that coroutine when it panics, or if you call it before your own code has waited for anything
-(a panic is reported at the end of the turn in which it happens). A coroutine that panics while
-nobody is joining it ends the program with exit code 101, even if you would have called
-`join_result` later:
+There is a condition. `go` runs the new coroutine at once, up to its first pause. A panic that no
+`join_result` has received ends the program, with exit code 101, as soon as the code that started
+the coroutine pauses (with `wait`, a `join`, or a call that waits). So `join_result` receives a
+panic when it is already waiting for that coroutine, or, for a coroutine that panics before its
+first pause, when you call it before you pause again after the `go`. Here the panic happens inside
+`go`, and `wait` comes before the `join_result`, so the program ends:
 
 ```colibri,panics
 fn risky() -> int {
@@ -1204,8 +1205,7 @@ fn main() {
 started
 ```
 
-So start the coroutines you will join and join them straight away, or join each one from a
-coroutine that is already waiting. That is how `httpd` survives a handler that panics: it starts
+So join a coroutine straight after you start it, or start it from a coroutine that waits for it. That is how `httpd` survives a handler that panics: it starts
 each handler and waits for it at once. To run several things and wait for all of
 them, use a `CoGroup`. It also cancels whatever is still running when it is dropped:
 

@@ -132,6 +132,18 @@ fn fence_problems(page: &str, blocks: &[Block]) -> Vec<String> {
         if b.value("pkg").is_some() != b.value("file").is_some() {
             problems.push(format!("{place}: `pkg=` and `file=` go together"));
         }
+        if b.has("panics") {
+            let alone = !(b.has("test") || b.has("error") || b.has("no-run"));
+            let next = blocks.get(i + 1);
+            if !alone {
+                problems.push(format!("{place}: `panics` stands alone"));
+            }
+            if !next.is_some_and(|n| n.lang == "output") {
+                problems.push(format!(
+                    "{place}: a `panics` sample needs an `output` block after it (empty if it prints nothing)"
+                ));
+            }
+        }
         if b.lang == "output" {
             let before = i.checked_sub(1).map(|j| &blocks[j]);
             match before {
@@ -145,7 +157,37 @@ fn fence_problems(page: &str, blocks: &[Block]) -> Vec<String> {
             }
         }
     }
-    let _ = page;
+    // A package with an `error` block fails to compile as a whole, so it has one such block, and
+    // no other block of it has output to compare.
+    let mut packages: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (i, b) in blocks.iter().enumerate() {
+        if let Some(pkg) = b.value("pkg") {
+            packages.entry(pkg).or_default().push(i);
+        }
+    }
+    for (pkg, members) in packages {
+        let errors: Vec<usize> = members
+            .iter()
+            .copied()
+            .filter(|i| blocks[*i].has("error"))
+            .collect();
+        if errors.len() > 1 {
+            problems.push(format!(
+                "{page}: package `{pkg}` has more than one `error` block"
+            ));
+        }
+        if !errors.is_empty() {
+            for i in members {
+                let has_output = blocks.get(i + 1).is_some_and(|n| n.lang == "output");
+                if has_output && !errors.contains(&i) {
+                    problems.push(format!(
+                        "{}: the package `{pkg}` does not compile, so this output is never compared",
+                        blocks[i].place()
+                    ));
+                }
+            }
+        }
+    }
     problems
 }
 
@@ -275,6 +317,8 @@ struct Job {
     expected: Option<String>,
     /// The package the sample belongs to, if it is a file of one.
     package: Option<PathBuf>,
+    /// For a package whose `error` block is in this file: the diagnostics must all be about it.
+    error_file: Option<String>,
 }
 
 /// Writes the samples of one page and says what to do with each. A package's blocks are written
@@ -314,6 +358,7 @@ fn plan(root: &Path, page: &str, blocks: &[Block]) -> Vec<Job> {
                     panics: b.has("panics"),
                     expected: next.map(|n| n.code.clone()),
                     package: Some(dir.clone()),
+                    error_file: b.has("error").then(|| file.to_string()),
                 });
             }
             continue;
@@ -332,25 +377,50 @@ fn plan(root: &Path, page: &str, blocks: &[Block]) -> Vec<Job> {
             panics: b.has("panics"),
             expected: next.map(|n| n.code.clone()),
             package: None,
+            error_file: None,
         });
     }
     // A package is checked as a whole, so when one of its blocks must fail to compile, the
     // package is expected to fail with that block's diagnostics.
-    let failing: Vec<(PathBuf, Option<String>)> = jobs
+    let failing: Vec<(PathBuf, Option<String>, Option<String>)> = jobs
         .iter()
         .filter(|j| j.error && j.package.is_some())
-        .map(|j| (j.package.clone().unwrap(), j.expected.clone()))
+        .map(|j| {
+            (
+                j.package.clone().unwrap(),
+                j.expected.clone(),
+                j.error_file.clone(),
+            )
+        })
         .collect();
     for job in &mut jobs {
-        if let Some((_, expected)) = failing
+        if let Some((_, expected, file)) = failing
             .iter()
-            .find(|(p, _)| Some(p) == job.package.as_ref())
+            .find(|(p, _, _)| Some(p) == job.package.as_ref())
         {
             job.error = true;
             job.expected = expected.clone();
+            job.error_file = file.clone();
         }
     }
     jobs
+}
+
+/// The files that the diagnostics in `stderr` are about (`╭─[ path:line:col ]`), with `/`.
+fn diagnostic_paths(stderr: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in stderr.lines() {
+        if let Some((_, rest)) = line.split_once("╭─[ ") {
+            let inside = rest.trim_end().trim_end_matches(']').trim_end();
+            // `path:line:col`
+            let mut parts = inside.rsplitn(3, ':');
+            let (_col, _line, path) = (parts.next(), parts.next(), parts.next());
+            if let Some(path) = path {
+                paths.push(path.replace('\\', "/"));
+            }
+        }
+    }
+    paths
 }
 
 fn s(p: &Path) -> &str {
@@ -391,6 +461,18 @@ fn check_all(test: &str, run: bool) -> Vec<String> {
                             "{place}: expected a compile error, got {:?}",
                             check.code
                         ));
+                    }
+                    // The failure must be the block's own: a mistake in another file of the
+                    // package is not what the guide shows.
+                    if let Some(file) = &job.error_file {
+                        for path in diagnostic_paths(&check.stderr) {
+                            if !path.ends_with(file.as_str()) {
+                                problems.push(format!(
+                                    "{place}: a diagnostic is about `{path}`, not `{file}`:\n{}",
+                                    check.stderr
+                                ));
+                            }
+                        }
                     }
                     for line in job.expected.iter().flat_map(|e| e.lines()) {
                         if !check.stderr.contains(line) {
@@ -646,6 +728,78 @@ let x = 1
 ```
 ```output
 m
+```
+"
+        )
+        .is_empty()
+    );
+    // A `panics` sample needs its output, and cannot also be `test`, `error` or `no-run`.
+    assert_eq!(
+        check(
+            "```colibri,panics
+fn main() {}
+```
+"
+        )
+        .len(),
+        1
+    );
+    assert!(
+        check(
+            "```colibri,panics
+fn main() {}
+```
+```output
+x
+```
+"
+        )
+        .is_empty()
+    );
+    assert!(
+        !check(
+            "```colibri,panics,no-run
+fn main() {}
+```
+```output
+x
+```
+"
+        )
+        .is_empty()
+    );
+    // One `error` block per package, and no `output` after the package's other blocks.
+    assert!(
+        !check(
+            "```colibri,pkg=p,file=a.colibri,error
+let x = 1
+```
+```output
+m
+```
+```colibri,pkg=p,file=b.colibri,error
+let y = 1
+```
+```output
+m
+```
+"
+        )
+        .is_empty()
+    );
+    assert!(
+        !check(
+            "```colibri,pkg=p,file=a.colibri,error
+let x = 1
+```
+```output
+m
+```
+```colibri,pkg=p,file=b.colibri
+pub fn f() {}
+```
+```output
+no
 ```
 "
         )
