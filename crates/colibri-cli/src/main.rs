@@ -140,6 +140,19 @@ enum Command {
     },
     /// Run the language server (LSP) on stdin and stdout
     Lsp,
+    /// Write the standard library reference as Markdown (one page for each module and an index),
+    /// generated from the interfaces of the modules; with `--check`, only report whether the
+    /// pages already in the folder are current. For the maintainers of the toolchain: the
+    /// result is `guide/std` in its repository
+    #[command(hide = true)]
+    Doc {
+        /// The folder to write the pages into
+        #[arg(long, value_name = "DIR")]
+        std: PathBuf,
+        /// Change nothing; exit with 1 and list the pages that are out of date
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 /// Serves the language server protocol on stdin and stdout.
@@ -223,5 +236,6 @@ fn main() -> ExitCode {
             colibri_lang::repl::run()
         }
         Command::Lsp => lsp(),
+        Command::Doc { std, check } => colibri_lang::doccmd::run(&std, check),
     })
 }

@@ -2,6 +2,7 @@
 
 pub mod checkcmd;
 pub mod depscmd;
+pub mod doccmd;
 pub mod fmt;
 pub mod golden;
 pub mod leakcmd;
