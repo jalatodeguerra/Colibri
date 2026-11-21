@@ -60,8 +60,14 @@ impl Machine {
     ) -> Result<Value, Box<PanicInfo>> {
         let chunk = match self.chunk_of(f) {
             Some(Ok(c)) => c,
-            Some(Err(m)) => return Err(bare_panic(&format!("internal error: {m}"))),
-            None => return Err(bare_panic("internal error: unknown function")),
+            Some(Err(m)) => {
+                self.release_all(args);
+                return Err(bare_panic(&format!("internal error: {m}")));
+            }
+            None => {
+                self.release_all(args);
+                return Err(bare_panic("internal error: unknown function"));
+            }
         };
         self.enter_from_host(fiber, true, |this, fiber| this.enter(fiber, chunk, args).0)
     }

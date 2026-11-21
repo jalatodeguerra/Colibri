@@ -9,6 +9,8 @@
 //! panics with "the bytecode VM does not support <node> yet". Hosts do not use this crate
 //! directly yet; [`run_source`] is a small entry for tests.
 
+#![forbid(unsafe_code)]
+
 pub mod bytecode;
 mod compile;
 mod engine;
