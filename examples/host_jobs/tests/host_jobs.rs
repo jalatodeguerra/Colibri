@@ -9,6 +9,7 @@ const VM_PENDING: &[&str] = &[
     "a_script_without_on_progress_is_skipped_by_the_hook_lookup",
     "the_log_matches_the_golden_file",
     "script_tests_see_a_fresh_queue_each",
+    "the_run_is_deterministic",
 ];
 
 fn vm_pending(name: &str, body: impl FnOnce()) {
@@ -63,6 +64,10 @@ fn the_run_is_deterministic() {
         let a = host_with_scripts().run(300);
         let b = host_with_scripts().run(300);
         assert_eq!(a, b);
+        // Two identical logs of refusals would agree too: the run must have done real work.
+        let log = a.join("\n");
+        assert!(!log.contains("script error"), "{log}");
+        assert!(!a.is_empty(), "the run logged nothing");
     })
 }
 
