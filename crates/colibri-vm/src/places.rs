@@ -409,9 +409,7 @@ impl Machine {
         chunk: &Chunk,
         base: usize,
         pc: usize,
-        l: u16,
-        s: u16,
-        site: u16,
+        [l, s, site]: [u16; 3],
     ) -> Result<(), Ctl> {
         let span = chunk.spans[pc - 1];
         let Some(Site::Path(path)) = chunk.sites.get(usize::from(site)) else {

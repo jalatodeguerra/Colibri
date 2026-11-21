@@ -549,7 +549,7 @@ impl Machine {
                 }
                 Op::SetPath { l, s, site } => {
                     sync!();
-                    tri!(self.op_set_path(fiber, &chunk, base, pc, l, s, site));
+                    tri!(self.op_set_path(fiber, &chunk, base, pc, [l, s, site]));
                 }
                 Op::CanonKey { d, m, k } => {
                     sync!();
