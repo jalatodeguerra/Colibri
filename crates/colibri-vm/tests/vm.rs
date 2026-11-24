@@ -101,15 +101,14 @@ fn a_counted_loop_is_one_fused_back_edge() {
 0001  LoadInt r0 0
 0002  LoadInt r1 0
 0003  LoadInt r2 5000000
-0004  JmpNotLtI r1 r2 -> 0010
+0004  JmpNotLtI r1 r2 -> 0009
 0005  Step 1
-0006  LoadInt r4 7
-0007  RemI r3 r1 r4
-0008  AddI r0 r0 r3
-0009  ForRangeNext r1 r2 -> 0005
-0010  Step 1
-0011  Print r0
-0012  ReturnUnit
+0006  RemIK r3 r1 7
+0007  AddI r0 r0 r3
+0008  ForRangeNext r1 r2 -> 0005
+0009  Step 1
+0010  Print r0
+0011  ReturnUnit
 ";
     assert_eq!(dis(src, "main"), expected);
 }

@@ -414,6 +414,44 @@ impl Machine {
                         None => fault!("integer overflow"),
                     }
                 }
+                Op::MulIK { d, a, i } => {
+                    let Value::Int(x) = rd!(a) else {
+                        internal!("ill-typed integer operation")
+                    };
+                    match x.checked_mul(i64::from(i)) {
+                        Some(v) => put!(d, Value::Int(v)),
+                        None => fault!("integer overflow"),
+                    }
+                }
+                // The divisor is neither 0 nor -1 (the compiler's condition), so these cannot fail.
+                Op::DivIK { d, a, i } => {
+                    let Value::Int(x) = rd!(a) else {
+                        internal!("ill-typed integer operation")
+                    };
+                    let v = x.wrapping_div(i64::from(i));
+                    put!(d, Value::Int(v));
+                }
+                Op::RemIK { d, a, i } => {
+                    let Value::Int(x) = rd!(a) else {
+                        internal!("ill-typed integer operation")
+                    };
+                    let v = x.wrapping_rem(i64::from(i));
+                    put!(d, Value::Int(v));
+                }
+                Op::EqIK { d, a, i } => {
+                    let Value::Int(x) = rd!(a) else {
+                        internal!("ill-typed integer comparison")
+                    };
+                    let v = *x == i64::from(i);
+                    put!(d, Value::Bool(v));
+                }
+                Op::NeIK { d, a, i } => {
+                    let Value::Int(x) = rd!(a) else {
+                        internal!("ill-typed integer comparison")
+                    };
+                    let v = *x != i64::from(i);
+                    put!(d, Value::Bool(v));
+                }
                 Op::NegI { d, a } => {
                     let Value::Int(x) = rd!(a) else {
                         internal!("ill-typed negation")
@@ -678,15 +716,33 @@ impl Machine {
                     sync!();
                     tri!(self.op_set_field(fiber, &chunk, base, pc, [l, s, idx]));
                 }
-                Op::NewStruct { .. }
-                | Op::NewObject { .. }
-                | Op::NewVariant { .. }
-                | Op::NewTuple { .. }
+                Op::NewStruct { d, site } => {
+                    sync!();
+                    tri!(self.op_new_struct(fiber, &chunk, base, pc, [d, site]));
+                }
+                Op::NewObject { d, site } => {
+                    sync!();
+                    tri!(self.op_new_object(fiber, &chunk, base, pc, [d, site]));
+                }
+                Op::NewVariant { d, site } => {
+                    sync!();
+                    tri!(self.op_new_variant(fiber, &chunk, base, pc, [d, site]));
+                }
+                Op::ObjGet { d, o, idx } => {
+                    let got = match rd!(o) {
+                        Value::Obj(obj) => obj.field(usize::from(idx)),
+                        _ => None,
+                    };
+                    match got {
+                        Some(v) => put!(d, v),
+                        None => internal!("a field of something that is not an object"),
+                    }
+                }
+                Op::NewTuple { .. }
                 | Op::NewList { .. }
                 | Op::NewMap { .. }
                 | Op::NewRange { .. }
                 | Op::GetPath { .. }
-                | Op::ObjGet { .. }
                 | Op::FromWeak { .. } => {
                     sync!();
                     tri!(self.op_new(fiber, &chunk, base, pc, op));
