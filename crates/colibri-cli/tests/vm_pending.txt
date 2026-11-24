@@ -7,7 +7,6 @@
 children::a_panic_leaves_no_child_behind  # `go`
 children::os_exit_leaves_no_child_behind  # `go`
 cli::a_panic_in_a_coroutine_after_main_exits_101  # `go`
-cli::main_returning_err_reports_on_stderr_and_exits_one  # this coercion
 cli::run_keeps_running_coroutines_after_main_with_real_time  # `go`
 cli::run_passes_the_arguments_after_the_file_to_os_args  # the built-in `ListLen`
 guide::guide_samples_print_the_output_the_guide_shows  # `Compare`
