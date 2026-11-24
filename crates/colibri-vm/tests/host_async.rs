@@ -253,10 +253,13 @@ fn a_callback_may_start_coroutines_that_wait_in_host_functions_too() {
         ),
     );
     run_main(&mut m, &p).expect("main");
-    assert_eq!(
-        out.text(),
-        "callback started child\nparent 10\nchild 50\nmain end\n"
-    );
+    // The two waits are on different threads: which coroutine finishes first is not the test's.
+    let text = out.text();
+    let mut lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.remove(0), "callback started child");
+    assert_eq!(lines.pop(), Some("main end"));
+    lines.sort_unstable();
+    assert_eq!(lines, ["child 50", "parent 10"]);
     assert_eq!(m.coroutine_slots_live(), 0);
 }
 
