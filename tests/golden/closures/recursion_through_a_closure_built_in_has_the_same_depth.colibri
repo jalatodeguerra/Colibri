@@ -1,0 +1,19 @@
+// A built-in that calls a closure adds no call of its own: the limit on nested calls counts the
+// program's calls only, whatever the engine does inside the built-in.
+let mut deepest = 0
+
+fn down(n: int) -> int {
+    deepest = n
+    let r = [n].map(fn(x) => down(x + 1))
+    return r[0]
+}
+
+fn main() {
+    defer {
+        print("deepest {deepest}")
+    }
+    print(down(0))
+}
+
+// expect: deepest 4999
+// panic: stack overflow: more than 10000 nested calls

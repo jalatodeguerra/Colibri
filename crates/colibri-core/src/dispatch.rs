@@ -292,8 +292,10 @@ pub trait Dispatch: Engine {
                 return None;
             }
             let outcome = self.step(fiber, span).and_then(|()| {
-                self.call_host_hook(fiber, r.ty, HostHook::Hash, vec![object.clone()])
-                    .map_err(|f| self.host_fault_ctl(fiber, f))
+                Self::enter_native(fiber);
+                let called = self.call_host_hook(fiber, r.ty, HostHook::Hash, vec![object.clone()]);
+                Self::leave_native(fiber);
+                called.map_err(|f| self.host_fault_ctl(fiber, f))
             });
             match outcome {
                 Ok(Value::Int(n)) => Some(n as u64),

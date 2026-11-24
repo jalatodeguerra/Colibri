@@ -123,7 +123,9 @@ impl FnCompiler<'_> {
                         Arg::Place(p) => receiver = Some(p),
                     }
                 }
-                self.call_fn(*f, &values, receiver, &e.ty, dst, e.span);
+                // The prelude's own code calls only the prelude's own functions.
+                let hidden = self.free.then_some(None);
+                self.call_fn_charging(*f, hidden, &values, receiver, &e.ty, dst, e.span);
             }
             Callee::Intrinsic(which) => self.intrinsic(which, c, e, dst),
             Callee::Host(id) => self.call_host_fn(*id, c, e, dst),
@@ -160,9 +162,21 @@ impl FnCompiler<'_> {
             Some(d) => d,
             None => self.alloc_for(&e.ty),
         };
-        let w = self.eval_window(0, &args, false);
-        self.emit(Op::CallValue { d, base: w.base }, span);
-        self.free_window(w, span);
+        if self.free
+            && let Some((callee, rest)) = args.split_first()
+        {
+            // The prelude calls the closure it was given once for each element: the function
+            // value stays in its register, and the window holds only the arguments.
+            let f = self.anchor_operand(callee, rest.iter().any(|a| writes_locals(a)));
+            let w = self.eval_window(0, rest, false);
+            self.emit(Op::CallValueIn { d, f, base: w.base }, span);
+            self.free_window(w, span);
+            self.free(f, span);
+        } else {
+            let w = self.eval_window(0, &args, false);
+            self.emit(Op::CallValue { d, base: w.base }, span);
+            self.free_window(w, span);
+        }
         if dst.is_none() {
             self.own(d);
             self.free(d, span);
@@ -321,6 +335,23 @@ impl FnCompiler<'_> {
         dst: Option<Reg>,
         span: Span,
     ) {
+        self.call_fn_charging(f, None, args, receiver, ret, dst, span);
+    }
+
+    /// [`FnCompiler::call_fn`] where `hidden` is `Some(work)` when `f` is a function of the
+    /// prelude: the call is a `CallHidden`, which charges what the native built-in `work`
+    /// stands for charged (nothing, for `None`).
+    #[allow(clippy::too_many_arguments)]
+    fn call_fn_charging(
+        &mut self,
+        f: FnId,
+        hidden: Option<Option<Builtin>>,
+        args: &[&Expr],
+        receiver: Option<&Place>,
+        ret: &Ty,
+        dst: Option<Reg>,
+        span: Span,
+    ) {
         let recv_local = match receiver {
             None => None,
             Some(p) => match (&p.anchor, p.path.is_empty()) {
@@ -341,15 +372,25 @@ impl FnCompiler<'_> {
             // If the call panics, the receiver goes back to its local before anything dies.
             self.push_item(Item::Recv { l, r: w.base });
         }
-        let site = self.add_site(Site::Call(f));
-        self.emit(
-            Op::Call {
-                d,
-                base: w.base,
-                site,
-            },
-            span,
-        );
+        let op = match hidden {
+            Some(work) => {
+                let site = self.add_site(Site::Hidden { f, work });
+                Op::CallHidden {
+                    d,
+                    base: w.base,
+                    site,
+                }
+            }
+            None => {
+                let site = self.add_site(Site::Call(f));
+                Op::Call {
+                    d,
+                    base: w.base,
+                    site,
+                }
+            }
+        };
+        self.emit(op, span);
         if let Some(l) = recv_local {
             let l = self.local(l);
             self.emit(Op::Move { d: l, s: w.base }, span);
@@ -504,6 +545,13 @@ impl FnCompiler<'_> {
     /// instructions of their own, the rest go through core's `builtin`.
     fn builtin(&mut self, b: Builtin, args: &[&Expr], e: &Expr, dst: Option<Reg>) {
         let span = e.span;
+        // The built-ins that take a closure are Colibri code: a call of the function of the
+        // prelude, so the closure runs as bytecode and may pause (vm-plan §2.9).
+        if let Some(f) = self.env.builtin_fn(b) {
+            // Whatever the built-in drops or replaces may run a `Drop` hook, as for the native one.
+            self.releases += 1;
+            return self.call_fn_charging(f, Some(Some(b)), args, None, &e.ty, dst, span);
+        }
         match b {
             Builtin::ListPush if args.len() == 2 => {
                 let l = self.anchor_operand(args[0], writes_locals(args[1]));
@@ -572,6 +620,42 @@ impl FnCompiler<'_> {
                     self.free(d, span);
                 }
             }
+        }
+    }
+
+    /// `wait_until(cond)`: a loop that runs the condition in the waiting coroutine and pauses
+    /// until it is next resumed while the answer is `false` (vm-plan §2.8). The check before
+    /// the loop gives the panics of a pause that cannot happen here.
+    fn wait_until(&mut self, cond: &Expr, e: &Expr, dst: Option<Reg>) {
+        let span = e.span;
+        // The answer lives below the window: the callee's window covers everything above the
+        // function value.
+        let t = self.alloc(Kind::Scalar);
+        let w = self.eval_window(0, &[cond], false);
+        let site = self.add_site(Site::Intrinsic {
+            which: Intrinsic::WaitUntil,
+            argc: 1,
+        });
+        self.emit(
+            Op::Intrinsic {
+                d: t,
+                base: w.base,
+                site,
+            },
+            span,
+        );
+        let top = self.new_label();
+        let done = self.new_label();
+        self.bind(top);
+        self.emit(Op::CallValue { d: t, base: w.base }, span);
+        self.emit_to(Op::JmpIf { r: t, off: 0 }, span, done);
+        self.emit(Op::SuspendReady, span);
+        self.emit_to(Op::Loop { off: 0 }, span, top);
+        self.bind(done);
+        self.free_window(w, span);
+        self.free(t, span);
+        if let Some(d) = dst {
+            self.emit(Op::LoadUnit { d }, span);
         }
     }
 
@@ -670,6 +754,7 @@ impl FnCompiler<'_> {
             // of its own (the tree-walker's twins).
             Intrinsic::Compare if args.len() == 2 => self.borrowing_intrinsic(which, &args, e, dst),
             Intrinsic::Builtin(b) => self.builtin(*b, &args, e, dst),
+            Intrinsic::WaitUntil if args.len() == 1 => self.wait_until(args[0], e, dst),
             other => {
                 let what = match other {
                     Intrinsic::Builtin(b) => format!("the built-in `{b:?}`"),

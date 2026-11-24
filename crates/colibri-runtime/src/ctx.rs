@@ -150,8 +150,8 @@ impl<'a> Ctx<'a> {
 
     /// Whether other coroutines keep running while [`Ctx::run_async`] (or
     /// [`Ctx::run_async_cancellable`]) waits: `true` in a coroutine and on the main fiber where
-    /// it may run the event loop, `false` inside a `Drop` hook or a host function's callback,
-    /// where the call blocks the interpreter thread. A host function whose work waits for
+    /// it may run the event loop, `false` inside a `Drop` hook, a host function's callback, or a `Show`, `Eq`,
+    /// `Ord`, `Hash`, `Clone` or `next` that a built-in operation calls, where the call blocks the interpreter thread. A host function whose work waits for
     /// something that only another coroutine can do (a turn that a suspended coroutine still
     /// holds) must not start that work when this is `false`: nothing could ever finish it.
     pub fn can_suspend(&self) -> bool {

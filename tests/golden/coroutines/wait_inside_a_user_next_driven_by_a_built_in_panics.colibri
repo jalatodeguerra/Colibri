@@ -1,0 +1,29 @@
+struct Countdown {
+    n: int
+}
+
+impl Iter[int] for Countdown {
+    fn next(mut self) -> int? {
+        wait(1.0)
+        if self.n == 0 {
+            return none
+        }
+        self.n -= 1
+        return some(self.n)
+    }
+}
+
+fn worker() {
+    // `enumerate` is a built-in that asks the user's `next`.
+    let counter = Countdown { n: 2 }
+    for pair in counter.enumerate() {
+        print(pair)
+    }
+}
+
+fn main() {
+    go worker()
+    task.tick(1.0)
+}
+
+// panic: `wait` cannot pause inside code that a built-in operation calls (a `Show`, `Eq`, `Ord`, `Hash` or `Clone` impl, or an iterator's `next`)

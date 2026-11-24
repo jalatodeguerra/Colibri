@@ -57,6 +57,14 @@ pub trait Engine: Sized {
     /// itself; `None` when no call is active.
     fn position(fiber: &Self::Fiber) -> Option<Span>;
 
+    /// `span` as a panic reports it. A position inside code of the prelude, which a program
+    /// never sees (a closure built-in written in Colibri), is where the innermost call of the
+    /// program's own code stands: the call of the built-in. The default has no such code.
+    #[inline]
+    fn visible_span(_fiber: &Self::Fiber, span: Span) -> Span {
+        span
+    }
+
     /// The Colibri stack, innermost call first.
     fn stack_trace(&self, fiber: &Self::Fiber) -> Vec<TraceEntry>;
 

@@ -72,7 +72,7 @@ impl FnCtx<'_, '_> {
         if self.lookup_local(name).is_some() {
             return self.check_value_call(callee, args, span);
         }
-        if let Some(f) = self.lookup_fn(name) {
+        if let Some(f) = self.lookup_fn(&crate::prelude::value_key(name, id.span)) {
             self.ck.note_deprecated_use(DeprKey::Fn(f), id.span);
             return self.check_fn_call(f, args, span);
         }

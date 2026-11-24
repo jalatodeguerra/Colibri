@@ -56,6 +56,7 @@ impl Machine {
             // No pad: the frame owns nothing. (A compiler bug would leave values in its window;
             // debug builds assert it, release builds release them rather than leak.)
             let frame = fiber.frames.pop().expect("a frame to unwind");
+            fiber.hidden -= usize::from(frame.chunk.hidden);
             let inflight = fiber.take_unwinding(fiber.frames.len());
             let base = frame.base as usize;
             let chunk = &frame.chunk;

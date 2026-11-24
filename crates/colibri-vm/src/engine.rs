@@ -44,7 +44,7 @@ impl Machine {
         closure: Option<&colibri_core::closure::ClosureObj>,
     ) -> (Eval, Option<Value>) {
         let body = std::rc::Rc::clone(&chunk.body);
-        let overflow = fiber.frames.len() >= self.max_depth;
+        let overflow = fiber.visible_depth() >= self.max_depth;
         self.core.budget.left -= 1;
         let over_budget = self.core.budget.left < 0;
         let too_deep = !overflow
@@ -88,6 +88,7 @@ impl Machine {
         if let Some(c) = closure {
             self.install_captures(fiber, base, c);
         }
+        fiber.hidden += usize::from(chunk.hidden);
         fiber.frames.push(Frame {
             chunk,
             pc: 0,
@@ -161,11 +162,24 @@ impl Engine for Machine {
         }
     }
 
+    fn visible_span(fiber: &VmFiber, span: Span) -> Span {
+        if !colibri_check::is_prelude_span(span) {
+            return span;
+        }
+        fiber
+            .frames
+            .iter()
+            .rev()
+            .find(|f| !f.chunk.hidden)
+            .map_or(span, Frame::span)
+    }
+
     fn stack_trace(&self, fiber: &VmFiber) -> Vec<TraceEntry> {
         fiber
             .frames
             .iter()
             .rev()
+            .filter(|f| !f.chunk.hidden)
             .map(|f| TraceEntry {
                 function: f.chunk.body.name.clone(),
                 span: f.span(),

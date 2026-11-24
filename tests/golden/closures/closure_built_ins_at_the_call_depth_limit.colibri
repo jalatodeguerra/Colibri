@@ -1,0 +1,24 @@
+// A built-in that never reaches its closure adds no call: at the deepest allowed call it still runs.
+fn f(n: int) {
+    if n == 0 {
+        let e: List[int] = []
+        print(e.map(fn(x) => x + 1).len())
+        let o: int? = none
+        print(o.map(fn(x) => x + 1))
+        let mut one = [5]
+        one.sort_by(fn(a, b) => compare(a, b))
+        print(one)
+    } else {
+        f(n - 1)
+    }
+}
+
+fn main() {
+    f(9998)
+    print("done")
+}
+
+// expect: 0
+// expect: none
+// expect: [5]
+// expect: done

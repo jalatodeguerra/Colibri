@@ -1,0 +1,28 @@
+class Bomb {
+    n: int
+}
+
+impl Drop for Bomb {
+    fn drop(self) {
+        print("drop {self.n}")
+        if self.n == 1 {
+            panic("boom {self.n}")
+        }
+    }
+}
+
+fn main() {
+    let xs = [1, 2, 3]
+    let b = xs.fold(Bomb { n: 0 }, fn(acc, x) {
+        print("fold {x} acc {acc.n}")
+        return Bomb { n: x }
+    })
+    print("result {b.n}")
+}
+
+// expect: fold 1 acc 0
+// expect: fold 2 acc 1
+// expect: drop 1
+// expect: drop 2
+// expect: drop 0
+// panic: boom 1

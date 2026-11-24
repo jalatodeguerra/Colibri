@@ -1,0 +1,9 @@
+fn main() {
+    let mut xs = [3, 1, 2]
+    xs.sort_by_key(fn(x) {
+        xs.push(0)
+        return x
+    })
+}
+
+// panic: list modified during iteration

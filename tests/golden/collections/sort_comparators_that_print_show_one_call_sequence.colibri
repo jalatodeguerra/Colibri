@@ -1,0 +1,52 @@
+// The order in which a sort asks its comparator is part of what a program can see, so every
+// engine asks in the same order: pairs of neighbours first, then merges of growing runs.
+fn main() {
+    let mut a = [5, 3, 4, 1, 2, 6, 0]
+    a.sort_by(fn(x, y) {
+        print("by {x} {y}")
+        return x - y
+    })
+    print(a)
+    let b = [2, 9, 4, 7, 1].sorted_by(fn(x, y) {
+        print("sorted_by {x} {y}")
+        return y - x
+    })
+    print(b)
+    let mut c = ["pear", "fig", "apple", "kiwi"]
+    c.sort_by_key(fn(s) {
+        print("key {s}")
+        return s.len()
+    })
+    print(c)
+}
+
+
+// expect: by 5 3
+// expect: by 4 1
+// expect: by 2 6
+// expect: by 3 1
+// expect: by 3 4
+// expect: by 5 4
+// expect: by 2 0
+// expect: by 1 0
+// expect: by 1 2
+// expect: by 3 2
+// expect: by 3 6
+// expect: by 4 6
+// expect: by 5 6
+// expect: [0, 1, 2, 3, 4, 5, 6]
+// expect: sorted_by 2 9
+// expect: sorted_by 4 7
+// expect: sorted_by 9 7
+// expect: sorted_by 2 7
+// expect: sorted_by 2 4
+// expect: sorted_by 9 1
+// expect: sorted_by 7 1
+// expect: sorted_by 4 1
+// expect: sorted_by 2 1
+// expect: [9, 7, 4, 2, 1]
+// expect: key pear
+// expect: key fig
+// expect: key apple
+// expect: key kiwi
+// expect: ["fig", "pear", "kiwi", "apple"]

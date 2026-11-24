@@ -101,7 +101,10 @@ pub trait ResultOps: Engine {
             if self.fn_span(f).is_none() {
                 return Err(self.internal(fiber, span, "unknown function"));
             }
-            return match self.call_fn(fiber, f, vec![value.clone()])? {
+            Self::enter_native(fiber);
+            let called = self.call_fn(fiber, f, vec![value.clone()]);
+            Self::leave_native(fiber);
+            return match called? {
                 Value::Str(s) => Ok(s.to_string()),
                 other => {
                     self.release(other);

@@ -1,0 +1,10 @@
+// `wait_until` pauses a coroutine; on the main fiber it is a panic, before the condition runs.
+fn main() {
+    wait_until(fn() {
+        print("the condition is not asked")
+        return true
+    })
+    print("not reached")
+}
+
+// panic: `wait_until` can only pause a coroutine, but this code is not running in one (start one with `go`)

@@ -343,6 +343,22 @@ pub enum Op {
         base: Reg,
         site: u16,
     },
+    /// Calls a function of the prelude (`Site::Hidden`): a closure built-in written in Colibri, or a
+    /// helper of one. It costs what the native built-in costs, which is all the budget the
+    /// built-in takes: the site's `work` is charged here, as core charges it, and neither the
+    /// call nor anything the prelude's own code does is.
+    CallHidden {
+        d: Reg,
+        base: Reg,
+        site: u16,
+    },
+    /// `CallValue` for a function value that sits in register `f`, outside the window: the
+    /// arguments are `base..`, and nothing is copied. Only the prelude's code uses it.
+    CallValueIn {
+        d: Reg,
+        f: Reg,
+        base: Reg,
+    },
     /// Calls the host function of the site (`Site::Host`) with owned copies of the arguments in
     /// `base..`, which stay where they are for the caller to drop; the result goes to `d`.
     CallHost {
@@ -713,6 +729,11 @@ pub enum Op {
     Unsupported {
         site: u16,
     },
+    /// The coroutine running `wait_until` pauses until it is next resumed, then goes on (the
+    /// loop that follows runs the condition again). Needs a coroutine to pause, which the
+    /// scheduler's step of the VM provides; the check before the loop makes it unreachable until
+    /// then.
+    SuspendReady,
 }
 
 /// One range of instructions and the landing pad a panic inside it goes to.
@@ -769,6 +790,12 @@ pub enum Site {
     Binary(BinOp),
     Unary(UnOp),
     Call(FnId),
+    /// A call of a function of the prelude; `work` is the built-in whose native version this
+    /// stands for, which charges one step for each element of its receiver (`work_of`).
+    Hidden {
+        f: FnId,
+        work: Option<colibri_check::hir::Builtin>,
+    },
     /// A host function, how many arguments it takes and the type arguments of the call.
     Host(HostFnId, u16, Box<[Ty]>),
     Format(Box<FormatSpec>),
@@ -849,6 +876,9 @@ pub struct Chunk {
     /// Registers of one frame: the locals, then the most temporaries alive at once.
     pub nregs: u16,
     pub nparams: u16,
+    /// The body is the prelude's own code (a closure built-in written in Colibri): a stack trace
+    /// leaves its frame out, and a panic in it is reported at the call of the built-in.
+    pub hidden: bool,
 }
 
 impl Chunk {
@@ -962,10 +992,14 @@ impl Chunk {
             Op::Call { d, base, site } => {
                 format!("Call r{d} base=r{base} {}", self.site_text(site))
             }
+            Op::CallHidden { d, base, site } => {
+                format!("CallHidden r{d} base=r{base} {}", self.site_text(site))
+            }
             Op::CallHost { d, base, site } => {
                 format!("CallHost r{d} base=r{base} {}", self.site_text(site))
             }
             Op::CallValue { d, base } => format!("CallValue r{d} base=r{base}"),
+            Op::CallValueIn { d, f, base } => format!("CallValueIn r{d} f=r{f} base=r{base}"),
             Op::CallBound { d, base, site } => {
                 format!("CallBound r{d} base=r{base} {}", self.site_text(site))
             }
@@ -1043,6 +1077,7 @@ impl Chunk {
             Op::FoldHooks => "FoldHooks".to_string(),
             Op::Resume => "Resume".to_string(),
             Op::Unsupported { site } => format!("Unsupported {}", self.site_text(site)),
+            Op::SuspendReady => "SuspendReady".to_string(),
         }
     }
 
@@ -1064,6 +1099,10 @@ impl Chunk {
             Some(Site::Binary(op)) => format!("{op:?}"),
             Some(Site::Unary(op)) => format!("{op:?}"),
             Some(Site::Call(f)) => format!("fn#{}", f.0),
+            Some(Site::Hidden { f, work }) => match work {
+                Some(b) => format!("fn#{} work({b:?})", f.0),
+                None => format!("fn#{}", f.0),
+            },
             Some(Site::Host(id, argc, _)) => format!("host#{}/{argc}", id.0),
             Some(Site::Format(spec)) => format!("{spec:?}"),
             Some(Site::Intrinsic { which, argc }) => format!("{which:?}/{argc}"),

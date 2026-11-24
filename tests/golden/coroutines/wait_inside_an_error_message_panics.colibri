@@ -1,0 +1,29 @@
+struct Oops {
+    n: int
+}
+
+impl IntoError for Oops {
+    fn message(self) -> str {
+        wait(1.0)
+        return "oops {self.n}"
+    }
+}
+
+fn fails() -> Result[int] {
+    return err(Oops { n: 1 })
+}
+
+fn worker() {
+    let r = fails()
+    match r {
+        ok(v) => print(v)
+        err(e) => print(e.message())
+    }
+}
+
+fn main() {
+    go worker()
+    task.tick(1.0)
+}
+
+// panic: `wait` cannot pause inside code that a built-in operation calls (a `Show`, `Eq`, `Ord`, `Hash` or `Clone` impl, or an iterator's `next`)

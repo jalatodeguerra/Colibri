@@ -1,0 +1,31 @@
+// A comparator that waits pauses the coroutine that sorts, and the sort goes on where it was:
+// the comparator runs as ordinary code, in the same order on every engine.
+fn sorter() {
+    let mut xs = [3, 1, 2]
+    xs.sort_by(fn(a, b) {
+        print("compare {a} {b}")
+        wait(1.0)
+        return a - b
+    })
+    print(xs)
+    let keyed = ["bb", "a", "ccc"].sorted_by(fn(a, b) {
+        wait(0.5)
+        return a.len() - b.len()
+    })
+    print(keyed)
+}
+
+fn main() {
+    go sorter()
+    for i in 0..6 {
+        task.tick(1.0)
+    }
+    print("done")
+}
+
+// expect: compare 3 1
+// expect: compare 1 2
+// expect: compare 3 2
+// expect: [1, 2, 3]
+// expect: ["a", "bb", "ccc"]
+// expect: done

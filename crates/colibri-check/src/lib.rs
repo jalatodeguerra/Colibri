@@ -55,7 +55,7 @@ mod zonk;
 pub use checker::Checked;
 pub use hir::Program;
 pub use host::HostEnv;
-pub use prelude::is_reserved_type_name;
+pub use prelude::{is_prelude_span, is_reserved_type_name};
 pub use types::{FnSig, Ty};
 
 /// How much native stack checking may use by default (see [`check_with_stack_budget`]).

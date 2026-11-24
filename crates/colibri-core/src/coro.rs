@@ -34,9 +34,44 @@ fn bare_panic_info(message: &str) -> Box<PanicInfo> {
     })
 }
 
+/// What follows the name of a pausing operation in the panic for one that runs inside native code.
+const NATIVE_PAUSE: &str = "cannot pause inside code that a built-in operation calls (a `Show`, `Eq`, `Ord`, `Hash` or `Clone` impl, or an iterator's `next`)";
+
 /// The scheduler's policy that engines and the runtime call, for any engine.
 #[doc(hidden)]
 pub trait Sched: Engine {
+    /// Common checks of `wait` and `join`: a coroutine is running, and no host function, `Drop`
+    /// hook or native operation sits on its stack. Gives the coroutine's id.
+    fn pause_context(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        span: Span,
+        what: &str,
+    ) -> Result<u64, Ctl> {
+        let state = Self::fiber_state(fiber);
+        let Some(id) = state.coro else {
+            let message = format!(
+                "`{what}` can only pause a coroutine, but this code is not running in one (start one with `go`)"
+            );
+            return Err(self.panic(fiber, span, message));
+        };
+        if state.host_depth > 0 {
+            let message = format!(
+                "`{what}` cannot pause inside a host function's callback: the host's stack frame cannot be suspended"
+            );
+            return Err(self.panic(fiber, span, message));
+        }
+        if self.core().hook_depth > 0 {
+            let message = format!("`{what}` cannot pause inside a `Drop` hook");
+            return Err(self.panic(fiber, span, message));
+        }
+        if state.native_depth > 0 {
+            let message = format!("`{what}` {NATIVE_PAUSE}");
+            return Err(self.panic(fiber, span, message));
+        }
+        Ok(id)
+    }
+
     // ---- ticking ----
 
     /// Resumes every due coroutine once, in start order. A coroutine started during the tick
@@ -174,6 +209,7 @@ pub trait Sched: Engine {
         let core = self.core();
         state.coro.is_none()
             && state.host_depth <= depth
+            && state.native_depth == 0
             && core.hook_depth == 0
             && !core.sched.is_busy()
             && !core.sched.is_shutting_down()
@@ -532,6 +568,8 @@ pub(crate) trait SchedInternal: Engine {
             "inside a host function's callback"
         } else if core.hook_depth > 0 {
             "inside a `Drop` hook"
+        } else if Self::fiber_state(fiber).native_depth > 0 {
+            "inside code that a built-in operation calls (a `Show`, `Eq`, `Ord`, `Hash` or `Clone` impl, or an iterator's `next`)"
         } else if core.sched.is_busy() {
             "inside a tick"
         } else if core.sched.is_shutting_down() {

@@ -431,6 +431,60 @@ pub trait ListFnOps: Engine {
                 });
                 Ok(Value::Str(Rc::from(text)))
             }
+            Builtin::ListGuardCheck => match list.check_guard() {
+                Ok(()) => Ok(Value::Unit),
+                Err(v) => Err(self.violation(fiber, span, v)),
+            },
+            Builtin::ListKeepMask => {
+                let Some(Value::List(mask)) = args.get(1) else {
+                    return Err(self.internal(fiber, span, "ill-typed `retain`"));
+                };
+                if let Err(v) = list.check_guard() {
+                    return Err(self.violation(fiber, span, v));
+                }
+                let keep = mask.snapshot();
+                let items = list.snapshot();
+                let kept: Vec<Value> = items
+                    .iter()
+                    .zip(&keep)
+                    .filter(|(_, k)| is_true(k))
+                    .map(|(v, _)| v.clone())
+                    .collect();
+                self.release_all(items);
+                let old = list.replace_all(kept);
+                self.release_all(old);
+                Ok(Value::Unit)
+            }
+            Builtin::ListSetOrder | Builtin::ListPickOrder => {
+                let Some(Value::List(order)) = args.get(1) else {
+                    return Err(self.internal(fiber, span, "ill-typed sort"));
+                };
+                let in_place = op == Builtin::ListSetOrder;
+                if in_place && let Err(v) = list.check_guard() {
+                    return Err(self.violation(fiber, span, v));
+                }
+                let items = list.snapshot();
+                let picked: Option<Vec<Value>> = order
+                    .snapshot()
+                    .iter()
+                    .map(|i| match i {
+                        Value::Int(i) => {
+                            usize::try_from(*i).ok().and_then(|i| items.get(i)).cloned()
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                self.release_all(items);
+                let Some(sorted) = picked else {
+                    return Err(self.internal(fiber, span, "ill-typed sort"));
+                };
+                if !in_place {
+                    return Ok(Value::list(sorted));
+                }
+                let old = list.replace_all(sorted);
+                self.release_all(old);
+                Ok(Value::Unit)
+            }
             Builtin::ListSlice => self.list_slice(fiber, list, args, span),
             _ => Err(self.internal(fiber, span, "ill-typed built-in call")),
         }

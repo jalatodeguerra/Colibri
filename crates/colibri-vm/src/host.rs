@@ -102,6 +102,7 @@ impl Machine {
             unwind: Box::new([]),
             nregs: 0,
             nparams: 0,
+            hidden: false,
         });
         self.host_impls.shims[slot] = Some(Rc::clone(&chunk));
         chunk
@@ -154,7 +155,7 @@ impl Machine {
             self.release_all(args);
             return Err(self.internal(fiber, span, "a host function is not installed"));
         };
-        if fiber.frames.len() >= self.max_depth {
+        if fiber.visible_depth() >= self.max_depth {
             self.release_all(args);
             return Err(self.overflow(fiber, span));
         }

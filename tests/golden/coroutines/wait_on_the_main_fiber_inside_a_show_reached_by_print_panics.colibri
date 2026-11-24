@@ -1,0 +1,19 @@
+// `print` is native code: it calls the user's `show` with Rust frames underneath. A `wait` on the
+// main fiber would run the event loop on top of them, which is refused as a coroutine's pause is.
+struct Gate {
+    n: int
+}
+
+impl Show for Gate {
+    fn show(self) -> str {
+        wait(0.01)
+        return "gate {self.n}"
+    }
+}
+
+fn main() {
+    print(Gate { n: 1 })
+    print("not reached")
+}
+
+// panic: `wait` on the main fiber runs the event loop, which cannot be done inside code that a built-in operation calls (a `Show`, `Eq`, `Ord`, `Hash` or `Clone` impl, or an iterator's `next`) (ARCHITECTURE section 22)

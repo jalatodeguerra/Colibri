@@ -312,7 +312,10 @@ pub trait IterOps: Engine {
                 // the temporaries keeps it alive on every path.
                 let mark = Self::temp_mark(fiber);
                 Self::hold_temp(fiber, inner.clone());
+                // A user iterator's `next` runs for a built-in here: it cannot pause.
+                Self::enter_native(fiber);
                 let step = self.iter_next(fiber, &mut inner, span);
+                Self::leave_native(fiber);
                 let out = match step {
                     Ok(Some(item)) => {
                         obj.resume(inner, true);

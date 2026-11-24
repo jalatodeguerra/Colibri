@@ -460,6 +460,11 @@ impl Machine {
                     ));
                     reload!();
                 }
+                Op::CallHidden { d, base: a, site } => {
+                    sync!();
+                    tri!(self.op_call_hidden(fiber, &chunk, base, pc, [d, a, site]));
+                    reload!();
+                }
                 Op::CallHost { .. } => {
                     sync!();
                     tri!(self.op_call_host(fiber, &chunk, base, pc, op));
@@ -467,6 +472,11 @@ impl Machine {
                 Op::CallValue { d, base: a } => {
                     sync!();
                     tri!(self.op_call_value(fiber, &chunk, base, pc, d, a));
+                    reload!();
+                }
+                Op::CallValueIn { d, f, base: a } => {
+                    sync!();
+                    tri!(self.op_call_value_in(fiber, &chunk, base, pc, [d, f, a]));
                     reload!();
                 }
                 Op::CallBound { d, base: a, site } | Op::CallDyn { d, base: a, site } => {
@@ -709,6 +719,10 @@ impl Machine {
                     }
                 }
 
+                Op::SuspendReady => {
+                    sync!();
+                    tri!(self.op_suspend_ready(fiber, &chunk, pc));
+                }
                 Op::Site { .. } => internal!("an operand word was executed"),
                 Op::Unsupported { site } => {
                     let Site::Unsupported(msg) = &chunk.sites[usize::from(site)] else {
@@ -718,6 +732,24 @@ impl Machine {
                 }
             }
         }
+    }
+
+    /// `SuspendReady`: pausing needs a coroutine, and the check that precedes the loop of
+    /// `wait_until` refuses everything else.
+    #[cold]
+    #[inline(never)]
+    fn op_suspend_ready(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        pc: usize,
+    ) -> Result<(), Ctl> {
+        let span = chunk.spans[pc - 1];
+        Err(self.internal(
+            fiber,
+            span,
+            "a pause reached a fiber that is not a coroutine",
+        ))
     }
 
     /// Folds the panics of `Drop` hooks into the panic this frame's pad is running for.
@@ -1143,13 +1175,14 @@ impl Machine {
             start = 1;
         }
         self.core.budget.left -= i64::from(steps);
-        if fiber.frames.len() >= self.max_depth || self.core.budget.left < 0 {
+        if fiber.visible_depth() >= self.max_depth || self.core.budget.left < 0 {
             return Err(self.call_refused(fiber, caller, pc));
         }
         let need = new_base + callee.nregs as usize;
         if fiber.regs.len() < need {
             fiber.regs.resize(need, Value::Unit);
         }
+        fiber.hidden += usize::from(callee.hidden);
         fiber.frames.push(Frame {
             chunk: callee,
             pc: start,
@@ -1162,12 +1195,57 @@ impl Machine {
         Ok(())
     }
 
+    /// `CallHidden`: a function of the prelude. The native built-in it replaces charged one step
+    /// for each element of its receiver and nothing else; so does this, and the code of the
+    /// prelude, which is compiled without budget steps, charges nothing more.
+    #[inline(never)]
+    fn op_call_hidden(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        [d, a, site]: [u16; 3],
+    ) -> Result<(), Ctl> {
+        let span = chunk.spans[pc - 1];
+        let Site::Hidden { f, work } = &chunk.sites[usize::from(site)] else {
+            return Err(self.internal(fiber, span, "a call without its function"));
+        };
+        let at = base + usize::from(a);
+        if let Some(b) = work
+            && let Some(n) = colibri_core::work_of(*b, fiber.regs.get(at))
+        {
+            self.charge(fiber, span, n)?;
+        }
+        let callee = self.callee_chunk(fiber, chunk, pc, *f)?;
+        // No depth check against the limit: the built-in adds no visible call, and the closure it
+        // calls is checked by `push_call` and `enter_with`. This only bounds the hidden frames.
+        if fiber.frames.len() >= 2 * self.max_depth + 64 {
+            return Err(self.internal(fiber, span, "the prelude's frames outgrew the call limit"));
+        }
+        fiber.hidden += usize::from(callee.hidden);
+        let need = at + callee.nregs as usize;
+        if fiber.regs.len() < need {
+            fiber.regs.resize(need, Value::Unit);
+        }
+        fiber.frames.push(Frame {
+            chunk: callee,
+            pc: 0,
+            base: at as u32,
+            ret: (base + usize::from(d)) as u32,
+            kind: FrameKind::Colibri,
+            noted: None,
+            temps_mark: fiber.temps.len() as u32,
+        });
+        Ok(())
+    }
+
     /// A call that cannot be made: too deep, or out of budget.
     #[cold]
     #[inline(never)]
     fn call_refused(&mut self, fiber: &mut VmFiber, caller: &Chunk, pc: usize) -> Ctl {
         let span = caller.spans[pc - 1];
-        if fiber.frames.len() >= self.max_depth {
+        if fiber.visible_depth() >= self.max_depth {
             self.overflow(fiber, span)
         } else {
             self.step_failure(fiber, span)
@@ -1186,6 +1264,7 @@ impl Machine {
     #[inline(always)]
     fn pop_frame(&mut self, fiber: &mut VmFiber, v: Value) -> Option<Value> {
         let frame = fiber.frames.pop().expect("a frame to pop");
+        fiber.hidden -= usize::from(frame.chunk.hidden);
         debug_assert!(
             fiber.temps.len() == frame.temps_mark as usize,
             "held temporaries outlive their frame"
@@ -1229,6 +1308,10 @@ impl Machine {
                     .collect();
                 self.ptr_intrinsic(fiber, op, values, span)
             }
+            // The check before the loop of `wait_until`: may this code pause?
+            Intrinsic::WaitUntil => self
+                .pause_context(fiber, span, "wait_until")
+                .map(|_| Value::Unit),
             Intrinsic::HostAlive => Ok(Value::Bool(match &fiber.regs[args.start] {
                 Value::Host(r) => self.core.host_alive(r.index, r.generation),
                 _ => false,

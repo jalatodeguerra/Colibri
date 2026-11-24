@@ -50,7 +50,8 @@ fn int_of(v: &Value) -> Option<i64> {
 /// How many elements a built-in looks at, for the instruction budget: the length of the
 /// receiver for every operation that walks it. Constant-time operations cost nothing extra.
 #[inline]
-fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
+#[doc(hidden)]
+pub fn work_of(op: Builtin, recv: Option<&Value>) -> Option<usize> {
     use Builtin as B;
     let walks = matches!(
         op,
@@ -322,6 +323,10 @@ pub trait Builtins: Engine {
             | Builtin::ListDedup
             | Builtin::ListChunks
             | Builtin::ListWindows
+            | Builtin::ListGuardCheck
+            | Builtin::ListKeepMask
+            | Builtin::ListSetOrder
+            | Builtin::ListPickOrder
             | Builtin::ListSlice => {
                 let Some(list) = list_of(&recv) else {
                     return Err(bad(self, fiber));

@@ -1,0 +1,20 @@
+fn main() {
+    let mut xs = [3, 1, 2]
+    let total = xs.fold(0, fn(acc, x) => acc + x)
+    print(total)
+    print(xs.find(fn(x) => x == 1))
+    print(xs.find_index(fn(x) => x == 2))
+    print(xs.any(fn(x) => x > 2))
+    print(xs.all(fn(x) => x > 2))
+    xs.find(fn(x) {
+        xs.push(x)
+        return false
+    })
+}
+
+// expect: 6
+// expect: some(1)
+// expect: some(2)
+// expect: true
+// expect: false
+// panic: list modified during iteration

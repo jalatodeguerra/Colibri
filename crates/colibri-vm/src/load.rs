@@ -101,7 +101,10 @@ impl Machine {
             colibri_core::compare::take_gave_up();
         }
         let result = f(self, fiber);
-        fiber.frames.truncate(frames);
+        if fiber.frames.len() > frames {
+            fiber.frames.truncate(frames);
+            fiber.hidden = fiber.frames.iter().filter(|f| f.chunk.hidden).count();
+        }
         debug_assert!(fiber.unwinding.iter().all(|&(i, _)| (i as usize) < frames));
         // Only a bug could leave one; it must not leak into a later failure at the same index.
         fiber.unwinding.retain(|&(i, _)| (i as usize) < frames);
