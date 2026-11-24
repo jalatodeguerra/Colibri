@@ -19,6 +19,7 @@ use colibri_core::value::{CellObj, SmallVec, Value, unwrap_cell};
 use crate::bytecode::{Chunk, Op, Site};
 use crate::fiber::{Frame, FrameKind, VmFiber, is_scalar_value};
 use crate::machine::Machine;
+use crate::unchecked;
 
 /// How `exec` ends when it does not fail.
 pub(crate) enum Exit {
@@ -80,10 +81,27 @@ impl Machine {
         let mut base = top.base as usize;
         let mut pc = top.pc as usize;
 
-        macro_rules! reg {
-            ($i:expr) => {
-                fiber.regs[base + usize::from($i)]
-            };
+        // The registers of the running frame, read and written without a bounds check. SAFETY
+        // (for every `rd!` and `wr!`, which only the arms of the instructions that
+        // `Op::unchecked_regs_end` lists may use): the frame's window `base .. base + nregs`
+        // lies inside `fiber.regs` (`push_call`, `op_call_hidden` and `enter_with` grow the file
+        // before they push a frame, and nothing shrinks it while frames exist), and the compiler's
+        // `Chunk::verify_registers` refused any chunk whose instruction names a register of that
+        // list at or beyond `nregs`. Debug builds check the access.
+        macro_rules! rd {
+            ($i:expr) => {{
+                #[allow(unsafe_code)]
+                let r: &Value = unsafe { unchecked::get(&fiber.regs, base + usize::from($i)) };
+                r
+            }};
+        }
+        macro_rules! wr {
+            ($i:expr) => {{
+                #[allow(unsafe_code)]
+                let r: &mut Value =
+                    unsafe { unchecked::get_mut(&mut fiber.regs, base + usize::from($i)) };
+                r
+            }};
         }
         // Writes a result into a register the compiler says is empty (Unit invariant: it holds
         // a scalar, which owns nothing). Debug builds assert that, so a write that would lose a
@@ -91,7 +109,7 @@ impl Machine {
         macro_rules! put {
             ($i:expr, $v:expr) => {{
                 let v = $v;
-                let slot = &mut reg!($i);
+                let slot = wr!($i);
                 debug_assert!(
                     is_scalar_value(slot),
                     "a write into r{} of `{}` would lose {:?}",
@@ -160,7 +178,7 @@ impl Machine {
         }
         macro_rules! int2 {
             ($a:expr, $b:expr) => {
-                match (&reg!($a), &reg!($b)) {
+                match (rd!($a), rd!($b)) {
                     (Value::Int(x), Value::Int(y)) => (*x, *y),
                     _ => internal!("ill-typed integer operation"),
                 }
@@ -168,7 +186,7 @@ impl Machine {
         }
         macro_rules! float2 {
             ($a:expr, $b:expr) => {
-                match (&reg!($a), &reg!($b)) {
+                match (rd!($a), rd!($b)) {
                     (Value::Float(x), Value::Float(y)) => (*x, *y),
                     _ => internal!("ill-typed float operation"),
                 }
@@ -206,7 +224,7 @@ impl Machine {
         // Compare an integer register with a constant and jump unless it holds.
         macro_rules! jmp_not_k {
             ($a:expr, $k:expr, $off:expr, $cmp:tt) => {{
-                let Value::Int(x) = &reg!($a) else {
+                let Value::Int(x) = rd!($a) else {
                     internal!("ill-typed integer comparison")
                 };
                 if !(*x $cmp i64::from($k)) {
@@ -259,15 +277,15 @@ impl Machine {
                 Op::LoadInt { d, i } => put!(d, Value::Int(i64::from(i))),
                 Op::LoadK { d, k } => put!(d, chunk.consts[k as usize].dup()),
                 Op::Copy { d, s } => {
-                    let v = reg!(s).dup();
+                    let v = rd!(s).dup();
                     put!(d, v);
                 }
                 Op::Move { d, s } => {
-                    let v = std::mem::replace(&mut reg!(s), Value::Unit);
+                    let v = std::mem::replace(wr!(s), Value::Unit);
                     put!(d, v);
                 }
                 Op::Drop { r } => {
-                    let v = std::mem::replace(&mut reg!(r), Value::Unit);
+                    let v = std::mem::replace(wr!(r), Value::Unit);
                     if !is_scalar_value(&v) {
                         sync!();
                         self.release(v);
@@ -276,12 +294,12 @@ impl Machine {
 
                 Op::DropInert { r } => {
                     // A string or bytes value: the plain drop is all it needs.
-                    reg!(r) = Value::Unit;
+                    *wr!(r) = Value::Unit;
                 }
                 Op::DropN { r, n } => {
                     sync!();
                     for i in (0..n).rev() {
-                        let v = std::mem::replace(&mut reg!(r + i), Value::Unit);
+                        let v = std::mem::replace(wr!(r + i), Value::Unit);
                         if !is_scalar_value(&v) {
                             self.release(v);
                         }
@@ -290,27 +308,27 @@ impl Machine {
 
                 Op::StoreLocal { l, s } => {
                     // An explicit replace: the old value is released.
-                    let v = std::mem::replace(&mut reg!(s), Value::Unit);
-                    let old = std::mem::replace(&mut reg!(l), v);
+                    let v = std::mem::replace(wr!(s), Value::Unit);
+                    let old = std::mem::replace(wr!(l), v);
                     if !is_scalar_value(&old) {
                         sync!();
                         self.release(old);
                     }
                 }
                 Op::NewCell { l, s } => {
-                    let v = std::mem::replace(&mut reg!(s), Value::Unit);
+                    let v = std::mem::replace(wr!(s), Value::Unit);
                     put!(l, Value::Cell(CellObj::new(v)));
                 }
                 Op::CellGet { d, l } => {
-                    let Value::Cell(c) = &reg!(l) else {
+                    let Value::Cell(c) = rd!(l) else {
                         internal!("a captured variable is not in a cell")
                     };
                     let v = c.get();
                     put!(d, v);
                 }
                 Op::CellSet { l, s } => {
-                    let v = std::mem::replace(&mut reg!(s), Value::Unit);
-                    let Value::Cell(c) = &reg!(l) else {
+                    let v = std::mem::replace(wr!(s), Value::Unit);
+                    let Value::Cell(c) = rd!(l) else {
                         internal!("a captured variable is not in a cell")
                     };
                     let old = c.set(v);
@@ -320,7 +338,7 @@ impl Machine {
                     }
                 }
                 Op::UnwrapCell { r } => {
-                    let v = std::mem::replace(&mut reg!(r), Value::Unit);
+                    let v = std::mem::replace(wr!(r), Value::Unit);
                     put!(r, unwrap_cell(v));
                 }
 
@@ -362,7 +380,7 @@ impl Machine {
                     }
                 }
                 Op::AddIK { d, a, i } => {
-                    let Value::Int(x) = &reg!(a) else {
+                    let Value::Int(x) = rd!(a) else {
                         internal!("ill-typed integer operation")
                     };
                     match x.checked_add(i64::from(i)) {
@@ -371,7 +389,7 @@ impl Machine {
                     }
                 }
                 Op::NegI { d, a } => {
-                    let Value::Int(x) = &reg!(a) else {
+                    let Value::Int(x) = rd!(a) else {
                         internal!("ill-typed negation")
                     };
                     match x.checked_neg() {
@@ -389,7 +407,7 @@ impl Machine {
                 Op::MulF { d, a, b } => arith_f!(d, a, b, *),
                 Op::DivF { d, a, b } => arith_f!(d, a, b, /),
                 Op::NegF { d, a } => {
-                    let Value::Float(x) = &reg!(a) else {
+                    let Value::Float(x) = rd!(a) else {
                         internal!("ill-typed negation")
                     };
                     put!(d, Value::Float(-*x));
@@ -400,7 +418,7 @@ impl Machine {
                 Op::NeF { d, a, b } => cmp_f!(d, a, b, !=),
 
                 Op::Not { d, a } => {
-                    let Value::Bool(x) = &reg!(a) else {
+                    let Value::Bool(x) = rd!(a) else {
                         internal!("ill-typed `not`")
                     };
                     put!(d, Value::Bool(!*x));
@@ -416,12 +434,12 @@ impl Machine {
                 }
 
                 Op::Jmp { off } => jump!(off),
-                Op::JmpIf { r, off } => match &reg!(r) {
+                Op::JmpIf { r, off } => match rd!(r) {
                     Value::Bool(true) => jump!(off),
                     Value::Bool(false) => {}
                     _ => internal!("a condition that is not a bool"),
                 },
-                Op::JmpIfNot { r, off } => match &reg!(r) {
+                Op::JmpIfNot { r, off } => match rd!(r) {
                     Value::Bool(false) => jump!(off),
                     Value::Bool(true) => {}
                     _ => internal!("a condition that is not a bool"),
@@ -522,7 +540,7 @@ impl Machine {
                     tri!(self.op_make_closure(fiber, &chunk, base, pc, d, site));
                 }
                 Op::IterIsUser { a } => {
-                    if self.iter_is_user(&reg!(a)) {
+                    if self.iter_is_user(rd!(a)) {
                         pc += 1;
                     }
                 }
@@ -538,7 +556,7 @@ impl Machine {
                     }
                 }
                 Op::Return { s } => {
-                    let v = std::mem::replace(&mut reg!(s), Value::Unit);
+                    let v = std::mem::replace(wr!(s), Value::Unit);
                     Self::check_window(fiber, base, &chunk);
                     match self.pop_frame(fiber, v) {
                         Some(v) => return Ok(Exit::Return(v)),
@@ -583,14 +601,14 @@ impl Machine {
                 }
                 Op::Coerce { d, s, site } => match &chunk.sites[usize::from(site)] {
                     Site::F32ToFloat => {
-                        let Value::F32(x) = &reg!(s) else {
+                        let Value::F32(x) = rd!(s) else {
                             internal!("ill-typed `f32` coercion")
                         };
                         put!(d, Value::Float(f64::from(*x)));
                     }
                     Site::Coerce(how) => {
                         sync!();
-                        let v = reg!(s).clone();
+                        let v = rd!(s).clone();
                         let out = self.coerce(v, how);
                         put!(d, out);
                     }
@@ -598,7 +616,7 @@ impl Machine {
                 },
 
                 Op::GetField { d, s, idx } => {
-                    let field = match &reg!(s) {
+                    let field = match rd!(s) {
                         Value::Struct(st) => st.fields.get(usize::from(idx)).map(Value::dup),
                         _ => None,
                     };
@@ -687,7 +705,7 @@ impl Machine {
                 // Only the variant is compared: the checker's types make the enum and the arity
                 // of the payload the pattern's (the tree-walker checks them too, redundantly).
                 Op::TestVariant { r, v } => {
-                    let Value::Enum(e) = &reg!(r) else {
+                    let Value::Enum(e) = rd!(r) else {
                         internal!("a variant pattern on a value that is not an enum")
                     };
                     if e.variant == v {
@@ -695,7 +713,7 @@ impl Machine {
                     }
                 }
                 Op::TestInt { r, k } => {
-                    let hit = match &reg!(r) {
+                    let hit = match rd!(r) {
                         Value::Int(x) => *x == i64::from(k),
                         Value::U64(x) => u64::try_from(k) == Ok(*x),
                         _ => internal!("an integer pattern on another value"),
@@ -712,7 +730,7 @@ impl Machine {
                 }
                 Op::Unpack { d, s, i } => {
                     let i = usize::from(i);
-                    let part = match &reg!(s) {
+                    let part = match rd!(s) {
                         Value::Enum(e) => e.payload.get(i).cloned(),
                         Value::Tuple(items) => items.get(i).cloned(),
                         Value::Struct(st) => st.fields.get(i).cloned(),
@@ -731,7 +749,7 @@ impl Machine {
                     }
                 }
                 Op::DropCheck { r } => {
-                    let v = std::mem::replace(&mut reg!(r), Value::Unit);
+                    let v = std::mem::replace(wr!(r), Value::Unit);
                     if !is_scalar_value(&v) {
                         sync!();
                         self.release(v);

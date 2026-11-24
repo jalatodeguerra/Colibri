@@ -433,3 +433,25 @@ fn compile_all_covers_a_patch_and_compiles_what_the_program_has() {
     .expect("the patch fails");
     assert!(text.contains("cannot compile `big`"), "{text}");
 }
+
+#[test]
+fn a_chunk_that_names_a_register_beyond_its_window_is_refused() {
+    use crate::bytecode::Op;
+    let (m, program, _) = load("fn f(a: int) -> int => a + 1\nfn main() { print(f(1)) }\n");
+    let f = fn_id(&program, "f");
+    let mut chunk =
+        crate::compile::compile_body(&m.fns[f.0 as usize].body, Some(f), &m.env).expect("compiles");
+    assert!(chunk.verify_registers().is_ok());
+    // An instruction that the dispatch loop runs unchecked, aimed past `nregs`.
+    let past = chunk.nregs;
+    chunk.code[0] = Op::LoadInt { d: past, i: 1 };
+    let why = chunk
+        .verify_registers()
+        .expect_err("a register past the window");
+    assert!(why.contains("beyond"), "{why}");
+    // A boundary: the last register of the window is fine, a range that ends past it is not.
+    chunk.code[0] = Op::LoadInt { d: past - 1, i: 1 };
+    assert!(chunk.verify_registers().is_ok());
+    chunk.code[0] = Op::DropN { r: past - 1, n: 2 };
+    assert!(chunk.verify_registers().is_err());
+}
