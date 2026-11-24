@@ -140,202 +140,182 @@ fn sample_tree(name: &str) -> PathBuf {
 
 #[test]
 fn organize_dry_run_prints_the_plan_and_changes_nothing() {
-    vm_pending(
-        "organize_dry_run_prints_the_plan_and_changes_nothing",
-        || {
-            let root = sample_tree("dry");
-            let before = tree(&root);
-            let out = run_script(&organize(), &[root.to_str().unwrap(), "--dry-run"]);
-            assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-            let got = text(&out.stdout);
-            assert_eq!(got, EXPECTED_DRY_RUN, "{got}");
-            assert_eq!(tree(&root), before);
-            let _ = fs::remove_dir_all(&root);
-        },
-    )
+    let root = sample_tree("dry");
+    let before = tree(&root);
+    let out = run_script(&organize(), &[root.to_str().unwrap(), "--dry-run"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let got = text(&out.stdout);
+    assert_eq!(got, EXPECTED_DRY_RUN, "{got}");
+    assert_eq!(tree(&root), before);
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
 fn organize_moves_files_into_categories_and_resolves_collisions() {
-    vm_pending(
-        "organize_moves_files_into_categories_and_resolves_collisions",
-        || {
-            let root = sample_tree("move");
-            let out = run_script(&organize(), &[root.to_str().unwrap()]);
-            assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-            assert_eq!(
-                tree(&root),
-                [
-                    ".hidden.jpg",
-                    "archives/",
-                    "archives/backup.tar.gz",
-                    "code/",
-                    "code/main.rs",
-                    "documents/",
-                    "documents/notes.txt",
-                    "documents/paper.pdf",
-                    "images/",
-                    "images/SHOT.PNG",
-                    "images/photo (1).jpg",
-                    "images/photo (2).jpg",
-                    "images/photo.jpg",
-                    "other/",
-                    "other/README",
-                    "other/weird.xyz",
-                ]
-            );
-            // The collisions kept every file's content.
-            let read = |rel: &str| fs::read_to_string(root.join(rel)).unwrap();
-            // The plan walks in name order, so `old/` is placed before the top-level `photo.jpg`.
-            // `old/` was emptied by the moves, so it is pruned.
-            assert_eq!(read("images/photo (1).jpg"), "oldest");
-            assert_eq!(read("images/photo.jpg"), "older");
-            assert_eq!(read("images/photo (2).jpg"), "jpeg");
-            // A second run finds everything in place.
-            let again = run_script(&organize(), &[root.to_str().unwrap()]);
-            assert_eq!(again.status.code(), Some(0));
-            assert_eq!(text(&again.stdout), "nothing to do\n");
-            let _ = fs::remove_dir_all(&root);
-        },
-    )
+    let root = sample_tree("move");
+    let out = run_script(&organize(), &[root.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        tree(&root),
+        [
+            ".hidden.jpg",
+            "archives/",
+            "archives/backup.tar.gz",
+            "code/",
+            "code/main.rs",
+            "documents/",
+            "documents/notes.txt",
+            "documents/paper.pdf",
+            "images/",
+            "images/SHOT.PNG",
+            "images/photo (1).jpg",
+            "images/photo (2).jpg",
+            "images/photo.jpg",
+            "other/",
+            "other/README",
+            "other/weird.xyz",
+        ]
+    );
+    // The collisions kept every file's content.
+    let read = |rel: &str| fs::read_to_string(root.join(rel)).unwrap();
+    // The plan walks in name order, so `old/` is placed before the top-level `photo.jpg`.
+    // `old/` was emptied by the moves, so it is pruned.
+    assert_eq!(read("images/photo (1).jpg"), "oldest");
+    assert_eq!(read("images/photo.jpg"), "older");
+    assert_eq!(read("images/photo (2).jpg"), "jpeg");
+    // A second run finds everything in place.
+    let again = run_script(&organize(), &[root.to_str().unwrap()]);
+    assert_eq!(again.status.code(), Some(0));
+    assert_eq!(text(&again.stdout), "nothing to do\n");
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
 fn organize_prunes_only_the_folders_it_emptied() {
-    vm_pending("organize_prunes_only_the_folders_it_emptied", || {
-        let root = temp_dir("prune");
-        touch(&root, "deep/er/a.txt", "a");
-        touch(&root, "kept/b.txt", "b");
-        touch(&root, "kept/.hidden", "stays");
-        fs::create_dir_all(root.join("untouched")).unwrap();
-        let out = run_script(&organize(), &[root.to_str().unwrap()]);
-        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-        assert_eq!(
-            tree(&root),
-            [
-                "documents/",
-                "documents/a.txt",
-                "documents/b.txt",
-                "kept/",
-                "kept/.hidden",
-                "untouched/",
-            ]
-        );
-        let _ = fs::remove_dir_all(&root);
-    })
+    let root = temp_dir("prune");
+    touch(&root, "deep/er/a.txt", "a");
+    touch(&root, "kept/b.txt", "b");
+    touch(&root, "kept/.hidden", "stays");
+    fs::create_dir_all(root.join("untouched")).unwrap();
+    let out = run_script(&organize(), &[root.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        tree(&root),
+        [
+            "documents/",
+            "documents/a.txt",
+            "documents/b.txt",
+            "kept/",
+            "kept/.hidden",
+            "untouched/",
+        ]
+    );
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
 fn organize_match_only_touches_matching_names() {
-    vm_pending("organize_match_only_touches_matching_names", || {
-        let root = sample_tree("match");
-        let out = run_script(
-            &organize(),
-            &[root.to_str().unwrap(), "--match", r"\.(pdf|txt)$"],
-        );
-        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-        let t = tree(&root);
-        assert!(t.contains(&"documents/paper.pdf".to_string()), "{t:?}");
-        assert!(t.contains(&"documents/notes.txt".to_string()), "{t:?}");
-        assert!(t.contains(&"photo.jpg".to_string()), "{t:?}");
-        assert!(!t.contains(&"images/".to_string()), "{t:?}");
-        let _ = fs::remove_dir_all(&root);
-    })
+    let root = sample_tree("match");
+    let out = run_script(
+        &organize(),
+        &[root.to_str().unwrap(), "--match", r"\.(pdf|txt)$"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let t = tree(&root);
+    assert!(t.contains(&"documents/paper.pdf".to_string()), "{t:?}");
+    assert!(t.contains(&"documents/notes.txt".to_string()), "{t:?}");
+    assert!(t.contains(&"photo.jpg".to_string()), "{t:?}");
+    assert!(!t.contains(&"images/".to_string()), "{t:?}");
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
 fn organize_reads_a_rules_file() {
-    vm_pending("organize_reads_a_rules_file", || {
-        let root = sample_tree("rules");
-        let rules = scripts().join("organize/rules.example.json");
-        let out = run_script(
-            &organize(),
-            &[root.to_str().unwrap(), "--rules", rules.to_str().unwrap()],
-        );
-        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-        let t = tree(&root);
-        for want in [
-            "photos/photo.jpg",
-            "photos/SHOT.PNG",
-            "paperwork/notes.txt",
-            "paperwork/paper.pdf",
-            "source/main.rs",
-            // `tar.gz` is not in these rules.
-            "other/backup.tar.gz",
-        ] {
-            assert!(t.contains(&want.to_string()), "{want} missing from {t:?}");
-        }
-        let _ = fs::remove_dir_all(&root);
-    })
+    let root = sample_tree("rules");
+    let rules = scripts().join("organize/rules.example.json");
+    let out = run_script(
+        &organize(),
+        &[root.to_str().unwrap(), "--rules", rules.to_str().unwrap()],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let t = tree(&root);
+    for want in [
+        "photos/photo.jpg",
+        "photos/SHOT.PNG",
+        "paperwork/notes.txt",
+        "paperwork/paper.pdf",
+        "source/main.rs",
+        // `tar.gz` is not in these rules.
+        "other/backup.tar.gz",
+    ] {
+        assert!(t.contains(&want.to_string()), "{want} missing from {t:?}");
+    }
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
 fn organize_by_date_uses_the_modification_time() {
-    vm_pending("organize_by_date_uses_the_modification_time", || {
-        let root = temp_dir("date");
-        touch(&root, "a.txt", "a");
-        touch(&root, "b.txt", "b");
-        touch(&root, "c.txt", "c");
-        let set = |name: &str, unix: u64| {
-            let file = fs::File::options()
-                .write(true)
-                .open(root.join(name))
-                .unwrap();
-            file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(unix))
-                .unwrap();
-        };
-        set("a.txt", 1_615_000_000); // 2021-03-06
-        set("b.txt", 1_700_000_000); // 2023-11-14
-        set("c.txt", 1_615_100_000); // 2021-03-07
-        let out = run_script(&organize(), &[root.to_str().unwrap(), "--by", "date"]);
-        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-        assert_eq!(
-            tree(&root),
-            [
-                "2021/",
-                "2021/03/",
-                "2021/03/a.txt",
-                "2021/03/c.txt",
-                "2023/",
-                "2023/11/",
-                "2023/11/b.txt",
-            ]
-        );
-        let _ = fs::remove_dir_all(&root);
-    })
+    let root = temp_dir("date");
+    touch(&root, "a.txt", "a");
+    touch(&root, "b.txt", "b");
+    touch(&root, "c.txt", "c");
+    let set = |name: &str, unix: u64| {
+        let file = fs::File::options()
+            .write(true)
+            .open(root.join(name))
+            .unwrap();
+        file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(unix))
+            .unwrap();
+    };
+    set("a.txt", 1_615_000_000); // 2021-03-06
+    set("b.txt", 1_700_000_000); // 2023-11-14
+    set("c.txt", 1_615_100_000); // 2021-03-07
+    let out = run_script(&organize(), &[root.to_str().unwrap(), "--by", "date"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        tree(&root),
+        [
+            "2021/",
+            "2021/03/",
+            "2021/03/a.txt",
+            "2021/03/c.txt",
+            "2023/",
+            "2023/11/",
+            "2023/11/b.txt",
+        ]
+    );
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
 fn organize_exit_codes() {
-    vm_pending("organize_exit_codes", || {
-        let root = temp_dir("codes");
-        let dir = root.to_str().unwrap();
-        // 2: the command line is wrong.
-        for args in [
-            vec![],
-            vec![dir, "--by", "size"],
-            vec!["/definitely/not/here"],
-            vec![dir, "--match", "("],
-        ] {
-            let out = run_script(&organize(), &args);
-            assert_eq!(out.status.code(), Some(2), "{args:?}");
-            assert!(text(&out.stderr).contains("usage: colibri run organize.colibri"));
-        }
-        // 1: the rules file is unreadable or not JSON of the right shape.
-        let missing = run_script(&organize(), &[dir, "--rules", "/no/such/rules.json"]);
-        assert_eq!(missing.status.code(), Some(1));
-        assert!(text(&missing.stderr).contains("reading the rules"));
-        let bad = root.join("bad.json");
-        fs::write(&bad, r#"{"images": "jpg"}"#).unwrap();
-        let out = run_script(&organize(), &[dir, "--rules", bad.to_str().unwrap()]);
-        assert_eq!(out.status.code(), Some(1));
-        let err = text(&out.stderr);
-        assert!(
-            err.contains("the rules file") && err.contains("$.images"),
-            "{err}"
-        );
-        let _ = fs::remove_dir_all(&root);
-    })
+    let root = temp_dir("codes");
+    let dir = root.to_str().unwrap();
+    // 2: the command line is wrong.
+    for args in [
+        vec![],
+        vec![dir, "--by", "size"],
+        vec!["/definitely/not/here"],
+        vec![dir, "--match", "("],
+    ] {
+        let out = run_script(&organize(), &args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(text(&out.stderr).contains("usage: colibri run organize.colibri"));
+    }
+    // 1: the rules file is unreadable or not JSON of the right shape.
+    let missing = run_script(&organize(), &[dir, "--rules", "/no/such/rules.json"]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(text(&missing.stderr).contains("reading the rules"));
+    let bad = root.join("bad.json");
+    fs::write(&bad, r#"{"images": "jpg"}"#).unwrap();
+    let out = run_script(&organize(), &[dir, "--rules", bad.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = text(&out.stderr);
+    assert!(
+        err.contains("the rules file") && err.contains("$.images"),
+        "{err}"
+    );
+    let _ = fs::remove_dir_all(&root);
 }
 
 // ------------------------------------------------------------------ report
@@ -491,34 +471,32 @@ fn report_lists_failed_sources_and_exits_1() {
 
 #[test]
 fn report_exit_codes() {
-    vm_pending("report_exit_codes", || {
-        // 1: the index itself cannot be read.
-        let out = run_script(&report(), &["/no/such/index.json"]);
-        assert_eq!(out.status.code(), Some(1));
-        assert!(
-            text(&out.stderr).contains("reading the index"),
-            "{}",
+    // 1: the index itself cannot be read.
+    let out = run_script(&report(), &["/no/such/index.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("reading the index"),
+        "{}",
+        text(&out.stderr)
+    );
+    // 2: bad command line.
+    let index = fixtures().join("index.json");
+    let index = index.to_str().unwrap();
+    for args in [
+        vec![],
+        vec![index, "--concurrency", "0"],
+        vec![index, "--concurrency", "many"],
+        vec![index, "--now", "yesterday"],
+    ] {
+        let out = run_script(&report(), &args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?}: {}",
             text(&out.stderr)
         );
-        // 2: bad command line.
-        let index = fixtures().join("index.json");
-        let index = index.to_str().unwrap();
-        for args in [
-            vec![],
-            vec![index, "--concurrency", "0"],
-            vec![index, "--concurrency", "many"],
-            vec![index, "--now", "yesterday"],
-        ] {
-            let out = run_script(&report(), &args);
-            assert_eq!(
-                out.status.code(),
-                Some(2),
-                "{args:?}: {}",
-                text(&out.stderr)
-            );
-            assert!(text(&out.stderr).contains("usage: colibri run report.colibri"));
-        }
-    })
+        assert!(text(&out.stderr).contains("usage: colibri run report.colibri"));
+    }
 }
 
 #[test]
@@ -834,35 +812,30 @@ fn kvserver_closes_idle_connections_and_reports_a_bad_address() {
 /// seconds that `set_timeout` takes: anything else is a usage error (exit 2), not a panic.
 #[test]
 fn kvserver_refuses_an_idle_time_or_a_connection_cap_that_makes_no_sense() {
-    vm_pending(
-        "kvserver_refuses_an_idle_time_or_a_connection_cap_that_makes_no_sense",
-        || {
-            let script = scripts().join("kvserver/kvserver.colibri");
-            for (flag, value) in [
-                ("--idle", "-1"),
-                ("--idle", "nan"),
-                ("--idle", "inf"),
-                ("--idle", "soon"),
-                ("--max-connections", "0"),
-                ("--max-connections", "-3"),
-                ("--max-connections", "many"),
-            ] {
-                let out = run_script(&script, &[flag, value]);
-                assert_eq!(
-                    out.status.code(),
-                    Some(2),
-                    "{flag} {value}: {}",
-                    text(&out.stderr)
-                );
-                assert!(
-                    text(&out.stderr).contains("usage:") && !text(&out.stderr).contains("panic"),
-                    "{flag} {value}: {}",
-                    text(&out.stderr)
-                );
-                assert_eq!(text(&out.stdout), "", "{flag} {value}");
-            }
-        },
-    )
+    let script = scripts().join("kvserver/kvserver.colibri");
+    for (flag, value) in [
+        ("--idle", "-1"),
+        ("--idle", "nan"),
+        ("--idle", "inf"),
+        ("--idle", "soon"),
+        ("--max-connections", "0"),
+        ("--max-connections", "-3"),
+        ("--max-connections", "many"),
+    ] {
+        let out = run_script(&script, &[flag, value]);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{flag} {value}: {}",
+            text(&out.stderr)
+        );
+        assert!(
+            text(&out.stderr).contains("usage:") && !text(&out.stderr).contains("panic"),
+            "{flag} {value}: {}",
+            text(&out.stderr)
+        );
+        assert_eq!(text(&out.stdout), "", "{flag} {value}");
+    }
 }
 
 /// With `--max-connections 2` a third connection is told so in one line and closed, and a
@@ -1267,16 +1240,14 @@ fn notes_serves_a_json_api_streams_its_export_and_stops_on_shutdown() {
 
 #[test]
 fn notes_reports_a_bad_address() {
-    vm_pending("notes_reports_a_bad_address", || {
-        let script = scripts().join("notes/notes.colibri");
-        let out = run_script(&script, &["--addr", "not an address"]);
-        assert_eq!(out.status.code(), Some(1));
-        assert!(
-            text(&out.stderr).contains("is not an address"),
-            "{}",
-            text(&out.stderr)
-        );
-    })
+    let script = scripts().join("notes/notes.colibri");
+    let out = run_script(&script, &["--addr", "not an address"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("is not an address"),
+        "{}",
+        text(&out.stderr)
+    );
 }
 
 /// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they

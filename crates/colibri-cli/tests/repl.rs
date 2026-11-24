@@ -15,12 +15,16 @@ fn repl(input: &str) -> (String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("colibri starts");
-    child
+    // A REPL that refuses to start (the VM, before it has sessions) is gone before the input
+    // is written; its stderr then says why.
+    if let Err(e) = child
         .stdin
         .take()
         .expect("stdin")
         .write_all(input.as_bytes())
-        .expect("input");
+    {
+        assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "input: {e}");
+    }
     let out = common::checked(child.wait_with_output().expect("colibri ends"));
     assert!(out.status.success());
     (
@@ -509,12 +513,16 @@ fn repl_with(args: &[&str], input: &str) -> (bool, String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("colibri starts");
-    child
+    // A REPL that refuses to start (the VM, before it has sessions) is gone before the input
+    // is written; its stderr then says why.
+    if let Err(e) = child
         .stdin
         .take()
         .expect("stdin")
         .write_all(input.as_bytes())
-        .expect("input");
+    {
+        assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "input: {e}");
+    }
     let out = common::checked(child.wait_with_output().expect("colibri ends"));
     (
         out.status.success(),

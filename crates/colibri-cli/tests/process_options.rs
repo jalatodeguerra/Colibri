@@ -4,7 +4,6 @@
 //! that differs most between Unix and Windows), and the child reports what it received.
 
 mod common;
-use common::vm_pending;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -51,16 +50,15 @@ fn run_script(dir: &Path, parent: &str) -> String {
 
 #[test]
 fn arguments_reach_the_program_exactly_as_given() {
-    vm_pending("arguments_reach_the_program_exactly_as_given", || {
-        let dir = folder("args");
-        let child = dir.join("child.colibri");
-        fs::write(
+    let dir = folder("args");
+    let child = dir.join("child.colibri");
+    fs::write(
         &child,
         "import os\n\nfn main() {\n    for a in os.args() {\n        print(\"[{a}]\")\n    }\n}\n",
     )
     .unwrap();
-        let parent = format!(
-            r#"import process
+    let parent = format!(
+        r#"import process
 import io
 
 fn main() {{
@@ -75,44 +73,42 @@ fn main() {{
     io.write(r.stdout)
 }}
 "#,
-            child = string_contents(&child),
-            exe = string_contents(Path::new(env!("CARGO_BIN_EXE_colibri"))),
-        );
-        let got = run_script(&dir, &parent);
-        let expected = [
-            "0",
-            "0",
-            "[a b]",
-            "[]",
-            "[%X%]",
-            "[$HOME]",
-            "[say \"hi\"]",
-            "[trailing\\]",
-            "[a&b]",
-            "[x | y > z]",
-            "[quote\\\"back]",
-            "[two  spaces]",
-            "[C:\\dir with space\\]",
-            "[tab\there]",
-            "",
-        ]
-        .join("\n");
-        assert_eq!(got, expected);
-        let _ = fs::remove_dir_all(&dir);
-    })
+        child = string_contents(&child),
+        exe = string_contents(Path::new(env!("CARGO_BIN_EXE_colibri"))),
+    );
+    let got = run_script(&dir, &parent);
+    let expected = [
+        "0",
+        "0",
+        "[a b]",
+        "[]",
+        "[%X%]",
+        "[$HOME]",
+        "[say \"hi\"]",
+        "[trailing\\]",
+        "[a&b]",
+        "[x | y > z]",
+        "[quote\\\"back]",
+        "[two  spaces]",
+        "[C:\\dir with space\\]",
+        "[tab\there]",
+        "",
+    ]
+    .join("\n");
+    assert_eq!(got, expected);
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn cwd_and_input_options_reach_the_program() {
-    vm_pending("cwd_and_input_options_reach_the_program", || {
-        let dir = folder("options");
-        let work = dir.join("work folder");
-        fs::create_dir_all(&work).unwrap();
-        fs::write(work.join("found-here.txt"), "x").unwrap();
-        let child = dir.join("child.colibri");
-        fs::write(
-            &child,
-            r#"import os
+    let dir = folder("options");
+    let work = dir.join("work folder");
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join("found-here.txt"), "x").unwrap();
+    let child = dir.join("child.colibri");
+    fs::write(
+        &child,
+        r#"import os
 import io
 import fs
 import path
@@ -126,10 +122,10 @@ fn main() {
     io.write(text)
 }
 "#,
-        )
-        .unwrap();
-        let parent = format!(
-            r#"import process
+    )
+    .unwrap();
+    let parent = format!(
+        r#"import process
 import io
 
 fn main() {{
@@ -142,17 +138,16 @@ fn main() {{
     io.write(r.stdout)
 }}
 "#,
-            work = string_contents(&work),
-            child = string_contents(&child),
-            exe = string_contents(Path::new(env!("CARGO_BIN_EXE_colibri"))),
-        );
-        let got = run_script(&dir, &parent);
-        assert_eq!(
-            got,
-            "0\n0\ncwd: work folder\nfile: true\ninput: 23 bytes\nfirst line\nsecond line\n"
-        );
-        let _ = fs::remove_dir_all(&dir);
-    })
+        work = string_contents(&work),
+        child = string_contents(&child),
+        exe = string_contents(Path::new(env!("CARGO_BIN_EXE_colibri"))),
+    );
+    let got = run_script(&dir, &parent);
+    assert_eq!(
+        got,
+        "0\n0\ncwd: work folder\nfile: true\ninput: 23 bytes\nfirst line\nsecond line\n"
+    );
+    let _ = fs::remove_dir_all(&dir);
 }
 
 /// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
