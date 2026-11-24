@@ -1,0 +1,36 @@
+class Bad { name: str }
+
+impl Drop for Bad {
+    fn drop(self) {
+        print("drop {self.name}")
+        if self.name == "a" {
+            let zero = 0
+            print(1 / zero)
+        }
+    }
+}
+
+struct Pt {
+    x: int
+    tag: str
+}
+
+fn main() {
+    let mut p = Pt { x: 1, tag: "t" }
+    let mut xs = [Bad { name: "a" }, Bad { name: "b" }]
+    for mut x in xs {
+        let a = p.x
+        print("{a}")
+        print("trip {x.name}")
+        x = Bad { name: x.name + "2" }
+    }
+    print("after")
+}
+
+// expect: 1
+// expect: trip a
+// expect: drop a
+// expect: drop a2
+// expect: drop b
+// panic: division by zero
+// drops: a, a2, b

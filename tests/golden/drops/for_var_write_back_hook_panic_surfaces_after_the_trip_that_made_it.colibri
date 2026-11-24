@@ -21,7 +21,6 @@ fn main() {
 
 // expect: trip a
 // expect: drop a
-// expect: trip b
 // expect: drop a2
 // expect: drop b
 // panic: division by zero
