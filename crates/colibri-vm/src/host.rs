@@ -102,6 +102,7 @@ impl Machine {
             unwind: Box::new([]),
             nregs: 0,
             nparams: 0,
+            hidden: false,
         });
         self.host_impls.shims[slot] = Some(Rc::clone(&chunk));
         chunk

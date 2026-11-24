@@ -441,6 +441,23 @@ fn list_sig(elem: &Ty, name: &str, fresh: Fresh<'_>) -> Option<Sig> {
                 Ty::List(Box::new(u)),
             )
         }
+        // Only the prelude may call these (see `check_builtin_method`).
+        "__guard" => sig(Builtin::ListGuardCheck, vec![], Ty::Unit),
+        "__keep" => sig(
+            Builtin::ListKeepMask,
+            vec![("mask", Ty::List(Box::new(Ty::Bool)))],
+            Ty::Unit,
+        ),
+        "__reorder" => sig(
+            Builtin::ListSetOrder,
+            vec![("order", Ty::List(Box::new(Ty::INT)))],
+            Ty::Unit,
+        ),
+        "__pick" => sig(
+            Builtin::ListPickOrder,
+            vec![("order", Ty::List(Box::new(Ty::INT)))],
+            list,
+        ),
         "dedup" => Sig {
             need: Need::Eq(t.clone()),
             ..sig(Builtin::ListDedup, vec![], Ty::Unit)
@@ -689,6 +706,9 @@ impl FnCtx<'_, '_> {
             }
             _ => return Err(recv),
         };
+        // The hidden helpers of the prelude are no methods of a program's lists.
+        let sig =
+            sig.filter(|_| !name.name.starts_with("__") || crate::prelude::in_prelude(name.span));
         let Some(sig) = sig else {
             if name.name == "enumerate" {
                 return Ok(self.check_enumerate(recv, args, span));

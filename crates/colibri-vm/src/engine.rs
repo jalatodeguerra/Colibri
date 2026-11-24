@@ -161,11 +161,24 @@ impl Engine for Machine {
         }
     }
 
+    fn visible_span(fiber: &VmFiber, span: Span) -> Span {
+        if !colibri_check::is_prelude_span(span) {
+            return span;
+        }
+        fiber
+            .frames
+            .iter()
+            .rev()
+            .find(|f| !f.chunk.hidden)
+            .map_or(span, Frame::span)
+    }
+
     fn stack_trace(&self, fiber: &VmFiber) -> Vec<TraceEntry> {
         fiber
             .frames
             .iter()
             .rev()
+            .filter(|f| !f.chunk.hidden)
             .map(|f| TraceEntry {
                 function: f.chunk.body.name.clone(),
                 span: f.span(),

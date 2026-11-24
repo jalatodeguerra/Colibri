@@ -709,6 +709,10 @@ impl Machine {
                     }
                 }
 
+                Op::SuspendReady => {
+                    sync!();
+                    tri!(self.op_suspend_ready(fiber, &chunk, pc));
+                }
                 Op::Site { .. } => internal!("an operand word was executed"),
                 Op::Unsupported { site } => {
                     let Site::Unsupported(msg) = &chunk.sites[usize::from(site)] else {
@@ -718,6 +722,24 @@ impl Machine {
                 }
             }
         }
+    }
+
+    /// `SuspendReady`: pausing needs a coroutine, and the check that precedes the loop of
+    /// `wait_until` refuses everything else.
+    #[cold]
+    #[inline(never)]
+    fn op_suspend_ready(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        pc: usize,
+    ) -> Result<(), Ctl> {
+        let span = chunk.spans[pc - 1];
+        Err(self.internal(
+            fiber,
+            span,
+            "a pause reached a fiber that is not a coroutine",
+        ))
     }
 
     /// Folds the panics of `Drop` hooks into the panic this frame's pad is running for.
@@ -1229,6 +1251,10 @@ impl Machine {
                     .collect();
                 self.ptr_intrinsic(fiber, op, values, span)
             }
+            // The check before the loop of `wait_until`: may this code pause?
+            Intrinsic::WaitUntil => self
+                .pause_context(fiber, span, "wait_until")
+                .map(|_| Value::Unit),
             Intrinsic::HostAlive => Ok(Value::Bool(match &fiber.regs[args.start] {
                 Value::Host(r) => self.core.host_alive(r.index, r.generation),
                 _ => false,

@@ -713,6 +713,11 @@ pub enum Op {
     Unsupported {
         site: u16,
     },
+    /// The coroutine running `wait_until` pauses until it is next resumed, then goes on (the
+    /// loop that follows runs the condition again). Needs a coroutine to pause, which the
+    /// scheduler's step of the VM provides; the check before the loop makes it unreachable until
+    /// then.
+    SuspendReady,
 }
 
 /// One range of instructions and the landing pad a panic inside it goes to.
@@ -849,6 +854,9 @@ pub struct Chunk {
     /// Registers of one frame: the locals, then the most temporaries alive at once.
     pub nregs: u16,
     pub nparams: u16,
+    /// The body is the prelude's own code (a closure built-in written in Colibri): a stack trace
+    /// leaves its frame out, and a panic in it is reported at the call of the built-in.
+    pub hidden: bool,
 }
 
 impl Chunk {
@@ -1043,6 +1051,7 @@ impl Chunk {
             Op::FoldHooks => "FoldHooks".to_string(),
             Op::Resume => "Resume".to_string(),
             Op::Unsupported { site } => format!("Unsupported {}", self.site_text(site)),
+            Op::SuspendReady => "SuspendReady".to_string(),
         }
     }
 

@@ -12,6 +12,7 @@ use crate::host::HostFault;
 pub trait Protocol: Engine {
     /// Creates a panic at `span`, capturing the Colibri stack as it is now.
     fn panic(&self, fiber: &mut Self::Fiber, span: Span, message: impl Into<String>) -> Ctl {
+        let span = Self::visible_span(fiber, span);
         Self::note_position(fiber, span);
         let stack = self.stack_trace(fiber);
         Ctl::Panic(Box::new(PanicInfo {
@@ -21,6 +22,20 @@ pub trait Protocol: Engine {
             notes: Vec::new(),
             budget: false,
         }))
+    }
+
+    /// Native code is about to call user code (a hook, a `next`, an error's `message`): a
+    /// coroutine cannot pause until [`Protocol::leave_native`] (`FiberState::native_depth`).
+    #[inline]
+    fn enter_native(fiber: &mut Self::Fiber) {
+        Self::fiber_state_mut(fiber).native_depth += 1;
+    }
+
+    /// The call that [`Protocol::enter_native`] announced is over, however it ended.
+    #[inline]
+    fn leave_native(fiber: &mut Self::Fiber) {
+        let state = Self::fiber_state_mut(fiber);
+        state.native_depth = state.native_depth.saturating_sub(1);
     }
 
     /// A panic for a state the checker should have made impossible.

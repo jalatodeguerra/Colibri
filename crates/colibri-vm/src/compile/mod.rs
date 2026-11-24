@@ -31,7 +31,7 @@ mod stmt;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use colibri_check::hir::{Body, FnId, Program, Stmt, Storage};
+use colibri_check::hir::{Body, Builtin, FnId, Program, Stmt, Storage};
 use colibri_check::types::Ty;
 use colibri_core::value::Value;
 use colibri_syntax::Span;
@@ -52,6 +52,19 @@ pub struct CompileEnv {
     pub fn_names: Vec<Rc<str>>,
     /// By type id: the name of the type, for messages.
     pub type_names: Vec<String>,
+    /// The built-ins that take a closure and the function written in Colibri that stands for
+    /// each: a call of the built-in is compiled as a call of that function.
+    pub builtin_fns: Vec<(Builtin, FnId)>,
+}
+
+impl CompileEnv {
+    /// The function that does what the built-in `b` does, if it is written in Colibri.
+    pub(crate) fn builtin_fn(&self, b: Builtin) -> Option<FnId> {
+        self.builtin_fns
+            .iter()
+            .find(|(x, _)| *x == b)
+            .map(|(_, f)| *f)
+    }
 }
 
 impl CompileEnv {
@@ -76,6 +89,7 @@ impl CompileEnv {
             checked_globals,
             hook_fns,
             type_names: program.types.iter().map(|t| t.name.clone()).collect(),
+            builtin_fns: program.builtin_fns.clone(),
             fn_names: program
                 .fns
                 .iter()
@@ -383,6 +397,7 @@ impl<'a> FnCompiler<'a> {
             unwind,
             nregs: nregs as u16,
             nparams: body.param_count as u16,
+            hidden: colibri_check::is_prelude_span(body.span),
         })
     }
 

@@ -471,28 +471,6 @@ impl Interp {
 
     // ---- pausing ----
 
-    /// Common checks of `wait` and `join`: a coroutine is running, and no host function or
-    /// `Drop` hook sits on its stack.
-    fn pause_context(&mut self, fiber: &mut Fiber, span: Span, what: &str) -> Result<u64, Ctl> {
-        let Some(id) = fiber.state.coro else {
-            let message = format!(
-                "`{what}` can only pause a coroutine, but this code is not running in one (start one with `go`)"
-            );
-            return Err(self.panic(fiber, span, message));
-        };
-        if fiber.state.host_depth > 0 {
-            let message = format!(
-                "`{what}` cannot pause inside a host function's callback: the host's stack frame cannot be suspended"
-            );
-            return Err(self.panic(fiber, span, message));
-        }
-        if self.core.hook_depth > 0 {
-            let message = format!("`{what}` cannot pause inside a `Drop` hook");
-            return Err(self.panic(fiber, span, message));
-        }
-        Ok(id)
-    }
-
     /// Suspends the running coroutine until `wake`; `Err(Cancel)` if it is cancelled.
     fn suspend(&mut self, fiber: &mut Fiber, id: u64, wake: Wake) -> Eval<()> {
         if self

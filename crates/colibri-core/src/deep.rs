@@ -65,14 +65,15 @@ impl<E: Engine> Hooks<'_, E> {
         if let Err(ctl) = self.engine.step(self.fiber, self.span) {
             return Some(Err(Stop::Ctl(Box::new(ctl))));
         }
-        Some(
-            match self.engine.call_host_hook(self.fiber, r.ty, hook, args) {
-                Ok(value) => Ok(value),
-                Err(fault) => Err(Stop::Ctl(Box::new(
-                    self.engine.host_fault_ctl(self.fiber, fault),
-                ))),
-            },
-        )
+        E::enter_native(self.fiber);
+        let called = self.engine.call_host_hook(self.fiber, r.ty, hook, args);
+        E::leave_native(self.fiber);
+        Some(match called {
+            Ok(value) => Ok(value),
+            Err(fault) => Err(Stop::Ctl(Box::new(
+                self.engine.host_fault_ctl(self.fiber, fault),
+            ))),
+        })
     }
 
     /// Runs the user method `f` on `args`; its result as a value.
@@ -85,9 +86,10 @@ impl<E: Engine> Hooks<'_, E> {
         if self.span != Span::new(FileId(0), 0, 0) {
             E::note_position(self.fiber, self.span);
         }
-        self.engine
-            .call_fn(self.fiber, f, args)
-            .map_err(|c| Stop::Ctl(Box::new(c)))
+        E::enter_native(self.fiber);
+        let called = self.engine.call_fn(self.fiber, f, args);
+        E::leave_native(self.fiber);
+        called.map_err(|c| Stop::Ctl(Box::new(c)))
     }
 }
 

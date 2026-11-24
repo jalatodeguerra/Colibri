@@ -661,3 +661,50 @@ fn a_discarded_const_is_a_script_statement_without_the_loader() {
         );
     }
 }
+
+#[test]
+fn the_closure_built_ins_have_a_body_written_in_colibri() {
+    let p = program("fn main() {}\n");
+    let listed: Vec<Builtin> = p.builtin_fns.iter().map(|(b, _)| *b).collect();
+    for b in [
+        Builtin::ListMap,
+        Builtin::ListFilter,
+        Builtin::ListRetain,
+        Builtin::ListAny,
+        Builtin::ListAll,
+        Builtin::ListFind,
+        Builtin::ListFindIndex,
+        Builtin::ListFold,
+        Builtin::ListForEach,
+        Builtin::ListFlatMap,
+        Builtin::ListSortBy,
+        Builtin::ListSortByKey,
+        Builtin::ListSortedBy,
+        Builtin::OptionMap,
+        Builtin::OptionAndThen,
+        Builtin::ResultMap,
+        Builtin::ResultAndThen,
+    ] {
+        assert!(listed.contains(&b), "{b:?} has no prelude function");
+    }
+    for (b, f) in &p.builtin_fns {
+        let def = &p.fns[f.0 as usize];
+        assert!(def.name.starts_with("__"), "{b:?} -> {}", def.name);
+        assert!(def.host.is_none());
+        assert!(
+            def.body.block.stmts.len() + usize::from(def.body.block.tail.is_some()) > 0,
+            "{} has no body",
+            def.name
+        );
+    }
+}
+
+#[test]
+fn a_program_cannot_call_the_hidden_helpers_of_the_prelude() {
+    let (program, messages) = check("fn main() {\n    let xs = [1]\n    xs.__guard()\n}\n");
+    assert!(program.is_none());
+    assert!(
+        messages.iter().any(|m| m.contains("no method `__guard`")),
+        "{messages:?}"
+    );
+}

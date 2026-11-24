@@ -2125,6 +2125,13 @@ impl<'a> Checker<'a> {
             skipped_tests: self.assemble_tests(true),
             types: self.types.clone(),
             host_fns,
+            builtin_fns: prelude::BUILTIN_FNS
+                .iter()
+                .filter_map(|(b, name)| {
+                    let i = self.fns.iter().position(|f| f.name == *name)?;
+                    Some((*b, FnId(i as u32)))
+                })
+                .collect(),
             host_types: self.host_type_count,
             host_type_modules: self
                 .type_extra
@@ -2165,6 +2172,7 @@ impl<'a> Checker<'a> {
         self.values
             .keys()
             .map(String::as_str)
+            .filter(|name| !name.starts_with("__"))
             .chain(BUILTIN_FNS.iter().copied())
     }
 }

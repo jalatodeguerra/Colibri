@@ -504,6 +504,11 @@ impl FnCompiler<'_> {
     /// instructions of their own, the rest go through core's `builtin`.
     fn builtin(&mut self, b: Builtin, args: &[&Expr], e: &Expr, dst: Option<Reg>) {
         let span = e.span;
+        // The built-ins that take a closure are Colibri code: a call of the function of the
+        // prelude, so the closure runs as bytecode and may pause (vm-plan §2.9).
+        if let Some(f) = self.env.builtin_fn(b) {
+            return self.call_fn(f, args, None, &e.ty, dst, span);
+        }
         match b {
             Builtin::ListPush if args.len() == 2 => {
                 let l = self.anchor_operand(args[0], writes_locals(args[1]));
@@ -572,6 +577,42 @@ impl FnCompiler<'_> {
                     self.free(d, span);
                 }
             }
+        }
+    }
+
+    /// `wait_until(cond)`: a loop that runs the condition in the waiting coroutine and pauses
+    /// until it is next resumed while the answer is `false` (vm-plan §2.8). The check before
+    /// the loop gives the panics of a pause that cannot happen here.
+    fn wait_until(&mut self, cond: &Expr, e: &Expr, dst: Option<Reg>) {
+        let span = e.span;
+        // The answer lives below the window: the callee's window covers everything above the
+        // function value.
+        let t = self.alloc(Kind::Scalar);
+        let w = self.eval_window(0, &[cond], false);
+        let site = self.add_site(Site::Intrinsic {
+            which: Intrinsic::WaitUntil,
+            argc: 1,
+        });
+        self.emit(
+            Op::Intrinsic {
+                d: t,
+                base: w.base,
+                site,
+            },
+            span,
+        );
+        let top = self.new_label();
+        let done = self.new_label();
+        self.bind(top);
+        self.emit(Op::CallValue { d: t, base: w.base }, span);
+        self.emit_to(Op::JmpIf { r: t, off: 0 }, span, done);
+        self.emit(Op::SuspendReady, span);
+        self.emit_to(Op::Loop { off: 0 }, span, top);
+        self.bind(done);
+        self.free_window(w, span);
+        self.free(t, span);
+        if let Some(d) = dst {
+            self.emit(Op::LoadUnit { d }, span);
         }
     }
 
@@ -670,6 +711,7 @@ impl FnCompiler<'_> {
             // of its own (the tree-walker's twins).
             Intrinsic::Compare if args.len() == 2 => self.borrowing_intrinsic(which, &args, e, dst),
             Intrinsic::Builtin(b) => self.builtin(*b, &args, e, dst),
+            Intrinsic::WaitUntil if args.len() == 1 => self.wait_until(args[0], e, dst),
             other => {
                 let what = match other {
                     Intrinsic::Builtin(b) => format!("the built-in `{b:?}`"),

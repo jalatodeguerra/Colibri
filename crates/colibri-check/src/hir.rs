@@ -65,6 +65,10 @@ pub struct Program {
     pub impls: Vec<ImplDef>,
     /// The host functions the program may call, indexed by [`HostFnId`].
     pub host_fns: Vec<HostFnDef>,
+    /// The built-ins that take a closure and the prelude function (in Colibri, an entry of
+    /// [`Program::fns`]) that does the same. The tree-walker runs the native versions; the
+    /// bytecode VM calls these, so a closure runs as bytecode and may pause (vm-plan §2.9).
+    pub builtin_fns: Vec<(Builtin, FnId)>,
     /// How many types after the prelude's come from the host interface: the user's own types
     /// start at `FIRST_USER_TYPE + host_types`.
     pub host_types: u32,
@@ -1019,6 +1023,15 @@ pub enum Builtin {
     /// `xs[lo..hi]`: `args` are the list, `lo` and `hi` as `int?` (`none` for an open end) and
     /// whether `hi` is inclusive.
     ListSlice,
+    // ---- used only by the prelude's Colibri bodies of the closure built-ins ----
+    /// `xs.__guard()`: the panic of a change to a list that a loop or call holds, if it is held.
+    ListGuardCheck,
+    /// `xs.__keep(mask)`: keeps the elements whose flag in `mask` is true, in place.
+    ListKeepMask,
+    /// `xs.__reorder(order)`: puts the elements in the order of these positions, in place.
+    ListSetOrder,
+    /// `xs.__pick(order)`: a new list of the elements at these positions.
+    ListPickOrder,
     // ---- strings ----
     StrChars,
     StrBytes,

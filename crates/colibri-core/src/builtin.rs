@@ -322,6 +322,10 @@ pub trait Builtins: Engine {
             | Builtin::ListDedup
             | Builtin::ListChunks
             | Builtin::ListWindows
+            | Builtin::ListGuardCheck
+            | Builtin::ListKeepMask
+            | Builtin::ListSetOrder
+            | Builtin::ListPickOrder
             | Builtin::ListSlice => {
                 let Some(list) = list_of(&recv) else {
                     return Err(bad(self, fiber));
