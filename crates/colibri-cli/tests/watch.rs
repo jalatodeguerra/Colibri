@@ -122,8 +122,8 @@ fn a_running_event_loop_is_patched_in_place() {
 #[test]
 fn a_restart_runs_main_again_and_carries_state() {
     vm_pending("a_restart_runs_main_again_and_carries_state", || {
-        let v1 = "var n = 41\nfn save_state() -> str => \"{n}\"\nfn tick() -> int => 1\nfn main() {\n    print(\"v1 {n}\")\n    go forever()\n}\nfn forever() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
-        let v2 = "var n = 0\nfn restore_state(s: str) {\n    print(\"restored {s}\")\n}\nfn tick(x: int) -> int => x\nfn main() {\n    print(\"v2\")\n    go forever()\n}\nfn forever() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
+        let v1 = "let mut n = 41\nfn save_state() -> str => \"{n}\"\nfn tick() -> int => 1\nfn main() {\n    print(\"v1 {n}\")\n    go forever()\n}\nfn forever() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
+        let v2 = "let mut n = 0\nfn restore_state(s: str) {\n    print(\"restored {s}\")\n}\nfn tick(x: int) -> int => x\nfn main() {\n    print(\"v2\")\n    go forever()\n}\nfn forever() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
         let path = temp_file("restart", v1);
         let mut w = Watch::start(&path);
         w.wait_for(false, "v1 41");

@@ -92,7 +92,7 @@ fn a_panic_in_update_is_logged_and_the_host_goes_on() {
     host.load_source(
         "panicky.colibri",
         r#"
-var ticks = 0
+let mut ticks = 0
 
 fn update(dt: f32) {
 ticks += 1

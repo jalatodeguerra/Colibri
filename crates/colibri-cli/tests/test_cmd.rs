@@ -381,7 +381,7 @@ fn coroutines_do_not_leak_into_the_next_test() {
     vm_pending("coroutines_do_not_leak_into_the_next_test", || {
         let out = test_script(
             "coroutines",
-            "var hits = 0\n\nfn w() {\n    wait(10.0)\n    hits += 1\n}\n\ntest \"a starts one\" {\n    go w()\n    task.tick(1.0)\n}\n\ntest \"b sees nothing\" {\n    assert_eq(hits, 0)\n    task.tick(100.0)\n    assert_eq(hits, 0)\n}\n",
+            "let mut hits = 0\n\nfn w() {\n    wait(10.0)\n    hits += 1\n}\n\ntest \"a starts one\" {\n    go w()\n    task.tick(1.0)\n}\n\ntest \"b sees nothing\" {\n    assert_eq(hits, 0)\n    task.tick(100.0)\n    assert_eq(hits, 0)\n}\n",
             &[],
         );
         assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));

@@ -17,7 +17,7 @@ impl FnCompiler<'_> {
                 Arg::Value(v) => args.push(v),
                 // The tree-walker drops the receiver of a host call on the floor; the checker
                 // does not produce one.
-                Arg::Place(_) => return self.unsupported("`var self` host functions", e.span),
+                Arg::Place(_) => return self.unsupported("`mut self` host functions", e.span),
             }
         }
         let Ok(argc) = u16::try_from(args.len()) else {

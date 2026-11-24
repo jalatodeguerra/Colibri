@@ -2146,7 +2146,7 @@ fn close_write_waits_for_the_writes_called_before_it() {
                 all.len()
             });
             let call = if from_hook {
-                "var g: Option[Guard] = some(Guard { conn: c })\n    g = none"
+                "let mut g: Option[Guard] = some(Guard { conn: c })\n    g = none"
             } else {
                 "c.close_write()?"
             };

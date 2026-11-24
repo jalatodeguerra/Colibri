@@ -44,7 +44,8 @@ fn expressions_print_value_and_type() {
 #[test]
 fn bindings_persist_and_are_not_rerun() {
     vm_pending("bindings_persist_and_are_not_rerun", || {
-        let (out, _) = repl("let x = 10\nvar n = 0\nprint(\"once\")\nn += 1\nn += 1\nn\nx * 2\n");
+        let (out, _) =
+            repl("let x = 10\nlet mut n = 0\nprint(\"once\")\nn += 1\nn += 1\nn\nx * 2\n");
         assert_eq!(out, "once\n= 2 : int\n= 20 : int\n");
         let (out, _) =
             repl("fn init() -> int {\n  print(\"init\")\n  return 4\n}\nlet x = init()\nx\nx\n");
@@ -72,7 +73,7 @@ fn functions_are_defined_then_called() {
 #[test]
 fn multi_line_function_and_loop() {
     vm_pending("multi_line_function_and_loop", || {
-        let input = "fn sum(xs: List[int]) -> int {\n  var t = 0\n  for v in xs {\n    t += v\n  }\n  return t\n}\nsum([1, 2, 3])\nfor i in 0..3 {\n  print(i)\n}\n";
+        let input = "fn sum(xs: List[int]) -> int {\n  let mut t = 0\n  for v in xs {\n    t += v\n  }\n  return t\n}\nsum([1, 2, 3])\nfor i in 0..3 {\n  print(i)\n}\n";
         let (out, err) = repl(input);
         assert_eq!(out, "= 6 : int\n0\n1\n2\n");
         assert_eq!(err, "");
@@ -103,7 +104,7 @@ fn a_check_error_leaves_the_session_intact() {
 #[test]
 fn a_panic_leaves_the_session_intact() {
     vm_pending("a_panic_leaves_the_session_intact", || {
-        let (out, err) = repl("var n = 1\nn = n / 0\nlet z = 1 / 0\nn\nz\n");
+        let (out, err) = repl("let mut n = 1\nn = n / 0\nlet z = 1 / 0\nn\nz\n");
         assert_eq!(out, "= 1 : int\n");
         assert!(err.contains("panic: division by zero"), "{err}");
         assert!(err.contains("unknown name `z`"), "{err}");
@@ -165,7 +166,7 @@ fn types_declare_and_persist() {
 #[test]
 fn closures_survive_later_declarations() {
     vm_pending("closures_survive_later_declarations", || {
-        let input = "var fs: List[fn(int) -> int] = []\nfs.push(fn(n: int) => n * 3)\nfn later() -> int { return 1 }\nfs[0](4)\nlet g = fn(a: int) => a + 100\nfn other() -> int { return 2 }\ng(1)\nfs[0](5)\n";
+        let input = "let mut fs: List[fn(int) -> int] = []\nfs.push(fn(n: int) => n * 3)\nfn later() -> int { return 1 }\nfs[0](4)\nlet g = fn(a: int) => a + 100\nfn other() -> int { return 2 }\ng(1)\nfs[0](5)\n";
         let (out, err) = repl(input);
         assert_eq!(out, "= 12 : int\n= 101 : int\n= 15 : int\n");
         assert_eq!(err, "");
@@ -229,7 +230,8 @@ fn unknown_commands_and_quit() {
 fn an_entry_runs_top_to_bottom() {
     vm_pending("an_entry_runs_top_to_bottom", || {
         // One entry (one line): the declaration after the statements sees what they did.
-        let (out, err) = repl("var a: List[int] = []; a.push(1); a.push(2); let n = a.len(); n\n");
+        let (out, err) =
+            repl("let mut a: List[int] = []; a.push(1); a.push(2); let n = a.len(); n\n");
         assert_eq!(out, "= 2 : int\n");
         assert_eq!(err, "");
     })
@@ -429,7 +431,7 @@ fn redefining_the_left_out_variant_leaves_the_active_one_alone() {
         "redefining_the_left_out_variant_leaves_the_active_one_alone",
         || {
             let (out, err) = repl(
-                "@when(debug)\nvar counter = 0\n@when(!debug)\nvar counter = 100\ncounter += 5\ncounter\n@when(!debug)\nvar counter = 200\ncounter\n",
+                "@when(debug)\nlet mut counter = 0\n@when(!debug)\nlet mut counter = 100\ncounter += 5\ncounter\n@when(!debug)\nlet mut counter = 200\ncounter\n",
             );
             assert_eq!(err, "");
             assert_eq!(out, "= 5 : int\n= 5 : int\n", "{out}");
@@ -451,7 +453,7 @@ fn a_plain_redefinition_takes_the_place_of_the_variant_that_is_in_the_program() 
             // The variant that holds is the second of `a`: the new `a` goes there, behind `b`, so
             // nothing is renumbered.
             let (out, err) = repl(
-                "@when(!debug)\nvar a = 0\nvar b = 9\n@when(debug)\nvar a = 1\nvar a = 2\na\nb\n",
+                "@when(!debug)\nlet mut a = 0\nlet mut b = 9\n@when(debug)\nlet mut a = 1\nlet mut a = 2\na\nb\n",
             );
             assert_eq!(err, "");
             assert_eq!(out, "= 2 : int\n= 9 : int\n", "{out}");
@@ -477,7 +479,7 @@ fn a_definition_that_is_left_out_here_cannot_replace_the_one_that_is_in_the_prog
             );
             assert!(!err.contains("changed their order"), "{err}");
             assert_eq!(out, "= 1 : int\n", "{out}");
-            let (out, err) = repl("var x = 1\n@when(!debug)\nvar x = 2\nx\n");
+            let (out, err) = repl("let mut x = 1\n@when(!debug)\nlet mut x = 2\nx\n");
             assert!(err.contains("`x` would no longer exist"), "{err}");
             assert!(!err.contains("removes module-level"), "{err}");
             assert_eq!(out, "= 1 : int\n", "{out}");

@@ -401,7 +401,7 @@ fn a_host_result_of_the_wrong_kind_is_a_panic_from_a_let_typed_int() {
 #[test]
 fn a_host_result_of_the_wrong_kind_is_a_panic_when_an_int_var_is_overwritten() {
     let outcome = lying_host(
-        "fn main() {\n    var n = 0\n    keep(Res { name: \"c\" })\n    n = lie(1)\n    print(\"after\")\n    n = 5\n    print(\"reassigned\")\n}\n",
+        "fn main() {\n    let mut n = 0\n    keep(Res { name: \"c\" })\n    n = lie(1)\n    print(\"after\")\n    n = 5\n    print(\"reassigned\")\n}\n",
     );
     assert_clean_lie_panic(&outcome);
 }
@@ -417,7 +417,7 @@ fn a_host_result_of_the_wrong_kind_is_a_panic_by_each_trip_of_a_loop() {
 #[test]
 fn a_host_result_of_the_wrong_kind_is_a_panic_when_a_loop_assigns_it_to_a_var() {
     let outcome = lying_host(
-        "fn main() {\n    var n = 0\n    for i in 0..3 {\n        n = 7\n        keep(Res { name: \"m{i}\" })\n        n = lie(i)\n    }\n    print(\"after\")\n}\n",
+        "fn main() {\n    let mut n = 0\n    for i in 0..3 {\n        n = 7\n        keep(Res { name: \"m{i}\" })\n        n = lie(i)\n    }\n    print(\"after\")\n}\n",
     );
     assert_clean_lie_panic(&outcome);
 }
