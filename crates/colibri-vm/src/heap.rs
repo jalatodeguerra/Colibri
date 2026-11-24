@@ -40,6 +40,72 @@ impl Machine {
         out
     }
 
+    /// `NewStruct`, `NewObject` and `NewVariant`: one function each, so that none pays for the
+    /// others' locals.
+    #[inline(never)]
+    pub(crate) fn op_new_struct(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        [d, site]: [u16; 2],
+    ) -> Result<(), Ctl> {
+        let Site::Struct(ty, regs) = &chunk.sites[usize::from(site)] else {
+            let span = chunk.spans[pc - 1];
+            return Err(self.internal(fiber, span, "a struct without its site"));
+        };
+        let fields = Self::clone_regs::<StructInline>(fiber, base, regs);
+        Self::put_reg(fiber, base + usize::from(d), Value::strukt(*ty, fields));
+        Ok(())
+    }
+
+    #[inline(never)]
+    pub(crate) fn op_new_object(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        [d, site]: [u16; 2],
+    ) -> Result<(), Ctl> {
+        let Site::Object(ty, regs) = &chunk.sites[usize::from(site)] else {
+            let span = chunk.spans[pc - 1];
+            return Err(self.internal(fiber, span, "an object without its site"));
+        };
+        let fields = Self::clone_regs::<ObjInline>(fiber, base, regs);
+        let obj = ClassObj::new(*ty, fields);
+        self.core.track_object(&obj, Some(chunk.spans[pc - 1]));
+        Self::put_reg(fiber, base + usize::from(d), Value::Obj(obj));
+        Ok(())
+    }
+
+    #[inline(never)]
+    pub(crate) fn op_new_variant(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        [d, site]: [u16; 2],
+    ) -> Result<(), Ctl> {
+        let Site::Variant(ty, variant, regs) = &chunk.sites[usize::from(site)] else {
+            let span = chunk.spans[pc - 1];
+            return Err(self.internal(fiber, span, "an enum value without its site"));
+        };
+        let value = if regs.is_empty()
+            && *ty == colibri_check::types::OPTION_TYPE
+            && *variant == colibri_check::types::VARIANT_NONE
+        {
+            self.core.none()
+        } else {
+            let payload = Self::clone_regs::<PayloadInline>(fiber, base, regs);
+            Value::variant(*ty, *variant, payload)
+        };
+        Self::put_reg(fiber, base + usize::from(d), value);
+        Ok(())
+    }
+
     #[inline(never)]
     pub(crate) fn op_new(
         &mut self,
@@ -51,36 +117,6 @@ impl Machine {
     ) -> Result<(), Ctl> {
         let span = chunk.spans[pc - 1];
         let (d, value) = match op {
-            Op::NewStruct { d, site } => {
-                let Site::Struct(ty, regs) = &chunk.sites[usize::from(site)] else {
-                    return Err(self.internal(fiber, span, "a struct without its site"));
-                };
-                let fields = Self::clone_regs::<StructInline>(fiber, base, regs);
-                (d, Value::strukt(*ty, fields))
-            }
-            Op::NewObject { d, site } => {
-                let Site::Object(ty, regs) = &chunk.sites[usize::from(site)] else {
-                    return Err(self.internal(fiber, span, "an object without its site"));
-                };
-                let fields = Self::clone_regs::<ObjInline>(fiber, base, regs);
-                let obj = ClassObj::new(*ty, fields);
-                self.core.track_object(&obj, Some(span));
-                (d, Value::Obj(obj))
-            }
-            Op::NewVariant { d, site } => {
-                let Site::Variant(ty, variant, regs) = &chunk.sites[usize::from(site)] else {
-                    return Err(self.internal(fiber, span, "an enum value without its site"));
-                };
-                if regs.is_empty()
-                    && *ty == colibri_check::types::OPTION_TYPE
-                    && *variant == colibri_check::types::VARIANT_NONE
-                {
-                    (d, self.core.none())
-                } else {
-                    let payload = Self::clone_regs::<PayloadInline>(fiber, base, regs);
-                    (d, Value::variant(*ty, *variant, payload))
-                }
-            }
             Op::NewTuple { d, site } | Op::NewList { d, site } => {
                 let Site::Regs(regs) = &chunk.sites[usize::from(site)] else {
                     return Err(self.internal(fiber, span, "a collection without its site"));
@@ -115,19 +151,6 @@ impl Machine {
                     None => return Err(self.internal(fiber, span, "ill-typed projection")),
                 }
             }
-            Op::ObjGet { d, o, idx } => match &fiber.regs[base + usize::from(o)] {
-                Value::Obj(obj) => match obj.field(usize::from(idx)) {
-                    Some(v) => (d, v),
-                    None => return Err(self.internal(fiber, span, "a place does not exist")),
-                },
-                _ => {
-                    return Err(self.internal(
-                        fiber,
-                        span,
-                        "a field of something that is not an object",
-                    ));
-                }
-            },
             Op::FromWeak { d, s } => match &fiber.regs[base + usize::from(s)] {
                 Value::Weak(w) => (d, self.core.option(w.upgrade().map(Value::Obj))),
                 _ => return Err(self.internal(fiber, span, "a weak read of a strong value")),

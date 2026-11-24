@@ -1020,6 +1020,7 @@ impl Op {
             | Op::Not { d, a: s }
             | Op::Coerce { d, s, .. }
             | Op::GetField { d, s, .. }
+            | Op::ObjGet { d, o: s, .. }
             | Op::ListLen { d, l: s }
             | Op::StrLen { d, s }
             | Op::ListPush { l: d, v: s }
@@ -1104,7 +1105,6 @@ impl Op {
             | Op::MapInsert { .. }
             | Op::NewRange { .. }
             | Op::GetPath { .. }
-            | Op::ObjGet { .. }
             | Op::ToWeak { .. }
             | Op::FromWeak { .. }
             | Op::PlaceGet { .. }

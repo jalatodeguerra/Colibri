@@ -716,15 +716,33 @@ impl Machine {
                     sync!();
                     tri!(self.op_set_field(fiber, &chunk, base, pc, [l, s, idx]));
                 }
-                Op::NewStruct { .. }
-                | Op::NewObject { .. }
-                | Op::NewVariant { .. }
-                | Op::NewTuple { .. }
+                Op::NewStruct { d, site } => {
+                    sync!();
+                    tri!(self.op_new_struct(fiber, &chunk, base, pc, [d, site]));
+                }
+                Op::NewObject { d, site } => {
+                    sync!();
+                    tri!(self.op_new_object(fiber, &chunk, base, pc, [d, site]));
+                }
+                Op::NewVariant { d, site } => {
+                    sync!();
+                    tri!(self.op_new_variant(fiber, &chunk, base, pc, [d, site]));
+                }
+                Op::ObjGet { d, o, idx } => {
+                    let got = match rd!(o) {
+                        Value::Obj(obj) => obj.field(usize::from(idx)),
+                        _ => None,
+                    };
+                    match got {
+                        Some(v) => put!(d, v),
+                        None => internal!("a field of something that is not an object"),
+                    }
+                }
+                Op::NewTuple { .. }
                 | Op::NewList { .. }
                 | Op::NewMap { .. }
                 | Op::NewRange { .. }
                 | Op::GetPath { .. }
-                | Op::ObjGet { .. }
                 | Op::FromWeak { .. } => {
                     sync!();
                     tri!(self.op_new(fiber, &chunk, base, pc, op));
