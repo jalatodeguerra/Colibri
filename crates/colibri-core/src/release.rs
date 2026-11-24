@@ -128,6 +128,14 @@ pub trait Release: Engine {
         if is_shared(&value) {
             return;
         }
+        self.release_last(value);
+    }
+
+    /// [`Release::release`] of a container that is its last reference. A separate function so
+    /// that the early exits of `release` keep a short prologue.
+    #[doc(hidden)]
+    #[inline(never)]
+    fn release_last(&mut self, value: Value) {
         // A struct, tuple or enum that owns nothing but scalars and strings (a point, a pair)
         // has nothing to release: it is freed with its last reference, no worklist.
         match &value {
@@ -140,10 +148,14 @@ pub trait Release: Engine {
         // children (a leaf) is taken apart without allocating (a map still collects its
         // entries into one `Vec`). `is_shared` only saves the call: an unshared-check inside
         // `dismantle` would do nothing for such a value, so no test can tell it apart.
-        let mut work = Vec::new();
+        let mut work = std::mem::take(&mut self.core_mut().release_work);
         self.dismantle(value, &mut work);
         while let Some(v) = work.pop() {
             self.dismantle(v, &mut work);
+        }
+        // A hook that ran meanwhile may have left a list of its own; the last one stays.
+        if work.capacity() <= 1 << 12 {
+            self.core_mut().release_work = work;
         }
     }
 

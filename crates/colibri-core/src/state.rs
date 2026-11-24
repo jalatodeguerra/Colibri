@@ -52,6 +52,9 @@ pub struct Core {
     /// The prelude's `none`, shared by every `T?` that has no value: enum values are
     /// immutable and nothing can tell two empty enum values apart, so one is enough.
     none: Value,
+    /// The worklist of the last `release`, kept empty for the next one so that releasing a
+    /// value with children does not allocate one every time.
+    pub release_work: Vec<crate::value::Value>,
 }
 
 impl Core {
@@ -81,6 +84,7 @@ impl Core {
             leaks: None,
             sched: Scheduler::new(),
             none: Value::option(None),
+            release_work: Vec::new(),
         }
     }
 
