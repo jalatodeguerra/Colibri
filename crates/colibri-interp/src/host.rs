@@ -148,7 +148,10 @@ impl Interp {
         self.core.host.type_args = outer_type_args;
         fiber.state.host_depth -= 1;
         let outcome = match result {
-            Ok(v) => match self.core.host_result_mismatch(&body, type_args, &v) {
+            Ok(v) => match self
+                .core
+                .host_result_mismatch(id.0 as usize, &body, type_args, &v)
+            {
                 None => Ok(v),
                 Some(message) => {
                     self.release(v);

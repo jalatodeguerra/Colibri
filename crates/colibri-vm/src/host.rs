@@ -180,7 +180,10 @@ impl Machine {
         fiber.state.host_depth -= 1;
         // The trace of a panic includes the host function's frame, so it is popped after.
         let outcome = match result {
-            Ok(v) => match self.core.host_result_mismatch(&body, type_args, &v) {
+            Ok(v) => match self
+                .core
+                .host_result_mismatch(id.0 as usize, &body, type_args, &v)
+            {
                 None => Ok(v),
                 Some(message) => {
                     self.release(v);

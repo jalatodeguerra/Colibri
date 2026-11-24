@@ -150,6 +150,8 @@ pub struct HostFnDef {
     /// The function's entry in [`Program::fns`], which has an empty body and carries the
     /// signature and the name shown in stack traces.
     pub f: FnId,
+    /// The function's own type parameters, in the order of [`Call::type_args`].
+    pub type_params: Vec<crate::types::ParamId>,
     /// The capability the function needs (`fs`, `os`, `net`, `ffi`), if any.
     pub requires: Option<String>,
     /// For a function declared in an `extern "C"` block: the C function it calls. The host

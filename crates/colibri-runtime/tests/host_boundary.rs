@@ -438,6 +438,42 @@ fn assert_clean_lie_panic(outcome: &str) {
         "{outcome}"
     );
     assert!(!outcome.contains("after"), "{outcome}");
+    // The stray object is dropped before the panic is raised, and the trace starts at the host
+    // function.
+    let (printed, end) = outcome.split_once("--\n").expect("an outcome");
+    assert!(printed.starts_with("drop "), "{outcome}");
+    assert!(end.contains("stack [\"lie:"), "{outcome}");
+    assert!(end.contains("\"main:"), "{outcome}");
+}
+
+#[test]
+fn a_list_result_with_an_element_of_the_wrong_kind_is_a_panic() {
+    let before = |vm: &mut colibri::Vm, _: &Handles| {
+        let stash: Rc<std::cell::RefCell<Option<Value>>> = Rc::default();
+        let put = Rc::clone(&stash);
+        vm.register_fn("keep", move |v: Value| {
+            *put.borrow_mut() = Some(v);
+        })
+        .unwrap();
+        vm.register_fn("lies", move |x: Value| -> Vec<Value> {
+            let stray = stash.borrow_mut().take().expect("keep first");
+            vec![x, stray]
+        })
+        .unwrap();
+    };
+    let outcome = both(
+        &plain(&before),
+        "class Res { name: str }\nimpl Drop for Res {\n    fn drop(self) { print(\"drop {self.name}\") }\n}\nfn main() {\n    keep(Res { name: \"q\" })\n    let xs: List[int] = lies(1)\n    print(\"after\")\n    for x in xs {\n        print(x)\n    }\n}\n",
+    );
+    assert!(
+        outcome.contains(
+            "panic `host function `lies` returned a `Res` object where `int` was expected`"
+        ),
+        "{outcome}"
+    );
+    assert!(outcome.starts_with("drop q\n"), "{outcome}");
+    assert!(outcome.contains("stack [\"lies:"), "{outcome}");
+    assert!(!outcome.contains("after"), "{outcome}");
 }
 
 #[test]
