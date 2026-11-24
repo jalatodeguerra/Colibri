@@ -4,6 +4,7 @@
 //! tree-walker: a native stack) and is asked to run it through [`crate::engine::Engine`].
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
@@ -100,6 +101,32 @@ pub(crate) struct Entry {
     pub(crate) ticked: u64,
 }
 
+/// The hasher of the scheduler's tables, which are keyed by the ids it hands out itself: small
+/// integers that grow by one. One multiply spreads them; SipHash's guard against chosen keys
+/// buys nothing here and cost a tenth of a coroutine-heavy program.
+#[derive(Default)]
+pub(crate) struct IdHasher(u64);
+
+impl Hasher for IdHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(u64::from(b));
+        }
+    }
+
+    fn write_u64(&mut self, id: u64) {
+        let x = (self.0 ^ id).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = x ^ (x >> 32);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// A table keyed by scheduler ids.
+pub(crate) type IdMap<V> = HashMap<u64, V, BuildHasherDefault<IdHasher>>;
+
 /// The per-`Interp` coroutine scheduler.
 #[doc(hidden)]
 pub struct Scheduler {
@@ -118,15 +145,15 @@ pub struct Scheduler {
     pub(crate) stack_size: usize,
     pub(crate) clock: Box<dyn Clock>,
     /// The coroutines waiting for each signal, in wait order.
-    pub(crate) signals: HashMap<u64, Vec<u64>>,
+    pub(crate) signals: IdMap<Vec<u64>>,
     /// The coroutines waiting in `join` or `join_result` for each coroutine, in wait order.
-    pub(crate) joiners: HashMap<u64, Vec<u64>>,
+    pub(crate) joiners: IdMap<Vec<u64>>,
     /// The coroutines waiting in `join_all` for each `CoGroup`, in wait order.
-    pub(crate) group_waiters: HashMap<u64, Vec<u64>>,
+    pub(crate) group_waiters: IdMap<Vec<u64>>,
     /// Coroutines whose signal was emitted, in the order they will resume next tick.
     pub(crate) signaled: Vec<u64>,
     /// The live coroutines of each `CoGroup`, in start order.
-    pub(crate) groups: HashMap<u64, Vec<u64>>,
+    pub(crate) groups: IdMap<Vec<u64>>,
     /// How many times any coroutine was resumed (for tests and tuning).
     pub(crate) resumptions: u64,
     pub(crate) ext: Externals,
@@ -146,11 +173,11 @@ impl Scheduler {
             shutting_down: false,
             stack_size: DEFAULT_COROUTINE_STACK,
             clock: Box::new(SystemClock::new()),
-            signals: HashMap::new(),
-            joiners: HashMap::new(),
-            group_waiters: HashMap::new(),
+            signals: IdMap::default(),
+            joiners: IdMap::default(),
+            group_waiters: IdMap::default(),
             signaled: Vec::new(),
-            groups: HashMap::new(),
+            groups: IdMap::default(),
             resumptions: 0,
             ext: Externals::new(),
         }
