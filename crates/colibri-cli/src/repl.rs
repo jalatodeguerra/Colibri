@@ -589,8 +589,6 @@ fn upsert(items: &mut Vec<Item>, item: Item) {
     }
 }
 
-/// The program text: the entry's statements first (so that their positions are the ones the
-/// user typed), then the declarations.
 /// The statements of an entry for the body of a function, where a `const` is not allowed: a
 /// top-level `const _ = expr` (a statement of the script) is written `let _ = expr`.
 fn locals_only(script: &str) -> String {
@@ -616,6 +614,8 @@ fn locals_only(script: &str) -> String {
     out
 }
 
+/// The program text: the entry's statements first (so that their positions are the ones the
+/// user typed), then the declarations.
 fn build(items: &[Item], script: &str) -> Built {
     let mut source = String::new();
     let mut shown = String::new();
