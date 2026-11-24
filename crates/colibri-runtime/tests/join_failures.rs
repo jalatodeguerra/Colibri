@@ -2,9 +2,6 @@
 //! a `join_result` returns is not one, a panic that nobody returns always is, and a budget panic
 //! (EMBEDDING §5) always reaches the host.
 
-mod common;
-use common::vm_pending;
-
 use colibri_runtime as colibri;
 
 fn vm(budget: Option<u64>) -> (colibri::Vm, colibri::SharedBuffer) {

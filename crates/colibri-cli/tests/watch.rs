@@ -3,7 +3,6 @@
 //! slower, not flaky.
 
 mod common;
-use common::vm_pending;
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;

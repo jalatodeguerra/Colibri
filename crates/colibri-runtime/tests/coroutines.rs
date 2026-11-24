@@ -1,9 +1,6 @@
 //! Coroutines from the host's side: `Vm::tick`, the event loop, host callbacks, stack sizes
 //! (ARCHITECTURE §16).
 
-mod common;
-use common::vm_pending;
-
 use std::cell::Cell;
 use std::rc::Rc;
 

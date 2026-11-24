@@ -1,9 +1,6 @@
 //! The whole-file `fs` functions (`read`, `write`, `append` and their `_bytes` forms) run on
 //! the calling thread and return when they are done: they never give other coroutines a turn.
 
-mod common;
-use common::vm_pending;
-
 use colibri_runtime as colibri;
 
 fn vm() -> (colibri::Vm, colibri::SharedBuffer) {

@@ -1,9 +1,6 @@
 //! The leak detector from the host's side: `VmBuilder::track_leaks`, `Vm::find_leaks`
 //! (ARCHITECTURE §18).
 
-mod common;
-use common::vm_pending;
-
 use colibri_runtime as colibri;
 
 const NODE: &str = "class Node {\n    name: str\n    next: Node? = none\n}\n";

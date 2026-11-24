@@ -51,7 +51,9 @@ const FIBER_POOL_CAP: usize = 16;
 pub struct FiberSlab {
     slots: Vec<Option<Box<VmFiber>>>,
     free: Vec<u32>,
-    /// Fibers of coroutines that ran to their end, emptied, ready for the next start.
+    /// Fibers of coroutines that ran to their end, emptied, ready for the next start. Boxed
+    /// so that a fiber moves in and out of the slab as a pointer, never by value.
+    #[allow(clippy::vec_box)]
     pool: Vec<Box<VmFiber>>,
 }
 
@@ -241,6 +243,7 @@ impl Machine {
 
     /// Makes the coroutine of a `go`: its handle, its fiber in the slab, its entry in the
     /// scheduler; the first run shares the starter's instruction budget.
+    #[allow(clippy::too_many_arguments)]
     fn start_coroutine(
         &mut self,
         fiber: &mut VmFiber,

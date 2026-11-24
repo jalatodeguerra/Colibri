@@ -1,7 +1,6 @@
 //! End-to-end tests of the `colibri` binary.
 
 mod common;
-use common::vm_pending;
 
 use std::path::PathBuf;
 use std::process::Output;

@@ -1,9 +1,6 @@
 //! Hot reload (DESIGN §16.3, ARCHITECTURE §17): `Vm::reload_changed` patches function bodies,
 //! restarts on anything else, and keeps the old program when the new one does not check.
 
-mod common;
-use common::vm_pending;
-
 use std::fs;
 use std::path::{Path, PathBuf};
 

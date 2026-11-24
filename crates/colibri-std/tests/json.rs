@@ -1,9 +1,6 @@
 //! `json` through the runtime API: field attributes, enums with data, the untyped `json.Value`.
 //! The golden tests in `tests/golden/std` cover the same ground from the language side.
 
-mod common;
-use common::vm_pending;
-
 use colibri_runtime as colibri;
 
 fn run(source: &str) -> String {
