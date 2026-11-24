@@ -1,0 +1,29 @@
+class Bad { name: str }
+
+impl Drop for Bad {
+    fn drop(self) {
+        print("drop {self.name}")
+        if self.name == "a" {
+            let zero = 0
+            print(1 / zero)
+        }
+    }
+}
+
+fn mk(n: str) -> Bad => Bad { name: n }
+
+fn main() {
+    let mut xs = [mk("a"), mk("b")]
+    for mut x in xs {
+        x = mk(x.name + "2")
+        print("tail {x.name}")
+    }
+    print("next")
+}
+
+// expect: tail a2
+// expect: drop a
+// expect: drop a2
+// expect: drop b
+// panic: division by zero
+// drops: a, a2, b

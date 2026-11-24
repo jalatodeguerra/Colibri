@@ -91,10 +91,7 @@ impl Machine {
     /// so landing pads and suspension have one place to hook into.
     pub(crate) fn exec(&mut self, fiber: &mut VmFiber) -> Result<Exit, Ctl> {
         let top = fiber.frames.last().expect("exec needs a frame");
-        let mut chunk = Rc::clone(&top.chunk);
-        // SAFETY: `chunk` lives as long as `code` is used; `reload!` replaces both together.
-        #[allow(unsafe_code)]
-        let mut code: &[Op] = unsafe { unchecked::code_of(&chunk) };
+        let mut chunk = unchecked::Running::new(Rc::clone(&top.chunk));
         let mut base = top.base as usize;
         let mut pc = top.pc as usize;
 
@@ -241,7 +238,7 @@ impl Machine {
             ($off:expr) => {{
                 let mut next = (pc as isize + $off as isize) as usize;
                 let mut n = 1;
-                if let Op::Step { n: run } = code[next] {
+                if let Op::Step { n: run } = chunk.ops()[next] {
                     n += run;
                     next += 1;
                 }
@@ -291,19 +288,14 @@ impl Machine {
         macro_rules! reload {
             () => {{
                 let frame = fiber.frames.last().expect("a frame");
-                chunk = Rc::clone(&frame.chunk);
-                // SAFETY: as above, `chunk` was just replaced and `code` follows it.
-                #[allow(unsafe_code)]
-                {
-                    code = unsafe { unchecked::code_of(&chunk) };
-                }
+                chunk.set(Rc::clone(&frame.chunk));
                 base = frame.base as usize;
                 pc = frame.pc as usize;
             }};
         }
 
         loop {
-            let op = code[pc];
+            let op = chunk.ops()[pc];
             pc += 1;
             match op {
                 Op::LoadUnit { d } => put!(d, Value::Unit),

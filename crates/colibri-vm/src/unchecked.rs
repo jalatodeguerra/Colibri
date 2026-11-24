@@ -12,25 +12,57 @@
 //! Debug builds (the test suites) check the index, so a violation fails there with a panic
 //! instead of reading out of bounds.
 
+use std::ops::Deref;
 use std::rc::Rc;
 
 use colibri_core::value::Value;
 
 use crate::bytecode::{Chunk, Op};
 
-/// The code of `chunk` as a slice that does not borrow the `Rc`, so the dispatch loop can keep
-/// it in registers and still replace its `chunk` when a call or a return changes the frame.
-/// Indexing it stays bounds checked.
+/// The chunk the dispatch loop runs, with its code as a slice kept next to it, so that fetching
+/// an instruction is one indexing and not a walk through the `Rc` and the chunk's vector.
 ///
-/// # Safety
-/// The caller keeps `chunk` (or another `Rc` of the same chunk) alive for as long as it uses the
-/// slice, and stops using the slice when it drops or replaces the last such `Rc`: `exec` reassigns
-/// the slice in the same statement block as it replaces its `chunk`.
-#[inline(always)]
-pub(crate) unsafe fn code_of<'a>(chunk: &Rc<Chunk>) -> &'a [Op] {
-    // SAFETY: the chunk's code is never mutated once the chunk is in an `Rc`, and the caller
-    // keeps the chunk alive (see above).
-    unsafe { &*std::ptr::from_ref::<[Op]>(&chunk.code[..]) }
+/// The two cannot be set apart: `new` and `set` take the `Rc` and derive the slice from it, and
+/// the only way to read the slice is `ops`, whose lifetime is that of the borrow of `self`.
+pub(crate) struct Running {
+    chunk: Rc<Chunk>,
+    /// The code of `chunk`, with the lifetime erased. Never exposed with a longer lifetime than
+    /// a borrow of `self`.
+    ops: *const [Op],
+}
+
+impl Running {
+    #[inline(always)]
+    pub(crate) fn new(chunk: Rc<Chunk>) -> Running {
+        let ops = std::ptr::from_ref::<[Op]>(&chunk.code[..]);
+        Running { chunk, ops }
+    }
+
+    /// Runs `chunk` from now on.
+    #[inline(always)]
+    pub(crate) fn set(&mut self, chunk: Rc<Chunk>) {
+        *self = Running::new(chunk);
+    }
+
+    /// The code of the chunk.
+    #[inline(always)]
+    pub(crate) fn ops(&self) -> &[Op] {
+        // SAFETY: `ops` points into the vector of `self.chunk`, which `self` keeps alive, and
+        // nothing mutates the code of a chunk inside an `Rc`. The vector is not moved: `Rc`
+        // keeps it in place whatever happens to `self`.
+        #[allow(unsafe_code)]
+        unsafe {
+            &*self.ops
+        }
+    }
+}
+
+impl Deref for Running {
+    type Target = Chunk;
+    #[inline(always)]
+    fn deref(&self) -> &Chunk {
+        &self.chunk
+    }
 }
 
 /// The register at `at`.
