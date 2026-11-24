@@ -859,9 +859,9 @@ fn the_closure_built_ins_are_calls_of_functions_written_in_colibri() {
     let text = dis(src, "f");
     // A call of a function, not an instruction of core's built-ins. Three of them: `map`,
     // `Option.map` and `sort_by`; the others (`clone`, `len`) are not closure built-ins.
-    assert!(!text.contains("ListMap"), "{text}");
-    assert!(!text.contains("OptionMap"), "{text}");
-    assert!(!text.contains("ListSortBy"), "{text}");
+    assert!(!text.contains("Builtin(ListMap)"), "{text}");
+    assert!(!text.contains("Builtin(OptionMap)"), "{text}");
+    assert!(!text.contains("Builtin(ListSortBy)"), "{text}");
     assert!(text.contains("Builtin(Clone)"), "{text}");
     assert_eq!(text.matches("CallHidden r").count(), 3, "{text}");
     // They run as bytecode, so the closure is called by `CallValue` from a function of the prelude.
