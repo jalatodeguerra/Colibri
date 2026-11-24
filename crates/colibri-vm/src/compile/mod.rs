@@ -140,6 +140,10 @@ impl CompileEnv {
 /// Which types of the program are release-inert: the greatest fixed point of "a struct or enum
 /// without a `Drop` hook whose field types are inert" (a recursive enum is inert when its other
 /// parts are).
+///
+/// The lending `for mut` relies on this being conservative: a type that can run user code when
+/// it is cloned, moved or released (a hook, a class, a closure, an interface value, or any new
+/// kind with a finaliser) must stay out of the set, or a lent slot could be seen empty.
 fn inert_types(program: &Program) -> Vec<bool> {
     use colibri_check::hir::TypeDefKind;
     let mut hooked = vec![false; program.types.len()];

@@ -1087,6 +1087,11 @@ impl Machine {
         if self.leaf_off {
             return false;
         }
+        // A Drop hook that panicked earlier in this expression is folded in at the first closure
+        // call of the generic path; the loop here would run past it.
+        if !self.core.hook_panics.is_empty() {
+            return false;
+        }
         let at = base + usize::from(a);
         let fold = which == Builtin::ListFold;
         let (Some(Value::List(list)), Some(Value::Closure(c))) = (

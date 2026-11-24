@@ -546,6 +546,8 @@ fn main() {
     }
     print(\"{ps[0].x} {ps[1].x} {ps[2].x} {ps[2].y}\")
 }";
+    // A VM-only regression guard, not a contract between engines: step counts are approximate and
+    // engine-specific (EMBEDDING §5), so the exact number is pinned for this engine alone.
     // The count was 47 before the loop lent the slot (the tree-walker charges one more; that
     // difference is older than the lending).
     let vm = steps_of(colibri::EngineKind::Bytecode, source);

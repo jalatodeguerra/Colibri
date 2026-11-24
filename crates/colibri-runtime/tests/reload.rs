@@ -252,6 +252,35 @@ fn a_leaf_closure_made_before_a_patch_runs_the_new_body_in_the_list_built_ins() 
     assert_eq!(total.call(&mut vm, ()).unwrap(), 18);
 }
 
+/// A patch that reorders the closure literals shifts the lifted function ids: a held closure runs
+/// the body the function table gives it now in the list built-ins, as a direct call of it does.
+#[test]
+fn a_leaf_closure_held_across_a_patch_that_shifts_the_closure_ids_keeps_its_own_body() {
+    let v1 = "let mut keep: fn(int) -> int = fn(n) => n\nlet mut other: fn(int) -> int = fn(n) => n\nfn setup() {\n    keep = fn(n) => n * 2\n    other = fn(n) => n + 100\n}\nfn one() -> int => keep(1)\nfn total() -> int {\n    let xs = [1, 2, 3]\n    return xs.map(keep).fold(0, fn(a, x) => a + x)\n}\n";
+    let v2 = "let mut keep: fn(int) -> int = fn(n) => n\nlet mut other: fn(int) -> int = fn(n) => n\nfn setup() {\n    other = fn(n) => n + 100\n    keep = fn(n) => n * 3\n}\nfn one() -> int => keep(1)\nfn total() -> int {\n    let xs = [1, 2, 3]\n    return xs.map(keep).fold(0, fn(a, x) => a + x)\n}\n";
+    let dir = tree("leaf-shift", &[("a.colibri", v1)]);
+    let (mut vm, _out) = vm();
+    vm.load_file(dir.join("a.colibri")).unwrap();
+    vm.get_fn::<(), ()>("setup")
+        .unwrap()
+        .call(&mut vm, ())
+        .unwrap();
+    let total = vm.get_fn::<(), i64>("total").unwrap();
+    for _ in 0..3 {
+        assert_eq!(total.call(&mut vm, ()).unwrap(), 12);
+    }
+    write(&dir, "a.colibri", v2);
+    assert!(matches!(
+        vm.reload_changed().unwrap(),
+        ReloadOutcome::Patched { .. }
+    ));
+    // Closure bodies are found by the position of their literal: `keep` was made by the first
+    // literal of `setup`, which is `n + 100` now. A direct call and the native loop agree.
+    let one = vm.get_fn::<(), i64>("one").unwrap();
+    assert_eq!(one.call(&mut vm, ()).unwrap(), 101);
+    assert_eq!(total.call(&mut vm, ()).unwrap(), 101 + 102 + 103);
+}
+
 #[test]
 fn a_signature_change_restarts_and_carries_state_through_the_hooks() {
     let v1 = "let mut score = 7\nfn save_state() -> str => \"score={score}\"\nfn add(a: int) -> int => a + 1\nfn main() { print(\"main v1\") }\n";

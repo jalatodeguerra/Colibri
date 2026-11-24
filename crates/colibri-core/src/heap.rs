@@ -229,6 +229,10 @@ impl ListObj {
 
     /// Lends an element: moves it out and leaves `()` in its place, for a `for mut` loop that
     /// holds the list and is the only one to see it. `None` past the end.
+    ///
+    /// Engine use only: the slot must be refilled with `unlend_at` before anything else can see
+    /// the list, since a `()` hole breaks the list's element invariant.
+    #[doc(hidden)]
     #[inline]
     pub fn lend_at(&self, i: usize) -> Option<Value> {
         self.items
@@ -239,6 +243,9 @@ impl ListObj {
 
     /// Puts a lent element back into its slot, which holds `()` (so nothing is released).
     /// Gives the value back when the position does not exist.
+    ///
+    /// Engine use only (see `lend_at`).
+    #[doc(hidden)]
     #[inline]
     pub fn unlend_at(&self, i: usize, v: Value) -> Result<(), Value> {
         match self.items.borrow_mut().get_mut(i) {

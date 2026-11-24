@@ -305,6 +305,44 @@ fn a_closure_from_a_failed_entrys_own_code_is_refused_not_mistaken_on_both_engin
     assert_eq!(run(EngineKind::Bytecode), tree);
 }
 
+/// The shift of the lifted ids a failed entry makes (it defines a function before the closures'
+/// makers), with the list built-ins running the closure it stored: the closure finds its own body
+/// there once the entry is rolled back, not a neighbour's.
+#[test]
+fn a_leaf_closure_a_failed_entry_stored_still_runs_its_own_body_in_the_list_built_ins_on_both_engines()
+ {
+    let first = "let mut keep: fn(int) -> int = fn(n) => 0\nfn mk() -> fn(int) -> int {\n    return fn(n) => n * 5\n}\nfn other() -> fn(int) -> int {\n    return fn(n) => n + 9\n}\n";
+    let second = format!("{first}fn extra() -> int => 1\nkeep = mk()\npanic(\"boom\")\n");
+    let third = format!("{first}print([1, 2, 3].map(keep))\nprint([1, 2, 3].map(other()))\n");
+    let run = |kind: EngineKind| session(kind, &[first, &second, &third], |_, _| {});
+    let tree = run(EngineKind::Tree);
+    assert_eq!(tree.1, "[5, 10, 15]\n[10, 11, 12]\n", "{tree:?}");
+    assert_eq!(run(EngineKind::Bytecode), tree);
+}
+
+/// The list built-ins run a closure that only computes in a native loop; one whose code is gone
+/// fails there as a direct call of it does, with the same panic, on both engines.
+#[test]
+fn a_leaf_closure_whose_code_is_gone_fails_in_the_list_built_ins_as_a_call_does_on_both_engines() {
+    let first = "let mut keep: fn(int) -> int = fn(n) => n\nfn other() -> fn() -> int {\n    return fn() => 9\n}\n";
+    let second = format!(
+        "{first}fn helper() -> int => 7\nkeep = fn(n) => n + helper() - 7\npanic(\"boom\")\n"
+    );
+    let direct = format!("{first}print(keep(5))\n");
+    let mapped = format!("{first}print([1, 2, 3].map(keep).len())\n");
+    let run = |kind: EngineKind, third: &str| session(kind, &[first, &second, third], |_, _| {});
+    for kind in [EngineKind::Tree, EngineKind::Bytecode] {
+        let d = run(kind, &direct);
+        assert!(d.0[2].contains("its code is gone"), "{d:?}");
+        let m = run(kind, &mapped);
+        assert_eq!(m, d, "mapped, then direct");
+    }
+    assert_eq!(
+        run(EngineKind::Bytecode, &mapped),
+        run(EngineKind::Tree, &mapped)
+    );
+}
+
 /// A closure whose lifted function the failed entry has no counterpart for (it redefined `mk`
 /// with one closure where the old one had two) still runs after the rollback: the old program is
 /// back, and so is its body.

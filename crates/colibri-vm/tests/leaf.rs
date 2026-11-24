@@ -270,3 +270,41 @@ fn main() {{
     }
     assert!(over > 0 && fine > 0, "{over} {fine}");
 }
+
+/// A Drop hook that panicked while the arguments were made is folded in at the first closure call,
+/// before anything the call's result is passed to runs: the native loop declines it.
+#[test]
+fn a_pending_hook_panic_is_folded_in_before_the_native_loop_as_before() {
+    for call in [
+        "xs.map(fn(x) => x * 2)",
+        "xs.fold(0, fn(a, x) => a + x)",
+        "xs.any(fn(x) => x > 3)",
+    ] {
+        let src = format!(
+            "class Res {{ name: str }}
+impl Drop for Res {{
+    fn drop(self) {{
+        print(\"drop {{self.name}}\")
+        panic(\"hook {{self.name}}\")
+    }}
+}}
+fn show(a: (), b: str) {{
+    print(\"show\")
+}}
+fn main() {{
+    let mut ys = [Res {{ name: \"r\" }}]
+    let xs = [3, 1, 4, 1, 5, 9, 2, 6]
+    show(ys.clear(), \"{{{call}}}\")
+    print(\"after\")
+}}"
+        );
+        let (fast, _) = same(&src, None, 10_000);
+        assert_eq!(
+            fast.panic.as_deref().map(|m| m.contains("hook r")),
+            Some(true),
+            "{call}"
+        );
+        assert!(!fast.stdout.contains("show"), "{call}: {}", fast.stdout);
+        assert_eq!(fast.leaf_runs, 0, "{call}");
+    }
+}

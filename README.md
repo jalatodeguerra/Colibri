@@ -941,7 +941,8 @@ they have.
 - A shared runtime core, then the **bytecode VM**, which becomes the engine behind `colibri run`,
   embedding and hot reload. The interpreter is retired once the VM passes every test. The first
   speed goal is to beat CPython 3.13 on every program in [`benchmarks/`](benchmarks/README.md);
-  the interpreter is about 4 to 10 times slower than CPython today.
+  the tree-walking interpreter is about 4 to 10 times slower than CPython today; the bytecode VM
+  is ahead of it on four of the eight programs, level on one and up to 1.3 times slower on three.
 - `colibri build` for single-file executables and `colibri build --web` for the browser.
 
 **Later:**

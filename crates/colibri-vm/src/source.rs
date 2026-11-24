@@ -30,8 +30,10 @@ pub struct Outcome {
     /// The program did not compile: `panic` holds the diagnostics.
     pub compile_error: bool,
     /// The budget steps the last entry (`main`, else the module) used, grace included.
+    #[doc(hidden)] // testing only, no stability promise
     pub steps: u64,
     /// How many closure built-in calls ran in a native loop (see `Options::no_leaf`).
+    #[doc(hidden)] // testing only, no stability promise
     pub leaf_runs: u64,
 }
 
@@ -45,6 +47,7 @@ pub struct Options {
     pub trace_drops: bool,
     /// Never run a closure built-in in a native loop: the prelude's code does every call, as it
     /// did before leaf closures got their own loops (for tests that compare the two).
+    #[doc(hidden)] // testing only, no stability promise
     pub no_leaf: bool,
 }
 
