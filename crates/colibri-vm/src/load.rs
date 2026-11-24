@@ -19,7 +19,7 @@ impl Machine {
         if outermost {
             // A refusal ends with the run it stopped, not with the Vm.
             self.refused = false;
-            self.pending_refusal = None;
+            self.take_pending_refusal();
             self.drain_root_drops();
         }
         let result = self.run_module_parts(fiber);
@@ -98,6 +98,7 @@ impl Machine {
         let outermost = self.core.begin_entry();
         if outermost {
             self.refused = false;
+            self.take_pending_refusal();
             self.drain_root_drops();
             // What the host compared before this entry is not this script's failure.
             colibri_core::compare::take_gave_up();
@@ -121,6 +122,17 @@ impl Machine {
                 Err(budget_panic())
             }
             other => other,
+        };
+        // A coroutine met a refusal that nothing settled (it was cancelled by this entry's last
+        // act): it is this entry's error.
+        let result = match (outermost, self.take_pending_refusal()) {
+            (true, Some(info)) => {
+                if let Ok(v) = result {
+                    self.release(v);
+                }
+                Err(Ctl::Panic(Box::new(info)))
+            }
+            (_, _) => result,
         };
         match result {
             Ok(v) => Ok(v),

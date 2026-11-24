@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use colibri_check::hir::{Body, FnId, GlobalId, Program};
 use colibri_core::Core;
+use colibri_core::ctl::PanicInfo;
 use colibri_core::dispatch::Tables;
 use colibri_core::value::Value;
 
@@ -76,8 +77,9 @@ pub struct Machine {
     pub(crate) fibers: FiberSlab,
     /// A coroutine that ended with a refusal during the resumption in progress: what resumed it
     /// raises the refusal on its own fiber (`settle_refusal`), so a refusal stops the program where
-    /// it is met. The id of the coroutine and the message.
-    pub(crate) pending_refusal: Option<(u64, String)>,
+    /// it is met. The id of the coroutine and its failure. A copy rides in `hook_panics` too, so a
+    /// resumption that no resumer settles (the death of a `CoGroup`) raises it where drop hooks fold.
+    pub(crate) pending_refusal: Option<(u64, PanicInfo)>,
     /// Where the native stack stood when the host (or the event loop) last called in with no
     /// coroutine running: a resumed coroutine measures its native recursion from it.
     pub(crate) stack_root: usize,

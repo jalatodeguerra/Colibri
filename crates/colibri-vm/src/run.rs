@@ -1099,7 +1099,17 @@ impl Machine {
         };
         let from = base + usize::from(a);
         let args: Vec<Value> = fiber.regs[from..from + usize::from(*argc)].to_vec();
-        let result = self.builtin(fiber, *which, args, span)?;
+        let result = self.builtin(fiber, *which, args, span);
+        // Cancelling resumes the coroutines to unwind them: a refusal they meet is raised here.
+        let result = if matches!(
+            which,
+            colibri_check::hir::Builtin::CoroutineCancel
+                | colibri_check::hir::Builtin::CoGroupCancel
+        ) {
+            self.settle_refusal(fiber, span, result)
+        } else {
+            result
+        }?;
         Self::put_reg(fiber, base + usize::from(d), result);
         if colibri_core::compare::take_gave_up() {
             return Err(self.lookup_gave_up(fiber, chunk, pc, Some(base + usize::from(d))));

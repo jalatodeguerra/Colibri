@@ -203,6 +203,158 @@ fn coroutines_are_not_unwound_through_pads_after_a_refusal() {
     assert_eq!(out.contents(), "");
 }
 
+/// A coroutine's entry arguments are not released after a refusal either: no `Drop` hook runs,
+/// whether the argument was passed to the coroutine or captured by the closure it runs.
+#[test]
+fn a_refusal_does_not_release_the_arguments_of_a_coroutine() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        &format!(
+            "{DROPS}fn sleeper(a: R) {{\n    defer print(\"co deferred {{a.n}}\")\n    wait(1.0)\n}}\nfn main() {{\n    let h = R {{ n: \"captured\" }}\n    let f = fn() => sleeper(R {{ n: \"inner {{h.n}}\" }})\n    let _c = go sleeper(R {{ n: \"arg\" }})\n    let _d = go f()\n    print(\"before\")\n    blocky()\n    print(\"after\")\n}}\n"
+        ),
+    )
+    .unwrap();
+    let e = vm.run_main().expect_err("the refusal");
+    assert!(text(&e).contains(REFUSAL), "{}", text(&e));
+    vm.shutdown();
+    assert_eq!(out.contents(), "before\n");
+}
+
+/// (R1) `c.cancel()` resumes the coroutine to unwind it, and its `defer` meets the refusal: the
+/// program stops at the `cancel`, not at the next `go` after it.
+#[test]
+fn a_refusal_met_by_a_cancelled_coroutine_stops_main_at_the_cancel() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        r#"
+fn worker() {
+    defer print("defer got {blocky()}")
+    wait(10.0)
+}
+fn fine_job() {
+    print("fine runs")
+}
+fn main() {
+    let c = go worker()
+    print("cancel")
+    c.cancel()
+    print("after cancel")
+    let _f = go fine_job()
+    print("after go")
+}
+"#,
+    )
+    .unwrap();
+    let e = vm.run_main().expect_err("the refusal");
+    let t = text(&e);
+    assert!(t.contains(REFUSAL), "{t}");
+    assert!(t.contains("main"), "{t}");
+    assert_eq!(out.contents(), "cancel\n");
+}
+
+/// (R1) A `CoGroup` that dies cancels its coroutines at the end of a statement: a refusal met
+/// in a member's `defer` stops the program there, not at the next wait.
+#[test]
+fn a_refusal_met_when_a_group_dies_stops_the_program_where_it_dies() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        r#"
+fn member() {
+    defer print("defer got {blocky()}")
+    wait(10.0)
+}
+fn spawn() {
+    let g = CoGroup()
+    let _m = g.go(member())
+    print("group dies at return")
+}
+fn main() {
+    spawn()
+    print("after spawn")
+    wait(0.1)
+    print("after wait")
+}
+"#,
+    )
+    .unwrap();
+    let e = vm.run_main().expect_err("the refusal");
+    assert!(text(&e).contains(REFUSAL), "{}", text(&e));
+    assert_eq!(out.contents(), "group dies at return\n");
+}
+
+/// (R1) A refusal never leaks into the next entry of the host: the entry that met it fails with
+/// it (here the coroutine was cancelled by `main`'s last act) and the calls after it run.
+#[test]
+fn a_refusal_from_a_cancel_is_the_error_of_its_entry_only() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        r#"
+fn worker() {
+    defer print("defer got {blocky()}")
+    wait(10.0)
+}
+fn fine_job() {
+    print("fine runs")
+}
+fn later() {
+    print("later starts")
+    let _c = go fine_job()
+    print("later ends")
+}
+fn main() {
+    let c = go worker()
+    c.cancel()
+    print("main ends")
+}
+"#,
+    )
+    .unwrap();
+    let e = vm
+        .run_main()
+        .expect_err("the entry that met the refusal fails with it");
+    assert!(text(&e).contains(REFUSAL), "{}", text(&e));
+    out.take();
+    let later = vm.get_fn::<(), ()>("later").unwrap();
+    later
+        .call(&mut vm, ())
+        .expect("the next entry is not refused");
+    assert_eq!(out.take(), "later starts\nfine runs\nlater ends\n");
+    later.call(&mut vm, ()).expect("nor the one after");
+}
+
+/// (R1) The host cancelling coroutines has nobody to raise a refusal to; it does not wait for
+/// the next entry to meet it.
+#[test]
+fn a_refusal_met_by_a_host_cancel_does_not_reach_the_next_entry() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        r#"
+fn worker() {
+    defer print("defer got {blocky()}")
+    wait(10.0)
+}
+fn fine_job() {
+    print("fine runs")
+}
+fn main() {
+    go worker()
+}
+"#,
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    vm.cancel_coroutines();
+    out.take();
+    let main = vm.get_fn::<(), ()>("fine_job").unwrap();
+    main.call(&mut vm, ()).expect("the entry is not refused");
+    assert_eq!(out.take(), "fine runs\n");
+}
+
 /// An embedder's host-class method can be marked `no_await`, and then it is called beside
 /// coroutines like a host function; an unmarked one is refused.
 struct Gauge {

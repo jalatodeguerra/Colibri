@@ -22,7 +22,7 @@ use std::rc::Rc;
 use colibri_check::hir::Callee;
 use colibri_check::types::{COROUTINE_TYPE, Ty};
 use colibri_core::coro::Sched;
-use colibri_core::ctl::{Ctl, Eval};
+use colibri_core::ctl::{Ctl, Eval, PanicInfo};
 use colibri_core::engine::{Engine, Resumed};
 use colibri_core::heap::ClassObj;
 use colibri_core::prelude::*;
@@ -379,7 +379,9 @@ impl Machine {
             && info.message.starts_with(crate::unwind::REFUSAL)
             && let Some(id) = fiber.state.coro
         {
-            self.pending_refusal = Some((id, info.message.clone()));
+            let info = (**info).clone();
+            self.core.hook_panics.push(info.clone());
+            self.pending_refusal = Some((id, info));
         }
         Resumed::Finished(finish)
     }
@@ -394,12 +396,21 @@ impl Machine {
         span: Span,
         result: Result<T, Ctl>,
     ) -> Result<T, Ctl> {
-        let Some((id, message)) = self.pending_refusal.take() else {
+        let Some(info) = self.take_pending_refusal() else {
             return result;
         };
-        // The coroutine's own failure is this refusal: it is not reported a second time.
+        Err(self.panic(fiber, span, info.message))
+    }
+
+    /// Takes the refusal a coroutine ended with out of the books: its copy among the `Drop`
+    /// panics goes, and the coroutine's own failure report is not made a second time.
+    pub(crate) fn take_pending_refusal(&mut self) -> Option<PanicInfo> {
+        let (id, info) = self.pending_refusal.take()?;
+        self.core
+            .hook_panics
+            .retain(|p| !p.message.starts_with(crate::unwind::REFUSAL));
         self.core.sched.forget_failure_of(id);
-        Err(self.panic(fiber, span, message))
+        Some(info)
     }
 
     /// Calls what `go` named on the new fiber. `Ok(None)`: a frame is pushed, and the loop runs
@@ -545,7 +556,11 @@ impl Machine {
             Some(CoEntry { nparams, callee }) => {
                 let (result, _) = self.finish_entry(fiber, 0, nparams, false, result);
                 if let Some(f) = callee {
-                    self.release(f);
+                    if self.refused {
+                        std::mem::forget(f);
+                    } else {
+                        self.release(f);
+                    }
                 }
                 result
             }

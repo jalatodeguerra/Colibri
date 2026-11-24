@@ -147,7 +147,7 @@ impl Machine {
         self.note_stack_root();
         let result = Sched::tick(self, dt);
         // The refusal is the failure `tick` returns; it is not for a later entry.
-        self.pending_refusal = None;
+        self.take_pending_refusal();
         result
     }
 

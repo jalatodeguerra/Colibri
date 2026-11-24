@@ -166,6 +166,11 @@ impl Machine {
             return result;
         }
         let mut panics = std::mem::take(&mut self.core.hook_panics).into_iter();
+        // A refusal that no resumer settled (a `CoGroup` died, and a member's `defer` met it)
+        // is raised here, as the failure of the code whose release it was.
+        if let Some((id, _)) = self.pending_refusal.take() {
+            self.core.sched.forget_failure_of(id);
+        }
         let mut result = result;
         for failure in &mut panics {
             result = self.merge_failure(result, Box::new(failure), "a `Drop` hook also panicked");
