@@ -69,8 +69,9 @@ a script
 
 ## Bindings and constants
 
-`let` is immutable and `var` is mutable. `const` is a compile-time constant. A name can be
-shadowed in an inner block. Types are written only where they cannot be inferred, mainly in
+`let` is immutable and `let mut` is mutable. `const` is a compile-time constant and
+only exists at the top level of a file; inside a function use `let`. A name can be shadowed in
+an inner block. Types are written only where they cannot be inferred, mainly in
 function signatures.
 
 ```colibri
@@ -78,7 +79,7 @@ const LIMIT = 3
 
 fn main() {
     let a = 10
-    var b = 20
+    let mut b = 20
     b += a
     let c: float = 1.5
     {
@@ -258,7 +259,7 @@ made in a loop capture that iteration's value.
 
 ```colibri
 fn make_counter() -> fn() -> int {
-    var n = 0
+    let mut n = 0
     return fn() -> int {
         n += 1
         return n
@@ -269,7 +270,7 @@ fn main() {
     let next = make_counter()
     print(next())
     print(next())
-    var fs: List[fn() -> int] = []
+    let mut fs: List[fn() -> int] = []
     for i in 0..3 {
         fs.push(fn() => i * 10)
     }
@@ -305,7 +306,7 @@ fn main() {
             print("{a}{b}")
         }
     }
-    var xs = [1, 2, 3]
+    let mut xs = [1, 2, 3]
     while let some(x) = xs.pop() {
         print(x)
     }
@@ -384,7 +385,7 @@ struct Item {
 
 fn main() {
     let a = Item { name: "pen" }
-    var b = a
+    let mut b = a
     b.qty = 10
     print(a)
     print(b)
@@ -470,8 +471,9 @@ true
 
 ## Methods and impl blocks
 
-Methods are declared in `impl` blocks, apart from the data. `self` reads, and `var self` mutates
-a struct in place (the caller needs a `var`). A function without `self` is called on the type.
+Methods are declared in `impl` blocks, apart from the data. `self` reads, and `mut self` mutates
+a struct in place (the value it is called on must be declared with `let mut`). A function
+without `self` is called on the type.
 You cannot add methods to the built-in types (`List`, `str`, the numbers, ...). Today an `impl`
 can be written for any other type your program can name, including a type from a dependency;
 the rules about who may add what to a type are expected to get stricter.
@@ -486,13 +488,13 @@ impl Counter {
 
     fn get(self) -> int => self.n
 
-    fn bump(var self) {
+    fn bump(mut self) {
         self.n += 1
     }
 }
 
 fn main() {
-    var c = Counter.new()
+    let mut c = Counter.new()
     c.bump()
     c.bump()
     print(c.get())
@@ -518,10 +520,10 @@ struct Version {
 }
 
 fn main() {
-    var vs = [Version { major: 1, minor: 10 }, Version { major: 1, minor: 2 }]
+    let mut vs = [Version { major: 1, minor: 10 }, Version { major: 1, minor: 2 }]
     vs.sort()
     print(vs)
-    var seen = Set[Version]()
+    let mut seen = Set[Version]()
     seen.add(vs[0])
     print(seen.contains(Version { major: 1, minor: 2 }))
     print(compare(vs[0], vs[1]))
@@ -585,7 +587,7 @@ inferred at the call. There is no variance: a `List[Circle]` is not a `List[Shap
 import math
 
 fn largest[T: Ord](items: List[T]) -> T? {
-    var best = items.first()?
+    let mut best = items.first()?
     for x in items {
         if x > best {
             best = x
@@ -645,7 +647,7 @@ impl Mul[int] for Money {
 }
 
 fn main() {
-    var total = Money { cents: 250 }
+    let mut total = Money { cents: 250 }
     total += Money { cents: 50 }
     print((total * 3).cents)
 }
@@ -767,14 +769,14 @@ gives an optional.
 
 ```colibri
 fn main() {
-    var xs = [3, 1, 2]
+    let mut xs = [3, 1, 2]
     xs.push(4)
     xs.sort()
     print(xs)
     print(xs.map(fn(x) => x * x).filter(fn(x) => x > 1))
     print(xs.fold(0, fn(a, b) => a + b))
     print(xs[1..3])
-    var m = Map[str, int]()
+    let mut m = Map[str, int]()
     m["a"] = 1
     m["b"] = m.get_or("b", 0) + 5
     print(m)
@@ -785,7 +787,7 @@ fn main() {
     s.add(1)
     s.add(1)
     print(s.len())
-    var e = [Version { n: 2 }, Version { n: 1 }]
+    let mut e = [Version { n: 2 }, Version { n: 1 }]
     e.sort_by_key(fn(v) => v.n)
     print(e)
 }
@@ -807,13 +809,13 @@ b=5
 [Version { n: 1 }, Version { n: 2 }]
 ```
 
-`for var x in xs` gives a place you can change. Changing a collection while you iterate it
+`for mut x in xs` gives a place you can change. Changing a collection while you iterate it
 panics ("list modified during iteration"); use `retain` or iterate a copy. The
 [built-in types](builtins.md) page lists their methods.
 
 ## Iterators
 
-`for` runs over anything with `fn next(var self) -> T?` (`Iter[T]`) or `fn iter(self) -> Iter[T]`
+`for` runs over anything with `fn next(mut self) -> T?` (`Iter[T]`) or `fn iter(self) -> Iter[T]`
 (`Iterable[T]`): lists, maps, sets, ranges, strings and your own types.
 
 ```colibri
@@ -822,7 +824,7 @@ struct Countdown {
 }
 
 impl Iter[int] for Countdown {
-    fn next(var self) -> int? {
+    fn next(mut self) -> int? {
         if self.n == 0 {
             return none
         }

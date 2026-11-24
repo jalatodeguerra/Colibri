@@ -1,6 +1,6 @@
 fn main() {
     let words = ["b", "a"]
-    var joined = ""
+    let mut joined = ""
     for w in words {
         joined = joined + w
     }

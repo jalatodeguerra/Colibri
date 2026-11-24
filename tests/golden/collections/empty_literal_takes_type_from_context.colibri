@@ -1,5 +1,5 @@
 fn total(xs: List[int]) -> int {
-    var t = 0
+    let mut t = 0
     for x in xs {
         t += x
     }
@@ -12,7 +12,7 @@ fn main() {
     print(total([]))
     let b = Bag { }
     print(b.items.len())
-    var later = []
+    let mut later = []
     later.push(1)
     print(later)
 }

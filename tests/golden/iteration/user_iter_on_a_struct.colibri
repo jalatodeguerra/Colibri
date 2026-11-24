@@ -3,7 +3,7 @@ struct Countdown {
 }
 
 impl Iter[int] for Countdown {
-    fn next(var self) -> int? {
+    fn next(mut self) -> int? {
         if self.n <= 0 {
             return none
         }
@@ -17,7 +17,7 @@ fn main() {
     for x in (Countdown { n: 3 }) {
         print(x)
     }
-    var c = Countdown { n: 2 }
+    let mut c = Countdown { n: 2 }
     while let some(x) = c.next() {
         print("manual {x}")
     }

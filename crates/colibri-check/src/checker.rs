@@ -47,7 +47,7 @@ pub(crate) struct HostFnInfo {
 #[derive(Clone, Copy)]
 pub(crate) enum ScriptStep<'a> {
     Stmt(&'a ast::Stmt),
-    /// A module-level `let` or `var` of the entry file: in a script it is initialised when
+    /// A module-level `let` or `let mut` of the entry file: in a script it is initialised when
     /// execution reaches it (DESIGN §4.2).
     Global(GlobalId),
 }
@@ -65,7 +65,7 @@ pub(crate) struct ParamInfo<'a> {
     pub ty: Ty,
     pub span: Span,
     pub default: Option<&'a ast::Expr>,
-    /// A `var self` receiver: the local is assignable.
+    /// A `mut self` receiver: the local is assignable.
     pub mutable: bool,
     /// The module whose names the default is written in.
     pub module: ModId,
@@ -86,7 +86,7 @@ pub(crate) struct FnInfo<'a> {
     pub span: Span,
     /// All parameters; a method's first one is `self`.
     pub params: Vec<ParamInfo<'a>>,
-    /// `Some(mutable)` for a method with a `self` receiver (`var self` is `Some(true)`).
+    /// `Some(mutable)` for a method with a `self` receiver (`mut self` is `Some(true)`).
     pub receiver: Option<bool>,
     pub ret: Ty,
     pub ret_span: Option<Span>,
@@ -258,7 +258,7 @@ pub(crate) struct Checker<'a> {
     pub op_impls: OpImpls,
     /// The derived implementations made so far (built-in interfaces only).
     pub derived_impls: HashMap<(TypeKey, TypeId), ImplId>,
-    /// The entry file's top-level statements and `let`/`var` bindings, in source order.
+    /// The entry file's top-level statements and `let`/`let mut` bindings, in source order.
     script: Vec<ScriptStep<'a>>,
     /// The top-level statements of unimported modules (scripts of the package): checked in
     /// their own module, never run.
@@ -560,7 +560,7 @@ impl<'a> Checker<'a> {
         for t in 0..self.tests.len() {
             self.check_test(t);
         }
-        // A script (an entry file without `fn main`) runs its `let`, `var` and statements top
+        // A script (an entry file without `fn main`) runs its `let`, `let mut` and statements top
         // to bottom (DESIGN §4.2); otherwise every value is initialised first.
         let script_mode = !self.dependency_order && self.entry_main().is_none();
         if !script_mode {

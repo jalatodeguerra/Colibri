@@ -2,7 +2,7 @@ struct P { n: int }
 struct Q { p: P }
 
 impl P {
-    fn bump(var self) -> int {
+    fn bump(mut self) -> int {
         self.n += 100
         return 1
     }
@@ -10,17 +10,17 @@ impl P {
 
 fn main() {
     // The index is read before the call; storing the result into it must not move the write-back.
-    var xs = [P { n: 0 }, P { n: 10 }]
-    var i = 0
+    let mut xs = [P { n: 0 }, P { n: 10 }]
+    let mut i = 0
     i = xs[i].bump()
     print(xs)
     print(i)
-    var m: Map[int, P] = {0: P { n: 0 }, 1: P { n: 10 }}
-    var k = 0
+    let mut m: Map[int, P] = {0: P { n: 0 }, 1: P { n: 10 }}
+    let mut k = 0
     k = m[k].bump()
     print(m)
-    var qs = [Q { p: P { n: 0 } }, Q { p: P { n: 10 } }]
-    var j = 0
+    let mut qs = [Q { p: P { n: 0 } }, Q { p: P { n: 10 } }]
+    let mut j = 0
     j = qs[j].p.bump()
     print(qs)
 }

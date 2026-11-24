@@ -8,7 +8,7 @@ impl Log {
 
 fn main() {
     let log = Log { }
-    var n = 0
+    let mut n = 0
     {
         defer log.add("closing")
         defer n = 99

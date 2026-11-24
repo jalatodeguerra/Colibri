@@ -24,7 +24,7 @@ impl Machine {
     /// Calls the chunk from Rust: the arguments are moved into a fresh window above every live
     /// frame, a `NativeEntry` frame runs in a nested dispatch loop, and the arguments are
     /// released afterwards, after the callee's own cleanups (where the tree-walker releases its
-    /// parameters). For a `var self` method the second result is the final `self`.
+    /// parameters). For a `mut self` method the second result is the final `self`.
     pub(crate) fn enter(
         &mut self,
         fiber: &mut VmFiber,
@@ -90,7 +90,7 @@ impl Machine {
             "a call left a mutation guard held"
         );
         fiber.holds.truncate(holds_mark);
-        // The receiver of a `var self` method goes back to the caller; every other parameter
+        // The receiver of a `mut self` method goes back to the caller; every other parameter
         // is released, last first.
         let first_owned = usize::from(body.mutates_self);
         let receiver = if body.mutates_self && nparams > 0 {

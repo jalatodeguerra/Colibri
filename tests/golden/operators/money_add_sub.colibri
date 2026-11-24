@@ -37,7 +37,7 @@ fn main() {
     print(-a)
     print(a + b - b == a)
     print(a + b + a)
-    var total = Money { cents: 0 }
+    let mut total = Money { cents: 0 }
     total += a
     total += b
     total -= Money { cents: 49 }
@@ -48,7 +48,7 @@ fn main() {
     let e = c + d
     print(e.n)
     print(c.n)
-    var acc = Counter { n: 0 }
+    let mut acc = Counter { n: 0 }
     acc += c
     acc += d
     print(acc.n)

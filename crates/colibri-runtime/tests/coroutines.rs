@@ -263,7 +263,7 @@ fn signal_waiters_cost_nothing_per_tick() {
             "waiters.colibri",
             r#"
 let ready = Signal()
-var woken = 0
+let mut woken = 0
 
 fn listener() {
     wait_for(ready)

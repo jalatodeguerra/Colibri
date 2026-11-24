@@ -2,7 +2,7 @@
 // A constant pattern whose comparison gives up panics at the pattern.
 enum N { Leaf, Node(N) }
 fn build(n: int) -> N {
-    var v = N.Leaf
+    let mut v = N.Leaf
     for i in 0..n {
         v = N.Node(v)
     }

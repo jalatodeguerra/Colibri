@@ -12,7 +12,7 @@ fn main() {
     print(vec.ivec2(3, -4))
     print(vec.ivec4(1, 1, 1, 1))
     // a vector is a value: a copy does not follow the original
-    var m = a
+    let mut m = a
     m.x = 10
     print(a)
     print(m)

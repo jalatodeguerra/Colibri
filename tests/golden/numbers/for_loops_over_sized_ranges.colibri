@@ -1,5 +1,5 @@
 fn main() {
-    var total = 0
+    let mut total = 0
     let lo: u8 = 250
     for i in lo..=255 {
         total += int(i)

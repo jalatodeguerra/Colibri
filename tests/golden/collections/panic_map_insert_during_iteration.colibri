@@ -1,5 +1,5 @@
 fn main() {
-    var m = {"a": 1}
+    let mut m = {"a": 1}
     for (k, v) in m {
         m["b"] = 2
     }

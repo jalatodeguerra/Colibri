@@ -1,5 +1,5 @@
 // `colibri run` type-checks `test` blocks but never executes them.
-var runs = 0
+let mut runs = 0
 
 fn bump() -> int {
     runs += 1

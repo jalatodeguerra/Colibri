@@ -8,7 +8,7 @@ impl Eq for Key {
 }
 
 fn tags(s: Set[Key]) -> str {
-    var out = ""
+    let mut out = ""
     for k in s {
         out += k.tag + "|"
     }

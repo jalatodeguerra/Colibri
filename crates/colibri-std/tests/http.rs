@@ -458,8 +458,8 @@ fn a_binary_body_comes_back_as_bytes_without_loss() {
         r#"
     let r = http.get_bytes("{base}/all256") or panic("request failed")
     print(r.status)
-    var same = r.body.len() == 256
-    var i = 0
+    let mut same = r.body.len() == 256
+    let mut i = 0
     while i < 256 {
         if int(r.body[i]) != i {
             same = false

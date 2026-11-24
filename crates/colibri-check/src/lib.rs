@@ -117,7 +117,7 @@ pub fn check_modules(
 /// How [`check_modules_with`] checks a program.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CheckOptions {
-    /// Initialise the entry file's `let`/`var` in dependency order before its top-level
+    /// Initialise the entry file's `let`/`let mut` in dependency order before its top-level
     /// statements, even when it has no `fn main`. A script normally runs top to bottom
     /// (DESIGN §4.2); `colibri repl` sets this because its session program is not one file
     /// read in order (it runs each entry in order itself).

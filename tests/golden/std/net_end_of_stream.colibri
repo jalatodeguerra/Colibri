@@ -20,7 +20,7 @@ fn main() -> Result[()] {
     print(c.read(0)?.len())
     print(c.read_line()?)
     // Read what is left, one byte at a time, until `read(1)` is empty: that is the end.
-    var rest = 0
+    let mut rest = 0
     while true {
         let one = c.read(1)?
         if one.len() == 0 {

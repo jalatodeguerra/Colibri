@@ -1,6 +1,6 @@
 fn main() {
-    var xs = [1, 2]
-    for var x in xs {
+    let mut xs = [1, 2]
+    for mut x in xs {
         x += 1
     }
     xs.push(9)

@@ -1,5 +1,5 @@
 interface Counter {
-    fn bump(var self)
+    fn bump(mut self)
     fn value(self) -> int
 }
 
@@ -12,8 +12,8 @@ impl Counter for Clicks {
 
 fn main() {
     let c = Clicks { n: 0 }
-    var a: Counter = c
-    var b = a
+    let mut a: Counter = c
+    let mut b = a
     a.bump()
     b.bump()
     print(c.n)

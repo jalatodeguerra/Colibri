@@ -1,11 +1,11 @@
 fn main() {
     let unused = 1 // warning: unused variable `unused`
-    var counter = 0 // warning: unused variable `counter`
+    let mut counter = 0 // warning: unused variable `counter`
     counter = 5
     let _ignored = 2
     let used = 3
     let captured = 4
-    var assigned_in_closure = 0
+    let mut assigned_in_closure = 0
     let f = fn() => captured + 1
     let g = fn() { assigned_in_closure = 7 }
     g()

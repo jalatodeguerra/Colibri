@@ -26,7 +26,7 @@ fn main() {
     print(a.stdout)
 
     // Options: folder, environment, standard input.
-    var o = process.options()
+    let mut o = process.options()
     o.cwd = some("/")
     o.env = { "GREETING": "hi" }
     o.input = some("typed\n")

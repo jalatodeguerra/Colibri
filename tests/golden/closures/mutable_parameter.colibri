@@ -1,6 +1,6 @@
 fn main() {
-    let countdown = fn(var n: int) -> int {
-        var steps = 0
+    let countdown = fn(mut n: int) -> int {
+        let mut steps = 0
         while n > 0 {
             n -= 1
             steps += 1
@@ -8,7 +8,7 @@ fn main() {
         return steps
     }
     print(countdown(5))
-    let bump = fn(var x: int) {
+    let bump = fn(mut x: int) {
         x += 1
         print(x)
     }

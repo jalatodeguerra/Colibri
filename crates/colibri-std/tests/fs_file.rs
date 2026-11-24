@@ -79,9 +79,9 @@ fn a_file_much_bigger_than_the_buffers_is_read_line_by_line() {
 fn main() -> Result[()] {{
     let f = fs.open("{path}")?
     defer f.close()
-    var count = 0
-    var total = 0
-    var longest = 0
+    let mut count = 0
+    let mut total = 0
+    let mut longest = 0
     while true {{
         match f.read_line()? {{
             some(line) => {{
@@ -539,7 +539,7 @@ fn reader(f: fs.File) {{
 }}
 
 fn ticker() -> int {{
-    var n = 0
+    let mut n = 0
     while n < 20 {{
         wait(0.01)
         n += 1
@@ -593,7 +593,7 @@ fn next(f: fs.File, name: str) -> str {{
 }}
 
 fn ticker() -> int {{
-    var n = 0
+    let mut n = 0
     while n < 10 {{
         wait(0.01)
         n += 1
@@ -760,7 +760,7 @@ fn main() -> Result[()] {{
     let builder = BytesBuilder()
     for _ in 0..70000 {{ builder.push(65) }}
     let data = builder.to_bytes()
-    var wrong = 0
+    let mut wrong = 0
     for _ in 0..200 {{
         let f = fs.create("{file}")?
         let a = go big(f, data)
@@ -809,7 +809,7 @@ fn main() -> Result[()] {{
     let a = piece(65, 150000)
     let b = piece(66, 3)
     let c = piece(67, 90000)
-    var wrong = 0
+    let mut wrong = 0
     for _ in 0..40 {{
         let f = fs.create("{file}")?
         let x = go put(f, a)
@@ -949,7 +949,7 @@ fn main() -> Result[()] {{
     let r = go reader(f)
     // `wait` yields, so the coroutine has started its read, which cannot finish yet.
     wait(0.01)
-    var g: Option[Guard] = some(Guard {{ file: f }})
+    let mut g: Option[Guard] = some(Guard {{ file: f }})
     g = none
     r.join()
     print("done")

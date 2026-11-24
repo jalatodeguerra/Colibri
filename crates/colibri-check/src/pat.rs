@@ -14,7 +14,7 @@ use crate::types::{
 
 /// The names a pattern binds, and how.
 pub(crate) struct PatCx {
-    /// How the bindings are declared (`let`, `var`, ...).
+    /// How the bindings are declared (`let`, `let mut`, ...).
     pub kind: LocalKind,
     /// The bindings made so far in the alternative being checked.
     bound: Vec<(String, LocalId)>,

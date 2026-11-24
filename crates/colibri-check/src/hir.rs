@@ -45,7 +45,7 @@ pub struct Program {
     pub fns: Vec<FnDef>,
     pub globals: Vec<GlobalDef>,
     /// Every global, in the order its initialiser runs: the ones ordered by dependency first,
-    /// then (from [`Program::script_from`] on) the script's `let`/`var` in source order.
+    /// then (from [`Program::script_from`] on) the script's `let`/`let mut` in source order.
     pub init_order: Vec<GlobalId>,
     /// Where the globals the script initialises start in `init_order` (DESIGN §4.2): the script
     /// runs `StmtKind::InitGlobal` for each when it reaches its line. It is
@@ -257,7 +257,7 @@ pub enum TypeDefKind {
 pub struct IfaceMethod {
     pub name: String,
     pub span: Span,
-    /// `Some(mutable)` (`var self` is `Some(true)`); every interface method has a receiver.
+    /// `Some(mutable)` (`mut self` is `Some(true)`); every interface method has a receiver.
     pub receiver: Option<bool>,
     /// The default implementation, if the interface provides one.
     pub default: Option<FnId>,
@@ -381,7 +381,7 @@ pub struct FnDef {
     pub host: Option<HostFnId>,
 }
 
-/// A module-level `const`, `let` or `var`.
+/// A module-level `const`, `let` or `let mut`.
 #[derive(Debug)]
 pub struct GlobalDef {
     pub name: String,
@@ -404,7 +404,7 @@ pub struct Body {
     /// The function's top-level block. Its drop list starts with the parameters.
     pub block: Block,
     pub ret: Ty,
-    /// A `var self` method: its first parameter is an in/out receiver. When the call ends,
+    /// A `mut self` method: its first parameter is an in/out receiver. When the call ends,
     /// the engine takes the final value of local 0 back out and the caller writes it to the
     /// receiver place (ARCHITECTURE §4).
     pub mutates_self: bool,
@@ -415,7 +415,7 @@ pub struct Body {
 pub enum Storage {
     /// The value lives in the frame slot.
     Slot,
-    /// The value lives in a shared cell: the local is captured by a closure, is `var` and is
+    /// The value lives in a shared cell: the local is captured by a closure, is `let mut` and is
     /// assigned after its initialisation (ARCHITECTURE §1). A fresh cell is made each time the
     /// local is bound, so a loop iteration or a block entered twice gets its own.
     Cell,
@@ -474,7 +474,7 @@ pub enum StmtKind {
     Return(Option<Expr>),
     Break(LoopId),
     Continue(LoopId),
-    /// The line of a script's module-level `let`/`var`: runs its initialiser and stores the
+    /// The line of a script's module-level `let`/`let mut`: runs its initialiser and stores the
     /// value in the global (DESIGN §4.2). Only in [`Program::script`].
     InitGlobal {
         global: GlobalId,
@@ -537,7 +537,7 @@ pub enum ExprKind {
     Or(Box<Expr>, Box<Expr>),
     Call(Box<Call>),
     /// `go call(..)` (DESIGN §14.2): the operand is an [`ExprKind::Call`] whose callee is
-    /// a function, a function value, an interface method or a host function (never a `var self`
+    /// a function, a function value, an interface method or a host function (never a `mut self`
     /// receiver or an intrinsic). The arguments are evaluated on the caller's fiber, the call
     /// itself runs on a new coroutine, and the value is its `Coroutine[T]` handle, where `T`
     /// is the call's type.
@@ -686,7 +686,7 @@ pub struct ForLoop {
     pub id: LoopId,
     pub binding: ForBinding,
     pub source: ForSource,
-    /// `for var x in list`: the element is a place; the final value of the binding is written
+    /// `for mut x in list`: the element is a place; the final value of the binding is written
     /// back after each iteration (DESIGN §11.6). Only lists.
     pub places: bool,
     pub body: Block,
@@ -1133,7 +1133,7 @@ pub enum Builtin {
 #[derive(Debug)]
 pub enum Arg {
     Value(Expr),
-    /// A mutable receiver (`var self`): the engine moves the value in and writes it back when
+    /// A mutable receiver (`mut self`): the engine moves the value in and writes it back when
     /// the call ends, on every path.
     Place(Place),
 }

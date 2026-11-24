@@ -1,14 +1,14 @@
 // Maps with integer keys and with string keys: insert and look up.
 fn main() {
-    var m: Map[int, int] = {:}
+    let mut m: Map[int, int] = {:}
     for i in 0..300000 {
         m[i] = i * 2
     }
-    var total = 0
+    let mut total = 0
     for i in 0..300000 {
         total += m[i]
     }
-    var sm: Map[str, int] = {:}
+    let mut sm: Map[str, int] = {:}
     for i in 0..100000 {
         sm["key{i}"] = i
     }

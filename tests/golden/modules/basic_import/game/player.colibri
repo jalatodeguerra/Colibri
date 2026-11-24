@@ -1,6 +1,6 @@
 pub struct Player { pub name: str }
 
-var spawned = 0
+let mut spawned = 0
 
 pub fn spawn(name: str) -> Player {
     spawned += 1

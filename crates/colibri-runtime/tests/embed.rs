@@ -4,7 +4,7 @@
 use colibri_runtime as colibri;
 
 const SCRIPT: &str = r#"
-var calls = 0
+let mut calls = 0
 
 fn add(a: int, b: int) -> int => a + b
 

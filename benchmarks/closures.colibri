@@ -1,10 +1,10 @@
 // Closures through `map` and `filter`.
 fn main() {
-    var xs: List[int] = []
+    let mut xs: List[int] = []
     for i in 0..200000 {
         xs.push(i)
     }
-    var total = 0
+    let mut total = 0
     for round in 0..10 {
         let ys = xs.map(fn(x) => x * 2).filter(fn(x) => x % 3 == 0)
         total += ys.len()

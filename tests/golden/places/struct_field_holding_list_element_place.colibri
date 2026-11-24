@@ -2,7 +2,7 @@ struct Inv { items: List[int] }
 struct Player { inv: Inv, hp: int }
 
 fn main() {
-    var p = Player { inv: Inv { items: [1, 2, 3] }, hp: 1 }
+    let mut p = Player { inv: Inv { items: [1, 2, 3] }, hp: 1 }
     p.inv.items[1] = 20
     p.inv.items[0] += 5
     print(p)

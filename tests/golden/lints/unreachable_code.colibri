@@ -15,7 +15,7 @@ fn after_break() {
 }
 
 fn after_continue() {
-    var i = 0
+    let mut i = 0
     while i < 3 {
         i += 1
         continue

@@ -153,7 +153,7 @@ fn a_very_deep_value_drops_and_encodes_cleanly_in_a_coroutine() {
     let out = run(r#"import json
 
 fn build(n: int) -> json.Value {
-    var v = json.Value.null()
+    let mut v = json.Value.null()
     for i in 0..n {
         v = json.Value.list([v])
     }
@@ -161,8 +161,8 @@ fn build(n: int) -> json.Value {
 }
 
 fn work() -> int {
-    var v = build(200000)
-    var m = json.Value.map({"a": v})
+    let mut v = build(200000)
+    let mut m = json.Value.map({"a": v})
     print(json.encode(v).is_err())
     print(json.pretty(m).is_err())
     print(v.equals(v))
@@ -336,7 +336,7 @@ fn showing_and_comparing_a_very_deep_value_is_safe() {
     let out = run(r#"import json
 
 fn build(n: int) -> json.Value {
-    var v = json.Value.null()
+    let mut v = json.Value.null()
     for i in 0..n {
         v = json.Value.list([v])
     }

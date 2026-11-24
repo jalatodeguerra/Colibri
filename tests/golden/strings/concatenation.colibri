@@ -1,7 +1,7 @@
 fn main() {
     let a = "foo"
     let b = "bar"
-    var s = a + b
+    let mut s = a + b
     s += "!"
     s += s
     print(s)

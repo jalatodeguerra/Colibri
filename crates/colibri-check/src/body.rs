@@ -42,14 +42,16 @@ pub(crate) enum LocalKind {
 /// What the checker learned about a local, to decide how it is stored (ARCHITECTURE §1).
 #[derive(Clone, Copy, Default)]
 pub(crate) struct LocalFlags {
+    /// It is the variable of a `for` loop (for the hint of an assignment).
+    pub for_var: bool,
     /// A closure captures it by reference to the variable.
     pub captured: bool,
-    /// It is assigned (or changed by a `var self` call) somewhere after its initialisation,
+    /// It is assigned (or changed by a `mut self` call) somewhere after its initialisation,
     /// in this body or in a closure that captures it.
     pub assigned: bool,
     /// Its value is read somewhere (or a closure captures it, or a place inside it is used).
     pub read: bool,
-    /// An unused-variable warning applies to it if nothing reads it: a plain `let` or `var`.
+    /// An unused-variable warning applies to it if nothing reads it: a plain `let` or `let mut`.
     pub lint_unused: bool,
 }
 
@@ -149,7 +151,7 @@ pub(crate) struct FnCtx<'c, 'a> {
     /// Module-level items referred to, each with the span of a use.
     deps: Vec<(Dep, Span)>,
     depth: u32,
-    /// The body is a `var self` method.
+    /// The body is a `mut self` method.
     self_mut: bool,
     /// The body is a `test` block, where a bare `return` means `return ok(())`.
     test_body: bool,
@@ -252,7 +254,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         }
     }
 
-    /// Marks the body as a `var self` method.
+    /// Marks the body as a `mut self` method.
     pub fn mutating_self(mut self, yes: bool) -> Self {
         self.self_mut = yes;
         self
@@ -373,7 +375,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                             span,
                         )
                         .with_label(prev_span, "the earlier binding")
-                        .with_hint("use a different name, or assign to the `var` instead"),
+                        .with_hint("use a different name, or assign to the existing `let mut` binding instead"),
                     );
                 }
             }
@@ -746,7 +748,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
 
     /// The top-level statements of a script, run in order.
     /// The top-level code of the entry file, in source order. A [`ScriptStep::Global`] (a
-    /// script `let`/`var`, whose initialiser was checked already) becomes an
+    /// script `let`/`let mut`, whose initialiser was checked already) becomes an
     /// [`hir::StmtKind::InitGlobal`] at its place. Also returns, for each step, the module-level
     /// items it refers to with their first use (an initialiser's are its own).
     pub fn check_script(

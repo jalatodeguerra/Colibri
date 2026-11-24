@@ -59,7 +59,7 @@ fn make() -> Map[str, Guard] {
     return {"k": Guard { name: "m" }}
 }
 fn main() {
-    var it = make().iter()
+    let mut it = make().iter()
     while true {
         match it.next() {
             some(p) => print("got {p.1.name}"),
@@ -85,7 +85,7 @@ struct Counter {
     g: Guard,
 }
 impl Iter[int] for Counter {
-    fn next(var self) -> int? {
+    fn next(mut self) -> int? {
         if self.n >= 2 {
             self.g = Guard { name: "fresh" }
             return none

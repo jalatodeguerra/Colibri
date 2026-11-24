@@ -169,7 +169,7 @@ impl Parser<'_> {
         let start = self.start();
         let (kind, blocklike) = match self.kind() {
             TokenKind::Let | TokenKind::Var | TokenKind::Const => {
-                (StmtKind::Let(self.parse_let()?), false)
+                (StmtKind::Let(self.parse_let(true)?), false)
             }
             TokenKind::Return => {
                 self.bump();
@@ -234,11 +234,36 @@ impl Parser<'_> {
         Ok((StmtKind::Assign { op, target, value }, false))
     }
 
-    /// `let`, `var` or `const` with a pattern, an optional type and `= init`.
-    pub(crate) fn parse_let(&mut self) -> PResult<LetStmt> {
+    /// `let`, `let mut` or `const` with a pattern, an optional type and `= init`. `local` is
+    /// true inside a block: `const` is only for the top level of a file, so there it is
+    /// reported and read as `let`. The old `var` is reported and read as `let mut`.
+    pub(crate) fn parse_let(&mut self, local: bool) -> PResult<LetStmt> {
         let kind = match self.bump().kind {
-            TokenKind::Let => BindKind::Let,
-            TokenKind::Var => BindKind::Var,
+            TokenKind::Let => {
+                if self.eat(&TokenKind::Mut) {
+                    BindKind::Var
+                } else {
+                    BindKind::Let
+                }
+            }
+            TokenKind::Var => {
+                // `var` was already consumed: the name is the current token.
+                let hint = match self.name_here() {
+                    Some(name) => format!("write `let mut {name} = ...`"),
+                    None => "write `let mut` instead of `var`".to_string(),
+                };
+                self.report_old_var_at(self.toks[self.pos - 1].span, &hint);
+                BindKind::Var
+            }
+            _ if local => {
+                let diag = Diagnostic::error(
+                    "`const` is only allowed at the top level of a file",
+                    self.toks[self.pos - 1].span,
+                )
+                .with_hint("use `let` for a local value");
+                self.report(diag);
+                BindKind::Let
+            }
             _ => BindKind::Const,
         };
         let pat = self.parse_pat()?;
@@ -311,7 +336,16 @@ impl Parser<'_> {
 
     fn parse_loop(&mut self, label: Option<Label>) -> PResult<StmtKind> {
         if self.bump().kind == TokenKind::For {
-            let mutable = self.eat(&TokenKind::Var);
+            let mut mutable = self.eat(&TokenKind::Mut);
+            if !mutable && self.at(&TokenKind::Var) {
+                let hint = match self.name_after_keyword() {
+                    Some(name) => format!("write `for mut {name} in ...`"),
+                    None => "write `for mut` instead of `for var`".to_string(),
+                };
+                self.report_old_var(&hint);
+                self.bump();
+                mutable = true;
+            }
             let pat = self.parse_pat()?;
             if !self.at(&TokenKind::In) {
                 let message = format!(

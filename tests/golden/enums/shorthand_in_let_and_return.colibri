@@ -8,7 +8,7 @@ fn main() {
     let s: Shape = .Circle(2)
     print(s)
     print(unit())
-    var t: Shape = .Square(3.0)
+    let mut t: Shape = .Square(3.0)
     t = .Circle(0.5)
     print(t)
 }

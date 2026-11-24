@@ -11,24 +11,24 @@ impl Mul[int] for Money {
 struct Wallet { cash: Money, saved: List[Money] }
 class Account { balance: Money, log: List[str] }
 
-var calls = 0
+let mut calls = 0
 fn next() -> int {
     calls += 1
     return calls - 1
 }
 
 fn main() {
-    var m = Money { cents: 5 }
+    let mut m = Money { cents: 5 }
     m += Money { cents: 10 }
     m *= 3
     print(m.cents)
 
-    var xs = [Money { cents: 1 }, Money { cents: 2 }]
+    let mut xs = [Money { cents: 1 }, Money { cents: 2 }]
     xs[1] += Money { cents: 40 }
     xs[next()] += Money { cents: 100 }     // the index is evaluated once
     print("{xs[0].cents} {xs[1].cents} {calls}")
 
-    var w = Wallet { cash: Money { cents: 7 }, saved: [Money { cents: 1 }] }
+    let mut w = Wallet { cash: Money { cents: 7 }, saved: [Money { cents: 1 }] }
     w.cash += Money { cents: 3 }
     w.saved[0] *= 9
     print("{w.cash.cents} {w.saved[0].cents}")
@@ -38,7 +38,7 @@ fn main() {
     a.balance += Money { cents: 25 }
     print(alias.balance.cents)
 
-    var by_name: Map[str, Money] = {"a": Money { cents: 1 }}
+    let mut by_name: Map[str, Money] = {"a": Money { cents: 1 }}
     by_name["a"] += Money { cents: 41 }
     print(by_name["a"].cents)
 }

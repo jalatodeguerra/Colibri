@@ -80,7 +80,7 @@ fn a_panic_unwinds_every_frame_and_temporary() {
 #[test]
 fn returns_and_breaks_inside_nested_blocks_leave_the_fiber_clean() {
     let mut m = machine(
-        "fn f() -> int {\n    var i = 0\n    while true {\n        let a = i\n        if i == 3 {\n            let b = a * 2\n            return b\n        }\n        i += 1\n    }\n    return 0\n}\n",
+        "fn f() -> int {\n    let mut i = 0\n    while true {\n        let a = i\n        if i == 3 {\n            let b = a * 2\n            return b\n        }\n        i += 1\n    }\n    return 0\n}\n",
         100,
     );
     assert_eq!(m.call("f", vec![]).unwrap(), Value::Int(6));
@@ -90,7 +90,7 @@ fn returns_and_breaks_inside_nested_blocks_leave_the_fiber_clean() {
 #[test]
 fn module_state_survives_a_panic() {
     let mut m = machine(
-        "var n = 0\nfn bump() -> int {\n    n += 1\n    return n\n}\nfn boom() -> int {\n    n += 100\n    return 1 / 0\n}\n",
+        "let mut n = 0\nfn bump() -> int {\n    n += 1\n    return n\n}\nfn boom() -> int {\n    n += 100\n    return 1 / 0\n}\n",
         100,
     );
     m.interp.run_module(&mut m.fiber).unwrap();
@@ -296,7 +296,7 @@ fn only_keys_that_reach_a_user_eq_are_scanned() {
             let p: Map[P, int] = {:}\n\
             let s = Set([P { x: 1, y: 1 }])\n\
             let g: Map[Pair[int], int] = {:}\n\
-            var i = 0\n\
+            let mut i = 0\n\
             while i < 300 { p[P { x: i, y: i }] = i; g[Pair { a: i }] = i; s.add(P { x: i, y: 0 }); i += 1 }\n\
             return p.len() + g.len() + s.len() + Set([P { x: 1, y: 1 }, P { x: 1, y: 1 }]).len()\n\
         }\n\
@@ -304,7 +304,7 @@ fn only_keys_that_reach_a_user_eq_are_scanned() {
             let m: Map[Q, int] = {:}\n\
             let g: Map[Pair[Q], int] = {:}\n\
             let t: Map[Tag, int] = {:}\n\
-            var i = 0\n\
+            let mut i = 0\n\
             while i < 30 { m[Q { v: i }] = i; g[Pair { a: Q { v: i } }] = i; t[Tag.Carry(Q { v: i })] = i; i += 1 }\n\
             return m.len() * 10000 + g.len() * 100 + t.len()\n\
         }\n";

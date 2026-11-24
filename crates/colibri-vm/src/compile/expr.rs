@@ -11,7 +11,7 @@ use crate::bytecode::{Op, Reg, Site};
 
 /// Whether evaluating `e` may assign a local of the running frame. Conservative: anything that
 /// can contain a statement counts. A call cannot (a callee has its own registers), except that a
-/// `var self` receiver is written back.
+/// `mut self` receiver is written back.
 pub(super) fn writes_locals(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Lit(_) | ExprKind::Read(_) | ExprKind::FnRef { .. } | ExprKind::Error => false,

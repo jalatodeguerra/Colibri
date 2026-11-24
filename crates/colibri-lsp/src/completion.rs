@@ -366,7 +366,7 @@ fn new_position(old: &str, new: &str, at: usize) -> Option<usize> {
 }
 
 /// Whether `text` between the byte offsets `from` and `to` binds `name` again: in the pattern
-/// of a `let`, `var` or `for`, or as a name matched in an arm (`x =>`). Meant to be sure
+/// of a `let`, `let mut` or `for`, or as a name matched in an arm (`x =>`). Meant to be sure
 /// rather than precise: a hit means the name may no longer mean what it did.
 fn redeclared(text: &str, from: usize, to: usize, name: &str) -> bool {
     let (tokens, _) = lex(FileId(0), text);
@@ -380,7 +380,7 @@ fn redeclared(text: &str, from: usize, to: usize, name: &str) -> bool {
             break;
         }
         match &t.kind {
-            TokenKind::Let | TokenKind::Var | TokenKind::For => in_pattern = true,
+            TokenKind::Let | TokenKind::Mut | TokenKind::Var | TokenKind::For => in_pattern = true,
             TokenKind::Eq
             | TokenKind::In
             | TokenKind::Semi
@@ -899,7 +899,7 @@ fn qualified_type_items(
 }
 
 /// Whether a type is written at `at` (not an expression): after `->`, or after the `:` that
-/// directly follows the name of a `let`, `var` or `const`, of a parameter of a `fn`, or of a
+/// directly follows the name of a `let`, `let mut` or `const`, of a parameter of a `fn`, or of a
 /// field of a `struct` or `class`. Decided from the syntax around the cursor: the name before
 /// the colon and the bracket that is still open, never from the line's first word (so a
 /// `:` inside a struct literal, a call's argument label or a map literal is an expression).
@@ -926,14 +926,14 @@ fn in_type_position(text: &str, at: usize) -> bool {
     if pre.ends_with('.') {
         return false;
     }
-    // `let name:`, `var name:`, `const name:` (after an optional `pub`).
+    // `let name:`, `let mut name:`, `const name:` (after an optional `pub`).
     let last_word = pre
         .char_indices()
         .rev()
         .take_while(|(_, c)| is_word(*c))
         .last()
         .map_or("", |(i, _)| &pre[i..]);
-    if ["let", "var", "const"].contains(&last_word) {
+    if ["let", "mut", "const"].contains(&last_word) {
         return true;
     }
     // The nearest bracket that is still open decides: `fn name(` or `struct Name {`.
@@ -1152,7 +1152,8 @@ pub fn ident_items(env: &Env<'_>, offset: usize, ctx: &Ctx) -> Vec<CompletionIte
         }
     }
     for kw in TokenKind::keywords() {
-        if seen.insert(kw.to_string()) {
+        // `var` is reserved only to explain what replaced it (`let mut`): not worth offering.
+        if kw != "var" && seen.insert(kw.to_string()) {
             out.push(item(kw, CompletionItemKind::KEYWORD, None, "4"));
         }
     }
@@ -1252,5 +1253,24 @@ mod tests {
         assert_eq!(map_span(old, new, (e, e + 1)), Some((e - 1, e)));
         // Over the edit itself.
         assert_eq!(map_span(old, new, (at, at + 8)), None);
+    }
+
+    #[test]
+    fn mut_declares_a_name_and_introduces_a_type_position() {
+        // A name after `mut` (a parameter, `let mut`, `for mut`) is a new binding.
+        for text in [
+            "let mut x = 1",
+            "fn f(mut x: int) {}",
+            "let g = fn(mut x) => x",
+            "for mut x in xs {}",
+        ] {
+            assert!(redeclared(text, 0, text.len(), "x"), "{text}");
+        }
+        assert!(!redeclared("let y = x + 1", 0, 13, "x"));
+        // `let mut x: ` and `mut x: ` are followed by a type.
+        for text in ["let mut x: ", "fn f(mut x: ", "fn f(a: int, mut x: "] {
+            assert!(in_type_position(text, text.len()), "{text}");
+        }
+        assert!(!in_type_position("let m = {mut: ", 14));
     }
 }

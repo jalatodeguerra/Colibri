@@ -32,7 +32,7 @@ fn main() {{
     go by_run()
     go by_shell()
     go by_status()
-    var tries = 0
+    let mut tries = 0
     while tries < 2000 {{
         if fs.exists("{dir}/run.pid") && fs.exists("{dir}/shell.pid") && fs.exists("{dir}/status.pid") {{
             break

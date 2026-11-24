@@ -4,11 +4,11 @@ fn main() {
     print(b)
     print(b.len() == s.len())
     print(b.to_str() == ok(s))
-    var total = 0
+    let mut total = 0
     for x in s.bytes() {
         total += int(x)
     }
-    var total2 = 0
+    let mut total2 = 0
     for x in b {
         total2 += int(x)
     }

@@ -1,5 +1,5 @@
 fn bump(x: int) -> int {
-    var y = x
+    let mut y = x
     y += 1
     return y
 }

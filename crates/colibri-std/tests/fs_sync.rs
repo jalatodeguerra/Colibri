@@ -37,7 +37,7 @@ fn a_host_call_that_touches_a_file_does_not_advance_coroutines() {
             r#"import fs
 
 fn mover() {{
-    var i = 0
+    let mut i = 0
     while i < 5 {{
         print("step {{i}}")
         wait(0.0)
@@ -85,7 +85,7 @@ fn coroutines_using_whole_file_functions_finish_in_a_fixed_order() {
         r#"import fs
 
 fn job(name: str) {{
-    var i = 0
+    let mut i = 0
     while i < 3 {{
         fs.write("{base}/{{name}}.txt", "{{i}}").expect("written")
         print("{{name}} wrote {{i}}")

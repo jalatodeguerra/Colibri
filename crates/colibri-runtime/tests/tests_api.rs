@@ -6,7 +6,7 @@ use common::vm_pending;
 use colibri_runtime as colibri;
 
 const SOURCE: &str = r#"
-var hits = 0
+let mut hits = 0
 
 fn bump() -> int {
     hits += 1
@@ -162,7 +162,7 @@ fn an_unknown_test_id_is_an_error_and_nothing_loaded_is_not_loaded() {
 fn the_instruction_budget_is_per_test() {
     let out = colibri::SharedBuffer::new();
     let mut vm = vm_with(&out);
-    let source = "test \"a\" {\n    var n = 0\n    for i in 0..1000 {\n        n += i\n    }\n}\n\ntest \"b\" {\n    var n = 0\n    for i in 0..1000 {\n        n += i\n    }\n}\n";
+    let source = "test \"a\" {\n    let mut n = 0\n    for i in 0..1000 {\n        n += i\n    }\n}\n\ntest \"b\" {\n    let mut n = 0\n    for i in 0..1000 {\n        n += i\n    }\n}\n";
     vm.load_source("t.colibri", source).unwrap();
     // One test fits, so a shared allotment would run out during the second one.
     vm.set_instruction_budget(Some(6_000));
@@ -419,7 +419,7 @@ fn a_hook_set_inside_the_hook_replaces_it() {
 }
 
 const HOOK_SOURCE: &str = r#"
-var items = [1, 2, 3]
+let mut items = [1, 2, 3]
 fn peek() -> int { return items.len() }
 test "one" { assert_eq(items.len(), 3) }
 test "two" { items.push(4); assert_eq(items.len(), 4) }

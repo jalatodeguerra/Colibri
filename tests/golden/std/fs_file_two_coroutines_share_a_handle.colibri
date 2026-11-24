@@ -5,7 +5,7 @@ import os
 import path
 
 fn reader(f: fs.File, lines: List[str]) -> int {
-    var n = 0
+    let mut n = 0
     while true {
         match f.read_line() {
             ok(some(line)) => {

@@ -77,6 +77,15 @@ impl Parser<'_> {
             TokenKind::DotDot | TokenKind::DotDotEq => self.parse_lit_or_range_pat(),
             TokenKind::LParen => self.parse_tuple_pat(),
             TokenKind::Dot | TokenKind::Ident(_) => self.parse_path_pat(),
+            TokenKind::Mut => {
+                let message = format!("expected a pattern, found {}", self.describe());
+                let diag = Diagnostic::error(message, self.found_span()).with_hint(
+                    "a pattern cannot mark a single binding `mut` (`if let`, `while let` and \
+                     `match` patterns cannot be `mut`): bind the value, then write \
+                     `let mut x = x`; in a `let`, `let mut` covers the whole pattern",
+                );
+                self.fail(diag)
+            }
             _ => self.unexpected("a pattern"),
         }
     }

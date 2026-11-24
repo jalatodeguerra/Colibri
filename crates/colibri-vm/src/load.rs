@@ -12,7 +12,7 @@ use crate::machine::{Machine, Slot};
 
 impl Machine {
     /// Runs the module-level initialisers in dependency order, then the top-level statements,
-    /// which initialise the script's own `let`/`var` on their lines (DESIGN §4.2).
+    /// which initialise the script's own `let`/`let mut` on their lines (DESIGN §4.2).
     pub fn run_module(&mut self, fiber: &mut VmFiber) -> Result<(), Box<PanicInfo>> {
         // The initialisers and the top-level statements share one allotment.
         let outermost = self.core.begin_entry();

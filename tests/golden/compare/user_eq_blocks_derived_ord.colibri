@@ -23,7 +23,7 @@ fn main() {
     let b = Version { major: 1, tag: "b" }
     print(a == b)
     print(a < b) // error: `<` cannot compare values of type
-    var versions = [a, b]
+    let mut versions = [a, b]
     versions.sort() // error: `sort` needs values that can be ordered
     print(Level.Low(1) < Level.High(0)) // error: `<` cannot compare values of type
 }

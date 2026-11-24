@@ -475,7 +475,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     Kind::declare(vm)?;
     let mut m = vm.std_module("process");
     m.register_type::<Child>()?;
-    // An empty `Options`: set the fields you need (`var o = process.options()`).
+    // An empty `Options`: set the fields you need (`let mut o = process.options()`).
     needs(
         Cap::Os,
         m.register_fn_named("options", [], Options::default),

@@ -29,7 +29,7 @@ fn an_infinite_loop_runs_out_and_the_vm_stays_usable() {
     let (mut vm, out) = vm_with(10_000);
     vm.load_source(
         "spin.colibri",
-        "var n = 0\nfn spin() {\n    while true {\n        n += 1\n    }\n}\nfn fine() -> int {\n    n += 1\n    return n\n}\n",
+        "let mut n = 0\nfn spin() {\n    while true {\n        n += 1\n    }\n}\nfn fine() -> int {\n    n += 1\n    return n\n}\n",
     )
     .unwrap();
     let spin = vm.get_fn::<(), ()>("spin").unwrap();
@@ -154,7 +154,7 @@ fn every_entry_gets_its_own_allotment() {
     let (mut vm, _) = vm_with(1_000);
     vm.load_source(
         "w.colibri",
-        "fn work(n: int) -> int {\n    var total = 0\n    for i in 0..n {\n        total += i\n    }\n    return total\n}\n",
+        "fn work(n: int) -> int {\n    let mut total = 0\n    for i in 0..n {\n        total += i\n    }\n    return total\n}\n",
     )
     .unwrap();
     let work = vm.get_fn::<(i64,), i64>("work").unwrap();
@@ -174,7 +174,7 @@ fn the_budget_can_be_changed_or_lifted_at_any_time() {
     let (mut vm, _) = vm_with(100);
     vm.load_source(
         "w.colibri",
-        "fn work() -> int {\n    var t = 0\n    for i in 0..10000 {\n        t += 1\n    }\n    return t\n}\n",
+        "fn work() -> int {\n    let mut t = 0\n    for i in 0..10000 {\n        t += 1\n    }\n    return t\n}\n",
     )
     .unwrap();
     let work = vm.get_fn::<(), i64>("work").unwrap();
@@ -195,7 +195,7 @@ fn looping_builtins_cost_a_step_per_element() {
         vm.load_source(
             "b.colibri",
             r#"
-var big: List[int] = []
+let mut big: List[int] = []
 fn fill() {
     for i in 0..50000 {
         big.push(i)
@@ -245,15 +245,15 @@ fn first() -> int {
     return -1
 }
 fn consume() -> int {
-    var n = 0
+    let mut n = 0
     for x in (0..9223372036854775807).iter() {
         n += x
     }
     return n
 }
 fn stepping() -> int {
-    var it = (0..9223372036854775807).iter()
-    var n = 0
+    let mut it = (0..9223372036854775807).iter()
+    let mut n = 0
     while true {
         match it.next() {
             some(x) => n += x,
@@ -394,7 +394,7 @@ fn an_unlimited_vm_never_runs_out() {
         .build();
     vm.load_source(
         "u.colibri",
-        "fn f() -> int {\n    var t = 0\n    for i in 0..200000 {\n        t += 1\n    }\n    return t\n}\n",
+        "fn f() -> int {\n    let mut t = 0\n    for i in 0..200000 {\n        t += 1\n    }\n    return t\n}\n",
     )
     .unwrap();
     let f = vm.get_fn::<(), i64>("f").unwrap();
@@ -456,7 +456,7 @@ impl colibri::HostType for Pt {
     }
 }
 
-const PT_SET: &str = "fn main() {\n    let xs: List[Pt] = []\n    var i = 0\n    while i < 4000 {\n        xs.push(Pt.new(i + 100))\n        i += 1\n    }\n    let s = Set(xs)\n    print(s.len())\n}\n";
+const PT_SET: &str = "fn main() {\n    let xs: List[Pt] = []\n    let mut i = 0\n    while i < 4000 {\n        xs.push(Pt.new(i + 100))\n        i += 1\n    }\n    let s = Set(xs)\n    print(s.len())\n}\n";
 
 #[test]
 fn host_eq_hooks_and_key_scans_are_charged() {

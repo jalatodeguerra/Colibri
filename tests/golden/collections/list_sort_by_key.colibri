@@ -1,10 +1,10 @@
 fn main() {
-    var words = ["ccc", "a", "bb", "dd"]
+    let mut words = ["ccc", "a", "bb", "dd"]
     words.sort_by_key(fn(w) => w.len())
     print(words)
     words.sort_by_key(fn(w) => w)
     print(words)
-    var pairs = [(2, "x"), (1, "y"), (2, "a")]
+    let mut pairs = [(2, "x"), (1, "y"), (2, "a")]
     pairs.sort_by_key(fn(p) => p.0)
     print(pairs)
 }

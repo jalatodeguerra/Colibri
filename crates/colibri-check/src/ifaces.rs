@@ -565,7 +565,7 @@ impl<'a> Checker<'a> {
             .collect();
         let exp_ret = wanted.ret.subst(&map);
         let got_tys: Vec<Ty> = got_params.iter().skip(1).map(|p| p.ty.clone()).collect();
-        // A class's `self` can always change its object, so it may implement a `var self` method.
+        // A class's `self` can always change its object, so it may implement a `mut self` method.
         let class = matches!(target, Ty::Adt(id, _) if self.types[id.0 as usize].is_class());
         let receiver_ok = wanted.receiver == got_recv
             || (class && wanted.receiver == Some(true) && got_recv == Some(false));
@@ -623,7 +623,7 @@ impl<'a> Checker<'a> {
     ) -> String {
         let mut parts: Vec<String> = Vec::new();
         match receiver {
-            Some(true) => parts.push("var self".to_string()),
+            Some(true) => parts.push("mut self".to_string()),
             Some(false) => parts.push("self".to_string()),
             None => {}
         }

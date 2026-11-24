@@ -1,5 +1,5 @@
 fn main() {
-    var x: u32 = 1
+    let mut x: u32 = 1
     let n: u8 = 5
     x <<= n
     print(x)

@@ -20,7 +20,7 @@ fn helper() {
 
 fn main() {
     let a = mk("a")
-    var i = 0
+    let mut i = 0
     while n_of(Bad { name: "w{i}" }.name) > i {
         print("body {i}")
         helper()

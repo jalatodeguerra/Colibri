@@ -18,7 +18,7 @@ impl Shape for Rect {
 }
 
 fn total_area[T: Shape](shapes: List[T]) -> float {
-    var total = 0.0
+    let mut total = 0.0
     for s in shapes { total += s.area() }
     return total
 }

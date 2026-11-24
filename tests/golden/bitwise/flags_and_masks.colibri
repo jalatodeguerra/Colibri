@@ -3,7 +3,7 @@ const WRITE: u8 = 2
 const EXEC: u8 = 4
 
 fn describe(perms: u8) -> str {
-    var out = ""
+    let mut out = ""
     if perms & READ != 0 {
         out += "r"
     } else {
@@ -23,7 +23,7 @@ fn describe(perms: u8) -> str {
 }
 
 fn main() {
-    var perms: u8 = READ | EXEC
+    let mut perms: u8 = READ | EXEC
     print(describe(perms))
     perms |= WRITE
     print(describe(perms))

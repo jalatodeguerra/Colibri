@@ -2,7 +2,7 @@ fn next(n: int) -> int? {
     if n < 4 { return some(n * n) }
     return none
 }
-var i = 0
+let mut i = 0
 while true {
     let v = next(i) or { break }
     print("value {v}")

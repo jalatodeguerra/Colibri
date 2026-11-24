@@ -667,7 +667,7 @@ fn a_child_gets_the_variables_the_script_set_and_its_own_folder() {
     run(
         &mut vm,
         &format!(
-            "import process\nimport os\nfn main() {{\n    os.set_env(\"A\", \"from-set-env\")\n    var o = process.options()\n    o.cwd = some(\"{dir}\")\n    o.env = {{ \"B\": \"from-options\" }}\n    let r = process.run_with(\"sh\", [\"-c\", \"echo $A $B; pwd -P\"], o) or |e| {{ panic(e.message()) }}\n    print(r.stdout)\n}}\n"
+            "import process\nimport os\nfn main() {{\n    os.set_env(\"A\", \"from-set-env\")\n    let mut o = process.options()\n    o.cwd = some(\"{dir}\")\n    o.env = {{ \"B\": \"from-options\" }}\n    let r = process.run_with(\"sh\", [\"-c\", \"echo $A $B; pwd -P\"], o) or |e| {{ panic(e.message()) }}\n    print(r.stdout)\n}}\n"
         ),
     )
     .unwrap();
@@ -734,8 +734,8 @@ fn coroutines_make_progress_while_a_child_process_runs() {
             r#"import process
 import fs
 
-var ticks = 0
-var finished_at = 0
+let mut ticks = 0
+let mut finished_at = 0
 
 fn ticker() {{
     while true {{

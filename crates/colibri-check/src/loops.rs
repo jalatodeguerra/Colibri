@@ -147,7 +147,7 @@ impl FnCtx<'_, '_> {
         };
         if mutable && !plain_list {
             self.ck
-                .unsupported("`for var` over anything but a list", pat.span);
+                .unsupported("`for mut` over anything but a list", pat.span);
             return self.for_body_only(label, false, pat, &elem, body, span);
         }
         self.finish_for(span, label, mutable, mutable, pat, &elem, source, body)
@@ -185,7 +185,11 @@ impl FnCtx<'_, '_> {
                 } else {
                     LocalKind::Let
                 };
-                ForBinding::Local(self.declare(&id.name, id.span, elem.clone(), kind))
+                let local = self.declare(&id.name, id.span, elem.clone(), kind);
+                if let Some(f) = self.flags.get_mut(local.0 as usize) {
+                    f.for_var = true;
+                }
+                ForBinding::Local(local)
             }
             AstPat::Wild | AstPat::Error => ForBinding::None,
             AstPat::Tuple(_) if !mutable => {

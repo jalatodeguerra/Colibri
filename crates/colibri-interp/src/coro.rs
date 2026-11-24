@@ -1012,7 +1012,7 @@ mod tests {
     #[test]
     fn a_nested_start_while_a_stack_is_out_of_its_slot() {
         use crate::Fiber;
-        let src = "fn leaf(n: int) {\n    wait(0.5)\n    print(n)\n}\nfn parent() {\n    var i = 0\n    while i < 40 {\n        let _h = go leaf(i)\n        i = i + 1\n    }\n    wait(0.1)\n    print(\"parent\")\n}\nfn main() {\n    let _p = go parent()\n}\n";
+        let src = "fn leaf(n: int) {\n    wait(0.5)\n    print(n)\n}\nfn parent() {\n    let mut i = 0\n    while i < 40 {\n        let _h = go leaf(i)\n        i = i + 1\n    }\n    wait(0.1)\n    print(\"parent\")\n}\nfn main() {\n    let _p = go parent()\n}\n";
         let out = Out::default();
         let (mut interp, program) = loaded(src, Box::new(out.clone()));
         let mut fiber = Fiber::new();
@@ -1034,7 +1034,7 @@ mod tests {
     #[test]
     fn slots_are_freed_after_many_start_and_finish_cycles() {
         use crate::Fiber;
-        let src = "fn work() {\n    wait(0.0)\n}\nfn main() {\n    var i = 0\n    while i < 100 {\n        let h = go work()\n        h.join()\n        i = i + 1\n    }\n}\n";
+        let src = "fn work() {\n    wait(0.0)\n}\nfn main() {\n    let mut i = 0\n    while i < 100 {\n        let h = go work()\n        h.join()\n        i = i + 1\n    }\n}\n";
         let (mut interp, program) = loaded(src, Box::new(std::io::sink()));
         let mut fiber = Fiber::new();
         interp
@@ -1053,7 +1053,7 @@ mod tests {
     #[test]
     fn finished_stacks_are_reused_and_the_pool_is_capped() {
         use crate::Fiber;
-        let src = "fn work(n: int) -> int {\n    wait(0.0)\n    return n\n}\nfn seq() {\n    var i = 0\n    while i < 200 {\n        let h = go work(i)\n        h.join()\n        i = i + 1\n    }\n}\nfn burst() {\n    var i = 0\n    while i < 40 {\n        let _h = go work(i)\n        i = i + 1\n    }\n}\n";
+        let src = "fn work(n: int) -> int {\n    wait(0.0)\n    return n\n}\nfn seq() {\n    let mut i = 0\n    while i < 200 {\n        let h = go work(i)\n        h.join()\n        i = i + 1\n    }\n}\nfn burst() {\n    let mut i = 0\n    while i < 40 {\n        let _h = go work(i)\n        i = i + 1\n    }\n}\n";
         let (mut interp, program) = loaded(src, Box::new(std::io::sink()));
         let mut fiber = Fiber::new();
         interp

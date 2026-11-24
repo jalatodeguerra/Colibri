@@ -1,7 +1,7 @@
 struct Bank { balance: int }
 
 impl Bank {
-    fn withdraw(var self, amount: int) -> bool {
+    fn withdraw(mut self, amount: int) -> bool {
         if amount > self.balance {
             return false
         }
@@ -11,7 +11,7 @@ impl Bank {
 }
 
 fn main() {
-    var b = Bank { balance: 50 }
+    let mut b = Bank { balance: 50 }
     print(b.withdraw(80))
     print(b.withdraw(30))
     print(b.balance)

@@ -83,7 +83,7 @@ pub enum Op {
         l: Reg,
         s: Reg,
     },
-    /// Replaces the cell in `r` by its content (a `var self` parameter that was captured).
+    /// Replaces the cell in `r` by its content (a `mut self` parameter that was captured).
     UnwrapCell {
         r: Reg,
     },
@@ -453,7 +453,7 @@ pub enum Op {
         a: Reg,
         b: Reg,
     },
-    /// Like `PlaceGet`, but the part is moved out and `()` is left behind (a `var self`
+    /// Like `PlaceGet`, but the part is moved out and `()` is left behind (a `mut self`
     /// receiver on a path of a local).
     PlaceTake {
         d: Reg,
@@ -519,7 +519,7 @@ pub enum Op {
     HoldIter {
         r: Reg,
     },
-    /// Holds the place guard of the list in `r`, named by the site (a `for var` loop's).
+    /// Holds the place guard of the list in `r`, named by the site (a `for mut` loop's).
     HoldListPlace {
         r: Reg,
         site: u16,
@@ -533,7 +533,7 @@ pub enum Op {
         d: Reg,
         a: Reg,
     },
-    /// `for var` over a list: also leaves a clone of the item in `a + 2`.
+    /// `for mut` over a list: also leaves a clone of the item in `a + 2`.
     ForListNextVar {
         d: Reg,
         a: Reg,
@@ -552,7 +552,7 @@ pub enum Op {
         d: Reg,
         a: Reg,
     },
-    /// The end of an iteration of `for var`: takes the final value of the binding `l`, and
+    /// The end of an iteration of `for mut`: takes the final value of the binding `l`, and
     /// writes it into the list `a` at the index before the one in `a + 1` unless it is the
     /// element `a + 2` already is; releases both.
     ForWriteBack {

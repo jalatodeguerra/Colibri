@@ -1,7 +1,7 @@
 struct Counter { n: int }
 
 fn bump(c: Counter) -> Counter {
-    var d = c
+    let mut d = c
     d.n += 1
     return d
 }

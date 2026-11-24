@@ -14,7 +14,7 @@ fn run(server: httpd.Server, router: httpd.Router) -> Result[()] => server.serve
 fn ask(c: net.Conn, method: str, target: str) -> Result[()] {
     c.write("{method} {target} HTTP/1.1\r\nHost: example.test\r\n\r\n")?
     print(c.read_line()?.expect("a status line"))
-    var length = 0
+    let mut length = 0
     while true {
         let line = c.read_line()?.expect("a header line")
         if line == "" {

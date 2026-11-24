@@ -125,7 +125,7 @@ fn main() {
 import io
 
 fn main() {{
-    var o = process.options()
+    let mut o = process.options()
     o.cwd = some("{work}")
     o.input = some("first line\nsecond line\n")
     let r = process.run_with("{exe}", ["run", "{child}"], o) or |e| {{ panic(e.message()) }}

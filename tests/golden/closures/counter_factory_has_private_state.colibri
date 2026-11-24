@@ -1,5 +1,5 @@
 fn make_counter() -> fn() -> int {
-    var n = 0
+    let mut n = 0
     return fn() {
         n += 1
         return n

@@ -22,7 +22,7 @@ pub(crate) struct SigCtx {
     pub outer: Vec<GenericParamInfo>,
     /// The enclosing type's name, for `Type.method` names.
     pub owner: Option<String>,
-    /// The method belongs to a class (`var self` is an error there).
+    /// The method belongs to a class (`mut self` is an error there).
     pub class: bool,
 }
 
@@ -162,7 +162,7 @@ impl Checker<'_> {
                     let mut mutable = r.mutable;
                     if mutable && ctx.class {
                         self.report(
-                            Diagnostic::error("a class method cannot take `var self`", r.span)
+                            Diagnostic::error("a class method cannot take `mut self`", r.span)
                                 .with_hint("`self` can always change the fields of a class, because the object is shared; write `self`"),
                         );
                         mutable = false;
@@ -207,7 +207,14 @@ impl Checker<'_> {
                 }
             };
             if p.mutable {
-                self.unsupported("`var` parameter", p.span);
+                self.report(
+                    Diagnostic::error("`mut` parameter is not supported yet", p.span).with_hint(
+                        format!(
+                            "copy it in the body instead: `let mut {0}2 = {0}`",
+                            p.name.name
+                        ),
+                    ),
+                );
             }
             params.push(ParamInfo {
                 name: p.name.name.clone(),

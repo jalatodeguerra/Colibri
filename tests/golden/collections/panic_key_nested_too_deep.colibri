@@ -1,8 +1,8 @@
 enum Chain { Nil, Cons(int, Chain) }
 
 fn build(n: int) -> Chain {
-    var l = Chain.Nil
-    var i = 0
+    let mut l = Chain.Nil
+    let mut i = 0
     while i < n {
         l = .Cons(i, l)
         i += 1
@@ -15,7 +15,7 @@ fn main() {
     let s = Set([build(300), build(300)])
     print(s.len())
     print(s.contains(build(300)))
-    var m = {build(300): 1}
+    let mut m = {build(300): 1}
     m[build(300)] = 2
     print(m.len())
     print(Set([build(300)]) == Set([build(300)]))

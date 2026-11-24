@@ -5,7 +5,7 @@ fn main() {
     for c in "héy".chars() {
         print(c)
     }
-    var n = 0
+    let mut n = 0
     for _ in "abcd".chars() {
         n += 1
     }

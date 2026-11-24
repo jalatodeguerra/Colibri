@@ -1,13 +1,13 @@
 struct Cell { alive: bool }
 
 impl Cell {
-    fn toggle(var self) {
+    fn toggle(mut self) {
         self.alive = !self.alive
     }
 }
 
 fn main() {
-    var pair = (Cell { alive: false }, Cell { alive: true })
+    let mut pair = (Cell { alive: false }, Cell { alive: true })
     pair.0.toggle()
     pair.1.toggle()
     print(pair)

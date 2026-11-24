@@ -1,14 +1,14 @@
 struct Acc { total: int }
 
 impl Acc {
-    fn add(var self, k: int) {
+    fn add(mut self, k: int) {
         self.total += k
     }
 }
 
 fn main() {
-    var a = Acc { total: 0 }
-    var i = 0
+    let mut a = Acc { total: 0 }
+    let mut i = 0
     while i < 5 {
         a.add(i)
         i += 1

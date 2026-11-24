@@ -71,7 +71,7 @@ fn answer(store: Store, line: str) -> str {
         return "{store.data.len()}"
     }
     if command == "KEYS" && parts.len() == 1 {
-        var keys = store.data.keys()
+        let mut keys = store.data.keys()
         keys.sort()
         return "KEYS {keys.join(" ")}"
     }
@@ -109,7 +109,7 @@ fn serve(store: Store, listener: net.Listener, conn: net.Conn, id: int, idle: fl
 
 fn main() -> Result[()] {
     let addr = args.value("addr") or { "127.0.0.1:0" }
-    var idle = 0.0
+    let mut idle = 0.0
     if let some(text) = args.value("idle") {
         idle = str.parse_float(text) or |e| {
             usage_error("--idle: {e.message()}")
@@ -121,7 +121,7 @@ fn main() -> Result[()] {
             )
         }
     }
-    var max_connections = DEFAULT_MAX_CONNECTIONS
+    let mut max_connections = DEFAULT_MAX_CONNECTIONS
     if let some(text) = args.value("max-connections") {
         max_connections = str.parse_int(text) or |e| {
             usage_error("--max-connections: {e.message()}")

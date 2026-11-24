@@ -122,7 +122,7 @@ fn serve(l: net.Listener) {
     }
 }
 
-var connected = 0
+let mut connected = 0
 
 fn client(addr: str, i: int, total: int) -> bool {
     let c = net.connect(addr).expect("connected")
@@ -145,7 +145,7 @@ fn client(addr: str, i: int, total: int) -> bool {
 fn main() -> Result[()] {
     let l = net.listen("127.0.0.1:0")?
     let server = go serve(l)
-    var clients: List[Coroutine[bool]] = []
+    let mut clients: List[Coroutine[bool]] = []
     for i in 0..200 {
         clients.push(go client(l.addr(), i, 200))
         // At most 25 connects at a time: a system answers a burst of connects that does not
@@ -156,7 +156,7 @@ fn main() -> Result[()] {
             }
         }
     }
-    var good = 0
+    let mut good = 0
     for c in clients {
         if c.join() {
             good += 1
@@ -183,7 +183,7 @@ import hash
 
 fn payload(size: int) -> Bytes {
     let b = BytesBuilder()
-    var x = 12345
+    let mut x = 12345
     for i in 0..size {
         x = (x * 1103515245 + 12345) % 2147483648
         b.push(u8((x / 65536) % 256))
@@ -200,7 +200,7 @@ fn send(addr: str, data: Bytes) {
 fn receive(l: net.Listener, size: int) -> Bytes {
     let c = l.accept().expect("accepted")
     let b = BytesBuilder()
-    var got = 0
+    let mut got = 0
     while got < size {
         let piece = c.read(65536).expect("read")
         if piece.len() == 0 {
@@ -265,7 +265,7 @@ fn main() -> Result[()] {
     let l = net.listen("127.0.0.1:0")?
     publish(l.addr())
     let c = l.accept()?
-    var n = 0
+    let mut n = 0
     while true {
         match c.read_line()? {
             none => break
@@ -522,7 +522,7 @@ fn main() -> Result[()] {{
     w2.join()
     let a = r1.join()
     let b = r2.join()
-    var both = [a, b]
+    let mut both = [a, b]
     both.sort()
     print(both)
     return ok(())
@@ -756,7 +756,7 @@ fn a_fake_clock_does_not_advance_while_a_coroutine_waits_on_the_network() {
         &format!(
             r#"import net
 
-var ticks = 0
+let mut ticks = 0
 
 fn counter() {{
     while true {{
@@ -869,7 +869,7 @@ fn main() -> Result[()] {{
     for _ in 0..2_000_000 {{
         b.push(u8(120))
     }}
-    var writers: List[Coroutine[()]] = []
+    let mut writers: List[Coroutine[()]] = []
     writers.push(go big(c, b.to_bytes()))
     writers.push(go small(c, "1"))
     writers.push(go small(c, "2"))
@@ -879,7 +879,7 @@ fn main() -> Result[()] {{
     writers.push(go small(c, "6"))
     writers.push(go small(c, "7"))
     writers.push(go small(c, "8"))
-    var readers: List[Coroutine[str]] = []
+    let mut readers: List[Coroutine[str]] = []
     for _ in 0..30 {{
         readers.push(go reader(c))
     }}
@@ -1156,8 +1156,8 @@ fn close_in_a_defer_of_a_cancelled_reader_runs_to_the_end() {
     let out = output(&format!(
         r#"import net
 
-var started = 0
-var finished = 0
+let mut started = 0
+let mut finished = 0
 
 fn reading(c: net.Conn) {{
     defer {{
@@ -1198,7 +1198,7 @@ fn close_is_not_a_scheduling_point() {
     let out = output(&format!(
         r#"import net
 
-var other_ran = false
+let mut other_ran = false
 
 fn other() {{
     // Waits for its turn: it only gets one when `main` stops running.
@@ -1466,8 +1466,8 @@ fn reading(c: net.Conn) -> str {{
 }}
 
 fn main() -> Result[()] {{
-    var conns: List[net.Conn] = []
-    var readers: List[Coroutine[str]] = []
+    let mut conns: List[net.Conn] = []
+    let mut readers: List[Coroutine[str]] = []
     for i in 0..50 {{
         let c = net.connect("{addr}")?
         conns.push(c)
@@ -1477,7 +1477,7 @@ fn main() -> Result[()] {{
     for c in conns {{
         c.close()
     }}
-    var closed = 0
+    let mut closed = 0
     for r in readers {{
         if r.join() == "Closed" {{
             closed += 1
@@ -1531,7 +1531,7 @@ fn main() -> Result[()] {{
     print(line.len())
     print(c.read_line()?)
     let block = c.read_exact({BLOCK})?
-    var good = true
+    let mut good = true
     for i in 0..{BLOCK} {{
         if int(block[i]) != i % 251 {{
             good = false
@@ -1585,8 +1585,8 @@ fn a_big_read_exact_over_loopback_is_correct_and_linear() {
 fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
     let b = c.read_exact({SIZE})?
-    var bad = 0
-    var i = 0
+    let mut bad = 0
+    let mut i = 0
     while i < {SIZE} {{
         if int(b[i]) != i % 251 {{
             bad += 1
@@ -1744,7 +1744,7 @@ impl Drop for Guard {{
 }}
 
 fn main() -> Result[()] {{
-    var g: Option[Guard] = some(Guard {{ what: "connect" }})
+    let mut g: Option[Guard] = some(Guard {{ what: "connect" }})
     g = none
     g = some(Guard {{ what: "refused" }})
     g = none
@@ -1906,7 +1906,7 @@ fn sender(c: net.Conn, data: Bytes) {{
 fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
     let w = go sender(c, big())
-    var tries = 0
+    let mut tries = 0
     while !peer_has_data() {{
         tries += 1
         if tries > 2000 {{
@@ -2036,7 +2036,7 @@ fn close_write_waits_for_the_writes_called_before_it() {
             all.len()
         });
         let call = if from_hook {
-            "var g: Option[Guard] = some(Guard { conn: c })\n    g = none"
+            "let mut g: Option[Guard] = some(Guard { conn: c })\n    g = none"
         } else {
             "c.close_write()?"
         };
@@ -2207,8 +2207,8 @@ fn a_loop_of_calls_that_never_wait_still_lets_the_other_coroutines_run() {
         format!(
             r#"import net
 
-var ticks = 0
-var finished = false
+let mut ticks = 0
+let mut finished = false
 
 fn counter() {{
     while !finished {{
@@ -2280,8 +2280,8 @@ fn a_loop_of_accepts_that_never_wait_still_lets_the_other_coroutines_run() {
         &format!(
             r#"import net
 
-var ticks = 0
-var finished = false
+let mut ticks = 0
+let mut finished = false
 
 fn counter() {{
     while !finished {{
@@ -2380,7 +2380,7 @@ fn main() -> Result[()] {{
     }}
     let w = go sender(c, b.to_bytes())
     task.tick(0.0)
-    var g: Option[Guard] = some(Guard {{ conn: c, close_end: false }})
+    let mut g: Option[Guard] = some(Guard {{ conn: c, close_end: false }})
     g = none
     g = some(Guard {{ conn: c, close_end: true }})
     g = none
@@ -2415,7 +2415,7 @@ fn hook_script(addr: &str, sender: &str, main_body: &str) -> String {
 class Guard {{ conn: net.Conn, what: str }}
 
 fn hook(c: net.Conn, what: str) {{
-    var g: Option[Guard] = some(Guard {{ conn: c, what: what }})
+    let mut g: Option[Guard] = some(Guard {{ conn: c, what: what }})
     g = none
 }}
 
@@ -2698,7 +2698,7 @@ fn main() -> Result[()] {{
         b.push_bytes(piece)
     }}
     let w = go sender(c, b.to_bytes())
-    var tries = 0
+    let mut tries = 0
     while !peer_has_data() {{
         tries += 1
         if tries > 2000 {{
@@ -2782,10 +2782,10 @@ fn big() -> Bytes {{
 }}
 
 fn main() -> Result[()] {{
-    var listeners: List[net.Listener] = []
-    var readers: List[net.Conn] = []
-    var writers: List[net.Conn] = []
-    var tasks: List[Coroutine[str]] = []
+    let mut listeners: List[net.Listener] = []
+    let mut readers: List[net.Conn] = []
+    let mut writers: List[net.Conn] = []
+    let mut tasks: List[Coroutine[str]] = []
     for _ in 0..70 {{
         let l = net.listen("127.0.0.1:0")?
         listeners.push(l)
@@ -2815,7 +2815,7 @@ fn main() -> Result[()] {{
         c.close()
     }}
     mark()
-    var closed = 0
+    let mut closed = 0
     for t in tasks {{
         if t.join() == "Closed" {{
             closed += 1
@@ -3007,7 +3007,7 @@ fn main() -> Result[()] {{
     print(kind(c.read(1)))
     // Writes to a connection the peer reset: the first may be accepted by the system, a later
     // one is refused. Either way the variant is `BrokenPipe`.
-    var last = "ok"
+    let mut last = "ok"
     for _ in 0..500 {{
         last = kind(c.write("data"))
         if last != "ok" {{
@@ -3134,7 +3134,7 @@ fn main() -> Result[()] {{
     task.tick(0.0)
     // The peer sends now; nothing on this fiber lets the coroutine run before the hook does.
     release()
-    var g: Option[Guard] = some(Guard {{ conn: c }})
+    let mut g: Option[Guard] = some(Guard {{ conn: c }})
     g = none
     r.join()
     // Nothing was lost: the coroutine got the first line, the next read gets the second.
@@ -3184,7 +3184,7 @@ fn main() -> Result[()] {
     let l = net.listen("127.0.0.1:0")?
     let r = go acceptor(l)
     task.tick(0.0)
-    var g: Option[Guard] = some(Guard { listener: l })
+    let mut g: Option[Guard] = some(Guard { listener: l })
     g = none
     let c = net.connect(l.addr())?
     r.join()
@@ -3225,7 +3225,7 @@ fn main() -> Result[()] {{
     let r = go {spawned}
     task.tick(0.0)
     release()
-    var g: Option[Guard] = some(Guard {{ conn: c }})
+    let mut g: Option[Guard] = some(Guard {{ conn: c }})
     g = none
     r.join()
     print("done")
@@ -3357,8 +3357,8 @@ fn one_among_a_thousand(event: Event) -> (String, Duration) {
             r#"import net
 
 let TARGET = {TARGET}
-var started = 0
-var ended = 0
+let mut started = 0
+let mut ended = 0
 
 fn reading(c: net.Conn) -> str {{
     started += 1
@@ -3371,8 +3371,8 @@ fn reading(c: net.Conn) -> str {{
 }}
 
 fn main() -> Result[()] {{
-    var conns: List[net.Conn] = []
-    var readers: List[Coroutine[str]] = []
+    let mut conns: List[net.Conn] = []
+    let mut readers: List[Coroutine[str]] = []
     for i in 0..{WAITERS} {{
         let c = net.connect("{addr}")?
         {timeouts}
@@ -3393,7 +3393,7 @@ fn main() -> Result[()] {{
     for c in conns {{
         c.close()
     }}
-    var closed = 0
+    let mut closed = 0
     for i in 0..{WAITERS} {{
         if i != TARGET {{
             if readers[i].join() == "Closed" {{
@@ -3478,7 +3478,7 @@ fn a_port_can_be_listened_on_again_at_once_after_a_close_with_an_accept_waiting(
     let out = output_within(
         r#"import net
 
-var started = 0
+let mut started = 0
 
 fn accepting(l: net.Listener) -> str {
     started += 1
@@ -3964,7 +3964,7 @@ fn main() -> Result[()] {{
     let r = go reader(c)
     task.tick(0.0)
     release()
-    var g: Option[Guard] = some(Guard {{ conn: c }})
+    let mut g: Option[Guard] = some(Guard {{ conn: c }})
     g = none
     r.join()
     print("then: {{c.read_until("\n".to_bytes(), 64)}}")
@@ -4002,8 +4002,8 @@ fn a_loop_of_read_until_calls_that_never_wait_still_lets_the_other_coroutines_ru
         format!(
             r#"import net
 
-var ticks = 0
-var finished = false
+let mut ticks = 0
+let mut finished = false
 
 fn counter() {{
     while !finished {{

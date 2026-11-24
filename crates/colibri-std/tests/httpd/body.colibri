@@ -15,7 +15,7 @@ fn some_bytes(n: int) -> Bytes {
 
 /// A body reader over `data` with the length framing that `count` records the calls of `pull` in.
 fn reader_over(data: Bytes, limit: int, calls: List[int]) -> httpd_impl.BodyReader {
-    var pos = 0
+    let mut pos = 0
     let pull = fn(n: int) -> Result[Bytes] {
         calls.push(n)
         let end = (pos + n).min(data.len())
@@ -224,7 +224,7 @@ test "the source is not asked again once the length has been read" {
 
 test "the first_read hook runs once, before the first bytes are pulled" {
     let events: List[str] = []
-    var pos = 0
+    let mut pos = 0
     let data = some_bytes(10)
     let pull = fn(n: int) -> Result[Bytes] {
         events.push("pull")

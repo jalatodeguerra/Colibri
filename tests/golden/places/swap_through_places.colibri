@@ -1,5 +1,5 @@
 fn main() {
-    var xs = [1, 2, 3]
+    let mut xs = [1, 2, 3]
     let t = xs[0]
     xs[0] = xs[2]
     xs[2] = t

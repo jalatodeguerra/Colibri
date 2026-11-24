@@ -9,7 +9,7 @@ struct SpanIter {
 }
 
 impl Iter[int] for SpanIter {
-    fn next(var self) -> int? {
+    fn next(mut self) -> int? {
         if self.at >= self.hi {
             return none
         }

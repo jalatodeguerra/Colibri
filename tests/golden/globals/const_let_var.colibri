@@ -1,6 +1,6 @@
 const MAX = 100
 let name = "Colibri"
-var counter = 0
+let mut counter = 0
 fn bump() {
     counter += 1
 }

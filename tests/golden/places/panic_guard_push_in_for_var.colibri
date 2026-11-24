@@ -3,8 +3,8 @@ struct Enemy { hp: int, pos: int }
 fn minion_at(p: int) -> Enemy => Enemy { hp: 1, pos: p }
 
 fn main() {
-    var enemies = [Enemy { hp: 20, pos: 0 }, Enemy { hp: 5, pos: 1 }]
-    for var e in enemies {
+    let mut enemies = [Enemy { hp: 20, pos: 0 }, Enemy { hp: 5, pos: 1 }]
+    for mut e in enemies {
         e.hp -= 1
         if e.hp < 10 {
             enemies.push(minion_at(e.pos))

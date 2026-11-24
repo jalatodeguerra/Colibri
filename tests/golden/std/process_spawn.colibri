@@ -8,7 +8,7 @@ import process
 fn main() {
     let child = process.spawn("sh", ["-c", "echo started; exit 5"]) or |e| { panic(e.message()) }
     print(child.id() > 0)
-    var result = child.try_wait() or |e| { panic(e.message()) }
+    let mut result = child.try_wait() or |e| { panic(e.message()) }
     while result == none {
         result = child.try_wait() or |e| { panic(e.message()) }
     }
@@ -18,7 +18,7 @@ fn main() {
     print(child.join() or |e| { panic(e.message()) })
 
     // A program that reads its input.
-    var o = process.options()
+    let mut o = process.options()
     o.input = some("one\ntwo\n")
     let counter = process.spawn_with("sh", ["-c", "wc -l"], o) or |e| { panic(e.message()) }
     let counted = counter.join() or |e| { panic(e.message()) }

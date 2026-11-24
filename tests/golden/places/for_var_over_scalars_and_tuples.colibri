@@ -1,11 +1,11 @@
 fn main() {
-    var xs = [1, 2, 3]
-    for var x in xs {
+    let mut xs = [1, 2, 3]
+    for mut x in xs {
         x *= 10
     }
     print(xs)
-    var ps = [(1, 1), (2, 2)]
-    for var p in ps {
+    let mut ps = [(1, 1), (2, 2)]
+    for mut p in ps {
         p.1 += 5
     }
     print(ps)

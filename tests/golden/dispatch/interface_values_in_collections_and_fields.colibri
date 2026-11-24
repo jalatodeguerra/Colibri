@@ -28,7 +28,7 @@ struct Scene {
 }
 
 fn biggest(by_name: Map[str, Shape]) -> float {
-    var best = 0.0
+    let mut best = 0.0
     for name in by_name.keys() {
         let a = by_name[name].area()
         if a > best { best = a }
@@ -42,7 +42,7 @@ fn pick(flag: bool) -> Shape {
 }
 
 fn main() {
-    var scene = Scene { main: Circle { r: 2.0 } }
+    let mut scene = Scene { main: Circle { r: 2.0 } }
     scene.extras.push(Blob { size: 2.0 })
     print(scene.main.area())
     print(scene.extras[0].name())

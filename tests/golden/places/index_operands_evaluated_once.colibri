@@ -1,4 +1,4 @@
-var calls = 0
+let mut calls = 0
 
 fn idx() -> int {
     calls += 1
@@ -8,10 +8,10 @@ fn idx() -> int {
 struct C { n: int }
 
 fn main() {
-    var xs = [C { n: 0 }, C { n: 0 }]
+    let mut xs = [C { n: 0 }, C { n: 0 }]
     xs[idx()].n += 5
     xs[idx()].n += 5
-    var ys = [1, 2, 3]
+    let mut ys = [1, 2, 3]
     ys[idx()] *= 7
     print(calls)
     print(xs)

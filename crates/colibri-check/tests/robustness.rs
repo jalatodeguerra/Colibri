@@ -126,6 +126,8 @@ fn token_soup_does_not_panic() {
     const PIECES: &[&str] = &[
         "fn",
         "let",
+        "let mut",
+        "mut",
         "var",
         "const",
         "if",
@@ -277,7 +279,7 @@ fn programs_built_from_statements_do_not_panic() {
     // Valid-looking functions with random statement shuffles exercise the body checker.
     const STMTS: &[&str] = &[
         "let a = 1",
-        "var b = 2.5",
+        "let mut b = 2.5",
         "a = 3",
         "b += 1",
         "print(a)",
@@ -296,7 +298,7 @@ fn programs_built_from_statements_do_not_panic() {
         "{ let d = 1 }",
         "let xs = [1, 2, 3]",
         "let xs: List[int] = []",
-        "var m = {\"a\": 1}",
+        "let mut m = {\"a\": 1}",
         "let e: Map[str, int] = {:}",
         "xs[0] = a",
         "xs[a] += 1",
@@ -304,7 +306,7 @@ fn programs_built_from_statements_do_not_panic() {
         "xs.push(a)",
         "print(xs.pop())",
         "for x in xs { print(x) }",
-        "for var x in xs { x += 1 }",
+        "for mut x in xs { x += 1 }",
         "for (k, v) in m { print(k) }",
         "for (i, x) in xs.enumerate() { print(i) }",
         "defer print(a)",
@@ -377,7 +379,7 @@ fn closure_programs_do_not_panic() {
     // Closures, function types, weak captures, iterators and slices, shuffled and mangled.
     const FRAGMENTS: &[&str] = &[
         "let a = 1",
-        "var n = 0",
+        "let mut n = 0",
         "class K { v: int, cb: fn(int) -> int }",
         "struct S { f: fn() }",
         "let f = fn(x: int) -> int => x + n",
@@ -387,13 +389,13 @@ fn closure_programs_do_not_panic() {
         "let k = fn() use(weak) {}",
         "let k = fn() use(weak n, weak n) => 1",
         "let k = fn() use(strong n) => 1",
-        "let m = fn(var q: int) { q += 1 }",
+        "let m = fn(mut q: int) { q += 1 }",
         "let p = fn(a: int, a: int) => a",
         "let q = fn(x: int) -> fn(int) -> int { return fn(y: int) => x + y }",
         "let r = fn() { return }",
         "let r = fn() -> int { }",
         "let r = fn() -> int { return \"s\" }",
-        "fn make() -> fn() -> int { var c = 0\n return fn() { c += 1\n return c } }",
+        "fn make() -> fn() -> int { let mut c = 0\n return fn() { c += 1\n return c } }",
         "fn apply[T, U](x: T, f: fn(T) -> U) -> U => f(x)",
         "fn id[T](x: T) -> T => x",
         "fn bad(f: fn(int) -> ) {}",
@@ -431,7 +433,7 @@ fn closure_programs_do_not_panic() {
         "print(t.replace(\"\", \"x\"))",
         "for c in t.chars() { print(c) }",
         "for (i, c) in t.chars().enumerate() { print(i) }",
-        "var it = xs.iter()",
+        "let mut it = xs.iter()",
         "print(it.next())",
         "xs.push(1)",
         "let w = 1..",
@@ -448,7 +450,7 @@ fn closure_programs_do_not_panic() {
         "print(kk.v(1))",
         "let ss = S { f: fn() {} }",
         "ss.f()",
-        "impl Iter[int] for S { fn next(var self) -> int? => none }",
+        "impl Iter[int] for S { fn next(mut self) -> int? => none }",
         "impl Iterable[int] for K { fn iter(self) -> Iter[int] => S { f: fn() {} } }",
         "for z in ss { print(z) }",
         "for z in kk { print(z) }",
@@ -491,7 +493,7 @@ fn numeric_programs_do_not_panic() {
         "let a: u8 = 255",
         "let b: u8 = 256",
         "let c: i8 = -129",
-        "var d: u64 = 18446744073709551615",
+        "let mut d: u64 = 18446744073709551615",
         "let e: u64 = 18446744073709551616",
         "let f: f32 = 0.1",
         "let g: float = f",
@@ -554,8 +556,7 @@ fn numeric_programs_do_not_panic() {
         let body: Vec<&str> = (0..n)
             .map(|_| FRAGMENTS[(rng.next() % FRAGMENTS.len() as u64) as usize])
             .collect();
-        let prefix =
-            "let a: u8 = 1\nlet b: u8 = 2\nlet f: f32 = 0.5\nlet g: float = 2.0\nvar d: u64 = 3\n";
+        let prefix = "let a: u8 = 1\nlet b: u8 = 2\nlet f: f32 = 0.5\nlet g: float = 2.0\nlet mut d: u64 = 3\n";
         let src = format!("fn main() {{\n{prefix}{}\n}}\n", body.join("\n"));
         check_str(&src);
         check_str(&body.join("\n"));
@@ -627,7 +628,7 @@ fn generic_and_interface_programs_do_not_panic() {
         "let p = Cell { v: o }",
         "print(Sq { s: 1.0 } == Sq { s: 2.0 })",
         "print(Sq { s: 1.0 } < Sq { s: 2.0 })",
-        "var q: Map[Sq, int] = {:}",
+        "let mut q: Map[Sq, int] = {:}",
         "let r = Box { v: 1 }.big(2)",
         "let s: Grid[int] = [[1]]",
         "let t = Box.v",

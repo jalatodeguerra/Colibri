@@ -13,7 +13,7 @@ fn main() -> Result[()] {
 
     // The folder is looked at before the program is started: the same message everywhere,
     // whatever the system says about it, and the program does not matter.
-    var missing = process.options()
+    let mut missing = process.options()
     missing.cwd = some("/colibri/no/such/folder")
     match process.run_with("colibri-no-such-program", [], missing) {
         ok(_)  => print("ran?")
@@ -27,7 +27,7 @@ fn main() -> Result[()] {
     // A file is not a folder to run in.
     let file = path_in_temp("a-file")
     fs.write(file, "x")?
-    var not_a_folder = process.options()
+    let mut not_a_folder = process.options()
     not_a_folder.cwd = some(file)
     match process.run_with("colibri-no-such-program", [], not_a_folder) {
         ok(_)  => print("ran?")

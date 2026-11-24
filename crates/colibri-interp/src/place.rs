@@ -12,7 +12,7 @@
 //! a struct shared with another variable is copied exactly once, at the first write.
 //!
 //! A write from user code is *guarded*: it is refused while the collection is being iterated
-//! or has a live place. The write-back of a `var self` call or a `for var` iteration is not,
+//! or has a live place. The write-back of a `mut self` call or a `for mut` iteration is not,
 //! because that place holds the guard itself.
 
 use std::rc::Rc;
@@ -299,7 +299,7 @@ impl Interp {
     }
 
     /// Holds the mutation guard of the collection a resolved anchor is an element of, for the
-    /// life of the returned token (a `var self` call or a `for var` loop). Anchors that are
+    /// life of the returned token (a `mut self` call or a `for mut` loop). Anchors that are
     /// not collection elements need no guard.
     pub(crate) fn hold_place(&self, r: &Resolved, place: &Place) -> PlaceHold {
         let name = match &place.anchor {
@@ -313,7 +313,7 @@ impl Interp {
         }
     }
 
-    /// The value of a `var self` receiver of a local or module-level place, handed to the
+    /// The value of a `mut self` receiver of a local or module-level place, handed to the
     /// callee. A local is moved out (nothing else can see it meanwhile, and the callee then
     /// owns it uniquely, so it changes in place); anything else, a captured variable in a cell
     /// included, is copied in, and the callee's final value replaces the original at

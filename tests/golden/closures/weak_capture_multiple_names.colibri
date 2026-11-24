@@ -6,7 +6,7 @@ fn main() {
     let a = Node { name: "a" }
     let b = Node { name: "b" }
     let both = fn() use(weak a, weak b) {
-        var out = ""
+        let mut out = ""
         if let some(x) = a {
             out = out + x.name
         }

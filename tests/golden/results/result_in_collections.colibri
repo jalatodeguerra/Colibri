@@ -3,13 +3,13 @@ fn parse(s: str) -> Result[int, str] {
     if s == "2" { return ok(2) }
     return err("bad {s}")
 }
-var results: List[Result[int, str]] = []
+let mut results: List[Result[int, str]] = []
 for s in ["1", "x", "2"] {
     results.push(parse(s))
 }
 print(results)
-var total = 0
-var failures = 0
+let mut total = 0
+let mut failures = 0
 for r in results {
     match r {
         ok(n) => total += n

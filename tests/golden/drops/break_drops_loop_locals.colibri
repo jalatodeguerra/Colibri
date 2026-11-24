@@ -3,7 +3,7 @@ class T { name: str }
 
 fn main() {
     let outer = T { name: "outer" }
-    var i = 0
+    let mut i = 0
     while true {
         let t = T { name: "t{i}" }
         if i == 1 {

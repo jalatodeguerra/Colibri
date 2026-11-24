@@ -16,7 +16,7 @@ fn main() {
     print(a == f)
     print(f != a)
     let xs: List[f32] = [1, 2]
-    var s = 0.0
+    let mut s = 0.0
     for x in xs {
         s += x
     }

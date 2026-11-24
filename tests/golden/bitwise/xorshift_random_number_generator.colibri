@@ -1,5 +1,5 @@
 fn next(state: u64) -> u64 {
-    var x = state
+    let mut x = state
     x ^= x << 13
     x ^= x >> 7
     x ^= x << 17
@@ -7,7 +7,7 @@ fn next(state: u64) -> u64 {
 }
 
 fn main() {
-    var s: u64 = 88172645463325252
+    let mut s: u64 = 88172645463325252
     for _ in 0..3 {
         s = next(s)
         print(s)

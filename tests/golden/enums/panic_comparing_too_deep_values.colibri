@@ -1,8 +1,8 @@
 enum Chain { Nil, Cons(int, Chain) }
 
 fn build(n: int) -> Chain {
-    var l = Chain.Nil
-    var i = 0
+    let mut l = Chain.Nil
+    let mut i = 0
     while i < n {
         l = .Cons(i, l)
         i += 1

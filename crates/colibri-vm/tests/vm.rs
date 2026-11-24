@@ -64,7 +64,7 @@ fn fib_uses_fused_compare_and_a_window_that_starts_at_the_arguments() {
 #[test]
 fn a_counted_loop_is_one_fused_back_edge() {
     let src = "fn main() {
-    var sum = 0
+    let mut sum = 0
     for i in 0..5000000 {
         sum += i % 7
     }
@@ -91,7 +91,7 @@ fn a_counted_loop_is_one_fused_back_edge() {
 #[test]
 fn conditions_become_jumps_and_break_and_continue_jump_to_the_loop_labels() {
     let src = "fn f(a: int, b: int) -> int {
-    var n = 0
+    let mut n = 0
     while n < a && b > 1 || n == 7 {
         n += 1
         if n == 3 { continue }
@@ -166,9 +166,9 @@ unwind [0008, 0009) -> 0015
 #[test]
 fn a_var_self_call_moves_the_receiver_into_register_zero_last_and_back() {
     let src = "struct C { n: int }
-impl C { fn add(var self, k: int) {} }
+impl C { fn add(mut self, k: int) {} }
 fn run() {
-    var c = C { n: 0 }
+    let mut c = C { n: 0 }
     c.add(3)
 }";
     // The argument is evaluated first; the receiver is taken last (`Move r2 r0`), becomes the
@@ -202,7 +202,7 @@ unwind [0005, 0006) -> 0010
 #[test]
 fn a_var_self_call_on_a_list_element_holds_the_place_and_writes_back_before_letting_go() {
     let src = "struct P { n: int }
-impl P { fn bump(var self, by: int) { self.n += by } }
+impl P { fn bump(mut self, by: int) { self.n += by } }
 fn elem(xs: List[P], i: int) {
     xs[i].bump(2)
 }";
@@ -245,8 +245,8 @@ unwind [0012, 0014) -> 0014
 fn a_for_var_trip_writes_back_before_the_guard_and_the_source_are_let_go() {
     let src = "struct P { n: int }
 fn each(ps: List[P]) {
-    var xs = ps
-    for var p in xs {
+    let mut xs = ps
+    for mut p in xs {
         p.n += 1
     }
 }";
@@ -300,7 +300,7 @@ unwind [0016, 0017) -> 0020
 
 #[test]
 fn script_values_are_checked_and_initialised_through_the_global_ops() {
-    let src = "var g = 1
+    let src = "let mut g = 1
 let h = g + 2
 fn get() -> int => g + h
 print(get())
@@ -418,7 +418,7 @@ fn main() {
 
 #[test]
 fn overflow_and_modulo_by_zero_are_panics() {
-    let o = run_panic("fn main() { var x = 9223372036854775807\n x += 1\n print(x) }");
+    let o = run_panic("fn main() { let mut x = 9223372036854775807\n x += 1\n print(x) }");
     assert_eq!(o.panic.as_deref(), Some("integer overflow"));
     let o = run_panic("fn main() { let z = 0\n print(5 % z) }");
     assert_eq!(o.panic.as_deref(), Some("modulo by zero"));
@@ -431,7 +431,7 @@ fn overflow_and_modulo_by_zero_are_panics() {
 #[test]
 fn loops_break_continue_and_labels_of_nested_loops() {
     let src = "fn main() {
-    var total = 0
+    let mut total = 0
     for i in 0..5 {
         for j in 0..=3 {
             if j == 2 { continue }
@@ -440,13 +440,13 @@ fn loops_break_continue_and_labels_of_nested_loops() {
         }
     }
     print(total)
-    var n = 0
+    let mut n = 0
     while true {
         n += 1
         if n >= 4 { break }
     }
     print(n)
-    var k = 0
+    let mut k = 0
     while true {
         k += 1
         if k == 2 { continue }
@@ -461,7 +461,7 @@ fn loops_break_continue_and_labels_of_nested_loops() {
 #[test]
 fn an_inclusive_range_does_not_step_past_its_end() {
     let src = "fn main() {
-    var seen = 0
+    let mut seen = 0
     for i in 9223372036854775805..=9223372036854775807 { seen += 1 }
     print(seen)
     for i in 5..=4 { print(\"never\") }
@@ -474,7 +474,7 @@ fn an_inclusive_range_does_not_step_past_its_end() {
 #[test]
 fn the_loop_variable_is_a_fresh_binding_even_when_the_loop_changes_it() {
     let src = "fn main() {
-    for var i in 0..3 {
+    for mut i in 0..3 {
         i += 10
         print(i)
     }
@@ -487,7 +487,7 @@ fn strings_concatenate_interpolate_and_survive_early_exits() {
     // Every path out of the loops drops the string temporaries and locals, or the debug check
     // of the Unit invariant fails the test when the frame pops.
     let src = "fn pick(n: int) -> str {
-    var acc = \"\"
+    let mut acc = \"\"
     for i in 0..10 {
         let piece = \"<\" + \"{i}\" + \">\"
         if i == n { return acc + piece }
@@ -547,8 +547,8 @@ fn use_of_a_script_value_before_its_line_is_rejected_before_any_code_runs() {
 
 #[test]
 fn module_values_update_in_place_and_compound_assign_works_on_them() {
-    let src = "var count = 0
-var name = \"a\"
+    let src = "let mut count = 0
+let mut name = \"a\"
 fn bump(by: int) {
     count += by
     name = name + \"!\"
@@ -609,7 +609,7 @@ fn an_infinite_loop_is_stopped_by_the_instruction_budget() {
     assert_eq!(o.trace[0].0, "spin");
     // A counted loop that is long enough runs out too.
     let o = run_source_with(
-        "fn main() { var s = 0\n for i in 0..1000000 { s += i }\n print(s) }",
+        "fn main() { let mut s = 0\n for i in 0..1000000 { s += i }\n print(s) }",
         &Options {
             instruction_budget: Some(5_000),
             ..Options::default()
@@ -621,7 +621,7 @@ fn an_infinite_loop_is_stopped_by_the_instruction_budget() {
     );
     // And a program that fits is not stopped.
     let o = run_source_with(
-        "fn main() { var s = 0\n for i in 0..100 { s += i }\n print(s) }",
+        "fn main() { let mut s = 0\n for i in 0..100 { s += i }\n print(s) }",
         &Options {
             instruction_budget: Some(5_000),
             ..Options::default()
@@ -709,14 +709,14 @@ fn a_program_that_does_not_compile_reports_its_errors() {
 fn compound_assignment_reads_the_old_value_after_the_right_hand_side() {
     // The right-hand side changes the place; the old value is read afterwards (as the
     // tree-walker does): 1 + 100 first, then + 5.
-    let src = "var g = 1
+    let src = "let mut g = 1
 fn bump() -> int {
     g = g + 100
     return 5
 }
 g += bump()
 print(g)
-var name = \"a\"
+let mut name = \"a\"
 fn touch() -> str {
     name = name + \"r\"
     return \"T\"
@@ -732,7 +732,7 @@ fn a_captured_for_binding_is_dropped_on_every_way_out_of_the_iteration() {
     // never created at run time here, which is enough: the cell must still be dropped at
     // the end of the iteration, at `continue` and at `break`.
     let src = "fn main() {
-    for var i in 0..5 {
+    for mut i in 0..5 {
         if i > 100 { let f = fn() => print(i) }
         i += 1
         if i == 2 { continue }
@@ -748,14 +748,14 @@ fn a_captured_for_binding_is_dropped_on_every_way_out_of_the_iteration() {
 fn an_exhausted_budget_at_a_back_edge_names_the_loop_not_its_first_statement() {
     // The edge that runs out is the loop's (line 3); the statements it jumps to are on 4 and 5.
     let counted = "fn main() {
-    var s = 0
+    let mut s = 0
     for i in 0..1000000 {
         s += i
         s += 1
     }
 }";
     let unbounded = "fn main() {
-    var n = 0
+    let mut n = 0
     while true {
         n += 1
         n += 2

@@ -1,10 +1,10 @@
 fn main() {
-    var parity: u8 = 0
+    let mut parity: u8 = 0
     for b in "hello".bytes() {
         parity ^= u8(b)
     }
     print(parity)
-    var swapped = 0
+    let mut swapped = 0
     for b in "AB".bytes() {
         swapped = (swapped << 8) | b
     }

@@ -226,7 +226,7 @@ test "after an error the same error comes again and nothing more is read" {
 test "first_read runs once, before the first bytes, and its error stops the body" {
     let f = feed("3\r\nabc\r\n0\r\n\r\n")
     let reader = reader_with(httpd_impl.Options {}, f)
-    var runs = 0
+    let mut runs = 0
     reader.first_read = fn() -> Result[()] {
         runs += 1
         f.log.push("hook")

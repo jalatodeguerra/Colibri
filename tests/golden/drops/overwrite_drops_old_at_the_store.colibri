@@ -2,7 +2,7 @@
 class T { name: str }
 
 fn main() {
-    var x = T { name: "old" }
+    let mut x = T { name: "old" }
     print("before")
     x = T { name: "new" }
     print("after")

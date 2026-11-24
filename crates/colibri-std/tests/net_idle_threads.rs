@@ -220,8 +220,8 @@ fn reading(c: net.Conn) -> str {{
 }}
 
 fn main() -> Result[()] {{
-    var conns: List[net.Conn] = []
-    var readers: List[Coroutine[str]] = []
+    let mut conns: List[net.Conn] = []
+    let mut readers: List[Coroutine[str]] = []
     for i in 0..{READERS} {{
         let c = net.connect("{addr}")?
         conns.push(c)
@@ -235,7 +235,7 @@ fn main() -> Result[()] {{
     for c in conns {{
         c.close()
     }}
-    var closed = 0
+    let mut closed = 0
     for r in readers {{
         if r.join() == "Closed" {{
             closed += 1
@@ -318,8 +318,8 @@ fn accepting(l: net.Listener) -> str {{
 }}
 
 fn main() -> Result[()] {{
-    var listeners: List[net.Listener] = []
-    var acceptors: List[Coroutine[str]] = []
+    let mut listeners: List[net.Listener] = []
+    let mut acceptors: List[Coroutine[str]] = []
     for i in 0..{LISTENERS} {{
         let l = net.listen("127.0.0.1:0")?
         listeners.push(l)
@@ -333,7 +333,7 @@ fn main() -> Result[()] {{
     for l in listeners {{
         l.close()
     }}
-    var closed = 0
+    let mut closed = 0
     for a in acceptors {{
         if a.join() == "Closed" {{
             closed += 1
@@ -500,8 +500,8 @@ fn main() -> Result[()] {{
         data.push_bytes(block.to_bytes())
     }}
     let bytes = data.to_bytes()
-    var conns: List[net.Conn] = []
-    var writers: List[Coroutine[str]] = []
+    let mut conns: List[net.Conn] = []
+    let mut writers: List[Coroutine[str]] = []
     for i in 0..{writers} {{
         let c = net.connect("{addr}")?
         conns.push(c)
@@ -515,7 +515,7 @@ fn main() -> Result[()] {{
     for c in conns {{
         c.close()
     }}
-    var closed = 0
+    let mut closed = 0
     for w in writers {{
         if w.join() == "Closed" {{
             closed += 1

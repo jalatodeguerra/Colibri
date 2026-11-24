@@ -3,7 +3,7 @@ class Res {
 }
 
 fn main() {
-    var fs: List[fn() -> str] = []
+    let mut fs: List[fn() -> str] = []
     let x = Res { name: "x" }
     fs.push(fn() => x.name)
     let y = Res { name: "y" }

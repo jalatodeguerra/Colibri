@@ -1,11 +1,11 @@
-// A script (no `fn main`) runs its `let`, `var` and statements top to bottom (DESIGN §4.2).
-var items: List[int] = []
+// A script (no `fn main`) runs its `let`, `let mut` and statements top to bottom (DESIGN §4.2).
+let mut items: List[int] = []
 items.push(1)
 items.push(2)
 let n = items.len()
 print(n)
 fn total() -> int => sum + n
-var sum = 0
+let mut sum = 0
 for x in items {
     sum += x
 }

@@ -247,7 +247,7 @@ impl Cx<'_> {
         )
     }
 
-    /// A module-level `let`, `var` or `const`: one symbol for each name the pattern binds.
+    /// A module-level `let`, `let mut` or `const`: one symbol for each name the pattern binds.
     fn binding(&self, item: &Item, b: &LetStmt, out: &mut Vec<DocumentSymbol>) {
         let kind = match b.kind {
             BindKind::Const => SymbolKind::CONSTANT,

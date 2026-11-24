@@ -1,5 +1,5 @@
 fn main() {
-    var xs = [1, 2]
+    let mut xs = [1, 2]
     print(xs.remove(2))
 }
 

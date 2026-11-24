@@ -1,6 +1,6 @@
 struct Pos { x: int }
 impl Pos {
-    fn right(var self) {
+    fn right(mut self) {
         self.x += 1
     }
 }

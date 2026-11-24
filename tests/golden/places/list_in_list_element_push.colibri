@@ -1,5 +1,5 @@
 fn main() {
-    var grid: List[List[int]] = [[1], [2]]
+    let mut grid: List[List[int]] = [[1], [2]]
     grid[0].push(10)
     grid[1][0] += 5
     print(grid)

@@ -1,4 +1,4 @@
-var pos = (0, 0)
+let mut pos = (0, 0)
 
 fn step() {
     pos.0 += 1

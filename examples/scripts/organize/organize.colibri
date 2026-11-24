@@ -60,7 +60,7 @@ fn load_rules(file: str) -> Result[Map[str, List[str]]] {
 
 // extension (lower case) -> category
 fn by_extension(rules: Map[str, List[str]]) -> Map[str, str] {
-    var table: Map[str, str] = {:}
+    let mut table: Map[str, str] = {:}
     for (bucket, exts) in rules {
         for e in exts {
             table.insert(e.to_lower(), bucket)
@@ -82,7 +82,7 @@ fn date_bucket(full: str) -> Result[str] {
 // Every file under `root`, as paths relative to it, in name order. Anything inside a hidden
 // name (a leading dot) is left alone.
 fn walk(root: str) -> Result[List[str]] {
-    var found: List[str] = []
+    let mut found: List[str] = []
     for rel in fs.walk(root)? {
         if rel.split("/").any(fn(part) => part.starts_with(".")) {
             continue
@@ -98,8 +98,8 @@ fn walk(root: str) -> Result[List[str]] {
 fn free_name(root: str, folder: str, file: str, taken: Set[str]) -> str {
     let stem = path.stem(file) or file
     let suffix = if let some(e) = path.ext(file) { "." + e } else { "" }
-    var candidate = path.join(folder, file)
-    var n = 1
+    let mut candidate = path.join(folder, file)
+    let mut n = 1
     while taken.contains(candidate) || fs.exists(path.join(root, candidate)) {
         candidate = path.join(folder, "{stem} ({n}){suffix}")
         n += 1
@@ -114,10 +114,10 @@ fn plan(
     only: Option[regex.Regex],
 ) -> Result[List[Move]] {
     let files = walk(root)?
-    var moves: List[Move] = []
-    var taken: Set[str] = Set[str]()
+    let mut moves: List[Move] = []
+    let mut taken: Set[str] = Set[str]()
     // Files that stay where they are keep their names reserved.
-    var pending: List[(str, str, str)] = []
+    let mut pending: List[(str, str, str)] = []
     for rel in files {
         let name = path.file_name(rel) or rel
         if let some(re) = only {
@@ -165,9 +165,9 @@ fn apply(root: str, moves: List[Move]) -> Result[()] {
 // `remove_dir` refuses a folder that still holds anything, so nothing else is lost;
 // a refusal just means the folder stays.
 fn prune(root: str, moves: List[Move]) {
-    var dirs: List[str] = []
+    let mut dirs: List[str] = []
     for m in moves {
-        var dir = path.parent(m.src)
+        let mut dir = path.parent(m.src)
         while dir != none {
             let d = dir or ""
             if d == "" {
@@ -187,9 +187,9 @@ fn prune(root: str, moves: List[Move]) {
 }
 
 fn summarize(moves: List[Move]) {
-    var totals: List[Totals] = []
+    let mut totals: List[Totals] = []
     for m in moves {
-        var found = false
+        let mut found = false
         for i in 0..totals.len() {
             if totals[i].bucket == m.bucket {
                 totals[i].files += 1
@@ -203,8 +203,8 @@ fn summarize(moves: List[Move]) {
     }
     totals.sort_by_key(fn(t) => t.bucket)
     print("{"folder":<14}{"files":>6}{"bytes":>10}")
-    var files = 0
-    var bytes = 0
+    let mut files = 0
+    let mut bytes = 0
     for t in totals {
         print("{t.bucket:<14}{t.files:>6}{t.bytes:>10}")
         files += t.files
@@ -226,7 +226,7 @@ fn main() -> Result[()] {
     }
     let root = dirs[0]
     let dry = args.flag("dry-run")
-    var mode = Mode.ByExt
+    let mut mode = Mode.ByExt
     match args.value("by") or "ext" {
         "ext"  => {}
         "date" => mode = Mode.ByDate
@@ -242,7 +242,7 @@ fn main() -> Result[()] {
     } else {
         default_rules()
     }
-    var only: Option[regex.Regex] = none
+    let mut only: Option[regex.Regex] = none
     if let some(pattern) = args.value("match") {
         match regex.compile(pattern) {
             ok(re) => only = some(re)

@@ -9,7 +9,7 @@ impl Mul[int] for Money {
 }
 
 fn main() {
-    var m = Money { cents: 1 }
+    let mut m = Money { cents: 1 }
     let p = Price { cents: 2 }
     let total = m + p // fine: a Money plus a Price is a Price
     print(total.cents)

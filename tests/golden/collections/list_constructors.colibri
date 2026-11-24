@@ -1,7 +1,7 @@
 fn main() {
     let a = List[int]()
     let b: List[str] = []
-    var c = List[float]()
+    let mut c = List[float]()
     c.push(1.5)
     print(a)
     print(b)

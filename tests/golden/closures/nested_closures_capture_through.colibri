@@ -1,5 +1,5 @@
 fn main() {
-    var n = 0
+    let mut n = 0
     let outer = fn() {
         let inner = fn() { n += 1 }
         inner()

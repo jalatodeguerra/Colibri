@@ -1,10 +1,10 @@
 // allow: unused
 class Res { name: str }
 struct Slot { r: Res }
-var slots = [Slot { r: Res { name: "old" } }]
+let mut slots = [Slot { r: Res { name: "old" } }]
 
 impl Slot {
-    fn replace_then_fail(var self, tag: Res) {
+    fn replace_then_fail(mut self, tag: Res) {
         let mine = Res { name: "mine" }
         self.r = Res { name: "replaced" }
         let zero = 0

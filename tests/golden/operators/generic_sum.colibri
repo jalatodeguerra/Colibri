@@ -16,7 +16,7 @@ impl Mul[float] for V {
 }
 
 fn sum[T: Add](xs: List[T], zero: T) -> T {
-    var acc = zero
+    let mut acc = zero
     for x in xs {
         acc += x
     }
@@ -28,7 +28,7 @@ fn pair_sum[T: Add](a: T, b: T) -> T => a + b
 fn scaled[T: Mul[float]](x: T, k: float) -> T => x * k
 
 fn scaled_sum[T: Add + Mul[float]](xs: List[T], zero: T, k: float) -> T {
-    var acc = zero
+    let mut acc = zero
     for x in xs {
         acc = acc + x * k
     }

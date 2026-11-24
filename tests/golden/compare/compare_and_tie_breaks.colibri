@@ -23,7 +23,7 @@ fn main() {
     print(compare((1, "b"), (1, "a")))
     print(compare(-0.0, 0.0))
 
-    var rows = [
+    let mut rows = [
         Row { name: "b", total: 2.5, count: 1 },
         Row { name: "a", total: 2.5, count: 4 },
         Row { name: "c", total: 9.0, count: 2 },

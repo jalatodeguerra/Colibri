@@ -408,7 +408,7 @@ impl FnCtx<'_, '_> {
 
     /// `go call(args)`: starts a coroutine and gives its `Coroutine[T]` handle, `T` being what
     /// the call returns. The call must go through a function, a function value, an interface
-    /// method or a host function, and cannot be a method that takes `var self` (the receiver
+    /// method or a host function, and cannot be a method that takes `mut self` (the receiver
     /// would have to be written back into the caller's variable while the coroutine runs).
     pub(crate) fn check_go(&mut self, call: &ast::Expr, span: Span) -> Expr {
         match self.check_go_call(call, span) {
@@ -481,7 +481,7 @@ impl FnCtx<'_, '_> {
             if inner.ty != Ty::Error {
                 self.ck.report(
                     Diagnostic::error("`go` cannot start this call", call.span).with_hint(
-                        "`go` needs a call of a function, a closure or a method; a method that mutates a struct through `var self` cannot run on its own, so call it inside a closure",
+                        "`go` needs a call of a function, a closure or a method; a method that mutates a struct through `mut self` cannot run on its own, so call it inside a closure",
                     ),
                 );
             }
@@ -816,7 +816,7 @@ impl FnCtx<'_, '_> {
         }
     }
 
-    /// The place a `var self` method changes: `recv` must be a variable or a part of one, and
+    /// The place a `mut self` method changes: `recv` must be a variable or a part of one, and
     /// that variable must be mutable.
     pub(crate) fn receiver_place(&mut self, recv: Expr, method: &str, span: Span) -> Option<Place> {
         match recv.kind {
@@ -830,7 +830,7 @@ impl FnCtx<'_, '_> {
                         format!("`{method}` changes its receiver, so it needs a variable, not a temporary value"),
                         span,
                     )
-                    .with_hint("store the value in a `var` first, then call the method on it"),
+                    .with_hint("store the value in a `let mut` binding first, then call the method on it"),
                 );
                 None
             }
@@ -1159,7 +1159,7 @@ pub(crate) fn subst_param<'a>(mut p: ParamInfo<'a>, map: &[(ParamId, Ty)]) -> Pa
 pub(crate) enum Receiver {
     /// `self`: read-only, passed by value.
     Value(Expr),
-    /// `var self`: a place the method changes in place.
+    /// `mut self`: a place the method changes in place.
     Place(Place),
 }
 

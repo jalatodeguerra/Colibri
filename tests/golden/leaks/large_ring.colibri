@@ -6,7 +6,7 @@ class Node {
 
 fn main() {
     let first = Node { id: 0 }
-    var last = first
+    let mut last = first
     for i in 1..10000 {
         let n = Node { id: i }
         last.next = some(n)

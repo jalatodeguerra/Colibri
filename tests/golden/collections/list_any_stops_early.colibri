@@ -1,5 +1,5 @@
 fn main() {
-    var calls = 0
+    let mut calls = 0
     let xs = [1, 2, 3, 4]
     print(xs.any(fn(x) {
         calls += 1

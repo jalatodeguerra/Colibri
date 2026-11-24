@@ -8,8 +8,8 @@ fn bigger[T: Ord](a: T, b: T) -> T {
 }
 
 fn fold_with(xs: List[int], f: fn(int, int) -> int) -> int {
-    var acc = xs[0]
-    var i = 1
+    let mut acc = xs[0]
+    let mut i = 1
     while i < xs.len() {
         acc = f(acc, xs[i])
         i += 1

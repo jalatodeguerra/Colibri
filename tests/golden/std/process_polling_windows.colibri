@@ -7,7 +7,7 @@ import process
 fn runner() -> int {
     // Two pings, about a second.
     let child = process.spawn("ping", ["-n", "2", "127.0.0.1"]) or |e| { panic(e.message()) }
-    var out = child.try_wait() or |e| { panic(e.message()) }
+    let mut out = child.try_wait() or |e| { panic(e.message()) }
     while out == none {
         wait(0.01)
         out = child.try_wait() or |e| { panic(e.message()) }
@@ -18,7 +18,7 @@ fn runner() -> int {
     return 1
 }
 
-var ticks = 0
+let mut ticks = 0
 
 fn counter() {
     while true {

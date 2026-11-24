@@ -1,5 +1,5 @@
 fn count(n: int) -> int {
-    var c = 0
+    let mut c = 0
     for _ in 0..n {
         c += 1
     }

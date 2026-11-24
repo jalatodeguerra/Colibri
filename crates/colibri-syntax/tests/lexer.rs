@@ -56,7 +56,7 @@ fn parts(src: &str) -> Vec<String> {
 
 #[test]
 fn every_keyword() {
-    let words = "fn let var const type return if else for in while break continue match \
+    let words = "fn let mut var const type return if else for in while break continue match \
                  struct class enum interface impl import pub as is self own borrow weak \
                  extern unsafe defer test go some none ok err or and not true false";
     let (tokens, diags) = lex(F, words);

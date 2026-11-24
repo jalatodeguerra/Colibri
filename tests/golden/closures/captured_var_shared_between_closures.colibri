@@ -1,5 +1,5 @@
 fn main() {
-    var total = 0
+    let mut total = 0
     let add = fn(n: int) { total += n }
     let read = fn() => total
     add(5)

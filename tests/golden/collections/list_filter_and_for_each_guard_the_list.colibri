@@ -1,6 +1,6 @@
 // allow: unused
 fn main() {
-    var xs = [1, 2]
+    let mut xs = [1, 2]
     xs.for_each(fn(x) { print(x) })
     xs.push(3)
     print(xs.len())

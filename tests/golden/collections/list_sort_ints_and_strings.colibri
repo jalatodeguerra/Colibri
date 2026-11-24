@@ -1,14 +1,14 @@
 fn main() {
-    var xs = [3, 1, 2, 5, 4, 1]
+    let mut xs = [3, 1, 2, 5, 4, 1]
     xs.sort()
     print(xs)
-    var ws = ["pear", "apple", "fig"]
+    let mut ws = ["pear", "apple", "fig"]
     ws.sort()
     print(ws)
-    var fs = [2.5, -1.0, 0.0]
+    let mut fs = [2.5, -1.0, 0.0]
     fs.sort()
     print(fs)
-    var empty: List[int] = []
+    let mut empty: List[int] = []
     empty.sort()
     print(empty)
 }

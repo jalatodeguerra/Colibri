@@ -15,7 +15,7 @@ fn main() {
     let dt: float = 0.5
     print(a * dt)
     print(dt * a)
-    var p = a
+    let mut p = a
     p += b
     p -= vec.vec2(1, 1)
     p *= 2
@@ -31,7 +31,7 @@ fn main() {
     print(i - vec.ivec3(1, 1, 1))
     print(-i)
     print(2 * i)
-    var j = i
+    let mut j = i
     j += vec.ivec3(1, 1, 1)
     j *= 2
     print(j)

@@ -3,7 +3,7 @@ struct Counter {
 }
 
 impl Iter[int] for Counter {
-    fn next(var self) -> int? {
+    fn next(mut self) -> int? {
         if self.n >= 3 {
             return none
         }
@@ -13,7 +13,7 @@ impl Iter[int] for Counter {
 }
 
 fn main() {
-    var c = Counter { n: 0 }
+    let mut c = Counter { n: 0 }
     for x in c {
         print(x)
     }

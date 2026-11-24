@@ -1,5 +1,5 @@
 fn main() {
-    var n = 0
+    let mut n = 0
     'w: while n < 10 {
         n += 1
         for k in 0..100 {

@@ -5,7 +5,7 @@ impl Drop for Item {
 }
 
 fn main() {
-    var items: List[Item] = [Item { name: "x" }, Item { name: "y" }, Item { name: "z" }]
+    let mut items: List[Item] = [Item { name: "x" }, Item { name: "y" }, Item { name: "z" }]
     items.remove(1)
     print("removed")
 }

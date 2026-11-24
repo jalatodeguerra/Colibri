@@ -1,8 +1,8 @@
 struct E { hp: int }
-var es = [E { hp: 1 }]
+let mut es = [E { hp: 1 }]
 
 impl E {
-    fn hit(var self) {
+    fn hit(mut self) {
         self.hp -= 1
     }
 }

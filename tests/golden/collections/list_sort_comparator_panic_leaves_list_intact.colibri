@@ -1,7 +1,7 @@
 // allow: unused
 fn main() {
-    var xs = [4, 3, 2, 1]
-    var calls = 0
+    let mut xs = [4, 3, 2, 1]
+    let mut calls = 0
     let broken = fn(a: int, b: int) -> int {
         calls += 1
         if calls == 3 {

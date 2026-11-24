@@ -10,8 +10,8 @@ fn first_even(a: int, b: int) -> int {
 }
 
 fn main() {
-    var total = 0
-    var i = 0
+    let mut total = 0
+    let mut i = 0
     while i < 6 {
         match i % 3 {
             0 => total += 10

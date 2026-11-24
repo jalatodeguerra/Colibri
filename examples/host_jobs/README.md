@@ -18,7 +18,7 @@ shows:
   `on_progress(job, units)` (optional; a script without it is simply not told about the worker's
   progress).
 - A script `class`, `enum`, `match`, a closure passed to `on_timer`, a `List`, `or` for a
-  fallback, and a module-level `var` that holds the balance.
+  fallback, and a module-level `let mut` that holds the balance.
 - An instruction budget for every entry into the script (`STEP_BUDGET`). A script that panics or
   runs out of budget is logged and the host goes on. The summary line reports the largest number
   of steps one entry used (`max_steps`).

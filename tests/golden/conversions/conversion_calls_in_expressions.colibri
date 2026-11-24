@@ -1,5 +1,5 @@
 fn average(xs: List[u8]) -> float {
-    var total = 0
+    let mut total = 0
     for x in xs {
         total += int(x)
     }

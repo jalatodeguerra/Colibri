@@ -34,9 +34,11 @@ pub enum StrPart {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
-    // Keywords (DESIGN §3.3). `use` is deliberately not one.
+    // Keywords (DESIGN §3.3). `use` is deliberately not one. `var` is reserved only so that
+    // the parser can say what replaced it (`let mut`).
     Fn,
     Let,
+    Mut,
     Var,
     Const,
     Type,
@@ -153,6 +155,7 @@ pub enum TokenKind {
 pub(crate) const KEYWORDS: &[(&str, TokenKind)] = &[
     ("fn", TokenKind::Fn),
     ("let", TokenKind::Let),
+    ("mut", TokenKind::Mut),
     ("var", TokenKind::Var),
     ("const", TokenKind::Const),
     ("type", TokenKind::Type),
@@ -255,6 +258,7 @@ impl TokenKind {
         Some(match word {
             "fn" => TokenKind::Fn,
             "let" => TokenKind::Let,
+            "mut" => TokenKind::Mut,
             "var" => TokenKind::Var,
             "const" => TokenKind::Const,
             "type" => TokenKind::Type,

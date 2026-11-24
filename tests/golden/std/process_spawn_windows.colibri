@@ -8,7 +8,7 @@ import process
 fn main() {
     let child = process.spawn("cmd", ["/C", "exit", "5"]) or |e| { panic(e.message()) }
     print(child.id() > 0)
-    var result = child.try_wait() or |e| { panic(e.message()) }
+    let mut result = child.try_wait() or |e| { panic(e.message()) }
     while result == none {
         result = child.try_wait() or |e| { panic(e.message()) }
     }
@@ -24,7 +24,7 @@ fn main() {
     print(joined.status)
 
     // A program that reads its input: `findstr` copies the lines that match `.`.
-    var o = process.options()
+    let mut o = process.options()
     o.input = some("one\r\ntwo\r\n")
     let echo = process.spawn_with("findstr", ["."], o) or |e| { panic(e.message()) }
     let copied = echo.join() or |e| { panic(e.message()) }

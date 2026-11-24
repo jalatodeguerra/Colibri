@@ -4,7 +4,7 @@ class Owner {
 
 fn main() {
     let owner = Owner { name: "owner" }
-    var calls = 0
+    let mut calls = 0
     let f = fn() use(weak owner) {
         calls += 1
         if let some(o) = owner {

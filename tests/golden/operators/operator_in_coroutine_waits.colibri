@@ -15,7 +15,7 @@ impl Neg for Slow {
 }
 
 fn work(name: str, start: Slow) {
-    var acc = start
+    let mut acc = start
     for i in 0..2 {
         acc += Slow { n: 10 }
         print("{name} {acc.n}")

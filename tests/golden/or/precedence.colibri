@@ -12,7 +12,7 @@ print(flag(false) or 2 < 3 || false == false)
 let n = get(false) or 10 - 4
 print(n)
 // ...and tighter than assignment.
-var x = 0
+let mut x = 0
 x = get(false) or 5
 x += get(false) or 5
 print(x)

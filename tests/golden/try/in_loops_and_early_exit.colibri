@@ -3,7 +3,7 @@ fn check(n: int) -> Result[int, str] {
     return ok(n)
 }
 fn all(limit: int) -> Result[int, str] {
-    var total = 0
+    let mut total = 0
     for i in 0..limit {
         total += check(i)?
         print("added {i}")

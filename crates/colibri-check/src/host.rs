@@ -387,7 +387,7 @@ fn print_const(init: &ast::Expr) -> String {
 fn print_fn(decl: &ast::FnDecl, out: &mut String) {
     let mut params: Vec<String> = Vec::new();
     if let Some(r) = decl.receiver {
-        params.push(if r.mutable { "var self" } else { "self" }.to_string());
+        params.push(if r.mutable { "mut self" } else { "self" }.to_string());
     }
     for p in &decl.params {
         let ty = p.ty.as_ref().map_or("?".to_string(), print_type);

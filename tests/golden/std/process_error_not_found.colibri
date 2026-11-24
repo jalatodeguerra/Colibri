@@ -28,7 +28,7 @@ fn main() -> Result[()] {
         err(e) => print("not a process error: {e}")
     }
     print(kind(process.spawn("colibri-no-such-program-xyz", []).err().expect("missing")))
-    var o = process.options()
+    let mut o = process.options()
     o.cwd = some("/colibri/no/such/folder")
     print(kind(process.run_with("colibri-no-such-program-xyz", [], o).err().expect("no folder")))
     // A working folder that is missing, or is not a folder, is not "program not found": the

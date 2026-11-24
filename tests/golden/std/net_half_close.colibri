@@ -8,7 +8,7 @@ fn serve(l: net.Listener) -> Result[()] {
     let c = l.accept()?
     defer c.close()
     // Read until the client is done, then answer with a different length.
-    var total = 0
+    let mut total = 0
     while true {
         let chunk = c.read(4)?
         if chunk.len() == 0 {
