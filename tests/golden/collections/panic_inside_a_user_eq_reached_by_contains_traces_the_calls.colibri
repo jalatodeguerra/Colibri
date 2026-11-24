@@ -1,0 +1,24 @@
+struct V {
+    n: int
+}
+
+impl Eq for V {
+    fn eq(self, other: V) -> bool {
+        if other.n == 0 {
+            panic("zero is not comparable")
+        }
+        return self.n == other.n
+    }
+}
+
+fn find(xs: List[V], x: V) -> bool {
+    return xs.contains(x)
+}
+
+fn main() {
+    print(find([V { n: 1 }, V { n: 2 }], V { n: 2 }))
+    print(find([V { n: 1 }], V { n: 0 }))
+}
+
+// expect: true
+// panic: zero is not comparable

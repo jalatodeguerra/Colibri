@@ -1,0 +1,26 @@
+struct V {
+    n: int
+}
+
+impl Ord for V {
+    fn cmp(self, other: V) -> int {
+        if self.n == 3 || other.n == 3 {
+            panic("no threes")
+        }
+        return compare(self.n, other.n)
+    }
+}
+
+fn order(xs: List[V]) {
+    let mut ys = xs
+    ys.sort()
+    print(ys.len())
+}
+
+fn main() {
+    order([V { n: 2 }, V { n: 1 }])
+    order([V { n: 2 }, V { n: 3 }, V { n: 1 }])
+}
+
+// expect: 2
+// panic: no threes
