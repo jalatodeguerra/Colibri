@@ -10,7 +10,8 @@
 //! directly yet; [`run_source`] is a small entry for tests.
 
 // `deny`, not `forbid`: the three `unsafe` blocks of `cffi` (reads and writes of C memory, which the
-// program asks for inside its own `unsafe` blocks) are the only ones, and they are allowed there.
+// program asks for inside its own `unsafe` blocks) and the module `stacks` (the native stacks of
+// host functions that wait, vm-plan §3.2) are the only places that are allowed to use it.
 #![deny(unsafe_code)]
 
 pub mod bytecode;
@@ -24,16 +25,20 @@ mod engine;
 mod fiber;
 mod heap;
 mod host;
+mod host_async;
 mod load;
 mod machine;
 mod patterns;
 mod places;
 mod run;
 mod source;
+#[allow(unsafe_code)]
+#[cfg_attr(target_arch = "wasm32", path = "stacks_web.rs")]
+mod stacks;
 mod unwind;
 
 pub use compile::{CompileEnv, compile_body};
-pub use coro::{FiberSlab, HOST_WAIT_REFUSAL};
+pub use coro::FiberSlab;
 pub use fiber::VmFiber;
 pub use host::{HostClassHooks, HostFault, HostImpl};
 pub use machine::{DEFAULT_NATIVE_STACK_BUDGET, Machine};

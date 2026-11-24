@@ -3,8 +3,9 @@
 //!
 //! The VM runs a growing part of the language (see its crate docs); what it does not run yet
 //! is a clean panic naming the missing feature. The REPL session entry points refuse with a
-//! message, a closure value cannot be called from the host, and a host function that waits for
-//! a background operation blocks (there are no coroutines to run meanwhile).
+//! message. A host function that waits for a background operation suspends its coroutine (it
+//! runs on a native stack of its own while a coroutine calls it, vm-plan §3.2), or runs the
+//! event loop on the main fiber.
 
 use std::any::{Any, TypeId as AnyTypeId};
 use std::io::Write;
@@ -20,7 +21,6 @@ use colibri_core::hostheap::{HostBorrowError, HostGuard};
 use colibri_core::leaks::Leak;
 use colibri_core::prelude::*;
 use colibri_core::value::Value as CoreValue;
-use colibri_vm::HOST_WAIT_REFUSAL;
 use colibri_vm::{HostClassHooks, HostImpl, Machine, VmFiber};
 
 use crate::engine::{ClassHooks, HostCx, HostFnImpl, RuntimeEngine};
@@ -117,7 +117,8 @@ macro_rules! host_cx {
             }
 
             fn external_wait_runs_others(&self) -> bool {
-                false
+                let (machine, fiber) = self.shared();
+                machine.external_wait_runs_others(fiber)
             }
 
             fn wait_for_completion(
@@ -125,20 +126,8 @@ macro_rules! host_cx {
                 op: u64,
                 token: &CancelToken,
             ) -> Result<Waited, ExternalError> {
-                // Suspending a coroutine for a background operation, and driving the event loop
-                // while the main fiber waits, are host async (vm-plan step 12). Until then a wait
-                // that would stop other coroutines from running is refused; with none alive the
-                // caller just blocks.
-                if self.parts().1.is_coroutine() || self.core().sched.coroutine_count() > 0 {
-                    token.cancel();
-                    self.core_mut().sched.ext().finish(op);
-                    // A panic of the program, not an error value the host function could
-                    // turn into something else: the refusal must show as the refusal it is.
-                    std::panic::resume_unwind(Box::new(crate::ctx::RaisedPanic(
-                        HOST_WAIT_REFUSAL.to_string(),
-                    )));
-                }
-                Ok(Waited::Blocked)
+                let (machine, fiber) = self.parts();
+                machine.wait_for_completion(fiber, op, token)
             }
         }
     };
@@ -146,29 +135,6 @@ macro_rules! host_cx {
 
 host_cx!(VmEngine);
 host_cx!(VmCx<'_>);
-
-/// A host function of the runtime as the VM installs it, for calls: one that may wait for
-/// something outside the program is refused at the call while a coroutine is alive (a
-/// coroutine cannot be suspended for it before vm-plan step 12), whether or not this call would
-/// wait. That is decided from what the function is, so a run does not depend on timing.
-fn adapt_calls(imp: HostFnImpl, no_await: bool) -> HostImpl {
-    if no_await {
-        return adapt(imp);
-    }
-    Rc::new(
-        move |machine: &mut Machine, fiber: &mut VmFiber, args: Vec<CoreValue>| {
-            if fiber.is_coroutine() || Engine::core(machine).sched.coroutine_count() > 0 {
-                for arg in args {
-                    machine.release(arg);
-                }
-                return Err(colibri_vm::HostFault::Message(
-                    HOST_WAIT_REFUSAL.to_string(),
-                ));
-            }
-            imp(&mut VmCx { machine, fiber }, args)
-        },
-    )
-}
 
 /// A host function of the runtime as the VM installs it.
 fn adapt(imp: HostFnImpl) -> HostImpl {
@@ -227,7 +193,10 @@ impl RuntimeEngine for VmEngine {
     }
 
     fn set_host_fn(&mut self, id: HostFnId, imp: HostFnImpl, no_await: bool) {
-        self.machine.set_host_fn(id, adapt_calls(imp, no_await));
+        self.machine.set_host_fn(id, adapt(imp));
+        if no_await {
+            self.machine.set_host_no_await(id);
+        }
     }
 
     fn set_host_class_hooks(&mut self, ty: TypeId, hooks: ClassHooks) {

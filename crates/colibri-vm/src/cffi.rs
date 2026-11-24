@@ -204,6 +204,9 @@ mod enabled {
                 },
             );
             self.set_host_fn(id, imp);
+            // A C function runs on the caller's stack: it never waits, and C code may need more
+            // stack than a host function's small one.
+            self.set_host_no_await(id);
             Ok(())
         }
 

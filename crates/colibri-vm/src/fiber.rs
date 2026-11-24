@@ -85,6 +85,12 @@ pub struct VmFiber {
     pub(crate) start: Option<Box<CoStart>>,
     /// What the end of a coroutine's entry frame releases.
     pub(crate) entry: Option<CoEntry>,
+    /// The host function that this coroutine called and that is waiting for a background
+    /// operation, on a native stack of its own (vm-plan §3.2). The frames of the coroutine are
+    /// as they were at the call, with the function's `HostShim` frame on top.
+    pub(crate) pending_host: Option<Box<crate::host_async::HostCont>>,
+    /// The stack a host function of this fiber is running on, while it does (`stacks`).
+    pub(crate) yielder: Option<crate::stacks::YielderPtr>,
 }
 
 /// The call a new coroutine begins with (`go`), kept until its first resumption.
@@ -138,6 +144,8 @@ impl VmFiber {
             redo: false,
             start: None,
             entry: None,
+            pending_host: None,
+            yielder: None,
         }
     }
 
@@ -152,6 +160,7 @@ impl VmFiber {
     pub(crate) fn reset(&mut self) {
         debug_assert!(self.frames.is_empty() && self.temps.is_empty() && self.holds.is_empty());
         debug_assert!(self.unwinding.is_empty() && self.start.is_none() && self.entry.is_none());
+        debug_assert!(self.pending_host.is_none() && self.yielder.is_none());
         self.regs.clear();
         self.frames.clear();
         self.temps.clear();

@@ -34,12 +34,9 @@ use colibri_syntax::Span;
 
 use crate::bytecode::{Chunk, JoinKind, PauseKind, Site};
 use crate::fiber::{CoEntry, CoStart, VmFiber};
+use crate::host_async::{Called, HostDest};
 use crate::machine::Machine;
 use crate::run::Exit;
-
-/// The refusal of a host call that can wait while a coroutine is alive (vm-plan step 12 lifts it).
-pub const HOST_WAIT_REFUSAL: &str =
-    "the bytecode VM does not support a host function that can wait, beside running coroutines yet";
 
 /// How many finished fibers the pool keeps for the next starts (their stacks keep their
 /// capacity). A server that starts a short coroutine per request has a few alive at a time.
@@ -336,7 +333,10 @@ impl Machine {
     /// Runs the coroutine from where it stands: its first call, the instruction after a pause
     /// (or the pausing instruction itself, for a `join`), or the unwinding of a cancel.
     fn run_coroutine(&mut self, fiber: &mut VmFiber, cancel: bool) -> Resumed {
-        let result: Result<Exit, Ctl> = if let Some(start) = fiber.start.take() {
+        let result: Result<Exit, Ctl> = if fiber.pending_host.is_some() {
+            // Parked in a host function: its stack goes on, the cancel signal is its to take.
+            self.continue_host(fiber, cancel)
+        } else if let Some(start) = fiber.start.take() {
             if cancel {
                 // Cancelled before it ran: nothing of it started. After a refusal nothing
                 // runs, hooks included: the arguments are leaked, as the refusal does.
@@ -348,6 +348,7 @@ impl Machine {
                 Err(Ctl::Cancel)
             } else {
                 match self.begin_coroutine(fiber, *start) {
+                    Ok(None) if fiber.pending_host.is_some() => Ok(Exit::Suspend),
                     Ok(None) => self.exec(fiber),
                     Ok(Some(v)) => Ok(Exit::Return(v)),
                     Err(ctl) => Err(ctl),
@@ -428,9 +429,18 @@ impl Machine {
         } = start;
         match callee {
             Callee::Fn(id) => self.begin_fn(fiber, id, values, None, None, span),
-            Callee::Host(id) => self
-                .call_host(fiber, id, &type_args, values, span)
-                .map(Some),
+            Callee::Host(id) => match self.call_host(
+                fiber,
+                id,
+                &type_args,
+                values,
+                span,
+                HostDest::Entry,
+            )? {
+                Called::Done(v) => Ok(Some(v)),
+                // Parked inside the function: `run_coroutine` ends the run.
+                Called::Parked => Ok(None),
+            },
             Callee::Value => {
                 if values.is_empty() {
                     return Err(self.internal(fiber, span, "a call without a function"));

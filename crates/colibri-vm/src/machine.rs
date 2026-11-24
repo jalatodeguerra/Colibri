@@ -15,6 +15,7 @@ use crate::cffi::CffiState;
 use crate::compile::{CompileEnv, compile_body};
 use crate::coro::FiberSlab;
 use crate::host::HostImpls;
+use crate::stacks::HostStacks;
 
 /// A body and its chunk, compiled the first time it is called.
 pub(crate) struct Slot {
@@ -68,6 +69,8 @@ pub struct Machine {
     pub(crate) native_stack_budget: usize,
     /// The host functions and class hooks the runtime installed.
     pub(crate) host_impls: HostImpls,
+    /// The native stacks that a coroutine's host functions run on (vm-plan §3.2).
+    pub(crate) host_stacks: HostStacks,
     /// The layouts of the C structs of the program and the libraries it uses.
     pub(crate) cffi: CffiState,
     /// Counts the loads and patches of the program: an inline cache entry made under another
@@ -110,6 +113,7 @@ impl Machine {
             max_depth: max_call_depth,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
             host_impls: HostImpls::default(),
+            host_stacks: HostStacks::default(),
             cffi: CffiState::default(),
             epoch: 0,
             fibers: FiberSlab::default(),
@@ -118,6 +122,25 @@ impl Machine {
             #[cfg(test)]
             print_hook: None,
         }
+    }
+
+    /// Sets the size of the native stacks that host functions called from coroutines run on
+    /// (default 256 KiB). Stacks pooled at another size are dropped at the next call.
+    pub fn set_host_stack_size(&mut self, bytes: usize) {
+        self.host_stacks.set_size(bytes);
+    }
+
+    /// How many host stacks were mapped from the system, as opposed to taken from the pool (for
+    /// tests of the pool).
+    #[doc(hidden)]
+    pub fn host_stacks_allocated(&self) -> usize {
+        self.host_stacks.allocated()
+    }
+
+    /// How many finished host stacks wait in the pool (for tests of the pool).
+    #[doc(hidden)]
+    pub fn host_stacks_pooled(&self) -> usize {
+        self.host_stacks.pooled()
     }
 
     /// How many bytes of native stack nested calls from Rust into Colibri may use.

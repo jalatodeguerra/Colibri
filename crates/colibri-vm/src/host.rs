@@ -5,7 +5,9 @@
 //! A host function runs on the native stack of whoever called it, with a frame of its own on the
 //! fiber (a `HostShim`: no code, no registers) so that a trace names it, the call depth counts it
 //! and a host object it borrows is held under its body. Everything it does to Colibri code in
-//! turn (a callback, `Ctx::call`) is a nested dispatch loop on the same fiber.
+//! turn (a callback, `Ctx::call`) is a nested dispatch loop on the same fiber. The exception is
+//! a call from a coroutine's own code of a function that may wait for a background operation: it
+//! runs on a native stack of its own, which can be parked (`stacks`, `host_async`).
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -22,7 +24,9 @@ pub use colibri_core::host::HostFault;
 
 use crate::bytecode::{Chunk, Op, Site};
 use crate::fiber::{Frame, FrameKind, VmFiber};
+use crate::host_async::{Called, HostCont, HostDest};
 use crate::machine::Machine;
+use crate::stacks::{self, Step};
 
 /// A host function as the machine calls it: the arguments are the caller's references, which
 /// the function must release (or hand on).
@@ -49,6 +53,16 @@ pub(crate) struct HostImpls {
     pub class_hooks: HashMap<TypeId, HostClassHooks>,
     /// The frame chunk of each host function, made at its first call (see [`Machine::shim`]).
     shims: Vec<Option<Rc<Chunk>>>,
+    /// By [`HostFnId`], the functions that never wait for anything outside the program
+    /// (`Registration::no_await`): a coroutine calls them on its own stack.
+    no_await: Vec<bool>,
+}
+
+impl HostImpls {
+    /// Whether host function `id` is marked as one that never waits.
+    pub(crate) fn is_no_await(&self, id: HostFnId) -> bool {
+        self.no_await.get(id.0 as usize).copied().unwrap_or(false)
+    }
 }
 
 impl Machine {
@@ -57,12 +71,22 @@ impl Machine {
         self.host_impls.fns = vec![None; program.host_fns.len()];
         self.host_impls.class_hooks.clear();
         self.host_impls.shims = vec![None; program.host_fns.len()];
+        self.host_impls.no_await = vec![false; program.host_fns.len()];
     }
 
     /// Installs the implementation of host function `id`.
     pub fn set_host_fn(&mut self, id: HostFnId, f: HostImpl) {
         if let Some(slot) = self.host_impls.fns.get_mut(id.0 as usize) {
             *slot = Some(f);
+        }
+    }
+
+    /// Marks host function `id` as one that never waits for a background operation (its calls
+    /// need no stack of their own when a coroutine makes them). A function that is not marked
+    /// may wait, and a coroutine that calls it can be parked in it.
+    pub fn set_host_no_await(&mut self, id: HostFnId) {
+        if let Some(slot) = self.host_impls.no_await.get_mut(id.0 as usize) {
+            *slot = true;
         }
     }
 
@@ -109,7 +133,8 @@ impl Machine {
     }
 
     /// `CallHost`: the host function of the site gets references of its own to the arguments in
-    /// the window, which stay for the caller to drop.
+    /// the window, which stay for the caller to drop. `Ok(true)`: the coroutine parked in the
+    /// function, and the loop must end.
     #[inline(never)]
     pub(crate) fn op_call_host(
         &mut self,
@@ -118,7 +143,7 @@ impl Machine {
         base: usize,
         pc: usize,
         op: Op,
-    ) -> Result<(), Ctl> {
+    ) -> Result<bool, Ctl> {
         let Op::CallHost { d, base: a, site } = op else {
             unreachable!("op_call_host is called for its own instruction")
         };
@@ -128,14 +153,24 @@ impl Machine {
         };
         let from = base + usize::from(a);
         let args: Vec<Value> = fiber.regs[from..from + usize::from(*argc)].to_vec();
-        let result = self.call_host(fiber, *id, type_args, args, span)?;
-        Self::put_reg(fiber, base + usize::from(d), result);
-        Ok(())
+        let dest = base + usize::from(d);
+        match self.call_host(fiber, *id, type_args, args, span, HostDest::Reg(dest))? {
+            Called::Done(result) => {
+                Self::put_reg(fiber, dest, result);
+                Ok(false)
+            }
+            // The coroutine waits inside the host function: the loop ends, the call completes
+            // when the coroutine is resumed.
+            Called::Parked => Ok(true),
+        }
     }
 
     /// A call of the host function `id` from Colibri code: the depth check, one budget step, a
     /// frame of its own, the type arguments of the call for a function that reads them
-    /// (`json.decode[T]`), and the fault mapped to a panic or a cancellation.
+    /// (`json.decode[T]`), and the fault mapped to a panic or a cancellation. A coroutine's
+    /// call of a function that may wait runs on a native stack of its own; if the function
+    /// waits, the coroutine is parked in it ([`Called::Parked`]) and the call completes, with
+    /// its result going to `dest`, when the coroutine is resumed.
     pub(crate) fn call_host(
         &mut self,
         fiber: &mut VmFiber,
@@ -143,7 +178,8 @@ impl Machine {
         type_args: &[Ty],
         args: Vec<Value>,
         span: Span,
-    ) -> Eval {
+        dest: HostDest,
+    ) -> Result<Called, Ctl> {
         let installed = self
             .host_impls
             .fns
@@ -176,14 +212,47 @@ impl Machine {
         });
         fiber.state.host_depth += 1;
         let outer_type_args = std::mem::replace(&mut self.core.host.type_args, type_args.to_vec());
-        let result = imp(self, fiber, args);
-        self.core.host.type_args = outer_type_args;
+        let step = if self.may_park(fiber, id) {
+            stacks::run(self, fiber, imp, args)
+        } else {
+            Step::Done(imp(self, fiber, args))
+        };
+        match step {
+            Step::Done(result) => {
+                self.core.host.type_args = outer_type_args;
+                self.finish_host_call(fiber, id, &body, type_args, span, result)
+                    .map(Called::Done)
+            }
+            Step::Parked(parked) => {
+                // Other code runs while the function waits: it sees the type arguments it had.
+                let own = std::mem::replace(&mut self.core.host.type_args, outer_type_args);
+                fiber.redo = false;
+                fiber.pending_host = Some(Box::new(HostCont::new(
+                    parked, id, body, own, span, dest,
+                )));
+                Ok(Called::Parked)
+            }
+        }
+    }
+
+    /// The end of a call of host function `id`, whether it ended at once or after a pause: the
+    /// frame and the depth of the call go, the result is checked against the function's type,
+    /// and a fault becomes a panic or a cancellation. The trace of a panic includes the host
+    /// function's frame, so it is popped after.
+    pub(crate) fn finish_host_call(
+        &mut self,
+        fiber: &mut VmFiber,
+        id: HostFnId,
+        body: &Rc<Body>,
+        type_args: &[Ty],
+        span: Span,
+        result: Result<Value, HostFault>,
+    ) -> Eval {
         fiber.state.host_depth -= 1;
-        // The trace of a panic includes the host function's frame, so it is popped after.
         let outcome = match result {
             Ok(v) => match self
                 .core
-                .host_result_mismatch(id.0 as usize, &body, type_args, &v)
+                .host_result_mismatch(id.0 as usize, body, type_args, &v)
             {
                 None => Ok(v),
                 Some(message) => {
