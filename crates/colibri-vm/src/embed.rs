@@ -57,7 +57,7 @@ impl Machine {
                     Ok(chunk) => chunk,
                     Err(m) => {
                         self.release_all(args);
-                        return Err(bare_panic(&format!("internal error: {m}")));
+                        return Err(bare_panic(&crate::calls::closure_message(&m)));
                     }
                 };
                 let c = Rc::clone(c);

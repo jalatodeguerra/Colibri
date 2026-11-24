@@ -464,7 +464,7 @@ impl Machine {
                             Err(msg) => {
                                 self.release_all(values);
                                 self.release(f);
-                                Err(self.internal(fiber, span, &msg))
+                                Err(self.panic(fiber, span, crate::calls::closure_message(&msg)))
                             }
                         }
                     }

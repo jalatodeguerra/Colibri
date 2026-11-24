@@ -265,7 +265,7 @@ impl Engine for Machine {
                 Ok(chunk) => self.enter_with(fiber, chunk, args, Some(c)).0,
                 Err(msg) => {
                     self.release_all(args);
-                    Err(self.internal(fiber, span, &msg))
+                    Err(self.panic(fiber, span, crate::calls::closure_message(&msg)))
                 }
             },
             _ => {

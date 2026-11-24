@@ -207,18 +207,26 @@ pub trait Sched: Engine {
         if self.core().sched.coroutine_running() {
             return;
         }
-        let ids: Vec<u64> = self
-            .core()
-            .sched
-            .entries
-            .iter()
-            .rev()
-            .filter(|e| e.id >= first && e.state == State::Suspended)
-            .map(|e| e.id)
-            .collect();
         let outermost = self.core_mut().begin_entry();
-        for id in ids {
-            self.cancel_id(id);
+        // A `defer` or a `Drop` hook that runs during a cancel may start coroutines, which are
+        // cancelled in turn; a few rounds are enough for any program that is not building them
+        // forever.
+        for _ in 0..64 {
+            let ids: Vec<u64> = self
+                .core()
+                .sched
+                .entries
+                .iter()
+                .rev()
+                .filter(|e| e.id >= first && e.state == State::Suspended)
+                .map(|e| e.id)
+                .collect();
+            if ids.is_empty() {
+                break;
+            }
+            for id in ids {
+                self.cancel_id(id);
+            }
         }
         self.core_mut().end_entry(outermost, false);
     }

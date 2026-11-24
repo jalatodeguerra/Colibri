@@ -114,12 +114,18 @@ impl Core {
     /// to have its number.
     pub fn retire_extension_closures(&mut self, maps_len: usize, failed_fns: usize) {
         self.closure_maps.truncate(maps_len + 1);
-        let Some(forward) = self.closure_maps.get(maps_len) else {
+        let Some(forward) = self.closure_maps.get_mut(maps_len) else {
             return;
         };
         let mut back = vec![u32::MAX; failed_fns];
-        for (old, &new) in forward.iter().enumerate() {
-            if let Some(slot) = back.get_mut(new as usize) {
+        for (old, new) in forward.iter_mut().enumerate() {
+            if *new == u32::MAX {
+                // The entry's program has no counterpart of this old function, but the restored
+                // one does: a slot past the entry's table, which no closure of the entry holds,
+                // so going forward and back is the identity on every old id.
+                *new = back.len() as u32;
+                back.push(old as u32);
+            } else if let Some(slot) = back.get_mut(*new as usize) {
                 *slot = old as u32;
             }
         }

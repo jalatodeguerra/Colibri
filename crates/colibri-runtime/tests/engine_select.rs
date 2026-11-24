@@ -297,6 +297,50 @@ fn a_closure_from_a_failed_entrys_own_code_is_refused_not_mistaken_on_both_engin
     let run = |kind: EngineKind| session(kind, &[first, &second, &third], |_, _| {});
     let tree = run(EngineKind::Tree);
     assert_eq!(tree.1, "", "nothing printed: {tree:?}");
-    assert!(tree.0[2].contains("closure"), "{tree:?}");
+    assert!(
+        tree.0[2].contains("this closure was made by a REPL entry that failed"),
+        "{tree:?}"
+    );
+    assert!(!tree.0[2].contains("internal error"), "{tree:?}");
+    assert_eq!(run(EngineKind::Bytecode), tree);
+}
+
+/// A closure whose lifted function the failed entry has no counterpart for (it redefined `mk`
+/// with one closure where the old one had two) still runs after the rollback: the old program is
+/// back, and so is its body.
+#[test]
+fn a_closure_whose_function_the_failed_entry_redefined_still_runs_on_both_engines() {
+    let first = "let mut keep: fn() -> int = fn() => 0\nfn mk(b: bool) -> fn() -> int {\n    if b {\n        return fn() => 5\n    }\n    return fn() => 8\n}\nkeep = mk(false)\n";
+    let old_program = "let mut keep: fn() -> int = fn() => 0\nfn mk(b: bool) -> fn() -> int {\n    if b {\n        return fn() => 5\n    }\n    return fn() => 8\n}\n";
+    let second = "let mut keep: fn() -> int = fn() => 0\nfn mk(b: bool) -> fn() -> int {\n    return fn() => 1\n}\npanic(\"boom\")\n";
+    let third = format!("{old_program}print(keep())\n");
+    let run = |kind: EngineKind| session(kind, &[first, second, &third], |_, _| {});
+    let tree = run(EngineKind::Tree);
+    assert_eq!(tree.1, "8\n", "{tree:?}");
+    assert_eq!(tree.0[2], "ok");
+    assert_eq!(run(EngineKind::Bytecode), tree);
+}
+
+/// A `defer` that starts a coroutine while the rollback cancels another one: the new one runs
+/// code of the failed entry too, so it is cancelled as well.
+#[test]
+fn a_coroutine_started_by_a_defer_during_the_rollback_is_cancelled_too_on_both_engines() {
+    let entry = "let a = 1\nfn helper() -> int => 4\nfn late() {\n    wait(0.1)\n    print(\"late {helper()}\")\n}\nfn start() {\n    go late()\n}\nfn spawner() {\n    defer start()\n    wait(1.0)\n}\ngo spawner()\nwait(0.05)\npanic(\"boom\")\n";
+    let ticks = std::cell::RefCell::new(Vec::new());
+    let run = |kind: EngineKind| {
+        ticks.borrow_mut().clear();
+        let r = session(kind, &["let a = 1\n", entry], |vm, i| {
+            if i == 1 {
+                ticks
+                    .borrow_mut()
+                    .push(format!("{:?}", vm.tick(0.5).map_err(|e| e.to_string())));
+            }
+        });
+        (r, ticks.borrow().clone())
+    };
+    let tree = run(EngineKind::Tree);
+
+    assert_eq!(tree.1, ["Ok(())"], "{tree:?}");
+    assert_eq!((tree.0).1, "", "{tree:?}");
     assert_eq!(run(EngineKind::Bytecode), tree);
 }
