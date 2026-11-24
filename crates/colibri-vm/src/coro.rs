@@ -305,7 +305,11 @@ impl Machine {
         let Some(mut fiber) = self.fibers.take(slot.0) else {
             return Resumed::Gone;
         };
-        debug_assert_eq!(fiber.state.coro, Some(id), "the slot holds another coroutine");
+        debug_assert_eq!(
+            fiber.state.coro,
+            Some(id),
+            "the slot holds another coroutine"
+        );
         fiber.stack_base = self.stack_root;
         let outcome = self.run_coroutine(&mut fiber, cancel);
         match outcome {
@@ -368,7 +372,9 @@ impl Machine {
         } = start;
         match callee {
             Callee::Fn(id) => self.begin_fn(fiber, id, values, None, None, span),
-            Callee::Host(id) => self.call_host(fiber, id, &type_args, values, span).map(Some),
+            Callee::Host(id) => self
+                .call_host(fiber, id, &type_args, values, span)
+                .map(Some),
             Callee::Value => {
                 if values.is_empty() {
                     return Err(self.internal(fiber, span, "a call without a function"));
@@ -393,7 +399,11 @@ impl Machine {
                     _ => {
                         self.release_all(values);
                         self.release(f);
-                        Err(self.internal(fiber, span, "a call of something that is not a function"))
+                        Err(self.internal(
+                            fiber,
+                            span,
+                            "a call of something that is not a function",
+                        ))
                     }
                 }
             }

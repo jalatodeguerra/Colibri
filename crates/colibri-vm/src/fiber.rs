@@ -176,6 +176,11 @@ impl VmFiber {
         self.state.host_depth
     }
 
+    /// Whether this fiber is the computation of a coroutine.
+    pub fn is_coroutine(&self) -> bool {
+        self.state.coro.is_some()
+    }
+
     /// How many held temporaries are alive; zero whenever no code is running.
     pub fn pending_temps(&self) -> usize {
         self.temps.len()

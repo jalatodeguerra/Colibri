@@ -44,14 +44,31 @@ fn the_bytecode_engine_reports_a_panic_with_its_stack() {
     assert!(text.contains("boom"), "{text}");
 }
 
+/// A `Vm` with the host function `nap()`, which waits for a background operation: on the VM, a
+/// wait while a coroutine is alive is host async (vm-plan step 12), which it does not have yet.
+fn vm_with_nap(kind: EngineKind, out: &colibri::SharedBuffer) -> Vm {
+    let mut vm = Vm::builder()
+        .engine(kind)
+        .stdout(Box::new(out.clone()))
+        .build();
+    vm.register_fn("nap", |cx: &mut colibri::Ctx| cx.run_async(|| ()))
+        .unwrap();
+    vm
+}
+
 #[test]
 fn what_the_bytecode_engine_lacks_is_a_clean_panic_naming_it() {
-    let (result, _) = run_on(
-        EngineKind::Bytecode,
-        "fn w() {}\nfn main() {\n    let c = go w()\n    print(1)\n}",
-    );
-    let text = message(&result.expect_err("`go` is not on the VM yet"));
+    let out = colibri::SharedBuffer::new();
+    let mut vm = vm_with_nap(EngineKind::Bytecode, &out);
+    vm.load_source(
+        "a.colibri",
+        "fn sleeper() {\n    wait(100.0)\n}\nfn main() {\n    let c = go sleeper()\n    nap()\n    print(1)\n}",
+    )
+    .unwrap();
+    let result = vm.run_main();
+    let text = message(&result.expect_err("a host wait beside a coroutine is not on the VM yet"));
     assert!(text.contains("the bytecode VM does not support"), "{text}");
+    assert_eq!(out.contents(), "");
 }
 
 #[test]
@@ -113,16 +130,14 @@ fn both_engines_agree_on_a_small_program() {
 
 #[test]
 fn a_refusal_does_not_silence_the_module_values_of_later_tests() {
-    // One Vm, three tests: the middle one needs `go`, which the VM refuses. The refusal
+    // One Vm, three tests: the middle one waits in a host function beside a coroutine, which the
+    // VM refuses. The refusal
     // leaks what its own run holds, but the test after it must still see the module value's
     // `Drop` hook run, as on the tree-walker.
-    let src = "class G {\n    name: str\n}\n\nimpl Drop for G {\n    fn drop(self) {\n        print(\"drop {self.name}\")\n    }\n}\n\nlet g = G { name: \"module\" }\n\nfn w() {}\n\ntest \"plain\" {\n    print(\"plain body\")\n}\n\ntest \"refused\" {\n    let c = go w()\n    print(1)\n}\n\ntest \"plain again\" {\n    print(\"again body\")\n}\n";
+    let src = "class G {\n    name: str\n}\n\nimpl Drop for G {\n    fn drop(self) {\n        print(\"drop {self.name}\")\n    }\n}\n\nlet g = G { name: \"module\" }\n\nfn sleeper() {\n    wait(100.0)\n}\n\ntest \"plain\" {\n    print(\"plain body\")\n}\n\ntest \"refused\" {\n    let c = go sleeper()\n    nap()\n    print(1)\n}\n\ntest \"plain again\" {\n    print(\"again body\")\n}\n";
     let run = |kind: EngineKind| {
         let out = colibri::SharedBuffer::new();
-        let mut vm = Vm::builder()
-            .engine(kind)
-            .stdout(Box::new(out.clone()))
-            .build();
+        let mut vm = vm_with_nap(kind, &out);
         vm.load_source("t.colibri", src).unwrap();
         let mut seen = Vec::new();
         for i in 0..3 {
@@ -139,6 +154,6 @@ fn a_refusal_does_not_silence_the_module_values_of_later_tests() {
     );
     let vm = run(EngineKind::Bytecode);
     assert_eq!(vm[0], tree[0], "{vm:?}");
-    assert!(!vm[1].0, "`go` is refused: {vm:?}");
+    assert!(!vm[1].0, "the host wait is refused: {vm:?}");
     assert_eq!(vm[2], tree[2], "{vm:?}");
 }

@@ -1333,8 +1333,12 @@ impl Machine {
                 Value::Float(dt) => self.task_tick(fiber, dt, span),
                 _ => Err(self.internal(fiber, span, "ill-typed tick")),
             },
-            Intrinsic::NewCoGroup => Ok(self.new_scheduler_object(colibri_check::types::COGROUP_TYPE)),
-            Intrinsic::NewSignal => Ok(self.new_scheduler_object(colibri_check::types::SIGNAL_TYPE)),
+            Intrinsic::NewCoGroup => {
+                Ok(self.new_scheduler_object(colibri_check::types::COGROUP_TYPE))
+            }
+            Intrinsic::NewSignal => {
+                Ok(self.new_scheduler_object(colibri_check::types::SIGNAL_TYPE))
+            }
             Intrinsic::HostAlive => Ok(Value::Bool(match &fiber.regs[args.start] {
                 Value::Host(r) => self.core.host_alive(r.index, r.generation),
                 _ => false,

@@ -10,10 +10,10 @@ use std::rc::Rc;
 use colibri_check::HostEnv;
 use colibri_check::hir::HostFnId;
 use colibri_check::host::{body_hash, header_line};
-use colibri_core::value::Value;
 use colibri_core::engine::Engine;
-use colibri_vm::{Machine, VmFiber};
+use colibri_core::value::Value;
 use colibri_syntax::{FileId, parse_file};
+use colibri_vm::{Machine, VmFiber};
 
 #[derive(Clone, Default)]
 struct Out(Rc<RefCell<Vec<u8>>>);
@@ -96,9 +96,7 @@ fn a_start_after_cancel_all_from_inside_does_not_share_a_slot() {
     }));
     assert!(r.is_ok(), "the call panicked in Rust");
     for _ in 0..5 {
-        let t = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            interp.tick(0.5)
-        }));
+        let t = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| interp.tick(0.5)));
         assert!(t.is_ok(), "a tick panicked in Rust");
     }
     let printed = String::from_utf8_lossy(&out.0.borrow()).into_owned();
@@ -115,9 +113,7 @@ fn slots_named_by_live_entries_are_not_handed_out_again() {
     let main = program.fn_by_name("main").expect("main");
     interp.call(&mut fiber, main, vec![]).expect("main runs");
     for _ in 0..12 {
-        let t = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            interp.tick(0.5)
-        }));
+        let t = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| interp.tick(0.5)));
         assert!(t.is_ok(), "a tick panicked in Rust");
     }
     let printed = String::from_utf8_lossy(&out.0.borrow()).into_owned();

@@ -92,10 +92,9 @@ fn main() {}
 
 #[test]
 fn a_suspended_coroutine_keeps_its_cycle_alive() {
-    vm_pending("a_suspended_coroutine_keeps_its_cycle_alive", || {
-        let (mut vm, _) = vm(
-            true,
-            r#"
+    let (mut vm, _) = vm(
+        true,
+        r#"
 fn worker() {
     let a = Node { name: "a" }
     let b = Node { name: "b" }
@@ -105,24 +104,22 @@ fn worker() {
 }
 fn main() { go worker() }
 "#,
-        );
-        vm.run_main().unwrap();
-        assert_eq!(vm.coroutine_count(), 1);
-        // Suspended in `wait`, the coroutine's frame owns the cycle.
-        assert!(vm.find_leaks().is_empty());
-        vm.tick(2.0).unwrap();
-        // The coroutine finished and its frame is gone: the cycle is garbage.
-        assert_eq!(vm.coroutine_count(), 0);
-        assert_eq!(vm.find_leaks().len(), 1);
-    })
+    );
+    vm.run_main().unwrap();
+    assert_eq!(vm.coroutine_count(), 1);
+    // Suspended in `wait`, the coroutine's frame owns the cycle.
+    assert!(vm.find_leaks().is_empty());
+    vm.tick(2.0).unwrap();
+    // The coroutine finished and its frame is gone: the cycle is garbage.
+    assert_eq!(vm.coroutine_count(), 0);
+    assert_eq!(vm.find_leaks().len(), 1);
 }
 
 #[test]
 fn a_cancelled_coroutine_leaks_what_only_it_held() {
-    vm_pending("a_cancelled_coroutine_leaks_what_only_it_held", || {
-        let (mut vm, _) = vm(
-            true,
-            r#"
+    let (mut vm, _) = vm(
+        true,
+        r#"
 fn worker() {
     let a = Node { name: "a" }
     a.next = some(a)
@@ -130,12 +127,11 @@ fn worker() {
 }
 fn main() { go worker() }
 "#,
-        );
-        vm.run_main().unwrap();
-        assert!(vm.find_leaks().is_empty());
-        vm.cancel_coroutines();
-        assert_eq!(vm.find_leaks().len(), 1);
-    })
+    );
+    vm.run_main().unwrap();
+    assert!(vm.find_leaks().is_empty());
+    vm.cancel_coroutines();
+    assert_eq!(vm.find_leaks().len(), 1);
 }
 
 #[test]

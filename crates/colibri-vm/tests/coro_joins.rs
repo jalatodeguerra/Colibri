@@ -6,11 +6,11 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
+use colibri_core::engine::Engine;
 use colibri_core::prelude::*;
 use colibri_core::value::Value;
-use colibri_core::engine::Engine;
-use colibri_vm::{Machine, VmFiber};
 use colibri_syntax::{FileId, parse_file};
+use colibri_vm::{Machine, VmFiber};
 
 #[derive(Clone, Default)]
 struct Out(Rc<RefCell<Vec<u8>>>);

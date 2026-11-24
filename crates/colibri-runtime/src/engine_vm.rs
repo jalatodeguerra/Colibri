@@ -91,7 +91,17 @@ macro_rules! host_cx {
 
             fn call(&mut self, f: FnId, args: Vec<CoreValue>) -> Result<CoreValue, Box<PanicInfo>> {
                 let (machine, fiber) = self.parts();
-                machine.call(fiber, f, args)
+                if fiber.host_depth() == 0 {
+                    // A new entry of the host: an earlier refusal does not carry over.
+                    machine.host_wait_refused = false;
+                }
+                let result = machine.call(fiber, f, args);
+                // A coroutine that met the refusal ends with a panic of its own, which the
+                // program may never look at: the host entry still reports the refusal.
+                if result.is_ok() && fiber.host_depth() == 0 && machine.host_wait_refused {
+                    return Err(host_wait_refusal());
+                }
+                result
             }
 
             fn call_function(
@@ -128,14 +138,17 @@ macro_rules! host_cx {
                 // while the main fiber waits, are host async (vm-plan step 12). Until then a wait
                 // that would stop other coroutines from running is refused; with none alive the
                 // caller just blocks.
-                if self.core().sched.coroutine_count() > 0 || self.parts().0.host_wait_refused {
+                if self.parts().1.is_coroutine()
+                    || self.core().sched.coroutine_count() > 0
+                    || self.parts().0.host_wait_refused
+                {
                     self.parts().0.host_wait_refused = true;
                     token.cancel();
                     self.core_mut().sched.ext().finish(op);
                     // A panic of the program, not an error value the host function could
                     // turn into something else: the refusal must show as the refusal it is.
                     std::panic::resume_unwind(Box::new(crate::ctx::RaisedPanic(
-                        "the bytecode VM does not support a host function that waits for a background operation while coroutines are alive yet".to_string(),
+                        HOST_WAIT_REFUSAL.to_string(),
                     )));
                 }
                 Ok(Waited::Blocked)
@@ -167,6 +180,18 @@ pub(crate) fn new_engine(
     Box::new(VmEngine {
         machine,
         fiber: VmFiber::new(),
+    })
+}
+
+const HOST_WAIT_REFUSAL: &str = "the bytecode VM does not support a host function that waits for a background operation while coroutines are alive yet";
+
+fn host_wait_refusal() -> Box<PanicInfo> {
+    Box::new(PanicInfo {
+        message: HOST_WAIT_REFUSAL.to_string(),
+        span: colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),
+        stack: Vec::new(),
+        notes: Vec::new(),
+        budget: false,
     })
 }
 
@@ -257,7 +282,11 @@ impl RuntimeEngine for VmEngine {
     }
 
     fn tick(&mut self, dt: f64) -> Result<(), Box<PanicInfo>> {
-        self.machine.tick(dt)
+        self.machine.tick(dt)?;
+        if self.machine.host_wait_refused {
+            return Err(host_wait_refusal());
+        }
+        Ok(())
     }
 
     fn next_wake(&mut self, poll: f64) -> Option<f64> {

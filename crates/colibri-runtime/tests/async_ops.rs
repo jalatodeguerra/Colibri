@@ -224,30 +224,25 @@ fn a_panicking_worker_is_a_panic_of_the_caller() {
 
 #[test]
 fn waiting_on_the_main_fiber_is_refused_inside_a_host_callback() {
-    vm_pending(
-        "waiting_on_the_main_fiber_is_refused_inside_a_host_callback",
-        || {
-            let (mut vm, _) = vm();
-            let handle: Rc<Cell<Option<colibri::Fn<(), ()>>>> = Rc::new(Cell::new(None));
-            let seen = Rc::new(Cell::new(false));
-            let (h, s) = (Rc::clone(&handle), Rc::clone(&seen));
-            vm.register_fn("call_back", move |cx: &mut colibri::Ctx| {
-                if let Err(colibri::Error::Panic { message, .. }) = h.get().unwrap().call(cx, ()) {
-                    assert!(message.contains("host function's callback"), "{message}");
-                    s.set(true);
-                }
-            })
-            .unwrap();
-            vm.load_source(
-                "a.colibri",
-                "fn pauses() { wait(1.0) }\nfn main() { call_back() }\n",
-            )
-            .unwrap();
-            handle.set(Some(vm.get_fn::<(), ()>("pauses").unwrap()));
-            vm.run_main().unwrap();
-            assert!(seen.get());
-        },
+    let (mut vm, _) = vm();
+    let handle: Rc<Cell<Option<colibri::Fn<(), ()>>>> = Rc::new(Cell::new(None));
+    let seen = Rc::new(Cell::new(false));
+    let (h, s) = (Rc::clone(&handle), Rc::clone(&seen));
+    vm.register_fn("call_back", move |cx: &mut colibri::Ctx| {
+        if let Err(colibri::Error::Panic { message, .. }) = h.get().unwrap().call(cx, ()) {
+            assert!(message.contains("host function's callback"), "{message}");
+            s.set(true);
+        }
+    })
+    .unwrap();
+    vm.load_source(
+        "a.colibri",
+        "fn pauses() { wait(1.0) }\nfn main() { call_back() }\n",
     )
+    .unwrap();
+    handle.set(Some(vm.get_fn::<(), ()>("pauses").unwrap()));
+    vm.run_main().unwrap();
+    assert!(seen.get());
 }
 
 // ---- the pool ----
@@ -803,21 +798,19 @@ fn main() {
 
 #[test]
 fn a_start_that_fails_is_an_error_and_nothing_waits() {
-    vm_pending("a_start_that_fails_is_an_error_and_nothing_waits", || {
-        let (mut vm, out, shared) = completion_vm();
-        vm.load_source(
+    let (mut vm, out, shared) = completion_vm();
+    vm.load_source(
         "a.colibri",
         "fn job() -> str { return refuse() }\nfn main() {\n    let c = go job()\n    print(c.join())\n    print(refuse())\n}\n",
     )
     .unwrap();
-        vm.run_main().unwrap();
-        assert_eq!(
-            out.contents(),
-            "not started: no thread\nnot started: no thread\n"
-        );
-        assert_eq!(vm.coroutine_count(), 0);
-        assert!(shared.slots.lock().unwrap().is_empty());
-    })
+    vm.run_main().unwrap();
+    assert_eq!(
+        out.contents(),
+        "not started: no thread\nnot started: no thread\n"
+    );
+    assert_eq!(vm.coroutine_count(), 0);
+    assert!(shared.slots.lock().unwrap().is_empty());
 }
 
 /// A parked operation that is cancelled: its hook has run when `cancel()` returns, the

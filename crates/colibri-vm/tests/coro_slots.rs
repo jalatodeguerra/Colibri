@@ -60,7 +60,11 @@ fn a_freed_slot_is_reused_and_a_suspended_neighbour_keeps_its_own() {
     assert_eq!(m.coroutine_slots_live(), 2, "two coroutines, two slots");
     m.tick(1.0).expect("tick");
     assert_eq!(out.text(), "quick\n");
-    assert_eq!(m.coroutine_slots_live(), 1, "the quick one gave its slot back");
+    assert_eq!(
+        m.coroutine_slots_live(),
+        1,
+        "the quick one gave its slot back"
+    );
     call(&mut m, &p, "second");
     assert_eq!(m.coroutine_slots_live(), 2);
     assert_eq!(m.coroutine_slots_made(), 2, "the freed slot was reused");
@@ -79,7 +83,11 @@ fn a_nested_start_while_a_fiber_is_out_of_its_slot() {
     let out = Out::default();
     let (mut m, p) = loaded(src, Box::new(out.clone()));
     call(&mut m, &p, "main");
-    assert_eq!(m.coroutine_slots_live(), 41, "the parent and its forty leaves");
+    assert_eq!(
+        m.coroutine_slots_live(),
+        41,
+        "the parent and its forty leaves"
+    );
     for _ in 0..4 {
         m.tick(0.5).expect("tick");
     }
@@ -101,7 +109,11 @@ fn slots_are_freed_after_many_start_and_finish_cycles() {
         "the slab has {} slots after 100 cycles",
         m.coroutine_slots_made()
     );
-    assert_eq!(m.coroutine_fibers_pooled(), 1, "one emptied fiber is reused");
+    assert_eq!(
+        m.coroutine_fibers_pooled(),
+        1,
+        "one emptied fiber is reused"
+    );
 }
 
 /// Freeing a slot twice would hand it to two coroutines: debug builds stop it at the second
@@ -136,7 +148,12 @@ fn a_lost_fiber_ends_its_coroutine_as_an_internal_error() {
     let out = Out::default();
     let (mut m, p) = loaded(src, Box::new(out.clone()));
     call(&mut m, &p, "main");
-    assert_eq!(colibri_core::engine::Engine::core(&m).sched.coroutine_count(), 1);
+    assert_eq!(
+        colibri_core::engine::Engine::core(&m)
+            .sched
+            .coroutine_count(),
+        1
+    );
     assert!(m.lose_coroutine_fiber(0), "the worker's fiber");
     // If the lost coroutine stayed suspended, the cancel below would never end: a watchdog turns
     // that hang into a failure.
@@ -159,7 +176,9 @@ fn a_lost_fiber_ends_its_coroutine_as_an_internal_error() {
         failure.message
     );
     assert_eq!(
-        colibri_core::engine::Engine::core(&m).sched.coroutine_count(),
+        colibri_core::engine::Engine::core(&m)
+            .sched
+            .coroutine_count(),
         0,
         "the coroutine is over"
     );
