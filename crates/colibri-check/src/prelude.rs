@@ -217,6 +217,9 @@ fn __sort_order[T](xs: List[T], f: fn(T, T) -> int) -> List[int] {
     }
     return order
 }
+fn __compare_keys[K: Ord](a: K, b: K) -> int {
+    return compare(a, b)
+}
 fn __key_order[T, K: Ord](xs: List[T], f: fn(T) -> K) -> List[int] {
     let mut keys: List[K] = []
     for x in xs {
@@ -224,7 +227,7 @@ fn __key_order[T, K: Ord](xs: List[T], f: fn(T) -> K) -> List[int] {
     }
     let mut order: List[int] = []
     for _ in xs {
-        order = __merge_order(keys, fn(a: K, b: K) => compare(a, b))
+        order = __merge_order(keys, __compare_keys)
         break
     }
     return order

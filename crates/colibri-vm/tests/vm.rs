@@ -13,12 +13,38 @@ fn run_source(src: &str) -> Outcome {
     )
 }
 
+/// How many functions the prelude (written in Colibri) puts before the program's own, so that
+/// a snapshot can name a function by its place among the program's: `fn#1` is the first one.
+fn prelude_fns() -> u32 {
+    let (ast, _) = colibri_syntax::parse_file(colibri_syntax::FileId(0), "");
+    let program = colibri_check::check(&ast)
+        .program
+        .expect("an empty program checks");
+    program.fns.len() as u32
+}
+
+/// The disassembly of `name`, with the functions numbered from 1 among the program's own (the
+/// functions of the prelude have no number here).
 fn dis(src: &str, name: &str) -> String {
     let all = compile_source(src).expect("the program compiles");
-    all.into_iter()
+    let text = all
+        .into_iter()
         .find(|(n, _)| n == name)
         .unwrap_or_else(|| panic!("no function `{name}`"))
-        .1
+        .1;
+    let skip = prelude_fns() - 1;
+    let mut out = String::new();
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("fn#") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        let digits = tail.chars().take_while(char::is_ascii_digit).count();
+        let n: u32 = tail[..digits].parse().expect("a function number");
+        out.push_str(&n.saturating_sub(skip).to_string());
+        rest = &tail[digits..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn run_ok(src: &str) -> String {
@@ -819,4 +845,91 @@ fn built_ins_run_and_give_core_answers() {
 }",
     );
     assert_eq!(out, "4\nsome(5)\n6\n-1\ntrue\n");
+}
+
+#[test]
+fn the_closure_built_ins_are_calls_of_functions_written_in_colibri() {
+    let src = "fn f(xs: List[int], o: int?) -> int {
+    let a = xs.map(fn(x) => x + 1)
+    let b = o.map(fn(x) => x + 1)
+    let mut c = xs.clone()
+    c.sort_by(fn(x, y) => x - y)
+    return a.len()
+}";
+    let text = dis(src, "f");
+    // A call of a function, not an instruction of core's built-ins. Three of them: `map`,
+    // `Option.map` and `sort_by`; the others (`clone`, `len`) are not closure built-ins.
+    assert!(!text.contains("ListMap"), "{text}");
+    assert!(!text.contains("OptionMap"), "{text}");
+    assert!(!text.contains("ListSortBy"), "{text}");
+    assert!(text.contains("Builtin(Clone)"), "{text}");
+    assert_eq!(text.matches("Call r").count(), 3, "{text}");
+    // They run as bytecode, so the closure is called by `CallValue` from a function of the prelude.
+    let (_, text) = compile_source(src)
+        .expect("compiles")
+        .into_iter()
+        .find(|(n, _)| n == "__list_map")
+        .expect("the prelude function is compiled with the program");
+    assert!(text.contains("CallValue"), "{text}");
+    assert!(text.contains("ListPush"), "{text}");
+}
+
+#[test]
+fn closure_built_ins_give_the_answers_of_the_native_ones() {
+    let out = run_ok(
+        "fn main() {
+    let xs = [5, 2, 8, 1]
+    print(xs.map(fn(x) => x * 10))
+    print(xs.filter(fn(x) => x > 1))
+    print(xs.any(fn(x) => x == 8))
+    print(xs.all(fn(x) => x < 8))
+    print(xs.find(fn(x) => x < 3))
+    print(xs.find_index(fn(x) => x < 3))
+    print(xs.fold(100, fn(a, x) => a - x))
+    print(xs.flat_map(fn(x) => [x, x]))
+    print(xs.sorted_by(fn(a, b) => b - a))
+    let mut ys = xs.clone()
+    ys.sort_by_key(fn(x) => 0 - x)
+    print(ys)
+    ys.retain(fn(x) => x % 2 == 0)
+    print(ys)
+    xs.for_each(fn(x) => print(x))
+    let none_int: int? = none
+    print(none_int.map(fn(x) => x + 1))
+    print(some(1).and_then(fn(x) => some(x + 1)))
+}",
+    );
+    assert_eq!(
+        out,
+        "[50, 20, 80, 10]\n[5, 2, 8]\ntrue\nfalse\nsome(2)\nsome(1)\n84\n[5, 5, 2, 2, 8, 8, 1, 1]\n[8, 5, 2, 1]\n[8, 5, 2, 1]\n[8, 2]\n5\n2\n8\n1\nnone\nsome(2)\n"
+    );
+}
+
+#[test]
+fn wait_until_is_a_bytecode_loop_with_a_check_before_it() {
+    let text = dis("fn f(done: fn() -> bool) {\n    wait_until(done)\n}", "f");
+    // The check that may refuse a pause, then: run the condition, leave when it holds, pause,
+    // go round again.
+    let at = |what: &str| {
+        text.find(what)
+            .unwrap_or_else(|| panic!("{what} is missing:\n{text}"))
+    };
+    assert!(at("Intrinsic") < at("CallValue"), "{text}");
+    assert!(at("CallValue") < at("JmpIf"), "{text}");
+    assert!(at("JmpIf") < at("SuspendReady"), "{text}");
+    assert!(at("SuspendReady") < at("Loop"), "{text}");
+}
+
+#[test]
+fn wait_until_outside_a_coroutine_panics_before_it_runs_the_condition() {
+    let o = run_panic(
+        "fn main() {\n    wait_until(fn() {\n        print(\"asked\")\n        return true\n    })\n}",
+    );
+    assert_eq!(o.stdout, "");
+    assert_eq!(
+        o.panic.as_deref(),
+        Some(
+            "`wait_until` can only pause a coroutine, but this code is not running in one (start one with `go`)"
+        )
+    );
 }

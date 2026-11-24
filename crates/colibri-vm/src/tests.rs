@@ -315,3 +315,52 @@ fn main() {}
     );
     assert!(matches!(r, Ok(Value::Int(17))), "{r:?}");
 }
+
+#[test]
+fn native_code_that_calls_user_code_counts_as_native_depth_and_the_closure_built_ins_do_not() {
+    // `print` and `sort` call the user's `show` and `cmp` from Rust: no coroutine may pause there
+    // (`native_depth`). A call the program makes itself, and a closure of `map` (Colibri code
+    // here), are ordinary calls.
+    let src = "
+struct X { n: int }
+impl Show for X { fn show(self) -> str {
+    print(\"in show\")
+    return \"x\"
+} }
+impl Ord for X { fn cmp(self, other: X) -> int {
+    print(\"in cmp\")
+    return self.n - other.n
+} }
+fn main() {
+    let x = X { n: 1 }
+    print(x)
+    let t = x.show()
+    print(t)
+    let mut xs = [X { n: 2 }, x]
+    xs.sort()
+    let ys = [1].map(fn(v) {
+        print(\"in map\")
+        return v
+    })
+}
+";
+    let (mut m, program, out) = load(src);
+    let depths = Rc::new(RefCell::new(Vec::new()));
+    {
+        let depths = Rc::clone(&depths);
+        m.print_hook = Some(Rc::new(move |_: &mut Machine, fiber: &mut VmFiber| {
+            depths.borrow_mut().push(fiber.state.native_depth);
+        }));
+    }
+    let mut fiber = VmFiber::new();
+    m.run_module(&mut fiber).expect("the module runs");
+    let main = fn_id(&program, "main");
+    m.call(&mut fiber, main, Vec::new()).expect("main runs");
+    assert_eq!(
+        String::from_utf8_lossy(&out.0.borrow()),
+        "in show\nx\nin show\nx\nin cmp\nin map\n"
+    );
+    // 1 only for the prints inside `show` (run by `print`) and `cmp` (run by `sort`).
+    assert_eq!(*depths.borrow(), [0, 1, 0, 0, 1, 0], "one entry per print");
+    assert_eq!(fiber.state.native_depth, 0);
+}
