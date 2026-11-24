@@ -320,36 +320,39 @@ fn each(ps: List[P]) {
 0003  LoadInt r4 0
 0004  HoldListPlace r3 \"xs\"
 0005  ForListNextVar r2 src=r3
-0006  Jmp -> 0014
+0006  Jmp -> 0015
 0007  Step 1
 0008  LoadInt r7 1
 0009  GetField r8 r2 .0
 0010  AddI r6 r8 r7
 0011  SetField r2 r6 .0
 0012  ForWriteBack r2 src=r3
-0013  Jmp -> 0005
-0014  Unhold
-0015  DropCheck r3
-0016  DropCheck r1
-0017  ReturnUnit
-0018  Drop r1
-0019  FoldHooks
-0020  Jmp -> 0029
-0021  FoldHooks
+0013  CheckHooks
+0014  Jmp -> 0005
+0015  Unhold
+0016  DropCheck r3
+0017  DropCheck r1
+0018  ReturnUnit
+0019  Drop r1
+0020  FoldHooks
+0021  Jmp -> 0031
 0022  FoldHooks
 0023  FoldHooks
-0024  ForWriteBack r2 src=r3
-0025  Unhold
-0026  Drop r3
-0027  FoldHooks
-0028  Jmp -> 0018
-0029  Resume
-unwind [0000, 0001) -> 0019
-unwind [0004, 0005) -> 0026
-unwind [0005, 0006) -> 0025
-unwind [0007, 0008) -> 0022
-unwind [0009, 0012) -> 0021
-unwind [0015, 0016) -> 0018
+0024  FoldHooks
+0025  ForWriteBack r2 src=r3
+0026  FoldHooks
+0027  Unhold
+0028  Drop r3
+0029  FoldHooks
+0030  Jmp -> 0019
+0031  Resume
+unwind [0000, 0001) -> 0020
+unwind [0004, 0005) -> 0028
+unwind [0005, 0006) -> 0027
+unwind [0007, 0008) -> 0023
+unwind [0009, 0012) -> 0022
+unwind [0013, 0014) -> 0027
+unwind [0016, 0017) -> 0019
 ";
     assert_eq!(dis(src, "each"), expected);
 }
