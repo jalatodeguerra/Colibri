@@ -2,7 +2,7 @@
 
 use colibri_check::hir::{Arg, Call, Expr, HostFnId};
 
-use super::{FnCompiler, Kind};
+use super::FnCompiler;
 use crate::bytecode::{Op, Reg, Site};
 
 impl FnCompiler<'_> {
@@ -27,14 +27,6 @@ impl FnCompiler<'_> {
             Some(d) => d,
             None => self.alloc_for(&e.ty),
         };
-        // A host function that returns a bare `T` may hand back a list for a `T` the call site
-        // instantiates with `int`; the register that receives it must be dropped like a value.
-        if self.env.host_returns_param.get(id.0 as usize) == Some(&true)
-            && let Some(t) = usize::from(d).checked_sub(self.nlocals)
-            && let Some(temp) = self.temps.get_mut(t)
-        {
-            temp.kind = Kind::Owned;
-        }
         let w = self.eval_window(0, &args, false);
         let site = self.add_site(Site::Host(id, argc, c.type_args.clone().into_boxed_slice()));
         self.emit(

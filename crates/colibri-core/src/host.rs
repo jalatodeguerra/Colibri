@@ -125,6 +125,58 @@ pub struct HostSide {
 }
 
 impl Core {
+    /// Checks the value a host function returned against the type its call site gave the
+    /// declared result `T` (`fn pair[T](..) -> T`): a scalar or string type takes only a value of
+    /// its shape, so no owning value ever sits in a register or local that holds none. Returns the
+    /// text of the panic when it does not.
+    pub fn host_result_mismatch(&self, body: &Body, type_args: &[Ty], v: &Value) -> Option<String> {
+        use colibri_check::types::IntTy;
+        if !matches!(body.ret, Ty::Param(..)) {
+            return None;
+        }
+        // Which type argument is `T` is known when the function has just one.
+        let [want] = type_args else { return None };
+        let fits = match want {
+            Ty::Int(IntTy::U64) => matches!(v, Value::U64(_)),
+            Ty::Int(_) => matches!(v, Value::Int(_)),
+            Ty::Float => matches!(v, Value::Float(_)),
+            Ty::F32 => matches!(v, Value::F32(_)),
+            Ty::Bool => matches!(v, Value::Bool(_)),
+            Ty::Char => matches!(v, Value::Char(_)),
+            Ty::Unit => matches!(v, Value::Unit),
+            Ty::Str => matches!(v, Value::Str(_)),
+            Ty::Bytes => matches!(v, Value::Bytes(_)),
+            _ => return None,
+        };
+        if fits {
+            return None;
+        }
+        let got = match v {
+            Value::Obj(o) => self.types.get(o.ty().0 as usize).map_or_else(
+                || "an object".to_string(),
+                |d| format!("a `{}` object", d.name),
+            ),
+            Value::Str(_) => "a str".to_string(),
+            Value::Bytes(_) => "a bytes value".to_string(),
+            Value::Struct(_) => "a struct".to_string(),
+            Value::Tuple(_) => "a tuple".to_string(),
+            Value::Enum(_) => "an enum value".to_string(),
+            Value::List(_) => "a list".to_string(),
+            Value::Map(_) => "a map".to_string(),
+            Value::Set(_) => "a set".to_string(),
+            Value::Int(_) | Value::U64(_) => "an integer".to_string(),
+            Value::Float(_) | Value::F32(_) => "a float".to_string(),
+            Value::Bool(_) => "a bool".to_string(),
+            Value::Char(_) => "a char".to_string(),
+            Value::Unit => "a unit value".to_string(),
+            _ => "a value of another type".to_string(),
+        };
+        Some(format!(
+            "host function `{}` returned {got} where `{want}` was expected",
+            body.name
+        ))
+    }
+
     /// Records the host functions of a freshly loaded program (their empty bodies) and the
     /// host types it declares.
     pub fn load_host(&mut self, program: &Program) {

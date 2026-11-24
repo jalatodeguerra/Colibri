@@ -358,8 +358,8 @@ fn every_host_call_costs_a_budget_step() {
 }
 
 /// A host function `keep` that stores the object it is given, and `lie`, declared `-> T`, that
-/// hands it back for a `T` the script instantiates with `int`: the local that receives the
-/// result owns an object although its type is a scalar.
+/// hands it back for a `T` the script instantiates with `int`. The boundary refuses that
+/// result with a panic naming the host function, whatever the script does with the value next.
 fn lying_host(source_body: &str) -> String {
     let before = |vm: &mut colibri::Vm, _: &Handles| {
         let stash: Rc<std::cell::RefCell<Option<Value>>> = Rc::default();
@@ -383,50 +383,92 @@ fn lying_host(source_body: &str) -> String {
 }
 
 #[test]
-fn a_host_result_that_owns_an_object_is_dropped_from_an_untyped_let() {
+fn a_host_result_of_the_wrong_kind_is_a_panic_from_an_untyped_let() {
     let outcome = lying_host(
         "fn main() {\n    keep(Res { name: \"a\" })\n    let n = lie(1)\n    print(\"after\")\n}\n",
     );
-    assert_eq!(outcome, "after\ndrop a\n--\nok");
+    assert_clean_lie_panic(&outcome);
 }
 
 #[test]
-fn a_host_result_that_owns_an_object_is_dropped_from_a_let_typed_int() {
+fn a_host_result_of_the_wrong_kind_is_a_panic_from_a_let_typed_int() {
     let outcome = lying_host(
         "fn main() {\n    keep(Res { name: \"b\" })\n    let n: int = lie(1)\n    print(\"after\")\n}\n",
     );
-    assert_eq!(outcome, "after\ndrop b\n--\nok");
+    assert_clean_lie_panic(&outcome);
 }
 
 #[test]
-fn a_host_result_that_owns_an_object_is_dropped_when_an_int_var_is_overwritten() {
+fn a_host_result_of_the_wrong_kind_is_a_panic_when_an_int_var_is_overwritten() {
     let outcome = lying_host(
         "fn main() {\n    var n = 0\n    keep(Res { name: \"c\" })\n    n = lie(1)\n    print(\"after\")\n    n = 5\n    print(\"reassigned\")\n}\n",
     );
-    assert_eq!(outcome, "after\ndrop c\nreassigned\n--\nok");
+    assert_clean_lie_panic(&outcome);
 }
 
 #[test]
-fn a_host_result_that_owns_an_object_is_dropped_by_each_trip_of_a_loop() {
+fn a_host_result_of_the_wrong_kind_is_a_panic_by_each_trip_of_a_loop() {
     let outcome = lying_host(
         "fn main() {\n    for i in 0..3 {\n        keep(Res { name: \"l{i}\" })\n        let n = lie(i)\n    }\n    print(\"after\")\n}\n",
     );
-    assert_eq!(outcome, "drop l0\ndrop l1\ndrop l2\nafter\n--\nok");
+    assert_clean_lie_panic(&outcome);
 }
 
 #[test]
-fn a_host_result_that_owns_an_object_is_dropped_when_a_loop_assigns_it_to_a_var() {
+fn a_host_result_of_the_wrong_kind_is_a_panic_when_a_loop_assigns_it_to_a_var() {
     let outcome = lying_host(
         "fn main() {\n    var n = 0\n    for i in 0..3 {\n        n = 7\n        keep(Res { name: \"m{i}\" })\n        n = lie(i)\n    }\n    print(\"after\")\n}\n",
     );
-    assert_eq!(outcome, "drop m0\ndrop m1\nafter\ndrop m2\n--\nok");
+    assert_clean_lie_panic(&outcome);
 }
 
 #[test]
-fn a_host_result_that_owns_an_object_is_dropped_from_a_temporary() {
+fn a_host_result_of_the_wrong_kind_is_a_panic_from_a_temporary() {
     let outcome = lying_host(
         "fn main() {\n    keep(Res { name: \"d\" })\n    print(lie(1))\n    print(\"after\")\n}\n",
     );
-    assert_eq!(outcome.lines().last(), Some("ok"), "{outcome}");
-    assert!(outcome.contains("drop d"), "{outcome}");
+    assert_clean_lie_panic(&outcome);
+}
+
+fn assert_clean_lie_panic(outcome: &str) {
+    assert!(
+        outcome.contains(
+            "panic `host function `lie` returned a `Res` object where `int` was expected`"
+        ),
+        "{outcome}"
+    );
+    assert!(!outcome.contains("after"), "{outcome}");
+}
+
+#[test]
+fn a_host_result_of_the_wrong_kind_is_a_panic_when_copied_to_another_local() {
+    let outcome = lying_host(
+        "fn main() {\n    keep(Res { name: \"p1\" })\n    let a = lie(1)\n    let b = a\n    print(\"after\")\n}\n",
+    );
+    assert_clean_lie_panic(&outcome);
+}
+
+#[test]
+fn a_host_result_of_the_wrong_kind_is_a_panic_when_returned_with_return() {
+    let outcome = lying_host(
+        "fn f() -> int {\n    return lie(1)\n}\nfn main() {\n    keep(Res { name: \"p2\" })\n    let n = f()\n    print(\"after\")\n}\n",
+    );
+    assert_clean_lie_panic(&outcome);
+}
+
+#[test]
+fn a_host_result_of_the_wrong_kind_is_a_panic_when_returned_as_a_body_value() {
+    let outcome = lying_host(
+        "fn f() -> int => lie(1)\nfn main() {\n    keep(Res { name: \"p2b\" })\n    let n = f()\n    print(\"after\")\n}\n",
+    );
+    assert_clean_lie_panic(&outcome);
+}
+
+#[test]
+fn a_host_result_of_the_wrong_kind_is_a_panic_when_passed_to_a_function_that_copies_it() {
+    let outcome = lying_host(
+        "fn g(x: int) {\n    let y = x\n    print(\"in g\")\n}\nfn main() {\n    keep(Res { name: \"p3b\" })\n    g(lie(1))\n    print(\"after\")\n}\n",
+    );
+    assert_clean_lie_panic(&outcome);
+    assert!(!outcome.contains("in g"), "{outcome}");
 }

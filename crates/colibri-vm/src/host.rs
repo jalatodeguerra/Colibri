@@ -180,7 +180,13 @@ impl Machine {
         fiber.state.host_depth -= 1;
         // The trace of a panic includes the host function's frame, so it is popped after.
         let outcome = match result {
-            Ok(v) => Ok(v),
+            Ok(v) => match self.core.host_result_mismatch(&body, type_args, &v) {
+                None => Ok(v),
+                Some(message) => {
+                    self.release(v);
+                    Err(self.panic(fiber, span, message))
+                }
+            },
             Err(HostFault::Panic(message) | HostFault::Message(message)) => {
                 Err(self.panic(fiber, span, message))
             }

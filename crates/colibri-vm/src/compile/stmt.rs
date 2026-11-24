@@ -8,7 +8,7 @@ use std::rc::Rc;
 use colibri_check::types::{IntTy, Ty};
 use colibri_syntax::Span;
 
-use super::{FnCompiler, Item, Kind, Label, LoopCtx, is_scalar};
+use super::{FnCompiler, Item, Kind, Label, LoopCtx, is_scalar, kind_of};
 use crate::bytecode::{Op, Reg, Site};
 
 /// What a `for` loop that is not over a range steps through.
@@ -120,8 +120,7 @@ impl FnCompiler<'_> {
         match &s.kind {
             StmtKind::Let { local, init } => {
                 let l = self.local(*local);
-                self.note_host_value(*local, init);
-                let kind = self.local_kind(*local);
+                let ty = self.local_ty(*local);
                 if self.storage(*local) == Storage::Cell {
                     let t = self.alloc_for(&init.ty);
                     self.expr(init, t);
@@ -132,12 +131,12 @@ impl FnCompiler<'_> {
                     self.push_item(Item::Reg(l));
                 } else {
                     self.expr(init, l);
-                    if kind == Kind::Scalar {
+                    if kind_of(ty) == Kind::Scalar {
                         self.end_group(m, span);
                     } else {
                         self.end_group_keeping(m, l, span);
                     }
-                    self.bind_local_cleanup(l, kind);
+                    self.bind_local_cleanup(l, ty);
                 }
             }
             StmtKind::Expr(e) => {
@@ -371,8 +370,8 @@ impl FnCompiler<'_> {
                         // A cell holds a value whatever the type of the item is.
                         self.push_item(Item::Reg(self.local(l)));
                     } else {
-                        let kind = self.local_kind(l);
-                        self.bind_local_cleanup(self.local(l), kind);
+                        let ty = self.local_ty(l);
+                        self.bind_local_cleanup(self.local(l), ty);
                     }
                 }
             }

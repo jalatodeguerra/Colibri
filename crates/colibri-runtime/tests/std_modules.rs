@@ -194,13 +194,18 @@ fn values_can_be_read_and_built_without_a_static_type() {
         })
         .unwrap();
     vm.std_module("demo")
-        .register_fn_named("pair", ["a", "b"], |a: Value, b: Value| {
-            Value::tuple(vec![b, a])
+        .register_fn_named("swapped", ["pair"], |pair: Value| match pair.kind() {
+            ValueKind::Tuple(mut items) if items.len() == 2 => {
+                let a = items.remove(0);
+                let b = items.remove(0);
+                Value::tuple(vec![b, a])
+            }
+            other => panic!("not a pair: {other:?}"),
         })
         .unwrap();
     vm.load_source(
     "a.colibri",
-    "import demo\nstruct P { a: int, b: int }\nenum E { X, Y }\nfn main() {\n    print(demo.describe(7))\n    print(demo.describe(\"s\"))\n    print(demo.describe([1, 2]))\n    print(demo.describe({\"k\": 1}))\n    print(demo.describe(E.Y))\n    print(demo.describe(P { a: 1, b: 2 }))\n    print(demo.pair(1, 2))\n}\n",
+    "import demo\nstruct P { a: int, b: int }\nenum E { X, Y }\nfn main() {\n    print(demo.describe(7))\n    print(demo.describe(\"s\"))\n    print(demo.describe([1, 2]))\n    print(demo.describe({\"k\": 1}))\n    print(demo.describe(E.Y))\n    print(demo.describe(P { a: 1, b: 2 }))\n    print(demo.swapped((1, 2)))\n}\n",
 )
 .unwrap();
     vm.run_main().unwrap();

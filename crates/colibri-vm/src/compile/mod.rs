@@ -48,10 +48,6 @@ pub struct CompileEnv {
     /// of earlier hooks may be pending, and the tree-walker folds them at its next statement
     /// end, so every statement of a hook checks.
     pub hook_fns: Vec<bool>,
-    /// By host function id: the function is declared to return a bare type parameter (`fn
-    /// pair[T](a: T, b: T) -> T`). The host decides what it returns (a `Value` can be anything),
-    /// so the result may own more than the type the call site instantiates `T` with says.
-    pub host_returns_param: Vec<bool>,
 }
 
 impl CompileEnv {
@@ -72,20 +68,9 @@ impl CompileEnv {
                 *slot = true;
             }
         }
-        let host_returns_param = program
-            .host_fns
-            .iter()
-            .map(|h| {
-                matches!(
-                    program.fns[h.f.0 as usize].sig.ret,
-                    colibri_check::types::Ty::Param(..)
-                )
-            })
-            .collect();
         CompileEnv {
             checked_globals,
             hook_fns,
-            host_returns_param,
         }
     }
 }
@@ -95,8 +80,6 @@ impl CompileEnv {
 pub(crate) enum Fail {
     /// A fused compare-and-branch jumps too far for its 16-bit offset: compile again unfused.
     TooFar,
-    /// The locals (by index) that must be compiled as owners.
-    Owned(Vec<bool>),
     Message(String),
 }
 
@@ -106,36 +89,14 @@ pub fn compile_body(
     fn_id: Option<FnId>,
     env: &CompileEnv,
 ) -> Result<Chunk, String> {
-    match compile_owned(body, fn_id, env, true) {
-        Err(Fail::TooFar) => match compile_owned(body, fn_id, env, false) {
+    match FnCompiler::compile(body, fn_id, env, true) {
+        Err(Fail::TooFar) => match FnCompiler::compile(body, fn_id, env, false) {
             Ok(chunk) => Ok(chunk),
             Err(Fail::TooFar) => Err("a jump is too far for the bytecode".to_string()),
             Err(Fail::Message(m)) => Err(m),
-            Err(Fail::Owned(_)) => unreachable!("compile_owned settles the owned locals"),
         },
         Err(Fail::Message(m)) => Err(m),
-        Err(Fail::Owned(_)) => unreachable!("compile_owned settles the owned locals"),
         Ok(chunk) => Ok(chunk),
-    }
-}
-
-/// Compiles until the set of locals that can hold an owning value no longer grows. A host
-/// function that returns a bare `T` may hand an owning value to a call site that instantiates
-/// `T` with a scalar type; a local that receives one is bound and released as an owner, as the
-/// tree-walker releases it. The set is found by compiling: the first pass notes the locals,
-/// the next one allocates them with the owning kind.
-fn compile_owned(
-    body: &Rc<Body>,
-    fn_id: Option<FnId>,
-    env: &CompileEnv,
-    fuse: bool,
-) -> Result<Chunk, Fail> {
-    let mut forced = vec![false; body.locals.len()];
-    loop {
-        match FnCompiler::compile(body, fn_id, env, fuse, &forced) {
-            Err(Fail::Owned(more)) => forced = more,
-            other => return other,
-        }
     }
 }
 
@@ -323,10 +284,6 @@ pub(crate) struct FnCompiler<'a> {
     pub env: &'a CompileEnv,
     pub body: &'a Body,
     pub fuse: bool,
-    /// Locals that hold an owning value although their type is a scalar or a string (see
-    /// [`compile_owned`]), and the ones this pass found to be of that kind.
-    forced: Vec<bool>,
-    found: Vec<bool>,
     code: Vec<Op>,
     spans: Vec<Span>,
     /// Parallel to `code`: the trie node the instruction runs under.
@@ -362,14 +319,11 @@ impl<'a> FnCompiler<'a> {
         fn_id: Option<FnId>,
         env: &'a CompileEnv,
         fuse: bool,
-        forced: &[bool],
     ) -> Result<Chunk, Fail> {
         let mut c = FnCompiler {
             env,
             body,
             fuse,
-            forced: forced.to_vec(),
-            found: forced.to_vec(),
             code: Vec::new(),
             spans: Vec::new(),
             states: Vec::new(),
@@ -396,9 +350,6 @@ impl<'a> FnCompiler<'a> {
         c.emit_pads();
         if let Some(f) = c.failure.take() {
             return Err(f);
-        }
-        if c.found != c.forced {
-            return Err(Fail::Owned(c.found));
         }
         let nregs = c.nlocals + c.max_temps;
         if nregs >= usize::from(u16::MAX) {
@@ -575,55 +526,6 @@ impl<'a> FnCompiler<'a> {
         self.body.locals[id.0 as usize].storage
     }
 
-    /// How local `id` dies: by its type, unless it can hold the result of a host function that
-    /// returns a bare `T`.
-    pub(crate) fn local_kind(&self, id: colibri_check::hir::LocalId) -> Kind {
-        if self.forced[id.0 as usize] {
-            Kind::Owned
-        } else {
-            kind_of(self.local_ty(id))
-        }
-    }
-
-    /// Notes that local `id` receives `value`: when that is the result of a host function
-    /// that returns a bare `T`, the local must be an owner (this pass is then redone).
-    pub(crate) fn note_host_value(
-        &mut self,
-        id: colibri_check::hir::LocalId,
-        value: &colibri_check::hir::Expr,
-    ) {
-        let i = id.0 as usize;
-        if i >= self.body.param_count as usize
-            && !self.found[i]
-            && kind_of(self.local_ty(id)) != Kind::Owned
-            && self.yields_host_param(value)
-        {
-            self.found[i] = true;
-        }
-    }
-
-    fn yields_host_param(&self, e: &colibri_check::hir::Expr) -> bool {
-        match &e.kind {
-            colibri_check::hir::ExprKind::Call(c) => {
-                matches!(&c.callee, colibri_check::hir::Callee::Host(id)
-                if self.env.host_returns_param.get(id.0 as usize) == Some(&true))
-            }
-            colibri_check::hir::ExprKind::Block(b) => {
-                b.tail.as_ref().is_some_and(|t| self.yields_host_param(t))
-            }
-            colibri_check::hir::ExprKind::If { then, else_, .. } => {
-                then.tail
-                    .as_ref()
-                    .is_some_and(|t| self.yields_host_param(t))
-                    || else_
-                        .as_ref()
-                        .and_then(|b| b.tail.as_ref())
-                        .is_some_and(|t| self.yields_host_param(t))
-            }
-            _ => false,
-        }
-    }
-
     pub(crate) fn local_ty(&self, id: colibri_check::hir::LocalId) -> &'a Ty {
         &self.body.locals[id.0 as usize].ty
     }
@@ -791,11 +693,7 @@ impl<'a> FnCompiler<'a> {
     /// An instruction that can release a value of type `ty` was emitted: if it is a class
     /// object (or holds one), a `Drop` hook may run and panic.
     pub(crate) fn note_release(&mut self, ty: &Ty) {
-        self.note_release_kind(kind_of(ty));
-    }
-
-    pub(crate) fn note_release_kind(&mut self, kind: Kind) {
-        if kind == Kind::Owned {
+        if kind_of(ty) == Kind::Owned {
             self.releases += 1;
         }
     }
@@ -821,8 +719,8 @@ impl<'a> FnCompiler<'a> {
     }
 
     /// Binds a non-scalar local: it is dropped when its scope ends.
-    pub(crate) fn bind_local_cleanup(&mut self, r: Reg, kind: Kind) {
-        match kind {
+    pub(crate) fn bind_local_cleanup(&mut self, r: Reg, ty: &Ty) {
+        match kind_of(ty) {
             Kind::Scalar => {}
             Kind::Inert => self.push_item(Item::Plain(r)),
             Kind::Owned => self.push_item(Item::Reg(r)),
