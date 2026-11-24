@@ -187,7 +187,7 @@ impl HostStacks {
         self.recycled += 1;
         let pool = size == self.pool_size && self.pool.len() < POOL_CAP;
         // On Windows the check is a read of two fields and decides if the stack is kept at all.
-        let trim = cfg!(windows) || self.recycled % TRIM_EVERY == 0;
+        let trim = cfg!(windows) || self.recycled.is_multiple_of(TRIM_EVERY);
         if pool && (!trim || trim_stack(&stack)) {
             self.pool.push(stack);
         }
