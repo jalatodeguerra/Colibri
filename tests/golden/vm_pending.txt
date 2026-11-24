@@ -36,4 +36,4 @@ std/net_read_until.colibri  # a host function that can wait, beside running coro
 std/net_timeout_then_continue.colibri  # a host function that can wait, beside running coroutines
 std/net_use_after_close.colibri  # a host function that can wait, beside running coroutines
 std/process_polling_in_a_coroutine.colibri  # a host function that can wait, beside running coroutines
-std/process_polling_windows.colibri  # `go`
+std/process_polling_windows.colibri  # a host function that can wait, beside running coroutines
