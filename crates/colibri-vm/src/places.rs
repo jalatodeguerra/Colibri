@@ -143,6 +143,13 @@ impl Machine {
             }
             _ => return Err(self.internal(fiber, span, "not a place instruction")),
         }
+        if matches!(site.anchor, AnchorKind::Entry) && colibri_core::compare::take_gave_up() {
+            let result = match op {
+                Op::PlaceGet { d, .. } => Some(r(d)),
+                _ => None,
+            };
+            return Err(self.lookup_gave_up(fiber, chunk, pc, result));
+        }
         Ok(())
     }
 
@@ -196,6 +203,14 @@ impl Machine {
                 match got {
                     Ok(root) => part_of(root, path),
                     Err(key) => {
+                        // The lookup may have given up (keys nested too deeply), not missed.
+                        if colibri_core::compare::take_gave_up() {
+                            return Err(self.panic(
+                                fiber,
+                                span,
+                                "these values nest too deeply to compare",
+                            ));
+                        }
                         let message = format!("key {key} not found in map");
                         return Err(self.panic(fiber, span, message));
                     }
@@ -274,6 +289,14 @@ impl Machine {
                         return self.insert_entry(fiber, &map, key, new, span);
                     }
                     Ok(None) => {
+                        // The lookup may have given up (keys nested too deeply), not missed.
+                        if colibri_core::compare::take_gave_up() {
+                            return Err(self.panic(
+                                fiber,
+                                span,
+                                "these values nest too deeply to compare",
+                            ));
+                        }
                         let message = format!("key {} not found in map", self.shown_key(&key));
                         return Err(self.panic(fiber, span, message));
                     }
@@ -364,6 +387,14 @@ impl Machine {
                 match got {
                     Ok(v) => Self::put_reg(fiber, r(d), v),
                     Err(key) => {
+                        // The lookup may have given up (keys nested too deeply), not missed.
+                        if colibri_core::compare::take_gave_up() {
+                            return Err(self.panic(
+                                fiber,
+                                span,
+                                "these values nest too deeply to compare",
+                            ));
+                        }
                         let message = format!("key {key} not found in map");
                         return Err(self.panic(fiber, span, message));
                     }
@@ -401,6 +432,15 @@ impl Machine {
                 }
             }
             _ => return Err(self.internal(fiber, span, "not an element instruction")),
+        }
+        if matches!(op, Op::MapGetAt { .. } | Op::MapSetAt { .. })
+            && colibri_core::compare::take_gave_up()
+        {
+            let result = match op {
+                Op::MapGetAt { d, .. } => Some(r(d)),
+                _ => None,
+            };
+            return Err(self.lookup_gave_up(fiber, chunk, pc, result));
         }
         Ok(())
     }
@@ -454,6 +494,9 @@ impl Machine {
         let key = fiber.regs[base + usize::from(k)].clone();
         let canon = self.canonical_key(fiber, || map.keys(), key, span)?;
         Self::put_reg(fiber, base + usize::from(d), canon);
+        if colibri_core::compare::take_gave_up() {
+            return Err(self.lookup_gave_up(fiber, chunk, pc, Some(base + usize::from(d))));
+        }
         Ok(())
     }
 

@@ -649,19 +649,17 @@ fn fmt_dash_formats_stdin_to_stdout() {
 
 #[test]
 fn run_passes_the_arguments_after_the_file_to_os_args() {
-    vm_pending("run_passes_the_arguments_after_the_file_to_os_args", || {
-        let path = temp_file(
-            "args.colibri",
-            "import os\n\nfn main() {\n    for a in os.args() {\n        print(a)\n    }\n    print(\"{os.args().len()}\")\n}\n",
-        );
-        let out = colibri(&["run", path.to_str().unwrap(), "a", "--flag", "b c"]);
-        assert_eq!(out.status.code(), Some(0), "{out:?}");
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "a\n--flag\nb c\n3\n");
-        let out = colibri(&["run", path.to_str().unwrap(), "--", "-x"]);
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "-x\n1\n");
-        let out = colibri(&["run", path.to_str().unwrap()]);
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n");
-    })
+    let path = temp_file(
+        "args.colibri",
+        "import os\n\nfn main() {\n    for a in os.args() {\n        print(a)\n    }\n    print(\"{os.args().len()}\")\n}\n",
+    );
+    let out = colibri(&["run", path.to_str().unwrap(), "a", "--flag", "b c"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a\n--flag\nb c\n3\n");
+    let out = colibri(&["run", path.to_str().unwrap(), "--", "-x"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "-x\n1\n");
+    let out = colibri(&["run", path.to_str().unwrap()]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n");
 }
 
 #[test]

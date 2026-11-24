@@ -440,8 +440,6 @@ impl FromColibri for String {
 /// use colibri_runtime as colibri;
 ///
 /// # fn main() -> Result<(), colibri::Error> {
-/// # // `str.to_bytes` does not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). vm-pin: 8
-/// # if std::env::var("COLIBRI_ENGINE").is_ok_and(|v| v == "vm") { return Ok(()); }
 /// let out = colibri::SharedBuffer::new();
 /// let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
 /// vm.register_fn("checksum", |data: colibri::Bytes| {

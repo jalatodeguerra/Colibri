@@ -1,8 +1,5 @@
 //! Host functions: Rust closures scripts call (EMBEDDING §1).
 
-mod common;
-use common::vm_pending;
-
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -532,13 +529,10 @@ fn typed_vm() -> (colibri::Vm, colibri::SharedBuffer) {
 
 #[test]
 fn a_host_error_keeps_a_typed_value_that_is_and_as_recover() {
-    vm_pending(
-        "a_host_error_keeps_a_typed_value_that_is_and_as_recover",
-        || {
-            let (mut vm, out) = typed_vm();
-            run(
-                &mut vm,
-                r#"import disk
+    let (mut vm, out) = typed_vm();
+    run(
+        &mut vm,
+        r#"import disk
 import net
 
 fn store(n: int) -> Result[int] {
@@ -565,14 +559,12 @@ fn main() {
     print(e.message())
 }
 "#,
-            )
-            .unwrap();
-            assert_eq!(
-                out.contents(),
-                "full: storing 0: the disk is full\ngone: storing 1: the disk is gone\nsaved 5\ntrue false\nsome(Gone) none\nthe link is gone\n"
-            );
-        },
     )
+    .unwrap();
+    assert_eq!(
+        out.contents(),
+        "full: storing 0: the disk is full\ngone: storing 1: the disk is gone\nsaved 5\ntrue false\nsome(Gone) none\nthe link is gone\n"
+    );
 }
 
 #[test]
@@ -820,13 +812,10 @@ fn a_host_signature_cannot_mention_a_module_enum() {
 
 #[test]
 fn an_embedders_module_enum_converts_to_error_without_an_impl() {
-    vm_pending(
-        "an_embedders_module_enum_converts_to_error_without_an_impl",
-        || {
-            let (mut vm, out) = typed_vm();
-            run(
-                &mut vm,
-                r#"import disk
+    let (mut vm, out) = typed_vm();
+    run(
+        &mut vm,
+        r#"import disk
 
 fn fake() -> Result[int] {
     return err(disk.Error.Gone)
@@ -850,37 +839,32 @@ fn main() {
     print(wrapped(2).expect("ok"))
 }
 "#,
-            )
-            .unwrap();
-            assert_eq!(out.contents(), "Gone true some(Gone)\nFull true\n2\n");
-            // The name stays the module's: a program cannot write the impl itself.
-            let err = run(
-                &mut typed_vm().0,
-                "import disk\nimpl IntoError for disk.Error {}\nfn main() {}\n",
-            )
-            .unwrap_err()
-            .render(false);
-            assert!(
-                err.contains("cannot implement the built-in `IntoError` for `disk.Error`"),
-                "{err}"
-            );
-        },
     )
+    .unwrap();
+    assert_eq!(out.contents(), "Gone true some(Gone)\nFull true\n2\n");
+    // The name stays the module's: a program cannot write the impl itself.
+    let err = run(
+        &mut typed_vm().0,
+        "import disk\nimpl IntoError for disk.Error {}\nfn main() {}\n",
+    )
+    .unwrap_err()
+    .render(false);
+    assert!(
+        err.contains("cannot implement the built-in `IntoError` for `disk.Error`"),
+        "{err}"
+    );
 }
 
 #[test]
 fn a_display_error_keeps_a_str_and_a_typed_error_keeps_none() {
-    vm_pending(
-        "a_display_error_keeps_a_str_and_a_typed_error_keeps_none",
-        || {
-            let (mut vm, out) = typed_vm();
-            vm.register_fn("plain", || -> Result<(), String> {
-                Err("plain failure".to_string())
-            })
-            .unwrap();
-            run(
-                &mut vm,
-                r#"import disk
+    let (mut vm, out) = typed_vm();
+    vm.register_fn("plain", || -> Result<(), String> {
+        Err("plain failure".to_string())
+    })
+    .unwrap();
+    run(
+        &mut vm,
+        r#"import disk
 
 fn main() {
     let p = plain().err().expect("fails")
@@ -889,12 +873,10 @@ fn main() {
     print("{t.as[str]()} {t.message()}")
 }
 "#,
-            )
-            .unwrap();
-            assert_eq!(
-                out.contents(),
-                "some(\"plain failure\") plain failure\nnone the disk is full\n"
-            );
-        },
     )
+    .unwrap();
+    assert_eq!(
+        out.contents(),
+        "some(\"plain failure\") plain failure\nnone the disk is full\n"
+    );
 }

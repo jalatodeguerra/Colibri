@@ -1,0 +1,24 @@
+struct V {
+    n: int
+}
+
+impl Show for V {
+    fn show(self) -> str {
+        if self.n < 0 {
+            panic("negative")
+        }
+        return "V{self.n}"
+    }
+}
+
+fn say(xs: List[V]) {
+    print(xs)
+}
+
+fn main() {
+    say([V { n: 1 }, V { n: 2 }])
+    say([V { n: 1 }, V { n: -2 }])
+}
+
+// expect: [V1, V2]
+// panic: negative

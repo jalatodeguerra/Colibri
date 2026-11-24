@@ -431,6 +431,28 @@ pub enum Op {
         base: Reg,
         site: u16,
     },
+    /// The built-in of the site (core `Builtins::builtin`) on references of its own to the
+    /// arguments `base..base+argc`, which stay in the window for the caller to drop.
+    Builtin {
+        d: Reg,
+        base: Reg,
+        site: u16,
+    },
+    /// `l.push(take(v))` on the list in `l`: refused while the list is held.
+    ListPush {
+        l: Reg,
+        v: Reg,
+    },
+    /// `d = l.len()`.
+    ListLen {
+        d: Reg,
+        l: Reg,
+    },
+    /// `d = s.len()` (bytes of a `str`).
+    StrLen {
+        d: Reg,
+        s: Reg,
+    },
     /// `d = coerce(s)` for the coercion of the site (a clone of `s` is converted).
     Coerce {
         d: Reg,
@@ -970,6 +992,12 @@ impl Chunk {
             Op::Intrinsic { d, base, site } => {
                 format!("Intrinsic r{d} base=r{base} {}", self.site_text(site))
             }
+            Op::Builtin { d, base, site } => {
+                format!("Builtin r{d} base=r{base} {}", self.site_text(site))
+            }
+            Op::ListPush { l, v } => format!("ListPush r{l} r{v}"),
+            Op::ListLen { d, l } => format!("ListLen r{d} r{l}"),
+            Op::StrLen { d, s } => format!("StrLen r{d} r{s}"),
             Op::Coerce { d, s, site } => format!("Coerce r{d} r{s} {}", self.site_text(site)),
             Op::NewStruct { d, site } => format!("NewStruct r{d} {}", self.site_text(site)),
             Op::NewObject { d, site } => format!("NewObject r{d} {}", self.site_text(site)),

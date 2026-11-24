@@ -1,0 +1,11 @@
+fn total(xs: List[int]) -> int {
+    return xs.fold(0, fn(acc, x) => acc + 10 / x)
+}
+
+fn main() {
+    print(total([1, 2]))
+    print(total([1, 0]))
+}
+
+// expect: 15
+// panic: division by zero

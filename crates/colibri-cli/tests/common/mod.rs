@@ -56,6 +56,22 @@ pub fn checked(out: std::process::Output) -> std::process::Output {
     out
 }
 
+/// Refusals that server children printed on stderr, with the name of the test thread that
+/// started the child: a server can start, listen, and refuse only when the first client comes,
+/// so the test fails on a reset connection and the refusal is not in its own failure text.
+static REFUSED: std::sync::Mutex<Vec<(Option<String>, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// The refusals printed so far by children of the test on this thread.
+fn refusals_of_this_test() -> String {
+    let me = std::thread::current().name().map(String::from);
+    let all = REFUSED.lock().unwrap_or_else(|e| e.into_inner());
+    all.iter()
+        .filter(|(owner, _)| *owner == me)
+        .map(|(_, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// What a server child has printed on stderr so far, read on a thread so the pipe never fills.
 pub struct Tap(std::sync::Arc<(std::sync::Mutex<String>, std::sync::atomic::AtomicBool)>);
 
@@ -68,16 +84,21 @@ pub fn tap_stderr(child: &mut std::process::Child) -> Tap {
     ));
     let mut err = child.stderr.take().expect("stderr is piped");
     let mine = std::sync::Arc::clone(&shared);
+    let owner = std::thread::current().name().map(String::from);
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         while let Ok(n) = err.read(&mut buf) {
             if n == 0 {
                 break;
             }
-            mine.0
-                .lock()
-                .unwrap()
-                .push_str(&String::from_utf8_lossy(&buf[..n]));
+            let chunk = String::from_utf8_lossy(&buf[..n]);
+            if chunk.contains(REFUSAL) {
+                REFUSED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((owner.clone(), chunk.to_string()));
+            }
+            mine.0.lock().unwrap().push_str(&chunk);
         }
         mine.1.store(true, std::sync::atomic::Ordering::SeqCst);
     });
@@ -150,7 +171,18 @@ pub fn vm_pending<R: Pending>(name: &str, body: impl FnOnce() -> R) -> R {
             // `enum values (test wrapper)`: the part in brackets is a note.
             let feature = reason.split(" (").next().unwrap_or(reason);
             let refusal = format!("{REFUSAL} {feature} yet");
-            let text = text_of(&*payload);
+            let mut text = text_of(&*payload);
+            // A server child may refuse a moment after the test saw its connection fail.
+            for _ in 0..100 {
+                if text.contains(&refusal) {
+                    break;
+                }
+                text = format!("{}\n{}", text_of(&*payload), refusals_of_this_test());
+                if text.contains(&refusal) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
             assert!(
                 text.contains(&refusal),
                 "{key} is listed as pending ({reason}) but failed another way: {text}"

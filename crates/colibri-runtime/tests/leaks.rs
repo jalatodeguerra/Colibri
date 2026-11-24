@@ -67,10 +67,9 @@ fn main() {}
 
 #[test]
 fn a_cycle_that_is_still_held_is_not_a_leak() {
-    vm_pending("a_cycle_that_is_still_held_is_not_a_leak", || {
-        let (mut vm, _) = vm(
-            true,
-            r#"
+    let (mut vm, _) = vm(
+        true,
+        r#"
 let keep: List[Node] = []
 fn hold() {
     let a = Node { name: "a" }
@@ -79,17 +78,16 @@ fn hold() {
 }
 fn main() {}
 "#,
-        );
-        vm.run_main().unwrap();
-        call(&mut vm, "hold");
-        // A global reaches it: live.
-        assert!(vm.find_leaks().is_empty());
-        vm.shutdown();
-        // The globals are gone: now it is a leak.
-        let leaks = vm.find_leaks();
-        assert_eq!(leaks.len(), 1);
-        assert_eq!(leaks[0].objects, ["Node"]);
-    })
+    );
+    vm.run_main().unwrap();
+    call(&mut vm, "hold");
+    // A global reaches it: live.
+    assert!(vm.find_leaks().is_empty());
+    vm.shutdown();
+    // The globals are gone: now it is a leak.
+    let leaks = vm.find_leaks();
+    assert_eq!(leaks.len(), 1);
+    assert_eq!(leaks[0].objects, ["Node"]);
 }
 
 #[test]
@@ -142,12 +140,9 @@ fn main() { go worker() }
 
 #[test]
 fn objects_a_leaked_cycle_owns_are_counted_as_retained() {
-    vm_pending(
-        "objects_a_leaked_cycle_owns_are_counted_as_retained",
-        || {
-            let (mut vm, _) = vm(
-                true,
-                r#"
+    let (mut vm, _) = vm(
+        true,
+        r#"
 class Holder { items: List[Node] = [], me: Holder? = none }
 fn leak() {
     let h = Holder {}
@@ -157,14 +152,12 @@ fn leak() {
 }
 fn main() { leak() }
 "#,
-            );
-            vm.run_main().unwrap();
-            let leaks = vm.find_leaks();
-            assert_eq!(leaks.len(), 1);
-            assert_eq!(leaks[0].objects, ["Holder"]);
-            assert_eq!(leaks[0].retained, 2);
-        },
-    )
+    );
+    vm.run_main().unwrap();
+    let leaks = vm.find_leaks();
+    assert_eq!(leaks.len(), 1);
+    assert_eq!(leaks[0].objects, ["Holder"]);
+    assert_eq!(leaks[0].retained, 2);
 }
 
 #[test]

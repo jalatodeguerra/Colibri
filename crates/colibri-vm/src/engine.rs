@@ -274,14 +274,16 @@ impl Engine for Machine {
     fn pausing_builtin(
         &mut self,
         fiber: &mut VmFiber,
-        _op: Builtin,
+        op: Builtin,
         _recv: &Value,
         span: Span,
     ) -> Eval {
-        Err(self.panic(
+        // `join`, `join_result` and `join_all` pause, and a pause is a frame operation on the VM
+        // (step 11): the compiler never hands them to core's `builtin`.
+        Err(self.internal(
             fiber,
             span,
-            "the bytecode VM does not support coroutines yet",
+            &format!("`{op:?}` reached the native path of the bytecode VM"),
         ))
     }
 }

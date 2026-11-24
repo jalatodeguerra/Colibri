@@ -544,46 +544,39 @@ impl Drop for Scratch {
 
 #[test]
 fn files_are_written_and_read_in_a_scratch_folder() {
-    vm_pending("files_are_written_and_read_in_a_scratch_folder", || {
-        let scratch = Scratch::new("files");
-        let (mut vm, out) = vm(&[colibri::Cap::Fs]);
-        let dir = scratch.0.to_string_lossy().replace('\\', "/");
-        run(
+    let scratch = Scratch::new("files");
+    let (mut vm, out) = vm(&[colibri::Cap::Fs]);
+    let dir = scratch.0.to_string_lossy().replace('\\', "/");
+    run(
         &mut vm,
         &format!(
             "import fs\nimport path\nfn main() -> Result[()] {{\n    let file = path.join(\"{dir}\", \"a.txt\")\n    fs.write(file, \"héllo\")?\n    print(fs.read(file)?)\n    print(fs.stat(file)?.size)\n    print(fs.read(path.join(\"{dir}\", \"nope\")).is_err())\n    return ok(())\n}}\n"
         ),
     )
     .unwrap();
-        assert_eq!(out.contents(), "héllo\n6\ntrue\n");
-        assert_eq!(
-            std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(),
-            "héllo"
-        );
-    })
+    assert_eq!(out.contents(), "héllo\n6\ntrue\n");
+    assert_eq!(
+        std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(),
+        "héllo"
+    );
 }
 
 #[test]
 fn a_missing_file_is_an_err_with_the_path_and_the_reason() {
-    vm_pending(
-        "a_missing_file_is_an_err_with_the_path_and_the_reason",
-        || {
-            let scratch = Scratch::new("missing");
-            let (mut vm, out) = vm(&[colibri::Cap::Fs]);
-            let dir = scratch.0.to_string_lossy().replace('\\', "/");
-            run(
+    let scratch = Scratch::new("missing");
+    let (mut vm, out) = vm(&[colibri::Cap::Fs]);
+    let dir = scratch.0.to_string_lossy().replace('\\', "/");
+    run(
         &mut vm,
         &format!(
             "import fs\nfn main() {{\n    match fs.read(\"{dir}/gone.txt\") {{\n        ok(t) => print(t)\n        err(e) => print(e.message())\n    }}\n}}\n"
         ),
     )
     .unwrap();
-            assert_eq!(
-                out.contents(),
-                format!("cannot read `{dir}/gone.txt`: no such file or directory\n")
-            );
-        },
-    )
+    assert_eq!(
+        out.contents(),
+        format!("cannot read `{dir}/gone.txt`: no such file or directory\n")
+    );
 }
 
 // ---- args, process and datetime under other configurations ----
@@ -608,36 +601,31 @@ fn with_args(args: &[&str]) -> StdConfig {
 
 #[test]
 fn args_reads_flags_values_positionals_and_the_terminator() {
-    vm_pending(
-        "args_reads_flags_values_positionals_and_the_terminator",
-        || {
-            let (mut vm, out) = vm_with(
-                with_args(&[
-                    "-vq",
-                    "--out",
-                    "result.txt",
-                    "--level=3",
-                    "input.txt",
-                    "-5",
-                    "--",
-                    "--not-a-flag",
-                    "-v",
-                ]),
-                &[],
-            );
-            run(
+    let (mut vm, out) = vm_with(
+        with_args(&[
+            "-vq",
+            "--out",
+            "result.txt",
+            "--level=3",
+            "input.txt",
+            "-5",
+            "--",
+            "--not-a-flag",
+            "-v",
+        ]),
+        &[],
+    );
+    run(
         &mut vm,
         "import args\nfn main() {\n    print(args.flag(\"v\"))\n    print(args.flag(\"q\"))\n    print(args.flag(\"out\"))  // present, whether or not it takes a value\n    print(args.flag(\"not-a-flag\"))\n    print(args.value(\"out\"))\n    print(args.value(\"level\"))\n    print(args.value(\"missing\"))\n    print(args.positional())\n    print(args.positional_with([\"out\"]))\n    print(args.list().len())\n}\n",
     )
     .unwrap();
-            assert_eq!(
-                out.contents(),
-                "true\ntrue\ntrue\nfalse\nsome(\"result.txt\")\nsome(\"3\")\nnone\n\
+    assert_eq!(
+        out.contents(),
+        "true\ntrue\ntrue\nfalse\nsome(\"result.txt\")\nsome(\"3\")\nnone\n\
          [\"result.txt\", \"input.txt\", \"-5\", \"--not-a-flag\", \"-v\"]\n\
          [\"input.txt\", \"-5\", \"--not-a-flag\", \"-v\"]\n9\n"
-            );
-        },
-    )
+    );
 }
 
 #[test]
@@ -891,27 +879,20 @@ fn a_removed_function_names_its_replacement() {
 #[cfg(unix)]
 #[test]
 fn stat_follow_looks_through_a_symlink_and_stat_does_not() {
-    vm_pending(
-        "stat_follow_looks_through_a_symlink_and_stat_does_not",
-        || {
-            let scratch = Scratch::new("stat-follow");
-            let dir = scratch.0.to_string_lossy().replace('\\', "/");
-            std::fs::write(scratch.0.join("target.txt"), "twelve bytes").unwrap();
-            std::os::unix::fs::symlink(scratch.0.join("target.txt"), scratch.0.join("link"))
-                .unwrap();
-            std::os::unix::fs::symlink(scratch.0.join("missing"), scratch.0.join("dangling"))
-                .unwrap();
-            let (mut vm, out) = vm(&[colibri::Cap::Fs]);
-            run(
+    let scratch = Scratch::new("stat-follow");
+    let dir = scratch.0.to_string_lossy().replace('\\', "/");
+    std::fs::write(scratch.0.join("target.txt"), "twelve bytes").unwrap();
+    std::os::unix::fs::symlink(scratch.0.join("target.txt"), scratch.0.join("link")).unwrap();
+    std::os::unix::fs::symlink(scratch.0.join("missing"), scratch.0.join("dangling")).unwrap();
+    let (mut vm, out) = vm(&[colibri::Cap::Fs]);
+    run(
         &mut vm,
         &format!(
             "import fs\nfn main() -> Result[()] {{\n    let direct = fs.stat(\"{dir}/link\")?\n    let through = fs.stat_follow(\"{dir}/link\")?\n    print(\"{{direct.kind}} {{through.kind}} {{through.size}}\")\n    print(fs.stat_follow(\"{dir}/dangling\").is_err())\n    print(fs.stat(\"{dir}/dangling\")?.kind)\n    return ok(())\n}}\n"
         ),
     )
     .unwrap();
-            assert_eq!(out.contents(), "symlink file 12\ntrue\nsymlink\n");
-        },
-    )
+    assert_eq!(out.contents(), "symlink file 12\ntrue\nsymlink\n");
 }
 
 // ---- typed errors (DESIGN §10.2) ----
@@ -977,13 +958,10 @@ fn the_error_enums_check_without_a_vm() {
 
 #[test]
 fn modules_with_the_same_error_name_are_different_types() {
-    vm_pending(
-        "modules_with_the_same_error_name_are_different_types",
-        || {
-            let (mut vm, out) = vm(&[colibri::Cap::Fs, colibri::Cap::Os]);
-            run(
-                &mut vm,
-                r#"import fs
+    let (mut vm, out) = vm(&[colibri::Cap::Fs, colibri::Cap::Os]);
+    run(
+        &mut vm,
+        r#"import fs
 import os
 import process
 
@@ -996,62 +974,50 @@ fn main() {
     print("{a.as[fs.Error]()} {b.as[process.Error]()}")
 }
 "#,
-            )
-            .unwrap();
-            assert_eq!(
-                out.contents(),
-                "true false false\nfalse true false\nsome(NotFound) some(NotFound)\n"
-            );
-        },
     )
+    .unwrap();
+    assert_eq!(
+        out.contents(),
+        "true false false\nfalse true false\nsome(NotFound) some(NotFound)\n"
+    );
 }
 
 #[test]
 fn a_typed_error_survives_context_and_main_prints_the_message() {
-    vm_pending(
-        "a_typed_error_survives_context_and_main_prints_the_message",
-        || {
-            let (mut vm, _) = vm(&[colibri::Cap::Fs]);
-            let err = run(
+    let (mut vm, _) = vm(&[colibri::Cap::Fs]);
+    let err = run(
         &mut vm,
         "import fs\nfn main() -> Result[()] {\n    let t = fs.read(\"/colibri/no/such/file\").context(\"loading\")?\n    print(t)\n    return ok(())\n}\n",
     )
     .unwrap_err();
-            assert_eq!(
-                err.render(false),
-                "error: loading: cannot read `/colibri/no/such/file`: no such file or directory\n"
-            );
-        },
-    )
+    assert_eq!(
+        err.render(false),
+        "error: loading: cannot read `/colibri/no/such/file`: no such file or directory\n"
+    );
 }
 
 #[test]
 fn reading_input_that_is_not_text_is_an_io_invalid_data_error() {
-    vm_pending(
-        "reading_input_that_is_not_text_is_an_io_invalid_data_error",
-        || {
-            let out = colibri::SharedBuffer::new();
-            let mut vm = colibri::Vm::builder()
-                .stdout(Box::new(out.clone()))
-                .allow(colibri::Cap::Os)
-                .build();
-            colibri_std::install_with(
-                &mut vm,
-                StdConfig {
-                    stdin: Some(Box::new(Cursor::new(vec![0xff, 0xfe, b'\n']))),
-                    ..StdConfig::default()
-                },
-            )
-            .unwrap();
-            run(
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .allow(colibri::Cap::Os)
+        .build();
+    colibri_std::install_with(
+        &mut vm,
+        StdConfig {
+            stdin: Some(Box::new(Cursor::new(vec![0xff, 0xfe, b'\n']))),
+            ..StdConfig::default()
+        },
+    )
+    .unwrap();
+    run(
         &mut vm,
         "import io\nfn main() {\n    let e = io.read_line().err().expect(\"not text\")\n    print(e.as[io.Error]().expect(\"an io error\") == io.Error.InvalidData)\n    print(e.message())\n}\n",
     )
     .unwrap();
-            assert_eq!(
-                out.contents(),
-                "true\ncannot read standard input: the data is not valid UTF-8 text\n"
-            );
-        },
-    )
+    assert_eq!(
+        out.contents(),
+        "true\ncannot read standard input: the data is not valid UTF-8 text\n"
+    );
 }

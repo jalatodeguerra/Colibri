@@ -55,28 +55,25 @@ impl Drop for Scratch {
 
 #[test]
 fn a_file_much_bigger_than_the_buffers_is_read_line_by_line() {
-    vm_pending(
-        "a_file_much_bigger_than_the_buffers_is_read_line_by_line",
-        || {
-            let scratch = Scratch::new("big");
-            let path = scratch.file("big.log");
-            // About 9 MB in 150000 lines, in the mix of endings a log has, written by Rust so that
-            // the contents are known independently of the code under test.
-            let mut text = String::new();
-            let mut expected_len = 0i64;
-            for i in 0..150_000 {
-                let line = format!("{i:06} {}", "x".repeat(i % 97));
-                expected_len += line.len() as i64;
-                text.push_str(&line);
-                text.push_str(if i % 3 == 0 { "\r\n" } else { "\n" });
-            }
-            assert!(text.len() > 6_000_000, "{}", text.len());
-            std::fs::write(&path, &text).unwrap();
-            let (mut vm, out) = vm();
-            run(
-                &mut vm,
-                &format!(
-                    r#"import fs
+    let scratch = Scratch::new("big");
+    let path = scratch.file("big.log");
+    // About 9 MB in 150000 lines, in the mix of endings a log has, written by Rust so that
+    // the contents are known independently of the code under test.
+    let mut text = String::new();
+    let mut expected_len = 0i64;
+    for i in 0..150_000 {
+        let line = format!("{i:06} {}", "x".repeat(i % 97));
+        expected_len += line.len() as i64;
+        text.push_str(&line);
+        text.push_str(if i % 3 == 0 { "\r\n" } else { "\n" });
+    }
+    assert!(text.len() > 6_000_000, "{}", text.len());
+    std::fs::write(&path, &text).unwrap();
+    let (mut vm, out) = vm();
+    run(
+        &mut vm,
+        &format!(
+            r#"import fs
 
 fn main() -> Result[()] {{
     let f = fs.open("{path}")?
@@ -107,29 +104,24 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-                ),
-            )
-            .unwrap();
-            assert_eq!(
-                out.contents(),
-                format!("150000\n{expected_len}\n103\n{}\n", text.len())
-            );
-        },
+        ),
     )
+    .unwrap();
+    assert_eq!(
+        out.contents(),
+        format!("150000\n{expected_len}\n103\n{}\n", text.len())
+    );
 }
 
 #[test]
 fn a_file_is_written_by_one_handle_and_checked_by_rust() {
-    vm_pending(
-        "a_file_is_written_by_one_handle_and_checked_by_rust",
-        || {
-            let scratch = Scratch::new("write");
-            let path = scratch.file("out.log");
-            let (mut vm, _) = vm();
-            run(
-                &mut vm,
-                &format!(
-                    r#"import fs
+    let scratch = Scratch::new("write");
+    let path = scratch.file("out.log");
+    let (mut vm, _) = vm();
+    run(
+        &mut vm,
+        &format!(
+            r#"import fs
 
 fn main() -> Result[()] {{
     let f = fs.create("{path}")?
@@ -141,18 +133,16 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-                ),
-            )
-            .unwrap();
-            let text = std::fs::read_to_string(&path).unwrap();
-            let mut expected = String::new();
-            for i in 0..100_000 {
-                expected.push_str(&format!("entry {i}\n"));
-            }
-            expected.push_str("tail");
-            assert!(text == expected, "contents differ ({} bytes)", text.len());
-        },
+        ),
     )
+    .unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut expected = String::new();
+    for i in 0..100_000 {
+        expected.push_str(&format!("entry {i}\n"));
+    }
+    expected.push_str("tail");
+    assert!(text == expected, "contents differ ({} bytes)", text.len());
 }
 
 #[test]
@@ -197,23 +187,18 @@ return ok(())
 
 #[test]
 fn a_handle_that_is_still_open_when_the_program_ends_is_flushed() {
-    vm_pending(
-        "a_handle_that_is_still_open_when_the_program_ends_is_flushed",
-        || {
-            let scratch = Scratch::new("exit");
-            let path = scratch.file("kept.txt");
-            let (mut vm, _) = vm();
-            run(
+    let scratch = Scratch::new("exit");
+    let path = scratch.file("kept.txt");
+    let (mut vm, _) = vm();
+    run(
         &mut vm,
         &format!(
             "import fs\nlet f = fs.create(\"{path}\").expect(\"created\")\nfn main() {{\n    f.write(\"still here\").expect(\"written\")\n}}\n"
         ),
     )
     .unwrap();
-            drop(vm);
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), "still here");
-        },
-    )
+    drop(vm);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "still here");
 }
 
 #[test]

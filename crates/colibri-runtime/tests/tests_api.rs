@@ -1,8 +1,5 @@
 //! The test API: `Vm::load_tests`, `Vm::tests`, `Vm::run_test` (ARCHITECTURE §15).
 
-mod common;
-use common::vm_pending;
-
 use colibri_runtime as colibri;
 
 const SOURCE: &str = r#"
@@ -191,64 +188,59 @@ fn folder(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
 
 #[test]
 fn load_tests_runs_nothing_and_finds_modules_nobody_imports() {
-    vm_pending(
-        "load_tests_runs_nothing_and_finds_modules_nobody_imports",
-        || {
-            let dir = folder(
-                "package",
-                &[
-                    (
-                        "colibri.toml",
-                        "[package]\nname = \"demo\"\n\n[dependencies]\nlib = { path = \"lib\" }\n",
-                    ),
-                    (
-                        "main.colibri",
-                        "import lib\nprint(\"top level\")\nlet shared = [lib.one()]\n\ntest \"in main\" {\n    assert_eq(shared.len(), 1)\n}\n",
-                    ),
-                    (
-                        "sub/extra.colibri",
-                        "test \"in extra\" {\n    assert(true)\n}\n",
-                    ),
-                    ("lib/colibri.toml", "[package]\nname = \"lib\"\n"),
-                    (
-                        "lib/lib.colibri",
-                        "pub fn one() -> int => 1\n\ntest \"in lib\" {\n    assert(true)\n}\n",
-                    ),
-                ],
-            );
-            let out = colibri::SharedBuffer::new();
-            let mut vm = vm_with(&out);
-            vm.load_tests(&dir).unwrap();
-            assert_eq!(
-                out.contents(),
-                "",
-                "neither initialisers nor top-level code ran"
-            );
-            let tests = vm.tests();
-            let listed: Vec<(String, String, bool)> = tests
-                .iter()
-                .map(|t| (t.module.clone(), t.name.clone(), t.root))
-                .collect();
-            assert!(
-                listed.contains(&("main".into(), "in main".into(), true)),
-                "{listed:?}"
-            );
-            assert!(
-                listed.contains(&("sub.extra".into(), "in extra".into(), true)),
-                "{listed:?}"
-            );
-            assert!(
-                listed.contains(&("lib".into(), "in lib".into(), false)),
-                "{listed:?}"
-            );
-            assert_eq!(listed.len(), 3, "{listed:?}");
-            for t in tests.iter().filter(|t| t.root) {
-                vm.run_test(t.id).unwrap();
-            }
-            // The initialiser ran for the test that needed it, the top-level print never.
-            assert_eq!(out.contents(), "");
-        },
-    )
+    let dir = folder(
+        "package",
+        &[
+            (
+                "colibri.toml",
+                "[package]\nname = \"demo\"\n\n[dependencies]\nlib = { path = \"lib\" }\n",
+            ),
+            (
+                "main.colibri",
+                "import lib\nprint(\"top level\")\nlet shared = [lib.one()]\n\ntest \"in main\" {\n    assert_eq(shared.len(), 1)\n}\n",
+            ),
+            (
+                "sub/extra.colibri",
+                "test \"in extra\" {\n    assert(true)\n}\n",
+            ),
+            ("lib/colibri.toml", "[package]\nname = \"lib\"\n"),
+            (
+                "lib/lib.colibri",
+                "pub fn one() -> int => 1\n\ntest \"in lib\" {\n    assert(true)\n}\n",
+            ),
+        ],
+    );
+    let out = colibri::SharedBuffer::new();
+    let mut vm = vm_with(&out);
+    vm.load_tests(&dir).unwrap();
+    assert_eq!(
+        out.contents(),
+        "",
+        "neither initialisers nor top-level code ran"
+    );
+    let tests = vm.tests();
+    let listed: Vec<(String, String, bool)> = tests
+        .iter()
+        .map(|t| (t.module.clone(), t.name.clone(), t.root))
+        .collect();
+    assert!(
+        listed.contains(&("main".into(), "in main".into(), true)),
+        "{listed:?}"
+    );
+    assert!(
+        listed.contains(&("sub.extra".into(), "in extra".into(), true)),
+        "{listed:?}"
+    );
+    assert!(
+        listed.contains(&("lib".into(), "in lib".into(), false)),
+        "{listed:?}"
+    );
+    assert_eq!(listed.len(), 3, "{listed:?}");
+    for t in tests.iter().filter(|t| t.root) {
+        vm.run_test(t.id).unwrap();
+    }
+    // The initialiser ran for the test that needed it, the top-level print never.
+    assert_eq!(out.contents(), "");
 }
 
 #[test]
@@ -519,75 +511,63 @@ fn a_hook_that_reloads_to_fewer_tests_makes_run_test_fail_clearly() {
 
 #[test]
 fn a_script_function_called_from_the_hook_that_reads_a_module_value_panics_clearly() {
-    vm_pending(
-        "a_script_function_called_from_the_hook_that_reads_a_module_value_panics_clearly",
-        || {
-            let mut vm = colibri::Vm::builder().build();
-            vm.load_source("s.colibri", HOOK_SOURCE).unwrap();
-            let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
-            let s = seen.clone();
-            vm.on_test_start(move |vm, _| {
-                let peek = vm.get_fn::<(), i64>("peek").unwrap();
-                *s.borrow_mut() = Some(peek.call(vm, ()));
-            });
-            vm.run_test(0).unwrap();
-            let result = seen.borrow_mut().take().unwrap();
-            match result {
-                Err(colibri::Error::Panic { message, .. }) => {
-                    assert!(
-                        message.contains("`items` is used before it is initialised"),
-                        "{message}"
-                    );
-                    assert!(message.contains("on_test_start"), "{message}");
-                }
-                other => panic!("expected a panic, got {other:?}"),
-            }
-            // The test itself still sees its module values.
-            vm.run_test(1).unwrap();
-        },
-    )
+    let mut vm = colibri::Vm::builder().build();
+    vm.load_source("s.colibri", HOOK_SOURCE).unwrap();
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let s = seen.clone();
+    vm.on_test_start(move |vm, _| {
+        let peek = vm.get_fn::<(), i64>("peek").unwrap();
+        *s.borrow_mut() = Some(peek.call(vm, ()));
+    });
+    vm.run_test(0).unwrap();
+    let result = seen.borrow_mut().take().unwrap();
+    match result {
+        Err(colibri::Error::Panic { message, .. }) => {
+            assert!(
+                message.contains("`items` is used before it is initialised"),
+                "{message}"
+            );
+            assert!(message.contains("on_test_start"), "{message}");
+        }
+        other => panic!("expected a panic, got {other:?}"),
+    }
+    // The test itself still sees its module values.
+    vm.run_test(1).unwrap();
 }
 
 #[test]
 fn a_panicking_hook_stays_registered() {
-    vm_pending("a_panicking_hook_stays_registered", || {
-        let mut vm = colibri::Vm::builder().build();
-        vm.load_source("s.colibri", HOOK_SOURCE).unwrap();
-        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-        let c = calls.clone();
-        vm.on_test_start(move |_, _| {
-            c.set(c.get() + 1);
-            if c.get() == 1 {
-                panic!("boom");
-            }
-        });
-        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| vm.run_test(0)));
-        assert!(caught.is_err());
-        vm.run_test(1).unwrap();
-        assert_eq!(calls.get(), 2);
-    })
+    let mut vm = colibri::Vm::builder().build();
+    vm.load_source("s.colibri", HOOK_SOURCE).unwrap();
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let c = calls.clone();
+    vm.on_test_start(move |_, _| {
+        c.set(c.get() + 1);
+        if c.get() == 1 {
+            panic!("boom");
+        }
+    });
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| vm.run_test(0)));
+    assert!(caught.is_err());
+    vm.run_test(1).unwrap();
+    assert_eq!(calls.get(), 2);
 }
 
 #[test]
 fn a_test_run_from_inside_the_hook_runs_without_the_hook() {
-    vm_pending(
-        "a_test_run_from_inside_the_hook_runs_without_the_hook",
-        || {
-            let mut vm = colibri::Vm::builder().build();
-            vm.load_source("s.colibri", HOOK_SOURCE).unwrap();
-            let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-            let s = seen.clone();
-            vm.on_test_start(move |vm, info| {
-                s.borrow_mut().push(info.id);
-                if info.id == 1 {
-                    vm.run_test(0).unwrap();
-                }
-            });
-            vm.run_test(1).unwrap();
-            assert_eq!(*seen.borrow(), [1]);
-            // The hook is back for the next call.
+    let mut vm = colibri::Vm::builder().build();
+    vm.load_source("s.colibri", HOOK_SOURCE).unwrap();
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let s = seen.clone();
+    vm.on_test_start(move |vm, info| {
+        s.borrow_mut().push(info.id);
+        if info.id == 1 {
             vm.run_test(0).unwrap();
-            assert_eq!(*seen.borrow(), [1, 0]);
-        },
-    )
+        }
+    });
+    vm.run_test(1).unwrap();
+    assert_eq!(*seen.borrow(), [1]);
+    // The hook is back for the next call.
+    vm.run_test(0).unwrap();
+    assert_eq!(*seen.borrow(), [1, 0]);
 }

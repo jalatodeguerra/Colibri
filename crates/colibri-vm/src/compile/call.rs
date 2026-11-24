@@ -2,10 +2,13 @@
 
 use std::rc::Rc;
 
-use colibri_check::hir::{Anchor, Arg, Call, Callee, Expr, FnId, Intrinsic, Place, Storage};
+use colibri_check::hir::{
+    Anchor, Arg, Builtin, Call, Callee, Expr, FnId, Intrinsic, Place, Storage,
+};
 use colibri_check::types::Ty;
 use colibri_syntax::Span;
 
+use super::expr::writes_locals;
 use super::{FnCompiler, Item, Kind};
 use crate::bytecode::{AnchorKind, IfaceSite, Op, PlaceSite, Reg, Site};
 
@@ -463,6 +466,115 @@ impl FnCompiler<'_> {
         }
     }
 
+    /// An intrinsic that only looks at its arguments (they die with the caller's statement).
+    fn borrowing_intrinsic(
+        &mut self,
+        which: &Intrinsic,
+        args: &[&Expr],
+        e: &Expr,
+        dst: Option<Reg>,
+    ) {
+        let d = match dst {
+            Some(d) => d,
+            None => self.alloc_for(&e.ty),
+        };
+        let w = self.eval_window(0, args, false);
+        let site = self.add_site(Site::Intrinsic {
+            which: which.clone(),
+            argc: args.len() as u16,
+        });
+        self.emit(
+            Op::Intrinsic {
+                d,
+                base: w.base,
+                site,
+            },
+            e.span,
+        );
+        // A comparison can run a user `Eq`/`Ord`, and a failed one drops what it was given.
+        self.releases += 1;
+        self.free_window(w, e.span);
+        if dst.is_none() {
+            self.own(d);
+            self.free(d, e.span);
+        }
+    }
+
+    /// A built-in of `str`, `List`, `Map`, `Set`, `Option`, `Result`...: the hottest are
+    /// instructions of their own, the rest go through core's `builtin`.
+    fn builtin(&mut self, b: Builtin, args: &[&Expr], e: &Expr, dst: Option<Reg>) {
+        let span = e.span;
+        match b {
+            Builtin::ListPush if args.len() == 2 => {
+                let l = self.anchor_operand(args[0], writes_locals(args[1]));
+                let v = self.operand(args[1], false);
+                self.emit(Op::ListPush { l, v }, span);
+                self.free(v, span);
+                self.free(l, span);
+                if let Some(d) = dst {
+                    self.emit(Op::LoadUnit { d }, span);
+                }
+            }
+            Builtin::ListLen if args.len() == 1 => {
+                let d = match dst {
+                    Some(d) => d,
+                    None => self.alloc_for(&Ty::INT),
+                };
+                let l = self.anchor_operand(args[0], false);
+                self.emit(Op::ListLen { d, l }, span);
+                self.free(l, span);
+                if dst.is_none() {
+                    self.free(d, span);
+                }
+            }
+            Builtin::StrLen if args.len() == 1 => {
+                let d = match dst {
+                    Some(d) => d,
+                    None => self.alloc_for(&Ty::INT),
+                };
+                let s = self.operand(args[0], false);
+                self.emit(Op::StrLen { d, s }, span);
+                self.free(s, span);
+                if dst.is_none() {
+                    self.free(d, span);
+                }
+            }
+            // `join`, `join_result` and `join_all` pause the running coroutine.
+            Builtin::CoroutineJoin | Builtin::CoroutineJoinResult | Builtin::CoGroupJoinAll => {
+                self.unsupported(&format!("the built-in `{b:?}`"), span);
+            }
+            _ => {
+                let Ok(argc) = u16::try_from(args.len()) else {
+                    return self.fail("a call with too many arguments");
+                };
+                let d = match dst {
+                    Some(d) => d,
+                    None => self.alloc_for(&e.ty),
+                };
+                let w = self.eval_window(0, args, false);
+                let site = self.add_site(Site::Intrinsic {
+                    which: Intrinsic::Builtin(b),
+                    argc,
+                });
+                self.emit(
+                    Op::Builtin {
+                        d,
+                        base: w.base,
+                        site,
+                    },
+                    span,
+                );
+                // Whatever the operation drops or replaces may run a `Drop` hook.
+                self.releases += 1;
+                self.free_window(w, span);
+                if dst.is_none() {
+                    self.own(d);
+                    self.free(d, span);
+                }
+            }
+        }
+    }
+
     fn intrinsic(&mut self, which: &Intrinsic, c: &Call, e: &Expr, dst: Option<Reg>) {
         let span = e.span;
         let mut args: Vec<&Expr> = Vec::new();
@@ -549,30 +661,15 @@ impl FnCompiler<'_> {
                 }
             }
             // The receiver is only looked at: it dies with the caller's statement.
-            Intrinsic::HostAlive if args.len() == 1 => {
-                let d = match dst {
-                    Some(d) => d,
-                    None => self.alloc_for(&Ty::Bool),
-                };
-                let w = self.eval_window(0, &args, false);
-                let site = self.add_site(Site::Intrinsic {
-                    which: which.clone(),
-                    argc: 1,
-                });
-                self.emit(
-                    Op::Intrinsic {
-                        d,
-                        base: w.base,
-                        site,
-                    },
-                    span,
-                );
-                self.free_window(w, span);
-                if dst.is_none() {
-                    self.own(d);
-                    self.free(d, span);
-                }
+            Intrinsic::HostAlive | Intrinsic::ErrorIs(_) | Intrinsic::ErrorAs(_)
+                if args.len() == 1 =>
+            {
+                self.borrowing_intrinsic(which, &args, e, dst);
             }
+            // The arguments stay on the caller's temporaries and the operation gets references
+            // of its own (the tree-walker's twins).
+            Intrinsic::Compare if args.len() == 2 => self.borrowing_intrinsic(which, &args, e, dst),
+            Intrinsic::Builtin(b) => self.builtin(*b, &args, e, dst),
             other => {
                 let what = match other {
                     Intrinsic::Builtin(b) => format!("the built-in `{b:?}`"),

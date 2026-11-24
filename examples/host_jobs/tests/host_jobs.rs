@@ -1,44 +1,6 @@
 //! The example runs in-process: its log is compared with a golden file, the committed
 //! `host.cbi` must be current, and a misbehaving script must not take the host down.
 
-/// Tests that do not pass on the bytecode VM yet (`COLIBRI_ENGINE=vm`), with the feature the VM
-/// refuses. On the VM such a test is expected to fail by that refusal, and one that passes fails
-/// the run, so the list only shrinks.
-const VM_PENDING: &[(&str, &str)] = &[
-    (
-        "the_log_matches_the_golden_file",
-        "the built-in `ListFilter`",
-    ),
-    (
-        "script_tests_see_a_fresh_queue_each",
-        "the built-in `ListLen`",
-    ),
-    ("the_run_is_deterministic", "the built-in `ListFilter`"),
-];
-
-fn vm_pending(name: &str, body: impl FnOnce()) {
-    let on_vm = std::env::var("COLIBRI_ENGINE").is_ok_and(|v| v == "vm");
-    let Some((_, reason)) = VM_PENDING.iter().find(|(n, _)| *n == name) else {
-        return body();
-    };
-    if !on_vm {
-        return body();
-    }
-    let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) else {
-        panic!("{name} passes on the VM now; remove it from VM_PENDING");
-    };
-    // It must fail by the VM's refusal of the missing feature, not another way.
-    let text = payload
-        .downcast_ref::<&str>()
-        .map(|s| s.to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_default();
-    assert!(
-        text.contains(&format!("the bytecode VM does not support {reason}")),
-        "{name} is listed as pending ({reason}) but failed another way: {text}"
-    );
-}
-
 use std::fs;
 
 use colibri_example_host_jobs::{DEFAULT_TICKS, JobHost, STEP_BUDGET, scripts_dir};
@@ -52,30 +14,26 @@ fn host_with_scripts() -> JobHost {
 
 #[test]
 fn the_log_matches_the_golden_file() {
-    vm_pending("the_log_matches_the_golden_file", || {
-        let log = host_with_scripts().run(DEFAULT_TICKS).join("\n") + "\n";
-        let path = scripts_dir().join("../tests/expected.txt");
-        // Never from the VM: its log is not the reference.
-        let on_vm = std::env::var("COLIBRI_ENGINE").is_ok_and(|v| v == "vm");
-        if std::env::var_os("UPDATE_EXPECTED").is_some() && !on_vm {
-            fs::write(&path, &log).unwrap();
-        }
-        let expected = fs::read_to_string(&path).expect("tests/expected.txt");
-        assert_eq!(log, expected, "run with UPDATE_EXPECTED=1 to rewrite it");
-    })
+    let log = host_with_scripts().run(DEFAULT_TICKS).join("\n") + "\n";
+    let path = scripts_dir().join("../tests/expected.txt");
+    // Never from the VM: its log is not the reference.
+    let on_vm = std::env::var("COLIBRI_ENGINE").is_ok_and(|v| v == "vm");
+    if std::env::var_os("UPDATE_EXPECTED").is_some() && !on_vm {
+        fs::write(&path, &log).unwrap();
+    }
+    let expected = fs::read_to_string(&path).expect("tests/expected.txt");
+    assert_eq!(log, expected, "run with UPDATE_EXPECTED=1 to rewrite it");
 }
 
 #[test]
 fn the_run_is_deterministic() {
-    vm_pending("the_run_is_deterministic", || {
-        let a = host_with_scripts().run(300);
-        let b = host_with_scripts().run(300);
-        assert_eq!(a, b);
-        // Two identical logs of refusals would agree too: the run must have done real work.
-        let log = a.join("\n");
-        assert!(!log.contains("script error"), "{log}");
-        assert!(!a.is_empty(), "the run logged nothing");
-    })
+    let a = host_with_scripts().run(300);
+    let b = host_with_scripts().run(300);
+    assert_eq!(a, b);
+    // Two identical logs of refusals would agree too: the run must have done real work.
+    let log = a.join("\n");
+    assert!(!log.contains("script error"), "{log}");
+    assert!(!a.is_empty(), "the run logged nothing");
 }
 
 #[test]
@@ -194,14 +152,12 @@ fn a_script_without_update_is_a_load_error() {
 
 #[test]
 fn script_tests_see_a_fresh_queue_each() {
-    vm_pending("script_tests_see_a_fresh_queue_each", || {
-        let mut host = JobHost::new().unwrap();
-        let results = host
-            .run_script_tests(scripts_dir().join("jobs.colibri"))
-            .unwrap_or_else(|e| panic!("{}", e.render(false)));
-        assert_eq!(results.len(), 4);
-        for (name, result) in &results {
-            assert!(result.is_ok(), "{name}: {result:?}");
-        }
-    })
+    let mut host = JobHost::new().unwrap();
+    let results = host
+        .run_script_tests(scripts_dir().join("jobs.colibri"))
+        .unwrap_or_else(|e| panic!("{}", e.render(false)));
+    assert_eq!(results.len(), 4);
+    for (name, result) in &results {
+        assert!(result.is_ok(), "{name}: {result:?}");
+    }
 }

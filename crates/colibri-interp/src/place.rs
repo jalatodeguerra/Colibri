@@ -182,6 +182,10 @@ impl Interp {
             Resolved::Entry(map, key) => match map.get(key) {
                 Some(root) => read_at(&root, path),
                 None => {
+                    // The lookup may have given up (keys nested too deeply), not missed.
+                    if crate::compare::take_gave_up() {
+                        return Err(self.gave_up(fiber, span, None));
+                    }
                     let message = format!("key {} not found in map", self.shown_key(key));
                     return Err(self.panic(fiber, span, message));
                 }
@@ -255,6 +259,10 @@ impl Interp {
                         return self.insert_entry(fiber, map, key, new, span);
                     }
                     Ok(None) => {
+                        // The lookup may have given up (keys nested too deeply), not missed.
+                        if crate::compare::take_gave_up() {
+                            return Err(self.gave_up(fiber, span, None));
+                        }
                         let message = format!("key {} not found in map", self.shown_key(key));
                         return Err(self.panic(fiber, span, message));
                     }

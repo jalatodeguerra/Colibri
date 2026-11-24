@@ -172,16 +172,14 @@ fn a_panic_in_a_defer_fails_the_test_cleanly() {
 
 #[test]
 fn a_test_that_returns_err_fails_with_the_error_chain() {
-    vm_pending("a_test_that_returns_err_fails_with_the_error_chain", || {
-        let source = "fn load() -> Result[int] {\n    return err(\"disk on fire\")\n}\n\ntest \"question mark\" {\n    let n = load().context(\"loading the save\")?\n    assert_eq(n, 1)\n}\n\ntest \"question mark ok\" {\n    let r: Result[int] = ok(1)\n    let n = r?\n    assert_eq(n, 1)\n}\n";
-        let out = test_script("err", source, &[]);
-        assert_eq!(out.status.code(), Some(1));
-        let text = stdout(&out);
-        assert!(text.contains("test t::question mark ... FAILED"), "{text}");
-        assert!(text.contains("test t::question mark ok ... ok"), "{text}");
-        assert!(text.contains("loading the save"), "{text}");
-        assert!(text.contains("disk on fire"), "{text}");
-    })
+    let source = "fn load() -> Result[int] {\n    return err(\"disk on fire\")\n}\n\ntest \"question mark\" {\n    let n = load().context(\"loading the save\")?\n    assert_eq(n, 1)\n}\n\ntest \"question mark ok\" {\n    let r: Result[int] = ok(1)\n    let n = r?\n    assert_eq(n, 1)\n}\n";
+    let out = test_script("err", source, &[]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = stdout(&out);
+    assert!(text.contains("test t::question mark ... FAILED"), "{text}");
+    assert!(text.contains("test t::question mark ok ... ok"), "{text}");
+    assert!(text.contains("loading the save"), "{text}");
+    assert!(text.contains("disk on fire"), "{text}");
 }
 
 #[test]

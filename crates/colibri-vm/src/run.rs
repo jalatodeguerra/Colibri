@@ -541,6 +541,14 @@ impl Machine {
                     sync!();
                     tri!(self.op_intrinsic(fiber, &chunk, base, pc, op));
                 }
+                Op::Builtin { .. } => {
+                    sync!();
+                    tri!(self.op_builtin(fiber, &chunk, base, pc, op));
+                }
+                Op::ListPush { .. } | Op::ListLen { .. } | Op::StrLen { .. } => {
+                    sync!();
+                    tri!(self.op_hot_builtin(fiber, &chunk, base, pc, op));
+                }
                 Op::Coerce { d, s, site } => match &chunk.sites[usize::from(site)] {
                     Site::F32ToFloat => {
                         let Value::F32(x) = &reg!(s) else {
@@ -1023,6 +1031,81 @@ impl Machine {
         Ok(())
     }
 
+    /// `Builtin`: core runs the built-in of the site on references of its own to the arguments
+    /// of the window (the arguments stay there for the caller to drop).
+    #[inline(never)]
+    fn op_builtin(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        op: Op,
+    ) -> Result<(), Ctl> {
+        let Op::Builtin { d, base: a, site } = op else {
+            unreachable!("op_builtin is called for its own instruction")
+        };
+        let span = chunk.spans[pc - 1];
+        let Some(Site::Intrinsic {
+            which: colibri_check::hir::Intrinsic::Builtin(which),
+            argc,
+        }) = chunk.sites.get(usize::from(site))
+        else {
+            return Err(self.internal(fiber, span, "a built-in without its site"));
+        };
+        let from = base + usize::from(a);
+        let args: Vec<Value> = fiber.regs[from..from + usize::from(*argc)].to_vec();
+        let result = self.builtin(fiber, *which, args, span)?;
+        Self::put_reg(fiber, base + usize::from(d), result);
+        if colibri_core::compare::take_gave_up() {
+            return Err(self.lookup_gave_up(fiber, chunk, pc, Some(base + usize::from(d))));
+        }
+        Ok(())
+    }
+
+    /// `ListPush`, `ListLen` and `StrLen`: the built-ins that are instructions of their own.
+    #[inline(never)]
+    fn op_hot_builtin(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        op: Op,
+    ) -> Result<(), Ctl> {
+        let span = chunk.spans[pc - 1];
+        let r = |i: u16| base + usize::from(i);
+        match op {
+            Op::ListPush { l, v } => {
+                let item = fiber.regs[r(v)].clone();
+                let Value::List(list) = &fiber.regs[r(l)] else {
+                    self.release(item);
+                    return Err(self.internal(fiber, span, "an ill-typed `push`"));
+                };
+                if let Err(rejected) = list.push(item) {
+                    self.release(rejected.args);
+                    return Err(self.violation(fiber, span, rejected.violation));
+                }
+            }
+            Op::ListLen { d, l } => {
+                let Value::List(list) = &fiber.regs[r(l)] else {
+                    return Err(self.internal(fiber, span, "an ill-typed `len`"));
+                };
+                let n = list.len() as i64;
+                Self::put_reg(fiber, r(d), Value::Int(n));
+            }
+            Op::StrLen { d, s } => {
+                let Value::Str(text) = &fiber.regs[r(s)] else {
+                    return Err(self.internal(fiber, span, "an ill-typed `len`"));
+                };
+                let n = text.len() as i64;
+                Self::put_reg(fiber, r(d), Value::Int(n));
+            }
+            _ => return Err(self.internal(fiber, span, "not a built-in instruction")),
+        }
+        Ok(())
+    }
+
     fn uninit_message(&self, g: u32) -> String {
         let name = self
             .uninit
@@ -1150,6 +1233,16 @@ impl Machine {
                 Value::Host(r) => self.core.host_alive(r.index, r.generation),
                 _ => false,
             })),
+            Intrinsic::ErrorIs(_) | Intrinsic::ErrorAs(_) => {
+                let arg = fiber.regs[args.start].clone();
+                let result = self.error_intrinsic(fiber, which, &arg, span);
+                self.release(arg);
+                result
+            }
+            Intrinsic::Compare => {
+                let values: Vec<Value> = fiber.regs[args].to_vec();
+                self.compare_values(fiber, values, span)
+            }
             Intrinsic::Convert { from, to } => num::convert(*from, *to, &fiber.regs[args.start])
                 .map_err(|msg| self.panic(fiber, span, msg)),
             Intrinsic::NumMethod(m, n) => {

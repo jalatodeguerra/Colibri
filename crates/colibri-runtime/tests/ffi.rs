@@ -4,9 +4,6 @@
 
 #![cfg(feature = "ffi")]
 
-mod common;
-use common::vm_pending;
-
 use colibri::{Cap, Vm};
 use colibri_runtime as colibri;
 
@@ -479,10 +476,9 @@ free(p)
 
 #[test]
 fn repr_c_layouts_match_the_c_compiler() {
-    vm_pending("repr_c_layouts_match_the_c_compiler", || {
-        // size_of and align_of are computed by the checker; `ct_layout` is what C says.
-        let out = run_structs(
-            r##"
+    // size_of and align_of are computed by the checker; `ct_layout` is what C says.
+    let out = run_structs(
+        r##"
     let names = ["Point", "Vec2d", "Vec2f", "Vec3f", "Color", "Mixed", "Mixed2", "Big", "Rect", "Padded", "Ladder", "Named"]
     let sizes = [size_of[Point](), size_of[Vec2d](), size_of[Vec2f](), size_of[Vec3f](), size_of[Color](), size_of[Mixed](), size_of[Mixed2](), size_of[Big](), size_of[Rect](), size_of[Padded](), size_of[Ladder](), size_of[Named]()]
     let aligns = [align_of[Point](), align_of[Vec2d](), align_of[Vec2f](), align_of[Vec3f](), align_of[Color](), align_of[Mixed](), align_of[Mixed2](), align_of[Big](), align_of[Rect](), align_of[Padded](), align_of[Ladder](), align_of[Named]()]
@@ -497,12 +493,11 @@ fn repr_c_layouts_match_the_c_compiler() {
     }
     print("sizes: {sizes}")
 "##,
-        );
-        assert_eq!(
-            out,
-            "sizes: [8, 16, 8, 12, 4, 16, 24, 32, 16, 24, 24, 16]\n"
-        );
-    })
+    );
+    assert_eq!(
+        out,
+        "sizes: [8, 16, 8, 12, 4, 16, 24, 32, 16, 24, 24, 16]\n"
+    );
 }
 
 #[test]

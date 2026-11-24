@@ -1,0 +1,14 @@
+fn total(xs: List[int]) -> int {
+    return xs.fold(0, fn(acc, x) => acc + 10 / x)
+}
+
+fn main() {
+    print(total([1, 2]))
+    let xs = [1, 2, 3]
+    print(
+        xs.remove(7),
+    )
+}
+
+// expect: 15
+// panic: index 7 out of bounds for list of length 3

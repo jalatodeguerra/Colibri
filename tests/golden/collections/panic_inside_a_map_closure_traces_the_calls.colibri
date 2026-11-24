@@ -1,0 +1,18 @@
+fn boom(x: int) -> int {
+    if x == 2 {
+        panic("boom at {x}")
+    }
+    return x
+}
+
+fn run(xs: List[int]) -> List[int] {
+    return xs.map(
+        fn(x) => boom(x),
+    )
+}
+
+fn main() {
+    print(run([1, 2, 3]))
+}
+
+// panic: boom at 2

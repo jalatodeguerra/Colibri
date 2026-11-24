@@ -253,7 +253,7 @@ impl FnCompiler<'_> {
         for (k, v) in entries {
             let regs = self.eval_each(&[k, v]);
             let (kr, vr) = (regs[0], regs[1]);
-            self.emit(Op::MapInsert { m, k: kr, v: vr }, k.span);
+            self.emit(Op::MapInsert { m, k: kr, v: vr }, span);
             // A repeated key releases the value it replaces.
             self.note_release(&v.ty);
             for r in regs.into_iter().rev() {

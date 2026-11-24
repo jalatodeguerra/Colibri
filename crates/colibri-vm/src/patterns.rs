@@ -5,6 +5,7 @@ use colibri_core::compare::{equal_or_give_up, take_gave_up};
 use colibri_core::ctl::Ctl;
 use colibri_core::pattern::{lit_matches, range_matches};
 use colibri_core::prelude::*;
+use colibri_core::value::Value;
 
 use crate::bytecode::{Chunk, Op, Site};
 use crate::fiber::VmFiber;
@@ -59,5 +60,30 @@ impl Machine {
             }
             _ => Err(self.internal(fiber, span, "not a pattern test")),
         }
+    }
+
+    /// After an instruction that looks a key up in a map or set: when the lookup gave up
+    /// (the keys nest too deeply to compare), its stand-in answer must not be used. The value
+    /// the instruction put in `result` (a register of the frame) is released and the failure is
+    /// a panic at the instruction, as the tree-walker's check after the expression.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn lookup_gave_up(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        pc: usize,
+        result: Option<usize>,
+    ) -> Ctl {
+        if let Some(r) = result {
+            let v = std::mem::replace(&mut fiber.regs[r], Value::Unit);
+            self.release(v);
+        }
+        let span = chunk.spans[pc - 1];
+        self.panic(
+            fiber,
+            span,
+            "these values nest too deeply to compare".to_string(),
+        )
     }
 }
