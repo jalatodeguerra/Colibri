@@ -6,7 +6,10 @@
 //! when it does, and the run fails when it passes (so the list only shrinks). On the tree
 //! engine, or when the test is not listed, the body just runs.
 
+use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 const LIST: &str = include_str!("../vm_pending.txt");
 
@@ -54,6 +57,35 @@ fn text_of(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_default()
 }
 
+thread_local! {
+    static SERVER_ENDS: RefCell<Arc<Mutex<Vec<String>>>> = RefCell::new(Arc::default());
+}
+
+/// Where a program that a test runs on another thread leaves how it ended (the text of its
+/// error). A test thread has one such list. Under `vm_pending`, a test whose server was refused
+/// by the VM after the test went on (the refusal came in a coroutine, late, not at the start)
+/// fails in the client's terms, such as a closed connection: the refusal is then looked up in
+/// this list.
+#[allow(dead_code)]
+pub fn server_ends() -> Arc<Mutex<Vec<String>>> {
+    SERVER_ENDS.with(|ends| ends.borrow().clone())
+}
+
+/// Whether a program of this test's thread ended with `refusal` within a few seconds.
+fn a_server_was_refused(refusal: &str) -> bool {
+    let ends = server_ends();
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if ends.lock().unwrap().iter().any(|e| e.contains(refusal)) {
+            return true;
+        }
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Runs the body of the test named `name` (`binary::test`). Listed and on the VM: the body is
 /// expected to panic with the VM's refusal of the listed feature (`the bytecode VM does not
 /// support X yet`), and anything else is an error: a body that passes, or fails for another
@@ -74,7 +106,7 @@ pub fn vm_pending<R: Pending>(name: &str, body: impl FnOnce() -> R) -> R {
             let refusal = format!("the bytecode VM does not support {feature} yet");
             let text = text_of(&*payload);
             assert!(
-                text.contains(&refusal),
+                text.contains(&refusal) || a_server_was_refused(&refusal),
                 "{key} is listed as pending ({reason}) but failed another way: {text}"
             );
             R::pending()

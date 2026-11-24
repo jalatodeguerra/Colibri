@@ -142,11 +142,8 @@ fn decoding_an_object_with_many_keys_is_fast() {
 
 #[test]
 fn a_very_deep_value_drops_and_encodes_cleanly_in_a_coroutine() {
-    vm_pending(
-        "a_very_deep_value_drops_and_encodes_cleanly_in_a_coroutine",
-        || {
-            // 200k levels built with the constructors, dropped inside a coroutine (small stack).
-            let out = run(r#"import json
+    // 200k levels built with the constructors, dropped inside a coroutine (small stack).
+    let out = run(r#"import json
 
 fn build(n: int) -> json.Value {
     let mut v = json.Value.null()
@@ -179,12 +176,10 @@ fn main() {
     print("end")
 }
 "#);
-            assert_eq!(
-                out,
-                "true\ntrue\ntrue\njson: the value is nested too deeply\nend\n"
-            );
-        },
-    )
+    assert_eq!(
+        out,
+        "true\ntrue\ntrue\njson: the value is nested too deeply\nend\n"
+    );
 }
 
 #[test]
@@ -330,9 +325,8 @@ fn main() {
 
 #[test]
 fn showing_and_comparing_a_very_deep_value_is_safe() {
-    vm_pending("showing_and_comparing_a_very_deep_value_is_safe", || {
-        // 200k levels, in the main fiber and in a coroutine (small stack).
-        let out = run(r#"import json
+    // 200k levels, in the main fiber and in a coroutine (small stack).
+    let out = run(r#"import json
 
 fn build(n: int) -> json.Value {
     let mut v = json.Value.null()
@@ -365,6 +359,5 @@ fn main() {
     print("end")
 }
 "#);
-        assert_eq!(out, "true\ntrue\ntrue\nfalse\ntrue\nsome(1)\nend\n");
-    })
+    assert_eq!(out, "true\ntrue\ntrue\nfalse\ntrue\nsome(1)\nend\n");
 }

@@ -433,24 +433,22 @@ fn report_over_http_matches_the_golden_file() {
 
 #[test]
 fn report_from_files_is_the_same_report() {
-    vm_pending("report_from_files_is_the_same_report", || {
-        let index = fixtures().join("index.json");
-        for concurrency in ["1", "4"] {
-            let out = run_script(
-                &report(),
-                &[
-                    index.to_str().unwrap(),
-                    "--now",
-                    NOW,
-                    "--concurrency",
-                    concurrency,
-                ],
-            );
-            assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-            // Without `--out` the report goes to stdout, `print` adding one newline.
-            assert_eq!(text(&out.stdout), format!("{}\n", expected_report()));
-        }
-    })
+    let index = fixtures().join("index.json");
+    for concurrency in ["1", "4"] {
+        let out = run_script(
+            &report(),
+            &[
+                index.to_str().unwrap(),
+                "--now",
+                NOW,
+                "--concurrency",
+                concurrency,
+            ],
+        );
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        // Without `--out` the report goes to stdout, `print` adding one newline.
+        assert_eq!(text(&out.stdout), format!("{}\n", expected_report()));
+    }
 }
 
 #[test]
@@ -501,51 +499,46 @@ fn report_exit_codes() {
 
 #[test]
 fn report_git_flag_adds_the_commit_inside_a_repository() {
-    vm_pending(
-        "report_git_flag_adds_the_commit_inside_a_repository",
-        || {
-            let index = fixtures().join("index.json");
-            let inside = Command::new("git")
-                .args(["rev-parse", "--short", "HEAD"])
-                .output();
-            let Ok(inside) = inside else { return };
-            if !inside.status.success() {
-                return; // not a checkout (a source tarball): nothing to compare with
-            }
-            let out = run_script(&report(), &[index.to_str().unwrap(), "--now", NOW, "--git"]);
-            assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-            let sha = text(&inside.stdout).trim().to_string();
-            assert!(
-                text(&out.stdout).contains(&format!("Generated {NOW}, commit `{sha}`")),
-                "{}",
-                text(&out.stdout)
-            );
-            // Outside a repository the flag is silently ignored.
-            let dir = temp_dir("nogit");
-            let out = colibri_command()
-                .current_dir(&dir)
-                .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap())
-                .args([
-                    "run",
-                    report().to_str().unwrap(),
-                    "--",
-                    index.to_str().unwrap(),
-                    "--now",
-                    NOW,
-                    "--git",
-                ])
-                .output()
-                .map(common::checked)
-                .unwrap();
-            assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-            assert!(
-                !text(&out.stdout).contains("commit"),
-                "{}",
-                text(&out.stdout)
-            );
-            let _ = fs::remove_dir_all(&dir);
-        },
-    )
+    let index = fixtures().join("index.json");
+    let inside = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output();
+    let Ok(inside) = inside else { return };
+    if !inside.status.success() {
+        return; // not a checkout (a source tarball): nothing to compare with
+    }
+    let out = run_script(&report(), &[index.to_str().unwrap(), "--now", NOW, "--git"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let sha = text(&inside.stdout).trim().to_string();
+    assert!(
+        text(&out.stdout).contains(&format!("Generated {NOW}, commit `{sha}`")),
+        "{}",
+        text(&out.stdout)
+    );
+    // Outside a repository the flag is silently ignored.
+    let dir = temp_dir("nogit");
+    let out = colibri_command()
+        .current_dir(&dir)
+        .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap())
+        .args([
+            "run",
+            report().to_str().unwrap(),
+            "--",
+            index.to_str().unwrap(),
+            "--now",
+            NOW,
+            "--git",
+        ])
+        .output()
+        .map(common::checked)
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(
+        !text(&out.stdout).contains("commit"),
+        "{}",
+        text(&out.stdout)
+    );
+    let _ = fs::remove_dir_all(&dir);
 }
 
 /// A server that answers every request after `delay`, from the files of `dir`; counts how many
@@ -784,28 +777,23 @@ fn kvclient_talks_to_kvserver_and_reports_a_missing_server() {
 
 #[test]
 fn kvserver_closes_idle_connections_and_reports_a_bad_address() {
-    vm_pending(
-        "kvserver_closes_idle_connections_and_reports_a_bad_address",
-        || {
-            let kv = Kv::start(&["--idle", "1.5"]);
-            let mut c = kv.client();
-            assert_eq!(ask(&mut c, "COUNT\n"), "0");
-            // Silent for longer than the idle time: the server closes the connection.
-            use std::io::BufRead;
-            let mut line = String::new();
-            assert_eq!(c.1.read_line(&mut line).unwrap(), 0);
-            drop(kv);
+    let kv = Kv::start(&["--idle", "1.5"]);
+    let mut c = kv.client();
+    assert_eq!(ask(&mut c, "COUNT\n"), "0");
+    // Silent for longer than the idle time: the server closes the connection.
+    use std::io::BufRead;
+    let mut line = String::new();
+    assert_eq!(c.1.read_line(&mut line).unwrap(), 0);
+    drop(kv);
 
-            let script = scripts().join("kvserver/kvserver.colibri");
-            let out = run_script(&script, &["--addr", "not an address"]);
-            assert_eq!(out.status.code(), Some(1));
-            assert!(
-                text(&out.stderr).contains("is not an address"),
-                "{}",
-                text(&out.stderr)
-            );
-        },
-    )
+    let script = scripts().join("kvserver/kvserver.colibri");
+    let out = run_script(&script, &["--addr", "not an address"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("is not an address"),
+        "{}",
+        text(&out.stderr)
+    );
 }
 
 /// `--idle` is a deadline for each request line, and what it is given must be a number of

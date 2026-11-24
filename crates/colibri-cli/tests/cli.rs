@@ -664,34 +664,27 @@ fn run_passes_the_arguments_after_the_file_to_os_args() {
 
 #[test]
 fn run_keeps_running_coroutines_after_main_with_real_time() {
-    vm_pending(
-        "run_keeps_running_coroutines_after_main_with_real_time",
-        || {
-            let path = temp_file(
-                "coro_loop.colibri",
-                "fn w() {\n    wait(0.05)\n    print(\"late\")\n}\nfn main() {\n    go w()\n    print(\"main\")\n}\n",
-            );
-            let started = std::time::Instant::now();
-            let out = colibri(&["run", path.to_str().unwrap()]);
-            assert!(out.status.success());
-            assert_eq!(String::from_utf8_lossy(&out.stdout), "main\nlate\n");
-            assert!(started.elapsed().as_millis() >= 50);
-        },
-    )
+    let path = temp_file(
+        "coro_loop.colibri",
+        "fn w() {\n    wait(0.05)\n    print(\"late\")\n}\nfn main() {\n    go w()\n    print(\"main\")\n}\n",
+    );
+    let started = std::time::Instant::now();
+    let out = colibri(&["run", path.to_str().unwrap()]);
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "main\nlate\n");
+    assert!(started.elapsed().as_millis() >= 50);
 }
 
 #[test]
 fn a_panic_in_a_coroutine_after_main_exits_101() {
-    vm_pending("a_panic_in_a_coroutine_after_main_exits_101", || {
-        let path = temp_file(
-            "coro_panic.colibri",
-            "fn w() {\n    wait(0.01)\n    panic(\"in coroutine\")\n}\nfn main() {\n    go w()\n}\n",
-        );
-        let out = colibri(&["run", path.to_str().unwrap()]);
-        assert_eq!(out.status.code(), Some(101));
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(err.contains("in coroutine") && err.contains("w"), "{err}");
-    })
+    let path = temp_file(
+        "coro_panic.colibri",
+        "fn w() {\n    wait(0.01)\n    panic(\"in coroutine\")\n}\nfn main() {\n    go w()\n}\n",
+    );
+    let out = colibri(&["run", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(101));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("in coroutine") && err.contains("w"), "{err}");
 }
 
 const CYCLE: &str = "class Node {\n    name: str\n    next: Node? = none\n}\nfn main() {\n    let a = Node { name: \"a\" }\n    a.next = some(a)\n    print(\"ran\")\n}\n";

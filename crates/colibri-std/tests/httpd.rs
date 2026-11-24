@@ -317,6 +317,7 @@ impl Server {
             .replace("@AFTER@", after);
         let (addr_tx, addr_rx) = mpsc::channel::<String>();
         let (done_tx, done) = mpsc::channel();
+        let ends = common::server_ends();
         thread::spawn(move || {
             let out = colibri::SharedBuffer::new();
             let mut vm = colibri::Vm::builder()
@@ -338,6 +339,9 @@ impl Server {
                 .and_then(|()| vm.run_event_loop())
                 .map(|()| out.contents())
                 .map_err(|e| e.render(false));
+            if let Err(e) = &result {
+                ends.lock().unwrap().push(e.clone());
+            }
             let _ = done_tx.send(result);
         });
         // The script either publishes its address or ends with an error.

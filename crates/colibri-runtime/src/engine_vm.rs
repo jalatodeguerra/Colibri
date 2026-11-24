@@ -98,7 +98,12 @@ macro_rules! host_cx {
                 let result = machine.call(fiber, f, args);
                 // A coroutine that met the refusal ends with a panic of its own, which the
                 // program may never look at: the host entry still reports the refusal.
-                if result.is_ok() && fiber.host_depth() == 0 && machine.host_wait_refused {
+                if fiber.host_depth() == 0 && machine.host_wait_refused {
+                    // What the program ended with (a value, or a panic that follows from the
+                    // refusal, such as a wait that can no longer end) is not the answer.
+                    if let Ok(value) = result {
+                        machine.release(value);
+                    }
                     return Err(host_wait_refusal());
                 }
                 result
@@ -125,8 +130,12 @@ macro_rules! host_cx {
                 machine.host_borrow(in_call.then_some(fiber), index, generation, any, exclusive)
             }
 
+            // Where a coroutine could give the thread away for a wait, a host function takes the
+            // path that waits (and meets the refusal) instead of the one that blocks.
             fn external_wait_runs_others(&self) -> bool {
-                false
+                let fiber = self.shared().1;
+                fiber.host_call_is_direct()
+                    && (fiber.is_coroutine() || self.core().sched.coroutine_count() > 0)
             }
 
             fn wait_for_completion(
@@ -282,11 +291,11 @@ impl RuntimeEngine for VmEngine {
     }
 
     fn tick(&mut self, dt: f64) -> Result<(), Box<PanicInfo>> {
-        self.machine.tick(dt)?;
+        let result = self.machine.tick(dt);
         if self.machine.host_wait_refused {
             return Err(host_wait_refusal());
         }
-        Ok(())
+        result
     }
 
     fn next_wake(&mut self, poll: f64) -> Option<f64> {

@@ -102,37 +102,33 @@ fn temp_file(name: &str, source: &str) -> PathBuf {
 
 #[test]
 fn a_running_event_loop_is_patched_in_place() {
-    vm_pending("a_running_event_loop_is_patched_in_place", || {
-        let src = |tag: &str| {
-            format!(
-                "fn msg() -> str => \"{tag}\"\nfn ticker() {{\n    while true {{\n        print(msg())\n        wait_real(0.05)\n    }}\n}}\nfn main() {{\n    print(\"main\")\n    go ticker()\n}}\n"
-            )
-        };
-        let path = temp_file("patch", &src("one"));
-        let mut w = Watch::start(&path);
-        w.wait_for(false, "one");
-        std::fs::write(&path, src("two")).unwrap();
-        w.wait_for(true, "patched 1 function");
-        let out = w.wait_for(false, "two");
-        // `main` ran once: a patch does not start the program again.
-        assert_eq!(out.iter().filter(|l| *l == "main").count(), 1, "{out:?}");
-    })
+    let src = |tag: &str| {
+        format!(
+            "fn msg() -> str => \"{tag}\"\nfn ticker() {{\n    while true {{\n        print(msg())\n        wait_real(0.05)\n    }}\n}}\nfn main() {{\n    print(\"main\")\n    go ticker()\n}}\n"
+        )
+    };
+    let path = temp_file("patch", &src("one"));
+    let mut w = Watch::start(&path);
+    w.wait_for(false, "one");
+    std::fs::write(&path, src("two")).unwrap();
+    w.wait_for(true, "patched 1 function");
+    let out = w.wait_for(false, "two");
+    // `main` ran once: a patch does not start the program again.
+    assert_eq!(out.iter().filter(|l| *l == "main").count(), 1, "{out:?}");
 }
 
 #[test]
 fn a_restart_runs_main_again_and_carries_state() {
-    vm_pending("a_restart_runs_main_again_and_carries_state", || {
-        let v1 = "let mut n = 41\nfn save_state() -> str => \"{n}\"\nfn tick() -> int => 1\nfn main() {\n    print(\"v1 {n}\")\n    go forever()\n}\nfn forever() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
-        let v2 = "let mut n = 0\nfn restore_state(s: str) {\n    print(\"restored {s}\")\n}\nfn tick(x: int) -> int => x\nfn main() {\n    print(\"v2\")\n    go forever()\n}\nfn forever() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
-        let path = temp_file("restart", v1);
-        let mut w = Watch::start(&path);
-        w.wait_for(false, "v1 41");
-        std::fs::write(&path, v2).unwrap();
-        w.wait_for(true, "restarted");
-        let out = w.wait_for(false, "v2");
-        let err = w.wait_for(true, "state carried");
-        assert!(out.iter().any(|l| l == "restored 41"), "{out:?} {err:?}");
-    })
+    let v1 = "let mut n = 41\nfn save_state() -> str => \"{n}\"\nfn tick() -> int => 1\nfn main() {\n    print(\"v1 {n}\")\n    go forever()\n}\nfn forever() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
+    let v2 = "let mut n = 0\nfn restore_state(s: str) {\n    print(\"restored {s}\")\n}\nfn tick(x: int) -> int => x\nfn main() {\n    print(\"v2\")\n    go forever()\n}\nfn forever() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
+    let path = temp_file("restart", v1);
+    let mut w = Watch::start(&path);
+    w.wait_for(false, "v1 41");
+    std::fs::write(&path, v2).unwrap();
+    w.wait_for(true, "restarted");
+    let out = w.wait_for(false, "v2");
+    let err = w.wait_for(true, "state carried");
+    assert!(out.iter().any(|l| l == "restored 41"), "{out:?} {err:?}");
 }
 
 #[test]
@@ -154,18 +150,13 @@ fn a_panic_waits_for_an_edit_then_runs_again() {
 
 #[test]
 fn code_that_does_not_check_is_reported_and_the_old_program_goes_on() {
-    vm_pending(
-        "code_that_does_not_check_is_reported_and_the_old_program_goes_on",
-        || {
-            let ok = "fn msg() -> str => \"fine\"\nfn main() {\n    print(msg())\n    go t()\n}\nfn t() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
-            let path = temp_file("check", ok);
-            let mut w = Watch::start(&path);
-            w.wait_for(false, "fine");
-            std::fs::write(&path, ok.replace("-> str => \"fine\"", "-> str => 5")).unwrap();
-            w.wait_for(true, "keeping the old program");
-            assert!(w.child.try_wait().unwrap().is_none());
-        },
-    )
+    let ok = "fn msg() -> str => \"fine\"\nfn main() {\n    print(msg())\n    go t()\n}\nfn t() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
+    let path = temp_file("check", ok);
+    let mut w = Watch::start(&path);
+    w.wait_for(false, "fine");
+    std::fs::write(&path, ok.replace("-> str => \"fine\"", "-> str => 5")).unwrap();
+    w.wait_for(true, "keeping the old program");
+    assert!(w.child.try_wait().unwrap().is_none());
 }
 
 #[test]

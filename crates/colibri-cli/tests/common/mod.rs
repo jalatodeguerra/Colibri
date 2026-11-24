@@ -61,6 +61,18 @@ pub fn checked(out: std::process::Output) -> std::process::Output {
 /// so the test fails on a reset connection and the refusal is not in its own failure text.
 static REFUSED: std::sync::Mutex<Vec<(Option<String>, String)>> = std::sync::Mutex::new(Vec::new());
 
+/// Records `text`, a line or a chunk of what a child printed on stderr, as a refusal of the test
+/// named `owner` (the name of its thread) when it is one. For a test that reads the pipe itself.
+#[allow(dead_code)]
+pub fn note_child_stderr(owner: &Option<String>, text: &str) {
+    if text.contains(REFUSAL) {
+        REFUSED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((owner.clone(), text.to_string()));
+    }
+}
+
 /// The refusals printed so far by children of the test on this thread.
 fn refusals_of_this_test() -> String {
     let me = std::thread::current().name().map(String::from);
