@@ -227,6 +227,45 @@ impl Machine {
                 }
             }};
         }
+        // `l.idx op= b` for a float field of a struct this register holds alone; a struct that is
+        // shared (it is copied first), or anything unexpected, is `op_field_update`'s.
+        macro_rules! field_f {
+            ($op:expr, $idx:expr, $l:expr, $b:expr, $sym:tt) => {{
+                let y = match rd!($b) {
+                    Value::Float(y) => *y,
+                    _ => internal!("ill-typed field update"),
+                };
+                if let Value::Struct(st) = wr!($l)
+                    && let Some(sv) = Rc::get_mut(st)
+                    && let Some(Value::Float(x)) = sv.fields.get_mut(usize::from($idx))
+                {
+                    *x = *x $sym y;
+                } else {
+                    sync!();
+                    tri!(self.op_field_update(fiber, &chunk, base, pc, $op));
+                }
+            }};
+        }
+        macro_rules! field_i {
+            ($op:expr, $idx:expr, $l:expr, $b:expr, $f:ident) => {{
+                let y = match rd!($b) {
+                    Value::Int(y) => *y,
+                    _ => internal!("ill-typed field update"),
+                };
+                if let Value::Struct(st) = wr!($l)
+                    && let Some(sv) = Rc::get_mut(st)
+                    && let Some(Value::Int(x)) = sv.fields.get_mut(usize::from($idx))
+                {
+                    match x.$f(y) {
+                        Some(v) => *x = v,
+                        None => fault!("integer overflow"),
+                    }
+                } else {
+                    sync!();
+                    tri!(self.op_field_update(fiber, &chunk, base, pc, $op));
+                }
+            }};
+        }
         macro_rules! jump {
             ($off:expr) => {
                 pc = (pc as isize + $off as isize) as usize
@@ -712,7 +751,32 @@ impl Machine {
                         None => internal!("ill-typed projection"),
                     }
                 }
+                Op::FieldAddF { idx, l, b } => field_f!(op, idx, l, b, +),
+                Op::FieldSubF { idx, l, b } => field_f!(op, idx, l, b, -),
+                Op::FieldMulF { idx, l, b } => field_f!(op, idx, l, b, *),
+                Op::FieldDivF { idx, l, b } => field_f!(op, idx, l, b, /),
+                Op::FieldAddI { idx, l, b } => field_i!(op, idx, l, b, checked_add),
+                Op::FieldSubI { idx, l, b } => field_i!(op, idx, l, b, checked_sub),
+                Op::FieldMulI { idx, l, b } => field_i!(op, idx, l, b, checked_mul),
                 Op::SetField { l, s, idx } => {
+                    // The common write: a scalar over a scalar field of a struct nothing else
+                    // holds, with nothing to release and nothing to copy.
+                    if is_scalar_value(rd!(s))
+                        && let Value::Struct(st) = rd!(l)
+                        && Rc::strong_count(st) == 1
+                        && Rc::weak_count(st) == 0
+                    {
+                        let v = std::mem::replace(wr!(s), Value::Unit);
+                        if let Value::Struct(st) = wr!(l)
+                            && let Some(sv) = Rc::get_mut(st)
+                            && let Some(slot) = sv.fields.get_mut(usize::from(idx))
+                            && is_scalar_value(slot)
+                        {
+                            std::mem::forget(std::mem::replace(slot, v));
+                            continue;
+                        }
+                        put!(s, v);
+                    }
                     sync!();
                     tri!(self.op_set_field(fiber, &chunk, base, pc, [l, s, idx]));
                 }

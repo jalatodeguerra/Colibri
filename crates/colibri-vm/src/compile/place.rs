@@ -360,6 +360,9 @@ impl FnCompiler<'_> {
                 _ => {}
             }
         }
+        if let Some(fused) = self.field_update(place, op, rhs, span) {
+            return fused;
+        }
         // Everything else: the anchor's operands once, then the right-hand side, then the old
         // value for `op=`, then a guarded write.
         let res = self.resolve_anchor(place, writes_locals(rhs), span);
@@ -374,6 +377,46 @@ impl FnCompiler<'_> {
         self.emit_place_set(&res, &place.path, new, true, span);
         self.free_moved(new);
         self.note_release(&place.ty);
+    }
+
+    /// `l.f op= rhs` on a plain local that holds a struct, where the field is an `int` or a
+    /// `float`: the right-hand side, then one instruction that reads the field, combines it and
+    /// writes it back (the struct is copied first when something else holds it). `None` for any
+    /// other place, operator or type.
+    fn field_update(
+        &mut self,
+        place: &Place,
+        op: Option<BinOp>,
+        rhs: &Expr,
+        span: Span,
+    ) -> Option<()> {
+        let Some(BinOp::Arith(ao, num)) = op else {
+            return None;
+        };
+        let (Anchor::Local(l), [ValueProj::Field(i)]) = (&place.anchor, place.path.as_slice())
+        else {
+            return None;
+        };
+        if self.storage(*l) != Storage::Slot {
+            return None;
+        }
+        let idx = u8::try_from(i.0).ok()?;
+        let make = |idx: u8, l: Reg, b: Reg| match (num, ao) {
+            (Num::Float, ArithOp::Add) => Some(Op::FieldAddF { idx, l, b }),
+            (Num::Float, ArithOp::Sub) => Some(Op::FieldSubF { idx, l, b }),
+            (Num::Float, ArithOp::Mul) => Some(Op::FieldMulF { idx, l, b }),
+            (Num::Float, ArithOp::Div) => Some(Op::FieldDivF { idx, l, b }),
+            (Num::Int(IntTy::I64), ArithOp::Add) => Some(Op::FieldAddI { idx, l, b }),
+            (Num::Int(IntTy::I64), ArithOp::Sub) => Some(Op::FieldSubI { idx, l, b }),
+            (Num::Int(IntTy::I64), ArithOp::Mul) => Some(Op::FieldMulI { idx, l, b }),
+            _ => None,
+        };
+        make(idx, 0, 0)?;
+        let lr = self.local(*l);
+        let b = self.operand(rhs, false);
+        self.emit(make(idx, lr, b)?, span);
+        self.free(b, span);
+        Some(())
     }
 
     /// `old op rhs` with a user operator `f`: the right-hand side first, then the old value,

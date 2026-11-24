@@ -645,6 +645,55 @@ pub enum Op {
         s: Reg,
         idx: u16,
     },
+    /// `l.<idx> += b` on a local that holds a struct whose field is a `float`: one
+    /// instruction for `GetField`, `AddF` and `SetField` (the old field is read after `b`).
+    FieldAddF {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
+    /// `l.<idx> -= b` on a local that holds a struct whose field is a `float`: one
+    /// instruction for `GetField`, `SubF` and `SetField` (the old field is read after `b`).
+    FieldSubF {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
+    /// `l.<idx> *= b` on a local that holds a struct whose field is a `float`: one
+    /// instruction for `GetField`, `MulF` and `SetField` (the old field is read after `b`).
+    FieldMulF {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
+    /// `l.<idx> /= b` on a local that holds a struct whose field is a `float`: one
+    /// instruction for `GetField`, `DivF` and `SetField` (the old field is read after `b`).
+    FieldDivF {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
+    /// `l.<idx> += b` on a local that holds a struct whose field is an `int`, checked: one
+    /// instruction for `GetField`, `AddI` and `SetField` (the old field is read after `b`).
+    FieldAddI {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
+    /// `l.<idx> -= b` on a local that holds a struct whose field is an `int`, checked: one
+    /// instruction for `GetField`, `SubI` and `SetField` (the old field is read after `b`).
+    FieldSubI {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
+    /// `l.<idx> *= b` on a local that holds a struct whose field is an `int`, checked: one
+    /// instruction for `GetField`, `MulI` and `SetField` (the old field is read after `b`).
+    FieldMulI {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
     /// `d = the key the map in `m` stores for the key in `k``: another key when a user `Eq` says
     /// the two are equal, else a clone of `k`.
     CanonKey {
@@ -1046,9 +1095,18 @@ impl Op {
             | Op::StrLen { d, s }
             | Op::ListPush { l: d, v: s }
             | Op::Unpack { d, s, .. } => end(&[d, s]),
+            Op::FieldAddF { l, b, .. }
+            | Op::FieldSubF { l, b, .. }
+            | Op::FieldMulF { l, b, .. }
+            | Op::FieldDivF { l, b, .. }
+            | Op::FieldAddI { l, b, .. }
+            | Op::FieldSubI { l, b, .. }
+            | Op::FieldMulI { l, b, .. } => end(&[l, b]),
             Op::ForListNext { d, a } => end(&[d, a.saturating_add(1)]),
             Op::ForListNextVar { d, a } => end(&[d, a.saturating_add(2)]),
             Op::ForListNextLend { d, a } => end(&[d, a.saturating_add(3)]),
+            Op::ForWriteBackLend { l, a } => end(&[l, a.saturating_add(3)]),
+            Op::SetField { l, s, .. } => end(&[l, s]),
             Op::Drop { r }
             | Op::DropInert { r }
             | Op::DropCheck { r }
@@ -1139,7 +1197,6 @@ impl Op {
             | Op::MapGetAt { .. }
             | Op::MapSetAt { .. }
             | Op::SetPath { .. }
-            | Op::SetField { .. }
             | Op::CanonKey { .. }
             | Op::HoldIter { .. }
             | Op::HoldListPlace { .. }
@@ -1148,7 +1205,6 @@ impl Op {
             | Op::ForSetNext { .. }
             | Op::ForIterNext { .. }
             | Op::ForWriteBack { .. }
-            | Op::ForWriteBackLend { .. }
             | Op::TestLit { .. }
             | Op::TestRange { .. }
             | Op::TestConst { .. }
@@ -1361,6 +1417,13 @@ impl Chunk {
             Op::Unhold => "Unhold".to_string(),
             Op::GetField { d, s, idx } => format!("GetField r{d} r{s} .{idx}"),
             Op::SetField { l, s, idx } => format!("SetField r{l} r{s} .{idx}"),
+            Op::FieldAddF { idx, l, b } => format!("FieldAddF r{l}.{idx} r{b}"),
+            Op::FieldSubF { idx, l, b } => format!("FieldSubF r{l}.{idx} r{b}"),
+            Op::FieldMulF { idx, l, b } => format!("FieldMulF r{l}.{idx} r{b}"),
+            Op::FieldDivF { idx, l, b } => format!("FieldDivF r{l}.{idx} r{b}"),
+            Op::FieldAddI { idx, l, b } => format!("FieldAddI r{l}.{idx} r{b}"),
+            Op::FieldSubI { idx, l, b } => format!("FieldSubI r{l}.{idx} r{b}"),
+            Op::FieldMulI { idx, l, b } => format!("FieldMulI r{l}.{idx} r{b}"),
             Op::SetPath { l, s, site } => format!("SetPath r{l} r{s} {}", self.site_text(site)),
             Op::CanonKey { d, m, k } => format!("CanonKey r{d} map=r{m} r{k}"),
             Op::HoldIter { r } => format!("HoldIter r{r}"),

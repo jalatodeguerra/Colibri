@@ -503,6 +503,61 @@ impl Machine {
         Ok(())
     }
 
+    /// `FieldAddF` and the other fused field updates when the struct is shared or the field is
+    /// not what the instruction expects: the struct is made unique (copied when something else
+    /// holds it, as `SetField` does), then the field is combined as the plain instructions do.
+    #[inline(never)]
+    pub(crate) fn op_field_update(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        op: Op,
+    ) -> Result<(), Ctl> {
+        let span = chunk.spans[pc - 1];
+        let (idx, l, b) = match op {
+            Op::FieldAddF { idx, l, b }
+            | Op::FieldSubF { idx, l, b }
+            | Op::FieldMulF { idx, l, b }
+            | Op::FieldDivF { idx, l, b }
+            | Op::FieldAddI { idx, l, b }
+            | Op::FieldSubI { idx, l, b }
+            | Op::FieldMulI { idx, l, b } => (usize::from(idx), usize::from(l), usize::from(b)),
+            _ => return Err(self.internal(fiber, span, "not a field update")),
+        };
+        let y = fiber.regs[base + b].dup();
+        let slot = match &mut fiber.regs[base + l] {
+            Value::Struct(st) => Rc::make_mut(st).fields.get_mut(idx),
+            _ => None,
+        };
+        let new = match (slot.as_deref(), op, &y) {
+            (Some(Value::Float(x)), Op::FieldAddF { .. }, Value::Float(y)) => Value::Float(x + y),
+            (Some(Value::Float(x)), Op::FieldSubF { .. }, Value::Float(y)) => Value::Float(x - y),
+            (Some(Value::Float(x)), Op::FieldMulF { .. }, Value::Float(y)) => Value::Float(x * y),
+            (Some(Value::Float(x)), Op::FieldDivF { .. }, Value::Float(y)) => Value::Float(x / y),
+            (Some(Value::Int(x)), Op::FieldAddI { .. }, Value::Int(y)) => match x.checked_add(*y) {
+                Some(v) => Value::Int(v),
+                None => return Err(self.panic(fiber, span, "integer overflow")),
+            },
+            (Some(Value::Int(x)), Op::FieldSubI { .. }, Value::Int(y)) => match x.checked_sub(*y) {
+                Some(v) => Value::Int(v),
+                None => return Err(self.panic(fiber, span, "integer overflow")),
+            },
+            (Some(Value::Int(x)), Op::FieldMulI { .. }, Value::Int(y)) => match x.checked_mul(*y) {
+                Some(v) => Value::Int(v),
+                None => return Err(self.panic(fiber, span, "integer overflow")),
+            },
+            _ => return Err(self.internal(fiber, span, "ill-typed field update")),
+        };
+        if let Value::Struct(st) = &mut fiber.regs[base + l]
+            && let Some(slot) = Rc::make_mut(st).fields.get_mut(idx)
+        {
+            *slot = new;
+        }
+        Ok(())
+    }
+
     /// `d = the key the map `m` stores for the key in `k``.
     #[inline(never)]
     pub(crate) fn op_canon_key(

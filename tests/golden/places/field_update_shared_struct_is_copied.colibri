@@ -1,0 +1,26 @@
+// A struct held by a list, a second local and a field is copied before a field update writes it.
+struct P { x: float, n: int }
+struct Pair { a: P, b: P }
+
+fn main() {
+    let mut a = P { x: 1.5, n: 1 }
+    let mut ps = [a, a]
+    a.x += 1.0
+    a.n += 1
+    print("{a.x} {a.n} {ps[0].x} {ps[1].n}")
+    let mut pair = Pair { a: a, b: a }
+    a.x *= 2.0
+    print("{a.x} {pair.a.x} {pair.b.x}")
+    for mut p in ps {
+        p.x += 0.5
+        p.n *= 3
+    }
+    print("{ps[0].x} {ps[1].x} {ps[0].n} {ps[1].n} {a.x}")
+    pair.a.x += 1.0
+    print("{pair.a.x} {pair.b.x}")
+}
+
+// expect: 2.5 2 1.5 1
+// expect: 5.0 2.5 2.5
+// expect: 2.0 2.0 3 3 5.0
+// expect: 3.5 2.5

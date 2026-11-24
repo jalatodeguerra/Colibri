@@ -1,0 +1,28 @@
+// `p.n op= rhs` for the checked integer operators, and the overflow panic of one of them.
+struct P { n: int, tag: str }
+
+impl P {
+    fn grow(mut self, k: int) {
+        self.n *= k
+        self.n += 1
+    }
+}
+
+fn main() {
+    let mut p = P { n: 3, tag: "a" }
+    p.n += 4
+    p.n -= 1
+    p.n *= 5
+    print(p.n)
+    p.grow(3)
+    print(p.n)
+    let mut q = p
+    q.n -= 1000
+    print("{p.n} {q.n}")
+    p.n *= 4611686018427387904
+}
+
+// expect: 30
+// expect: 91
+// expect: 91 -909
+// panic: integer overflow
