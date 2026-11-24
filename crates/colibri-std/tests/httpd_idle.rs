@@ -6,6 +6,9 @@
 //! (`/proc/self/task`, `proc_pidinfo`, a toolhelp snapshot; `getrusage`, `GetProcessTimes`).
 #![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
+mod common;
+use common::vm_pending;
+
 #[path = "support/wire.rs"]
 #[allow(dead_code)]
 mod wire;
@@ -168,96 +171,104 @@ fn main() -> Result[()] {
 
 #[test]
 fn a_thousand_idle_connections_use_a_few_threads_and_no_cpu_and_are_all_served_again() {
-    raise_descriptor_limit();
-    let threads_before = threads();
-    let (addr_tx, addr_rx) = mpsc::channel::<String>();
-    let (done_tx, done) = mpsc::channel();
-    thread::spawn(move || {
-        // Pinned to the tree-walker: this tests the standard library, not the engine, and host
-        // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
-        let mut vm = colibri::Vm::builder()
-            // vm-pin: 2c
-            .engine(colibri::EngineKind::Tree)
-            .stdout(Box::new(colibri::SharedBuffer::new()))
-            .allow(colibri::Cap::Net)
-            .allow(colibri::Cap::Os)
-            .build();
-        colibri_std::install(&mut vm).expect("installs");
-        vm.register_fn("publish", move |addr: String| {
-            let _ = addr_tx.send(addr);
-        })
-        .expect("registers publish");
-        let result = vm
-            .load_source("app/main.colibri", PROGRAM)
-            .and_then(|()| vm.run_main())
-            .and_then(|()| vm.run_event_loop())
-            .map_err(|e| e.render(false));
-        let _ = done_tx.send(result);
-        // The `Vm` is dropped here: its threads must be gone afterwards.
-    });
-    let addr = addr_rx.recv_timeout(EVENT).expect("the server's address");
+    vm_pending(
+        "a_thousand_idle_connections_use_a_few_threads_and_no_cpu_and_are_all_served_again",
+        || {
+            raise_descriptor_limit();
+            let threads_before = threads();
+            let (addr_tx, addr_rx) = mpsc::channel::<String>();
+            let (done_tx, done) = mpsc::channel();
+            thread::spawn(move || {
+                let mut vm = colibri::Vm::builder()
+                    .stdout(Box::new(colibri::SharedBuffer::new()))
+                    .allow(colibri::Cap::Net)
+                    .allow(colibri::Cap::Os)
+                    .build();
+                colibri_std::install(&mut vm).expect("installs");
+                vm.register_fn("publish", move |addr: String| {
+                    let _ = addr_tx.send(addr);
+                })
+                .expect("registers publish");
+                let result = vm
+                    .load_source("app/main.colibri", PROGRAM)
+                    .and_then(|()| vm.run_main())
+                    .and_then(|()| vm.run_event_loop())
+                    .map_err(|e| e.render(false));
+                let _ = done_tx.send(result);
+                // The `Vm` is dropped here: its threads must be gone afterwards.
+            });
+            // A server that ends before it publishes its address says why (the bytecode VM's refusal of a
+            // feature, for one).
+            let addr = addr_rx.recv_timeout(EVENT).unwrap_or_else(|e| {
+                panic!(
+                    "the server's address: {e:?}; the server ended with {:?}",
+                    done.recv_timeout(EVENT)
+                )
+            });
 
-    // The connections, in waves, each with one keep-alive request answered.
-    let started = Instant::now();
-    let mut clients: Vec<Wire> = Vec::new();
-    for _ in 0..CONNECTIONS / WAVE {
-        let mut wave: Vec<Wire> = (0..WAVE).map(|_| Wire::connect(&addr)).collect();
-        for w in &mut wave {
-            assert_eq!(w.call(get("/")).status, 200);
-        }
-        clients.append(&mut wave);
-        assert!(started.elapsed() < LIMIT, "the connections took too long");
-    }
+            // The connections, in waves, each with one keep-alive request answered.
+            let started = Instant::now();
+            let mut clients: Vec<Wire> = Vec::new();
+            for _ in 0..CONNECTIONS / WAVE {
+                let mut wave: Vec<Wire> = (0..WAVE).map(|_| Wire::connect(&addr)).collect();
+                for w in &mut wave {
+                    assert_eq!(w.call(get("/")).status, 200);
+                }
+                clients.append(&mut wave);
+                assert!(started.elapsed() < LIMIT, "the connections took too long");
+            }
 
-    // The server has all of them (and the one that asks).
-    let mut asker = Wire::connect(&addr);
-    let open: usize = asker.call(get("/__stats")).text().trim().parse().unwrap();
-    assert_eq!(open, CONNECTIONS + 1);
+            // The server has all of them (and the one that asks).
+            let mut asker = Wire::connect(&addr);
+            let open: usize = asker.call(get("/__stats")).text().trim().parse().unwrap();
+            assert_eq!(open, CONNECTIONS + 1);
 
-    // Idle: the threads stay few and the CPU time stays near nothing.
-    let threads_idle = threads();
-    let cpu_start = cpu_seconds();
-    let t0 = Instant::now();
-    thread::sleep(Duration::from_secs_f64(IDLE_SECONDS));
-    let seconds = t0.elapsed().as_secs_f64();
-    let used = cpu_seconds() - cpu_start;
-    assert!(
-        threads_idle <= threads_before + MAY_GROW_BY,
-        "{threads_idle} threads with {CONNECTIONS} idle connections, {threads_before} before"
-    );
-    assert!(
-        threads() <= threads_before + MAY_GROW_BY,
-        "{} threads after the idle seconds",
-        threads()
-    );
-    assert!(
-        used < MAX_SHARE * seconds,
-        "{used:.3} s of CPU in {seconds:.2} s idle: over {MAX_SHARE} of a core"
-    );
+            // Idle: the threads stay few and the CPU time stays near nothing.
+            let threads_idle = threads();
+            let cpu_start = cpu_seconds();
+            let t0 = Instant::now();
+            thread::sleep(Duration::from_secs_f64(IDLE_SECONDS));
+            let seconds = t0.elapsed().as_secs_f64();
+            let used = cpu_seconds() - cpu_start;
+            assert!(
+                threads_idle <= threads_before + MAY_GROW_BY,
+                "{threads_idle} threads with {CONNECTIONS} idle connections, {threads_before} before"
+            );
+            assert!(
+                threads() <= threads_before + MAY_GROW_BY,
+                "{} threads after the idle seconds",
+                threads()
+            );
+            assert!(
+                used < MAX_SHARE * seconds,
+                "{used:.3} s of CPU in {seconds:.2} s idle: over {MAX_SHARE} of a core"
+            );
 
-    // Every connection makes a second request, and every one is answered.
-    for w in &mut clients {
-        let r = w.call(get("/"));
-        assert_eq!(r.status, 200);
-        assert_eq!(r.text(), "hello\n");
-    }
+            // Every connection makes a second request, and every one is answered.
+            for w in &mut clients {
+                let r = w.call(get("/"));
+                assert_eq!(r.status, 200);
+                assert_eq!(r.text(), "hello\n");
+            }
 
-    // Stop; the run ends, and the `Vm`'s threads go with it.
-    let r = asker.call(request("POST", "/__stop", &["Content-Length: 0"], b""));
-    assert_eq!(r.status, 200);
-    drop(asker);
-    drop(clients);
-    match done.recv_timeout(Duration::from_secs(30)) {
-        Ok(Ok(())) => {}
-        other => panic!("the server did not end well: {other:?}"),
-    }
-    let start = Instant::now();
-    while threads() > threads_before + 1 {
-        assert!(
-            start.elapsed() < EVENT,
-            "{} threads left after the server ended, {threads_before} before",
-            threads()
-        );
-        thread::sleep(Duration::from_millis(20));
-    }
+            // Stop; the run ends, and the `Vm`'s threads go with it.
+            let r = asker.call(request("POST", "/__stop", &["Content-Length: 0"], b""));
+            assert_eq!(r.status, 200);
+            drop(asker);
+            drop(clients);
+            match done.recv_timeout(Duration::from_secs(30)) {
+                Ok(Ok(())) => {}
+                other => panic!("the server did not end well: {other:?}"),
+            }
+            let start = Instant::now();
+            while threads() > threads_before + 1 {
+                assert!(
+                    start.elapsed() < EVENT,
+                    "{} threads left after the server ended, {threads_before} before",
+                    threads()
+                );
+                thread::sleep(Duration::from_millis(20));
+            }
+        },
+    )
 }

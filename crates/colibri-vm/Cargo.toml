@@ -11,3 +11,9 @@ publish = false
 colibri-syntax = { path = "../colibri-syntax" }
 colibri-check = { path = "../colibri-check" }
 colibri-core = { path = "../colibri-core" }
+colibri-ffi = { path = "../colibri-ffi", optional = true }
+
+[features]
+# Calls into C libraries (`extern` blocks, `ptr[T]`): libffi and dlopen. Without it, a program
+# with an `extern` block fails to load with a message that says so.
+ffi = ["dep:colibri-ffi"]

@@ -213,15 +213,13 @@ fn main() {
 
 #[test]
 fn a_panicking_worker_is_a_panic_of_the_caller() {
-    vm_pending("a_panicking_worker_is_a_panic_of_the_caller", || {
-        let (mut vm, _) = vm();
-        vm.load_source("a.colibri", "fn main() { let _ = explode() }\n")
-            .unwrap();
-        let Err(colibri::Error::Panic { message, .. }) = vm.run_main() else {
-            panic!("expected a panic");
-        };
-        assert!(message.contains("worker blew up"), "{message}");
-    })
+    let (mut vm, _) = vm();
+    vm.load_source("a.colibri", "fn main() { let _ = explode() }\n")
+        .unwrap();
+    let Err(colibri::Error::Panic { message, .. }) = vm.run_main() else {
+        panic!("expected a panic");
+    };
+    assert!(message.contains("worker blew up"), "{message}");
 }
 
 #[test]
@@ -746,39 +744,29 @@ fn main() {
 /// what has completed before it sleeps.
 #[test]
 fn a_completion_that_arrives_before_the_waiter_suspends_is_not_lost() {
-    vm_pending(
-        "a_completion_that_arrives_before_the_waiter_suspends_is_not_lost",
-        || {
-            for _ in 0..200 {
-                let text = run_completion("fn main() { print(now(1)) }\n");
-                assert_eq!(text, "ok 1\n");
-            }
-        },
-    )
+    for _ in 0..200 {
+        let text = run_completion("fn main() { print(now(1)) }\n");
+        assert_eq!(text, "ok 1\n");
+    }
 }
 
 #[test]
 fn a_completion_in_a_drop_hook_blocks_until_it_is_done() {
-    vm_pending(
-        "a_completion_in_a_drop_hook_blocks_until_it_is_done",
-        || {
-            let text = run_completion(
-                r#"
+    let text = run_completion(
+        r#"
 class Res { label: str }
 
 impl Drop for Res {
-    fn drop(self) { print("drop {self.label} {now(3)}") }
+fn drop(self) { print("drop {self.label} {now(3)}") }
 }
 
 fn main() {
-    let r = Res { label: "r" }
-    print("end of main")
+let r = Res { label: "r" }
+print("end of main")
 }
 "#,
-            );
-            assert_eq!(text, "end of main\ndrop r ok 3\n");
-        },
-    )
+    );
+    assert_eq!(text, "end of main\ndrop r ok 3\n");
 }
 
 #[test]
@@ -998,69 +986,59 @@ fn main() {
 
 #[test]
 fn a_completion_made_inside_start_works_where_the_wait_blocks() {
-    vm_pending(
-        "a_completion_made_inside_start_works_where_the_wait_blocks",
-        || {
-            let text = run_completion(
-                r#"
+    let text = run_completion(
+        r#"
 class Res { label: str }
 
 impl Drop for Res {
-    fn drop(self) { print("drop {self.label} {inline(8)}") }
+fn drop(self) { print("drop {self.label} {inline(8)}") }
 }
 
 fn main() {
-    let r = Res { label: "r" }
+let r = Res { label: "r" }
 }
 "#,
-            );
-            assert_eq!(text, "drop r ok 8\n");
-        },
-    )
+    );
+    assert_eq!(text, "drop r ok 8\n");
 }
 
 /// A `start` that panics is a panic of the host function (the program sees it), leaves nothing of
 /// the operation behind (its hook has run, not at the end of the `Vm`), and the `Vm` goes on.
 #[test]
 fn a_start_that_panics_is_a_panic_of_the_call_and_the_vm_goes_on() {
-    vm_pending(
-        "a_start_that_panics_is_a_panic_of_the_call_and_the_vm_goes_on",
-        || {
-            let (mut vm, out, shared) = completion_vm();
-            let hooks = Arc::clone(&shared.hooks);
-            vm.register_fn("bad_start", move |cx: &mut colibri::Ctx| -> String {
-                let hooks = Arc::clone(&hooks);
-                describe(
-                    cx.try_await_completion(move |completer: colibri::Completer<i64>| {
-                        completer.token().on_cancel(move || {
-                            hooks.fetch_add(1, Ordering::SeqCst);
-                        });
-                        panic!("start blew up")
-                    }),
-                )
-            })
-            .unwrap();
-            vm.load_source(
-                "a.colibri",
-                "fn main() { print(bad_start()) }\nfn again() { print(now(4)) }\n",
-            )
-            .unwrap();
-            let again = vm.get_fn::<(), ()>("again").unwrap();
-            let Err(colibri::Error::Panic { message, .. }) = vm.run_main() else {
-                panic!("expected a panic");
-            };
-            assert!(message.contains("start blew up"), "{message}");
-            assert_eq!(
-                shared.hooks.load(Ordering::SeqCst),
-                1,
-                "the hook ran at once"
-            );
-            // `again` is called through the same `Vm` after the panic: the wait works.
-            again.call(&mut vm, ()).unwrap();
-            assert_eq!(out.contents(), "ok 4\n");
-            assert_eq!(vm.coroutine_count(), 0);
-        },
+    let (mut vm, out, shared) = completion_vm();
+    let hooks = Arc::clone(&shared.hooks);
+    vm.register_fn("bad_start", move |cx: &mut colibri::Ctx| -> String {
+        let hooks = Arc::clone(&hooks);
+        describe(
+            cx.try_await_completion(move |completer: colibri::Completer<i64>| {
+                completer.token().on_cancel(move || {
+                    hooks.fetch_add(1, Ordering::SeqCst);
+                });
+                panic!("start blew up")
+            }),
+        )
+    })
+    .unwrap();
+    vm.load_source(
+        "a.colibri",
+        "fn main() { print(bad_start()) }\nfn again() { print(now(4)) }\n",
     )
+    .unwrap();
+    let again = vm.get_fn::<(), ()>("again").unwrap();
+    let Err(colibri::Error::Panic { message, .. }) = vm.run_main() else {
+        panic!("expected a panic");
+    };
+    assert!(message.contains("start blew up"), "{message}");
+    assert_eq!(
+        shared.hooks.load(Ordering::SeqCst),
+        1,
+        "the hook ran at once"
+    );
+    // `again` is called through the same `Vm` after the panic: the wait works.
+    again.call(&mut vm, ()).unwrap();
+    assert_eq!(out.contents(), "ok 4\n");
+    assert_eq!(vm.coroutine_count(), 0);
 }
 
 // ---- the result types a wait can carry: the wait is not specific to one of them ----

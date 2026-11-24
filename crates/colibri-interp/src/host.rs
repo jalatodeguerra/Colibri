@@ -136,7 +136,7 @@ impl Interp {
         // The host function gets a frame of its own, so a trace names it and the call depth
         // counts it; it has no slots and nothing to clean up.
         fiber.frames.push(Frame {
-            body,
+            body: Rc::clone(&body),
             slots: Vec::new(),
             span,
             cleanups: Vec::new(),
@@ -148,7 +148,16 @@ impl Interp {
         self.core.host.type_args = outer_type_args;
         fiber.state.host_depth -= 1;
         let outcome = match result {
-            Ok(v) => Ok(v),
+            Ok(v) => match self
+                .core
+                .host_result_mismatch(id.0 as usize, &body, type_args, &v)
+            {
+                None => Ok(v),
+                Some(message) => {
+                    self.release(v);
+                    Err(self.panic(fiber, span, message))
+                }
+            },
             Err(HostFault::Panic(message) | HostFault::Message(message)) => {
                 Err(self.panic(fiber, span, message))
             }

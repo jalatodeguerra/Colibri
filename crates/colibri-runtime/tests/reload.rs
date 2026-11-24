@@ -479,32 +479,27 @@ fn forcing_a_restart_reinitialises_module_state() {
 
 #[test]
 fn host_functions_budget_and_capabilities_survive_a_restart() {
-    vm_pending(
-        "host_functions_budget_and_capabilities_survive_a_restart",
-        || {
-            let src = |extra: &str| {
-                format!(
-                    "fn twice(n: int) -> int => double(n)\nfn spin() {{\n    while true {{\n    }}\n}}\n{extra}"
-                )
-            };
-            let dir = tree("host", &[("a.colibri", &src(""))]);
-            let mut vm = colibri::Vm::builder().instruction_budget(10_000).build();
-            vm.register_fn("double", |n: i64| n * 2).unwrap();
-            vm.load_file(dir.join("a.colibri")).unwrap();
-            write(&dir, "a.colibri", &src("fn added() -> int => 1\n"));
-            assert!(matches!(
-                vm.reload_changed().unwrap(),
-                ReloadOutcome::Restarted { .. }
-            ));
-            let twice = vm.get_fn::<(i64,), i64>("twice").unwrap();
-            assert_eq!(twice.call(&mut vm, (4,)).unwrap(), 8);
-            let spin = vm.get_fn::<(), ()>("spin").unwrap();
-            assert!(matches!(
-                spin.call(&mut vm, ()),
-                Err(colibri::Error::BudgetExhausted { .. })
-            ));
-        },
-    )
+    let src = |extra: &str| {
+        format!(
+            "fn twice(n: int) -> int => double(n)\nfn spin() {{\n    while true {{\n    }}\n}}\n{extra}"
+        )
+    };
+    let dir = tree("host", &[("a.colibri", &src(""))]);
+    let mut vm = colibri::Vm::builder().instruction_budget(10_000).build();
+    vm.register_fn("double", |n: i64| n * 2).unwrap();
+    vm.load_file(dir.join("a.colibri")).unwrap();
+    write(&dir, "a.colibri", &src("fn added() -> int => 1\n"));
+    assert!(matches!(
+        vm.reload_changed().unwrap(),
+        ReloadOutcome::Restarted { .. }
+    ));
+    let twice = vm.get_fn::<(i64,), i64>("twice").unwrap();
+    assert_eq!(twice.call(&mut vm, (4,)).unwrap(), 8);
+    let spin = vm.get_fn::<(), ()>("spin").unwrap();
+    assert!(matches!(
+        spin.call(&mut vm, ()),
+        Err(colibri::Error::BudgetExhausted { .. })
+    ));
 }
 
 #[test]

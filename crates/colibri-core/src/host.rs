@@ -89,6 +89,8 @@ pub struct Roots {
 pub struct HostSide {
     /// The empty bodies of the host functions, which name them in stack traces.
     pub bodies: Vec<Rc<Body>>,
+    /// The type parameters of each host function, in the order of a call's type arguments.
+    pub type_param_ids: Vec<Vec<colibri_check::types::ParamId>>,
     pub state: HashMap<AnyTypeId, Box<dyn Any>>,
     pub roots: Roots,
     pub sources: Rc<SourceMap>,
@@ -124,7 +126,141 @@ pub struct HostSide {
     pub heap: HostHeap,
 }
 
+/// Whether a type has a position whose static kind the engines rely on.
+fn has_kind(ty: &Ty) -> bool {
+    match ty {
+        Ty::Int(_) | Ty::Float | Ty::F32 | Ty::Bool | Ty::Char | Ty::Unit | Ty::Str | Ty::Bytes => {
+            true
+        }
+        Ty::Tuple(ts) => ts.iter().any(has_kind),
+        Ty::List(t) => has_kind(t),
+        Ty::Map(k, t) => has_kind(k) || has_kind(t),
+        _ => false,
+    }
+}
+
+/// The part of `v` that does not have the shape `want` asks for, if any.
+fn misfit_in(want: &Ty, v: &Value) -> Option<Value> {
+    use colibri_check::types::IntTy;
+    let fits = match want {
+        Ty::Int(IntTy::U64) => matches!(v, Value::U64(_)),
+        Ty::Int(_) => matches!(v, Value::Int(_)),
+        Ty::Float => matches!(v, Value::Float(_)),
+        Ty::F32 => matches!(v, Value::F32(_)),
+        Ty::Bool => matches!(v, Value::Bool(_)),
+        Ty::Char => matches!(v, Value::Char(_)),
+        Ty::Unit => matches!(v, Value::Unit),
+        Ty::Str => matches!(v, Value::Str(_)),
+        Ty::Bytes => matches!(v, Value::Bytes(_)),
+        Ty::Tuple(ts) => {
+            return match v {
+                Value::Tuple(items) if items.len() == ts.len() => ts
+                    .iter()
+                    .zip(items.iter())
+                    .find_map(|(t, x)| misfit_in(t, x)),
+                _ => None,
+            };
+        }
+        Ty::List(t) => {
+            return match v {
+                Value::List(l) => l.with(|xs| xs.iter().find_map(|x| misfit_in(t, x))),
+                _ => None,
+            };
+        }
+        Ty::Map(k, t) => {
+            return match v {
+                Value::Map(m) => m
+                    .keys()
+                    .iter()
+                    .find_map(|x| misfit_in(k, x))
+                    .or_else(|| m.values().iter().find_map(|x| misfit_in(t, x))),
+                _ => None,
+            };
+        }
+        _ => true,
+    };
+    (!fits).then(|| v.clone())
+}
+
 impl Core {
+    /// Checks the value host function `id` returned against the types its call site gave the
+    /// type parameters of its declared result (`fn pair[T](..) -> T`, `-> List[T]`): a scalar
+    /// or string position takes only a value of its shape, so no owning value ever sits in a
+    /// register or local that holds none. Returns the text of the panic when it does not.
+    ///
+    /// A call made inside generic Colibri code (`fn wrap[U](x: U) -> U => lie(x)`) is
+    /// instantiated with `U` itself, and generics are erased at run time, so the boundary cannot
+    /// resolve `U`: that call is not checked (a known limitation).
+    pub fn host_result_mismatch(
+        &self,
+        id: usize,
+        body: &Body,
+        type_args: &[Ty],
+        v: &Value,
+    ) -> Option<String> {
+        let ids = self.host.type_param_ids.get(id)?;
+        // Without a type parameter in the result there is nothing the call site decides, and
+        // when no argument has a position with a static kind the walk would find nothing.
+        if ids.is_empty() || ids.len() != type_args.len() || !type_args.iter().any(has_kind) {
+            return None;
+        }
+        let (want, got) = self.misfit(&body.ret, ids, type_args, v)?;
+        let got = match &got {
+            Value::Obj(o) => self.types.get(o.ty().0 as usize).map_or_else(
+                || "an object".to_string(),
+                |d| format!("a `{}` object", d.name),
+            ),
+            Value::Str(_) => "a str".to_string(),
+            Value::Bytes(_) => "a bytes value".to_string(),
+            Value::Struct(_) => "a struct".to_string(),
+            Value::Tuple(_) => "a tuple".to_string(),
+            Value::Enum(_) => "an enum value".to_string(),
+            Value::List(_) => "a list".to_string(),
+            Value::Map(_) => "a map".to_string(),
+            Value::Set(_) => "a set".to_string(),
+            Value::Int(_) | Value::U64(_) => "an integer".to_string(),
+            Value::Float(_) | Value::F32(_) => "a float".to_string(),
+            Value::Bool(_) => "a bool".to_string(),
+            Value::Char(_) => "a char".to_string(),
+            Value::Unit => "a unit value".to_string(),
+            _ => "a value of another type".to_string(),
+        };
+        Some(format!(
+            "host function `{}` returned {got} where `{want}` was expected",
+            body.name
+        ))
+    }
+
+    /// Follows the declared result type to the type parameters in it and checks what stands
+    /// there against the type argument. Returns the type wanted and the value that is not one.
+    fn misfit(
+        &self,
+        declared: &Ty,
+        ids: &[colibri_check::types::ParamId],
+        args: &[Ty],
+        v: &Value,
+    ) -> Option<(Ty, Value)> {
+        match (declared, v) {
+            (Ty::Param(p, _), _) => {
+                let want = &args[ids.iter().position(|q| q == p)?];
+                misfit_in(want, v).map(|got| (want.clone(), got))
+            }
+            (Ty::Tuple(ts), Value::Tuple(items)) if ts.len() == items.len() => ts
+                .iter()
+                .zip(items.iter())
+                .find_map(|(t, x)| self.misfit(t, ids, args, x)),
+            (Ty::List(t), Value::List(l)) => {
+                l.with(|xs| xs.iter().find_map(|x| self.misfit(t, ids, args, x)))
+            }
+            (Ty::Map(k, t), Value::Map(m)) => m
+                .keys()
+                .iter()
+                .find_map(|x| self.misfit(k, ids, args, x))
+                .or_else(|| m.values().iter().find_map(|x| self.misfit(t, ids, args, x))),
+            _ => None,
+        }
+    }
+
     /// Records the host functions of a freshly loaded program (their empty bodies) and the
     /// host types it declares.
     pub fn load_host(&mut self, program: &Program) {
@@ -132,6 +268,11 @@ impl Core {
             .host_fns
             .iter()
             .map(|h| Rc::clone(&program.fns[h.f.0 as usize].body))
+            .collect();
+        self.host.type_param_ids = program
+            .host_fns
+            .iter()
+            .map(|h| h.type_params.clone())
             .collect();
         self.host.class_types.clear();
         self.host.any_show_hook = false;
@@ -473,4 +614,69 @@ pub fn map_value(entries: Vec<(Value, Value)>) -> Value {
         let _ = map.insert(k, v);
     }
     Value::Map(MapObj::new(map))
+}
+
+#[cfg(test)]
+mod tests {
+    use colibri_check::hir::Block;
+    use colibri_check::types::{IntTy, ParamId};
+    use colibri_syntax::{FileId, Span};
+
+    use super::*;
+
+    const SP: Span = Span {
+        file: FileId(0),
+        start: 0,
+        end: 0,
+    };
+
+    /// `fn pair[A, B](a: A, b: B) -> (B, A)`.
+    fn pair_body() -> Body {
+        let a = Ty::Param(ParamId(7), "A".into());
+        let b = Ty::Param(ParamId(8), "B".into());
+        Body {
+            name: "pair".to_string(),
+            span: SP,
+            param_count: 2,
+            locals: Vec::new(),
+            block: Block {
+                locals: Vec::new(),
+                stmts: Vec::new(),
+                tail: None,
+                ty: Ty::Unit,
+                span: SP,
+            },
+            ret: Ty::Tuple(vec![b, a]),
+            mutates_self: false,
+        }
+    }
+
+    fn core() -> Core {
+        let mut core = Core::new(Box::new(std::io::sink()));
+        core.host.type_param_ids = vec![vec![ParamId(7), ParamId(8)]];
+        core
+    }
+
+    #[test]
+    fn each_type_parameter_of_a_host_function_is_checked_against_its_own_argument() {
+        let core = core();
+        let body = pair_body();
+        let args = [Ty::Int(IntTy::I64), Ty::Str];
+        // `(B, A)` with `A = int` and `B = str`: a string, then an int.
+        let good = Value::tuple(vec![Value::Str("s".into()), Value::Int(1)]);
+        assert_eq!(core.host_result_mismatch(0, &body, &args, &good), None);
+        // The parts swapped back fit the other order, which is not this call's.
+        let bad = Value::tuple(vec![Value::Int(1), Value::Str("s".into())]);
+        let message = core.host_result_mismatch(0, &body, &args, &bad).unwrap();
+        assert!(
+            message.contains("returned an integer where `str` was expected"),
+            "{message}"
+        );
+        let bad = Value::tuple(vec![Value::Str("s".into()), Value::Str("t".into())]);
+        let message = core.host_result_mismatch(0, &body, &args, &bad).unwrap();
+        assert!(
+            message.contains("returned a str where `int` was expected"),
+            "{message}"
+        );
+    }
 }

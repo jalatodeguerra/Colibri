@@ -9,14 +9,19 @@
 //! panics with "the bytecode VM does not support <node> yet". Hosts do not use this crate
 //! directly yet; [`run_source`] is a small entry for tests.
 
-#![forbid(unsafe_code)]
+// `deny`, not `forbid`: the three `unsafe` blocks of `cffi` (reads and writes of C memory, which the
+// program asks for inside its own `unsafe` blocks) are the only ones, and they are allowed there.
+#![deny(unsafe_code)]
 
 pub mod bytecode;
+#[allow(unsafe_code)]
+mod cffi;
 mod compile;
 mod embed;
 mod engine;
 mod fiber;
 mod heap;
+mod host;
 mod load;
 mod machine;
 mod patterns;
@@ -27,6 +32,7 @@ mod unwind;
 
 pub use compile::{CompileEnv, compile_body};
 pub use fiber::VmFiber;
+pub use host::{HostClassHooks, HostFault, HostImpl};
 pub use machine::{DEFAULT_NATIVE_STACK_BUDGET, Machine};
 pub use source::{Options, Outcome, compile_source, run_source, run_source_with};
 

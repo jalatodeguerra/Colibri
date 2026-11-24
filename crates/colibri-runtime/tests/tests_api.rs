@@ -343,79 +343,62 @@ fn vm_with_counter() -> colibri::Vm {
 
 #[test]
 fn host_state_leaks_from_one_test_to_the_next_without_the_hook() {
-    vm_pending(
-        "host_state_leaks_from_one_test_to_the_next_without_the_hook",
-        || {
-            let mut vm = vm_with_counter();
-            let results: Vec<_> = (0..3).map(|id| vm.run_test(id)).collect();
-            results[0].as_ref().expect("the first test passes");
-            let results: Vec<bool> = results.iter().map(|r| r.is_ok()).collect();
-            assert_eq!(results, [true, false, false]);
-            assert_eq!(vm.state_mut::<Calls>().unwrap().0, 3);
-        },
-    )
+    let mut vm = vm_with_counter();
+    let results: Vec<_> = (0..3).map(|id| vm.run_test(id)).collect();
+    results[0].as_ref().expect("the first test passes");
+    let results: Vec<bool> = results.iter().map(|r| r.is_ok()).collect();
+    assert_eq!(results, [true, false, false]);
+    assert_eq!(vm.state_mut::<Calls>().unwrap().0, 3);
 }
 
 #[test]
 fn on_test_start_lets_the_host_reset_its_state_before_each_test() {
-    vm_pending(
-        "on_test_start_lets_the_host_reset_its_state_before_each_test",
-        || {
-            let mut vm = vm_with_counter();
-            let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-            let log = seen.clone();
-            vm.on_test_start(move |vm, info| {
-                log.borrow_mut().push((info.id, info.name.clone()));
-                vm.state_mut::<Calls>().unwrap().0 = 0;
-            });
-            for id in 0..3 {
-                vm.run_test(id).unwrap();
-            }
-            assert_eq!(
-                *seen.borrow(),
-                [
-                    (0, "first".to_string()),
-                    (1, "second".to_string()),
-                    (2, "third".to_string())
-                ]
-            );
-        },
-    )
+    let mut vm = vm_with_counter();
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let log = seen.clone();
+    vm.on_test_start(move |vm, info| {
+        log.borrow_mut().push((info.id, info.name.clone()));
+        vm.state_mut::<Calls>().unwrap().0 = 0;
+    });
+    for id in 0..3 {
+        vm.run_test(id).unwrap();
+    }
+    assert_eq!(
+        *seen.borrow(),
+        [
+            (0, "first".to_string()),
+            (1, "second".to_string()),
+            (2, "third".to_string())
+        ]
+    );
 }
 
 #[test]
 fn the_hook_does_not_run_for_an_unknown_test_or_a_plain_load() {
-    vm_pending(
-        "the_hook_does_not_run_for_an_unknown_test_or_a_plain_load",
-        || {
-            let mut vm = vm_with_counter();
-            let count = std::rc::Rc::new(std::cell::Cell::new(0));
-            let c = count.clone();
-            vm.on_test_start(move |_, _| c.set(c.get() + 1));
-            assert!(vm.run_test(99).is_err());
-            assert_eq!(count.get(), 0);
-            vm.run_test(0).unwrap();
-            assert_eq!(count.get(), 1);
-        },
-    )
+    let mut vm = vm_with_counter();
+    let count = std::rc::Rc::new(std::cell::Cell::new(0));
+    let c = count.clone();
+    vm.on_test_start(move |_, _| c.set(c.get() + 1));
+    assert!(vm.run_test(99).is_err());
+    assert_eq!(count.get(), 0);
+    vm.run_test(0).unwrap();
+    assert_eq!(count.get(), 1);
 }
 
 #[test]
 fn a_hook_set_inside_the_hook_replaces_it() {
-    vm_pending("a_hook_set_inside_the_hook_replaces_it", || {
-        let mut vm = vm_with_counter();
-        let hits = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let first = hits.clone();
-        let second = hits.clone();
-        vm.on_test_start(move |vm, _| {
-            first.borrow_mut().push("first");
-            let second = second.clone();
-            vm.on_test_start(move |_, _| second.borrow_mut().push("second"));
-        });
-        vm.run_test(0).unwrap();
-        let _ = vm.run_test(1);
-        assert_eq!(*hits.borrow(), ["first", "second"]);
-    })
+    let mut vm = vm_with_counter();
+    let hits = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let first = hits.clone();
+    let second = hits.clone();
+    vm.on_test_start(move |vm, _| {
+        first.borrow_mut().push("first");
+        let second = second.clone();
+        vm.on_test_start(move |_, _| second.borrow_mut().push("second"));
+    });
+    vm.run_test(0).unwrap();
+    let _ = vm.run_test(1);
+    assert_eq!(*hits.borrow(), ["first", "second"]);
 }
 
 const HOOK_SOURCE: &str = r#"

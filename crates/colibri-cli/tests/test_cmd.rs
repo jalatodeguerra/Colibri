@@ -1,13 +1,18 @@
 //! End-to-end tests of `colibri test`.
 
+mod common;
+use common::vm_pending;
+
 use std::path::PathBuf;
 use std::process::Output;
 
 fn colibri(args: &[&str]) -> Output {
-    colibri_command()
-        .args(args)
-        .output()
-        .expect("the colibri binary runs")
+    common::checked(
+        colibri_command()
+            .args(args)
+            .output()
+            .expect("the colibri binary runs"),
+    )
 }
 
 /// A fresh folder holding `files` (`(relative path, text)`).
@@ -91,11 +96,13 @@ fn a_passing_package_reports_every_test_and_exits_zero() {
 #[test]
 fn a_package_without_a_path_uses_the_current_folder() {
     let dir = folder("cwd", PACKAGE);
-    let out = colibri_command()
-        .arg("test")
-        .current_dir(&dir)
-        .output()
-        .unwrap();
+    let out = common::checked(
+        colibri_command()
+            .arg("test")
+            .current_dir(&dir)
+            .output()
+            .unwrap(),
+    );
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(stdout(&out).contains("4 passed, 0 failed"));
 }
@@ -165,14 +172,16 @@ fn a_panic_in_a_defer_fails_the_test_cleanly() {
 
 #[test]
 fn a_test_that_returns_err_fails_with_the_error_chain() {
-    let source = "fn load() -> Result[int] {\n    return err(\"disk on fire\")\n}\n\ntest \"question mark\" {\n    let n = load().context(\"loading the save\")?\n    assert_eq(n, 1)\n}\n\ntest \"question mark ok\" {\n    let r: Result[int] = ok(1)\n    let n = r?\n    assert_eq(n, 1)\n}\n";
-    let out = test_script("err", source, &[]);
-    assert_eq!(out.status.code(), Some(1));
-    let text = stdout(&out);
-    assert!(text.contains("test t::question mark ... FAILED"), "{text}");
-    assert!(text.contains("test t::question mark ok ... ok"), "{text}");
-    assert!(text.contains("loading the save"), "{text}");
-    assert!(text.contains("disk on fire"), "{text}");
+    vm_pending("a_test_that_returns_err_fails_with_the_error_chain", || {
+        let source = "fn load() -> Result[int] {\n    return err(\"disk on fire\")\n}\n\ntest \"question mark\" {\n    let n = load().context(\"loading the save\")?\n    assert_eq(n, 1)\n}\n\ntest \"question mark ok\" {\n    let r: Result[int] = ok(1)\n    let n = r?\n    assert_eq(n, 1)\n}\n";
+        let out = test_script("err", source, &[]);
+        assert_eq!(out.status.code(), Some(1));
+        let text = stdout(&out);
+        assert!(text.contains("test t::question mark ... FAILED"), "{text}");
+        assert!(text.contains("test t::question mark ok ... ok"), "{text}");
+        assert!(text.contains("loading the save"), "{text}");
+        assert!(text.contains("disk on fire"), "{text}");
+    })
 }
 
 #[test]
@@ -369,13 +378,15 @@ fn a_missing_path_is_an_error() {
 
 #[test]
 fn coroutines_do_not_leak_into_the_next_test() {
-    let out = test_script(
-        "coroutines",
-        "let mut hits = 0\n\nfn w() {\n    wait(10.0)\n    hits += 1\n}\n\ntest \"a starts one\" {\n    go w()\n    task.tick(1.0)\n}\n\ntest \"b sees nothing\" {\n    assert_eq(hits, 0)\n    task.tick(100.0)\n    assert_eq(hits, 0)\n}\n",
-        &[],
-    );
-    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
-    assert!(stdout(&out).contains("2 passed"), "{}", stdout(&out));
+    vm_pending("coroutines_do_not_leak_into_the_next_test", || {
+        let out = test_script(
+            "coroutines",
+            "let mut hits = 0\n\nfn w() {\n    wait(10.0)\n    hits += 1\n}\n\ntest \"a starts one\" {\n    go w()\n    task.tick(1.0)\n}\n\ntest \"b sees nothing\" {\n    assert_eq(hits, 0)\n    task.tick(100.0)\n    assert_eq(hits, 0)\n}\n",
+            &[],
+        );
+        assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+        assert!(stdout(&out).contains("2 passed"), "{}", stdout(&out));
+    })
 }
 
 const LEAKY_TESTS: &str = "class Node {\n    next: Node? = none\n}\ntest \"clean\" {\n    let _a = Node {}\n}\ntest \"leaky\" {\n    let a = Node {}\n    a.next = some(a)\n}\ntest \"also clean\" {\n    let _a = Node {}\n}\n";
@@ -492,11 +503,8 @@ fn check_still_finds_errors_in_a_script_modules_statements_and_initialisers() {
     assert!(err.contains("gen.colibri:2"), "{err}");
 }
 
-/// The binary under test, pinned to the tree-walker: these tests are about the command line,
-/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
+/// spawn on the VM (see `vm_pending.txt` for the ones that cannot pass there yet).
 fn colibri_command() -> std::process::Command {
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
-    // vm-pin: 2c
-    cmd.env_remove("COLIBRI_ENGINE");
-    cmd
+    std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

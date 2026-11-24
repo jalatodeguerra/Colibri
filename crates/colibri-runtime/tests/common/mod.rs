@@ -71,7 +71,7 @@ pub fn vm_pending<R: Pending>(name: &str, body: impl FnOnce() -> R) -> R {
         Err(payload) => {
             // `enum values (test wrapper)`: the part in brackets is a note.
             let feature = reason.split(" (").next().unwrap_or(reason);
-            let refusal = format!("the bytecode VM does not support {feature}");
+            let refusal = format!("the bytecode VM does not support {feature} yet");
             let text = text_of(&*payload);
             assert!(
                 text.contains(&refusal),

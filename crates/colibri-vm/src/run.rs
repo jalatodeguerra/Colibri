@@ -460,6 +460,10 @@ impl Machine {
                     ));
                     reload!();
                 }
+                Op::CallHost { .. } => {
+                    sync!();
+                    tri!(self.op_call_host(fiber, &chunk, base, pc, op));
+                }
                 Op::Return { s } => {
                     let v = std::mem::replace(&mut reg!(s), Value::Unit);
                     Self::check_window(fiber, base, &chunk);
@@ -1062,6 +1066,7 @@ impl Machine {
                 Self::put_reg(fiber, frame.ret as usize, v);
                 None
             }
+            FrameKind::HostShim => unreachable!("a host call frame is popped by its call"),
         }
     }
 
@@ -1088,6 +1093,16 @@ impl Machine {
                     .collect();
                 self.assertion(fiber, which, values, span)
             }
+            Intrinsic::Ptr(op) => {
+                let values: Vec<Value> = args
+                    .map(|i| std::mem::replace(&mut fiber.regs[i], Value::Unit))
+                    .collect();
+                self.ptr_intrinsic(fiber, op, values, span)
+            }
+            Intrinsic::HostAlive => Ok(Value::Bool(match &fiber.regs[args.start] {
+                Value::Host(r) => self.core.host_alive(r.index, r.generation),
+                _ => false,
+            })),
             Intrinsic::Convert { from, to } => num::convert(*from, *to, &fiber.regs[args.start])
                 .map_err(|msg| self.panic(fiber, span, msg)),
             Intrinsic::NumMethod(m, n) => {

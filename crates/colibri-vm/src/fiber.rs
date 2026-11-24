@@ -18,6 +18,10 @@ pub(crate) enum FrameKind {
     Colibri,
     /// Entered from Rust: returning ends the dispatch loop that was started for it.
     NativeEntry,
+    /// A host function that Colibri code called: no code and no registers, only the name in
+    /// traces and the body a borrowed host object is held under. Pushed and popped by the call
+    /// itself, so no `Return` ever meets it.
+    HostShim,
 }
 
 /// One call. A frame's registers are `regs[base .. base + chunk.nregs]`; its parameters are the
@@ -104,6 +108,11 @@ impl VmFiber {
     /// How many calls are active.
     pub fn depth(&self) -> usize {
         self.frames.len()
+    }
+
+    /// How many host functions are running, one inside another, on this fiber.
+    pub fn host_depth(&self) -> u32 {
+        self.state.host_depth
     }
 
     /// How many held temporaries are alive; zero whenever no code is running.

@@ -2,6 +2,9 @@
 //! `Stat` (in the default module or in a module of its own) coexists with the standard
 //! library's, whichever is registered first.
 
+mod common;
+use common::vm_pending;
+
 use colibri_runtime::{self as colibri, Cap, HostType, TypeBuilder};
 
 macro_rules! embedder_class {
@@ -26,11 +29,7 @@ embedder_class!(GameStat, "Stat", "game-stat");
 
 fn vm() -> (colibri::Vm, colibri::SharedBuffer) {
     let out = colibri::SharedBuffer::new();
-    // Pinned to the tree-walker: this tests the standard library, not the engine, and host
-    // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
     let vm = colibri::Vm::builder()
-        // vm-pin: 2c
-        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(Cap::Os)
         .allow(Cap::Fs)
@@ -98,12 +97,22 @@ fn check(register_first: bool) {
 
 #[test]
 fn embedder_types_registered_before_the_library_coexist_with_its_own() {
-    check(true);
+    vm_pending(
+        "embedder_types_registered_before_the_library_coexist_with_its_own",
+        || {
+            check(true);
+        },
+    )
 }
 
 #[test]
 fn embedder_types_registered_after_the_library_coexist_with_its_own() {
-    check(false);
+    vm_pending(
+        "embedder_types_registered_after_the_library_coexist_with_its_own",
+        || {
+            check(false);
+        },
+    )
 }
 
 #[test]
@@ -228,12 +237,22 @@ fn check_values(register_first: bool) {
 
 #[test]
 fn an_embedder_value_and_item_registered_before_the_library_coexist_with_json_value() {
-    check_values(true);
+    vm_pending(
+        "an_embedder_value_and_item_registered_before_the_library_coexist_with_json_value",
+        || {
+            check_values(true);
+        },
+    )
 }
 
 #[test]
 fn an_embedder_value_and_item_registered_after_the_library_coexist_with_json_value() {
-    check_values(false);
+    vm_pending(
+        "an_embedder_value_and_item_registered_after_the_library_coexist_with_json_value",
+        || {
+            check_values(false);
+        },
+    )
 }
 
 #[test]
@@ -257,10 +276,10 @@ fn json_decode_does_not_mistake_an_embedder_value_for_json_value() {
     colibri_std::install(&mut vm).unwrap();
     vm.register_type::<MyValue>().unwrap();
     vm.load_source(
-        "app/main.colibri",
-        "import json\nstruct Doc { v: Value }\nfn main() {\n    match json.decode[Doc](r\"\"\"{\"v\": 1}\"\"\") {\n        ok(_) => print(\"decoded\"),\n        err(e) => print(e),\n    }\n}\n",
-    )
-    .unwrap_or_else(|e| panic!("{}", e.render(false)));
+    "app/main.colibri",
+    "import json\nstruct Doc { v: Value }\nfn main() {\n    match json.decode[Doc](r\"\"\"{\"v\": 1}\"\"\") {\n        ok(_) => print(\"decoded\"),\n        err(e) => print(e),\n    }\n}\n",
+)
+.unwrap_or_else(|e| panic!("{}", e.render(false)));
     vm.run_main().unwrap();
     let text = out.contents();
     assert!(

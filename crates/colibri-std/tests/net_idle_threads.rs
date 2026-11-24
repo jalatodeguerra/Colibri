@@ -10,6 +10,9 @@
 //! other).
 #![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
+mod common;
+use common::vm_pending;
+
 use std::io::Read;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -167,10 +170,12 @@ fn raise_descriptor_limit() {
 /// even one that waits on a lock, would be counted).
 #[test]
 fn a_thousand_idle_waits_use_a_few_threads_and_no_cpu() {
-    raise_descriptor_limit();
-    a_thousand_idle_blocked_reads();
-    a_thousand_idle_accepts();
-    a_thousand_writes_blocked_on_full_buffers();
+    vm_pending("a_thousand_idle_waits_use_a_few_threads_and_no_cpu", || {
+        raise_descriptor_limit();
+        a_thousand_idle_blocked_reads();
+        a_thousand_idle_accepts();
+        a_thousand_writes_blocked_on_full_buffers();
+    })
 }
 
 fn a_thousand_idle_blocked_reads() {
@@ -191,11 +196,7 @@ fn a_thousand_idle_blocked_reads() {
 
     let marks = Arc::new(Mutex::new(Vec::<(Instant, f64, usize)>::new()));
     let out = colibri::SharedBuffer::new();
-    // Pinned to the tree-walker: this tests the standard library, not the engine, and host
-    // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
     let mut vm = colibri::Vm::builder()
-        // vm-pin: 2c
-        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Net)
         .build();
@@ -292,8 +293,6 @@ fn a_thousand_idle_accepts() {
     let marks = Arc::new(Mutex::new(Vec::<(Instant, f64, usize)>::new()));
     let out = colibri::SharedBuffer::new();
     let mut vm = colibri::Vm::builder()
-        // vm-pin: 2c
-        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Net)
         .build();
@@ -465,8 +464,6 @@ fn a_thousand_writes_blocked_on_full_buffers() {
     let marks = Arc::new(Mutex::new(Vec::<(Instant, f64, usize)>::new()));
     let out = colibri::SharedBuffer::new();
     let mut vm = colibri::Vm::builder()
-        // vm-pin: 2c
-        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Net)
         .build();

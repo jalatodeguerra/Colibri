@@ -7,8 +7,10 @@
 use std::fmt::Write;
 use std::rc::Rc;
 
-use colibri_check::hir::{BinOp, Body, FnId, FormatSpec, Intrinsic, Lit, UnOp, ValueProj};
-use colibri_check::types::TypeId;
+use colibri_check::hir::{
+    BinOp, Body, FnId, FormatSpec, HostFnId, Intrinsic, Lit, UnOp, ValueProj,
+};
+use colibri_check::types::{Ty, TypeId};
 use colibri_core::value::Value;
 use colibri_syntax::Span;
 
@@ -334,6 +336,13 @@ pub enum Op {
     /// Calls the function of the site with the window starting at register `base` (the
     /// arguments are `base..`); the result goes to `d`.
     Call {
+        d: Reg,
+        base: Reg,
+        site: u16,
+    },
+    /// Calls the host function of the site (`Site::Host`) with owned copies of the arguments in
+    /// `base..`, which stay where they are for the caller to drop; the result goes to `d`.
+    CallHost {
         d: Reg,
         base: Reg,
         site: u16,
@@ -668,6 +677,8 @@ pub enum Site {
     Binary(BinOp),
     Unary(UnOp),
     Call(FnId),
+    /// A host function, how many arguments it takes and the type arguments of the call.
+    Host(HostFnId, u16, Box<[Ty]>),
     Format(Box<FormatSpec>),
     Intrinsic {
         which: Intrinsic,
@@ -817,6 +828,9 @@ impl Chunk {
             Op::Call { d, base, site } => {
                 format!("Call r{d} base=r{base} {}", self.site_text(site))
             }
+            Op::CallHost { d, base, site } => {
+                format!("CallHost r{d} base=r{base} {}", self.site_text(site))
+            }
             Op::Return { s } => format!("Return r{s}"),
             Op::ReturnUnit => "ReturnUnit".to_string(),
             Op::Print { r } => format!("Print r{r}"),
@@ -892,6 +906,7 @@ impl Chunk {
             Some(Site::Binary(op)) => format!("{op:?}"),
             Some(Site::Unary(op)) => format!("{op:?}"),
             Some(Site::Call(f)) => format!("fn#{}", f.0),
+            Some(Site::Host(id, argc, _)) => format!("host#{}/{argc}", id.0),
             Some(Site::Format(spec)) => format!("{spec:?}"),
             Some(Site::Intrinsic { which, argc }) => format!("{which:?}/{argc}"),
             Some(Site::F32ToFloat) => "F32ToFloat".to_string(),

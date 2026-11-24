@@ -1,6 +1,9 @@
 //! `http` against a server inside the test process (127.0.0.1, an ephemeral port): no test
 //! touches the real network. The server is a few lines of hand-written HTTP/1.1.
 
+mod common;
+use common::vm_pending;
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
@@ -100,11 +103,7 @@ fn handle(mut stream: TcpStream) {
 /// granted and `base` bound to the server's URL; returns what it printed.
 fn run(base: &str, body: &str) -> String {
     let out = colibri::SharedBuffer::new();
-    // Pinned to the tree-walker: this tests the standard library, not the engine, and host
-    // functions do not run on the bytecode VM yet (`COLIBRI_ENGINE=vm`). Unpin with step 2c.
     let mut vm = colibri::Vm::builder()
-        // vm-pin: 2c
-        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Net)
         .build();
@@ -120,10 +119,11 @@ fn run(base: &str, body: &str) -> String {
 
 #[test]
 fn get_returns_status_headers_and_body() {
-    let base = serve();
-    let out = run(
-        &base,
-        r#"
+    vm_pending("get_returns_status_headers_and_body", || {
+        let base = serve();
+        let out = run(
+            &base,
+            r#"
     let r = http.get("{base}/hello") or panic("request failed")
     print(r.status)
     print(r.body)
@@ -132,8 +132,9 @@ fn get_returns_status_headers_and_body() {
     print(r.headers["set-cookie"])
     print(r.headers.contains_key("X-Thing"))
 "#,
-    );
-    assert_eq!(out, "200\nhello\na\n5\none=1, two=2\nfalse\n");
+        );
+        assert_eq!(out, "200\nhello\na\n5\none=1, two=2\nfalse\n");
+    })
 }
 
 #[test]
@@ -142,10 +143,10 @@ fn an_error_status_is_a_response_not_an_err() {
     let out = run(
         &base,
         r#"
-    match http.get("{base}/missing") {
-        ok(r) => print("{r.status} {r.body}")
-        err(e) => print("error: {e.message()}")
-    }
+match http.get("{base}/missing") {
+    ok(r) => print("{r.status} {r.body}")
+    err(e) => print("error: {e.message()}")
+}
 "#,
     );
     assert_eq!(out, "404 nothing here\n");
@@ -157,14 +158,14 @@ fn post_and_request_send_the_method_headers_and_body() {
     let out = run(
         &base,
         r#"
-    let a = http.post("{base}/echo", "plain") or panic("a")
-    print(a.body)
-    let b = http.post_as("{base}/echo", "{{\"k\": 1}}", "application/json") or panic("b")
-    print(b.body)
-    let c = http.request("put", "{base}/echo", {"content-type": "text/csv"}, "x,y") or panic("c")
-    print(c.body)
-    let d = http.request("GET", "{base}/headers", {"X-Token": "secret"}, "") or panic("d")
-    print(d.body)
+let a = http.post("{base}/echo", "plain") or panic("a")
+print(a.body)
+let b = http.post_as("{base}/echo", "{{\"k\": 1}}", "application/json") or panic("b")
+print(b.body)
+let c = http.request("put", "{base}/echo", {"content-type": "text/csv"}, "x,y") or panic("c")
+print(c.body)
+let d = http.request("GET", "{base}/headers", {"X-Token": "secret"}, "") or panic("d")
+print(d.body)
 "#,
     );
     assert_eq!(
@@ -179,8 +180,8 @@ fn redirects_are_followed() {
     let out = run(
         &base,
         r#"
-    let r = http.get("{base}/redirect") or panic("request failed")
-    print("{r.status} {r.body}")
+let r = http.get("{base}/redirect") or panic("request failed")
+print("{r.status} {r.body}")
 "#,
     );
     assert_eq!(out, "200 hello\n");
@@ -192,8 +193,8 @@ fn a_body_that_is_not_utf8_is_decoded_lossily() {
     let out = run(
         &base,
         r#"
-    let r = http.get("{base}/binary") or panic("request failed")
-    print(r.body)
+let r = http.get("{base}/binary") or panic("request failed")
+print(r.body)
 "#,
     );
     assert_eq!(out, "a\u{fffd}b\n");
@@ -205,10 +206,10 @@ fn json_decode_reads_a_response_body() {
     let out = run(
         &base,
         r#"
-    let r = http.post_as("{base}/echo", "x", "t") or panic("request failed")
-    let parts = json.decode[List[int]]("[1, 2]") or panic("json")
-    print(parts)
-    print(r.body)
+let r = http.post_as("{base}/echo", "x", "t") or panic("request failed")
+let parts = json.decode[List[int]]("[1, 2]") or panic("json")
+print(parts)
+print(r.body)
 "#,
     );
     assert_eq!(out, "[1, 2]\nPOST t|x\n");
@@ -216,10 +217,11 @@ fn json_decode_reads_a_response_body() {
 
 #[test]
 fn failures_are_errs_with_a_message() {
-    let base = serve();
-    let out = run(
-        &base,
-        r#"
+    vm_pending("failures_are_errs_with_a_message", || {
+        let base = serve();
+        let out = run(
+            &base,
+            r#"
     match http.get("not a url") {
         ok(_) => print("ok")
         err(e) => print(e.message())
@@ -238,24 +240,26 @@ fn failures_are_errs_with_a_message() {
         err(e) => print("refused: {e.message()}")
     }
 "#,
-    );
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 4, "{out}");
-    assert!(lines[0].starts_with("http: GET not a url failed:"), "{out}");
-    assert_eq!(lines[1], "http: `GE T` is not an HTTP method");
-    assert!(lines[2].starts_with("header: http: GET "), "{out}");
-    assert!(
-        lines[3].starts_with("refused: http: GET http://127.0.0.1:1/ failed:"),
-        "{out}"
-    );
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 4, "{out}");
+        assert!(lines[0].starts_with("http: GET not a url failed:"), "{out}");
+        assert_eq!(lines[1], "http: `GE T` is not an HTTP method");
+        assert!(lines[2].starts_with("header: http: GET "), "{out}");
+        assert!(
+            lines[3].starts_with("refused: http: GET http://127.0.0.1:1/ failed:"),
+            "{out}"
+        );
+    })
 }
 
 #[test]
 fn the_timeout_is_configurable() {
-    let base = serve();
-    let out = run(
-        &base,
-        r#"
+    vm_pending("the_timeout_is_configurable", || {
+        let base = serve();
+        let out = run(
+            &base,
+            r#"
     http.set_timeout(0.2)
     match http.get("{base}/slow") {
         ok(r) => print("ok {r.body}")
@@ -265,10 +269,11 @@ fn the_timeout_is_configurable() {
     let r = http.get("{base}/slow") or panic("no timeout")
     print(r.body)
 "#,
-    );
-    let lines: Vec<&str> = out.lines().collect();
-    assert!(lines[0].starts_with("timed out: http: GET "), "{out}");
-    assert_eq!(lines[1], "late");
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].starts_with("timed out: http: GET "), "{out}");
+        assert_eq!(lines[1], "late");
+    })
 }
 
 #[test]
@@ -276,8 +281,6 @@ fn a_negative_timeout_panics() {
     let base = serve();
     let out = colibri::SharedBuffer::new();
     let mut vm = colibri::Vm::builder()
-        // vm-pin: 2c
-        .engine(colibri::EngineKind::Tree)
         .stdout(Box::new(out.clone()))
         .allow(colibri::Cap::Net)
         .build();
@@ -301,10 +304,10 @@ fn https_to_a_closed_port_fails_cleanly() {
     let out = run(
         "",
         r#"
-    match http.get("https://127.0.0.1:1/") {
-        ok(_) => print("ok")
-        err(e) => print("err")
-    }
+match http.get("https://127.0.0.1:1/") {
+    ok(_) => print("ok")
+    err(e) => print("err")
+}
 "#,
     );
     assert_eq!(out, "err\n");
@@ -351,10 +354,10 @@ fn requests_to_one_host_reuse_the_connection() {
     let out = run(
         &base,
         r#"
-    for i in 0..5 {
-        let r = http.get("{base}/n") or panic("request failed")
-        print(r.body)
-    }
+for i in 0..5 {
+    let r = http.get("{base}/n") or panic("request failed")
+    print(r.body)
+}
 "#,
     );
     assert_eq!(out, "ok\nok\nok\nok\nok\n");
@@ -381,10 +384,11 @@ fn serve_garbage() -> String {
 
 #[test]
 fn failures_carry_an_http_error_to_branch_on() {
-    let base = serve();
-    let out = run(
-        &base,
-        r#"
+    vm_pending("failures_carry_an_http_error_to_branch_on", || {
+        let base = serve();
+        let out = run(
+            &base,
+            r#"
     http.set_timeout(0.2)
     print(http.get("{base}/slow").err().expect("times out").as[http.Error]())
     http.set_timeout(30.0)
@@ -399,20 +403,24 @@ fn failures_carry_an_http_error_to_branch_on() {
     print(e.as[http.Error]().expect("kept") == http.Error.Connect)
     print("{e}".starts_with("fetching: http: GET http://127.0.0.1:1/ failed:"))
 "#,
-    );
-    assert_eq!(
-        out,
-        "some(Timeout)\nsome(Connect)\nsome(InvalidUrl)\nsome(Other)\nsome(Other)\nnone\ntrue\ntrue\ntrue\n"
-    );
+        );
+        assert_eq!(
+            out,
+            "some(Timeout)\nsome(Connect)\nsome(InvalidUrl)\nsome(Other)\nsome(Other)\nnone\ntrue\ntrue\ntrue\n"
+        );
+    })
 }
 
 #[test]
 fn speaking_tls_to_a_server_that_does_not_is_a_tls_error() {
-    let addr = serve_garbage();
-    let out = run(
-        "",
-        &format!(
-            r#"
+    vm_pending(
+        "speaking_tls_to_a_server_that_does_not_is_a_tls_error",
+        || {
+            let addr = serve_garbage();
+            let out = run(
+                "",
+                &format!(
+                    r#"
     match http.get("https://{addr}/") {{
         ok(_) => print("ok")
         err(e) => {{
@@ -421,9 +429,11 @@ fn speaking_tls_to_a_server_that_does_not_is_a_tls_error() {
         }}
     }}
 "#
-        ),
-    );
-    assert!(out.starts_with("some(Tls)\nhttp: GET https://"), "{out}");
+                ),
+            );
+            assert!(out.starts_with("some(Tls)\nhttp: GET https://"), "{out}");
+        },
+    )
 }
 
 /// `Response` keeps its three fields: a response encodes as JSON, prints once, and holds the
@@ -434,9 +444,9 @@ fn a_response_encodes_as_json_and_has_only_status_headers_and_body() {
     let out = run(
         &base,
         r#"
-    let r = http.get("{base}/missing") or panic("request failed")
-    print(json.encode(r) or panic("encode"))
-    print(r)
+let r = http.get("{base}/missing") or panic("request failed")
+print(json.encode(r) or panic("encode"))
+print(r)
 "#,
     );
     let mut lines = out.lines();
@@ -452,10 +462,11 @@ fn a_response_encodes_as_json_and_has_only_status_headers_and_body() {
 
 #[test]
 fn a_binary_body_comes_back_as_bytes_without_loss() {
-    let base = serve();
-    let out = run(
-        &base,
-        r#"
+    vm_pending("a_binary_body_comes_back_as_bytes_without_loss", || {
+        let base = serve();
+        let out = run(
+            &base,
+            r#"
     let r = http.get_bytes("{base}/all256") or panic("request failed")
     print(r.status)
     let mut same = r.body.len() == 256
@@ -475,16 +486,18 @@ fn a_binary_body_comes_back_as_bytes_without_loss() {
     let t = http.get("{base}/binary") or panic("request failed")
     print(t.body.len())
 "#,
-    );
-    assert_eq!(out, "200\ntrue\nb\"a\\xffb\"\ntrue\n3\n5\n");
+        );
+        assert_eq!(out, "200\ntrue\nb\"a\\xffb\"\ntrue\n3\n5\n");
+    })
 }
 
 #[test]
 fn bytes_are_sent_as_they_are() {
-    let base = serve();
-    let out = run(
-        &base,
-        r#"
+    vm_pending("bytes_are_sent_as_they_are", || {
+        let base = serve();
+        let out = run(
+            &base,
+            r#"
     let data = Bytes([0, 255, 128, 10, 13, 0])
     let a = http.request_bytes("post", "{base}/raw", {"content-type": "application/octet-stream"}, data) or panic("a")
     print(a.body == data)
@@ -502,9 +515,10 @@ fn bytes_are_sent_as_they_are() {
         err(e) => print(e.message())
     }
 "#,
-    );
-    assert_eq!(
-        out,
-        "true\nb\"\\x00\\xff\\x80\\n\\r\\x00\"\n0\nPOST text/x-bytes|hi\n{\"status\":\nhttp: `no way` is not an HTTP method\n"
-    );
+        );
+        assert_eq!(
+            out,
+            "true\nb\"\\x00\\xff\\x80\\n\\r\\x00\"\n0\nPOST text/x-bytes|hi\n{\"status\":\nhttp: `no way` is not an HTTP method\n"
+        );
+    })
 }

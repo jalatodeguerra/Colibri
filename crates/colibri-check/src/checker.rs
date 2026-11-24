@@ -2051,6 +2051,7 @@ impl<'a> Checker<'a> {
                             name: f.name.clone(),
                             module: self.mods[f.module.0 as usize].name.clone(),
                             f: FnId(i as u32),
+                            type_params: f.generics.iter().map(|g| g.id).collect(),
                             requires: h.requires.clone(),
                             ext: self.host_ext.get(&h.id.0).cloned(),
                         },

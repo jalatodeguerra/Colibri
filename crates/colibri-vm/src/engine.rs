@@ -219,15 +219,12 @@ impl Engine for Machine {
 
     fn call_host_hook(
         &mut self,
-        _fiber: &mut VmFiber,
-        _ty: TypeId,
-        _hook: HostHook,
+        fiber: &mut VmFiber,
+        ty: TypeId,
+        hook: HostHook,
         args: Vec<Value>,
     ) -> Result<Value, HostFault> {
-        self.release_all(args);
-        Err(HostFault::Message(
-            "the bytecode VM does not support host classes yet".to_string(),
-        ))
+        self.run_host_hook(fiber, ty, hook, args)
     }
 
     #[inline]

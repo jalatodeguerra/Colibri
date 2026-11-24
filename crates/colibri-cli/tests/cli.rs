@@ -1,13 +1,18 @@
 //! End-to-end tests of the `colibri` binary.
 
+mod common;
+use common::vm_pending;
+
 use std::path::PathBuf;
 use std::process::Output;
 
 fn colibri(args: &[&str]) -> Output {
-    colibri_command()
-        .args(args)
-        .output()
-        .expect("the colibri binary runs")
+    common::checked(
+        colibri_command()
+            .args(args)
+            .output()
+            .expect("the colibri binary runs"),
+    )
 }
 
 /// Writes `source` to a unique temporary file.
@@ -110,11 +115,13 @@ fn deep_recursion_is_a_stack_overflow_panic_not_a_crash() {
         "long traces are elided: {stderr}"
     );
     assert!(stderr.lines().count() < 40, "{stderr}");
-    let full = colibri_command()
-        .args(["run", path.to_str().unwrap()])
-        .env("COLIBRI_FULL_TRACE", "1")
-        .output()
-        .unwrap();
+    let full = common::checked(
+        colibri_command()
+            .args(["run", path.to_str().unwrap()])
+            .env("COLIBRI_FULL_TRACE", "1")
+            .output()
+            .unwrap(),
+    );
     let full = String::from_utf8_lossy(&full.stderr);
     assert!(!full.contains("more calls"), "{full}");
     assert!(full.lines().count() > 5000, "{}", full.lines().count());
@@ -187,15 +194,17 @@ fn a_missing_file_is_an_error() {
 
 #[test]
 fn main_returning_err_reports_on_stderr_and_exits_one() {
-    let path = temp_file(
-        "main_err.colibri",
-        "fn main() -> Result[()] {\n    print(\"start\")\n    return err(\"it broke\")\n}\n",
-    );
-    let out = colibri(&["run", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(1));
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "start\n");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.starts_with("error: it broke"), "{stderr}");
+    vm_pending("main_returning_err_reports_on_stderr_and_exits_one", || {
+        let path = temp_file(
+            "main_err.colibri",
+            "fn main() -> Result[()] {\n    print(\"start\")\n    return err(\"it broke\")\n}\n",
+        );
+        let out = colibri(&["run", path.to_str().unwrap()]);
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "start\n");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.starts_with("error: it broke"), "{stderr}");
+    })
 }
 
 #[test]
@@ -447,11 +456,13 @@ fn run_and_check_without_a_file_use_the_current_folder() {
         ],
     );
     let run = |arg: &str| {
-        colibri_command()
-            .arg(arg)
-            .current_dir(&dir)
-            .output()
-            .expect("the colibri binary runs")
+        common::checked(
+            colibri_command()
+                .arg(arg)
+                .current_dir(&dir)
+                .output()
+                .expect("the colibri binary runs"),
+        )
     };
     let out = run("run");
     assert_eq!(
@@ -594,11 +605,13 @@ fn fmt_walks_directories_but_skips_target_and_hidden_ones() {
 fn fmt_without_a_path_formats_the_current_directory() {
     let dir = temp_dir("cwd");
     let path = write(&dir, "x/a.colibri", MESSY);
-    let out = colibri_command()
-        .arg("fmt")
-        .current_dir(&dir)
-        .output()
-        .expect("the colibri binary runs");
+    let out = common::checked(
+        colibri_command()
+            .arg("fmt")
+            .current_dir(&dir)
+            .output()
+            .expect("the colibri binary runs"),
+    );
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(std::fs::read_to_string(path).unwrap(), TIDY);
 }
@@ -638,42 +651,51 @@ fn fmt_dash_formats_stdin_to_stdout() {
 
 #[test]
 fn run_passes_the_arguments_after_the_file_to_os_args() {
-    let path = temp_file(
-        "args.colibri",
-        "import os\n\nfn main() {\n    for a in os.args() {\n        print(a)\n    }\n    print(\"{os.args().len()}\")\n}\n",
-    );
-    let out = colibri(&["run", path.to_str().unwrap(), "a", "--flag", "b c"]);
-    assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "a\n--flag\nb c\n3\n");
-    let out = colibri(&["run", path.to_str().unwrap(), "--", "-x"]);
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "-x\n1\n");
-    let out = colibri(&["run", path.to_str().unwrap()]);
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n");
+    vm_pending("run_passes_the_arguments_after_the_file_to_os_args", || {
+        let path = temp_file(
+            "args.colibri",
+            "import os\n\nfn main() {\n    for a in os.args() {\n        print(a)\n    }\n    print(\"{os.args().len()}\")\n}\n",
+        );
+        let out = colibri(&["run", path.to_str().unwrap(), "a", "--flag", "b c"]);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "a\n--flag\nb c\n3\n");
+        let out = colibri(&["run", path.to_str().unwrap(), "--", "-x"]);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "-x\n1\n");
+        let out = colibri(&["run", path.to_str().unwrap()]);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n");
+    })
 }
 
 #[test]
 fn run_keeps_running_coroutines_after_main_with_real_time() {
-    let path = temp_file(
-        "coro_loop.colibri",
-        "fn w() {\n    wait(0.05)\n    print(\"late\")\n}\nfn main() {\n    go w()\n    print(\"main\")\n}\n",
-    );
-    let started = std::time::Instant::now();
-    let out = colibri(&["run", path.to_str().unwrap()]);
-    assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "main\nlate\n");
-    assert!(started.elapsed().as_millis() >= 50);
+    vm_pending(
+        "run_keeps_running_coroutines_after_main_with_real_time",
+        || {
+            let path = temp_file(
+                "coro_loop.colibri",
+                "fn w() {\n    wait(0.05)\n    print(\"late\")\n}\nfn main() {\n    go w()\n    print(\"main\")\n}\n",
+            );
+            let started = std::time::Instant::now();
+            let out = colibri(&["run", path.to_str().unwrap()]);
+            assert!(out.status.success());
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "main\nlate\n");
+            assert!(started.elapsed().as_millis() >= 50);
+        },
+    )
 }
 
 #[test]
 fn a_panic_in_a_coroutine_after_main_exits_101() {
-    let path = temp_file(
-        "coro_panic.colibri",
-        "fn w() {\n    wait(0.01)\n    panic(\"in coroutine\")\n}\nfn main() {\n    go w()\n}\n",
-    );
-    let out = colibri(&["run", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(101));
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("in coroutine") && err.contains("w"), "{err}");
+    vm_pending("a_panic_in_a_coroutine_after_main_exits_101", || {
+        let path = temp_file(
+            "coro_panic.colibri",
+            "fn w() {\n    wait(0.01)\n    panic(\"in coroutine\")\n}\nfn main() {\n    go w()\n}\n",
+        );
+        let out = colibri(&["run", path.to_str().unwrap()]);
+        assert_eq!(out.status.code(), Some(101));
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("in coroutine") && err.contains("w"), "{err}");
+    })
 }
 
 const CYCLE: &str = "class Node {\n    name: str\n    next: Node? = none\n}\nfn main() {\n    let a = Node { name: \"a\" }\n    a.next = some(a)\n    print(\"ran\")\n}\n";
@@ -1095,11 +1117,8 @@ fn a_panic_inside_vec_names_the_library_in_the_trace() {
     assert!(stderr.contains("<std>/vec.colibri"), "{stderr}");
 }
 
-/// The binary under test, pinned to the tree-walker: these tests are about the command line,
-/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
+/// spawn on the VM (see `vm_pending.txt` for the ones that cannot pass there yet).
 fn colibri_command() -> std::process::Command {
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
-    // vm-pin: 2c
-    cmd.env_remove("COLIBRI_ENGINE");
-    cmd
+    std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

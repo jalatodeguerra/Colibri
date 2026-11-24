@@ -17,6 +17,9 @@
 //!   The package is checked as a whole, and an `output` block after one of its blocks is what
 //!   `colibri run` on the package prints.
 
+mod common;
+use common::vm_pending;
+
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -273,11 +276,13 @@ fn colibri(dir: &Path, args: &[&str]) -> Ran {
         let _ = guard.0.kill();
         let _ = guard.0.wait();
     }
-    Ran {
+    let ran = Ran {
         code: status.map(|s| s.code().unwrap_or(-1)),
         stdout: String::from_utf8_lossy(&out.join().unwrap()).replace("\r\n", "\n"),
         stderr: String::from_utf8_lossy(&err.join().unwrap()).replace("\r\n", "\n"),
-    }
+    };
+    common::no_refusal(&ran.stderr);
+    ran
 }
 
 /// A fresh folder for the samples of one test, removed at the end.
@@ -535,8 +540,10 @@ fn guide_samples_check_and_are_formatted() {
 
 #[test]
 fn guide_samples_print_the_output_the_guide_shows() {
-    let problems = check_all("run", true);
-    assert!(problems.is_empty(), "\n{}", problems.join("\n\n"));
+    vm_pending("guide_samples_print_the_output_the_guide_shows", || {
+        let problems = check_all("run", true);
+        assert!(problems.is_empty(), "\n{}", problems.join("\n\n"));
+    })
 }
 
 #[test]
@@ -840,11 +847,8 @@ fn colibri_doc_refuses_a_folder_with_pages_it_did_not_write() {
     assert!(empty.join(".DS_Store").exists());
 }
 
-/// The binary under test, pinned to the tree-walker: these tests are about the command line,
-/// not the engine, and `COLIBRI_ENGINE=vm` would otherwise reach every process they spawn.
+/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
+/// spawn on the VM (see `vm_pending.txt` for the ones that cannot pass there yet).
 fn colibri_command() -> std::process::Command {
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_colibri"));
-    // vm-pin: 2c
-    cmd.env_remove("COLIBRI_ENGINE");
-    cmd
+    std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }
