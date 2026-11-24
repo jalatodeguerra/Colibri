@@ -155,6 +155,36 @@ pub enum Op {
         a: Reg,
         i: i16,
     },
+    /// `d = a * i`, checked.
+    MulIK {
+        d: Reg,
+        a: Reg,
+        i: i16,
+    },
+    /// `d = a / i`; the compiler only emits it for an `i` that is neither 0 nor -1.
+    DivIK {
+        d: Reg,
+        a: Reg,
+        i: i16,
+    },
+    /// `d = a % i`; the compiler only emits it for an `i` that is neither 0 nor -1.
+    RemIK {
+        d: Reg,
+        a: Reg,
+        i: i16,
+    },
+    /// `d = a == i`.
+    EqIK {
+        d: Reg,
+        a: Reg,
+        i: i16,
+    },
+    /// `d = a != i`.
+    NeIK {
+        d: Reg,
+        a: Reg,
+        i: i16,
+    },
     NegI {
         d: Reg,
         a: Reg,
@@ -980,6 +1010,11 @@ impl Op {
             | Op::StoreLocal { l: d, s }
             | Op::CellSet { l: d, s }
             | Op::AddIK { d, a: s, .. }
+            | Op::MulIK { d, a: s, .. }
+            | Op::DivIK { d, a: s, .. }
+            | Op::RemIK { d, a: s, .. }
+            | Op::EqIK { d, a: s, .. }
+            | Op::NeIK { d, a: s, .. }
             | Op::NegI { d, a: s }
             | Op::NegF { d, a: s }
             | Op::Not { d, a: s }
@@ -1171,6 +1206,11 @@ impl Chunk {
             Op::DivI { d, a, b } => format!("DivI r{d} r{a} r{b}"),
             Op::RemI { d, a, b } => format!("RemI r{d} r{a} r{b}"),
             Op::AddIK { d, a, i } => format!("AddIK r{d} r{a} {i}"),
+            Op::MulIK { d, a, i } => format!("MulIK r{d} r{a} {i}"),
+            Op::DivIK { d, a, i } => format!("DivIK r{d} r{a} {i}"),
+            Op::RemIK { d, a, i } => format!("RemIK r{d} r{a} {i}"),
+            Op::EqIK { d, a, i } => format!("EqIK r{d} r{a} {i}"),
+            Op::NeIK { d, a, i } => format!("NeIK r{d} r{a} {i}"),
             Op::NegI { d, a } => format!("NegI r{d} r{a}"),
             Op::LtI { d, a, b } => format!("LtI r{d} r{a} r{b}"),
             Op::LeI { d, a, b } => format!("LeI r{d} r{a} r{b}"),

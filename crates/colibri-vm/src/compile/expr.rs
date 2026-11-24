@@ -425,6 +425,45 @@ impl FnCompiler<'_> {
                 self.free(a, span);
                 return;
             }
+            BinOp::Arith(ao, Num::Int(IntTy::I64))
+                if matches!(ao, ArithOp::Mul | ArithOp::Div | ArithOp::Rem)
+                    && matches!(&r.kind, ExprKind::Lit(Lit::Int(k))
+                        if i16::try_from(*k).is_ok()
+                            && (ao == ArithOp::Mul || !matches!(*k, 0 | -1))) =>
+            {
+                let ExprKind::Lit(Lit::Int(k)) = &r.kind else {
+                    unreachable!()
+                };
+                let i = i16::try_from(*k).unwrap_or(1);
+                let a = self.operand(l, false);
+                let op = match ao {
+                    ArithOp::Mul => Op::MulIK { d: dst, a, i },
+                    ArithOp::Div => Op::DivIK { d: dst, a, i },
+                    _ => Op::RemIK { d: dst, a, i },
+                };
+                self.emit(op, span);
+                self.free(a, span);
+                return;
+            }
+            BinOp::Cmp(c, Operand::Int(ty))
+                if matches!(c, CmpOp::Eq | CmpOp::Ne)
+                    && ty != IntTy::U64
+                    && matches!(&r.kind, ExprKind::Lit(Lit::Int(k)) if i16::try_from(*k).is_ok()) =>
+            {
+                let ExprKind::Lit(Lit::Int(k)) = &r.kind else {
+                    unreachable!()
+                };
+                let i = i16::try_from(*k).unwrap_or(0);
+                let a = self.operand(l, false);
+                let op = if c == CmpOp::Eq {
+                    Op::EqIK { d: dst, a, i }
+                } else {
+                    Op::NeIK { d: dst, a, i }
+                };
+                self.emit(op, span);
+                self.free(a, span);
+                return;
+            }
             _ => {}
         }
         let a = self.operand(l, writes_locals(r));

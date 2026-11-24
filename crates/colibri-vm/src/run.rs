@@ -414,6 +414,44 @@ impl Machine {
                         None => fault!("integer overflow"),
                     }
                 }
+                Op::MulIK { d, a, i } => {
+                    let Value::Int(x) = rd!(a) else {
+                        internal!("ill-typed integer operation")
+                    };
+                    match x.checked_mul(i64::from(i)) {
+                        Some(v) => put!(d, Value::Int(v)),
+                        None => fault!("integer overflow"),
+                    }
+                }
+                // The divisor is neither 0 nor -1 (the compiler's condition), so these cannot fail.
+                Op::DivIK { d, a, i } => {
+                    let Value::Int(x) = rd!(a) else {
+                        internal!("ill-typed integer operation")
+                    };
+                    let v = x.wrapping_div(i64::from(i));
+                    put!(d, Value::Int(v));
+                }
+                Op::RemIK { d, a, i } => {
+                    let Value::Int(x) = rd!(a) else {
+                        internal!("ill-typed integer operation")
+                    };
+                    let v = x.wrapping_rem(i64::from(i));
+                    put!(d, Value::Int(v));
+                }
+                Op::EqIK { d, a, i } => {
+                    let Value::Int(x) = rd!(a) else {
+                        internal!("ill-typed integer comparison")
+                    };
+                    let v = *x == i64::from(i);
+                    put!(d, Value::Bool(v));
+                }
+                Op::NeIK { d, a, i } => {
+                    let Value::Int(x) = rd!(a) else {
+                        internal!("ill-typed integer comparison")
+                    };
+                    let v = *x != i64::from(i);
+                    put!(d, Value::Bool(v));
+                }
                 Op::NegI { d, a } => {
                     let Value::Int(x) = rd!(a) else {
                         internal!("ill-typed negation")
