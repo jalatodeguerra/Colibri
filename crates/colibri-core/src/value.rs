@@ -184,10 +184,26 @@ pub fn exact<A: smallvec::Array<Item = Value>>(
 }
 
 /// A struct value: its type and its fields in declaration order.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct StructVal {
     pub ty: TypeId,
     pub fields: StructFields,
+}
+
+impl Clone for StructVal {
+    /// The fields are copied with the scalars inline (`Value::dup`): a struct of floats is
+    /// the commonest copy-on-write there is.
+    #[inline]
+    fn clone(&self) -> Self {
+        let mut fields = StructFields::with_capacity(self.fields.len());
+        for f in &self.fields {
+            fields.push(f.dup());
+        }
+        StructVal {
+            ty: self.ty,
+            fields,
+        }
+    }
 }
 
 /// An enum value: its type, which variant, and the variant's payload.
