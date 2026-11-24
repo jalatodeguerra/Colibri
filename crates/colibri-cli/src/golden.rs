@@ -765,6 +765,25 @@ fn finish(problems: Vec<String>) -> Result<(), String> {
     }
 }
 
+/// `text` with the number of a run's scratch folder (`colibri-golden-<pid>-<n>`) replaced, so
+/// that two runs of one program compare equal.
+fn same_folder(text: &str) -> String {
+    const MARK: &str = "colibri-golden-";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(MARK) {
+        let (head, tail) = rest.split_at(at + MARK.len());
+        out.push_str(head);
+        let digits = tail
+            .find(|c: char| !(c.is_ascii_digit() || c == '-'))
+            .unwrap_or(tail.len());
+        out.push('N');
+        rest = &tail[digits..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// How two engines' outcomes of one golden test differ (stdout, panic text and trace, main's error, the
 /// drop trace, the warnings), or `None` when they agree. The leak report is not compared: a
 /// cycle's shape is an engine detail.
@@ -790,6 +809,16 @@ pub fn diff_outcomes(tree: &Outcome, vm: &Outcome) -> Option<String> {
                 ..
             },
         ) => {
+            // Each run has a folder of its own: its number is no difference.
+            let (m1, m2) = (
+                m1.as_deref().map(same_folder),
+                m2.as_deref().map(same_folder),
+            );
+            let (p1, p2) = (
+                p1.as_deref().map(same_folder),
+                p2.as_deref().map(same_folder),
+            );
+            let (s1, s2) = (&same_folder(s1), &same_folder(s2));
             let mut parts = Vec::new();
             if s1 != s2 {
                 parts.push(format!("stdout:\n  tree: {s1:?}\n  vm:   {s2:?}"));

@@ -35,7 +35,7 @@ impl FnCompiler<'_> {
     /// A list or map operand of an anchor: a plain local's own register when nothing evaluated
     /// later can assign it, else a temporary holding a reference (the tree-walker keeps one on
     /// its temporaries stack).
-    fn anchor_operand(&mut self, e: &Expr, later_writes: bool) -> Reg {
+    pub(super) fn anchor_operand(&mut self, e: &Expr, later_writes: bool) -> Reg {
         if !later_writes
             && let ExprKind::Read(p) = &e.kind
             && p.path.is_empty()

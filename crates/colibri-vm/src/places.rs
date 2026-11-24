@@ -143,6 +143,13 @@ impl Machine {
             }
             _ => return Err(self.internal(fiber, span, "not a place instruction")),
         }
+        if matches!(site.anchor, AnchorKind::Entry) && colibri_core::compare::take_gave_up() {
+            let result = match op {
+                Op::PlaceGet { d, .. } => Some(r(d)),
+                _ => None,
+            };
+            return Err(self.lookup_gave_up(fiber, chunk, pc, result));
+        }
         Ok(())
     }
 

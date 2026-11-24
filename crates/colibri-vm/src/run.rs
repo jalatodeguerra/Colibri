@@ -221,6 +221,23 @@ impl Machine {
                 put!($d, Value::Float(x $op y));
             }};
         }
+        // After a lookup in a map or set: a comparison that gave up is a panic (the lookup's
+        // answer is a stand-in), and the value it left in `$d` is released.
+        macro_rules! gave_up {
+            ($d:expr) => {
+                if colibri_core::compare::take_gave_up() {
+                    let result: Option<u16> = $d;
+                    sync!();
+                    let ctl = self.lookup_gave_up(
+                        fiber,
+                        &chunk,
+                        pc,
+                        result.map(|d| base + usize::from(d)),
+                    );
+                    throw!(ctl)
+                }
+            };
+        }
         // Reloads the loop state from the top frame (after a push or a pop).
         macro_rules! reload {
             () => {{
@@ -541,6 +558,38 @@ impl Machine {
                     sync!();
                     tri!(self.op_intrinsic(fiber, &chunk, base, pc, op));
                 }
+                Op::Builtin { d, .. } => {
+                    sync!();
+                    tri!(self.op_builtin(fiber, &chunk, base, pc, op));
+                    gave_up!(Some(d));
+                }
+                Op::ListPush { l, v } => {
+                    let item = reg!(v).clone();
+                    let rejected = match &reg!(l) {
+                        Value::List(list) => list.push(item).err(),
+                        _ => internal!("an ill-typed `push`"),
+                    };
+                    if let Some(rejected) = rejected {
+                        sync!();
+                        let span = chunk.spans[pc - 1];
+                        self.release(rejected.args);
+                        throw!(self.violation(fiber, span, rejected.violation));
+                    }
+                }
+                Op::ListLen { d, l } => {
+                    let Value::List(list) = &reg!(l) else {
+                        internal!("an ill-typed `len`")
+                    };
+                    let n = list.len() as i64;
+                    put!(d, Value::Int(n));
+                }
+                Op::StrLen { d, s } => {
+                    let Value::Str(text) = &reg!(s) else {
+                        internal!("an ill-typed `len`")
+                    };
+                    let n = text.len() as i64;
+                    put!(d, Value::Int(n));
+                }
                 Op::Coerce { d, s, site } => match &chunk.sites[usize::from(site)] {
                     Site::F32ToFloat => {
                         let Value::F32(x) = &reg!(s) else {
@@ -577,6 +626,7 @@ impl Machine {
                 Op::MapInsert { m, k, v } => {
                     sync!();
                     tri!(self.op_map_insert(fiber, &chunk, base, pc, [m, k, v]));
+                    gave_up!(None);
                 }
 
                 Op::PlaceGet { .. }
@@ -587,12 +637,19 @@ impl Machine {
                     sync!();
                     tri!(self.op_place(fiber, &chunk, base, pc, op));
                 }
-                Op::ListGetAt { .. }
-                | Op::ListSetAt { .. }
-                | Op::MapGetAt { .. }
-                | Op::MapSetAt { .. } => {
+                Op::ListGetAt { .. } | Op::ListSetAt { .. } => {
                     sync!();
                     tri!(self.op_elem(fiber, &chunk, base, pc, op));
+                }
+                Op::MapGetAt { d, .. } => {
+                    sync!();
+                    tri!(self.op_elem(fiber, &chunk, base, pc, op));
+                    gave_up!(Some(d));
+                }
+                Op::MapSetAt { .. } => {
+                    sync!();
+                    tri!(self.op_elem(fiber, &chunk, base, pc, op));
+                    gave_up!(None);
                 }
                 Op::Unhold => {
                     let held = fiber.holds.pop();
@@ -605,6 +662,7 @@ impl Machine {
                 Op::CanonKey { d, m, k } => {
                     sync!();
                     tri!(self.op_canon_key(fiber, &chunk, base, pc, [d, m, k]));
+                    gave_up!(Some(d));
                 }
                 Op::HoldIter { .. } | Op::HoldListPlace { .. } => {
                     sync!();
@@ -1023,6 +1081,35 @@ impl Machine {
         Ok(())
     }
 
+    /// `Builtin`: core runs the built-in of the site on references of its own to the arguments
+    /// of the window (the arguments stay there for the caller to drop).
+    #[inline(never)]
+    fn op_builtin(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        op: Op,
+    ) -> Result<(), Ctl> {
+        let Op::Builtin { d, base: a, site } = op else {
+            unreachable!("op_builtin is called for its own instruction")
+        };
+        let span = chunk.spans[pc - 1];
+        let Some(Site::Intrinsic {
+            which: colibri_check::hir::Intrinsic::Builtin(which),
+            argc,
+        }) = chunk.sites.get(usize::from(site))
+        else {
+            return Err(self.internal(fiber, span, "a built-in without its site"));
+        };
+        let from = base + usize::from(a);
+        let args: Vec<Value> = fiber.regs[from..from + usize::from(*argc)].to_vec();
+        let result = self.builtin(fiber, *which, args, span)?;
+        Self::put_reg(fiber, base + usize::from(d), result);
+        Ok(())
+    }
+
     fn uninit_message(&self, g: u32) -> String {
         let name = self
             .uninit
@@ -1150,6 +1237,16 @@ impl Machine {
                 Value::Host(r) => self.core.host_alive(r.index, r.generation),
                 _ => false,
             })),
+            Intrinsic::ErrorIs(_) | Intrinsic::ErrorAs(_) => {
+                let arg = fiber.regs[args.start].clone();
+                let result = self.error_intrinsic(fiber, which, &arg, span);
+                self.release(arg);
+                result
+            }
+            Intrinsic::Compare => {
+                let values: Vec<Value> = fiber.regs[args].to_vec();
+                self.compare_values(fiber, values, span)
+            }
             Intrinsic::Convert { from, to } => num::convert(*from, *to, &fiber.regs[args.start])
                 .map_err(|msg| self.panic(fiber, span, msg)),
             Intrinsic::NumMethod(m, n) => {
