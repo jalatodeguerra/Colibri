@@ -526,7 +526,13 @@ impl Interp {
                 Ok(())
             }
             StmtKind::Assign { place, op, rhs } => {
-                self.exec_assign(fiber, place, *op, rhs, stmt.span)
+                self.exec_assign(fiber, place, *op, rhs, stmt.span)?;
+                // A key lookup of the store gave up: stop at the statement, before anything
+                // uses its stand-in answer.
+                if crate::compare::take_gave_up() {
+                    return Err(self.gave_up(fiber, stmt.span, None));
+                }
+                Ok(())
             }
             StmtKind::Return(value) => {
                 let v = match value {

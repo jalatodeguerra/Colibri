@@ -1,0 +1,21 @@
+enum Chain { Nil, Cons(int, Chain) }
+fn build(n: int) -> Chain {
+    let mut l = Chain.Nil
+    let mut i = 0
+    while i < n {
+        l = .Cons(i, l)
+        i += 1
+    }
+    return l
+}
+fn put(m: Map[Chain, int]) {
+    let mut n = m
+    n[build(50000)] = 2
+}
+fn main() {
+    let m = {build(50000): 1}
+    put(m)
+    print("after")
+}
+
+// panic: these values nest too deeply to compare

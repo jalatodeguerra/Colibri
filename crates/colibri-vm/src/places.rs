@@ -203,6 +203,14 @@ impl Machine {
                 match got {
                     Ok(root) => part_of(root, path),
                     Err(key) => {
+                        // The lookup may have given up (keys nested too deeply), not missed.
+                        if colibri_core::compare::take_gave_up() {
+                            return Err(self.panic(
+                                fiber,
+                                span,
+                                "these values nest too deeply to compare",
+                            ));
+                        }
                         let message = format!("key {key} not found in map");
                         return Err(self.panic(fiber, span, message));
                     }
@@ -281,6 +289,14 @@ impl Machine {
                         return self.insert_entry(fiber, &map, key, new, span);
                     }
                     Ok(None) => {
+                        // The lookup may have given up (keys nested too deeply), not missed.
+                        if colibri_core::compare::take_gave_up() {
+                            return Err(self.panic(
+                                fiber,
+                                span,
+                                "these values nest too deeply to compare",
+                            ));
+                        }
                         let message = format!("key {} not found in map", self.shown_key(&key));
                         return Err(self.panic(fiber, span, message));
                     }
@@ -371,6 +387,14 @@ impl Machine {
                 match got {
                     Ok(v) => Self::put_reg(fiber, r(d), v),
                     Err(key) => {
+                        // The lookup may have given up (keys nested too deeply), not missed.
+                        if colibri_core::compare::take_gave_up() {
+                            return Err(self.panic(
+                                fiber,
+                                span,
+                                "these values nest too deeply to compare",
+                            ));
+                        }
                         let message = format!("key {key} not found in map");
                         return Err(self.panic(fiber, span, message));
                     }
