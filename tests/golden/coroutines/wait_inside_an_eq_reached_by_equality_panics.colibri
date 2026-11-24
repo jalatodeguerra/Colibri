@@ -1,0 +1,21 @@
+struct Gate {
+    n: int
+}
+
+impl Eq for Gate {
+    fn eq(self, other: Gate) -> bool {
+        wait(1.0)
+        return self.n == other.n
+    }
+}
+
+fn worker() {
+    print(Gate { n: 1 } == Gate { n: 1 })
+}
+
+fn main() {
+    go worker()
+    task.tick(1.0)
+}
+
+// panic: `wait` cannot pause inside code that a built-in operation calls (a `Show`, `Eq`, `Ord`, `Hash` or `Clone` impl, or an iterator's `next`)

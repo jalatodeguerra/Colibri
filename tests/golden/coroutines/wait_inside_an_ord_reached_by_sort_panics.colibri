@@ -1,0 +1,22 @@
+struct Gate {
+    n: int
+}
+
+impl Ord for Gate {
+    fn cmp(self, other: Gate) -> int {
+        wait(1.0)
+        return self.n - other.n
+    }
+}
+
+fn worker() {
+    let mut gates = [Gate { n: 2 }, Gate { n: 1 }]
+    gates.sort()
+}
+
+fn main() {
+    go worker()
+    task.tick(1.0)
+}
+
+// panic: `wait` cannot pause inside code that a built-in operation calls (a `Show`, `Eq`, `Ord`, `Hash` or `Clone` impl, or an iterator's `next`)

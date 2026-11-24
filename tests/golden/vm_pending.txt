@@ -68,6 +68,10 @@ coroutines/wait_for_on_main_panics.colibri  # `NewSignal`
 coroutines/wait_inside_a_direct_show_call_pauses.colibri  # `go`
 coroutines/wait_inside_a_show_reached_by_print_panics.colibri  # `go`
 coroutines/wait_inside_a_sort_by_comparator.colibri  # `go`
+coroutines/wait_inside_a_user_next_driven_by_a_built_in_panics.colibri  # `go`
+coroutines/wait_inside_an_eq_reached_by_equality_panics.colibri  # `go`
+coroutines/wait_inside_an_error_message_panics.colibri  # `go`
+coroutines/wait_inside_an_ord_reached_by_sort_panics.colibri  # `go`
 coroutines/wait_inside_closure_and_defer.colibri  # `go`
 coroutines/wait_on_main_reports_a_failure.colibri  # `go`
 coroutines/wait_on_main_runs_the_loop.colibri  # `go`
