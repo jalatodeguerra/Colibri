@@ -283,7 +283,10 @@ fn an_inline_cache_does_not_outlive_a_patch() {
     let fresh = m.chunk_of(run).expect("exists").expect("compiles");
     assert!(cache_of(&fresh).is_none(), "a new chunk has no cache");
     let again = m.enter(&mut fiber, Rc::clone(&old), vec![]).0;
-    assert!(matches!(&again, Ok(Value::Str(s)) if &**s == "A2"), "{again:?}");
+    assert!(
+        matches!(&again, Ok(Value::Str(s)) if &**s == "A2"),
+        "{again:?}"
+    );
     let refreshed = cache_of(&old).expect("a filled cache");
     assert_eq!(refreshed.epoch, m.epoch, "the old chunk's entry was remade");
 }
@@ -304,6 +307,11 @@ fn main() {}
         .call(&mut fiber, fn_id(&program, "make"), vec![Value::Int(10)])
         .expect("makes");
     assert!(matches!(f, Value::Closure(_)));
-    let r = m.call_value(&mut fiber, &f, vec![Value::Int(5)], colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0));
+    let r = m.call_value(
+        &mut fiber,
+        &f,
+        vec![Value::Int(5)],
+        colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),
+    );
     assert!(matches!(r, Ok(Value::Int(17))), "{r:?}");
 }

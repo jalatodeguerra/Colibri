@@ -169,12 +169,9 @@ fn main() { leak() }
 
 #[test]
 fn a_cycle_through_a_closure_names_the_captured_variable() {
-    vm_pending(
-        "a_cycle_through_a_closure_names_the_captured_variable",
-        || {
-            let (mut vm, _) = vm(
-                true,
-                r#"
+    let (mut vm, _) = vm(
+        true,
+        r#"
 class Button { on_click: fn()? = none }
 fn leak() {
     let button = Button {}
@@ -182,18 +179,16 @@ fn leak() {
 }
 fn main() { leak() }
 "#,
-            );
-            vm.run_main().unwrap();
-            let leaks = vm.find_leaks();
-            assert_eq!(leaks.len(), 1);
-            assert_eq!(leaks[0].objects, ["Button", "closure"]);
-            assert!(
-                leaks[0].path.contains("captures button"),
-                "{}",
-                leaks[0].path
-            );
-        },
-    )
+    );
+    vm.run_main().unwrap();
+    let leaks = vm.find_leaks();
+    assert_eq!(leaks.len(), 1);
+    assert_eq!(leaks[0].objects, ["Button", "closure"]);
+    assert!(
+        leaks[0].path.contains("captures button"),
+        "{}",
+        leaks[0].path
+    );
 }
 
 #[test]

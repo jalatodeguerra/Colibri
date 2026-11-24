@@ -98,52 +98,50 @@ fn loading_normally_never_runs_a_test() {
 
 #[test]
 fn run_test_reports_success_and_each_kind_of_failure() {
-    vm_pending("run_test_reports_success_and_each_kind_of_failure", || {
-        let out = colibri::SharedBuffer::new();
-        let mut vm = vm_with(&out);
-        vm.set_instruction_budget(Some(100_000));
-        vm.load_source("game.colibri", SOURCE).unwrap();
-        out.take();
+    let out = colibri::SharedBuffer::new();
+    let mut vm = vm_with(&out);
+    vm.set_instruction_budget(Some(100_000));
+    vm.load_source("game.colibri", SOURCE).unwrap();
+    out.take();
 
-        vm.run_test(0).expect("the test passes");
-        assert_eq!(out.take(), "in passes\n");
+    vm.run_test(0).expect("the test passes");
+    assert_eq!(out.take(), "in passes\n");
 
-        // Module state is fresh for every test: `hits` is 0 again.
-        vm.run_test(1).expect("the test passes");
+    // Module state is fresh for every test: `hits` is 0 again.
+    vm.run_test(1).expect("the test passes");
 
-        match vm.run_test(2) {
-            Err(colibri::Error::Panic {
-                message,
-                location,
-                stack,
-                ..
-            }) => {
-                assert!(message.contains("assertion failed"), "{message}");
-                assert!(message.contains("left: 1"), "{message}");
-                assert!(message.contains("right: 2"), "{message}");
-                assert_eq!(location.unwrap().line, 23);
-                assert_eq!(stack[0].function, "test \"fails an assertion\"");
-            }
-            other => panic!("{other:?}"),
+    match vm.run_test(2) {
+        Err(colibri::Error::Panic {
+            message,
+            location,
+            stack,
+            ..
+        }) => {
+            assert!(message.contains("assertion failed"), "{message}");
+            assert!(message.contains("left: 1"), "{message}");
+            assert!(message.contains("right: 2"), "{message}");
+            assert_eq!(location.unwrap().line, 23);
+            assert_eq!(stack[0].function, "test \"fails an assertion\"");
         }
-        match vm.run_test(3) {
-            Err(colibri::Error::Panic { message, .. }) => assert_eq!(message, "division by zero"),
-            other => panic!("{other:?}"),
+        other => panic!("{other:?}"),
+    }
+    match vm.run_test(3) {
+        Err(colibri::Error::Panic { message, .. }) => assert_eq!(message, "division by zero"),
+        other => panic!("{other:?}"),
+    }
+    match vm.run_test(4) {
+        Err(colibri::Error::TestReturnedErr { message }) => {
+            assert!(message.contains("cannot parse x"), "{message}");
         }
-        match vm.run_test(4) {
-            Err(colibri::Error::TestReturnedErr { message }) => {
-                assert!(message.contains("cannot parse x"), "{message}");
-            }
-            other => panic!("{other:?}"),
-        }
-        assert!(matches!(
-            vm.run_test(5),
-            Err(colibri::Error::BudgetExhausted { .. })
-        ));
-        // The Vm is still usable after every kind of failure.
-        vm.run_test(6).expect("the test passes");
-        vm.run_test(0).expect("the test passes");
-    })
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        vm.run_test(5),
+        Err(colibri::Error::BudgetExhausted { .. })
+    ));
+    // The Vm is still usable after every kind of failure.
+    vm.run_test(6).expect("the test passes");
+    vm.run_test(0).expect("the test passes");
 }
 
 #[test]
