@@ -444,6 +444,7 @@ impl FnCtx<'_, '_> {
                 block: d.block,
                 ret: ret.clone(),
                 mutates_self: false,
+                captures: d.frame.captures.iter().map(|r| r.inner).collect(),
             };
             info.params = params;
             info.ret = ret;

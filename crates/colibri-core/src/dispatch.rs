@@ -101,7 +101,8 @@ impl Tables {
 }
 
 /// The head of a value's type, which interface dispatch works on.
-pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
+#[doc(hidden)]
+pub fn runtime_key(v: &Value) -> Option<TypeKey> {
     Some(match v {
         Value::Unit => TypeKey::Unit,
         Value::Bool(_) => TypeKey::Bool,

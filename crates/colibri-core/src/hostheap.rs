@@ -459,6 +459,7 @@ mod tests {
             },
             ret: colibri_check::types::Ty::Unit,
             mutates_self: false,
+            captures: Vec::new(),
         }
     }
 

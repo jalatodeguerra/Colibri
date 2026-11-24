@@ -42,6 +42,8 @@ pub(crate) mod state;
 pub(crate) mod strfn;
 pub mod value;
 
+#[doc(hidden)]
+pub use iter::item_of;
 pub use state::Core;
 
 /// The extension traits of the engine-neutral code, for `use colibri_core::prelude::*;` in an

@@ -68,6 +68,9 @@ pub struct Machine {
     pub(crate) host_impls: HostImpls,
     /// The layouts of the C structs of the program and the libraries it uses.
     pub(crate) cffi: CffiState,
+    /// Counts the loads and patches of the program: an inline cache entry made under another
+    /// epoch is stale (its chunk may be one a running frame kept across a patch).
+    pub(crate) epoch: u32,
     /// Tests only: runs at every `print`, so a test can call back into Colibri from inside the
     /// dispatch loop (a native re-entry, like a user `Show` or a `Drop` hook would).
     #[cfg(test)]
@@ -96,6 +99,7 @@ impl Machine {
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
             host_impls: HostImpls::default(),
             cffi: CffiState::default(),
+            epoch: 0,
             #[cfg(test)]
             print_hook: None,
         }
@@ -110,6 +114,7 @@ impl Machine {
     /// old module-level values die first).
     pub fn load(&mut self, program: &Program) {
         self.shutdown();
+        self.epoch = self.epoch.wrapping_add(1);
         self.core.closure_maps.clear();
         self.core.load_host(program);
         self.load_host_impls(program);

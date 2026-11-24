@@ -29,7 +29,19 @@ impl Machine {
         &mut self,
         fiber: &mut VmFiber,
         chunk: std::rc::Rc<crate::bytecode::Chunk>,
+        args: Vec<Value>,
+    ) -> (Eval, Option<Value>) {
+        self.enter_with(fiber, chunk, args, None)
+    }
+
+    /// [`Machine::enter`] for the body of a closure: its captured variables are installed in
+    /// the frame (they die with it).
+    pub(crate) fn enter_with(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: std::rc::Rc<crate::bytecode::Chunk>,
         mut args: Vec<Value>,
+        closure: Option<&colibri_core::closure::ClosureObj>,
     ) -> (Eval, Option<Value>) {
         let body = std::rc::Rc::clone(&chunk.body);
         let overflow = fiber.frames.len() >= self.max_depth;
@@ -72,6 +84,9 @@ impl Machine {
             } else {
                 self.release(v);
             }
+        }
+        if let Some(c) = closure {
+            self.install_captures(fiber, base, c);
         }
         fiber.frames.push(Frame {
             chunk,
@@ -192,9 +207,16 @@ impl Engine for Machine {
     fn call_value(&mut self, fiber: &mut VmFiber, f: &Value, args: Vec<Value>, span: Span) -> Eval {
         match f {
             Value::Fn(id, _) => self.call_fn(fiber, *id, args),
+            Value::Closure(c) => match self.closure_chunk(c) {
+                Ok(chunk) => self.enter_with(fiber, chunk, args, Some(c)).0,
+                Err(msg) => {
+                    self.release_all(args);
+                    Err(self.internal(fiber, span, &msg))
+                }
+            },
             _ => {
                 self.release_all(args);
-                Err(self.panic(fiber, span, "the bytecode VM does not support closures yet"))
+                Err(self.internal(fiber, span, "a call of something that is not a function"))
             }
         }
     }

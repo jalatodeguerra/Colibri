@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use colibri_check::hir::ArithOp;
 use colibri_check::hir::{
-    Anchor, BinOp, Expr, ExprKind, FnId, Lit, Num, Place, Storage, UserOp, ValueProj,
+    Anchor, BinOp, Expr, ExprKind, Lit, Num, Place, Storage, UserOp, ValueProj,
 };
 use colibri_check::types::IntTy;
 use colibri_syntax::Span;
@@ -328,9 +328,6 @@ impl FnCompiler<'_> {
     /// `place = rhs` and `place op= rhs`. The place's operands (there are none for a local or a
     /// global) come first, then the right-hand side, then the old value is read.
     pub(super) fn assign(&mut self, place: &Place, op: Option<BinOp>, rhs: &Expr, span: Span) {
-        if let Some(BinOp::User(UserOp::Bound { .. })) = op {
-            return self.unsupported("operators on type parameters", span);
-        }
         if place.path.is_empty() && !matches!(op, Some(BinOp::User(_))) {
             match &place.anchor {
                 Anchor::Local(l) if self.storage(*l) == Storage::Slot => {
@@ -345,7 +342,7 @@ impl FnCompiler<'_> {
         // value for `op=`, then a guarded write.
         let res = self.resolve_anchor(place, writes_locals(rhs), span);
         let new = match op {
-            Some(BinOp::User(UserOp::Fn(f))) => self.user_op_value(&res, f, place, rhs, span),
+            Some(BinOp::User(uop)) => self.user_op_value(&res, uop, place, rhs, span),
             _ => {
                 let path: &[ValueProj] = &place.path;
                 let read = |c: &mut Self, d: Reg| c.emit_place_get(&res, path, d, span);
@@ -363,7 +360,7 @@ impl FnCompiler<'_> {
     fn user_op_value(
         &mut self,
         res: &Resolved,
-        f: FnId,
+        uop: UserOp,
         place: &Place,
         rhs: &Expr,
         span: Span,
@@ -375,15 +372,34 @@ impl FnCompiler<'_> {
         // scope, like any other argument; after it, the callee is done with both.
         self.emit_place_get(res, &place.path, w.base, span);
         self.push_item(Item::Reg(w.base));
-        let site = self.add_site(Site::Call(f));
-        self.emit(
-            Op::Call {
-                d: t,
-                base: w.base,
-                site,
-            },
-            span,
-        );
+        match uop {
+            UserOp::Fn(f) => {
+                let site = self.add_site(Site::Call(f));
+                self.emit(
+                    Op::Call {
+                        d: t,
+                        base: w.base,
+                        site,
+                    },
+                    span,
+                );
+            }
+            UserOp::Bound { iface, rhs } => {
+                let site = self.add_site(Site::Operator {
+                    iface,
+                    rhs,
+                    argc: 2,
+                });
+                self.emit(
+                    Op::CallOperator {
+                        d: t,
+                        base: w.base,
+                        site,
+                    },
+                    span,
+                );
+            }
+        }
         // The callee has returned: its parameters die, last first, as the tree-walker's
         // callee releases them.
         self.drop_window(w);

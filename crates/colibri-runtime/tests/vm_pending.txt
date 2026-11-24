@@ -34,12 +34,6 @@ budget::set_algebra_on_ints_ignores_an_unrelated_user_eq  # the built-in `SetFro
 bytes::a_host_function_takes_and_returns_bytes  # the built-in `BytesFromList`
 bytes::an_exported_function_names_bytes_in_its_signature  # the built-in `BytesFromList`
 bytes::get_fn_checks_and_moves_bytes  # the built-in `StrToBytes`
-callbacks::a_callback_belongs_to_its_vm  # closures
-callbacks::a_callback_goes_stale_when_the_program_goes  # closures
-callbacks::a_callback_panic_is_an_error_and_the_vm_stays_usable  # closures
-callbacks::a_dropped_callback_releases_its_closure_at_the_next_entry  # closures
-callbacks::a_host_function_calls_a_callback_through_its_context  # closures
-callbacks::closures_and_functions_outlive_the_call_that_registered_them  # closures
 coroutines::a_configured_stack_size_bounds_recursion_in_a_coroutine  # `go`
 coroutines::a_go_child_whose_local_and_capture_hooks_both_panic_is_the_only_failure  # `go`
 coroutines::a_go_closure_stopped_by_the_instruction_budget_still_releases_its_capture  # `go`
@@ -47,7 +41,7 @@ coroutines::a_go_closure_that_finishes_releases_the_object_only_it_holds  # `go`
 coroutines::a_go_closure_that_is_cancelled_releases_the_object_only_it_holds  # `go`
 coroutines::a_go_closure_that_panics_releases_the_object_only_it_holds  # `go`
 coroutines::a_go_closure_with_arguments_releases_what_it_captured_and_what_it_got  # `go`
-coroutines::a_go_of_a_closure_held_in_a_variable_releases_it_after_the_other_owners_die  # closures
+coroutines::a_go_of_a_closure_held_in_a_variable_releases_it_after_the_other_owners_die  # `go`
 coroutines::a_group_go_closure_releases_its_capture_when_it_ends_and_when_the_group_dies  # `NewCoGroup`
 coroutines::a_hook_panic_of_a_cancelled_go_closure_does_not_stop_the_canceller  # `go`
 coroutines::a_hook_panic_of_a_finished_go_closure_does_not_stop_another_coroutine  # `go`
@@ -71,19 +65,13 @@ ffi::repr_c_layouts_match_the_c_compiler  # the built-in `ListLen`
 host_classes::a_busy_object_gives_the_documented_panic_when_the_script_reenters_it  # the built-in `ResultExpect`
 host_classes::a_class_can_customise_show_and_equality  # the built-in `MapLen`
 host_classes::a_host_object_dying_with_a_list_dies_in_element_order  # the built-in `ListLen`
-host_classes::equal_host_objects_hash_equally_and_one_without_a_hash_is_a_clean_error  # calls through interfaces
-host_classes::objects_are_dropped_in_index_order_when_the_vm_goes  # closures
 host_classes::objects_cross_functions_collections_and_tuples  # the built-in `ListLen`
 host_classes::objects_have_identity_equality_hash_and_show  # the built-in `MapLen`
 host_classes::reading_methods_may_nest_but_not_inside_a_writing_one  # the built-in `ResultExpect`
-host_classes::removing_a_borrowed_object_is_an_error_not_a_free  # closures
-host_classes::the_host_cannot_borrow_what_a_running_method_holds  # closures
 host_fns::a_display_error_keeps_a_str_and_a_typed_error_keeps_none  # the built-in `OptionExpect`
 host_fns::a_host_error_keeps_a_typed_value_that_is_and_as_recover  # the built-in `ResultContext`
 host_fns::an_embedders_module_enum_converts_to_error_without_an_impl  # the built-in `OptionExpect`
-host_fns::host_functions_are_not_values  # closures
 host_modules::a_session_keeps_module_values_between_steps  # REPL sessions
-host_modules::the_host_calls_a_stored_callback_that_takes_a_struct_of_a_named_module  # closures
 iter_release::a_for_loop_over_the_only_reference_to_a_list_releases_it_at_the_end  # the built-in `Iter`
 iter_release::a_map_iterator_advanced_with_next_releases_its_map_at_the_end  # the built-in `Iter`
 iter_release::enumerate_releases_its_inner_iterator_when_that_ends  # the built-in `IterEnumerate`
@@ -97,7 +85,6 @@ join_failures::join_of_a_budget_panicked_coroutine_reports_the_budget_error  # `
 join_failures::when_only_join_waiters_are_left_nothing_polls_and_nothing_resumes  # `NewSignal`
 leaks::a_cancelled_coroutine_leaks_what_only_it_held  # `go`
 leaks::a_cycle_that_is_still_held_is_not_a_leak  # the built-in `ListPush`
-leaks::a_cycle_through_a_closure_names_the_captured_variable  # closures
 leaks::a_suspended_coroutine_keeps_its_cycle_alive  # `go`
 leaks::objects_a_leaked_cycle_owns_are_counted_as_retained  # the built-in `ListPush`
 reload::a_coroutine_in_an_old_body_finishes_on_it_and_new_calls_use_the_new_one  # `go`
@@ -108,4 +95,3 @@ tests_api::a_panicking_hook_stays_registered  # the built-in `ListPush`
 tests_api::a_script_function_called_from_the_hook_that_reads_a_module_value_panics_clearly  # the built-in `ListLen`
 tests_api::a_test_run_from_inside_the_hook_runs_without_the_hook  # the built-in `ListLen`
 tests_api::load_tests_runs_nothing_and_finds_modules_nobody_imports  # the built-in `ListLen`
-tests_api::run_test_reports_success_and_each_kind_of_failure  # this coercion

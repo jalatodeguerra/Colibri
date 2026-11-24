@@ -5,12 +5,15 @@
 /// refuses. On the VM such a test is expected to fail by that refusal, and one that passes fails
 /// the run, so the list only shrinks.
 const VM_PENDING: &[(&str, &str)] = &[
-    ("the_log_matches_the_golden_file", "closures"),
+    (
+        "the_log_matches_the_golden_file",
+        "the built-in `ListFilter`",
+    ),
     (
         "script_tests_see_a_fresh_queue_each",
         "the built-in `ListLen`",
     ),
-    ("the_run_is_deterministic", "closures"),
+    ("the_run_is_deterministic", "the built-in `ListFilter`"),
 ];
 
 fn vm_pending(name: &str, body: impl FnOnce()) {

@@ -1,0 +1,37 @@
+// A panic inside the `next` of a user iterator that a `for` drives: the iterator goes back
+// where the loop keeps it and is dropped with the loop, before the enclosing `defer` runs.
+class Steps {
+    n: int
+}
+
+impl Drop for Steps {
+    fn drop(self) {
+        print("steps dropped at {self.n}")
+    }
+}
+
+impl Iter[int] for Steps {
+    fn next(self) -> int? {
+        self.n += 1
+        if self.n == 3 {
+            panic("no more steps")
+        }
+        return some(self.n)
+    }
+}
+
+fn main() {
+    defer {
+        print("deferred")
+    }
+    let steps = Steps { n: 0 }
+    for x in steps {
+        print("step {x}")
+    }
+}
+
+// panic: no more steps
+// expect: step 1
+// expect: step 2
+// expect: steps dropped at 3
+// expect: deferred

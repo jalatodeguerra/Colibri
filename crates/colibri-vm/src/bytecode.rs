@@ -7,8 +7,11 @@
 use std::fmt::Write;
 use std::rc::Rc;
 
+use std::cell::Cell;
+
 use colibri_check::hir::{
-    BinOp, Body, FnId, FormatSpec, HostFnId, Intrinsic, Lit, UnOp, ValueProj,
+    BinOp, Body, Capture, Coercion, FnId, FormatSpec, HostFnId, Intrinsic, Lit, TypeKey, UnOp,
+    ValueProj,
 };
 use colibri_check::types::{Ty, TypeId};
 use colibri_core::value::Value;
@@ -347,6 +350,51 @@ pub enum Op {
         base: Reg,
         site: u16,
     },
+    /// Calls the function value in `base` (a function or a closure) with the arguments
+    /// `base+1..`: the callee's window starts at `base + 1`.
+    CallValue {
+        d: Reg,
+        base: Reg,
+    },
+    /// Calls method `method` of an interface on the receiver in `base` (a value whose
+    /// implementation is found from its runtime type, or an interface value); the arguments
+    /// follow it. The site holds the inline cache.
+    CallBound {
+        d: Reg,
+        base: Reg,
+        site: u16,
+    },
+    /// The same for a receiver that is statically an interface value.
+    CallDyn {
+        d: Reg,
+        base: Reg,
+        site: u16,
+    },
+    /// A `mut self` interface call: the receiver was copied from its place into `base`; the
+    /// callee's window starts at `base + 1`, where the receiver is unwrapped from an interface
+    /// value (`base` keeps its shell). `Rewrap` puts the final value back.
+    CallIfaceInout {
+        d: Reg,
+        base: Reg,
+        site: u16,
+    },
+    /// Boxes the value in `recv` again as the interface value whose shell is in `shell` (or
+    /// moves it there when the receiver was not an interface value).
+    Rewrap {
+        shell: Reg,
+        recv: Reg,
+    },
+    /// The operator of an interface (`a + b` on a type parameter) on the operands `base..`.
+    CallOperator {
+        d: Reg,
+        base: Reg,
+        site: u16,
+    },
+    /// `d = closure of the site`: captures read from the registers of the running frame.
+    MakeClosure {
+        d: Reg,
+        site: u16,
+    },
     /// Returns the value in `s` (moved).
     Return {
         s: Reg,
@@ -383,7 +431,7 @@ pub enum Op {
         base: Reg,
         site: u16,
     },
-    /// `d = coerce(s)` for the coercion of the site.
+    /// `d = coerce(s)` for the coercion of the site (a clone of `s` is converted).
     Coerce {
         d: Reg,
         s: Reg,
@@ -617,6 +665,28 @@ pub enum Op {
     /// The end of a landing pad: the frame's panic goes on to its caller.
     Resume,
 
+    // ---- `for` over an iterator that may be a user implementation ----
+    /// When the iterator in `a` is a boxed user iterator whose `next` is Colibri code, skips the
+    /// next instruction; else falls through.
+    IterIsUser {
+        a: Reg,
+    },
+    /// Calls `next` of the user iterator in `a`: the receiver is unwrapped into `w` (the
+    /// callee's window starts there), the interface value's shell stays in `a`, the result
+    /// goes to `w - 1`.
+    IterNextCall {
+        a: Reg,
+        w: Reg,
+    },
+    /// After `next` returned: the receiver goes back into the shell in `a`; when the result in
+    /// `w - 1` is `some(item)` the item is in `d`, a budget step is charged and the next
+    /// instruction is skipped; on `none` the loop is over.
+    IterNextEnd {
+        d: Reg,
+        a: Reg,
+        w: Reg,
+    },
+
     /// A node the VM does not compile yet: panics with the site's message when executed.
     Unsupported {
         site: u16,
@@ -685,6 +755,19 @@ pub enum Site {
         argc: u16,
     },
     F32ToFloat,
+    Coerce(Coercion),
+    /// A closure: the lifted function and what it captures.
+    Closure {
+        f: FnId,
+        captures: Box<[Capture]>,
+    },
+    /// An interface method call, with its inline cache.
+    Iface(Box<IfaceSite>),
+    Operator {
+        iface: TypeId,
+        rhs: Option<TypeKey>,
+        argc: u16,
+    },
     /// A literal pattern.
     Lit(Lit),
     /// A range pattern; a missing bound is open.
@@ -694,6 +777,35 @@ pub enum Site {
         inclusive: bool,
     },
     Unsupported(String),
+}
+
+/// What an interface call site remembers: the implementation and method found for one kind of
+/// receiver, valid for one load of the program (`epoch`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IcEntry {
+    pub epoch: u32,
+    pub key: IcKey,
+    pub target: Option<FnId>,
+}
+
+/// The receiver a cache entry is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IcKey {
+    /// An interface value with this implementation.
+    Impl(u32),
+    /// A value of this runtime type (a call through a bound).
+    Type(TypeKey),
+}
+
+/// An interface method call: the cache lives in the chunk's site, so it dies with the chunk,
+/// and its entry names the load of the program it was made for, so a chunk that a running frame
+/// keeps across a patch never uses an entry of the old tables.
+#[derive(Debug, Clone)]
+pub struct IfaceSite {
+    pub iface: TypeId,
+    pub method: u32,
+    pub argc: u16,
+    pub cache: Cell<Option<IcEntry>>,
 }
 
 /// The compiled form of one body.
@@ -831,6 +943,24 @@ impl Chunk {
             Op::CallHost { d, base, site } => {
                 format!("CallHost r{d} base=r{base} {}", self.site_text(site))
             }
+            Op::CallValue { d, base } => format!("CallValue r{d} base=r{base}"),
+            Op::CallBound { d, base, site } => {
+                format!("CallBound r{d} base=r{base} {}", self.site_text(site))
+            }
+            Op::CallDyn { d, base, site } => {
+                format!("CallDyn r{d} base=r{base} {}", self.site_text(site))
+            }
+            Op::CallIfaceInout { d, base, site } => {
+                format!("CallIfaceInout r{d} base=r{base} {}", self.site_text(site))
+            }
+            Op::Rewrap { shell, recv } => format!("Rewrap r{shell} r{recv}"),
+            Op::CallOperator { d, base, site } => {
+                format!("CallOperator r{d} base=r{base} {}", self.site_text(site))
+            }
+            Op::MakeClosure { d, site } => format!("MakeClosure r{d} {}", self.site_text(site)),
+            Op::IterIsUser { a } => format!("IterIsUser r{a}"),
+            Op::IterNextCall { a, w } => format!("IterNextCall r{a} w=r{w}"),
+            Op::IterNextEnd { d, a, w } => format!("IterNextEnd r{d} r{a} w=r{w}"),
             Op::Return { s } => format!("Return r{s}"),
             Op::ReturnUnit => "ReturnUnit".to_string(),
             Op::Print { r } => format!("Print r{r}"),
@@ -910,6 +1040,10 @@ impl Chunk {
             Some(Site::Format(spec)) => format!("{spec:?}"),
             Some(Site::Intrinsic { which, argc }) => format!("{which:?}/{argc}"),
             Some(Site::F32ToFloat) => "F32ToFloat".to_string(),
+            Some(Site::Coerce(c)) => format!("{c:?}"),
+            Some(Site::Closure { f, captures }) => format!("fn#{} {captures:?}", f.0),
+            Some(Site::Iface(i)) => format!("iface#{}.{}", i.iface.0, i.method),
+            Some(Site::Operator { iface, .. }) => format!("operator iface#{}", iface.0),
             Some(Site::Struct(ty, regs)) => format!("struct#{} {}", ty.0, regs_text(regs)),
             Some(Site::Object(ty, regs)) => format!("class#{} {}", ty.0, regs_text(regs)),
             Some(Site::Variant(ty, v, regs)) => {

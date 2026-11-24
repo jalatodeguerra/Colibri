@@ -14,6 +14,7 @@
 #![deny(unsafe_code)]
 
 pub mod bytecode;
+mod calls;
 #[allow(unsafe_code)]
 mod cffi;
 mod compile;

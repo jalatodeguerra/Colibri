@@ -272,6 +272,23 @@ impl Fingerprint {
             .iter()
             .map(|f| (f.name.as_str(), &f.sig, f.type_params, f.host))
             .collect();
+        // What each closure body captures (which locals, of which type and storage, in order):
+        // closures made before a patch keep their captured values, which the new body must
+        // read from the same places.
+        let captures: Vec<Vec<_>> = program
+            .fns
+            .iter()
+            .map(|f| {
+                f.body
+                    .captures
+                    .iter()
+                    .map(|c| {
+                        let l = &f.body.locals[c.0 as usize];
+                        (c.0, &l.ty, l.storage)
+                    })
+                    .collect()
+            })
+            .collect();
         let globals: Vec<_> = program
             .globals
             .iter()
@@ -303,7 +320,7 @@ impl Fingerprint {
         let parts = vec![
             (
                 "the functions or their signatures",
-                hash_debug(&(&fns, program.main)),
+                hash_debug(&(&fns, program.main, &captures)),
             ),
             (
                 "a struct, class, enum or interface",
