@@ -340,8 +340,8 @@ fn main() {
                             // that feature, not by a crash or a wrong answer.
                             Err(failure) if reason_of(&failure) != *reason => {
                                 report.push_str(&format!(
-                                    "{name}: listed as pending ({reason}) but it fails differently: {}\n",
-                                    failure.lines().next().unwrap_or("")
+                                    "{name}: listed as pending ({reason}) but it fails differently:\n{}\n",
+                                    failure.trim_end()
                                 ));
                             }
                             Err(_) => {}
