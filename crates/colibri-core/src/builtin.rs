@@ -171,16 +171,26 @@ pub trait Builtins: Engine {
         mut args: Vec<Value>,
         span: Span,
     ) -> Eval {
-        // Built-ins that look at every element cost a step for each.
-        if let Some(n) = work_of(op, args.first())
-            && let Err(ctl) = self.charge(fiber, span, n)
-        {
-            self.release_all(args);
-            return Err(ctl);
-        }
-        let result = self.builtin_inner(fiber, op, &mut args, span);
+        let result = self.builtin_args(fiber, op, &mut args, span);
         self.release_all(args);
         result
+    }
+
+    /// [`Self::builtin`] on arguments the caller keeps: it charges the built-in's work and runs
+    /// it, and the caller releases `args` afterwards (an engine that keeps them on its stack
+    /// does not allocate a `Vec` for each call).
+    fn builtin_args(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        op: Builtin,
+        args: &mut [Value],
+        span: Span,
+    ) -> Eval {
+        // Built-ins that look at every element cost a step for each.
+        if let Some(n) = work_of(op, args.first()) {
+            self.charge(fiber, span, n)?;
+        }
+        self.builtin_inner(fiber, op, args, span)
     }
 
     fn builtin_inner(

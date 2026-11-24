@@ -166,6 +166,40 @@ fn string_temporaries_are_dropped_right_after_their_use_and_locals_at_return() {
 0004  DropInert r3
 0005  LoadK r4 k1 (\"v\")
 0006  Copy r5 r2
+0007  Copy r6 r1
+0008  StrConcat r3 base=r4 n=3
+0009  DropInert r5
+0010  DropInert r4
+0011  DropInert r2
+0012  Return r3
+0013  ReturnUnit
+0014  Drop r5
+0015  Drop r4
+0016  Drop r2
+0017  Jmp -> 0020
+0018  Drop r3
+0019  Jmp -> 0017
+0020  Resume
+unwind [0002, 0004) -> 0018
+unwind [0008, 0009) -> 0014
+";
+    assert_eq!(dis(src, "f"), expected);
+}
+
+#[test]
+fn a_shown_part_of_a_string_is_dropped_right_after_its_use() {
+    let src = "fn f(s: str, x: float) -> str {
+    let t = s + \"x\"
+    return \"v{t}{x}\"
+}";
+    let expected = "\
+0000  Step 2
+0001  LoadK r3 k0 (\"x\")
+0002  Binary r2 r0 r3
+0003    site Concat
+0004  DropInert r3
+0005  LoadK r4 k1 (\"v\")
+0006  Copy r5 r2
 0007  Show r6 r1
 0008  StrConcat r3 base=r4 n=3
 0009  DropInert r6

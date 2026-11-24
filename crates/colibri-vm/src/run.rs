@@ -14,7 +14,7 @@ use std::rc::Rc;
 use colibri_core::ctl::{Ctl, Eval};
 use colibri_core::num;
 use colibri_core::prelude::*;
-use colibri_core::value::{CellObj, Value, unwrap_cell};
+use colibri_core::value::{CellObj, SmallVec, Value, unwrap_cell};
 
 use crate::bytecode::{Chunk, Op, Site};
 use crate::fiber::{Frame, FrameKind, VmFiber, is_scalar_value};
@@ -27,6 +27,12 @@ pub(crate) enum Exit {
     /// A coroutine paused: its frames stay as they are, each with its pc saved, for
     /// `resume_stack` to run on.
     Suspend,
+}
+
+/// Appends the decimal form of `x`, as `show` writes an integer.
+fn push_int(out: &mut String, x: i64) {
+    use std::fmt::Write as _;
+    let _ = write!(out, "{x}");
 }
 
 impl Machine {
@@ -1009,8 +1015,17 @@ impl Machine {
         d: u16,
         r: u16,
     ) -> Result<(), Ctl> {
-        let span = chunk.spans[pc - 1];
         let at = base + usize::from(r);
+        if let Value::Int(x) = fiber.regs[at] {
+            let mut out = std::mem::take(&mut self.scratch);
+            out.clear();
+            push_int(&mut out, x);
+            let text: Rc<str> = Rc::from(out.as_str());
+            self.scratch = out;
+            Self::put_reg(fiber, base + usize::from(d), Value::Str(text));
+            return Ok(());
+        }
+        let span = chunk.spans[pc - 1];
         let v = std::mem::replace(&mut fiber.regs[at], Value::Unit);
         let text = self.show_deep(fiber, &v, span);
         fiber.regs[at] = v;
@@ -1052,15 +1067,15 @@ impl Machine {
             unreachable!("op_str_concat is called for its own instruction")
         };
         let span = chunk.spans[pc - 1];
-        let mut out = String::new();
+        // The scratch text keeps its capacity from one string to the next: the only allocation
+        // of a concatenation is the string it makes.
+        let mut out = std::mem::take(&mut self.scratch);
+        out.clear();
         for i in 0..n {
             let at = base + usize::from(a + i);
             match &fiber.regs[at] {
                 Value::Str(s) => out.push_str(s),
-                Value::Int(x) => {
-                    use std::fmt::Write as _;
-                    let _ = write!(out, "{x}");
-                }
+                Value::Int(x) => push_int(&mut out, *x),
                 _ => {
                     let v = std::mem::replace(&mut fiber.regs[at], Value::Unit);
                     let text = self.show_deep(fiber, &v, span);
@@ -1069,7 +1084,9 @@ impl Machine {
                 }
             }
         }
-        Self::put_reg(fiber, base + usize::from(d), Value::Str(Rc::from(out)));
+        let text: Rc<str> = Rc::from(out.as_str());
+        self.scratch = out;
+        Self::put_reg(fiber, base + usize::from(d), Value::Str(text));
         Ok(())
     }
 
@@ -1119,8 +1136,14 @@ impl Machine {
             return Err(self.internal(fiber, span, "a built-in without its site"));
         };
         let from = base + usize::from(a);
-        let args: Vec<Value> = fiber.regs[from..from + usize::from(*argc)].to_vec();
-        let result = self.builtin(fiber, *which, args, span);
+        let mut args: SmallVec<[Value; 4]> = fiber.regs[from..from + usize::from(*argc)]
+            .iter()
+            .map(Value::dup)
+            .collect();
+        let result = self.builtin_args(fiber, *which, &mut args, span);
+        for arg in args {
+            self.release(arg);
+        }
         // Cancelling resumes the coroutines to unwind them: a refusal they meet is raised here.
         let result = if matches!(
             which,

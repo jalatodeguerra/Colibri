@@ -1,9 +1,10 @@
 //! Expressions.
 
 use colibri_check::hir::{
-    Anchor, ArithOp, BinOp, CmpOp, Coercion, Expr, ExprKind, Lit, Num, Operand, UnOp, UserOp,
+    Anchor, Arg, ArithOp, BinOp, Callee, CmpOp, Coercion, Expr, ExprKind, Intrinsic, Lit, Num,
+    Operand, UnOp, UserOp,
 };
-use colibri_check::types::IntTy;
+use colibri_check::types::{IntTy, Ty};
 use colibri_syntax::Span;
 
 use super::{FnCompiler, Kind, kind_of};
@@ -64,6 +65,19 @@ fn imm16(op: ArithOp, k: i64) -> Option<i16> {
     }
 }
 
+/// The argument of a `Show` of an integer, else `part`: `StrConcat` writes an integer itself.
+fn unshown_int(part: &Expr) -> &Expr {
+    if let ExprKind::Call(c) = &part.kind
+        && matches!(c.callee, Callee::Intrinsic(Intrinsic::Show))
+        && let [Arg::Value(arg)] = c.args.as_slice()
+        && matches!(arg.ty, Ty::Int(_))
+    {
+        arg
+    } else {
+        part
+    }
+}
+
 impl FnCompiler<'_> {
     /// Evaluates `e` and puts its value, owned, in `dst`. `dst` must be a temporary or a local
     /// that holds no value (see [`dst_safe`] for writing into a live local).
@@ -78,7 +92,8 @@ impl FnCompiler<'_> {
             ExprKind::Or(l, r) => self.logic(false, l, r, dst, span),
             ExprKind::Call(c) => self.call(e, c, Some(dst)),
             ExprKind::StrConcat(parts) => {
-                let refs: Vec<&Expr> = parts.iter().collect();
+                // An integer part is written into the string as it is: no `Show` string first.
+                let refs: Vec<&Expr> = parts.iter().map(unshown_int).collect();
                 let w = self.eval_window(0, &refs, false);
                 let Ok(n) = u16::try_from(parts.len()) else {
                     self.fail("a string with too many parts");
