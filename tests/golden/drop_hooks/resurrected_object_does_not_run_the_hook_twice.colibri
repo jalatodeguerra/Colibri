@@ -1,7 +1,7 @@
 // allow: unused
 class Res { name: str }
 
-var saved: List[Res] = []
+let mut saved: List[Res] = []
 
 impl Drop for Res {
     fn drop(self) {

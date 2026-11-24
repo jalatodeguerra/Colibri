@@ -1,7 +1,7 @@
 class Counter { n: int }
 
 impl Counter {
-    fn bump(var self) { // error: a class method cannot take `var self`
+    fn bump(mut self) { // error: a class method cannot take `mut self`
         self.n += 1
     }
 }

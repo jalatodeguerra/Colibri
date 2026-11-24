@@ -5,9 +5,9 @@ const MAX_ITEMS = 10
 const LIMIT = 10
 
 @deprecated("use state")
-var legacy = 0
+let mut legacy = 0
 
-var state = 0
+let mut state = 0
 
 struct Config {
     @deprecated("use size") width: int,

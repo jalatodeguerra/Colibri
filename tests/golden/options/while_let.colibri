@@ -1,6 +1,6 @@
 fn main() {
-    var xs = [1, 2, 3]
-    var total = 0
+    let mut xs = [1, 2, 3]
+    let mut total = 0
     while let some(x) = xs.pop() {
         total += x
         print(x)

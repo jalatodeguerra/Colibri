@@ -1,5 +1,5 @@
 fn checksum(data: Bytes) -> u8 {
-    var sum: int = 0
+    let mut sum: int = 0
     for x in data {
         sum = (sum + int(x)) % 256
     }

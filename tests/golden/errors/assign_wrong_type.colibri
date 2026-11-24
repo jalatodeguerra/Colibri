@@ -1,9 +1,9 @@
 // allow: unused
 fn main() {
-    var n = 1
+    let mut n = 1
     n = "one" // error: expected `int`, found `str`
-    var s = "a"
+    let mut s = "a"
     s += 1 // error: expected `str`, found `{integer}`
-    var b = true
+    let mut b = true
     b += true // error: `+=` cannot be applied to `bool`
 }

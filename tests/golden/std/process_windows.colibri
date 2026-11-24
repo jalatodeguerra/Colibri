@@ -32,7 +32,7 @@ fn main() {
     print(c.stdout.trim())
 
     // Options: the environment of the program.
-    var o = process.options()
+    let mut o = process.options()
     o.env = { "GREETING": "hi" }
     let b = process.run_with("cmd", ["/C", "echo", "%GREETING%"], o) or |e| { panic(e.message()) }
     print(b.stdout.trim())

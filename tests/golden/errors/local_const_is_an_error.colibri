@@ -1,0 +1,12 @@
+// `const` only exists at the top level of a file. In a block it is reported and read as
+// `let`, so the rest of the file is still checked.
+const TOP = 1
+
+fn main() {
+    const K = 2 // error: `const` is only allowed at the top level of a file
+    print(K + TOP)
+    if true {
+        const J = 3 // error: `const` is only allowed at the top level of a file
+    }
+    let both = true and false // error: `and` is not an operator in Colibri
+}

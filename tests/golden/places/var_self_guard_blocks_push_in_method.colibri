@@ -1,8 +1,8 @@
 struct Enemy { hp: int }
-var enemies = [Enemy { hp: 1 }]
+let mut enemies = [Enemy { hp: 1 }]
 
 impl Enemy {
-    fn spawn(var self) {
+    fn spawn(mut self) {
         enemies.push(Enemy { hp: 9 })
     }
 }

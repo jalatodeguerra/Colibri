@@ -1,7 +1,7 @@
 struct S { o: int? }
 
 fn main() {
-    var xs = [S { o: none }, S { o: some(1) }]
+    let mut xs = [S { o: none }, S { o: some(1) }]
     xs[0].o = some(5)
     xs[1].o = none
     print(xs)

@@ -1,6 +1,6 @@
 struct Stats { kills: int, deaths: int }
 
-var stats = Stats { kills: 0, deaths: 0 }
+let mut stats = Stats { kills: 0, deaths: 0 }
 
 fn kill() {
     stats.kills += 1

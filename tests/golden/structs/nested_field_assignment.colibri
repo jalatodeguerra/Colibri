@@ -2,7 +2,7 @@ struct Vec2i { x: int, y: int }
 struct Rect { origin: Vec2i, size: Vec2i }
 
 fn main() {
-    var r = Rect { origin: Vec2i { x: 0, y: 0 }, size: Vec2i { x: 1, y: 1 } }
+    let mut r = Rect { origin: Vec2i { x: 0, y: 0 }, size: Vec2i { x: 1, y: 1 } }
     let copy = r
     r.origin.x = 5
     r.size.y += 9

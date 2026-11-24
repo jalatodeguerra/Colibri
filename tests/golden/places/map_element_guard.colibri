@@ -1,12 +1,12 @@
 struct C { n: int }
 impl C {
-    fn run(var self, m: Map[str, C]) {
+    fn run(mut self, m: Map[str, C]) {
         m["z"] = C { n: 0 }
     }
 }
 
 fn main() {
-    var m = {"a": C { n: 1 }}
+    let mut m = {"a": C { n: 1 }}
     m["a"].run(m)
 }
 

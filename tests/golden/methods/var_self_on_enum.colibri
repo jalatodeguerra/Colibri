@@ -1,16 +1,16 @@
 enum Mode { Idle, Busy(int) }
 
 impl Mode {
-    fn start(var self, job: int) {
+    fn start(mut self, job: int) {
         self = Mode.Busy(job)
     }
-    fn stop(var self) {
+    fn stop(mut self) {
         self = .Idle
     }
 }
 
 fn main() {
-    var m = Mode.Idle
+    let mut m = Mode.Idle
     m.start(4)
     print(m)
     m.stop()

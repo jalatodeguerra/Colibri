@@ -17,9 +17,9 @@ fn main() -> Result[()] {
 
     let r = fs.open(file)?
     defer r.close()
-    var count = 0
-    var bytes = 0
-    var last = ""
+    let mut count = 0
+    let mut bytes = 0
+    let mut last = ""
     while true {
         match r.read_line()? {
             some(line) => {

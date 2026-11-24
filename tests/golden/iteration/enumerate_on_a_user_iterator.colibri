@@ -3,7 +3,7 @@ struct Letters {
 }
 
 impl Iter[str] for Letters {
-    fn next(var self) -> str? {
+    fn next(mut self) -> str? {
         let all = ["p", "q", "r"]
         if self.at >= all.len() {
             return none
@@ -17,7 +17,7 @@ fn main() {
     for (i, s) in (Letters { at: 0 }).enumerate() {
         print("{i}{s}")
     }
-    var e = (Letters { at: 1 }).enumerate()
+    let mut e = (Letters { at: 1 }).enumerate()
     print(e.next())
     print(e.next())
     print(e.next())

@@ -1,8 +1,8 @@
 struct Cell2 { n: int }
-var cells = [Cell2 { n: 1 }, Cell2 { n: 2 }, Cell2 { n: 3 }]
+let mut cells = [Cell2 { n: 1 }, Cell2 { n: 2 }, Cell2 { n: 3 }]
 
 impl Cell2 {
-    fn bump(var self, by: int) { self.n += by }
+    fn bump(mut self, by: int) { self.n += by }
 }
 
 fn index() -> int {

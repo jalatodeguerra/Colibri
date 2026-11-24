@@ -1,6 +1,6 @@
 fn main() {
     let xs = [10, 20, 30]
-    var it = xs.iter()
+    let mut it = xs.iter()
     print(it.next())
     print(it.next())
     print(it.next())

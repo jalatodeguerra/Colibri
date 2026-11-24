@@ -1,5 +1,5 @@
-var xs = [1, 2]
-var ys = [3, 4]
+let mut xs = [1, 2]
+let mut ys = [3, 4]
 
 fn find(target: int) -> int {
     for x in xs {

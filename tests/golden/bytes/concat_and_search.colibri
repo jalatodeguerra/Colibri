@@ -1,7 +1,7 @@
 fn main() {
     let a = "foo".to_bytes()
     let b = "bar".to_bytes()
-    var c = a + b
+    let mut c = a + b
     print(c)
     c += Bytes([33])
     print(c)

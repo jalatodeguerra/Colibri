@@ -35,7 +35,7 @@ fn main() {
     print((size_of[Packet](), align_of[Packet]()))
     print((size_of[Opaque](), align_of[Opaque]()))
     // A repr(C) struct is an ordinary struct to Colibri code: literals, fields, copies.
-    var h = Header { tag: 1, length: 2, flags: 3 }
+    let mut h = Header { tag: 1, length: 2, flags: 3 }
     let copy = h
     h.length = 20
     print(h.length + copy.length)

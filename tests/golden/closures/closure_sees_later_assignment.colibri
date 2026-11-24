@@ -1,5 +1,5 @@
 fn main() {
-    var level = 1
+    let mut level = 1
     let show_level = fn() => "level {level}"
     print(show_level())
     level = 2

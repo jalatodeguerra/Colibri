@@ -1,6 +1,6 @@
 fn main() {
     for i in 1..=3 {
-        var row = "{i}"
+        let mut row = "{i}"
         for j in 2..=3 {
             row += ",{i * j}"
         }

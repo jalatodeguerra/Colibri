@@ -15,7 +15,7 @@ fn main() {
     if id(mk("b").n) > 1 {
         print("in if 2")
     }
-    var i = 0
+    let mut i = 0
     while i < mk("w{i}").n {
         print("body {i}")
         i += 1

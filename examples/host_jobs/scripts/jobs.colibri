@@ -12,9 +12,9 @@ class Entry {
     priority: Priority
 }
 
-var balance = 0
-var submitted = 0
-var entries: List[Entry] = []
+let mut balance = 0
+let mut submitted = 0
+let mut entries: List[Entry] = []
 
 fn get_balance() -> int => balance
 

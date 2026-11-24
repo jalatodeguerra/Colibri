@@ -5,7 +5,7 @@ class T {
 
 fn main() {
     let probe = T { name: "probe" }
-    var x = T { name: "old" }
+    let mut x = T { name: "old" }
     probe.peer = x
     print(probe.peer == some(x))
     x = T { name: "new" }

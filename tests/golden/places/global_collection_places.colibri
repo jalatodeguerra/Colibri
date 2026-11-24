@@ -1,6 +1,6 @@
 struct E { hp: int }
-var es = [E { hp: 1 }]
-var m: Map[str, int] = {:}
+let mut es = [E { hp: 1 }]
+let mut m: Map[str, int] = {:}
 
 fn hit() {
     es[0].hp += 1

@@ -1,6 +1,6 @@
 fn main() {
-    var xs = [1, 2, 3]
-    var it = xs.iter()
+    let mut xs = [1, 2, 3]
+    let mut it = xs.iter()
     print(it.next())
     xs.push(4)
     print("unreachable")

@@ -1,7 +1,7 @@
 struct C { n: int }
 
 impl C {
-    fn boom(var self) {
+    fn boom(mut self) {
         self.n += 1
         let z = 0
         print(10 / z)
@@ -9,7 +9,7 @@ impl C {
 }
 
 fn main() {
-    var c = C { n: 0 }
+    let mut c = C { n: 0 }
     print("before")
     c.boom() // panic: division by zero
     print("unreachable")

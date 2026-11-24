@@ -1,5 +1,5 @@
 struct P { n: int }
-var ps = [P { n: 1 }, P { n: 2 }, P { n: 3 }]
+let mut ps = [P { n: 1 }, P { n: 2 }, P { n: 3 }]
 
 fn after() {
     print("{ps[0].n} {ps[1].n} {ps[2].n}")
@@ -10,7 +10,7 @@ fn after() {
 
 fn main() {
     defer after()
-    for var p in ps {
+    for mut p in ps {
         p.n += 10
         if p.n == 12 {
             let zero = p.n - 12

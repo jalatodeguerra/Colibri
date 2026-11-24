@@ -1,7 +1,7 @@
 class T { name: str }
 
 fn main() {
-    var xs = [T { name: "a" }, T { name: "b" }, T { name: "c" }]
+    let mut xs = [T { name: "a" }, T { name: "b" }, T { name: "c" }]
     while let some(t) = xs.pop() {
         print(t.name)
     }

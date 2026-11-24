@@ -3,8 +3,8 @@ class Res { name: str }
 struct Slot { r: Res, n: int }
 
 fn main() {
-    var slots = [Slot { r: Res { name: "old0" }, n: 0 }, Slot { r: Res { name: "old1" }, n: 1 }]
-    for var s in slots {
+    let mut slots = [Slot { r: Res { name: "old0" }, n: 0 }, Slot { r: Res { name: "old1" }, n: 1 }]
+    for mut s in slots {
         let local = Res { name: "local{s.n}" }
         s.r = Res { name: "new{s.n}" }
         print("end of trip {s.n}")

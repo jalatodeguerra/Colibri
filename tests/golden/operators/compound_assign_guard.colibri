@@ -1,6 +1,6 @@
 // An operator that runs on a list element may not change the shape of that list while it
-// runs, like a `var self` method (the element is written back afterwards).
-var shared: List[Tally] = []
+// runs, like a `mut self` method (the element is written back afterwards).
+let mut shared: List[Tally] = []
 
 struct Tally { n: int }
 

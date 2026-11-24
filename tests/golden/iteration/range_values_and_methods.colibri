@@ -12,7 +12,7 @@ fn main() {
     let empty = 3..3
     print(empty.is_empty())
     print((5..1).len())
-    var total = 0
+    let mut total = 0
     for i in r {
         total += i
     }

@@ -16,7 +16,7 @@ fn main() {
     // a permutation is the constructor with the components in another order
     print(vec.vec3(v.z, v.y, v.x))
     print(vec.ivec2(i.y, i.x))
-    var p = vec.vec2(1, 2)
+    let mut p = vec.vec2(1, 2)
     p.x = vec.vec2(p.y, p.x).x * 10
     print(p)
 }

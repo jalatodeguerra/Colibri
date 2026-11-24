@@ -1,5 +1,5 @@
 fn fnv1a(s: str) -> u64 {
-    var h: u64 = 14695981039346656037
+    let mut h: u64 = 14695981039346656037
     for b in s.bytes() {
         h ^= u64(b)
         h = h.wrapping_mul(1099511628211)

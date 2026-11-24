@@ -1,7 +1,7 @@
 struct E { hp: int }
 
 fn first_dead(es: List[E]) -> int {
-    for var e in es {
+    for mut e in es {
         e.hp -= 1
         if e.hp <= 0 {
             return e.hp
@@ -11,7 +11,7 @@ fn first_dead(es: List[E]) -> int {
 }
 
 fn main() {
-    var es = [E { hp: 5 }, E { hp: 1 }, E { hp: 5 }]
+    let mut es = [E { hp: 5 }, E { hp: 1 }, E { hp: 5 }]
     print(first_dead(es))
     print(es)
 }

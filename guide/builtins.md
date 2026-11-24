@@ -196,7 +196,7 @@ methods need something of `T`: `sort`, `min`, `max` need `Ord`, `contains`, `ind
 
 ```colibri
 fn main() {
-    var xs = [3, 1, 2]
+    let mut xs = [3, 1, 2]
     xs.push(4)
     xs.insert(1, 9)
     print(xs)
@@ -219,7 +219,7 @@ fn main() {
     print(xs.chunks(3))
     print(xs.windows(3))
     print([[1], [2, 3]].flat_map(fn(x) => x))
-    var d = [1, 1, 2, 2, 1]
+    let mut d = [1, 1, 2, 2, 1]
     d.dedup()
     print(d)
     xs.retain(fn(x) => x != 9)
@@ -282,7 +282,7 @@ a map shares it. `m[k]` panics when the key is missing; `m[k] = v` adds or repla
 
 ```colibri
 fn main() {
-    var m = {"a": 1}
+    let mut m = {"a": 1}
     m.insert("b", 2)
     m["c"] = 3
     print(m)

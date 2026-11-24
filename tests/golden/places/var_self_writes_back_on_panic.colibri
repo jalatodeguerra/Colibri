@@ -1,7 +1,7 @@
 struct Acc { n: int }
 
 impl Acc {
-    fn add_then_fail(var self) {
+    fn add_then_fail(mut self) {
         self.n += 10
         let boom = 1 / (self.n - 10)
         print(boom)
@@ -9,7 +9,7 @@ impl Acc {
 }
 
 fn main() {
-    var xs = [Acc { n: 0 }]
+    let mut xs = [Acc { n: 0 }]
     xs[0].add_then_fail()
 }
 

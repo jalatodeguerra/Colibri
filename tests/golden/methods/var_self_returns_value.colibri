@@ -1,7 +1,7 @@
 struct Stack { top: int, size: int }
 
 impl Stack {
-    fn push(var self, v: int) -> int {
+    fn push(mut self, v: int) -> int {
         self.top = v
         self.size += 1
         return self.size
@@ -9,7 +9,7 @@ impl Stack {
 }
 
 fn main() {
-    var s = Stack { top: 0, size: 0 }
+    let mut s = Stack { top: 0, size: 0 }
     let a = s.push(7)
     let b = s.push(9)
     print("{a} {b} {s}")

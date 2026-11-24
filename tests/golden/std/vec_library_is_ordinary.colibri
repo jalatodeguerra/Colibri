@@ -19,7 +19,7 @@ fn tell[T: Describe](x: T) -> str => x.describe()
 
 // operators in generic code reach the library's impls
 fn sum[T: Add](xs: List[T], zero: T) -> T {
-    var acc = zero
+    let mut acc = zero
     for x in xs {
         acc += x
     }
@@ -43,13 +43,13 @@ fn main() {
     print(flip(vec2(1, -2)))
     print(flip(ivec2(1, -2)))
     print(vec2(5, 5) - Offset { k: 1.5 })
-    var seen: Map[ivec2, int] = {:}
+    let mut seen: Map[ivec2, int] = {:}
     seen[ivec2(1, 1)] = 7
     seen[ivec2(1, 1)] += 1
     print(seen[ivec2(1, 1)])
     // a list of vectors, sorted by hand through a key
     let pts = [vec2(3, 1), vec2(1, 2), vec2(2, 0)]
-    var best = pts[0]
+    let mut best = pts[0]
     for p in pts {
         if p.x < best.x {
             best = p

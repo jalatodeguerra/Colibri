@@ -18,8 +18,8 @@ impl Container[str] for Letters {
 }
 
 fn sum_ints[C: Container[int]](c: C) -> int {
-    var t = 0
-    var i = 0
+    let mut t = 0
+    let mut i = 0
     while i < c.size() {
         t += c.get(i)
         i += 1

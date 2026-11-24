@@ -1,4 +1,4 @@
-var calls = 0
+let mut calls = 0
 fn next() -> int {
     calls += 1
     return calls

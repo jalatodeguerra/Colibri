@@ -1,6 +1,6 @@
 fn main() {
-    var xs = [1, 2, 3]
-    for var x in xs {
+    let mut xs = [1, 2, 3]
+    for mut x in xs {
         xs.remove(0)
     }
 }

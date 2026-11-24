@@ -22,14 +22,14 @@ struct WordCount {
 
 fn count_words(path: str) -> Result[List[WordCount]] {
     let text = fs.read(path).context("reading {path}")?
-    var counts = Map[str, int]()
+    let mut counts = Map[str, int]()
     for word in text.to_lower().split(" ") {
         let w = word.trim()
         if w != "" {
             counts[w] = counts.get_or(w, 0) + 1
         }
     }
-    var words = counts.entries().map(fn(e) => WordCount { word: e.0, count: e.1 })
+    let mut words = counts.entries().map(fn(e) => WordCount { word: e.0, count: e.1 })
     words.sort_by_key(fn(w) => -w.count)
     return ok(words)
 }
@@ -132,8 +132,8 @@ fn area(s: Shape) -> float {
 }
 
 fn main() {
-    var a = Point { x: 1, y: 2 }
-    var b = a
+    let mut a = Point { x: 1, y: 2 }
+    let mut b = a
     b.x = 10
     print("{a.x} {b.x}") // 1.0 10.0
 
@@ -166,7 +166,7 @@ impl Describe for User {
 }
 
 fn largest[T: Ord](items: List[T]) -> T? {
-    var best = items.first()?
+    let mut best = items.first()?
     for x in items {
         if x > best {
             best = x
@@ -214,7 +214,7 @@ impl Mul[Money, Money] for int {
 }
 
 fn total[T: Add](xs: List[T], zero: T) -> T {
-    var sum = zero
+    let mut sum = zero
     for x in xs {
         sum += x
     }
@@ -247,8 +247,8 @@ fn main() {
     print(vec.vec3(v.z, v.y, v.x)) // not v.zyx
     print(vec.vec3(7.0, 7.0, 7.0)) // not vec3(7)
     print(vec.ivec3(1, 2, 3).to_vec()) // not vec3(iv); and v.to_ivec() the other way
-    var ks: List[float] = [] // not `var ks = []`: its type decides which `*` is meant
-    var w = v
+    let mut ks: List[float] = [] // not `let mut ks = []`: its type decides which `*` is meant
+    let mut w = v
     for i in 0..3 {
         if ks.len() > 0 {
             w = w * ks[0]
@@ -290,7 +290,7 @@ impl[T] Sorted[T] {
 }
 
 fn main() {
-    var versions = [Version { major: 1, minor: 10 }, Version { major: 1, minor: 2 }]
+    let mut versions = [Version { major: 1, minor: 10 }, Version { major: 1, minor: 2 }]
     versions.sort()
     print(versions) // [Version { major: 1, minor: 2 }, Version { major: 1, minor: 10 }]
     print(Level.Mid(5) < Level.Mid(7)) // true
@@ -366,7 +366,7 @@ import fs
 fn count_errors(path: str) -> Result[int] {
     let f = fs.open(path)?
     defer f.close()
-    var errors = 0
+    let mut errors = 0
     while true {
         match f.read_line()? {
             some(line) => {
@@ -701,7 +701,7 @@ fn sum(n: int) -> int => n * (n + 1) / 2
 
 @when(!fast)
 fn sum(n: int) -> int {
-    var total = 0
+    let mut total = 0
     for i in 1..=n {
         total += i
     }

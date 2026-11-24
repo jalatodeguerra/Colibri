@@ -1,5 +1,5 @@
 fn main() {
-    var total = 0
+    let mut total = 0
     [1, 2, 3].for_each(fn(x) { total += x })
     print(total)
     ["a", "b"].for_each(fn(s) { print(s) })

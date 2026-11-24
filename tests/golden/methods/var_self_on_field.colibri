@@ -2,13 +2,13 @@ struct Counter { n: int }
 struct Game { score: Counter, lives: Counter }
 
 impl Counter {
-    fn inc(var self) {
+    fn inc(mut self) {
         self.n += 1
     }
 }
 
 fn main() {
-    var g = Game { score: Counter { n: 0 }, lives: Counter { n: 3 } }
+    let mut g = Game { score: Counter { n: 0 }, lives: Counter { n: 3 } }
     g.score.inc()
     g.score.inc()
     g.lives.inc()

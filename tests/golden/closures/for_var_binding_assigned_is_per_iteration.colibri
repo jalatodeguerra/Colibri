@@ -1,6 +1,6 @@
 fn main() {
-    var fns: List[fn() -> int] = []
-    for var i in 0..3 {
+    let mut fns: List[fn() -> int] = []
+    for mut i in 0..3 {
         i += 100
         fns.push(fn() => i)
     }

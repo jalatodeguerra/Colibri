@@ -12,7 +12,7 @@ fn creak(name: str) {
 }
 
 fn main() {
-    var door = Door { name: "door" }
+    let mut door = Door { name: "door" }
     door.co.go(creak(door.name))
     print("running {door.co.count()}")
     door = Door { name: "other" }

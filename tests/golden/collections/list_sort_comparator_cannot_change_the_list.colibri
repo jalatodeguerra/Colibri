@@ -1,5 +1,5 @@
 fn main() {
-    var xs = [3, 1, 2]
+    let mut xs = [3, 1, 2]
     xs.sort_by(fn(a, b) {
         xs.push(0)
         return a - b

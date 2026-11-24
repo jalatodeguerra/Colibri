@@ -10,7 +10,7 @@ fn main() {
     print(time.now() - start)
     print(time.monotonic())
     print(time.unix())
-    var frames = 0
+    let mut frames = 0
     let t0 = time.now()
     while time.now() - t0 < 1.0 {
         time.sleep(0.25)

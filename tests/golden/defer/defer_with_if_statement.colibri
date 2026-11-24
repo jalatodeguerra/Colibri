@@ -1,5 +1,5 @@
 fn main() {
-    var n = 3
+    let mut n = 3
     defer if n > 2 {
         print("big")
     } else {

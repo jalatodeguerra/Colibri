@@ -1,6 +1,6 @@
 fn main() {
-    var s = Set([1, 2])
-    var it = s.iter()
+    let mut s = Set([1, 2])
+    let mut it = s.iter()
     print(it.next())
     s.add(3)
 }

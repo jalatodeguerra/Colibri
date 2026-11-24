@@ -3,7 +3,7 @@ class Res {
 }
 
 fn main() {
-    var current = Res { name: "first" }
+    let mut current = Res { name: "first" }
     let swap = fn() { current = Res { name: "second" } }
     swap()
     print("swapped")

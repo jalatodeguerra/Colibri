@@ -1,8 +1,8 @@
 struct Acc { n: int }
-var xs = [Acc { n: 0 }, Acc { n: 5 }]
+let mut xs = [Acc { n: 0 }, Acc { n: 5 }]
 
 impl Acc {
-    fn add_then_fail(var self) {
+    fn add_then_fail(mut self) {
         self.n += 10
         let zero = self.n - 10
         print(1 / zero)

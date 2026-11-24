@@ -1,8 +1,8 @@
 struct E { hp: int }
 
 fn main() {
-    var es = [E { hp: 1 }, E { hp: 2 }, E { hp: 3 }, E { hp: 4 }]
-    for var e in es {
+    let mut es = [E { hp: 1 }, E { hp: 2 }, E { hp: 3 }, E { hp: 4 }]
+    for mut e in es {
         if e.hp == 2 {
             continue
         }

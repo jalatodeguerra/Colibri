@@ -1,5 +1,5 @@
 fn checksum(data: List[u8]) -> u8 {
-    var sum: u8 = 0
+    let mut sum: u8 = 0
     for b in data {
         sum = sum.wrapping_add(b)
     }

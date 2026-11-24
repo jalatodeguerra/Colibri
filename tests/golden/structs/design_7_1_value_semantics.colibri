@@ -1,14 +1,14 @@
 struct Player { name: str, hp: int }
 
 fn heal(p: Player) -> Player {
-    var q = p
+    let mut q = p
     q.hp += 10
     return q
 }
 
 fn main() {
-    var a = Player { name: "Ana", hp: 100 }
-    var b = a              // a copy
+    let mut a = Player { name: "Ana", hp: 100 }
+    let mut b = a              // a copy
     b.hp = 50
     print(a.hp)            // 100
     print(b.hp)            // 50

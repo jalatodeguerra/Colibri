@@ -1,5 +1,5 @@
 fn main() {
-    var m: Map[int, str] = {:}
+    let mut m: Map[int, str] = {:}
     m[3] = "c"
     m[1] = "a"
     m[2] = "b"

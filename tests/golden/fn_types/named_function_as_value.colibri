@@ -7,7 +7,7 @@ fn main() {
     print(apply(double, 5))
     let f = inc
     print(f(1))
-    var g: fn(int) -> int = double
+    let mut g: fn(int) -> int = double
     print(g(10))
     g = inc
     print(g(10))

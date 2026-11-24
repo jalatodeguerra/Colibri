@@ -1,5 +1,5 @@
 fn main() {
-    var state = "start"
+    let mut state = "start"
     defer print("state at exit: {state}")
     state = "changed"
 }

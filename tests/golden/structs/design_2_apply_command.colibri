@@ -14,7 +14,7 @@ enum Command {
 fn greet(name: str) -> str => "Hello, {name}!"
 
 fn apply(p: Player, cmd: Command) -> Player {
-    var next = p                       // structs are values: this is a copy
+    let mut next = p                       // structs are values: this is a copy
     match cmd {
         Move(dir) => next.pos += dir
         Heal(n)   => next.hp = if next.hp + n > 100 { 100 } else { next.hp + n }
@@ -25,7 +25,7 @@ fn apply(p: Player, cmd: Command) -> Player {
 
 fn main() {
     print(greet("Ana"))
-    var hero = Player { name: "Ana", pos: 0, hp: 60 }
+    let mut hero = Player { name: "Ana", pos: 0, hp: 60 }
     let before = hero
     hero = apply(hero, .Move(1))     // `.Move`: the expected type is Command
     hero = apply(hero, .Heal(70))

@@ -1,6 +1,6 @@
 fn main() {
-    var m = {"a": 1}
-    var it = m.iter()
+    let mut m = {"a": 1}
+    let mut it = m.iter()
     print(it.next())
     m["b"] = 2
 }

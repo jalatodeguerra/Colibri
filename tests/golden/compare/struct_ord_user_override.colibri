@@ -11,7 +11,7 @@ impl Ord for Job {
 }
 
 fn main() {
-    var jobs = [Job { priority: 1, name: "a" }, Job { priority: 3, name: "b" }]
+    let mut jobs = [Job { priority: 1, name: "a" }, Job { priority: 3, name: "b" }]
     jobs.sort()
     print(jobs[0].name)
     print(Job { priority: 1, name: "x" } < Job { priority: 2, name: "x" })

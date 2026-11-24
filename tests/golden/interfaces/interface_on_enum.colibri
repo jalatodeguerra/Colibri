@@ -17,7 +17,7 @@ impl Value for Coin {
 }
 
 fn total[V: Value](xs: List[V]) -> int {
-    var t = 0
+    let mut t = 0
     for x in xs { t += x.cents() }
     return t
 }

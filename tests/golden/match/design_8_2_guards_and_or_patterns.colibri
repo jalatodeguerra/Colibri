@@ -3,7 +3,7 @@ enum Cmd { Move(int), Heal(int), Regen(int), Quit }
 struct Hero { pos: int, hp: int }
 
 fn main() {
-    var hero = Hero { pos: 0, hp: 10 }
+    let mut hero = Hero { pos: 0, hp: 10 }
     let cmds = (Cmd.Move(50), Cmd.Move(3), Cmd.Regen(4), Cmd.Quit)
     for i in 0..4 {
         let cmd = match i {

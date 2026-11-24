@@ -5,7 +5,7 @@ fn main() {
     for b in "hé".bytes() {
         print(b)
     }
-    var it = "ab".chars()
+    let mut it = "ab".chars()
     print(it.next())
     print(it.next())
     print(it.next())

@@ -1,4 +1,4 @@
-var total = 9223372036854775800
+let mut total = 9223372036854775800
 total += 5
 print(total)
 total += 5 // panic: integer overflow

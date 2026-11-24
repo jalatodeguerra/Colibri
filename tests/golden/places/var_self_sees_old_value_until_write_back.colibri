@@ -1,9 +1,9 @@
 struct Acc { n: int }
 
-var list = [Acc { n: 1 }]
+let mut list = [Acc { n: 1 }]
 
 impl Acc {
-    fn bump_and_peek(var self) {
+    fn bump_and_peek(mut self) {
         self.n += 100
         print(list[0].n)
     }

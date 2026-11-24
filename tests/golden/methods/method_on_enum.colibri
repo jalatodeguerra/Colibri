@@ -18,8 +18,8 @@ impl Light {
 }
 
 fn main() {
-    var l = Light.Red
-    var total = 0
+    let mut l = Light.Red
+    let mut total = 0
     for _ in 0..6 {
         total += l.wait()
         l = l.next()

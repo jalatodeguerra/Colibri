@@ -1,7 +1,7 @@
 struct Stats { hits: int, misses: int }
 
 fn make() -> (fn(), fn() -> Stats) {
-    var s = Stats { hits: 0, misses: 0 }
+    let mut s = Stats { hits: 0, misses: 0 }
     let hit = fn() { s.hits += 1 }
     let get = fn() => s
     return (hit, get)

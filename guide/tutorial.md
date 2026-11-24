@@ -108,13 +108,13 @@ colibri> 21 * 2
 
 ## 3. Values, variables and types
 
-`let` makes a binding that cannot be reassigned, and `var` one that can. You almost never write
+`let` makes a binding that cannot be reassigned, and `let mut` one that can. You almost never write
 a type: the compiler infers it from what you assign.
 
 ```colibri
 fn main() {
     let language = "Colibri"
-    var year = 2026
+    let mut year = 2026
     year += 1
     let pi = 3.14159
     let ready = true
@@ -186,8 +186,8 @@ A tuple groups a few values, and you take it apart with a pattern. (This sample 
 
 ```colibri
 fn min_max(xs: List[int]) -> (int, int) {
-    var lo = xs[0]
-    var hi = xs[0]
+    let mut lo = xs[0]
+    let mut hi = xs[0]
     for x in xs {
         if x < lo {
             lo = x
@@ -254,7 +254,7 @@ fn apply_twice(f: fn(int) -> int, x: int) -> int {
 fn main() {
     print(apply_twice(fn(n) => n * 3, 2))
 
-    var total = 0
+    let mut total = 0
     let add = fn(n: int) {
         total += n
     }
@@ -323,7 +323,7 @@ fn main() {
     for i in 0..3 {
         print(i)
     }
-    var n = 1
+    let mut n = 1
     while n < 20 {
         n *= 3
     }
@@ -393,16 +393,16 @@ impl Point {
 
     fn dist2(self) -> int => self.x * self.x + self.y * self.y
 
-    fn shift(var self, dx: int, dy: int) {
+    fn shift(mut self, dx: int, dy: int) {
         self.x += dx
         self.y += dy
     }
 }
 
 fn main() {
-    var a = Point.origin()
+    let mut a = Point.origin()
     a.shift(3, 4)
-    var b = a
+    let mut b = a
     b.x = 100
     print(a)
     print(b)
@@ -416,8 +416,8 @@ Point { x: 100, y: 4 }
 25
 ```
 
-Methods live in an `impl` block next to the type. `self` reads the value and `var self` may
-change it, so the call needs a `var` to change. A function in the block with no `self`
+Methods live in an `impl` block next to the type. `self` reads the value and `mut self` may
+change it, so the call needs a `let mut` to change. A function in the block with no `self`
 (`origin`) is called on the type. Printing, `==`, hashing and ordering of a struct need no code:
 the compiler provides them from the fields.
 
@@ -538,7 +538,7 @@ impl Shape for Circle {
 }
 
 fn total_area(shapes: List[Shape]) -> float {
-    var sum = 0.0
+    let mut sum = 0.0
     for s in shapes {
         sum += s.area()
     }
@@ -569,7 +569,7 @@ the parameter must be able to do:
 
 ```colibri
 fn largest[T: Ord](items: List[T]) -> T? {
-    var best = items.first()?
+    let mut best = items.first()?
     for x in items {
         if x > best {
             best = x
@@ -699,7 +699,7 @@ import str
 
 fn main() {
     let inputs = ["10", "x", "30"]
-    var total = 0
+    let mut total = 0
     for text in inputs {
         let n = str.parse_int(text) or |e| {
             print("skipping `{text}`: {e}")
@@ -859,7 +859,7 @@ were added. Both are shared, not copied, when you assign them. Literals use `[ ]
 
 ```colibri
 fn main() {
-    var xs = [5, 3, 9]
+    let mut xs = [5, 3, 9]
     xs.push(1)
     xs.sort()
     print(xs)
@@ -889,12 +889,12 @@ b-a
 ```
 
 An index that is out of range is a panic, and `get` gives an optional when you are not sure.
-`for var x in xs` lets you change each element in place.
+`for mut x in xs` lets you change each element in place.
 
 ```colibri
 fn main() {
     let ages = {"ana": 30, "bo": 25}
-    var stock = Map[str, int]()
+    let mut stock = Map[str, int]()
     stock["pens"] = 12
     stock["ink"] = 3
     stock["pens"] += 1
@@ -936,11 +936,11 @@ struct Entry {
 }
 
 fn main() {
-    var counts = Map[str, int]()
+    let mut counts = Map[str, int]()
     for w in "to be or not to be".split(" ") {
         counts[w] = counts.get_or(w, 0) + 1
     }
-    var entries = counts.entries().map(fn(e) => Entry { word: e.0, count: e.1 })
+    let mut entries = counts.entries().map(fn(e) => Entry { word: e.0, count: e.1 })
     entries.sort_by_key(fn(e) => -e.count)
     for e in entries {
         print("{e.word}: {e.count}")
@@ -980,14 +980,14 @@ pub struct Entry {
 // Splits text into lower-case words and counts them, most frequent first. Ties keep the
 // order of first appearance.
 pub fn count(text: str) -> List[Entry] {
-    var counts = Map[str, int]()
+    let mut counts = Map[str, int]()
     for raw in text.to_lower().split(" ") {
         let word = raw.trim()
         if word != "" {
             counts[word] = counts.get_or(word, 0) + 1
         }
     }
-    var entries = counts.entries().map(fn(e) => Entry { word: e.0, count: e.1 })
+    let mut entries = counts.entries().map(fn(e) => Entry { word: e.0, count: e.1 })
     entries.sort_by_key(fn(e) => -e.count)
     return entries
 }

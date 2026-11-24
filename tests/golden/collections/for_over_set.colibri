@@ -1,6 +1,6 @@
 fn main() {
     let s = Set([3, 1, 2])
-    var sum = 0
+    let mut sum = 0
     for x in s {
         print(x)
         sum += x

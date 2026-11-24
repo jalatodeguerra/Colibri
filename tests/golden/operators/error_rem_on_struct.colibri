@@ -10,6 +10,6 @@ fn main() {
     print(a & a) // error: `&` cannot be applied to a value of type `V`
     print(a << 1) // error: `<<` cannot be applied to a value of type `V`
     print(~a) // error: `~` cannot be applied to a value of type `V`
-    var b = a
+    let mut b = a
     b %= a // error: `%=` cannot be applied to `V`
 }

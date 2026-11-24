@@ -8,7 +8,7 @@ fn sign(x: int) -> str {
     return "positive"
 }
 fn first_multiple(n: int, of: int) -> int {
-    var i = 1
+    let mut i = 1
     while true {
         if i % of == 0 && i >= n {
             return i

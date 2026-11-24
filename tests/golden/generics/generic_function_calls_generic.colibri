@@ -7,7 +7,7 @@ fn quad[T](x: T) -> ((T, T), (T, T)) {
 
 fn largest[T: Ord](xs: List[T]) -> T? {
     if xs.is_empty() { return none }
-    var best = xs[0]
+    let mut best = xs[0]
     for x in xs {
         if x > best { best = x }
     }

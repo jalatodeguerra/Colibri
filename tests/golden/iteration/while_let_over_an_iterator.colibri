@@ -1,6 +1,6 @@
 fn main() {
     let words = ["a", "b", "c"]
-    var it = words.iter()
+    let mut it = words.iter()
     while let some(w) = it.next() {
         print(w)
     }

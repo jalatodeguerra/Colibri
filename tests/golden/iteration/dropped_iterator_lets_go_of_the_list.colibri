@@ -1,7 +1,7 @@
 fn main() {
-    var xs = [1, 2]
+    let mut xs = [1, 2]
     {
-        var it = xs.iter()
+        let mut it = xs.iter()
         print(it.next())
     }
     xs.push(3)

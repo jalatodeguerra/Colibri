@@ -6,7 +6,7 @@ impl Drop for Res {
 }
 
 fn main() {
-    var r = Res { name: "first" }
+    let mut r = Res { name: "first" }
     r = Res { name: "second" }
     print("assigned")
 }

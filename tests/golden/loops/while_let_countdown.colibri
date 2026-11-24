@@ -8,7 +8,7 @@ fn next(n: int) -> Opt {
 }
 
 fn main() {
-    var cur = Opt.Some(3)
+    let mut cur = Opt.Some(3)
     while let Some(n) = cur {
         print(n)
         cur = next(n)

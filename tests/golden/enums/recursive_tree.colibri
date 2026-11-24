@@ -23,7 +23,7 @@ fn depth(t: Tree) -> int {
 }
 
 fn main() {
-    var t = Tree.Leaf
+    let mut t = Tree.Leaf
     t = insert(t, 5)
     t = insert(t, 3)
     t = insert(t, 8)

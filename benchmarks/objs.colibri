@@ -5,7 +5,7 @@ class Node {
 }
 
 fn build(n: int) -> Node? {
-    var head: Node? = none
+    let mut head: Node? = none
     for i in 0..n {
         head = some(Node { value: i, next: head })
     }
@@ -13,9 +13,9 @@ fn build(n: int) -> Node? {
 }
 
 fn main() {
-    var total = 0
+    let mut total = 0
     for round in 0..20 {
-        var cur = build(50000)
+        let mut cur = build(50000)
         while let some(n) = cur {
             total += n.value
             cur = n.next

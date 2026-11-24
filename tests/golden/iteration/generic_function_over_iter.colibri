@@ -3,7 +3,7 @@ struct Evens {
 }
 
 impl Iter[int] for Evens {
-    fn next(var self) -> int? {
+    fn next(mut self) -> int? {
         if self.n > 6 {
             return none
         }
@@ -14,7 +14,7 @@ impl Iter[int] for Evens {
 }
 
 fn collect[I: Iter[int]](it: I) -> List[int] {
-    var out: List[int] = []
+    let mut out: List[int] = []
     for x in it {
         out.push(x)
     }

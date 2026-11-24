@@ -1,5 +1,5 @@
 fn main() {
-    var sum = 0
+    let mut sum = 0
     for x in Bytes([1, 2, 250]) {
         sum += int(x)
     }
@@ -7,7 +7,7 @@ fn main() {
     for (i, x) in "ab".to_bytes().enumerate() {
         print("{i}: {x}")
     }
-    var it = Bytes([7, 8]).iter()
+    let mut it = Bytes([7, 8]).iter()
     print(it.next())
 }
 

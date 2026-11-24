@@ -3,7 +3,7 @@ import rand
 
 fn main() {
     rand.seed(1)
-    var drawn: List[int] = []
+    let mut drawn: List[int] = []
     for _ in 0..8 {
         drawn.push(rand.int(0, 100))
     }
@@ -12,7 +12,7 @@ fn main() {
     print(rand.float())
     print(rand.float())
     rand.seed(1)
-    var bits: List[bool] = []
+    let mut bits: List[bool] = []
     for _ in 0..8 {
         bits.push(rand.bool())
     }

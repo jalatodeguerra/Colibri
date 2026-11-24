@@ -11,7 +11,7 @@ struct NotOrd {
 }
 
 fn largest[T: Ord](s: S[T]) -> T {
-    var best = s.items[0]
+    let mut best = s.items[0]
     for x in s.items {
         if x > best {
             best = x

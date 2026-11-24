@@ -1,23 +1,23 @@
 interface Counter {
-    fn bump(var self)
+    fn bump(mut self)
     fn value(self) -> int
 }
 
 struct Clicks { n: int }
 
 impl Counter for Clicks {
-    fn bump(var self) { self.n += 1 }
+    fn bump(mut self) { self.n += 1 }
     fn value(self) -> int => self.n
 }
 
 fn main() {
-    var original = Clicks { n: 10 }
-    var boxed: Counter = original
+    let mut original = Clicks { n: 10 }
+    let mut boxed: Counter = original
     boxed.bump()
     boxed.bump()
     print(original.n)
     print(boxed.value())
-    var other = boxed
+    let mut other = boxed
     other.bump()
     print(boxed.value())
     print(other.value())

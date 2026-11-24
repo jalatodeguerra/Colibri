@@ -17,10 +17,10 @@ impl Mul[float] for V {
 
 fn main() {
     let m = Money { c: 1 }
-    var xs = []
-    var ys = []
-    var zs = []
-    var ws = []
+    let mut xs = []
+    let mut ys = []
+    let mut zs = []
+    let mut ws = []
     if false {
         let t = xs[0] + m // error: the type of the operand of `+` is not known yet
         let u = -ys[0] // error: the type of the operand of `-` is not known yet

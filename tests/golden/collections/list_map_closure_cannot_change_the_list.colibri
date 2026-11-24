@@ -1,6 +1,6 @@
 // allow: unused
 fn main() {
-    var xs = [1, 2, 3]
+    let mut xs = [1, 2, 3]
     let ys = xs.map(fn(x) {
         xs.push(x)
         return x

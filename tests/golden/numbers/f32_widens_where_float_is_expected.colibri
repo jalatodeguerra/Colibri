@@ -18,7 +18,7 @@ fn main() {
     print(arrow(0.25))
     let p = Particle { mass: a }
     print(p.mass)
-    var c: float = 1.0
+    let mut c: float = 1.0
     c = a
     print(c)
     let d: float = if a > 0.0 { a } else { 0.0 }

@@ -1,7 +1,7 @@
 let root = Error.from("disk full")
 let top = root.context("saving").context("quitting")
-var cur: Error? = some(top)
-var depth = 0
+let mut cur: Error? = some(top)
+let mut depth = 0
 while let some(e) = cur {
     print("{depth}: {e.message()}")
     cur = e.cause()

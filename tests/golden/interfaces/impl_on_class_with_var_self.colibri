@@ -1,5 +1,5 @@
 interface Counter {
-    fn bump(var self)
+    fn bump(mut self)
     fn value(self) -> int
 }
 
@@ -11,7 +11,7 @@ impl Counter for Clicks {
 }
 
 fn bump_twice[C: Counter](c: C) {
-    var local = c
+    let mut local = c
     local.bump()
     local.bump()
 }

@@ -1,7 +1,7 @@
 struct C { n: int }
 
 impl C {
-    fn inc(var self) {
+    fn inc(mut self) {
         self.n += 1
     }
     fn twice(self) {

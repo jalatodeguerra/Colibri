@@ -1,12 +1,12 @@
 struct Enemy { hp: int }
 
 fn main() {
-    var enemies = [Enemy { hp: 10 }, Enemy { hp: 20 }]
-    for var e in enemies {
+    let mut enemies = [Enemy { hp: 10 }, Enemy { hp: 20 }]
+    for mut e in enemies {
         e.hp -= 1
     }
     print(enemies)
-    for var e in enemies {
+    for mut e in enemies {
         e = Enemy { hp: e.hp * 2 }
     }
     print(enemies)

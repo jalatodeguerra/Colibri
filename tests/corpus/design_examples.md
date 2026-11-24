@@ -22,7 +22,7 @@ enum Command {
 fn greet(name: str) -> str => "Hello, {name}!"
 
 fn apply(a: Account, cmd: Command) -> Result[Account] {
-    var next = a // structs are values: this is a copy
+    let mut next = a // structs are values: this is a copy
     match cmd {
         Deposit(n) => next.balance += n
         Withdraw(n) => {
@@ -48,7 +48,7 @@ fn main() {
     }
 
     let limit = load_limit("limit.txt") or 500 // the file may be missing
-    var acct = Account { owner: "Ana" }
+    let mut acct = Account { owner: "Ana" }
     acct = apply(acct, .Deposit(120)) or acct
     print("{acct.owner} has {acct.balance} (limit {limit})")
     match apply(acct, .Withdraw(200)) {
@@ -80,19 +80,19 @@ extern "C" { fn MessageBoxA(...) -> i32 }
 
 ```colibri
 let x = 10        // immutable binding
-var y = 20        // mutable binding
+let mut y = 20        // mutable binding
 y += 1
-const MAX_HP = 100   // compile-time constant, module level or local
+const MAX_HP = 100   // compile-time constant, module level
 ```
 
 ```colibri
 const GRAVITY = 9.81                  // compile-time constant
 let config = load_defaults()          // initialised once, immutable binding
-var score = 0                         // mutable module state
+let mut score = 0                         // mutable module state
 ```
 
 ```colibri
-var items: List[int] = []
+let mut items: List[int] = []
 items.push(1)
 let n = items.len()
 print(n)                              // prints 1
@@ -143,7 +143,7 @@ struct Particle {
 }
 
 let a = Vec2i { x: 1, y: 2 }
-var b = a                      // copy
+let mut b = a                      // copy
 b.x = 10                       // `a` is unchanged
 ```
 
@@ -165,14 +165,14 @@ impl Particle {
 
     fn alive(self) -> bool => self.life > 0             // read-only receiver
 
-    fn step(var self, dt: float) {                      // mutating receiver (structs only)
+    fn step(mut self, dt: float) {                      // mutating receiver (structs only)
         self.pos += self.vel * dt                       // vec2 * float: §5.1
         self.life -= dt
     }
 }
 
-var p = Particle.new(vec2(0, 0))
-p.step(0.016)        // `p` must be `var`
+let mut p = Particle.new(vec2(0, 0))
+p.step(0.016)        // `p` must be `let mut`
 ```
 
 ```colibri
@@ -229,7 +229,7 @@ impl Shape for Circle {
 }
 
 fn total_area(shapes: List[Shape]) -> float {   // dynamic dispatch
-    var sum = 0.0
+    let mut sum = 0.0
     for s in shapes { sum += s.area() }
     return sum
 }
@@ -290,15 +290,15 @@ match load_config() {
   ```
 
 ```colibri
-for var e in enemies {     // `e` is a place in the list
+for mut e in enemies {     // `e` is a place in the list
     e.hp -= 1
 }
 enemies[0].pos += vec2(1, 0)
-enemies[0].step(dt)        // `var self` method on a place
+enemies[0].step(dt)        // `mut self` method on a place
 ```
 
 ```colibri
-for var e in enemies {
+for mut e in enemies {
     e.hp -= 1
     if e.hp < 10 { enemies.push(minion_at(e.pos)) }   // panics: push while `e` is live
 }

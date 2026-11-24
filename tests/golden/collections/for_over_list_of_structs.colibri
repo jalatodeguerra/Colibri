@@ -2,7 +2,7 @@ struct P { x: int }
 
 fn main() {
     let ps = [P { x: 1 }, P { x: 2 }]
-    var t = 0
+    let mut t = 0
     for p in ps {
         t += p.x
     }

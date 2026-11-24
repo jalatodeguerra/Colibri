@@ -1,5 +1,5 @@
 fn main() {
-    var x: u8 = 0b1111_0000
+    let mut x: u8 = 0b1111_0000
     x &= 0b0011_1100
     print(x)
     x |= 1

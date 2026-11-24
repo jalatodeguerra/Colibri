@@ -3,8 +3,8 @@ struct Counter { n: int }
 
 impl Counter {
     @deprecated("use bump instead")
-    fn increment(var self) { self.n += 1 }
-    fn bump(var self) { self.n += 1 }
+    fn increment(mut self) { self.n += 1 }
+    fn bump(mut self) { self.n += 1 }
     @deprecated
     fn make() -> Counter => Counter { n: 0 }
 }
@@ -21,7 +21,7 @@ fn countdown(n: int) -> int {
 }
 
 fn main() {
-    var c = Counter.make() // warning: `Counter.make` is deprecated
+    let mut c = Counter.make() // warning: `Counter.make` is deprecated
     c.increment() // warning: `Counter.increment` is deprecated: use bump instead
     c.bump()
     print(c.n)

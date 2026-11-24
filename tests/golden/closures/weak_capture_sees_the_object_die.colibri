@@ -3,7 +3,7 @@ class Node {
 }
 
 fn main() {
-    var keeper: fn() -> str = fn() => "unset"
+    let mut keeper: fn() -> str = fn() => "unset"
     {
         let n = Node { name: "n" }
         keeper = fn() use(weak n) {

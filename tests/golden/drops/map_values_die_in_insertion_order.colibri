@@ -1,7 +1,7 @@
 class T { name: str }
 
 fn main() {
-    var m: Map[str, T] = {:}
+    let mut m: Map[str, T] = {:}
     m["one"] = T { name: "v1" }
     m["two"] = T { name: "v2" }
     m["one"] = T { name: "v1b" }

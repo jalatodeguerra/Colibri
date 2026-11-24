@@ -4,7 +4,7 @@ class Item {
 }
 
 fn main() {
-    var xs = [Item { name: "a" }, Item { name: "b" }]
+    let mut xs = [Item { name: "a" }, Item { name: "b" }]
     let ys = xs.map(fn(i) {
         if i.name == "b" {
             let boom = [1][3]

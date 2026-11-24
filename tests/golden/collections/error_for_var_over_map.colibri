@@ -1,5 +1,5 @@
 fn main() {
-    var m = {"a": 1}
-    for var (k, v) in m { // error: `for var` over anything but a list is not supported yet
+    let mut m = {"a": 1}
+    for mut (k, v) in m { // error: `for mut` over anything but a list is not supported yet
     }
 }

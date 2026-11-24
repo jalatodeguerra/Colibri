@@ -1,8 +1,8 @@
 class Res { name: str }
 
 fn main() {
-    var xs = [Res { name: "a" }, Res { name: "b" }]
-    for var _ in xs {
+    let mut xs = [Res { name: "a" }, Res { name: "b" }]
+    for mut _ in xs {
         print("trip")
     }
     print("end")

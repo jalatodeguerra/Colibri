@@ -11,7 +11,7 @@ finished when the bytecode VM is faster than CPython 3.13 on every one of them (
 | `loop` | integer arithmetic in a counted loop |
 | `list` | a list of a million integers: push, index, iterate |
 | `map` | maps with integer keys and with string keys |
-| `structs` | value-type structs updated in place through `var self` methods |
+| `structs` | value-type structs updated in place through `mut self` methods |
 | `objs` | class objects: building and walking a linked list |
 | `closures` | closures through `map` and `filter` |
 | `strings` | format, join, split and prefix tests |

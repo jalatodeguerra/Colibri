@@ -6,7 +6,7 @@ class T { name: str }
 fn deep(limit: int) -> int {
     let outer = T { name: "outer" }
     defer print("defer outer")
-    var i = 0
+    let mut i = 0
     while true {
         let a = T { name: "a{i}" }
         defer print("defer a{i}")
@@ -35,7 +35,7 @@ fn deep(limit: int) -> int {
 // break and continue leave the iteration scope only; the loop's own locals live on.
 fn loops() -> int {
     let keep = T { name: "keep" }
-    var total = 0
+    let mut total = 0
     for n in 0..4 {
         let each = T { name: "each{n}" }
         defer print("end {n}")

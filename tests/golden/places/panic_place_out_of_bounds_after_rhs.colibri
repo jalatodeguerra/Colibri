@@ -4,7 +4,7 @@ fn boom() -> int {
 }
 
 fn main() {
-    var xs = [1]
+    let mut xs = [1]
     xs[5] = boom()
 }
 

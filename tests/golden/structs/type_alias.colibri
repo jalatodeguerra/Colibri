@@ -16,7 +16,7 @@ fn main() {
     let q: Point = p
     print(q == p)
     print(best(3, 8))
-    var s: Score = 1
+    let mut s: Score = 1
     s += best(2, 5)
     print(s)
 }

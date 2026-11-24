@@ -1,8 +1,8 @@
 enum Opt { Some(int), None }
 
 fn main() {
-    var i = 0
-    var cur = Opt.Some(0)
+    let mut i = 0
+    let mut cur = Opt.Some(0)
     while let Some(n) = cur {
         i += 1
         cur = .Some(n + 1)

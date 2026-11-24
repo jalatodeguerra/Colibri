@@ -14,7 +14,7 @@ fn main() {
     let g = CoGroup()
     g.go(ticker(20000))
     g.go(ticker(20000))
-    var total = 0
+    let mut total = 0
     for i in 0..40000 {
         let c = go square(i)
         total += c.join()
