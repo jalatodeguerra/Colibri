@@ -162,9 +162,21 @@ impl FnCompiler<'_> {
             Some(d) => d,
             None => self.alloc_for(&e.ty),
         };
-        let w = self.eval_window(0, &args, false);
-        self.emit(Op::CallValue { d, base: w.base }, span);
-        self.free_window(w, span);
+        if self.free
+            && let Some((callee, rest)) = args.split_first()
+        {
+            // The prelude calls the closure it was given once for each element: the function
+            // value stays in its register, and the window holds only the arguments.
+            let f = self.anchor_operand(callee, rest.iter().any(|a| writes_locals(a)));
+            let w = self.eval_window(0, rest, false);
+            self.emit(Op::CallValueIn { d, f, base: w.base }, span);
+            self.free_window(w, span);
+            self.free(f, span);
+        } else {
+            let w = self.eval_window(0, &args, false);
+            self.emit(Op::CallValue { d, base: w.base }, span);
+            self.free_window(w, span);
+        }
         if dst.is_none() {
             self.own(d);
             self.free(d, span);
@@ -536,6 +548,8 @@ impl FnCompiler<'_> {
         // The built-ins that take a closure are Colibri code: a call of the function of the
         // prelude, so the closure runs as bytecode and may pause (vm-plan §2.9).
         if let Some(f) = self.env.builtin_fn(b) {
+            // Whatever the built-in drops or replaces may run a `Drop` hook, as for the native one.
+            self.releases += 1;
             return self.call_fn_charging(f, Some(Some(b)), args, None, &e.ty, dst, span);
         }
         match b {

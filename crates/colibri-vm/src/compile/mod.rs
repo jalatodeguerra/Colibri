@@ -781,6 +781,8 @@ impl<'a> FnCompiler<'a> {
     /// Whether the group that began when `releases` stood at `start` can have released a
     /// value, so a hook may have panicked in it.
     fn may_have_released(&self, start: u32) -> bool {
+        // The prelude's code checks like any other: `fold` releases its old accumulator in the
+        // prelude's frame, where the native one released it in the closure's.
         self.always_check || self.releases != start
     }
 

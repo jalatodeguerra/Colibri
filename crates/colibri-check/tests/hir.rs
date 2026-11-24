@@ -708,3 +708,33 @@ fn a_program_cannot_call_the_hidden_helpers_of_the_prelude() {
         "{messages:?}"
     );
 }
+
+#[test]
+fn a_program_cannot_call_the_prelude_functions_of_the_closure_built_ins() {
+    let (program, messages) = check("fn main() {\n    print(__list_map([1], fn(x) => x))\n}\n");
+    assert!(program.is_none());
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("unknown name `__list_map`")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn a_program_may_define_functions_named_like_the_prelude_ones() {
+    let src = "fn __list_map(a: int) -> int => a\nfn __merge_order(a: int) -> int => a\n\
+               fn main() {\n    print(__list_map(1))\n    print(__merge_order(2))\n    print([1].map(fn(x) => x))\n}\n";
+    let (program, messages) = check(src);
+    assert!(messages.is_empty(), "{messages:?}");
+    let program = program.expect("it compiles");
+    // The built-in still maps to the prelude's function, not to the program's.
+    let (_, f) = program
+        .builtin_fns
+        .iter()
+        .find(|(b, _)| matches!(b, colibri_check::hir::Builtin::ListMap))
+        .expect("a function for `map`");
+    assert!(colibri_check::is_prelude_span(
+        program.fns[f.0 as usize].span
+    ));
+}

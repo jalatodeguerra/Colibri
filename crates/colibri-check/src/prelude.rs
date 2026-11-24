@@ -374,6 +374,18 @@ pub fn is_reserved_type_name(name: &str) -> bool {
         })
 }
 
+/// The key of a function of the prelude in the table of module-level names. The prelude's own
+/// functions (`__list_map`, `__merge_order`, ..) live under a key that no program can write, so
+/// a program can neither call them nor clash with them: only a use inside the prelude resolves
+/// to them.
+pub(crate) fn value_key(name: &str, span: Span) -> std::borrow::Cow<'_, str> {
+    if name.starts_with("__") && in_prelude(span) {
+        std::borrow::Cow::Owned(format!("\u{1}{name}"))
+    } else {
+        std::borrow::Cow::Borrowed(name)
+    }
+}
+
 /// Whether a span belongs to the prelude.
 pub(crate) fn in_prelude(span: Span) -> bool {
     span.file == PRELUDE_FILE

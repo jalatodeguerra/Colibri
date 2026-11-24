@@ -85,8 +85,40 @@ impl Machine {
         d: u16,
         a: u16,
     ) -> Result<(), Ctl> {
-        let span = chunk.spans[pc - 1];
         let at = base + usize::from(a);
+        self.call_value_at_reg(fiber, chunk, base, pc, d, at, at + 1)
+    }
+
+    /// `CallValueIn`: like `CallValue`, with the function value in register `f` and the
+    /// arguments in the window that starts at `a`: no copy of the function value is made.
+    #[inline(never)]
+    pub(crate) fn op_call_value_in(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        [d, f, a]: [u16; 3],
+    ) -> Result<(), Ctl> {
+        let (at, window) = (base + usize::from(f), base + usize::from(a));
+        self.call_value_at_reg(fiber, chunk, base, pc, d, at, window)
+    }
+
+    /// Calls the function value in the absolute register `at`, whose arguments start at
+    /// `window`; the result goes to register `d` of the caller whose window starts at `base`.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn call_value_at_reg(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        d: u16,
+        at: usize,
+        window: usize,
+    ) -> Result<(), Ctl> {
+        let span = chunk.spans[pc - 1];
         let (callee, closure) = match &fiber.regs[at] {
             Value::Fn(id, _) => {
                 let id = *id;
@@ -107,9 +139,9 @@ impl Machine {
                 ));
             }
         };
-        self.push_call(fiber, callee, at + 1, base + usize::from(d), chunk, pc)?;
+        self.push_call(fiber, callee, window, base + usize::from(d), chunk, pc)?;
         if let Some(c) = closure {
-            self.install_captures(fiber, at + 1, &c);
+            self.install_captures(fiber, window, &c);
         }
         Ok(())
     }

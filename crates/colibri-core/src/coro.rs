@@ -209,6 +209,7 @@ pub trait Sched: Engine {
         let core = self.core();
         state.coro.is_none()
             && state.host_depth <= depth
+            && state.native_depth == 0
             && core.hook_depth == 0
             && !core.sched.is_busy()
             && !core.sched.is_shutting_down()

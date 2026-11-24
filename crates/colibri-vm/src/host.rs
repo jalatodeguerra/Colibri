@@ -155,7 +155,7 @@ impl Machine {
             self.release_all(args);
             return Err(self.internal(fiber, span, "a host function is not installed"));
         };
-        if fiber.frames.len() >= self.max_depth {
+        if fiber.visible_depth() >= self.max_depth {
             self.release_all(args);
             return Err(self.overflow(fiber, span));
         }

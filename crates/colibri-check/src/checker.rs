@@ -962,7 +962,7 @@ impl<'a> Checker<'a> {
         let id = self.add_fn(item, decl, &SigCtx::default());
         // A clash keeps the later declaration out of the name table but still checks its body.
         self.declare_value(
-            &decl.name.name,
+            &prelude::value_key(&decl.name.name, decl.name.span),
             decl.name.span,
             ValueRef::Fn(id),
             item.public,
@@ -2128,7 +2128,10 @@ impl<'a> Checker<'a> {
             builtin_fns: prelude::BUILTIN_FNS
                 .iter()
                 .filter_map(|(b, name)| {
-                    let i = self.fns.iter().position(|f| f.name == *name)?;
+                    let i = self
+                        .fns
+                        .iter()
+                        .position(|f| f.name == *name && prelude::in_prelude(f.name_span))?;
                     Some((*b, FnId(i as u32)))
                 })
                 .collect(),
@@ -2172,7 +2175,7 @@ impl<'a> Checker<'a> {
         self.values
             .keys()
             .map(String::as_str)
-            .filter(|name| !name.starts_with("__"))
+            .filter(|name| !name.starts_with("__") && !name.starts_with('\u{1}'))
             .chain(BUILTIN_FNS.iter().copied())
     }
 }

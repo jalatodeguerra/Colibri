@@ -1,0 +1,18 @@
+// A program may define functions with the names of the prelude's helpers.
+fn __list_map(a: int) -> int => a + 100
+
+fn __merge_order(a: int) -> int => a + 200
+
+fn main() {
+    print(__list_map(1))
+    print(__merge_order(1))
+    print([1, 2].map(fn(x) => x * 2))
+    let mut xs = [3, 1, 2]
+    xs.sort_by(fn(a, b) => compare(a, b))
+    print(xs)
+}
+
+// expect: 101
+// expect: 201
+// expect: [2, 4]
+// expect: [1, 2, 3]

@@ -306,9 +306,13 @@ impl Interp {
     }
 
     /// Whether the coroutine on `fiber` may suspend for a background operation: it is a
-    /// coroutine, at most one host function deep, outside a `Drop` hook.
+    /// coroutine, at most one host function deep, outside a `Drop` hook and outside code that a
+    /// built-in operation calls (a coroutine may not pause there, whatever it waits for).
     pub(crate) fn can_suspend_for_external(&self, fiber: &Fiber) -> bool {
-        fiber.state.coro.is_some() && fiber.state.host_depth <= 1 && self.core.hook_depth == 0
+        fiber.state.coro.is_some()
+            && fiber.state.host_depth <= 1
+            && fiber.state.native_depth == 0
+            && self.core.hook_depth == 0
     }
 
     // ---- starting ----

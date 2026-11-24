@@ -352,6 +352,13 @@ pub enum Op {
         base: Reg,
         site: u16,
     },
+    /// `CallValue` for a function value that sits in register `f`, outside the window: the
+    /// arguments are `base..`, and nothing is copied. Only the prelude's code uses it.
+    CallValueIn {
+        d: Reg,
+        f: Reg,
+        base: Reg,
+    },
     /// Calls the host function of the site (`Site::Host`) with owned copies of the arguments in
     /// `base..`, which stay where they are for the caller to drop; the result goes to `d`.
     CallHost {
@@ -992,6 +999,7 @@ impl Chunk {
                 format!("CallHost r{d} base=r{base} {}", self.site_text(site))
             }
             Op::CallValue { d, base } => format!("CallValue r{d} base=r{base}"),
+            Op::CallValueIn { d, f, base } => format!("CallValueIn r{d} f=r{f} base=r{base}"),
             Op::CallBound { d, base, site } => {
                 format!("CallBound r{d} base=r{base} {}", self.site_text(site))
             }

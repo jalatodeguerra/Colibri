@@ -60,6 +60,8 @@ pub struct VmFiber {
     /// holds `()` or a scalar (checked when a frame pops, in debug builds).
     pub(crate) regs: Vec<Value>,
     pub(crate) frames: Vec<Frame>,
+    /// How many of `frames` run a hidden chunk (the prelude's). The depth limit counts the others only, as the tree-walker has no frames for built-ins.
+    pub(crate) hidden: usize,
     /// Values kept alive for `Engine::hold_temp`: what core code holds across user code.
     pub(crate) temps: Vec<Value>,
     /// The mutation guards held by running code, newest last: a `for` loop's iteration hold, a
@@ -97,12 +99,19 @@ impl VmFiber {
         VmFiber {
             regs: Vec::new(),
             frames: Vec::new(),
+            hidden: 0,
             temps: Vec::new(),
             holds: Vec::new(),
             state: FiberState::default(),
             stack_base: 0,
             unwinding: Vec::new(),
         }
+    }
+
+    /// The frames that count against the call-depth limit: all but the hidden ones.
+    #[inline(always)]
+    pub(crate) fn visible_depth(&self) -> usize {
+        self.frames.len() - self.hidden
     }
 
     /// How many calls are active.

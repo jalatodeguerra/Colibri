@@ -75,6 +75,7 @@ coroutines/wait_inside_an_ord_reached_by_sort_panics.colibri  # `go`
 coroutines/wait_inside_closure_and_defer.colibri  # `go`
 coroutines/wait_on_main_reports_a_failure.colibri  # `go`
 coroutines/wait_on_main_runs_the_loop.colibri  # `go`
+coroutines/wait_on_the_main_fiber_inside_a_show_reached_by_print_panics.colibri  # `Wait`
 coroutines/wait_orders_ticks.colibri  # `go`
 coroutines/wait_real_clock.colibri  # `go`
 coroutines/wait_until.colibri  # `go`

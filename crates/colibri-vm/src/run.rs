@@ -474,6 +474,11 @@ impl Machine {
                     tri!(self.op_call_value(fiber, &chunk, base, pc, d, a));
                     reload!();
                 }
+                Op::CallValueIn { d, f, base: a } => {
+                    sync!();
+                    tri!(self.op_call_value_in(fiber, &chunk, base, pc, [d, f, a]));
+                    reload!();
+                }
                 Op::CallBound { d, base: a, site } | Op::CallDyn { d, base: a, site } => {
                     sync!();
                     tri!(self.op_call_iface(fiber, &chunk, base, pc, [d, a, site]));
@@ -1170,13 +1175,14 @@ impl Machine {
             start = 1;
         }
         self.core.budget.left -= i64::from(steps);
-        if fiber.frames.len() >= self.max_depth || self.core.budget.left < 0 {
+        if fiber.visible_depth() >= self.max_depth || self.core.budget.left < 0 {
             return Err(self.call_refused(fiber, caller, pc));
         }
         let need = new_base + callee.nregs as usize;
         if fiber.regs.len() < need {
             fiber.regs.resize(need, Value::Unit);
         }
+        fiber.hidden += usize::from(callee.hidden);
         fiber.frames.push(Frame {
             chunk: callee,
             pc: start,
@@ -1212,9 +1218,10 @@ impl Machine {
             self.charge(fiber, span, n)?;
         }
         let callee = self.callee_chunk(fiber, chunk, pc, *f)?;
-        if fiber.frames.len() >= self.max_depth {
+        if fiber.visible_depth() >= self.max_depth {
             return Err(self.overflow(fiber, span));
         }
+        fiber.hidden += 1;
         let need = at + callee.nregs as usize;
         if fiber.regs.len() < need {
             fiber.regs.resize(need, Value::Unit);
@@ -1236,7 +1243,7 @@ impl Machine {
     #[inline(never)]
     fn call_refused(&mut self, fiber: &mut VmFiber, caller: &Chunk, pc: usize) -> Ctl {
         let span = caller.spans[pc - 1];
-        if fiber.frames.len() >= self.max_depth {
+        if fiber.visible_depth() >= self.max_depth {
             self.overflow(fiber, span)
         } else {
             self.step_failure(fiber, span)
@@ -1255,6 +1262,7 @@ impl Machine {
     #[inline(always)]
     fn pop_frame(&mut self, fiber: &mut VmFiber, v: Value) -> Option<Value> {
         let frame = fiber.frames.pop().expect("a frame to pop");
+        fiber.hidden -= usize::from(frame.chunk.hidden);
         debug_assert!(
             fiber.temps.len() == frame.temps_mark as usize,
             "held temporaries outlive their frame"
