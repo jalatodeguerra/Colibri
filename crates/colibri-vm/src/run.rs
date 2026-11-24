@@ -730,6 +730,19 @@ impl Machine {
                         jump!(off);
                     }
                 }
+                Op::DropCheck { r } => {
+                    let v = std::mem::replace(&mut reg!(r), Value::Unit);
+                    if !is_scalar_value(&v) {
+                        sync!();
+                        self.release(v);
+                    }
+                    if !self.core.hook_panics.is_empty() {
+                        sync!();
+                        if let Err(ctl) = self.fold_hook_panics(Ok(Value::Unit)) {
+                            throw!(ctl);
+                        }
+                    }
+                }
                 Op::CheckHooks => {
                     if !self.core.hook_panics.is_empty() {
                         sync!();

@@ -710,6 +710,10 @@ pub enum Op {
     },
     /// Statement end: folds the panics of `Drop` hooks that ran meanwhile into a panic.
     CheckHooks,
+    /// `Drop { r }` followed by `CheckHooks`: the commonest pair at the end of a statement.
+    DropCheck {
+        r: Reg,
+    },
     /// The same inside a landing pad: folds them into the panic on its way out.
     FoldHooks,
     /// The end of a landing pad: the frame's panic goes on to its caller.
@@ -1147,6 +1151,7 @@ impl Chunk {
             Op::Unpack { d, s, i } => format!("Unpack r{d} r{s} .{i}"),
             Op::SkipIfDead { off } => format!("SkipIfDead -> {:04}", target(off.into())),
             Op::CheckHooks => "CheckHooks".to_string(),
+            Op::DropCheck { r } => format!("DropCheck r{r}"),
             Op::FoldHooks => "FoldHooks".to_string(),
             Op::Resume => "Resume".to_string(),
             Op::Unsupported { site } => format!("Unsupported {}", self.site_text(site)),

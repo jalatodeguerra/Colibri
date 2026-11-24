@@ -321,10 +321,9 @@ impl FnCompiler<'_> {
                 let Ok(idx) = u16::try_from(idx.0) else {
                     return self.fail("a class with too many fields for the bytecode VM");
                 };
-                // The object is a temporary: it lives to the end of the statement.
-                let o = self.alloc_for(&obj.ty);
-                self.expr(obj, o);
-                self.own(o);
+                // The object is a temporary that lives to the end of the statement, unless it is a
+                // local, which already does and is read at once: no copy then.
+                let o = self.anchor_operand(obj, false);
                 if place.path.is_empty() {
                     self.emit(Op::ObjGet { d: dst, o, idx }, span);
                 } else {

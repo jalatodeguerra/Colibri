@@ -429,6 +429,22 @@ impl<'a> FnCompiler<'a> {
         self.code.len() - 1
     }
 
+    /// Emits `CheckHooks`; right after a `Drop` that nothing jumps past, the two become one
+    /// `DropCheck` (the drop cannot fail, so only the check's landing pad counts).
+    fn emit_check_hooks(&mut self, span: Span) {
+        if let Some(&Op::Drop { r }) = self.code.last()
+            && self.bound_at != self.code.len()
+        {
+            let at = self.emit(Op::DropCheck { r }, span);
+            // The pair is one instruction: the `Drop` it replaces is dropped from the tables.
+            self.code.swap_remove(at - 1);
+            self.spans.swap_remove(at - 1);
+            self.states.swap_remove(at - 1);
+        } else {
+            self.emit(Op::CheckHooks, span);
+        }
+    }
+
     /// Whether a panic with nothing to clean up still has to run the end of the function: a
     /// `mut self` parameter in a cell is unwrapped before it goes back to the caller.
     fn root_is_real(&self) -> bool {
@@ -840,12 +856,14 @@ impl<'a> FnCompiler<'a> {
                     self.emit_defer(idx, &prefix, node, span, self.temps.len());
                 }
                 Item::Fold(start) => {
-                    let redundant = matches!(self.code.last(), Some(Op::CheckHooks))
-                        && self.bound_at != self.code.len();
+                    let redundant = matches!(
+                        self.code.last(),
+                        Some(Op::CheckHooks | Op::DropCheck { .. })
+                    ) && self.bound_at != self.code.len();
                     if self.may_have_released(start) && !redundant {
                         let node = below(self);
                         self.state_override = Some(node);
-                        self.emit(Op::CheckHooks, span);
+                        self.emit_check_hooks(span);
                         self.state_override = None;
                     }
                 }
