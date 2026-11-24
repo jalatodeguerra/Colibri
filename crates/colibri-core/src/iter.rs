@@ -368,6 +368,7 @@ pub trait IterOps: Engine {
             }));
             return Err(self.internal(fiber, span, "an iterator without a `next`"));
         };
+        Self::note_position(fiber, span);
         let mutates = self.fn_mutates_self(f);
         let unchanged = (!mutates).then(|| inner.clone());
         let (result, out) = self.call_fn_inout(fiber, f, vec![inner]);

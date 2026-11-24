@@ -125,6 +125,9 @@ impl Interp {
             return Err(self.internal(fiber, span, "unknown function"));
         };
         let mut args = values;
+        if let Some(frame) = fiber.frames.last_mut() {
+            frame.span = span;
+        }
         // An implementation that does not change its receiver (a class's `self`) hands nothing
         // back; the value goes back where it was.
         let unchanged = (!body.mutates_self).then(|| inner.clone());

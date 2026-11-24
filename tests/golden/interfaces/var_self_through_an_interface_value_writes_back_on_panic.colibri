@@ -1,0 +1,32 @@
+// A `var self` method called on an interface value changes the value inside it, and the change
+// is written back into the variable even when the method panics.
+interface Counter {
+    fn bump(var self)
+}
+
+struct Tally {
+    n: int
+}
+
+impl Counter for Tally {
+    fn bump(var self) {
+        self.n += 1
+        if self.n == 3 {
+            panic("three")
+        }
+    }
+}
+
+fn main() {
+    var c: Counter = Tally { n: 0 }
+    defer {
+        print(c)
+    }
+    c.bump()
+    c.bump()
+    c.bump()
+    print("not reached")
+}
+
+// panic: three
+// expect: Tally { n: 3 }
