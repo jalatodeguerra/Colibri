@@ -288,7 +288,7 @@ fn assign_text(op: AssignOp) -> &'static str {
 fn bind_text(kind: BindKind) -> &'static str {
     match kind {
         BindKind::Let => "let",
-        BindKind::Var => "var",
+        BindKind::Var => "let mut",
         BindKind::Const => "const",
     }
 }
@@ -1143,7 +1143,7 @@ impl<'a> Fmt<'a> {
         let mut items = Vec::new();
         if let Some(r) = receiver {
             items.push(self.element(r.span.start, r.span.end, |_| {
-                text(if r.mutable { "var self" } else { "self" })
+                text(if r.mutable { "mut self" } else { "self" })
             }));
         }
         for p in params {
@@ -1155,7 +1155,7 @@ impl<'a> Fmt<'a> {
     fn param(&mut self, p: &Param) -> Doc {
         let mut parts = Vec::new();
         if p.mutable {
-            parts.push(text("var "));
+            parts.push(text("mut "));
         }
         parts.push(text(p.name.name.clone()));
         if let Some(ty) = &p.ty {
@@ -1348,7 +1348,7 @@ impl<'a> Fmt<'a> {
                 body,
             } => concat(vec![
                 Self::label(label),
-                text(if *mutable { "for var " } else { "for " }),
+                text(if *mutable { "for mut " } else { "for " }),
                 self.pat(pat),
                 text(" in "),
                 self.expr(iter),

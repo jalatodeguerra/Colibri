@@ -501,12 +501,12 @@ fn declarations() {
     );
     check("struct E { }", "struct E {}\n");
     check(
-        "impl[T] Show for List[T]{fn show(self)->str=>\"x\"\nfn m(var self){}}",
-        "impl[T] Show for List[T] {\n    fn show(self) -> str => \"x\"\n    fn m(var self) {}\n}\n",
+        "impl[T] Show for List[T]{fn show(self)->str=>\"x\"\nfn m(mut self){}}",
+        "impl[T] Show for List[T] {\n    fn show(self) -> str => \"x\"\n    fn m(mut self) {}\n}\n",
     );
     check(
-        "interface Iter[T]{fn next(var self)->T?}",
-        "interface Iter[T] {\n    fn next(var self) -> T?\n}\n",
+        "interface Iter[T]{fn next(mut self)->T?}",
+        "interface Iter[T] {\n    fn next(mut self) -> T?\n}\n",
     );
     check("type  Cb = fn(int)->int", "type Cb = fn(int) -> int\n");
     check(
@@ -656,8 +656,8 @@ fn unusual_but_valid_spellings_survive() {
     check("let f = fn() => fn() => 1", "let f = fn() => fn() => 1\n");
     check("let a = max[f32](1, 2)", "let a = max[f32](1, 2)\n");
     check(
-        "for var e in es { e.hp -= 1 }\n'o: while true { break 'o }",
-        "for var e in es { e.hp -= 1 }\n'o: while true { break 'o }\n",
+        "for mut e in es { e.hp -= 1 }\n'o: while true { break 'o }",
+        "for mut e in es { e.hp -= 1 }\n'o: while true { break 'o }\n",
     );
     check(
         "let a = x or { return }\nlet b = y or |e| { f(e) }",
@@ -950,4 +950,36 @@ fn a_when_condition_keeps_its_comments_and_gets_no_trailing_comma() {
     // The output parses again: no comma crept in.
     let out = fmt("@when(\n    debug // x\n)\nfn e() {}\n");
     assert!(!out.contains(",\n"), "{out}");
+}
+
+#[test]
+fn mut_forms_round_trip() {
+    check("let  mut x=1", "let mut x = 1\n");
+    check("let mut (a,b)=p", "let mut (a, b) = p\n");
+    check(
+        "fn f(mut q:int,r:int){let mut n:int=q\nfor mut e in xs{e+=1}}",
+        "fn f(mut q: int, r: int) {\n    let mut n: int = q\n    for mut e in xs { e += 1 }\n}\n",
+    );
+    check(
+        "impl P{fn step(mut self,dt:float){}}",
+        "impl P {\n    fn step(mut self, dt: float) {}\n}\n",
+    );
+    check("let c=fn(mut x,y)=>x", "let c = fn(mut x, y) => x\n");
+    check("const  K=1\nlet mut s=0", "const K = 1\nlet mut s = 0\n");
+    // The AST is the same before and after.
+    let src = "let mut s=0\nfn f(mut q:int){for mut e in xs{e+=q}}\nimpl P{fn g(mut self){}}";
+    assert_eq!(dump(src), dump(&fmt(src)));
+}
+
+#[test]
+fn the_old_var_is_refused_not_rewritten() {
+    for src in [
+        "var x = 1\n",
+        "fn f() {\n    var x = 1\n}\n",
+        "impl P {\n    fn g(var self) {}\n}\n",
+        "fn f(var q: int) {}\n",
+        "for var e in xs {}\n",
+    ] {
+        assert!(format_source("test.colibri", src).is_err(), "{src:?}");
+    }
 }

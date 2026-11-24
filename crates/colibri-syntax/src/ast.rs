@@ -81,7 +81,7 @@ pub enum ItemKind {
     Interface(InterfaceDecl),
     Impl(ImplDecl),
     TypeAlias(TypeAlias),
-    /// Module-level `const`, `let` or `var`.
+    /// Module-level `const`, `let` or `let mut`.
     Binding(LetStmt),
     Import(Import),
     Extern(ExternBlock),
@@ -110,7 +110,7 @@ pub struct FnDecl {
     pub body: Option<FnBody>,
 }
 
-/// `self` or `var self`.
+/// `self` or `mut self`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Receiver {
     pub mutable: bool,
@@ -122,7 +122,7 @@ pub struct Receiver {
 pub struct Param {
     pub id: NodeId,
     pub span: Span,
-    /// `var x`, as in `fn(var x) => ...`.
+    /// `mut x`, as in `fn(mut x) => ...`.
     pub mutable: bool,
     pub name: Ident,
     pub ty: Option<TypeExpr>,
@@ -322,7 +322,7 @@ pub enum BindKind {
     Const,
 }
 
-/// `let`, `var` or `const` with a pattern, an optional type and an initialiser.
+/// `let`, `let mut` or `const` with a pattern, an optional type and an initialiser.
 /// Also the payload of module-level [`ItemKind::Binding`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct LetStmt {
@@ -369,7 +369,7 @@ pub enum StmtKind {
     Defer(Box<Stmt>),
     For {
         label: Option<Label>,
-        /// `for var e in xs`
+        /// `for mut e in xs`
         mutable: bool,
         pat: Pat,
         iter: Expr,

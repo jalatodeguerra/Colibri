@@ -444,7 +444,7 @@ fn closures_of_every_form() {
             "fn() { return 1 }",
             "(closure (params) (block (return (int 1))))",
         ),
-        ("fn(var x) => x", "(closure (params (var x)) (=> x))"),
+        ("fn(mut x) => x", "(closure (params (mut x)) (=> x))"),
         (
             "fn() use(weak self) { run() }",
             "(closure (params) (use weak self) (block (tail (call run))))",
@@ -657,7 +657,7 @@ fn a_pattern_arm_needs_a_fat_arrow() {
 fn statements() {
     check(&[
         ("let x = 1", "(let x (int 1))"),
-        ("var y: int = 2", "(var y : int (int 2))"),
+        ("let mut y: int = 2", "(let mut y : int (int 2))"),
         ("const MAX = 100", "(const MAX (int 100))"),
         ("p.x += 1", "(assign += (field p x) (int 1))"),
         ("flags &= ~mask", "(assign &= flags (unary ~ mask))"),
@@ -705,8 +705,8 @@ fn loops_and_labels() {
             "(for (tuple i x) (call (field xs enumerate)) (block))",
         ),
         (
-            "for var e in enemies { e.hp -= 1 }",
-            "(for var e enemies (block (assign -= (field e hp) (int 1))))",
+            "for mut e in enemies { e.hp -= 1 }",
+            "(for mut e enemies (block (assign -= (field e hp) (int 1))))",
         ),
         ("for i in 0..n { }", "(for i (range .. (int 0) n) (block))"),
         (
@@ -781,8 +781,8 @@ fn functions() {
             "(impl P (fn area (params self) -> float (=> (int 0))))",
         ),
         (
-            "impl P { fn step(var self, dt: float) {} }",
-            "(impl P (fn step (params (var self) (dt : float)) (block)))",
+            "impl P { fn step(mut self, dt: float) {} }",
+            "(impl P (fn step (params (mut self) (dt : float)) (block)))",
         ),
         ("fn f() -> () {}", "(fn f (params) -> () (block))"),
         (
@@ -859,8 +859,8 @@ fn interfaces_and_impls() {
             "(interface Shape (fn area (params self) -> float) (fn name (params self) -> str (=> (str \"shape\"))))",
         ),
         (
-            "interface Iter[T] { fn next(var self) -> T? }",
-            "(interface Iter [T] (fn next (params (var self)) -> T?))",
+            "interface Iter[T] { fn next(mut self) -> T? }",
+            "(interface Iter [T] (fn next (params (mut self)) -> T?))",
         ),
         (
             "impl Circle { fn new() -> Circle => Circle { r: 1 } }",
@@ -920,7 +920,7 @@ fn modules_externs_tests_and_attributes() {
         ),
         ("const GRAVITY = 9.81", "(const GRAVITY (float 9.81))"),
         ("let config = load()", "(let config (call load))"),
-        ("var score = 0", "(var score (int 0))"),
+        ("let mut score = 0", "(let mut score (int 0))"),
         ("pub const X = 1", "(const pub X (int 1))"),
     ]);
 }
@@ -1266,11 +1266,11 @@ fn never_panics_on_truncated_or_scrambled_input() {
 #[test]
 fn never_panics_on_token_soup() {
     const PIECES: &[&str] = &[
-        "fn", "let", "var", "if", "else", "for", "in", "match", "{", "}", "(", ")", "[", "]", ",",
-        ".", "..", "=>", "->", "=", "==", "<", "+", "?", "or", "as", "is", "x", "Foo", "1",
-        "\"s{x}\"", "'a'", "'l", ":", ";", "\n", "|", "&&", "!", "weak", "self", "use", "struct",
-        "enum", "impl", "import", "@", "extern", "test", "go", "defer", "return", "some", "none",
-        "_", "_",
+        "fn", "let", "mut", "var", "if", "else", "for", "in", "match", "{", "}", "(", ")", "[",
+        "]", ",", ".", "..", "=>", "->", "=", "==", "<", "+", "?", "or", "as", "is", "x", "Foo",
+        "1", "\"s{x}\"", "'a'", "'l", ":", ";", "\n", "|", "&&", "!", "weak", "self", "use",
+        "struct", "enum", "impl", "import", "@", "extern", "test", "go", "defer", "return", "some",
+        "none", "_", "_",
     ];
     let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
     let mut next = move || {
@@ -1393,10 +1393,10 @@ fn every_design_block_parses_without_diagnostics() {
 
 #[test]
 fn design_apply_function_dump() {
-    let src = "fn apply(p: Player, cmd: Command) -> Player {\n    var next = p\n    match cmd {\n        Move(dir) => next.pos += dir\n        Heal(n)   => next.hp = math.min(next.hp + n, 100)\n        Quit      => {}\n    }\n    return next\n}";
+    let src = "fn apply(p: Player, cmd: Command) -> Player {\n    let mut next = p\n    match cmd {\n        Move(dir) => next.pos += dir\n        Heal(n)   => next.hp = math.min(next.hp + n, 100)\n        Quit      => {}\n    }\n    return next\n}";
     assert_eq!(
         dump(src),
-        "(fn apply (params (p : Player) (cmd : Command)) -> Player (block (var next p) \
+        "(fn apply (params (p : Player) (cmd : Command)) -> Player (block (let mut next p) \
          (match cmd (arm (variant Move dir) (assign += (field next pos) dir)) \
          (arm (variant Heal n) (assign = (field next hp) (call (field math min) (binary + (field next hp) n) (int 100)))) \
          (arm Quit (block))) (return next)))"
@@ -1422,4 +1422,186 @@ fn when_refuses_a_trailing_comma() {
     assert_eq!(pointed_at("@when(debug,)\nfn f() {}\n", &d), ",");
     // Other attributes are not affected.
     assert!(parse_dump("@deprecated(\"x\",)\nfn f() {}\n").1.is_empty());
+}
+
+// ---- `let mut`, `mut` and the old `var` ----
+
+#[test]
+fn mut_forms_parse() {
+    check(&[
+        ("let mut x = 1", "(let mut x (int 1))"),
+        ("let mut (a, b) = p", "(let mut (tuple a b) p)"),
+        ("let x = 1", "(let x (int 1))"),
+        ("const K = 1", "(const K (int 1))"),
+        ("pub const K = 1", "(const pub K (int 1))"),
+        (
+            "fn f() {\n    let mut x: int = 1\n}",
+            "(fn f (params) (block (let mut x : int (int 1))))",
+        ),
+        (
+            "fn f(mut q: int, r: int) {}",
+            "(fn f (params (mut q : int) (r : int)) (block))",
+        ),
+        (
+            "impl P { fn step(mut self, dt: float) {} }",
+            "(impl P (fn step (params (mut self) (dt : float)) (block)))",
+        ),
+        (
+            "interface Iter[T] { fn next(mut self) -> T? }",
+            "(interface Iter [T] (fn next (params (mut self)) -> T?))",
+        ),
+        ("fn(mut x, y) => x", "(closure (params (mut x) y) (=> x))"),
+        (
+            "for mut e in xs { e.hp -= 1 }",
+            "(for mut e xs (block (assign -= (field e hp) (int 1))))",
+        ),
+    ]);
+}
+
+#[test]
+fn mut_is_a_reserved_word() {
+    for src in [
+        "let mut = 1",
+        "let x = mut",
+        "fn mut() {}",
+        "fn f(mut: int) {}",
+    ] {
+        let (_, diags) = parse_dump(src);
+        assert!(!diags.is_empty(), "{src:?} should not parse");
+    }
+    let d = one_error("fn mut() {}");
+    assert!(d.message.contains("keyword `mut`"), "{}", d.message);
+    assert_eq!(
+        d.hint.as_deref(),
+        Some("`mut` is a reserved word and cannot be used as a name")
+    );
+}
+
+/// The message every use of the old keyword gets.
+const VAR_MESSAGE: &str = "`var` is not a Colibri keyword; mutable bindings are written `let mut`";
+
+/// `src` uses the old `var` once: one error with `hint` at the `var`, and the dump is that
+/// of the new syntax, so the rest of the file is still checked.
+fn old_var(src: &str, hint: &str, expected_dump: &str) {
+    let (out, diags) = parse_dump(src);
+    assert_eq!(diags.len(), 1, "diagnostics for {src:?}: {diags:#?}");
+    let d = &diags[0];
+    assert_eq!(d.message, VAR_MESSAGE, "source: {src:?}");
+    assert_eq!(d.hint.as_deref(), Some(hint), "source: {src:?}");
+    assert_eq!(pointed_at(src, d), "var", "source: {src:?}");
+    assert_eq!(out, expected_dump, "source: {src:?}");
+}
+
+#[test]
+fn old_var_is_reported_with_the_replacement_for_each_position() {
+    // A statement, a top-level item and a global.
+    old_var(
+        "fn f() {\n    var x = 1\n}",
+        "write `let mut x = ...`",
+        "(fn f (params) (block (let mut x (int 1))))",
+    );
+    old_var(
+        "var score = 0",
+        "write `let mut score = ...`",
+        "(let mut score (int 0))",
+    );
+    old_var(
+        "pub var score = 0",
+        "write `let mut score = ...`",
+        "(let mut pub score (int 0))",
+    );
+    // A receiver, in an impl and in an interface.
+    old_var(
+        "impl P { fn step(var self) {} }",
+        "write `mut self`",
+        "(impl P (fn step (params (mut self)) (block)))",
+    );
+    old_var(
+        "interface Iter[T] { fn next(var self) -> T? }",
+        "write `mut self`",
+        "(interface Iter [T] (fn next (params (mut self)) -> T?))",
+    );
+    // A parameter and a closure parameter.
+    old_var(
+        "fn f(var q: int) {}",
+        "write `mut q: Type`",
+        "(fn f (params (mut q : int)) (block))",
+    );
+    old_var(
+        "let c = fn(var q) => q",
+        "write `mut q`",
+        "(let c (closure (params (mut q)) (=> q)))",
+    );
+    // A loop.
+    old_var(
+        "for var e in xs { e.hp -= 1 }",
+        "write `for mut e in ...`",
+        "(for mut e xs (block (assign -= (field e hp) (int 1))))",
+    );
+}
+
+#[test]
+fn old_var_recovers_so_later_errors_are_still_reported() {
+    let sources = [
+        "fn f() {\n    var x = 1\n    let b = a and c\n}",
+        "var x = 1\nlet b = a and c\n",
+        "impl P { fn step(var self) {}\n fn g() { let b = a and c } }",
+        "fn f(var q: int) { let b = a and c }",
+        "let g = fn(var q) => q\nlet b = a and c\n",
+        "fn f() {\n    for var e in xs {}\n    let b = a and c\n}",
+    ];
+    for src in sources {
+        let (_, diags) = parse_dump(src);
+        let messages: Vec<_> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            [VAR_MESSAGE, "`and` is not an operator in Colibri"],
+            "source: {src:?}"
+        );
+    }
+}
+
+const LOCAL_CONST: &str = "`const` is only allowed at the top level of a file";
+
+#[test]
+fn local_const_is_an_error_and_reads_as_let() {
+    let src = "fn f() {\n    const K = 1\n    let b = a and c\n}";
+    let (out, diags) = parse_dump(src);
+    assert_eq!(
+        out,
+        "(fn f (params) (block (let K (int 1)) (let b (binary && a c))))"
+    );
+    let messages: Vec<_> = diags.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [LOCAL_CONST, "`and` is not an operator in Colibri"]
+    );
+    assert_eq!(
+        diags[0].hint.as_deref(),
+        Some("use `let` for a local value")
+    );
+    assert_eq!(pointed_at(src, &diags[0]), "const");
+    // Nested blocks and closures too.
+    for src in [
+        "fn f() {\n    if true {\n        const K = 1\n    }\n}",
+        "let g = fn() {\n    const K = 1\n}",
+        "for x in xs {\n    const K = 1\n}",
+        "if true {\n    const K = 1\n}",
+    ] {
+        let d = one_error(src);
+        assert_eq!(d.message, LOCAL_CONST, "source: {src:?}");
+    }
+}
+
+#[test]
+fn top_level_const_is_still_an_item() {
+    let (file, diags) = parse_file(F, "const A = 1\npub const B = 2\nlet c = 3\n");
+    assert!(diags.is_empty(), "{diags:#?}");
+    assert!(file.items.iter().all(
+        |top| matches!(top, TopLevel::Item(item) if matches!(item.kind, ItemKind::Binding(_)))
+    ));
+    assert_eq!(
+        dump_file(&file),
+        "(const A (int 1))\n(const pub B (int 2))\n(let c (int 3))"
+    );
 }

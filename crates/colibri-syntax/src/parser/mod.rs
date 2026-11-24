@@ -268,6 +268,38 @@ impl<'a> Parser<'a> {
         Err(Failed)
     }
 
+    /// The text of the identifier after the current token, or `x`: for hints that show the
+    /// replacement of a construct written with the old `var` keyword.
+    pub(crate) fn name_after_keyword(&self) -> String {
+        match self.nth(1) {
+            TokenKind::Ident(name) => name.clone(),
+            _ => "x".to_string(),
+        }
+    }
+
+    /// Like [`Parser::name_after_keyword`], when the keyword was already consumed.
+    pub(crate) fn name_here(&self) -> String {
+        match self.kind() {
+            TokenKind::Ident(name) => name.clone(),
+            _ => "x".to_string(),
+        }
+    }
+
+    /// Reports the old `var` keyword at the current token; the caller reads it as the new form.
+    pub(crate) fn report_old_var(&mut self, hint: &str) {
+        let span = self.found_span();
+        self.report_old_var_at(span, hint);
+    }
+
+    pub(crate) fn report_old_var_at(&mut self, span: Span, hint: &str) {
+        let diag = Diagnostic::error(
+            "`var` is not a Colibri keyword; mutable bindings are written `let mut`",
+            span,
+        )
+        .with_hint(hint);
+        self.report(diag);
+    }
+
     /// "expected `what`, found `token`" at the current token.
     pub(crate) fn unexpected<T>(&mut self, what: &str) -> PResult<T> {
         let message = format!("expected {what}, found {}", self.describe());

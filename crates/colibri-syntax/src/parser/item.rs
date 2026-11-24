@@ -40,7 +40,7 @@ impl Member {
 
 impl Parser<'_> {
     /// Whether the current token starts an item that is not a plain statement.
-    /// `const`, `let` and `var` are not listed: they are items at module level
+    /// `const`, `let` and `let mut` are not listed: they are items at module level
     /// and statements elsewhere.
     pub(crate) fn starts_item(&self) -> bool {
         match self.kind() {
@@ -204,7 +204,7 @@ impl Parser<'_> {
             TokenKind::Extern => ItemKind::Extern(self.parse_extern()?),
             TokenKind::Test => ItemKind::Test(self.parse_test()?),
             TokenKind::Const | TokenKind::Let | TokenKind::Var => {
-                ItemKind::Binding(self.parse_let()?)
+                ItemKind::Binding(self.parse_let(false)?)
             }
             _ => return self.unexpected("an item"),
         };
@@ -300,7 +300,7 @@ impl Parser<'_> {
     }
 
     /// Parses parameters after `(`, through `)`. Closures may omit types and
-    /// write `var x`; functions may start with `self` or `var self`.
+    /// write `mut x`; functions may start with `self` or `mut self`.
     pub(crate) fn parse_params(
         &mut self,
         closure: bool,
@@ -311,9 +311,16 @@ impl Parser<'_> {
         while !self.at(&TokenKind::RParen) {
             let start = self.start();
             let is_self = self.at(&TokenKind::SelfKw);
-            let is_var_self = self.at(&TokenKind::Var) && *self.nth(1) == TokenKind::SelfKw;
-            if first && !closure && (is_self || is_var_self) {
-                let mutable = self.eat(&TokenKind::Var);
+            let is_mut_self = matches!(self.kind(), TokenKind::Mut | TokenKind::Var)
+                && *self.nth(1) == TokenKind::SelfKw;
+            if first && !closure && (is_self || is_mut_self) {
+                let mutable = is_mut_self;
+                if self.at(&TokenKind::Var) {
+                    self.report_old_var("write `mut self`");
+                }
+                if mutable {
+                    self.bump();
+                }
                 self.bump();
                 receiver = Some(Receiver {
                     mutable,
@@ -336,7 +343,18 @@ impl Parser<'_> {
 
     fn parse_param(&mut self, closure: bool) -> PResult<Param> {
         let start = self.start();
-        let mutable = self.eat(&TokenKind::Var);
+        let mut mutable = self.eat(&TokenKind::Mut);
+        if !mutable && self.at(&TokenKind::Var) {
+            let name = self.name_after_keyword();
+            let hint = if closure {
+                format!("write `mut {name}`")
+            } else {
+                format!("write `mut {name}: Type`")
+            };
+            self.report_old_var(&hint);
+            self.bump();
+            mutable = true;
+        }
         let name = self.expect_ident("a parameter name")?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type()?)

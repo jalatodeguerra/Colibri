@@ -131,7 +131,7 @@ pub fn dump_item(item: &Item) -> String {
 fn bind_kw(kind: BindKind) -> &'static str {
     match kind {
         BindKind::Let => "let",
-        BindKind::Var => "var",
+        BindKind::Var => "let mut",
         BindKind::Const => "const",
     }
 }
@@ -162,7 +162,7 @@ fn dump_fn_parts(f: &FnDecl) -> Vec<String> {
     rest.extend(generics(&f.generics));
     let mut params = Vec::new();
     if let Some(r) = &f.receiver {
-        params.push(if r.mutable { "(var self)" } else { "self" }.to_string());
+        params.push(if r.mutable { "(mut self)" } else { "self" }.to_string());
     }
     params.extend(f.params.iter().map(dump_param));
     rest.push(list("params", params));
@@ -185,7 +185,7 @@ fn dump_body(body: &FnBody) -> String {
 fn dump_param(p: &Param) -> String {
     let mut parts = Vec::new();
     if p.mutable {
-        parts.push("var".to_string());
+        parts.push("mut".to_string());
     }
     parts.push(p.name.name.clone());
     if let Some(ty) = &p.ty {
@@ -354,7 +354,7 @@ pub fn dump_stmt(s: &Stmt) -> String {
         } => {
             let mut parts: Vec<String> = label(l).into_iter().collect();
             if *mutable {
-                parts.push("var".to_string());
+                parts.push("mut".to_string());
             }
             parts.push(dump_pat(pat));
             parts.push(dump_expr(iter));
