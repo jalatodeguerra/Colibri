@@ -648,6 +648,7 @@ mod tests {
             },
             ret: Ty::Tuple(vec![b, a]),
             mutates_self: false,
+            captures: Vec::new(),
         }
     }
 
