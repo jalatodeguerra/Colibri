@@ -182,6 +182,39 @@ fn a_coroutine_in_an_old_body_finishes_on_it_and_new_calls_use_the_new_one() {
     assert_eq!(out.contents(), "worker v1\nworker v2\n");
 }
 
+/// A closure made before a patch finds its body through the function table when it is called, so
+/// it runs the patched body (ARCHITECTURE §17 says it keeps the old one; the code is the truth).
+/// What it captured is kept. A coroutine already inside the closure's old body finishes on it.
+#[test]
+fn a_closure_made_before_a_patch_runs_the_new_body_with_what_it_captured() {
+    let src = |tag: &str| {
+        format!(
+            "let mut keep: fn(int) -> str = fn(n) => \"init\"\nfn setup(base: int) {{\n    keep = fn(n) => \"{tag} {{base + n}}\"\n}}\nfn call(n: int) -> str => keep(n)\nfn slow(base: int) {{\n    let f = fn() {{\n        wait(1.0)\n        print(\"{tag} closure {{base}}\")\n    }}\n    go f()\n}}\n"
+        )
+    };
+    let dir = tree("closure-patch", &[("a.colibri", &src("v1"))]);
+    let (mut vm, out) = vm();
+    vm.load_file(dir.join("a.colibri")).unwrap();
+    vm.get_fn::<(i64,), ()>("setup")
+        .unwrap()
+        .call(&mut vm, (10,))
+        .unwrap();
+    vm.get_fn::<(i64,), ()>("slow")
+        .unwrap()
+        .call(&mut vm, (5,))
+        .unwrap();
+    let call = vm.get_fn::<(i64,), String>("call").unwrap();
+    assert_eq!(call.call(&mut vm, (1,)).unwrap(), "v1 11");
+    write(&dir, "a.colibri", &src("v2"));
+    assert!(matches!(
+        vm.reload_changed().unwrap(),
+        ReloadOutcome::Patched { functions: 2 }
+    ));
+    assert_eq!(call.call(&mut vm, (2,)).unwrap(), "v2 12");
+    vm.tick(1.5).unwrap();
+    assert_eq!(out.contents(), "v1 closure 5\n");
+}
+
 #[test]
 fn a_signature_change_restarts_and_carries_state_through_the_hooks() {
     let v1 = "let mut score = 7\nfn save_state() -> str => \"score={score}\"\nfn add(a: int) -> int => a + 1\nfn main() { print(\"main v1\") }\n";

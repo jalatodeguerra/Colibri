@@ -75,14 +75,18 @@ fn what_the_bytecode_engine_lacks_is_a_clean_panic_naming_it() {
 }
 
 #[test]
-fn a_repl_session_is_refused_on_the_bytecode_engine() {
-    let mut vm = Vm::builder().engine(EngineKind::Bytecode).build();
-    let error = vm.session_start().expect_err("no session on the VM yet");
-    assert!(
-        message(&error).contains("does not support REPL sessions"),
-        "{}",
-        message(&error)
-    );
+fn a_repl_session_runs_on_the_bytecode_engine() {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = Vm::builder()
+        .engine(EngineKind::Bytecode)
+        .stdout(Box::new(out.clone()))
+        .build();
+    vm.session_start().expect("a session starts on the VM");
+    let check = vm.session_check("let x = 20 + 1\nprint(x)\n").unwrap();
+    vm.session_commit(check, &[], &[]).unwrap();
+    assert_eq!(out.contents(), "21\n");
+    let (text, ty) = vm.session_display("x").expect("x is a module value");
+    assert_eq!((text.as_str(), ty.as_str()), ("21", "int"));
 }
 
 /// What a commit without a running session says, on an engine.
@@ -103,16 +107,16 @@ fn commit_without_a_session(kind: EngineKind, load: bool) -> String {
 fn a_session_commit_without_a_session_is_the_same_error_on_both_engines() {
     let tree = commit_without_a_session(EngineKind::Tree, false);
     assert_eq!(commit_without_a_session(EngineKind::Bytecode, false), tree);
-    // A program loaded the ordinary way is no session on the VM either.
-    assert_eq!(commit_without_a_session(EngineKind::Bytecode, true), tree);
 }
 
 #[test]
-fn a_session_display_after_an_ordinary_load_does_not_panic_on_the_bytecode_engine() {
-    let mut vm = Vm::builder().engine(EngineKind::Bytecode).build();
-    vm.load_source("a.colibri", "let x = 1\n").unwrap();
-    assert!(vm.session_display("x").is_none());
-    assert!(vm.session_display("nobody").is_none());
+fn a_session_display_after_an_ordinary_load_is_the_same_on_both_engines() {
+    let display = |kind: EngineKind| {
+        let mut vm = Vm::builder().engine(kind).build();
+        vm.load_source("a.colibri", "let x = 1\n").unwrap();
+        (vm.session_display("x"), vm.session_display("nobody"))
+    };
+    assert_eq!(display(EngineKind::Bytecode), display(EngineKind::Tree));
 }
 
 #[test]
@@ -158,4 +162,30 @@ fn a_refusal_does_not_silence_the_module_values_of_later_tests() {
     assert_eq!(vm[0], tree[0], "{vm:?}");
     assert!(!vm[1].0, "the refusal fails the test: {vm:?}");
     assert_eq!(vm[2], tree[2], "{vm:?}");
+}
+
+/// A session entry that panics after creating a module-level value: the value is released when
+/// the entry is rolled back (its `Drop` hook runs then), and the name is free again.
+#[test]
+fn a_failed_session_entry_releases_the_values_it_made_on_both_engines() {
+    let run = |kind: EngineKind| {
+        let out = colibri::SharedBuffer::new();
+        let mut vm = Vm::builder()
+            .engine(kind)
+            .stdout(Box::new(out.clone()))
+            .build();
+        vm.session_start().unwrap();
+        let decl = "class G {\n    name: str\n}\nimpl Drop for G {\n    fn drop(self) {\n        print(\"drop {self.name}\")\n    }\n}\n";
+        let check = vm.session_check(decl).unwrap();
+        vm.session_commit(check, &[], &[]).unwrap();
+        let failing = format!("{decl}let g = G {{ name: \"made\" }}\nlet boom = 1 / (2 - 2)\n");
+        let check = vm.session_check(&failing).unwrap();
+        let failed = vm.session_commit(check, &[], &[]).is_err();
+        let after = out.contents();
+        let shown = vm.session_display("g").is_none();
+        (failed, after, shown)
+    };
+    let tree = run(EngineKind::Tree);
+    assert_eq!(tree, (true, "drop made\n".to_string(), true));
+    assert_eq!(run(EngineKind::Bytecode), tree);
 }

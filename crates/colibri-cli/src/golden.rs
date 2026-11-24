@@ -381,7 +381,10 @@ fn run_with(
             builder = builder.instruction_budget(2_000_000_000);
         }
     }
+    // In a debug build the VM compiles the whole program at load, so a function that cannot be
+    // compiled fails its test even if the run never calls it.
     let mut builder = builder
+        .compile_all_at_load(cfg!(debug_assertions))
         .trace_drops(true)
         .track_leaks(true)
         .stdout(Box::new(out.clone()));
