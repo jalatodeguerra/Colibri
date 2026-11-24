@@ -96,6 +96,9 @@ pub struct Machine {
     /// Where the native stack stood when the host (or the event loop) last called in with no
     /// coroutine running: a resumed coroutine measures its native recursion from it.
     pub(crate) stack_root: usize,
+    /// Text the string instructions build in before they make the string: kept between
+    /// instructions so its capacity is reused.
+    pub(crate) scratch: String,
     /// Tests only: runs at every `print`, so a test can call back into Colibri from inside the
     /// dispatch loop (a native re-entry, like a user `Show` or a `Drop` hook would).
     #[cfg(test)]
@@ -130,6 +133,7 @@ impl Machine {
             fibers: FiberSlab::default(),
             pending_refusal: None,
             stack_root: 0,
+            scratch: String::new(),
             #[cfg(test)]
             print_hook: None,
         }

@@ -50,8 +50,40 @@ impl Machine {
         }
     }
 
-    /// The chunk of a closure's lifted body, checked to expect the closure's captures.
+    /// The chunk of a closure's lifted body, checked to expect the closure's captures. A closure
+    /// of the current generation whose body is compiled (every call but the first) is found with
+    /// one table read.
+    #[inline]
     pub(crate) fn closure_chunk(&mut self, c: &ClosureObj) -> Result<Rc<Chunk>, String> {
+        let hit = if c.generation == self.core.generation() {
+            self.fns.get(c.f.0 as usize).and_then(|s| s.chunk.get())
+        } else {
+            None
+        };
+        let chunk = match hit {
+            Some(chunk) => Rc::clone(chunk),
+            None => return self.closure_chunk_slow(c),
+        };
+        if Self::captures_match(&chunk, c) {
+            Ok(chunk)
+        } else {
+            Err("a closure does not match its body".to_string())
+        }
+    }
+
+    #[inline]
+    fn captures_match(chunk: &Chunk, c: &ClosureObj) -> bool {
+        chunk.body.captures.len() == c.captures.len()
+            && chunk
+                .body
+                .captures
+                .iter()
+                .zip(&c.captures)
+                .all(|(a, b)| *a == b.inner)
+    }
+
+    #[inline(never)]
+    fn closure_chunk_slow(&mut self, c: &ClosureObj) -> Result<Rc<Chunk>, String> {
         let Some(f) = self.core.closure_fn(c) else {
             return Err(CLOSURE_GONE.to_string());
         };
@@ -60,14 +92,7 @@ impl Machine {
             Some(Err(msg)) => return Err(format!("cannot compile a closure: {msg}")),
             None => return Err(CLOSURE_GONE.to_string()),
         };
-        let same = chunk.body.captures.len() == c.captures.len()
-            && chunk
-                .body
-                .captures
-                .iter()
-                .zip(&c.captures)
-                .all(|(a, b)| *a == b.inner);
-        if same {
+        if Self::captures_match(&chunk, c) {
             Ok(chunk)
         } else {
             Err("a closure does not match its body".to_string())
@@ -118,7 +143,6 @@ impl Machine {
         at: usize,
         window: usize,
     ) -> Result<(), Ctl> {
-        let span = chunk.spans[pc - 1];
         let (callee, closure) = match &fiber.regs[at] {
             Value::Fn(id, _) => {
                 let id = *id;
@@ -128,10 +152,14 @@ impl Machine {
                 let c = Rc::clone(c);
                 match self.closure_chunk(&c) {
                     Ok(callee) => (callee, Some(c)),
-                    Err(msg) => return Err(self.panic(fiber, span, closure_message(&msg))),
+                    Err(msg) => {
+                        let span = chunk.spans[pc - 1];
+                        return Err(self.panic(fiber, span, closure_message(&msg)));
+                    }
                 }
             }
             _ => {
+                let span = chunk.spans[pc - 1];
                 return Err(self.internal(
                     fiber,
                     span,
@@ -140,7 +168,9 @@ impl Machine {
             }
         };
         self.push_call(fiber, callee, window, base + usize::from(d), chunk, pc)?;
-        if let Some(c) = closure {
+        if let Some(c) = closure
+            && !c.captures.is_empty()
+        {
             self.install_captures(fiber, window, &c);
         }
         Ok(())
@@ -286,16 +316,22 @@ impl Machine {
         let at = base + usize::from(a);
         let current = std::mem::replace(&mut fiber.regs[at], Value::Unit);
         let (impl_id, inner) = match current {
-            Value::Dyn(rc) => {
+            Value::Dyn(mut rc) => {
                 let id = rc.impl_id;
-                let inner = match Rc::try_unwrap(rc) {
-                    Ok(dv) => dv.val,
-                    Err(rc) => rc.val.clone(),
+                // The value comes out of its box and the box stays as the shell `Rewrap` fills
+                // again, so a call allocates nothing when the interface value is not shared.
+                let inner = match Rc::get_mut(&mut rc) {
+                    Some(dv) => std::mem::replace(&mut dv.val, Value::Unit),
+                    None => {
+                        let inner = rc.val.clone();
+                        rc = Rc::new(DynVal {
+                            impl_id: id,
+                            val: Value::Unit,
+                        });
+                        inner
+                    }
                 };
-                fiber.regs[at] = Value::Dyn(Rc::new(DynVal {
-                    impl_id: id,
-                    val: Value::Unit,
-                }));
+                fiber.regs[at] = Value::Dyn(rc);
                 (Some(id), inner)
             }
             other => {
@@ -328,11 +364,14 @@ impl Machine {
     pub(crate) fn op_rewrap(&mut self, fiber: &mut VmFiber, base: usize, shell: u16, recv: u16) {
         let s = base + usize::from(shell);
         let v = std::mem::replace(&mut fiber.regs[base + usize::from(recv)], Value::Unit);
-        match &fiber.regs[s] {
-            Value::Dyn(shell_rc) => {
-                let impl_id = shell_rc.impl_id;
-                fiber.regs[s] = Value::Dyn(Rc::new(DynVal { impl_id, val: v }));
-            }
+        match &mut fiber.regs[s] {
+            Value::Dyn(shell_rc) => match Rc::get_mut(shell_rc) {
+                Some(shell) => shell.val = v,
+                None => {
+                    let impl_id = shell_rc.impl_id;
+                    *shell_rc = Rc::new(DynVal { impl_id, val: v });
+                }
+            },
             _ => Self::put_reg(fiber, s, v),
         }
     }

@@ -166,6 +166,40 @@ fn string_temporaries_are_dropped_right_after_their_use_and_locals_at_return() {
 0004  DropInert r3
 0005  LoadK r4 k1 (\"v\")
 0006  Copy r5 r2
+0007  Copy r6 r1
+0008  StrConcat r3 base=r4 n=3
+0009  DropInert r5
+0010  DropInert r4
+0011  DropInert r2
+0012  Return r3
+0013  ReturnUnit
+0014  Drop r5
+0015  Drop r4
+0016  Drop r2
+0017  Jmp -> 0020
+0018  Drop r3
+0019  Jmp -> 0017
+0020  Resume
+unwind [0002, 0004) -> 0018
+unwind [0008, 0009) -> 0014
+";
+    assert_eq!(dis(src, "f"), expected);
+}
+
+#[test]
+fn a_shown_part_of_a_string_is_dropped_right_after_its_use() {
+    let src = "fn f(s: str, x: float) -> str {
+    let t = s + \"x\"
+    return \"v{t}{x}\"
+}";
+    let expected = "\
+0000  Step 2
+0001  LoadK r3 k0 (\"x\")
+0002  Binary r2 r0 r3
+0003    site Concat
+0004  DropInert r3
+0005  LoadK r4 k1 (\"v\")
+0006  Copy r5 r2
 0007  Show r6 r1
 0008  StrConcat r3 base=r4 n=3
 0009  DropInert r6
@@ -207,20 +241,19 @@ fn run() {
 0004  Move r2 r0
 0005  Call r1 base=r2 fn#1
 0006  Move r0 r2
-0007  Drop r0
-0008  CheckHooks
-0009  ReturnUnit
-0010  Move r0 r2
-0011  FoldHooks
-0012  Drop r0
-0013  FoldHooks
-0014  Jmp -> 0017
-0015  FoldHooks
-0016  Jmp -> 0013
-0017  Resume
-unwind [0000, 0001) -> 0013
-unwind [0002, 0003) -> 0015
-unwind [0005, 0006) -> 0010
+0007  DropCheck r0
+0008  ReturnUnit
+0009  Move r0 r2
+0010  FoldHooks
+0011  Drop r0
+0012  FoldHooks
+0013  Jmp -> 0016
+0014  FoldHooks
+0015  Jmp -> 0012
+0016  Resume
+unwind [0000, 0001) -> 0012
+unwind [0002, 0003) -> 0014
+unwind [0005, 0006) -> 0009
 ";
     assert_eq!(dis(src, "run"), expected);
 }
@@ -290,35 +323,33 @@ fn each(ps: List[P]) {
 0006  Jmp -> 0014
 0007  Step 1
 0008  LoadInt r7 1
-0009  GetPath r8 r2 [Field(FieldIdx(0))]
+0009  GetField r8 r2 .0
 0010  AddI r6 r8 r7
-0011  SetPath r2 r6 [Field(FieldIdx(0))]
+0011  SetField r2 r6 .0
 0012  ForWriteBack r2 src=r3
 0013  Jmp -> 0005
 0014  Unhold
-0015  Drop r3
-0016  CheckHooks
-0017  Drop r1
-0018  CheckHooks
-0019  ReturnUnit
-0020  Drop r1
+0015  DropCheck r3
+0016  DropCheck r1
+0017  ReturnUnit
+0018  Drop r1
+0019  FoldHooks
+0020  Jmp -> 0029
 0021  FoldHooks
-0022  Jmp -> 0031
+0022  FoldHooks
 0023  FoldHooks
-0024  FoldHooks
-0025  FoldHooks
-0026  ForWriteBack r2 src=r3
-0027  Unhold
-0028  Drop r3
-0029  FoldHooks
-0030  Jmp -> 0020
-0031  Resume
-unwind [0000, 0001) -> 0021
-unwind [0004, 0005) -> 0028
-unwind [0005, 0006) -> 0027
-unwind [0007, 0008) -> 0024
-unwind [0009, 0012) -> 0023
-unwind [0016, 0017) -> 0020
+0024  ForWriteBack r2 src=r3
+0025  Unhold
+0026  Drop r3
+0027  FoldHooks
+0028  Jmp -> 0018
+0029  Resume
+unwind [0000, 0001) -> 0019
+unwind [0004, 0005) -> 0026
+unwind [0005, 0006) -> 0025
+unwind [0007, 0008) -> 0022
+unwind [0009, 0012) -> 0021
+unwind [0015, 0016) -> 0018
 ";
     assert_eq!(dis(src, "each"), expected);
 }
@@ -383,18 +414,17 @@ fn run() -> int => two(mk(P { x: 1 }, 3), 4)";
 0007  Call r0 base=r4 fn#2
 0008  Drop r4
 0009  Drop r1
-0010  Drop r2
-0011  CheckHooks
-0012  Return r0
-0013  Drop r4
-0014  Drop r1
-0015  Drop r2
-0016  FoldHooks
-0017  Jmp -> 0018
-0018  Resume
-unwind [0001, 0002) -> 0016
-unwind [0003, 0004) -> 0015
-unwind [0007, 0008) -> 0013
+0010  DropCheck r2
+0011  Return r0
+0012  Drop r4
+0013  Drop r1
+0014  Drop r2
+0015  FoldHooks
+0016  Jmp -> 0017
+0017  Resume
+unwind [0001, 0002) -> 0015
+unwind [0003, 0004) -> 0014
+unwind [0007, 0008) -> 0012
 ";
     assert_eq!(d, expected);
 }

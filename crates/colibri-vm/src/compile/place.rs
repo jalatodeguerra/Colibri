@@ -152,10 +152,7 @@ impl FnCompiler<'_> {
             AnchorKind::Local if path.is_empty() => {
                 self.emit(Op::Copy { d, s: res.a }, span);
             }
-            AnchorKind::Local => {
-                let site = self.add_site(Site::Path(path.into()));
-                self.emit(Op::GetPath { d, s: res.a, site }, span);
-            }
+            AnchorKind::Local => self.emit_get_path(d, res.a, path, span),
             AnchorKind::Elem if path.is_empty() => {
                 let op = Op::ListGetAt {
                     d,
@@ -197,15 +194,28 @@ impl FnCompiler<'_> {
         span: Span,
     ) {
         if res.kind == AnchorKind::Local && !path.is_empty() {
-            let site = self.add_site(Site::Path(path.into()));
-            self.emit(
-                Op::SetPath {
-                    l: res.a,
-                    s: v,
-                    site,
-                },
-                span,
-            );
+            if let [ValueProj::Field(i)] = path
+                && let Ok(idx) = u16::try_from(i.0)
+            {
+                self.emit(
+                    Op::SetField {
+                        l: res.a,
+                        s: v,
+                        idx,
+                    },
+                    span,
+                );
+            } else {
+                let site = self.add_site(Site::Path(path.into()));
+                self.emit(
+                    Op::SetPath {
+                        l: res.a,
+                        s: v,
+                        site,
+                    },
+                    span,
+                );
+            }
         } else if guarded && path.is_empty() && res.kind == AnchorKind::Elem {
             let op = Op::ListSetAt {
                 l: res.a,
@@ -234,6 +244,18 @@ impl FnCompiler<'_> {
         }
     }
 
+    /// `d = s.<path>` (a clone of the part): a single struct field is an instruction of its own.
+    pub(super) fn emit_get_path(&mut self, d: Reg, s: Reg, path: &[ValueProj], span: Span) {
+        if let [ValueProj::Field(i)] = path
+            && let Ok(idx) = u16::try_from(i.0)
+        {
+            self.emit(Op::GetField { d, s, idx }, span);
+        } else {
+            let site = self.add_site(Site::Path(path.into()));
+            self.emit(Op::GetPath { d, s, site }, span);
+        }
+    }
+
     /// Takes the place hold of the collection `res` is an element of, if it is one.
     pub(super) fn emit_hold(&mut self, res: &Resolved, span: Span) {
         if !res.holds() {
@@ -256,7 +278,6 @@ impl FnCompiler<'_> {
     }
 
     pub(super) fn read_place(&mut self, place: &Place, dst: Reg, span: Span) {
-        let path = |c: &mut Self| c.add_site(Site::Path(place.path.clone().into_boxed_slice()));
         match &place.anchor {
             Anchor::Local(l) => {
                 let r = self.local(*l);
@@ -270,13 +291,11 @@ impl FnCompiler<'_> {
                 } else if cell {
                     let t = self.alloc(Kind::Owned);
                     self.emit(Op::CellGet { d: t, l: r }, span);
-                    let site = path(self);
-                    self.emit(Op::GetPath { d: dst, s: t, site }, span);
+                    self.emit_get_path(dst, t, &place.path, span);
                     self.emit(Op::Drop { r: t }, span);
                     self.free_moved(t);
                 } else {
-                    let site = path(self);
-                    self.emit(Op::GetPath { d: dst, s: r, site }, span);
+                    self.emit_get_path(dst, r, &place.path, span);
                 }
             }
             Anchor::Global(g) => {
@@ -293,8 +312,7 @@ impl FnCompiler<'_> {
                 } else {
                     let t = self.alloc(Kind::Owned);
                     self.emit(op(t), span);
-                    let site = path(self);
-                    self.emit(Op::GetPath { d: dst, s: t, site }, span);
+                    self.emit_get_path(dst, t, &place.path, span);
                     self.emit(Op::Drop { r: t }, span);
                     self.free_moved(t);
                 }
@@ -303,17 +321,21 @@ impl FnCompiler<'_> {
                 let Ok(idx) = u16::try_from(idx.0) else {
                     return self.fail("a class with too many fields for the bytecode VM");
                 };
-                // The object is a temporary: it lives to the end of the statement.
-                let o = self.alloc_for(&obj.ty);
-                self.expr(obj, o);
-                self.own(o);
+                // The object is a temporary that lives to the end of the statement, unless it is a
+                // local, which already does and is read at once: no copy then.
+                let o = self.anchor_operand(obj, false);
+                if usize::from(o) < self.nlocals {
+                    // The tree-walker releases a twin of the object at the statement end, and a
+                    // `Drop` hook panic that an earlier statement left surfaces there: the
+                    // statement keeps its `CheckHooks`.
+                    self.releases += 1;
+                }
                 if place.path.is_empty() {
                     self.emit(Op::ObjGet { d: dst, o, idx }, span);
                 } else {
                     let t = self.alloc(Kind::Owned);
                     self.emit(Op::ObjGet { d: t, o, idx }, span);
-                    let site = path(self);
-                    self.emit(Op::GetPath { d: dst, s: t, site }, span);
+                    self.emit_get_path(dst, t, &place.path, span);
                     self.emit(Op::Drop { r: t }, span);
                     self.free_moved(t);
                 }

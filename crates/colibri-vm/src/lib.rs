@@ -9,7 +9,8 @@
 //! panics with "the bytecode VM does not support <node> yet". Hosts do not use this crate
 //! directly yet; [`run_source`] is a small entry for tests.
 
-// `deny`, not `forbid`: the three `unsafe` blocks of `cffi` (reads and writes of C memory, which the
+// `deny`, not `forbid`: the module `unchecked` (register accesses of the dispatch loop, with the
+// proof in `Chunk::verify_registers`), the three `unsafe` blocks of `cffi` (reads and writes of C memory, which the
 // program asks for inside its own `unsafe` blocks) and the module `stacks` (the native stacks of
 // host functions that wait, vm-plan §3.2) are the only places that are allowed to use it.
 #![deny(unsafe_code)]
@@ -35,6 +36,8 @@ mod source;
 #[allow(unsafe_code)]
 #[cfg_attr(target_arch = "wasm32", path = "stacks_web.rs")]
 mod stacks;
+#[allow(unsafe_code)]
+mod unchecked;
 mod unwind;
 
 pub use compile::{CompileEnv, compile_body};

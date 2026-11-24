@@ -522,6 +522,12 @@ pub enum Op {
         s: Reg,
         site: u16,
     },
+    /// `d = s.<field idx>`: a clone of a field of the struct in `s` (`GetPath` of one field).
+    GetField {
+        d: Reg,
+        s: Reg,
+        idx: u16,
+    },
     /// `d = field idx of the class object in o`.
     ObjGet {
         d: Reg,
@@ -602,6 +608,12 @@ pub enum Op {
         l: Reg,
         s: Reg,
         site: u16,
+    },
+    /// `l.<field idx> = take(s)` on a local that holds a struct (`SetPath` of one field).
+    SetField {
+        l: Reg,
+        s: Reg,
+        idx: u16,
     },
     /// `d = the key the map in `m` stores for the key in `k``: another key when a user `Eq` says
     /// the two are equal, else a clone of `k`.
@@ -698,6 +710,10 @@ pub enum Op {
     },
     /// Statement end: folds the panics of `Drop` hooks that ran meanwhile into a panic.
     CheckHooks,
+    /// `Drop { r }` followed by `CheckHooks`: the commonest pair at the end of a statement.
+    DropCheck {
+        r: Reg,
+    },
     /// The same inside a landing pad: folds them into the panic on its way out.
     FoldHooks,
     /// The end of a landing pad: the frame's panic goes on to its caller.
@@ -940,7 +956,173 @@ pub struct Chunk {
     pub hidden: bool,
 }
 
+impl Op {
+    /// One past the highest register that the dispatch loop reads or writes without a bounds
+    /// check for this instruction, or 0 when its arm uses checked accesses only. `exec` indexes
+    /// the register file unchecked for the instructions that return a bound here, so this is
+    /// the proof obligation behind `crate::unchecked`: [`Chunk::verify_registers`] refuses a chunk
+    /// whose instruction names a register at or beyond `nregs`.
+    ///
+    /// Exhaustive on purpose: a new instruction must be classified, and one whose `exec` arm
+    /// uses `reg!` or `put!` must be given its registers here.
+    pub(crate) fn unchecked_regs_end(&self) -> usize {
+        let end = |rs: &[Reg]| rs.iter().map(|&r| usize::from(r) + 1).max().unwrap_or(0);
+        match *self {
+            Op::LoadUnit { d }
+            | Op::LoadBool { d, .. }
+            | Op::LoadInt { d, .. }
+            | Op::LoadK { d, .. }
+            | Op::GetGlobal { d, .. } => end(&[d]),
+            Op::Copy { d, s }
+            | Op::Move { d, s }
+            | Op::NewCell { l: d, s }
+            | Op::CellGet { d, l: s }
+            | Op::StoreLocal { l: d, s }
+            | Op::CellSet { l: d, s }
+            | Op::AddIK { d, a: s, .. }
+            | Op::NegI { d, a: s }
+            | Op::NegF { d, a: s }
+            | Op::Not { d, a: s }
+            | Op::Coerce { d, s, .. }
+            | Op::GetField { d, s, .. }
+            | Op::Unpack { d, s, .. } => end(&[d, s]),
+            Op::Drop { r }
+            | Op::DropInert { r }
+            | Op::DropCheck { r }
+            | Op::UnwrapCell { r }
+            | Op::JmpIf { r, .. }
+            | Op::JmpIfNot { r, .. }
+            | Op::TestVariant { r, .. }
+            | Op::TestInt { r, .. }
+            | Op::Return { s: r }
+            | Op::IterIsUser { a: r } => end(&[r]),
+            Op::DropN { r, n } => usize::from(r) + usize::from(n),
+            Op::AddI { d, a, b }
+            | Op::SubI { d, a, b }
+            | Op::MulI { d, a, b }
+            | Op::DivI { d, a, b }
+            | Op::RemI { d, a, b }
+            | Op::LtI { d, a, b }
+            | Op::LeI { d, a, b }
+            | Op::EqI { d, a, b }
+            | Op::NeI { d, a, b }
+            | Op::AddF { d, a, b }
+            | Op::SubF { d, a, b }
+            | Op::MulF { d, a, b }
+            | Op::DivF { d, a, b }
+            | Op::LtF { d, a, b }
+            | Op::LeF { d, a, b }
+            | Op::EqF { d, a, b }
+            | Op::NeF { d, a, b } => end(&[d, a, b]),
+            Op::JmpNotLtI { a, b, .. }
+            | Op::JmpNotLeI { a, b, .. }
+            | Op::JmpNotEqI { a, b, .. }
+            | Op::JmpNotNeI { a, b, .. }
+            | Op::ForRangeNext { i: a, end: b, .. }
+            | Op::ForRangeNextIncl { i: a, end: b, .. } => end(&[a, b]),
+            Op::JmpNotLtIK { a, .. }
+            | Op::JmpNotLeIK { a, .. }
+            | Op::JmpNotGtIK { a, .. }
+            | Op::JmpNotGeIK { a, .. }
+            | Op::JmpNotEqIK { a, .. }
+            | Op::JmpNotNeIK { a, .. } => end(&[a]),
+            Op::CheckGlobal { .. }
+            | Op::GetGlobalChecked { .. }
+            | Op::SetGlobal { .. }
+            | Op::InitGlobal { .. }
+            | Op::CallInit { .. }
+            | Op::Binary { .. }
+            | Op::Site { .. }
+            | Op::Unary { .. }
+            | Op::Jmp { .. }
+            | Op::Loop { .. }
+            | Op::Step { .. }
+            | Op::Call { .. }
+            | Op::CallHidden { .. }
+            | Op::CallValueIn { .. }
+            | Op::CallHost { .. }
+            | Op::CallValue { .. }
+            | Op::CallBound { .. }
+            | Op::CallDyn { .. }
+            | Op::CallIfaceInout { .. }
+            | Op::Rewrap { .. }
+            | Op::CallOperator { .. }
+            | Op::MakeClosure { .. }
+            | Op::ReturnUnit
+            | Op::Print { .. }
+            | Op::Show { .. }
+            | Op::Format { .. }
+            | Op::StrConcat { .. }
+            | Op::Intrinsic { .. }
+            | Op::Builtin { .. }
+            | Op::ListPush { .. }
+            | Op::ListLen { .. }
+            | Op::StrLen { .. }
+            | Op::NewStruct { .. }
+            | Op::NewObject { .. }
+            | Op::NewVariant { .. }
+            | Op::NewTuple { .. }
+            | Op::NewList { .. }
+            | Op::NewMap { .. }
+            | Op::MapInsert { .. }
+            | Op::NewRange { .. }
+            | Op::GetPath { .. }
+            | Op::ObjGet { .. }
+            | Op::ToWeak { .. }
+            | Op::FromWeak { .. }
+            | Op::PlaceGet { .. }
+            | Op::PlaceTake { .. }
+            | Op::PlaceSet { .. }
+            | Op::PlaceHold { .. }
+            | Op::Unhold
+            | Op::ListGetAt { .. }
+            | Op::ListSetAt { .. }
+            | Op::MapGetAt { .. }
+            | Op::MapSetAt { .. }
+            | Op::SetPath { .. }
+            | Op::SetField { .. }
+            | Op::CanonKey { .. }
+            | Op::HoldIter { .. }
+            | Op::HoldListPlace { .. }
+            | Op::ForListNext { .. }
+            | Op::ForListNextVar { .. }
+            | Op::ForMapNext { .. }
+            | Op::ForSetNext { .. }
+            | Op::ForIterNext { .. }
+            | Op::ForWriteBack { .. }
+            | Op::TestLit { .. }
+            | Op::TestRange { .. }
+            | Op::TestConst { .. }
+            | Op::SkipIfDead { .. }
+            | Op::CheckHooks
+            | Op::FoldHooks
+            | Op::Resume
+            | Op::IterNextCall { .. }
+            | Op::IterNextEnd { .. }
+            | Op::Unsupported { .. }
+            | Op::SuspendReady
+            | Op::Go { .. }
+            | Op::Pause { .. }
+            | Op::Join { .. } => 0,
+        }
+    }
+}
+
 impl Chunk {
+    /// Whether every register that `exec` accesses without a bounds check is inside the
+    /// frame's window (see [`Op::unchecked_regs_end`]). The compiler runs it on every chunk.
+    pub(crate) fn verify_registers(&self) -> Result<(), String> {
+        for (pc, op) in self.code.iter().enumerate() {
+            if op.unchecked_regs_end() > usize::from(self.nregs) {
+                return Err(format!(
+                    "`{}` uses a register beyond its {} at instruction {pc}",
+                    self.body.name, self.nregs
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// The landing pad of the instruction at `pc`, if one covers it.
     pub fn pad_for(&self, pc: u32) -> Option<u32> {
         let i = self.unwind.partition_point(|e| e.start <= pc);
@@ -1113,6 +1295,8 @@ impl Chunk {
             Op::PlaceSet { a, b, v } => format!("PlaceSet r{a} r{b} r{v}"),
             Op::PlaceHold { a } => format!("PlaceHold r{a}"),
             Op::Unhold => "Unhold".to_string(),
+            Op::GetField { d, s, idx } => format!("GetField r{d} r{s} .{idx}"),
+            Op::SetField { l, s, idx } => format!("SetField r{l} r{s} .{idx}"),
             Op::SetPath { l, s, site } => format!("SetPath r{l} r{s} {}", self.site_text(site)),
             Op::CanonKey { d, m, k } => format!("CanonKey r{d} map=r{m} r{k}"),
             Op::HoldIter { r } => format!("HoldIter r{r}"),
@@ -1133,6 +1317,7 @@ impl Chunk {
             Op::Unpack { d, s, i } => format!("Unpack r{d} r{s} .{i}"),
             Op::SkipIfDead { off } => format!("SkipIfDead -> {:04}", target(off.into())),
             Op::CheckHooks => "CheckHooks".to_string(),
+            Op::DropCheck { r } => format!("DropCheck r{r}"),
             Op::FoldHooks => "FoldHooks".to_string(),
             Op::Resume => "Resume".to_string(),
             Op::Unsupported { site } => format!("Unsupported {}", self.site_text(site)),
