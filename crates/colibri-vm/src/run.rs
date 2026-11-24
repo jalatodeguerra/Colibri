@@ -101,9 +101,15 @@ impl Machine {
         // lies inside `fiber.regs` (`push_call`, `op_call_hidden` and `enter_with` grow the file
         // before they push a frame, and nothing shrinks it while frames exist), and the compiler's
         // `Chunk::verify_registers` refused any chunk whose instruction names a register of that
-        // list at or beyond `nregs`. Debug builds check the access.
+        // list at or beyond `nregs`. Debug builds check the access, and that the index is below `nregs`.
         macro_rules! rd {
             ($i:expr) => {{
+                debug_assert!(
+                    usize::from($i) < usize::from(chunk.nregs),
+                    "r{} of {} registers",
+                    $i,
+                    chunk.nregs
+                );
                 #[allow(unsafe_code)]
                 let r: &Value = unsafe { unchecked::get(&fiber.regs, base + usize::from($i)) };
                 r
@@ -111,6 +117,12 @@ impl Machine {
         }
         macro_rules! wr {
             ($i:expr) => {{
+                debug_assert!(
+                    usize::from($i) < usize::from(chunk.nregs),
+                    "r{} of {} registers",
+                    $i,
+                    chunk.nregs
+                );
                 #[allow(unsafe_code)]
                 let r: &mut Value =
                     unsafe { unchecked::get_mut(&mut fiber.regs, base + usize::from($i)) };
