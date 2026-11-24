@@ -152,6 +152,11 @@ pub(crate) trait RuntimeEngine: HostCx {
         true
     }
 
+    /// The size of the native stack a coroutine's call of a host function runs on, where the
+    /// engine gives it one of its own (the bytecode VM). The tree-walker's coroutines have one
+    /// native stack each, sized by `coroutine_stack_size` in the scheduler.
+    fn set_host_stack_size(&mut self, _bytes: usize) {}
+
     /// Puts a checked program to work: the code tables, the host function slots. Module
     /// initialisers do not run yet.
     fn load(&mut self, program: &Program);

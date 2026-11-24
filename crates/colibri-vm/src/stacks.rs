@@ -43,9 +43,11 @@ use crate::fiber::VmFiber;
 use crate::host::{HostFault, HostImpl};
 use crate::machine::Machine;
 
-/// How big a host function's stack is when the machine is not told otherwise: the size DESIGN
-/// §14.3 gives to native code. The stack of a coroutine's own code is on the heap.
-pub(crate) const DEFAULT_HOST_STACK: usize = 256 * 1024;
+/// How big a host function's stack is when the machine is not told otherwise. The stack of a
+/// coroutine's own code is on the heap; this one is for host code, which can use a lot of native
+/// stack (a recursive parser, a C library), more so in a debug build. The memory is reserved, not
+/// committed, and the pages below `HOT_WINDOW` are given back when a stack is pooled.
+pub(crate) const DEFAULT_HOST_STACK: usize = 1024 * 1024;
 
 /// How many finished stacks the pool keeps. A server that calls one host function from each of
 /// a few coroutines at a time reuses a handful. Each pooled stack is `DEFAULT_HOST_STACK` of
@@ -55,6 +57,11 @@ const POOL_CAP: usize = 16;
 /// The part of a pooled stack, at its top, that keeps its pages. Below it, the pages a deep run
 /// touched are given back when the stack is pooled.
 const HOT_WINDOW: usize = 256 * 1024;
+
+/// Every this many stacks that come back are trimmed (`trim_stack` is a system call, and most
+/// host functions never get below the hot window), so the memory of a deep run is given back
+/// within a few calls and a pooled stack is not trimmed at every call.
+const TRIM_EVERY: usize = 32;
 
 /// What the host function may use of its stack through nested calls into Colibri (a callback):
 /// the rest is for the host function's own frames and for built-ins, which are not measured.
@@ -127,6 +134,8 @@ pub(crate) struct HostStacks {
     size: usize,
     /// How many stacks were mapped (not taken from the pool), for tests.
     allocated: usize,
+    /// How many stacks came back, to trim one in `TRIM_EVERY` (see `recycle`).
+    recycled: usize,
 }
 
 impl Default for HostStacks {
@@ -136,6 +145,7 @@ impl Default for HostStacks {
             pool_size: DEFAULT_HOST_STACK,
             size: DEFAULT_HOST_STACK,
             allocated: 0,
+            recycled: 0,
         }
     }
 }
@@ -174,7 +184,11 @@ impl HostStacks {
     /// full or the stack went deep (see `trim_stack`).
     fn recycle(&mut self, co: Co, size: usize) {
         let stack = co.into_stack();
-        if size == self.pool_size && self.pool.len() < POOL_CAP && trim_stack(&stack) {
+        self.recycled += 1;
+        let pool = size == self.pool_size && self.pool.len() < POOL_CAP;
+        // On Windows the check is a read of two fields and decides if the stack is kept at all.
+        let trim = cfg!(windows) || self.recycled % TRIM_EVERY == 0;
+        if pool && (!trim || trim_stack(&stack)) {
             self.pool.push(stack);
         }
     }
@@ -250,16 +264,19 @@ pub(crate) fn run(
     let base = stack.base().get();
     let body = move |yielder: &Y, first: Resume| -> Result<Value, HostFault> {
         // SAFETY: the pointers come from `enter`, which made them from its own `&mut`
-        // references immediately before the switch that started this body, and which is blocked
-        // in that switch until this body parks or ends, so these are the only live references
-        // to the machine and the fiber (fact 2). The machine and the fiber are where they were
-        // when the pointers were made (fact 3: `enter`'s callers hold the machine by `&mut`
-        // and the fiber of a coroutine in a box, and neither is moved while this stack exists;
-        // `park` checks it at every resumption). The references live as long as this body,
-        // across every park: while the stack is parked the resumer uses the machine and the
-        // fiber through its own pointers, and every park is the call `Yielder::suspend` in
-        // `park`, which the compiler cannot see through and to which `park` gives the pointers
-        // it uses afterwards (fact 1).
+        // references immediately before the switch that started this body, and is blocked in
+        // that switch. They point at a live machine and fiber (fact 3: the machine is not moved
+        // while a stack exists, the fiber of a coroutine is in a box; `park` checks both at every
+        // resumption). While this body runs, the two `&mut` made here are the only references
+        // that are used, so they are unique then. That stops being true across a park, and what
+        // this code asserts is weaker: both references stay alive across every `park`, and the
+        // resumer uses the machine and the fiber through its own `&mut` meanwhile, so under the
+        // aliasing rules of Rust (Stacked or Tree Borrows) this is a violation, as in the
+        // tree-walker's coroutine stacks. It is sound in practice because of fact 1, and only
+        // because of it: every park is the call `Yielder::suspend` in `park`, which the compiler
+        // cannot see through and to which `park` hands the pointers, followed by `black_box` of
+        // them, so no value read through these references is assumed to survive the call.
+        // Nothing here has a name or a type that Miri could check (it cannot run corosensei).
         let (machine, fiber) = unsafe { (&mut *first.machine, &mut *first.fiber) };
         fiber.yielder = Some(YielderPtr(yielder));
         let result = catch_unwind(AssertUnwindSafe(|| imp(machine, fiber, args)));
@@ -305,16 +322,24 @@ fn enter(machine: &mut Machine, fiber: &mut VmFiber, mut parked: Parked, cancel:
     let pointers: Parking = (&mut *machine, &mut *fiber);
     // From here to the `black_box` below no reference to the machine or the fiber is used
     // (fact 2): `machine` and `fiber` are not touched, `co` is owned by this frame, and the host
-    // function on its stack has the only references, made from `pointers`.
-    let outcome = co.resume(Resume {
-        machine: pointers.0,
-        fiber: pointers.1,
-        cancel,
-    });
+    // function on its stack has the only references, made from `pointers`. A panic that the
+    // function let through comes out of `resume` (corosensei carries it over): the three values
+    // are put back on that path too, and the panic goes on.
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        co.resume(Resume {
+            machine: pointers.0,
+            fiber: pointers.1,
+            cancel,
+        })
+    }));
     std::hint::black_box(pointers);
     machine.native_stack_budget = saved_budget;
     fiber.stack_base = saved_base;
     machine.stack_root = saved_root;
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(payload) => resume_unwind(payload),
+    };
     match outcome {
         CoroutineResult::Yield(_) => {
             parked.co = Some(co);

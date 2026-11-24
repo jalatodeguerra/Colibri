@@ -155,3 +155,54 @@ fn a_host_function_that_go_starts_may_wait_and_its_result_is_the_coroutines() {
     vm.run_main().unwrap();
     assert_eq!(out.contents(), "started\n42 8\n");
 }
+
+/// A host function that keeps `bytes` of native stack alive while it runs.
+fn use_stack(bytes: usize) -> usize {
+    let mut buffer = vec_on_stack(bytes);
+    std::hint::black_box(&mut buffer);
+    buffer.len()
+}
+
+#[inline(never)]
+fn vec_on_stack(bytes: usize) -> Vec<u8> {
+    // 64 KiB frames, one inside the other, until `bytes` are in use.
+    fn deeper(left: usize, out: &mut Vec<u8>) {
+        let mut frame = [0u8; 64 * 1024];
+        std::hint::black_box(&mut frame);
+        out.push(frame[0]);
+        if left > frame.len() {
+            deeper(left - frame.len(), out);
+        }
+        std::hint::black_box(&mut frame);
+    }
+    let mut out = Vec::new();
+    deeper(bytes, &mut out);
+    out
+}
+
+/// A coroutine's call of a host function that uses half a megabyte of native stack works with
+/// the default stack of the VM, and one that uses more works when the builder gives the
+/// coroutines bigger stacks (`coroutine_stack_size` is the size of the host function's stack on
+/// the VM).
+#[test]
+fn a_host_function_that_needs_a_lot_of_native_stack_works_in_a_coroutine() {
+    let program = "fn main() {\n    let c = go heavy()\n    print(\"{c.join()}\")\n}\nfn heavy() -> int {\n    return deep()\n}\n";
+    let (mut vm, out) = vm();
+    vm.register_fn("deep", || use_stack(512 * 1024) as i64)
+        .unwrap();
+    vm.load_source("a.colibri", program).unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "8\n");
+
+    let out = SharedBuffer::new();
+    let mut vm = Vm::builder()
+        .engine(EngineKind::Bytecode)
+        .coroutine_stack_size(8 << 20)
+        .stdout(Box::new(out.clone()))
+        .build();
+    vm.register_fn("deep", || use_stack(3 << 20) as i64)
+        .unwrap();
+    vm.load_source("a.colibri", program).unwrap();
+    vm.run_main().unwrap();
+    assert_eq!(out.contents(), "48\n");
+}

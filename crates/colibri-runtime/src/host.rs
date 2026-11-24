@@ -141,6 +141,11 @@ impl Registration<'_> {
     /// function on a native stack of its own, so that the coroutine can be suspended inside it
     /// (this costs a switch of stacks); a marked function runs on the caller's stack, where
     /// [`crate::Ctx::can_suspend`] reads `false`. The tree-walker takes no notice.
+    ///
+    /// A function that is not marked runs on that stack, which is 1 MiB unless
+    /// [`crate::VmBuilder::coroutine_stack_size`] says otherwise; a function that needs more
+    /// native stack than the size crashes the process when a coroutine calls it. Marking is
+    /// also the way to give such a function the whole stack of the caller, if it never waits.
     pub fn no_await(self) -> Self {
         self.vm.set_no_await(self.index);
         self

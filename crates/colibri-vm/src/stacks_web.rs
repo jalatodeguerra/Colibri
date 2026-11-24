@@ -9,7 +9,7 @@ use crate::fiber::VmFiber;
 use crate::host::{HostFault, HostImpl};
 use crate::machine::Machine;
 
-pub(crate) const DEFAULT_HOST_STACK: usize = 256 * 1024;
+pub(crate) const DEFAULT_HOST_STACK: usize = 1024 * 1024;
 
 /// No fiber ever has a yielder here.
 #[derive(Clone, Copy, Debug)]

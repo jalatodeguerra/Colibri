@@ -192,6 +192,10 @@ impl RuntimeEngine for VmEngine {
         self.machine.run_initialisers(&mut self.fiber)
     }
 
+    fn set_host_stack_size(&mut self, bytes: usize) {
+        self.machine.set_host_stack_size(bytes);
+    }
+
     fn set_host_fn(&mut self, id: HostFnId, imp: HostFnImpl, no_await: bool) {
         self.machine.set_host_fn(id, adapt(imp));
         if no_await {

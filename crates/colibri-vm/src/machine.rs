@@ -47,6 +47,14 @@ impl Slot {
 pub(crate) type PrintHook = Rc<dyn Fn(&mut Machine, &mut crate::fiber::VmFiber)>;
 
 /// The bytecode virtual machine: the engine behind `colibri_core::engine::Engine`.
+///
+/// **A machine must not move while a coroutine is parked in a host function.** A host function
+/// that a coroutine called runs on a native stack of its own (see `stacks`) and keeps references
+/// into the machine across its waits; a machine that is moved (or dropped from another place after
+/// a move) while one is parked makes the process abort at the next resume, because going on would
+/// be undefined behaviour. Keep the machine in a `Box` (the runtime does) or do not move it after
+/// the first `go`. Moving it before anything runs, or when no coroutine is alive, is fine. The
+/// fibers of coroutines are boxed and are not moved by the machine.
 pub struct Machine {
     /// Looked up at call time, so a patched function takes effect at its next call.
     pub(crate) fns: Vec<Slot>,
@@ -125,7 +133,7 @@ impl Machine {
     }
 
     /// Sets the size of the native stacks that host functions called from coroutines run on
-    /// (default 256 KiB). Stacks pooled at another size are dropped at the next call.
+    /// (default 1 MiB). Stacks pooled at another size are dropped at the next call.
     pub fn set_host_stack_size(&mut self, bytes: usize) {
         self.host_stacks.set_size(bytes);
     }

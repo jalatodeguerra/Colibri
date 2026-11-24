@@ -140,6 +140,14 @@ impl VmBuilder {
     /// (DESIGN §14.3); the memory is reserved lazily and committed as the coroutine uses it.
     /// The evaluator panics with "stack overflow" before a coroutine uses more than three
     /// quarters of it, so deep recursion inside a coroutine needs a bigger size.
+    ///
+    /// On the bytecode VM a coroutine's own code lives on the heap, so this size is the one of the
+    /// native stack that a host function runs on when a coroutine calls it (a function that is
+    /// not marked [`Registration::no_await`]; the default is 1 MiB). A host function that needs
+    /// more native stack than that, with deep recursion or large buffers on the stack, crashes
+    /// the process with a stack overflow: raise the size, or call the function from the main
+    /// fiber. The stacks are reserved lazily, a few are kept for reuse, and the engine measures
+    /// callbacks into Colibri against three quarters of the size.
     pub fn coroutine_stack_size(mut self, bytes: usize) -> Self {
         self.coroutine_stack_size = Some(bytes);
         self
@@ -241,6 +249,7 @@ impl VmBuilder {
             .set_instruction_budget(self.instruction_budget);
         if let Some(size) = self.coroutine_stack_size {
             engine.core_mut().sched.set_stack_size(size);
+            engine.set_host_stack_size(size);
         }
         if let Some(clock) = self.clock {
             engine.core_mut().sched.set_clock(clock);
