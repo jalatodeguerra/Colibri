@@ -333,6 +333,7 @@ pub(crate) struct FnCompiler<'a> {
     /// How many instructions that can release a value (and so run a `Drop` hook) were emitted.
     releases: u32,
     labels: Vec<LabelState>,
+    bound_at: usize,
     pub loops: Vec<LoopCtx>,
     /// The `Step` instruction of the straight-line run being emitted.
     step_at: Option<usize>,
@@ -372,6 +373,7 @@ impl<'a> FnCompiler<'a> {
                 .is_some_and(|f| env.hook_fns.get(f.0 as usize).copied() == Some(true)),
             releases: 0,
             labels: Vec::new(),
+            bound_at: usize::MAX,
             loops: Vec::new(),
             step_at: None,
             free: colibri_check::is_prelude_span(body.span),
@@ -471,6 +473,7 @@ impl<'a> FnCompiler<'a> {
     pub(crate) fn bind(&mut self, l: Label) {
         self.step_at = None;
         let pos = self.code.len();
+        self.bound_at = pos;
         self.labels[l.0].pos = Some(pos);
         for at in std::mem::take(&mut self.labels[l.0].patches) {
             self.set_target(at, pos);
@@ -837,7 +840,9 @@ impl<'a> FnCompiler<'a> {
                     self.emit_defer(idx, &prefix, node, span, self.temps.len());
                 }
                 Item::Fold(start) => {
-                    if self.may_have_released(start) {
+                    let redundant = matches!(self.code.last(), Some(Op::CheckHooks))
+                        && self.bound_at != self.code.len();
+                    if self.may_have_released(start) && !redundant {
                         let node = below(self);
                         self.state_override = Some(node);
                         self.emit(Op::CheckHooks, span);

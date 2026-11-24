@@ -247,22 +247,21 @@ fn elem(xs: List[P], i: int) {
 0007    site Elem[] unguarded
 0008  Unhold
 0009  CheckHooks
-0010  CheckHooks
-0011  ReturnUnit
-0012  PlaceSet r0 r1 r3
-0013    site Elem[] unguarded
-0014  Unhold
+0010  ReturnUnit
+0011  PlaceSet r0 r1 r3
+0012    site Elem[] unguarded
+0013  Unhold
+0014  FoldHooks
 0015  FoldHooks
-0016  FoldHooks
-0017  Jmp -> 0018
-0018  Resume
-unwind [0000, 0001) -> 0016
-unwind [0002, 0004) -> 0015
-unwind [0004, 0005) -> 0014
-unwind [0005, 0006) -> 0012
-unwind [0006, 0008) -> 0014
-unwind [0009, 0010) -> 0016
-unwind [0012, 0014) -> 0014
+0016  Jmp -> 0017
+0017  Resume
+unwind [0000, 0001) -> 0015
+unwind [0002, 0004) -> 0014
+unwind [0004, 0005) -> 0013
+unwind [0005, 0006) -> 0011
+unwind [0006, 0008) -> 0013
+unwind [0009, 0010) -> 0015
+unwind [0011, 0013) -> 0013
 ";
     assert_eq!(dis(src, "elem"), expected);
 }

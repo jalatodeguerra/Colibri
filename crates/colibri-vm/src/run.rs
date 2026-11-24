@@ -1218,10 +1218,12 @@ impl Machine {
             self.charge(fiber, span, n)?;
         }
         let callee = self.callee_chunk(fiber, chunk, pc, *f)?;
-        if fiber.visible_depth() >= self.max_depth {
-            return Err(self.overflow(fiber, span));
+        // No depth check against the limit: the built-in adds no visible call, and the closure it
+        // calls is checked by `push_call` and `enter_with`. This only bounds the hidden frames.
+        if fiber.frames.len() >= 2 * self.max_depth + 64 {
+            return Err(self.internal(fiber, span, "the prelude's frames outgrew the call limit"));
         }
-        fiber.hidden += 1;
+        fiber.hidden += usize::from(callee.hidden);
         let need = at + callee.nregs as usize;
         if fiber.regs.len() < need {
             fiber.regs.resize(need, Value::Unit);

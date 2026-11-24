@@ -83,7 +83,8 @@
 //!
 //! # Where nothing else can run
 //!
-//! A call made from a `Drop` hook or a callback of a host function cannot suspend: it blocks the
+//! A call made from a `Drop` hook, a callback of a host function, or a `Show`, `Eq`, `Ord`, `Hash`,
+//! `Clone` or `next` that a built-in operation calls, cannot suspend: it blocks the
 //! interpreter thread (`Ctx::can_suspend` is `false`), and the poller wakes it (a `connect`
 //! from such a place waits for its lookup and its attempts the same way, and may block as long
 //! as they take). A read (or accept) holds its turn until its coroutine has taken the result,
@@ -100,7 +101,7 @@
 //! does. A write that finds no other write outstanding can still wait in a hook for room that
 //! only another coroutine of the same program would make (the one that reads what is written),
 //! and that coroutine cannot run while the hook waits. A program must not do that: from a
-//! `Drop` hook or a callback, write only what the peer takes without help from this program (as
+//! such place, write only what the peer takes without help from this program (as
 //! `fs` has the same limit with a pipe that this program reads itself).
 //!
 //! # A write that stops part way breaks the write side
@@ -1928,7 +1929,7 @@ impl Shared {
         }
         if !cx.can_suspend() && !self.closed.load(Ordering::SeqCst) && self.writes.busy() {
             return Err(Kind::Other.error(format!(
-                "cannot {action} `{}`: a write of this connection is already waiting in another coroutine, and it cannot finish while a `Drop` hook or a callback waits (write in the coroutine, or before that write starts)",
+                "cannot {action} `{}`: a write of this connection is already waiting in another coroutine, and it cannot finish while a `Drop` hook, a callback, or a `Show`, `Eq`, `Ord`, `Hash`, `Clone` or `next` that a built-in operation calls, waits (write in the coroutine, or before that write starts)",
                 self.peer
             )));
         }
@@ -2292,7 +2293,7 @@ fn on_read<R>(
     // for each other for ever. It is refused instead.
     if !cx.can_suspend() && !sh.closed.load(Ordering::SeqCst) && sh.reads.busy() {
         return Err(Kind::Other.error(format!(
-            "cannot read from `{}`: a read of this connection is already waiting in another coroutine, and it cannot finish while a `Drop` hook or a callback waits (read in the coroutine, or before that read starts)",
+            "cannot read from `{}`: a read of this connection is already waiting in another coroutine, and it cannot finish while a `Drop` hook, a callback, or a `Show`, `Eq`, `Ord`, `Hash`, `Clone` or `next` that a built-in operation calls, waits (read in the coroutine, or before that read starts)",
             sh.peer
         )));
     }
@@ -2901,7 +2902,7 @@ impl HostType for Listener {
             // coroutine that holds its turn until it resumes.
             if !cx.can_suspend() && !sh.closed.load(Ordering::SeqCst) && sh.accepts.busy() {
                 return Err(Kind::Other.error(format!(
-                    "cannot accept on `{}`: an accept on this listener is already waiting in another coroutine, and it cannot finish while a `Drop` hook or a callback waits (accept in the coroutine, or before that accept starts)",
+                    "cannot accept on `{}`: an accept on this listener is already waiting in another coroutine, and it cannot finish while a `Drop` hook, a callback, or a `Show`, `Eq`, `Ord`, `Hash`, `Clone` or `next` that a built-in operation calls, waits (accept in the coroutine, or before that accept starts)",
                     sh.addr
                 )));
             }
