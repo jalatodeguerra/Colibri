@@ -242,6 +242,20 @@ impl<'r, T: HostType> TypeBuilder<'r, T> {
         self
     }
 
+    /// The method or static function described last never suspends its caller, like
+    /// [`crate::Registration::no_await`]: the bytecode VM may call it beside running
+    /// coroutines.
+    pub fn no_await(&mut self) -> &mut Self {
+        match self.methods.last_mut() {
+            Some(last) => last.no_await = true,
+            None => self.problems.push(format!(
+                "`{}`: `no_await` comes after the method it marks",
+                T::NAME
+            )),
+        }
+        self
+    }
+
     fn add(&mut self, name: &str, params: &[&str], sig: SigDesc, has_self: bool, raw: RawHostFn) {
         let class = T::NAME;
         if name == "alive" {
@@ -269,6 +283,7 @@ impl<'r, T: HostType> TypeBuilder<'r, T> {
             sig,
             has_self,
             raw,
+            no_await: false,
         });
     }
 }

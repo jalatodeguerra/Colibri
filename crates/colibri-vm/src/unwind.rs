@@ -16,7 +16,7 @@ use crate::machine::Machine;
 
 // vm-pin: refusal (the leaks that keep a refused run silent go when no feature is refused)
 /// What every refusal of an unsupported feature starts with.
-const REFUSAL: &str = "the bytecode VM does not support";
+pub(crate) const REFUSAL: &str = "the bytecode VM does not support";
 
 impl Machine {
     /// Continues unwinding `ctl` from the top frame: into its pad when the instruction it is at
@@ -31,7 +31,10 @@ impl Machine {
     ) -> Result<(), Ctl> {
         // The VM's refusal of a feature is not the program's own panic: nothing the program
         // wrote (a `defer`, a `Drop` hook) runs for it, so output stops where the refusal is.
-        let refusal = matches!(&ctl, Ctl::Panic(info) if info.message.starts_with(REFUSAL));
+        // The cancellation of a coroutine after a refusal (at shutdown, between tests) is the same:
+        // the program stopped, and nothing it wrote runs.
+        let refusal = matches!(&ctl, Ctl::Panic(info) if info.message.starts_with(REFUSAL))
+            || (self.refused && matches!(ctl, Ctl::Cancel));
         loop {
             let frame = fiber.frames.last_mut().expect("a frame to unwind");
             if !skip_top && !refusal {

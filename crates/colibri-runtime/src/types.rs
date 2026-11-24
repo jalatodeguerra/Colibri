@@ -983,6 +983,8 @@ pub(crate) struct MethodEntry {
     /// Whether the first argument is the object (`self`).
     pub has_self: bool,
     pub raw: RawHostFn,
+    /// Never suspends its caller (`TypeBuilder::no_await`).
+    pub no_await: bool,
 }
 
 impl std::fmt::Debug for MethodEntry {

@@ -19,7 +19,7 @@ impl Machine {
         if outermost {
             // A refusal ends with the run it stopped, not with the Vm.
             self.refused = false;
-            self.host_wait_refused = false;
+            self.pending_refusal = None;
             self.drain_root_drops();
         }
         let result = self.run_module_parts(fiber);

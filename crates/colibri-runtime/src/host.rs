@@ -134,10 +134,13 @@ impl Registration<'_> {
         self
     }
 
-    /// The function never waits for anything outside the program (no `run_async`, no
-    /// completion): the bytecode VM may call it beside running coroutines. Without this, the
-    /// VM refuses the call while a coroutine is alive, as it cannot yet suspend one for a wait
-    /// (vm-plan step 12); the tree-walker takes no notice.
+    /// The function never suspends its caller: it does not call `run_async`, `run_async_cancellable`
+    /// or `try_await_completion` (it may still block the thread, as a plain file read does; that
+    /// blocks every coroutine the same way on both engines). A function that does suspend its
+    /// caller must not be marked. The bytecode VM calls a marked function beside running
+    /// coroutines at no extra cost, and refuses every other host call while a coroutine is alive,
+    /// since it cannot suspend one for a wait before vm-plan step 12; the tree-walker takes no
+    /// notice. After step 12 the mark lets the VM skip the switch of stacks.
     pub fn no_await(self) -> Self {
         self.vm.set_no_await(self.index);
         self

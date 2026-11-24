@@ -1004,8 +1004,6 @@ impl Vm {
         }
     }
 
-    /// The raw function that implements the host function or method `name` (`World.step`),
-    /// and the capability it needs.
     /// Whether the host function `name` of `module` never waits for anything outside the
     /// program (a pure one): the VM runs it beside live coroutines, and refuses any other
     /// until it can suspend a coroutine for a wait (vm-plan step 12).
@@ -1031,6 +1029,8 @@ impl Vm {
         ));
     }
 
+    /// The raw function that implements the host function or method `name` (`World.step`), the
+    /// capability it needs, and whether it never suspends its caller.
     fn find_raw(
         &self,
         module: &str,
@@ -1051,7 +1051,7 @@ impl Vm {
                 c.name == class && c.module.as_deref().unwrap_or(DEFAULT_MODULE) == module
             })?;
         let method = class.methods.iter().find(|m| m.name == method)?;
-        Some((method.raw.clone(), None, pure))
+        Some((method.raw.clone(), None, pure || method.no_await))
     }
 
     pub(crate) fn set_typed(&mut self, index: usize) -> Result<(), Error> {

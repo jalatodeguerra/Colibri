@@ -145,7 +145,10 @@ impl Machine {
     /// Resumes every due coroutine once.
     pub fn tick(&mut self, dt: f64) -> Result<(), Box<PanicInfo>> {
         self.note_stack_root();
-        Sched::tick(self, dt)
+        let result = Sched::tick(self, dt);
+        // The refusal is the failure `tick` returns; it is not for a later entry.
+        self.pending_refusal = None;
+        result
     }
 
     /// How long until the next coroutine needs a tick (see `Scheduler::next_wake`).

@@ -725,7 +725,11 @@ pub enum Op {
         w: Reg,
     },
 
-    /// A node the VM does not compile yet: panics with the site's message when executed.
+    /// A node the VM does not compile yet: panics with the site's message when executed. Since
+    /// step 11 no program the checker accepts reaches it (every construct compiles), so no test
+    /// can name a program for it; it stays for what the checker may add, and the refusal that
+    /// can still happen, of a host call that can wait, is pinned by
+    /// `colibri-runtime/tests/vm_refusals.rs`.
     Unsupported {
         site: u16,
     },

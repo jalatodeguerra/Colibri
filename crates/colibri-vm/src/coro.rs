@@ -29,9 +29,6 @@ use colibri_core::prelude::*;
 use colibri_core::sched::*;
 use colibri_core::stack_position;
 
-/// The refusal of a host call that can wait while a coroutine is alive (vm-plan step 12 lifts it).
-pub const HOST_WAIT_REFUSAL: &str =
-    "the bytecode VM does not support a host function that can wait, beside running coroutines yet";
 use colibri_core::value::Value;
 use colibri_syntax::Span;
 
@@ -39,6 +36,10 @@ use crate::bytecode::{Chunk, JoinKind, PauseKind, Site};
 use crate::fiber::{CoEntry, CoStart, VmFiber};
 use crate::machine::Machine;
 use crate::run::Exit;
+
+/// The refusal of a host call that can wait while a coroutine is alive (vm-plan step 12 lifts it).
+pub const HOST_WAIT_REFUSAL: &str =
+    "the bytecode VM does not support a host function that can wait, beside running coroutines yet";
 
 /// How many finished fibers the pool keeps for the next starts (their stacks keep their
 /// capacity). A server that starts a short coroutine per request has a few alive at a time.
@@ -171,8 +172,9 @@ impl Machine {
         self.fibers.pooled()
     }
 
-    /// Takes the fiber of slot `slot` out of the slab and forgets it, as a broken engine would
-    /// lose it (for the test of `Resumed::Gone`).
+    /// Takes the fiber of slot `slot` out of the slab and forgets it (`mem::forget`: whatever it
+    /// holds is leaked on purpose), as a broken engine would lose it (for the test of
+    /// `Resumed::Gone`).
     #[doc(hidden)]
     pub fn lose_coroutine_fiber(&mut self, slot: u32) -> bool {
         match self.fibers.take(slot) {
@@ -298,11 +300,10 @@ impl Machine {
         // own execution.
         self.resume_coro(id, false, false);
         self.core.sched.compact_if_crowded();
-        // A host call that can wait was refused in the new coroutine: the program stops here, at
-        // its `go`, as it would at the call itself, and does not go on without that coroutine.
-        if self.host_wait_refused {
+        // The new coroutine met a refusal: the program stops here, at its `go`.
+        if self.pending_refusal.is_some() {
             self.release(Value::Obj(handle));
-            return Err(self.panic(fiber, span, HOST_WAIT_REFUSAL));
+            return self.settle_refusal(fiber, span, Ok(Value::Unit));
         }
         Ok(Value::Obj(handle))
     }
@@ -337,8 +338,13 @@ impl Machine {
     fn run_coroutine(&mut self, fiber: &mut VmFiber, cancel: bool) -> Resumed {
         let result: Result<Exit, Ctl> = if let Some(start) = fiber.start.take() {
             if cancel {
-                // Cancelled before it ran: nothing of it started.
-                self.release_all(start.values);
+                // Cancelled before it ran: nothing of it started. After a refusal nothing
+                // runs, hooks included: the arguments are leaked, as the refusal does.
+                if self.refused {
+                    std::mem::forget(start.values);
+                } else {
+                    self.release_all(start.values);
+                }
                 Err(Ctl::Cancel)
             } else {
                 match self.begin_coroutine(fiber, *start) {
@@ -363,11 +369,37 @@ impl Machine {
             }
             self.exec(fiber)
         };
-        match result {
-            Ok(Exit::Suspend) => Resumed::Suspended,
-            Ok(Exit::Return(v)) => Resumed::Finished(self.end_coroutine(fiber, Ok(v))),
-            Err(ctl) => Resumed::Finished(self.end_coroutine(fiber, Err(ctl))),
+        let finish = match result {
+            Ok(Exit::Suspend) => return Resumed::Suspended,
+            Ok(Exit::Return(v)) => self.end_coroutine(fiber, Ok(v)),
+            Err(ctl) => self.end_coroutine(fiber, Err(ctl)),
+        };
+        // A refusal ends the program, not just this coroutine: whatever resumed it raises it.
+        if let Finish::Panicked(info) = &finish
+            && info.message.starts_with(crate::unwind::REFUSAL)
+            && let Some(id) = fiber.state.coro
+        {
+            self.pending_refusal = Some((id, info.message.clone()));
         }
+        Resumed::Finished(finish)
+    }
+
+    /// What resumed coroutines gives back to the code that resumed them (`go`, a wait or a join
+    /// on the main fiber, `task.tick`): when a coroutine ended with a refusal meanwhile, the
+    /// refusal is raised on this fiber, at this instruction, with this fiber's trace, and
+    /// `result` (whatever it was) is dropped. A refusal runs no pads, so the program stops here.
+    pub(crate) fn settle_refusal<T>(
+        &mut self,
+        fiber: &mut VmFiber,
+        span: Span,
+        result: Result<T, Ctl>,
+    ) -> Result<T, Ctl> {
+        let Some((id, message)) = self.pending_refusal.take() else {
+            return result;
+        };
+        // The coroutine's own failure is this refusal: it is not reported a second time.
+        self.core.sched.forget_failure_of(id);
+        Err(self.panic(fiber, span, message))
     }
 
     /// Calls what `go` named on the new fiber. `Ok(None)`: a frame is pushed, and the loop runs
@@ -612,7 +644,8 @@ impl Machine {
             if s.is_nan() {
                 return Err(self.panic(fiber, span, "`wait` needs a number of seconds, not NaN"));
             }
-            self.wait_on_main(fiber, s.max(0.0), span)?;
+            let waited = self.wait_on_main(fiber, s.max(0.0), span);
+            self.settle_refusal(fiber, span, waited)?;
             return Ok(false);
         }
         let id = self.pause_context(fiber, span, name)?;
@@ -691,9 +724,10 @@ impl Machine {
         let mut status = handle_status(&h);
         if status == RUNNING && fiber.state.coro.is_none() {
             let target = Rc::clone(&h);
-            self.drive_main(fiber, span, what, None, &mut |_| {
+            let driven = self.drive_main(fiber, span, what, None, &mut |_| {
                 handle_status(&target) != RUNNING
-            })?;
+            });
+            self.settle_refusal(fiber, span, driven)?;
             status = handle_status(&h);
         }
         if status == RUNNING {
@@ -730,9 +764,10 @@ impl Machine {
             return Ok(Some(Value::Unit));
         }
         if me.is_none() {
-            self.drive_main(fiber, span, "join_all", None, &mut |it| {
+            let driven = self.drive_main(fiber, span, "join_all", None, &mut |it| {
                 !it.core.sched.group_has_others(g, me)
-            })?;
+            });
+            self.settle_refusal(fiber, span, driven)?;
             return Ok(Some(Value::Unit));
         }
         let id = self.pause_context(fiber, span, "join_all")?;
@@ -752,11 +787,12 @@ impl Machine {
             };
             return Err(self.panic(fiber, span, message));
         }
-        match self.tick_core(dt) {
+        let ticked = match self.tick_core(dt) {
             Ok(()) => Ok(Value::Unit),
             Err(TickError::Failure(info)) => Err(Ctl::Panic(info)),
             Err(TickError::Reentrant) => Err(self.panic(fiber, span, "`task.tick` is busy")),
-        }
+        };
+        self.settle_refusal(fiber, span, ticked)
     }
 
     /// `CoGroup()` and `Signal()`: a new id in an object of the type.

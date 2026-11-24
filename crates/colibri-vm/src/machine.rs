@@ -74,10 +74,10 @@ pub struct Machine {
     pub(crate) epoch: u32,
     /// The fibers of the coroutines that have not ended (vm-plan §2.8).
     pub(crate) fibers: FiberSlab,
-    /// A host function's wait for a background operation was refused (host async is step 12 of
-    /// the plan): a later wait is refused too, instead of blocking for what the refused one
-    /// would have let run.
-    pub host_wait_refused: bool,
+    /// A coroutine that ended with a refusal during the resumption in progress: what resumed it
+    /// raises the refusal on its own fiber (`settle_refusal`), so a refusal stops the program where
+    /// it is met. The id of the coroutine and the message.
+    pub(crate) pending_refusal: Option<(u64, String)>,
     /// Where the native stack stood when the host (or the event loop) last called in with no
     /// coroutine running: a resumed coroutine measures its native recursion from it.
     pub(crate) stack_root: usize,
@@ -111,7 +111,7 @@ impl Machine {
             cffi: CffiState::default(),
             epoch: 0,
             fibers: FiberSlab::default(),
-            host_wait_refused: false,
+            pending_refusal: None,
             stack_root: 0,
             #[cfg(test)]
             print_hook: None,

@@ -201,3 +201,47 @@ fn resuming_a_finished_entry_does_nothing() {
     assert!(m.take_coroutine_failure().is_none());
     m.tick(1.0).expect("a later tick still works");
 }
+
+/// The pool of emptied fibers is capped: a burst of forty coroutines that all end leaves sixteen
+/// of their fibers for the next starts, and the slots of all forty are free.
+#[test]
+fn the_pool_of_emptied_fibers_is_capped() {
+    let src = "fn work() {\n    wait(0.5)\n}\nfn main() {\n    let mut i = 0\n    while i < 40 {\n        let _h = go work()\n        i = i + 1\n    }\n}\n";
+    let (mut m, p) = loaded(src, Box::new(std::io::sink()));
+    call(&mut m, &p, "main");
+    assert_eq!(m.coroutine_slots_live(), 40);
+    m.tick(1.0).expect("tick");
+    assert_eq!(m.coroutine_slots_live(), 0);
+    assert_eq!(m.coroutine_slots_made(), 40);
+    assert_eq!(m.coroutine_fibers_pooled(), 16, "the pool holds at most 16");
+}
+
+/// A fiber that ended by a cancellation (through its pads) is emptied like any other: the next
+/// coroutine reuses it and runs normally, in the same slot.
+#[test]
+fn a_cancelled_fiber_is_recycled_and_reused() {
+    let src = "fn sleeper() {\n    defer print(\"cleanup\")\n    wait(5.0)\n}\nfn quick() {\n    wait(0.0)\n    print(\"quick\")\n}\nfn main() {\n    let h = go sleeper()\n    h.cancel()\n    let k = go quick()\n    k.join()\n}\n";
+    let out = Out::default();
+    let (mut m, p) = loaded(src, Box::new(out.clone()));
+    call(&mut m, &p, "main");
+    assert_eq!(out.text(), "cleanup\nquick\n");
+    assert_eq!(m.coroutine_slots_live(), 0);
+    assert_eq!(
+        m.coroutine_slots_made(),
+        1,
+        "the second coroutine took the slot of the cancelled one"
+    );
+    assert_eq!(m.coroutine_fibers_pooled(), 1);
+}
+
+/// The call-depth limit holds on a fiber that was used before: a fiber taken from the pool
+/// starts with no frames counted, overflows at the limit, and is usable again afterwards.
+#[test]
+fn the_call_depth_limit_holds_on_a_reused_fiber() {
+    let src = "fn deep(n: int) -> int {\n    if n == 0 {\n        return 0\n    }\n    return 1 + deep(n - 1)\n}\nfn work(n: int) -> int {\n    return deep(n)\n}\nfn main() {\n    let a = go work(10)\n    print(a.join())\n    let b = go work(1000)\n    let r = b.join_result()\n    print(r.is_err())\n    let c = go work(10)\n    print(c.join())\n}\n";
+    let out = Out::default();
+    let (mut m, p) = loaded(src, Box::new(out.clone()));
+    call(&mut m, &p, "main");
+    assert_eq!(out.text(), "10\ntrue\n10\n");
+    assert_eq!(m.coroutine_slots_made(), 1, "all three used the one fiber");
+}

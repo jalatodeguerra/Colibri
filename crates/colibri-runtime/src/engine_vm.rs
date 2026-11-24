@@ -20,6 +20,7 @@ use colibri_core::hostheap::{HostBorrowError, HostGuard};
 use colibri_core::leaks::Leak;
 use colibri_core::prelude::*;
 use colibri_core::value::Value as CoreValue;
+use colibri_vm::HOST_WAIT_REFUSAL;
 use colibri_vm::{HostClassHooks, HostImpl, Machine, VmFiber};
 
 use crate::engine::{ClassHooks, HostCx, HostFnImpl, RuntimeEngine};
@@ -91,22 +92,7 @@ macro_rules! host_cx {
 
             fn call(&mut self, f: FnId, args: Vec<CoreValue>) -> Result<CoreValue, Box<PanicInfo>> {
                 let (machine, fiber) = self.parts();
-                if fiber.host_depth() == 0 {
-                    // A new entry of the host: an earlier refusal does not carry over.
-                    machine.host_wait_refused = false;
-                }
-                let result = machine.call(fiber, f, args);
-                // A coroutine that met the refusal ends with a panic of its own, which the
-                // program may never look at: the host entry still reports the refusal.
-                if fiber.host_depth() == 0 && machine.host_wait_refused {
-                    // What the program ended with (a value, or a panic that follows from the
-                    // refusal, such as a wait that can no longer end) is not the answer.
-                    if let Ok(value) = result {
-                        machine.release(value);
-                    }
-                    return Err(host_wait_refusal());
-                }
-                result
+                machine.call(fiber, f, args)
             }
 
             fn call_function(
@@ -143,11 +129,7 @@ macro_rules! host_cx {
                 // while the main fiber waits, are host async (vm-plan step 12). Until then a wait
                 // that would stop other coroutines from running is refused; with none alive the
                 // caller just blocks.
-                if self.parts().1.is_coroutine()
-                    || self.core().sched.coroutine_count() > 0
-                    || self.parts().0.host_wait_refused
-                {
-                    self.parts().0.host_wait_refused = true;
+                if self.parts().1.is_coroutine() || self.core().sched.coroutine_count() > 0 {
                     token.cancel();
                     self.core_mut().sched.ext().finish(op);
                     // A panic of the program, not an error value the host function could
@@ -176,7 +158,6 @@ fn adapt_calls(imp: HostFnImpl, no_await: bool) -> HostImpl {
     Rc::new(
         move |machine: &mut Machine, fiber: &mut VmFiber, args: Vec<CoreValue>| {
             if fiber.is_coroutine() || Engine::core(machine).sched.coroutine_count() > 0 {
-                machine.host_wait_refused = true;
                 for arg in args {
                     machine.release(arg);
                 }
@@ -209,19 +190,6 @@ pub(crate) fn new_engine(
     Box::new(VmEngine {
         machine,
         fiber: VmFiber::new(),
-    })
-}
-
-const HOST_WAIT_REFUSAL: &str =
-    "the bytecode VM does not support a host function that can wait, beside running coroutines yet";
-
-fn host_wait_refusal() -> Box<PanicInfo> {
-    Box::new(PanicInfo {
-        message: HOST_WAIT_REFUSAL.to_string(),
-        span: colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),
-        stack: Vec::new(),
-        notes: Vec::new(),
-        budget: false,
     })
 }
 
@@ -312,11 +280,7 @@ impl RuntimeEngine for VmEngine {
     }
 
     fn tick(&mut self, dt: f64) -> Result<(), Box<PanicInfo>> {
-        let result = self.machine.tick(dt);
-        if self.machine.host_wait_refused {
-            return Err(host_wait_refusal());
-        }
-        result
+        self.machine.tick(dt)
     }
 
     fn next_wake(&mut self, poll: f64) -> Option<f64> {
