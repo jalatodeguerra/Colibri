@@ -33,6 +33,8 @@ pub struct SessionUndo {
     /// The module-level values that were re-initialised.
     replaced: Vec<(usize, Value)>,
     maps_len: usize,
+    /// The first coroutine id the entry could have started.
+    first_coro: u64,
 }
 
 impl Machine {
@@ -114,7 +116,7 @@ impl Machine {
     fn swap_program(&mut self, program: &Program) {
         self.epoch = self.epoch.wrapping_add(1);
         self.env = CompileEnv::for_program(program);
-        // Only the host functions' (empty) bodies and type parameters: `load_host` would also
+        // Only the host functions' (empty) bodies: `load_host` would also
         // forget the host classes and hooks the runtime installed after loading, which a reload
         // keeps.
         self.core.host.bodies = program
@@ -122,11 +124,17 @@ impl Machine {
             .iter()
             .map(|h| Rc::clone(&program.fns[h.f.0 as usize].body))
             .collect();
-        self.core.host.type_param_ids = program
-            .host_fns
-            .iter()
-            .map(|h| h.type_params.clone())
-            .collect();
+        // The type parameters of the host functions are what the result checks of parked and
+        // new calls read by id: neither a patch (`same_host_table`) nor a session extension
+        // (every module is registered when the session starts) changes them.
+        debug_assert!(
+            self.core
+                .host
+                .type_param_ids
+                .iter()
+                .eq(program.host_fns.iter().map(|h| &h.type_params)),
+            "the host functions' type parameters changed under a running program"
+        );
         self.cffi.load(program);
         self.fns = program
             .fns
@@ -182,6 +190,7 @@ impl Machine {
                 })
                 .collect(),
             maps_len: self.core.closure_maps.len(),
+            first_coro: self.core.sched.next_id(),
         };
         self.core.closure_maps.push(closure_map);
         self.globals.resize(program.globals.len(), Value::Unit);
@@ -275,7 +284,14 @@ impl Machine {
             globals_len,
             replaced,
             maps_len,
+            first_coro,
         } = undo;
+        // The coroutines the entry started may run code that goes away with it: they end here,
+        // while its code is still in place, so their `defer`s and drops run.
+        self.note_stack_root();
+        Sched::cancel_coroutines_from(self, first_coro);
+        self.core
+            .retire_extension_closures(maps_len, self.fns.len());
         // Chunks made under the failed extension are stale, whatever the cache says.
         self.epoch = self.epoch.wrapping_add(1);
         self.fns = fns;
@@ -287,15 +303,12 @@ impl Machine {
         self.script = script;
         self.script_from = script_from;
         self.env = env;
-        self.core.closure_maps.truncate(maps_len);
         self.cffi.load(old);
         self.core.host.bodies = old
             .host_fns
             .iter()
             .map(|h| Rc::clone(&old.fns[h.f.0 as usize].body))
             .collect();
-        self.core.host.type_param_ids =
-            old.host_fns.iter().map(|h| h.type_params.clone()).collect();
         let extra: Vec<Value> = self.globals.drain(globals_len..).collect();
         for value in extra {
             self.release(value);

@@ -200,6 +200,29 @@ pub trait Sched: Engine {
         self.core_mut().end_entry(outermost, false);
     }
 
+    /// Cancels the suspended coroutines with an id of `first` or more, newest first: the ones
+    /// a REPL entry started when it failed and its code went away. Does nothing while a
+    /// coroutine runs.
+    fn cancel_coroutines_from(&mut self, first: u64) {
+        if self.core().sched.coroutine_running() {
+            return;
+        }
+        let ids: Vec<u64> = self
+            .core()
+            .sched
+            .entries
+            .iter()
+            .rev()
+            .filter(|e| e.id >= first && e.state == State::Suspended)
+            .map(|e| e.id)
+            .collect();
+        let outermost = self.core_mut().begin_entry();
+        for id in ids {
+            self.cancel_id(id);
+        }
+        self.core_mut().end_entry(outermost, false);
+    }
+
     // ---- driving the scheduler from the main fiber ----
 
     /// May the main fiber run the event loop now? `depth` is how many host functions may be

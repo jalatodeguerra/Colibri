@@ -105,6 +105,27 @@ impl Core {
         self.closure_maps.len() as u32
     }
 
+    /// A session entry that extended the program (its map is `closure_maps[maps_len]`) failed
+    /// and the old code tables came back. The generations are not given up, because a closure
+    /// the entry made or stored carries the generation it saw: a map back to the old numbering is
+    /// added after the entry's map (`failed_fns` is the size of the entry's function table).
+    /// A closure made in code that survives finds its old body again; one made in code that
+    /// only the entry had finds none (`closure_fn` says so) instead of a function that happens
+    /// to have its number.
+    pub fn retire_extension_closures(&mut self, maps_len: usize, failed_fns: usize) {
+        self.closure_maps.truncate(maps_len + 1);
+        let Some(forward) = self.closure_maps.get(maps_len) else {
+            return;
+        };
+        let mut back = vec![u32::MAX; failed_fns];
+        for (old, &new) in forward.iter().enumerate() {
+            if let Some(slot) = back.get_mut(new as usize) {
+                *slot = old as u32;
+            }
+        }
+        self.closure_maps.push(back);
+    }
+
     /// The function id a closure made in an earlier generation has now.
     #[inline]
     pub fn closure_fn(&self, c: &ClosureObj) -> Option<FnId> {

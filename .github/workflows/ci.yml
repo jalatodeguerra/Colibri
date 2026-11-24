@@ -60,6 +60,13 @@ jobs:
         run: cargo test -p colibri-runtime -p colibri-vm --no-fail-fast
         env:
           COLIBRI_ENGINE: vm
+      # The `colibri` binary reads COLIBRI_ENGINE, so the programs these tests spawn run on the VM
+      # (the other test binaries of the crate run on the tree in the main job).
+      - name: Command-line tests on the VM
+        if: ${{ !cancelled() }}
+        run: cargo test -p colibri-lang --no-fail-fast --test repl --test watch --test scripts --test test_cmd --test vm_pending_list
+        env:
+          COLIBRI_ENGINE: vm
       - name: Golden tests on both engines, outcomes compared
         if: ${{ !cancelled() }}
         run: cargo test -p colibri-lang --test golden

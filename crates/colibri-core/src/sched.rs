@@ -160,6 +160,11 @@ impl Scheduler {
         self.entries.binary_search_by_key(&id, |e| e.id).ok()
     }
 
+    /// The id the next coroutine, group, signal or operation gets.
+    pub fn next_id(&self) -> u64 {
+        self.next_id
+    }
+
     /// A fresh id, for a coroutine, a `CoGroup`, a `Signal` or a background operation. Ids
     /// only grow, so `entries` stays sorted by id.
     pub fn alloc_id(&mut self) -> u64 {
