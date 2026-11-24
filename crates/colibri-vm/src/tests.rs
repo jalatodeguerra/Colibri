@@ -455,3 +455,27 @@ fn a_chunk_that_names_a_register_beyond_its_window_is_refused() {
     chunk.code[0] = Op::DropN { r: past - 1, n: 2 };
     assert!(chunk.verify_registers().is_err());
 }
+
+#[test]
+fn integers_in_strings_print_as_show_does() {
+    let src = "fn main() {
+    let a = 0
+    let b = -7
+    let c = 9223372036854775807
+    let d = -9223372036854775807 - 1
+    let e = 1234567890
+    print(\"{a}|{b}|{c}|{d}|{e}\")
+    print(\"{d}\")
+    print(\"{b}\")
+}
+";
+    let (mut m, program, out) = load(src);
+    let mut fiber = VmFiber::new();
+    m.run_module(&mut fiber).expect("the module runs");
+    m.call(&mut fiber, fn_id(&program, "main"), Vec::new())
+        .expect("main runs");
+    assert_eq!(
+        String::from_utf8_lossy(&out.0.borrow()),
+        "0|-7|9223372036854775807|-9223372036854775808|1234567890\n-9223372036854775808\n-7\n"
+    );
+}

@@ -30,10 +30,24 @@ pub(crate) enum Exit {
     Suspend,
 }
 
-/// Appends the decimal form of `x`, as `show` writes an integer.
+/// Appends the decimal form of `x`, as `show` writes an integer (without the formatting
+/// machinery, which is most of the cost of building a short string).
 fn push_int(out: &mut String, x: i64) {
-    use std::fmt::Write as _;
-    let _ = write!(out, "{x}");
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    let mut n = x.unsigned_abs();
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    if x < 0 {
+        out.push('-');
+    }
+    out.extend(digits[at..].iter().map(|&d| char::from(d)));
 }
 
 impl Machine {
