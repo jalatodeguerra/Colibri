@@ -1,0 +1,8 @@
+fn main() {
+    let mut xs = [2, 1]
+    for x in xs {
+        xs.sort_by_key(fn(y) => y)
+    }
+}
+
+// panic: list modified during iteration

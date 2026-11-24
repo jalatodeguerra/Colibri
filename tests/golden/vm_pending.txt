@@ -65,6 +65,9 @@ coroutines/signal_wakes_in_order.colibri  # `NewSignal`
 coroutines/started_in_tick_waits.colibri  # `go`
 coroutines/tick_in_coroutine_panics.colibri  # `go`
 coroutines/wait_for_on_main_panics.colibri  # `NewSignal`
+coroutines/wait_inside_a_direct_show_call_pauses.colibri  # `go`
+coroutines/wait_inside_a_show_reached_by_print_panics.colibri  # `go`
+coroutines/wait_inside_a_sort_by_comparator.colibri  # `go`
 coroutines/wait_inside_closure_and_defer.colibri  # `go`
 coroutines/wait_on_main_reports_a_failure.colibri  # `go`
 coroutines/wait_on_main_runs_the_loop.colibri  # `go`
