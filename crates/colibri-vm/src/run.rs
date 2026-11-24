@@ -629,9 +629,32 @@ impl Machine {
                     sync!();
                     tri!(self.op_builtin(fiber, &chunk, base, pc, op));
                 }
-                Op::ListPush { .. } | Op::ListLen { .. } | Op::StrLen { .. } => {
-                    sync!();
-                    tri!(self.op_hot_builtin(fiber, &chunk, base, pc, op));
+                Op::ListPush { l, v } => {
+                    let item = rd!(v).dup();
+                    let Value::List(list) = rd!(l) else {
+                        self.release(item);
+                        internal!("an ill-typed `push`")
+                    };
+                    if let Err(rejected) = list.push(item) {
+                        sync!();
+                        self.release(rejected.args);
+                        let span = chunk.spans[pc - 1];
+                        throw!(self.violation(fiber, span, rejected.violation));
+                    }
+                }
+                Op::ListLen { d, l } => {
+                    let Value::List(list) = rd!(l) else {
+                        internal!("an ill-typed `len`")
+                    };
+                    let n = list.len() as i64;
+                    put!(d, Value::Int(n));
+                }
+                Op::StrLen { d, s } => {
+                    let Value::Str(text) = rd!(s) else {
+                        internal!("an ill-typed `len`")
+                    };
+                    let n = text.len() as i64;
+                    put!(d, Value::Int(n));
                 }
                 Op::Coerce { d, s, site } => match &chunk.sites[usize::from(site)] {
                     Site::F32ToFloat => {
@@ -1225,50 +1248,6 @@ impl Machine {
         }
         Ok(())
     }
-
-    /// `ListPush`, `ListLen` and `StrLen`: the built-ins that are instructions of their own.
-    #[inline(never)]
-    fn op_hot_builtin(
-        &mut self,
-        fiber: &mut VmFiber,
-        chunk: &Chunk,
-        base: usize,
-        pc: usize,
-        op: Op,
-    ) -> Result<(), Ctl> {
-        let span = || chunk.spans[pc - 1];
-        let r = |i: u16| base + usize::from(i);
-        match op {
-            Op::ListPush { l, v } => {
-                let item = fiber.regs[r(v)].clone();
-                let Value::List(list) = &fiber.regs[r(l)] else {
-                    self.release(item);
-                    return Err(self.internal(fiber, span(), "an ill-typed `push`"));
-                };
-                if let Err(rejected) = list.push(item) {
-                    self.release(rejected.args);
-                    return Err(self.violation(fiber, span(), rejected.violation));
-                }
-            }
-            Op::ListLen { d, l } => {
-                let Value::List(list) = &fiber.regs[r(l)] else {
-                    return Err(self.internal(fiber, span(), "an ill-typed `len`"));
-                };
-                let n = list.len() as i64;
-                Self::put_reg(fiber, r(d), Value::Int(n));
-            }
-            Op::StrLen { d, s } => {
-                let Value::Str(text) = &fiber.regs[r(s)] else {
-                    return Err(self.internal(fiber, span(), "an ill-typed `len`"));
-                };
-                let n = text.len() as i64;
-                Self::put_reg(fiber, r(d), Value::Int(n));
-            }
-            _ => return Err(self.internal(fiber, span(), "not a built-in instruction")),
-        }
-        Ok(())
-    }
-
     fn uninit_message(&self, g: u32) -> String {
         let name = self
             .uninit

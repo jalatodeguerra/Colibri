@@ -56,7 +56,17 @@ impl Guard {
     }
 
     /// Fails when the collection is being iterated or has a live place.
-    fn check(&self) -> Result<(), Violation> {
+    #[inline]
+    pub(crate) fn check(&self) -> Result<(), Violation> {
+        if self.places.get() == 0 && self.iterations.get() == 0 {
+            return Ok(());
+        }
+        self.violation()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn violation(&self) -> Result<(), Violation> {
         if self.places.get() > 0 {
             let name = self.place_name.borrow().clone();
             return Err(Violation(format!(

@@ -985,6 +985,9 @@ impl Op {
             | Op::Not { d, a: s }
             | Op::Coerce { d, s, .. }
             | Op::GetField { d, s, .. }
+            | Op::ListLen { d, l: s }
+            | Op::StrLen { d, s }
+            | Op::ListPush { l: d, v: s }
             | Op::Unpack { d, s, .. } => end(&[d, s]),
             Op::Drop { r }
             | Op::DropInert { r }
@@ -1055,9 +1058,6 @@ impl Op {
             | Op::StrConcat { .. }
             | Op::Intrinsic { .. }
             | Op::Builtin { .. }
-            | Op::ListPush { .. }
-            | Op::ListLen { .. }
-            | Op::StrLen { .. }
             | Op::NewStruct { .. }
             | Op::NewObject { .. }
             | Op::NewVariant { .. }

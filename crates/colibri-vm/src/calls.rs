@@ -143,21 +143,18 @@ impl Machine {
         at: usize,
         window: usize,
     ) -> Result<(), Ctl> {
-        let (callee, closure) = match &fiber.regs[at] {
+        let (callee, captures) = match &fiber.regs[at] {
             Value::Fn(id, _) => {
                 let id = *id;
-                (self.callee_chunk(fiber, chunk, pc, id)?, None)
+                (self.callee_chunk(fiber, chunk, pc, id)?, false)
             }
-            Value::Closure(c) => {
-                let c = Rc::clone(c);
-                match self.closure_chunk(&c) {
-                    Ok(callee) => (callee, Some(c)),
-                    Err(msg) => {
-                        let span = chunk.spans[pc - 1];
-                        return Err(self.panic(fiber, span, closure_message(&msg)));
-                    }
+            Value::Closure(c) => match self.closure_chunk(c) {
+                Ok(callee) => (callee, !c.captures.is_empty()),
+                Err(msg) => {
+                    let span = chunk.spans[pc - 1];
+                    return Err(self.panic(fiber, span, closure_message(&msg)));
                 }
-            }
+            },
             _ => {
                 let span = chunk.spans[pc - 1];
                 return Err(self.internal(
@@ -168,9 +165,11 @@ impl Machine {
             }
         };
         self.push_call(fiber, callee, window, base + usize::from(d), chunk, pc)?;
-        if let Some(c) = closure
-            && !c.captures.is_empty()
+        if captures
+            && let Value::Closure(c) = &fiber.regs[at]
         {
+            // The call does not touch the caller's registers, so the closure is still there.
+            let c = Rc::clone(c);
             self.install_captures(fiber, window, &c);
         }
         Ok(())
