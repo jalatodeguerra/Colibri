@@ -83,7 +83,11 @@ impl Interp {
             Value::Closure(c) => {
                 let Some(body) = self.closure_body(c) else {
                     self.release_all(args);
-                    return Err(self.internal(fiber, span, "unknown closure body"));
+                    return Err(self.panic(
+                        fiber,
+                        span,
+                        "this closure was made by a REPL entry that failed and was rolled back, or in a function that a REPL entry replaced; its code is gone",
+                    ));
                 };
                 let captures = c
                     .captures

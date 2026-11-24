@@ -53,12 +53,12 @@ impl Machine {
     /// The chunk of a closure's lifted body, checked to expect the closure's captures.
     pub(crate) fn closure_chunk(&mut self, c: &ClosureObj) -> Result<Rc<Chunk>, String> {
         let Some(f) = self.core.closure_fn(c) else {
-            return Err("unknown closure body".to_string());
+            return Err(CLOSURE_GONE.to_string());
         };
         let chunk = match self.chunk_of(f) {
             Some(Ok(chunk)) => chunk,
             Some(Err(msg)) => return Err(format!("cannot compile a closure: {msg}")),
-            None => return Err("unknown closure body".to_string()),
+            None => return Err(CLOSURE_GONE.to_string()),
         };
         let same = chunk.body.captures.len() == c.captures.len()
             && chunk
@@ -128,7 +128,7 @@ impl Machine {
                 let c = Rc::clone(c);
                 match self.closure_chunk(&c) {
                     Ok(callee) => (callee, Some(c)),
-                    Err(msg) => return Err(self.internal(fiber, span, &msg)),
+                    Err(msg) => return Err(self.panic(fiber, span, closure_message(&msg))),
                 }
             }
             _ => {
@@ -440,5 +440,19 @@ impl Machine {
             Some(None) => Ok(false),
             None => Err(self.internal(fiber, span, "`next` did not return an `Option`")),
         }
+    }
+}
+
+/// What `closure_chunk` says of a closure whose function is not in the tables: it was made by an
+/// entry of a REPL session that failed and was rolled back, or in a function the session replaced.
+pub(crate) const CLOSURE_GONE: &str = "this closure was made by a REPL entry that failed and was rolled back, or in a function that a REPL entry replaced; its code is gone";
+
+/// The text of the panic for a closure that cannot be called: the one case that is the program's
+/// doing is said plainly, anything else is an internal error.
+pub(crate) fn closure_message(msg: &str) -> String {
+    if msg == CLOSURE_GONE {
+        msg.to_string()
+    } else {
+        format!("internal error: {msg}")
     }
 }

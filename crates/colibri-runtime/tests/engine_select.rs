@@ -75,14 +75,18 @@ fn what_the_bytecode_engine_lacks_is_a_clean_panic_naming_it() {
 }
 
 #[test]
-fn a_repl_session_is_refused_on_the_bytecode_engine() {
-    let mut vm = Vm::builder().engine(EngineKind::Bytecode).build();
-    let error = vm.session_start().expect_err("no session on the VM yet");
-    assert!(
-        message(&error).contains("does not support REPL sessions"),
-        "{}",
-        message(&error)
-    );
+fn a_repl_session_runs_on_the_bytecode_engine() {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = Vm::builder()
+        .engine(EngineKind::Bytecode)
+        .stdout(Box::new(out.clone()))
+        .build();
+    vm.session_start().expect("a session starts on the VM");
+    let check = vm.session_check("let x = 20 + 1\nprint(x)\n").unwrap();
+    vm.session_commit(check, &[], &[]).unwrap();
+    assert_eq!(out.contents(), "21\n");
+    let (text, ty) = vm.session_display("x").expect("x is a module value");
+    assert_eq!((text.as_str(), ty.as_str()), ("21", "int"));
 }
 
 /// What a commit without a running session says, on an engine.
@@ -103,16 +107,42 @@ fn commit_without_a_session(kind: EngineKind, load: bool) -> String {
 fn a_session_commit_without_a_session_is_the_same_error_on_both_engines() {
     let tree = commit_without_a_session(EngineKind::Tree, false);
     assert_eq!(commit_without_a_session(EngineKind::Bytecode, false), tree);
-    // A program loaded the ordinary way is no session on the VM either.
-    assert_eq!(commit_without_a_session(EngineKind::Bytecode, true), tree);
+}
+
+/// What a commit after an ordinary load does and prints.
+fn commit_after_a_load(kind: EngineKind) -> (String, String) {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = Vm::builder()
+        .engine(kind)
+        .stdout(Box::new(out.clone()))
+        .build();
+    vm.load_source("a.colibri", "let x = 1\n").unwrap();
+    let check = vm
+        .session_check("let x = 1\nprint(\"ran {x}\")\n")
+        .expect("checks");
+    let result = match vm.session_commit(check, &[], &[]) {
+        Ok(()) => "ok".to_string(),
+        Err(e) => format!("{e:?}"),
+    };
+    (result, out.contents())
+}
+
+/// A program loaded the ordinary way is extended by a commit, as on the tree-walker.
+#[test]
+fn a_commit_after_an_ordinary_load_is_the_same_on_both_engines() {
+    let tree = commit_after_a_load(EngineKind::Tree);
+    assert_eq!(tree, ("ok".to_string(), "ran 1\n".to_string()));
+    assert_eq!(commit_after_a_load(EngineKind::Bytecode), tree);
 }
 
 #[test]
-fn a_session_display_after_an_ordinary_load_does_not_panic_on_the_bytecode_engine() {
-    let mut vm = Vm::builder().engine(EngineKind::Bytecode).build();
-    vm.load_source("a.colibri", "let x = 1\n").unwrap();
-    assert!(vm.session_display("x").is_none());
-    assert!(vm.session_display("nobody").is_none());
+fn a_session_display_after_an_ordinary_load_is_the_same_on_both_engines() {
+    let display = |kind: EngineKind| {
+        let mut vm = Vm::builder().engine(kind).build();
+        vm.load_source("a.colibri", "let x = 1\n").unwrap();
+        (vm.session_display("x"), vm.session_display("nobody"))
+    };
+    assert_eq!(display(EngineKind::Bytecode), display(EngineKind::Tree));
 }
 
 #[test]
@@ -158,4 +188,159 @@ fn a_refusal_does_not_silence_the_module_values_of_later_tests() {
     assert_eq!(vm[0], tree[0], "{vm:?}");
     assert!(!vm[1].0, "the refusal fails the test: {vm:?}");
     assert_eq!(vm[2], tree[2], "{vm:?}");
+}
+
+/// A session entry that panics after creating a module-level value: the value is released when
+/// the entry is rolled back (its `Drop` hook runs then), and the name is free again.
+#[test]
+fn a_failed_session_entry_releases_the_values_it_made_on_both_engines() {
+    let run = |kind: EngineKind| {
+        let out = colibri::SharedBuffer::new();
+        let mut vm = Vm::builder()
+            .engine(kind)
+            .stdout(Box::new(out.clone()))
+            .build();
+        vm.session_start().unwrap();
+        let decl = "class G {\n    name: str\n}\nimpl Drop for G {\n    fn drop(self) {\n        print(\"drop {self.name}\")\n    }\n}\n";
+        let check = vm.session_check(decl).unwrap();
+        vm.session_commit(check, &[], &[]).unwrap();
+        let failing = format!("{decl}let g = G {{ name: \"made\" }}\nlet boom = 1 / (2 - 2)\n");
+        let check = vm.session_check(&failing).unwrap();
+        let failed = vm.session_commit(check, &[], &[]).is_err();
+        let after = out.contents();
+        let shown = vm.session_display("g").is_none();
+        (failed, after, shown)
+    };
+    let tree = run(EngineKind::Tree);
+    assert_eq!(tree, (true, "drop made\n".to_string(), true));
+    assert_eq!(run(EngineKind::Bytecode), tree);
+}
+
+/// Runs `entries` in a session, each a whole program; `Err` text for one that fails.
+fn session(
+    kind: EngineKind,
+    entries: &[&str],
+    between: impl Fn(&mut Vm, usize),
+) -> (Vec<String>, String, usize) {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = Vm::builder()
+        .engine(kind)
+        .stdout(Box::new(out.clone()))
+        .track_leaks(true)
+        .build();
+    vm.session_start().unwrap();
+    let mut results = Vec::new();
+    for (i, entry) in entries.iter().enumerate() {
+        let check = vm.session_check(entry).unwrap();
+        results.push(match vm.session_commit(check, &[], &[]) {
+            Ok(()) => "ok".to_string(),
+            Err(e) => format!("{e:?}").lines().next().unwrap_or("").to_string(),
+        });
+        between(&mut vm, i);
+    }
+    (results, out.contents(), vm.find_leaks().len())
+}
+
+/// A coroutine that a failed entry started runs code that goes away with the entry: it ends at
+/// the rollback (its `defer`s and drops run), and the next tick has nothing to resume. It used to
+/// stay and fail with `internal error: unknown function`.
+#[test]
+fn a_failed_entry_ends_the_coroutines_it_started_on_both_engines() {
+    let entry = "let a = 1\nclass Box2 {\n    n: int\n}\nimpl Drop for Box2 {\n    fn drop(self) {\n        print(\"drop {self.n}\")\n    }\n}\nfn helper(n: int) -> int => n * 2\nfn worker() {\n    let b = Box2 { n: 3 }\n    wait(0.1)\n    print(\"helper {helper(b.n)}\")\n}\ngo worker()\npanic(\"boom\")\n";
+    let ticks = std::cell::RefCell::new(Vec::new());
+    let run = |kind: EngineKind| {
+        ticks.borrow_mut().clear();
+        let r = session(
+            kind,
+            &["let a = 1\n", entry, "let a = 1\nprint(\"next {a}\")\n"],
+            |vm, i| {
+                if i == 1 {
+                    ticks
+                        .borrow_mut()
+                        .push(format!("{:?}", vm.tick(0.5).map_err(|e| e.to_string())));
+                }
+            },
+        );
+        (r, ticks.borrow().clone())
+    };
+    let tree = run(EngineKind::Tree);
+    let ((results, out, leaks), tick) = &tree;
+    assert!(results[1].contains("boom"), "{results:?}");
+    assert_eq!(tick, &["Ok(())"]);
+    assert_eq!(out, "drop 3\nnext 1\n");
+    assert_eq!(*leaks, 0);
+    assert_eq!(run(EngineKind::Bytecode), tree);
+}
+
+/// A closure that a failed entry stored in an older value, made by a function that survives,
+/// still finds its body when a later entry calls it (the entry's new function shifted the ids of
+/// the lifted closure bodies). It used to run another body, or none (`unknown closure body`).
+#[test]
+fn a_closure_a_failed_entry_stored_from_surviving_code_still_runs_on_both_engines() {
+    let first = "let mut keep: fn() -> int = fn() => 0\nfn mk() -> fn() -> int {\n    return fn() => 5\n}\nfn other() -> fn() -> int {\n    return fn() => 9\n}\n";
+    let second = format!("{first}fn extra() -> int => 1\nkeep = mk()\npanic(\"boom\")\n");
+    let third = format!("{first}print(keep())\nprint(other()())\n");
+    let run = |kind: EngineKind| session(kind, &[first, &second, &third], |_, _| {});
+    let tree = run(EngineKind::Tree);
+    assert_eq!(tree.1, "5\n9\n", "{tree:?}");
+    assert_eq!(run(EngineKind::Bytecode), tree);
+}
+
+/// A closure that only the failed entry's code made has no body to run: calling it later is a
+/// panic on both engines, and no other closure answers in its place.
+#[test]
+fn a_closure_from_a_failed_entrys_own_code_is_refused_not_mistaken_on_both_engines() {
+    let first = "let mut keep: fn() -> int = fn() => 0\nfn other() -> fn() -> int {\n    return fn() => 9\n}\n";
+    let second =
+        format!("{first}fn helper() -> int => 7\nkeep = fn() => helper()\npanic(\"boom\")\n");
+    let third = format!("{first}print(keep())\n");
+    let run = |kind: EngineKind| session(kind, &[first, &second, &third], |_, _| {});
+    let tree = run(EngineKind::Tree);
+    assert_eq!(tree.1, "", "nothing printed: {tree:?}");
+    assert!(
+        tree.0[2].contains("this closure was made by a REPL entry that failed"),
+        "{tree:?}"
+    );
+    assert!(!tree.0[2].contains("internal error"), "{tree:?}");
+    assert_eq!(run(EngineKind::Bytecode), tree);
+}
+
+/// A closure whose lifted function the failed entry has no counterpart for (it redefined `mk`
+/// with one closure where the old one had two) still runs after the rollback: the old program is
+/// back, and so is its body.
+#[test]
+fn a_closure_whose_function_the_failed_entry_redefined_still_runs_on_both_engines() {
+    let first = "let mut keep: fn() -> int = fn() => 0\nfn mk(b: bool) -> fn() -> int {\n    if b {\n        return fn() => 5\n    }\n    return fn() => 8\n}\nkeep = mk(false)\n";
+    let old_program = "let mut keep: fn() -> int = fn() => 0\nfn mk(b: bool) -> fn() -> int {\n    if b {\n        return fn() => 5\n    }\n    return fn() => 8\n}\n";
+    let second = "let mut keep: fn() -> int = fn() => 0\nfn mk(b: bool) -> fn() -> int {\n    return fn() => 1\n}\npanic(\"boom\")\n";
+    let third = format!("{old_program}print(keep())\n");
+    let run = |kind: EngineKind| session(kind, &[first, second, &third], |_, _| {});
+    let tree = run(EngineKind::Tree);
+    assert_eq!(tree.1, "8\n", "{tree:?}");
+    assert_eq!(tree.0[2], "ok");
+    assert_eq!(run(EngineKind::Bytecode), tree);
+}
+
+/// A `defer` that starts a coroutine while the rollback cancels another one: the new one runs
+/// code of the failed entry too, so it is cancelled as well.
+#[test]
+fn a_coroutine_started_by_a_defer_during_the_rollback_is_cancelled_too_on_both_engines() {
+    let entry = "let a = 1\nfn helper() -> int => 4\nfn late() {\n    wait(0.1)\n    print(\"late {helper()}\")\n}\nfn start() {\n    go late()\n}\nfn spawner() {\n    defer start()\n    wait(1.0)\n}\ngo spawner()\nwait(0.05)\npanic(\"boom\")\n";
+    let ticks = std::cell::RefCell::new(Vec::new());
+    let run = |kind: EngineKind| {
+        ticks.borrow_mut().clear();
+        let r = session(kind, &["let a = 1\n", entry], |vm, i| {
+            if i == 1 {
+                ticks
+                    .borrow_mut()
+                    .push(format!("{:?}", vm.tick(0.5).map_err(|e| e.to_string())));
+            }
+        });
+        (r, ticks.borrow().clone())
+    };
+    let tree = run(EngineKind::Tree);
+
+    assert_eq!(tree.1, ["Ok(())"], "{tree:?}");
+    assert_eq!((tree.0).1, "", "{tree:?}");
+    assert_eq!(run(EngineKind::Bytecode), tree);
 }

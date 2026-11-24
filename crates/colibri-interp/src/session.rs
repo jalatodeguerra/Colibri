@@ -16,6 +16,7 @@ use crate::ctl::PanicInfo;
 use crate::eval::Interp;
 use crate::fiber::Fiber;
 use crate::value::{ClosureObj, Value};
+use colibri_core::coro::Sched;
 use colibri_core::prelude::*;
 
 /// What [`Interp::session_extend`] replaced, so that [`Interp::session_rollback`] can put it
@@ -29,6 +30,8 @@ pub struct SessionUndo {
     /// The values of the module-level values that were re-initialised.
     replaced: Vec<(usize, Value)>,
     maps_len: usize,
+    /// The first coroutine id the entry could have started.
+    first_coro: u64,
 }
 
 impl Interp {
@@ -67,6 +70,7 @@ impl Interp {
                 })
                 .collect(),
             maps_len: self.core.closure_maps.len(),
+            first_coro: self.core.sched.next_id(),
         };
         self.core.closure_maps.push(closure_map);
         self.globals.resize(program.globals.len(), Value::Unit);
@@ -143,12 +147,17 @@ impl Interp {
             globals_len,
             replaced,
             maps_len,
+            first_coro,
         } = undo;
+        // The coroutines the entry started may run code that goes away with it: they end here,
+        // while its code is still in place, so their `defer`s and drops run.
+        Sched::cancel_coroutines_from(self, first_coro);
+        self.core
+            .retire_extension_closures(maps_len, self.fns.len());
         self.fns = fns;
         self.core.types = types;
         self.core.dispatch = dispatch;
         self.inits = inits;
-        self.core.closure_maps.truncate(maps_len);
         self.set_script(old);
         self.cffi.load(old);
         self.core.host.bodies = old

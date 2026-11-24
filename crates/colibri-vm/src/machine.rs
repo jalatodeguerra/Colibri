@@ -84,6 +84,8 @@ pub struct Machine {
     /// Counts the loads and patches of the program: an inline cache entry made under another
     /// epoch is stale (its chunk may be one a running frame kept across a patch).
     pub(crate) epoch: u32,
+    /// Compile everything when a program is installed (see `set_compile_all`).
+    pub(crate) compile_all: bool,
     /// The fibers of the coroutines that have not ended (vm-plan §2.8).
     pub(crate) fibers: FiberSlab,
     /// A coroutine that ended with a refusal during the resumption in progress: what resumed it
@@ -124,6 +126,7 @@ impl Machine {
             host_stacks: HostStacks::default(),
             cffi: CffiState::default(),
             epoch: 0,
+            compile_all: false,
             fibers: FiberSlab::default(),
             pending_refusal: None,
             stack_root: 0,
@@ -154,6 +157,36 @@ impl Machine {
     /// How many bytes of native stack nested calls from Rust into Colibri may use.
     pub fn set_native_stack_budget(&mut self, bytes: usize) {
         self.native_stack_budget = bytes;
+    }
+
+    /// Whether installing a program (load, patch, session) compiles every function, global
+    /// initialiser and the script at once, and panics on one that does not compile. Chunks
+    /// are compiled lazily otherwise, so a function that cannot be compiled (an internal error:
+    /// the checker accepted it) shows only in a run that calls it. For test suites.
+    pub fn set_compile_all(&mut self, on: bool) {
+        self.compile_all = on;
+    }
+
+    /// With `compile_all` on: compiles every body now.
+    pub(crate) fn compile_everything(&self) {
+        if !self.compile_all {
+            return;
+        }
+        let bodies = self
+            .fns
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (Some(FnId(i as u32)), s))
+            .chain(self.global_inits.iter().map(|s| (None, s)))
+            .chain(self.script.iter().map(|s| (None, s)));
+        for (id, slot) in bodies {
+            if let Err(why) = slot.chunk(id, &self.env) {
+                panic!(
+                    "internal error: the bytecode VM cannot compile `{}`: {why}",
+                    slot.body.name
+                );
+            }
+        }
     }
 
     /// Installs a checked program, replacing any earlier one and resetting module state (the
@@ -196,6 +229,7 @@ impl Machine {
             }
         }
         self.script = Some(Slot::new(Rc::clone(&program.script)));
+        self.compile_everything();
     }
 
     /// The module-level value `g` (for hosts and tests).

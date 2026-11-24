@@ -147,10 +147,9 @@ impl dyn HostCx + '_ {
 
 /// What a [`crate::Vm`] asks of an engine. Each engine owns its main fiber.
 pub(crate) trait RuntimeEngine: HostCx {
-    /// Whether the REPL session entry points work on this engine.
-    fn supports_sessions(&self) -> bool {
-        true
-    }
+    /// Compile every function when a program is loaded, patched or extended (see
+    /// [`crate::VmBuilder::compile_all_at_load`]). Only the bytecode VM compiles lazily.
+    fn set_compile_all(&mut self, _on: bool) {}
 
     /// The size of the native stack a coroutine's call of a host function runs on, where the
     /// engine gives it one of its own (the bytecode VM). The tree-walker's coroutines have one
@@ -162,8 +161,10 @@ pub(crate) trait RuntimeEngine: HostCx {
     fn load(&mut self, program: &Program);
 
     /// Replaces the bodies of the functions of the loaded program with those of `program`
-    /// (hot reload; the declarations are unchanged).
-    fn patch(&mut self, program: &Program);
+    /// (hot reload; the declarations are unchanged). An engine that cannot swap them without
+    /// harming what runs (a coroutine parked in a host function whose declaration changed)
+    /// refuses with the reason and changes nothing; the caller then restarts.
+    fn patch(&mut self, program: &Program) -> Result<(), String>;
 
     /// Runs the module initialisers and the top-level statements.
     fn run_module(&mut self) -> Result<(), Box<PanicInfo>>;

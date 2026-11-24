@@ -3,7 +3,6 @@
 //! it uses that module, and the interface text of all of it round-trips.
 
 mod common;
-use common::vm_pending;
 
 use colibri::{Cx, FromColibri, HostType, Interface, IntoColibri, TypeBuilder, TypeDesc};
 use colibri::{Handle, TypeRegistry, Value};
@@ -525,24 +524,22 @@ fn a_module_type_keeps_its_identity_across_a_patch_and_a_restart() {
 
 #[test]
 fn a_session_keeps_module_values_between_steps() {
-    vm_pending("a_session_keeps_module_values_between_steps", || {
-        let (mut vm, _) = vm_with_both();
-        vm.session_start().unwrap();
-        let check = vm
-            .session_check("import a\nimport b\nlet x = a.Item.new(1)\nlet y = b.Item.new(2)\n")
-            .unwrap();
-        vm.session_commit(check, &[], &[]).unwrap();
-        // Later steps use the earlier values with the right types.
-        let check = vm
+    let (mut vm, _) = vm_with_both();
+    vm.session_start().unwrap();
+    let check = vm
+        .session_check("import a\nimport b\nlet x = a.Item.new(1)\nlet y = b.Item.new(2)\n")
+        .unwrap();
+    vm.session_commit(check, &[], &[]).unwrap();
+    // Later steps use the earlier values with the right types.
+    let check = vm
         .session_check("import a\nimport b\nlet x = a.Item.new(1)\nlet y = b.Item.new(2)\nprint(x.word() + y.word())\nlet z: a.Item = x\n")
         .unwrap();
-        vm.session_commit(check, &[], &[]).unwrap();
-        let err = vm
+    vm.session_commit(check, &[], &[]).unwrap();
+    let err = vm
         .session_check("import a\nimport b\nlet x = a.Item.new(1)\nlet y = b.Item.new(2)\nprint(x.word() + y.word())\nlet z: a.Item = x\nlet w: b.Item = x\n")
         .err()
         .expect("a.Item is not b.Item");
-        assert!(err.to_string().contains("b.Item"), "{err}");
-    })
+    assert!(err.to_string().contains("b.Item"), "{err}");
 }
 
 // ---- a named module and the default module's types ----

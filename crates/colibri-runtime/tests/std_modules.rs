@@ -3,7 +3,6 @@
 //! `Ctx::raise`. The library itself is tested in the `colibri-std` crate.
 
 mod common;
-use common::vm_pending;
 
 use colibri::{Cap, Ctx, Value, ValueKind, reflect};
 use colibri_runtime as colibri;
@@ -348,16 +347,14 @@ mod lazy {
     counted!(IN_SESSION, register_in_session, "session");
     #[test]
     fn a_session_has_every_module() {
-        vm_pending("lazy::a_session_has_every_module", || {
-            let (mut vm, _) = vm();
-            vm.lazy_std_module("session", register_in_session);
-            vm.session_start().unwrap();
-            assert_eq!(IN_SESSION.load(Ordering::SeqCst), 1);
-            let check = vm
-                .session_check("import session\nlet x = session.twice(4)\n")
-                .unwrap();
-            vm.session_commit(check, &[], &[]).unwrap();
-        })
+        let (mut vm, _) = vm();
+        vm.lazy_std_module("session", register_in_session);
+        vm.session_start().unwrap();
+        assert_eq!(IN_SESSION.load(Ordering::SeqCst), 1);
+        let check = vm
+            .session_check("import session\nlet x = session.twice(4)\n")
+            .unwrap();
+        vm.session_commit(check, &[], &[]).unwrap();
     }
 
     counted!(AFTER_RELOAD, register_after_reload, "later");
@@ -493,31 +490,26 @@ fn main() {
 
     #[test]
     fn a_failed_module_fails_every_session_entry_point() {
-        vm_pending(
-            "lazy::a_failed_module_fails_every_session_entry_point",
-            || {
-                let (mut vm, _) = vm();
-                vm.register_type::<Mine>().unwrap();
-                vm.lazy_std_module("clash", register_clashing);
-                let first = vm.session_start().unwrap_err().to_string();
-                assert!(first.contains("std.clash"), "{first}");
-                // Retrying reports the same error, it does not start a session around a
-                // half-registered module.
-                let second = vm.session_start().unwrap_err().to_string();
-                assert_eq!(second, first);
-                let load = vm
-                    .load_source("a.colibri", "import clash\nfn main() {}\n")
-                    .unwrap_err()
-                    .to_string();
-                assert_eq!(second, load);
-                let check = vm
-                    .session_check("import clash\nlet x = 1\n")
-                    .err()
-                    .expect("the check fails")
-                    .to_string();
-                assert_eq!(check, load);
-            },
-        )
+        let (mut vm, _) = vm();
+        vm.register_type::<Mine>().unwrap();
+        vm.lazy_std_module("clash", register_clashing);
+        let first = vm.session_start().unwrap_err().to_string();
+        assert!(first.contains("std.clash"), "{first}");
+        // Retrying reports the same error, it does not start a session around a
+        // half-registered module.
+        let second = vm.session_start().unwrap_err().to_string();
+        assert_eq!(second, first);
+        let load = vm
+            .load_source("a.colibri", "import clash\nfn main() {}\n")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(second, load);
+        let check = vm
+            .session_check("import clash\nlet x = 1\n")
+            .err()
+            .expect("the check fails")
+            .to_string();
+        assert_eq!(check, load);
     }
 
     fn register_panicking(_: &mut colibri::Vm) -> Result<(), colibri::Error> {

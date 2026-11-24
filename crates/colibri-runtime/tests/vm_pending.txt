@@ -4,6 +4,3 @@
 # wraps its body in `vm_pending` (tests/common/mod.rs): on the VM it is expected to fail, and
 # one that passes fails the run, so delete its line (and the wrapper) when it starts to pass.
 # `vm_pending_list.rs` checks that every entry names a wrapped test.
-host_modules::a_session_keeps_module_values_between_steps  # REPL sessions
-std_modules::lazy::a_failed_module_fails_every_session_entry_point  # REPL sessions
-std_modules::lazy::a_session_has_every_module  # REPL sessions

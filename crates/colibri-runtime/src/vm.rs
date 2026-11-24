@@ -110,6 +110,7 @@ pub struct VmBuilder {
     clock: Option<Box<dyn Clock>>,
     cfg: BuildCfg,
     engine: EngineKind,
+    compile_all: bool,
     /// Why the engine the environment names cannot be used (an unknown `COLIBRI_ENGINE`).
     engine_error: Option<String>,
 }
@@ -232,6 +233,16 @@ impl VmBuilder {
         self
     }
 
+    /// Makes the bytecode VM compile every function when a program is loaded, patched or
+    /// extended, instead of at its first call, and panic on a function that does not compile
+    /// (a bug: the checker accepted the program). For test suites, so that such a bug surfaces
+    /// at once and not in the one run that reaches the function. The tree-walker ignores it.
+    #[doc(hidden)]
+    pub fn compile_all_at_load(mut self, on: bool) -> Self {
+        self.compile_all = on;
+        self
+    }
+
     pub fn build(self) -> Vm {
         let out = self.stdout.unwrap_or_else(|| Box::new(std::io::stdout()));
         // An unknown engine name (`COLIBRI_ENGINE`) fails every load with the reason (see
@@ -242,6 +253,7 @@ impl VmBuilder {
             EngineKind::Bytecode => engine_vm::new_engine,
         };
         let mut engine = new_engine(out, self.max_call_depth, self.native_stack_budget);
+        engine.set_compile_all(self.compile_all);
         engine.core_mut().set_trace_drops(self.trace_drops);
         engine.core_mut().set_track_leaks(self.track_leaks);
         engine
@@ -404,6 +416,7 @@ impl Vm {
             clock: None,
             cfg: BuildCfg::default(),
             engine,
+            compile_all: false,
             engine_error,
         }
     }
@@ -1688,7 +1701,10 @@ impl Vm {
         }
         let functions = current.changed_bodies(&fingerprint);
         // Swap in every body, also the unchanged ones: their spans point into the new sources.
-        self.engine.patch(&checked.program);
+        if let Err(why) = self.engine.patch(&checked.program) {
+            // The engine cannot swap the bodies under what runs: start over instead.
+            return self.restart(checked, fingerprint, why, Some(&old));
+        }
         self.sources = Rc::new(checked.sources);
         self.warnings = checked.warnings;
         self.engine

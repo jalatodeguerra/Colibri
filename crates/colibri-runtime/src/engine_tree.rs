@@ -156,8 +156,9 @@ impl RuntimeEngine for TreeEngine {
         self.interp.load(program);
     }
 
-    fn patch(&mut self, program: &Program) {
+    fn patch(&mut self, program: &Program) -> Result<(), String> {
         self.interp.patch(program);
+        Ok(())
     }
 
     fn run_module(&mut self) -> Result<(), Box<PanicInfo>> {

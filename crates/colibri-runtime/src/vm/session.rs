@@ -56,14 +56,6 @@ impl Vm {
     /// Starts (or restarts) a session: an empty program is loaded.
     pub fn session_start(&mut self) -> Result<(), Error> {
         self.check_engine()?;
-        if !self.engine.supports_sessions() {
-            return Err(Error::Panic {
-                message: "the bytecode VM does not support REPL sessions yet".to_string(),
-                location: None,
-                stack: Vec::new(),
-                notes: Vec::new(),
-            });
-        }
         self.reload = None;
         self.teardown();
         // Later entries may import anything: have every module registered, so the host types
@@ -97,10 +89,8 @@ impl Vm {
         reinit: &[&str],
         replaced: &[&str],
     ) -> Result<(), SessionError> {
-        // An engine without sessions never has one running, whatever program is loaded.
-        let old = match self.program.clone() {
-            Some(old) if self.engine.supports_sessions() => old,
-            _ => return Err(SessionError::Conflict("no session is running".to_string())),
+        let Some(old) = self.program.clone() else {
+            return Err(SessionError::Conflict("no session is running".to_string()));
         };
         let Checked {
             sources, program, ..
@@ -147,9 +137,6 @@ impl Vm {
 
     /// The `Show` text of module-level value `name` and its type, for the session to print.
     pub fn session_display(&mut self, name: &str) -> Option<(String, String)> {
-        if !self.engine.supports_sessions() {
-            return None;
-        }
         let program = self.program.clone()?;
         let i = program.globals.iter().position(|g| g.name == name)?;
         let ty = program.globals[i].ty.clone();

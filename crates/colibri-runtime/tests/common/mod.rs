@@ -6,6 +6,10 @@
 //! when it does, and the run fails when it passes (so the list only shrinks). On the tree
 //! engine, or when the test is not listed, the body just runs.
 
+// No test of this crate is pending on the VM any more (the list is empty); the harness stays for
+// the next feature the VM lacks, so most of it is unused for now.
+#![allow(dead_code)]
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const LIST: &str = include_str!("../vm_pending.txt");

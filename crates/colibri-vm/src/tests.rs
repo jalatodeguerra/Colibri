@@ -278,7 +278,7 @@ fn an_inline_cache_does_not_outlive_a_patch() {
     assert_eq!(first.epoch, m.epoch);
 
     let (patched, _) = check_source(&shapes("2")).expect("checks");
-    m.patch(&patched);
+    m.patch(&patched).expect("same declarations");
     assert_ne!(first.epoch, m.epoch, "a patch starts a new epoch");
     let fresh = m.chunk_of(run).expect("exists").expect("compiles");
     assert!(cache_of(&fresh).is_none(), "a new chunk has no cache");
@@ -363,4 +363,73 @@ fn main() {
     // 1 only for the prints inside `show` (run by `print`) and `cmp` (run by `sort`).
     assert_eq!(*depths.borrow(), [0, 1, 0, 0, 1, 0], "one entry per print");
     assert_eq!(fiber.state.native_depth, 0);
+}
+
+/// A program whose function `big` has more locals than a frame has registers: the checker accepts
+/// such a program (it is made here by adding locals to a checked one), the compiler cannot.
+fn program_with_an_uncompilable_function() -> colibri_check::hir::Program {
+    let (mut program, _) =
+        check_source("fn big() -> int => 1\nfn main() { print(big()) }\n").expect("checks");
+    let big = fn_id(&program, "big");
+    let body = Rc::get_mut(&mut program.fns[big.0 as usize].body).expect("the only holder");
+    let local = colibri_check::hir::LocalInfo {
+        name: "x".to_string(),
+        ty: colibri_check::types::Ty::Int(colibri_check::types::IntTy::I64),
+        mutable: false,
+        storage: colibri_check::hir::Storage::Slot,
+        span: colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),
+    };
+    body.locals.extend(std::iter::repeat_n(local, 70_000));
+    program
+}
+
+fn panic_text(f: impl FnOnce()) -> Option<String> {
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).err()?;
+    Some(
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default(),
+    )
+}
+
+/// Chunks are compiled on first use, so a function that cannot be compiled is found by the run
+/// that calls it; with `set_compile_all` the load finds it, whether or not anything calls it.
+#[test]
+fn compile_all_finds_an_uncompilable_function_at_load() {
+    let program = program_with_an_uncompilable_function();
+    let mut lazy = Machine::new(Box::new(Out::default()), 100);
+    lazy.load(&program);
+    let mut fiber = VmFiber::new();
+    let main = fn_id(&program, "main");
+    let _ = lazy.call(&mut fiber, main, vec![]);
+    let err = lazy.chunk_of(fn_id(&program, "big")).expect("exists");
+    assert!(err.is_err(), "the function cannot be compiled");
+
+    let mut eager = Machine::new(Box::new(Out::default()), 100);
+    eager.set_compile_all(true);
+    let text = panic_text(|| eager.load(&program)).expect("the load fails");
+    assert!(text.contains("cannot compile `big`"), "{text}");
+    assert!(text.contains("registers"), "{text}");
+}
+
+/// The same for a patch: the new bodies are compiled when they are swapped in.
+#[test]
+fn compile_all_covers_a_patch_and_compiles_what_the_program_has() {
+    let (program, _) = check_source("fn big() -> int => 1\nfn main() { print(big()) }\n").unwrap();
+    let mut m = Machine::new(Box::new(Out::default()), 100);
+    m.set_compile_all(true);
+    m.load(&program);
+    let big = fn_id(&program, "big");
+    assert!(
+        m.fns[big.0 as usize].chunk.get().is_some(),
+        "compiled at the load, not at a call"
+    );
+    let bad = program_with_an_uncompilable_function();
+    let text = panic_text(|| {
+        let _ = m.patch(&bad);
+    })
+    .expect("the patch fails");
+    assert!(text.contains("cannot compile `big`"), "{text}");
 }

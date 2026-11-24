@@ -2,10 +2,9 @@
 //! names `colibri_vm`.
 //!
 //! The VM runs a growing part of the language (see its crate docs); what it does not run yet
-//! is a clean panic naming the missing feature. The REPL session entry points refuse with a
-//! message. A host function that waits for a background operation suspends its coroutine (it
-//! runs on a native stack of its own while a coroutine calls it, vm-plan §3.2), or runs the
-//! event loop on the main fiber.
+//! is a clean panic naming the missing feature. A host function that waits for a background
+//! operation suspends its coroutine (it runs on a native stack of its own while a coroutine
+//! calls it, vm-plan §3.2), or runs the event loop on the main fiber.
 
 use std::any::{Any, TypeId as AnyTypeId};
 use std::io::Write;
@@ -21,7 +20,7 @@ use colibri_core::hostheap::{HostBorrowError, HostGuard};
 use colibri_core::leaks::Leak;
 use colibri_core::prelude::*;
 use colibri_core::value::Value as CoreValue;
-use colibri_vm::{HostClassHooks, HostImpl, Machine, VmFiber};
+use colibri_vm::{HostClassHooks, HostImpl, Machine, SessionUndo, VmFiber};
 
 use crate::engine::{ClassHooks, HostCx, HostFnImpl, RuntimeEngine};
 
@@ -159,29 +158,17 @@ pub(crate) fn new_engine(
     })
 }
 
-const NO_SESSIONS: &str = "the bytecode VM does not support REPL sessions yet";
-
-fn no_sessions() -> Box<PanicInfo> {
-    Box::new(PanicInfo {
-        message: NO_SESSIONS.to_string(),
-        span: colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),
-        stack: Vec::new(),
-        notes: Vec::new(),
-        budget: false,
-    })
-}
-
 impl RuntimeEngine for VmEngine {
-    fn supports_sessions(&self) -> bool {
-        false
+    fn set_compile_all(&mut self, on: bool) {
+        self.machine.set_compile_all(on);
     }
 
     fn load(&mut self, program: &Program) {
         self.machine.load(program);
     }
 
-    fn patch(&mut self, program: &Program) {
-        self.machine.patch(program);
+    fn patch(&mut self, program: &Program) -> Result<(), String> {
+        self.machine.patch(program)
     }
 
     fn run_module(&mut self) -> Result<(), Box<PanicInfo>> {
@@ -218,22 +205,41 @@ impl RuntimeEngine for VmEngine {
         self.machine.bind_extern(id, name, def)
     }
 
-    // The `Vm` methods check `supports_sessions` first, so none of these is reached; they
-    // still answer cleanly instead of panicking, should one be.
-    fn session_extend(&mut self, _: &Program, _: Vec<u32>, _: &[GlobalId]) -> Box<dyn Any> {
-        Box::new(())
+    fn session_extend(
+        &mut self,
+        program: &Program,
+        closure_map: Vec<u32>,
+        reinit: &[GlobalId],
+    ) -> Box<dyn Any> {
+        Box::new(self.machine.session_extend(program, closure_map, reinit))
     }
 
-    fn session_run(&mut self, _: &Program, _: usize, _: &[GlobalId]) -> Result<(), Box<PanicInfo>> {
-        Err(no_sessions())
+    fn session_run(
+        &mut self,
+        program: &Program,
+        new_from: usize,
+        reinit: &[GlobalId],
+    ) -> Result<(), Box<PanicInfo>> {
+        self.machine
+            .session_run(&mut self.fiber, program, new_from, reinit)
     }
 
-    fn session_commit(&mut self, _: Box<dyn Any>) {}
+    fn session_commit(&mut self, undo: Box<dyn Any>) {
+        match undo.downcast::<SessionUndo>() {
+            Ok(undo) => self.machine.session_commit(*undo),
+            Err(_) => unreachable!("a session undo of another engine"),
+        }
+    }
 
-    fn session_rollback(&mut self, _: Box<dyn Any>, _: &Program) {}
+    fn session_rollback(&mut self, undo: Box<dyn Any>, old: &Program) {
+        match undo.downcast::<SessionUndo>() {
+            Ok(undo) => self.machine.session_rollback(*undo, old),
+            Err(_) => unreachable!("a session undo of another engine"),
+        }
+    }
 
-    fn session_show(&mut self, _: GlobalId) -> Result<String, Box<PanicInfo>> {
-        Err(no_sessions())
+    fn session_show(&mut self, g: GlobalId) -> Result<String, Box<PanicInfo>> {
+        self.machine.session_show(&mut self.fiber, g)
     }
 
     fn release_globals(&mut self) {
