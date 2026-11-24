@@ -15,9 +15,10 @@ fn echo(c: net.Conn) {
 }
 
 fn serve(l: net.Listener) {
+    let g = CoGroup()
     while true {
         let c = l.accept() or |e| { return }
-        go echo(c)
+        let _e = g.go(echo(c))
     }
 }
 

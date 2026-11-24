@@ -480,7 +480,10 @@ impl Machine {
                 }
                 Op::CallHost { .. } => {
                     sync!();
-                    tri!(self.op_call_host(fiber, &chunk, base, pc, op));
+                    if tri!(self.op_call_host(fiber, &chunk, base, pc, op)) {
+                        // The coroutine waits inside the host function.
+                        return Ok(Exit::Suspend);
+                    }
                 }
                 Op::CallValue { d, base: a } => {
                     sync!();

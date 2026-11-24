@@ -1,20 +1,17 @@
-//! How the bytecode VM stops at its refusal of a host call that can wait while a coroutine is
-//! alive (vm-plan step 12 lifts it). A refusal stops the program where it is met, whichever
+//! How the bytecode VM stops at a refusal (`the bytecode VM does not support ...`). Nothing a
+//! checked program says is refused any more, so the host function `blocky` stands in for the
+//! feature the VM lacks by failing with the text of a refusal. A refusal stops the program where it
+//! is met, whichever
 //! coroutine meets it and whatever resumed that coroutine: `go`, a wait or a join on the main
 //! fiber, `task.tick` or a tick of the host. Nothing the program wrote runs for it (no `defer`,
 //! no `Drop` hook, not even at shutdown), and it carries the trace of the fiber that raises it.
 //!
-//! Every test runs on the VM only: the tree-walker has no such refusal, which the host
-//! functions `blocky` (unmarked, so it may wait) and `fine` (marked `no_await`) stand for.
-
-use std::cell::Cell;
-use std::rc::Rc;
+//! Every test runs on the VM only: the tree-walker has no such refusal.
 
 use colibri::{Ctx, EngineKind, Error, HostType, SharedBuffer, TypeBuilder, Vm};
 use colibri_runtime as colibri;
 
-const REFUSAL: &str =
-    "the bytecode VM does not support a host function that can wait, beside running coroutines yet";
+const REFUSAL: &str = "the bytecode VM does not support a stand-in feature yet";
 
 fn vm() -> (Vm, SharedBuffer) {
     let out = SharedBuffer::new();
@@ -22,8 +19,8 @@ fn vm() -> (Vm, SharedBuffer) {
         .engine(EngineKind::Bytecode)
         .stdout(Box::new(out.clone()))
         .build();
-    vm.register_fn("blocky", || 7i64).unwrap();
-    vm.register_fn("fine", || 8i64).unwrap().no_await();
+    vm.register_fn("blocky", |cx: &mut Ctx| -> i64 { cx.raise(REFUSAL) })
+        .unwrap();
     (vm, out)
 }
 
@@ -355,24 +352,22 @@ fn main() {
     assert_eq!(out.take(), "fine runs\n");
 }
 
-/// An embedder's host-class method can be marked `no_await`, and then it is called beside
-/// coroutines like a host function; an unmarked one is refused.
-struct Gauge {
-    n: Rc<Cell<i64>>,
-}
+/// A function or method marked `no_await` is called from a coroutine on the caller's stack, one that
+/// is not marked on a stack of its own, where it can wait for a background operation: what
+/// `Ctx::can_suspend` reads inside it.
+struct Gauge;
 
 impl HostType for Gauge {
     const NAME: &'static str = "Gauge";
     fn describe(d: &mut TypeBuilder<'_, Self>) {
-        d.static_fn("new", [], || Gauge {
-            n: Rc::new(Cell::new(0)),
-        });
-        d.method("read", [], |this: &Gauge| this.n.get()).no_await();
-        d.method_mut("bump", [], |_cx: &mut Ctx, this: &mut Gauge| {
-            this.n.set(this.n.get() + 1)
+        d.static_fn("new", [], || Gauge);
+        d.method_mut("marked", [], |cx: &mut Ctx, _this: &mut Gauge| {
+            cx.can_suspend()
         })
         .no_await();
-        d.method("slow", [], |this: &Gauge| this.n.get());
+        d.method_mut("unmarked", [], |cx: &mut Ctx, _this: &mut Gauge| {
+            cx.can_suspend()
+        });
     }
 }
 
@@ -380,28 +375,116 @@ impl HostType for Gauge {
 fn a_host_class_method_can_be_marked_no_await() {
     let (mut vm, out) = vm();
     vm.register_type::<Gauge>().unwrap();
+    vm.register_fn("fn_marked", |cx: &mut Ctx| cx.can_suspend())
+        .unwrap()
+        .no_await();
+    vm.register_fn("fn_unmarked", |cx: &mut Ctx| cx.can_suspend())
+        .unwrap();
     vm.load_source(
         "game.colibri",
-        "fn tick(g: Gauge) {\n    wait(1.0)\n    g.bump()\n    print(g.read())\n}\nfn main() {\n    let g = Gauge.new()\n    let _c = go tick(g)\n    g.bump()\n    print(g.read())\n    task.tick(2.0)\n}\n",
+        "fn probe(g: Gauge) {\n    print(\"{g.marked()} {g.unmarked()} {fn_marked()} {fn_unmarked()}\")\n}\nfn main() {\n    let g = Gauge.new()\n    let c = go probe(g)\n    c.join()\n}\n",
     )
     .unwrap();
-    vm.run_main()
-        .expect("marked methods run beside a coroutine");
-    assert_eq!(out.contents(), "1\n2\n");
-
-    let (mut vm, out) = vm_with_gauge();
-    vm.load_source(
-        "game.colibri",
-        "fn sleeper() {\n    wait(1.0)\n}\nfn main() {\n    let g = Gauge.new()\n    let _c = go sleeper()\n    print(\"before\")\n    print(g.slow())\n}\n",
-    )
-    .unwrap();
-    let shown = text(&vm.run_main().expect_err("an unmarked method is refused"));
-    assert!(shown.contains(REFUSAL), "{shown}");
-    assert_eq!(out.contents(), "before\n");
+    vm.run_main().expect("main");
+    assert_eq!(out.contents(), "false true false true\n");
 }
 
-fn vm_with_gauge() -> (Vm, SharedBuffer) {
+// ---- the end of an entry (re-review 3, F1) ----
+
+const MEMBER: &str =
+    "fn member() {\n    defer print(\"member defer {blocky()}\")\n    wait(10.0)\n}\n";
+
+/// A `CoGroup` that is a local of `main` dies in `main`'s own frame teardown: settled where the
+/// frame's drops fold, inside the entry.
+#[test]
+fn a_group_that_dies_in_mains_teardown_fails_the_entry() {
     let (mut vm, out) = vm();
-    vm.register_type::<Gauge>().unwrap();
-    (vm, out)
+    vm.load_source(
+        "game.colibri",
+        &format!("{MEMBER}fn main() {{\n    let g = CoGroup()\n    let _m = g.go(member())\n    print(\"main ends\")\n}}\n"),
+    )
+    .unwrap();
+    let error = vm.run_main().expect_err("the refusal");
+    assert!(text(&error).contains(REFUSAL), "{}", text(&error));
+    assert_eq!(out.contents(), "main ends\n");
+}
+
+/// A `defer` of `main` that cancels the coroutine: settled at the cancel call.
+#[test]
+fn a_defer_of_main_that_cancels_fails_the_entry() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        &format!("{MEMBER}fn main() {{\n    let c = go member()\n    defer c.cancel()\n    print(\"main ends\")\n}}\n"),
+    )
+    .unwrap();
+    let error = vm.run_main().expect_err("the refusal");
+    assert!(text(&error).contains(REFUSAL), "{}", text(&error));
+    assert_eq!(out.contents(), "main ends\n");
+}
+
+/// A `Drop` hook of a local of `main` that cancels the coroutine, at `main`'s end.
+#[test]
+fn a_drop_hook_at_mains_end_that_cancels_fails_the_entry() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        &format!("{MEMBER}class Stopper {{\n    c: Coroutine[()]\n}}\nimpl Drop for Stopper {{\n    fn drop(self) {{\n        self.c.cancel()\n    }}\n}}\nfn main() {{\n    let _s = Stopper {{ c: go member() }}\n    print(\"main ends\")\n}}\n"),
+    )
+    .unwrap();
+    let error = vm.run_main().expect_err("the refusal");
+    assert!(text(&error).contains(REFUSAL), "{}", text(&error));
+    assert_eq!(out.contents(), "main ends\n");
+}
+
+/// The value an entry hands back is released by the host after the entry (`run_main` releases
+/// `main`'s `Err` payload with `release_in_entry`). Its `CoGroup` dies there and the member's
+/// `defer` meets the refusal: neither `settle_refusal`, nor a fold, nor the end-of-entry check
+/// sees it. The refusal must reach the host one way or another.
+#[test]
+fn a_group_released_by_the_host_after_the_entry_is_not_lost() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        &format!("{MEMBER}class Holder {{\n    g: CoGroup\n}}\nimpl IntoError for Holder {{}}\nfn main() -> Result[()] {{\n    let g = CoGroup()\n    let _m = g.go(member())\n    print(\"main returns err\")\n    return err(Error.from(Holder {{ g: g }}))\n}}\n"),
+    )
+    .unwrap();
+    let result = vm.run_main();
+    let shown = match &result {
+        Err(e) => text(e),
+        Ok(()) => "Ok".to_string(),
+    };
+    let failure = vm.run_event_loop().err().map(|e| text(&e));
+    let _ = out;
+    // The refusal must reach the host one way or another.
+    assert!(
+        shown.contains(REFUSAL) || failure.as_deref().is_some_and(|f| f.contains(REFUSAL)),
+        "the refusal was lost: run_main gave {shown:?}, no coroutine failure carries it"
+    );
+}
+
+/// The same, but the host makes another entry before it looks at coroutine failures: that
+/// entry's start discards the pending refusal but keeps the coroutine's failure, which the event
+/// loop then reports.
+#[test]
+fn a_group_released_by_the_host_then_another_entry() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        &format!("{MEMBER}class Holder {{\n    g: CoGroup\n}}\nimpl IntoError for Holder {{}}\nfn main() -> Result[()] {{\n    let g = CoGroup()\n    let _m = g.go(member())\n    print(\"main returns err\")\n    return err(Error.from(Holder {{ g: g }}))\n}}\nfn other() {{\n    print(\"other runs\")\n}}\n"),
+    )
+    .unwrap();
+    let _first = vm.run_main().err().map(|e| text(&e));
+    let f = vm.get_fn::<(), ()>("other").unwrap();
+    let second = f.call(&mut vm, ()).err().map(|e| text(&e));
+    let failure = vm.run_event_loop().err().map(|e| text(&e));
+    let _ = out;
+    assert!(
+        second.is_none(),
+        "{second:?}: the refusal is not blamed on the next entry"
+    );
+    assert!(
+        failure.as_deref().is_some_and(|f| f.contains(REFUSAL)),
+        "the refusal was lost: run_main {_first:?}, other {second:?}, event loop {failure:?}"
+    );
 }

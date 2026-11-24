@@ -14,9 +14,6 @@
 //! after `=>`, because `colibri test` has no way to say that a test should panic (the router
 //! refuses a malformed pattern by panicking).
 
-mod common;
-use common::vm_pending;
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -153,12 +150,10 @@ macro_rules! suite {
         $(
             #[test]
             fn $name() {
-                vm_pending(stringify!($name), || {
-                    run_file(
-                        stringify!($name),
-                        include_str!(concat!("httpd/", stringify!($name), ".colibri")),
-                    );
-                });
+                run_file(
+                    stringify!($name),
+                    include_str!(concat!("httpd/", stringify!($name), ".colibri")),
+                );
             }
         )*
     };
@@ -186,12 +181,10 @@ macro_rules! failing {
         $(
             #[test]
             fn $name() {
-                vm_pending(stringify!($name), || {
-                    expect_failure(
-                        stringify!($name),
-                        include_str!(concat!("httpd/failing/", stringify!($name), ".colibri")),
-                    );
-                });
+                expect_failure(
+                    stringify!($name),
+                    include_str!(concat!("httpd/failing/", stringify!($name), ".colibri")),
+                );
             }
         )*
     };

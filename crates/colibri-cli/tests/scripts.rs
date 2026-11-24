@@ -3,7 +3,6 @@
 //! hand-written HTTP server on 127.0.0.1 that serves the fixtures (nothing leaves the machine).
 
 mod common;
-use common::vm_pending;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -383,52 +382,50 @@ fn expected_report() -> String {
 
 #[test]
 fn report_over_http_matches_the_golden_file() {
-    vm_pending("report_over_http_matches_the_golden_file", || {
-        let (base, log) = serve();
-        let dir = temp_dir("http");
-        let out_file = dir.join("report.md");
-        let url = format!("{base}/index.json");
-        let out = run_script(
-            &report(),
-            &[
-                &url,
-                "--out",
-                out_file.to_str().unwrap(),
-                "--now",
-                NOW,
-                "--concurrency",
-                "3",
-            ],
-        );
-        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-        assert!(
-            text(&out.stdout).starts_with("wrote "),
-            "{}",
-            text(&out.stdout)
-        );
-        let got = fs::read_to_string(&out_file).unwrap();
-        if std::env::var_os("UPDATE_EXPECTED").is_some() {
-            fs::write(scripts().join("report/expected.md"), &got).unwrap();
-        }
-        assert_eq!(
-            got,
-            expected_report(),
-            "run with UPDATE_EXPECTED=1 to rewrite it"
-        );
-        // The index and each of the three items were fetched once.
-        let mut seen = log.lock().unwrap().clone();
-        seen.sort();
-        assert_eq!(
-            seen,
-            [
-                "/data/index.json",
-                "/data/north.json",
-                "/data/south.json",
-                "/data/west.json"
-            ]
-        );
-        let _ = fs::remove_dir_all(&dir);
-    })
+    let (base, log) = serve();
+    let dir = temp_dir("http");
+    let out_file = dir.join("report.md");
+    let url = format!("{base}/index.json");
+    let out = run_script(
+        &report(),
+        &[
+            &url,
+            "--out",
+            out_file.to_str().unwrap(),
+            "--now",
+            NOW,
+            "--concurrency",
+            "3",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).starts_with("wrote "),
+        "{}",
+        text(&out.stdout)
+    );
+    let got = fs::read_to_string(&out_file).unwrap();
+    if std::env::var_os("UPDATE_EXPECTED").is_some() {
+        fs::write(scripts().join("report/expected.md"), &got).unwrap();
+    }
+    assert_eq!(
+        got,
+        expected_report(),
+        "run with UPDATE_EXPECTED=1 to rewrite it"
+    );
+    // The index and each of the three items were fetched once.
+    let mut seen = log.lock().unwrap().clone();
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            "/data/index.json",
+            "/data/north.json",
+            "/data/south.json",
+            "/data/west.json"
+        ]
+    );
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -453,18 +450,16 @@ fn report_from_files_is_the_same_report() {
 
 #[test]
 fn report_lists_failed_sources_and_exits_1() {
-    vm_pending("report_lists_failed_sources_and_exits_1", || {
-        let (base, _) = serve();
-        let url = format!("{base}/index_with_missing.json");
-        let out = run_script(&report(), &[&url, "--now", NOW]);
-        assert_eq!(out.status.code(), Some(1));
-        let stdout = text(&out.stdout);
-        assert!(stdout.contains("Sources: 2 read, 1 failed."), "{stdout}");
-        assert!(stdout.contains("## Failed sources"), "{stdout}");
-        assert!(stdout.contains("gone.json"), "{stdout}");
-        assert!(stdout.contains("HTTP status 404"), "{stdout}");
-        assert!(text(&out.stderr).contains("1 of 3 sources failed"));
-    })
+    let (base, _) = serve();
+    let url = format!("{base}/index_with_missing.json");
+    let out = run_script(&report(), &[&url, "--now", NOW]);
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = text(&out.stdout);
+    assert!(stdout.contains("Sources: 2 read, 1 failed."), "{stdout}");
+    assert!(stdout.contains("## Failed sources"), "{stdout}");
+    assert!(stdout.contains("gone.json"), "{stdout}");
+    assert!(stdout.contains("HTTP status 404"), "{stdout}");
+    assert!(text(&out.stderr).contains("1 of 3 sources failed"));
 }
 
 #[test]
@@ -595,48 +590,46 @@ fn serve_slowly(
 /// after 300 ms, `--concurrency 4`: the items take about 300 ms together, not 4 x 300 ms.
 #[test]
 fn report_requests_overlap_with_concurrency() {
-    vm_pending("report_requests_overlap_with_concurrency", || {
-        let dir = temp_dir("overlap");
-        let north = fs::read_to_string(fixtures().join("north.json")).unwrap();
-        let items = ["a.json", "b.json", "c.json", "d.json"];
-        for item in items {
-            fs::write(dir.join(item), &north).unwrap();
-        }
-        let list: Vec<String> = items.iter().map(|i| format!("\"{i}\"")).collect();
-        fs::write(
-            dir.join("index.json"),
-            format!("{{\"title\": \"Slow\", \"items\": [{}]}}", list.join(", ")),
-        )
-        .unwrap();
-        let delay = Duration::from_millis(300);
-        let (base, peak) = serve_slowly(dir.clone(), delay);
-        let url = format!("{base}/index.json");
-        let mut runs = Vec::new();
-        for concurrency in ["4", "1"] {
-            let started = std::time::Instant::now();
-            let out = run_script(
-                &report(),
-                &[&url, "--now", NOW, "--concurrency", concurrency],
-            );
-            assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-            assert!(text(&out.stdout).contains("Sources: 4 read, 0 failed."));
-            runs.push((
-                started.elapsed(),
-                peak.swap(0, std::sync::atomic::Ordering::SeqCst),
-            ));
-        }
-        let (overlapped, peak4) = runs[0];
-        let (serial, peak1) = runs[1];
-        eprintln!(
-            "concurrency 4: {overlapped:?} (peak {peak4}); concurrency 1: {serial:?} (peak {peak1})"
+    let dir = temp_dir("overlap");
+    let north = fs::read_to_string(fixtures().join("north.json")).unwrap();
+    let items = ["a.json", "b.json", "c.json", "d.json"];
+    for item in items {
+        fs::write(dir.join(item), &north).unwrap();
+    }
+    let list: Vec<String> = items.iter().map(|i| format!("\"{i}\"")).collect();
+    fs::write(
+        dir.join("index.json"),
+        format!("{{\"title\": \"Slow\", \"items\": [{}]}}", list.join(", ")),
+    )
+    .unwrap();
+    let delay = Duration::from_millis(300);
+    let (base, peak) = serve_slowly(dir.clone(), delay);
+    let url = format!("{base}/index.json");
+    let mut runs = Vec::new();
+    for concurrency in ["4", "1"] {
+        let started = std::time::Instant::now();
+        let out = run_script(
+            &report(),
+            &[&url, "--now", NOW, "--concurrency", concurrency],
         );
-        // The index (300 ms) then four items together (about 300 ms), against five in a row.
-        assert_eq!(peak4, 4, "four requests were in flight at once");
-        assert_eq!(peak1, 1);
-        assert!(overlapped < Duration::from_millis(1000), "{overlapped:?}");
-        assert!(serial >= Duration::from_millis(1500), "{serial:?}");
-        let _ = fs::remove_dir_all(&dir);
-    })
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        assert!(text(&out.stdout).contains("Sources: 4 read, 0 failed."));
+        runs.push((
+            started.elapsed(),
+            peak.swap(0, std::sync::atomic::Ordering::SeqCst),
+        ));
+    }
+    let (overlapped, peak4) = runs[0];
+    let (serial, peak1) = runs[1];
+    eprintln!(
+        "concurrency 4: {overlapped:?} (peak {peak4}); concurrency 1: {serial:?} (peak {peak1})"
+    );
+    // The index (300 ms) then four items together (about 300 ms), against five in a row.
+    assert_eq!(peak4, 4, "four requests were in flight at once");
+    assert_eq!(peak1, 1);
+    assert!(overlapped < Duration::from_millis(1000), "{overlapped:?}");
+    assert!(serial >= Duration::from_millis(1500), "{serial:?}");
+    let _ = fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------- kvserver
@@ -721,84 +714,72 @@ fn ask(c: &mut (TcpStream, std::io::BufReader<TcpStream>), request: &str) -> Str
 
 #[test]
 fn kvserver_serves_several_clients_and_shuts_down() {
-    vm_pending("kvserver_serves_several_clients_and_shuts_down", || {
-        let mut kv = Kv::start(&[]);
-        let mut a = kv.client();
-        let mut b = kv.client();
-        assert_eq!(ask(&mut a, "SET colour dark blue\r\n"), "OK");
-        // Another client sees it at once; and `\n` alone ends a request too.
-        assert_eq!(ask(&mut b, "GET colour\n"), "VALUE dark blue");
-        assert_eq!(ask(&mut b, "set size 3\n"), "OK");
-        assert_eq!(ask(&mut a, "KEYS\n"), "KEYS colour size");
-        assert_eq!(ask(&mut a, "COUNT\n"), "2");
-        assert_eq!(ask(&mut a, "DEL size\n"), "DELETED");
-        assert_eq!(ask(&mut b, "DEL size\n"), "MISSING");
-        assert_eq!(ask(&mut b, "GET size\n"), "MISSING");
-        assert!(ask(&mut b, "FROB\n").starts_with("ERR unknown"));
-        assert_eq!(ask(&mut a, "QUIT\n"), "BYE");
-        // QUIT closed that connection only.
-        assert_eq!(ask(&mut b, "COUNT\n"), "1");
-        assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
-        let status = kv.child.wait().unwrap();
-        assert_eq!(status.code(), Some(0));
-    })
+    let mut kv = Kv::start(&[]);
+    let mut a = kv.client();
+    let mut b = kv.client();
+    assert_eq!(ask(&mut a, "SET colour dark blue\r\n"), "OK");
+    // Another client sees it at once; and `\n` alone ends a request too.
+    assert_eq!(ask(&mut b, "GET colour\n"), "VALUE dark blue");
+    assert_eq!(ask(&mut b, "set size 3\n"), "OK");
+    assert_eq!(ask(&mut a, "KEYS\n"), "KEYS colour size");
+    assert_eq!(ask(&mut a, "COUNT\n"), "2");
+    assert_eq!(ask(&mut a, "DEL size\n"), "DELETED");
+    assert_eq!(ask(&mut b, "DEL size\n"), "MISSING");
+    assert_eq!(ask(&mut b, "GET size\n"), "MISSING");
+    assert!(ask(&mut b, "FROB\n").starts_with("ERR unknown"));
+    assert_eq!(ask(&mut a, "QUIT\n"), "BYE");
+    // QUIT closed that connection only.
+    assert_eq!(ask(&mut b, "COUNT\n"), "1");
+    assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
+    let status = kv.child.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
 }
 
 /// The Colibri client that the README shows (for systems without `nc`) talks to the server, and
 /// says so when there is nobody to talk to.
 #[test]
 fn kvclient_talks_to_kvserver_and_reports_a_missing_server() {
-    vm_pending(
-        "kvclient_talks_to_kvserver_and_reports_a_missing_server",
-        || {
-            let kv = Kv::start(&[]);
-            let client = scripts().join("kvserver/kvclient.colibri");
-            let out = run_script(
-                &client,
-                &[&kv.addr, "SET a 1", "GET a", "COUNT", "SHUTDOWN"],
-            );
-            assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-            assert_eq!(text(&out.stdout), "OK\nVALUE 1\n1\nBYE\n");
-            let mut kv = kv;
-            assert_eq!(kv.child.wait().unwrap().code(), Some(0));
-            // The server has stopped: its port refuses (a port that was just closed).
-            let out = run_script(&client, &[&kv.addr, "COUNT"]);
-            assert_eq!(out.status.code(), Some(1));
-            assert!(
-                text(&out.stderr).contains("cannot reach the server"),
-                "{}",
-                text(&out.stderr)
-            );
-            let out = run_script(&client, &[&kv.addr]);
-            assert_eq!(out.status.code(), Some(2));
-        },
-    )
+    let kv = Kv::start(&[]);
+    let client = scripts().join("kvserver/kvclient.colibri");
+    let out = run_script(
+        &client,
+        &[&kv.addr, "SET a 1", "GET a", "COUNT", "SHUTDOWN"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "OK\nVALUE 1\n1\nBYE\n");
+    let mut kv = kv;
+    assert_eq!(kv.child.wait().unwrap().code(), Some(0));
+    // The server has stopped: its port refuses (a port that was just closed).
+    let out = run_script(&client, &[&kv.addr, "COUNT"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("cannot reach the server"),
+        "{}",
+        text(&out.stderr)
+    );
+    let out = run_script(&client, &[&kv.addr]);
+    assert_eq!(out.status.code(), Some(2));
 }
 
 #[test]
 fn kvserver_closes_idle_connections_and_reports_a_bad_address() {
-    vm_pending(
-        "kvserver_closes_idle_connections_and_reports_a_bad_address",
-        || {
-            let kv = Kv::start(&["--idle", "1.5"]);
-            let mut c = kv.client();
-            assert_eq!(ask(&mut c, "COUNT\n"), "0");
-            // Silent for longer than the idle time: the server closes the connection.
-            use std::io::BufRead;
-            let mut line = String::new();
-            assert_eq!(c.1.read_line(&mut line).unwrap(), 0);
-            drop(kv);
+    let kv = Kv::start(&["--idle", "1.5"]);
+    let mut c = kv.client();
+    assert_eq!(ask(&mut c, "COUNT\n"), "0");
+    // Silent for longer than the idle time: the server closes the connection.
+    use std::io::BufRead;
+    let mut line = String::new();
+    assert_eq!(c.1.read_line(&mut line).unwrap(), 0);
+    drop(kv);
 
-            let script = scripts().join("kvserver/kvserver.colibri");
-            let out = run_script(&script, &["--addr", "not an address"]);
-            assert_eq!(out.status.code(), Some(1));
-            assert!(
-                text(&out.stderr).contains("is not an address"),
-                "{}",
-                text(&out.stderr)
-            );
-        },
-    )
+    let script = scripts().join("kvserver/kvserver.colibri");
+    let out = run_script(&script, &["--addr", "not an address"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("is not an address"),
+        "{}",
+        text(&out.stderr)
+    );
 }
 
 /// `--idle` is a deadline for each request line, and what it is given must be a number of
@@ -835,63 +816,61 @@ fn kvserver_refuses_an_idle_time_or_a_connection_cap_that_makes_no_sense() {
 /// connection that leaves makes room again.
 #[test]
 fn kvserver_turns_away_connections_over_its_cap() {
-    vm_pending("kvserver_turns_away_connections_over_its_cap", || {
-        use std::io::BufRead;
-        let kv = Kv::start(&["--max-connections", "2"]);
-        let mut a = kv.client();
-        let mut b = kv.client();
-        // Both are being served (the answer shows the server has taken them into its table).
-        assert_eq!(ask(&mut a, "SET k v\n"), "OK");
-        assert_eq!(ask(&mut b, "GET k\n"), "VALUE v");
-        let mut c = kv.client();
-        let mut line = String::new();
-        c.1.read_line(&mut line).unwrap();
-        assert_eq!(line.trim_end(), "ERR too many connections");
-        line.clear();
-        assert_eq!(
-            c.1.read_line(&mut line).unwrap(),
-            0,
-            "it is closed after that"
-        );
-        // The others are not disturbed.
-        assert_eq!(ask(&mut a, "COUNT\n"), "1");
-        // `a` leaves; the server notices when its coroutine ends, so ask until there is room.
-        assert_eq!(ask(&mut a, "QUIT\n"), "BYE");
-        let started = std::time::Instant::now();
-        loop {
-            let mut d = kv.client();
-            // The wait in `is_turned_away` only saves time: whatever it says, the answer to `COUNT`
-            // decides. The refusal line may come late on a slow machine, and then it is the answer
-            // (or, where closing with unread input resets the connection, the read fails: that is
-            // the documented case of a client that was turned away).
-            if !is_turned_away(&mut d) {
-                let asked = d.0.write_all(b"COUNT\n").and_then(|()| {
-                    use std::io::BufRead;
-                    let mut line = String::new();
-                    d.1.read_line(&mut line).map(|_| line)
-                });
-                match asked {
-                    Ok(line) if line.trim_end() == "1" => break,
-                    Ok(line) => assert_eq!(line.trim_end(), "ERR too many connections"),
-                    Err(e) => assert!(
-                        matches!(
-                            e.kind(),
-                            std::io::ErrorKind::ConnectionReset
-                                | std::io::ErrorKind::ConnectionAborted
-                                | std::io::ErrorKind::BrokenPipe
-                        ),
-                        "{e}"
+    use std::io::BufRead;
+    let kv = Kv::start(&["--max-connections", "2"]);
+    let mut a = kv.client();
+    let mut b = kv.client();
+    // Both are being served (the answer shows the server has taken them into its table).
+    assert_eq!(ask(&mut a, "SET k v\n"), "OK");
+    assert_eq!(ask(&mut b, "GET k\n"), "VALUE v");
+    let mut c = kv.client();
+    let mut line = String::new();
+    c.1.read_line(&mut line).unwrap();
+    assert_eq!(line.trim_end(), "ERR too many connections");
+    line.clear();
+    assert_eq!(
+        c.1.read_line(&mut line).unwrap(),
+        0,
+        "it is closed after that"
+    );
+    // The others are not disturbed.
+    assert_eq!(ask(&mut a, "COUNT\n"), "1");
+    // `a` leaves; the server notices when its coroutine ends, so ask until there is room.
+    assert_eq!(ask(&mut a, "QUIT\n"), "BYE");
+    let started = std::time::Instant::now();
+    loop {
+        let mut d = kv.client();
+        // The wait in `is_turned_away` only saves time: whatever it says, the answer to `COUNT`
+        // decides. The refusal line may come late on a slow machine, and then it is the answer
+        // (or, where closing with unread input resets the connection, the read fails: that is
+        // the documented case of a client that was turned away).
+        if !is_turned_away(&mut d) {
+            let asked = d.0.write_all(b"COUNT\n").and_then(|()| {
+                use std::io::BufRead;
+                let mut line = String::new();
+                d.1.read_line(&mut line).map(|_| line)
+            });
+            match asked {
+                Ok(line) if line.trim_end() == "1" => break,
+                Ok(line) => assert_eq!(line.trim_end(), "ERR too many connections"),
+                Err(e) => assert!(
+                    matches!(
+                        e.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::BrokenPipe
                     ),
-                }
+                    "{e}"
+                ),
             }
-            assert!(
-                started.elapsed() < Duration::from_secs(20),
-                "no room after a connection left"
-            );
-            std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
-    })
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "no room after a connection left"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
 }
 
 /// Clients that are turned away and then say nothing do not hold up the accept loop: with a cap
@@ -901,28 +880,23 @@ fn kvserver_turns_away_connections_over_its_cap() {
 /// the real figure a few tenths of a second on a slow runner.
 #[test]
 fn kvserver_does_not_stall_on_silent_clients_it_turns_away() {
-    vm_pending(
-        "kvserver_does_not_stall_on_silent_clients_it_turns_away",
-        || {
-            use std::io::BufRead;
-            let kv = Kv::start(&["--max-connections", "1"]);
-            let mut a = kv.client();
-            assert_eq!(ask(&mut a, "SET k v\n"), "OK");
-            let silent: Vec<_> = (0..15).map(|_| kv.client()).collect();
-            let started = std::time::Instant::now();
-            let mut last = kv.client();
-            let mut line = String::new();
-            last.1.read_line(&mut line).unwrap();
-            let took = started.elapsed();
-            assert_eq!(line.trim_end(), "ERR too many connections");
-            assert!(
-                took < Duration::from_millis(1500),
-                "the line came after {took:?}"
-            );
-            drop(silent);
-            assert_eq!(ask(&mut a, "SHUTDOWN\n"), "BYE");
-        },
-    )
+    use std::io::BufRead;
+    let kv = Kv::start(&["--max-connections", "1"]);
+    let mut a = kv.client();
+    assert_eq!(ask(&mut a, "SET k v\n"), "OK");
+    let silent: Vec<_> = (0..15).map(|_| kv.client()).collect();
+    let started = std::time::Instant::now();
+    let mut last = kv.client();
+    let mut line = String::new();
+    last.1.read_line(&mut line).unwrap();
+    let took = started.elapsed();
+    assert_eq!(line.trim_end(), "ERR too many connections");
+    assert!(
+        took < Duration::from_millis(1500),
+        "the line came after {took:?}"
+    );
+    drop(silent);
+    assert_eq!(ask(&mut a, "SHUTDOWN\n"), "BYE");
 }
 
 /// A server that runs out of descriptors reports it and goes on: `accept` fails with a
@@ -931,83 +905,79 @@ fn kvserver_does_not_stall_on_silent_clients_it_turns_away() {
 #[cfg(unix)]
 #[test]
 fn kvserver_survives_running_out_of_descriptors() {
-    vm_pending("kvserver_survives_running_out_of_descriptors", || {
-        use std::io::BufRead;
-        let script = scripts().join("kvserver/kvserver.colibri");
-        let mut child = Command::new("sh")
-            .args(["-c", "ulimit -n 40; exec \"$0\" run \"$1\" --"])
-            .arg(env!("CARGO_BIN_EXE_colibri"))
-            .arg(&script)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("sh runs");
-        let tap = common::tap_stderr(&mut child);
-        let mut first = String::new();
-        std::io::BufReader::new(child.stdout.as_mut().unwrap())
-            .read_line(&mut first)
-            .unwrap();
-        let addr = tap.listening_addr(&first);
-        let mut kv = Kv { child, addr };
-        // Many more connections than the server has descriptors for. Each is served or waits in
-        // the queue of the listener.
-        let crowd: Vec<_> = (0..80).map(|_| kv.client()).collect();
-        let mut first_ones = crowd;
-        let mut a = first_ones.remove(0);
-        assert_eq!(ask(&mut a, "SET k v\n"), "OK");
-        // They all go away; the server accepts the queued ones, finds them closed, and is free.
-        drop(first_ones);
-        let mut b = kv.client();
-        assert_eq!(ask(&mut b, "GET k\n"), "VALUE v");
-        assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
-        let status = kv.child.wait().unwrap();
-        assert_eq!(status.code(), Some(0));
-    })
+    use std::io::BufRead;
+    let script = scripts().join("kvserver/kvserver.colibri");
+    let mut child = Command::new("sh")
+        .args(["-c", "ulimit -n 40; exec \"$0\" run \"$1\" --"])
+        .arg(env!("CARGO_BIN_EXE_colibri"))
+        .arg(&script)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh runs");
+    let tap = common::tap_stderr(&mut child);
+    let mut first = String::new();
+    std::io::BufReader::new(child.stdout.as_mut().unwrap())
+        .read_line(&mut first)
+        .unwrap();
+    let addr = tap.listening_addr(&first);
+    let mut kv = Kv { child, addr };
+    // Many more connections than the server has descriptors for. Each is served or waits in
+    // the queue of the listener.
+    let crowd: Vec<_> = (0..80).map(|_| kv.client()).collect();
+    let mut first_ones = crowd;
+    let mut a = first_ones.remove(0);
+    assert_eq!(ask(&mut a, "SET k v\n"), "OK");
+    // They all go away; the server accepts the queued ones, finds them closed, and is free.
+    drop(first_ones);
+    let mut b = kv.client();
+    assert_eq!(ask(&mut b, "GET k\n"), "VALUE v");
+    assert_eq!(ask(&mut b, "SHUTDOWN\n"), "BYE");
+    let status = kv.child.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
 }
 
 /// `os.exit` with coroutines blocked in `accept` and `read` ends the process at once: no
 /// background thread keeps it alive.
 #[test]
 fn os_exit_with_blocked_sockets_ends_the_process() {
-    vm_pending("os_exit_with_blocked_sockets_ends_the_process", || {
-        let dir = temp_dir("net-exit");
-        let script = dir.join("exit.colibri");
-        fs::write(
-            &script,
-            r#"import net
+    let dir = temp_dir("net-exit");
+    let script = dir.join("exit.colibri");
+    fs::write(
+        &script,
+        r#"import net
 import os
 
 fn accepting(l: net.Listener) {
-    let _ = l.accept()
+let _ = l.accept()
 }
 
 fn reading(c: net.Conn) {
-    let _ = c.read(1)
+let _ = c.read(1)
 }
 
 fn main() {
-    let l = net.listen("127.0.0.1:0").expect("listens")
-    let c = net.connect(l.addr()).expect("connects")
-    let s = l.accept().expect("accepts")
-    go reading(c)
-    go reading(s)
-    go accepting(l)
-    wait(0.05)
-    os.exit(3)
+let l = net.listen("127.0.0.1:0").expect("listens")
+let c = net.connect(l.addr()).expect("connects")
+let s = l.accept().expect("accepts")
+go reading(c)
+go reading(s)
+go accepting(l)
+wait(0.05)
+os.exit(3)
 }
 "#,
-        )
-        .unwrap();
-        let started = std::time::Instant::now();
-        let out = run_script(&script, &[]);
-        assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "{:?}",
-            started.elapsed()
-        );
-        let _ = fs::remove_dir_all(&dir);
-    })
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let out = run_script(&script, &[]);
+    assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "{:?}",
+        started.elapsed()
+    );
+    let _ = fs::remove_dir_all(&dir);
 }
 
 /// The example scripts are formatted: `colibri fmt --check` lists nothing. If this fails, run
@@ -1121,114 +1091,104 @@ fn notes_is_formatted() {
 /// reports a server that is not there and a bad command line.
 #[test]
 fn notes_client_talks_to_notes_and_reports_a_missing_server() {
-    vm_pending(
-        "notes_client_talks_to_notes_and_reports_a_missing_server",
-        || {
-            let mut notes = Notes::start(&[]);
-            let client = scripts().join("notes/notes_client.colibri");
-            let out = run_script(&client, &[&notes.addr, "buy milk", "call mom"]);
-            assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-            assert_eq!(
-                text(&out.stdout),
-                "added 1: buy milk\nadded 2: call mom\n2 notes\nexport 1 buy milk\nexport 2 call mom\n"
-            );
-            // What the client added is on the server.
-            assert!(
-                notes
-                    .call("GET", "/notes/2", "")
-                    .ends_with(r#"{"id":2,"text":"call mom"}"#)
-            );
-            notes.call("POST", "/shutdown", "");
-            assert_eq!(notes.exit_code(), Some(0));
-            // The server has stopped: its port refuses.
-            let out = run_script(&client, &[&notes.addr, "x"]);
-            assert_eq!(out.status.code(), Some(1));
-            assert!(
-                text(&out.stderr).contains("cannot reach the server"),
-                "{}",
-                text(&out.stderr)
-            );
-            let out = run_script(&client, &[&notes.addr]);
-            assert_eq!(out.status.code(), Some(2));
-        },
-    )
+    let mut notes = Notes::start(&[]);
+    let client = scripts().join("notes/notes_client.colibri");
+    let out = run_script(&client, &[&notes.addr, "buy milk", "call mom"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        "added 1: buy milk\nadded 2: call mom\n2 notes\nexport 1 buy milk\nexport 2 call mom\n"
+    );
+    // What the client added is on the server.
+    assert!(
+        notes
+            .call("GET", "/notes/2", "")
+            .ends_with(r#"{"id":2,"text":"call mom"}"#)
+    );
+    notes.call("POST", "/shutdown", "");
+    assert_eq!(notes.exit_code(), Some(0));
+    // The server has stopped: its port refuses.
+    let out = run_script(&client, &[&notes.addr, "x"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("cannot reach the server"),
+        "{}",
+        text(&out.stderr)
+    );
+    let out = run_script(&client, &[&notes.addr]);
+    assert_eq!(out.status.code(), Some(2));
 }
 
 #[test]
 fn notes_serves_a_json_api_streams_its_export_and_stops_on_shutdown() {
-    vm_pending(
-        "notes_serves_a_json_api_streams_its_export_and_stops_on_shutdown",
-        || {
-            let mut notes = Notes::start(&[]);
-            let r = notes.call("POST", "/notes", r#"{"text":"buy milk"}"#);
-            assert!(r.starts_with("HTTP/1.1 201 Created\r\n"), "{r}");
-            assert!(r.contains("\r\nLocation: /notes/1\r\n"), "{r}");
-            assert!(r.ends_with(r#"{"id":1,"text":"buy milk"}"#), "{r}");
-            notes.call("POST", "/notes", r#"{"text":"call mom"}"#);
+    let mut notes = Notes::start(&[]);
+    let r = notes.call("POST", "/notes", r#"{"text":"buy milk"}"#);
+    assert!(r.starts_with("HTTP/1.1 201 Created\r\n"), "{r}");
+    assert!(r.contains("\r\nLocation: /notes/1\r\n"), "{r}");
+    assert!(r.ends_with(r#"{"id":1,"text":"buy milk"}"#), "{r}");
+    notes.call("POST", "/notes", r#"{"text":"call mom"}"#);
 
-            let r = notes.call("GET", "/notes/2", "");
-            assert!(r.starts_with("HTTP/1.1 200 OK\r\n"), "{r}");
-            assert!(r.ends_with(r#"{"id":2,"text":"call mom"}"#), "{r}");
-            let r = notes.call("GET", "/notes", "");
-            assert!(
-                r.ends_with(r#"[{"id":1,"text":"buy milk"},{"id":2,"text":"call mom"}]"#),
-                "{r}"
-            );
-
-            // `fail` gives the status and its message; `export` is a literal, not a note number.
-            let r = notes.call("GET", "/notes/9", "");
-            assert!(r.starts_with("HTTP/1.1 404 Not Found\r\n"), "{r}");
-            assert!(r.ends_with("there is no note 9\n"), "{r}");
-            assert!(
-                notes
-                    .call("GET", "/notes/x", "")
-                    .starts_with("HTTP/1.1 400 ")
-            );
-            assert!(
-                notes
-                    .call("POST", "/notes", r#"{"text":"  "}"#)
-                    .starts_with("HTTP/1.1 422 ")
-            );
-            assert!(
-                notes
-                    .call("POST", "/notes", "not json")
-                    .starts_with("HTTP/1.1 400 ")
-            );
-            let r = notes.call("PUT", "/notes", "");
-            assert!(r.starts_with("HTTP/1.1 405 "), "{r}");
-            assert!(r.contains("\r\nAllow: GET, HEAD, OPTIONS, POST\r\n"), "{r}");
-
-            // The export is chunked: each note is one line of the body, in two chunks.
-            let r = notes.call("GET", "/notes/export", "");
-            assert!(r.starts_with("HTTP/1.1 200 OK\r\n"), "{r}");
-            assert!(r.contains("\r\nTransfer-Encoding: chunked\r\n"), "{r}");
-            assert!(
-                r.contains("\r\nContent-Type: application/x-ndjson\r\n"),
-                "{r}"
-            );
-            assert!(
-        r.ends_with(
-            "1b\r\n{\"id\":1,\"text\":\"buy milk\"}\n\r\n1b\r\n{\"id\":2,\"text\":\"call mom\"}\n\r\n0\r\n\r\n"
-        ),
-        "{r:?}"
+    let r = notes.call("GET", "/notes/2", "");
+    assert!(r.starts_with("HTTP/1.1 200 OK\r\n"), "{r}");
+    assert!(r.ends_with(r#"{"id":2,"text":"call mom"}"#), "{r}");
+    let r = notes.call("GET", "/notes", "");
+    assert!(
+        r.ends_with(r#"[{"id":1,"text":"buy milk"},{"id":2,"text":"call mom"}]"#),
+        "{r}"
     );
 
-            let r = notes.call("DELETE", "/notes/1", "");
-            assert!(r.starts_with("HTTP/1.1 204 No Content\r\n"), "{r}");
-            assert!(
-                notes
-                    .call("GET", "/notes/1", "")
-                    .starts_with("HTTP/1.1 404 ")
-            );
+    // `fail` gives the status and its message; `export` is a literal, not a note number.
+    let r = notes.call("GET", "/notes/9", "");
+    assert!(r.starts_with("HTTP/1.1 404 Not Found\r\n"), "{r}");
+    assert!(r.ends_with("there is no note 9\n"), "{r}");
+    assert!(
+        notes
+            .call("GET", "/notes/x", "")
+            .starts_with("HTTP/1.1 400 ")
+    );
+    assert!(
+        notes
+            .call("POST", "/notes", r#"{"text":"  "}"#)
+            .starts_with("HTTP/1.1 422 ")
+    );
+    assert!(
+        notes
+            .call("POST", "/notes", "not json")
+            .starts_with("HTTP/1.1 400 ")
+    );
+    let r = notes.call("PUT", "/notes", "");
+    assert!(r.starts_with("HTTP/1.1 405 "), "{r}");
+    assert!(r.contains("\r\nAllow: GET, HEAD, OPTIONS, POST\r\n"), "{r}");
 
-            // The stop answers first, then the server ends and the port is closed.
-            let r = notes.call("POST", "/shutdown", "");
-            assert!(r.starts_with("HTTP/1.1 200 OK\r\n"), "{r}");
-            assert!(r.contains("\r\nConnection: close\r\n"), "{r}");
-            assert!(r.ends_with("stopping\n"), "{r}");
-            assert_eq!(notes.exit_code(), Some(0));
-        },
-    )
+    // The export is chunked: each note is one line of the body, in two chunks.
+    let r = notes.call("GET", "/notes/export", "");
+    assert!(r.starts_with("HTTP/1.1 200 OK\r\n"), "{r}");
+    assert!(r.contains("\r\nTransfer-Encoding: chunked\r\n"), "{r}");
+    assert!(
+        r.contains("\r\nContent-Type: application/x-ndjson\r\n"),
+        "{r}"
+    );
+    assert!(
+    r.ends_with(
+        "1b\r\n{\"id\":1,\"text\":\"buy milk\"}\n\r\n1b\r\n{\"id\":2,\"text\":\"call mom\"}\n\r\n0\r\n\r\n"
+    ),
+    "{r:?}"
+);
+
+    let r = notes.call("DELETE", "/notes/1", "");
+    assert!(r.starts_with("HTTP/1.1 204 No Content\r\n"), "{r}");
+    assert!(
+        notes
+            .call("GET", "/notes/1", "")
+            .starts_with("HTTP/1.1 404 ")
+    );
+
+    // The stop answers first, then the server ends and the port is closed.
+    let r = notes.call("POST", "/shutdown", "");
+    assert!(r.starts_with("HTTP/1.1 200 OK\r\n"), "{r}");
+    assert!(r.contains("\r\nConnection: close\r\n"), "{r}");
+    assert!(r.ends_with("stopping\n"), "{r}");
+    assert_eq!(notes.exit_code(), Some(0));
 }
 
 #[test]

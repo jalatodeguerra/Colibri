@@ -3,9 +3,6 @@
 //! [`StdConfig`]. The behaviour of each module is covered by the golden tests in
 //! `tests/golden/std`.
 
-mod common;
-use common::vm_pending;
-
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
@@ -707,141 +704,132 @@ fn an_unfinished_child_is_killed_when_it_is_dropped() {
 #[cfg(unix)]
 #[test]
 fn coroutines_make_progress_while_a_child_process_runs() {
-    vm_pending(
-        "coroutines_make_progress_while_a_child_process_runs",
-        || {
-            // The child ends when the ticker has written a marker after its tenth tick, so the test
-            // waits for a condition and not for a duration (timers on a loaded macOS runner sleep far
-            // longer than asked). A blocked `Vm` never writes the marker: the child gives up after
-            // twenty seconds and the count stays at one.
-            let scratch = Scratch::new("progress");
-            let marker = scratch
-                .0
-                .join("marker")
-                .to_string_lossy()
-                .replace('\\', "/");
-            let (mut vm, out) = vm(&[colibri::Cap::Os, colibri::Cap::Fs]);
-            run(
-        &mut vm,
-        &format!(
-            r#"import process
+    // The child ends when the ticker has written a marker after its tenth tick, so the test
+    // waits for a condition and not for a duration (timers on a loaded macOS runner sleep far
+    // longer than asked). A blocked `Vm` never writes the marker: the child gives up after
+    // twenty seconds and the count stays at one.
+    let scratch = Scratch::new("progress");
+    let marker = scratch
+        .0
+        .join("marker")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let (mut vm, out) = vm(&[colibri::Cap::Os, colibri::Cap::Fs]);
+    run(
+    &mut vm,
+    &format!(
+        r#"import process
 import fs
 
 let mut ticks = 0
 let mut finished_at = 0
 
 fn ticker() {{
-    while true {{
-        ticks += 1
-        if ticks == 10 {{
-            let _ = fs.write("{marker}", "x")
-        }}
-        wait(0.001)
+while true {{
+    ticks += 1
+    if ticks == 10 {{
+        let _ = fs.write("{marker}", "x")
     }}
+    wait(0.001)
+}}
 }}
 
 fn runner() -> int {{
-    let script = "i=0; while [ ! -f \"$1\" ] && [ $i -lt 1000 ]; do sleep 0.02; i=$((i+1)); done; echo done"
-    let r = process.run("sh", ["-c", script, "sh", "{marker}"]) or |e| {{ panic(e.message()) }}
-    finished_at = ticks
-    return r.status
+let script = "i=0; while [ ! -f \"$1\" ] && [ $i -lt 1000 ]; do sleep 0.02; i=$((i+1)); done; echo done"
+let r = process.run("sh", ["-c", script, "sh", "{marker}"]) or |e| {{ panic(e.message()) }}
+finished_at = ticks
+return r.status
 }}
 
 fn main() {{
-    let t = go ticker()
-    let r = go runner()
-    print(r.join())
-    t.cancel()
-    print(finished_at >= 10)
+let t = go ticker()
+let r = go runner()
+print(r.join())
+t.cancel()
+print(finished_at >= 10)
 }}
 "#
-        ),
-    )
-    .unwrap();
-            assert_eq!(out.contents(), "0\ntrue\n");
-        },
-    )
+    ),
+)
+.unwrap();
+    assert_eq!(out.contents(), "0\ntrue\n");
 }
 
 /// Two children started by two coroutines run at the same time.
 #[test]
 fn child_processes_of_different_coroutines_overlap() {
-    vm_pending("child_processes_of_different_coroutines_overlap", || {
-        // Each child sleeps `nap` seconds (`ping -n 5` is the four seconds a Windows console-less
-        // `cmd` can sleep for, long enough that starting two `cmd`s on a busy machine does not
-        // eat the margin); run one after the other they would take twice that.
-        let (line, nap) = if cfg!(windows) {
-            ("ping -n 5 127.0.0.1 >nul & echo {n}", 4.0)
-        } else {
-            ("sleep 0.4; echo {n}", 0.4)
-        };
-        let (mut vm, out) = vm(&[colibri::Cap::Os]);
-        let start = std::time::Instant::now();
-        run(
-            &mut vm,
-            &format!(
-                r#"import process
+    // Each child sleeps `nap` seconds (`ping -n 5` is the four seconds a Windows console-less
+    // `cmd` can sleep for, long enough that starting two `cmd`s on a busy machine does not
+    // eat the margin); run one after the other they would take twice that.
+    let (line, nap) = if cfg!(windows) {
+        ("ping -n 5 127.0.0.1 >nul & echo {n}", 4.0)
+    } else {
+        ("sleep 0.4; echo {n}", 0.4)
+    };
+    let (mut vm, out) = vm(&[colibri::Cap::Os]);
+    let start = std::time::Instant::now();
+    run(
+        &mut vm,
+        &format!(
+            r#"import process
 
 fn one(n: int) -> str {{
-    let r = process.shell("{line}") or |e| {{ panic(e.message()) }}
-    return r.stdout.trim()
+let r = process.shell("{line}") or |e| {{ panic(e.message()) }}
+return r.stdout.trim()
 }}
 
 fn main() {{
-    let a = go one(1)
-    let b = go one(2)
-    print(a.join() + b.join())
+let a = go one(1)
+let b = go one(2)
+print(a.join() + b.join())
 }}
 "#
-            ),
-        )
-        .unwrap();
-        assert_eq!(out.contents(), "12\n");
-        let took = start.elapsed();
-        let limit = std::time::Duration::from_secs_f64(nap * 1.875);
-        assert!(
-            took < limit,
-            "two {nap} s programs should overlap, took {took:?}"
-        );
-    })
+        ),
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "12\n");
+    let took = start.elapsed();
+    let limit = std::time::Duration::from_secs_f64(nap * 1.875);
+    assert!(
+        took < limit,
+        "two {nap} s programs should overlap, took {took:?}"
+    );
 }
 
 /// Cancelling the coroutine that waits for a program stops the program.
 #[test]
 fn cancelling_a_coroutine_stops_its_child_process() {
-    vm_pending("cancelling_a_coroutine_stops_its_child_process", || {
-        let scratch = Scratch::new("cancel-child");
-        let marker = scratch.0.join("marker");
-        // The child waits and then creates the marker, unless it was stopped; the script looks
-        // once the child would have been done.
-        let (program, args) = sleep_then_touch("0.5", 2, &marker);
-        let settle = if cfg!(windows) { 1.5 } else { 0.8 };
-        let marker = colibri_text(&marker.to_string_lossy());
-        let (mut vm, out) = vm(&[colibri::Cap::Os, colibri::Cap::Fs]);
-        run(
-            &mut vm,
-            &format!(
-                r#"import process
+    let scratch = Scratch::new("cancel-child");
+    let marker = scratch.0.join("marker");
+    // The child waits and then creates the marker, unless it was stopped; the script looks
+    // once the child would have been done.
+    let (program, args) = sleep_then_touch("0.5", 2, &marker);
+    let settle = if cfg!(windows) { 1.5 } else { 0.8 };
+    let marker = colibri_text(&marker.to_string_lossy());
+    let (mut vm, out) = vm(&[colibri::Cap::Os, colibri::Cap::Fs]);
+    run(
+        &mut vm,
+        &format!(
+            r#"import process
 import fs
 
 fn job() {{
-    let _ = process.run("{program}", {args})
-    print("never")
+let _ = process.run("{program}", {args})
+print("never")
 }}
 
 fn main() {{
-    let c = go job()
-    wait(0.1)
-    c.cancel()
-    wait({settle})
-    print(fs.exists("{marker}"))
+let c = go job()
+wait(0.1)
+c.cancel()
+wait({settle})
+print(fs.exists("{marker}"))
 }}
 "#
-            ),
-        )
-        .unwrap();
-        assert_eq!(out.contents(), "false\n");
-    })
+        ),
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "false\n");
 }
 
 // ---- removed functions say what replaced them ----

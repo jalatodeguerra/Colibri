@@ -6,7 +6,6 @@
 #![cfg(unix)]
 
 mod common;
-use common::vm_pending;
 
 use std::io::{BufRead, Read, Write};
 use std::net::TcpStream;
@@ -81,119 +80,113 @@ fn ask(stream: &mut TcpStream, request: &str) -> String {
 
 #[test]
 fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connections_end() {
-    vm_pending(
-        "a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connections_end",
-        || {
-            let dir =
-                std::env::temp_dir().join(format!("colibri-httpd-fds-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            let _cleanup = TempDir(dir.clone());
-            let script = dir.join("server.colibri");
-            std::fs::write(&script, SERVER).unwrap();
-            let mut child = Server(
-                Command::new("sh")
-                    .args(["-c", "ulimit -n 40; exec \"$0\" run \"$1\""])
-                    .arg(env!("CARGO_BIN_EXE_colibri"))
-                    .arg(&script)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .expect("sh runs"),
-            );
-            // The pipes are read on threads, so that a server that says nothing, or never ends, fails the
-            // test after `PATIENCE` instead of hanging it.
-            let (first_tx, first_rx) = mpsc::channel();
-            let stdout = child.0.stdout.take().unwrap();
-            std::thread::spawn(move || {
-                let mut out = std::io::BufReader::new(stdout);
-                let mut first = String::new();
-                let _ = out.read_line(&mut first);
-                let _ = first_tx.send(first);
-                let _ = std::io::copy(&mut out, &mut std::io::sink());
-            });
-            // Each line of the log is sent as it comes, so the test can wait for the failure itself
-            // instead of guessing when the server has tried to accept past its limit.
-            let (log_tx, log_rx) = mpsc::channel::<String>();
-            let stderr = child.0.stderr.take().unwrap();
-            let owner = std::thread::current().name().map(String::from);
-            std::thread::spawn(move || {
-                for line in std::io::BufReader::new(stderr).lines() {
-                    let Ok(line) = line else { break };
-                    common::note_child_stderr(&owner, &line);
-                    if log_tx.send(line).is_err() {
-                        break;
-                    }
-                }
-            });
-            let mut log = String::new();
-            let first = first_rx
-                .recv_timeout(PATIENCE)
-                .expect("the server printed its address in time");
-            let Some(addr) = first.trim().strip_prefix("listening on ") else {
-                // The server did not start: its stderr says why.
-                let mut err = String::new();
-                while let Ok(line) = log_rx.recv_timeout(Duration::from_secs(2)) {
-                    err.push_str(&line);
-                    err.push('\n');
-                }
-                common::no_refusal(&err);
-                panic!("unexpected first line {first:?}; stderr: {err}");
-            };
-            let addr = addr.to_string();
-
-            // Many more connections than the server has descriptors for: each is served or waits in the
-            // queue of the listener.
-            let mut crowd: Vec<TcpStream> = (0..80)
-                .map(|_| TcpStream::connect(&addr).expect("connects"))
-                .collect();
-            // The server accepts until its table is full and then logs the failure; nothing goes away
-            // before that, so the failure cannot be missed however the scheduler orders the accepts.
-            let started = Instant::now();
-            while !log.contains("accept failed") {
-                let left = PATIENCE
-                    .checked_sub(started.elapsed())
-                    .unwrap_or_else(|| panic!("nothing was logged in time: {log:?}"));
-                match log_rx.recv_timeout(left) {
-                    Ok(line) => {
-                        log.push_str(&line);
-                        log.push('\n');
-                    }
-                    Err(_) => panic!("nothing was logged in time: {log:?}"),
-                }
+    let dir = std::env::temp_dir().join(format!("colibri-httpd-fds-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let _cleanup = TempDir(dir.clone());
+    let script = dir.join("server.colibri");
+    std::fs::write(&script, SERVER).unwrap();
+    let mut child = Server(
+        Command::new("sh")
+            .args(["-c", "ulimit -n 40; exec \"$0\" run \"$1\""])
+            .arg(env!("CARGO_BIN_EXE_colibri"))
+            .arg(&script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("sh runs"),
+    );
+    // The pipes are read on threads, so that a server that says nothing, or never ends, fails the
+    // test after `PATIENCE` instead of hanging it.
+    let (first_tx, first_rx) = mpsc::channel();
+    let stdout = child.0.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        let mut out = std::io::BufReader::new(stdout);
+        let mut first = String::new();
+        let _ = out.read_line(&mut first);
+        let _ = first_tx.send(first);
+        let _ = std::io::copy(&mut out, &mut std::io::sink());
+    });
+    // Each line of the log is sent as it comes, so the test can wait for the failure itself
+    // instead of guessing when the server has tried to accept past its limit.
+    let (log_tx, log_rx) = mpsc::channel::<String>();
+    let stderr = child.0.stderr.take().unwrap();
+    let owner = std::thread::current().name().map(String::from);
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            common::note_child_stderr(&owner, &line);
+            if log_tx.send(line).is_err() {
+                break;
             }
-            let mut a = crowd.remove(0);
-            let answer = ask(&mut a, "GET / HTTP/1.1\r\nHost: t\r\n\r\n");
-            assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
-            // They all go away; the server accepts the queued ones, finds them closed, and is free.
-            drop(crowd);
-            drop(a);
-            let mut b = TcpStream::connect(&addr).expect("connects");
-            let answer = ask(&mut b, "GET / HTTP/1.1\r\nHost: t\r\n\r\n");
-            assert!(answer.ends_with("hello\n"), "{answer}");
-            let answer = ask(
-                &mut b,
-                "POST /__stop HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n",
-            );
-            assert!(answer.ends_with("bye\n"), "{answer}");
-            drop(b);
-            let started = Instant::now();
-            let status = loop {
-                if let Some(status) = child.0.try_wait().unwrap() {
-                    break status;
-                }
-                assert!(
-                    started.elapsed() < PATIENCE,
-                    "the server did not end: {log}"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            };
-            // The rest of the log, which ends when the server closes its stderr.
-            while let Ok(line) = log_rx.recv_timeout(Duration::from_secs(5)) {
+        }
+    });
+    let mut log = String::new();
+    let first = first_rx
+        .recv_timeout(PATIENCE)
+        .expect("the server printed its address in time");
+    let Some(addr) = first.trim().strip_prefix("listening on ") else {
+        // The server did not start: its stderr says why.
+        let mut err = String::new();
+        while let Ok(line) = log_rx.recv_timeout(Duration::from_secs(2)) {
+            err.push_str(&line);
+            err.push('\n');
+        }
+        common::no_refusal(&err);
+        panic!("unexpected first line {first:?}; stderr: {err}");
+    };
+    let addr = addr.to_string();
+
+    // Many more connections than the server has descriptors for: each is served or waits in the
+    // queue of the listener.
+    let mut crowd: Vec<TcpStream> = (0..80)
+        .map(|_| TcpStream::connect(&addr).expect("connects"))
+        .collect();
+    // The server accepts until its table is full and then logs the failure; nothing goes away
+    // before that, so the failure cannot be missed however the scheduler orders the accepts.
+    let started = Instant::now();
+    while !log.contains("accept failed") {
+        let left = PATIENCE
+            .checked_sub(started.elapsed())
+            .unwrap_or_else(|| panic!("nothing was logged in time: {log:?}"));
+        match log_rx.recv_timeout(left) {
+            Ok(line) => {
                 log.push_str(&line);
                 log.push('\n');
             }
-            assert_eq!(status.code(), Some(0), "{log}");
-        },
-    )
+            Err(_) => panic!("nothing was logged in time: {log:?}"),
+        }
+    }
+    let mut a = crowd.remove(0);
+    let answer = ask(&mut a, "GET / HTTP/1.1\r\nHost: t\r\n\r\n");
+    assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
+    // They all go away; the server accepts the queued ones, finds them closed, and is free.
+    drop(crowd);
+    drop(a);
+    let mut b = TcpStream::connect(&addr).expect("connects");
+    let answer = ask(&mut b, "GET / HTTP/1.1\r\nHost: t\r\n\r\n");
+    assert!(answer.ends_with("hello\n"), "{answer}");
+    let answer = ask(
+        &mut b,
+        "POST /__stop HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n",
+    );
+    assert!(answer.ends_with("bye\n"), "{answer}");
+    drop(b);
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            started.elapsed() < PATIENCE,
+            "the server did not end: {log}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // The rest of the log, which ends when the server closes its stderr.
+    while let Ok(line) = log_rx.recv_timeout(Duration::from_secs(5)) {
+        log.push_str(&line);
+        log.push('\n');
+    }
+    assert_eq!(status.code(), Some(0), "{log}");
 }

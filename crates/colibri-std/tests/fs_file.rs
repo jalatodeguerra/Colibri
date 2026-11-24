@@ -1,9 +1,6 @@
 //! `fs.File` through the runtime API: what the golden tests cannot reach (a file bigger than
 //! its buffers, a handle that blocks, cancellation, two coroutines on one handle).
 
-mod common;
-use common::vm_pending;
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -203,63 +200,58 @@ fn a_handle_that_is_still_open_when_the_program_ends_is_flushed() {
 
 #[test]
 fn two_coroutines_writing_one_handle_never_mix_their_lines() {
-    vm_pending(
-        "two_coroutines_writing_one_handle_never_mix_their_lines",
-        || {
-            let scratch = Scratch::new("two-writers");
-            let path = scratch.file("both.log");
-            let dashes = "-".repeat(300);
-            let (mut vm, out) = vm();
-            run(
-                &mut vm,
-                &format!(
-                    r#"import fs
+    let scratch = Scratch::new("two-writers");
+    let path = scratch.file("both.log");
+    let dashes = "-".repeat(300);
+    let (mut vm, out) = vm();
+    run(
+        &mut vm,
+        &format!(
+            r#"import fs
 
 fn writer(f: fs.File, name: str, n: int) -> int {{
-    let dashes = "{dashes}"
-    for i in 0..n {{
-        let _ = f.write("{{name}} {{i}} {{dashes}}\n")
-        if i % 500 == 0 {{
-            let _ = f.flush()
-        }}
+let dashes = "{dashes}"
+for i in 0..n {{
+    let _ = f.write("{{name}} {{i}} {{dashes}}\n")
+    if i % 500 == 0 {{
+        let _ = f.flush()
     }}
-    return n
+}}
+return n
 }}
 
 fn main() -> Result[()] {{
-    let f = fs.create("{path}")?
-    let a = go writer(f, "A", 4000)
-    let b = go writer(f, "B", 4000)
-    print(a.join() + b.join())
-    f.close()?
-    return ok(())
+let f = fs.create("{path}")?
+let a = go writer(f, "A", 4000)
+let b = go writer(f, "B", 4000)
+print(a.join() + b.join())
+f.close()?
+return ok(())
 }}
 "#
-                ),
-            )
-            .unwrap_or_else(|e| panic!("{}", e.render(false)));
-            assert_eq!(out.contents(), "8000\n");
-            let text = std::fs::read_to_string(&path).unwrap();
-            let (mut a, mut b) = (0, 0);
-            for line in text.lines() {
-                let mut parts = line.split(' ');
-                match parts.next() {
-                    Some("A") => {
-                        assert_eq!(parts.next(), Some(a.to_string().as_str()));
-                        a += 1;
-                    }
-                    Some("B") => {
-                        assert_eq!(parts.next(), Some(b.to_string().as_str()));
-                        b += 1;
-                    }
-                    other => panic!("a mixed line: {other:?}"),
-                }
-                assert_eq!(parts.next().map(str::len), Some(300), "{line}");
-                assert_eq!(parts.next(), None);
-            }
-            assert_eq!((a, b), (4000, 4000));
-        },
+        ),
     )
+    .unwrap_or_else(|e| panic!("{}", e.render(false)));
+    assert_eq!(out.contents(), "8000\n");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let (mut a, mut b) = (0, 0);
+    for line in text.lines() {
+        let mut parts = line.split(' ');
+        match parts.next() {
+            Some("A") => {
+                assert_eq!(parts.next(), Some(a.to_string().as_str()));
+                a += 1;
+            }
+            Some("B") => {
+                assert_eq!(parts.next(), Some(b.to_string().as_str()));
+                b += 1;
+            }
+            other => panic!("a mixed line: {other:?}"),
+        }
+        assert_eq!(parts.next().map(str::len), Some(300), "{line}");
+        assert_eq!(parts.next(), None);
+    }
+    assert_eq!((a, b), (4000, 4000));
 }
 
 // ---- a handle that blocks, and cancellation ----
@@ -487,97 +479,87 @@ mod blocking {
     #[cfg(unix)]
     #[test]
     fn cancelling_a_coroutine_stuck_in_open_returns_at_once() {
-        vm_pending(
-            "blocking::cancelling_a_coroutine_stuck_in_open_returns_at_once",
-            || {
-                let scratch = Scratch::new("cancel-open");
-                let pipe = Pipe::new(&scratch, "pipe").path;
-                let (mut vm, out) = vm();
-                let started = Instant::now();
-                run(
-                    &mut vm,
-                    &format!(
-                        r#"import fs
+        let scratch = Scratch::new("cancel-open");
+        let pipe = Pipe::new(&scratch, "pipe").path;
+        let (mut vm, out) = vm();
+        let started = Instant::now();
+        run(
+            &mut vm,
+            &format!(
+                r#"import fs
 
 fn stuck() {{
-    let _ = fs.open("{pipe}")
-    print("never")
+let _ = fs.open("{pipe}")
+print("never")
 }}
 
 fn main() {{
-    let c = go stuck()
-    wait(0.1)
-    c.cancel()
-    print("cancelled {{c.done()}}")
+let c = go stuck()
+wait(0.1)
+c.cancel()
+print("cancelled {{c.done()}}")
 }}
 "#
-                    ),
-                )
-                .unwrap();
-                assert_eq!(out.contents(), "cancelled true\n");
-                assert!(started.elapsed() < Duration::from_secs(5));
-                // Let the stuck thread go: a writer opens the other end.
-                drop(std::fs::OpenOptions::new().write(true).open(&pipe).unwrap());
-            },
+            ),
         )
+        .unwrap();
+        assert_eq!(out.contents(), "cancelled true\n");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // Let the stuck thread go: a writer opens the other end.
+        drop(std::fs::OpenOptions::new().write(true).open(&pipe).unwrap());
     }
 
     /// A read that blocks does not stop the other coroutines, and cancelling it unwinds the
     /// coroutine (its `defer` runs) without waiting for the read.
     #[test]
     fn a_blocked_read_lets_other_coroutines_run_and_can_be_cancelled() {
-        vm_pending(
-            "blocking::a_blocked_read_lets_other_coroutines_run_and_can_be_cancelled",
-            || {
-                let scratch = Scratch::new("cancel-read");
-                let pipe = Pipe::new(&scratch, "pipe");
-                let (mut vm, out) = vm();
-                // Keeps the write end open (so the read blocks instead of ending), until told.
-                let (release, hold) = std::sync::mpsc::channel::<()>();
-                let writer = pipe.serve(move |_end| {
-                    let _ = hold.recv();
-                });
-                let pipe = pipe.path.clone();
-                let started = Instant::now();
-                run(
-                    &mut vm,
-                    &format!(
-                        r#"import fs
+        let scratch = Scratch::new("cancel-read");
+        let pipe = Pipe::new(&scratch, "pipe");
+        let (mut vm, out) = vm();
+        // Keeps the write end open (so the read blocks instead of ending), until told.
+        let (release, hold) = std::sync::mpsc::channel::<()>();
+        let writer = pipe.serve(move |_end| {
+            let _ = hold.recv();
+        });
+        let pipe = pipe.path.clone();
+        let started = Instant::now();
+        run(
+            &mut vm,
+            &format!(
+                r#"import fs
 
 fn reader(f: fs.File) {{
-    defer print("reader unwound")
-    let _ = f.read_line()
-    print("never")
+defer print("reader unwound")
+let _ = f.read_line()
+print("never")
 }}
 
 fn ticker() -> int {{
-    let mut n = 0
-    while n < 20 {{
-        wait(0.01)
-        n += 1
-    }}
-    return n
+let mut n = 0
+while n < 20 {{
+    wait(0.01)
+    n += 1
+}}
+return n
 }}
 
 fn main() -> Result[()] {{
-    let f = fs.open("{pipe}")?
-    let r = go reader(f)
-    let t = go ticker()
-    print("ticks {{t.join()}}")
-    r.cancel()
-    print("cancelled {{r.done()}}")
-    return ok(())
+let f = fs.open("{pipe}")?
+let r = go reader(f)
+let t = go ticker()
+print("ticks {{t.join()}}")
+r.cancel()
+print("cancelled {{r.done()}}")
+return ok(())
 }}
 "#
-                    ),
-                )
-                .unwrap_or_else(|e| panic!("{}", e.render(false)));
-                assert_eq!(out.contents(), "ticks 20\nreader unwound\ncancelled true\n");
-                assert!(started.elapsed() < Duration::from_secs(5));
-                release.send(()).unwrap();
-                writer.join().unwrap();
-            },
+            ),
         )
+        .unwrap_or_else(|e| panic!("{}", e.render(false)));
+        assert_eq!(out.contents(), "ticks 20\nreader unwound\ncancelled true\n");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        release.send(()).unwrap();
+        writer.join().unwrap();
     }
 
     /// While one coroutine is stuck inside a read of a handle, another that uses the same
@@ -585,178 +567,163 @@ fn main() -> Result[()] {{
     /// the first read is over.
     #[test]
     fn a_second_coroutine_on_a_busy_handle_waits_its_turn() {
-        vm_pending(
-            "blocking::a_second_coroutine_on_a_busy_handle_waits_its_turn",
-            || {
-                let scratch = Scratch::new("turns");
-                let pipe = Pipe::new(&scratch, "pipe");
-                let (mut vm, out) = vm();
-                let writer = pipe.serve(|end| {
-                    std::thread::sleep(Duration::from_millis(300));
-                    end.write_all(b"first\nsecond\n").unwrap();
-                });
-                let pipe = pipe.path.clone();
-                run(
-                    &mut vm,
-                    &format!(
-                        r#"import fs
+        let scratch = Scratch::new("turns");
+        let pipe = Pipe::new(&scratch, "pipe");
+        let (mut vm, out) = vm();
+        let writer = pipe.serve(|end| {
+            std::thread::sleep(Duration::from_millis(300));
+            end.write_all(b"first\nsecond\n").unwrap();
+        });
+        let pipe = pipe.path.clone();
+        run(
+            &mut vm,
+            &format!(
+                r#"import fs
 
 fn next(f: fs.File, name: str) -> str {{
-    match f.read_line() {{
-        ok(some(line)) => return "{{name}} got {{line}}"
-        ok(none) => return "{{name}} got the end"
-        err(e) => return e.message()
-    }}
+match f.read_line() {{
+    ok(some(line)) => return "{{name}} got {{line}}"
+    ok(none) => return "{{name}} got the end"
+    err(e) => return e.message()
+}}
 }}
 
 fn ticker() -> int {{
-    let mut n = 0
-    while n < 10 {{
-        wait(0.01)
-        n += 1
-    }}
-    return n
+let mut n = 0
+while n < 10 {{
+    wait(0.01)
+    n += 1
+}}
+return n
 }}
 
 fn main() -> Result[()] {{
-    let f = fs.open("{pipe}")?
-    let a = go next(f, "a")
-    let b = go next(f, "b")
-    let t = go ticker()
-    print("ticks {{t.join()}}")
-    let first = a.join()
-    let second = b.join()
-    print(first)
-    print(second)
-    return ok(())
+let f = fs.open("{pipe}")?
+let a = go next(f, "a")
+let b = go next(f, "b")
+let t = go ticker()
+print("ticks {{t.join()}}")
+let first = a.join()
+let second = b.join()
+print(first)
+print(second)
+return ok(())
 }}
 "#
-                    ),
-                )
-                .unwrap_or_else(|e| panic!("{}", e.render(false)));
-                writer.join().unwrap();
-                assert_eq!(out.contents(), "ticks 10\na got first\nb got second\n");
-            },
+            ),
         )
+        .unwrap_or_else(|e| panic!("{}", e.render(false)));
+        writer.join().unwrap();
+        assert_eq!(out.contents(), "ticks 10\na got first\nb got second\n");
     }
 
     /// A coroutine cancelled while its read waits for the turn never reads: the line that
     /// would have been its goes to the coroutine behind it.
     #[test]
     fn a_cancelled_queued_read_never_runs_and_the_ones_behind_it_do() {
-        vm_pending(
-            "blocking::a_cancelled_queued_read_never_runs_and_the_ones_behind_it_do",
-            || {
-                let scratch = Scratch::new("cancel-queued");
-                let pipe = Pipe::new(&scratch, "pipe");
-                let (mut vm, out) = vm();
-                // The data is written only after the program says it has cancelled `x`, so the result
-                // does not depend on how fast the program gets there. (A read that has had its turn
-                // before the cancel takes its line, and the cancel comes too late for it.)
-                let marker = scratch.file("cancelled");
-                let marker_path = std::path::PathBuf::from(&marker);
-                let writer = pipe.serve(move |end| {
-                    let waited = Instant::now();
-                    while !marker_path.exists() {
-                        assert!(
-                            waited.elapsed() < Duration::from_secs(60),
-                            "the program never cancelled x"
-                        );
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    end.write_all(b"first\nsecond\nthird\n").unwrap();
-                });
-                let pipe = pipe.path.clone();
-                run(
-                    &mut vm,
-                    &format!(
-                        r#"import fs
+        let scratch = Scratch::new("cancel-queued");
+        let pipe = Pipe::new(&scratch, "pipe");
+        let (mut vm, out) = vm();
+        // The data is written only after the program says it has cancelled `x`, so the result
+        // does not depend on how fast the program gets there. (A read that has had its turn
+        // before the cancel takes its line, and the cancel comes too late for it.)
+        let marker = scratch.file("cancelled");
+        let marker_path = std::path::PathBuf::from(&marker);
+        let writer = pipe.serve(move |end| {
+            let waited = Instant::now();
+            while !marker_path.exists() {
+                assert!(
+                    waited.elapsed() < Duration::from_secs(60),
+                    "the program never cancelled x"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            end.write_all(b"first\nsecond\nthird\n").unwrap();
+        });
+        let pipe = pipe.path.clone();
+        run(
+            &mut vm,
+            &format!(
+                r#"import fs
 
 fn next(f: fs.File, name: str) -> str {{
-    match f.read_line() {{
-        ok(some(line)) => return "{{name}} got {{line}}"
-        ok(none) => return "{{name}} got the end"
-        err(e) => return e.message()
-    }}
+match f.read_line() {{
+    ok(some(line)) => return "{{name}} got {{line}}"
+    ok(none) => return "{{name}} got the end"
+    err(e) => return e.message()
+}}
 }}
 
 fn main() -> Result[()] {{
-    let f = fs.open("{pipe}")?
-    // `wait` yields, so each coroutine starts and takes its place in the queue of the handle
-    // before the next one is made: the queue is a, x, y whatever the time each wait takes.
-    let a = go next(f, "a")
-    wait(0.01)
-    let x = go next(f, "x")
-    wait(0.01)
-    let y = go next(f, "y")
-    wait(0.01)
-    x.cancel()
-    fs.write("{marker}", "done")?
-    print(a.join())
-    print(y.join())
-    print("main got {{f.read_line()?}}")
-    return ok(())
+let f = fs.open("{pipe}")?
+// `wait` yields, so each coroutine starts and takes its place in the queue of the handle
+// before the next one is made: the queue is a, x, y whatever the time each wait takes.
+let a = go next(f, "a")
+wait(0.01)
+let x = go next(f, "x")
+wait(0.01)
+let y = go next(f, "y")
+wait(0.01)
+x.cancel()
+fs.write("{marker}", "done")?
+print(a.join())
+print(y.join())
+print("main got {{f.read_line()?}}")
+return ok(())
 }}
 "#
-                    ),
-                )
-                .unwrap_or_else(|e| panic!("{}", e.render(false)));
-                writer.join().unwrap();
-                assert_eq!(
-                    out.contents(),
-                    "a got first\ny got second\nmain got some(\"third\")\n"
-                );
-            },
+            ),
         )
+        .unwrap_or_else(|e| panic!("{}", e.render(false)));
+        writer.join().unwrap();
+        assert_eq!(
+            out.contents(),
+            "a got first\ny got second\nmain got some(\"third\")\n"
+        );
     }
 
     /// The program ends while a read is stuck and other operations wait behind it: nothing
     /// hangs on the way out.
     #[test]
     fn ending_the_program_with_queued_operations_does_not_hang() {
-        vm_pending(
-            "blocking::ending_the_program_with_queued_operations_does_not_hang",
-            || {
-                let scratch = Scratch::new("end-queued");
-                let pipe = Pipe::new(&scratch, "pipe");
-                // Keeps the write end open, so the reads block instead of ending, until told.
-                let (release, hold) = std::sync::mpsc::channel::<()>();
-                let writer = pipe.serve(move |_end| {
-                    let _ = hold.recv();
-                });
-                let pipe = pipe.path.clone();
-                let started = Instant::now();
-                {
-                    let (mut vm, out) = vm();
-                    run(
-                        &mut vm,
-                        &format!(
-                            r#"import fs
+        let scratch = Scratch::new("end-queued");
+        let pipe = Pipe::new(&scratch, "pipe");
+        // Keeps the write end open, so the reads block instead of ending, until told.
+        let (release, hold) = std::sync::mpsc::channel::<()>();
+        let writer = pipe.serve(move |_end| {
+            let _ = hold.recv();
+        });
+        let pipe = pipe.path.clone();
+        let started = Instant::now();
+        {
+            let (mut vm, out) = vm();
+            run(
+                &mut vm,
+                &format!(
+                    r#"import fs
 
 fn next(f: fs.File) {{
-    let _ = f.read_line()
+let _ = f.read_line()
 }}
 
 fn main() -> Result[()] {{
-    let f = fs.open("{pipe}")?
-    let a = go next(f)
-    let b = go next(f)
-    let c = go next(f)
-    wait(0.1)
-    print("leaving")
-    return ok(())
+let f = fs.open("{pipe}")?
+let a = go next(f)
+let b = go next(f)
+let c = go next(f)
+wait(0.1)
+print("leaving")
+return ok(())
 }}
 "#
-                        ),
-                    )
-                    .unwrap_or_else(|e| panic!("{}", e.render(false)));
-                    assert_eq!(out.contents(), "leaving\n");
-                }
-                assert!(started.elapsed() < Duration::from_secs(5));
-                release.send(()).unwrap();
-                writer.join().unwrap();
-            },
-        )
+                ),
+            )
+            .unwrap_or_else(|e| panic!("{}", e.render(false)));
+            assert_eq!(out.contents(), "leaving\n");
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+        release.send(()).unwrap();
+        writer.join().unwrap();
     }
 }
 
@@ -769,149 +736,137 @@ mod order {
     /// Repeated, because the old failure depended on thread timing.
     #[test]
     fn a_small_write_never_overtakes_a_big_one_issued_before_it() {
-        vm_pending(
-            "order::a_small_write_never_overtakes_a_big_one_issued_before_it",
-            || {
-                let scratch = Scratch::new("order-two");
-                let file = scratch.file("order.txt");
-                let (mut vm, out) = vm();
-                run(
-                    &mut vm,
-                    &format!(
-                        r#"import fs
+        let scratch = Scratch::new("order-two");
+        let file = scratch.file("order.txt");
+        let (mut vm, out) = vm();
+        run(
+            &mut vm,
+            &format!(
+                r#"import fs
 
 fn big(f: fs.File, data: Bytes) {{
-    f.write_bytes(data).expect("big")
+f.write_bytes(data).expect("big")
 }}
 
 fn small(f: fs.File) {{
-    f.write("B").expect("small")
+f.write("B").expect("small")
 }}
 
 fn main() -> Result[()] {{
-    let builder = BytesBuilder()
-    for _ in 0..70000 {{ builder.push(65) }}
-    let data = builder.to_bytes()
-    let mut wrong = 0
-    for _ in 0..200 {{
-        let f = fs.create("{file}")?
-        let a = go big(f, data)
-        let b = go small(f)
-        a.join()
-        b.join()
-        f.close()?
-        let back = fs.read_bytes("{file}")?
-        if back.len() != 70001 || back[0] != 65 || back[70000] != 66 {{
-            wrong += 1
-        }}
+let builder = BytesBuilder()
+for _ in 0..70000 {{ builder.push(65) }}
+let data = builder.to_bytes()
+let mut wrong = 0
+for _ in 0..200 {{
+    let f = fs.create("{file}")?
+    let a = go big(f, data)
+    let b = go small(f)
+    a.join()
+    b.join()
+    f.close()?
+    let back = fs.read_bytes("{file}")?
+    if back.len() != 70001 || back[0] != 65 || back[70000] != 66 {{
+        wrong += 1
     }}
-    print("out of order: {{wrong}}")
-    return ok(())
+}}
+print("out of order: {{wrong}}")
+return ok(())
 }}
 "#
-                    ),
-                )
-                .unwrap_or_else(|e| panic!("{}", e.render(false)));
-                assert_eq!(out.contents(), "out of order: 0\n");
-            },
+            ),
         )
+        .unwrap_or_else(|e| panic!("{}", e.render(false)));
+        assert_eq!(out.contents(), "out of order: 0\n");
     }
 
     /// Three coroutines and the main fiber write pieces of different sizes: the file holds them
     /// in the order of the calls.
     #[test]
     fn writes_of_different_sizes_land_in_the_order_they_were_issued() {
-        vm_pending(
-            "order::writes_of_different_sizes_land_in_the_order_they_were_issued",
-            || {
-                let scratch = Scratch::new("order-many");
-                let file = scratch.file("many.txt");
-                let (mut vm, out) = vm();
-                run(
-                    &mut vm,
-                    &format!(
-                        r#"import fs
+        let scratch = Scratch::new("order-many");
+        let file = scratch.file("many.txt");
+        let (mut vm, out) = vm();
+        run(
+            &mut vm,
+            &format!(
+                r#"import fs
 
 fn piece(byte: u8, n: int) -> Bytes {{
-    let builder = BytesBuilder()
-    for _ in 0..n {{ builder.push(byte) }}
-    return builder.to_bytes()
+let builder = BytesBuilder()
+for _ in 0..n {{ builder.push(byte) }}
+return builder.to_bytes()
 }}
 
 fn put(f: fs.File, data: Bytes) {{
-    f.write_bytes(data).expect("put")
+f.write_bytes(data).expect("put")
 }}
 
 fn main() -> Result[()] {{
-    let a = piece(65, 150000)
-    let b = piece(66, 3)
-    let c = piece(67, 90000)
-    let mut wrong = 0
-    for _ in 0..40 {{
-        let f = fs.create("{file}")?
-        let x = go put(f, a)
-        let y = go put(f, b)
-        let z = go put(f, c)
-        f.write("D")?
-        x.join()
-        y.join()
-        z.join()
-        f.close()?
-        let back = fs.read_bytes("{file}")?
-        if back != a + b + c + "D".to_bytes() {{
-            wrong += 1
-        }}
+let a = piece(65, 150000)
+let b = piece(66, 3)
+let c = piece(67, 90000)
+let mut wrong = 0
+for _ in 0..40 {{
+    let f = fs.create("{file}")?
+    let x = go put(f, a)
+    let y = go put(f, b)
+    let z = go put(f, c)
+    f.write("D")?
+    x.join()
+    y.join()
+    z.join()
+    f.close()?
+    let back = fs.read_bytes("{file}")?
+    if back != a + b + c + "D".to_bytes() {{
+        wrong += 1
     }}
-    print("wrong files: {{wrong}}")
-    return ok(())
+}}
+print("wrong files: {{wrong}}")
+return ok(())
 }}
 "#
-                    ),
-                )
-                .unwrap_or_else(|e| panic!("{}", e.render(false)));
-                assert_eq!(out.contents(), "wrong files: 0\n");
-            },
+            ),
         )
+        .unwrap_or_else(|e| panic!("{}", e.render(false)));
+        assert_eq!(out.contents(), "wrong files: 0\n");
     }
 
     /// `close()` issued behind a big write takes its turn: the write is in the file, and a
     /// later use of the handle says it is closed.
     #[test]
     fn close_waits_for_the_writes_issued_before_it() {
-        vm_pending("order::close_waits_for_the_writes_issued_before_it", || {
-            let scratch = Scratch::new("order-close");
-            let file = scratch.file("close.txt");
-            let (mut vm, out) = vm();
-            run(
-                &mut vm,
-                &format!(
-                    r#"import fs
+        let scratch = Scratch::new("order-close");
+        let file = scratch.file("close.txt");
+        let (mut vm, out) = vm();
+        run(
+            &mut vm,
+            &format!(
+                r#"import fs
 
 fn put(f: fs.File, data: Bytes) {{
-    f.write_bytes(data).expect("put")
+f.write_bytes(data).expect("put")
 }}
 
 fn main() -> Result[()] {{
-    let builder = BytesBuilder()
-    for _ in 0..200000 {{ builder.push(65) }}
-    let f = fs.create("{file}")?
-    let w = go put(f, builder.to_bytes())
-    f.close()?
-    print("size {{fs.stat("{file}")?.size}}")
-    w.join()
-    print(f.write("x"))
-    return ok(())
+let builder = BytesBuilder()
+for _ in 0..200000 {{ builder.push(65) }}
+let f = fs.create("{file}")?
+let w = go put(f, builder.to_bytes())
+f.close()?
+print("size {{fs.stat("{file}")?.size}}")
+w.join()
+print(f.write("x"))
+return ok(())
 }}
 "#
-                ),
-            )
-            .unwrap_or_else(|e| panic!("{}", e.render(false)));
-            assert!(
-                out.contents().starts_with("size 200000\nerr("),
-                "{}",
-                out.contents()
-            );
-        })
+            ),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.render(false)));
+        assert!(
+            out.contents().starts_with("size 200000\nerr("),
+            "{}",
+            out.contents()
+        );
     }
 
     /// `flush` on a handle opened for reading has nothing to push and is fine.
@@ -952,73 +907,68 @@ return ok(())
 /// finish and resume before the hook has printed: the order of the lines is fixed.
 #[test]
 fn a_drop_hook_reads_a_handle_while_a_coroutine_reads_it_without_a_hang() {
-    vm_pending(
-        "a_drop_hook_reads_a_handle_while_a_coroutine_reads_it_without_a_hang",
-        || {
-            let scratch = Scratch::new("drophook");
-            let pipe = pipe::Pipe::new(&scratch, "pipe");
-            let marker = scratch.file("hook-running");
-            let marker_path = std::path::PathBuf::from(&marker);
-            let writer = pipe.serve(move |end| {
-                use std::io::Write;
-                let waited = Instant::now();
-                while !marker_path.exists() {
-                    assert!(
-                        waited.elapsed() < Duration::from_secs(20),
-                        "the drop hook never ran"
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                end.write_all(b"one\ntwo\n").unwrap();
-            });
-            let path = pipe.path.clone();
-            let source = format!(
-                r#"import fs
+    let scratch = Scratch::new("drophook");
+    let pipe = pipe::Pipe::new(&scratch, "pipe");
+    let marker = scratch.file("hook-running");
+    let marker_path = std::path::PathBuf::from(&marker);
+    let writer = pipe.serve(move |end| {
+        use std::io::Write;
+        let waited = Instant::now();
+        while !marker_path.exists() {
+            assert!(
+                waited.elapsed() < Duration::from_secs(20),
+                "the drop hook never ran"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        end.write_all(b"one\ntwo\n").unwrap();
+    });
+    let path = pipe.path.clone();
+    let source = format!(
+        r#"import fs
 
 class Guard {{ file: fs.File }}
 
 impl Drop for Guard {{
-    fn drop(self) {{
-        let _ = fs.write("{marker}", "running")
-        print("drop hook reads: {{self.file.read_line()}}")
-    }}
+fn drop(self) {{
+    let _ = fs.write("{marker}", "running")
+    print("drop hook reads: {{self.file.read_line()}}")
+}}
 }}
 
 fn reader(f: fs.File) {{
-    print("coroutine reads: {{f.read_line()}}")
+print("coroutine reads: {{f.read_line()}}")
 }}
 
 fn main() -> Result[()] {{
-    let f = fs.open("{path}")?
-    let r = go reader(f)
-    // `wait` yields, so the coroutine has started its read, which cannot finish yet.
-    wait(0.01)
-    let mut g: Option[Guard] = some(Guard {{ file: f }})
-    g = none
-    r.join()
-    print("done")
-    return ok(())
+let f = fs.open("{path}")?
+let r = go reader(f)
+// `wait` yields, so the coroutine has started its read, which cannot finish yet.
+wait(0.01)
+let mut g: Option[Guard] = some(Guard {{ file: f }})
+g = none
+r.join()
+print("done")
+return ok(())
 }}
 "#
-            );
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let (mut vm, out) = vm();
-                let result = run(&mut vm, &source).map(|()| out.contents());
-                let _ = tx.send(result.map_err(|e| e.to_string()));
-            });
-            let out = match rx.recv_timeout(Duration::from_secs(30)) {
-                Ok(Ok(text)) => text,
-                Ok(Err(e)) => panic!("{e}"),
-                Err(_) => panic!("the program did not finish within 30 s: it hangs"),
-            };
-            writer.join().unwrap();
-            // The coroutine's read was called first, so it has the first line; the hook has the second,
-            // and prints first because the coroutine cannot resume while the hook blocks the thread.
-            assert_eq!(
-                out,
-                "drop hook reads: ok(some(\"two\"))\ncoroutine reads: ok(some(\"one\"))\ndone\n"
-            );
-        },
-    )
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut vm, out) = vm();
+        let result = run(&mut vm, &source).map(|()| out.contents());
+        let _ = tx.send(result.map_err(|e| e.to_string()));
+    });
+    let out = match rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(Ok(text)) => text,
+        Ok(Err(e)) => panic!("{e}"),
+        Err(_) => panic!("the program did not finish within 30 s: it hangs"),
+    };
+    writer.join().unwrap();
+    // The coroutine's read was called first, so it has the first line; the hook has the second,
+    // and prints first because the coroutine cannot resume while the hook blocks the thread.
+    assert_eq!(
+        out,
+        "drop hook reads: ok(some(\"two\"))\ncoroutine reads: ok(some(\"one\"))\ndone\n"
+    );
 }

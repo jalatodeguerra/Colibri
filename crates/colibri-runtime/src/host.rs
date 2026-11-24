@@ -137,10 +137,15 @@ impl Registration<'_> {
     /// The function never suspends its caller: it does not call `run_async`, `run_async_cancellable`
     /// or `try_await_completion` (it may still block the thread, as a plain file read does; that
     /// blocks every coroutine the same way on both engines). A function that does suspend its
-    /// caller must not be marked. The bytecode VM calls a marked function beside running
-    /// coroutines at no extra cost, and refuses every other host call while a coroutine is alive,
-    /// since it cannot suspend one for a wait before vm-plan step 12; the tree-walker takes no
-    /// notice. After step 12 the mark lets the VM skip the switch of stacks.
+    /// caller must not be marked. The bytecode VM runs a coroutine's call of any other host
+    /// function on a native stack of its own, so that the coroutine can be suspended inside it
+    /// (this costs a switch of stacks); a marked function runs on the caller's stack, where
+    /// [`crate::Ctx::can_suspend`] reads `false`. The tree-walker takes no notice.
+    ///
+    /// A function that is not marked runs on that stack, which is 1 MiB unless
+    /// [`crate::VmBuilder::coroutine_stack_size`] says otherwise; a function that needs more
+    /// native stack than the size crashes the process when a coroutine calls it. Marking is
+    /// also the way to give such a function the whole stack of the caller, if it never waits.
     pub fn no_await(self) -> Self {
         self.vm.set_no_await(self.index);
         self

@@ -13,6 +13,15 @@ colibri-check = { path = "../colibri-check" }
 colibri-core = { path = "../colibri-core" }
 colibri-ffi = { path = "../colibri-ffi", optional = true }
 
+# Native stacks for host functions that a coroutine calls (`stacks`). corosensei has no
+# wasm32 target: on the web a host function cannot suspend.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+corosensei = "0.3.4"
+
+# `madvise`, to give a pooled stack's deep pages back to the system (Unix only).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 # Calls into C libraries (`extern` blocks, `ptr[T]`): libffi and dlopen. Without it, a program
 # with an `extern` block fails to load with a message that says so.

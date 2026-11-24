@@ -18,7 +18,6 @@
 //!   `colibri run` on the package prints.
 
 mod common;
-use common::vm_pending;
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -540,10 +539,8 @@ fn guide_samples_check_and_are_formatted() {
 
 #[test]
 fn guide_samples_print_the_output_the_guide_shows() {
-    vm_pending("guide_samples_print_the_output_the_guide_shows", || {
-        let problems = check_all("run", true);
-        assert!(problems.is_empty(), "\n{}", problems.join("\n\n"));
-    })
+    let problems = check_all("run", true);
+    assert!(problems.is_empty(), "\n{}", problems.join("\n\n"));
 }
 
 #[test]
