@@ -243,8 +243,8 @@ impl<'r, T: HostType> TypeBuilder<'r, T> {
     }
 
     /// The method or static function described last never suspends its caller, like
-    /// [`crate::Registration::no_await`]: the bytecode VM may call it beside running
-    /// coroutines.
+    /// [`crate::Registration::no_await`]: the bytecode VM calls it from a coroutine without a
+    /// native stack of its own.
     pub fn no_await(&mut self) -> &mut Self {
         match self.methods.last_mut() {
             Some(last) => last.no_await = true,

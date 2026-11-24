@@ -1,20 +1,18 @@
-//! How the bytecode VM stops at its refusal of a host call that can wait while a coroutine is
-//! alive (vm-plan step 12 lifts it). A refusal stops the program where it is met, whichever
+//! How the bytecode VM stops at a refusal (`the bytecode VM does not support ...`). Nothing a
+//! checked program says is refused any more, so the host function `blocky` stands in for the
+//! feature the VM lacks by failing with the text of a refusal. A refusal stops the program where it
+//! is met, whichever
 //! coroutine meets it and whatever resumed that coroutine: `go`, a wait or a join on the main
 //! fiber, `task.tick` or a tick of the host. Nothing the program wrote runs for it (no `defer`,
 //! no `Drop` hook, not even at shutdown), and it carries the trace of the fiber that raises it.
 //!
-//! Every test runs on the VM only: the tree-walker has no such refusal, which the host
-//! functions `blocky` (unmarked, so it may wait) and `fine` (marked `no_await`) stand for.
+//! Every test runs on the VM only: the tree-walker has no such refusal.
 
-use std::cell::Cell;
-use std::rc::Rc;
 
 use colibri::{Ctx, EngineKind, Error, HostType, SharedBuffer, TypeBuilder, Vm};
 use colibri_runtime as colibri;
 
-const REFUSAL: &str =
-    "the bytecode VM does not support a host function that can wait, beside running coroutines yet";
+const REFUSAL: &str = "the bytecode VM does not support a stand-in feature yet";
 
 fn vm() -> (Vm, SharedBuffer) {
     let out = SharedBuffer::new();
@@ -22,8 +20,8 @@ fn vm() -> (Vm, SharedBuffer) {
         .engine(EngineKind::Bytecode)
         .stdout(Box::new(out.clone()))
         .build();
-    vm.register_fn("blocky", || 7i64).unwrap();
-    vm.register_fn("fine", || 8i64).unwrap().no_await();
+    vm.register_fn("blocky", |cx: &mut Ctx| -> i64 { cx.raise(REFUSAL) })
+        .unwrap();
     (vm, out)
 }
 
@@ -355,24 +353,26 @@ fn main() {
     assert_eq!(out.take(), "fine runs\n");
 }
 
-/// An embedder's host-class method can be marked `no_await`, and then it is called beside
-/// coroutines like a host function; an unmarked one is refused.
-struct Gauge {
-    n: Rc<Cell<i64>>,
-}
+/// A function or method marked `no_await` is called from a coroutine on the caller's stack, one that
+/// is not marked on a stack of its own, where it can wait for a background operation: what
+/// `Ctx::can_suspend` reads inside it.
+struct Gauge;
 
 impl HostType for Gauge {
     const NAME: &'static str = "Gauge";
     fn describe(d: &mut TypeBuilder<'_, Self>) {
-        d.static_fn("new", [], || Gauge {
-            n: Rc::new(Cell::new(0)),
-        });
-        d.method("read", [], |this: &Gauge| this.n.get()).no_await();
-        d.method_mut("bump", [], |_cx: &mut Ctx, this: &mut Gauge| {
-            this.n.set(this.n.get() + 1)
-        })
+        d.static_fn("new", [], || Gauge);
+        d.method_mut(
+            "marked",
+            [],
+            |cx: &mut Ctx, _this: &mut Gauge| cx.can_suspend(),
+        )
         .no_await();
-        d.method("slow", [], |this: &Gauge| this.n.get());
+        d.method_mut(
+            "unmarked",
+            [],
+            |cx: &mut Ctx, _this: &mut Gauge| cx.can_suspend(),
+        );
     }
 }
 
@@ -380,28 +380,16 @@ impl HostType for Gauge {
 fn a_host_class_method_can_be_marked_no_await() {
     let (mut vm, out) = vm();
     vm.register_type::<Gauge>().unwrap();
+    vm.register_fn("fn_marked", |cx: &mut Ctx| cx.can_suspend())
+        .unwrap()
+        .no_await();
+    vm.register_fn("fn_unmarked", |cx: &mut Ctx| cx.can_suspend())
+        .unwrap();
     vm.load_source(
         "game.colibri",
-        "fn tick(g: Gauge) {\n    wait(1.0)\n    g.bump()\n    print(g.read())\n}\nfn main() {\n    let g = Gauge.new()\n    let _c = go tick(g)\n    g.bump()\n    print(g.read())\n    task.tick(2.0)\n}\n",
+        "fn probe(g: Gauge) {\n    print(\"{g.marked()} {g.unmarked()} {fn_marked()} {fn_unmarked()}\")\n}\nfn main() {\n    let g = Gauge.new()\n    let c = go probe(g)\n    c.join()\n}\n",
     )
     .unwrap();
-    vm.run_main()
-        .expect("marked methods run beside a coroutine");
-    assert_eq!(out.contents(), "1\n2\n");
-
-    let (mut vm, out) = vm_with_gauge();
-    vm.load_source(
-        "game.colibri",
-        "fn sleeper() {\n    wait(1.0)\n}\nfn main() {\n    let g = Gauge.new()\n    let _c = go sleeper()\n    print(\"before\")\n    print(g.slow())\n}\n",
-    )
-    .unwrap();
-    let shown = text(&vm.run_main().expect_err("an unmarked method is refused"));
-    assert!(shown.contains(REFUSAL), "{shown}");
-    assert_eq!(out.contents(), "before\n");
-}
-
-fn vm_with_gauge() -> (Vm, SharedBuffer) {
-    let (mut vm, out) = vm();
-    vm.register_type::<Gauge>().unwrap();
-    (vm, out)
+    vm.run_main().expect("main");
+    assert_eq!(out.contents(), "false true false true\n");
 }

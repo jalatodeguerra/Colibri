@@ -1005,8 +1005,8 @@ impl Vm {
     }
 
     /// Whether the host function `name` of `module` never waits for anything outside the
-    /// program (a pure one): the VM runs it beside live coroutines, and refuses any other
-    /// until it can suspend a coroutine for a wait (vm-plan step 12).
+    /// program (a pure one): the VM calls it from a coroutine without a native stack of its
+    /// own, which any other function gets so that the coroutine can wait inside it.
     fn is_no_await(&self, module: &str, name: &str) -> bool {
         let class = name.split_once('.').map(|(c, _)| format!("{c}.*"));
         self.no_await.iter().any(|(m, waiting)| {
