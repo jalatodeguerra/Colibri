@@ -74,3 +74,5 @@ scripts::report_requests_overlap_with_concurrency  # the built-in `ListLen`
 test_cmd::a_test_that_returns_err_fails_with_the_error_chain  # `match`
 test_cmd::coroutines_do_not_leak_into_the_next_test  # `go`
 watch::a_running_event_loop_is_patched_in_place  # `go`
+watch::a_restart_runs_main_again_and_carries_state  # `go`
+watch::code_that_does_not_check_is_reported_and_the_old_program_goes_on  # `go`

@@ -18,10 +18,12 @@ fn scripts() -> PathBuf {
 }
 
 fn colibri(args: &[&str]) -> Output {
-    colibri_command()
-        .args(args)
-        .output()
-        .expect("the colibri binary runs")
+    common::checked(
+        colibri_command()
+            .args(args)
+            .output()
+            .expect("the colibri binary runs"),
+    )
 }
 
 /// `colibri run <script> -- <args...>`.
@@ -555,6 +557,7 @@ fn report_git_flag_adds_the_commit_inside_a_repository() {
                     "--git",
                 ])
                 .output()
+                .map(common::checked)
                 .unwrap();
             assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
             assert!(
@@ -681,17 +684,15 @@ impl Kv {
             .args(["run", script.to_str().unwrap(), "--"])
             .args(extra)
             .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("the colibri binary runs");
+        let tap = common::tap_stderr(&mut child);
         let mut first = String::new();
         std::io::BufReader::new(child.stdout.as_mut().unwrap())
             .read_line(&mut first)
             .unwrap();
-        let addr = first
-            .trim()
-            .strip_prefix("listening on ")
-            .unwrap_or_else(|| panic!("unexpected first line {first:?}"))
-            .to_string();
+        let addr = tap.listening_addr(&first);
         Kv { child, addr }
     }
 
@@ -975,15 +976,12 @@ fn kvserver_survives_running_out_of_descriptors() {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("sh runs");
+        let tap = common::tap_stderr(&mut child);
         let mut first = String::new();
         std::io::BufReader::new(child.stdout.as_mut().unwrap())
             .read_line(&mut first)
             .unwrap();
-        let addr = first
-            .trim()
-            .strip_prefix("listening on ")
-            .unwrap_or_else(|| panic!("unexpected first line {first:?}"))
-            .to_string();
+        let addr = tap.listening_addr(&first);
         let mut kv = Kv { child, addr };
         // Many more connections than the server has descriptors for. Each is served or waits in
         // the queue of the listener.
@@ -1077,8 +1075,10 @@ impl Notes {
             .args(["run", script.to_str().unwrap(), "--"])
             .args(extra)
             .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("the colibri binary runs");
+        let tap = common::tap_stderr(&mut child);
         // The address is read on a thread, so that a server that prints nothing fails the test
         // after a while and does not hang it.
         let stdout = child.stdout.take().unwrap();
@@ -1095,12 +1095,12 @@ impl Notes {
             child,
             addr: String::new(),
         };
-        let first = first.expect("the server printed its address");
-        notes.addr = first
-            .trim()
-            .strip_prefix("listening on ")
-            .unwrap_or_else(|| panic!("unexpected first line {first:?}"))
-            .to_string();
+        let Ok(first) = first else {
+            let err = tap.text();
+            common::no_refusal(&err);
+            panic!("the server printed no address; stderr: {err}");
+        };
+        notes.addr = tap.listening_addr(&first);
         notes
     }
 

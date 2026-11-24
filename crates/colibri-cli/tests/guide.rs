@@ -276,11 +276,13 @@ fn colibri(dir: &Path, args: &[&str]) -> Ran {
         let _ = guard.0.kill();
         let _ = guard.0.wait();
     }
-    Ran {
+    let ran = Ran {
         code: status.map(|s| s.code().unwrap_or(-1)),
         stdout: String::from_utf8_lossy(&out.join().unwrap()).replace("\r\n", "\n"),
         stderr: String::from_utf8_lossy(&err.join().unwrap()).replace("\r\n", "\n"),
-    }
+    };
+    common::no_refusal(&ran.stderr);
+    ran
 }
 
 /// A fresh folder for the samples of one test, removed at the end.

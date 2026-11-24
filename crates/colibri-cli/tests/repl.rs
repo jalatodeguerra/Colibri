@@ -21,7 +21,7 @@ fn repl(input: &str) -> (String, String) {
         .expect("stdin")
         .write_all(input.as_bytes())
         .expect("input");
-    let out = child.wait_with_output().expect("colibri ends");
+    let out = common::checked(child.wait_with_output().expect("colibri ends"));
     assert!(out.status.success());
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -506,7 +506,7 @@ fn repl_with(args: &[&str], input: &str) -> (bool, String, String) {
         .expect("stdin")
         .write_all(input.as_bytes())
         .expect("input");
-    let out = child.wait_with_output().expect("colibri ends");
+    let out = common::checked(child.wait_with_output().expect("colibri ends"));
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),

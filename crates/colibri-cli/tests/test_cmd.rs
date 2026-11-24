@@ -7,10 +7,12 @@ use std::path::PathBuf;
 use std::process::Output;
 
 fn colibri(args: &[&str]) -> Output {
-    colibri_command()
-        .args(args)
-        .output()
-        .expect("the colibri binary runs")
+    common::checked(
+        colibri_command()
+            .args(args)
+            .output()
+            .expect("the colibri binary runs"),
+    )
 }
 
 /// A fresh folder holding `files` (`(relative path, text)`).
@@ -94,11 +96,13 @@ fn a_passing_package_reports_every_test_and_exits_zero() {
 #[test]
 fn a_package_without_a_path_uses_the_current_folder() {
     let dir = folder("cwd", PACKAGE);
-    let out = colibri_command()
-        .arg("test")
-        .current_dir(&dir)
-        .output()
-        .unwrap();
+    let out = common::checked(
+        colibri_command()
+            .arg("test")
+            .current_dir(&dir)
+            .output()
+            .unwrap(),
+    );
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(stdout(&out).contains("4 passed, 0 failed"));
 }

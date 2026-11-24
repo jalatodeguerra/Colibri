@@ -7,10 +7,12 @@ use std::path::PathBuf;
 use std::process::Output;
 
 fn colibri(args: &[&str]) -> Output {
-    colibri_command()
-        .args(args)
-        .output()
-        .expect("the colibri binary runs")
+    common::checked(
+        colibri_command()
+            .args(args)
+            .output()
+            .expect("the colibri binary runs"),
+    )
 }
 
 /// Writes `source` to a unique temporary file.
@@ -113,11 +115,13 @@ fn deep_recursion_is_a_stack_overflow_panic_not_a_crash() {
         "long traces are elided: {stderr}"
     );
     assert!(stderr.lines().count() < 40, "{stderr}");
-    let full = colibri_command()
-        .args(["run", path.to_str().unwrap()])
-        .env("COLIBRI_FULL_TRACE", "1")
-        .output()
-        .unwrap();
+    let full = common::checked(
+        colibri_command()
+            .args(["run", path.to_str().unwrap()])
+            .env("COLIBRI_FULL_TRACE", "1")
+            .output()
+            .unwrap(),
+    );
     let full = String::from_utf8_lossy(&full.stderr);
     assert!(!full.contains("more calls"), "{full}");
     assert!(full.lines().count() > 5000, "{}", full.lines().count());
@@ -452,11 +456,13 @@ fn run_and_check_without_a_file_use_the_current_folder() {
         ],
     );
     let run = |arg: &str| {
-        colibri_command()
-            .arg(arg)
-            .current_dir(&dir)
-            .output()
-            .expect("the colibri binary runs")
+        common::checked(
+            colibri_command()
+                .arg(arg)
+                .current_dir(&dir)
+                .output()
+                .expect("the colibri binary runs"),
+        )
     };
     let out = run("run");
     assert_eq!(
@@ -599,11 +605,13 @@ fn fmt_walks_directories_but_skips_target_and_hidden_ones() {
 fn fmt_without_a_path_formats_the_current_directory() {
     let dir = temp_dir("cwd");
     let path = write(&dir, "x/a.colibri", MESSY);
-    let out = colibri_command()
-        .arg("fmt")
-        .current_dir(&dir)
-        .output()
-        .expect("the colibri binary runs");
+    let out = common::checked(
+        colibri_command()
+            .arg("fmt")
+            .current_dir(&dir)
+            .output()
+            .expect("the colibri binary runs"),
+    );
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(std::fs::read_to_string(path).unwrap(), TIDY);
 }

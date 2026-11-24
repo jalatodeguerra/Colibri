@@ -128,11 +128,17 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
             let first = first_rx
                 .recv_timeout(PATIENCE)
                 .expect("the server printed its address in time");
-            let addr = first
-                .trim()
-                .strip_prefix("listening on ")
-                .unwrap_or_else(|| panic!("unexpected first line {first:?}"))
-                .to_string();
+            let Some(addr) = first.trim().strip_prefix("listening on ") else {
+                // The server did not start: its stderr says why.
+                let mut err = String::new();
+                while let Ok(line) = log_rx.recv_timeout(Duration::from_secs(2)) {
+                    err.push_str(&line);
+                    err.push('\n');
+                }
+                common::no_refusal(&err);
+                panic!("unexpected first line {first:?}; stderr: {err}");
+            };
+            let addr = addr.to_string();
 
             // Many more connections than the server has descriptors for: each is served or waits in the
             // queue of the listener.

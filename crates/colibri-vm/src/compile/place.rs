@@ -428,7 +428,10 @@ impl FnCompiler<'_> {
         span: Span,
     ) {
         let lr = self.local(l);
-        let scalar = is_scalar(&place.ty);
+        if op.is_none() {
+            self.note_host_value(l, rhs);
+        }
+        let scalar = is_scalar(&place.ty) && self.local_kind(l) == Kind::Scalar;
         match op {
             None if scalar && dst_safe(rhs) => self.expr(rhs, lr),
             None => {
@@ -473,7 +476,7 @@ impl FnCompiler<'_> {
         } else {
             self.emit(Op::StoreLocal { l: lr, s: t }, span);
             self.free_moved(t);
-            self.note_release(self.local_ty(l));
+            self.note_release_kind(self.local_kind(l));
         }
     }
 

@@ -82,10 +82,12 @@ fn check_no_child_is_left(name: &str, ending: &str, code: i32) {
     let file = dir.join("main.colibri");
     fs::write(&file, program(dir.to_str().unwrap(), ending)).unwrap();
     let started = Instant::now();
-    let out = colibri_command()
-        .args(["run", file.to_str().unwrap()])
-        .output()
-        .unwrap();
+    let out = common::checked(
+        colibri_command()
+            .args(["run", file.to_str().unwrap()])
+            .output()
+            .unwrap(),
+    );
     assert_eq!(
         out.status.code(),
         Some(code),

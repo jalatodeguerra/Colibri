@@ -34,10 +34,12 @@ fn folder(name: &str) -> PathBuf {
 fn run_script(dir: &Path, parent: &str) -> String {
     let file = dir.join("parent.colibri");
     fs::write(&file, parent).unwrap();
-    let out = colibri_command()
-        .args(["run", file.to_str().unwrap()])
-        .output()
-        .unwrap();
+    let out = common::checked(
+        colibri_command()
+            .args(["run", file.to_str().unwrap()])
+            .output()
+            .unwrap(),
+    );
     assert!(
         out.status.success(),
         "{}{}",

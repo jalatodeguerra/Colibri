@@ -57,14 +57,20 @@ impl Watch {
     fn wait_for(&mut self, stderr: bool, needle: &str) -> Vec<String> {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            let (rx, seen) = if stderr {
-                (&self.err, &mut self.seen_err)
-            } else {
-                (&self.out, &mut self.seen_out)
-            };
-            while let Ok(line) = rx.try_recv() {
-                seen.push(line);
+            // Both streams are drained on every round: a refusal on stderr fails at once, even
+            // when the test is waiting for stdout.
+            while let Ok(line) = self.out.try_recv() {
+                self.seen_out.push(line);
             }
+            while let Ok(line) = self.err.try_recv() {
+                self.seen_err.push(line);
+            }
+            common::no_refusal(&self.seen_err.join("\n"));
+            let seen = if stderr {
+                &self.seen_err
+            } else {
+                &self.seen_out
+            };
             if seen.iter().any(|l| l.contains(needle)) {
                 return seen.clone();
             }
@@ -115,16 +121,18 @@ fn a_running_event_loop_is_patched_in_place() {
 
 #[test]
 fn a_restart_runs_main_again_and_carries_state() {
-    let v1 = "let mut n = 41\nfn save_state() -> str => \"{n}\"\nfn tick() -> int => 1\nfn main() {\n    print(\"v1 {n}\")\n    go forever()\n}\nfn forever() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
-    let v2 = "let mut n = 0\nfn restore_state(s: str) {\n    print(\"restored {s}\")\n}\nfn tick(x: int) -> int => x\nfn main() {\n    print(\"v2\")\n    go forever()\n}\nfn forever() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
-    let path = temp_file("restart", v1);
-    let mut w = Watch::start(&path);
-    w.wait_for(false, "v1 41");
-    std::fs::write(&path, v2).unwrap();
-    w.wait_for(true, "restarted");
-    let out = w.wait_for(false, "v2");
-    let err = w.wait_for(true, "state carried");
-    assert!(out.iter().any(|l| l == "restored 41"), "{out:?} {err:?}");
+    vm_pending("a_restart_runs_main_again_and_carries_state", || {
+        let v1 = "var n = 41\nfn save_state() -> str => \"{n}\"\nfn tick() -> int => 1\nfn main() {\n    print(\"v1 {n}\")\n    go forever()\n}\nfn forever() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
+        let v2 = "var n = 0\nfn restore_state(s: str) {\n    print(\"restored {s}\")\n}\nfn tick(x: int) -> int => x\nfn main() {\n    print(\"v2\")\n    go forever()\n}\nfn forever() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
+        let path = temp_file("restart", v1);
+        let mut w = Watch::start(&path);
+        w.wait_for(false, "v1 41");
+        std::fs::write(&path, v2).unwrap();
+        w.wait_for(true, "restarted");
+        let out = w.wait_for(false, "v2");
+        let err = w.wait_for(true, "state carried");
+        assert!(out.iter().any(|l| l == "restored 41"), "{out:?} {err:?}");
+    })
 }
 
 #[test]
@@ -146,13 +154,18 @@ fn a_panic_waits_for_an_edit_then_runs_again() {
 
 #[test]
 fn code_that_does_not_check_is_reported_and_the_old_program_goes_on() {
-    let ok = "fn msg() -> str => \"fine\"\nfn main() {\n    print(msg())\n    go t()\n}\nfn t() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
-    let path = temp_file("check", ok);
-    let mut w = Watch::start(&path);
-    w.wait_for(false, "fine");
-    std::fs::write(&path, ok.replace("-> str => \"fine\"", "-> str => 5")).unwrap();
-    w.wait_for(true, "keeping the old program");
-    assert!(w.child.try_wait().unwrap().is_none());
+    vm_pending(
+        "code_that_does_not_check_is_reported_and_the_old_program_goes_on",
+        || {
+            let ok = "fn msg() -> str => \"fine\"\nfn main() {\n    print(msg())\n    go t()\n}\nfn t() {\n    while true {\n        wait_real(0.05)\n    }\n}\n";
+            let path = temp_file("check", ok);
+            let mut w = Watch::start(&path);
+            w.wait_for(false, "fine");
+            std::fs::write(&path, ok.replace("-> str => \"fine\"", "-> str => 5")).unwrap();
+            w.wait_for(true, "keeping the old program");
+            assert!(w.child.try_wait().unwrap().is_none());
+        },
+    )
 }
 
 #[test]
@@ -171,10 +184,12 @@ fn warnings_are_printed_before_the_top_level_code_runs() {
         "warnfirst",
         "import os\nfn main() {\n    let x = 1\n    let x = 2\n    print(x)\n}\nos.exit(3)\n",
     );
-    let out = colibri_command()
-        .args(["run", "--watch", path.to_str().unwrap()])
-        .output()
-        .expect("the colibri binary runs");
+    let out = common::checked(
+        colibri_command()
+            .args(["run", "--watch", path.to_str().unwrap()])
+            .output()
+            .expect("the colibri binary runs"),
+    );
     assert_eq!(out.status.code(), Some(3));
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("Warning"),

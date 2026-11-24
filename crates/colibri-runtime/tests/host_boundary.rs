@@ -356,3 +356,77 @@ fn every_host_call_costs_a_budget_step() {
         );
     }
 }
+
+/// A host function `keep` that stores the object it is given, and `lie`, declared `-> T`, that
+/// hands it back for a `T` the script instantiates with `int`: the local that receives the
+/// result owns an object although its type is a scalar.
+fn lying_host(source_body: &str) -> String {
+    let before = |vm: &mut colibri::Vm, _: &Handles| {
+        let stash: Rc<std::cell::RefCell<Option<Value>>> = Rc::default();
+        let put = Rc::clone(&stash);
+        vm.register_fn("keep", move |v: Value| {
+            *put.borrow_mut() = Some(v);
+        })
+        .unwrap();
+        vm.register_fn("lie", move |x: Value| -> Value {
+            drop(x);
+            stash.borrow_mut().take().expect("keep first")
+        })
+        .unwrap();
+    };
+    both(
+        &plain(&before),
+        &format!(
+            "class Res {{ name: str }}\nimpl Drop for Res {{\n    fn drop(self) {{ print(\"drop {{self.name}}\") }}\n}}\n{source_body}"
+        ),
+    )
+}
+
+#[test]
+fn a_host_result_that_owns_an_object_is_dropped_from_an_untyped_let() {
+    let outcome = lying_host(
+        "fn main() {\n    keep(Res { name: \"a\" })\n    let n = lie(1)\n    print(\"after\")\n}\n",
+    );
+    assert_eq!(outcome, "after\ndrop a\n--\nok");
+}
+
+#[test]
+fn a_host_result_that_owns_an_object_is_dropped_from_a_let_typed_int() {
+    let outcome = lying_host(
+        "fn main() {\n    keep(Res { name: \"b\" })\n    let n: int = lie(1)\n    print(\"after\")\n}\n",
+    );
+    assert_eq!(outcome, "after\ndrop b\n--\nok");
+}
+
+#[test]
+fn a_host_result_that_owns_an_object_is_dropped_when_an_int_var_is_overwritten() {
+    let outcome = lying_host(
+        "fn main() {\n    var n = 0\n    keep(Res { name: \"c\" })\n    n = lie(1)\n    print(\"after\")\n    n = 5\n    print(\"reassigned\")\n}\n",
+    );
+    assert_eq!(outcome, "after\ndrop c\nreassigned\n--\nok");
+}
+
+#[test]
+fn a_host_result_that_owns_an_object_is_dropped_by_each_trip_of_a_loop() {
+    let outcome = lying_host(
+        "fn main() {\n    for i in 0..3 {\n        keep(Res { name: \"l{i}\" })\n        let n = lie(i)\n    }\n    print(\"after\")\n}\n",
+    );
+    assert_eq!(outcome, "drop l0\ndrop l1\ndrop l2\nafter\n--\nok");
+}
+
+#[test]
+fn a_host_result_that_owns_an_object_is_dropped_when_a_loop_assigns_it_to_a_var() {
+    let outcome = lying_host(
+        "fn main() {\n    var n = 0\n    for i in 0..3 {\n        n = 7\n        keep(Res { name: \"m{i}\" })\n        n = lie(i)\n    }\n    print(\"after\")\n}\n",
+    );
+    assert_eq!(outcome, "drop m0\ndrop m1\nafter\ndrop m2\n--\nok");
+}
+
+#[test]
+fn a_host_result_that_owns_an_object_is_dropped_from_a_temporary() {
+    let outcome = lying_host(
+        "fn main() {\n    keep(Res { name: \"d\" })\n    print(lie(1))\n    print(\"after\")\n}\n",
+    );
+    assert_eq!(outcome.lines().last(), Some("ok"), "{outcome}");
+    assert!(outcome.contains("drop d"), "{outcome}");
+}
