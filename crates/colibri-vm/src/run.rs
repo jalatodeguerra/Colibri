@@ -783,12 +783,15 @@ impl Machine {
                     sync!();
                     tri!(self.op_canon_key(fiber, &chunk, base, pc, [d, m, k]));
                 }
-                Op::HoldIter { .. } | Op::HoldListPlace { .. } => {
+                Op::HoldIter { .. } | Op::HoldListPlace { .. } | Op::HoldListLend { .. } => {
                     sync!();
                     tri!(self.op_hold(fiber, &chunk, base, pc, op));
                 }
-                Op::ForListNext { d, a } | Op::ForListNextVar { d, a } => {
-                    let var = matches!(op, Op::ForListNextVar { .. });
+                Op::ForListNext { d, a }
+                | Op::ForListNextVar { d, a }
+                | Op::ForListNextLend { d, a } => {
+                    let var = !matches!(op, Op::ForListNext { .. });
+                    let lend = matches!(op, Op::ForListNextLend { .. });
                     // The common trip, with no call out: an item is there, the budget lasts, and
                     // the item is bound. Everything else (the end of the list, a failing step, a
                     // source that is not a list) is `op_for_list_next`'s, which starts over.
@@ -802,7 +805,13 @@ impl Machine {
                         if !chunk.hidden && self.core.budget.left <= 0 {
                             break 'trip false;
                         }
-                        let Some(item) = list.at(i as usize) else {
+                        // A lent slot: the item moves out and nothing keeps a second reference.
+                        let lent = lend && matches!(rd!(a + 3), Value::Bool(true));
+                        let Some(item) = (if lent {
+                            list.lend_at(i as usize)
+                        } else {
+                            list.at(i as usize)
+                        }) else {
                             break 'trip false;
                         };
                         if !chunk.hidden {
@@ -811,7 +820,7 @@ impl Machine {
                         if let Value::Int(n) = wr!(a + 1) {
                             *n += 1;
                         }
-                        if var {
+                        if var && !lent {
                             put!(a + 2, item.dup());
                         }
                         put!(d, item);
@@ -822,7 +831,7 @@ impl Machine {
                         pc += 1;
                     } else {
                         sync!();
-                        if tri!(self.op_for_list_next(fiber, &chunk, base, pc, [d, a], var)) {
+                        if tri!(self.op_for_list_next(fiber, &chunk, base, pc, [d, a], var, lend)) {
                             pc += 1;
                         }
                     }
@@ -837,6 +846,24 @@ impl Machine {
                 Op::ForWriteBack { l, a } => {
                     sync!();
                     self.op_for_write_back(fiber, base, l, a);
+                }
+                Op::ForWriteBackLend { l, a } => {
+                    if let Value::Bool(true) = rd!(a + 3)
+                        && let Value::Int(next) = *rd!(a + 1)
+                        && let Value::List(list) = rd!(a)
+                    {
+                        // The binding goes back into the slot it was lent from. The binding is a
+                        // plain slot (the compiler checked), and the slot holds `()`.
+                        let list = Rc::clone(list);
+                        let v = std::mem::replace(wr!(l), Value::Unit);
+                        if let Err(lost) = list.unlend_at((next - 1) as usize, v) {
+                            sync!();
+                            self.release(lost);
+                        }
+                    } else {
+                        sync!();
+                        self.op_for_write_back(fiber, base, l, a);
+                    }
                 }
 
                 // Only the variant is compared: the checker's types make the enum and the arity

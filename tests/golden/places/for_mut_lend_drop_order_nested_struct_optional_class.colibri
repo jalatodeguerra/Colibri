@@ -1,0 +1,25 @@
+// A struct inside a struct, holding an optional class instance.
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) {
+        print("drop {self.name}")
+    }
+}
+struct Inner { r: Res? }
+struct Outer { inner: Inner, n: int }
+
+fn main() {
+    let mut xs = [Outer { inner: Inner { r: some(Res { name: "old0" }) }, n: 0 }, Outer { inner: Inner { r: some(Res { name: "old1" }) }, n: 1 }]
+    for mut o in xs {
+        o.inner = Inner { r: none }
+        print("end of trip {o.n}")
+    }
+    print("after the loop")
+}
+
+// expect: end of trip 0
+// expect: drop old0
+// expect: end of trip 1
+// expect: drop old1
+// expect: after the loop

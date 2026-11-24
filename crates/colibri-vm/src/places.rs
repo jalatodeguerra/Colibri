@@ -545,14 +545,27 @@ impl Machine {
                 Value::Set(s) => s.iter_hold(),
                 _ => return Err(self.internal(fiber, span, "a `for` over a non-collection")),
             },
-            Op::HoldListPlace { r, site } => {
+            Op::HoldListPlace { r, site } | Op::HoldListLend { r, site } => {
                 let Some(Site::Name(name)) = chunk.sites.get(usize::from(site)) else {
                     return Err(self.internal(fiber, span, "a hold without its name"));
                 };
-                match &fiber.regs[base + usize::from(r)] {
-                    Value::List(l) => l.place_hold(name),
+                let at = base + usize::from(r);
+                let token = match &fiber.regs[at] {
+                    Value::List(l) => {
+                        // The slot of an element may be lent only while nobody else can see the
+                        // list: the source local and this register are the two owners, the body
+                        // cannot name the local, and nobody can take a new reference to a list
+                        // they do not hold (it has no weak references).
+                        let sole = Rc::strong_count(l) == 2;
+                        let token = l.place_hold(name);
+                        (token, sole)
+                    }
                     _ => return Err(self.internal(fiber, span, "a `for mut` over a non-list")),
+                };
+                if let Op::HoldListLend { .. } = op {
+                    Self::put_reg(fiber, at + 3, Value::Bool(token.1));
                 }
+                token.0
             }
             _ => return Err(self.internal(fiber, span, "not a hold instruction")),
         };
@@ -572,8 +585,28 @@ impl Machine {
         pc: usize,
         [d, a]: [u16; 2],
         var: bool,
+        lend: bool,
     ) -> Result<bool, Ctl> {
         let src = base + usize::from(a);
+        if lend
+            && let [Value::List(list), Value::Int(i), _, Value::Bool(true)] =
+                &mut fiber.regs[src..src + 4]
+            && (*i as usize) < list.len()
+        {
+            // One budget step per trip, before the slot is touched: a failing step leaves the
+            // element where it is.
+            if !chunk.hidden {
+                self.core.budget.left -= 1;
+                if self.core.budget.left < 0 {
+                    let span = chunk.spans[pc - 1];
+                    return Err(self.step_failure(fiber, span));
+                }
+            }
+            let item = list.lend_at(*i as usize).unwrap_or(Value::Unit);
+            *i += 1;
+            Self::put_reg(fiber, base + usize::from(d), item);
+            return Ok(true);
+        }
         if let [Value::List(list), Value::Int(i)] = &mut fiber.regs[src..src + 2]
             && let Some(item) = list.at(*i as usize)
         {

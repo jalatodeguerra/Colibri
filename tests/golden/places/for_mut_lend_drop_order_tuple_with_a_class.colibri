@@ -1,0 +1,26 @@
+// A tuple element holding a class: replacing the object is a release that must happen at the end
+// of the trip (the write-back), not at the assignment.
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) {
+        print("drop {self.name}")
+    }
+}
+
+fn main() {
+    let mut xs = [(0, Res { name: "old0" }), (1, Res { name: "old1" })]
+    for mut t in xs {
+        t.1 = Res { name: "new{t.0}" }
+        print("end of trip {t.0}")
+    }
+    print("after the loop")
+}
+
+// expect: end of trip 0
+// expect: drop old0
+// expect: end of trip 1
+// expect: drop old1
+// expect: after the loop
+// expect: drop new0
+// expect: drop new1

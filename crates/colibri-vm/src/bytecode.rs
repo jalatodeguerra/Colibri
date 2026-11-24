@@ -661,6 +661,13 @@ pub enum Op {
         r: Reg,
         site: u16,
     },
+    /// `HoldListPlace` of a `for mut` loop that may lend the element slot (see `ForListNextLend`):
+    /// it also leaves `true` in `r + 3` when nothing but the source local and `r` holds the list,
+    /// `false` otherwise.
+    HoldListLend {
+        r: Reg,
+        site: u16,
+    },
 
     // ---- `for` over collections and iterators ----
     // Each loop keeps its source in `a` and its position in `a + 1`. When an item is there, the
@@ -672,6 +679,14 @@ pub enum Op {
     },
     /// `for mut` over a list: also leaves a clone of the item in `a + 2`.
     ForListNextVar {
+        d: Reg,
+        a: Reg,
+    },
+    /// `for mut` over a list that may lend the slot (the loop's `r + 3` says): the item is moved
+    /// out of the list, which keeps `()` in its place until `ForWriteBackLend`, so the binding
+    /// holds the only reference and a field write does not copy the struct. When `r + 3` is
+    /// `false` it is `ForListNextVar`.
+    ForListNextLend {
         d: Reg,
         a: Reg,
     },
@@ -693,6 +708,12 @@ pub enum Op {
     /// writes it into the list `a` at the index before the one in `a + 1` unless it is the
     /// element `a + 2` already is; releases both.
     ForWriteBack {
+        l: Reg,
+        a: Reg,
+    },
+    /// `ForWriteBack` of a loop that may have lent the slot: puts the binding back into it (the
+    /// slot holds `()`); when `a + 3` is `false` it is `ForWriteBack`.
+    ForWriteBackLend {
         l: Reg,
         a: Reg,
     },
@@ -1027,6 +1048,7 @@ impl Op {
             | Op::Unpack { d, s, .. } => end(&[d, s]),
             Op::ForListNext { d, a } => end(&[d, a.saturating_add(1)]),
             Op::ForListNextVar { d, a } => end(&[d, a.saturating_add(2)]),
+            Op::ForListNextLend { d, a } => end(&[d, a.saturating_add(3)]),
             Op::Drop { r }
             | Op::DropInert { r }
             | Op::DropCheck { r }
@@ -1121,10 +1143,12 @@ impl Op {
             | Op::CanonKey { .. }
             | Op::HoldIter { .. }
             | Op::HoldListPlace { .. }
+            | Op::HoldListLend { .. }
             | Op::ForMapNext { .. }
             | Op::ForSetNext { .. }
             | Op::ForIterNext { .. }
             | Op::ForWriteBack { .. }
+            | Op::ForWriteBackLend { .. }
             | Op::TestLit { .. }
             | Op::TestRange { .. }
             | Op::TestConst { .. }
@@ -1343,12 +1367,17 @@ impl Chunk {
             Op::HoldListPlace { r, site } => {
                 format!("HoldListPlace r{r} {}", self.site_text(site))
             }
+            Op::HoldListLend { r, site } => {
+                format!("HoldListLend r{r} {}", self.site_text(site))
+            }
             Op::ForListNext { d, a } => format!("ForListNext r{d} src=r{a}"),
             Op::ForListNextVar { d, a } => format!("ForListNextVar r{d} src=r{a}"),
+            Op::ForListNextLend { d, a } => format!("ForListNextLend r{d} src=r{a}"),
             Op::ForMapNext { d, a } => format!("ForMapNext r{d} src=r{a}"),
             Op::ForSetNext { d, a } => format!("ForSetNext r{d} src=r{a}"),
             Op::ForIterNext { d, a } => format!("ForIterNext r{d} src=r{a}"),
             Op::ForWriteBack { l, a } => format!("ForWriteBack r{l} src=r{a}"),
+            Op::ForWriteBackLend { l, a } => format!("ForWriteBackLend r{l} src=r{a}"),
             Op::TestVariant { r, v } => format!("TestVariant r{r} .{v}"),
             Op::TestInt { r, k } => format!("TestInt r{r} {k}"),
             Op::TestLit { r, site } => format!("TestLit r{r} {}", self.site_text(site)),

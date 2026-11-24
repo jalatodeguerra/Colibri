@@ -104,7 +104,24 @@ impl FnCtx<'_, '_> {
         body: &ast::Block,
     ) -> Expr {
         let id = self.new_loop(label);
+        // A `for mut` over a plain local lends the element's slot when the body never names the
+        // local (the VM adds the conditions only it can see).
+        let source_local = match &source {
+            ForSource::List { list, .. } if places => match &list.kind {
+                hir::ExprKind::Read(place) if place.path.is_empty() => match place.anchor {
+                    hir::Anchor::Local(l) => Some(l),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        };
+        let named_before = source_local.map(|l| self.flags[l.0 as usize].names);
         let (binding, block) = self.loop_body(mutable, pat, elem, body);
+        let lend = match (source_local, named_before) {
+            (Some(l), Some(before)) => self.flags[l.0 as usize].names == before,
+            _ => false,
+        };
         self.loops.pop();
         self.mk(
             hir::ExprKind::For(Box::new(ForLoop {
@@ -112,6 +129,7 @@ impl FnCtx<'_, '_> {
                 binding,
                 source,
                 places,
+                lend,
                 body: block,
             })),
             Ty::Unit,

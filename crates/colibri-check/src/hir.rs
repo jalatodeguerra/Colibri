@@ -699,6 +699,10 @@ pub struct ForLoop {
     /// `for mut x in list`: the element is a place; the final value of the binding is written
     /// back after each iteration (DESIGN §11.6). Only lists.
     pub places: bool,
+    /// `for mut x in xs` where `xs` is a plain local that the body, its closures and its defers
+    /// never name. The element's slot may then be lent to the binding for the trip (the VM
+    /// decides, from the storage and the element type).
+    pub lend: bool,
     pub body: Block,
 }
 

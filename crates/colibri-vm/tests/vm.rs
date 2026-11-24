@@ -307,7 +307,69 @@ fn each(ps: List[P]) {
         p.n += 1
     }
 }";
-    // The source (r3), its position (r4) and the copy of the element in flight (r5) are
+    // The element is a struct of scalars, so the loop may lend the slot of the element to the
+    // binding (`HoldListLend` decides at run time, from the owners of the list). The source (r3),
+    // its position (r4), the copy of the element in flight (r5) and the lent flag (r6) are
+    // consecutive registers. `ForListNextLend` skips the `Jmp` that ends the loop when it
+    // produced an item. The write-back is the last act of a trip, after the trip's hook check
+    // (in the pad: `FoldHooks` at 0025, then `ForWriteBackLend` at 0026); the pad then lets go of
+    // the guard and drops the source (0027-0028).
+    let expected = "\
+0000  Step 2
+0001  Copy r1 r0
+0002  Copy r3 r1
+0003  LoadInt r4 0
+0004  HoldListLend r3 \"xs\"
+0005  ForListNextLend r2 src=r3
+0006  Jmp -> 0015
+0007  Step 1
+0008  LoadInt r8 1
+0009  GetField r9 r2 .0
+0010  AddI r7 r9 r8
+0011  SetField r2 r7 .0
+0012  ForWriteBackLend r2 src=r3
+0013  CheckHooks
+0014  Jmp -> 0005
+0015  Unhold
+0016  DropCheck r3
+0017  DropCheck r1
+0018  ReturnUnit
+0019  Drop r1
+0020  FoldHooks
+0021  Jmp -> 0031
+0022  FoldHooks
+0023  FoldHooks
+0024  FoldHooks
+0025  ForWriteBackLend r2 src=r3
+0026  FoldHooks
+0027  Unhold
+0028  Drop r3
+0029  FoldHooks
+0030  Jmp -> 0019
+0031  Resume
+unwind [0000, 0001) -> 0020
+unwind [0004, 0005) -> 0028
+unwind [0005, 0006) -> 0027
+unwind [0007, 0008) -> 0023
+unwind [0009, 0012) -> 0022
+unwind [0013, 0014) -> 0027
+unwind [0016, 0017) -> 0019
+";
+    assert_eq!(dis(src, "each"), expected);
+}
+
+#[test]
+fn a_for_var_over_structs_that_hold_a_class_copies_the_element_in_and_out() {
+    let src = "class R { k: int }
+struct P { n: int, r: R }
+fn each(ps: List[P]) {
+    let mut xs = ps
+    for mut p in xs {
+        p.n += 1
+    }
+}";
+    // The struct holds a class, so releasing an element is observable (a `Drop` hook): no slot
+    // is lent. The source (r3), its position (r4) and the copy of the element in flight (r5) are
     // consecutive registers. `ForListNextVar` skips the `Jmp` that ends the loop when it
     // produced an item. The write-back is the last act of a trip, after the trip's hook check
     // (in the pad: `FoldHooks` at 0025, then `ForWriteBack` at 0026); the pad then lets go of

@@ -1,7 +1,7 @@
 //! Functions, blocks, statements, `if`, `loop` and `for` over ranges.
 
 use colibri_check::hir::{
-    Block, Expr, ForBinding, ForLoop, ForSource, LoopId, Stmt, StmtKind, Storage,
+    Anchor, Block, Expr, ExprKind, ForBinding, ForLoop, ForSource, LoopId, Stmt, StmtKind, Storage,
 };
 use std::rc::Rc;
 
@@ -316,11 +316,30 @@ impl FnCompiler<'_> {
     fn for_each(&mut self, f: &ForLoop, source: &Expr, each: Each, name: Option<&str>, span: Span) {
         let m = self.mark();
         let places = f.places && each == Each::List;
+        // The slot of the element is lent to the binding for the trip (so a field write does not
+        // copy the struct) when nothing can tell: the source is a plain slot local the body never
+        // names, the binding is a plain slot, and releasing an element is unobservable. Whether
+        // the list is shared is the loop's to see (`HoldListLend`).
+        let lend = places
+            && f.lend
+            && match (&source.kind, &f.binding) {
+                (ExprKind::Read(place), ForBinding::Local(b)) => {
+                    matches!(place.anchor, Anchor::Local(l) if self.storage(l) == Storage::Slot)
+                        && place.path.is_empty()
+                        && self.storage(*b) == Storage::Slot
+                        && kind_of(self.local_ty(*b)) == Kind::Owned
+                        && self.env.inert(self.local_ty(*b))
+                }
+                _ => false,
+            };
         let a = self.alloc(Kind::Owned);
         if each != Each::Iter {
             self.alloc(Kind::Scalar);
         }
         if places {
+            self.alloc(Kind::Scalar);
+        }
+        if lend {
             self.alloc(Kind::Scalar);
         }
         self.expr(source, a);
@@ -330,7 +349,11 @@ impl FnCompiler<'_> {
             if places {
                 let n = Rc::<str>::from(name.unwrap_or(""));
                 let site = self.add_site(Site::Name(n));
-                self.emit(Op::HoldListPlace { r: a, site }, span);
+                if lend {
+                    self.emit(Op::HoldListLend { r: a, site }, span);
+                } else {
+                    self.emit(Op::HoldListPlace { r: a, site }, span);
+                }
             } else {
                 self.emit(Op::HoldIter { r: a }, span);
             }
@@ -354,6 +377,7 @@ impl FnCompiler<'_> {
         };
         let next = match (each, write_back) {
             (Each::List, false) => Op::ForListNext { d: item, a },
+            (Each::List, true) if lend => Op::ForListNextLend { d: item, a },
             (Each::List, true) => Op::ForListNextVar { d: item, a },
             (Each::Map, _) => Op::ForMapNext { d: item, a },
             (Each::Set, _) => Op::ForSetNext { d: item, a },
@@ -377,9 +401,11 @@ impl FnCompiler<'_> {
                     // the write-back raises folds right after it (the drop-hook rule: a panic
                     // folds where the release that raised it ends).
                     self.push_fold();
-                    self.push_item(Item::ForBack {
-                        l: self.local(l),
-                        a,
+                    let (l, a) = (self.local(l), a);
+                    self.push_item(if lend {
+                        Item::ForBackLend { l, a }
+                    } else {
+                        Item::ForBack { l, a }
                     });
                     self.push_fold();
                 } else {

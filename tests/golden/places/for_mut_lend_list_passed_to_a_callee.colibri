@@ -1,0 +1,24 @@
+// The body hands the list to a function; it is the loop's list and reads it back.
+struct P { x: int }
+
+fn total(xs: List[P]) -> int {
+    let mut t = 0
+    for p in xs {
+        t += p.x
+    }
+    return t
+}
+
+fn main() {
+    let mut ps = [P { x: 1 }, P { x: 2 }, P { x: 3 }]
+    for mut p in ps {
+        p.x += 10
+        print(total(ps))
+    }
+    print(total(ps))
+}
+
+// expect: 6
+// expect: 16
+// expect: 26
+// expect: 36
