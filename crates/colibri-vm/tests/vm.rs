@@ -777,3 +777,46 @@ fn an_exhausted_budget_at_a_back_edge_names_the_loop_not_its_first_statement() {
         assert_eq!(o.trace[0], ("main".to_string(), 3), "{:?}", o.trace);
     }
 }
+
+#[test]
+fn the_hot_built_ins_are_instructions_and_the_others_go_through_core() {
+    let src = "fn f(xs: List[int], s: str) -> int {
+    xs.push(1)
+    let n = xs.len() + s.len()
+    let top = xs.pop()
+    return n
+}";
+    let text = dis(src, "f");
+    for want in ["ListPush ", "ListLen ", "StrLen ", "Builtin "] {
+        assert!(text.contains(want), "{want} is missing:\n{text}");
+    }
+    // `pop` is the only one that is not an instruction of its own.
+    assert_eq!(text.matches("Builtin ").count(), 1, "{text}");
+    assert!(text.contains("Builtin(ListPop)/1"), "{text}");
+}
+
+#[test]
+fn a_built_in_that_pauses_is_refused_by_name_until_coroutines_exist() {
+    let text = dis(
+        "fn w() -> int => 1\nfn f() -> int {\n    let c = go w()\n    return c.join()\n}",
+        "f",
+    );
+    assert!(text.contains("CoroutineJoin"), "{text}");
+    assert!(!text.contains("Builtin "), "{text}");
+}
+
+#[test]
+fn built_ins_run_and_give_core_answers() {
+    let out = run_ok(
+        "fn main() {
+    let xs = [3, 1, 2]
+    xs.push(5)
+    print(xs.len())
+    print(xs.pop())
+    print(\"héllo\".len())
+    print(compare(1, 2))
+    print(xs.contains(2))
+}",
+    );
+    assert_eq!(out, "4\nsome(5)\n6\n-1\ntrue\n");
+}
