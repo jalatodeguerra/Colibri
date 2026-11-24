@@ -112,8 +112,10 @@ impl Parser<'_> {
             let doc = self.docs_before(first);
             let item = self.parse_item_rest(start, attrs, doc, public)?;
             self.finish_stmt(false)?;
-            // `let _ = expr` binds nothing: it is a statement of the script, so it runs in
-            // order with the other top-level statements instead of as a module-level value.
+            // `let _ = expr` binds nothing: it is a statement of the script, so it runs in order
+            // with the other top-level statements instead of as a module-level value. A
+            // `const _` stays an item: a `const` cannot be a statement, which the REPL needs
+            // when it moves the statements of an entry into a function.
             return Ok(match item {
                 Item {
                     id,
@@ -122,7 +124,10 @@ impl Parser<'_> {
                     public: false,
                     ref attrs,
                     ..
-                } if attrs.is_empty() && matches!(binding.pat.kind, PatKind::Wild) => {
+                } if attrs.is_empty()
+                    && binding.kind != BindKind::Const
+                    && matches!(binding.pat.kind, PatKind::Wild) =>
+                {
                     TopLevel::Stmt(Stmt {
                         id,
                         span,
@@ -344,16 +349,18 @@ impl Parser<'_> {
     fn parse_param(&mut self, closure: bool) -> PResult<Param> {
         let start = self.start();
         let mut mutable = self.eat(&TokenKind::Mut);
-        if !mutable && self.at(&TokenKind::Var) {
-            let name = self.name_after_keyword();
-            let hint = if closure {
-                format!("write `mut {name}`")
-            } else {
-                format!("write `mut {name}: Type`")
+        // `var self` in a closure only gets the error about `self`.
+        if !mutable && self.at(&TokenKind::Var) && *self.nth(1) != TokenKind::SelfKw {
+            let hint = match (self.name_after_keyword(), closure) {
+                (Some(name), true) => format!("write `mut {name}`"),
+                (Some(name), false) => format!("write `mut {name}: Type`"),
+                (None, _) => "write `mut` instead of `var`".to_string(),
             };
             self.report_old_var(&hint);
             self.bump();
             mutable = true;
+        } else if !mutable && self.at(&TokenKind::Var) {
+            self.bump();
         }
         let name = self.expect_ident("a parameter name")?;
         let ty = if self.eat(&TokenKind::Colon) {

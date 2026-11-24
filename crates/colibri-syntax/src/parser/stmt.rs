@@ -248,11 +248,11 @@ impl Parser<'_> {
             }
             TokenKind::Var => {
                 // `var` was already consumed: the name is the current token.
-                let name = self.name_here();
-                self.report_old_var_at(
-                    self.toks[self.pos - 1].span,
-                    &format!("write `let mut {name} = ...`"),
-                );
+                let hint = match self.name_here() {
+                    Some(name) => format!("write `let mut {name} = ...`"),
+                    None => "write `let mut` instead of `var`".to_string(),
+                };
+                self.report_old_var_at(self.toks[self.pos - 1].span, &hint);
                 BindKind::Var
             }
             _ if local => {
@@ -338,8 +338,11 @@ impl Parser<'_> {
         if self.bump().kind == TokenKind::For {
             let mut mutable = self.eat(&TokenKind::Mut);
             if !mutable && self.at(&TokenKind::Var) {
-                let name = self.name_after_keyword();
-                self.report_old_var(&format!("write `for mut {name} in ...`"));
+                let hint = match self.name_after_keyword() {
+                    Some(name) => format!("write `for mut {name} in ...`"),
+                    None => "write `for mut` instead of `for var`".to_string(),
+                };
+                self.report_old_var(&hint);
                 self.bump();
                 mutable = true;
             }

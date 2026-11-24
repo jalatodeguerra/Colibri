@@ -127,6 +127,8 @@ fn token_soup_does_not_panic() {
         "fn",
         "let",
         "let mut",
+        "mut",
+        "var",
         "const",
         "if",
         "else",

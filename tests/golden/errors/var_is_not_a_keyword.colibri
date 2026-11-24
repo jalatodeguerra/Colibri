@@ -3,22 +3,22 @@
 struct P { n: int }
 
 impl P {
-    fn bump(var self) { // error: `var` is not a Colibri keyword; mutable bindings are written `let mut`
+    fn bump(var self) { // error: Colibri has no `var`; mutable bindings are written `let mut`
         self.n += 1
     }
 }
 
-fn twice(var q: int) -> int { // error: `var` is not a Colibri keyword; mutable bindings are written `let mut`
+fn twice(var q: int) -> int { // error: Colibri has no `var`; mutable bindings are written `let mut`
     q += q
     return q
 }
 
 fn main() {
-    var x = 1 // error: `var` is not a Colibri keyword; mutable bindings are written `let mut`
+    var x = 1 // error: Colibri has no `var`; mutable bindings are written `let mut`
     x += 1
-    for var e in [1, 2] { // error: `var` is not a Colibri keyword; mutable bindings are written `let mut`
+    for var e in [1, 2] { // error: Colibri has no `var`; mutable bindings are written `let mut`
         e += 1
     }
-    let f = fn(var k) => k // error: `var` is not a Colibri keyword; mutable bindings are written `let mut`
+    let f = fn(var k) => k // error: Colibri has no `var`; mutable bindings are written `let mut`
     let both = true and false // error: `and` is not an operator in Colibri
 }

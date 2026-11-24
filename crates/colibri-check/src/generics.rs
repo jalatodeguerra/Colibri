@@ -207,7 +207,14 @@ impl Checker<'_> {
                 }
             };
             if p.mutable {
-                self.unsupported("`mut` parameter", p.span);
+                self.report(
+                    Diagnostic::error("`mut` parameter is not supported yet", p.span).with_hint(
+                        format!(
+                            "copy it in the body instead: `let mut {0}2 = {0}`",
+                            p.name.name
+                        ),
+                    ),
+                );
             }
             params.push(ParamInfo {
                 name: p.name.name.clone(),

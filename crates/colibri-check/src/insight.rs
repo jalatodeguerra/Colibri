@@ -480,7 +480,7 @@ impl Checker<'_> {
                 }),
                 Target::Local { name, mutable, def } => Some(Fact {
                     span: r.span,
-                    text: format!("{}{name}: {ty}", if mutable { "mut " } else { "" }),
+                    text: format!("{}{name}: {ty}", if mutable { "let mut " } else { "" }),
                     name: None,
                     def: Some(def),
                 }),

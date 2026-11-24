@@ -14,7 +14,7 @@ enum Command {
 fn greet(name: str) -> str => "Hello, {name}!"
 
 fn apply(p: Player, cmd: Command) -> Player {
-    let mut next = p                       // structs are values: this is a copy
+    let mut next = p                   // structs are values: this is a copy
     match cmd {
         Move(dir) => next.pos += dir
         Heal(n)   => next.hp = if next.hp + n > 100 { 100 } else { next.hp + n }

@@ -1478,7 +1478,7 @@ fn mut_is_a_reserved_word() {
 }
 
 /// The message every use of the old keyword gets.
-const VAR_MESSAGE: &str = "`var` is not a Colibri keyword; mutable bindings are written `let mut`";
+const VAR_MESSAGE: &str = "Colibri has no `var`; mutable bindings are written `let mut`";
 
 /// `src` uses the old `var` once: one error with `hint` at the `var`, and the dump is that
 /// of the new syntax, so the rest of the file is still checked.
@@ -1604,4 +1604,42 @@ fn top_level_const_is_still_an_item() {
         dump_file(&file),
         "(const A (int 1))\n(const pub B (int 2))\n(let c (int 3))"
     );
+}
+
+#[test]
+fn old_var_before_a_pattern_has_a_hint_without_a_made_up_name() {
+    old_var(
+        "var (a, b) = p",
+        "write `let mut` instead of `var`",
+        "(let mut (tuple a b) p)",
+    );
+    old_var(
+        "for var (i, e) in xs {}",
+        "write `for mut` instead of `for var`",
+        "(for mut (tuple i e) xs (block))",
+    );
+    // A closure has no `self`: the one error is about that, not about `var`.
+    let (_, diags) = parse_dump("let c = fn(var self) => 1");
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+    assert!(diags[0].message.contains("keyword `self`"), "{diags:#?}");
+}
+
+#[test]
+fn a_misplaced_mut_hints_at_where_it_goes() {
+    let src = "mut x = 1";
+    let d = one_error(src);
+    assert_eq!(d.hint.as_deref(), Some("write `let mut x = ...`"));
+    assert_eq!(pointed_at(src, &d), "mut");
+    for src in [
+        "if let mut x = o {}",
+        "match o { some(mut x) => {} }",
+        "let (mut a, b) = p",
+    ] {
+        let (_, diags) = parse_dump(src);
+        let hint = diags[0].hint.as_deref().unwrap_or("");
+        assert!(
+            hint.contains("goes after `let`") && hint.contains("let mut x = x"),
+            "{src:?}: {diags:#?}"
+        );
+    }
 }

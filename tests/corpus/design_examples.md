@@ -80,7 +80,7 @@ extern "C" { fn MessageBoxA(...) -> i32 }
 
 ```colibri
 let x = 10        // immutable binding
-let mut y = 20        // mutable binding
+let mut y = 20    // mutable binding
 y += 1
 const MAX_HP = 100   // compile-time constant, module level
 ```
@@ -88,7 +88,7 @@ const MAX_HP = 100   // compile-time constant, module level
 ```colibri
 const GRAVITY = 9.81                  // compile-time constant
 let config = load_defaults()          // initialised once, immutable binding
-let mut score = 0                         // mutable module state
+let mut score = 0                     // mutable module state
 ```
 
 ```colibri
@@ -143,7 +143,7 @@ struct Particle {
 }
 
 let a = Vec2i { x: 1, y: 2 }
-let mut b = a                      // copy
+let mut b = a                  // copy
 b.x = 10                       // `a` is unchanged
 ```
 

@@ -8,7 +8,7 @@ fn heal(p: Player) -> Player {
 
 fn main() {
     let mut a = Player { name: "Ana", hp: 100 }
-    let mut b = a              // a copy
+    let mut b = a          // a copy
     b.hp = 50
     print(a.hp)            // 100
     print(b.hp)            // 50

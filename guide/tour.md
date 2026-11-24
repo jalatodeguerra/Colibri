@@ -472,7 +472,8 @@ true
 ## Methods and impl blocks
 
 Methods are declared in `impl` blocks, apart from the data. `self` reads, and `mut self` mutates
-a struct in place (the caller needs a `let mut`). A function without `self` is called on the type.
+a struct in place (the value it is called on must be declared with `let mut`). A function
+without `self` is called on the type.
 You cannot add methods to the built-in types (`List`, `str`, the numbers, ...). Today an `impl`
 can be written for any other type your program can name, including a type from a dependency;
 the rules about who may add what to a type are expected to get stricter.

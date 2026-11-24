@@ -620,6 +620,32 @@ fn hover_text(h: &Value) -> String {
 }
 
 #[test]
+fn hover_shows_mutable_bindings_as_let_mut() {
+    let dir = temp_dir("hover_mut");
+    let file = dir.join("a.colibri");
+    let text = "let mut total = 0\nlet fixed = 1\n\nfn main() {\n    let mut n = 1\n    n += 1\n    print(n)\n    print(total)\n    print(fixed)\n}\n";
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&file, text);
+    assert!(c.diags(&file).is_empty(), "{:?}", c.diags(&file));
+    // A mutable local and a mutable global read the same; globals always show their keyword.
+    let (l, col) = pos_of(text, "n)\n    print(total");
+    assert_eq!(
+        hover_text(&c.hover(&file, l, col)),
+        "```colibri\nlet mut n: int\n```"
+    );
+    let (l, col) = pos_of(text, "total)");
+    assert_eq!(
+        hover_text(&c.hover(&file, l, col)),
+        "```colibri\nlet mut total: int\n```"
+    );
+    let (l, col) = pos_of(text, "fixed)");
+    assert_eq!(
+        hover_text(&c.hover(&file, l, col)),
+        "```colibri\nlet fixed: int\n```"
+    );
+}
+
+#[test]
 fn hover_shows_types_signatures_and_fields() {
     let dir = temp_dir("hover");
     let file = dir.join("a.colibri");

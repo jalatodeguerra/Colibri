@@ -498,13 +498,27 @@ impl FnCtx<'_, '_> {
                     (true, Action::Call(_)) => format!("cannot {what}, which is not mutable"),
                     (false, _) => format!("cannot {what}, because `{name}` is not mutable"),
                 };
-                let hint = if is_let {
-                    format!("declare it with `let mut {name} = ...` to allow changing it")
+                let (label, hint) = if !is_let {
+                    (
+                        format!("`{name}` is declared here as a constant"),
+                        "constants never change; use `let mut` for a value that does".to_string(),
+                    )
+                } else if matches!(&place.anchor, Anchor::Local(id) if self.flags.get(id.0 as usize).is_some_and(|f| f.for_var))
+                {
+                    (
+                        format!("`{name}` is declared here without `mut`"),
+                        format!(
+                            "declare the loop variable with `for mut {name} in ...` to allow changing it"
+                        ),
+                    )
                 } else {
-                    "constants never change; use `let mut` for a value that does".to_string()
+                    (
+                        format!("`{name}` is declared here without `mut`"),
+                        format!("declare it with `let mut {name} = ...` to allow changing it"),
+                    )
                 };
                 Diagnostic::error(message, span)
-                    .with_label(decl, format!("`{name}` is declared here without `mut`"))
+                    .with_label(decl, label)
                     .with_hint(hint)
             }
             Root::Param => Diagnostic::error(

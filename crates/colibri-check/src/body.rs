@@ -42,6 +42,8 @@ pub(crate) enum LocalKind {
 /// What the checker learned about a local, to decide how it is stored (ARCHITECTURE §1).
 #[derive(Clone, Copy, Default)]
 pub(crate) struct LocalFlags {
+    /// It is the variable of a `for` loop (for the hint of an assignment).
+    pub for_var: bool,
     /// A closure captures it by reference to the variable.
     pub captured: bool,
     /// It is assigned (or changed by a `mut self` call) somewhere after its initialisation,

@@ -655,6 +655,16 @@ impl Parser<'_> {
             TokenKind::Else => {
                 diag = diag.with_hint("`else` must follow the `}` of an `if` block");
             }
+            TokenKind::Mut => {
+                diag = diag.with_hint(match (self.nth(1), self.nth(2)) {
+                    (TokenKind::Ident(name), TokenKind::Eq) => {
+                        format!("write `let mut {name} = ...`")
+                    }
+                    _ => "`mut` is written after `let` (`let mut x = ...`), before a parameter \
+                          or before the variable of a `for`"
+                        .to_string(),
+                });
+            }
             _ => {}
         }
         self.fail(diag)

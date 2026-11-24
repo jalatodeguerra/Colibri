@@ -606,3 +606,44 @@ fn assigning_to_a_bytes_element_says_it_is_immutable() {
     );
     assert!(hint.contains("BytesBuilder"), "{hint}");
 }
+
+#[test]
+fn assignment_hints_name_the_declaration_that_fixes_it() {
+    let first_diagnostic = |src: &str| {
+        let (ast, _) = parse_file(FileId(0), src);
+        let checked = colibri_check::check(&ast);
+        let d = checked.diagnostics.iter().find(|d| d.is_error()).unwrap();
+        (d.message.clone(), d.hint.clone().unwrap_or_default())
+    };
+    let (m, h) = first_diagnostic("fn main() {\n    let x = 1\n    x = 2\n}\n");
+    assert_eq!(m, "cannot assign to the variable `x`, which is not mutable");
+    assert_eq!(h, "declare it with `let mut x = ...` to allow changing it");
+    // A loop variable is changed by `for mut`, not by a `let mut` that does not exist.
+    let (_, h) = first_diagnostic("fn main() {\n    for e in [1, 2] {\n        e = 3\n    }\n}\n");
+    assert_eq!(
+        h,
+        "declare the loop variable with `for mut e in ...` to allow changing it"
+    );
+    // A constant never changes, and its label does not talk about `mut`.
+    let src = "const K = 1\nfn main() {\n    K = 2\n}\n";
+    let (ast, _) = parse_file(FileId(0), src);
+    let checked = colibri_check::check(&ast);
+    let d = &checked.diagnostics[0];
+    assert_eq!(
+        d.hint.as_deref(),
+        Some("constants never change; use `let mut` for a value that does")
+    );
+    assert_eq!(d.labels[0].1, "`K` is declared here as a constant");
+    let src = "fn main() {\n    let x = 1\n    x = 2\n}\n";
+    let (ast, _) = parse_file(FileId(0), src);
+    let checked = colibri_check::check(&ast);
+    let d = checked.diagnostics.iter().find(|d| d.is_error()).unwrap();
+    assert_eq!(d.labels[0].1, "`x` is declared here without `mut`");
+}
+
+#[test]
+fn a_mut_parameter_of_a_function_says_what_to_write_instead() {
+    let (m, h) = first_diagnostic("fn f(mut q: int) -> int {\n    q += 1\n    return q\n}\n");
+    assert_eq!(m, "`mut` parameter is not supported yet");
+    assert_eq!(h, "copy it in the body instead: `let mut q2 = q`");
+}

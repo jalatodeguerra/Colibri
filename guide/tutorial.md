@@ -417,8 +417,8 @@ Point { x: 100, y: 4 }
 ```
 
 Methods live in an `impl` block next to the type. `self` reads the value and `mut self` may
-change it, so the call needs a `let mut` to change. A function in the block with no `self`
-(`origin`) is called on the type. Printing, `==`, hashing and ordering of a struct need no code:
+change it, so the value it is called on must be declared with `let mut`. A function in the block with
+no `self` (`origin`) is called on the type. Printing, `==`, hashing and ordering of a struct need no code:
 the compiler provides them from the fields.
 
 A `class` is a record with identity. It is shared, not copied, and reference counted, so it is

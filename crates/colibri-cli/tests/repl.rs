@@ -141,6 +141,16 @@ fn closures_survive_later_declarations() {
 }
 
 #[test]
+fn a_discarded_const_or_let_with_a_closure_is_accepted() {
+    // The entry holds a closure, so the REPL moves its statements into a function, where
+    // a `const` is not allowed: `const _` is a declaration and stays out of it.
+    let input = "const _ = fn() => 3\nlet _ = fn() => 4\nlet mut _ = fn() => 5\nprint(1)\n";
+    let (out, err) = repl(input);
+    assert_eq!(out, "1\n");
+    assert_eq!(err, "");
+}
+
+#[test]
 fn coroutines_run_when_due() {
     let input = "fn work() {\n  print(\"a\")\n  wait(0.0)\n  print(\"b\")\n}\nlet c = go work()\nprint(\"after\")\n";
     let (out, err) = repl(input);
