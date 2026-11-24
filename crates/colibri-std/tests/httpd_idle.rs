@@ -178,6 +178,7 @@ fn a_thousand_idle_connections_use_a_few_threads_and_no_cpu_and_are_all_served_a
             let threads_before = threads();
             let (addr_tx, addr_rx) = mpsc::channel::<String>();
             let (done_tx, done) = mpsc::channel();
+            let ends = common::server_ends();
             thread::spawn(move || {
                 let mut vm = colibri::Vm::builder()
                     .stdout(Box::new(colibri::SharedBuffer::new()))
@@ -194,6 +195,9 @@ fn a_thousand_idle_connections_use_a_few_threads_and_no_cpu_and_are_all_served_a
                     .and_then(|()| vm.run_main())
                     .and_then(|()| vm.run_event_loop())
                     .map_err(|e| e.render(false));
+                if let Err(e) = &result {
+                    ends.lock().unwrap().push(e.clone());
+                }
                 let _ = done_tx.send(result);
                 // The `Vm` is dropped here: its threads must be gone afterwards.
             });

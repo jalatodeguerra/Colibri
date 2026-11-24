@@ -19,6 +19,7 @@ impl Machine {
         if outermost {
             // A refusal ends with the run it stopped, not with the Vm.
             self.refused = false;
+            self.take_pending_refusal();
             self.drain_root_drops();
         }
         let result = self.run_module_parts(fiber);
@@ -92,10 +93,12 @@ impl Machine {
         let (frames, temps) = (fiber.frames.len(), fiber.temps.len());
         if frames == 0 {
             fiber.stack_base = stack_position();
+            self.note_stack_root();
         }
         let outermost = self.core.begin_entry();
         if outermost {
             self.refused = false;
+            self.take_pending_refusal();
             self.drain_root_drops();
             // What the host compared before this entry is not this script's failure.
             colibri_core::compare::take_gave_up();
@@ -120,6 +123,17 @@ impl Machine {
             }
             other => other,
         };
+        // A coroutine met a refusal that nothing settled (it was cancelled by this entry's last
+        // act): it is this entry's error.
+        let result = match (outermost, self.take_pending_refusal()) {
+            (true, Some(info)) => {
+                if let Ok(v) = result {
+                    self.release(v);
+                }
+                Err(Ctl::Panic(Box::new(info)))
+            }
+            (_, _) => result,
+        };
         match result {
             Ok(v) => Ok(v),
             Err(Ctl::Return(v)) => Ok(v),
@@ -133,6 +147,8 @@ impl Machine {
     /// Ends the program's life: module-level values die in reverse initialisation order
     /// (DESIGN §11.2). Safe to call twice.
     pub fn shutdown(&mut self) {
+        // Coroutines unwind first: their locals may use module-level values.
+        self.cancel_all_coroutines();
         let outermost = self.core.begin_entry();
         // Roots die first, then the module's values (EMBEDDING §3).
         self.clear_roots();
@@ -157,6 +173,8 @@ impl Machine {
 impl Drop for Machine {
     fn drop(&mut self) {
         self.shutdown();
+        // `shutdown` ended every coroutine: what is left is plain data.
+        self.fibers.clear();
         // Roots and module values are gone; what is left in the host heap dies last.
         self.core.drop_host_heap();
     }

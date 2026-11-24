@@ -4,67 +4,27 @@
 # wraps its body in `vm_pending` (tests/common/mod.rs): on the VM it is expected to fail, and
 # one that passes fails the run, so delete its line (and the wrapper) when it starts to pass.
 # `vm_pending_list.rs` checks that every entry names a wrapped test.
-async_ops::a_cancel_hook_has_run_when_cancel_returns  # `go`
-async_ops::a_cancelled_completion_has_run_its_hook_and_ignores_a_late_complete  # `go`
-async_ops::a_completed_parked_waiter_gets_its_value_once  # `go`
-async_ops::a_completer_dropped_by_its_holder_wakes_a_parked_waiter_with_an_error  # `go`
-async_ops::a_completer_dropped_without_a_result_is_an_error_not_a_hang  # `go`
-async_ops::a_completion_from_another_thread_wakes_coroutines_that_overlap  # `NewCoGroup`
-async_ops::a_completion_made_inside_start_yields_once_and_gives_its_value  # `NewCoGroup`
-async_ops::a_completion_on_the_main_fiber_runs_the_loop_meanwhile  # `go`
-async_ops::a_fake_clock_does_not_advance_while_an_operation_runs  # `go`
-async_ops::a_host_driven_loop_is_not_blocked_by_an_operation  # `go`
-async_ops::a_start_that_fails_is_an_error_and_nothing_waits  # `go`
-async_ops::an_operation_cancelled_while_running_is_dropped  # `go`
-async_ops::background_operations_overlap_inside_coroutines  # `NewCoGroup`
-async_ops::blocked_operations_never_hold_back_the_one_that_unblocks_them  # `NewCoGroup`
-async_ops::cancelling_a_waiting_coroutine_unwinds_it  # `go`
-async_ops::dropping_the_vm_cancels_running_operations  # `go`
-async_ops::dropping_the_vm_with_a_completer_outstanding_cancels_its_token  # `go`
-async_ops::on_the_main_fiber_the_wait_runs_the_loop  # `go`
-async_ops::the_event_loop_sleeps_until_a_completion  # `go`
-async_ops::thousands_of_operations_reuse_threads  # `NewCoGroup`
-async_ops::waiting_on_the_main_fiber_is_refused_inside_a_host_callback  # `Wait`
-async_ops::waits_carry_unit_and_string_results  # `NewCoGroup`
-coroutines::a_configured_stack_size_bounds_recursion_in_a_coroutine  # `go`
-coroutines::a_go_child_whose_local_and_capture_hooks_both_panic_is_the_only_failure  # `go`
-coroutines::a_go_closure_stopped_by_the_instruction_budget_still_releases_its_capture  # `go`
-coroutines::a_go_closure_that_finishes_releases_the_object_only_it_holds  # `go`
-coroutines::a_go_closure_that_is_cancelled_releases_the_object_only_it_holds  # `go`
-coroutines::a_go_closure_that_panics_releases_the_object_only_it_holds  # `go`
-coroutines::a_go_closure_with_arguments_releases_what_it_captured_and_what_it_got  # `go`
-coroutines::a_go_of_a_closure_held_in_a_variable_releases_it_after_the_other_owners_die  # `go`
-coroutines::a_group_go_closure_releases_its_capture_when_it_ends_and_when_the_group_dies  # `NewCoGroup`
-coroutines::a_hook_panic_of_a_cancelled_go_closure_does_not_stop_the_canceller  # `go`
-coroutines::a_hook_panic_of_a_finished_go_closure_does_not_stop_another_coroutine  # `go`
-coroutines::a_hook_panic_of_a_finished_go_closure_is_reported_by_its_tick_not_the_next_host_call  # `go`
-coroutines::a_host_loop_drives_coroutines_with_tick  # `go`
-coroutines::a_panic_handed_to_join_result_is_not_a_failure_of_the_event_loop  # `go`
-coroutines::a_panic_in_a_coroutine_is_an_err_from_tick_and_the_vm_survives  # `go`
-coroutines::a_panic_nobody_receives_still_fails_the_event_loop  # `go`
-coroutines::a_thousand_idle_coroutines_tick_quickly  # `go`
-coroutines::dropping_the_vm_cancels_suspended_coroutines  # `go`
-coroutines::join_and_join_all_waiters_do_not_keep_the_event_loop_polling  # `NewSignal`
-coroutines::join_on_the_main_fiber_sleeps_to_the_timer_and_does_not_poll  # `go`
-coroutines::join_result_waiters_do_not_keep_the_event_loop_polling  # `NewSignal`
-coroutines::signal_waiters_cost_nothing_per_tick  # `NewSignal`
-coroutines::the_event_loop_ends_when_only_signal_waiters_remain  # `go`
-coroutines::the_event_loop_uses_the_injected_clock  # `go`
-coroutines::the_instruction_budget_applies_inside_a_coroutine  # `go`
-coroutines::tick_zero_pauses_time  # `go`
-coroutines::wait_in_a_host_callback_reports_the_reason  # `go`
+async_ops::a_cancel_hook_has_run_when_cancel_returns  # a host function that can wait, beside running coroutines
+async_ops::a_cancelled_completion_has_run_its_hook_and_ignores_a_late_complete  # a host function that can wait, beside running coroutines
+async_ops::a_completed_parked_waiter_gets_its_value_once  # a host function that can wait, beside running coroutines
+async_ops::a_completer_dropped_by_its_holder_wakes_a_parked_waiter_with_an_error  # a host function that can wait, beside running coroutines
+async_ops::a_completer_dropped_without_a_result_is_an_error_not_a_hang  # a host function that can wait, beside running coroutines
+async_ops::a_completion_from_another_thread_wakes_coroutines_that_overlap  # a host function that can wait, beside running coroutines
+async_ops::a_completion_made_inside_start_yields_once_and_gives_its_value  # a host function that can wait, beside running coroutines
+async_ops::a_completion_on_the_main_fiber_runs_the_loop_meanwhile  # a host function that can wait, beside running coroutines
+async_ops::a_fake_clock_does_not_advance_while_an_operation_runs  # a host function that can wait, beside running coroutines
+async_ops::a_host_driven_loop_is_not_blocked_by_an_operation  # a host function that can wait, beside running coroutines
+async_ops::a_start_that_fails_is_an_error_and_nothing_waits  # a host function that can wait, beside running coroutines
+async_ops::an_operation_cancelled_while_running_is_dropped  # a host function that can wait, beside running coroutines
+async_ops::background_operations_overlap_inside_coroutines  # a host function that can wait, beside running coroutines
+async_ops::blocked_operations_never_hold_back_the_one_that_unblocks_them  # a host function that can wait, beside running coroutines
+async_ops::cancelling_a_waiting_coroutine_unwinds_it  # a host function that can wait, beside running coroutines
+async_ops::dropping_the_vm_cancels_running_operations  # a host function that can wait, beside running coroutines
+async_ops::dropping_the_vm_with_a_completer_outstanding_cancels_its_token  # a host function that can wait, beside running coroutines
+async_ops::on_the_main_fiber_the_wait_runs_the_loop  # a host function that can wait, beside running coroutines
+async_ops::the_event_loop_sleeps_until_a_completion  # a host function that can wait, beside running coroutines
+async_ops::thousands_of_operations_reuse_threads  # a host function that can wait, beside running coroutines
+async_ops::waits_carry_unit_and_string_results  # a host function that can wait, beside running coroutines
 host_modules::a_session_keeps_module_values_between_steps  # REPL sessions
-join_failures::a_budget_panic_is_not_held_for_a_woken_join_result_waiter  # `go`
-join_failures::a_budget_panic_is_not_hidden_by_a_later_join_result_in_the_tick  # `go`
-join_failures::a_budget_panic_is_not_hidden_by_join_result_on_the_main_fiber  # `go`
-join_failures::a_host_cancel_between_the_panic_and_the_waiter_does_not_lose_the_panic  # `NewSignal`
-join_failures::a_waiter_that_runs_takes_the_panic_from_the_queue  # `NewSignal`
-join_failures::cancelling_everything_leaves_no_waiter_registered  # `NewSignal`
-join_failures::join_of_a_budget_panicked_coroutine_reports_the_budget_error  # `go`
-join_failures::when_only_join_waiters_are_left_nothing_polls_and_nothing_resumes  # `NewSignal`
-leaks::a_cancelled_coroutine_leaks_what_only_it_held  # `go`
-leaks::a_suspended_coroutine_keeps_its_cycle_alive  # `go`
-reload::a_coroutine_in_an_old_body_finishes_on_it_and_new_calls_use_the_new_one  # `go`
-reload::the_watching_event_loop_calls_the_hook_between_ticks  # `go`
 std_modules::lazy::a_failed_module_fails_every_session_entry_point  # REPL sessions
 std_modules::lazy::a_session_has_every_module  # REPL sessions

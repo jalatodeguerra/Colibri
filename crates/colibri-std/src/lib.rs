@@ -97,6 +97,7 @@ pub fn sources() -> Vec<colibri_runtime::SourceModule> {
 pub fn install_vec(vm: &mut Vm) -> Result<(), Error> {
     vm.std_source_module("vec", VEC);
     vm.lazy_std_module("math", math::register);
+    vm.no_await_module("math", &[]);
     Ok(())
 }
 
@@ -147,7 +148,23 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
     for (name, register) in lazy {
         vm.lazy_std_module(name, register);
     }
+    declare_no_await(vm);
     Ok(())
+}
+
+/// Tells the VM which functions never wait for anything outside the program, so that a
+/// coroutine may call them (a function that may wait is refused beside running coroutines until
+/// the VM can suspend one for a wait). Everything of `net`, `process` and `http` may wait, and
+/// so may `time.sleep` and the file handles of `fs`; the rest is pure.
+fn declare_no_await(vm: &mut Vm) {
+    for module in [
+        "io", "path", "os", "math", "rand", "str", "json", "regex", "args", "datetime", "base64",
+        "hex", "hash", "csv", "toml",
+    ] {
+        vm.no_await_module(module, &[]);
+    }
+    vm.no_await_module("time", &["sleep"]);
+    vm.no_await_module("fs", &["open", "create", "open_append", "File.*"]);
 }
 
 /// The interface files (`.cbi`) of the standard library, for `colibri check` and language

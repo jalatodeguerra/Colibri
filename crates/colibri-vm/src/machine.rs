@@ -6,12 +6,14 @@ use std::rc::Rc;
 
 use colibri_check::hir::{Body, FnId, GlobalId, Program};
 use colibri_core::Core;
+use colibri_core::ctl::PanicInfo;
 use colibri_core::dispatch::Tables;
 use colibri_core::value::Value;
 
 use crate::bytecode::Chunk;
 use crate::cffi::CffiState;
 use crate::compile::{CompileEnv, compile_body};
+use crate::coro::FiberSlab;
 use crate::host::HostImpls;
 
 /// A body and its chunk, compiled the first time it is called.
@@ -71,6 +73,16 @@ pub struct Machine {
     /// Counts the loads and patches of the program: an inline cache entry made under another
     /// epoch is stale (its chunk may be one a running frame kept across a patch).
     pub(crate) epoch: u32,
+    /// The fibers of the coroutines that have not ended (vm-plan §2.8).
+    pub(crate) fibers: FiberSlab,
+    /// A coroutine that ended with a refusal during the resumption in progress: what resumed it
+    /// raises the refusal on its own fiber (`settle_refusal`), so a refusal stops the program where
+    /// it is met. The id of the coroutine and its failure. A copy rides in `hook_panics` too, so a
+    /// resumption that no resumer settles (the death of a `CoGroup`) raises it where drop hooks fold.
+    pub(crate) pending_refusal: Option<(u64, PanicInfo)>,
+    /// Where the native stack stood when the host (or the event loop) last called in with no
+    /// coroutine running: a resumed coroutine measures its native recursion from it.
+    pub(crate) stack_root: usize,
     /// Tests only: runs at every `print`, so a test can call back into Colibri from inside the
     /// dispatch loop (a native re-entry, like a user `Show` or a `Drop` hook would).
     #[cfg(test)]
@@ -100,6 +112,9 @@ impl Machine {
             host_impls: HostImpls::default(),
             cffi: CffiState::default(),
             epoch: 0,
+            fibers: FiberSlab::default(),
+            pending_refusal: None,
+            stack_root: 0,
             #[cfg(test)]
             print_hook: None,
         }

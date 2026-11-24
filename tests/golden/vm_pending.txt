@@ -19,86 +19,21 @@
 # Linux, so the gate-lifted run stops early). A copy of `process_spawn_windows` and `process_windows`
 # with `sh`, `grep` and `sleep` in place of `cmd`, `findstr` and `ping` ran to the end with the same
 # output on both engines. The Windows CI run is the proof.
-collections/list_new_helpers_wait_in_closures.colibri  # `go`
-coroutines/cancel_at_shutdown.colibri  # `go`
-coroutines/cancel_self.colibri  # `go`
-coroutines/cancel_unwinds.colibri  # `go`
-coroutines/event_loop_after_main.colibri  # `go`
-coroutines/go_forms.colibri  # `go`
-coroutines/group_cancel_and_count.colibri  # `NewCoGroup`
-coroutines/group_drop_cancels.colibri  # `NewCoGroup`
-coroutines/group_go_result.colibri  # `NewCoGroup`
-coroutines/group_owner_object.colibri  # `NewCoGroup`
-coroutines/join_all_on_main.colibri  # `NewCoGroup`
-coroutines/join_on_main.colibri  # `go`
-coroutines/join_on_main_never_ends.colibri  # `NewSignal`
-coroutines/join_on_main_panicked.colibri  # `go`
-coroutines/join_panicked.colibri  # `go`
-coroutines/join_result_both_cancelled_reports_once.colibri  # `NewSignal`
-coroutines/join_result_cancel.colibri  # `go`
-coroutines/join_result_cancelled_before_it_runs_group.colibri  # `NewSignal`
-coroutines/join_result_cancelled_before_it_runs_same_tick.colibri  # `NewSignal`
-coroutines/join_result_ok.colibri  # `go`
-coroutines/join_result_on_main.colibri  # `go`
-coroutines/join_result_panic_after_pause.colibri  # `go`
-coroutines/join_result_panic_before_pause.colibri  # `go`
-coroutines/join_result_self.colibri  # `go`
-coroutines/join_result_twice.colibri  # `go`
-coroutines/join_result_two_waiters_one_cancelled.colibri  # `NewSignal`
-coroutines/join_result_wake_order.colibri  # `NewSignal`
-coroutines/join_value.colibri  # `go`
-coroutines/join_wake_timing.colibri  # `go`
-coroutines/many_coroutines.colibri  # `go`
-coroutines/nested_go.colibri  # `go`
-coroutines/panic_ends_program_after_main.colibri  # `go`
-coroutines/panic_in_coroutine.colibri  # `go`
-coroutines/recursion_in_coroutine.colibri  # `go`
-coroutines/signal_and_timer.colibri  # `NewSignal`
-coroutines/signal_cancel_after_emit.colibri  # `NewSignal`
-coroutines/signal_cancel_while_waiting.colibri  # `NewSignal`
-coroutines/signal_emit_before_wait_is_lost.colibri  # `NewSignal`
-coroutines/signal_in_group.colibri  # `NewSignal`
-coroutines/signal_no_waiters.colibri  # `NewSignal`
-coroutines/signal_order_is_wait_order.colibri  # `NewSignal`
-coroutines/signal_waiters_cancelled_at_end.colibri  # `NewSignal`
-coroutines/signal_wakes_in_order.colibri  # `NewSignal`
-coroutines/started_in_tick_waits.colibri  # `go`
-coroutines/tick_in_coroutine_panics.colibri  # `go`
-coroutines/wait_for_on_main_panics.colibri  # `NewSignal`
-coroutines/wait_inside_a_direct_show_call_pauses.colibri  # `go`
-coroutines/wait_inside_a_show_reached_by_print_panics.colibri  # `go`
-coroutines/wait_inside_a_sort_by_comparator.colibri  # `go`
-coroutines/wait_inside_a_user_next_driven_by_a_built_in_panics.colibri  # `go`
-coroutines/wait_inside_an_eq_reached_by_equality_panics.colibri  # `go`
-coroutines/wait_inside_an_error_message_panics.colibri  # `go`
-coroutines/wait_inside_an_ord_reached_by_sort_panics.colibri  # `go`
-coroutines/wait_inside_closure_and_defer.colibri  # `go`
-coroutines/wait_on_main_reports_a_failure.colibri  # `go`
-coroutines/wait_on_main_runs_the_loop.colibri  # `go`
-coroutines/wait_on_the_main_fiber_inside_a_show_reached_by_print_panics.colibri  # `Wait`
-coroutines/wait_orders_ticks.colibri  # `go`
-coroutines/wait_real_clock.colibri  # `go`
-coroutines/wait_until.colibri  # `go`
-iteration/wait_inside_a_user_iterator_next_driven_by_for.colibri  # `go`
-leaks/finished_coroutine_leaves_a_cycle.colibri  # `go`
-leaks/suspended_coroutine_holds_a_cycle.colibri  # `go`
-operators/operator_in_coroutine_waits.colibri  # `go`
-std/fs_file_two_coroutines_share_a_handle.colibri  # `go`
-std/httpd_chunked_request.colibri  # `NewCoGroup`
-std/httpd_failure.colibri  # `NewCoGroup`
-std/httpd_head.colibri  # `NewCoGroup`
-std/httpd_hello.colibri  # `NewCoGroup`
-std/httpd_options_checked.colibri  # `NewCoGroup`
-std/httpd_router.colibri  # `NewCoGroup`
-std/httpd_stream.colibri  # `NewCoGroup`
-std/net_echo_server_and_client.colibri  # `go`
-std/net_end_of_stream.colibri  # `go`
-std/net_half_close.colibri  # `go`
-std/net_line_limit.colibri  # `go`
-std/net_line_protocol.colibri  # `go`
-std/net_read_exact_end_of_stream.colibri  # `go`
-std/net_read_until.colibri  # `go`
-std/net_timeout_then_continue.colibri  # `go`
-std/net_use_after_close.colibri  # `go`
-std/process_polling_in_a_coroutine.colibri  # `go`
-std/process_polling_windows.colibri  # `go`
+std/fs_file_two_coroutines_share_a_handle.colibri  # a host function that can wait, beside running coroutines
+std/httpd_chunked_request.colibri  # a host function that can wait, beside running coroutines
+std/httpd_failure.colibri  # a host function that can wait, beside running coroutines
+std/httpd_head.colibri  # a host function that can wait, beside running coroutines
+std/httpd_hello.colibri  # a host function that can wait, beside running coroutines
+std/httpd_router.colibri  # a host function that can wait, beside running coroutines
+std/httpd_stream.colibri  # a host function that can wait, beside running coroutines
+std/net_echo_server_and_client.colibri  # a host function that can wait, beside running coroutines
+std/net_end_of_stream.colibri  # a host function that can wait, beside running coroutines
+std/net_half_close.colibri  # a host function that can wait, beside running coroutines
+std/net_line_limit.colibri  # a host function that can wait, beside running coroutines
+std/net_line_protocol.colibri  # a host function that can wait, beside running coroutines
+std/net_read_exact_end_of_stream.colibri  # a host function that can wait, beside running coroutines
+std/net_read_until.colibri  # a host function that can wait, beside running coroutines
+std/net_timeout_then_continue.colibri  # a host function that can wait, beside running coroutines
+std/net_use_after_close.colibri  # a host function that can wait, beside running coroutines
+std/process_polling_in_a_coroutine.colibri  # a host function that can wait, beside running coroutines
+std/process_polling_windows.colibri  # a host function that can wait, beside running coroutines

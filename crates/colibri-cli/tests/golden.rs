@@ -129,8 +129,15 @@ impl Case {
         if diff_outcomes(&tree, &vm).is_none() {
             return Ok(());
         }
-        let (Outcome::Compiled { stdout: want, .. }, Outcome::Compiled { stdout, panic, .. }) =
-            (&tree, &vm)
+        let (
+            Outcome::Compiled { stdout: want, .. },
+            Outcome::Compiled {
+                stdout,
+                panic,
+                main_err,
+                ..
+            },
+        ) = (&tree, &vm)
         else {
             return Err(format!(
                 "the VM's outcome has another kind than the tree's: {vm:?}"
@@ -142,8 +149,11 @@ impl Case {
             ));
         }
         let refusal = format!("the bytecode VM does not support {reason}");
+        // A refusal inside a coroutine ends the program as a panic of that coroutine, or, when
+        // `main` handles the failure of a call it made, as the error `main` returns.
         match panic {
             Some(p) if p.contains(&refusal) => Ok(()),
+            _ if main_err.as_deref().is_some_and(|m| m.contains(&refusal)) => Ok(()),
             other => Err(format!(
                 "expected the VM to refuse {reason}, it ended with {other:?}"
             )),

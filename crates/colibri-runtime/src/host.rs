@@ -134,6 +134,18 @@ impl Registration<'_> {
         self
     }
 
+    /// The function never suspends its caller: it does not call `run_async`, `run_async_cancellable`
+    /// or `try_await_completion` (it may still block the thread, as a plain file read does; that
+    /// blocks every coroutine the same way on both engines). A function that does suspend its
+    /// caller must not be marked. The bytecode VM calls a marked function beside running
+    /// coroutines at no extra cost, and refuses every other host call while a coroutine is alive,
+    /// since it cannot suspend one for a wait before vm-plan step 12; the tree-walker takes no
+    /// notice. After step 12 the mark lets the VM skip the switch of stacks.
+    pub fn no_await(self) -> Self {
+        self.vm.set_no_await(self.index);
+        self
+    }
+
     /// The function is deprecated: a script that calls it gets the warning "`name` is
     /// deprecated: message" (an empty `message` leaves the colon out). The interface file
     /// carries it as `@deprecated("message")`.

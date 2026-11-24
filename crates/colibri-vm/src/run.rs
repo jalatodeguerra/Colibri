@@ -20,10 +20,13 @@ use crate::bytecode::{Chunk, Op, Site};
 use crate::fiber::{Frame, FrameKind, VmFiber, is_scalar_value};
 use crate::machine::Machine;
 
-/// How `exec` ends when it does not fail. Suspension (coroutines) adds a variant here.
+/// How `exec` ends when it does not fail.
 pub(crate) enum Exit {
     /// The entry frame returned this value.
     Return(Value),
+    /// A coroutine paused: its frames stay as they are, each with its pc saved, for
+    /// `resume_stack` to run on.
+    Suspend,
 }
 
 impl Machine {
@@ -32,6 +35,16 @@ impl Machine {
     pub(crate) fn run(&mut self, fiber: &mut VmFiber) -> Eval {
         match self.exec(fiber)? {
             Exit::Return(v) => Ok(v),
+            // `Machine::suspend` pauses only where the coroutine's own entry is the one that
+            // runs, so a nested loop never sees it.
+            Exit::Suspend => {
+                let span = Self::position(fiber).unwrap_or(colibri_syntax::Span::new(
+                    colibri_syntax::FileId(0),
+                    0,
+                    0,
+                ));
+                Err(self.internal(fiber, span, "a coroutine paused inside a native call"))
+            }
         }
     }
 
@@ -722,6 +735,23 @@ impl Machine {
                 Op::SuspendReady => {
                     sync!();
                     tri!(self.op_suspend_ready(fiber, &chunk, pc));
+                    return Ok(Exit::Suspend);
+                }
+                Op::Go { d, base: a, site } => {
+                    sync!();
+                    tri!(self.op_go(fiber, &chunk, base, pc, [d, a, site]));
+                }
+                Op::Pause { a, kind } => {
+                    sync!();
+                    if tri!(self.op_pause(fiber, &chunk, base, pc, a, kind)) {
+                        return Ok(Exit::Suspend);
+                    }
+                }
+                Op::Join { d, a, kind } => {
+                    sync!();
+                    if tri!(self.op_join(fiber, &chunk, base, pc, [d, a], kind)) {
+                        return Ok(Exit::Suspend);
+                    }
                 }
                 Op::Site { .. } => internal!("an operand word was executed"),
                 Op::Unsupported { site } => {
@@ -732,24 +762,6 @@ impl Machine {
                 }
             }
         }
-    }
-
-    /// `SuspendReady`: pausing needs a coroutine, and the check that precedes the loop of
-    /// `wait_until` refuses everything else.
-    #[cold]
-    #[inline(never)]
-    fn op_suspend_ready(
-        &mut self,
-        fiber: &mut VmFiber,
-        chunk: &Chunk,
-        pc: usize,
-    ) -> Result<(), Ctl> {
-        let span = chunk.spans[pc - 1];
-        Err(self.internal(
-            fiber,
-            span,
-            "a pause reached a fiber that is not a coroutine",
-        ))
     }
 
     /// Folds the panics of `Drop` hooks into the panic this frame's pad is running for.
@@ -1087,7 +1099,17 @@ impl Machine {
         };
         let from = base + usize::from(a);
         let args: Vec<Value> = fiber.regs[from..from + usize::from(*argc)].to_vec();
-        let result = self.builtin(fiber, *which, args, span)?;
+        let result = self.builtin(fiber, *which, args, span);
+        // Cancelling resumes the coroutines to unwind them: a refusal they meet is raised here.
+        let result = if matches!(
+            which,
+            colibri_check::hir::Builtin::CoroutineCancel
+                | colibri_check::hir::Builtin::CoGroupCancel
+        ) {
+            self.settle_refusal(fiber, span, result)
+        } else {
+            result
+        }?;
         Self::put_reg(fiber, base + usize::from(d), result);
         if colibri_core::compare::take_gave_up() {
             return Err(self.lookup_gave_up(fiber, chunk, pc, Some(base + usize::from(d))));
@@ -1309,9 +1331,24 @@ impl Machine {
                 self.ptr_intrinsic(fiber, op, values, span)
             }
             // The check before the loop of `wait_until`: may this code pause?
-            Intrinsic::WaitUntil => self
-                .pause_context(fiber, span, "wait_until")
-                .map(|_| Value::Unit),
+            Intrinsic::WaitUntil => {
+                self.pause_context(fiber, span, "wait_until")?;
+                // A coroutine that is being cancelled (in a `defer`) does not even ask.
+                if fiber.state.cancelling {
+                    return Err(Ctl::Cancel);
+                }
+                Ok(Value::Unit)
+            }
+            Intrinsic::TaskTick => match fiber.regs[args.start] {
+                Value::Float(dt) => self.task_tick(fiber, dt, span),
+                _ => Err(self.internal(fiber, span, "ill-typed tick")),
+            },
+            Intrinsic::NewCoGroup => {
+                Ok(self.new_scheduler_object(colibri_check::types::COGROUP_TYPE))
+            }
+            Intrinsic::NewSignal => {
+                Ok(self.new_scheduler_object(colibri_check::types::SIGNAL_TYPE))
+            }
             Intrinsic::HostAlive => Ok(Value::Bool(match &fiber.regs[args.start] {
                 Value::Host(r) => self.core.host_alive(r.index, r.generation),
                 _ => false,
