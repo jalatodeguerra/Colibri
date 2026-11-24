@@ -647,3 +647,17 @@ fn a_mut_parameter_of_a_function_says_what_to_write_instead() {
     assert_eq!(m, "`mut` parameter is not supported yet");
     assert_eq!(h, "copy it in the body instead: `let mut q2 = q`");
 }
+
+#[test]
+fn a_discarded_const_is_a_script_statement_without_the_loader() {
+    for src in ["const _ = 1\nfn main() {}\n", "let _ = 1\nfn main() {}\n"] {
+        let (ast, parse) = parse_file(FileId(0), src);
+        assert!(parse.is_empty(), "{parse:?}");
+        let checked = colibri_check::check(&ast);
+        assert!(
+            checked.diagnostics.iter().all(|d| !d.is_error()),
+            "{src:?}: {:#?}",
+            checked.diagnostics
+        );
+    }
+}

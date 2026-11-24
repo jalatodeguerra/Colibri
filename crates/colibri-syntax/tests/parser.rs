@@ -1638,7 +1638,7 @@ fn a_misplaced_mut_hints_at_where_it_goes() {
         let (_, diags) = parse_dump(src);
         let hint = diags[0].hint.as_deref().unwrap_or("");
         assert!(
-            hint.contains("goes after `let`") && hint.contains("let mut x = x"),
+            hint.contains("cannot mark a single binding `mut`") && hint.contains("let mut x = x"),
             "{src:?}: {diags:#?}"
         );
     }

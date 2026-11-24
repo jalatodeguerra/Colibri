@@ -113,9 +113,8 @@ impl Parser<'_> {
             let item = self.parse_item_rest(start, attrs, doc, public)?;
             self.finish_stmt(false)?;
             // `let _ = expr` binds nothing: it is a statement of the script, so it runs in order
-            // with the other top-level statements instead of as a module-level value. A
-            // `const _` stays an item: a `const` cannot be a statement, which the REPL needs
-            // when it moves the statements of an entry into a function.
+            // with the other top-level statements instead of as a module-level value (also
+            // for `const _`).
             return Ok(match item {
                 Item {
                     id,
@@ -124,10 +123,7 @@ impl Parser<'_> {
                     public: false,
                     ref attrs,
                     ..
-                } if attrs.is_empty()
-                    && binding.kind != BindKind::Const
-                    && matches!(binding.pat.kind, PatKind::Wild) =>
-                {
+                } if attrs.is_empty() && matches!(binding.pat.kind, PatKind::Wild) => {
                     TopLevel::Stmt(Stmt {
                         id,
                         span,

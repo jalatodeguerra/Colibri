@@ -410,7 +410,7 @@ impl Session {
             items.push(Item {
                 key: None,
                 cond: None,
-                text: format!("fn __entry_{n}() {{\n{script}\n}}"),
+                text: format!("fn __entry_{n}() {{\n{}\n}}", locals_only(&script)),
                 fresh: true,
                 new: true,
             });
@@ -591,6 +591,31 @@ fn upsert(items: &mut Vec<Item>, item: Item) {
 
 /// The program text: the entry's statements first (so that their positions are the ones the
 /// user typed), then the declarations.
+/// The statements of an entry for the body of a function, where a `const` is not allowed: a
+/// top-level `const _ = expr` (a statement of the script) is written `let _ = expr`.
+fn locals_only(script: &str) -> String {
+    let (file, _) = parse_file(FileId(0), script);
+    let mut out = script.to_string();
+    let mut starts: Vec<usize> = file
+        .items
+        .iter()
+        .filter_map(|top| match top {
+            TopLevel::Stmt(s) => match &s.kind {
+                StmtKind::Let(l) if l.kind == BindKind::Const => Some(s.span.start as usize),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    starts.sort_unstable_by(|a, b| b.cmp(a));
+    for start in starts {
+        if out[start..].starts_with("const") {
+            out.replace_range(start..start + "const".len(), "let");
+        }
+    }
+    out
+}
+
 fn build(items: &[Item], script: &str) -> Built {
     let mut source = String::new();
     let mut shown = String::new();
