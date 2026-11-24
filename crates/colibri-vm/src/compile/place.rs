@@ -324,6 +324,12 @@ impl FnCompiler<'_> {
                 // The object is a temporary that lives to the end of the statement, unless it is a
                 // local, which already does and is read at once: no copy then.
                 let o = self.anchor_operand(obj, false);
+                if usize::from(o) < self.nlocals {
+                    // The tree-walker releases a twin of the object at the statement end, and a
+                    // `Drop` hook panic that an earlier statement left surfaces there: the
+                    // statement keeps its `CheckHooks`.
+                    self.releases += 1;
+                }
                 if place.path.is_empty() {
                     self.emit(Op::ObjGet { d: dst, o, idx }, span);
                 } else {
