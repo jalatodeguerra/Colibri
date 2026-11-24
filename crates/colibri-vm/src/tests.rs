@@ -239,3 +239,71 @@ print(late)
     assert!(msgs[1].starts_with("returned"), "{msgs:?}");
     assert_eq!(String::from_utf8_lossy(&out.0.borrow()), "1\n5\n");
 }
+
+const SHAPES: &str = "
+interface Speak { fn say(self) -> str }
+struct A { n: int }
+impl Speak for A { fn say(self) -> str => \"A{VERSION}\" }
+fn run() -> str {
+    let s: Speak = A { n: 1 }
+    return s.say()
+}
+fn main() { print(run()) }
+";
+
+fn shapes(version: &str) -> String {
+    SHAPES.replace("{VERSION}", version)
+}
+
+fn cache_of(chunk: &crate::bytecode::Chunk) -> Option<crate::bytecode::IcEntry> {
+    use crate::bytecode::Site;
+    chunk.sites.iter().find_map(|s| match s {
+        Site::Iface(i) => Some(i.cache.get()),
+        _ => None,
+    })?
+}
+
+/// The cache of an interface call site lives in its chunk and names the load it was made for:
+/// a chunk that a running frame keeps across a patch refreshes its entry (and runs the new
+/// body of the method) instead of trusting the old one, and a new chunk starts empty.
+#[test]
+fn an_inline_cache_does_not_outlive_a_patch() {
+    let (mut m, program, _out) = load(&shapes("1"));
+    let mut fiber = VmFiber::new();
+    let run = fn_id(&program, "run");
+    let r = m.call(&mut fiber, run, vec![]).expect("runs");
+    assert!(matches!(&r, Value::Str(s) if &**s == "A1"), "{r:?}");
+    let old = m.chunk_of(run).expect("exists").expect("compiles");
+    let first = cache_of(&old).expect("a filled cache");
+    assert_eq!(first.epoch, m.epoch);
+
+    let (patched, _) = check_source(&shapes("2")).expect("checks");
+    m.patch(&patched);
+    assert_ne!(first.epoch, m.epoch, "a patch starts a new epoch");
+    let fresh = m.chunk_of(run).expect("exists").expect("compiles");
+    assert!(cache_of(&fresh).is_none(), "a new chunk has no cache");
+    let again = m.enter(&mut fiber, Rc::clone(&old), vec![]).0;
+    assert!(matches!(&again, Ok(Value::Str(s)) if &**s == "A2"), "{again:?}");
+    let refreshed = cache_of(&old).expect("a filled cache");
+    assert_eq!(refreshed.epoch, m.epoch, "the old chunk's entry was remade");
+}
+
+/// A closure called from Rust gets its captures installed and releases them with the frame.
+#[test]
+fn a_closure_called_from_rust_runs_with_its_captures() {
+    let src = "
+fn make(n: int) -> fn(int) -> int {
+    let label = \"x\" + \"y\"
+    return fn(k) => if label == \"xy\" { n + k + 2 } else { 0 }
+}
+fn main() {}
+";
+    let (mut m, program, _out) = load(src);
+    let mut fiber = VmFiber::new();
+    let f = m
+        .call(&mut fiber, fn_id(&program, "make"), vec![Value::Int(10)])
+        .expect("makes");
+    assert!(matches!(f, Value::Closure(_)));
+    let r = m.call_value(&mut fiber, &f, vec![Value::Int(5)], colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0));
+    assert!(matches!(r, Ok(Value::Int(17))), "{r:?}");
+}

@@ -24,23 +24,10 @@ const PENDING: &[(&str, &str)] = &[
         "globals/generic_call_reaches_only_the_bound_method.colibri",
         "structs",
     ),
-    (
-        "globals/generic_call_reads_globals_of_a_show_impl.colibri",
-        "structs",
-    ),
     ("globals/script_runs_top_to_bottom.colibri", "lists"),
-    ("numbers/f32_widens_in_more_places.colibri", "enums"),
-    (
-        "numbers/interface_values_over_sized_numbers.colibri",
-        "lists",
-    ),
     (
         "numbers/sized_integers_are_hashable_and_ordered.colibri",
         "builtins",
-    ),
-    (
-        "numbers/sized_ints_as_closure_captures_and_returns.colibri",
-        "closures",
     ),
     (
         "numbers/sized_numbers_in_options_and_results.colibri",

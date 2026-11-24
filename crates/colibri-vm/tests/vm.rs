@@ -689,13 +689,15 @@ fn numeric_conversions_and_methods_run_through_the_intrinsic_instruction() {
 
 #[test]
 fn anything_not_compiled_yet_is_a_clean_panic_naming_the_node() {
-    let o = run_panic("fn main() { print(\"before\")\n let f = fn() => 1\n print(\"after\") }");
+    let o = run_panic(
+        "fn w() {}\nfn main() { print(\"before\")\n let c = go w()\n print(\"after\") }",
+    );
     assert_eq!(o.stdout, "before\n");
     assert_eq!(
         o.panic.as_deref(),
-        Some("the bytecode VM does not support closures yet")
+        Some("the bytecode VM does not support `go` yet")
     );
-    assert_eq!(o.trace, vec![("main".to_string(), 2)]);
+    assert_eq!(o.trace, vec![("main".to_string(), 3)]);
 }
 
 #[test]

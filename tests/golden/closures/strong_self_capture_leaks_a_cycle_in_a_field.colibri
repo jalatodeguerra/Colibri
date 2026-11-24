@@ -1,0 +1,33 @@
+class Button {
+    label: str
+    handler: fn()
+}
+
+impl Button {
+    fn on_click(self, f: fn()) {
+        self.handler = f
+    }
+}
+
+class Panel {
+    name: str
+    button: Button
+    count: int
+}
+
+impl Panel {
+    fn wire(self) {
+        self.button.on_click(fn() { self.count += 1 })
+    }
+}
+
+fn main() {
+    let panel = Panel { name: "leaky", button: Button { label: "b", handler: fn() {} }, count: 0 }
+    panel.wire()
+    print("end of main")
+}
+
+// expect: end of main
+// drops:
+
+// leaks: Button, Panel, closure

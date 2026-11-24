@@ -1,0 +1,48 @@
+// A `wait` inside the `next` of a user iterator that a `for` loop drives pauses the coroutine
+// that runs the loop; the other coroutine runs in between.
+struct Ticker {
+    n: int
+}
+
+impl Iter[int] for Ticker {
+    fn next(var self) -> int? {
+        if self.n >= 3 {
+            return none
+        }
+        wait(1.0)
+        self.n += 1
+        return some(self.n)
+    }
+}
+
+fn consume() {
+    let ticker = Ticker { n: 0 }
+    for x in ticker {
+        print("got {x}")
+    }
+    print("consumer done")
+}
+
+fn other() {
+    for i in 0..4 {
+        print("other {i}")
+        wait(1.0)
+    }
+}
+
+fn main() {
+    go consume()
+    go other()
+    for i in 0..6 {
+        task.tick(1.0)
+    }
+}
+
+// expect: other 0
+// expect: got 1
+// expect: other 1
+// expect: got 2
+// expect: other 2
+// expect: got 3
+// expect: consumer done
+// expect: other 3
