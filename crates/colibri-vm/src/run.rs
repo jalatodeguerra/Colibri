@@ -740,11 +740,43 @@ impl Machine {
                     tri!(self.op_hold(fiber, &chunk, base, pc, op));
                 }
                 Op::ForListNext { d, a } | Op::ForListNextVar { d, a } => {
-                    sync!();
                     let var = matches!(op, Op::ForListNextVar { .. });
-                    // An item skips the jump that ends the loop.
-                    if tri!(self.op_for_list_next(fiber, &chunk, base, pc, [d, a], var)) {
+                    // The common trip, with no call out: an item is there, the budget lasts, and
+                    // the item is bound. Everything else (the end of the list, a failing step, a
+                    // source that is not a list) is `op_for_list_next`'s, which starts over.
+                    let fast = 'trip: {
+                        let Value::List(list) = rd!(a) else {
+                            break 'trip false;
+                        };
+                        let Value::Int(i) = *rd!(a + 1) else {
+                            break 'trip false;
+                        };
+                        if !chunk.hidden && self.core.budget.left <= 0 {
+                            break 'trip false;
+                        }
+                        let Some(item) = list.at(i as usize) else {
+                            break 'trip false;
+                        };
+                        if !chunk.hidden {
+                            self.core.budget.left -= 1;
+                        }
+                        if let Value::Int(n) = wr!(a + 1) {
+                            *n += 1;
+                        }
+                        if var {
+                            put!(a + 2, item.dup());
+                        }
+                        put!(d, item);
+                        true
+                    };
+                    if fast {
+                        // An item skips the jump that ends the loop.
                         pc += 1;
+                    } else {
+                        sync!();
+                        if tri!(self.op_for_list_next(fiber, &chunk, base, pc, [d, a], var)) {
+                            pc += 1;
+                        }
                     }
                 }
                 Op::ForMapNext { .. } | Op::ForSetNext { .. } | Op::ForIterNext { .. } => {
