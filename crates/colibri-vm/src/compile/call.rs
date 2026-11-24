@@ -452,6 +452,17 @@ impl FnCompiler<'_> {
         }
     }
 
+    /// A type as a refusal names it: a user type by its name, not its table position.
+    fn type_key_name(&self, key: colibri_check::hir::TypeKey) -> String {
+        match key {
+            colibri_check::hir::TypeKey::Adt(t) => match self.env.type_names.get(t.0 as usize) {
+                Some(name) => format!("`{name}`"),
+                None => format!("`{key:?}`"),
+            },
+            other => format!("`{other:?}`"),
+        }
+    }
+
     fn intrinsic(&mut self, which: &Intrinsic, c: &Call, e: &Expr, dst: Option<Reg>) {
         let span = e.span;
         let mut args: Vec<&Expr> = Vec::new();
@@ -565,6 +576,8 @@ impl FnCompiler<'_> {
             other => {
                 let what = match other {
                     Intrinsic::Builtin(b) => format!("the built-in `{b:?}`"),
+                    Intrinsic::ErrorIs(k) => format!("`ErrorIs` of {}", self.type_key_name(*k)),
+                    Intrinsic::ErrorAs(k) => format!("`ErrorAs` of {}", self.type_key_name(*k)),
                     other => format!("`{other:?}`"),
                 };
                 self.unsupported(&what, span);

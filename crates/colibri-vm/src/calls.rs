@@ -194,8 +194,8 @@ impl Machine {
             .cache
             .get()
             .filter(|e| e.epoch == self.epoch && Some(e.key) == key);
-        let (impl_id, target) = match cached {
-            Some(e) => (Some(e.impl_id), e.target),
+        let target = match cached {
+            Some(e) => e.target,
             None => {
                 let impl_id = match &fiber.regs[at] {
                     Value::Dyn(dv) => Some(dv.impl_id),
@@ -205,18 +205,16 @@ impl Machine {
                     }
                 };
                 let target = self.target_of(impl_id, s.method);
-                if let (Some(key), Some(impl_id)) = (key, impl_id) {
+                if let Some(key) = key {
                     s.cache.set(Some(IcEntry {
                         epoch: self.epoch,
                         key,
-                        impl_id,
                         target,
                     }));
                 }
-                (impl_id, target)
+                target
             }
         };
-        let _ = impl_id;
         // The receiver is replaced by what the interface value holds.
         if let Value::Dyn(dv) = &fiber.regs[at] {
             let inner = dv.val.clone();

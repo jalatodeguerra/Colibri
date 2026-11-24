@@ -785,7 +785,6 @@ pub enum Site {
 pub struct IcEntry {
     pub epoch: u32,
     pub key: IcKey,
-    pub impl_id: u32,
     pub target: Option<FnId>,
 }
 

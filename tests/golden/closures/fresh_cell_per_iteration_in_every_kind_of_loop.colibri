@@ -1,0 +1,86 @@
+// A local bound in a loop trip gets its own cell each trip: closures that capture it and are chained see their own trip's value, with no list involved (`i` of the first loop is one variable shared by all trips)
+fn main() {
+    var acc: fn() -> str = fn() => ""
+    var i = 0
+    while i < 3 {
+        let prev = acc
+        acc = fn() => prev() + "{i},"
+        i += 1
+    }
+    print(acc())
+    var acc2: fn() -> str = fn() => ""
+    for j in 0..3 {
+        let prev = acc2
+        acc2 = fn() => prev() + "{j * 10},"
+    }
+    print(acc2())
+    var acc3: fn() -> str = fn() => ""
+    for var k in 0..3 {
+        k += 100
+        let prev = acc3
+        acc3 = fn() => prev() + "{k},"
+        k += 1000
+    }
+    print(acc3())
+    var acc4: fn() -> str = fn() => ""
+    var n = 0
+    while n < 3 {
+        var local = n
+        local += 1
+        let prev = acc4
+        acc4 = fn() => prev() + "{local},"
+        local += 50
+        n += 1
+    }
+    print(acc4())
+    var opt: int? = some(3)
+    var acc5: fn() -> str = fn() => ""
+    while let some(x) = opt {
+        let prev = acc5
+        acc5 = fn() => prev() + "{x},"
+        opt = if x > 1 { some(x - 1) } else { none }
+    }
+    print(acc5())
+    var acc6: fn() -> str = fn() => ""
+    for s in ["a", "b", "c"] {
+        let prev = acc6
+        acc6 = fn() => prev() + s
+    }
+    print(acc6())
+    var acc7: fn() -> str = fn() => ""
+    for var s in ["a", "b", "c"] {
+        s = s + "!"
+        let prev = acc7
+        acc7 = fn() => prev() + s
+        s = s + "?"
+    }
+    print(acc7())
+    var acc8: fn() -> str = fn() => ""
+    for (a, b) in [(1, "x"), (2, "y")] {
+        let prev = acc8
+        acc8 = fn() => prev() + "{a}{b}"
+    }
+    print(acc8())
+    var acc9: fn() -> str = fn() => ""
+    for i in 0..4 {
+        if i == 1 { continue }
+        var c = i
+        let prev = acc9
+        let bump = fn() { c += 10 }
+        acc9 = fn() => prev() + "{c},"
+        bump()
+        if i == 2 { bump() }
+        if i == 3 { break }
+    }
+    print(acc9())
+}
+
+// expect: 3,3,3,
+// expect: 0,10,20,
+// expect: 1100,1101,1102,
+// expect: 51,52,53,
+// expect: 3,2,1,
+// expect: abc
+// expect: a!?b!?c!?
+// expect: 1x2y
+// expect: 10,22,13,

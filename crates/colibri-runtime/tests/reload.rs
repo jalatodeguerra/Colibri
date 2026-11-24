@@ -644,3 +644,25 @@ fn a_relative_entry_path_does_not_look_changed_right_after_the_load() {
         assert!(matches!(outcome, ReloadOutcome::Unchanged), "{outcome:?}");
     }
 }
+
+#[test]
+fn an_edit_that_changes_what_a_closure_captures_restarts() {
+    // Two captures of different types trade places: a closure made before the edit holds its
+    // captured values in the old order, so the new body cannot run against them.
+    let v1 = "var keep: fn() -> str = fn() => \"init\"\nfn setup() {\n    let a = \"A\"\n    let n = 5\n    keep = fn() => \"{a}{n}\"\n}\nfn call() -> str => keep()\n";
+    let v2 = "var keep: fn() -> str = fn() => \"init\"\nfn setup() {\n    let a = \"A\"\n    let n = 5\n    keep = fn() => \"{n}{a}\"\n}\nfn call() -> str => keep()\n";
+    let dir = tree("closure-captures", &[("a.colibri", v1)]);
+    let (mut vm, _out) = vm();
+    vm.load_file(dir.join("a.colibri")).unwrap();
+    vm.get_fn::<(), ()>("setup")
+        .unwrap()
+        .call(&mut vm, ())
+        .unwrap();
+    write(&dir, "a.colibri", v2);
+    match vm.reload_changed().unwrap() {
+        ReloadOutcome::Restarted { reason, .. } => {
+            assert!(reason.contains("functions"), "{reason}");
+        }
+        other => panic!("expected a restart, got {other:?}"),
+    }
+}

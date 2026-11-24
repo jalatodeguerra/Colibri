@@ -50,6 +50,8 @@ pub struct CompileEnv {
     pub hook_fns: Vec<bool>,
     /// By function id: the name a function value of it shows.
     pub fn_names: Vec<Rc<str>>,
+    /// By type id: the name of the type, for messages.
+    pub type_names: Vec<String>,
 }
 
 impl CompileEnv {
@@ -73,6 +75,7 @@ impl CompileEnv {
         CompileEnv {
             checked_globals,
             hook_fns,
+            type_names: program.types.iter().map(|t| t.name.clone()).collect(),
             fn_names: program
                 .fns
                 .iter()
