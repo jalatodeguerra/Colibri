@@ -7,6 +7,11 @@ use clap::{Parser, Subcommand};
 use colibri_lang::depscmd::{self, DepFlags};
 use colibri_lang::on_big_stack;
 
+// The system allocator is a large share of the time of the allocation-heavy programs (`objs`, `strings`,
+// `map`); mimalloc is faster. Only the binary chooses: a library cannot pick an allocator for its host.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// The flags that decide `@when` conditions (DESIGN §3.6).
 #[derive(clap::Args, Clone, Debug, Default)]
 struct BuildFlags {
