@@ -13,7 +13,12 @@
 # skips them: add or keep them by hand. Three are not listed because the VM now runs them as far as
 # the tree-walker does on Linux: `std/path_from_native_windows` and `std/path_roots_windows` (step
 # 6 supports `match`), and `ffi/libc_windows_integers` (`extern` is supported; only `_getpid` is
-# missing here, as for the tree-walker).
+# missing here, as for the tree-walker). Four more are not listed since step 8:
+# `std/process_error_failed_windows`, `process_shell_windows`, `process_spawn_windows` and
+# `process_windows` need no feature the VM lacks (their reasons were built-ins; `cmd` is missing on
+# Linux, so the gate-lifted run stops early). A copy of `process_spawn_windows` and `process_windows`
+# with `sh`, `grep` and `sleep` in place of `cmd`, `findstr` and `ping` ran to the end with the same
+# output on both engines. The Windows CI run is the proof.
 collections/list_new_helpers_wait_in_closures.colibri  # `go`
 coroutines/cancel_at_shutdown.colibri  # `go`
 coroutines/cancel_self.colibri  # `go`
@@ -87,9 +92,5 @@ std/net_read_exact_end_of_stream.colibri  # `go`
 std/net_read_until.colibri  # `go`
 std/net_timeout_then_continue.colibri  # `go`
 std/net_use_after_close.colibri  # `go`
-std/process_error_failed_windows.colibri  # the built-in `ResultExpect`
 std/process_polling_in_a_coroutine.colibri  # `go`
 std/process_polling_windows.colibri  # `go`
-std/process_shell_windows.colibri  # the built-in `StrReplace`
-std/process_spawn_windows.colibri  # the built-in `StrReplace`
-std/process_windows.colibri  # the built-in `StrTrim`
