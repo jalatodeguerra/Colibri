@@ -1,0 +1,29 @@
+// allow: unused
+class T { name: str }
+impl Drop for T {
+    fn drop(self) { print("drop {self.name}") }
+}
+fn mk(s: str) -> T => T { name: s }
+
+enum Pair { Left(T, int), Right(int, T) }
+
+fn describe(p: Pair, want: int) -> str {
+    return match p {
+        .Left(t, n) | .Right(n, t) if n == want => "hit {t.name}"
+        _ => "miss"
+    }
+}
+
+fn main() {
+    print(describe(.Right(1, mk("r")), 1))
+    print(describe(.Left(mk("l"), 2), 1))
+    print(describe(.Left(mk("m"), 3), 3))
+}
+
+// expect: hit r
+// expect: drop r
+// expect: miss
+// expect: drop l
+// expect: hit m
+// expect: drop m
+// drops: r, l, m

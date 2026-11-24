@@ -1,0 +1,25 @@
+// allow: unused
+// The bindings of an or-pattern drop in the order of the first alternative, whichever matched.
+class Res { name: str }
+impl Drop for Res { fn drop(self) { print("drop {self.name}") } }
+class H { a: Res, b: Res, k: int }
+fn main() {
+    var h = H { a: Res { name: "A" }, b: Res { name: "B" }, k: 2 }
+    match h {
+        H { a: x, b: y, k: 1 } | H { a: y, b: x, k: 2 } => {
+            h.a = Res { name: "A2" }
+            h.b = Res { name: "B2" }
+            print("arm {x.name} {y.name}")
+        }
+        _ => print("other")
+    }
+    print("after")
+}
+
+// expect: arm B A
+// expect: drop A
+// expect: drop B
+// expect: after
+// expect: drop A2
+// expect: drop B2
+// drops: A, B, H, A2, B2

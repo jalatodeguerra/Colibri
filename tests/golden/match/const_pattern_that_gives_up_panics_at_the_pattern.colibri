@@ -1,0 +1,25 @@
+// allow: unused
+// A constant pattern whose comparison gives up panics at the pattern.
+enum N { Leaf, Node(N) }
+fn build(n: int) -> N {
+    var v = N.Leaf
+    for i in 0..n {
+        v = N.Node(v)
+    }
+    return v
+}
+const DEEP: N = build(3000)
+fn main() {
+    let x = build(3000)
+    let r = match x {
+        DEEP => 1
+        N.Node(inner) => {
+            print("node arm")
+            2
+        }
+        N.Leaf => 3
+    }
+    print(r)
+}
+
+// panic: these values nest too deeply to compare

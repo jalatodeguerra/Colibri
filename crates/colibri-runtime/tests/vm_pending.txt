@@ -77,7 +77,6 @@ coroutines::the_event_loop_uses_the_injected_clock  # `go`
 coroutines::the_instruction_budget_applies_inside_a_coroutine  # `go`
 coroutines::tick_zero_pauses_time  # `go`
 coroutines::wait_in_a_host_callback_reports_the_reason  # `go`
-embed::a_function_can_use_structs_enums_and_match_internally  # `match`
 export_macros::a_host_class_is_passed_by_handle_to_get_fn  # host functions
 export_macros::a_script_uses_exported_classes_value_types_and_functions  # host functions
 export_macros::parameter_names_are_the_rust_ones_so_arguments_can_be_named  # host functions
@@ -113,7 +112,7 @@ host_classes::a_panic_in_the_rust_drop_of_a_script_owned_object_is_a_panic_of_th
 host_classes::a_returned_object_is_script_owned_and_dies_with_its_last_reference  # host functions
 host_classes::a_rust_panic_in_a_method_releases_the_borrow  # host functions
 host_classes::a_script_that_still_holds_a_removed_object_is_told_so  # host functions
-host_classes::an_option_of_a_stale_handle_is_none_for_the_script  # `match`
+host_classes::an_option_of_a_stale_handle_is_none_for_the_script  # host functions
 host_classes::equal_host_objects_hash_equally_and_one_without_a_hash_is_a_clean_error  # host functions
 host_classes::objects_are_dropped_in_index_order_when_the_vm_goes  # host functions
 host_classes::objects_cross_functions_collections_and_tuples  # host functions
@@ -124,7 +123,7 @@ host_classes::the_host_cannot_borrow_what_a_running_method_holds  # host functio
 host_classes::the_host_cannot_remove_what_the_script_owns  # host functions
 host_classes::the_rust_drop_runs_after_the_class_drop_hook_that_held_it  # host functions
 host_fns::a_display_error_keeps_a_str_and_a_typed_error_keeps_none  # the built-in `OptionExpect`
-host_fns::a_host_error_keeps_a_typed_value_that_is_and_as_recover  # `match`
+host_fns::a_host_error_keeps_a_typed_value_that_is_and_as_recover  # the built-in `ResultContext`
 host_fns::a_host_function_calls_back_into_the_script  # host functions
 host_fns::a_host_function_that_cannot_read_its_argument_panics_cleanly  # host functions
 host_fns::a_leading_context_gives_access_to_host_state  # host functions
@@ -141,7 +140,7 @@ host_fns::closure_parameters_are_unnamed_and_named_arguments_are_rejected  # hos
 host_fns::closures_may_capture_what_they_like  # host functions
 host_fns::collections_cross_both_ways  # host functions
 host_fns::host_functions_are_not_values  # closures
-host_fns::main_returning_a_host_err_reports_its_message  # `match`
+host_fns::main_returning_a_host_err_reports_its_message  # host functions
 host_fns::nested_host_calls_track_the_depth  # host functions
 host_fns::the_default_module_needs_no_import  # host functions
 host_modules::a_default_module_type_keeps_its_bare_name_beside_module_types  # host functions
@@ -205,5 +204,5 @@ tests_api::a_test_run_from_inside_the_hook_runs_without_the_hook  # the built-in
 tests_api::host_state_leaks_from_one_test_to_the_next_without_the_hook  # host functions
 tests_api::load_tests_runs_nothing_and_finds_modules_nobody_imports  # the built-in `ListLen`
 tests_api::on_test_start_lets_the_host_reset_its_state_before_each_test  # host functions
-tests_api::run_test_reports_success_and_each_kind_of_failure  # `match`
+tests_api::run_test_reports_success_and_each_kind_of_failure  # this coercion
 tests_api::the_hook_does_not_run_for_an_unknown_test_or_a_plain_load  # host functions

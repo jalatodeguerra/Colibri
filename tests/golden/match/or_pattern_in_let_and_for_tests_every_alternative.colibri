@@ -1,0 +1,19 @@
+// allow: unused
+// A refutable or-pattern in `let` and `for` (exhaustive together) tests each alternative.
+enum E { A(int, str), B(str, int) }
+fn main() {
+    let e = E.B("bee", 2)
+    let E.A(n, s) | E.B(s, n) = e
+    print("{n} {s}")
+    let (E.A(p, _) | E.B(_, p), q) = (E.B("x", 9), 3)
+    print("{p} {q}")
+    let xs = [(E.A(1, "a"), 0), (E.B("b", 2), 0)]
+    for (E.A(k, t) | E.B(t, k), _) in xs {
+        print("{k} {t}")
+    }
+}
+
+// expect: 2 bee
+// expect: 9 3
+// expect: 1 a
+// expect: 2 b

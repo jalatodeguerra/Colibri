@@ -1,9 +1,6 @@
 //! A Rust host embedding Colibri: load a script, call its functions with typed arguments,
 //! recover from panics and capture output.
 
-mod common;
-use common::vm_pending;
-
 use colibri_runtime as colibri;
 
 const SCRIPT: &str = r#"
@@ -351,13 +348,10 @@ fn check_source_reports_without_running() {
 
 #[test]
 fn a_function_can_use_structs_enums_and_match_internally() {
-    vm_pending(
-        "a_function_can_use_structs_enums_and_match_internally",
-        || {
-            let (mut vm, out) = vm_with_output();
-            vm.load_source(
-                "shapes.colibri",
-                r#"
+    let (mut vm, out) = vm_with_output();
+    vm.load_source(
+        "shapes.colibri",
+        r#"
 enum Shape { Circle(float), Rect(float, float), Dot }
 struct Pair { lo: int, hi: int }
 
@@ -391,26 +385,24 @@ fn show_it() {
     print(Shape.Rect(1.0, 2.0))
 }
 "#,
-            )
-            .unwrap();
-            let area = vm
-                .get_fn::<(i64, f64, f64), f64>("area_of")
-                .expect("signature matches");
-            assert_eq!(area.call(&mut vm, (0, 2.0, 0.0)).unwrap(), 12.0);
-            assert_eq!(area.call(&mut vm, (1, 2.0, 4.5)).unwrap(), 9.0);
-            assert_eq!(area.call(&mut vm, (2, 0.0, 0.0)).unwrap(), 0.0);
-            let spread = vm.get_fn::<(i64, i64), i64>("spread").unwrap();
-            assert_eq!(spread.call(&mut vm, (9, 4)).unwrap(), 5);
-            let label = vm.get_fn::<(i64,), String>("label").unwrap();
-            assert_eq!(label.call(&mut vm, (5,)).unwrap(), "small");
-            assert_eq!(label.call(&mut vm, (50,)).unwrap(), "big");
-            vm.get_fn::<(), ()>("show_it")
-                .unwrap()
-                .call(&mut vm, ())
-                .unwrap();
-            assert_eq!(out.contents(), "Rect(1.0, 2.0)\n");
-        },
     )
+    .unwrap();
+    let area = vm
+        .get_fn::<(i64, f64, f64), f64>("area_of")
+        .expect("signature matches");
+    assert_eq!(area.call(&mut vm, (0, 2.0, 0.0)).unwrap(), 12.0);
+    assert_eq!(area.call(&mut vm, (1, 2.0, 4.5)).unwrap(), 9.0);
+    assert_eq!(area.call(&mut vm, (2, 0.0, 0.0)).unwrap(), 0.0);
+    let spread = vm.get_fn::<(i64, i64), i64>("spread").unwrap();
+    assert_eq!(spread.call(&mut vm, (9, 4)).unwrap(), 5);
+    let label = vm.get_fn::<(i64,), String>("label").unwrap();
+    assert_eq!(label.call(&mut vm, (5,)).unwrap(), "small");
+    assert_eq!(label.call(&mut vm, (50,)).unwrap(), "big");
+    vm.get_fn::<(), ()>("show_it")
+        .unwrap()
+        .call(&mut vm, ())
+        .unwrap();
+    assert_eq!(out.contents(), "Rect(1.0, 2.0)\n");
 }
 
 #[test]

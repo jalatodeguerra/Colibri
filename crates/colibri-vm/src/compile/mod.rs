@@ -23,6 +23,7 @@
 mod call;
 mod cond;
 mod expr;
+mod pattern;
 mod place;
 mod stmt;
 
@@ -624,6 +625,15 @@ impl<'a> FnCompiler<'a> {
         let node = self.trie.child(self.stack.top(), item);
         self.stack.items.push(item);
         self.stack.nodes.push(node);
+    }
+
+    /// Registers `items` at position `at` of the stack, below what is there: they outlive it.
+    pub(crate) fn insert_items(&mut self, at: usize, items: &[Item]) {
+        let tail = self.stack.items.split_off(at);
+        self.stack.nodes.truncate(at);
+        for &item in items.iter().chain(tail.iter()) {
+            self.push_item(item);
+        }
     }
 
     pub(crate) fn truncate_stack(&mut self, len: usize) {

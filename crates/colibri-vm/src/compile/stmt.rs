@@ -176,9 +176,25 @@ impl FnCompiler<'_> {
                 self.note_release(&init.ret);
                 self.end_group(m, span);
             }
-            StmtKind::LetPat { .. } => {
-                self.unsupported("`let` with a pattern", span);
-                self.end_group(m, span);
+            StmtKind::LetPat { pat, init } => {
+                // The value is matched, then released at once; the bindings are the block's, not
+                // the statement's, so they go below the group on the cleanup stack.
+                let t = self.alloc_for(&init.ty);
+                self.expr(init, t);
+                self.own(t);
+                let (cx, held) = self.pat_tests_must_match(pat, t, span);
+                let (items, moved) = self.emit_binds(&cx, t, span);
+                self.drop_unmoved(&held, &moved, span);
+                self.drop_now(t);
+                let n = items.len();
+                self.insert_items(m.cleanups, &items);
+                self.end_group(
+                    super::Mark {
+                        cleanups: m.cleanups + n,
+                        ..m
+                    },
+                    span,
+                );
             }
             StmtKind::Defer(_) => unreachable!("handled above"),
         }
@@ -287,9 +303,6 @@ impl FnCompiler<'_> {
     /// duration (the place guard for `for var`); each trip binds a fresh item, and `for var`
     /// writes the binding's final value back on every way out of the trip (DESIGN §11.6).
     fn for_each(&mut self, f: &ForLoop, source: &Expr, each: Each, name: Option<&str>, span: Span) {
-        if matches!(f.binding, ForBinding::Pat(_)) {
-            return self.unsupported("`for` with a pattern binding", span);
-        }
         let m = self.mark();
         let places = f.places && each == Each::List;
         let a = self.alloc(Kind::Owned);
@@ -322,10 +335,11 @@ impl FnCompiler<'_> {
         // `for var` writes back through its binding; `for var _` has none and only holds the guard.
         let write_back = places && matches!(f.binding, ForBinding::Local(_));
         // Where the item goes: straight into a plain binding, else into a temporary.
-        let (item, cell) = match f.binding {
-            ForBinding::Local(l) if self.storage(l) == Storage::Slot => (self.local(l), None),
-            ForBinding::Local(l) => (self.alloc(Kind::Scalar), Some(self.local(l))),
-            _ => (self.alloc(Kind::Scalar), None),
+        let (item, cell) = match &f.binding {
+            ForBinding::Local(l) if self.storage(*l) == Storage::Slot => (self.local(*l), None),
+            ForBinding::Local(l) => (self.alloc(Kind::Scalar), Some(self.local(*l))),
+            ForBinding::Pat(pat) => (self.alloc_for(&pat.ty), None),
+            ForBinding::None => (self.alloc(Kind::Scalar), None),
         };
         let next = match (each, write_back) {
             (Each::List, false) => Op::ForListNext { d: item, a },
@@ -336,8 +350,9 @@ impl FnCompiler<'_> {
         };
         self.emit(next, span);
         self.emit_to(Op::Jmp { off: 0 }, span, exit);
-        match f.binding {
+        match &f.binding {
             ForBinding::Local(l) => {
+                let l = *l;
                 if let Some(lr) = cell {
                     self.emit(Op::NewCell { l: lr, s: item }, span);
                 }
@@ -360,7 +375,20 @@ impl FnCompiler<'_> {
                     }
                 }
             }
-            _ => {
+            ForBinding::Pat(pat) => {
+                // The item is matched and released before the body runs; the bindings are the
+                // trip's.
+                self.push_fold();
+                self.own(item);
+                let (cx, held) = self.pat_tests_must_match(pat, item, pat.span);
+                let (items, moved) = self.emit_binds(&cx, item, pat.span);
+                for it in items {
+                    self.push_item(it);
+                }
+                self.drop_unmoved(&held, &moved, pat.span);
+                self.drop_now(item);
+            }
+            ForBinding::None => {
                 self.push_fold();
                 // `for _ in ..` binds nothing: the item dies at once.
                 self.releases += 1;

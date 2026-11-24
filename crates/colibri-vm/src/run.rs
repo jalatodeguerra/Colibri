@@ -575,6 +575,47 @@ impl Machine {
                     self.op_for_write_back(fiber, base, l, a);
                 }
 
+                // Only the variant is compared: the checker's types make the enum and the arity
+                // of the payload the pattern's (the tree-walker checks them too, redundantly).
+                Op::TestVariant { r, v } => {
+                    let Value::Enum(e) = &reg!(r) else {
+                        internal!("a variant pattern on a value that is not an enum")
+                    };
+                    if e.variant == v {
+                        pc += 1;
+                    }
+                }
+                Op::TestInt { r, k } => {
+                    let hit = match &reg!(r) {
+                        Value::Int(x) => *x == i64::from(k),
+                        Value::U64(x) => u64::try_from(k) == Ok(*x),
+                        _ => internal!("an integer pattern on another value"),
+                    };
+                    if hit {
+                        pc += 1;
+                    }
+                }
+                Op::TestLit { .. } | Op::TestRange { .. } | Op::TestConst { .. } => {
+                    sync!();
+                    if tri!(self.op_test(fiber, &chunk, base, pc, op)) {
+                        pc += 1;
+                    }
+                }
+                Op::Unpack { d, s, i } => {
+                    let i = usize::from(i);
+                    let part = match &reg!(s) {
+                        Value::Enum(e) => e.payload.get(i).cloned(),
+                        Value::Tuple(items) => items.get(i).cloned(),
+                        Value::Struct(st) => st.fields.get(i).cloned(),
+                        Value::Obj(o) => o.field(i),
+                        _ => None,
+                    };
+                    match part {
+                        Some(v) => put!(d, v),
+                        None => internal!("a pattern on a value of another shape"),
+                    }
+                }
+
                 Op::SkipIfDead { off } => {
                     if self.core.budget_is_dead() {
                         jump!(off);

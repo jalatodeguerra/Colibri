@@ -1,0 +1,33 @@
+// allow: unused
+class T { name: str }
+impl Drop for T {
+    fn drop(self) { print("drop {self.name}") }
+}
+fn mk(s: str) -> T => T { name: s }
+fn check(t: T) -> bool {
+    print("check {t.name}")
+    return false
+}
+
+fn pick(o: T?) -> str {
+    return match o {
+        some(t) if check(t) => "first"
+        some(t) => {
+            let _extra = mk("extra")
+            "second {t.name}"
+        }
+        none => "none"
+    }
+}
+
+fn main() {
+    print(pick(some(mk("x"))))
+    print("after")
+}
+
+// expect: check x
+// expect: drop extra
+// expect: second x
+// expect: drop x
+// expect: after
+// drops: extra, x

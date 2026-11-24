@@ -19,6 +19,7 @@ mod fiber;
 mod heap;
 mod load;
 mod machine;
+mod patterns;
 mod places;
 mod run;
 mod source;

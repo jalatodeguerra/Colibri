@@ -46,7 +46,6 @@ pub(super) fn dst_safe(e: &Expr) -> bool {
 fn node_name(e: &ExprKind) -> &'static str {
     match e {
         ExprKind::Go(_) | ExprKind::GoIn(..) => "`go`",
-        ExprKind::Match { .. } => "`match`",
         ExprKind::Coerce(..) => "this coercion",
         ExprKind::FnRef { .. } => "function values",
         ExprKind::Closure(_) => "closures",
@@ -97,6 +96,9 @@ impl FnCompiler<'_> {
                 self.if_expr(cond, then, else_.as_deref(), Some(dst), span);
             }
             ExprKind::Block(b) => self.block(b, Some(dst)),
+            ExprKind::Match { scrutinee, arms } => {
+                self.match_expr(scrutinee, arms, Some(dst), span);
+            }
             ExprKind::Loop { id, body } => {
                 self.loop_expr(*id, body, span);
                 self.emit(Op::LoadUnit { d: dst }, span);
@@ -247,6 +249,7 @@ impl FnCompiler<'_> {
                 self.if_expr(cond, then, else_.as_deref(), None, span);
             }
             ExprKind::Block(b) => self.block(b, None),
+            ExprKind::Match { scrutinee, arms } => self.match_expr(scrutinee, arms, None, span),
             ExprKind::Loop { id, body } => self.loop_expr(*id, body, span),
             ExprKind::For(f) => self.for_expr(f, span),
             ExprKind::Call(c) => self.call(e, c, None),
