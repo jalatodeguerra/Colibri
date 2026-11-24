@@ -221,23 +221,6 @@ impl Machine {
                 put!($d, Value::Float(x $op y));
             }};
         }
-        // After a lookup in a map or set: a comparison that gave up is a panic (the lookup's
-        // answer is a stand-in), and the value it left in `$d` is released.
-        macro_rules! gave_up {
-            ($d:expr) => {
-                if colibri_core::compare::take_gave_up() {
-                    let result: Option<u16> = $d;
-                    sync!();
-                    let ctl = self.lookup_gave_up(
-                        fiber,
-                        &chunk,
-                        pc,
-                        result.map(|d| base + usize::from(d)),
-                    );
-                    throw!(ctl)
-                }
-            };
-        }
         // Reloads the loop state from the top frame (after a push or a pop).
         macro_rules! reload {
             () => {{
@@ -558,37 +541,13 @@ impl Machine {
                     sync!();
                     tri!(self.op_intrinsic(fiber, &chunk, base, pc, op));
                 }
-                Op::Builtin { d, .. } => {
+                Op::Builtin { .. } => {
                     sync!();
                     tri!(self.op_builtin(fiber, &chunk, base, pc, op));
-                    gave_up!(Some(d));
                 }
-                Op::ListPush { l, v } => {
-                    let item = reg!(v).clone();
-                    let rejected = match &reg!(l) {
-                        Value::List(list) => list.push(item).err(),
-                        _ => internal!("an ill-typed `push`"),
-                    };
-                    if let Some(rejected) = rejected {
-                        sync!();
-                        let span = chunk.spans[pc - 1];
-                        self.release(rejected.args);
-                        throw!(self.violation(fiber, span, rejected.violation));
-                    }
-                }
-                Op::ListLen { d, l } => {
-                    let Value::List(list) = &reg!(l) else {
-                        internal!("an ill-typed `len`")
-                    };
-                    let n = list.len() as i64;
-                    put!(d, Value::Int(n));
-                }
-                Op::StrLen { d, s } => {
-                    let Value::Str(text) = &reg!(s) else {
-                        internal!("an ill-typed `len`")
-                    };
-                    let n = text.len() as i64;
-                    put!(d, Value::Int(n));
+                Op::ListPush { .. } | Op::ListLen { .. } | Op::StrLen { .. } => {
+                    sync!();
+                    tri!(self.op_hot_builtin(fiber, &chunk, base, pc, op));
                 }
                 Op::Coerce { d, s, site } => match &chunk.sites[usize::from(site)] {
                     Site::F32ToFloat => {
@@ -626,7 +585,6 @@ impl Machine {
                 Op::MapInsert { m, k, v } => {
                     sync!();
                     tri!(self.op_map_insert(fiber, &chunk, base, pc, [m, k, v]));
-                    gave_up!(None);
                 }
 
                 Op::PlaceGet { .. }
@@ -637,19 +595,12 @@ impl Machine {
                     sync!();
                     tri!(self.op_place(fiber, &chunk, base, pc, op));
                 }
-                Op::ListGetAt { .. } | Op::ListSetAt { .. } => {
+                Op::ListGetAt { .. }
+                | Op::ListSetAt { .. }
+                | Op::MapGetAt { .. }
+                | Op::MapSetAt { .. } => {
                     sync!();
                     tri!(self.op_elem(fiber, &chunk, base, pc, op));
-                }
-                Op::MapGetAt { d, .. } => {
-                    sync!();
-                    tri!(self.op_elem(fiber, &chunk, base, pc, op));
-                    gave_up!(Some(d));
-                }
-                Op::MapSetAt { .. } => {
-                    sync!();
-                    tri!(self.op_elem(fiber, &chunk, base, pc, op));
-                    gave_up!(None);
                 }
                 Op::Unhold => {
                     let held = fiber.holds.pop();
@@ -662,7 +613,6 @@ impl Machine {
                 Op::CanonKey { d, m, k } => {
                     sync!();
                     tri!(self.op_canon_key(fiber, &chunk, base, pc, [d, m, k]));
-                    gave_up!(Some(d));
                 }
                 Op::HoldIter { .. } | Op::HoldListPlace { .. } => {
                     sync!();
@@ -1107,6 +1057,52 @@ impl Machine {
         let args: Vec<Value> = fiber.regs[from..from + usize::from(*argc)].to_vec();
         let result = self.builtin(fiber, *which, args, span)?;
         Self::put_reg(fiber, base + usize::from(d), result);
+        if colibri_core::compare::take_gave_up() {
+            return Err(self.lookup_gave_up(fiber, chunk, pc, Some(base + usize::from(d))));
+        }
+        Ok(())
+    }
+
+    /// `ListPush`, `ListLen` and `StrLen`: the built-ins that are instructions of their own.
+    #[inline(never)]
+    fn op_hot_builtin(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        op: Op,
+    ) -> Result<(), Ctl> {
+        let span = chunk.spans[pc - 1];
+        let r = |i: u16| base + usize::from(i);
+        match op {
+            Op::ListPush { l, v } => {
+                let item = fiber.regs[r(v)].clone();
+                let Value::List(list) = &fiber.regs[r(l)] else {
+                    self.release(item);
+                    return Err(self.internal(fiber, span, "an ill-typed `push`"));
+                };
+                if let Err(rejected) = list.push(item) {
+                    self.release(rejected.args);
+                    return Err(self.violation(fiber, span, rejected.violation));
+                }
+            }
+            Op::ListLen { d, l } => {
+                let Value::List(list) = &fiber.regs[r(l)] else {
+                    return Err(self.internal(fiber, span, "an ill-typed `len`"));
+                };
+                let n = list.len() as i64;
+                Self::put_reg(fiber, r(d), Value::Int(n));
+            }
+            Op::StrLen { d, s } => {
+                let Value::Str(text) = &fiber.regs[r(s)] else {
+                    return Err(self.internal(fiber, span, "an ill-typed `len`"));
+                };
+                let n = text.len() as i64;
+                Self::put_reg(fiber, r(d), Value::Int(n));
+            }
+            _ => return Err(self.internal(fiber, span, "not a built-in instruction")),
+        }
         Ok(())
     }
 

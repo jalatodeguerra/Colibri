@@ -409,6 +409,15 @@ impl Machine {
             }
             _ => return Err(self.internal(fiber, span, "not an element instruction")),
         }
+        if matches!(op, Op::MapGetAt { .. } | Op::MapSetAt { .. })
+            && colibri_core::compare::take_gave_up()
+        {
+            let result = match op {
+                Op::MapGetAt { d, .. } => Some(r(d)),
+                _ => None,
+            };
+            return Err(self.lookup_gave_up(fiber, chunk, pc, result));
+        }
         Ok(())
     }
 
@@ -461,6 +470,9 @@ impl Machine {
         let key = fiber.regs[base + usize::from(k)].clone();
         let canon = self.canonical_key(fiber, || map.keys(), key, span)?;
         Self::put_reg(fiber, base + usize::from(d), canon);
+        if colibri_core::compare::take_gave_up() {
+            return Err(self.lookup_gave_up(fiber, chunk, pc, Some(base + usize::from(d))));
+        }
         Ok(())
     }
 

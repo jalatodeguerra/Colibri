@@ -192,7 +192,8 @@ impl Machine {
         let key = fiber.regs[base + usize::from(k)].clone();
         let value = fiber.regs[base + usize::from(v)].clone();
         let key = self.canonical_key(fiber, || map.keys(), key, span)?;
-        match map.insert(key, value) {
+        let inserted = map.insert(key, value);
+        match inserted {
             Ok(replaced) => {
                 if let Some(old) = replaced.old {
                     self.release(old);
@@ -200,9 +201,12 @@ impl Machine {
                 if let Some(spare) = replaced.spare_key {
                     self.release(spare);
                 }
-                Ok(())
             }
-            Err(_) => Err(self.internal(fiber, span, "a map literal on a held map")),
+            Err(_) => return Err(self.internal(fiber, span, "a map literal on a held map")),
         }
+        if colibri_core::compare::take_gave_up() {
+            return Err(self.lookup_gave_up(fiber, chunk, pc, None));
+        }
+        Ok(())
     }
 }
