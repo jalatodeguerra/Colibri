@@ -476,6 +476,33 @@ impl Machine {
         }
     }
 
+    /// `l.<field idx> = s` on a plain local slot that holds a struct.
+    #[inline(never)]
+    pub(crate) fn op_set_field(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        [l, s, idx]: [u16; 3],
+    ) -> Result<(), Ctl> {
+        let value = std::mem::replace(&mut fiber.regs[base + usize::from(s)], Value::Unit);
+        let slot = match &mut fiber.regs[base + usize::from(l)] {
+            Value::Struct(st) => Rc::make_mut(st).fields.get_mut(usize::from(idx)),
+            _ => None,
+        };
+        let Some(slot) = slot else {
+            self.release(value);
+            let span = chunk.spans[pc - 1];
+            return Err(self.internal(fiber, span, "a place does not exist"));
+        };
+        let old = std::mem::replace(slot, value);
+        if !is_scalar_value(&old) {
+            self.release(old);
+        }
+        Ok(())
+    }
+
     /// `d = the key the map `m` stores for the key in `k``.
     #[inline(never)]
     pub(crate) fn op_canon_key(
@@ -531,6 +558,48 @@ impl Machine {
         };
         fiber.holds.push(token);
         Ok(())
+    }
+
+    /// `ForListNext` and `ForListNextVar`, the loops over a list: the same as `op_for_next` for a list that has an
+    /// item left, without its dispatch on the kind of loop. The end of the list and every
+    /// failure are `op_for_next`'s.
+    #[inline(never)]
+    pub(crate) fn op_for_list_next(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        [d, a]: [u16; 2],
+        var: bool,
+    ) -> Result<bool, Ctl> {
+        let src = base + usize::from(a);
+        if let [Value::List(list), Value::Int(i)] = &mut fiber.regs[src..src + 2]
+            && let Some(item) = list.at(*i as usize)
+        {
+            // An integer is overwritten in place: no drop of the old value.
+            *i += 1;
+            // One budget step per trip, before anything is bound (the prelude's loops are free).
+            if !chunk.hidden {
+                self.core.budget.left -= 1;
+                if self.core.budget.left < 0 {
+                    self.release(item);
+                    let span = chunk.spans[pc - 1];
+                    return Err(self.step_failure(fiber, span));
+                }
+            }
+            if var {
+                Self::put_reg(fiber, src + 2, item.clone());
+            }
+            Self::put_reg(fiber, base + usize::from(d), item);
+            return Ok(true);
+        }
+        let op = if var {
+            Op::ForListNextVar { d, a }
+        } else {
+            Op::ForListNext { d, a }
+        };
+        self.op_for_next(fiber, chunk, base, pc, op)
     }
 
     /// The next item of a `for` loop. `Ok(true)`: it charged a step and put the item in `d`;

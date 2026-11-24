@@ -199,7 +199,7 @@ impl ListObj {
     /// The element at a position, `None` past the end (for iteration).
     #[inline]
     pub fn at(&self, i: usize) -> Option<Value> {
-        self.items.borrow().get(i).cloned()
+        self.items.borrow().get(i).map(Value::dup)
     }
 
     #[inline]

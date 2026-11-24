@@ -290,9 +290,9 @@ fn each(ps: List[P]) {
 0006  Jmp -> 0014
 0007  Step 1
 0008  LoadInt r7 1
-0009  GetPath r8 r2 [Field(FieldIdx(0))]
+0009  GetField r8 r2 .0
 0010  AddI r6 r8 r7
-0011  SetPath r2 r6 [Field(FieldIdx(0))]
+0011  SetField r2 r6 .0
 0012  ForWriteBack r2 src=r3
 0013  Jmp -> 0005
 0014  Unhold

@@ -251,9 +251,9 @@ impl Machine {
                 Op::LoadUnit { d } => put!(d, Value::Unit),
                 Op::LoadBool { d, b } => put!(d, Value::Bool(b)),
                 Op::LoadInt { d, i } => put!(d, Value::Int(i64::from(i))),
-                Op::LoadK { d, k } => put!(d, chunk.consts[k as usize].clone()),
+                Op::LoadK { d, k } => put!(d, chunk.consts[k as usize].dup()),
                 Op::Copy { d, s } => {
-                    let v = reg!(s).clone();
+                    let v = reg!(s).dup();
                     put!(d, v);
                 }
                 Op::Move { d, s } => {
@@ -318,7 +318,7 @@ impl Machine {
                     put!(r, unwrap_cell(v));
                 }
 
-                Op::GetGlobal { d, g } => put!(d, self.globals[g as usize].clone()),
+                Op::GetGlobal { d, g } => put!(d, self.globals[g as usize].dup()),
                 Op::GetGlobalChecked { .. }
                 | Op::CheckGlobal { .. }
                 | Op::SetGlobal { .. }
@@ -591,6 +591,20 @@ impl Machine {
                     _ => internal!("a coercion without its kind"),
                 },
 
+                Op::GetField { d, s, idx } => {
+                    let field = match &reg!(s) {
+                        Value::Struct(st) => st.fields.get(usize::from(idx)).map(Value::dup),
+                        _ => None,
+                    };
+                    match field {
+                        Some(v) => put!(d, v),
+                        None => internal!("ill-typed projection"),
+                    }
+                }
+                Op::SetField { l, s, idx } => {
+                    sync!();
+                    tri!(self.op_set_field(fiber, &chunk, base, pc, [l, s, idx]));
+                }
                 Op::NewStruct { .. }
                 | Op::NewObject { .. }
                 | Op::NewVariant { .. }
@@ -644,11 +658,15 @@ impl Machine {
                     sync!();
                     tri!(self.op_hold(fiber, &chunk, base, pc, op));
                 }
-                Op::ForListNext { .. }
-                | Op::ForListNextVar { .. }
-                | Op::ForMapNext { .. }
-                | Op::ForSetNext { .. }
-                | Op::ForIterNext { .. } => {
+                Op::ForListNext { d, a } | Op::ForListNextVar { d, a } => {
+                    sync!();
+                    let var = matches!(op, Op::ForListNextVar { .. });
+                    // An item skips the jump that ends the loop.
+                    if tri!(self.op_for_list_next(fiber, &chunk, base, pc, [d, a], var)) {
+                        pc += 1;
+                    }
+                }
+                Op::ForMapNext { .. } | Op::ForSetNext { .. } | Op::ForIterNext { .. } => {
                     sync!();
                     // An item skips the jump that ends the loop.
                     if tri!(self.op_for_next(fiber, &chunk, base, pc, op)) {
@@ -1130,35 +1148,35 @@ impl Machine {
         pc: usize,
         op: Op,
     ) -> Result<(), Ctl> {
-        let span = chunk.spans[pc - 1];
+        let span = || chunk.spans[pc - 1];
         let r = |i: u16| base + usize::from(i);
         match op {
             Op::ListPush { l, v } => {
                 let item = fiber.regs[r(v)].clone();
                 let Value::List(list) = &fiber.regs[r(l)] else {
                     self.release(item);
-                    return Err(self.internal(fiber, span, "an ill-typed `push`"));
+                    return Err(self.internal(fiber, span(), "an ill-typed `push`"));
                 };
                 if let Err(rejected) = list.push(item) {
                     self.release(rejected.args);
-                    return Err(self.violation(fiber, span, rejected.violation));
+                    return Err(self.violation(fiber, span(), rejected.violation));
                 }
             }
             Op::ListLen { d, l } => {
                 let Value::List(list) = &fiber.regs[r(l)] else {
-                    return Err(self.internal(fiber, span, "an ill-typed `len`"));
+                    return Err(self.internal(fiber, span(), "an ill-typed `len`"));
                 };
                 let n = list.len() as i64;
                 Self::put_reg(fiber, r(d), Value::Int(n));
             }
             Op::StrLen { d, s } => {
                 let Value::Str(text) = &fiber.regs[r(s)] else {
-                    return Err(self.internal(fiber, span, "an ill-typed `len`"));
+                    return Err(self.internal(fiber, span(), "an ill-typed `len`"));
                 };
                 let n = text.len() as i64;
                 Self::put_reg(fiber, r(d), Value::Int(n));
             }
-            _ => return Err(self.internal(fiber, span, "not a built-in instruction")),
+            _ => return Err(self.internal(fiber, span(), "not a built-in instruction")),
         }
         Ok(())
     }

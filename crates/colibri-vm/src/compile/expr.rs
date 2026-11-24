@@ -181,8 +181,7 @@ impl FnCompiler<'_> {
                 let t = self.alloc_for(&base.ty);
                 self.expr(base, t);
                 self.own(t);
-                let site = self.add_site(Site::Path(Box::new([*proj])));
-                self.emit(Op::GetPath { d: dst, s: t, site }, span);
+                self.emit_get_path(dst, t, &[*proj], span);
             }
             ExprKind::Range {
                 start,

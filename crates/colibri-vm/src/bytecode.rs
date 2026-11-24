@@ -522,6 +522,12 @@ pub enum Op {
         s: Reg,
         site: u16,
     },
+    /// `d = s.<field idx>`: a clone of a field of the struct in `s` (`GetPath` of one field).
+    GetField {
+        d: Reg,
+        s: Reg,
+        idx: u16,
+    },
     /// `d = field idx of the class object in o`.
     ObjGet {
         d: Reg,
@@ -602,6 +608,12 @@ pub enum Op {
         l: Reg,
         s: Reg,
         site: u16,
+    },
+    /// `l.<field idx> = take(s)` on a local that holds a struct (`SetPath` of one field).
+    SetField {
+        l: Reg,
+        s: Reg,
+        idx: u16,
     },
     /// `d = the key the map in `m` stores for the key in `k``: another key when a user `Eq` says
     /// the two are equal, else a clone of `k`.
@@ -1113,6 +1125,8 @@ impl Chunk {
             Op::PlaceSet { a, b, v } => format!("PlaceSet r{a} r{b} r{v}"),
             Op::PlaceHold { a } => format!("PlaceHold r{a}"),
             Op::Unhold => "Unhold".to_string(),
+            Op::GetField { d, s, idx } => format!("GetField r{d} r{s} .{idx}"),
+            Op::SetField { l, s, idx } => format!("SetField r{l} r{s} .{idx}"),
             Op::SetPath { l, s, site } => format!("SetPath r{l} r{s} {}", self.site_text(site)),
             Op::CanonKey { d, m, k } => format!("CanonKey r{d} map=r{m} r{k}"),
             Op::HoldIter { r } => format!("HoldIter r{r}"),
