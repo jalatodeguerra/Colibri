@@ -278,6 +278,7 @@ ffi/libc_pointers.colibri  # `extern` functions
 ffi/libc_posix_integers.colibri  # `extern` functions
 ffi/libc_strings.colibri  # `extern` functions
 ffi/libc_struct_by_value.colibri  # `extern` functions
+ffi/libc_windows_integers.colibri  # `extern` functions
 ffi/libm_fabsf.colibri  # `extern` functions
 ffi/libm_functions.colibri  # `extern` functions
 ffi/null_where_not_allowed.colibri  # `extern` functions
