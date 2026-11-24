@@ -11,6 +11,7 @@ use colibri_core::prelude::*;
 use colibri_core::sched::TickError;
 use colibri_core::value::Value;
 
+use crate::compile::CompileEnv;
 use crate::engine::bare_panic;
 use crate::fiber::VmFiber;
 use crate::machine::{Machine, Slot};
@@ -21,8 +22,7 @@ impl Machine {
         self.fns.get(f.0 as usize).map(|s| s.body.param_count)
     }
 
-    /// Calls a function value from the host. Only plain functions run yet; a closure is a
-    /// clean panic.
+    /// Calls a function value from the host.
     pub fn call_function(
         &mut self,
         fiber: &mut VmFiber,
@@ -31,9 +31,24 @@ impl Machine {
     ) -> Result<Value, Box<PanicInfo>> {
         match f {
             Value::Fn(id, _) => self.call(fiber, *id, args),
+            Value::Closure(c) => {
+                let chunk = match self.closure_chunk(c) {
+                    Ok(chunk) => chunk,
+                    Err(m) => {
+                        self.release_all(args);
+                        return Err(bare_panic(&format!("internal error: {m}")));
+                    }
+                };
+                let c = Rc::clone(c);
+                self.enter_from_host(fiber, true, |this, fiber| {
+                    this.enter_with(fiber, chunk, args, Some(&c)).0
+                })
+            }
             _ => {
                 self.release_all(args);
-                Err(bare_panic("the bytecode VM does not support closures yet"))
+                Err(bare_panic(
+                    "internal error: a call of something that is not a function",
+                ))
             }
         }
     }
@@ -42,6 +57,8 @@ impl Machine {
     /// a call made from now on runs the new body, and frames already running keep their chunk.
     pub fn patch(&mut self, program: &Program) {
         debug_assert_eq!(self.fns.len(), program.fns.len());
+        self.epoch = self.epoch.wrapping_add(1);
+        self.env = CompileEnv::for_program(program);
         // Only the host functions' (empty) bodies: `load_host` would also forget the host
         // classes and hooks the runtime installed after loading, which a reload keeps.
         self.core.host.bodies = program

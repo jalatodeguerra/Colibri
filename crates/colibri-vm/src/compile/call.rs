@@ -7,7 +7,7 @@ use colibri_check::types::Ty;
 use colibri_syntax::Span;
 
 use super::{FnCompiler, Item, Kind};
-use crate::bytecode::{AnchorKind, Op, PlaceSite, Reg, Site};
+use crate::bytecode::{AnchorKind, IfaceSite, Op, PlaceSite, Reg, Site};
 
 /// Registers `base..` that a call's callee sees as its first locals.
 pub(super) struct Window {
@@ -124,10 +124,184 @@ impl FnCompiler<'_> {
             }
             Callee::Intrinsic(which) => self.intrinsic(which, c, e, dst),
             Callee::Host(id) => self.call_host_fn(*id, c, e, dst),
-            Callee::Value => self.unsupported("calls of function values", e.span),
-            Callee::Bound { .. } | Callee::Dyn { .. } => {
-                self.unsupported("calls through interfaces", e.span);
+            Callee::Value => self.call_value(e, c, dst),
+            Callee::Bound { iface, method } | Callee::Dyn { iface, method } => {
+                let is_dyn = matches!(c.callee, Callee::Dyn { .. });
+                let mut values = Vec::new();
+                let mut receiver = None;
+                for a in &c.args {
+                    match a {
+                        Arg::Value(v) => values.push(v),
+                        Arg::Place(p) => receiver = Some(p),
+                    }
+                }
+                self.call_iface(*iface, *method, is_dyn, &values, receiver, e, dst);
             }
+        }
+    }
+
+    /// A call of a function value: the function is the first value of the window, the arguments
+    /// follow, and the callee's window starts at the first argument.
+    fn call_value(&mut self, e: &Expr, c: &Call, dst: Option<Reg>) {
+        let span = e.span;
+        let mut args: Vec<&Expr> = Vec::new();
+        for a in &c.args {
+            match a {
+                Arg::Value(v) => args.push(v),
+                Arg::Place(_) => {
+                    return self.unsupported("a place argument of a function value", span);
+                }
+            }
+        }
+        let d = match dst {
+            Some(d) => d,
+            None => self.alloc_for(&e.ty),
+        };
+        let w = self.eval_window(0, &args, false);
+        self.emit(Op::CallValue { d, base: w.base }, span);
+        self.free_window(w, span);
+        if dst.is_none() {
+            self.own(d);
+            self.free(d, span);
+        }
+    }
+
+    /// A call of a method of an interface. The receiver is the first value, or, for a `var self`
+    /// method, the place it lives in.
+    #[allow(clippy::too_many_arguments)]
+    fn call_iface(
+        &mut self,
+        iface: colibri_check::types::TypeId,
+        method: u32,
+        is_dyn: bool,
+        args: &[&Expr],
+        receiver: Option<&Place>,
+        e: &Expr,
+        dst: Option<Reg>,
+    ) {
+        let span = e.span;
+        let Ok(argc) = u16::try_from(args.len() + usize::from(receiver.is_some())) else {
+            return self.fail("a call with too many arguments");
+        };
+        let site = self.add_site(Site::Iface(Box::new(IfaceSite {
+            iface,
+            method,
+            argc,
+            cache: std::cell::Cell::new(None),
+        })));
+        if let Some(place) = receiver {
+            return self.call_iface_on_place(site, args, place, &e.ty, dst, span);
+        }
+        let d = match dst {
+            Some(d) => d,
+            None => self.alloc_for(&e.ty),
+        };
+        let w = self.eval_window(0, args, false);
+        let base = w.base;
+        self.emit(
+            if is_dyn {
+                Op::CallDyn { d, base, site }
+            } else {
+                Op::CallBound { d, base, site }
+            },
+            span,
+        );
+        self.free_window(w, span);
+        if dst.is_none() {
+            self.own(d);
+            self.free(d, span);
+        }
+    }
+
+    /// A `var self` call through an interface: like [`FnCompiler::call_fn_on_place`], with the
+    /// receiver unwrapped from its interface value for the call and boxed again before it is
+    /// written back (also when the call panics).
+    fn call_iface_on_place(
+        &mut self,
+        site: u16,
+        args: &[&Expr],
+        place: &Place,
+        ret: &Ty,
+        dst: Option<Reg>,
+        span: Span,
+    ) {
+        let via_temp = matches!(dst, Some(d) if usize::from(d) < self.nlocals);
+        let d = match dst {
+            Some(d) if !via_temp => d,
+            _ => self.alloc_for(ret),
+        };
+        let (w, res) =
+            self.eval_window_then(2, args, false, |c| c.resolve_anchor(place, false, span));
+        self.emit_hold(&res, span);
+        let place_site = |c: &mut Self, guarded: bool| {
+            c.add_site(Site::Place(Box::new(PlaceSite {
+                anchor: res.kind,
+                path: place.path.clone().into_boxed_slice(),
+                name: Rc::clone(&res.name),
+                guarded,
+            })))
+        };
+        if res.kind == AnchorKind::Local {
+            let take = place_site(self, false);
+            self.emit(
+                Op::PlaceTake {
+                    d: w.base,
+                    a: res.a,
+                    b: res.b,
+                },
+                span,
+            );
+            self.emit(Op::Site { site: take }, span);
+        } else {
+            self.emit_place_get(&res, &place.path, w.base, span);
+        }
+        let back = place_site(self, false);
+        self.push_item(Item::Place {
+            site: back,
+            a: res.a,
+            b: res.b,
+            r: w.base,
+        });
+        self.push_item(Item::Rewrap {
+            shell: w.base,
+            recv: w.base + 1,
+        });
+        self.emit(
+            Op::CallIfaceInout {
+                d,
+                base: w.base,
+                site,
+            },
+            span,
+        );
+        let depth = self.cleanup_depth();
+        self.truncate_stack(depth - 2);
+        self.emit(
+            Op::Rewrap {
+                shell: w.base,
+                recv: w.base + 1,
+            },
+            span,
+        );
+        self.emit(
+            Op::PlaceSet {
+                a: res.a,
+                b: res.b,
+                v: w.base,
+            },
+            span,
+        );
+        self.emit(Op::Site { site: back }, span);
+        self.note_release(&place.ty);
+        self.emit_unhold(&res, span);
+        self.free_window(w, span);
+        if let (true, Some(local)) = (via_temp, dst) {
+            self.own(d);
+            self.emit(Op::Move { d: local, s: d }, span);
+            self.free_moved(d);
+        } else if dst.is_none() {
+            self.own(d);
+            self.free(d, span);
         }
     }
 

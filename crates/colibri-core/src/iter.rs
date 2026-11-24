@@ -252,7 +252,8 @@ impl fmt::Debug for IterObj {
 }
 
 /// The item inside a `T?` that `next` returned: `Some(item)` for `some(item)`.
-fn item_of(next: &Value) -> Option<Option<Value>> {
+#[doc(hidden)]
+pub fn item_of(next: &Value) -> Option<Option<Value>> {
     match next {
         Value::Enum(e) if e.ty == OPTION_TYPE => {
             if e.variant == VARIANT_SOME {

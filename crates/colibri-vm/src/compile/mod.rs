@@ -48,6 +48,8 @@ pub struct CompileEnv {
     /// of earlier hooks may be pending, and the tree-walker folds them at its next statement
     /// end, so every statement of a hook checks.
     pub hook_fns: Vec<bool>,
+    /// By function id: the name a function value of it shows.
+    pub fn_names: Vec<Rc<str>>,
 }
 
 impl CompileEnv {
@@ -71,6 +73,11 @@ impl CompileEnv {
         CompileEnv {
             checked_globals,
             hook_fns,
+            fn_names: program
+                .fns
+                .iter()
+                .map(|f| Rc::from(f.body.name.as_str()))
+                .collect(),
         }
     }
 }
@@ -167,6 +174,9 @@ pub(crate) enum Item {
     Place { site: u16, a: Reg, b: Reg, r: Reg },
     /// The binding of a `for mut` iteration: its final value goes back into the list.
     ForBack { l: Reg, a: Reg },
+    /// The receiver of a `var self` interface call, unwrapped from its interface value in
+    /// `shell`: boxed again before it is written back.
+    Rewrap { shell: Reg, recv: Reg },
 }
 
 /// The stack of items as a path in a trie, so equal stacks share one node and the landing pad
@@ -237,6 +247,7 @@ fn cannot_fail(op: &Op) -> bool {
             | Op::Jmp { .. }
             | Op::UnwrapCell { .. }
             | Op::Unhold
+            | Op::Rewrap { .. }
             | Op::ForWriteBack { .. }
             | Op::SkipIfDead { .. }
             | Op::FoldHooks
@@ -813,6 +824,9 @@ impl<'a> FnCompiler<'a> {
                     self.emit(Op::ForWriteBack { l, a }, span);
                     self.releases += 1;
                 }
+                Item::Rewrap { shell, recv } => {
+                    self.emit(Op::Rewrap { shell, recv }, span);
+                }
             }
         }
     }
@@ -958,6 +972,9 @@ impl<'a> FnCompiler<'a> {
                     }
                     Item::ForBack { l, a } => {
                         self.emit(Op::ForWriteBack { l, a }, span);
+                    }
+                    Item::Rewrap { shell, recv } => {
+                        self.emit(Op::Rewrap { shell, recv }, span);
                     }
                 }
                 self.state_override = None;

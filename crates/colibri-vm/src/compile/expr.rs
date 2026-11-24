@@ -8,6 +8,7 @@ use colibri_syntax::Span;
 
 use super::{FnCompiler, Kind, kind_of};
 use crate::bytecode::{Op, Reg, Site};
+use colibri_core::value::Value;
 
 /// Whether evaluating `e` may assign a local of the running frame. Conservative: anything that
 /// can contain a statement counts. A call cannot (a callee has its own registers), except that a
@@ -40,6 +41,8 @@ pub(super) fn dst_safe(e: &Expr) -> bool {
             | ExprKind::Call(_)
             | ExprKind::StrConcat(_)
             | ExprKind::Coerce(..)
+            | ExprKind::FnRef { .. }
+            | ExprKind::Closure(_)
     )
 }
 
@@ -107,11 +110,31 @@ impl FnCompiler<'_> {
                 self.for_expr(f, span);
                 self.emit(Op::LoadUnit { d: dst }, span);
             }
-            ExprKind::Coerce(inner, Coercion::F32ToFloat) => {
+            ExprKind::Coerce(inner, how) => {
                 let s = self.operand(inner, false);
-                let site = self.add_site(Site::F32ToFloat);
+                let site = match how {
+                    Coercion::F32ToFloat => self.add_site(Site::F32ToFloat),
+                    other => self.add_site(Site::Coerce(*other)),
+                };
                 self.emit(Op::Coerce { d: dst, s, site }, span);
                 self.free(s, span);
+            }
+            ExprKind::FnRef { f, .. } => {
+                let name = self
+                    .env
+                    .fn_names
+                    .get(f.0 as usize)
+                    .cloned()
+                    .unwrap_or_else(|| "?".into());
+                let k = self.add_const(Value::Fn(*f, name));
+                self.emit(Op::LoadK { d: dst, k }, span);
+            }
+            ExprKind::Closure(c) => {
+                let site = self.add_site(Site::Closure {
+                    f: c.f,
+                    captures: c.captures.clone().into_boxed_slice(),
+                });
+                self.emit(Op::MakeClosure { d: dst, site }, span);
             }
             ExprKind::Struct { ty, fields } => {
                 self.construct(fields.iter().collect(), dst, span, |regs| {
@@ -309,8 +332,22 @@ impl FnCompiler<'_> {
             UnOp::User(UserOp::Fn(f)) => {
                 self.call_fn(f, &[x], None, &x.ty, Some(dst), span);
             }
-            UnOp::User(UserOp::Bound { .. }) => {
-                self.unsupported("operators on type parameters", span);
+            UnOp::User(UserOp::Bound { iface, rhs }) => {
+                let w = self.eval_window(0, &[x], false);
+                let site = self.add_site(Site::Operator {
+                    iface,
+                    rhs,
+                    argc: 1,
+                });
+                self.emit(
+                    Op::CallOperator {
+                        d: dst,
+                        base: w.base,
+                        site,
+                    },
+                    span,
+                );
+                self.free_window(w, span);
             }
             UnOp::Neg(Num::Int(IntTy::I64)) => {
                 let a = self.operand(x, false);
@@ -342,8 +379,22 @@ impl FnCompiler<'_> {
                 self.call_fn(f, &[l, r], None, &l.ty, Some(dst), span);
                 return;
             }
-            BinOp::User(UserOp::Bound { .. }) => {
-                self.unsupported("operators on type parameters", span);
+            BinOp::User(UserOp::Bound { iface, rhs }) => {
+                let w = self.eval_window(0, &[l, r], false);
+                let site = self.add_site(Site::Operator {
+                    iface,
+                    rhs,
+                    argc: 2,
+                });
+                self.emit(
+                    Op::CallOperator {
+                        d: dst,
+                        base: w.base,
+                        site,
+                    },
+                    span,
+                );
+                self.free_window(w, span);
                 return;
             }
             BinOp::Arith(ao, Num::Int(IntTy::I64))

@@ -587,6 +587,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             block,
             ret,
             mutates_self: self.self_mut,
+            captures: Vec::new(),
         }
     }
 

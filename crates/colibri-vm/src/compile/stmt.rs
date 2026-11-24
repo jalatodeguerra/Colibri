@@ -37,6 +37,17 @@ impl FnCompiler<'_> {
                 self.emit(Op::NewCell { l: r, s: r }, span);
             }
         }
+        // The captured variables of a closure are installed by its caller and die with the
+        // frame, after the body's own locals.
+        for &inner in &body.captures {
+            let l = self.local(inner);
+            if self.storage(inner) == Storage::Cell {
+                self.push_item(Item::Reg(l));
+            } else {
+                let ty = self.local_ty(inner);
+                self.bind_local_cleanup(l, ty);
+            }
+        }
         if matches!(body.ret, Ty::Unit | Ty::Never) || body.block.tail.is_none() {
             // Without a tail the value, if any, is returned by a `return` statement; falling
             // off the end is only possible for `()`.
@@ -348,8 +359,12 @@ impl FnCompiler<'_> {
             (Each::Set, _) => Op::ForSetNext { d: item, a },
             (Each::Iter, _) => Op::ForIterNext { d: item, a },
         };
-        self.emit(next, span);
-        self.emit_to(Op::Jmp { off: 0 }, span, exit);
+        if each == Each::Iter {
+            self.iter_step(next, item, a, exit, span);
+        } else {
+            self.emit(next, span);
+            self.emit_to(Op::Jmp { off: 0 }, span, exit);
+        }
         match &f.binding {
             ForBinding::Local(l) => {
                 let l = *l;
@@ -481,6 +496,33 @@ impl FnCompiler<'_> {
         // tree-walker's iteration.
         self.emit_exit(m.cleanups, None, span);
         self.abandon(m);
+    }
+
+    /// The step of a `for` over an iterator: a built-in iterator is stepped by `ForIterNext`; a
+    /// boxed user iterator is advanced by an ordinary call of its `next`, so that a coroutine
+    /// can pause inside it. Either way an item ends in `item`, and an exhausted source jumps to
+    /// `exit`.
+    fn iter_step(&mut self, native_next: Op, item: Reg, a: Reg, exit: Label, span: Span) {
+        let native = self.new_label();
+        let body = self.new_label();
+        self.emit(Op::IterIsUser { a }, span);
+        self.emit_to(Op::Jmp { off: 0 }, span, native);
+        // The call's window is above everything alive: the result first, then the receiver.
+        let res = self.alloc(Kind::Scalar);
+        let w = self.alloc(Kind::Scalar);
+        let depth = self.cleanup_depth();
+        self.push_item(Item::Rewrap { shell: a, recv: w });
+        self.emit(Op::IterNextCall { a, w }, span);
+        self.truncate_stack(depth);
+        self.emit(Op::IterNextEnd { d: item, a, w }, span);
+        self.emit_to(Op::Jmp { off: 0 }, span, exit);
+        self.jmp(body, span);
+        self.free(w, span);
+        self.free(res, span);
+        self.bind(native);
+        self.emit(native_next, span);
+        self.emit_to(Op::Jmp { off: 0 }, span, exit);
+        self.bind(body);
     }
 
     fn jump_unless_in_range(

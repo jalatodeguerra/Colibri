@@ -410,6 +410,10 @@ pub struct Body {
     /// the engine takes the final value of local 0 back out and the caller writes it to the
     /// receiver place (ARCHITECTURE §4).
     pub mutates_self: bool,
+    /// For the lifted body of a closure: the locals that hold its captured variables, in
+    /// capture order. The caller of a closure fills them; they die with the call's frame,
+    /// after the body's own locals. Empty for every other body.
+    pub captures: Vec<LocalId>,
 }
 
 /// How a local's slot is stored.

@@ -464,6 +464,47 @@ impl Machine {
                     sync!();
                     tri!(self.op_call_host(fiber, &chunk, base, pc, op));
                 }
+                Op::CallValue { d, base: a } => {
+                    sync!();
+                    tri!(self.op_call_value(fiber, &chunk, base, pc, d, a));
+                    reload!();
+                }
+                Op::CallBound { d, base: a, site } | Op::CallDyn { d, base: a, site } => {
+                    sync!();
+                    tri!(self.op_call_iface(fiber, &chunk, base, pc, d, a, site));
+                    reload!();
+                }
+                Op::CallIfaceInout { d, base: a, site } => {
+                    sync!();
+                    tri!(self.op_call_iface_inout(fiber, &chunk, base, pc, d, a, site));
+                    reload!();
+                }
+                Op::Rewrap { shell, recv } => self.op_rewrap(fiber, base, shell, recv),
+                Op::CallOperator { d, base: a, site } => {
+                    sync!();
+                    tri!(self.op_call_operator(fiber, &chunk, base, pc, d, a, site));
+                    reload!();
+                }
+                Op::MakeClosure { d, site } => {
+                    sync!();
+                    tri!(self.op_make_closure(fiber, &chunk, base, pc, d, site));
+                }
+                Op::IterIsUser { a } => {
+                    if self.iter_is_user(&reg!(a)) {
+                        pc += 1;
+                    }
+                }
+                Op::IterNextCall { a, w } => {
+                    sync!();
+                    tri!(self.op_iter_next_call(fiber, &chunk, base, pc, a, w));
+                    reload!();
+                }
+                Op::IterNextEnd { d, a, w } => {
+                    sync!();
+                    if tri!(self.op_iter_next_end(fiber, &chunk, base, pc, d, a, w)) {
+                        pc += 1;
+                    }
+                }
                 Op::Return { s } => {
                     let v = std::mem::replace(&mut reg!(s), Value::Unit);
                     Self::check_window(fiber, base, &chunk);
@@ -500,15 +541,21 @@ impl Machine {
                     sync!();
                     tri!(self.op_intrinsic(fiber, &chunk, base, pc, op));
                 }
-                Op::Coerce { d, s, site } => {
-                    let Site::F32ToFloat = &chunk.sites[usize::from(site)] else {
-                        internal!("a coercion without its kind")
-                    };
-                    let Value::F32(x) = &reg!(s) else {
-                        internal!("ill-typed `f32` coercion")
-                    };
-                    put!(d, Value::Float(f64::from(*x)));
-                }
+                Op::Coerce { d, s, site } => match &chunk.sites[usize::from(site)] {
+                    Site::F32ToFloat => {
+                        let Value::F32(x) = &reg!(s) else {
+                            internal!("ill-typed `f32` coercion")
+                        };
+                        put!(d, Value::Float(f64::from(*x)));
+                    }
+                    Site::Coerce(how) => {
+                        sync!();
+                        let v = reg!(s).clone();
+                        let out = self.coerce(v, how);
+                        put!(d, out);
+                    }
+                    _ => internal!("a coercion without its kind"),
+                },
 
                 Op::NewStruct { .. }
                 | Op::NewObject { .. }
@@ -779,7 +826,7 @@ impl Machine {
     /// The chunk of a function that is not compiled yet (the fast path is in `exec`).
     #[cold]
     #[inline(never)]
-    fn callee_slow(
+    pub(crate) fn callee_slow(
         &mut self,
         fiber: &mut VmFiber,
         chunk: &Chunk,
@@ -998,7 +1045,7 @@ impl Machine {
     /// together with the callee's opening `Step`, which it then skips. A failure is reported
     /// at the instruction before `pc` of `caller`.
     #[inline(always)]
-    fn push_call(
+    pub(crate) fn push_call(
         &mut self,
         fiber: &mut VmFiber,
         callee: Rc<Chunk>,
