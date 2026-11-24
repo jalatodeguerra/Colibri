@@ -403,6 +403,17 @@ impl Machine {
         Err(self.panic(fiber, span, info.message))
     }
 
+    /// The start of an entry from the host: a refusal left pending by an earlier entry has nobody
+    /// to be raised to, so it is dropped (with its copy among the `Drop` panics), but the
+    /// coroutine's own failure stays queued, so the next tick or event loop still reports it.
+    pub(crate) fn discard_pending_refusal(&mut self) {
+        if self.pending_refusal.take().is_some() {
+            self.core
+                .hook_panics
+                .retain(|p| !p.message.starts_with(crate::unwind::REFUSAL));
+        }
+    }
+
     /// Takes the refusal a coroutine ended with out of the books: its copy among the `Drop`
     /// panics goes, and the coroutine's own failure report is not made a second time.
     pub(crate) fn take_pending_refusal(&mut self) -> Option<PanicInfo> {
@@ -429,18 +440,13 @@ impl Machine {
         } = start;
         match callee {
             Callee::Fn(id) => self.begin_fn(fiber, id, values, None, None, span),
-            Callee::Host(id) => match self.call_host(
-                fiber,
-                id,
-                &type_args,
-                values,
-                span,
-                HostDest::Entry,
-            )? {
-                Called::Done(v) => Ok(Some(v)),
-                // Parked inside the function: `run_coroutine` ends the run.
-                Called::Parked => Ok(None),
-            },
+            Callee::Host(id) => {
+                match self.call_host(fiber, id, &type_args, values, span, HostDest::Entry)? {
+                    Called::Done(v) => Ok(Some(v)),
+                    // Parked inside the function: `run_coroutine` ends the run.
+                    Called::Parked => Ok(None),
+                }
+            }
             Callee::Value => {
                 if values.is_empty() {
                     return Err(self.internal(fiber, span, "a call without a function"));

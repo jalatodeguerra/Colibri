@@ -227,9 +227,8 @@ impl Machine {
                 // Other code runs while the function waits: it sees the type arguments it had.
                 let own = std::mem::replace(&mut self.core.host.type_args, outer_type_args);
                 fiber.redo = false;
-                fiber.pending_host = Some(Box::new(HostCont::new(
-                    parked, id, body, own, span, dest,
-                )));
+                fiber.pending_host =
+                    Some(Box::new(HostCont::new(parked, id, body, own, span, dest)));
                 Ok(Called::Parked)
             }
         }

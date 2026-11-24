@@ -8,7 +8,6 @@
 //!
 //! Every test runs on the VM only: the tree-walker has no such refusal.
 
-
 use colibri::{Ctx, EngineKind, Error, HostType, SharedBuffer, TypeBuilder, Vm};
 use colibri_runtime as colibri;
 
@@ -362,17 +361,13 @@ impl HostType for Gauge {
     const NAME: &'static str = "Gauge";
     fn describe(d: &mut TypeBuilder<'_, Self>) {
         d.static_fn("new", [], || Gauge);
-        d.method_mut(
-            "marked",
-            [],
-            |cx: &mut Ctx, _this: &mut Gauge| cx.can_suspend(),
-        )
+        d.method_mut("marked", [], |cx: &mut Ctx, _this: &mut Gauge| {
+            cx.can_suspend()
+        })
         .no_await();
-        d.method_mut(
-            "unmarked",
-            [],
-            |cx: &mut Ctx, _this: &mut Gauge| cx.can_suspend(),
-        );
+        d.method_mut("unmarked", [], |cx: &mut Ctx, _this: &mut Gauge| {
+            cx.can_suspend()
+        });
     }
 }
 
@@ -392,4 +387,104 @@ fn a_host_class_method_can_be_marked_no_await() {
     .unwrap();
     vm.run_main().expect("main");
     assert_eq!(out.contents(), "false true false true\n");
+}
+
+// ---- the end of an entry (re-review 3, F1) ----
+
+const MEMBER: &str =
+    "fn member() {\n    defer print(\"member defer {blocky()}\")\n    wait(10.0)\n}\n";
+
+/// A `CoGroup` that is a local of `main` dies in `main`'s own frame teardown: settled where the
+/// frame's drops fold, inside the entry.
+#[test]
+fn a_group_that_dies_in_mains_teardown_fails_the_entry() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        &format!("{MEMBER}fn main() {{\n    let g = CoGroup()\n    let _m = g.go(member())\n    print(\"main ends\")\n}}\n"),
+    )
+    .unwrap();
+    let error = vm.run_main().expect_err("the refusal");
+    assert!(text(&error).contains(REFUSAL), "{}", text(&error));
+    assert_eq!(out.contents(), "main ends\n");
+}
+
+/// A `defer` of `main` that cancels the coroutine: settled at the cancel call.
+#[test]
+fn a_defer_of_main_that_cancels_fails_the_entry() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        &format!("{MEMBER}fn main() {{\n    let c = go member()\n    defer c.cancel()\n    print(\"main ends\")\n}}\n"),
+    )
+    .unwrap();
+    let error = vm.run_main().expect_err("the refusal");
+    assert!(text(&error).contains(REFUSAL), "{}", text(&error));
+    assert_eq!(out.contents(), "main ends\n");
+}
+
+/// A `Drop` hook of a local of `main` that cancels the coroutine, at `main`'s end.
+#[test]
+fn a_drop_hook_at_mains_end_that_cancels_fails_the_entry() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        &format!("{MEMBER}class Stopper {{\n    c: Coroutine[()]\n}}\nimpl Drop for Stopper {{\n    fn drop(self) {{\n        self.c.cancel()\n    }}\n}}\nfn main() {{\n    let _s = Stopper {{ c: go member() }}\n    print(\"main ends\")\n}}\n"),
+    )
+    .unwrap();
+    let error = vm.run_main().expect_err("the refusal");
+    assert!(text(&error).contains(REFUSAL), "{}", text(&error));
+    assert_eq!(out.contents(), "main ends\n");
+}
+
+/// The value an entry hands back is released by the host after the entry (`run_main` releases
+/// `main`'s `Err` payload with `release_in_entry`). Its `CoGroup` dies there and the member's
+/// `defer` meets the refusal: neither `settle_refusal`, nor a fold, nor the end-of-entry check
+/// sees it. The refusal must reach the host one way or another.
+#[test]
+fn a_group_released_by_the_host_after_the_entry_is_not_lost() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        &format!("{MEMBER}class Holder {{\n    g: CoGroup\n}}\nimpl IntoError for Holder {{}}\nfn main() -> Result[()] {{\n    let g = CoGroup()\n    let _m = g.go(member())\n    print(\"main returns err\")\n    return err(Error.from(Holder {{ g: g }}))\n}}\n"),
+    )
+    .unwrap();
+    let result = vm.run_main();
+    let shown = match &result {
+        Err(e) => text(e),
+        Ok(()) => "Ok".to_string(),
+    };
+    let failure = vm.run_event_loop().err().map(|e| text(&e));
+    let _ = out;
+    // The refusal must reach the host one way or another.
+    assert!(
+        shown.contains(REFUSAL) || failure.as_deref().is_some_and(|f| f.contains(REFUSAL)),
+        "the refusal was lost: run_main gave {shown:?}, no coroutine failure carries it"
+    );
+}
+
+/// The same, but the host makes another entry before it looks at coroutine failures: that
+/// entry's start discards the pending refusal but keeps the coroutine's failure, which the event
+/// loop then reports.
+#[test]
+fn a_group_released_by_the_host_then_another_entry() {
+    let (mut vm, out) = vm();
+    vm.load_source(
+        "game.colibri",
+        &format!("{MEMBER}class Holder {{\n    g: CoGroup\n}}\nimpl IntoError for Holder {{}}\nfn main() -> Result[()] {{\n    let g = CoGroup()\n    let _m = g.go(member())\n    print(\"main returns err\")\n    return err(Error.from(Holder {{ g: g }}))\n}}\nfn other() {{\n    print(\"other runs\")\n}}\n"),
+    )
+    .unwrap();
+    let _first = vm.run_main().err().map(|e| text(&e));
+    let f = vm.get_fn::<(), ()>("other").unwrap();
+    let second = f.call(&mut vm, ()).err().map(|e| text(&e));
+    let failure = vm.run_event_loop().err().map(|e| text(&e));
+    let _ = out;
+    assert!(
+        second.is_none(),
+        "{second:?}: the refusal is not blamed on the next entry"
+    );
+    assert!(
+        failure.as_deref().is_some_and(|f| f.contains(REFUSAL)),
+        "the refusal was lost: run_main {_first:?}, other {second:?}, event loop {failure:?}"
+    );
 }

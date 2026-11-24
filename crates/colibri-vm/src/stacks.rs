@@ -352,7 +352,9 @@ pub(crate) fn park(machine: &mut Machine, fiber: &mut VmFiber) -> bool {
     if input.machine != pointers.0 || input.fiber != pointers.1 {
         // The references this stack holds point at a place the machine or the fiber left: going
         // on would be undefined behaviour (fact 3).
-        eprintln!("internal error: the machine or a coroutine's fiber moved while a host function was parked");
+        eprintln!(
+            "internal error: the machine or a coroutine's fiber moved while a host function was parked"
+        );
         std::process::abort();
     }
     input.cancel

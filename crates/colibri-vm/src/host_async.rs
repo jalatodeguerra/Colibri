@@ -250,9 +250,8 @@ impl Machine {
         let own = std::mem::replace(&mut self.core.host.type_args, outer);
         let result = match step {
             Step::Parked(parked) => {
-                fiber.pending_host = Some(Box::new(HostCont::new(
-                    parked, id, body, own, span, dest,
-                )));
+                fiber.pending_host =
+                    Some(Box::new(HostCont::new(parked, id, body, own, span, dest)));
                 return Ok(Exit::Suspend);
             }
             Step::Done(result) => result,

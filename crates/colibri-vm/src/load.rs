@@ -19,7 +19,7 @@ impl Machine {
         if outermost {
             // A refusal ends with the run it stopped, not with the Vm.
             self.refused = false;
-            self.take_pending_refusal();
+            self.discard_pending_refusal();
             self.drain_root_drops();
         }
         let result = self.run_module_parts(fiber);
@@ -98,7 +98,7 @@ impl Machine {
         let outermost = self.core.begin_entry();
         if outermost {
             self.refused = false;
-            self.take_pending_refusal();
+            self.discard_pending_refusal();
             self.drain_root_drops();
             // What the host compared before this entry is not this script's failure.
             colibri_core::compare::take_gave_up();

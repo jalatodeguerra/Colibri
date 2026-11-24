@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use colibri_check::HostEnv;
 use colibri_check::hir::HostFnId;
 use colibri_check::host::{body_hash, header_line};
-use colibri_core::release::Release;
 use colibri_core::external::ExternalError;
+use colibri_core::release::Release;
 use colibri_core::value::Value;
 use colibri_syntax::{FileId, parse_file};
 use colibri_vm::{HostFault, HostImpl, Machine, VmFiber};
@@ -159,7 +159,11 @@ fn only_a_function_that_may_wait_gets_a_stack_and_only_in_a_coroutine() {
     m.set_host_no_await(QUICK);
     run_main(&mut m, &p).expect("main");
     assert_eq!(out.text(), "7 700\n");
-    assert_eq!(m.host_stacks_allocated(), 0, "a marked function needs no stack");
+    assert_eq!(
+        m.host_stacks_allocated(),
+        0,
+        "a marked function needs no stack"
+    );
 
     // The same function, not marked: each call from the coroutine runs on a stack (one,
     // reused), the call from the main fiber on none.
@@ -174,7 +178,11 @@ fn only_a_function_that_may_wait_gets_a_stack_and_only_in_a_coroutine() {
     m.set_host_fn(QUICK, quick_impl());
     run_main(&mut m, &p).expect("main");
     assert_eq!(out.text(), "7\n");
-    assert_eq!(m.host_stacks_allocated(), 0, "the main fiber calls on its own stack");
+    assert_eq!(
+        m.host_stacks_allocated(),
+        0,
+        "the main fiber calls on its own stack"
+    );
 }
 
 /// A coroutine that is cancelled while it is parked in a host function: the function's wait ends with
@@ -206,11 +214,19 @@ fn cancelling_a_coroutine_parked_in_a_host_function_runs_the_hooks_and_ends_the_
         ),
     );
     run_main(&mut m, &p).expect("main");
-    assert_eq!(*saw_cancel.borrow(), Some(true), "the wait ended with Cancelled");
+    assert_eq!(
+        *saw_cancel.borrow(),
+        Some(true),
+        "the wait ended with Cancelled"
+    );
     assert!(hook.load(Ordering::SeqCst), "the token's hook ran");
     assert_eq!(out.text(), "defer ran\ncancelled true\n");
     assert_eq!(m.coroutine_slots_live(), 0);
-    assert_eq!(m.host_stacks_pooled(), 1, "the stack of the cancelled call was recycled");
+    assert_eq!(
+        m.host_stacks_pooled(),
+        1,
+        "the stack of the cancelled call was recycled"
+    );
 }
 
 /// A host function on a stack may call back into Colibri, which may start a coroutine that waits in a
@@ -299,9 +315,16 @@ fn a_machine_dropped_with_a_parked_host_function_cancels_it() {
         ),
     );
     run_main(&mut m, &p).expect("main");
-    assert_eq!(m.coroutine_slots_live(), 1, "the coroutine is parked in its host function");
+    assert_eq!(
+        m.coroutine_slots_live(),
+        1,
+        "the coroutine is parked in its host function"
+    );
     assert!(!*cancelled.borrow());
     drop(m);
-    assert!(*cancelled.borrow(), "the host function was resumed with a cancel");
+    assert!(
+        *cancelled.borrow(),
+        "the host function was resumed with a cancel"
+    );
     assert_eq!(out.text(), "defer ran\n");
 }

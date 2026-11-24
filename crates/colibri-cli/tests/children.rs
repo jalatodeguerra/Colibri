@@ -6,7 +6,6 @@
 #![cfg(unix)]
 
 mod common;
-use common::vm_pending;
 
 use std::fs;
 use std::path::PathBuf;
@@ -110,16 +109,12 @@ fn check_no_child_is_left(name: &str, ending: &str, code: i32) {
 
 #[test]
 fn a_panic_leaves_no_child_behind() {
-    vm_pending("a_panic_leaves_no_child_behind", || {
-        check_no_child_is_left("panic", "panic(\"stop\")", 101);
-    })
+    check_no_child_is_left("panic", "panic(\"stop\")", 101);
 }
 
 #[test]
 fn os_exit_leaves_no_child_behind() {
-    vm_pending("os_exit_leaves_no_child_behind", || {
-        check_no_child_is_left("exit", "os.exit(3)", 3);
-    })
+    check_no_child_is_left("exit", "os.exit(3)", 3);
 }
 
 /// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
