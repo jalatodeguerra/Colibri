@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use colibri_check::HostEnv;
 use colibri_check::hir::HostFnId;
 use colibri_check::host::{body_hash, header_line};
+use colibri_core::engine::Engine;
 use colibri_core::external::ExternalError;
 use colibri_core::release::Release;
 use colibri_core::value::Value;
@@ -330,4 +331,25 @@ fn a_machine_dropped_with_a_parked_host_function_cancels_it() {
         "the host function was resumed with a cancel"
     );
     assert_eq!(out.text(), "defer ran\n");
+}
+
+/// A Rust panic that a host function lets through (a `HostImpl` without the runtime's trampoline)
+/// leaves its stack: the budget of native recursion the machine had is put back, not the host
+/// stack's.
+#[test]
+fn a_panic_out_of_a_host_function_on_a_stack_restores_the_native_budget() {
+    let src = "fn worker() {\n    nap(1)\n}\nfn main() {\n    let _c = go worker()\n}\n";
+    let (mut m, p, _out) = load(src, 200);
+    let before = m.native_stack_budget();
+    m.set_host_fn(
+        NAP,
+        Rc::new(
+            |_: &mut Machine, _: &mut VmFiber, _: Vec<Value>| -> Result<Value, HostFault> {
+                panic!("a host function that does not catch its own panic")
+            },
+        ),
+    );
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_main(&mut m, &p)));
+    assert!(result.is_err(), "the panic went out of the machine");
+    assert_eq!(m.native_stack_budget(), before);
 }

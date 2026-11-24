@@ -1,7 +1,14 @@
 //! The web has no native stacks to park: corosensei does not target wasm32, so a host function
 //! cannot suspend there, and a wait for a background operation blocks the thread (vm-plan
 //! §3.2). Nothing in this file is unsafe, and `may_park` never holds, so only the names the VM
-//! uses are here. (Not built by the repository's CI: there is no wasm32 build yet.)
+//! uses are here.
+//!
+//! **This file has never been compiled.** colibri-vm's own dependencies on wasm32 are pure Rust
+//! (`corosensei` and `libc` are not dependencies there), so a `cargo check -p colibri-vm --target
+//! wasm32-unknown-unknown` looks possible, but the target is not installed on the machines this
+//! was written on and no CI job builds it. `colibri-interp` and so `colibri-runtime` cannot be
+//! built for wasm32 at all (`corosensei`). It stays unbuilt until the web step, which has to make
+//! the runtime build there and then check this stub.
 
 use colibri_core::value::Value;
 
