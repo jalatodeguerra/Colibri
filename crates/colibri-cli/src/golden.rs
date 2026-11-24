@@ -823,10 +823,17 @@ pub fn diff_outcomes(tree: &Outcome, vm: &Outcome) -> Option<String> {
             if s1 != s2 {
                 parts.push(format!("stdout:\n  tree: {s1:?}\n  vm:   {s2:?}"));
             }
-            if p1 != p2 {
+            // How deep a runaway recursion gets depends on the engine's limits (the tree-walker
+            // measures a coroutine's native stack, the VM counts calls): both stop it cleanly.
+            let overflow = |p: &Option<_>| {
+                p.as_ref()
+                    .is_some_and(|m: &String| m.starts_with("stack overflow"))
+            };
+            let both_overflow = overflow(&p1) && overflow(&p2);
+            if p1 != p2 && !both_overflow {
                 parts.push(format!("panic:\n  tree: {p1:?}\n  vm:   {p2:?}"));
             }
-            if t1 != t2 {
+            if t1 != t2 && !both_overflow {
                 parts.push(format!("panic trace:\n  tree: {t1:?}\n  vm:   {t2:?}"));
             }
             if m1 != m2 {

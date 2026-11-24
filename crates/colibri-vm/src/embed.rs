@@ -144,11 +144,13 @@ impl Machine {
 
     /// Resumes every due coroutine once.
     pub fn tick(&mut self, dt: f64) -> Result<(), Box<PanicInfo>> {
+        self.note_stack_root();
         Sched::tick(self, dt)
     }
 
-    pub fn cancel_all_coroutines(&mut self) {
-        Sched::cancel_all_coroutines(self);
+    /// How long until the next coroutine needs a tick (see `Scheduler::next_wake`).
+    pub fn next_wake(&mut self, poll: f64) -> Option<f64> {
+        self.core.sched.next_wake(poll)
     }
 
     /// Panics that no `tick` has reported yet.

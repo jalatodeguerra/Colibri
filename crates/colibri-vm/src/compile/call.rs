@@ -3,14 +3,16 @@
 use std::rc::Rc;
 
 use colibri_check::hir::{
-    Anchor, Arg, Builtin, Call, Callee, Expr, FnId, Intrinsic, Place, Storage,
+    Anchor, Arg, Builtin, Call, Callee, Expr, ExprKind, FnId, Intrinsic, Place, Storage,
 };
 use colibri_check::types::Ty;
 use colibri_syntax::Span;
 
 use super::expr::writes_locals;
 use super::{FnCompiler, Item, Kind};
-use crate::bytecode::{AnchorKind, IfaceSite, Op, PlaceSite, Reg, Site};
+use crate::bytecode::{
+    AnchorKind, GoSite, IfaceSite, JoinKind, Op, PauseKind, PlaceSite, Reg, Site,
+};
 
 /// Registers `base..` that a call's callee sees as its first locals.
 pub(super) struct Window {
@@ -587,9 +589,29 @@ impl FnCompiler<'_> {
                     self.free(d, span);
                 }
             }
-            // `join`, `join_result` and `join_all` pause the running coroutine.
-            Builtin::CoroutineJoin | Builtin::CoroutineJoinResult | Builtin::CoGroupJoinAll => {
-                self.unsupported(&format!("the built-in `{b:?}`"), span);
+            // `join`, `join_result` and `join_all` pause the running coroutine (or drive the
+            // event loop, on the main fiber).
+            Builtin::CoroutineJoin | Builtin::CoroutineJoinResult | Builtin::CoGroupJoinAll
+                if args.len() == 1 =>
+            {
+                let kind = match b {
+                    Builtin::CoroutineJoin => JoinKind::Join,
+                    Builtin::CoroutineJoinResult => JoinKind::JoinResult,
+                    _ => JoinKind::JoinAll,
+                };
+                let d = match dst {
+                    Some(d) => d,
+                    None => self.alloc_for(&e.ty),
+                };
+                let a = self.operand(args[0], false);
+                self.emit(Op::Join { d, a, kind }, span);
+                // Other code runs while it waits, and what that drops may run a `Drop` hook.
+                self.releases += 1;
+                self.free(a, span);
+                if dst.is_none() {
+                    self.own(d);
+                    self.free(d, span);
+                }
             }
             _ => {
                 let Ok(argc) = u16::try_from(args.len()) else {
@@ -659,6 +681,57 @@ impl FnCompiler<'_> {
         }
     }
 
+    /// `wait`, `wait_real` and `wait_for`: one instruction that pauses the running coroutine (or,
+    /// for `wait` on the main fiber, runs the event loop).
+    fn pause(&mut self, kind: PauseKind, arg: &Expr, e: &Expr, dst: Option<Reg>) {
+        let span = e.span;
+        let a = self.operand(arg, false);
+        self.emit(Op::Pause { a, kind }, span);
+        // Other code runs meanwhile, and what it drops may run a `Drop` hook.
+        self.releases += 1;
+        self.free(a, span);
+        if let Some(d) = dst {
+            self.emit(Op::LoadUnit { d }, span);
+        }
+    }
+
+    /// `go call(..)` and `group.go(call(..))`: the group (if any) and the arguments are
+    /// evaluated here, in order, into a window; the call itself runs on the new coroutine.
+    pub(super) fn go_expr(&mut self, group: Option<&Expr>, call: &Expr, e: &Expr, dst: Reg) {
+        let span = e.span;
+        let ExprKind::Call(c) = &call.kind else {
+            return self.unsupported("`go` without a call", span);
+        };
+        let mut args: Vec<&Expr> = group.into_iter().collect();
+        for a in &c.args {
+            match a {
+                Arg::Value(v) => args.push(v),
+                Arg::Place(_) => return self.unsupported("`go` with a receiver place", span),
+            }
+        }
+        let Ok(argc) = u16::try_from(args.len()) else {
+            return self.fail("a call with too many arguments");
+        };
+        let w = self.eval_window(0, &args, false);
+        let site = self.add_site(Site::Go(Box::new(GoSite {
+            callee: c.callee.clone(),
+            type_args: c.type_args.clone(),
+            argc,
+            grouped: group.is_some(),
+        })));
+        self.emit(
+            Op::Go {
+                d: dst,
+                base: w.base,
+                site,
+            },
+            span,
+        );
+        // The coroutine runs until it first pauses, and what it drops may run a `Drop` hook.
+        self.releases += 1;
+        self.free_window(w, span);
+    }
+
     fn intrinsic(&mut self, which: &Intrinsic, c: &Call, e: &Expr, dst: Option<Reg>) {
         let span = e.span;
         let mut args: Vec<&Expr> = Vec::new();
@@ -712,7 +785,10 @@ impl FnCompiler<'_> {
             | Intrinsic::AssertEq
             | Intrinsic::Convert { .. }
             | Intrinsic::Ptr(_)
-            | Intrinsic::NumMethod(..) => {
+            | Intrinsic::NumMethod(..)
+            | Intrinsic::TaskTick
+            | Intrinsic::NewCoGroup
+            | Intrinsic::NewSignal => {
                 let d = match dst {
                     Some(d) => d,
                     None => self.alloc_for(&e.ty),
@@ -738,6 +814,10 @@ impl FnCompiler<'_> {
                 for a in &args {
                     self.note_release(&a.ty);
                 }
+                if matches!(which, Intrinsic::TaskTick) {
+                    // A tick runs coroutines, and what they drop may run a `Drop` hook.
+                    self.releases += 1;
+                }
                 self.free_window_moved(w);
                 if dst.is_none() {
                     self.own(d);
@@ -755,6 +835,13 @@ impl FnCompiler<'_> {
             Intrinsic::Compare if args.len() == 2 => self.borrowing_intrinsic(which, &args, e, dst),
             Intrinsic::Builtin(b) => self.builtin(*b, &args, e, dst),
             Intrinsic::WaitUntil if args.len() == 1 => self.wait_until(args[0], e, dst),
+            Intrinsic::Wait if args.len() == 1 => self.pause(PauseKind::Wait, args[0], e, dst),
+            Intrinsic::WaitReal if args.len() == 1 => {
+                self.pause(PauseKind::WaitReal, args[0], e, dst)
+            }
+            Intrinsic::WaitFor if args.len() == 1 => {
+                self.pause(PauseKind::WaitFor, args[0], e, dst)
+            }
             other => {
                 let what = match other {
                     Intrinsic::Builtin(b) => format!("the built-in `{b:?}`"),

@@ -12,6 +12,7 @@ use colibri_core::value::Value;
 use crate::bytecode::Chunk;
 use crate::cffi::CffiState;
 use crate::compile::{CompileEnv, compile_body};
+use crate::coro::FiberSlab;
 use crate::host::HostImpls;
 
 /// A body and its chunk, compiled the first time it is called.
@@ -71,6 +72,15 @@ pub struct Machine {
     /// Counts the loads and patches of the program: an inline cache entry made under another
     /// epoch is stale (its chunk may be one a running frame kept across a patch).
     pub(crate) epoch: u32,
+    /// The fibers of the coroutines that have not ended (vm-plan §2.8).
+    pub(crate) fibers: FiberSlab,
+    /// A host function's wait for a background operation was refused (host async is step 12 of
+    /// the plan): a later wait is refused too, instead of blocking for what the refused one
+    /// would have let run.
+    pub host_wait_refused: bool,
+    /// Where the native stack stood when the host (or the event loop) last called in with no
+    /// coroutine running: a resumed coroutine measures its native recursion from it.
+    pub(crate) stack_root: usize,
     /// Tests only: runs at every `print`, so a test can call back into Colibri from inside the
     /// dispatch loop (a native re-entry, like a user `Show` or a `Drop` hook would).
     #[cfg(test)]
@@ -100,6 +110,9 @@ impl Machine {
             host_impls: HostImpls::default(),
             cffi: CffiState::default(),
             epoch: 0,
+            fibers: FiberSlab::default(),
+            host_wait_refused: false,
+            stack_root: 0,
             #[cfg(test)]
             print_hook: None,
         }

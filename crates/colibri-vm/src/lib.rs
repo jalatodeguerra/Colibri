@@ -18,6 +18,7 @@ mod calls;
 #[allow(unsafe_code)]
 mod cffi;
 mod compile;
+mod coro;
 mod embed;
 mod engine;
 mod fiber;
@@ -32,6 +33,7 @@ mod source;
 mod unwind;
 
 pub use compile::{CompileEnv, compile_body};
+pub use coro::FiberSlab;
 pub use fiber::VmFiber;
 pub use host::{HostClassHooks, HostFault, HostImpl};
 pub use machine::{DEFAULT_NATIVE_STACK_BUDGET, Machine};

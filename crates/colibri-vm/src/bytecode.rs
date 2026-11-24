@@ -730,10 +730,52 @@ pub enum Op {
         site: u16,
     },
     /// The coroutine running `wait_until` pauses until it is next resumed, then goes on (the
-    /// loop that follows runs the condition again). Needs a coroutine to pause, which the
-    /// scheduler's step of the VM provides; the check before the loop makes it unreachable until
-    /// then.
+    /// loop that follows runs the condition again). The check before the loop has made sure
+    /// that this is a coroutine that may pause.
     SuspendReady,
+
+    // ---- coroutines (vm-plan §2.8) ----
+    /// `d = go call(..)` or `d = group.go(call(..))`: the site says what is called; the
+    /// window starting at `base` holds the group (when the site has one) and the call's
+    /// arguments. The new coroutine runs until it first pauses, then `d` holds its handle.
+    Go {
+        d: Reg,
+        base: Reg,
+        site: u16,
+    },
+    /// `wait`, `wait_real` or `wait_for` of the operand in `a`: the running coroutine pauses
+    /// and goes on with the next instruction when it is resumed. On the main fiber `wait` runs
+    /// the event loop instead. Resuming it with a cancel unwinds from here.
+    Pause {
+        a: Reg,
+        kind: PauseKind,
+    },
+    /// `join`, `join_result` or `join_all` of the handle in `a`. A pause here runs the
+    /// instruction again when the coroutine is resumed, which looks at the handle once more.
+    Join {
+        d: Reg,
+        a: Reg,
+        kind: JoinKind,
+    },
+}
+
+/// What a [`Op::Pause`] waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseKind {
+    /// Scheduler time: the operand is a number of seconds.
+    Wait,
+    /// Wall-clock time.
+    WaitReal,
+    /// The next `emit` of the `Signal` in the operand.
+    WaitFor,
+}
+
+/// What a [`Op::Join`] waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinKind {
+    Join,
+    JoinResult,
+    JoinAll,
 }
 
 /// One range of instructions and the landing pad a panic inside it goes to.
@@ -826,6 +868,19 @@ pub enum Site {
         inclusive: bool,
     },
     Unsupported(String),
+    /// `go`: the callee and how many values the window holds (a group first, when there is one).
+    Go(Box<GoSite>),
+}
+
+/// What `go` starts.
+#[derive(Debug, Clone)]
+pub struct GoSite {
+    pub callee: colibri_check::hir::Callee,
+    pub type_args: Vec<Ty>,
+    /// The values of the window, the group included.
+    pub argc: u16,
+    /// The first value is the `CoGroup` that owns the new coroutine.
+    pub grouped: bool,
 }
 
 /// What an interface call site remembers: the implementation and method found for one kind of
@@ -1078,6 +1133,9 @@ impl Chunk {
             Op::Resume => "Resume".to_string(),
             Op::Unsupported { site } => format!("Unsupported {}", self.site_text(site)),
             Op::SuspendReady => "SuspendReady".to_string(),
+            Op::Go { d, base, site } => format!("Go r{d} base=r{base} {}", self.site_text(site)),
+            Op::Pause { a, kind } => format!("Pause r{a} {kind:?}"),
+            Op::Join { d, a, kind } => format!("Join r{d} r{a} {kind:?}"),
         }
     }
 
@@ -1130,6 +1188,12 @@ impl Chunk {
                 format!("{lo:?}{}{hi:?}", if *inclusive { "..=" } else { ".." })
             }
             Some(Site::Unsupported(what)) => what.clone(),
+            Some(Site::Go(g)) => format!(
+                "{:?}{}/{}",
+                g.callee,
+                if g.grouped { " in group" } else { "" },
+                g.argc
+            ),
             None => "?".to_string(),
         }
     }

@@ -48,7 +48,6 @@ pub(super) fn dst_safe(e: &Expr) -> bool {
 
 fn node_name(e: &ExprKind) -> &'static str {
     match e {
-        ExprKind::Go(_) | ExprKind::GoIn(..) => "`go`",
         ExprKind::Coerce(..) => "this coercion",
         ExprKind::FnRef { .. } => "function values",
         ExprKind::Closure(_) => "closures",
@@ -204,6 +203,8 @@ impl FnCompiler<'_> {
                 self.free(b, span);
                 self.free(a, span);
             }
+            ExprKind::Go(call) => self.go_expr(None, call, e, dst),
+            ExprKind::GoIn(group, call) => self.go_expr(Some(group), call, e, dst),
             other => self.unsupported(node_name(other), span),
         }
     }

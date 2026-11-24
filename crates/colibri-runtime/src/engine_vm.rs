@@ -121,11 +121,23 @@ macro_rules! host_cx {
 
             fn wait_for_completion(
                 &mut self,
-                _op: u64,
-                _token: &CancelToken,
+                op: u64,
+                token: &CancelToken,
             ) -> Result<Waited, ExternalError> {
-                // Nothing else can run meanwhile on the VM yet (coroutines, vm-plan steps 11 and 12):
-                // the caller blocks.
+                // Suspending a coroutine for a background operation, and driving the event loop
+                // while the main fiber waits, are host async (vm-plan step 12). Until then a wait
+                // that would stop other coroutines from running is refused; with none alive the
+                // caller just blocks.
+                if self.core().sched.coroutine_count() > 0 || self.parts().0.host_wait_refused {
+                    self.parts().0.host_wait_refused = true;
+                    token.cancel();
+                    self.core_mut().sched.ext().finish(op);
+                    // A panic of the program, not an error value the host function could
+                    // turn into something else: the refusal must show as the refusal it is.
+                    std::panic::resume_unwind(Box::new(crate::ctx::RaisedPanic(
+                        "the bytecode VM does not support a host function that waits for a background operation while coroutines are alive yet".to_string(),
+                    )));
+                }
                 Ok(Waited::Blocked)
             }
         }

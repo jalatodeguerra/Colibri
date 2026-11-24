@@ -74,6 +74,35 @@ pub struct VmFiber {
     /// on), by the frame's index, lowest first. Off the frame so a call and a return do not
     /// touch it.
     pub(crate) unwinding: Vec<(u32, Box<colibri_core::ctl::Ctl>)>,
+    /// How many entries from Rust (`NativeEntry` frames, a coroutine's own among them) are
+    /// running a dispatch loop on this fiber. A coroutine may pause only where its own entry
+    /// is the only one: a nested loop sits on the native stack, which cannot be suspended.
+    pub(crate) entries: u32,
+    /// The coroutine paused in an instruction that runs again when it is resumed (`join`), not
+    /// in one that is over (`wait`).
+    pub(crate) redo: bool,
+    /// A coroutine that has not run yet: what its first resumption calls.
+    pub(crate) start: Option<Box<CoStart>>,
+    /// What the end of a coroutine's entry frame releases.
+    pub(crate) entry: Option<CoEntry>,
+}
+
+/// The call a new coroutine begins with (`go`), kept until its first resumption.
+#[derive(Debug)]
+pub(crate) struct CoStart {
+    pub callee: colibri_check::hir::Callee,
+    pub type_args: Vec<colibri_check::types::Ty>,
+    /// The values the callee owns.
+    pub values: Vec<Value>,
+    pub span: Span,
+}
+
+/// The entry frame of a running coroutine: its parameters are released after the frame's own
+/// cleanups, and so is the function value that was called.
+#[derive(Debug)]
+pub(crate) struct CoEntry {
+    pub nparams: usize,
+    pub callee: Option<Value>,
 }
 
 impl VmFiber {
@@ -105,6 +134,10 @@ impl VmFiber {
             state: FiberState::default(),
             stack_base: 0,
             unwinding: Vec::new(),
+            entries: 0,
+            redo: false,
+            start: None,
+            entry: None,
         }
     }
 
@@ -112,6 +145,25 @@ impl VmFiber {
     #[inline(always)]
     pub(crate) fn visible_depth(&self) -> usize {
         self.frames.len() - self.hidden
+    }
+
+    /// Empties a finished coroutine's fiber for the next one, keeping the capacity of its
+    /// stacks. Everything in it was released when the coroutine ended.
+    pub(crate) fn reset(&mut self) {
+        debug_assert!(self.frames.is_empty() && self.temps.is_empty() && self.holds.is_empty());
+        debug_assert!(self.unwinding.is_empty() && self.start.is_none() && self.entry.is_none());
+        self.regs.clear();
+        self.frames.clear();
+        self.temps.clear();
+        self.holds.clear();
+        self.unwinding.clear();
+        self.state = FiberState::default();
+        self.stack_base = 0;
+        self.hidden = 0;
+        self.entries = 0;
+        self.redo = false;
+        self.start = None;
+        self.entry = None;
     }
 
     /// How many calls are active.

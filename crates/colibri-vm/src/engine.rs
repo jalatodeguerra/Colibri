@@ -40,9 +40,37 @@ impl Machine {
         &mut self,
         fiber: &mut VmFiber,
         chunk: std::rc::Rc<crate::bytecode::Chunk>,
-        mut args: Vec<Value>,
+        args: Vec<Value>,
         closure: Option<&colibri_core::closure::ClosureObj>,
     ) -> (Eval, Option<Value>) {
+        let body = std::rc::Rc::clone(&chunk.body);
+        let nparams = chunk.nparams as usize;
+        let base = match self.push_entry(fiber, chunk, args, closure) {
+            Ok(base) => base,
+            Err(refused) => return refused,
+        };
+        let holds_mark = fiber.holds.len();
+        let result = self.run(fiber);
+        // Landing pads release their holds. Only a refusal, which runs no pads, leaves any.
+        debug_assert!(
+            fiber.holds.len() == holds_mark || self.refused,
+            "a call left a mutation guard held"
+        );
+        fiber.holds.truncate(holds_mark);
+        self.finish_entry(fiber, base, nparams, body.mutates_self, result)
+    }
+
+    /// Pushes the `NativeEntry` frame of `chunk` over `args`, which it owns, on top of every
+    /// live frame; its window starts at the result. A call that cannot be made (too deep, out
+    /// of budget) releases the arguments and gives the failure, with the receiver of a
+    /// `mut self` method.
+    pub(crate) fn push_entry(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: std::rc::Rc<crate::bytecode::Chunk>,
+        mut args: Vec<Value>,
+        closure: Option<&colibri_core::closure::ClosureObj>,
+    ) -> Result<usize, (Eval, Option<Value>)> {
         let body = std::rc::Rc::clone(&chunk.body);
         let overflow = fiber.visible_depth() >= self.max_depth;
         self.core.budget.left -= 1;
@@ -69,7 +97,7 @@ impl Machine {
                 None
             };
             self.release_all(args);
-            return (Err(ctl), receiver);
+            return Err((Err(ctl), receiver));
         }
         let base = fiber.top();
         let nparams = chunk.nparams as usize;
@@ -98,18 +126,25 @@ impl Machine {
             noted: None,
             temps_mark: fiber.temps.len() as u32,
         });
-        let holds_mark = fiber.holds.len();
-        let result = self.run(fiber);
-        // Landing pads release their holds. Only a refusal, which runs no pads, leaves any.
-        debug_assert!(
-            fiber.holds.len() == holds_mark || self.refused,
-            "a call left a mutation guard held"
-        );
-        fiber.holds.truncate(holds_mark);
-        // The receiver of a `mut self` method goes back to the caller; every other parameter
-        // is released, last first.
-        let first_owned = usize::from(body.mutates_self);
-        let receiver = if body.mutates_self && nparams > 0 {
+        fiber.entries += 1;
+        Ok(base)
+    }
+
+    /// What follows an entry's run, however it ended: the receiver of a `mut self` method goes
+    /// back to the caller and every other parameter is released, last first, after the
+    /// callee's own cleanups (where the tree-walker releases its parameters). The panics of
+    /// `Drop` hooks that ran meanwhile fold into the result.
+    pub(crate) fn finish_entry(
+        &mut self,
+        fiber: &mut VmFiber,
+        base: usize,
+        nparams: usize,
+        mutates_self: bool,
+        result: Eval,
+    ) -> (Eval, Option<Value>) {
+        fiber.entries -= 1;
+        let first_owned = usize::from(mutates_self);
+        let receiver = if mutates_self && nparams > 0 {
             Some(unwrap_cell(std::mem::replace(
                 &mut fiber.regs[base],
                 Value::Unit,
@@ -281,8 +316,8 @@ impl Engine for Machine {
         }
     }
 
-    fn resume_stack(&mut self, _id: u64, _slot: EngineSlot, _cancel: bool) -> Resumed {
-        Resumed::Gone
+    fn resume_stack(&mut self, id: u64, slot: EngineSlot, cancel: bool) -> Resumed {
+        self.resume_fiber(id, slot, cancel)
     }
 
     fn pausing_builtin(
@@ -293,7 +328,7 @@ impl Engine for Machine {
         span: Span,
     ) -> Eval {
         // `join`, `join_result` and `join_all` pause, and a pause is a frame operation on the VM
-        // (step 11): the compiler never hands them to core's `builtin`.
+        // (`Op::Join`): the compiler never hands them to core's `builtin`.
         Err(self.internal(
             fiber,
             span,
