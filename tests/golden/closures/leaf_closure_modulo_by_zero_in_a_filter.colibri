@@ -1,0 +1,9 @@
+// `%` by zero in the last element of a filter.
+fn main() {
+    let xs = [3, 4, 5, 0]
+    print(xs.filter(fn(x) => 12 % (x + 1) == 0))
+    print(xs.filter(fn(x) => 12 % x == 0))
+}
+
+// expect: [3, 5, 0]
+// panic: modulo by zero

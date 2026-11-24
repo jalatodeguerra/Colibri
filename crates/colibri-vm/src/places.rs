@@ -632,6 +632,7 @@ impl Machine {
     /// item left, without its dispatch on the kind of loop. The end of the list and every
     /// failure are `op_for_next`'s.
     #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn op_for_list_next(
         &mut self,
         fiber: &mut VmFiber,

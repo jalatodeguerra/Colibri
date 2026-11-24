@@ -1,0 +1,50 @@
+// Closures that are not leaves (a capture, a call, a print, a nested built-in) and closures that
+// are, side by side through the same built-ins; a closure kept in a variable, a function used as
+// a value, a closure that changes what it captured.
+fn double(x: int) -> int => x * 2
+
+fn main() {
+    let xs = [1, 2, 3, 4, 5, 6]
+    let k = 10
+    let mut seen = 0
+    print(xs.map(fn(x) => x + k))
+    print(xs.map(fn(x) => double(x) + 1))
+    print(xs.map(double))
+    print(xs.filter(fn(x) => x % 2 == 0 && x > k - 7))
+    print(xs.map(fn(x) {
+        seen += x
+        return x * 3
+    }))
+    print(seen)
+    let f = fn(x: int) => x * x
+    print(xs.map(f))
+    print(xs.filter(fn(x) => f(x) > 10))
+    print(xs.any(fn(x) {
+        print("look {x}")
+        return x == 2
+    }))
+    print(xs.fold(0, fn(a, x) => a + double(x)))
+    print(xs.map(fn(x) => xs.filter(fn(y) => y < x).len()))
+    print(xs.find(fn(x) => x * 3 > k))
+    let g = fn(x: int) => x + 1
+    let h = if k > 5 { g } else { f }
+    print(xs.map(h))
+    print("{xs.all(fn(x) => x > 0)} {xs.all(fn(x) => x > k)}")
+}
+
+// expect: [11, 12, 13, 14, 15, 16]
+// expect: [3, 5, 7, 9, 11, 13]
+// expect: [2, 4, 6, 8, 10, 12]
+// expect: [4, 6]
+// expect: [3, 6, 9, 12, 15, 18]
+// expect: 21
+// expect: [1, 4, 9, 16, 25, 36]
+// expect: [4, 5, 6]
+// expect: look 1
+// expect: look 2
+// expect: true
+// expect: 42
+// expect: [0, 1, 2, 3, 4, 5]
+// expect: some(4)
+// expect: [2, 3, 4, 5, 6, 7]
+// expect: true false

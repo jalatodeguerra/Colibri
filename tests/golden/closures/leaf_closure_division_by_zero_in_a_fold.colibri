@@ -1,0 +1,10 @@
+// A division by zero in the fourth call of a fold: nothing of the fold is kept.
+fn main() {
+    let xs = [4, 2, 1, 0, 5]
+    print(xs.fold(0, fn(a, x) => a + 8 / (x + 1)))
+    let total = xs.fold(0, fn(a, x) => a + 8 / x)
+    print("not reached {total}")
+}
+
+// expect: 16
+// panic: division by zero

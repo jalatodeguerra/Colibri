@@ -1,0 +1,55 @@
+// Float and bool arithmetic in closures that only compute: NaN, infinities, negative zero.
+fn main() {
+    let fs = [1.5, -2.0, 0.0, 3.25, 10.0]
+    print(fs.map(fn(x) => x * 2.0 + 1.0))
+    print(fs.map(fn(x) => x / 0.0))
+    print(fs.map(fn(x) => -x))
+    print(fs.map(fn(x) => x - 0.5))
+    print(fs.filter(fn(x) => x > 1.0))
+    print(fs.filter(fn(x) => x <= 0.0))
+    print(fs.any(fn(x) => x == 3.25))
+    print(fs.all(fn(x) => x != 0.0))
+    print(fs.find(fn(x) => x < 0.0))
+    print(fs.find_index(fn(x) => x >= 10.0))
+    print(fs.fold(0.0, fn(a, x) => a + x))
+    print(fs.fold(1.0, fn(a, x) => a * (x + 3.0)))
+    let nans = [0.0 / 0.0, 1.0, 0.0 / 0.0]
+    print(nans.filter(fn(x) => x == x))
+    print(nans.filter(fn(x) => x != x).len())
+    print(nans.any(fn(x) => x < 1.0))
+    print(nans.all(fn(x) => x <= 1.0))
+    print(nans.find_index(fn(x) => x >= 0.0))
+    let bs = [true, false, true, true]
+    print(bs.map(fn(b) => !b))
+    print(bs.filter(fn(b) => b))
+    print(bs.all(fn(b) => b))
+    print(bs.any(fn(b) => !b))
+    print(bs.find_index(fn(b) => !b))
+    print(bs.fold(0, fn(n, b) => if b { n + 1 } else { n }))
+    print(bs.map(fn(b) => if b { 1.5 } else { 2.5 }))
+}
+
+// expect: [4.0, -3.0, 1.0, 7.5, 21.0]
+// expect: [inf, -inf, nan, inf, inf]
+// expect: [-1.5, 2.0, -0.0, -3.25, -10.0]
+// expect: [1.0, -2.5, -0.5, 2.75, 9.5]
+// expect: [1.5, 3.25, 10.0]
+// expect: [-2.0, 0.0]
+// expect: true
+// expect: false
+// expect: some(-2.0)
+// expect: some(4)
+// expect: 12.75
+// expect: 1096.875
+// expect: [1.0]
+// expect: 2
+// expect: false
+// expect: false
+// expect: some(1)
+// expect: [false, true, false, false]
+// expect: [true, true, true]
+// expect: false
+// expect: true
+// expect: some(1)
+// expect: 3
+// expect: [1.5, 2.5, 1.5, 1.5]

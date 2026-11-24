@@ -215,6 +215,43 @@ fn a_closure_made_before_a_patch_runs_the_new_body_with_what_it_captured() {
     assert_eq!(out.contents(), "v1 closure 5\n");
 }
 
+/// The list built-ins run a closure that only computes in a native loop; a closure made before a
+/// patch must still find the patched body there, as it does in the prelude's code.
+#[test]
+fn a_leaf_closure_made_before_a_patch_runs_the_new_body_in_the_list_built_ins() {
+    let src = |k: i64| {
+        format!(
+            "let mut keep: fn(int) -> int = fn(n) => n\nfn setup() {{\n    keep = fn(n) => n * {k}\n}}\nfn total() -> int {{\n    let xs = [1, 2, 3]\n    return xs.map(keep).fold(0, fn(a, x) => a + x)\n}}\nfn count() -> int {{\n    let xs = [1, 2, 3]\n    return xs.filter(fn(x) => x * {k} > 5).len()\n}}\n"
+        )
+    };
+    let dir = tree("leaf-patch", &[("a.colibri", &src(2))]);
+    let (mut vm, _out) = vm();
+    vm.load_file(dir.join("a.colibri")).unwrap();
+    vm.get_fn::<(), ()>("setup")
+        .unwrap()
+        .call(&mut vm, ())
+        .unwrap();
+    let total = vm.get_fn::<(), i64>("total").unwrap();
+    let count = vm.get_fn::<(), i64>("count").unwrap();
+    for _ in 0..3 {
+        assert_eq!(total.call(&mut vm, ()).unwrap(), 12);
+        assert_eq!(count.call(&mut vm, ()).unwrap(), 1);
+    }
+    write(&dir, "a.colibri", &src(3));
+    assert!(matches!(
+        vm.reload_changed().unwrap(),
+        ReloadOutcome::Patched { .. }
+    ));
+    // `keep` was made by the old `setup`: its body is the patched one now.
+    assert_eq!(total.call(&mut vm, ()).unwrap(), 18);
+    assert_eq!(count.call(&mut vm, ()).unwrap(), 2);
+    vm.get_fn::<(), ()>("setup")
+        .unwrap()
+        .call(&mut vm, ())
+        .unwrap();
+    assert_eq!(total.call(&mut vm, ()).unwrap(), 18);
+}
+
 #[test]
 fn a_signature_change_restarts_and_carries_state_through_the_hooks() {
     let v1 = "let mut score = 7\nfn save_state() -> str => \"score={score}\"\nfn add(a: int) -> int => a + 1\nfn main() { print(\"main v1\") }\n";

@@ -503,7 +503,10 @@ impl<'a> FnCompiler<'a> {
             nregs: nregs as u16,
             nparams: body.param_count as u16,
             hidden: colibri_check::is_prelude_span(body.span),
+            leaf: None,
         };
+        let mut chunk = chunk;
+        chunk.leaf = crate::leaf::Leaf::build(&chunk);
         // The dispatch loop indexes registers unchecked; this is what makes that sound.
         chunk.verify_registers().map_err(Fail::Message)?;
         Ok(chunk)

@@ -239,7 +239,7 @@ impl Machine {
                     && let Some(sv) = Rc::get_mut(st)
                     && let Some(Value::Float(x)) = sv.fields.get_mut(usize::from($idx))
                 {
-                    *x = *x $sym y;
+                    *x $sym y;
                 } else {
                     sync!();
                     tri!(self.op_field_update(fiber, &chunk, base, pc, $op));
@@ -751,10 +751,10 @@ impl Machine {
                         None => internal!("ill-typed projection"),
                     }
                 }
-                Op::FieldAddF { idx, l, b } => field_f!(op, idx, l, b, +),
-                Op::FieldSubF { idx, l, b } => field_f!(op, idx, l, b, -),
-                Op::FieldMulF { idx, l, b } => field_f!(op, idx, l, b, *),
-                Op::FieldDivF { idx, l, b } => field_f!(op, idx, l, b, /),
+                Op::FieldAddF { idx, l, b } => field_f!(op, idx, l, b, +=),
+                Op::FieldSubF { idx, l, b } => field_f!(op, idx, l, b, -=),
+                Op::FieldMulF { idx, l, b } => field_f!(op, idx, l, b, *=),
+                Op::FieldDivF { idx, l, b } => field_f!(op, idx, l, b, /=),
                 Op::FieldAddI { idx, l, b } => field_i!(op, idx, l, b, checked_add),
                 Op::FieldSubI { idx, l, b } => field_i!(op, idx, l, b, checked_sub),
                 Op::FieldMulI { idx, l, b } => field_i!(op, idx, l, b, checked_mul),
@@ -1497,6 +1497,21 @@ impl Machine {
             && let Some(n) = colibri_core::work_of(*b, fiber.regs.get(at))
         {
             self.charge(fiber, span, n)?;
+        }
+        // A closure that is a leaf runs in a native loop; anything it cannot do alone is the
+        // prelude's function below, from the start.
+        if let Some(
+            b @ (colibri_check::hir::Builtin::ListMap
+            | colibri_check::hir::Builtin::ListFilter
+            | colibri_check::hir::Builtin::ListAny
+            | colibri_check::hir::Builtin::ListAll
+            | colibri_check::hir::Builtin::ListFind
+            | colibri_check::hir::Builtin::ListFindIndex
+            | colibri_check::hir::Builtin::ListFold),
+        ) = work
+            && self.leaf_hof(fiber, base, a, d, *b)
+        {
+            return Ok(());
         }
         let callee = self.callee_chunk(fiber, chunk, pc, *f)?;
         // No depth check against the limit: the built-in adds no visible call, and the closure it

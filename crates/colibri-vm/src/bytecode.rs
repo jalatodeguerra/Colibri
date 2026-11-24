@@ -1054,6 +1054,9 @@ pub struct Chunk {
     /// The body is the prelude's own code (a closure built-in written in Colibri): a stack trace
     /// leaves its frame out, and a panic in it is reported at the call of the built-in.
     pub hidden: bool,
+    /// The typed form of the body when it is a leaf (see `crate::leaf`), built once with the
+    /// chunk.
+    pub(crate) leaf: Option<crate::leaf::Leaf>,
 }
 
 impl Op {

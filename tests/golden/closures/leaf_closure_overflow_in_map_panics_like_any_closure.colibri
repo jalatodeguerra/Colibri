@@ -1,0 +1,14 @@
+// The third element overflows inside a closure that only computes: the panic names the closure's
+// line, with the frame of `main` at the call, as for every closure.
+fn main() {
+    let big = 4611686018427387904
+    let xs = [1, 2, big, 4]
+    print(xs.map(fn(x) => x + 1))
+    print("before")
+    let ys = xs.map(fn(x) => x * 2)
+    print("not reached {ys.len()}")
+}
+
+// expect: [2, 3, 4611686018427387905, 5]
+// expect: before
+// panic: integer overflow

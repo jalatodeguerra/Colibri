@@ -1,0 +1,69 @@
+// Closures that only compute with their parameter (no captures, no calls) through every list
+// built-in that takes one.
+fn main() {
+    let xs = [5, 3, 9, 1, 7, 2, 8, -4, 0]
+    print(xs.map(fn(x) => x * 2))
+    print(xs.map(fn(x) => x - 1 + 3 * x))
+    print(xs.map(fn(x) => x / 2))
+    print(xs.map(fn(x) => x % 4))
+    print(xs.map(fn(x) => -x))
+    print(xs.map(fn(x) => x))
+    print(xs.map(fn(x) => x > 2))
+    print(xs.filter(fn(x) => x % 2 == 0))
+    print(xs.filter(fn(x) => x >= 5 && x != 9))
+    print(xs.filter(fn(x) => x < 0 || x == 0))
+    print(xs.any(fn(x) => x == 7))
+    print(xs.any(fn(x) => x > 100))
+    print(xs.all(fn(x) => x < 10))
+    print(xs.all(fn(x) => x > 0))
+    print(xs.find(fn(x) => x > 6))
+    print(xs.find(fn(x) => x > 60))
+    print(xs.find_index(fn(x) => x == 2))
+    print(xs.find_index(fn(x) => x == 99))
+    print(xs.fold(0, fn(a, x) => a + x))
+    print(xs.fold(1, fn(a, x) => a * (x + 10)))
+    print(xs.fold(0, fn(a, x) => if x > a { x } else { a }))
+    print(xs.fold(0, fn(a, x) => a + 1))
+    let empty: List[int] = []
+    print(empty.map(fn(x) => x + 1))
+    print(empty.filter(fn(x) => x > 0))
+    print(empty.any(fn(x) => x > 0))
+    print(empty.all(fn(x) => x > 0))
+    print(empty.find(fn(x) => x > 0))
+    print(empty.find_index(fn(x) => x > 0))
+    print(empty.fold(7, fn(a, x) => a + x))
+    print([4].map(fn(x) => x * x))
+    print(xs.map(fn(x) => x * 2).filter(fn(x) => x % 3 == 0).map(fn(x) => x + 1))
+}
+
+// expect: [10, 6, 18, 2, 14, 4, 16, -8, 0]
+// expect: [19, 11, 35, 3, 27, 7, 31, -17, -1]
+// expect: [2, 1, 4, 0, 3, 1, 4, -2, 0]
+// expect: [1, 3, 1, 1, 3, 2, 0, 0, 0]
+// expect: [-5, -3, -9, -1, -7, -2, -8, 4, 0]
+// expect: [5, 3, 9, 1, 7, 2, 8, -4, 0]
+// expect: [true, true, true, false, true, false, true, false, false]
+// expect: [2, 8, -4, 0]
+// expect: [5, 7, 8]
+// expect: [-4, 0]
+// expect: true
+// expect: false
+// expect: true
+// expect: false
+// expect: some(9)
+// expect: none
+// expect: some(5)
+// expect: none
+// expect: 31
+// expect: 8979141600
+// expect: 9
+// expect: 9
+// expect: []
+// expect: []
+// expect: false
+// expect: true
+// expect: none
+// expect: none
+// expect: 7
+// expect: [16]
+// expect: [7, 19, 1]

@@ -1,0 +1,45 @@
+// Closures that read the scalar fields of a struct parameter; the elements they let through
+// are shared with the list, not copied.
+struct P { x: float, n: int, on: bool, name: str }
+
+fn main() {
+    let ps = [
+        P { x: 1.5, n: 3, on: true, name: "a" },
+        P { x: -2.0, n: 8, on: false, name: "b" },
+        P { x: 4.0, n: -1, on: true, name: "c" },
+    ]
+    print(ps.map(fn(p) => p.x * 2.0))
+    print(ps.map(fn(p) => p.n + 1))
+    print(ps.map(fn(p) => p.on))
+    print(ps.map(fn(p) => p.n * 2 + 1 > 4))
+    print(ps.filter(fn(p) => p.on).map(fn(p) => p.name))
+    print(ps.filter(fn(p) => p.x > 0.0 && p.n > 0).len())
+    print(ps.any(fn(p) => p.n < 0))
+    print(ps.all(fn(p) => p.x > -3.0))
+    print(ps.find(fn(p) => p.n > 5).map(fn(p) => p.name))
+    print(ps.find_index(fn(p) => p.x == 4.0))
+    print(ps.fold(0, fn(a, p) => a + p.n))
+    print(ps.fold(0.0, fn(a, p) => a + p.x))
+    let mut kept = ps.filter(fn(p) => p.n > 0)
+    kept[0].n = 100
+    print("{kept[0].n} {ps[0].n} {kept[1].n} {ps[1].n}")
+    print(ps.map(fn(p) => p).len())
+    let first = ps.map(fn(p) => p)[0]
+    print(first.name)
+}
+
+// expect: [3.0, -4.0, 8.0]
+// expect: [4, 9, 0]
+// expect: [true, false, true]
+// expect: [true, true, false]
+// expect: ["a", "c"]
+// expect: 1
+// expect: true
+// expect: true
+// expect: some("b")
+// expect: some(2)
+// expect: 10
+// expect: 3.5
+// expect: 100 3 8 8
+// expect: 3
+// expect: a
