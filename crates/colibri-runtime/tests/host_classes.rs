@@ -1,9 +1,6 @@
 //! Host classes: Rust objects that scripts hold (EMBEDDING §2, §3), written by hand with
 //! `HostType` (the `export` macros have their own tests).
 
-mod common;
-use common::vm_pending;
-
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -177,12 +174,9 @@ log("after")
 
 #[test]
 fn a_host_object_dying_with_a_list_dies_in_element_order() {
-    vm_pending(
-        "a_host_object_dying_with_a_list_dies_in_element_order",
-        || {
-            let mut f = fixture();
-            f.run(
-                r#"
+    let mut f = fixture();
+    f.run(
+        r#"
 fn main() {
     let list = [spawn("a"), spawn("b"), spawn("c")]
     log("count {list.len()}")
@@ -190,20 +184,18 @@ fn main() {
     log("cleared")
 }
 "#,
-            )
-            .unwrap();
-            assert_eq!(
-                *f.log.borrow(),
-                [
-                    "count 3",
-                    "rust drop a",
-                    "rust drop b",
-                    "rust drop c",
-                    "cleared"
-                ]
-            );
-        },
     )
+    .unwrap();
+    assert_eq!(
+        *f.log.borrow(),
+        [
+            "count 3",
+            "rust drop a",
+            "rust drop b",
+            "rust drop c",
+            "cleared"
+        ]
+    );
 }
 
 #[test]
@@ -362,77 +354,65 @@ show(2)
 
 #[test]
 fn a_busy_object_gives_the_documented_panic_when_the_script_reenters_it() {
-    vm_pending(
-        "a_busy_object_gives_the_documented_panic_when_the_script_reenters_it",
-        || {
-            let mut f = fixture();
-            f.vm.register_type::<World>().unwrap();
-            // `step` holds the world exclusively; the callback asks it for its ticks.
-            let err = f
-                .run(
-                    r#"
+    let mut f = fixture();
+    f.vm.register_type::<World>().unwrap();
+    // `step` holds the world exclusively; the callback asks it for its ticks.
+    let err = f
+        .run(
+            r#"
 fn main() {
     let w = World.new()
     w.step(fn() { log("ticks {w.ticks()}") }).expect("step")
 }
 "#,
-                )
-                .unwrap_err();
-            let message = match &err {
-                colibri::Error::Panic { message, .. } => message.clone(),
-                other => panic!("{other:?}"),
-            };
-            // The callback's panic travels out of `step` as an `err` result string the script did not
-            // handle; the first line is the busy-object text.
-            assert!(
-                message.contains(
-                    "host object `World` is already in use by an enclosing call (`World.step`)"
-                ),
-                "{message}"
-            );
-        },
-    )
+        )
+        .unwrap_err();
+    let message = match &err {
+        colibri::Error::Panic { message, .. } => message.clone(),
+        other => panic!("{other:?}"),
+    };
+    // The callback's panic travels out of `step` as an `err` result string the script did not
+    // handle; the first line is the busy-object text.
+    assert!(
+        message
+            .contains("host object `World` is already in use by an enclosing call (`World.step`)"),
+        "{message}"
+    );
 }
 
 #[test]
 fn reading_methods_may_nest_but_not_inside_a_writing_one() {
-    vm_pending(
-        "reading_methods_may_nest_but_not_inside_a_writing_one",
-        || {
-            let mut f = fixture();
-            f.vm.register_type::<World>().unwrap();
-            // `watch` is `&self`: the callback may read again.
-            f.run(
-                r#"
+    let mut f = fixture();
+    f.vm.register_type::<World>().unwrap();
+    // `watch` is `&self`: the callback may read again.
+    f.run(
+        r#"
 fn main() {
     let w = World.new()
     w.watch(fn() { log("ticks {w.ticks()}") }).expect("watch")
 }
 "#,
-            )
-            .unwrap();
-            assert_eq!(*f.log.borrow(), ["ticks 0"]);
-            // But a writing method reached through a reading one is busy, and says which call holds it.
-            let mut f = fixture();
-            f.vm.register_type::<World>().unwrap();
-            let err = f
-                .run(
-                    r#"
+    )
+    .unwrap();
+    assert_eq!(*f.log.borrow(), ["ticks 0"]);
+    // But a writing method reached through a reading one is busy, and says which call holds it.
+    let mut f = fixture();
+    f.vm.register_type::<World>().unwrap();
+    let err = f
+        .run(
+            r#"
 fn main() {
     let w = World.new()
     w.watch(fn() { w.poke(fn() { }).expect("poke") }).expect("watch")
 }
 "#,
-                )
-                .unwrap_err();
-            assert!(
-                err.to_string().contains(
-                    "host object `World` is already in use by an enclosing call (`World.watch`)"
-                ),
-                "{err}"
-            );
-        },
-    )
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("host object `World` is already in use by an enclosing call (`World.watch`)"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -549,10 +529,9 @@ fn a_rust_panic_in_a_method_releases_the_borrow() {
 
 #[test]
 fn objects_have_identity_equality_hash_and_show() {
-    vm_pending("objects_have_identity_equality_hash_and_show", || {
-        let mut f = fixture();
-        f.run(
-            r#"
+    let mut f = fixture();
+    f.run(
+        r#"
 fn main() {
     let a = spawn("a")
     let b = spawn("b")
@@ -571,13 +550,12 @@ fn main() {
     print(list)
 }
 "#,
-        )
-        .unwrap();
-        assert_eq!(
-            f.out.contents(),
-            "true\nfalse\ntrue\nfalse\n<Enemy #0>\n<Enemy #1>\n<Enemy #0> and <Enemy #1>\nfirst\n2\n[<Enemy #0>, <Enemy #1>]\n"
-        );
-    })
+    )
+    .unwrap();
+    assert_eq!(
+        f.out.contents(),
+        "true\nfalse\ntrue\nfalse\n<Enemy #0>\n<Enemy #1>\n<Enemy #0> and <Enemy #1>\nfirst\n2\n[<Enemy #0>, <Enemy #1>]\n"
+    );
 }
 
 #[test]
@@ -617,10 +595,9 @@ fn a_host_class_cannot_be_cloned_built_or_opened() {
 
 #[test]
 fn objects_cross_functions_collections_and_tuples() {
-    vm_pending("objects_cross_functions_collections_and_tuples", || {
-        let mut f = fixture();
-        f.run(
-            r#"
+    let mut f = fixture();
+    f.run(
+        r#"
 fn pick(es: List[Enemy], i: int) -> Enemy => es[i]
 
 fn main() {
@@ -632,11 +609,10 @@ fn main() {
     print(best)
 }
 "#,
-        )
-        .unwrap();
-        assert_eq!(f.out.contents(), "false\ntrue\n2\n");
-        assert_eq!(*f.log.borrow(), ["rust drop a", "rust drop b"]);
-    })
+    )
+    .unwrap();
+    assert_eq!(f.out.contents(), "false\ntrue\n2\n");
+    assert_eq!(*f.log.borrow(), ["rust drop a", "rust drop b"]);
 }
 
 #[test]
@@ -924,14 +900,13 @@ impl HostType for Plain {
 
 #[test]
 fn a_class_can_customise_show_and_equality() {
-    vm_pending("a_class_can_customise_show_and_equality", || {
-        let out = colibri::SharedBuffer::new();
-        let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
-        vm.register_type::<Pt>().unwrap();
-        vm.register_type::<Plain>().unwrap();
-        vm.load_source(
-            "game.colibri",
-            r#"fn main() {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    vm.register_type::<Pt>().unwrap();
+    vm.register_type::<Plain>().unwrap();
+    vm.load_source(
+        "game.colibri",
+        r#"fn main() {
     let a = Pt.new(1, 2)
     let b = Pt.new(1, 2)
     let c = Pt.new(3, 4)
@@ -955,42 +930,41 @@ fn a_class_can_customise_show_and_equality() {
     print(p == q)
 }
 "#,
-        )
-        .unwrap_or_else(|e| panic!("{}", e.render(false)));
-        vm.run_main().unwrap();
-        let text = out.contents();
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(
-            lines[..5],
-            [
-                "(1, 2)",
-                "(1, 2) (3, 4)",
-                "[(1, 2), (3, 4)]",
-                "some((1, 2))",
-                "true"
-            ]
-        );
-        assert_eq!(
-            lines[5..],
-            [
-                "false",
-                "true",
-                "true",
-                "false",
-                "1",
-                "some(\"two\")",
-                "2",
-                "true",
-                "false"
-            ]
-        );
-        // Nothing is added to the module's interface for the two hooks.
-        let interface = vm.interface_text();
-        assert!(
-            !interface.contains("show") && !interface.contains("eq"),
-            "{interface}"
-        );
-    })
+    )
+    .unwrap_or_else(|e| panic!("{}", e.render(false)));
+    vm.run_main().unwrap();
+    let text = out.contents();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[..5],
+        [
+            "(1, 2)",
+            "(1, 2) (3, 4)",
+            "[(1, 2), (3, 4)]",
+            "some((1, 2))",
+            "true"
+        ]
+    );
+    assert_eq!(
+        lines[5..],
+        [
+            "false",
+            "true",
+            "true",
+            "false",
+            "1",
+            "some(\"two\")",
+            "2",
+            "true",
+            "false"
+        ]
+    );
+    // Nothing is added to the module's interface for the two hooks.
+    let interface = vm.interface_text();
+    assert!(
+        !interface.contains("show") && !interface.contains("eq"),
+        "{interface}"
+    );
 }
 
 /// A class that compares by its first field only, and hashes by it.

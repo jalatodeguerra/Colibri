@@ -2,9 +2,6 @@
 //! items: the objects only the iterator held must be released, so their `Drop` hooks run, and
 //! not dropped by Rust (a debug build stops on that).
 
-mod common;
-use common::vm_pending;
-
 use colibri_runtime as colibri;
 
 const GUARD: &str = r#"
@@ -29,10 +26,7 @@ fn run(body: &str) -> String {
 
 #[test]
 fn a_for_loop_over_the_only_reference_to_a_list_releases_it_at_the_end() {
-    vm_pending(
-        "a_for_loop_over_the_only_reference_to_a_list_releases_it_at_the_end",
-        || {
-            let out = run(r#"
+    let out = run(r#"
 fn make() -> List[Guard] {
     return [Guard { name: "a" }]
 }
@@ -44,17 +38,12 @@ fn main() {
     print("end")
 }
 "#);
-            assert_eq!(out, "got a\ndrop a\nend\n");
-        },
-    )
+    assert_eq!(out, "got a\ndrop a\nend\n");
 }
 
 #[test]
 fn a_map_iterator_advanced_with_next_releases_its_map_at_the_end() {
-    vm_pending(
-        "a_map_iterator_advanced_with_next_releases_its_map_at_the_end",
-        || {
-            let out = run(r#"
+    let out = run(r#"
 fn make() -> Map[str, Guard] {
     return {"k": Guard { name: "m" }}
 }
@@ -69,17 +58,12 @@ fn main() {
     print("end")
 }
 "#);
-            assert_eq!(out, "got m\ndrop m\nend\n");
-        },
-    )
+    assert_eq!(out, "got m\ndrop m\nend\n");
 }
 
 #[test]
 fn enumerate_releases_its_inner_iterator_when_that_ends() {
-    vm_pending(
-        "enumerate_releases_its_inner_iterator_when_that_ends",
-        || {
-            let out = run(r#"
+    let out = run(r#"
 struct Counter {
     n: int,
     g: Guard,
@@ -102,8 +86,6 @@ fn main() {
     print("end")
 }
 "#);
-            // The loop's copy of the counter ends with "fresh"; `c` itself still has "first".
-            assert_eq!(out, "got 0 1\ngot 1 2\ndrop fresh\nend\ndrop first\n");
-        },
-    )
+    // The loop's copy of the counter ends with "fresh"; `c` itself still has "first".
+    assert_eq!(out, "got 0 1\ngot 1 2\ndrop fresh\nend\ndrop first\n");
 }

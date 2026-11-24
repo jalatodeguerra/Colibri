@@ -15,7 +15,7 @@ async_ops::a_completion_on_the_main_fiber_runs_the_loop_meanwhile  # `go`
 async_ops::a_fake_clock_does_not_advance_while_an_operation_runs  # `go`
 async_ops::a_host_driven_loop_is_not_blocked_by_an_operation  # `go`
 async_ops::a_start_that_fails_is_an_error_and_nothing_waits  # `go`
-async_ops::an_operation_cancelled_while_running_is_dropped  # the built-in `ListPush`
+async_ops::an_operation_cancelled_while_running_is_dropped  # `go`
 async_ops::background_operations_overlap_inside_coroutines  # `NewCoGroup`
 async_ops::blocked_operations_never_hold_back_the_one_that_unblocks_them  # `NewCoGroup`
 async_ops::cancelling_a_waiting_coroutine_unwinds_it  # `go`
@@ -26,14 +26,6 @@ async_ops::the_event_loop_sleeps_until_a_completion  # `go`
 async_ops::thousands_of_operations_reuse_threads  # `NewCoGroup`
 async_ops::waiting_on_the_main_fiber_is_refused_inside_a_host_callback  # `Wait`
 async_ops::waits_carry_unit_and_string_results  # `NewCoGroup`
-budget::host_eq_hooks_and_key_scans_are_charged  # the built-in `ListPush`
-budget::iter_on_a_huge_range_is_cheap_and_what_it_yields_is_charged  # the built-in `Iter`
-budget::looping_builtins_cost_a_step_per_element  # the built-in `ListPush`
-budget::set_algebra_by_a_user_eq_charges_the_comparisons  # the built-in `SetFromList`
-budget::set_algebra_on_ints_ignores_an_unrelated_user_eq  # the built-in `SetFromList`
-bytes::a_host_function_takes_and_returns_bytes  # the built-in `BytesFromList`
-bytes::an_exported_function_names_bytes_in_its_signature  # the built-in `BytesFromList`
-bytes::get_fn_checks_and_moves_bytes  # the built-in `StrToBytes`
 coroutines::a_configured_stack_size_bounds_recursion_in_a_coroutine  # `go`
 coroutines::a_go_child_whose_local_and_capture_hooks_both_panic_is_the_only_failure  # `go`
 coroutines::a_go_closure_stopped_by_the_instruction_budget_still_releases_its_capture  # `go`
@@ -61,20 +53,7 @@ coroutines::the_event_loop_uses_the_injected_clock  # `go`
 coroutines::the_instruction_budget_applies_inside_a_coroutine  # `go`
 coroutines::tick_zero_pauses_time  # `go`
 coroutines::wait_in_a_host_callback_reports_the_reason  # `go`
-ffi::repr_c_layouts_match_the_c_compiler  # the built-in `ListLen`
-host_classes::a_busy_object_gives_the_documented_panic_when_the_script_reenters_it  # the built-in `ResultExpect`
-host_classes::a_class_can_customise_show_and_equality  # the built-in `MapLen`
-host_classes::a_host_object_dying_with_a_list_dies_in_element_order  # the built-in `ListLen`
-host_classes::objects_cross_functions_collections_and_tuples  # the built-in `ListLen`
-host_classes::objects_have_identity_equality_hash_and_show  # the built-in `MapLen`
-host_classes::reading_methods_may_nest_but_not_inside_a_writing_one  # the built-in `ResultExpect`
-host_fns::a_display_error_keeps_a_str_and_a_typed_error_keeps_none  # the built-in `OptionExpect`
-host_fns::a_host_error_keeps_a_typed_value_that_is_and_as_recover  # the built-in `ResultContext`
-host_fns::an_embedders_module_enum_converts_to_error_without_an_impl  # the built-in `OptionExpect`
 host_modules::a_session_keeps_module_values_between_steps  # REPL sessions
-iter_release::a_for_loop_over_the_only_reference_to_a_list_releases_it_at_the_end  # the built-in `Iter`
-iter_release::a_map_iterator_advanced_with_next_releases_its_map_at_the_end  # the built-in `Iter`
-iter_release::enumerate_releases_its_inner_iterator_when_that_ends  # the built-in `IterEnumerate`
 join_failures::a_budget_panic_is_not_held_for_a_woken_join_result_waiter  # `go`
 join_failures::a_budget_panic_is_not_hidden_by_a_later_join_result_in_the_tick  # `go`
 join_failures::a_budget_panic_is_not_hidden_by_join_result_on_the_main_fiber  # `go`
@@ -84,14 +63,8 @@ join_failures::cancelling_everything_leaves_no_waiter_registered  # `NewSignal`
 join_failures::join_of_a_budget_panicked_coroutine_reports_the_budget_error  # `go`
 join_failures::when_only_join_waiters_are_left_nothing_polls_and_nothing_resumes  # `NewSignal`
 leaks::a_cancelled_coroutine_leaks_what_only_it_held  # `go`
-leaks::a_cycle_that_is_still_held_is_not_a_leak  # the built-in `ListPush`
 leaks::a_suspended_coroutine_keeps_its_cycle_alive  # `go`
-leaks::objects_a_leaked_cycle_owns_are_counted_as_retained  # the built-in `ListPush`
 reload::a_coroutine_in_an_old_body_finishes_on_it_and_new_calls_use_the_new_one  # `go`
 reload::the_watching_event_loop_calls_the_hook_between_ticks  # `go`
 std_modules::lazy::a_failed_module_fails_every_session_entry_point  # REPL sessions
 std_modules::lazy::a_session_has_every_module  # REPL sessions
-tests_api::a_panicking_hook_stays_registered  # the built-in `ListPush`
-tests_api::a_script_function_called_from_the_hook_that_reads_a_module_value_panics_clearly  # the built-in `ListLen`
-tests_api::a_test_run_from_inside_the_hook_runs_without_the_hook  # the built-in `ListLen`
-tests_api::load_tests_runs_nothing_and_finds_modules_nobody_imports  # the built-in `ListLen`
