@@ -863,7 +863,7 @@ fn the_closure_built_ins_are_calls_of_functions_written_in_colibri() {
     assert!(!text.contains("OptionMap"), "{text}");
     assert!(!text.contains("ListSortBy"), "{text}");
     assert!(text.contains("Builtin(Clone)"), "{text}");
-    assert_eq!(text.matches("Call r").count(), 3, "{text}");
+    assert_eq!(text.matches("CallHidden r").count(), 3, "{text}");
     // They run as bytecode, so the closure is called by `CallValue` from a function of the prelude.
     let (_, text) = compile_source(src)
         .expect("compiles")

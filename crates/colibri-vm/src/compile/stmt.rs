@@ -290,7 +290,7 @@ impl FnCompiler<'_> {
         });
         self.block(body, None);
         self.bind(cont);
-        self.emit_to(Op::Loop { off: 0 }, span, head);
+        self.back_edge(head, span);
         self.loops.pop();
         self.bind(brk);
     }
@@ -635,6 +635,6 @@ impl FnCompiler<'_> {
             self.emit_to(Op::JmpIfNot { r: t, off: 0 }, span, exit);
         }
         self.free(t, span);
-        self.emit_to(Op::Loop { off: 0 }, span, head);
+        self.back_edge(head, span);
     }
 }

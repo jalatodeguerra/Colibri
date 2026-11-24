@@ -123,7 +123,9 @@ impl FnCompiler<'_> {
                         Arg::Place(p) => receiver = Some(p),
                     }
                 }
-                self.call_fn(*f, &values, receiver, &e.ty, dst, e.span);
+                // The prelude's own code calls only the prelude's own functions.
+                let hidden = self.free.then_some(None);
+                self.call_fn_charging(*f, hidden, &values, receiver, &e.ty, dst, e.span);
             }
             Callee::Intrinsic(which) => self.intrinsic(which, c, e, dst),
             Callee::Host(id) => self.call_host_fn(*id, c, e, dst),
@@ -321,6 +323,23 @@ impl FnCompiler<'_> {
         dst: Option<Reg>,
         span: Span,
     ) {
+        self.call_fn_charging(f, None, args, receiver, ret, dst, span);
+    }
+
+    /// [`FnCompiler::call_fn`] where `hidden` is `Some(work)` when `f` is a function of the
+    /// prelude: the call is a `CallHidden`, which charges what the native built-in `work`
+    /// stands for charged (nothing, for `None`).
+    #[allow(clippy::too_many_arguments)]
+    fn call_fn_charging(
+        &mut self,
+        f: FnId,
+        hidden: Option<Option<Builtin>>,
+        args: &[&Expr],
+        receiver: Option<&Place>,
+        ret: &Ty,
+        dst: Option<Reg>,
+        span: Span,
+    ) {
         let recv_local = match receiver {
             None => None,
             Some(p) => match (&p.anchor, p.path.is_empty()) {
@@ -341,15 +360,25 @@ impl FnCompiler<'_> {
             // If the call panics, the receiver goes back to its local before anything dies.
             self.push_item(Item::Recv { l, r: w.base });
         }
-        let site = self.add_site(Site::Call(f));
-        self.emit(
-            Op::Call {
-                d,
-                base: w.base,
-                site,
-            },
-            span,
-        );
+        let op = match hidden {
+            Some(work) => {
+                let site = self.add_site(Site::Hidden { f, work });
+                Op::CallHidden {
+                    d,
+                    base: w.base,
+                    site,
+                }
+            }
+            None => {
+                let site = self.add_site(Site::Call(f));
+                Op::Call {
+                    d,
+                    base: w.base,
+                    site,
+                }
+            }
+        };
+        self.emit(op, span);
         if let Some(l) = recv_local {
             let l = self.local(l);
             self.emit(Op::Move { d: l, s: w.base }, span);
@@ -507,7 +536,7 @@ impl FnCompiler<'_> {
         // The built-ins that take a closure are Colibri code: a call of the function of the
         // prelude, so the closure runs as bytecode and may pause (vm-plan §2.9).
         if let Some(f) = self.env.builtin_fn(b) {
-            return self.call_fn(f, args, None, &e.ty, dst, span);
+            return self.call_fn_charging(f, Some(Some(b)), args, None, &e.ty, dst, span);
         }
         match b {
             Builtin::ListPush if args.len() == 2 => {

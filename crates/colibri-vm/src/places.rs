@@ -590,8 +590,11 @@ impl Machine {
             fiber.regs[src + 1] = Value::Int(next);
             item
         };
-        // One budget step per trip, before anything is bound.
-        if let Err(ctl) = self.step(fiber, span) {
+        // One budget step per trip, before anything is bound. The loops of the prelude are free:
+        // the built-in they stand for charged its whole walk at the call.
+        if !chunk.hidden
+            && let Err(ctl) = self.step(fiber, span)
+        {
             self.release(item);
             return Err(ctl);
         }

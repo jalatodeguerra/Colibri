@@ -343,6 +343,15 @@ pub enum Op {
         base: Reg,
         site: u16,
     },
+    /// Calls a function of the prelude (`Site::Hidden`): a closure built-in written in Colibri, or a
+    /// helper of one. It costs what the native built-in costs, which is all the budget the
+    /// built-in takes: the site's `work` is charged here, as core charges it, and neither the
+    /// call nor anything the prelude's own code does is.
+    CallHidden {
+        d: Reg,
+        base: Reg,
+        site: u16,
+    },
     /// Calls the host function of the site (`Site::Host`) with owned copies of the arguments in
     /// `base..`, which stay where they are for the caller to drop; the result goes to `d`.
     CallHost {
@@ -774,6 +783,12 @@ pub enum Site {
     Binary(BinOp),
     Unary(UnOp),
     Call(FnId),
+    /// A call of a function of the prelude; `work` is the built-in whose native version this
+    /// stands for, which charges one step for each element of its receiver (`work_of`).
+    Hidden {
+        f: FnId,
+        work: Option<colibri_check::hir::Builtin>,
+    },
     /// A host function, how many arguments it takes and the type arguments of the call.
     Host(HostFnId, u16, Box<[Ty]>),
     Format(Box<FormatSpec>),
@@ -970,6 +985,9 @@ impl Chunk {
             Op::Call { d, base, site } => {
                 format!("Call r{d} base=r{base} {}", self.site_text(site))
             }
+            Op::CallHidden { d, base, site } => {
+                format!("CallHidden r{d} base=r{base} {}", self.site_text(site))
+            }
             Op::CallHost { d, base, site } => {
                 format!("CallHost r{d} base=r{base} {}", self.site_text(site))
             }
@@ -1073,6 +1091,10 @@ impl Chunk {
             Some(Site::Binary(op)) => format!("{op:?}"),
             Some(Site::Unary(op)) => format!("{op:?}"),
             Some(Site::Call(f)) => format!("fn#{}", f.0),
+            Some(Site::Hidden { f, work }) => match work {
+                Some(b) => format!("fn#{} work({b:?})", f.0),
+                None => format!("fn#{}", f.0),
+            },
             Some(Site::Host(id, argc, _)) => format!("host#{}/{argc}", id.0),
             Some(Site::Format(spec)) => format!("{spec:?}"),
             Some(Site::Intrinsic { which, argc }) => format!("{which:?}/{argc}"),

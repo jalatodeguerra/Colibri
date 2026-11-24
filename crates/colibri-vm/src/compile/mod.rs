@@ -336,6 +336,9 @@ pub(crate) struct FnCompiler<'a> {
     pub loops: Vec<LoopCtx>,
     /// The `Step` instruction of the straight-line run being emitted.
     step_at: Option<usize>,
+    /// The body is the prelude's own code: it takes no budget steps (the call that reaches it
+    /// charges what the native built-in did, see `Op::CallHidden`).
+    pub(crate) free: bool,
     failure: Option<Fail>,
     /// The pad of each node that has one, once the pads are emitted.
     pad_labels: HashMap<u32, Label>,
@@ -371,6 +374,7 @@ impl<'a> FnCompiler<'a> {
             labels: Vec::new(),
             loops: Vec::new(),
             step_at: None,
+            free: colibri_check::is_prelude_span(body.span),
             failure: None,
             pad_labels: HashMap::new(),
         };
@@ -523,6 +527,17 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    /// The jump back to the head of a loop: it charges one budget step, except in the prelude's
+    /// own code, which charges nothing.
+    pub(crate) fn back_edge(&mut self, head: Label, span: Span) {
+        let op = if self.free {
+            Op::Jmp { off: 0 }
+        } else {
+            Op::Loop { off: 0 }
+        };
+        self.emit_to(op, span, head);
+    }
+
     pub(crate) fn jmp(&mut self, l: Label, span: Span) {
         self.emit_to(Op::Jmp { off: 0 }, span, l);
     }
@@ -532,6 +547,9 @@ impl<'a> FnCompiler<'a> {
     /// Counts one statement in the current straight-line run, starting the run's `Step` when
     /// there is none.
     pub(crate) fn count_statement(&mut self, span: Span) {
+        if self.free {
+            return;
+        }
         match self.step_at {
             Some(at) => {
                 if let Op::Step { n } = &mut self.code[at] {

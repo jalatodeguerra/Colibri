@@ -460,6 +460,11 @@ impl Machine {
                     ));
                     reload!();
                 }
+                Op::CallHidden { d, base: a, site } => {
+                    sync!();
+                    tri!(self.op_call_hidden(fiber, &chunk, base, pc, [d, a, site]));
+                    reload!();
+                }
                 Op::CallHost { .. } => {
                     sync!();
                     tri!(self.op_call_host(fiber, &chunk, base, pc, op));
@@ -1177,6 +1182,48 @@ impl Machine {
             pc: start,
             base: new_base as u32,
             ret: ret as u32,
+            kind: FrameKind::Colibri,
+            noted: None,
+            temps_mark: fiber.temps.len() as u32,
+        });
+        Ok(())
+    }
+
+    /// `CallHidden`: a function of the prelude. The native built-in it replaces charged one step
+    /// for each element of its receiver and nothing else; so does this, and the code of the
+    /// prelude, which is compiled without budget steps, charges nothing more.
+    #[inline(never)]
+    fn op_call_hidden(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        [d, a, site]: [u16; 3],
+    ) -> Result<(), Ctl> {
+        let span = chunk.spans[pc - 1];
+        let Site::Hidden { f, work } = &chunk.sites[usize::from(site)] else {
+            return Err(self.internal(fiber, span, "a call without its function"));
+        };
+        let at = base + usize::from(a);
+        if let Some(b) = work
+            && let Some(n) = colibri_core::work_of(*b, fiber.regs.get(at))
+        {
+            self.charge(fiber, span, n)?;
+        }
+        let callee = self.callee_chunk(fiber, chunk, pc, *f)?;
+        if fiber.frames.len() >= self.max_depth {
+            return Err(self.overflow(fiber, span));
+        }
+        let need = at + callee.nregs as usize;
+        if fiber.regs.len() < need {
+            fiber.regs.resize(need, Value::Unit);
+        }
+        fiber.frames.push(Frame {
+            chunk: callee,
+            pc: 0,
+            base: at as u32,
+            ret: (base + usize::from(d)) as u32,
             kind: FrameKind::Colibri,
             noted: None,
             temps_mark: fiber.temps.len() as u32,

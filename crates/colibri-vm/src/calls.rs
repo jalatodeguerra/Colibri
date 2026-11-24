@@ -18,7 +18,7 @@ use crate::machine::Machine;
 
 impl Machine {
     /// The compiled body of `f`, or the internal error the call reports.
-    fn callee_chunk(
+    pub(crate) fn callee_chunk(
         &mut self,
         fiber: &mut VmFiber,
         chunk: &Chunk,

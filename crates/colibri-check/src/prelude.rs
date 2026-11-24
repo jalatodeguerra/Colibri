@@ -157,19 +157,24 @@ fn __list_for_each[T](xs: List[T], f: fn(T)) {
 fn __list_flat_map[T, U](xs: List[T], f: fn(T) -> List[U]) -> List[U] {
     let mut out: List[U] = []
     for x in xs {
-        out.extend(f(x))
+        // Not `extend`: that charges a step for each element of `out`, the native one does not.
+        for y in f(x) {
+            out.push(y)
+        }
     }
     return out
 }
+// The loop of core's `merge_order`: runs of `width` elements are merged, the right element going
+// first only when the left is strictly greater, so the comparator is asked in the same order.
 fn __merge_order[T](items: List[T], f: fn(T, T) -> int) -> List[int] {
     let n = items.len()
     let mut src: List[int] = []
-    for i in 0..n {
-        src.push(i)
-    }
     let mut dst: List[int] = []
-    for i in 0..n {
-        dst.push(i)
+    let mut p = 0
+    while p < n {
+        src.push(p)
+        dst.push(p)
+        p += 1
     }
     let mut width = 1
     while width < n {
@@ -209,6 +214,55 @@ fn __merge_order[T](items: List[T], f: fn(T, T) -> int) -> List[int] {
     }
     return src
 }
+// The same loop, ordering by `compare` (which panics on a `nan`) with no call in between.
+fn __merge_order_keys[K: Ord](items: List[K]) -> List[int] {
+    let n = items.len()
+    let mut src: List[int] = []
+    let mut dst: List[int] = []
+    let mut p = 0
+    while p < n {
+        src.push(p)
+        dst.push(p)
+        p += 1
+    }
+    let mut width = 1
+    while width < n {
+        let mut start = 0
+        while start < n {
+            let mid = if start + width < n { start + width } else { n }
+            let end = if start + 2 * width < n { start + 2 * width } else { n }
+            let mut i = start
+            let mut j = mid
+            let mut k = start
+            while i < mid && j < end {
+                if compare(items[src[i]], items[src[j]]) > 0 {
+                    dst[k] = src[j]
+                    j += 1
+                } else {
+                    dst[k] = src[i]
+                    i += 1
+                }
+                k += 1
+            }
+            while i < mid {
+                dst[k] = src[i]
+                i += 1
+                k += 1
+            }
+            while j < end {
+                dst[k] = src[j]
+                j += 1
+                k += 1
+            }
+            start += 2 * width
+        }
+        let t = src
+        src = dst
+        dst = t
+        width *= 2
+    }
+    return src
+}
 fn __sort_order[T](xs: List[T], f: fn(T, T) -> int) -> List[int] {
     let mut order: List[int] = []
     for _ in xs {
@@ -217,9 +271,6 @@ fn __sort_order[T](xs: List[T], f: fn(T, T) -> int) -> List[int] {
     }
     return order
 }
-fn __compare_keys[K: Ord](a: K, b: K) -> int {
-    return compare(a, b)
-}
 fn __key_order[T, K: Ord](xs: List[T], f: fn(T) -> K) -> List[int] {
     let mut keys: List[K] = []
     for x in xs {
@@ -227,7 +278,7 @@ fn __key_order[T, K: Ord](xs: List[T], f: fn(T) -> K) -> List[int] {
     }
     let mut order: List[int] = []
     for _ in xs {
-        order = __merge_order(keys, __compare_keys)
+        order = __merge_order_keys(keys)
         break
     }
     return order
