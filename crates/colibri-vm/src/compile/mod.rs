@@ -177,7 +177,7 @@ pub(crate) enum Item {
     Place { site: u16, a: Reg, b: Reg, r: Reg },
     /// The binding of a `for mut` iteration: its final value goes back into the list.
     ForBack { l: Reg, a: Reg },
-    /// The receiver of a `var self` interface call, unwrapped from its interface value in
+    /// The receiver of a `mut self` interface call, unwrapped from its interface value in
     /// `shell`: boxed again before it is written back.
     Rewrap { shell: Reg, recv: Reg },
 }

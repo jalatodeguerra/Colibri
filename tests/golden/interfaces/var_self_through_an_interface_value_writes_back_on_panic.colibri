@@ -1,7 +1,7 @@
-// A `var self` method called on an interface value changes the value inside it, and the change
+// A `mut self` method called on an interface value changes the value inside it, and the change
 // is written back into the variable even when the method panics.
 interface Counter {
-    fn bump(var self)
+    fn bump(mut self)
 }
 
 struct Tally {
@@ -9,7 +9,7 @@ struct Tally {
 }
 
 impl Counter for Tally {
-    fn bump(var self) {
+    fn bump(mut self) {
         self.n += 1
         if self.n == 3 {
             panic("three")
@@ -18,7 +18,7 @@ impl Counter for Tally {
 }
 
 fn main() {
-    var c: Counter = Tally { n: 0 }
+    let mut c: Counter = Tally { n: 0 }
     defer {
         print(c)
     }

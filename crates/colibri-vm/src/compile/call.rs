@@ -166,7 +166,7 @@ impl FnCompiler<'_> {
         }
     }
 
-    /// A call of a method of an interface. The receiver is the first value, or, for a `var self`
+    /// A call of a method of an interface. The receiver is the first value, or, for a `mut self`
     /// method, the place it lives in.
     #[allow(clippy::too_many_arguments)]
     fn call_iface(
@@ -213,7 +213,7 @@ impl FnCompiler<'_> {
         }
     }
 
-    /// A `var self` call through an interface: like [`FnCompiler::call_fn_on_place`], with the
+    /// A `mut self` call through an interface: like [`FnCompiler::call_fn_on_place`], with the
     /// receiver unwrapped from its interface value for the call and boxed again before it is
     /// written back (also when the call panics).
     fn call_iface_on_place(

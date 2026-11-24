@@ -5,7 +5,7 @@ struct Ticker {
 }
 
 impl Iter[int] for Ticker {
-    fn next(var self) -> int? {
+    fn next(mut self) -> int? {
         if self.n >= 3 {
             return none
         }

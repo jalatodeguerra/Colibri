@@ -370,7 +370,7 @@ pub enum Op {
         base: Reg,
         site: u16,
     },
-    /// A `var self` interface call: the receiver was copied from its place into `base`; the
+    /// A `mut self` interface call: the receiver was copied from its place into `base`; the
     /// callee's window starts at `base + 1`, where the receiver is unwrapped from an interface
     /// value (`base` keeps its shell). `Rewrap` puts the final value back.
     CallIfaceInout {

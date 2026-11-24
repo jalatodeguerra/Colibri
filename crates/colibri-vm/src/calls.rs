@@ -235,7 +235,7 @@ impl Machine {
         }
     }
 
-    /// `CallIfaceInout`: a `var self` method through an interface. The place's value is in
+    /// `CallIfaceInout`: a `mut self` method through an interface. The place's value is in
     /// register `a`; the receiver proper goes to `a + 1`, which is where the callee's window
     /// starts, and `a` keeps the interface value's shell (an empty one for a plain value).
     #[inline(never)]
