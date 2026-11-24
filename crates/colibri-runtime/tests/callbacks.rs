@@ -1,8 +1,5 @@
 //! `find_fn` for optional hooks, and `Callback`: script functions the host keeps (EMBEDDING §6).
 
-mod common;
-use common::vm_pending;
-
 use colibri_runtime as colibri;
 
 type Hook = colibri::Callback<(i64,), i64>;
