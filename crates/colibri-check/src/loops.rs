@@ -147,7 +147,7 @@ impl FnCtx<'_, '_> {
         };
         if mutable && !plain_list {
             self.ck
-                .unsupported("`for var` over anything but a list", pat.span);
+                .unsupported("`for mut` over anything but a list", pat.span);
             return self.for_body_only(label, false, pat, &elem, body, span);
         }
         self.finish_for(span, label, mutable, mutable, pat, &elem, source, body)

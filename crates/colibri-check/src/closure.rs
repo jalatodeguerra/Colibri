@@ -454,7 +454,7 @@ impl FnCtx<'_, '_> {
     // ---- storage ----
 
     /// Decides, for the outermost body and every closure inside it, which locals live in
-    /// cells (ARCHITECTURE §1): a local is a `Cell` iff it is captured by reference, is `var`
+    /// cells (ARCHITECTURE §1): a local is a `Cell` iff it is captured by reference, is `let mut`
     /// and is assigned after its initialisation, in its own body or in any closure.
     pub(crate) fn settle_storage(&mut self) {
         // Assignments inside a closure count for the variable it captures, innermost first.

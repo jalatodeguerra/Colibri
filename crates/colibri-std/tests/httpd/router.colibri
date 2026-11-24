@@ -155,7 +155,7 @@ test "a literal is compared with the segment as it came: /%61dmin is not /admin"
     assert_eq(answer(r, "GET", "/it%65ms"), "404 404 Not Found\n")
     assert_eq(answer(r, "GET", "/admin"), "200 admin id=- rest=-")
     // The router and `Request.path` agree: a check on the path sees what the router matched.
-    var seen = ""
+    let mut seen = ""
     let h = r.handler()
     let req = httpd_impl.test_request("GET", "/%61dmin")
     let _ = h(req)

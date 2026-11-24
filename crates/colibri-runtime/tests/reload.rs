@@ -141,7 +141,7 @@ fn comments_and_moved_code_do_not_count() {
 fn a_patch_does_not_rerun_initialisers_and_keeps_module_state() {
     let src = |msg: &str| {
         format!(
-            "var count = start()\nfn start() -> int {{\n    print(\"init\")\n    return 10\n}}\nfn bump() -> int {{\n    count += 1\n    return count\n}}\nfn greet() -> str => \"{msg}\"\nprint(\"top level\")\n"
+            "let mut count = start()\nfn start() -> int {{\n    print(\"init\")\n    return 10\n}}\nfn bump() -> int {{\n    count += 1\n    return count\n}}\nfn greet() -> str => \"{msg}\"\nprint(\"top level\")\n"
         )
     };
     let dir = tree("state", &[("a.colibri", &src("a"))]);
@@ -192,8 +192,8 @@ fn a_coroutine_in_an_old_body_finishes_on_it_and_new_calls_use_the_new_one() {
 
 #[test]
 fn a_signature_change_restarts_and_carries_state_through_the_hooks() {
-    let v1 = "var score = 7\nfn save_state() -> str => \"score={score}\"\nfn add(a: int) -> int => a + 1\nfn main() { print(\"main v1\") }\n";
-    let v2 = "var score = 0\nfn restore_state(s: str) {\n    print(\"restoring {s}\")\n}\nfn add(a: int, b: int) -> int => a + b\nprint(\"init v2\")\nfn main() { print(\"main v2\") }\n";
+    let v1 = "let mut score = 7\nfn save_state() -> str => \"score={score}\"\nfn add(a: int) -> int => a + 1\nfn main() { print(\"main v1\") }\n";
+    let v2 = "let mut score = 0\nfn restore_state(s: str) {\n    print(\"restoring {s}\")\n}\nfn add(a: int, b: int) -> int => a + b\nprint(\"init v2\")\nfn main() { print(\"main v2\") }\n";
     let dir = tree("restart", &[("a.colibri", v1)]);
     let (mut vm, out) = vm();
     vm.load_file(dir.join("a.colibri")).unwrap();
@@ -247,7 +247,7 @@ fn restart_without_hooks_carries_nothing() {
 
 #[test]
 fn what_forces_a_restart() {
-    let base = "struct P {\n    x: int\n}\nenum Shape {\n    Dot\n    Line\n}\nvar n = 1\nfn f() -> int => 1\n";
+    let base = "struct P {\n    x: int\n}\nenum Shape {\n    Dot\n    Line\n}\nlet mut n = 1\nfn f() -> int => 1\n";
     let cases: &[(&str, String, &str)] = &[
         (
             "field",
@@ -257,12 +257,12 @@ fn what_forces_a_restart() {
         ("variant", base.replace("Line", "Line\n    Arc"), "enum"),
         (
             "initialiser",
-            base.replace("var n = 1", "var n = 2"),
+            base.replace("let mut n = 1", "let mut n = 2"),
             "initialiser",
         ),
         (
             "global type",
-            base.replace("var n = 1", "var n = 1.5"),
+            base.replace("let mut n = 1", "let mut n = 1.5"),
             "declarations",
         ),
         (
@@ -337,11 +337,11 @@ fn a_changed_field_default_restarts_instead_of_patching() {
 fn code_that_does_not_check_leaves_the_old_program_running() {
     let dir = tree(
         "broken",
-        &[("a.colibri", "var n = 1\nfn greet() -> str => \"v1\"\n")],
+        &[("a.colibri", "let mut n = 1\nfn greet() -> str => \"v1\"\n")],
     );
     let (mut vm, _) = vm();
     vm.load_file(dir.join("a.colibri")).unwrap();
-    write(&dir, "a.colibri", "var n = 1\nfn greet() -> str => 5\n");
+    write(&dir, "a.colibri", "let mut n = 1\nfn greet() -> str => 5\n");
     match vm.reload_changed().unwrap() {
         ReloadOutcome::CheckFailed(report) => {
             assert!(report.has_errors());
@@ -358,7 +358,7 @@ fn code_that_does_not_check_leaves_the_old_program_running() {
     write(
         &dir,
         "a.colibri",
-        "var n = 1\nfn greet() -> str => \"v3\"\n",
+        "let mut n = 1\nfn greet() -> str => \"v3\"\n",
     );
     assert!(matches!(
         vm.reload_changed().unwrap(),
@@ -425,14 +425,14 @@ fn a_package_notices_a_change_in_a_module_and_in_a_dependency() {
 fn a_panic_in_the_new_initialisers_leaves_no_program_until_the_next_edit() {
     let dir = tree(
         "initpanic",
-        &[("a.colibri", "var n = 1\nfn greet() -> str => \"v1\"\n")],
+        &[("a.colibri", "let mut n = 1\nfn greet() -> str => \"v1\"\n")],
     );
     let (mut vm, _) = vm();
     vm.load_file(dir.join("a.colibri")).unwrap();
     write(
         &dir,
         "a.colibri",
-        "var n = 1 / (1 - 1)\nfn greet() -> str => \"v1\"\n",
+        "let mut n = 1 / (1 - 1)\nfn greet() -> str => \"v1\"\n",
     );
     let err = vm.reload_changed().expect_err("the initialiser panics");
     assert!(matches!(err, colibri::Error::Panic { .. }), "{err:?}");
@@ -440,7 +440,7 @@ fn a_panic_in_the_new_initialisers_leaves_no_program_until_the_next_edit() {
     write(
         &dir,
         "a.colibri",
-        "var n = 2\nfn greet() -> str => \"v4\"\n",
+        "let mut n = 2\nfn greet() -> str => \"v4\"\n",
     );
     assert!(matches!(
         vm.reload_changed().unwrap(),
@@ -455,7 +455,7 @@ fn forcing_a_restart_reinitialises_module_state() {
         "forced",
         &[(
             "a.colibri",
-            "var n = 0\nfn bump() -> int {\n    n += 1\n    return n\n}\n",
+            "let mut n = 0\nfn bump() -> int {\n    n += 1\n    return n\n}\n",
         )],
     );
     let (mut vm, _) = vm();
@@ -465,7 +465,7 @@ fn forcing_a_restart_reinitialises_module_state() {
     write(
         &dir,
         "a.colibri",
-        "var n = 0\nfn bump() -> int {\n    n += 10\n    return n\n}\n",
+        "let mut n = 0\nfn bump() -> int {\n    n += 10\n    return n\n}\n",
     );
     let out = vm
         .reload_changed_with(ReloadOptions {
@@ -526,7 +526,7 @@ fn the_watching_event_loop_calls_the_hook_between_ticks() {
                 "loop",
                 &[(
                     "a.colibri",
-                    "fn msg() -> str => \"one\"\nfn ticker() {\n    var i = 0\n    while i < 6 {\n        print(msg())\n        i += 1\n        wait_real(0.02)\n    }\n}\nfn main() {\n    go ticker()\n}\n",
+                    "fn msg() -> str => \"one\"\nfn ticker() {\n    let mut i = 0\n    while i < 6 {\n        print(msg())\n        i += 1\n        wait_real(0.02)\n    }\n}\nfn main() {\n    go ticker()\n}\n",
                 )],
             );
             let (mut vm, out) = vm();
@@ -541,7 +541,7 @@ fn the_watching_event_loop_calls_the_hook_between_ticks() {
             write(
                 &path,
                 "a.colibri",
-                "fn msg() -> str => \"two\"\nfn ticker() {\n    var i = 0\n    while i < 6 {\n        print(msg())\n        i += 1\n        wait_real(0.02)\n    }\n}\nfn main() {\n    go ticker()\n}\n",
+                "fn msg() -> str => \"two\"\nfn ticker() {\n    let mut i = 0\n    while i < 6 {\n        print(msg())\n        i += 1\n        wait_real(0.02)\n    }\n}\nfn main() {\n    go ticker()\n}\n",
             );
         }
         if let ReloadOutcome::Patched { .. } = vm.reload_changed()? {
@@ -568,7 +568,7 @@ fn patching_a_ten_thousand_line_program_is_quick() {
         s.push_str("struct Item {\n    id: int\n    name: str\n}\n");
         for i in 0..1000 {
             s.push_str(&format!(
-                "fn f{i}(x: int) -> int {{\n    var total = x\n    for k in 0..3 {{\n        if k % 2 == 0 {{\n            total += k * {i}\n        }} else {{\n            total -= 1\n        }}\n    }}\n    let it = Item {{ id: total, name: \"n{i}\" }}\n    return it.id + {}\n}}\n",
+                "fn f{i}(x: int) -> int {{\n    let mut total = x\n    for k in 0..3 {{\n        if k % 2 == 0 {{\n            total += k * {i}\n        }} else {{\n            total -= 1\n        }}\n    }}\n    let it = Item {{ id: total, name: \"n{i}\" }}\n    return it.id + {}\n}}\n",
                 if i == 400 { tag } else { "0" }
             ));
         }

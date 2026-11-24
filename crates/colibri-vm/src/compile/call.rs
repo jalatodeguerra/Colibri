@@ -28,7 +28,7 @@ impl FnCompiler<'_> {
 
     /// [`FnCompiler::eval_window`] that runs `after` once the arguments are evaluated and before
     /// the window's layout is settled: what it leaves alive above them (the anchor operands of a
-    /// `var self` receiver, evaluated after the arguments) pushes the window up.
+    /// `mut self` receiver, evaluated after the arguments) pushes the window up.
     pub(super) fn eval_window_then<T>(
         &mut self,
         reserve: usize,
@@ -134,7 +134,7 @@ impl FnCompiler<'_> {
     /// A call of the function `f`. The callee's window starts at the first argument register,
     /// so its parameters are the caller's argument registers: nothing is copied, and the callee
     /// never releases them (the caller does, as the tree-walker's twins do). The receiver of a
-    /// `var self` call is moved into register 0 last, and moved back after the call.
+    /// `mut self` call is moved into register 0 last, and moved back after the call.
     pub(super) fn call_fn(
         &mut self,
         f: FnId,
@@ -186,7 +186,7 @@ impl FnCompiler<'_> {
         }
     }
 
-    /// A `var self` call on any place but a whole local: the arguments first, then the place's
+    /// A `mut self` call on any place but a whole local: the arguments first, then the place's
     /// operands, once. The receiver is copied in (a plain local's field is moved out), the
     /// collection a place is an element of stays guarded for the whole call, and the callee's
     /// final value is written back, unguarded, on every way out, a panic included
@@ -285,7 +285,7 @@ impl FnCompiler<'_> {
             match a {
                 Arg::Value(v) => args.push(v),
                 Arg::Place(_) => {
-                    self.unsupported("`var self` intrinsics", span);
+                    self.unsupported("`mut self` intrinsics", span);
                     return;
                 }
             }

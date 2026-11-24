@@ -18,7 +18,7 @@ use crate::repl_input::is_complete;
 
 const HELP: &str = "\
 Type a statement, an expression (its value is printed with its type) or a declaration
-(fn, struct, class, enum, interface, impl, import, let, var, const). Everything persists.
+(fn, struct, class, enum, interface, impl, import, let, let mut, const). Everything persists.
 A line that leaves a bracket or an expression open continues on the next line; an empty
 line submits what is there.
 
@@ -241,7 +241,7 @@ impl Session {
     }
 
     /// One entry. It runs top to bottom like a script (DESIGN §4.2): an entry where a `let`
-    /// or `var` follows a statement runs in pieces, one after the other, so that the binding
+    /// or `let mut` follows a statement runs in pieces, one after the other, so that the binding
     /// sees what the statement did. Only the last piece shows its value; a piece that fails
     /// stops the rest.
     fn entry(&mut self, text: &str) {
@@ -622,7 +622,7 @@ fn build(items: &[Item], script: &str) -> Built {
     }
 }
 
-/// An entry cut before every `let` or `var` that follows a statement, so that each binding
+/// An entry cut before every `let` or `let mut` that follows a statement, so that each binding
 /// runs after the statements above it. Other declarations (`fn`, types, `const`, ..) stay
 /// where they are and are visible to the whole of their piece. Text that does not parse is
 /// one piece (the checker reports it).
@@ -809,9 +809,9 @@ mod tests {
 
     #[test]
     fn an_entry_is_cut_where_a_declaration_follows_a_statement() {
-        let p = pieces("var a: List[int] = []\na.push(1)\nlet n = a.len()\nprint(n)\n");
+        let p = pieces("let mut a: List[int] = []\na.push(1)\nlet n = a.len()\nprint(n)\n");
         assert_eq!(p.len(), 2);
-        assert_eq!(p[0].trim(), "var a: List[int] = []\na.push(1)");
+        assert_eq!(p[0].trim(), "let mut a: List[int] = []\na.push(1)");
         assert_eq!(p[1].trim(), "let n = a.len()\nprint(n)");
         assert_eq!(pieces("let x = 1\nlet y = 2\nprint(x + y)\n").len(), 1);
         // Functions and types are not cut off from the statements that use them.

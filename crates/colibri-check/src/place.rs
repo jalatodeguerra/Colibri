@@ -1,4 +1,4 @@
-//! Places: assignment targets and `var self` receivers (ARCHITECTURE §1 and §4).
+//! Places: assignment targets and `mut self` receivers (ARCHITECTURE §1 and §4).
 //!
 //! A place is an anchor (a local or a module-level value) plus a path of field and tuple
 //! projections. Structs and tuples are values, so writing through a path is only allowed when
@@ -60,7 +60,7 @@ pub(crate) fn expr_text(e: &ast::Expr) -> String {
 #[derive(Clone, Copy)]
 pub(crate) enum Action<'a> {
     Assign,
-    /// Calling the named `var self` method on the place.
+    /// Calling the named `mut self` method on the place.
     Call(&'a str),
 }
 
@@ -70,7 +70,7 @@ enum Root {
     Let,
     Const,
     Param,
-    /// `self` of a method that does not take `var self`.
+    /// `self` of a method that does not take `mut self`.
     ReadOnlySelf,
 }
 
@@ -171,7 +171,7 @@ impl FnCtx<'_, '_> {
             Base::Value(_) => {
                 self.ck.report(
                     Diagnostic::error("cannot assign to a part of a temporary value", span_of.span)
-                        .with_hint("the change would be lost; store the value in a `var` first"),
+                        .with_hint("the change would be lost; store the value in a `let mut` binding first"),
                 );
                 None
             }
@@ -499,12 +499,12 @@ impl FnCtx<'_, '_> {
                     (false, _) => format!("cannot {what}, because `{name}` is not mutable"),
                 };
                 let hint = if is_let {
-                    format!("declare it with `var {name} = ...` to allow changing it")
+                    format!("declare it with `let mut {name} = ...` to allow changing it")
                 } else {
-                    "constants never change; use `var` for a value that does".to_string()
+                    "constants never change; use `let mut` for a value that does".to_string()
                 };
                 Diagnostic::error(message, span)
-                    .with_label(decl, format!("`{name}` is declared here without `var`"))
+                    .with_label(decl, format!("`{name}` is declared here without `mut`"))
                     .with_hint(hint)
             }
             Root::Param => Diagnostic::error(
@@ -517,13 +517,13 @@ impl FnCtx<'_, '_> {
                 span,
             )
             .with_label(decl, "parameters are immutable")
-            .with_hint(format!("copy it first: `var {name}2 = {name}`")),
+            .with_hint(format!("copy it first: `let mut {name}2 = {name}`")),
             Root::ReadOnlySelf => Diagnostic::error(
                 format!("cannot {what}, because `self` is read-only in this method"),
                 span,
             )
             .with_label(decl, "`self` is declared here")
-            .with_hint("declare the method with `var self` if it should change the value"),
+            .with_hint("declare the method with `mut self` if it should change the value"),
         };
         self.ck.report(diag);
         false

@@ -14,7 +14,7 @@
 //!   (ARCHITECTURE §2 rule 2), which is what the tree-walker's temporaries stack does.
 //!
 //! What has to die when control leaves is one compile-time stack of [`Item`]s: registers to
-//! drop, registered `defer`s, a hook-folding mark at every statement and scope, and `var self`
+//! drop, registered `defer`s, a hook-folding mark at every statement and scope, and `mut self`
 //! receivers to write back. A normal exit (a block's end, `break`, `continue`, `return`) emits
 //! the items above its depth, newest first. A panic does the same from a landing pad: every
 //! instruction is tagged with the stack node it runs under, and the unwind table maps a range
@@ -157,14 +157,14 @@ pub(crate) enum Item {
     /// The end of a statement or scope, where `Drop` hook panics fold into the outcome. The
     /// payload is how many releases had been emitted when the group began.
     Fold(u32),
-    /// A `var self` receiver moved into a call window: written back into its local.
+    /// A `mut self` receiver moved into a call window: written back into its local.
     Recv { l: Reg, r: Reg },
     /// A mutation guard held on the fiber's hold stack, released at the exit.
     Hold,
-    /// A `var self` receiver copied out of a place: written back (unguarded) through the place
+    /// A `mut self` receiver copied out of a place: written back (unguarded) through the place
     /// whose operands are in `a` and `b`, with the site naming it.
     Place { site: u16, a: Reg, b: Reg, r: Reg },
-    /// The binding of a `for var` iteration: its final value goes back into the list.
+    /// The binding of a `for mut` iteration: its final value goes back into the list.
     ForBack { l: Reg, a: Reg },
 }
 
@@ -394,7 +394,7 @@ impl<'a> FnCompiler<'a> {
     }
 
     /// Whether a panic with nothing to clean up still has to run the end of the function: a
-    /// `var self` parameter in a cell is unwrapped before it goes back to the caller.
+    /// `mut self` parameter in a cell is unwrapped before it goes back to the caller.
     fn root_is_real(&self) -> bool {
         self.body.mutates_self
             && self

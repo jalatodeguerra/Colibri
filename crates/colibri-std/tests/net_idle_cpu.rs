@@ -126,8 +126,8 @@ fn reading(c: net.Conn) -> str {{
 }}
 
 fn main() -> Result[()] {{
-    var conns: List[net.Conn] = []
-    var readers: List[Coroutine[str]] = []
+    let mut conns: List[net.Conn] = []
+    let mut readers: List[Coroutine[str]] = []
     for i in 0..{READERS} {{
         let c = net.connect("{addr}")?
         conns.push(c)
@@ -141,7 +141,7 @@ fn main() -> Result[()] {{
     for c in conns {{
         c.close()
     }}
-    var closed = 0
+    let mut closed = 0
     for r in readers {{
         if r.join() == "Closed" {{
             closed += 1

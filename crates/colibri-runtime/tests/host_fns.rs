@@ -228,7 +228,7 @@ fn a_rust_panic_is_a_colibri_panic_and_the_vm_stays_usable() {
             .unwrap();
             vm.load_source(
         "game.colibri",
-        "fn launch(n: int) -> int => explode(n)\nvar calls = 0\nfn bump() -> int {\n    calls += 1\n    return calls\n}\nfn main() {\n    print(\"before\")\n}\n",
+        "fn launch(n: int) -> int => explode(n)\nlet mut calls = 0\nfn bump() -> int {\n    calls += 1\n    return calls\n}\nfn main() {\n    print(\"before\")\n}\n",
     )
     .unwrap();
             let launch = vm.get_fn::<(i64,), i64>("launch").unwrap();

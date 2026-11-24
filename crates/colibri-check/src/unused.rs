@@ -380,7 +380,7 @@ fn is_plain_literal(e: &Expr) -> bool {
 
 impl Checker<'_> {
     /// Whether the module an `import` item names runs code when it loads: a top-level
-    /// statement, or a `let`/`var` whose initialiser is not a plain literal.
+    /// statement, or a `let`/`let mut` whose initialiser is not a plain literal.
     fn import_has_load_effects(&self, importer: &ModInfo<'_>, import_item: NodeId) -> bool {
         let Some(ImportTarget::Module(i)) = importer.imports.and_then(|m| m.get(&import_item))
         else {

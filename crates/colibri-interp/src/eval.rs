@@ -195,7 +195,7 @@ impl Interp {
     }
 
     /// Runs the module-level initialisers in dependency order, then the top-level statements,
-    /// which initialise the script's own `let`/`var` on their lines (DESIGN §4.2).
+    /// which initialise the script's own `let`/`let mut` on their lines (DESIGN §4.2).
     pub fn run_module(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
         // The initialisers and the top-level statements share one allotment.
         let outermost = self.core.begin_entry();
@@ -208,7 +208,7 @@ impl Interp {
     }
 
     /// Runs every module-level initialiser and nothing else (no top-level statements): those
-    /// in dependency order, then the script's `let`/`var` in source order. The state a test
+    /// in dependency order, then the script's `let`/`let mut` in source order. The state a test
     /// starts from (ARCHITECTURE §15).
     pub fn run_initialisers(&mut self, fiber: &mut Fiber) -> Result<(), Box<PanicInfo>> {
         let outermost = self.core.begin_entry();
@@ -347,7 +347,7 @@ impl Interp {
     }
 
     /// Runs a call. The arguments become the callee's parameters, which it releases when it
-    /// ends; the caller keeps its own references on its temporaries. For a `var self` method
+    /// ends; the caller keeps its own references on its temporaries. For a `mut self` method
     /// the second result is the final value of `self`, taken out of the frame after every
     /// other cleanup ran, for the caller to write back; it is present on every path, including
     /// a panic.
@@ -407,7 +407,7 @@ impl Interp {
             span: body.span,
             cleanups: Vec::new(),
         };
-        // The receiver of a `var self` method is not released here: it goes back to the caller.
+        // The receiver of a `mut self` method is not released here: it goes back to the caller.
         let first_owned = u32::from(body.mutates_self);
         for i in first_owned..body.param_count {
             frame
@@ -573,7 +573,7 @@ impl Interp {
             None => rhs_value,
             Some(BinOp::User(user)) => {
                 // The operator of a user type runs script code, which must not change the shape
-                // of the collection the place is an element of (DESIGN §11.6), like a `var self`
+                // of the collection the place is an element of (DESIGN §11.6), like a `mut self`
                 // method.
                 let _hold = self.hold_place(&anchor, place);
                 let old = match self.get_resolved(fiber, &anchor, &place.path, span) {
@@ -1004,7 +1004,7 @@ impl Interp {
         args: &[Arg],
         span: Span,
     ) -> Eval {
-        // The receiver of a `var self` method is taken last, so the other arguments still see
+        // The receiver of a `mut self` method is taken last, so the other arguments still see
         // the variable it lives in. The arguments stay on the caller's temporaries, so they die
         // at the end of the caller's statement (ARCHITECTURE §6); the callee gets its own
         // references.
@@ -1051,7 +1051,7 @@ impl Interp {
     }
 
     /// Calls `callee` with already evaluated arguments (the callee owns them): everything but
-    /// a `var self` receiver. `go` runs this on the new coroutine's fiber.
+    /// a `mut self` receiver. `go` runs this on the new coroutine's fiber.
     pub(crate) fn call_values(
         &mut self,
         fiber: &mut Fiber,
@@ -1092,7 +1092,7 @@ impl Interp {
         }
     }
 
-    /// A `var self` call: the receiver is copied in (or, for a local, moved in), the callee
+    /// A `mut self` call: the receiver is copied in (or, for a local, moved in), the callee
     /// mutates its own copy, and the final value is written back on every path. An element
     /// of a collection stays guarded for the whole call (DESIGN §11.6), so the callee cannot
     /// change the collection's shape under its own receiver.

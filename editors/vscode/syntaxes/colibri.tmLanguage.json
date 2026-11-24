@@ -31,8 +31,8 @@
       "patterns": [
         { "name": "keyword.control.colibri", "match": "\\b(if|else|for|in|while|break|continue|match|return|defer|go)\\b" },
         { "name": "keyword.operator.word.colibri", "match": "\\b(or|and|not|is|as)\\b" },
-        { "name": "keyword.declaration.colibri", "match": "\\b(fn|let|var|const|type|struct|class|enum|interface|impl|import|test)\\b" },
-        { "name": "storage.modifier.colibri", "match": "\\b(pub|own|borrow|weak|extern|unsafe)\\b" },
+        { "name": "keyword.declaration.colibri", "match": "\\b(fn|let|const|type|struct|class|enum|interface|impl|import|test)\\b" },
+        { "name": "storage.modifier.colibri", "match": "\\b(pub|mut|own|borrow|weak|extern|unsafe)\\b" },
         { "name": "variable.language.self.colibri", "match": "\\bself\\b" },
         { "name": "constant.language.colibri", "match": "\\b(true|false|none)\\b" },
         { "name": "support.function.builtin.colibri", "match": "\\b(some|ok|err|print|panic|assert|assert_eq)\\b" }

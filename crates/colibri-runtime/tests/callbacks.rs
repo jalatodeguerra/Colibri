@@ -32,7 +32,7 @@ fn vm() -> (colibri::Vm, colibri::SharedBuffer) {
 }
 
 const SCRIPT: &str = r#"
-var total = 0
+let mut total = 0
 
 fn bonus(n: int) -> int => n + 1000
 

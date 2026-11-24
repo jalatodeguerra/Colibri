@@ -5,7 +5,7 @@
 //! `impls[(runtime type, interface)]`; `Callee::Dyn` calls (and `Bound` calls on an interface
 //! value) read it from the value. A type that has no explicit implementation of a built-in
 //! interface gets the derived one, which `colibri_core::dispatch` runs structurally. This module
-//! runs the implementations that are found: the calling convention and the places a `var self`
+//! runs the implementations that are found: the calling convention and the places a `mut self`
 //! receiver lives in are the engine's.
 
 use std::rc::Rc;
@@ -60,7 +60,7 @@ impl Interp {
     }
 
     /// Calls method `method` of `iface` on the receiver, which is the first of `values` or,
-    /// for a `var self` method, the value in `receiver`.
+    /// for a `mut self` method, the value in `receiver`.
     pub(crate) fn call_interface(
         &mut self,
         fiber: &mut Fiber,
@@ -159,7 +159,7 @@ impl Interp {
         self.binary(fiber, op, l, r, span)
     }
 
-    /// A `var self` interface call: the receiver is taken out of its place, changed by the
+    /// A `mut self` interface call: the receiver is taken out of its place, changed by the
     /// callee, and written back (re-boxed when it is an interface value).
     fn call_interface_inout(
         &mut self,
@@ -206,7 +206,7 @@ impl Interp {
             };
         }
         let Some(f) = self.target_of(impl_id, method) else {
-            // Derived interfaces have no `var self` methods; put the value back.
+            // Derived interfaces have no `mut self` methods; put the value back.
             let restored = rewrap(inner, impl_id, was_dyn);
             let back = self.write_resolved(fiber, &anchor, &place.path, restored, false, span);
             self.release_all(values);

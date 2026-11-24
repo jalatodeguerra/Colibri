@@ -236,7 +236,7 @@ fn a_big_graph_is_found_quickly() {
         r#"
 fn main() {
     let first = Node { name: "0" }
-    var last = first
+    let mut last = first
     for i in 1..20000 {
         let n = Node { name: "n" }
         last.next = some(n)

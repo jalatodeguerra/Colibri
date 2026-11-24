@@ -136,7 +136,7 @@ pub(crate) fn runtime_key(v: &Value) -> Option<TypeKey> {
 /// Interface dispatch that needs no engine internals: finding implementations, the lookup of
 /// map and set keys by a user-written `Eq`, and the derived methods of the built-in
 /// interfaces. Running a found method (`call_interface`, `call_operator`) stays with the
-/// engine, which owns the calling convention and the places a `var self` receiver lives in.
+/// engine, which owns the calling convention and the places a `mut self` receiver lives in.
 #[doc(hidden)]
 pub trait Dispatch: Engine {
     /// A `Map` key or `Set` element is looked up by the user-written `Eq` of its type: the

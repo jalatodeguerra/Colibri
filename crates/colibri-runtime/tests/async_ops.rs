@@ -42,12 +42,12 @@ fn job(i: int) -> int {
 }
 fn main() {
     let group = CoGroup()
-    var handles: List[Coroutine[int]] = []
+    let mut handles: List[Coroutine[int]] = []
     for i in 0..4 {
         handles.push(group.go(job(i)))
     }
     group.join_all()
-    var total = 0
+    let mut total = 0
     for h in handles {
         total += h.join()
     }
@@ -301,12 +301,12 @@ fn job(i: int) -> int {
 }
 fn main() {
     let group = CoGroup()
-    var handles: List[Coroutine[int]] = []
+    let mut handles: List[Coroutine[int]] = []
     for i in 0..2000 {
         handles.push(group.go(job(i)))
     }
     group.join_all()
-    var total = 0
+    let mut total = 0
     for h in handles {
         total += h.join()
     }
@@ -339,7 +339,7 @@ fn job(i: int) {
     print("never {v}")
 }
 fn main() {
-    var handles: List[Coroutine[()]] = []
+    let mut handles: List[Coroutine[()]] = []
     for i in 0..64 {
         handles.push(go job(i))
     }
@@ -399,14 +399,14 @@ fn blocked() -> bool {
 }
 fn main() {
     let group = CoGroup()
-    var handles: List[Coroutine[bool]] = []
+    let mut handles: List[Coroutine[bool]] = []
     for i in 0..48 {
         handles.push(group.go(blocked()))
     }
     wait(0.1)
     open_gate()
     group.join_all()
-    var count = 0
+    let mut count = 0
     for h in handles {
         let done = h.join()
         if done {
@@ -532,7 +532,7 @@ fn a_fake_clock_does_not_advance_while_an_operation_runs() {
                 vm.load_source(
             "a.colibri",
             &format!(
-                "var ticks = 0\nfn counter() {{\n    while true {{\n        ticks += 1\n        wait(0.01)\n    }}\n}}\nfn main() {{\n    let c = go counter()\n    slow({real_ms})\n    print(\"ticks {{ticks}}\")\n    c.cancel()\n}}\n"
+                "let mut ticks = 0\nfn counter() {{\n    while true {{\n        ticks += 1\n        wait(0.01)\n    }}\n}}\nfn main() {{\n    let c = go counter()\n    slow({real_ms})\n    print(\"ticks {{ticks}}\")\n    c.cancel()\n}}\n"
             ),
         )
         .unwrap();
@@ -702,7 +702,7 @@ fn a_completion_from_another_thread_wakes_coroutines_that_overlap() {
 fn job(i: int) -> str { return now(i * 10) }
 fn main() {
     let group = CoGroup()
-    var handles: List[Coroutine[str]] = []
+    let mut handles: List[Coroutine[str]] = []
     for i in 0..4 {
         handles.push(group.go(job(i)))
     }

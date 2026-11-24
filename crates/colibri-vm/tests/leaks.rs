@@ -62,7 +62,7 @@ fn returns_and_tails_release_their_strings() {
     return u + \"z\"
 }
 fn main() {
-    var keep = \"k\" + \"eep\"
+    let mut keep = \"k\" + \"eep\"
     keep = f(keep, 1) + f(keep, 0)
     print(keep)
 }",
@@ -74,7 +74,7 @@ fn break_and_continue_release_the_strings_of_the_iteration() {
     assert_no_leak(
         "break and continue",
         "fn main() {
-    var total = 0
+    let mut total = 0
     for i in 0..6 {
         let a = \"a\" + \"b\"
         if i == 1 { continue }
@@ -82,7 +82,7 @@ fn break_and_continue_release_the_strings_of_the_iteration() {
         if i == 4 { break }
         total += 1
     }
-    var n = 0
+    let mut n = 0
     while true {
         let s = \"w\" + \"x\"
         n += 1
@@ -99,7 +99,7 @@ fn reassigning_a_string_local_releases_the_old_value() {
     assert_no_leak(
         "reassignment",
         "fn main() {
-    var s = \"a\" + \"b\"
+    let mut s = \"a\" + \"b\"
     for i in 0..5 {
         s = s + \"c\"
     }

@@ -516,7 +516,7 @@ fn repr_c_layouts_match_the_c_compiler() {
     let names = ["Point", "Vec2d", "Vec2f", "Vec3f", "Color", "Mixed", "Mixed2", "Big", "Rect", "Padded", "Ladder", "Named"]
     let sizes = [size_of[Point](), size_of[Vec2d](), size_of[Vec2f](), size_of[Vec3f](), size_of[Color](), size_of[Mixed](), size_of[Mixed2](), size_of[Big](), size_of[Rect](), size_of[Padded](), size_of[Ladder](), size_of[Named]()]
     let aligns = [align_of[Point](), align_of[Vec2d](), align_of[Vec2f](), align_of[Vec3f](), align_of[Color](), align_of[Mixed](), align_of[Mixed2](), align_of[Big](), align_of[Rect](), align_of[Padded](), align_of[Ladder](), align_of[Named]()]
-    var i = 0
+    let mut i = 0
     while i < names.len() {
         let size = int(ct_layout(names[i], none))
         let align = int(ct_layout(names[i], some("#align")))

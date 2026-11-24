@@ -59,7 +59,7 @@ pub struct VmFiber {
     /// Values kept alive for `Engine::hold_temp`: what core code holds across user code.
     pub(crate) temps: Vec<Value>,
     /// The mutation guards held by running code, newest last: a `for` loop's iteration hold, a
-    /// `for var` loop's or a `var self` call's place hold. Released by `Unhold`, in pads too.
+    /// `for mut` loop's or a `mut self` call's place hold. Released by `Unhold`, in pads too.
     pub(crate) holds: Vec<GuardToken>,
     pub(crate) state: FiberState,
     /// The native stack position when the host called in, to bound native re-entry.

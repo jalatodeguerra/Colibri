@@ -323,7 +323,7 @@ fn bad_host_class_text_is_refused_with_a_position() {
     };
     assert!(refuse("@host class E { hp: int }\n").contains("no fields"));
     assert!(refuse("impl E {\n    fn f(self)\n}\n").contains("belongs to a `@host class`"));
-    assert!(refuse("@host class E {}\nimpl E {\n    fn f(var self)\n}\n").contains("plain `self`"));
+    assert!(refuse("@host class E {}\nimpl E {\n    fn f(mut self)\n}\n").contains("plain `self`"));
     assert!(
         refuse("@host class E {}\nimpl E {\n    fn alive(self) -> bool\n}\n")
             .contains("built into every host class")

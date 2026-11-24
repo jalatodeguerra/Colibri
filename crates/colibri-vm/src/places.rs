@@ -481,7 +481,7 @@ impl Machine {
                 };
                 match &fiber.regs[base + usize::from(r)] {
                     Value::List(l) => l.place_hold(name),
-                    _ => return Err(self.internal(fiber, span, "a `for var` over a non-list")),
+                    _ => return Err(self.internal(fiber, span, "a `for mut` over a non-list")),
                 }
             }
             _ => return Err(self.internal(fiber, span, "not a hold instruction")),
@@ -559,7 +559,7 @@ impl Machine {
         Ok(true)
     }
 
-    /// The end of an iteration of `for var`: the binding's final value goes back into the list
+    /// The end of an iteration of `for mut`: the binding's final value goes back into the list
     /// unless it is the element that was copied out.
     #[inline(never)]
     pub(crate) fn op_for_write_back(&mut self, fiber: &mut VmFiber, base: usize, l: u16, a: u16) {

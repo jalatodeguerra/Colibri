@@ -67,7 +67,7 @@ impl Machine {
     }
 
     /// Runs every module-level initialiser and nothing else: those in dependency order, then
-    /// the script's `let`/`var` in source order. The state a test starts from.
+    /// the script's `let`/`let mut` in source order. The state a test starts from.
     pub fn run_initialisers(&mut self, fiber: &mut VmFiber) -> Result<(), Box<PanicInfo>> {
         let outermost = self.core.begin_entry();
         if outermost {

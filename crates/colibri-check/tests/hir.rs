@@ -34,7 +34,7 @@ fn tail(body: &Body) -> &Expr {
 #[test]
 fn locals_are_flat_slots_listed_per_block_in_declaration_order() {
     let p = program(
-        "fn f(a: int, b: int) {\n    let x = 1\n    {\n        let y = 2\n        let z = 3\n    }\n    var w = 4\n}\n",
+        "fn f(a: int, b: int) {\n    let x = 1\n    {\n        let y = 2\n        let z = 3\n    }\n    let mut w = 4\n}\n",
     );
     let body = body_of(&p, "f");
     assert_eq!(body.param_count, 2);
@@ -165,7 +165,7 @@ fn interpolation_becomes_a_concat_of_resolved_show_operations() {
 
 #[test]
 fn while_is_a_loop_around_an_if_with_a_break() {
-    let p = program("fn f() {\n    var i = 0\n    while i < 3 {\n        i += 1\n    }\n}\n");
+    let p = program("fn f() {\n    let mut i = 0\n    while i < 3 {\n        i += 1\n    }\n}\n");
     let body = body_of(&p, "f");
     let StmtKind::Expr(Expr {
         kind: ExprKind::Loop { id, body: lp },
@@ -187,7 +187,9 @@ fn while_is_a_loop_around_an_if_with_a_break() {
 
 #[test]
 fn assignments_use_explicit_places() {
-    let p = program("var g = 1\nfn f() {\n    var x = 1\n    x = 2\n    x += 3\n    g -= 1\n}\n");
+    let p = program(
+        "let mut g = 1\nfn f() {\n    let mut x = 1\n    x = 2\n    x += 3\n    g -= 1\n}\n",
+    );
     let body = body_of(&p, "f");
     let StmtKind::Assign { place, op, .. } = &body.block.stmts[1].kind else {
         panic!("expected an assignment");
@@ -394,7 +396,7 @@ fn for_over_a_range_is_its_own_node_with_a_fresh_binding() {
 #[test]
 fn var_self_methods_are_marked_and_take_a_place_receiver() {
     let p = program(
-        "struct C { n: int }\nimpl C {\n    fn inc(var self) {\n        self.n += 1\n    }\n    fn get(self) -> int => self.n\n}\nfn main() {\n    var c = C { n: 0 }\n    c.inc()\n}\n",
+        "struct C { n: int }\nimpl C {\n    fn inc(mut self) {\n        self.n += 1\n    }\n    fn get(self) -> int => self.n\n}\nfn main() {\n    let mut c = C { n: 0 }\n    c.inc()\n}\n",
     );
     assert!(body_of(&p, "C.inc").mutates_self);
     assert!(!body_of(&p, "C.get").mutates_self);
@@ -529,14 +531,14 @@ fn warnings_of(src: &str) -> Vec<String> {
 #[test]
 fn unused_locals_warn_and_underscore_names_do_not() {
     let w = warnings_of(
-        "fn f() {\n    let a = 1\n    var b = 2\n    b = 3\n    let _c = 4\n    let d = 5\n    print(d)\n}\n",
+        "fn f() {\n    let a = 1\n    let mut b = 2\n    b = 3\n    let _c = 4\n    let d = 5\n    print(d)\n}\n",
     );
     assert_eq!(w, ["unused variable `a`", "unused variable `b`"]);
 }
 
 #[test]
 fn a_local_counts_as_used_when_read_captured_or_changed_through_a_field() {
-    let src = "struct P { x: int }\nfn f() {\n    let a = 1\n    let g = fn() => a\n    print(g())\n    var p = P { x: 1 }\n    p.x = 2\n    var n = 0\n    n += 1\n}\n";
+    let src = "struct P { x: int }\nfn f() {\n    let a = 1\n    let g = fn() => a\n    print(g())\n    let mut p = P { x: 1 }\n    p.x = 2\n    let mut n = 0\n    n += 1\n}\n";
     assert!(warnings_of(src).is_empty(), "{:?}", warnings_of(src));
 }
 
@@ -597,7 +599,7 @@ fn bytes_where_a_str_is_expected_says_how_to_convert() {
 #[test]
 fn assigning_to_a_bytes_element_says_it_is_immutable() {
     let (message, hint) =
-        first_diagnostic("fn main() {\n    var b = Bytes([1, 2])\n    b[0] = 9\n}\n");
+        first_diagnostic("fn main() {\n    let mut b = Bytes([1, 2])\n    b[0] = 9\n}\n");
     assert_eq!(
         message,
         "cannot assign to an element of a `Bytes`: it is immutable"

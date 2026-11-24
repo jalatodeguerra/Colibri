@@ -43,7 +43,7 @@ interface Drop {
     fn drop(self)
 }
 interface Iter[T] {
-    fn next(var self) -> T?
+    fn next(mut self) -> T?
 }
 interface Iterable[T] {
     fn iter(self) -> Iter[T]

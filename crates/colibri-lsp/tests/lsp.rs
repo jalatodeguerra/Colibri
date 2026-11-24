@@ -1070,7 +1070,7 @@ impl Area for Shape {
 }
 type Pair = (int, int)
 let limit = 10
-var counter: int = 0
+let mut counter: int = 0
 const NAME = \"colibri\"
 let (lo, hi) = (1, 2)
 fn main() {
@@ -1335,8 +1335,8 @@ fn parse(s: str) -> Result[int] {
 fn main() {
     let s = \"abc\"
     let xs = [1, 2, 3]
-    var m = {\"a\": 1}
-    var set = Set[int]()
+    let mut m = {\"a\": 1}
+    let mut set = Set[int]()
     let o = some(1)
     let r = parse(\"1\")
     let mut_buf = StrBuilder()
@@ -1488,7 +1488,7 @@ fn completion_of_names_follows_the_scope_at_the_cursor() {
     for want in ["count", "before"] {
         assert!(names.contains(&want), "{want} missing from {names:?}");
     }
-    for not in ["inner", "after"] {
+    for not in ["inner", "after", "var"] {
         assert!(!names.contains(&not), "{not} should not be in {names:?}");
     }
     // Items of the module, imports (names and modules), the prelude and keywords.
@@ -1507,6 +1507,7 @@ fn completion_of_names_follows_the_scope_at_the_cursor() {
         "Show",
         "int",
         "match",
+        "mut",
         "return",
         "while",
     ] {
@@ -1699,7 +1700,7 @@ fn area(s: Shape, factor: float) -> float {
 
 fn main() {
     let count = 3
-    var p = Point { x: 1.0, y: 2.0 }
+    let mut p = Point { x: 1.0, y: 2.0 }
     p.x = 4.0
     let x = 5.0
     let q = Point { x, y: 1.0 }
@@ -2843,7 +2844,7 @@ fn completion_decides_a_type_position_from_the_syntax_around_the_cursor() {
     // A type position: only types.
     for what in [
         "let x: util.",
-        "var x : util.",
+        "let mut x : util.",
         "fn inner(a: int, b: util.",
         "let r = 1 -> util.",
     ] {

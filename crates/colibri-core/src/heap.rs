@@ -10,7 +10,7 @@
 //!
 //! Operations that change the structure of a collection check the *mutation guard* first
 //! (DESIGN §6.3, §11.6): while a `for` loop iterates a collection, or a place into it is live
-//! (a `var self` call on an element, a `for var` loop), a structural change is rejected with a
+//! (a `mut self` call on an element, a `for mut` loop), a structural change is rejected with a
 //! [`Violation`] and the arguments are returned to the caller untouched.
 
 use std::cell::{Cell, RefCell};

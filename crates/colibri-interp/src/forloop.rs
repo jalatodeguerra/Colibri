@@ -1,7 +1,7 @@
 //! `for` loops over ranges, lists, maps, sets and any iterator (DESIGN §6.3, §11.6).
 //!
 //! A loop over a collection holds the collection's mutation guard for its whole duration, and
-//! keeps the collection itself on the temporaries stack. `for var` holds the stronger place
+//! keeps the collection itself on the temporaries stack. `for mut` holds the stronger place
 //! guard and writes each iteration's final element back unless it is unchanged.
 
 use std::rc::Rc;
@@ -157,7 +157,7 @@ impl Interp {
     }
 
     /// One trip round the loop: binds the item, runs the body, leaves the iteration's scope,
-    /// and writes a changed element back (`for var`). Returns whether the loop goes on.
+    /// and writes a changed element back (`for mut`). Returns whether the loop goes on.
     fn run_iteration(
         &mut self,
         fiber: &mut Fiber,

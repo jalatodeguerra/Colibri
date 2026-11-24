@@ -1,7 +1,7 @@
 //! Iteration (DESIGN §6.3, §9.2): turning anything iterable into an iterator, and the methods
 //! every iterator has.
 //!
-//! `for x in it` works on anything implementing `Iter[T]` (`fn next(var self) -> T?`) or
+//! `for x in it` works on anything implementing `Iter[T]` (`fn next(mut self) -> T?`) or
 //! `Iterable[T]` (`fn iter(self) -> Iter[T]`), and on the built-in collections and ranges.
 //! `Iterable.iter` returns the interface type `Iter[T]`, an interface value (dynamic dispatch),
 //! exactly as the DESIGN signature reads. The iterators the built-in collections hand out are

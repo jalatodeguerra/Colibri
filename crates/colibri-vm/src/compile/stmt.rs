@@ -298,9 +298,9 @@ impl FnCompiler<'_> {
     }
 
     /// A loop over a collection or an iterator. The source lives in the first of a few
-    /// consecutive registers `a..`: with it a position (`a + 1`) and, for `for var`, a copy of
+    /// consecutive registers `a..`: with it a position (`a + 1`) and, for `for mut`, a copy of
     /// the element in flight (`a + 2`). The loop holds the collection's guard for its whole
-    /// duration (the place guard for `for var`); each trip binds a fresh item, and `for var`
+    /// duration (the place guard for `for mut`); each trip binds a fresh item, and `for mut`
     /// writes the binding's final value back on every way out of the trip (DESIGN §11.6).
     fn for_each(&mut self, f: &ForLoop, source: &Expr, each: Each, name: Option<&str>, span: Span) {
         let m = self.mark();
@@ -332,7 +332,7 @@ impl FnCompiler<'_> {
         // The trip's scope starts after the step: a failing step (a budget, an iterator's `next`)
         // is outside it, as in the tree-walker's `run_iteration`.
         let cleanups = self.cleanup_depth();
-        // `for var` writes back through its binding; `for var _` has none and only holds the guard.
+        // `for mut` writes back through its binding; `for mut _` has none and only holds the guard.
         let write_back = places && matches!(f.binding, ForBinding::Local(_));
         // Where the item goes: straight into a plain binding, else into a temporary.
         let (item, cell) = match &f.binding {

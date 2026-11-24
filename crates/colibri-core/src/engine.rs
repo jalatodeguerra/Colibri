@@ -69,7 +69,7 @@ pub trait Engine: Sized {
 
     // ---- calling Colibri code ----
 
-    /// Calls the function `f`; the callee owns `args`. For a `var self` method the second
+    /// Calls the function `f`; the callee owns `args`. For a `mut self` method the second
     /// result is the final value of `self`, taken out of the frame after every other cleanup
     /// ran, for the caller to write back; it is present on every path, including a panic.
     fn call_fn_inout(
@@ -118,7 +118,7 @@ pub trait Engine: Sized {
     /// as an internal error at its own position.
     fn fn_span(&self, f: FnId) -> Option<Span>;
 
-    /// Whether `f` is a `var self` method, which hands the final `self` back to its caller.
+    /// Whether `f` is a `mut self` method, which hands the final `self` back to its caller.
     /// `false` for an id the engine does not have.
     fn fn_mutates_self(&self, f: FnId) -> bool;
 

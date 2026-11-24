@@ -176,7 +176,7 @@ impl Headers {
 
     /// The number of field lines.
     pub fn len(self) -> int {
-        var n = 0
+        let mut n = 0
         for entry in self.entries.values() {
             n += entry.values.len()
         }
@@ -282,7 +282,7 @@ impl BodyWriter {
                 return err(e)
             }
         }
-        var at = 0
+        let mut at = 0
         self.busy += 1
         while at < data.len() {
             // The response may have ended while an earlier piece waited: nothing more goes out.
@@ -292,7 +292,7 @@ impl BodyWriter {
             }
             let end = (at + WRITE_PIECE).min(data.len())
             let piece = if at == 0 && end == data.len() { data } else { data.slice(at, end) }
-            var out = piece
+            let mut out = piece
             if self.chunked {
                 // One write for a chunk: its size line, its data and its CRLF.
                 let frame = BytesBuilder()
@@ -468,7 +468,7 @@ fn query_pairs(
     if text.is_empty() {
         return ok(out)
     }
-    var pairs = 0
+    let mut pairs = 0
     for pair in text.split("&") {
         if pair.is_empty() {
             continue
@@ -838,7 +838,7 @@ impl HeadParser {
         if hosts.is_empty() && !self.http10 {
             return err(reject(400, "an HTTP/1.1 request needs a Host header field"))
         }
-        var host = self.authority
+        let mut host = self.authority
         if let some(value) = hosts.first() {
             if !g.host.is_match(value) {
                 return err(reject(400, "the Host header field is not a host and a port"))
@@ -867,7 +867,7 @@ impl HeadParser {
         }
         let framing = framing_of(g, self.headers, self.http10)?
         // `Expect` is for HTTP/1.1 only; in 1.0 it is ignored (RFC 9110 10.1.1).
-        var expect_continue = false
+        let mut expect_continue = false
         if !self.http10 {
             if let some(value) = self.headers.get("expect") {
                 if value.to_lower() != "100-continue" {
@@ -957,7 +957,7 @@ fn parse_te(g: Grammar, values: List[str]) -> Result[bool, Reject] {
         }
         codings.push(coding)
     }
-    var chunked = 0
+    let mut chunked = 0
     for coding in codings {
         if coding == "chunked" {
             chunked += 1
@@ -1003,7 +1003,7 @@ fn parse_cl(g: Grammar, values: List[str]) -> Result[int?, Reject] {
 /// Whether the connection stays open after the response (RFC 9112 9.3): never with a `close`
 /// token in `Connection`; otherwise in HTTP/1.1 always, and in 1.0 only with `keep-alive`.
 fn keeps_alive(g: Grammar, headers: Headers, http10: bool) -> bool {
-    var keep = false
+    let mut keep = false
     if let some(value) = headers.get("connection") {
         // Two calls, whatever the length of the value (it can be 64 KiB of commas).
         if g.close_token.is_match(value) {
@@ -1036,9 +1036,9 @@ fn chunk_head(g: Grammar, line: Bytes) -> Result[(int, int), Reject] {
     }
     // At most 15 digits, and once for each chunk, so a loop is cheap here.
     let digits = c.get(1) or ""
-    var size = 0
-    var zeros = 0
-    var leading = true
+    let mut size = 0
+    let mut zeros = 0
+    let mut leading = true
     for b in digits.bytes() {
         size = size * 16 + hex_value(b)
         if leading && b == 48 {
@@ -1193,7 +1193,7 @@ impl BodyReader {
             let got = (self.line)(4096) or |e| {
                 return err(self.halt(e))
             }
-            var extra = 0
+            let mut extra = 0
             let size = match got {
                 Line(b) => {
                     let (n, e) = chunk_head(g, b) or |r| {
@@ -1257,8 +1257,8 @@ impl BodyReader {
     /// field line, they count against `max_headers` and `max_header_bytes`, and they are
     /// discarded (RFC 9112 7.1.2).
     fn trailers(self, g: Grammar) -> Result[()] {
-        var lines = 0
-        var used = 0
+        let mut lines = 0
+        let mut used = 0
         while true {
             // `max` leaves out the CRLF, which is counted with the line.
             let room = (self.max_header_bytes - used - 2).max(0)
@@ -1513,13 +1513,13 @@ pub fn test_request(
     for (name, value) in headers {
         fields.add(name, value)
     }
-    var path = target
-    var query = ""
+    let mut path = target
+    let mut query = ""
     if let some((p, q)) = target.split_once("?") {
         path = p
         query = q
     }
-    var framing: Framing = .NoBody
+    let mut framing: Framing = .NoBody
     if let some(given) = fields.get("content-length") {
         if given != "{body.len()}" {
             panic(
@@ -1533,7 +1533,7 @@ pub fn test_request(
             fields.add("Content-Length", "{body.len()}")
         }
     }
-    var pos = 0
+    let mut pos = 0
     let pull = fn(n: int) -> Result[Bytes] {
         let end = (pos + n).min(body.len())
         let piece = body.slice(pos, end)
@@ -1636,8 +1636,8 @@ impl Router {
         }
         let segments = pattern[1..].split("/")
         let names: List[str] = []
-        var wild: str? = none
-        var node = self.root
+        let mut wild: str? = none
+        let mut node = self.root
         for i in 0..segments.len() {
             let segment = segments[i]
             if segment.starts_with("*") {
@@ -1756,7 +1756,7 @@ impl Router {
         // The first segment is the empty one before the first `/`.
         let segments = path.split("/")
         let values: List[str] = []
-        var route = find_route(self.root, segments, 1, req.method, values)
+        let mut route = find_route(self.root, segments, 1, req.method, values)
         if route == none && req.method == "HEAD" {
             values.clear()
             route = find_route(self.root, segments, 1, "GET", values)
@@ -2230,7 +2230,7 @@ fn sweep(server: Server) {
             continue
         }
         let now = time.now()
-        var next = 0.25
+        let mut next = 0.25
         let expired: List[ConnState] = []
         for state in server.busy.values() {
             let left = state.deadline - now
@@ -2414,7 +2414,7 @@ impl Server {
         let conn = state.conn
         let head = StrBuilder()
         head.push("HTTP/1.1 {response.status} {reason(response.status)}\r\n")
-        var has_date = false
+        let mut has_date = false
         for (name, value) in response.headers.lines() {
             let key = name.to_lower()
             if key == "connection" {
@@ -2430,8 +2430,8 @@ impl Server {
         }
         let size = body_size(response)
         let has_body = !bodyless(response.status)
-        var chunked = false
-        var streamed = false
+        let mut chunked = false
+        let mut streamed = false
         if has_body {
             match response.body {
                 Stream(_, length) => {
@@ -2497,7 +2497,7 @@ impl Server {
             Data(b) => b
             _       => Bytes()
         }
-        var at = 0
+        let mut at = 0
         while at < data.len() {
             let end = (at + 262144).min(data.len())
             conn.set_timeout(self.options.write_timeout)
@@ -2605,7 +2605,7 @@ impl Server {
     fn linger(self, conn: net.Conn) {
         let _ = conn.close_write()
         let started = time.now()
-        var total = 0
+        let mut total = 0
         while total < DRAIN_BYTES && time.now() - started < 2.0 {
             conn.set_timeout(1.0)
             let piece = conn.read(65536) or {
@@ -2622,7 +2622,7 @@ impl Server {
     /// could not.
     fn drain(self, conn: net.Conn, count: int) -> bool {
         let started = time.now()
-        var left = count
+        let mut left = count
         while left > 0 {
             let spent = time.now() - started
             if spent >= 1.0 {
@@ -2756,7 +2756,7 @@ impl Server {
         let conn = state.conn
         let o = self.options
         let peer = conn.peer_addr()
-        var first = true
+        let mut first = true
         while !self.stopping {
             state.phase = .Idle
             let wait_limit = if first { o.header_timeout } else { o.idle_timeout }
@@ -2793,7 +2793,7 @@ impl Server {
             conn.set_timeout(o.header_timeout)
             conn.set_line_limit(o.max_header_bytes)
             let head_started = time.now()
-            var ended = false
+            let mut ended = false
             while !ended {
                 let line = read_head_line(conn, o, true, true)
                 match line {
@@ -2830,7 +2830,7 @@ impl Server {
             let what = "{request.method} {request.target}"
             // A panic or a timeout of the handler leaves its state and the body unknown: the
             // answer says so, and the connection closes after it.
-            var broken = false
+            let mut broken = false
             let result = match self.run_handler(state, handler, request) {
                 Done(r) => r
                 Panicked(message) => {
@@ -2847,7 +2847,7 @@ impl Server {
             state.phase = .Writing
             let response = self.answer(request, result)
             // Whether the connection stays open after the response (3.8, 3.10).
-            var closing = !head.keep_alive || self.stopping || broken
+            let mut closing = !head.keep_alive || self.stopping || broken
             if response.headers.get("connection") != none {
                 closing = true
             }
@@ -2860,7 +2860,7 @@ impl Server {
                     _ => {}
                 }
             }
-            var drain = 0
+            let mut drain = 0
             if head.expect_continue && !reader.started {
                 // The client may be waiting to send, or may have started: not drained.
                 closing = true

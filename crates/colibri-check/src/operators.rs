@@ -499,7 +499,7 @@ impl FnCtx<'_, '_> {
                         span,
                     )
                     .with_label(r.span, "its type is decided later in the function")
-                    .with_hint("give it a type where it is declared (for example `var xs: List[float] = []`) or convert it, so that the impl can be chosen here"),
+                    .with_hint("give it a type where it is declared (for example `let mut xs: List[float] = []`) or convert it, so that the impl can be chosen here"),
                 );
                 None
             }

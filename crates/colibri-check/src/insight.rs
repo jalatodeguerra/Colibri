@@ -34,7 +34,7 @@ pub struct Fact {
     /// For a fact about a name that has no span of its own (a call's callee, a field of a
     /// longer expression): the name. The fact answers only when the cursor is on that word.
     pub name: Option<String>,
-    /// What to show on hover: a type (`int`), a binding (`var n: int`), a signature
+    /// What to show on hover: a type (`int`), a binding (`let mut n: int`), a signature
     /// (`fn add(a: int, b: int) -> int`).
     pub text: String,
     /// Where the thing is declared, when that is in source.
@@ -324,7 +324,7 @@ impl Checker<'_> {
         ty.render(&self.types)
     }
 
-    /// `fn name[T](a: int, var self) -> int` for a function of the program.
+    /// `fn name[T](a: int, mut self) -> int` for a function of the program.
     fn signature(&self, f: FnId) -> String {
         self.signature_of(f, &self.fns[f.0 as usize].name, false, &[])
     }
@@ -356,7 +356,7 @@ impl Checker<'_> {
             .enumerate()
             .filter(|(i, _)| !(skip_receiver && *i == 0 && info.receiver.is_some()))
             .map(|(i, p)| match (i, info.receiver) {
-                (0, Some(true)) => "var self".to_string(),
+                (0, Some(true)) => "mut self".to_string(),
                 (0, Some(false)) => "self".to_string(),
                 _ => format!("{}: {}", p.name, self.show_ty(&p.ty.subst(bound))),
             })
@@ -480,7 +480,7 @@ impl Checker<'_> {
                 }),
                 Target::Local { name, mutable, def } => Some(Fact {
                     span: r.span,
-                    text: format!("{}{name}: {ty}", if mutable { "var " } else { "" }),
+                    text: format!("{}{name}: {ty}", if mutable { "mut " } else { "" }),
                     name: None,
                     def: Some(def),
                 }),
@@ -497,7 +497,11 @@ impl Checker<'_> {
                     };
                     Some(Fact {
                         span,
-                        text: format!("{} {}: {ty}", if g.mutable { "var" } else { "let" }, g.name),
+                        text: format!(
+                            "{} {}: {ty}",
+                            if g.mutable { "let mut" } else { "let" },
+                            g.name
+                        ),
                         name: None,
                         def: Some(g.name_span),
                     })
@@ -602,7 +606,11 @@ impl Checker<'_> {
             facts.push(Fact {
                 span: g.name_span,
                 name: None,
-                text: format!("{} {}: {ty}", if g.mutable { "var" } else { "let" }, g.name),
+                text: format!(
+                    "{} {}: {ty}",
+                    if g.mutable { "let mut" } else { "let" },
+                    g.name
+                ),
                 def: Some(g.name_span),
             });
         }
@@ -814,7 +822,7 @@ mod tests {
         let src = "struct P { x: int, y: int }\n\
             enum E { A(int), B }\n\
             fn f(e: E) -> int {\n    match e {\n        .A(n) => return n\n        B => return 0\n    }\n}\n\
-            fn main() {\n    var p = P { x: 1, y: 2 }\n    p.x = p.y\n    let e: E = .A(p.x)\n    print(\"{f(e)}\")\n}\n";
+            fn main() {\n    let mut p = P { x: 1, y: 2 }\n    p.x = p.y\n    let e: E = .A(p.x)\n    print(\"{f(e)}\")\n}\n";
         let insight = insight_of(src);
         let at = |needle: &str, add: usize| (src.find(needle).unwrap() + add) as u32;
         let target = |use_at: u32| {

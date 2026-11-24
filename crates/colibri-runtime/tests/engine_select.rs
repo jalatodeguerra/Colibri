@@ -104,7 +104,7 @@ fn the_tree_engine_runs_programs() {
 
 #[test]
 fn both_engines_agree_on_a_small_program() {
-    let src = "fn main() {\n    var s = 0\n    for i in 0..10 { s += i * i }\n    print(s)\n}";
+    let src = "fn main() {\n    let mut s = 0\n    for i in 0..10 { s += i * i }\n    print(s)\n}";
     let tree = run_on(EngineKind::Tree, src);
     let vm = run_on(EngineKind::Bytecode, src);
     assert!(tree.0.is_ok() && vm.0.is_ok());

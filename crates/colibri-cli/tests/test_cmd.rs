@@ -210,7 +210,7 @@ fn filter_selects_by_substring_of_the_full_name() {
 
 #[test]
 fn an_endless_loop_fails_the_test_when_the_budget_runs_out() {
-    let source = "test \"spins\" {\n    var n = 0\n    while true {\n        n += 1\n    }\n}\n\ntest \"fine\" {\n    assert(true)\n}\n";
+    let source = "test \"spins\" {\n    let mut n = 0\n    while true {\n        n += 1\n    }\n}\n\ntest \"fine\" {\n    assert(true)\n}\n";
     let out = test_script("budget", source, &["--budget", "50000"]);
     assert_eq!(out.status.code(), Some(1));
     let text = stdout(&out);
@@ -222,7 +222,7 @@ fn an_endless_loop_fails_the_test_when_the_budget_runs_out() {
 
 #[test]
 fn the_default_budget_is_large_enough_for_ordinary_work() {
-    let source = "test \"busy\" {\n    var sum = 0\n    for i in 0..200000 {\n        sum += i\n    }\n    assert_eq(sum, 19999900000)\n}\n";
+    let source = "test \"busy\" {\n    let mut sum = 0\n    for i in 0..200000 {\n        sum += i\n    }\n    assert_eq(sum, 19999900000)\n}\n";
     let out = test_script("busy", source, &[]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
 }
@@ -252,7 +252,7 @@ fn output_is_shown_only_for_failing_tests_unless_nocapture() {
 
 #[test]
 fn every_test_starts_from_fresh_module_state() {
-    let source = "var counter = 0\nlet names = [\"a\"]\n\nfn bump() -> int {\n    counter += 1\n    return counter\n}\n\ntest \"first\" {\n    assert_eq(bump(), 1)\n    assert_eq(bump(), 2)\n}\n\ntest \"second\" {\n    assert_eq(counter, 0)\n    assert_eq(bump(), 1)\n}\n\ntest \"third\" {\n    assert_eq(counter, 0)\n}\n";
+    let source = "let mut counter = 0\nlet names = [\"a\"]\n\nfn bump() -> int {\n    counter += 1\n    return counter\n}\n\ntest \"first\" {\n    assert_eq(bump(), 1)\n    assert_eq(bump(), 2)\n}\n\ntest \"second\" {\n    assert_eq(counter, 0)\n    assert_eq(bump(), 1)\n}\n\ntest \"third\" {\n    assert_eq(counter, 0)\n}\n";
     let out = test_script("fresh", source, &[]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(stdout(&out).contains("3 passed, 0 failed"));
@@ -371,7 +371,7 @@ fn a_missing_path_is_an_error() {
 fn coroutines_do_not_leak_into_the_next_test() {
     let out = test_script(
         "coroutines",
-        "var hits = 0\n\nfn w() {\n    wait(10.0)\n    hits += 1\n}\n\ntest \"a starts one\" {\n    go w()\n    task.tick(1.0)\n}\n\ntest \"b sees nothing\" {\n    assert_eq(hits, 0)\n    task.tick(100.0)\n    assert_eq(hits, 0)\n}\n",
+        "let mut hits = 0\n\nfn w() {\n    wait(10.0)\n    hits += 1\n}\n\ntest \"a starts one\" {\n    go w()\n    task.tick(1.0)\n}\n\ntest \"b sees nothing\" {\n    assert_eq(hits, 0)\n    task.tick(100.0)\n    assert_eq(hits, 0)\n}\n",
         &[],
     );
     assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
