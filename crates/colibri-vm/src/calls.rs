@@ -316,16 +316,22 @@ impl Machine {
         let at = base + usize::from(a);
         let current = std::mem::replace(&mut fiber.regs[at], Value::Unit);
         let (impl_id, inner) = match current {
-            Value::Dyn(rc) => {
+            Value::Dyn(mut rc) => {
                 let id = rc.impl_id;
-                let inner = match Rc::try_unwrap(rc) {
-                    Ok(dv) => dv.val,
-                    Err(rc) => rc.val.clone(),
+                // The value comes out of its box and the box stays as the shell `Rewrap` fills
+                // again, so a call allocates nothing when the interface value is not shared.
+                let inner = match Rc::get_mut(&mut rc) {
+                    Some(dv) => std::mem::replace(&mut dv.val, Value::Unit),
+                    None => {
+                        let inner = rc.val.clone();
+                        rc = Rc::new(DynVal {
+                            impl_id: id,
+                            val: Value::Unit,
+                        });
+                        inner
+                    }
                 };
-                fiber.regs[at] = Value::Dyn(Rc::new(DynVal {
-                    impl_id: id,
-                    val: Value::Unit,
-                }));
+                fiber.regs[at] = Value::Dyn(rc);
                 (Some(id), inner)
             }
             other => {
@@ -358,11 +364,14 @@ impl Machine {
     pub(crate) fn op_rewrap(&mut self, fiber: &mut VmFiber, base: usize, shell: u16, recv: u16) {
         let s = base + usize::from(shell);
         let v = std::mem::replace(&mut fiber.regs[base + usize::from(recv)], Value::Unit);
-        match &fiber.regs[s] {
-            Value::Dyn(shell_rc) => {
-                let impl_id = shell_rc.impl_id;
-                fiber.regs[s] = Value::Dyn(Rc::new(DynVal { impl_id, val: v }));
-            }
+        match &mut fiber.regs[s] {
+            Value::Dyn(shell_rc) => match Rc::get_mut(shell_rc) {
+                Some(shell) => shell.val = v,
+                None => {
+                    let impl_id = shell_rc.impl_id;
+                    *shell_rc = Rc::new(DynVal { impl_id, val: v });
+                }
+            },
             _ => Self::put_reg(fiber, s, v),
         }
     }
