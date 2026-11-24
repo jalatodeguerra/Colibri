@@ -494,8 +494,8 @@ std/process_polling_windows.colibri  # `go`
 std/process_run.colibri  # the built-in `ErrorMessage`
 std/process_shell_windows.colibri  # the built-in `StrReplace`
 std/process_spawn.colibri  # the built-in `StrTrim`
-std/process_spawn_windows.colibri  # the built-in `ErrorMessage`
-std/process_windows.colibri  # the built-in `ErrorMessage`
+std/process_spawn_windows.colibri  # the built-in `StrReplace`
+std/process_windows.colibri  # the built-in `StrTrim`
 std/rand_choice_and_shuffle.colibri  # the built-in `Clone`
 std/rand_independent_generators.colibri  # the built-in `ListPush`
 std/rand_seeded_sequence.colibri  # the built-in `ListPush`
