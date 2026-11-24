@@ -19,21 +19,7 @@ const FILES: &[&str] = &[
 ];
 
 /// Files that do not pass yet, with the one-word reason (the first thing they need).
-const PENDING: &[(&str, &str)] = &[
-    (
-        "globals/generic_call_reaches_only_the_bound_method.colibri",
-        "structs",
-    ),
-    ("globals/script_runs_top_to_bottom.colibri", "lists"),
-    (
-        "numbers/sized_integers_are_hashable_and_ordered.colibri",
-        "builtins",
-    ),
-    (
-        "numbers/sized_numbers_in_options_and_results.colibri",
-        "lists",
-    ),
-];
+const PENDING: &[(&str, &str)] = &[];
 
 #[derive(Default)]
 struct Directives {
