@@ -165,9 +165,7 @@ impl Machine {
             }
         };
         self.push_call(fiber, callee, window, base + usize::from(d), chunk, pc)?;
-        if captures
-            && let Value::Closure(c) = &fiber.regs[at]
-        {
+        if captures && let Value::Closure(c) = &fiber.regs[at] {
             // The call does not touch the caller's registers, so the closure is still there.
             let c = Rc::clone(c);
             self.install_captures(fiber, window, &c);
