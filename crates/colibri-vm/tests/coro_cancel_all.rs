@@ -2,7 +2,6 @@
 //! slab of coroutine stacks must keep true meanwhile. The call must change nothing (it returns at
 //! once, as it always did): the stacks that suspended coroutines own stay where they are.
 
-use colibri_core::prelude::*;
 use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;

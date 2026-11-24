@@ -713,15 +713,14 @@ fn numeric_conversions_and_methods_run_through_the_intrinsic_instruction() {
 }
 
 #[test]
-fn anything_not_compiled_yet_is_a_clean_panic_naming_the_node() {
-    let o =
-        run_panic("fn w() {}\nfn main() { print(\"before\")\n let c = go w()\n print(\"after\") }");
-    assert_eq!(o.stdout, "before\n");
-    assert_eq!(
-        o.panic.as_deref(),
-        Some("the bytecode VM does not support `go` yet")
+fn go_is_compiled_and_runs_the_coroutine_up_to_its_first_pause_before_returning() {
+    // `go` was the last construct the compiler refused; nothing a checked program can say is
+    // refused any more (the refusal path stays for what the checker may add).
+    let o = run_source(
+        "fn w() {\n    print(\"in w\")\n    wait(1.0)\n    print(\"w again\")\n}\nfn main() { print(\"before\")\n let c = go w()\n print(\"after\")\n c.join() }",
     );
-    assert_eq!(o.trace, vec![("main".to_string(), 3)]);
+    assert_eq!(o.panic, None);
+    assert_eq!(o.stdout, "before\nin w\nafter\nw again\n");
 }
 
 #[test]
@@ -821,12 +820,14 @@ fn the_hot_built_ins_are_instructions_and_the_others_go_through_core() {
 }
 
 #[test]
-fn a_built_in_that_pauses_is_refused_by_name_until_coroutines_exist() {
+fn a_built_in_that_pauses_is_an_instruction_of_its_own_not_a_core_call() {
     let text = dis(
         "fn w() -> int => 1\nfn f() -> int {\n    let c = go w()\n    return c.join()\n}",
         "f",
     );
-    assert!(text.contains("CoroutineJoin"), "{text}");
+    for want in ["Go ", "Join "] {
+        assert!(text.contains(want), "{want} is missing:\n{text}");
+    }
     assert!(!text.contains("Builtin "), "{text}");
 }
 
