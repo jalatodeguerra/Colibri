@@ -19,4 +19,9 @@
 # Linux, so the gate-lifted run stops early). A copy of `process_spawn_windows` and `process_windows`
 # with `sh`, `grep` and `sleep` in place of `cmd`, `findstr` and `ping` ran to the end with the same
 # output on both engines. The Windows CI run is the proof.
+#
+# Step 12 (host async) lifted the host-wait refusal that every other entry here had. The one that is
+# left, `std/process_polling_windows`, keeps the reason it had: it runs only on Windows, so nobody
+# re-derived it. Its Linux twin (`process_polling_in_a_coroutine`) passes on the VM now, so the entry
+# is expected to be reported as passing by the Windows CI run; take it out there.
 std/process_polling_windows.colibri  # a host function that can wait, beside running coroutines
