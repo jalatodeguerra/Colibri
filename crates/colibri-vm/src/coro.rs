@@ -28,6 +28,10 @@ use colibri_core::heap::ClassObj;
 use colibri_core::prelude::*;
 use colibri_core::sched::*;
 use colibri_core::stack_position;
+
+/// The refusal of a host call that can wait while a coroutine is alive (vm-plan step 12 lifts it).
+pub const HOST_WAIT_REFUSAL: &str =
+    "the bytecode VM does not support a host function that can wait, beside running coroutines yet";
 use colibri_core::value::Value;
 use colibri_syntax::Span;
 
@@ -294,6 +298,12 @@ impl Machine {
         // own execution.
         self.resume_coro(id, false, false);
         self.core.sched.compact_if_crowded();
+        // A host call that can wait was refused in the new coroutine: the program stops here, at
+        // its `go`, as it would at the call itself, and does not go on without that coroutine.
+        if self.host_wait_refused {
+            self.release(Value::Obj(handle));
+            return Err(self.panic(fiber, span, HOST_WAIT_REFUSAL));
+        }
         Ok(Value::Obj(handle))
     }
 

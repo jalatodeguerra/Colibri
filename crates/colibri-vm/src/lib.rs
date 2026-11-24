@@ -33,7 +33,7 @@ mod source;
 mod unwind;
 
 pub use compile::{CompileEnv, compile_body};
-pub use coro::FiberSlab;
+pub use coro::{FiberSlab, HOST_WAIT_REFUSAL};
 pub use fiber::VmFiber;
 pub use host::{HostClassHooks, HostFault, HostImpl};
 pub use machine::{DEFAULT_NATIVE_STACK_BUDGET, Machine};
