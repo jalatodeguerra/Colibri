@@ -139,90 +139,80 @@ fn get_returns_status_headers_and_body() {
 
 #[test]
 fn an_error_status_is_a_response_not_an_err() {
-    vm_pending("an_error_status_is_a_response_not_an_err", || {
-        let base = serve();
-        let out = run(
-            &base,
-            r#"
-    match http.get("{base}/missing") {
-        ok(r) => print("{r.status} {r.body}")
-        err(e) => print("error: {e.message()}")
-    }
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
+match http.get("{base}/missing") {
+    ok(r) => print("{r.status} {r.body}")
+    err(e) => print("error: {e.message()}")
+}
 "#,
-        );
-        assert_eq!(out, "404 nothing here\n");
-    })
+    );
+    assert_eq!(out, "404 nothing here\n");
 }
 
 #[test]
 fn post_and_request_send_the_method_headers_and_body() {
-    vm_pending("post_and_request_send_the_method_headers_and_body", || {
-        let base = serve();
-        let out = run(
-            &base,
-            r#"
-    let a = http.post("{base}/echo", "plain") or panic("a")
-    print(a.body)
-    let b = http.post_as("{base}/echo", "{{\"k\": 1}}", "application/json") or panic("b")
-    print(b.body)
-    let c = http.request("put", "{base}/echo", {"content-type": "text/csv"}, "x,y") or panic("c")
-    print(c.body)
-    let d = http.request("GET", "{base}/headers", {"X-Token": "secret"}, "") or panic("d")
-    print(d.body)
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
+let a = http.post("{base}/echo", "plain") or panic("a")
+print(a.body)
+let b = http.post_as("{base}/echo", "{{\"k\": 1}}", "application/json") or panic("b")
+print(b.body)
+let c = http.request("put", "{base}/echo", {"content-type": "text/csv"}, "x,y") or panic("c")
+print(c.body)
+let d = http.request("GET", "{base}/headers", {"X-Token": "secret"}, "") or panic("d")
+print(d.body)
 "#,
-        );
-        assert_eq!(
-            out,
-            "POST text/plain; charset=utf-8|plain\nPOST application/json|{\"k\": 1}\nPUT text/csv|x,y\nsecret\n"
-        );
-    })
+    );
+    assert_eq!(
+        out,
+        "POST text/plain; charset=utf-8|plain\nPOST application/json|{\"k\": 1}\nPUT text/csv|x,y\nsecret\n"
+    );
 }
 
 #[test]
 fn redirects_are_followed() {
-    vm_pending("redirects_are_followed", || {
-        let base = serve();
-        let out = run(
-            &base,
-            r#"
-    let r = http.get("{base}/redirect") or panic("request failed")
-    print("{r.status} {r.body}")
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
+let r = http.get("{base}/redirect") or panic("request failed")
+print("{r.status} {r.body}")
 "#,
-        );
-        assert_eq!(out, "200 hello\n");
-    })
+    );
+    assert_eq!(out, "200 hello\n");
 }
 
 #[test]
 fn a_body_that_is_not_utf8_is_decoded_lossily() {
-    vm_pending("a_body_that_is_not_utf8_is_decoded_lossily", || {
-        let base = serve();
-        let out = run(
-            &base,
-            r#"
-    let r = http.get("{base}/binary") or panic("request failed")
-    print(r.body)
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
+let r = http.get("{base}/binary") or panic("request failed")
+print(r.body)
 "#,
-        );
-        assert_eq!(out, "a\u{fffd}b\n");
-    })
+    );
+    assert_eq!(out, "a\u{fffd}b\n");
 }
 
 #[test]
 fn json_decode_reads_a_response_body() {
-    vm_pending("json_decode_reads_a_response_body", || {
-        let base = serve();
-        let out = run(
-            &base,
-            r#"
-    let r = http.post_as("{base}/echo", "x", "t") or panic("request failed")
-    let parts = json.decode[List[int]]("[1, 2]") or panic("json")
-    print(parts)
-    print(r.body)
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
+let r = http.post_as("{base}/echo", "x", "t") or panic("request failed")
+let parts = json.decode[List[int]]("[1, 2]") or panic("json")
+print(parts)
+print(r.body)
 "#,
-        );
-        assert_eq!(out, "[1, 2]\nPOST t|x\n");
-    })
+    );
+    assert_eq!(out, "[1, 2]\nPOST t|x\n");
 }
 
 #[test]
@@ -310,19 +300,17 @@ fn a_negative_timeout_panics() {
 
 #[test]
 fn https_to_a_closed_port_fails_cleanly() {
-    vm_pending("https_to_a_closed_port_fails_cleanly", || {
-        // Exercises the rustls connector path without leaving the machine.
-        let out = run(
-            "",
-            r#"
-    match http.get("https://127.0.0.1:1/") {
-        ok(_) => print("ok")
-        err(e) => print("err")
-    }
+    // Exercises the rustls connector path without leaving the machine.
+    let out = run(
+        "",
+        r#"
+match http.get("https://127.0.0.1:1/") {
+    ok(_) => print("ok")
+    err(e) => print("err")
+}
 "#,
-        );
-        assert_eq!(out, "err\n");
-    })
+    );
+    assert_eq!(out, "err\n");
 }
 
 /// A server that keeps connections open and counts them: `(base URL, connections accepted)`.
@@ -362,24 +350,22 @@ fn serve_keep_alive() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>
 
 #[test]
 fn requests_to_one_host_reuse_the_connection() {
-    vm_pending("requests_to_one_host_reuse_the_connection", || {
-        let (base, accepted) = serve_keep_alive();
-        let out = run(
-            &base,
-            r#"
-    for i in 0..5 {
-        let r = http.get("{base}/n") or panic("request failed")
-        print(r.body)
-    }
+    let (base, accepted) = serve_keep_alive();
+    let out = run(
+        &base,
+        r#"
+for i in 0..5 {
+    let r = http.get("{base}/n") or panic("request failed")
+    print(r.body)
+}
 "#,
-        );
-        assert_eq!(out, "ok\nok\nok\nok\nok\n");
-        assert_eq!(
-            accepted.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "five requests, one connection"
-        );
-    })
+    );
+    assert_eq!(out, "ok\nok\nok\nok\nok\n");
+    assert_eq!(
+        accepted.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "five requests, one connection"
+    );
 }
 
 /// A server that answers every connection with bytes that are not a TLS handshake and closes.
@@ -454,29 +440,24 @@ fn speaking_tls_to_a_server_that_does_not_is_a_tls_error() {
 /// body once.
 #[test]
 fn a_response_encodes_as_json_and_has_only_status_headers_and_body() {
-    vm_pending(
-        "a_response_encodes_as_json_and_has_only_status_headers_and_body",
-        || {
-            let base = serve();
-            let out = run(
-                &base,
-                r#"
-    let r = http.get("{base}/missing") or panic("request failed")
-    print(json.encode(r) or panic("encode"))
-    print(r)
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
+let r = http.get("{base}/missing") or panic("request failed")
+print(json.encode(r) or panic("encode"))
+print(r)
 "#,
-            );
-            let mut lines = out.lines();
-            let encoded = lines.next().unwrap();
-            assert!(
-                encoded.starts_with(r#"{"status":404,"headers":{"#)
-                    && encoded.ends_with(r#""body":"nothing here"}"#),
-                "{encoded}"
-            );
-            let shown = lines.next().unwrap();
-            assert_eq!(shown.matches("nothing here").count(), 1, "{shown}");
-        },
-    )
+    );
+    let mut lines = out.lines();
+    let encoded = lines.next().unwrap();
+    assert!(
+        encoded.starts_with(r#"{"status":404,"headers":{"#)
+            && encoded.ends_with(r#""body":"nothing here"}"#),
+        "{encoded}"
+    );
+    let shown = lines.next().unwrap();
+    assert_eq!(shown.matches("nothing here").count(), 1, "{shown}");
 }
 
 #[test]

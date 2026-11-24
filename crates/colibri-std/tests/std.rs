@@ -663,61 +663,52 @@ fn the_local_time_zone_comes_from_the_config() {
 #[cfg(unix)]
 #[test]
 fn a_child_gets_the_variables_the_script_set_and_its_own_folder() {
-    vm_pending(
-        "a_child_gets_the_variables_the_script_set_and_its_own_folder",
-        || {
-            let scratch = Scratch::new("child");
-            let dir = scratch.0.to_string_lossy().replace('\\', "/");
-            let (mut vm, out) = vm(&[colibri::Cap::Os]);
-            run(
-        &mut vm,
-        &format!(
-            "import process\nimport os\nfn main() {{\n    os.set_env(\"A\", \"from-set-env\")\n    let mut o = process.options()\n    o.cwd = some(\"{dir}\")\n    o.env = {{ \"B\": \"from-options\" }}\n    let r = process.run_with(\"sh\", [\"-c\", \"echo $A $B; pwd -P\"], o) or |e| {{ panic(e.message()) }}\n    print(r.stdout)\n}}\n"
-        ),
-    )
-    .unwrap();
-            let real = std::fs::canonicalize(&scratch.0).unwrap();
-            assert_eq!(
-                out.contents(),
-                format!("from-set-env from-options\n{}\n\n", real.display())
-            );
-        },
-    )
+    let scratch = Scratch::new("child");
+    let dir = scratch.0.to_string_lossy().replace('\\', "/");
+    let (mut vm, out) = vm(&[colibri::Cap::Os]);
+    run(
+    &mut vm,
+    &format!(
+        "import process\nimport os\nfn main() {{\n    os.set_env(\"A\", \"from-set-env\")\n    let mut o = process.options()\n    o.cwd = some(\"{dir}\")\n    o.env = {{ \"B\": \"from-options\" }}\n    let r = process.run_with(\"sh\", [\"-c\", \"echo $A $B; pwd -P\"], o) or |e| {{ panic(e.message()) }}\n    print(r.stdout)\n}}\n"
+    ),
+)
+.unwrap();
+    let real = std::fs::canonicalize(&scratch.0).unwrap();
+    assert_eq!(
+        out.contents(),
+        format!("from-set-env from-options\n{}\n\n", real.display())
+    );
 }
 
 // Unix only: a signal that ends a program exists only on Unix (Windows has exit codes only).
 #[cfg(unix)]
 #[test]
 fn a_child_killed_by_a_signal_has_a_negative_status() {
-    vm_pending("a_child_killed_by_a_signal_has_a_negative_status", || {
-        let (mut vm, out) = vm(&[colibri::Cap::Os]);
-        run(
-        &mut vm,
-        "import process\nfn main() {\n    let r = process.shell(\"kill -9 $$\") or |e| { panic(e.message()) }\n    print(r.status)\n}\n",
-    )
-    .unwrap();
-        assert_eq!(out.contents(), "-9\n");
-    })
+    let (mut vm, out) = vm(&[colibri::Cap::Os]);
+    run(
+    &mut vm,
+    "import process\nfn main() {\n    let r = process.shell(\"kill -9 $$\") or |e| { panic(e.message()) }\n    print(r.status)\n}\n",
+)
+.unwrap();
+    assert_eq!(out.contents(), "-9\n");
 }
 
 #[test]
 fn an_unfinished_child_is_killed_when_it_is_dropped() {
-    vm_pending("an_unfinished_child_is_killed_when_it_is_dropped", || {
-        let scratch = Scratch::new("dropped");
-        let marker = scratch.0.join("marker");
-        // The child waits about a second and then creates the marker, unless it was killed.
-        let (program, args) = sleep_then_touch("1", 2, &marker);
-        let (mut vm, _) = vm(&[colibri::Cap::Os]);
-        run(
-        &mut vm,
-        &format!(
-            "import process\nfn start() {{\n    let c = process.spawn(\"{program}\", {args}) or |e| {{ panic(e.message()) }}\n    print(c.id() > 0)\n}}\nfn main() {{\n    start()\n}}\n"
-        ),
-    )
-    .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(1500));
-        assert!(!marker.exists(), "the child outlived its handle");
-    })
+    let scratch = Scratch::new("dropped");
+    let marker = scratch.0.join("marker");
+    // The child waits about a second and then creates the marker, unless it was killed.
+    let (program, args) = sleep_then_touch("1", 2, &marker);
+    let (mut vm, _) = vm(&[colibri::Cap::Os]);
+    run(
+    &mut vm,
+    &format!(
+        "import process\nfn start() {{\n    let c = process.spawn(\"{program}\", {args}) or |e| {{ panic(e.message()) }}\n    print(c.id() > 0)\n}}\nfn main() {{\n    start()\n}}\n"
+    ),
+)
+.unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(!marker.exists(), "the child outlived its handle");
 }
 
 // ---- process in coroutines ----

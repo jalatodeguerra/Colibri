@@ -175,20 +175,27 @@ fn closures_survive_later_declarations() {
 
 #[test]
 fn a_discarded_const_or_let_with_a_closure_is_accepted() {
-    // The entry holds a closure, so the REPL moves its statements into a function, where
-    // a `const` is not allowed: `const _` is written as `let _` there.
-    let input = "const _ = fn() => 3\nlet _ = fn() => 4\nlet mut _ = fn() => 5\nprint(1)\n";
-    let (out, err) = repl(input);
-    assert_eq!(out, "1\n");
-    assert_eq!(err, "");
+    vm_pending(
+        "a_discarded_const_or_let_with_a_closure_is_accepted",
+        || {
+            // The entry holds a closure, so the REPL moves its statements into a function, where
+            // a `const` is not allowed: `const _` is written as `let _` there.
+            let input = "const _ = fn() => 3\nlet _ = fn() => 4\nlet mut _ = fn() => 5\nprint(1)\n";
+            let (out, err) = repl(input);
+            assert_eq!(out, "1\n");
+            assert_eq!(err, "");
+        },
+    )
 }
 
 #[test]
 fn a_discarded_const_runs_once_in_entry_order() {
-    let input = "const _ = print(\"s\")\nprint(1)\nprint(2)\nlet x = 3\nx\n";
-    let (out, err) = repl(input);
-    assert_eq!(out, "s\n1\n2\n= 3 : int\n");
-    assert_eq!(err, "");
+    vm_pending("a_discarded_const_runs_once_in_entry_order", || {
+        let input = "const _ = print(\"s\")\nprint(1)\nprint(2)\nlet x = 3\nx\n";
+        let (out, err) = repl(input);
+        assert_eq!(out, "s\n1\n2\n= 3 : int\n");
+        assert_eq!(err, "");
+    })
 }
 
 #[test]

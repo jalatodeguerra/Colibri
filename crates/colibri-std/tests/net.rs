@@ -242,94 +242,90 @@ fn main() -> Result[()] {
 
 #[test]
 fn a_rust_client_talks_to_a_colibri_server() {
-    vm_pending("a_rust_client_talks_to_a_colibri_server", || {
-        let (mut vm, out) = vm();
-        let (tx, rx) = mpsc::channel::<String>();
-        // The script prints its address; the client thread needs it, so the script runs in the
-        // test thread and hands the address over through a host function.
-        vm.register_fn("publish", move |addr: String| {
-            tx.send(addr).unwrap();
-        })
-        .unwrap();
-        let client = thread::spawn(move || {
-            let addr = rx.recv_timeout(LIMIT).expect("the server's address");
-            let mut s = TcpStream::connect(addr).expect("connects");
-            with_timeouts(&s);
-            s.write_all(b"hello\r\nsecond line\nrest").unwrap();
-            s.shutdown(std::net::Shutdown::Write).unwrap();
-            let mut answer = String::new();
-            s.read_to_string(&mut answer).unwrap();
-            answer
-        });
-        run(
-            &mut vm,
-            r#"import net
+    let (mut vm, out) = vm();
+    let (tx, rx) = mpsc::channel::<String>();
+    // The script prints its address; the client thread needs it, so the script runs in the
+    // test thread and hands the address over through a host function.
+    vm.register_fn("publish", move |addr: String| {
+        tx.send(addr).unwrap();
+    })
+    .unwrap();
+    let client = thread::spawn(move || {
+        let addr = rx.recv_timeout(LIMIT).expect("the server's address");
+        let mut s = TcpStream::connect(addr).expect("connects");
+        with_timeouts(&s);
+        s.write_all(b"hello\r\nsecond line\nrest").unwrap();
+        s.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut answer = String::new();
+        s.read_to_string(&mut answer).unwrap();
+        answer
+    });
+    run(
+        &mut vm,
+        r#"import net
 
 fn main() -> Result[()] {
-    let l = net.listen("127.0.0.1:0")?
-    publish(l.addr())
-    let c = l.accept()?
-    let mut n = 0
-    while true {
-        match c.read_line()? {
-            none => break
-            some(line) => {
-                n += 1
-                c.write("{n}: {line}\n")?
-            }
+let l = net.listen("127.0.0.1:0")?
+publish(l.addr())
+let c = l.accept()?
+let mut n = 0
+while true {
+    match c.read_line()? {
+        none => break
+        some(line) => {
+            n += 1
+            c.write("{n}: {line}\n")?
         }
     }
-    c.close()
-    l.close()
-    return ok(())
+}
+c.close()
+l.close()
+return ok(())
 }
 "#,
-        )
-        .unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(out.contents(), "");
-        assert_eq!(
-            client.join().unwrap(),
-            "1: hello\n2: second line\n3: rest\n"
-        );
-    })
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(out.contents(), "");
+    assert_eq!(
+        client.join().unwrap(),
+        "1: hello\n2: second line\n3: rest\n"
+    );
 }
 
 #[test]
 fn a_colibri_client_talks_to_a_rust_server() {
-    vm_pending("a_colibri_client_talks_to_a_rust_server", || {
-        let (listener, addr) = rust_listener();
-        let server = thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
-            with_timeouts(&s);
-            let got = read_n(&mut s, 5);
-            s.write_all(b"pong:").unwrap();
-            s.write_all(&got).unwrap();
-            // A line in two pieces, and then the end of the stream.
-            s.write_all(b"\nhalf").unwrap();
-            s.write_all(b" line\n").unwrap();
-            got
-        });
-        let out = output(&format!(
-            r#"import net
+    let (listener, addr) = rust_listener();
+    let server = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        let got = read_n(&mut s, 5);
+        s.write_all(b"pong:").unwrap();
+        s.write_all(&got).unwrap();
+        // A line in two pieces, and then the end of the stream.
+        s.write_all(b"\nhalf").unwrap();
+        s.write_all(b" line\n").unwrap();
+        got
+    });
+    let out = output(&format!(
+        r#"import net
 
 fn main() -> Result[()] {{
-    let c = net.connect("{addr}")?
-    c.write("ping!")?
-    print(c.read_line()?)
-    print(c.read_line()?)
-    print(c.read_line()?)
-    print(c.local_addr() != c.peer_addr())
-    print(c.peer_addr() == "{addr}")
-    return ok(())
+let c = net.connect("{addr}")?
+c.write("ping!")?
+print(c.read_line()?)
+print(c.read_line()?)
+print(c.read_line()?)
+print(c.local_addr() != c.peer_addr())
+print(c.peer_addr() == "{addr}")
+return ok(())
 }}
 "#
-        ));
-        assert_eq!(server.join().unwrap(), b"ping!");
-        assert_eq!(
-            out,
-            "some(\"pong:ping!\")\nsome(\"half line\")\nnone\ntrue\ntrue\n"
-        );
-    })
+    ));
+    assert_eq!(server.join().unwrap(), b"ping!");
+    assert_eq!(
+        out,
+        "some(\"pong:ping!\")\nsome(\"half line\")\nnone\ntrue\ntrue\n"
+    );
 }
 
 #[test]
@@ -1758,41 +1754,39 @@ fn main() -> Result[()] {{
 /// the next one connects.
 #[test]
 fn a_connect_by_name_finds_the_listener() {
-    vm_pending("a_connect_by_name_finds_the_listener", || {
-        let (listener, addr) = rust_listener();
-        let port = addr.rsplit(':').next().unwrap().to_string();
-        let peer = thread::spawn(move || {
-            let mut got = Vec::new();
-            for _ in 0..2 {
-                let (mut s, _) = listener.accept().unwrap();
-                with_timeouts(&s);
-                let mut line = [0u8; 2];
-                s.read_exact(&mut line).unwrap();
-                got.push(line);
-            }
-            got
-        });
-        let out = output_within(
-            format!(
-                r#"import net
+    let (listener, addr) = rust_listener();
+    let port = addr.rsplit(':').next().unwrap().to_string();
+    let peer = thread::spawn(move || {
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            let (mut s, _) = listener.accept().unwrap();
+            with_timeouts(&s);
+            let mut line = [0u8; 2];
+            s.read_exact(&mut line).unwrap();
+            got.push(line);
+        }
+        got
+    });
+    let out = output_within(
+        format!(
+            r#"import net
 
 fn main() -> Result[()] {{
-    let a = net.connect("localhost:{port}")?
-    a.write("a\n")?
-    let b = net.connect_timeout("localhost:{port}", 20.0)?
-    b.write("b\n")?
-    print("both")
-    a.close()
-    b.close()
-    return ok(())
+let a = net.connect("localhost:{port}")?
+a.write("a\n")?
+let b = net.connect_timeout("localhost:{port}", 20.0)?
+b.write("b\n")?
+print("both")
+a.close()
+b.close()
+return ok(())
 }}
 "#
-            ),
-            LIMIT,
-        );
-        assert_eq!(out, "both\n");
-        assert_eq!(peer.join().unwrap(), [*b"a\n", *b"b\n"]);
-    })
+        ),
+        LIMIT,
+    );
+    assert_eq!(out, "both\n");
+    assert_eq!(peer.join().unwrap(), [*b"a\n", *b"b\n"]);
 }
 
 /// A connect from a place that cannot suspend (a `Drop` hook) blocks the interpreter thread and
@@ -3050,40 +3044,35 @@ fn main() -> Result[()] {
 /// at once.
 #[test]
 fn a_port_can_be_listened_on_again_after_the_server_closed_a_connection_first() {
-    vm_pending(
-        "a_port_can_be_listened_on_again_after_the_server_closed_a_connection_first",
-        || {
-            let out = output_within(
-                r#"import net
+    let out = output_within(
+        r#"import net
 
 fn main() -> Result[()] {
-    let l = net.listen("127.0.0.1:0")?
-    let addr = l.addr()
-    let c = net.connect(addr)?
-    let s = l.accept()?
-    s.write("bye\n")?
-    // The server side closes first.
-    s.close()
-    print(c.read_line()?)
-    print(c.read_line()?)
-    c.close()
-    l.close()
-    let again = net.listen(addr)?
-    print(again.addr() == addr)
-    // And it serves on the port it got back.
-    let c2 = net.connect(addr)?
-    let s2 = again.accept()?
-    c2.write("hi\n")?
-    print(s2.read_line()?)
-    return ok(())
+let l = net.listen("127.0.0.1:0")?
+let addr = l.addr()
+let c = net.connect(addr)?
+let s = l.accept()?
+s.write("bye\n")?
+// The server side closes first.
+s.close()
+print(c.read_line()?)
+print(c.read_line()?)
+c.close()
+l.close()
+let again = net.listen(addr)?
+print(again.addr() == addr)
+// And it serves on the port it got back.
+let c2 = net.connect(addr)?
+let s2 = again.accept()?
+c2.write("hi\n")?
+print(s2.read_line()?)
+return ok(())
 }
 "#
-                .to_string(),
-                LIMIT,
-            );
-            assert_eq!(out, "some(\"bye\")\nnone\ntrue\nsome(\"hi\")\n");
-        },
-    )
+        .to_string(),
+        LIMIT,
+    );
+    assert_eq!(out, "some(\"bye\")\nnone\ntrue\nsome(\"hi\")\n");
 }
 /// Whether this machine has IPv6 at all: it can bind `[::1]`. A machine without it fails that
 /// with "address not available" or "address family not supported" (EAFNOSUPPORT: 97 on Linux,

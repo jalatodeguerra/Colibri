@@ -10,7 +10,10 @@
 # on that system see them as pending; here they are ignored and the ratchet leaves them be, but a
 # path that names no test still fails. Their reasons were taken from the same program run on Linux
 # with the `only:` line removed, and from the twin for the other system. The regeneration above
-# skips them: add or keep them by hand.
+# skips them: add or keep them by hand. Three are not listed because the VM now runs them as far as
+# the tree-walker does on Linux: `std/path_from_native_windows` and `std/path_roots_windows` (step
+# 6 supports `match`), and `ffi/libc_windows_integers` (`extern` is supported; only `_getpid` is
+# missing here, as for the tree-walker).
 bitwise/bitwise_on_bytes_of_a_string.colibri  # the built-in `StrBytes`
 bitwise/fnv1a_hash_with_wrapping_multiplication.colibri  # the built-in `StrBytes`
 bytes/basics.colibri  # the built-in `BytesFromList`
@@ -273,17 +276,6 @@ errors_values/result_context_on_str_and_error_results.colibri  # the built-in `R
 errors_values/show_of_nested_error_in_result.colibri  # the built-in `ErrorContext`
 errors_values/str_converts_to_error.colibri  # this coercion
 errors_values/user_show_is_the_default_message.colibri  # this coercion
-ffi/libc_integers.colibri  # `extern` functions
-ffi/libc_pointers.colibri  # `extern` functions
-ffi/libc_posix_integers.colibri  # `extern` functions
-ffi/libc_strings.colibri  # `extern` functions
-ffi/libc_struct_by_value.colibri  # `extern` functions
-ffi/libc_windows_integers.colibri  # `extern` functions
-ffi/libm_fabsf.colibri  # `extern` functions
-ffi/libm_functions.colibri  # `extern` functions
-ffi/null_where_not_allowed.colibri  # `extern` functions
-ffi/package_with_ffi/  # `extern` functions
-ffi/vectors_as_c_types.colibri  # `extern` functions
 fn_types/call_a_field_of_function_type.colibri  # closures
 fn_types/field_call_when_there_is_no_method.colibri  # closures
 fn_types/function_as_return_value.colibri  # calls of function values
@@ -356,13 +348,9 @@ leaks/finished_coroutine_leaves_a_cycle.colibri  # `go`
 leaks/self_referencing_closure.colibri  # closures
 leaks/suspended_coroutine_holds_a_cycle.colibri  # `go`
 leaks/weak_breaks_the_cycle.colibri  # the built-in `ListPush`
-lints/unused_import_warns.colibri  # host functions
 lints/unused_variable_warns.colibri  # closures
-modules/std_import_forms/  # host functions
-modules/std_prefix_beats_local_file/  # host functions
 never/chained_and_infinite.colibri  # the built-in `StrSplit`
 never/never_in_function_types.colibri  # function values
-never/os_exit_helper.colibri  # host functions
 numbers/f32_widens_in_more_places.colibri  # closures
 numbers/interface_values_over_sized_numbers.colibri  # this coercion
 numbers/sized_integers_are_hashable_and_ordered.colibri  # the built-in `SetFromList`
@@ -425,42 +413,36 @@ slicing/string_slice_panics_inside_a_character.colibri  # the built-in `StrSlice
 slicing/string_slice_panics_out_of_range.colibri  # the built-in `StrSlice`
 slicing/string_slice_start_after_end_panics.colibri  # the built-in `StrSlice`
 slicing/string_slices_by_byte_range.colibri  # the built-in `StrSlice`
-std/args_defaults.colibri  # host functions
-std/base64_encode_and_decode.colibri  # host functions
-std/base64_errors.colibri  # host functions
+std/base64_encode_and_decode.colibri  # the built-in `StrToBytes`
+std/base64_errors.colibri  # the built-in `ErrorMessage`
 std/base64_hex_reject_whitespace.colibri  # the built-in `ResultIsErr`
-std/csv_errors.colibri  # host functions
+std/csv_errors.colibri  # the built-in `ErrorMessage`
 std/csv_parse.colibri  # the built-in `ResultExpect`
-std/csv_write.colibri  # host functions
-std/datetime_add_out_of_range_panics.colibri  # host functions
-std/datetime_arithmetic.colibri  # host functions
-std/datetime_bad_pattern_panics.colibri  # host functions
-std/datetime_calendar.colibri  # host functions
+std/csv_write.colibri  # the built-in `StrReplace`
 std/datetime_error_kinds.colibri  # the built-in `OptionExpect`
-std/datetime_format_and_parse.colibri  # host functions
+std/datetime_format_and_parse.colibri  # the built-in `ErrorMessage`
 std/error_enum_converts_to_error.colibri  # this coercion
-std/fs_bytes_files.colibri  # host functions
-std/fs_error_directory_not_empty.colibri  # host functions
-std/fs_error_from_main.colibri  # host functions
-std/fs_error_not_found.colibri  # host functions
-std/fs_errors_are_results.colibri  # host functions
-std/fs_file_append_across_opens.colibri  # host functions
-std/fs_file_close_and_drop.colibri  # host functions
-std/fs_file_open_errors.colibri  # host functions
-std/fs_file_read_chunks_and_seek.colibri  # host functions
-std/fs_file_read_lines.colibri  # host functions
-std/fs_file_streams_a_big_file.colibri  # host functions
-std/fs_file_two_coroutines_share_a_handle.colibri  # host functions
-std/fs_file_wrong_mode.colibri  # host functions
-std/fs_folders.colibri  # host functions
-std/fs_remove_dir.colibri  # host functions
-std/fs_set_modified.colibri  # host functions
-std/fs_stat.colibri  # host functions
-std/fs_stat_modified.colibri  # host functions
-std/fs_walk.colibri  # host functions
-std/fs_write_and_read.colibri  # host functions
-std/hash_sha256.colibri  # host functions
-std/hex_encode_and_decode.colibri  # host functions
+std/fs_bytes_files.colibri  # the built-in `BytesBuilderNew`
+std/fs_error_directory_not_empty.colibri  # the built-in `BytesFromList`
+std/fs_error_from_main.colibri  # the built-in `ResultContext`
+std/fs_error_not_found.colibri  # the built-in `ResultContext`
+std/fs_errors_are_results.colibri  # the built-in `ErrorMessage`
+std/fs_file_append_across_opens.colibri  # the built-in `ListLen`
+std/fs_file_close_and_drop.colibri  # the built-in `OptionExpect`
+std/fs_file_open_errors.colibri  # the built-in `OptionExpect`
+std/fs_file_read_chunks_and_seek.colibri  # the built-in `StrToBytes`
+std/fs_file_read_lines.colibri  # the built-in `StrLen`
+std/fs_file_streams_a_big_file.colibri  # the built-in `StrLen`
+std/fs_file_two_coroutines_share_a_handle.colibri  # `go`
+std/fs_file_wrong_mode.colibri  # the built-in `OptionExpect`
+std/fs_remove_dir.colibri  # the built-in `StrReplace`
+std/fs_set_modified.colibri  # the built-in `StrReplace`
+std/fs_stat.colibri  # the built-in `StrReplace`
+std/fs_stat_modified.colibri  # the built-in `ResultIsErr`
+std/fs_walk.colibri  # the built-in `StrReplace`
+std/fs_write_and_read.colibri  # the built-in `ListLen`
+std/hash_sha256.colibri  # the built-in `StrToBytes`
+std/hex_encode_and_decode.colibri  # the built-in `StrToBytes`
 std/http_error_connect.colibri  # the built-in `ResultContext`
 std/httpd_chunked_request.colibri  # the built-in `ResultExpect`
 std/httpd_failure.colibri  # the built-in `ResultExpect`
@@ -469,85 +451,64 @@ std/httpd_hello.colibri  # the built-in `ResultExpect`
 std/httpd_options_checked.colibri  # the built-in `ResultExpect`
 std/httpd_router.colibri  # the built-in `ResultExpect`
 std/httpd_stream.colibri  # the built-in `ResultExpect`
-std/io_read_all.colibri  # host functions
-std/io_write_and_stdin.colibri  # host functions
-std/json_decode_defaults.colibri  # host functions
-std/json_decode_errors.colibri  # host functions
+std/io_read_all.colibri  # the built-in `StrLen`
+std/json_decode_defaults.colibri  # the built-in `ResultExpect`
+std/json_decode_errors.colibri  # the built-in `ErrorMessage`
 std/json_decode_structs.colibri  # the built-in `ResultExpect`
 std/json_encode_scalars_and_collections.colibri  # the built-in `ResultExpect`
 std/json_enums_with_data.colibri  # the built-in `ResultExpect`
-std/json_error_enum_names_its_module.colibri  # host functions
+std/json_error_enum_names_its_module.colibri  # the built-in `ErrorMessage`
 std/json_error_kinds.colibri  # the built-in `OptionExpect`
 std/json_generic_types.colibri  # the built-in `ResultExpect`
 std/json_pretty.colibri  # the built-in `ResultExpect`
-std/json_refuses_bytes.colibri  # host functions
+std/json_refuses_bytes.colibri  # the built-in `BytesFromList`
 std/json_rename_and_skip.colibri  # the built-in `ResultExpect`
 std/json_round_trip.colibri  # the built-in `ResultExpect`
-std/json_syntax_errors.colibri  # host functions
-std/json_unsupported.colibri  # host functions
+std/json_syntax_errors.colibri  # the built-in `ErrorMessage`
+std/json_unsupported.colibri  # the built-in `ErrorMessage`
 std/json_value.colibri  # the built-in `ResultExpect`
-std/json_value_errors.colibri  # host functions
+std/json_value_errors.colibri  # `ErrorIs(Adt(TypeId(22)))`
 std/json_value_hash.colibri  # the built-in `ResultExpect`
 std/json_value_show_and_equality.colibri  # the built-in `ResultExpect`
-std/math_empty_clamp_range_panics.colibri  # host functions
-std/math_floor_div_by_zero_panics.colibri  # host functions
-std/math_functions.colibri  # host functions
-std/math_integers.colibri  # host functions
-std/math_rounding_and_helpers.colibri  # host functions
-std/net_connect_timeout.colibri  # host functions
-std/net_connect_to_the_wildcard.colibri  # host functions
-std/net_echo_server_and_client.colibri  # host functions
-std/net_end_of_stream.colibri  # host functions
-std/net_errors.colibri  # host functions
-std/net_half_close.colibri  # host functions
-std/net_line_limit.colibri  # host functions
-std/net_line_protocol.colibri  # host functions
-std/net_read_exact_end_of_stream.colibri  # host functions
-std/net_read_until.colibri  # host functions
-std/net_timeout_then_continue.colibri  # host functions
-std/net_use_after_close.colibri  # host functions
-std/os_args_and_platform.colibri  # host functions
-std/os_environment.colibri  # host functions
-std/os_exit_runs_defers.colibri  # host functions
-std/os_temp_dir_is_the_tests_own.colibri  # host functions
-std/path_from_native.colibri  # host functions
-std/path_from_native_unix.colibri  # host functions
-std/path_from_native_windows.colibri  # host functions
-std/path_operations.colibri  # host functions
-std/path_roots_unix.colibri  # host functions
-std/path_roots_windows.colibri  # host functions
+std/net_connect_timeout.colibri  # the built-in `OptionExpect`
+std/net_connect_to_the_wildcard.colibri  # the built-in `StrStartsWith`
+std/net_echo_server_and_client.colibri  # the built-in `StrStartsWith`
+std/net_end_of_stream.colibri  # `go`
+std/net_errors.colibri  # the built-in `OptionExpect`
+std/net_half_close.colibri  # `go`
+std/net_line_limit.colibri  # `go`
+std/net_line_protocol.colibri  # `go`
+std/net_read_exact_end_of_stream.colibri  # `go`
+std/net_read_until.colibri  # `go`
+std/net_timeout_then_continue.colibri  # the built-in `OptionExpect`
+std/net_use_after_close.colibri  # the built-in `OptionExpect`
+std/os_args_and_platform.colibri  # the built-in `ListLen`
+std/os_temp_dir_is_the_tests_own.colibri  # the built-in `StrStartsWith`
 std/process_error_failed.colibri  # the built-in `ResultExpect`
 std/process_error_failed_windows.colibri  # the built-in `ResultExpect`
 std/process_error_not_found.colibri  # the built-in `ResultContext`
-std/process_errors.colibri  # host functions
-std/process_names_do_not_clash.colibri  # host functions
+std/process_errors.colibri  # the built-in `ErrorMessage`
+std/process_names_do_not_clash.colibri  # the built-in `StrTrim`
 std/process_polling_in_a_coroutine.colibri  # `go`
 std/process_polling_windows.colibri  # `go`
-std/process_run.colibri  # host functions
-std/process_shell_windows.colibri  # host functions
-std/process_spawn.colibri  # host functions
-std/process_spawn_windows.colibri  # host functions
-std/process_windows.colibri  # host functions
-std/rand_choice_and_shuffle.colibri  # host functions
-std/rand_empty_range_panics.colibri  # host functions
-std/rand_independent_generators.colibri  # host functions
-std/rand_method_empty_range_panics.colibri  # host functions
-std/rand_seeded_sequence.colibri  # host functions
-std/regex_captures_and_replace.colibri  # host functions
-std/regex_error_syntax.colibri  # host functions
-std/regex_invalid_pattern.colibri  # host functions
-std/regex_matching.colibri  # host functions
+std/process_run.colibri  # the built-in `ErrorMessage`
+std/process_shell_windows.colibri  # the built-in `StrReplace`
+std/process_spawn.colibri  # the built-in `StrTrim`
+std/process_spawn_windows.colibri  # the built-in `ErrorMessage`
+std/process_windows.colibri  # the built-in `ErrorMessage`
+std/rand_choice_and_shuffle.colibri  # the built-in `Clone`
+std/rand_independent_generators.colibri  # the built-in `ListPush`
+std/rand_seeded_sequence.colibri  # the built-in `ListPush`
+std/regex_error_syntax.colibri  # `ErrorIs(Adt(TypeId(22)))`
+std/regex_invalid_pattern.colibri  # the built-in `ErrorMessage`
+std/regex_matching.colibri  # the built-in `StrSlice`
 std/std_error_keeps_no_str.colibri  # the built-in `OptionExpect`
 std/str_error_kinds.colibri  # the built-in `OptionExpect`
-std/str_helpers.colibri  # host functions
-std/str_repeat_negative_panics.colibri  # host functions
-std/time_manual_clock.colibri  # host functions
-std/time_sleep_rejects_bad_durations.colibri  # host functions
-std/toml_decode.colibri  # host functions
-std/toml_errors.colibri  # host functions
-std/toml_number_underscores.colibri  # host functions
+std/str_helpers.colibri  # the built-in `StrPadLeft`
+std/toml_decode.colibri  # the built-in `OptionExpect`
+std/toml_errors.colibri  # `ErrorIs(Adt(TypeId(24)))`
+std/toml_number_underscores.colibri  # the built-in `ResultExpect`
 std/toml_parse.colibri  # the built-in `ResultExpect`
-std/vec_json_encodes.colibri  # host functions
 std/vec_library_is_ordinary.colibri  # calls through interfaces
 strings/case_conversion.colibri  # the built-in `StrToUpper`
 strings/chars_and_bytes_count.colibri  # the built-in `StrChars`

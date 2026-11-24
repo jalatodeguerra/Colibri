@@ -272,23 +272,18 @@ fn json_value_is_named_by_its_module_in_messages() {
 
 #[test]
 fn json_decode_does_not_mistake_an_embedder_value_for_json_value() {
-    vm_pending(
-        "json_decode_does_not_mistake_an_embedder_value_for_json_value",
-        || {
-            let (mut vm, out) = vm();
-            colibri_std::install(&mut vm).unwrap();
-            vm.register_type::<MyValue>().unwrap();
-            vm.load_source(
-        "app/main.colibri",
-        "import json\nstruct Doc { v: Value }\nfn main() {\n    match json.decode[Doc](r\"\"\"{\"v\": 1}\"\"\") {\n        ok(_) => print(\"decoded\"),\n        err(e) => print(e),\n    }\n}\n",
-    )
-    .unwrap_or_else(|e| panic!("{}", e.render(false)));
-            vm.run_main().unwrap();
-            let text = out.contents();
-            assert!(
-                text.contains("`Value` is a class") && !text.contains("decoded"),
-                "{text}"
-            );
-        },
-    )
+    let (mut vm, out) = vm();
+    colibri_std::install(&mut vm).unwrap();
+    vm.register_type::<MyValue>().unwrap();
+    vm.load_source(
+    "app/main.colibri",
+    "import json\nstruct Doc { v: Value }\nfn main() {\n    match json.decode[Doc](r\"\"\"{\"v\": 1}\"\"\") {\n        ok(_) => print(\"decoded\"),\n        err(e) => print(e),\n    }\n}\n",
+)
+.unwrap_or_else(|e| panic!("{}", e.render(false)));
+    vm.run_main().unwrap();
+    let text = out.contents();
+    assert!(
+        text.contains("`Value` is a class") && !text.contains("decoded"),
+        "{text}"
+    );
 }

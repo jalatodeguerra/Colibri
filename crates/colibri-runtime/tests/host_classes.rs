@@ -310,56 +310,54 @@ fn a_reused_slot_does_not_revive_an_old_handle() {
 
 #[test]
 fn an_option_of_a_stale_handle_is_none_for_the_script() {
-    vm_pending("an_option_of_a_stale_handle_is_none_for_the_script", || {
-        let mut f = fixture();
-        f.vm.register_type::<Enemy>().unwrap();
-        let live = f.vm.insert(Enemy {
-            name: "live".into(),
-            hp: 1,
-            log: Rc::clone(&f.log),
-        });
-        let dead = f.vm.insert(Enemy {
-            name: "dead".into(),
-            hp: 1,
-            log: Rc::clone(&f.log),
-        });
-        f.vm.remove(dead).unwrap();
-        f.vm.register_fn("lookup", move |which: i64| -> Option<Handle<Enemy>> {
-            match which {
-                0 => Some(live),
-                1 => Some(dead),
-                _ => None,
-            }
-        })
-        .unwrap();
-        f.run(
-            r#"
+    let mut f = fixture();
+    f.vm.register_type::<Enemy>().unwrap();
+    let live = f.vm.insert(Enemy {
+        name: "live".into(),
+        hp: 1,
+        log: Rc::clone(&f.log),
+    });
+    let dead = f.vm.insert(Enemy {
+        name: "dead".into(),
+        hp: 1,
+        log: Rc::clone(&f.log),
+    });
+    f.vm.remove(dead).unwrap();
+    f.vm.register_fn("lookup", move |which: i64| -> Option<Handle<Enemy>> {
+        match which {
+            0 => Some(live),
+            1 => Some(dead),
+            _ => None,
+        }
+    })
+    .unwrap();
+    f.run(
+        r#"
 fn show(i: int) {
-    match lookup(i) {
-        some(e) => log("found {e.name()}"),
-        none => log("nothing for {i}"),
-    }
+match lookup(i) {
+    some(e) => log("found {e.name()}"),
+    none => log("nothing for {i}"),
+}
 }
 
 fn main() {
-    show(0)
-    show(1)
-    show(2)
+show(0)
+show(1)
+show(2)
 }
 "#,
-        )
-        .unwrap();
-        assert_eq!(
-            *f.log.borrow(),
-            [
-                // `remove` handed the object back and the host dropped it.
-                "rust drop dead",
-                "found live",
-                "nothing for 1",
-                "nothing for 2"
-            ]
-        );
-    })
+    )
+    .unwrap();
+    assert_eq!(
+        *f.log.borrow(),
+        [
+            // `remove` handed the object back and the host dropped it.
+            "rust drop dead",
+            "found live",
+            "nothing for 1",
+            "nothing for 2"
+        ]
+    );
 }
 
 #[test]

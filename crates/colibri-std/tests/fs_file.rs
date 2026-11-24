@@ -157,44 +157,42 @@ fn main() -> Result[()] {{
 
 #[test]
 fn appending_line_by_line_across_two_opens() {
-    vm_pending("appending_line_by_line_across_two_opens", || {
-        let scratch = Scratch::new("append");
-        let path = scratch.file("a.log");
-        std::fs::write(&path, "before\n").unwrap();
-        let (mut vm, out) = vm();
-        run(
-            &mut vm,
-            &format!(
-                r#"import fs
+    let scratch = Scratch::new("append");
+    let path = scratch.file("a.log");
+    std::fs::write(&path, "before\n").unwrap();
+    let (mut vm, out) = vm();
+    run(
+        &mut vm,
+        &format!(
+            r#"import fs
 
 fn add(from: int, to: int) -> Result[()] {{
-    let f = fs.open_append("{path}")?
-    defer f.close()
-    for i in from..to {{
-        f.write("line {{i}}\n")?
-    }}
-    return ok(())
+let f = fs.open_append("{path}")?
+defer f.close()
+for i in from..to {{
+    f.write("line {{i}}\n")?
+}}
+return ok(())
 }}
 
 fn main() -> Result[()] {{
-    add(0, 5000)?
-    add(5000, 10000)?
-    print(fs.stat("{path}")?.size)
-    return ok(())
+add(0, 5000)?
+add(5000, 10000)?
+print(fs.stat("{path}")?.size)
+return ok(())
 }}
 "#
-            ),
-        )
-        .unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        let mut lines = text.lines();
-        assert_eq!(lines.next(), Some("before"));
-        for (i, line) in lines.enumerate() {
-            assert_eq!(line, format!("line {i}"));
-        }
-        assert_eq!(text.lines().count(), 10_001);
-        assert_eq!(out.contents(), format!("{}\n", text.len()));
-    })
+        ),
+    )
+    .unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("before"));
+    for (i, line) in lines.enumerate() {
+        assert_eq!(line, format!("line {i}"));
+    }
+    assert_eq!(text.lines().count(), 10_001);
+    assert_eq!(out.contents(), format!("{}\n", text.len()));
 }
 
 #[test]
@@ -934,31 +932,26 @@ fn main() -> Result[()] {{
     /// `flush` on a handle opened for reading has nothing to push and is fine.
     #[test]
     fn flush_on_a_handle_opened_for_reading_does_nothing() {
-        vm_pending(
-            "order::flush_on_a_handle_opened_for_reading_does_nothing",
-            || {
-                let scratch = Scratch::new("flush-reader");
-                let file = scratch.file("r.txt");
-                std::fs::write(&file, "one\ntwo\n").unwrap();
-                let (mut vm, out) = vm();
-                run(
-                    &mut vm,
-                    &format!(
-                        r#"import fs
+        let scratch = Scratch::new("flush-reader");
+        let file = scratch.file("r.txt");
+        std::fs::write(&file, "one\ntwo\n").unwrap();
+        let (mut vm, out) = vm();
+        run(
+            &mut vm,
+            &format!(
+                r#"import fs
 
 fn main() -> Result[()] {{
-    let f = fs.open("{file}")?
-    f.flush()?
-    print(f.read_line()?)
-    return ok(())
+let f = fs.open("{file}")?
+f.flush()?
+print(f.read_line()?)
+return ok(())
 }}
 "#
-                    ),
-                )
-                .unwrap_or_else(|e| panic!("{}", e.render(false)));
-                assert_eq!(out.contents(), "some(\"one\")\n");
-            },
+            ),
         )
+        .unwrap_or_else(|e| panic!("{}", e.render(false)));
+        assert_eq!(out.contents(), "some(\"one\")\n");
     }
 }
 

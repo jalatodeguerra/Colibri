@@ -12,8 +12,8 @@ cli::run_keeps_running_coroutines_after_main_with_real_time  # `go`
 cli::run_passes_the_arguments_after_the_file_to_os_args  # the built-in `ListLen`
 guide::guide_samples_print_the_output_the_guide_shows  # `Compare`
 httpd_descriptors::a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connections_end  # the built-in `ResultExpect`
-process_options::arguments_reach_the_program_exactly_as_given  # `match`
-process_options::cwd_and_input_options_reach_the_program  # `match`
+process_options::arguments_reach_the_program_exactly_as_given  # the built-in `StrLen`
+process_options::cwd_and_input_options_reach_the_program  # the built-in `StrLen`
 repl::a_check_error_leaves_the_session_intact  # REPL sessions
 repl::a_definition_that_is_left_out_here_cannot_replace_the_one_that_is_in_the_program  # REPL sessions
 repl::a_definition_without_when_replaces_every_variant_and_the_other_way_round  # REPL sessions
@@ -47,13 +47,13 @@ repl::two_when_variants_of_one_name_keep_both  # REPL sessions
 repl::type_command_shows_the_type_without_running  # REPL sessions
 repl::types_declare_and_persist  # REPL sessions
 repl::unknown_commands_and_quit  # REPL sessions
-scripts::kvclient_talks_to_kvserver_and_reports_a_missing_server  # `match`
-scripts::kvserver_closes_idle_connections_and_reports_a_bad_address  # `match`
-scripts::kvserver_does_not_stall_on_silent_clients_it_turns_away  # `match`
-scripts::kvserver_refuses_an_idle_time_or_a_connection_cap_that_makes_no_sense  # `match`
-scripts::kvserver_serves_several_clients_and_shuts_down  # `match`
-scripts::kvserver_survives_running_out_of_descriptors  # `match`
-scripts::kvserver_turns_away_connections_over_its_cap  # `match`
+scripts::kvclient_talks_to_kvserver_and_reports_a_missing_server  # the built-in `ResultContext`
+scripts::kvserver_closes_idle_connections_and_reports_a_bad_address  # the built-in `ResultContext`
+scripts::kvserver_does_not_stall_on_silent_clients_it_turns_away  # the built-in `ResultContext`
+scripts::kvserver_refuses_an_idle_time_or_a_connection_cap_that_makes_no_sense  # the built-in `ErrorMessage`
+scripts::kvserver_serves_several_clients_and_shuts_down  # the built-in `ResultContext`
+scripts::kvserver_survives_running_out_of_descriptors  # the built-in `ResultContext`
+scripts::kvserver_turns_away_connections_over_its_cap  # the built-in `ResultContext`
 scripts::notes_client_talks_to_notes_and_reports_a_missing_server  # the built-in `ResultExpect`
 scripts::notes_reports_a_bad_address  # the built-in `ResultExpect`
 scripts::notes_serves_a_json_api_streams_its_export_and_stops_on_shutdown  # the built-in `ResultExpect`
@@ -71,8 +71,10 @@ scripts::report_git_flag_adds_the_commit_inside_a_repository  # the built-in `Li
 scripts::report_lists_failed_sources_and_exits_1  # the built-in `ListLen`
 scripts::report_over_http_matches_the_golden_file  # the built-in `ListLen`
 scripts::report_requests_overlap_with_concurrency  # the built-in `ListLen`
-test_cmd::a_test_that_returns_err_fails_with_the_error_chain  # `match`
+test_cmd::a_test_that_returns_err_fails_with_the_error_chain  # the built-in `ResultContext`
 test_cmd::coroutines_do_not_leak_into_the_next_test  # `go`
-watch::a_running_event_loop_is_patched_in_place  # `go`
 watch::a_restart_runs_main_again_and_carries_state  # `go`
+watch::a_running_event_loop_is_patched_in_place  # `go`
 watch::code_that_does_not_check_is_reported_and_the_old_program_goes_on  # `go`
+repl::a_discarded_const_or_let_with_a_closure_is_accepted  # REPL sessions
+repl::a_discarded_const_runs_once_in_entry_order  # REPL sessions

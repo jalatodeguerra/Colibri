@@ -147,62 +147,58 @@ fn collections_cross_both_ways() {
 
 #[test]
 fn a_rust_err_is_a_colibri_err_not_a_panic() {
-    vm_pending("a_rust_err_is_a_colibri_err_not_a_panic", || {
-        let (mut vm, out) = vm();
-        vm.register_fn(
-            "parse",
-            |s: String| -> Result<i64, std::num::ParseIntError> { s.parse::<i64>() },
-        )
-        .unwrap();
-        vm.register_fn("custom", |n: i64| -> Result<(), String> {
-            if n < 0 {
-                Err(format!("{n} is negative"))
-            } else {
-                Ok(())
-            }
-        })
-        .unwrap();
-        let err = run(
-            &mut vm,
-            r#"
+    let (mut vm, out) = vm();
+    vm.register_fn(
+        "parse",
+        |s: String| -> Result<i64, std::num::ParseIntError> { s.parse::<i64>() },
+    )
+    .unwrap();
+    vm.register_fn("custom", |n: i64| -> Result<(), String> {
+        if n < 0 {
+            Err(format!("{n} is negative"))
+        } else {
+            Ok(())
+        }
+    })
+    .unwrap();
+    let err = run(
+        &mut vm,
+        r#"
 fn main() -> Result[()] {
-    print(parse("42"))
-    match parse("x") {
-        ok(v) => print("ok {v}")
-        err(e) => print("err: {e}")
-    }
-    let n = parse("7")?
-    print(n + 1)
-    custom(-5)?
-    print("unreachable")
+print(parse("42"))
+match parse("x") {
+    ok(v) => print("ok {v}")
+    err(e) => print("err: {e}")
+}
+let n = parse("7")?
+print(n + 1)
+custom(-5)?
+print("unreachable")
 }
 "#,
-        )
-        .unwrap_err();
-        if let colibri::Error::Panic { message, .. } = &err {
-            panic!("the script panicked instead of returning the error: {message}");
-        }
-        assert_eq!(
-            out.contents(),
-            "ok(42)\nerr: invalid digit found in string\n8\n"
-        );
-    })
+    )
+    .unwrap_err();
+    if let colibri::Error::Panic { message, .. } = &err {
+        panic!("the script panicked instead of returning the error: {message}");
+    }
+    assert_eq!(
+        out.contents(),
+        "ok(42)\nerr: invalid digit found in string\n8\n"
+    );
 }
 
 #[test]
 fn main_returning_a_host_err_reports_its_message() {
-    vm_pending("main_returning_a_host_err_reports_its_message", || {
-        let (mut vm, _) = vm();
-        vm.register_fn("fail", || -> Result<(), String> {
-            Err("disk on fire".into())
-        })
-        .unwrap();
-        let err = run(&mut vm, "fn main() -> Result[()] {\n    fail()?\n}\n").unwrap_err();
-        match err {
-            colibri::Error::MainReturnedErr { message } => assert_eq!(message, "disk on fire"),
-            other => panic!("unexpected: {other:?}"),
-        }
+    let (mut vm, _) = vm();
+    vm.register_fn("fail", || -> Result<(), String> {
+        Err("disk on fire".into())
     })
+    .unwrap();
+    let err = run(&mut vm, "fn main() -> Result[()] {\n    fail()?\n}\n").unwrap_err();
+    match err {
+        colibri::Error::MainReturnedErr { message } => assert_eq!(message, "disk on fire"),
+        other => panic!("unexpected: {other:?}"),
+    }
 }
 
 #[test]
