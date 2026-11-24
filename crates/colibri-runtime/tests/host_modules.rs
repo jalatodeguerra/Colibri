@@ -610,25 +610,20 @@ thread_local! {
 
 #[test]
 fn the_host_calls_a_stored_callback_that_takes_a_struct_of_a_named_module() {
-    vm_pending(
-        "the_host_calls_a_stored_callback_that_takes_a_struct_of_a_named_module",
-        || {
-            let (mut vm, _) = vm();
-            let mut game = vm.module("game");
-            game.register_fn("make", |n: i64| Gem { n }).unwrap();
-            game.register_fn("on", |cb: colibri::Callback<(Gem,), i64>| {
-                STORED.with(|c| *c.borrow_mut() = Some(cb));
-            })
-            .unwrap();
-            run(
-                &mut vm,
-                "import game\nfn main() { game.on(fn(i: game.Gem) -> int => i.n * 2) }\n",
-            )
-            .unwrap();
-            let cb = STORED.with(|c| c.borrow_mut().take()).unwrap();
-            assert_eq!(cb.call(&mut vm, (Gem { n: 5 },)).unwrap(), 10);
-        },
+    let (mut vm, _) = vm();
+    let mut game = vm.module("game");
+    game.register_fn("make", |n: i64| Gem { n }).unwrap();
+    game.register_fn("on", |cb: colibri::Callback<(Gem,), i64>| {
+        STORED.with(|c| *c.borrow_mut() = Some(cb));
+    })
+    .unwrap();
+    run(
+        &mut vm,
+        "import game\nfn main() { game.on(fn(i: game.Gem) -> int => i.n * 2) }\n",
     )
+    .unwrap();
+    let cb = STORED.with(|c| c.borrow_mut().take()).unwrap();
+    assert_eq!(cb.call(&mut vm, (Gem { n: 5 },)).unwrap(), 10);
 }
 
 #[test]

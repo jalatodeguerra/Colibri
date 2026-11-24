@@ -399,28 +399,26 @@ fn a_script_cannot_redefine_a_host_function() {
 
 #[test]
 fn host_functions_are_not_values() {
-    vm_pending("host_functions_are_not_values", || {
-        let (mut vm, _) = vm();
-        vm.register_fn("spawn", |x: f32| x).unwrap();
-        let err = vm
-            .load_source("game.colibri", "let f = spawn\n")
-            .unwrap_err();
-        let text = err.render(false);
-        assert!(
-            text.contains("the host function `spawn` cannot be used as a value"),
-            "{text}"
-        );
-        assert!(text.contains("wrap it in a closure"), "{text}");
-        // The suggested closure works.
-        let (mut vm, out) = self::vm();
-        vm.register_fn("spawn", |x: f32| x + 1.0).unwrap();
-        run(
-            &mut vm,
-            "fn main() {\n    let f = fn(x: f32) => spawn(x)\n    print(f(1.0))\n}\n",
-        )
-        .unwrap();
-        assert_eq!(out.contents(), "2.0\n");
-    })
+    let (mut vm, _) = vm();
+    vm.register_fn("spawn", |x: f32| x).unwrap();
+    let err = vm
+        .load_source("game.colibri", "let f = spawn\n")
+        .unwrap_err();
+    let text = err.render(false);
+    assert!(
+        text.contains("the host function `spawn` cannot be used as a value"),
+        "{text}"
+    );
+    assert!(text.contains("wrap it in a closure"), "{text}");
+    // The suggested closure works.
+    let (mut vm, out) = self::vm();
+    vm.register_fn("spawn", |x: f32| x + 1.0).unwrap();
+    run(
+        &mut vm,
+        "fn main() {\n    let f = fn(x: f32) => spawn(x)\n    print(f(1.0))\n}\n",
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "2.0\n");
 }
 
 #[test]
