@@ -60,6 +60,13 @@ thread_local! {
 #[inline]
 #[doc(hidden)]
 pub fn equal_or_give_up(a: &Value, b: &Value) -> bool {
+    // Integers and strings, the commonest keys, are equal as they are written: no user `Eq`
+    // can apply and no nesting can be too deep.
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => return x == y,
+        (Value::Str(x), Value::Str(y)) => return x == y,
+        _ => {}
+    }
     values_equal(a, b).unwrap_or_else(|TooDeep| {
         GAVE_UP.set(true);
         false

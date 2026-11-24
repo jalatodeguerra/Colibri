@@ -28,7 +28,22 @@ const COMPACT_MIN: usize = 32;
 /// else still hashes without panicking.)
 #[inline]
 pub(crate) fn hash_value(v: &Value) -> u64 {
-    hash_value_with(v, &mut |_| None)
+    // The commonest keys, without the walk over a value that aggregates need (same hash).
+    match v {
+        Value::Int(i) => {
+            let mut h = KeyHasher::default();
+            std::mem::discriminant(v).hash(&mut h);
+            i.hash(&mut h);
+            h.finish()
+        }
+        Value::Str(s) => {
+            let mut h = KeyHasher::default();
+            std::mem::discriminant(v).hash(&mut h);
+            s.hash(&mut h);
+            h.finish()
+        }
+        _ => hash_value_with(v, &mut |_| None),
+    }
 }
 
 /// [`hash_value`], where `host` may give the hash of an object of a host class (at any depth)
