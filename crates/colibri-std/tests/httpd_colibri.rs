@@ -203,17 +203,14 @@ failing!(router_registration, request_misuse);
 /// tests above use), the handlers of the plan's JSON example, and `test_request` to call them.
 #[test]
 fn a_program_imports_the_module_and_tests_its_handlers_without_sockets() {
-    vm_pending(
-        "a_program_imports_the_module_and_tests_its_handlers_without_sockets",
-        || {
-            let out = colibri::SharedBuffer::new();
-            let mut vm = colibri::Vm::builder()
-                .stdout(Box::new(out.clone()))
-                .allow(colibri::Cap::Net)
-                .allow(colibri::Cap::Os)
-                .build();
-            colibri_std::install(&mut vm).expect("the standard library installs");
-            vm.load_source(
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .allow(colibri::Cap::Net)
+        .allow(colibri::Cap::Os)
+        .build();
+    colibri_std::install(&mut vm).expect("the standard library installs");
+    vm.load_source(
         "app/main.colibri",
         r##"
 import httpd
@@ -285,20 +282,18 @@ fn main() -> Result[()] {
 "##,
     )
     .unwrap_or_else(|e| panic!("{}", e.render(false)));
-            vm.run_main()
-                .unwrap_or_else(|e| panic!("{}", e.render(false)));
-            let printed = out.contents();
-            let lines: Vec<&str> = printed.lines().collect();
-            assert_eq!(lines[0], r#"201 {"id":1,"name":"pen"}"#);
-            assert_eq!(lines[1], r#"200 {"id":1,"name":"pen"}"#);
-            assert_eq!(lines[2], "error 404: no item 9");
-            assert_eq!(lines[3], "error 400: `x` is not an item id");
-            assert!(lines[4].starts_with("error 400: "), "{}", lines[4]);
-            // the message of a JSON error may take more than one line, so the last ones are counted from
-            // the end; the body of the 405 ends with a newline of its own
-            assert_eq!(lines[lines.len() - 3], r#"200 [{"id":1,"name":"pen"}]"#);
-            assert_eq!(lines[lines.len() - 2], "405 405 Method Not Allowed");
-            assert_eq!(lines[lines.len() - 1], "");
-        },
-    )
+    vm.run_main()
+        .unwrap_or_else(|e| panic!("{}", e.render(false)));
+    let printed = out.contents();
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines[0], r#"201 {"id":1,"name":"pen"}"#);
+    assert_eq!(lines[1], r#"200 {"id":1,"name":"pen"}"#);
+    assert_eq!(lines[2], "error 404: no item 9");
+    assert_eq!(lines[3], "error 400: `x` is not an item id");
+    assert!(lines[4].starts_with("error 400: "), "{}", lines[4]);
+    // the message of a JSON error may take more than one line, so the last ones are counted from
+    // the end; the body of the 405 ends with a newline of its own
+    assert_eq!(lines[lines.len() - 3], r#"200 [{"id":1,"name":"pen"}]"#);
+    assert_eq!(lines[lines.len() - 2], "405 405 Method Not Allowed");
+    assert_eq!(lines[lines.len() - 1], "");
 }

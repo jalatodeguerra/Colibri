@@ -1,9 +1,6 @@
 //! `http` against a server inside the test process (127.0.0.1, an ephemeral port): no test
 //! touches the real network. The server is a few lines of hand-written HTTP/1.1.
 
-mod common;
-use common::vm_pending;
-
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
@@ -119,11 +116,10 @@ fn run(base: &str, body: &str) -> String {
 
 #[test]
 fn get_returns_status_headers_and_body() {
-    vm_pending("get_returns_status_headers_and_body", || {
-        let base = serve();
-        let out = run(
-            &base,
-            r#"
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
     let r = http.get("{base}/hello") or panic("request failed")
     print(r.status)
     print(r.body)
@@ -132,9 +128,8 @@ fn get_returns_status_headers_and_body() {
     print(r.headers["set-cookie"])
     print(r.headers.contains_key("X-Thing"))
 "#,
-        );
-        assert_eq!(out, "200\nhello\na\n5\none=1, two=2\nfalse\n");
-    })
+    );
+    assert_eq!(out, "200\nhello\na\n5\none=1, two=2\nfalse\n");
 }
 
 #[test]
@@ -217,11 +212,10 @@ print(r.body)
 
 #[test]
 fn failures_are_errs_with_a_message() {
-    vm_pending("failures_are_errs_with_a_message", || {
-        let base = serve();
-        let out = run(
-            &base,
-            r#"
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
     match http.get("not a url") {
         ok(_) => print("ok")
         err(e) => print(e.message())
@@ -240,26 +234,24 @@ fn failures_are_errs_with_a_message() {
         err(e) => print("refused: {e.message()}")
     }
 "#,
-        );
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 4, "{out}");
-        assert!(lines[0].starts_with("http: GET not a url failed:"), "{out}");
-        assert_eq!(lines[1], "http: `GE T` is not an HTTP method");
-        assert!(lines[2].starts_with("header: http: GET "), "{out}");
-        assert!(
-            lines[3].starts_with("refused: http: GET http://127.0.0.1:1/ failed:"),
-            "{out}"
-        );
-    })
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 4, "{out}");
+    assert!(lines[0].starts_with("http: GET not a url failed:"), "{out}");
+    assert_eq!(lines[1], "http: `GE T` is not an HTTP method");
+    assert!(lines[2].starts_with("header: http: GET "), "{out}");
+    assert!(
+        lines[3].starts_with("refused: http: GET http://127.0.0.1:1/ failed:"),
+        "{out}"
+    );
 }
 
 #[test]
 fn the_timeout_is_configurable() {
-    vm_pending("the_timeout_is_configurable", || {
-        let base = serve();
-        let out = run(
-            &base,
-            r#"
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
     http.set_timeout(0.2)
     match http.get("{base}/slow") {
         ok(r) => print("ok {r.body}")
@@ -269,11 +261,10 @@ fn the_timeout_is_configurable() {
     let r = http.get("{base}/slow") or panic("no timeout")
     print(r.body)
 "#,
-        );
-        let lines: Vec<&str> = out.lines().collect();
-        assert!(lines[0].starts_with("timed out: http: GET "), "{out}");
-        assert_eq!(lines[1], "late");
-    })
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(lines[0].starts_with("timed out: http: GET "), "{out}");
+    assert_eq!(lines[1], "late");
 }
 
 #[test]
@@ -384,11 +375,10 @@ fn serve_garbage() -> String {
 
 #[test]
 fn failures_carry_an_http_error_to_branch_on() {
-    vm_pending("failures_carry_an_http_error_to_branch_on", || {
-        let base = serve();
-        let out = run(
-            &base,
-            r#"
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
     http.set_timeout(0.2)
     print(http.get("{base}/slow").err().expect("times out").as[http.Error]())
     http.set_timeout(30.0)
@@ -403,24 +393,20 @@ fn failures_carry_an_http_error_to_branch_on() {
     print(e.as[http.Error]().expect("kept") == http.Error.Connect)
     print("{e}".starts_with("fetching: http: GET http://127.0.0.1:1/ failed:"))
 "#,
-        );
-        assert_eq!(
-            out,
-            "some(Timeout)\nsome(Connect)\nsome(InvalidUrl)\nsome(Other)\nsome(Other)\nnone\ntrue\ntrue\ntrue\n"
-        );
-    })
+    );
+    assert_eq!(
+        out,
+        "some(Timeout)\nsome(Connect)\nsome(InvalidUrl)\nsome(Other)\nsome(Other)\nnone\ntrue\ntrue\ntrue\n"
+    );
 }
 
 #[test]
 fn speaking_tls_to_a_server_that_does_not_is_a_tls_error() {
-    vm_pending(
-        "speaking_tls_to_a_server_that_does_not_is_a_tls_error",
-        || {
-            let addr = serve_garbage();
-            let out = run(
-                "",
-                &format!(
-                    r#"
+    let addr = serve_garbage();
+    let out = run(
+        "",
+        &format!(
+            r#"
     match http.get("https://{addr}/") {{
         ok(_) => print("ok")
         err(e) => {{
@@ -429,11 +415,9 @@ fn speaking_tls_to_a_server_that_does_not_is_a_tls_error() {
         }}
     }}
 "#
-                ),
-            );
-            assert!(out.starts_with("some(Tls)\nhttp: GET https://"), "{out}");
-        },
-    )
+        ),
+    );
+    assert!(out.starts_with("some(Tls)\nhttp: GET https://"), "{out}");
 }
 
 /// `Response` keeps its three fields: a response encodes as JSON, prints once, and holds the
@@ -462,11 +446,10 @@ print(r)
 
 #[test]
 fn a_binary_body_comes_back_as_bytes_without_loss() {
-    vm_pending("a_binary_body_comes_back_as_bytes_without_loss", || {
-        let base = serve();
-        let out = run(
-            &base,
-            r#"
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
     let r = http.get_bytes("{base}/all256") or panic("request failed")
     print(r.status)
     let mut same = r.body.len() == 256
@@ -486,18 +469,16 @@ fn a_binary_body_comes_back_as_bytes_without_loss() {
     let t = http.get("{base}/binary") or panic("request failed")
     print(t.body.len())
 "#,
-        );
-        assert_eq!(out, "200\ntrue\nb\"a\\xffb\"\ntrue\n3\n5\n");
-    })
+    );
+    assert_eq!(out, "200\ntrue\nb\"a\\xffb\"\ntrue\n3\n5\n");
 }
 
 #[test]
 fn bytes_are_sent_as_they_are() {
-    vm_pending("bytes_are_sent_as_they_are", || {
-        let base = serve();
-        let out = run(
-            &base,
-            r#"
+    let base = serve();
+    let out = run(
+        &base,
+        r#"
     let data = Bytes([0, 255, 128, 10, 13, 0])
     let a = http.request_bytes("post", "{base}/raw", {"content-type": "application/octet-stream"}, data) or panic("a")
     print(a.body == data)
@@ -515,10 +496,9 @@ fn bytes_are_sent_as_they_are() {
         err(e) => print(e.message())
     }
 "#,
-        );
-        assert_eq!(
-            out,
-            "true\nb\"\\x00\\xff\\x80\\n\\r\\x00\"\n0\nPOST text/x-bytes|hi\n{\"status\":\nhttp: `no way` is not an HTTP method\n"
-        );
-    })
+    );
+    assert_eq!(
+        out,
+        "true\nb\"\\x00\\xff\\x80\\n\\r\\x00\"\n0\nPOST text/x-bytes|hi\n{\"status\":\nhttp: `no way` is not an HTTP method\n"
+    );
 }

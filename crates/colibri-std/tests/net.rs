@@ -330,44 +330,43 @@ return ok(())
 
 #[test]
 fn a_rust_client_gets_back_a_large_echo() {
-    vm_pending("a_rust_client_gets_back_a_large_echo", || {
-        let (mut vm, out) = vm();
-        let (tx, rx) = mpsc::channel::<String>();
-        vm.register_fn("publish", move |addr: String| {
-            tx.send(addr).unwrap();
-        })
-        .unwrap();
-        let client = thread::spawn(move || {
-            let addr = rx.recv_timeout(LIMIT).expect("the server's address");
-            let s = TcpStream::connect(addr).unwrap();
-            with_timeouts(&s);
-            let data: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
-            let mut writer = s.try_clone().unwrap();
-            let sent = data.clone();
-            let w = thread::spawn(move || {
-                writer.write_all(&sent).unwrap();
-                writer.shutdown(std::net::Shutdown::Write).unwrap();
-            });
-            let mut got = Vec::new();
-            let mut s = s;
-            // Reads slowly.
-            let mut chunk = [0u8; 4096];
-            loop {
-                let n = s.read(&mut chunk).unwrap();
-                if n == 0 {
-                    break;
-                }
-                got.extend_from_slice(&chunk[..n]);
-                if got.len() % (1 << 18) < 4096 {
-                    thread::sleep(Duration::from_millis(1));
-                }
-            }
-            w.join().unwrap();
-            got == data
+    let (mut vm, out) = vm();
+    let (tx, rx) = mpsc::channel::<String>();
+    vm.register_fn("publish", move |addr: String| {
+        tx.send(addr).unwrap();
+    })
+    .unwrap();
+    let client = thread::spawn(move || {
+        let addr = rx.recv_timeout(LIMIT).expect("the server's address");
+        let s = TcpStream::connect(addr).unwrap();
+        with_timeouts(&s);
+        let data: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+        let mut writer = s.try_clone().unwrap();
+        let sent = data.clone();
+        let w = thread::spawn(move || {
+            writer.write_all(&sent).unwrap();
+            writer.shutdown(std::net::Shutdown::Write).unwrap();
         });
-        run(
-            &mut vm,
-            r#"import net
+        let mut got = Vec::new();
+        let mut s = s;
+        // Reads slowly.
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = s.read(&mut chunk).unwrap();
+            if n == 0 {
+                break;
+            }
+            got.extend_from_slice(&chunk[..n]);
+            if got.len() % (1 << 18) < 4096 {
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        w.join().unwrap();
+        got == data
+    });
+    run(
+        &mut vm,
+        r#"import net
 
 fn main() -> Result[()] {
     let l = net.listen("127.0.0.1:0")?
@@ -387,39 +386,37 @@ fn main() -> Result[()] {
     return ok(())
 }
 "#,
-        )
-        .unwrap_or_else(|e| panic!("{e}"));
-        assert!(
-            client.join().unwrap(),
-            "the echo differs from what was sent"
-        );
-        assert_eq!(out.contents(), "");
-    })
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        client.join().unwrap(),
+        "the echo differs from what was sent"
+    );
+    assert_eq!(out.contents(), "");
 }
 
 #[test]
 fn a_peer_that_resets_the_connection_is_reset() {
-    vm_pending("a_peer_that_resets_the_connection_is_reset", || {
-        let (listener, addr) = rust_listener();
-        let (up_tx, up_rx) = mpsc::channel::<()>();
-        let peer = thread::spawn(move || {
-            let (s, _) = listener.accept().unwrap();
-            // Reset only once the script has its connection: a reset during `connect` is a
-            // failed connect, which is another test.
-            up_rx.recv_timeout(LIMIT).unwrap();
-            // Closing with a zero linger sends a reset instead of an orderly end, on every system.
-            socket2::SockRef::from(&s)
-                .set_linger(Some(Duration::ZERO))
-                .expect("sets the linger");
-            drop(s);
-        });
-        let (mut vm, out) = vm();
-        vm.register_fn("connected", move || up_tx.send(()).unwrap())
-            .unwrap();
-        run(
-            &mut vm,
-            &format!(
-                r#"import net
+    let (listener, addr) = rust_listener();
+    let (up_tx, up_rx) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (s, _) = listener.accept().unwrap();
+        // Reset only once the script has its connection: a reset during `connect` is a
+        // failed connect, which is another test.
+        up_rx.recv_timeout(LIMIT).unwrap();
+        // Closing with a zero linger sends a reset instead of an orderly end, on every system.
+        socket2::SockRef::from(&s)
+            .set_linger(Some(Duration::ZERO))
+            .expect("sets the linger");
+        drop(s);
+    });
+    let (mut vm, out) = vm();
+    vm.register_fn("connected", move || up_tx.send(()).unwrap())
+        .unwrap();
+    run(
+        &mut vm,
+        &format!(
+            r#"import net
 
 fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
@@ -431,12 +428,11 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-            ),
-        )
-        .unwrap_or_else(|e| panic!("{e}"));
-        peer.join().unwrap();
-        assert_eq!(out.contents(), "Reset\n");
-    })
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    peer.join().unwrap();
+    assert_eq!(out.contents(), "Reset\n");
 }
 
 /// One coroutine waits in `read` while another writes several times on the same connection:
@@ -817,24 +813,23 @@ fn main() -> Result[()] {{
 /// is still there.
 #[test]
 fn read_line_refuses_a_huge_line_and_bad_utf8() {
-    vm_pending("read_line_refuses_a_huge_line_and_bad_utf8", || {
-        let (listener, addr) = rust_listener();
-        let peer = thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
-            with_timeouts(&s);
-            s.write_all(&[0xff, 0xfe, b'\n', b'o', b'k', b'\n'])
-                .unwrap();
-            // More than a mebibyte and no end of line: the reader must give up, not buffer it all.
-            let chunk = vec![b'x'; 64 * 1024];
-            for _ in 0..40 {
-                if s.write_all(&chunk).is_err() {
-                    break;
-                }
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        s.write_all(&[0xff, 0xfe, b'\n', b'o', b'k', b'\n'])
+            .unwrap();
+        // More than a mebibyte and no end of line: the reader must give up, not buffer it all.
+        let chunk = vec![b'x'; 64 * 1024];
+        for _ in 0..40 {
+            if s.write_all(&chunk).is_err() {
+                break;
             }
-            let _ = s.read(&mut [0u8; 1]);
-        });
-        let out = output(&format!(
-            r#"import net
+        }
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output(&format!(
+        r#"import net
 
 fn kind[T](r: Result[T]) -> str {{
     match r {{
@@ -854,10 +849,9 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-        ));
-        assert_eq!(out, "InvalidData\ntrue\nsome(\"ok\")\nLineTooLong\n");
-        peer.join().unwrap();
-    })
+    ));
+    assert_eq!(out, "InvalidData\ntrue\nsome(\"ok\")\nLineTooLong\n");
+    peer.join().unwrap();
 }
 
 /// Operations of one kind on one connection are served in the order they were called, not in
@@ -1288,30 +1282,29 @@ fn main() -> Result[()] {{
 /// is out of step; the peer received exactly what the message says.
 #[test]
 fn a_write_that_times_out_says_how_much_was_sent() {
-    vm_pending("a_write_that_times_out_says_how_much_was_sent", || {
-        let (listener, addr) = rust_listener();
-        let (tx, rx) = mpsc::channel::<()>();
-        let peer = thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
-            with_timeouts(&s);
-            rx.recv_timeout(LIMIT).unwrap();
-            let mut n = 0usize;
-            let mut buf = [0u8; 65536];
-            loop {
-                match s.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(k) => n += k,
-                }
+    let (listener, addr) = rust_listener();
+    let (tx, rx) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        rx.recv_timeout(LIMIT).unwrap();
+        let mut n = 0usize;
+        let mut buf = [0u8; 65536];
+        loop {
+            match s.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(k) => n += k,
             }
-            n
-        });
-        let (mut vm, out) = vm();
-        vm.register_fn("signal", move || tx.send(()).unwrap())
-            .unwrap();
-        run(
-            &mut vm,
-            &format!(
-                r#"import net
+        }
+        n
+    });
+    let (mut vm, out) = vm();
+    vm.register_fn("signal", move || tx.send(()).unwrap())
+        .unwrap();
+    run(
+        &mut vm,
+        &format!(
+            r#"import net
 
 fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
@@ -1345,54 +1338,50 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-            ),
-        )
-        .unwrap_or_else(|e| panic!("{e}"));
-        let received = peer.join().unwrap();
-        let text = out.contents();
-        let mut lines = text.lines();
-        assert_eq!(lines.next(), Some("Timeout"), "{text}");
-        let message = lines.next().unwrap_or_default();
-        assert!(
-            message.contains(&format!("{received} of 67108864 bytes were sent")),
-            "the peer got {received} bytes: {message}"
-        );
-        assert!(message.contains("out of step"), "{message}");
-        assert!(message.contains("close the connection"), "{message}");
-        assert_eq!(lines.next(), Some("BrokenPipe"), "{text}");
-        let later = lines.next().unwrap_or_default();
-        assert!(
-            later.contains("an earlier write stopped part way")
-                && later.contains("close the connection"),
-            "{later}"
-        );
-    })
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let received = peer.join().unwrap();
+    let text = out.contents();
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("Timeout"), "{text}");
+    let message = lines.next().unwrap_or_default();
+    assert!(
+        message.contains(&format!("{received} of 67108864 bytes were sent")),
+        "the peer got {received} bytes: {message}"
+    );
+    assert!(message.contains("out of step"), "{message}");
+    assert!(message.contains("close the connection"), "{message}");
+    assert_eq!(lines.next(), Some("BrokenPipe"), "{text}");
+    let later = lines.next().unwrap_or_default();
+    assert!(
+        later.contains("an earlier write stopped part way")
+            && later.contains("close the connection"),
+        "{later}"
+    );
 }
 
 /// The text of a timeout is true when part of the line has arrived: it says the call did not
 /// finish, not that nothing happened.
 #[test]
 fn a_timeout_in_the_middle_of_a_line_says_it_did_not_finish() {
-    vm_pending(
-        "a_timeout_in_the_middle_of_a_line_says_it_did_not_finish",
-        || {
-            let (listener, addr) = rust_listener();
-            let (tx, rx) = mpsc::channel::<()>();
-            let peer = thread::spawn(move || {
-                let (mut s, _) = listener.accept().unwrap();
-                with_timeouts(&s);
-                s.write_all(b"par").unwrap();
-                rx.recv_timeout(LIMIT).unwrap();
-                s.write_all(b"t\n").unwrap();
-                let _ = s.read(&mut [0u8; 1]);
-            });
-            let (mut vm, out) = vm();
-            vm.register_fn("signal", move || tx.send(()).unwrap())
-                .unwrap();
-            run(
-                &mut vm,
-                &format!(
-                    r#"import net
+    let (listener, addr) = rust_listener();
+    let (tx, rx) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        s.write_all(b"par").unwrap();
+        rx.recv_timeout(LIMIT).unwrap();
+        s.write_all(b"t\n").unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let (mut vm, out) = vm();
+    vm.register_fn("signal", move || tx.send(()).unwrap())
+        .unwrap();
+    run(
+        &mut vm,
+        &format!(
+            r#"import net
 
 fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
@@ -1407,16 +1396,14 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-                ),
-            )
-            .unwrap_or_else(|e| panic!("{e}"));
-            peer.join().unwrap();
-            assert_eq!(
-                out.contents(),
-                "cannot read from `<addr>`: did not finish within 0.2 seconds (see `set_timeout`; the connection is still usable)\nsome(\"part\")\n"
-            );
-        },
+        ),
     )
+    .unwrap_or_else(|e| panic!("{e}"));
+    peer.join().unwrap();
+    assert_eq!(
+        out.contents(),
+        "cannot read from `<addr>`: did not finish within 0.2 seconds (see `set_timeout`; the connection is still usable)\nsome(\"part\")\n"
+    );
 }
 
 /// A deadline bounds the whole write, also when the peer reads steadily but slowly; and a
@@ -1575,20 +1562,19 @@ fn main() -> Result[()] {{
 /// `\r\n` is a line; `read_exact` of a big block leaves what follows for the next read.
 #[test]
 fn counts_lines_at_the_limit_and_big_blocks() {
-    vm_pending("counts_lines_at_the_limit_and_big_blocks", || {
-        const BLOCK: usize = 300_000;
-        let (listener, addr) = rust_listener();
-        let peer = thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
-            with_timeouts(&s);
-            let mut all = vec![b'x'; 1 << 20];
-            all.extend_from_slice(b"\r\nnext\n");
-            all.extend((0..BLOCK + 1000).map(|i| (i % 251) as u8));
-            s.write_all(&all).unwrap();
-            let _ = s.read(&mut [0u8; 1]);
-        });
-        let out = output(&format!(
-            r#"import net
+    const BLOCK: usize = 300_000;
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        let mut all = vec![b'x'; 1 << 20];
+        all.extend_from_slice(b"\r\nnext\n");
+        all.extend((0..BLOCK + 1000).map(|i| (i % 251) as u8));
+        s.write_all(&all).unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output(&format!(
+        r#"import net
 
 fn kind[T](r: Result[T]) -> str {{
     match r {{
@@ -1619,47 +1605,43 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-        ));
-        peer.join().unwrap();
-        assert_eq!(
-            out,
-            format!(
-                "Other\nOther\ncannot read from `{}`: -1 is not a number of bytes (use 0 or more)\n1048576\nsome(\"next\")\n{BLOCK} true\n1000 true\n",
-                addr
-            )
-        );
-    })
+    ));
+    peer.join().unwrap();
+    assert_eq!(
+        out,
+        format!(
+            "Other\nOther\ncannot read from `{}`: -1 is not a number of bytes (use 0 or more)\n1048576\nsome(\"next\")\n{BLOCK} true\n1000 true\n",
+            addr
+        )
+    );
 }
 
 /// A big `read_exact` is correct and takes time in proportion to its size (the buffer grows
 /// with what has arrived: a doubling, not a copy per piece).
 #[test]
 fn a_big_read_exact_over_loopback_is_correct_and_linear() {
-    vm_pending(
-        "a_big_read_exact_over_loopback_is_correct_and_linear",
-        || {
-            const SIZE: usize = 64 * 1024 * 1024;
-            let (listener, addr) = rust_listener();
-            let peer = thread::spawn(move || {
-                let (mut s, _) = listener.accept().unwrap();
-                with_timeouts(&s);
-                // Pieces that do not divide the total, each with a pattern that depends on the offset.
-                let mut sent = 0usize;
-                let mut piece = vec![0u8; 100_003];
-                while sent < SIZE {
-                    let n = piece.len().min(SIZE - sent);
-                    for (i, b) in piece[..n].iter_mut().enumerate() {
-                        *b = ((sent + i) % 251) as u8;
-                    }
-                    s.write_all(&piece[..n]).unwrap();
-                    sent += n;
-                }
-                let _ = s.read(&mut [0u8; 1]);
-            });
-            let started = Instant::now();
-            let out = output_within(
-                format!(
-                    r#"import net
+    const SIZE: usize = 64 * 1024 * 1024;
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        // Pieces that do not divide the total, each with a pattern that depends on the offset.
+        let mut sent = 0usize;
+        let mut piece = vec![0u8; 100_003];
+        while sent < SIZE {
+            let n = piece.len().min(SIZE - sent);
+            for (i, b) in piece[..n].iter_mut().enumerate() {
+                *b = ((sent + i) % 251) as u8;
+            }
+            s.write_all(&piece[..n]).unwrap();
+            sent += n;
+        }
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let started = Instant::now();
+    let out = output_within(
+        format!(
+            r#"import net
 
 fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
@@ -1678,42 +1660,37 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-                ),
-                Duration::from_secs(120),
-            );
-            peer.join().unwrap();
-            assert_eq!(out, format!("{SIZE}\n0\n"));
-            // Not a bound on speed (a debug build on a loaded machine is slow): a hang or a quadratic
-            // buffer would take minutes.
-            assert!(
-                started.elapsed() < Duration::from_secs(100),
-                "{:?}",
-                started.elapsed()
-            );
-        },
-    )
+        ),
+        Duration::from_secs(120),
+    );
+    peer.join().unwrap();
+    assert_eq!(out, format!("{SIZE}\n0\n"));
+    // Not a bound on speed (a debug build on a loaded machine is slow): a hang or a quadratic
+    // buffer would take minutes.
+    assert!(
+        started.elapsed() < Duration::from_secs(100),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 /// `connect_timeout` connects like `connect`, fails like it, and takes only a positive number.
 #[test]
 fn connect_timeout_connects_fails_and_checks_its_argument() {
-    vm_pending(
-        "connect_timeout_connects_fails_and_checks_its_argument",
-        || {
-            let (listener, addr) = rust_listener();
-            let peer = thread::spawn(move || {
-                let (mut s, _) = listener.accept().unwrap();
-                with_timeouts(&s);
-                s.write_all(b"hi\n").unwrap();
-                let _ = s.read(&mut [0u8; 1]);
-            });
-            // A port that is closed now.
-            let closed = {
-                let l = TcpListener::bind("127.0.0.1:0").unwrap();
-                l.local_addr().unwrap().to_string()
-            };
-            let out = output(&format!(
-                r#"import net
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        s.write_all(b"hi\n").unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    // A port that is closed now.
+    let closed = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().to_string()
+    };
+    let out = output(&format!(
+        r#"import net
 
 fn main() -> Result[()] {{
     let c = net.connect_timeout("{addr}", 10.0)?
@@ -1727,25 +1704,23 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-            ));
-            peer.join().unwrap();
-            assert_eq!(out, "some(\"hi\")\nRefused\ntrue\n");
-            for bad in ["0.0", "-1.0", "math.sqrt(-1.0)"] {
-                let (mut vm, _out) = vm();
-                let err = run(
+    ));
+    peer.join().unwrap();
+    assert_eq!(out, "some(\"hi\")\nRefused\ntrue\n");
+    for bad in ["0.0", "-1.0", "math.sqrt(-1.0)"] {
+        let (mut vm, _out) = vm();
+        let err = run(
             &mut vm,
             &format!(
                 "import net\nimport math\n\nfn main() -> Result[()] {{\n    let _ = net.connect_timeout(\"127.0.0.1:1\", {bad})\n    return ok(())\n}}\n"
             ),
         )
         .expect_err("a bad number of seconds is a panic");
-                assert!(
-                    err.to_string().contains("net.connect_timeout"),
-                    "{bad}: {err}"
-                );
-            }
-        },
-    )
+        assert!(
+            err.to_string().contains("net.connect_timeout"),
+            "{bad}: {err}"
+        );
+    }
 }
 
 /// `connect` by name: the lookup goes to a helper thread and the call goes on when it answers, and
@@ -1794,20 +1769,19 @@ return ok(())
 /// refused where nothing listens.
 #[test]
 fn a_connect_from_a_drop_hook_connects_and_is_refused() {
-    vm_pending("a_connect_from_a_drop_hook_connects_and_is_refused", || {
-        let (listener, addr) = rust_listener();
-        // A port that nothing is bound to: bound and let go of.
-        let free = {
-            let l = TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().to_string()
-        };
-        let peer = thread::spawn(move || {
-            let (s, _) = listener.accept().unwrap();
-            drop(s);
-        });
-        let out = output_within(
-            format!(
-                r#"import net
+    let (listener, addr) = rust_listener();
+    // A port that nothing is bound to: bound and let go of.
+    let free = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().to_string()
+    };
+    let peer = thread::spawn(move || {
+        let (s, _) = listener.accept().unwrap();
+        drop(s);
+    });
+    let out = output_within(
+        format!(
+            r#"import net
 
 class Guard {{ what: str }}
 
@@ -1838,12 +1812,11 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-            ),
-            LIMIT,
-        );
-        assert_eq!(out, "connected\nerror Refused\n");
-        peer.join().unwrap();
-    })
+        ),
+        LIMIT,
+    );
+    assert_eq!(out, "connected\nerror Refused\n");
+    peer.join().unwrap();
 }
 
 /// A connect that cannot finish ends at its timeout, and one that is cancelled ends at once.
@@ -3003,11 +2976,8 @@ fn main() -> Result[()] {{
 #[cfg(any(target_os = "linux", windows))]
 #[test]
 fn a_specific_address_of_a_port_held_on_the_wildcard_is_in_use() {
-    vm_pending(
-        "a_specific_address_of_a_port_held_on_the_wildcard_is_in_use",
-        || {
-            let out = output(
-                r#"import net
+    let out = output(
+        r#"import net
 
 fn main() -> Result[()] {
     let l = net.listen("0.0.0.0:0")?
@@ -3030,10 +3000,8 @@ fn main() -> Result[()] {
     return ok(())
 }
 "#,
-            );
-            assert_eq!(out, "AddrInUse\nAddrInUse\ntrue\n");
-        },
-    )
+    );
+    assert_eq!(out, "AddrInUse\nAddrInUse\ntrue\n");
 }
 
 /// A server that closes a connection first leaves the port in `TIME_WAIT` on its side, and the
@@ -3136,28 +3104,25 @@ fn main() -> Result[()] {
 /// every system (Windows says "reset" for the write, Linux and macOS say "broken pipe").
 #[test]
 fn a_write_to_a_peer_that_reset_is_a_broken_pipe_and_a_read_is_a_reset() {
-    vm_pending(
-        "a_write_to_a_peer_that_reset_is_a_broken_pipe_and_a_read_is_a_reset",
-        || {
-            let (listener, addr) = rust_listener();
-            let (tx, rx) = mpsc::channel::<()>();
-            let peer = thread::spawn(move || {
-                let (s, _) = listener.accept().unwrap();
-                // Only after the script's connect has finished: a reset that arrives earlier fails
-                // the connect itself.
-                rx.recv_timeout(LIMIT).unwrap();
-                // Closing with unread data in the buffer makes the system send a reset.
-                let sock = socket2::SockRef::from(&s);
-                sock.set_linger(Some(Duration::ZERO)).unwrap();
-                drop(s);
-            });
-            let (mut vm, out) = vm();
-            vm.register_fn("connected", move || tx.send(()).unwrap())
-                .unwrap();
-            run(
-                &mut vm,
-                &format!(
-                    r#"import net
+    let (listener, addr) = rust_listener();
+    let (tx, rx) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (s, _) = listener.accept().unwrap();
+        // Only after the script's connect has finished: a reset that arrives earlier fails
+        // the connect itself.
+        rx.recv_timeout(LIMIT).unwrap();
+        // Closing with unread data in the buffer makes the system send a reset.
+        let sock = socket2::SockRef::from(&s);
+        sock.set_linger(Some(Duration::ZERO)).unwrap();
+        drop(s);
+    });
+    let (mut vm, out) = vm();
+    vm.register_fn("connected", move || tx.send(()).unwrap())
+        .unwrap();
+    run(
+        &mut vm,
+        &format!(
+            r#"import net
 
 fn kind[T](r: Result[T]) -> str {{
     match r {{
@@ -3185,13 +3150,11 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-                ),
-            )
-            .unwrap_or_else(|e| panic!("{e}"));
-            peer.join().unwrap();
-            assert_eq!(out.contents(), "Reset\nBrokenPipe\n");
-        },
+        ),
     )
+    .unwrap_or_else(|e| panic!("{e}"));
+    peer.join().unwrap();
+    assert_eq!(out.contents(), "Reset\nBrokenPipe\n");
 }
 
 /// What a script can see of the module: `connect_timeout` is there, and `Cancelled` is not (a
@@ -3747,23 +3710,20 @@ fn show(r: Result[Bytes?]) -> str {
 /// pending, `UnexpectedEnd` with bytes pending (which stay readable).
 #[test]
 fn read_until_takes_the_bytes_before_a_delimiter_and_tells_a_limit_from_the_end() {
-    vm_pending(
-        "read_until_takes_the_bytes_before_a_delimiter_and_tells_a_limit_from_the_end",
-        || {
-            let (listener, addr) = rust_listener();
-            let peer = thread::spawn(move || {
-                let (mut s, _) = listener.accept().unwrap();
-                with_timeouts(&s);
-                s.write_all(b"a\nb\r\n").unwrap();
-                s.write_all(b"\r\n").unwrap();
-                s.write_all(b"0123456789abcdefg\r\n").unwrap();
-                s.write_all(b"tail").unwrap();
-                // The end of the stream, once the script has read all of it.
-                s.shutdown(std::net::Shutdown::Write).unwrap();
-                let _ = s.read(&mut [0u8; 1]);
-            });
-            let out = output(&format!(
-                r#"import net
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        s.write_all(b"a\nb\r\n").unwrap();
+        s.write_all(b"\r\n").unwrap();
+        s.write_all(b"0123456789abcdefg\r\n").unwrap();
+        s.write_all(b"tail").unwrap();
+        // The end of the stream, once the script has read all of it.
+        s.shutdown(std::net::Shutdown::Write).unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output(&format!(
+        r#"import net
 {SHOW}
 fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
@@ -3787,46 +3747,41 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-            ));
-            peer.join().unwrap();
-            assert_eq!(
-                out,
-                "3\ntrue\n0\nLineTooLong\ntrue\n17\nUnexpectedEnd\n4\nnone\nnone\n"
-            );
-        },
-    )
+    ));
+    peer.join().unwrap();
+    assert_eq!(
+        out,
+        "3\ntrue\n0\nLineTooLong\ntrue\n17\nUnexpectedEnd\n4\nnone\nnone\n"
+    );
 }
 
 /// The limit of `read_line` set to 16 gives `LineTooLong` at 17 bytes and not at 16, with `\r\n`
 /// and with `\n`, and `read_until` has its own `max`, which `set_line_limit` does not change.
 #[test]
 fn the_line_limit_is_at_one_byte_more_than_it_says_and_read_until_has_its_own() {
-    vm_pending(
-        "the_line_limit_is_at_one_byte_more_than_it_says_and_read_until_has_its_own",
-        || {
-            let (listener, addr) = rust_listener();
-            let peer = thread::spawn(move || {
-                let (mut s, _) = listener.accept().unwrap();
-                with_timeouts(&s);
-                let x = |n: usize, end: &[u8]| {
-                    let mut v = vec![b'x'; n];
-                    v.extend_from_slice(end);
-                    v
-                };
-                for piece in [
-                    x(16, b"\r\n"),
-                    x(16, b"\n"),
-                    x(17, b"\r\n"),
-                    // What `read_until` gets: its own limit, 40, over the line limit of 16.
-                    x(30, b"\r\n"),
-                    x(41, b"\r\n"),
-                ] {
-                    s.write_all(&piece).unwrap();
-                }
-                let _ = s.read(&mut [0u8; 1]);
-            });
-            let out = output(&format!(
-                r#"import net
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        let x = |n: usize, end: &[u8]| {
+            let mut v = vec![b'x'; n];
+            v.extend_from_slice(end);
+            v
+        };
+        for piece in [
+            x(16, b"\r\n"),
+            x(16, b"\n"),
+            x(17, b"\r\n"),
+            // What `read_until` gets: its own limit, 40, over the line limit of 16.
+            x(30, b"\r\n"),
+            x(41, b"\r\n"),
+        ] {
+            s.write_all(&piece).unwrap();
+        }
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output(&format!(
+        r#"import net
 {SHOW}
 fn line(r: Result[str?]) -> str {{
     match r {{
@@ -3853,14 +3808,12 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-            ));
-            peer.join().unwrap();
-            assert_eq!(
-                out,
-                "16 chars\n16 chars\nLineTooLong\n19\n30 bytes\nLineTooLong\n"
-            );
-        },
-    )
+    ));
+    peer.join().unwrap();
+    assert_eq!(
+        out,
+        "16 chars\n16 chars\nLineTooLong\n19\n30 bytes\nLineTooLong\n"
+    );
 }
 
 /// `set_line_limit` made while a `read_line` waits counts at that call's next look (the limit is
@@ -3937,18 +3890,15 @@ fn main() -> Result[()] {{
 /// gibibyte (a script error otherwise, as `set_timeout` has for a bad number).
 #[test]
 fn read_until_and_set_line_limit_check_their_arguments() {
-    vm_pending(
-        "read_until_and_set_line_limit_check_their_arguments",
-        || {
-            let (listener, addr) = rust_listener();
-            let peer = thread::spawn(move || {
-                let (mut s, _) = listener.accept().unwrap();
-                with_timeouts(&s);
-                s.write_all(b"ok\n").unwrap();
-                let _ = s.read(&mut [0u8; 1]);
-            });
-            let out = output(&format!(
-                r#"import net
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        s.write_all(b"ok\n").unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output(&format!(
+        r#"import net
 {SHOW}
 fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
@@ -3967,21 +3917,21 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-            ));
-            peer.join().unwrap();
-            // `ok` is two bytes before `\n`: over a `max` of 0, then taken with a gibibyte.
-            assert_eq!(out, "Other\ntrue\nOther\nOther\nLineTooLong\n2 bytes\n");
-            for bad in [0i64, -1, 1_073_741_825] {
-                let (listener, addr) = rust_listener();
-                let peer = thread::spawn(move || {
-                    let (mut s, _) = listener.accept().unwrap();
-                    let _ = s.read(&mut [0u8; 1]);
-                });
-                let (mut vm, _out) = vm();
-                let result = run(
-                    &mut vm,
-                    &format!(
-                        r#"import net
+    ));
+    peer.join().unwrap();
+    // `ok` is two bytes before `\n`: over a `max` of 0, then taken with a gibibyte.
+    assert_eq!(out, "Other\ntrue\nOther\nOther\nLineTooLong\n2 bytes\n");
+    for bad in [0i64, -1, 1_073_741_825] {
+        let (listener, addr) = rust_listener();
+        let peer = thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let _ = s.read(&mut [0u8; 1]);
+        });
+        let (mut vm, _out) = vm();
+        let result = run(
+            &mut vm,
+            &format!(
+                r#"import net
 
 fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
@@ -3990,17 +3940,15 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-                    ),
-                );
-                let e = result.expect_err("a bad limit is an error").to_string();
-                assert!(
-                    e.contains("set_line_limit") && e.contains(&bad.to_string()),
-                    "{bad}: {e}"
-                );
-                peer.join().unwrap();
-            }
-        },
-    )
+            ),
+        );
+        let e = result.expect_err("a bad limit is an error").to_string();
+        assert!(
+            e.contains("set_line_limit") && e.contains(&bad.to_string()),
+            "{bad}: {e}"
+        );
+        peer.join().unwrap();
+    }
 }
 
 /// A `read_until` called behind another coroutine's `read_until` or `read_line` is served after
@@ -4119,27 +4067,24 @@ fn main() -> Result[()] {{
 /// leaves the connection usable with the bytes still there.
 #[test]
 fn a_read_until_that_times_out_leaves_the_half_match_for_the_next_call() {
-    vm_pending(
-        "a_read_until_that_times_out_leaves_the_half_match_for_the_next_call",
-        || {
-            let (listener, addr) = rust_listener();
-            let (more_now, told) = mpsc::channel::<()>();
-            let peer = thread::spawn(move || {
-                let (mut s, _) = listener.accept().unwrap();
-                with_timeouts(&s);
-                s.write_all(b"ab\r").unwrap();
-                // Only when the call has timed out.
-                told.recv_timeout(LIMIT).unwrap();
-                s.write_all(b"\nrest\r\n").unwrap();
-                let _ = s.read(&mut [0u8; 1]);
-            });
-            let out = output_within_setup(
-                move |vm| {
-                    vm.register_fn("more_now", move || more_now.send(()).unwrap())
-                        .unwrap();
-                },
-                format!(
-                    r#"import net
+    let (listener, addr) = rust_listener();
+    let (more_now, told) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        s.write_all(b"ab\r").unwrap();
+        // Only when the call has timed out.
+        told.recv_timeout(LIMIT).unwrap();
+        s.write_all(b"\nrest\r\n").unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output_within_setup(
+        move |vm| {
+            vm.register_fn("more_now", move || more_now.send(()).unwrap())
+                .unwrap();
+        },
+        format!(
+            r#"import net
 {SHOW}
 fn main() -> Result[()] {{
     let c = net.connect("{addr}")?
@@ -4154,13 +4099,11 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-                ),
-                LIMIT,
-            );
-            peer.join().unwrap();
-            assert_eq!(out, "Timeout\nb\"ab\"\nb\"rest\"\n");
-        },
-    )
+        ),
+        LIMIT,
+    );
+    peer.join().unwrap();
+    assert_eq!(out, "Timeout\nb\"ab\"\nb\"rest\"\n");
 }
 
 /// A `Drop` hook that calls `read_until` while a coroutine waits in a read of the same connection
@@ -4288,22 +4231,19 @@ fn main() -> Result[()] {{
 /// `net.Error.Other` with words of Colibri's own, and nothing is taken from the stream.
 #[test]
 fn a_delimiter_of_a_thousand_and_twenty_four_bytes_is_the_longest() {
-    vm_pending(
-        "a_delimiter_of_a_thousand_and_twenty_four_bytes_is_the_longest",
-        || {
-            let (listener, addr) = rust_listener();
-            let peer = thread::spawn(move || {
-                let (mut s, _) = listener.accept().unwrap();
-                with_timeouts(&s);
-                let mut piece = b"head".to_vec();
-                piece.extend_from_slice(&[b'z'; 1024]);
-                piece.extend_from_slice(b"tail");
-                s.write_all(&piece).unwrap();
-                s.shutdown(std::net::Shutdown::Write).unwrap();
-                let _ = s.read(&mut [0u8; 1]);
-            });
-            let out = output(&format!(
-                r#"import net
+    let (listener, addr) = rust_listener();
+    let peer = thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        with_timeouts(&s);
+        let mut piece = b"head".to_vec();
+        piece.extend_from_slice(&[b'z'; 1024]);
+        piece.extend_from_slice(b"tail");
+        s.write_all(&piece).unwrap();
+        s.shutdown(std::net::Shutdown::Write).unwrap();
+        let _ = s.read(&mut [0u8; 1]);
+    });
+    let out = output(&format!(
+        r#"import net
 import str
 {SHOW}
 fn main() -> Result[()] {{
@@ -4319,11 +4259,9 @@ fn main() -> Result[()] {{
     return ok(())
 }}
 "#
-            ));
-            peer.join().unwrap();
-            assert_eq!(out, "Other\ntrue\n4\n4\n");
-        },
-    )
+    ));
+    peer.join().unwrap();
+    assert_eq!(out, "Other\ntrue\n4\n4\n");
 }
 
 /// The `httpd` shape that stopped the interpreter: a closure hands a big write to a child

@@ -2,9 +2,6 @@
 //! `Stat` (in the default module or in a module of its own) coexists with the standard
 //! library's, whichever is registered first.
 
-mod common;
-use common::vm_pending;
-
 use colibri_runtime::{self as colibri, Cap, HostType, TypeBuilder};
 
 macro_rules! embedder_class {
@@ -97,22 +94,12 @@ fn check(register_first: bool) {
 
 #[test]
 fn embedder_types_registered_before_the_library_coexist_with_its_own() {
-    vm_pending(
-        "embedder_types_registered_before_the_library_coexist_with_its_own",
-        || {
-            check(true);
-        },
-    )
+    check(true);
 }
 
 #[test]
 fn embedder_types_registered_after_the_library_coexist_with_its_own() {
-    vm_pending(
-        "embedder_types_registered_after_the_library_coexist_with_its_own",
-        || {
-            check(false);
-        },
-    )
+    check(false);
 }
 
 #[test]
@@ -237,22 +224,12 @@ fn check_values(register_first: bool) {
 
 #[test]
 fn an_embedder_value_and_item_registered_before_the_library_coexist_with_json_value() {
-    vm_pending(
-        "an_embedder_value_and_item_registered_before_the_library_coexist_with_json_value",
-        || {
-            check_values(true);
-        },
-    )
+    check_values(true);
 }
 
 #[test]
 fn an_embedder_value_and_item_registered_after_the_library_coexist_with_json_value() {
-    vm_pending(
-        "an_embedder_value_and_item_registered_after_the_library_coexist_with_json_value",
-        || {
-            check_values(false);
-        },
-    )
+    check_values(false);
 }
 
 #[test]
