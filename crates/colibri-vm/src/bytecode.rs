@@ -985,7 +985,12 @@ impl Op {
             | Op::Not { d, a: s }
             | Op::Coerce { d, s, .. }
             | Op::GetField { d, s, .. }
+            | Op::ListLen { d, l: s }
+            | Op::StrLen { d, s }
+            | Op::ListPush { l: d, v: s }
             | Op::Unpack { d, s, .. } => end(&[d, s]),
+            Op::ForListNext { d, a } => end(&[d, a.saturating_add(1)]),
+            Op::ForListNextVar { d, a } => end(&[d, a.saturating_add(2)]),
             Op::Drop { r }
             | Op::DropInert { r }
             | Op::DropCheck { r }
@@ -1055,9 +1060,6 @@ impl Op {
             | Op::StrConcat { .. }
             | Op::Intrinsic { .. }
             | Op::Builtin { .. }
-            | Op::ListPush { .. }
-            | Op::ListLen { .. }
-            | Op::StrLen { .. }
             | Op::NewStruct { .. }
             | Op::NewObject { .. }
             | Op::NewVariant { .. }
@@ -1084,8 +1086,6 @@ impl Op {
             | Op::CanonKey { .. }
             | Op::HoldIter { .. }
             | Op::HoldListPlace { .. }
-            | Op::ForListNext { .. }
-            | Op::ForListNextVar { .. }
             | Op::ForMapNext { .. }
             | Op::ForSetNext { .. }
             | Op::ForIterNext { .. }

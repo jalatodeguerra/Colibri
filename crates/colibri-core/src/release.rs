@@ -128,6 +128,14 @@ pub trait Release: Engine {
         if is_shared(&value) {
             return;
         }
+        // A struct, tuple or enum that owns nothing but scalars and strings (a point, a pair)
+        // has nothing to release: it is freed with its last reference, no worklist.
+        match &value {
+            Value::Struct(rc) if !rc.fields.iter().any(is_container) => return,
+            Value::Tuple(rc) if !rc.iter().any(is_container) => return,
+            Value::Enum(rc) if !rc.payload.iter().any(is_container) => return,
+            _ => {}
+        }
         // The worklist allocates on its first push, so a container with no container
         // children (a leaf) is taken apart without allocating (a map still collects its
         // entries into one `Vec`). `is_shared` only saves the call: an unshared-check inside

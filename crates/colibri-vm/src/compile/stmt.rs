@@ -373,7 +373,10 @@ impl FnCompiler<'_> {
                 }
                 if write_back {
                     // The write-back runs after the trip's hook check, as `run_iteration` writes
-                    // back after `exit_scope` has folded the hook panics.
+                    // back after `exit_scope` has folded the hook panics, and a hook panic
+                    // the write-back raises folds right after it (the drop-hook rule: a panic
+                    // folds where the release that raised it ends).
+                    self.push_fold();
                     self.push_item(Item::ForBack {
                         l: self.local(l),
                         a,

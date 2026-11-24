@@ -91,7 +91,7 @@ impl Machine {
     /// so landing pads and suspension have one place to hook into.
     pub(crate) fn exec(&mut self, fiber: &mut VmFiber) -> Result<Exit, Ctl> {
         let top = fiber.frames.last().expect("exec needs a frame");
-        let mut chunk = Rc::clone(&top.chunk);
+        let mut chunk = unchecked::Running::new(Rc::clone(&top.chunk));
         let mut base = top.base as usize;
         let mut pc = top.pc as usize;
 
@@ -238,7 +238,7 @@ impl Machine {
             ($off:expr) => {{
                 let mut next = (pc as isize + $off as isize) as usize;
                 let mut n = 1;
-                if let Op::Step { n: run } = chunk.code[next] {
+                if let Op::Step { n: run } = chunk.ops()[next] {
                     n += run;
                     next += 1;
                 }
@@ -288,14 +288,14 @@ impl Machine {
         macro_rules! reload {
             () => {{
                 let frame = fiber.frames.last().expect("a frame");
-                chunk = Rc::clone(&frame.chunk);
+                chunk.set(Rc::clone(&frame.chunk));
                 base = frame.base as usize;
                 pc = frame.pc as usize;
             }};
         }
 
         loop {
-            let op = chunk.code[pc];
+            let op = chunk.ops()[pc];
             pc += 1;
             match op {
                 Op::LoadUnit { d } => put!(d, Value::Unit),
@@ -621,9 +621,32 @@ impl Machine {
                     sync!();
                     tri!(self.op_builtin(fiber, &chunk, base, pc, op));
                 }
-                Op::ListPush { .. } | Op::ListLen { .. } | Op::StrLen { .. } => {
-                    sync!();
-                    tri!(self.op_hot_builtin(fiber, &chunk, base, pc, op));
+                Op::ListPush { l, v } => {
+                    let item = rd!(v).dup();
+                    let Value::List(list) = rd!(l) else {
+                        self.release(item);
+                        internal!("an ill-typed `push`")
+                    };
+                    if let Err(rejected) = list.push(item) {
+                        sync!();
+                        self.release(rejected.args);
+                        let span = chunk.spans[pc - 1];
+                        throw!(self.violation(fiber, span, rejected.violation));
+                    }
+                }
+                Op::ListLen { d, l } => {
+                    let Value::List(list) = rd!(l) else {
+                        internal!("an ill-typed `len`")
+                    };
+                    let n = list.len() as i64;
+                    put!(d, Value::Int(n));
+                }
+                Op::StrLen { d, s } => {
+                    let Value::Str(text) = rd!(s) else {
+                        internal!("an ill-typed `len`")
+                    };
+                    let n = text.len() as i64;
+                    put!(d, Value::Int(n));
                 }
                 Op::Coerce { d, s, site } => match &chunk.sites[usize::from(site)] {
                     Site::F32ToFloat => {
@@ -709,11 +732,43 @@ impl Machine {
                     tri!(self.op_hold(fiber, &chunk, base, pc, op));
                 }
                 Op::ForListNext { d, a } | Op::ForListNextVar { d, a } => {
-                    sync!();
                     let var = matches!(op, Op::ForListNextVar { .. });
-                    // An item skips the jump that ends the loop.
-                    if tri!(self.op_for_list_next(fiber, &chunk, base, pc, [d, a], var)) {
+                    // The common trip, with no call out: an item is there, the budget lasts, and
+                    // the item is bound. Everything else (the end of the list, a failing step, a
+                    // source that is not a list) is `op_for_list_next`'s, which starts over.
+                    let fast = 'trip: {
+                        let Value::List(list) = rd!(a) else {
+                            break 'trip false;
+                        };
+                        let Value::Int(i) = *rd!(a + 1) else {
+                            break 'trip false;
+                        };
+                        if !chunk.hidden && self.core.budget.left <= 0 {
+                            break 'trip false;
+                        }
+                        let Some(item) = list.at(i as usize) else {
+                            break 'trip false;
+                        };
+                        if !chunk.hidden {
+                            self.core.budget.left -= 1;
+                        }
+                        if let Value::Int(n) = wr!(a + 1) {
+                            *n += 1;
+                        }
+                        if var {
+                            put!(a + 2, item.dup());
+                        }
+                        put!(d, item);
+                        true
+                    };
+                    if fast {
+                        // An item skips the jump that ends the loop.
                         pc += 1;
+                    } else {
+                        sync!();
+                        if tri!(self.op_for_list_next(fiber, &chunk, base, pc, [d, a], var)) {
+                            pc += 1;
+                        }
                     }
                 }
                 Op::ForMapNext { .. } | Op::ForSetNext { .. } | Op::ForIterNext { .. } => {
@@ -1217,50 +1272,6 @@ impl Machine {
         }
         Ok(())
     }
-
-    /// `ListPush`, `ListLen` and `StrLen`: the built-ins that are instructions of their own.
-    #[inline(never)]
-    fn op_hot_builtin(
-        &mut self,
-        fiber: &mut VmFiber,
-        chunk: &Chunk,
-        base: usize,
-        pc: usize,
-        op: Op,
-    ) -> Result<(), Ctl> {
-        let span = || chunk.spans[pc - 1];
-        let r = |i: u16| base + usize::from(i);
-        match op {
-            Op::ListPush { l, v } => {
-                let item = fiber.regs[r(v)].clone();
-                let Value::List(list) = &fiber.regs[r(l)] else {
-                    self.release(item);
-                    return Err(self.internal(fiber, span(), "an ill-typed `push`"));
-                };
-                if let Err(rejected) = list.push(item) {
-                    self.release(rejected.args);
-                    return Err(self.violation(fiber, span(), rejected.violation));
-                }
-            }
-            Op::ListLen { d, l } => {
-                let Value::List(list) = &fiber.regs[r(l)] else {
-                    return Err(self.internal(fiber, span(), "an ill-typed `len`"));
-                };
-                let n = list.len() as i64;
-                Self::put_reg(fiber, r(d), Value::Int(n));
-            }
-            Op::StrLen { d, s } => {
-                let Value::Str(text) = &fiber.regs[r(s)] else {
-                    return Err(self.internal(fiber, span(), "an ill-typed `len`"));
-                };
-                let n = text.len() as i64;
-                Self::put_reg(fiber, r(d), Value::Int(n));
-            }
-            _ => return Err(self.internal(fiber, span(), "not a built-in instruction")),
-        }
-        Ok(())
-    }
-
     fn uninit_message(&self, g: u32) -> String {
         let name = self
             .uninit

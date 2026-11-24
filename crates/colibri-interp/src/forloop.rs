@@ -186,7 +186,7 @@ impl Interp {
                 .map(|slot| crate::eval::unwrap_cell(std::mem::replace(slot, Value::Unit))),
             _ => None,
         };
-        let result = self.exit_scope(fiber, mark, result);
+        let mut result = self.exit_scope(fiber, mark, result);
         if let (Some((list, i)), Some(original), Some(last)) = (write_back, original, last) {
             if same_object(&original, &last) {
                 self.release(last);
@@ -197,6 +197,8 @@ impl Interp {
                 }
             }
             self.release(original);
+            // A hook panic the write-back raised folds here, not at some later statement end.
+            result = self.fold_hook_panics(result);
         }
         match result {
             Ok(v) => {
