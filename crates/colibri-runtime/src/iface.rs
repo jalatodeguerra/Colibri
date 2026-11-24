@@ -31,6 +31,8 @@ pub(crate) struct HostFnEntry {
     pub typed: bool,
     /// `@deprecated("message")`: scripts that use the function get a warning.
     pub deprecated: Option<String>,
+    /// The function never waits for anything outside the program (`Registration::no_await`).
+    pub no_await: bool,
 }
 
 /// A registered constant of a module (`math.PI`).
@@ -337,6 +339,7 @@ mod tests {
             names: None,
             typed: false,
             deprecated: None,
+            no_await: false,
         }
     }
 

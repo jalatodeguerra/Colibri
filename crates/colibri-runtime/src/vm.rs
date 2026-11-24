@@ -261,6 +261,7 @@ impl VmBuilder {
             caps: self.caps,
             registry: TypeRegistry::new(),
             host_fns: Vec::new(),
+            no_await: Vec::new(),
             host_consts: Vec::new(),
             modules: Vec::new(),
             pending: Vec::new(),
@@ -298,6 +299,9 @@ pub struct Vm {
     registry: TypeRegistry,
     /// The registered host functions, in the order of their `HostFnId`s.
     host_fns: Vec<HostFnEntry>,
+    /// Standard modules whose functions never wait on anything outside the program, with the
+    /// names (`f`, or `Class.*`) of the ones that may (see `Vm::no_await_module`).
+    no_await: Vec<(String, Vec<String>)>,
     /// The constants of named modules (`math.PI`).
     host_consts: Vec<ConstEntry>,
     /// The named host modules (`vm.module("physics")`) that have something registered, in the
@@ -732,6 +736,7 @@ impl Vm {
             names,
             typed: false,
             deprecated: None,
+            no_await: false,
         });
         let before = std::mem::replace(&mut self.registry, registry);
         let added = self.note_module(module);
@@ -1001,13 +1006,44 @@ impl Vm {
 
     /// The raw function that implements the host function or method `name` (`World.step`),
     /// and the capability it needs.
-    fn find_raw(&self, module: &str, name: &str) -> Option<(crate::host::RawHostFn, Option<Cap>)> {
+    /// Whether the host function `name` of `module` never waits for anything outside the
+    /// program (a pure one): the VM runs it beside live coroutines, and refuses any other
+    /// until it can suspend a coroutine for a wait (vm-plan step 12).
+    fn is_no_await(&self, module: &str, name: &str) -> bool {
+        let class = name.split_once('.').map(|(c, _)| format!("{c}.*"));
+        self.no_await.iter().any(|(m, waiting)| {
+            m == module
+                && !waiting
+                    .iter()
+                    .any(|w| w == name || class.as_deref() == Some(w.as_str()))
+        })
+    }
+
+    /// Declares that the functions of the standard module `name` never wait for anything
+    /// outside the program, except the ones in `waiting` (a function name, or `Class.*` for
+    /// the methods of a class). A host function of any other module may wait. For the
+    /// `colibri-std` crate; not part of the embedding API, hence hidden.
+    #[doc(hidden)]
+    pub fn no_await_module(&mut self, name: &str, waiting: &[&str]) {
+        self.no_await.push((
+            format!("{}{name}", colibri_check::host::STD_PREFIX),
+            waiting.iter().map(|w| w.to_string()).collect(),
+        ));
+    }
+
+    fn find_raw(
+        &self,
+        module: &str,
+        name: &str,
+    ) -> Option<(crate::host::RawHostFn, Option<Cap>, bool)> {
+        let pure = self.is_no_await(module, name);
+        let marked = |e: &HostFnEntry| e.no_await || pure;
         if let Some(entry) = self
             .host_fns
             .iter()
             .find(|e| e.module == module && e.name == name)
         {
-            return Some((entry.raw.clone(), entry.requires));
+            return Some((entry.raw.clone(), entry.requires, marked(entry)));
         }
         let (class, method) = name.split_once('.')?;
         let class =
@@ -1015,7 +1051,7 @@ impl Vm {
                 c.name == class && c.module.as_deref().unwrap_or(DEFAULT_MODULE) == module
             })?;
         let method = class.methods.iter().find(|m| m.name == method)?;
-        Some((method.raw.clone(), None))
+        Some((method.raw.clone(), None, pure))
     }
 
     pub(crate) fn set_typed(&mut self, index: usize) -> Result<(), Error> {
@@ -1093,6 +1129,12 @@ impl Vm {
     pub(crate) fn set_deprecated(&mut self, index: usize, message: &str) {
         if let Some(entry) = self.host_fns.get_mut(index) {
             entry.deprecated = Some(message.to_string());
+        }
+    }
+
+    pub(crate) fn set_no_await(&mut self, index: usize) {
+        if let Some(entry) = self.host_fns.get_mut(index) {
+            entry.no_await = true;
         }
     }
 
@@ -1281,14 +1323,14 @@ impl Vm {
                     .map_err(Error::Ffi)?;
                 continue;
             }
-            let Some((raw, requires)) = self.find_raw(&def.module, &def.name) else {
+            let Some((raw, requires, pure)) = self.find_raw(&def.module, &def.name) else {
                 continue;
             };
             if requires.is_some_and(|cap| !self.caps.contains(cap)) {
                 continue;
             }
             let imp = trampoline(&def.name, &def.module, raw);
-            self.engine.set_host_fn(HostFnId(i as u32), imp);
+            self.engine.set_host_fn(HostFnId(i as u32), imp, pure);
         }
         Ok(())
     }

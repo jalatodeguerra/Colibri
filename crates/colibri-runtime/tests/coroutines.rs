@@ -110,7 +110,8 @@ fn wait_in_a_host_callback_reports_the_reason() {
             s.set(true);
         }
     })
-    .unwrap();
+    .unwrap()
+    .no_await();
     vm.load_source(
         "game.colibri",
         "fn pauses() { wait(1.0) }\nfn co() { call_back() }\nfn main() { go co() }\n",

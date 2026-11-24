@@ -4,14 +4,16 @@
 # wraps its body in `vm_pending` (tests/common/mod.rs): on the VM it is expected to fail, and
 # one that passes fails the run, so delete its line (and the wrapper) when it starts to pass.
 # `vm_pending_list.rs` checks that every entry names a wrapped test.
-children::a_panic_leaves_no_child_behind  # a host function that waits for a background operation while coroutines are alive
-children::os_exit_leaves_no_child_behind  # a host function that waits for a background operation while coroutines are alive
-guide::guide_samples_print_the_output_the_guide_shows  # a host function that waits for a background operation while coroutines are alive
-httpd_descriptors::a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connections_end  # a host function that waits for a background operation while coroutines are alive
+children::a_panic_leaves_no_child_behind  # a host function that can wait, beside running coroutines
+children::os_exit_leaves_no_child_behind  # a host function that can wait, beside running coroutines
+guide::guide_samples_print_the_output_the_guide_shows  # a host function that can wait, beside running coroutines
+httpd_descriptors::a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connections_end  # a host function that can wait, beside running coroutines
 repl::a_check_error_leaves_the_session_intact  # REPL sessions
 repl::a_definition_that_is_left_out_here_cannot_replace_the_one_that_is_in_the_program  # REPL sessions
 repl::a_definition_without_when_replaces_every_variant_and_the_other_way_round  # REPL sessions
 repl::a_deprecated_use_warns_in_the_repl  # REPL sessions
+repl::a_discarded_const_or_let_with_a_closure_is_accepted  # REPL sessions
+repl::a_discarded_const_runs_once_in_entry_order  # REPL sessions
 repl::a_panic_leaves_the_session_intact  # REPL sessions
 repl::a_plain_redefinition_takes_the_place_of_the_variant_that_is_in_the_program  # REPL sessions
 repl::a_redefinition_with_the_same_condition_replaces_whatever_the_spacing  # REPL sessions
@@ -41,16 +43,15 @@ repl::two_when_variants_of_one_name_keep_both  # REPL sessions
 repl::type_command_shows_the_type_without_running  # REPL sessions
 repl::types_declare_and_persist  # REPL sessions
 repl::unknown_commands_and_quit  # REPL sessions
-scripts::kvclient_talks_to_kvserver_and_reports_a_missing_server  # a host function that waits for a background operation while coroutines are alive
-scripts::kvserver_does_not_stall_on_silent_clients_it_turns_away  # a host function that waits for a background operation while coroutines are alive
-scripts::kvserver_serves_several_clients_and_shuts_down  # a host function that waits for a background operation while coroutines are alive
-scripts::kvserver_survives_running_out_of_descriptors  # a host function that waits for a background operation while coroutines are alive
-scripts::kvserver_turns_away_connections_over_its_cap  # a host function that waits for a background operation while coroutines are alive
-scripts::notes_client_talks_to_notes_and_reports_a_missing_server  # a host function that waits for a background operation while coroutines are alive
-scripts::notes_serves_a_json_api_streams_its_export_and_stops_on_shutdown  # a host function that waits for a background operation while coroutines are alive
-scripts::os_exit_with_blocked_sockets_ends_the_process  # a host function that waits for a background operation while coroutines are alive
-scripts::report_lists_failed_sources_and_exits_1  # a host function that waits for a background operation while coroutines are alive
-scripts::report_over_http_matches_the_golden_file  # a host function that waits for a background operation while coroutines are alive
-scripts::report_requests_overlap_with_concurrency  # a host function that waits for a background operation while coroutines are alive
-repl::a_discarded_const_or_let_with_a_closure_is_accepted  # REPL sessions
-repl::a_discarded_const_runs_once_in_entry_order  # REPL sessions
+scripts::kvclient_talks_to_kvserver_and_reports_a_missing_server  # a host function that can wait, beside running coroutines
+scripts::kvserver_closes_idle_connections_and_reports_a_bad_address  # a host function that can wait, beside running coroutines
+scripts::kvserver_does_not_stall_on_silent_clients_it_turns_away  # a host function that can wait, beside running coroutines
+scripts::kvserver_serves_several_clients_and_shuts_down  # a host function that can wait, beside running coroutines
+scripts::kvserver_survives_running_out_of_descriptors  # a host function that can wait, beside running coroutines
+scripts::kvserver_turns_away_connections_over_its_cap  # a host function that can wait, beside running coroutines
+scripts::notes_client_talks_to_notes_and_reports_a_missing_server  # a host function that can wait, beside running coroutines
+scripts::notes_serves_a_json_api_streams_its_export_and_stops_on_shutdown  # a host function that can wait, beside running coroutines
+scripts::os_exit_with_blocked_sockets_ends_the_process  # a host function that can wait, beside running coroutines
+scripts::report_lists_failed_sources_and_exits_1  # a host function that can wait, beside running coroutines
+scripts::report_over_http_matches_the_golden_file  # a host function that can wait, beside running coroutines
+scripts::report_requests_overlap_with_concurrency  # a host function that can wait, beside running coroutines

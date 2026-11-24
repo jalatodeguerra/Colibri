@@ -777,23 +777,28 @@ fn kvclient_talks_to_kvserver_and_reports_a_missing_server() {
 
 #[test]
 fn kvserver_closes_idle_connections_and_reports_a_bad_address() {
-    let kv = Kv::start(&["--idle", "1.5"]);
-    let mut c = kv.client();
-    assert_eq!(ask(&mut c, "COUNT\n"), "0");
-    // Silent for longer than the idle time: the server closes the connection.
-    use std::io::BufRead;
-    let mut line = String::new();
-    assert_eq!(c.1.read_line(&mut line).unwrap(), 0);
-    drop(kv);
+    vm_pending(
+        "kvserver_closes_idle_connections_and_reports_a_bad_address",
+        || {
+            let kv = Kv::start(&["--idle", "1.5"]);
+            let mut c = kv.client();
+            assert_eq!(ask(&mut c, "COUNT\n"), "0");
+            // Silent for longer than the idle time: the server closes the connection.
+            use std::io::BufRead;
+            let mut line = String::new();
+            assert_eq!(c.1.read_line(&mut line).unwrap(), 0);
+            drop(kv);
 
-    let script = scripts().join("kvserver/kvserver.colibri");
-    let out = run_script(&script, &["--addr", "not an address"]);
-    assert_eq!(out.status.code(), Some(1));
-    assert!(
-        text(&out.stderr).contains("is not an address"),
-        "{}",
-        text(&out.stderr)
-    );
+            let script = scripts().join("kvserver/kvserver.colibri");
+            let out = run_script(&script, &["--addr", "not an address"]);
+            assert_eq!(out.status.code(), Some(1));
+            assert!(
+                text(&out.stderr).contains("is not an address"),
+                "{}",
+                text(&out.stderr)
+            );
+        },
+    )
 }
 
 /// `--idle` is a deadline for each request line, and what it is given must be a number of

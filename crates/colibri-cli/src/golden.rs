@@ -405,7 +405,9 @@ fn run_with(
     let driver = clock.clone();
     vm.module("testclock")
         .register_fn("advance", move |seconds: f64| driver.advance(seconds))
-        .expect("the test clock registers into a new Vm");
+        .expect("the test clock registers into a new Vm")
+        // It only moves a fake clock: the VM may call it beside running coroutines.
+        .no_await();
     // After `main`, the program's coroutines run until none is left (what `colibri run` does).
     let result = load(&mut vm)
         .and_then(|()| vm.run_main())

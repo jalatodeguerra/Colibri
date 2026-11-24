@@ -134,6 +134,15 @@ impl Registration<'_> {
         self
     }
 
+    /// The function never waits for anything outside the program (no `run_async`, no
+    /// completion): the bytecode VM may call it beside running coroutines. Without this, the
+    /// VM refuses the call while a coroutine is alive, as it cannot yet suspend one for a wait
+    /// (vm-plan step 12); the tree-walker takes no notice.
+    pub fn no_await(self) -> Self {
+        self.vm.set_no_await(self.index);
+        self
+    }
+
     /// The function is deprecated: a script that calls it gets the warning "`name` is
     /// deprecated: message" (an empty `message` leaves the colon out). The interface file
     /// carries it as `@deprecated("message")`.

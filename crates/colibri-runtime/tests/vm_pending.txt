@@ -4,26 +4,27 @@
 # wraps its body in `vm_pending` (tests/common/mod.rs): on the VM it is expected to fail, and
 # one that passes fails the run, so delete its line (and the wrapper) when it starts to pass.
 # `vm_pending_list.rs` checks that every entry names a wrapped test.
-async_ops::a_cancel_hook_has_run_when_cancel_returns  # a host function that waits for a background operation while coroutines are alive
-async_ops::a_cancelled_completion_has_run_its_hook_and_ignores_a_late_complete  # a host function that waits for a background operation while coroutines are alive
-async_ops::a_completed_parked_waiter_gets_its_value_once  # a host function that waits for a background operation while coroutines are alive
-async_ops::a_completer_dropped_by_its_holder_wakes_a_parked_waiter_with_an_error  # a host function that waits for a background operation while coroutines are alive
-async_ops::a_completer_dropped_without_a_result_is_an_error_not_a_hang  # a host function that waits for a background operation while coroutines are alive
-async_ops::a_completion_from_another_thread_wakes_coroutines_that_overlap  # a host function that waits for a background operation while coroutines are alive
-async_ops::a_completion_made_inside_start_yields_once_and_gives_its_value  # a host function that waits for a background operation while coroutines are alive
-async_ops::a_completion_on_the_main_fiber_runs_the_loop_meanwhile  # a host function that waits for a background operation while coroutines are alive
-async_ops::a_fake_clock_does_not_advance_while_an_operation_runs  # a host function that waits for a background operation while coroutines are alive
-async_ops::a_host_driven_loop_is_not_blocked_by_an_operation  # a host function that waits for a background operation while coroutines are alive
-async_ops::an_operation_cancelled_while_running_is_dropped  # a host function that waits for a background operation while coroutines are alive
-async_ops::background_operations_overlap_inside_coroutines  # a host function that waits for a background operation while coroutines are alive
-async_ops::blocked_operations_never_hold_back_the_one_that_unblocks_them  # a host function that waits for a background operation while coroutines are alive
-async_ops::cancelling_a_waiting_coroutine_unwinds_it  # a host function that waits for a background operation while coroutines are alive
-async_ops::dropping_the_vm_cancels_running_operations  # a host function that waits for a background operation while coroutines are alive
-async_ops::dropping_the_vm_with_a_completer_outstanding_cancels_its_token  # a host function that waits for a background operation while coroutines are alive
-async_ops::on_the_main_fiber_the_wait_runs_the_loop  # a host function that waits for a background operation while coroutines are alive
-async_ops::the_event_loop_sleeps_until_a_completion  # a host function that waits for a background operation while coroutines are alive
-async_ops::thousands_of_operations_reuse_threads  # a host function that waits for a background operation while coroutines are alive
-async_ops::waits_carry_unit_and_string_results  # a host function that waits for a background operation while coroutines are alive
+async_ops::a_cancel_hook_has_run_when_cancel_returns  # a host function that can wait, beside running coroutines
+async_ops::a_cancelled_completion_has_run_its_hook_and_ignores_a_late_complete  # a host function that can wait, beside running coroutines
+async_ops::a_completed_parked_waiter_gets_its_value_once  # a host function that can wait, beside running coroutines
+async_ops::a_completer_dropped_by_its_holder_wakes_a_parked_waiter_with_an_error  # a host function that can wait, beside running coroutines
+async_ops::a_completer_dropped_without_a_result_is_an_error_not_a_hang  # a host function that can wait, beside running coroutines
+async_ops::a_completion_from_another_thread_wakes_coroutines_that_overlap  # a host function that can wait, beside running coroutines
+async_ops::a_completion_made_inside_start_yields_once_and_gives_its_value  # a host function that can wait, beside running coroutines
+async_ops::a_completion_on_the_main_fiber_runs_the_loop_meanwhile  # a host function that can wait, beside running coroutines
+async_ops::a_fake_clock_does_not_advance_while_an_operation_runs  # a host function that can wait, beside running coroutines
+async_ops::a_host_driven_loop_is_not_blocked_by_an_operation  # a host function that can wait, beside running coroutines
+async_ops::a_start_that_fails_is_an_error_and_nothing_waits  # a host function that can wait, beside running coroutines
+async_ops::an_operation_cancelled_while_running_is_dropped  # a host function that can wait, beside running coroutines
+async_ops::background_operations_overlap_inside_coroutines  # a host function that can wait, beside running coroutines
+async_ops::blocked_operations_never_hold_back_the_one_that_unblocks_them  # a host function that can wait, beside running coroutines
+async_ops::cancelling_a_waiting_coroutine_unwinds_it  # a host function that can wait, beside running coroutines
+async_ops::dropping_the_vm_cancels_running_operations  # a host function that can wait, beside running coroutines
+async_ops::dropping_the_vm_with_a_completer_outstanding_cancels_its_token  # a host function that can wait, beside running coroutines
+async_ops::on_the_main_fiber_the_wait_runs_the_loop  # a host function that can wait, beside running coroutines
+async_ops::the_event_loop_sleeps_until_a_completion  # a host function that can wait, beside running coroutines
+async_ops::thousands_of_operations_reuse_threads  # a host function that can wait, beside running coroutines
+async_ops::waits_carry_unit_and_string_results  # a host function that can wait, beside running coroutines
 host_modules::a_session_keeps_module_values_between_steps  # REPL sessions
 std_modules::lazy::a_failed_module_fails_every_session_entry_point  # REPL sessions
 std_modules::lazy::a_session_has_every_module  # REPL sessions

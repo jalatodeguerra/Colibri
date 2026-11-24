@@ -181,14 +181,6 @@ impl VmFiber {
         self.state.coro.is_some()
     }
 
-    /// Whether the host function running now was called by the program's code itself (not from
-    /// a `Drop` hook, a callback or a native loop): where it could give the thread to the
-    /// other coroutines for a wait, which is what a wait for a background operation needs
-    /// (vm-plan step 12).
-    pub fn host_call_is_direct(&self) -> bool {
-        self.state.host_depth == 1 && self.state.native_depth == 0
-    }
-
     /// How many held temporaries are alive; zero whenever no code is running.
     pub fn pending_temps(&self) -> usize {
         self.temps.len()

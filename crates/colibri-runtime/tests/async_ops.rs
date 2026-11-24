@@ -798,19 +798,21 @@ fn main() {
 
 #[test]
 fn a_start_that_fails_is_an_error_and_nothing_waits() {
-    let (mut vm, out, shared) = completion_vm();
-    vm.load_source(
+    vm_pending("a_start_that_fails_is_an_error_and_nothing_waits", || {
+        let (mut vm, out, shared) = completion_vm();
+        vm.load_source(
         "a.colibri",
         "fn job() -> str { return refuse() }\nfn main() {\n    let c = go job()\n    print(c.join())\n    print(refuse())\n}\n",
     )
     .unwrap();
-    vm.run_main().unwrap();
-    assert_eq!(
-        out.contents(),
-        "not started: no thread\nnot started: no thread\n"
-    );
-    assert_eq!(vm.coroutine_count(), 0);
-    assert!(shared.slots.lock().unwrap().is_empty());
+        vm.run_main().unwrap();
+        assert_eq!(
+            out.contents(),
+            "not started: no thread\nnot started: no thread\n"
+        );
+        assert_eq!(vm.coroutine_count(), 0);
+        assert!(shared.slots.lock().unwrap().is_empty());
+    })
 }
 
 /// A parked operation that is cancelled: its hook has run when `cancel()` returns, the

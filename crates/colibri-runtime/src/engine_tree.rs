@@ -168,7 +168,7 @@ impl RuntimeEngine for TreeEngine {
         self.interp.run_initialisers(&mut self.fiber)
     }
 
-    fn set_host_fn(&mut self, id: HostFnId, imp: HostFnImpl) {
+    fn set_host_fn(&mut self, id: HostFnId, imp: HostFnImpl, _no_await: bool) {
         self.interp.set_host_fn(id, adapt(imp));
     }
 

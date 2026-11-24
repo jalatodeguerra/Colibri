@@ -166,7 +166,8 @@ pub(crate) trait RuntimeEngine: HostCx {
     /// Runs the module-level value initialisers again, after `release_globals`.
     fn run_initialisers(&mut self) -> Result<(), Box<PanicInfo>>;
 
-    fn set_host_fn(&mut self, id: HostFnId, imp: HostFnImpl);
+    /// `no_await`: the function never waits for anything outside the program.
+    fn set_host_fn(&mut self, id: HostFnId, imp: HostFnImpl, no_await: bool);
     fn set_host_class_hooks(&mut self, ty: TypeId, hooks: ClassHooks);
 
     /// Binds an `extern` function to its C library; the error is what a load failure shows.

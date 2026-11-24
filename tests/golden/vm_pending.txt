@@ -19,19 +19,21 @@
 # Linux, so the gate-lifted run stops early). A copy of `process_spawn_windows` and `process_windows`
 # with `sh`, `grep` and `sleep` in place of `cmd`, `findstr` and `ping` ran to the end with the same
 # output on both engines. The Windows CI run is the proof.
-std/fs_file_two_coroutines_share_a_handle.colibri  # a host function that waits for a background operation while coroutines are alive
-std/httpd_chunked_request.colibri  # a host function that waits for a background operation while coroutines are alive
-std/httpd_failure.colibri  # a host function that waits for a background operation while coroutines are alive
-std/httpd_head.colibri  # a host function that waits for a background operation while coroutines are alive
-std/httpd_hello.colibri  # a host function that waits for a background operation while coroutines are alive
-std/httpd_router.colibri  # a host function that waits for a background operation while coroutines are alive
-std/httpd_stream.colibri  # a host function that waits for a background operation while coroutines are alive
-std/net_echo_server_and_client.colibri  # a host function that waits for a background operation while coroutines are alive
-std/net_end_of_stream.colibri  # a host function that waits for a background operation while coroutines are alive
-std/net_half_close.colibri  # a host function that waits for a background operation while coroutines are alive
-std/net_line_limit.colibri  # a host function that waits for a background operation while coroutines are alive
-std/net_line_protocol.colibri  # a host function that waits for a background operation while coroutines are alive
-std/net_read_exact_end_of_stream.colibri  # a host function that waits for a background operation while coroutines are alive
-std/net_read_until.colibri  # a host function that waits for a background operation while coroutines are alive
-std/net_use_after_close.colibri  # a host function that waits for a background operation while coroutines are alive
+std/fs_file_two_coroutines_share_a_handle.colibri  # a host function that can wait, beside running coroutines
+std/httpd_chunked_request.colibri  # a host function that can wait, beside running coroutines
+std/httpd_failure.colibri  # a host function that can wait, beside running coroutines
+std/httpd_head.colibri  # a host function that can wait, beside running coroutines
+std/httpd_hello.colibri  # a host function that can wait, beside running coroutines
+std/httpd_router.colibri  # a host function that can wait, beside running coroutines
+std/httpd_stream.colibri  # a host function that can wait, beside running coroutines
+std/net_echo_server_and_client.colibri  # a host function that can wait, beside running coroutines
+std/net_end_of_stream.colibri  # a host function that can wait, beside running coroutines
+std/net_half_close.colibri  # a host function that can wait, beside running coroutines
+std/net_line_limit.colibri  # a host function that can wait, beside running coroutines
+std/net_line_protocol.colibri  # a host function that can wait, beside running coroutines
+std/net_read_exact_end_of_stream.colibri  # a host function that can wait, beside running coroutines
+std/net_read_until.colibri  # a host function that can wait, beside running coroutines
+std/net_timeout_then_continue.colibri  # a host function that can wait, beside running coroutines
+std/net_use_after_close.colibri  # a host function that can wait, beside running coroutines
+std/process_polling_in_a_coroutine.colibri  # a host function that can wait, beside running coroutines
 std/process_polling_windows.colibri  # `go`

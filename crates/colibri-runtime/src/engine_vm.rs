@@ -130,12 +130,8 @@ macro_rules! host_cx {
                 machine.host_borrow(in_call.then_some(fiber), index, generation, any, exclusive)
             }
 
-            // Where a coroutine could give the thread away for a wait, a host function takes the
-            // path that waits (and meets the refusal) instead of the one that blocks.
             fn external_wait_runs_others(&self) -> bool {
-                let fiber = self.shared().1;
-                fiber.host_call_is_direct()
-                    && (fiber.is_coroutine() || self.core().sched.coroutine_count() > 0)
+                false
             }
 
             fn wait_for_completion(
@@ -169,6 +165,30 @@ macro_rules! host_cx {
 host_cx!(VmEngine);
 host_cx!(VmCx<'_>);
 
+/// A host function of the runtime as the VM installs it, for calls: one that may wait for
+/// something outside the program is refused at the call while a coroutine is alive (a
+/// coroutine cannot be suspended for it before vm-plan step 12), whether or not this call would
+/// wait. That is decided from what the function is, so a run does not depend on timing.
+fn adapt_calls(imp: HostFnImpl, no_await: bool) -> HostImpl {
+    if no_await {
+        return adapt(imp);
+    }
+    Rc::new(
+        move |machine: &mut Machine, fiber: &mut VmFiber, args: Vec<CoreValue>| {
+            if fiber.is_coroutine() || Engine::core(machine).sched.coroutine_count() > 0 {
+                machine.host_wait_refused = true;
+                for arg in args {
+                    machine.release(arg);
+                }
+                return Err(colibri_vm::HostFault::Message(
+                    HOST_WAIT_REFUSAL.to_string(),
+                ));
+            }
+            imp(&mut VmCx { machine, fiber }, args)
+        },
+    )
+}
+
 /// A host function of the runtime as the VM installs it.
 fn adapt(imp: HostFnImpl) -> HostImpl {
     Rc::new(
@@ -192,7 +212,8 @@ pub(crate) fn new_engine(
     })
 }
 
-const HOST_WAIT_REFUSAL: &str = "the bytecode VM does not support a host function that waits for a background operation while coroutines are alive yet";
+const HOST_WAIT_REFUSAL: &str =
+    "the bytecode VM does not support a host function that can wait, beside running coroutines yet";
 
 fn host_wait_refusal() -> Box<PanicInfo> {
     Box::new(PanicInfo {
@@ -237,8 +258,8 @@ impl RuntimeEngine for VmEngine {
         self.machine.run_initialisers(&mut self.fiber)
     }
 
-    fn set_host_fn(&mut self, id: HostFnId, imp: HostFnImpl) {
-        self.machine.set_host_fn(id, adapt(imp));
+    fn set_host_fn(&mut self, id: HostFnId, imp: HostFnImpl, no_await: bool) {
+        self.machine.set_host_fn(id, adapt_calls(imp, no_await));
     }
 
     fn set_host_class_hooks(&mut self, ty: TypeId, hooks: ClassHooks) {
