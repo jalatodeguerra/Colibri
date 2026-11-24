@@ -179,9 +179,7 @@ impl Machine {
         chunk: &Chunk,
         base: usize,
         pc: usize,
-        d: u16,
-        a: u16,
-        site: u16,
+        [d, a, site]: [u16; 3],
     ) -> Result<(), Ctl> {
         let span = chunk.spans[pc - 1];
         let Site::Iface(s) = &chunk.sites[usize::from(site)] else {
@@ -249,9 +247,7 @@ impl Machine {
         chunk: &Chunk,
         base: usize,
         pc: usize,
-        d: u16,
-        a: u16,
-        site: u16,
+        [d, a, site]: [u16; 3],
     ) -> Result<(), Ctl> {
         let span = chunk.spans[pc - 1];
         let Site::Iface(s) = &chunk.sites[usize::from(site)] else {
@@ -319,9 +315,7 @@ impl Machine {
         chunk: &Chunk,
         base: usize,
         pc: usize,
-        d: u16,
-        a: u16,
-        site: u16,
+        [d, a, site]: [u16; 3],
     ) -> Result<(), Ctl> {
         let span = chunk.spans[pc - 1];
         let Site::Operator { iface, rhs, argc } = &chunk.sites[usize::from(site)] else {
@@ -397,9 +391,7 @@ impl Machine {
         chunk: &Chunk,
         base: usize,
         pc: usize,
-        d: u16,
-        a: u16,
-        w: u16,
+        [d, a, w]: [u16; 3],
     ) -> Result<bool, Ctl> {
         let span = chunk.spans[pc - 1];
         self.op_rewrap(fiber, base, a, w);

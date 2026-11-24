@@ -471,18 +471,18 @@ impl Machine {
                 }
                 Op::CallBound { d, base: a, site } | Op::CallDyn { d, base: a, site } => {
                     sync!();
-                    tri!(self.op_call_iface(fiber, &chunk, base, pc, d, a, site));
+                    tri!(self.op_call_iface(fiber, &chunk, base, pc, [d, a, site]));
                     reload!();
                 }
                 Op::CallIfaceInout { d, base: a, site } => {
                     sync!();
-                    tri!(self.op_call_iface_inout(fiber, &chunk, base, pc, d, a, site));
+                    tri!(self.op_call_iface_inout(fiber, &chunk, base, pc, [d, a, site]));
                     reload!();
                 }
                 Op::Rewrap { shell, recv } => self.op_rewrap(fiber, base, shell, recv),
                 Op::CallOperator { d, base: a, site } => {
                     sync!();
-                    tri!(self.op_call_operator(fiber, &chunk, base, pc, d, a, site));
+                    tri!(self.op_call_operator(fiber, &chunk, base, pc, [d, a, site]));
                     reload!();
                 }
                 Op::MakeClosure { d, site } => {
@@ -501,7 +501,7 @@ impl Machine {
                 }
                 Op::IterNextEnd { d, a, w } => {
                     sync!();
-                    if tri!(self.op_iter_next_end(fiber, &chunk, base, pc, d, a, w)) {
+                    if tri!(self.op_iter_next_end(fiber, &chunk, base, pc, [d, a, w])) {
                         pc += 1;
                     }
                 }
