@@ -18,6 +18,7 @@
 
 use colibri_check::hir::{Arm, Expr, Lit, LocalId, Pat, PatKind, Storage};
 use colibri_check::types::Ty;
+use colibri_core::pattern::bind_order;
 use colibri_syntax::Span;
 
 use super::expr::writes_locals;
@@ -43,28 +44,6 @@ pub(super) struct PatCx {
     in_or: bool,
     /// Whether bindings are recorded (only the first alternative of an or-pattern records).
     record: bool,
-}
-
-/// The locals a pattern binds, in the order the tree-walker binds them (the first alternative
-/// stands for an or-pattern).
-fn collect_binds(p: &Pat, out: &mut Vec<LocalId>) {
-    match &p.kind {
-        PatKind::Bind(local, inner) => {
-            if let Some(inner) = inner {
-                collect_binds(inner, out);
-            }
-            out.push(*local);
-        }
-        PatKind::Variant { args: items, .. }
-        | PatKind::Struct { fields: items, .. }
-        | PatKind::Tuple(items) => items.iter().for_each(|i| collect_binds(i, out)),
-        PatKind::Or(alts) => {
-            if let Some(first) = alts.first() {
-                collect_binds(first, out);
-            }
-        }
-        PatKind::Wild | PatKind::Lit(_) | PatKind::Range { .. } | PatKind::Const(_) => {}
-    }
 }
 
 /// Whether a pattern can fail to match.
@@ -97,6 +76,35 @@ impl FnCompiler<'_> {
         };
         self.pat(pat, v, &mut cx);
         cx
+    }
+
+    /// The tests of a pattern in a place that needs it to match (`let`, `for`). The checker proved
+    /// it does, but an or-pattern or a variant is only exhaustive together with its siblings, so
+    /// what is refutable is tested all the same, and a failure is an internal error. The clones
+    /// are off the cleanup stack when this returns; they are the second result.
+    pub(super) fn pat_tests_must_match(
+        &mut self,
+        pat: &Pat,
+        v: Reg,
+        span: Span,
+    ) -> (PatCx, Vec<Item>) {
+        let base = self.cleanup_depth();
+        let fail = refutable(pat).then(|| self.new_label());
+        let cx = self.pat_tests(pat, v, fail);
+        let held: Vec<Item> = self.stack.items[base..].to_vec();
+        self.truncate_stack(base);
+        if let Some(fail) = fail {
+            let ok = self.new_label();
+            self.jmp(ok, span);
+            self.bind(fail);
+            self.emit_drop_items(&held, span);
+            let site = self.add_site(Site::Unsupported(
+                "an irrefutable pattern failed".to_string(),
+            ));
+            self.emit(Op::Unsupported { site }, span);
+            self.bind(ok);
+        }
+        (cx, held)
     }
 
     fn test(&mut self, op: Op, span: Span, cx: &PatCx) {
@@ -202,7 +210,7 @@ impl FnCompiler<'_> {
         if !was_in_or {
             let mut locals = Vec::new();
             if let Some(first) = alts.first() {
-                collect_binds(first, &mut locals);
+                bind_order(first, &mut locals);
             }
             for l in locals {
                 let t = self.alloc_for(self.local_ty(l));
@@ -223,7 +231,7 @@ impl FnCompiler<'_> {
             // What this alternative may be holding when it fails: its clones and its captures.
             let mut held: Vec<Item> = self.stack.items[smark..].to_vec();
             let mut bound = Vec::new();
-            collect_binds(alt, &mut bound);
+            bind_order(alt, &mut bound);
             for l in bound {
                 if let Some(&(_, cap)) = cx.caps.iter().find(|(c, _)| *c == l) {
                     match kind_of(self.local_ty(l)) {

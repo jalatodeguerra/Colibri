@@ -229,6 +229,9 @@ impl Interp {
                 self.release(item);
                 if !matched {
                     self.release_all(binds.into_iter().map(|(_, v)| v).collect());
+                    if let Some(at) = self.pat_gave_up.take() {
+                        return Err(self.gave_up(fiber, at, None));
+                    }
                     return Err(self.internal(fiber, span, "an irrefutable `for` pattern failed"));
                 }
                 self.bind_all(fiber, binds);

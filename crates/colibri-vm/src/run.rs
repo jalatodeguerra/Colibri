@@ -575,6 +575,8 @@ impl Machine {
                     self.op_for_write_back(fiber, base, l, a);
                 }
 
+                // Only the variant is compared: the checker's types make the enum and the arity
+                // of the payload the pattern's (the tree-walker checks them too, redundantly).
                 Op::TestVariant { r, v } => {
                     let Value::Enum(e) = &reg!(r) else {
                         internal!("a variant pattern on a value that is not an enum")

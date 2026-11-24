@@ -34,6 +34,9 @@ pub struct Interp {
     /// from parts costs one allocation (the result's). Taken while in use, so a nested concat
     /// (or another coroutine's) starts with an empty one.
     concat_buf: String,
+    /// Where a constant pattern's comparison gave up while a pattern was being matched; the
+    /// caller of `match_pat` turns it into a panic at that pattern.
+    pub(crate) pat_gave_up: std::cell::Cell<Option<Span>>,
     /// Looked up at call time, so a patched function takes effect at its next call.
     pub(crate) fns: Vec<Rc<Body>>,
     pub(crate) globals: Vec<Value>,
@@ -93,6 +96,7 @@ impl Interp {
             stacks: Default::default(),
             cffi: crate::cffi::CffiState::default(),
             concat_buf: String::new(),
+            pat_gave_up: std::cell::Cell::new(None),
         }
     }
 
@@ -506,6 +510,10 @@ impl Interp {
                 let mut binds = Vec::new();
                 if !self.match_pat(pat, &value, &mut binds) {
                     self.release(value);
+                    self.release_all(binds.into_iter().map(|(_, v)| v).collect());
+                    if let Some(at) = self.pat_gave_up.take() {
+                        return Err(self.gave_up(fiber, at, None));
+                    }
                     return Err(self.internal(fiber, stmt.span, "an irrefutable pattern failed"));
                 }
                 self.release(value);
@@ -691,7 +699,12 @@ impl Interp {
     /// key, a constant pattern); `computed` is the value that depended on its stand-in answer.
     #[cold]
     #[inline(never)]
-    fn gave_up(&mut self, fiber: &mut Fiber, span: Span, computed: Option<Value>) -> Ctl {
+    pub(crate) fn gave_up(
+        &mut self,
+        fiber: &mut Fiber,
+        span: Span,
+        computed: Option<Value>,
+    ) -> Ctl {
         if let Some(value) = computed {
             self.release(value);
         }
@@ -901,6 +914,10 @@ impl Interp {
             self.release(value);
             if !matched {
                 self.release_all(binds.into_iter().map(|(_, v)| v).collect());
+                // A constant pattern gave up: no later arm is tried on its stand-in answer.
+                if let Some(at) = self.pat_gave_up.take() {
+                    return Err(self.gave_up(fiber, at, None));
+                }
                 continue;
             }
             let mark = Self::scope_mark(fiber);

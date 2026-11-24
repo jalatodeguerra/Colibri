@@ -182,10 +182,7 @@ impl FnCompiler<'_> {
                 let t = self.alloc_for(&init.ty);
                 self.expr(init, t);
                 self.own(t);
-                let base = self.cleanup_depth();
-                let cx = self.pat_tests(pat, t, None);
-                let held: Vec<Item> = self.stack.items[base..].to_vec();
-                self.truncate_stack(base);
+                let (cx, held) = self.pat_tests_must_match(pat, t, span);
                 let (items, moved) = self.emit_binds(&cx, t, span);
                 self.drop_unmoved(&held, &moved, span);
                 self.drop_now(t);
@@ -383,10 +380,7 @@ impl FnCompiler<'_> {
                 // trip's.
                 self.push_fold();
                 self.own(item);
-                let base = self.cleanup_depth();
-                let cx = self.pat_tests(pat, item, None);
-                let held: Vec<Item> = self.stack.items[base..].to_vec();
-                self.truncate_stack(base);
+                let (cx, held) = self.pat_tests_must_match(pat, item, pat.span);
                 let (items, moved) = self.emit_binds(&cx, item, pat.span);
                 for it in items {
                     self.push_item(it);

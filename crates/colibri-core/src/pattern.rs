@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 
-use colibri_check::hir::Lit;
+use colibri_check::hir::{Lit, LocalId, Pat, PatKind};
 
 use crate::value::Value;
 
@@ -43,4 +43,28 @@ pub fn range_matches(lo: Option<&Lit>, hi: Option<&Lit>, inclusive: bool, v: &Va
         _ => false,
     });
     above && below
+}
+
+/// The locals a pattern binds, in the order its bindings are stored (and so the reverse of the
+/// order they die in): the order the names first appear, a binding with a sub-pattern after the
+/// bindings of that sub-pattern, an or-pattern as its first alternative. Whichever alternative
+/// matched, both engines store and drop the bindings in this order.
+pub fn bind_order(p: &Pat, out: &mut Vec<LocalId>) {
+    match &p.kind {
+        PatKind::Bind(local, inner) => {
+            if let Some(inner) = inner {
+                bind_order(inner, out);
+            }
+            out.push(*local);
+        }
+        PatKind::Variant { args: items, .. }
+        | PatKind::Struct { fields: items, .. }
+        | PatKind::Tuple(items) => items.iter().for_each(|i| bind_order(i, out)),
+        PatKind::Or(alts) => {
+            if let Some(first) = alts.first() {
+                bind_order(first, out);
+            }
+        }
+        PatKind::Wild | PatKind::Lit(_) | PatKind::Range { .. } | PatKind::Const(_) => {}
+    }
 }
