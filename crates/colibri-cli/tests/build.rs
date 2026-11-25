@@ -344,13 +344,35 @@ fn a_damaged_or_cut_program_is_a_clean_error() {
 }
 
 #[test]
-fn a_cut_executable_is_not_mistaken_for_a_program() {
-    // Without its trailer the file is a plain `colibri`: it does not run the program.
+fn a_cut_executable_is_the_plain_tool_and_not_a_program() {
+    // Without its trailer the file is a plain `colibri`: it does not run the program, it
+    // answers to `--version` like the tool does.
     let dir = Dir::new("cut");
     dir.write("prog.colibri", "fn main() {\n    print(\"fine\")\n}\n");
     build(&dir, "prog.colibri", "good");
-    let out = damaged(&dir, "short", |b, _| b.truncate(b.len() - 5));
-    assert!(!out.stdout.contains("fine"), "{}", out.stdout);
+    let good = fs::read(dir.path(&exe("good"))).unwrap();
+    assert!(
+        !dir.built(&exe("good"), &["--version"])
+            .stdout
+            .starts_with("colibri ")
+    );
+    let out = {
+        let target = dir.path(&exe("short"));
+        fs::write(&target, &good[..good.len() - 5]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir.built(&exe("short"), &["--version"])
+    };
+    assert_eq!(
+        (out.code, out.stdout.starts_with("colibri ")),
+        (0, true),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
 }
 
 const LIB_TOML: &str = "[package]\nname = \"greet\"\n";
