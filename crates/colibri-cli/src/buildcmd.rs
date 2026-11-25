@@ -3,6 +3,17 @@
 //! The executable is a copy of the running `colibri` (the runner) with the program after its
 //! code (see [`crate::pack`]). The program is checked first, through a recording file system:
 //! the files the check reads are the program, dependencies included.
+//!
+//! `--target T --runner PATH` writes for another platform: the runner is then a `colibri` of that
+//! platform, which this build never runs. It is refused unless it is the right kind of file
+//! (ELF, PE or Mach-O, and the processor of `T`), has the version of this `colibri` (a marker
+//! string in its data, see [`crate::platform`]) and holds no program already. The target also
+//! decides `@when(os == ..)` and `@when(arch == ..)` while the program is checked, since that
+//! is when the files to read are chosen. No runner is ever downloaded.
+//!
+//! A program for macOS has its `__LINKEDIT` segment extended over the pack ([`crate::macho`]), so
+//! that `codesign -s -` accepts it: this build does that itself on a Mac, and elsewhere warns
+//! that it must be done there.
 
 use std::fs;
 use std::io::Write;
@@ -13,7 +24,9 @@ use colibri_runtime::{self as colibri, Recorded, RecordingFs};
 
 use crate::assets;
 use crate::depscmd::{self, DepFlags};
+use crate::macho;
 use crate::pack::{self, Kind, Pack, PackFile, Start};
+use crate::platform::{self, Target};
 
 /// What `colibri build` was asked for.
 pub struct Options<'a> {
@@ -23,6 +36,10 @@ pub struct Options<'a> {
     /// folder.
     pub out: Option<&'a Path>,
     pub deps: DepFlags,
+    /// The platform to build for; `runner` is then needed unless it is this one.
+    pub target: Option<Target>,
+    /// A `colibri` of the target's platform, to copy instead of this one.
+    pub runner: Option<&'a Path>,
 }
 
 /// Builds the executable, printing problems to stderr.
@@ -40,6 +57,7 @@ fn fail(message: impl std::fmt::Display) -> ExitCode {
 
 fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
     let path = options.path;
+    let runner = choose_runner(options).map_err(fail)?;
     // As `colibri run` does: the dependencies are fetched and locked before anything is read.
     depscmd::prepare(path, options.deps)?;
     let recorder = RecordingFs::new(&colibri::DiskFs);
@@ -47,7 +65,7 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
     let reads = recorder.into_files();
     let out = match options.out {
         Some(out) => out.to_path_buf(),
-        None => default_out(path),
+        None => default_out(path, options.target),
     };
     let pack = make_pack(path, reads, &out)?;
     if out.is_dir() {
@@ -62,15 +80,20 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
             out.display()
         )));
     }
-    let runner = std::env::current_exe()
-        .map_err(|e| fail(format!("cannot find the running `colibri` to copy: {e}")))?;
     if fs::canonicalize(&out).is_ok_and(|o| fs::canonicalize(&runner).is_ok_and(|r| r == o)) {
         return Err(fail(format!(
-            "the output `{}` is the running `colibri` itself: choose another with `-o`",
+            "the output `{}` is the runner itself: choose another with `-o`",
             out.display()
         )));
     }
-    write_executable(&runner, &out, &pack).map_err(fail)?;
+    let mac = crate::build_cfg().os == "macos";
+    write_executable(&runner, &out, &pack, mac).map_err(fail)?;
+    if mac {
+        sign_or_warn(&out, &runner).map_err(|e| {
+            let _ = fs::remove_file(&out);
+            fail(e)
+        })?;
+    }
     let sources = pack
         .files
         .iter()
@@ -194,12 +217,107 @@ fn program_name(path: &Path) -> String {
     )
 }
 
-fn default_out(path: &Path) -> PathBuf {
-    PathBuf::from(format!(
-        "{}{}",
-        program_name(path),
-        std::env::consts::EXE_SUFFIX
-    ))
+fn default_out(path: &Path, target: Option<Target>) -> PathBuf {
+    let suffix = target.map_or(std::env::consts::EXE_SUFFIX, Target::exe_suffix);
+    PathBuf::from(format!("{}{suffix}", program_name(path)))
+}
+
+/// The file to copy as the runner: this `colibri`, or `--runner` after its checks.
+fn choose_runner(options: &Options<'_>) -> Result<PathBuf, String> {
+    let list = || {
+        platform::TARGETS
+            .iter()
+            .map(|(n, _)| *n)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let Some(given) = options.runner else {
+        if let Some(target) = options.target
+            && Some(target) != Target::host()
+        {
+            return Err(format!(
+                "building for {} needs `--runner PATH`, a `colibri` of that platform (version {}); \
+                 `colibri build` never downloads one",
+                target.name(),
+                platform::own_version()
+            ));
+        }
+        return std::env::current_exe()
+            .map_err(|e| format!("cannot find the running `colibri` to copy: {e}"));
+    };
+    let Some(target) = options.target else {
+        return Err(format!(
+            "`--runner` needs `--target`, the platform the runner is for (one of: {})",
+            list()
+        ));
+    };
+    check_runner(given, target)?;
+    Ok(given.to_path_buf())
+}
+
+/// Refuses a runner that is not a `colibri` of `target`'s platform and of this version.
+fn check_runner(runner: &Path, target: Target) -> Result<(), String> {
+    let shown = runner.display();
+    let mut file =
+        fs::File::open(runner).map_err(|e| format!("cannot read the runner `{shown}`: {e}"))?;
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Err(format!("the runner `{shown}` is not a file"));
+    }
+    platform::check_format(&mut file, target).map_err(|e| format!("`{shown}`: {e}"))?;
+    if pack::has_pack(&mut file)? {
+        return Err(format!("the runner `{shown}` is a built program already"));
+    }
+    use std::io::Seek;
+    file.rewind()
+        .map_err(|e| format!("cannot read the runner `{shown}`: {e}"))?;
+    match platform::runner_version(&mut file)
+        .map_err(|e| format!("cannot read the runner `{shown}`: {e}"))?
+    {
+        Some(v) if v == platform::own_version() => Ok(()),
+        Some(v) => Err(format!(
+            "the runner `{shown}` is `colibri` {v}, and this is {}: use a runner of the same version",
+            platform::own_version()
+        )),
+        None => Err(format!(
+            "the runner `{shown}` does not say which `colibri` version it is: it is not a `colibri` of this version"
+        )),
+    }
+}
+
+/// Signs the program on a Mac, and elsewhere says that it must be signed there.
+fn sign_or_warn(out: &Path, runner: &Path) -> Result<(), String> {
+    let thin = fs::File::open(runner).is_ok_and(|mut f| {
+        let mut b = [0u8; 4];
+        std::io::Read::read_exact(&mut f, &mut b).is_ok() && macho::is_thin(&b)
+    });
+    if !thin {
+        eprintln!(
+            "warning: the runner is a universal Mach-O file, which cannot be prepared for signing: \
+             take one slice with `lipo -thin`, or the program stays unsigned"
+        );
+        return Ok(());
+    }
+    if cfg!(target_os = "macos") {
+        let result = std::process::Command::new("codesign")
+            .args(["-s", "-"])
+            .arg(out)
+            .output()
+            .map_err(|e| format!("cannot run `codesign` to sign `{}`: {e}", out.display()))?;
+        if !result.status.success() {
+            return Err(format!(
+                "`codesign -s -` failed on `{}`: {}",
+                out.display(),
+                String::from_utf8_lossy(&result.stderr).trim()
+            ));
+        }
+    } else {
+        eprintln!(
+            "warning: the program for macOS is not signed, and arm64 Macs refuse unsigned programs: \
+             on a Mac, run `codesign -s - {}` (or sign it with your identity)",
+            out.display()
+        );
+    }
+    Ok(())
 }
 
 /// The name of a source file of the program that `out` would overwrite, if there is one.
@@ -256,7 +374,10 @@ fn create_temp(out: &Path) -> std::io::Result<(fs::File, PathBuf)> {
 /// Copies `runner` to `out` and appends the pack. The file is made new under another name,
 /// with the permissions of the runner, and moved into place, so a failure leaves nothing
 /// half-written (and a running copy of `out` is not written into).
-fn write_executable(runner: &Path, out: &Path, pack: &Pack) -> Result<(), String> {
+///
+/// With `mac`, a Mach-O runner has its signature taken off and `__LINKEDIT` extended over the
+/// pack (see [`crate::macho`]).
+fn write_executable(runner: &Path, out: &Path, pack: &Pack, mac: bool) -> Result<(), String> {
     let cannot = |e: std::io::Error| format!("cannot write `{}`: {e}", out.display());
     let mut source = fs::File::open(runner)
         .map_err(|e| format!("cannot read the runner `{}`: {e}", runner.display()))?;
@@ -266,17 +387,29 @@ fn write_executable(runner: &Path, out: &Path, pack: &Pack) -> Result<(), String
             runner.display()
         ));
     }
-    let permissions = source.metadata().map_err(cannot)?.permissions();
+    let metadata = source.metadata().map_err(cannot)?;
+    let permissions = metadata.permissions();
+    let prepared = if mac {
+        mac_head(&mut source, metadata.len())?
+    } else {
+        None
+    };
     let (mut file, tmp) = create_temp(out).map_err(cannot)?;
     let result = (|| {
-        use std::io::Seek;
+        use std::io::{Read, Seek, SeekFrom};
         source.rewind()?;
-        let runner_len = std::io::copy(&mut source, &mut file)?;
+        let keep = prepared.as_ref().map_or(u64::MAX, |p| p.keep);
+        let runner_len = std::io::copy(&mut (&mut source).take(keep), &mut file)?;
         {
             let mut buffered = std::io::BufWriter::new(&mut file);
             pack.write_to(&mut buffered, runner_len)
                 .map_err(std::io::Error::other)?;
             buffered.flush()?;
+        }
+        if let Some(p) = &prepared {
+            let total = file.seek(SeekFrom::End(0))?;
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(&p.head_with(total))?;
         }
         file.set_permissions(permissions)?;
         file.sync_all()?;
@@ -287,6 +420,27 @@ fn write_executable(runner: &Path, out: &Path, pack: &Pack) -> Result<(), String
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// The runner's header and load commands made ready for a pack, if it is a thin Mach-O file.
+fn mac_head(source: &mut fs::File, len: u64) -> Result<Option<macho::Prepared>, String> {
+    use std::io::{Read, Seek};
+    let mut start = [0u8; 32];
+    source
+        .rewind()
+        .map_err(|e| format!("cannot read the runner: {e}"))?;
+    if source.read_exact(&mut start).is_err() || !macho::is_thin(&start) {
+        return Ok(None);
+    }
+    let Some(size) = macho::head_len(&start) else {
+        return Ok(None);
+    };
+    let mut head = start.to_vec();
+    head.resize(size, 0);
+    source
+        .read_exact(&mut head[32..])
+        .map_err(|e| format!("cannot read the runner: {e}"))?;
+    macho::prepare(&head, len).map(Some)
 }
 
 #[cfg(test)]
@@ -319,7 +473,7 @@ mod tests {
         // the file has been made and filled.
         fs::create_dir_all(dir.join("out")).unwrap();
         fs::write(dir.join("out").join("keep"), b"x").unwrap();
-        let err = write_executable(&dir.join("runner"), &dir.join("out"), &tiny_pack());
+        let err = write_executable(&dir.join("runner"), &dir.join("out"), &tiny_pack(), false);
         assert!(err.is_err());
         let mut names: Vec<String> = fs::read_dir(&dir)
             .unwrap()
@@ -328,6 +482,59 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names, ["out", "runner"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// What `codesign -s -` does to a prepared file, as far as this reader can tell: the blob
+    /// goes to the next multiple of 16 after `__LINKEDIT`'s end, a command for it is added in
+    /// the free room after the others, and `__LINKEDIT` grows over it.
+    fn fake_codesign(mut file: Vec<u8>, blob: usize) -> Vec<u8> {
+        let at = file.len().next_multiple_of(16);
+        file.resize(at, 0);
+        file.resize(at + blob, 0xEE);
+        let ncmds = u32::from_le_bytes(file[16..20].try_into().unwrap());
+        let size = u32::from_le_bytes(file[20..24].try_into().unwrap()) as usize;
+        let mut cmd = Vec::new();
+        cmd.extend(0x1du32.to_le_bytes());
+        cmd.extend(16u32.to_le_bytes());
+        cmd.extend((at as u32).to_le_bytes());
+        cmd.extend((blob as u32).to_le_bytes());
+        file[32 + size..32 + size + 16].copy_from_slice(&cmd);
+        file[16..20].copy_from_slice(&(ncmds + 1).to_le_bytes());
+        file[20..24].copy_from_slice(&((size + 16) as u32).to_le_bytes());
+        file
+    }
+
+    #[test]
+    fn a_program_for_macos_is_signable_and_still_found_after_signing() {
+        let dir = scratch("mac");
+        let runner = crate::macho::tests::image(0x8000, 0x100, false);
+        fs::write(dir.join("runner"), &runner).unwrap();
+        let mut pack = tiny_pack();
+        pack.assets = vec![crate::pack::PackAsset::held("a.txt", vec![5; 1000])];
+        let out = dir.join("out");
+        write_executable(&dir.join("runner"), &out, &pack, true).unwrap();
+        let built = fs::read(&out).unwrap();
+        // The runner's own signature is gone, and what is left of it is untouched.
+        assert!(built.len() > 0x7f00 + 1000);
+        assert_eq!(&built[0x4000 + 200..0x7f00], &runner[0x4000 + 200..0x7f00]);
+        // __LINKEDIT reaches the end of the file, so that codesign accepts it.
+        let linkedit = crate::macho::tests::linkedit_of(&built[..32 + 144]);
+        assert_eq!(0x4000 + linkedit.1, built.len() as u64);
+        // Unsigned, the program is found at the end of the file; signed, before the signature.
+        let mut plain = std::io::Cursor::new(built.clone());
+        assert!(pack::read_from(&mut plain).unwrap().is_some());
+        for blob in [16, 17, 4000] {
+            let signed = fake_codesign(built.clone(), blob);
+            let mut file = std::io::Cursor::new(signed);
+            let found = pack::read_from(&mut file).unwrap().expect("the pack");
+            assert_eq!(found.name, "p");
+            assert_eq!(found.assets.len(), 1, "blob {blob}");
+            assert!(pack::has_pack(&mut file).unwrap());
+        }
+        // Without `mac`, the runner is copied as it is.
+        write_executable(&dir.join("runner"), &out, &pack, false).unwrap();
+        assert_eq!(&fs::read(&out).unwrap()[..0x8000], &runner[..]);
         let _ = fs::remove_dir_all(&dir);
     }
 
