@@ -114,8 +114,7 @@ enum Command {
     /// source files where it runs, and it runs like `colibri run` (the same output, exit
     /// codes and `os.args()`, every capability granted). Arguments given to it go to the
     /// program, never to `colibri`. The program is checked first; git dependencies are
-    /// resolved as for `run`. It runs on the platform of this `colibri`. On macOS the result
-    /// is signed again, ad hoc
+    /// resolved as for `run`. It runs on the platform of this `colibri`
     Build {
         /// A script, or a package folder (the current folder by default)
         file: Option<PathBuf>,

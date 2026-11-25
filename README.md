@@ -944,9 +944,12 @@ argument given to it goes to the program (`os.args()`), including ones such as `
   executable keeps the result: `--release` is how a program built for use is made.
 - Without `-o` the file is named after the script or the package folder, in the current folder.
   A build never overwrites a source file.
-- The executable only runs on the platform that built it. On macOS the result is signed again
-  (ad hoc) because appending the program invalidates the signature of `colibri`; a Windows
-  executable is unsigned.
+- The executable only runs on the platform that built it. A built Windows executable is
+  unsigned.
+- The files of the program keep the names they had when it was built, and so do the dependencies
+  (which live in the cache folder of the machine that built it): a stack trace shows those paths,
+  also on the machine that runs the program. An argument that is not valid UTF-8 reaches `os.args()`
+  with replacement characters.
 - The program is read when it starts and checked then, as `colibri run` does; the files of the
   program are held as text, so the file is about the size of `colibri` plus the source.
 

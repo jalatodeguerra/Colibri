@@ -63,8 +63,18 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
     }
     let runner = std::env::current_exe()
         .map_err(|e| fail(format!("cannot find the running `colibri` to copy: {e}")))?;
+    if fs::canonicalize(&out).is_ok_and(|o| fs::canonicalize(&runner).is_ok_and(|r| r == o)) {
+        return Err(fail(format!(
+            "the output `{}` is the running `colibri` itself: choose another with `-o`",
+            out.display()
+        )));
+    }
     write_executable(&runner, &out, &pack).map_err(fail)?;
-    let sources = pack.files.iter().filter(|f| f.kind != Kind::Asset).count();
+    let sources = pack
+        .files
+        .iter()
+        .filter(|f| f.kind != Kind::Asset && f.path.ends_with(".colibri"))
+        .count();
     let size = fs::metadata(&out).map_or(0, |m| m.len());
     eprintln!(
         "built {} ({sources} source file{}, {size} bytes)",
@@ -184,66 +194,121 @@ fn clobbers(out: &Path, pack: &Pack, entry: &Path) -> Option<String> {
         .map(|f| f.name.clone())
 }
 
-/// Copies `runner` to `out` and appends the pack. The file is made under another name and
-/// moved into place, so a failure leaves nothing half-written (and a running copy of `out`
-/// is not written into).
+/// A name for the temporary file next to `out`: the process, a counter and the clock, so that
+/// two builds never share one and nobody can guess it.
+fn temp_name(name: &str, attempt: u32) -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    format!(
+        ".{name}.{}-{}-{nanos:x}-{attempt}.colibri-build",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// Creates a new, empty file next to `out` under a name that is not taken. `create_new` never
+/// opens an existing file and never follows a link that is already there.
+fn create_temp(out: &Path) -> std::io::Result<(fs::File, PathBuf)> {
+    let name = out
+        .file_name()
+        .map_or_else(|| "out".into(), |n| n.to_string_lossy().into_owned());
+    let mut last = None;
+    for attempt in 0..16 {
+        let tmp = out.with_file_name(temp_name(&name, attempt));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(file) => return Ok((file, tmp)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.expect("at least one attempt was made"))
+}
+
+/// Copies `runner` to `out` and appends the pack. The file is made new under another name,
+/// with the permissions of the runner, and moved into place, so a failure leaves nothing
+/// half-written (and a running copy of `out` is not written into).
 fn write_executable(runner: &Path, out: &Path, pack: &Pack) -> Result<(), String> {
-    let mut check = fs::File::open(runner)
+    let cannot = |e: std::io::Error| format!("cannot write `{}`: {e}", out.display());
+    let mut source = fs::File::open(runner)
         .map_err(|e| format!("cannot read the runner `{}`: {e}", runner.display()))?;
-    if pack::has_pack(&mut check)? {
+    if pack::has_pack(&mut source)? {
         return Err(format!(
             "the runner `{}` is a built program already",
             runner.display()
         ));
     }
-    drop(check);
-    let name = out
-        .file_name()
-        .map_or_else(|| "out".into(), |n| n.to_string_lossy().into_owned());
-    let tmp = out.with_file_name(format!(".{name}.colibri-build"));
+    let permissions = source.metadata().map_err(cannot)?.permissions();
+    let (mut file, tmp) = create_temp(out).map_err(cannot)?;
     let result = (|| {
-        let runner_len =
-            fs::copy(runner, &tmp).map_err(|e| format!("cannot write `{}`: {e}", out.display()))?;
-        let mut file = fs::OpenOptions::new()
-            .append(true)
-            .open(&tmp)
-            .map_err(|e| format!("cannot write `{}`: {e}", out.display()))?;
-        file.write_all(&pack.append_to(runner_len))
-            .and_then(|()| file.flush())
-            .map_err(|e| format!("cannot write `{}`: {e}", out.display()))?;
-        drop(file);
-        sign(&tmp);
-        fs::rename(&tmp, out).map_err(|e| format!("cannot write `{}`: {e}", out.display()))
-    })();
+        use std::io::Seek;
+        source.rewind()?;
+        let runner_len = std::io::copy(&mut source, &mut file)?;
+        file.write_all(&pack.append_to(runner_len))?;
+        file.set_permissions(permissions)?;
+        file.sync_all()?;
+        fs::rename(&tmp, out)
+    })()
+    .map_err(cannot);
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
 }
 
-/// On macOS the appended data invalidates the signature of the runner, and arm64 refuses to
-/// run unsigned code: sign it again, ad hoc.
-#[cfg(target_os = "macos")]
-fn sign(file: &Path) {
-    let signed = std::process::Command::new("codesign")
-        .args(["-s", "-", "-f"])
-        .arg(file)
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !signed {
-        eprintln!(
-            "warning: `codesign -s - {}` failed: the program may not start until it is run",
-            file.display()
-        );
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn sign(_file: &Path) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("colibri-bc-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn tiny_pack() -> Pack {
+        Pack {
+            name: "p".to_string(),
+            start: Start::File("p.colibri".to_string()),
+            cfg: colibri::BuildCfg::default(),
+            files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_temporary_file() {
+        let dir = scratch("failed");
+        fs::write(dir.join("runner"), b"runner code").unwrap();
+        // The output is a folder with something in it: the move into place cannot work, after
+        // the file has been made and filled.
+        fs::create_dir_all(dir.join("out")).unwrap();
+        fs::write(dir.join("out").join("keep"), b"x").unwrap();
+        let err = write_executable(&dir.join("runner"), &dir.join("out"), &tiny_pack());
+        assert!(err.is_err());
+        let mut names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["out", "runner"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn temporary_names_are_never_the_same_twice() {
+        let a = temp_name("out", 0);
+        let b = temp_name("out", 0);
+        assert_ne!(a, b);
+        assert!(a.starts_with(".out.") && a.ends_with(".colibri-build"));
+    }
 
     #[test]
     fn a_dependency_file_names_its_checkout() {

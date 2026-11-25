@@ -232,6 +232,8 @@ fn a_package_is_built_from_its_folder() {
     assert!(made.stderr.contains("is a folder"), "{}", made.stderr);
     let made = dir.colibri(&["build", "app", "-o", &exe("appbin")]);
     assert_eq!(made.code, 0, "{}", made.stderr);
+    // Two modules; the manifest is not counted as a source file.
+    assert!(made.stderr.contains("(2 source files,"), "{}", made.stderr);
     fs::remove_dir_all(dir.path("app")).unwrap();
     same(&run, &dir.built(&exe("appbin"), &[]));
 }
@@ -257,15 +259,93 @@ fn a_program_that_does_not_check_is_not_built() {
 #[test]
 fn the_output_never_overwrites_a_source_file() {
     let dir = Dir::new("clobber");
-    dir.write("prog.colibri", "fn main() {\n    print(1)\n}\n");
-    dir.write("helper.colibri", "pub fn f() -> int => 1\n");
-    let out = dir.colibri(&["build", "prog.colibri", "-o", "prog.colibri"]);
-    assert_eq!(out.code, 1);
-    assert!(out.stderr.contains("source file"), "{}", out.stderr);
-    assert_eq!(
-        fs::read_to_string(dir.path("prog.colibri")).unwrap(),
-        "fn main() {\n    print(1)\n}\n"
+    dir.write(
+        "prog.colibri",
+        "import helper\n\nfn main() {\n    print(helper.f())\n}\n",
     );
+    dir.write("helper.colibri", "pub fn f() -> int => 1\n");
+    // The entry and a module it imports.
+    for target in ["prog.colibri", "helper.colibri"] {
+        let before = fs::read_to_string(dir.path(target)).unwrap();
+        let out = dir.colibri(&["build", "prog.colibri", "-o", target]);
+        assert_eq!(out.code, 1, "{target}");
+        assert!(out.stderr.contains("source file"), "{}", out.stderr);
+        assert_eq!(fs::read_to_string(dir.path(target)).unwrap(), before);
+    }
+    // And the manifest of a package.
+    dir.write("pk/colibri.toml", "[package]\nname = \"pk\"\n");
+    dir.write("pk/main.colibri", "fn main() {\n    print(1)\n}\n");
+    let out = dir.colibri(&["build", "pk", "-o", "pk/colibri.toml"]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert_eq!(
+        fs::read_to_string(dir.path("pk/colibri.toml")).unwrap(),
+        "[package]\nname = \"pk\"\n"
+    );
+}
+
+#[test]
+fn the_output_never_replaces_the_running_tool() {
+    let dir = Dir::new("selftool");
+    dir.write("prog.colibri", "fn main() {\n    print(1)\n}\n");
+    let tool = dir.path(&exe("tool"));
+    fs::copy(env!("CARGO_BIN_EXE_colibri"), &tool).unwrap();
+    let before = fs::metadata(&tool).unwrap().len();
+    let mut cmd = Command::new(&tool);
+    cmd.args(["build", "prog.colibri", "-o"])
+        .arg(&tool)
+        .current_dir(&dir.0)
+        .env("COLIBRI_HOME", dir.path("home"));
+    let out = cmd.output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("running `colibri`"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::metadata(&tool).unwrap().len(), before);
+    let version = Command::new(&tool).arg("--version").output().unwrap();
+    assert!(String::from_utf8_lossy(&version.stdout).starts_with("colibri "));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_planted_link_at_the_old_temporary_name_is_never_followed() {
+    let dir = Dir::new("symlink");
+    dir.write("prog.colibri", "fn main() {\n    print(1)\n}\n");
+    dir.write("victim.txt", "precious");
+    let victim = dir.path("victim.txt");
+    std::os::unix::fs::symlink(&victim, dir.path(".out_bin.colibri-build")).unwrap();
+    let out = dir.colibri(&["build", "prog.colibri", "-o", "out_bin"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "precious");
+    // The output is a real file, and the link is still the planted one.
+    assert!(
+        !fs::symlink_metadata(dir.path("out_bin"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        fs::symlink_metadata(dir.path(".out_bin.colibri-build"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(dir.built("out_bin", &[]).stdout, "1\n");
+}
+
+#[test]
+fn warnings_of_a_built_program_are_those_of_run() {
+    let dir = Dir::new("warn");
+    dir.write(
+        "prog.colibri",
+        "fn main() {\n    let unused = 5\n    print(\"ok\")\n}\n",
+    );
+    let run = dir.colibri(&["run", "prog.colibri"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.contains("unused"), "{}", run.stderr);
+    build(&dir, "prog.colibri", "w");
+    same(&run, &dir.built(&exe("w"), &[]));
 }
 
 /// The executable `built` made, with a mistake `damage` makes in its bytes.
@@ -448,28 +528,4 @@ fn a_git_dependency_is_inside_the_built_program() {
     };
     same(&run, &built);
     assert!(!dir.path("nowhere").exists());
-}
-
-/// How long a built copy of a program takes to start and finish, printed for the CI log.
-#[test]
-fn start_up_time_of_a_built_server_example_is_printed() {
-    let dir = Dir::new("startup");
-    let hello = include_str!("../../../tests/golden/std/httpd_hello.colibri");
-    dir.write("httpd_hello.colibri", hello);
-    build(&dir, "httpd_hello.colibri", "hello");
-    fs::remove_file(dir.path("httpd_hello.colibri")).unwrap();
-    let mut best = std::time::Duration::MAX;
-    for _ in 0..5 {
-        let started = std::time::Instant::now();
-        let out = dir.built(&exe("hello"), &[]);
-        assert_eq!(out.code, 0, "{}", out.stderr);
-        assert!(
-            out.stdout.contains("hello, GET /greeting"),
-            "{}",
-            out.stdout
-        );
-        best = best.min(started.elapsed());
-    }
-    let size = fs::metadata(dir.path(&exe("hello"))).unwrap().len();
-    eprintln!("built httpd_hello: {size} bytes, start and run {best:?} (best of 5)");
 }

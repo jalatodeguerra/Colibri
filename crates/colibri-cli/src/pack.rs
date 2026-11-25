@@ -354,6 +354,12 @@ pub fn read_from<R: Read + Seek>(file: &mut R) -> Result<Option<Pack>, String> {
 }
 
 /// The pack at the end of the running executable, if it is a built program.
+///
+/// An executable that cannot be found or opened (a path that is not readable because the file
+/// is executable-only, a system without `/proc`, a file replaced after it started) is taken
+/// for the ordinary tool, and the program's arguments are then read as `colibri`'s. That is
+/// the choice that cannot make the tool itself unusable: a plain `colibri` has no marker to
+/// tell it from a built program that cannot read itself, and it must start everywhere.
 pub fn read_own() -> Result<Option<Pack>, String> {
     let Ok(exe) = std::env::current_exe() else {
         return Ok(None);
