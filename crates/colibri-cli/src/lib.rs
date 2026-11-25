@@ -1,5 +1,6 @@
 //! Support code for the `colibri` command line tool.
 
+pub mod assets;
 pub mod buildcmd;
 pub mod checkcmd;
 pub mod depscmd;
@@ -55,9 +56,19 @@ pub fn vm_builder() -> colibri_runtime::VmBuilder {
 /// Builds the `Vm` with the standard library installed (`import math`, `import fs`, ...).
 /// `args` is what the script's `os.args()` returns.
 pub fn build_vm(builder: colibri_runtime::VmBuilder, args: Vec<String>) -> colibri_runtime::Vm {
+    build_vm_with_assets(builder, args, None)
+}
+
+/// [`build_vm`] for a program whose `import assets` reads from `assets` (see [`assets`]).
+pub fn build_vm_with_assets(
+    builder: colibri_runtime::VmBuilder,
+    args: Vec<String>,
+    assets: Option<Box<dyn colibri_std::AssetSource>>,
+) -> colibri_runtime::Vm {
     let mut vm = builder.build();
     let config = colibri_std::StdConfig {
         args,
+        assets,
         ..colibri_std::StdConfig::default()
     };
     colibri_std::install_with(&mut vm, config)

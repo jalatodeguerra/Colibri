@@ -30,6 +30,10 @@ pub const INDEX: &str = "README.md";
 const SUMMARIES: &[(&str, &str)] = &[
     ("args", "Command-line argument parsing."),
     (
+        "assets",
+        "The files that ship with the program, listed under `[build] assets` in `colibri.toml`: read from the package folder by `run` and `test`, and from the executable that `colibri build` writes.",
+    ),
+    (
         "base64",
         "Base64 encoding and decoding of text and of `Bytes`.",
     ),

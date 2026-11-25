@@ -27,18 +27,20 @@ pub fn run(
     if let Err(code) = depscmd::prepare(file, deps) {
         return code;
     }
-    let mut vm = crate::build_vm(
+    let mut vm = crate::build_vm_with_assets(
         crate::vm_builder().allow_all().track_leaks(leaks.is_some()),
         args,
+        Some(crate::assets::for_entry(file)),
     );
     run_with(&mut vm, file, leaks, profile, rc)
 }
 
 /// Runs the program of a built executable (`colibri build`): the same as `colibri run` on the
 /// files it was built from, with every capability granted, but read from the pack.
-pub fn run_pack(pack: &crate::pack::Pack, args: Vec<String>) -> ExitCode {
+pub fn run_pack(mut pack: crate::pack::Pack, args: Vec<String>) -> ExitCode {
     let (fs, start) = pack.file_system();
-    let mut vm = crate::build_vm(crate::vm_builder().allow_all(), args);
+    let assets = crate::assets::for_pack(&mut pack);
+    let mut vm = crate::build_vm_with_assets(crate::vm_builder().allow_all(), args, Some(assets));
     let color = io::stderr().is_terminal();
     vm.on_warnings(move |report| eprint!("{}", report.render(color)));
     let loaded = match &start {

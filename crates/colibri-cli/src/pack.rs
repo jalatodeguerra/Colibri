@@ -1,4 +1,4 @@
-//! The pack: a program (its source files and, later, its assets) written after the code of a
+//! The pack: a program (its source files and its assets) written after the code of a
 //! `colibri` executable, so that the executable runs it when it starts (`colibri build`).
 //!
 //! A built file is the runner (a copy of `colibri`), then the payload, then a 32-byte trailer:
@@ -25,7 +25,8 @@
 //!
 //! An entry is a source file (`kind` 0, `path` is where the loader looks for it), a source file of a
 //! git dependency (`kind` 2, `path` is below the cache folder, which is different on every machine),
-//! or an asset (`kind` 1, not made yet). `name` is what messages call the file. Nothing here
+//! or an asset (`kind` 1: a file of the package that the program reads with `import assets`;
+//! `path` is relative to the package folder, `/` between the pieces, and no two assets share one). `name` is what messages call the file. Nothing here
 //! allocates what a length says before it has been checked against the bytes that are left, so a
 //! damaged pack is an error and never a crash.
 
@@ -33,7 +34,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path};
 
-use colibri_runtime::{BuildCfg, MemoryFs};
+use colibri_runtime::{BuildCfg, MemoryFs, asset_path_problem};
 
 /// The last 32 bytes of a built executable start with this.
 pub const MAGIC: &[u8; 12] = b"COLIBRI\0PACK";
@@ -51,7 +52,7 @@ const PACK_CACHE: &str = "<pack>/cache";
 pub enum Kind {
     /// A source file, text, at `path`.
     Source,
-    /// A file the program reads at run time (not made yet).
+    /// A file the program reads at run time (`import assets`), bytes of any kind.
     Asset,
     /// A source file of a git dependency; `path` is below the cache folder.
     Dependency,
@@ -197,6 +198,7 @@ impl Pack {
             cfg.features.push(r.str()?);
         }
         let mut files = Vec::with_capacity(count);
+        let mut asset_paths = std::collections::HashSet::new();
         for _ in 0..count {
             let kind =
                 Kind::from_code(r.u8()?).ok_or_else(|| damaged("an unknown kind of file"))?;
@@ -206,6 +208,16 @@ impl Pack {
             let data = r.take(usize::try_from(len).map_err(|_| damaged("a file is too long"))?)?;
             if kind != Kind::Asset && std::str::from_utf8(data).is_err() {
                 return Err(damaged("a source file is not text"));
+            }
+            // An asset is looked up by its path, so the path must be one a program can ask
+            // for, and one asset must not hide another.
+            if kind == Kind::Asset {
+                if asset_path_problem(&path).is_some() {
+                    return Err(damaged("an asset has a path that is not valid"));
+                }
+                if !asset_paths.insert(path.clone()) {
+                    return Err(damaged("an asset is there twice"));
+                }
             }
             files.push(PackFile {
                 kind,
@@ -559,6 +571,32 @@ mod tests {
                 .unwrap_err()
                 .contains("unknown kind")
         );
+    }
+
+    #[test]
+    fn an_asset_path_a_program_could_not_ask_for_is_refused_and_so_is_a_repeat() {
+        let with = |path: &str| {
+            let mut pack = sample();
+            pack.files.push(PackFile {
+                kind: Kind::Asset,
+                path: path.to_string(),
+                name: path.to_string(),
+                data: vec![1],
+            });
+            Pack::decode(&pack.encode())
+        };
+        for bad in ["../x", "/abs", "", "a//b", "a/./b", "a\\b", "C:/x", "a/"] {
+            let err = with(bad).unwrap_err();
+            assert!(err.contains("not valid"), "{bad:?}: {err}");
+        }
+        assert!(with("data/other.bin").is_ok());
+        // The same path as an asset of the sample.
+        let err = with("data/blob.bin").unwrap_err();
+        assert!(err.contains("twice"), "{err}");
+        // A source file may share a path with an asset: they are different things.
+        let mut pack = sample();
+        pack.files[0].path = "data/blob.bin".to_string();
+        assert!(Pack::decode(&pack.encode()).is_ok());
     }
 
     #[test]

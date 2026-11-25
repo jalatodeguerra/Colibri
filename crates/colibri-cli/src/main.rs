@@ -272,7 +272,7 @@ fn run_built(pack: colibri_lang::pack::Pack) -> ExitCode {
         .skip(1)
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
-    on_big_stack(move || colibri_lang::runcmd::run_pack(&pack, args))
+    on_big_stack(move || colibri_lang::runcmd::run_pack(pack, args))
 }
 
 fn main() -> ExitCode {

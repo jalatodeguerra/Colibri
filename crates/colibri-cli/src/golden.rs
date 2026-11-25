@@ -296,6 +296,7 @@ fn hermetic_std(temp: &Path) -> colibri_std::StdConfig {
         stdin: Some(Box::new(std::io::Cursor::new("first line\nsecond line\n"))),
         // +05:30, so that local time and UTC differ in every golden that uses `datetime`.
         local_offset: Some(19_800),
+        assets: None,
     }
 }
 

@@ -1,0 +1,522 @@
+//! `import assets` and `[build] assets`, end to end: the same program reads the same assets under
+//! `colibri run`, under `colibri test` and in a built executable that has neither its sources nor
+//! its assets on disk; what is not an asset, and what leaves the package, is an error that the
+//! program can handle.
+
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+
+struct Out {
+    stdout: String,
+    stderr: String,
+    code: i32,
+}
+
+/// A fresh folder, removed at the end, with a private `COLIBRI_HOME` inside.
+struct Dir(PathBuf);
+
+impl Dir {
+    fn new(name: &str) -> Dir {
+        let dir =
+            std::env::temp_dir().join(format!("colibri-assets-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("home")).unwrap();
+        Dir(dir)
+    }
+
+    fn path(&self, rel: &str) -> PathBuf {
+        self.0.join(rel)
+    }
+
+    fn write_bytes(&self, rel: &str, data: &[u8]) {
+        let full = self.0.join(rel);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        fs::write(full, data).unwrap();
+    }
+
+    fn write(&self, rel: &str, text: &str) {
+        self.write_bytes(rel, text.as_bytes());
+    }
+
+    fn colibri(&self, args: &[&str]) -> Out {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_colibri"));
+        cmd.args(args);
+        self.exec(cmd)
+    }
+
+    fn built(&self, exe: &str) -> Out {
+        self.exec(Command::new(self.path(exe)))
+    }
+
+    fn exec(&self, mut cmd: Command) -> Out {
+        cmd.current_dir(&self.0)
+            .env("COLIBRI_HOME", self.path("home"));
+        let out = cmd.output().expect("the program runs");
+        Out {
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            code: out.status.code().unwrap_or(-1),
+        }
+    }
+}
+
+impl Drop for Dir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn exe(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+fn build(dir: &Dir, target: &str, name: &str) -> Out {
+    let out = dir.colibri(&["build", target, "-o", &exe(name)]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(dir.path(&exe(name)).is_file());
+    out
+}
+
+const MANIFEST: &str =
+    "[package]\nname = \"app\"\n\n[build]\nassets = [\"greeting.txt\", \"data/\", \"img/*.png\"]\n";
+
+/// The bytes of the logo: not text, with a first byte of 0.
+const LOGO: &[u8] = &[0x00, 0xff, 0x10, 0xc0, 0x7f, 0x80];
+
+const MAIN: &str = r#"import assets
+
+fn kind(e: Error) -> str {
+    match e.as[assets.Error]() {
+        some(k) => return "{k}"
+        none => return "other"
+    }
+}
+
+fn show(path: str) {
+    match assets.read(path) {
+        ok(b) => print("{path}: {b.len()} bytes")
+        err(e) => print("{path}: {kind(e)}")
+    }
+}
+
+fn main() {
+    print(assets.read_text("greeting.txt").expect("greeting").trim())
+    let logo = assets.read("img/logo.png").expect("logo")
+    print("logo {logo.len()} first {logo[0]} last {logo[logo.len() - 1]}")
+    print(assets.read_text("data/deep/note.txt").expect("note").trim())
+    print(assets.list("").expect("top"))
+    print(assets.list("img").expect("img"))
+    print(assets.list("data").expect("data"))
+    print(assets.list("data/").expect("data slash"))
+    show("secret.txt")
+    show("img/photo.jpg")
+    show("nope.txt")
+    show("data")
+    show("../outside.txt")
+    show("data/../greeting.txt")
+    show("/etc/hostname")
+    show("")
+    show("data//deep/note.txt")
+    show("img\\logo.png")
+    match assets.read_text("img/logo.png") {
+        ok(_) => print("logo as text: read")
+        err(e) => print("logo as text: {kind(e)}")
+    }
+    match assets.list("nope") {
+        ok(_) => print("list nope: listed")
+        err(e) => print("list nope: {kind(e)}")
+    }
+    match assets.list("../app") {
+        ok(_) => print("list ../app: listed")
+        err(e) => print("list ../app: {kind(e)}")
+    }
+}
+
+test "assets under test" {
+    assert_eq(assets.read_text("greeting.txt").expect("g").trim(), "hello assets")
+    assert_eq(assets.read("img/logo.png").expect("l").len(), 6)
+    assert_eq(assets.list("data").expect("d"), ["deep/", "table.csv"])
+    assert(assets.read("secret.txt").err().is_some())
+    assert(assets.read("../outside.txt").err().is_some())
+}
+"#;
+
+/// What `main` prints, whichever way it runs.
+const EXPECTED: &str = r#"hello assets
+logo 6 first 0 last 128
+note
+["data/", "greeting.txt", "img/"]
+["logo.png"]
+["deep/", "table.csv"]
+["deep/", "table.csv"]
+secret.txt: NotFound
+img/photo.jpg: NotFound
+nope.txt: NotFound
+data: NotFound
+../outside.txt: Invalid
+data/../greeting.txt: Invalid
+/etc/hostname: Invalid
+: Invalid
+data//deep/note.txt: Invalid
+img\logo.png: Invalid
+logo as text: InvalidData
+list nope: NotFound
+list ../app: Invalid
+"#;
+
+/// A package `app/` with assets, a file the manifest does not list, a file the patterns do not
+/// reach, and a file beside the package that nothing may read.
+fn package(dir: &Dir) {
+    dir.write("app/colibri.toml", MANIFEST);
+    dir.write("app/main.colibri", MAIN);
+    dir.write("app/greeting.txt", "hello assets\n");
+    dir.write("app/data/deep/note.txt", "note\n");
+    dir.write("app/data/table.csv", "a,b\n");
+    dir.write_bytes("app/img/logo.png", LOGO);
+    dir.write("app/img/photo.jpg", "PHOTO-NOT-LISTED");
+    dir.write("app/secret.txt", "SECRET-UNLISTED");
+    dir.write("outside.txt", "OUTSIDE-OF-THE-PACKAGE");
+}
+
+#[test]
+fn run_test_and_a_built_program_read_the_same_assets() {
+    let dir = Dir::new("parity");
+    package(&dir);
+    let run = dir.colibri(&["run", "app"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, EXPECTED);
+
+    let test = dir.colibri(&["test", "app"]);
+    assert_eq!(test.code, 0, "{}{}", test.stdout, test.stderr);
+    assert!(
+        test.stdout.contains("assets under test ... ok"),
+        "{}",
+        test.stdout
+    );
+
+    let made = build(&dir, "app", "appbin");
+    // The build says what it packed.
+    for line in [
+        "  asset data/deep/note.txt (5 bytes)",
+        "  asset data/table.csv (4 bytes)",
+        "  asset greeting.txt (13 bytes)",
+        "  asset img/logo.png (6 bytes)",
+    ] {
+        assert!(made.stderr.contains(line), "{line}\n{}", made.stderr);
+    }
+    assert!(
+        made.stderr.contains("(1 source file, 4 assets,"),
+        "{}",
+        made.stderr
+    );
+    // The files the patterns do not select are not in the executable.
+    let bytes = fs::read(dir.path(&exe("appbin"))).unwrap();
+    let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    assert!(has(b"hello assets"));
+    assert!(!has(b"SECRET-UNLISTED"));
+    assert!(!has(b"OUTSIDE-OF-THE-PACKAGE"));
+    assert!(!has(b"PHOTO-NOT-LISTED"));
+    // Neither the sources nor the assets are left: the executable has them.
+    fs::remove_dir_all(dir.path("app")).unwrap();
+    fs::remove_file(dir.path("outside.txt")).unwrap();
+    let built = dir.built(&exe("appbin"));
+    assert_eq!(built.code, 0, "{}", built.stderr);
+    assert_eq!(built.stdout, run.stdout);
+    assert_eq!(built.stderr, run.stderr);
+}
+
+#[test]
+fn the_assets_of_a_package_do_not_depend_on_the_current_folder() {
+    let dir = Dir::new("cwd");
+    package(&dir);
+    let near = dir.colibri(&["run", "app"]);
+    assert_eq!(near.stdout, EXPECTED);
+    // From inside the package, and from a folder beside it, the program is the same.
+    let inside = {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_colibri"));
+        cmd.args(["run", "."]);
+        let mut c = cmd;
+        c.current_dir(dir.path("app"))
+            .env("COLIBRI_HOME", dir.path("home"));
+        let o = c.output().unwrap();
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    assert_eq!(inside, EXPECTED);
+}
+
+#[test]
+fn a_script_beside_a_manifest_has_its_assets_and_a_lone_script_has_none() {
+    let dir = Dir::new("script");
+    let prog = "import assets\n\nfn main() {\n    match assets.read(\"data.txt\") {\n        ok(b) => print(\"read {b.len()}\")\n        err(e) => print(\"error {e.as[assets.Error]()}\")\n    }\n    print(assets.list(\"\").expect(\"top\"))\n}\n";
+    // Beside a manifest: the folder of the script is the package.
+    dir.write(
+        "pkg/colibri.toml",
+        "[package]\nname = \"pkg\"\n\n[build]\nassets = [\"data.txt\"]\n",
+    );
+    dir.write("pkg/data.txt", "12345");
+    dir.write("pkg/tool.colibri", prog);
+    // No manifest: nothing is an asset, though the file is there.
+    dir.write("lone/data.txt", "12345");
+    dir.write("lone/tool.colibri", prog);
+
+    let run = dir.colibri(&["run", "pkg/tool.colibri"]);
+    assert_eq!(run.stdout, "read 5\n[\"data.txt\"]\n", "{}", run.stderr);
+    build(&dir, "pkg/tool.colibri", "tool");
+    fs::remove_dir_all(dir.path("pkg")).unwrap();
+    let built = dir.built(&exe("tool"));
+    assert_eq!(
+        (built.stdout.as_str(), built.code),
+        (run.stdout.as_str(), 0)
+    );
+
+    let run = dir.colibri(&["run", "lone/tool.colibri"]);
+    assert_eq!(run.stdout, "error some(NotFound)\n[]\n", "{}", run.stderr);
+    let made = build(&dir, "lone/tool.colibri", "lonetool");
+    assert!(!made.stderr.contains("asset"), "{}", made.stderr);
+    fs::remove_dir_all(dir.path("lone")).unwrap();
+    let built = dir.built(&exe("lonetool"));
+    assert_eq!(
+        (built.stdout.as_str(), built.code),
+        (run.stdout.as_str(), 0)
+    );
+}
+
+#[test]
+fn a_package_that_lists_no_assets_reads_none() {
+    let dir = Dir::new("none");
+    dir.write("app/colibri.toml", "[package]\nname = \"app\"\n");
+    dir.write("app/data.txt", "x");
+    dir.write(
+        "app/main.colibri",
+        "import assets\n\nfn main() {\n    print(assets.read(\"data.txt\").err().is_some())\n}\n",
+    );
+    assert_eq!(dir.colibri(&["run", "app"]).stdout, "true\n");
+    let made = build(&dir, "app", "appbin");
+    assert!(!made.stderr.contains("asset"), "{}", made.stderr);
+    assert_eq!(dir.built(&exe("appbin")).stdout, "true\n");
+}
+
+#[test]
+fn a_pattern_that_selects_nothing_stops_the_build() {
+    let dir = Dir::new("typo");
+    package(&dir);
+    dir.write(
+        "app/colibri.toml",
+        "[package]\nname = \"app\"\n\n[build]\nassets = [\"data/\", \"imgs/*.png\"]\n",
+    );
+    let out = dir.colibri(&["build", "app", "-o", &exe("appbin")]);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("the asset pattern `imgs/*.png` of `[build] assets` selects no file"),
+        "{}",
+        out.stderr
+    );
+    assert!(!dir.path(&exe("appbin")).exists());
+}
+
+#[test]
+fn a_bad_pattern_in_the_manifest_is_an_error_of_every_command() {
+    let dir = Dir::new("badpattern");
+    package(&dir);
+    for pattern in ["../outside.txt", "/etc/passwd", "a/**b", ""] {
+        dir.write(
+            "app/colibri.toml",
+            &format!("[package]\nname = \"app\"\n\n[build]\nassets = [\"{pattern}\"]\n"),
+        );
+        for cmd in ["run", "test", "build", "check"] {
+            let out = dir.colibri(&[cmd, "app"]);
+            assert_eq!(out.code, 1, "{cmd} {pattern}: {}{}", out.stdout, out.stderr);
+            assert!(
+                out.stderr.contains("not a valid asset pattern"),
+                "{cmd} {pattern}: {}",
+                out.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn the_output_is_never_an_asset() {
+    let dir = Dir::new("clobber");
+    package(&dir);
+    let out = dir.colibri(&["build", "app", "-o", "app/greeting.txt"]);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("the output is the asset `greeting.txt`"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path("app/greeting.txt")).unwrap(),
+        "hello assets\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_out_of_the_package_is_never_read_and_a_build_refuses_it() {
+    use std::os::unix::fs::symlink;
+    let dir = Dir::new("links");
+    package(&dir);
+    dir.write("app/data/ok.txt", "ok");
+    symlink(dir.path("outside.txt"), dir.path("app/data/leak.txt")).unwrap();
+    symlink(dir.0.clone(), dir.path("app/data/up")).unwrap();
+    let prog = "import assets\n\nfn main() {\n    for p in [\"data/ok.txt\", \"data/leak.txt\", \"data/up/outside.txt\"] {\n        match assets.read_text(p) {\n            ok(t) => print(\"{p}: {t}\")\n            err(e) => print(\"{p}: {e.as[assets.Error]()}\")\n        }\n    }\n    print(assets.list(\"data\").expect(\"data\"))\n}\n";
+    dir.write("app/main.colibri", prog);
+    let run = dir.colibri(&["run", "app"]);
+    assert_eq!(
+        run.stdout,
+        "data/ok.txt: ok\ndata/leak.txt: some(Invalid)\ndata/up/outside.txt: some(Invalid)\n[\"deep/\", \"ok.txt\", \"table.csv\"]\n",
+        "{}",
+        run.stderr
+    );
+    assert!(!run.stdout.contains("OUTSIDE"));
+    let out = dir.colibri(&["build", "app", "-o", &exe("appbin")]);
+    assert_eq!(out.code, 1);
+    assert!(out.stderr.contains("is a symbolic link"), "{}", out.stderr);
+    assert!(!dir.path(&exe("appbin")).exists());
+}
+
+/// The executable `built` made, with a mistake `damage` makes in its bytes.
+fn damaged(dir: &Dir, name: &str, damage: impl FnOnce(&mut Vec<u8>)) -> Out {
+    let mut bytes = fs::read(dir.path(&exe("good"))).unwrap();
+    damage(&mut bytes);
+    let target = dir.path(&exe(name));
+    fs::write(&target, &bytes).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    dir.built(&exe(name))
+}
+
+fn damaged_error(out: &Out) {
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(out.stdout.is_empty(), "{}", out.stdout);
+    assert!(
+        out.stderr.starts_with("error: ") && out.stderr.contains("program's data"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("panicked"), "{}", out.stderr);
+}
+
+fn find(bytes: &[u8], needle: &[u8]) -> usize {
+    bytes
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .expect("the bytes are in the file")
+}
+
+#[test]
+fn a_damaged_program_with_assets_is_a_clean_error() {
+    let dir = Dir::new("damaged");
+    dir.write(
+        "app/colibri.toml",
+        "[package]\nname = \"app\"\n\n[build]\nassets = [\"blob.bin\"]\n",
+    );
+    dir.write("app/main.colibri", "import assets\n\nfn main() {\n    print(assets.read(\"blob.bin\").expect(\"blob\").len())\n}\n");
+    dir.write_bytes("app/blob.bin", b"ASSET-MARKER-0123456789");
+    build(&dir, "app", "good");
+    assert_eq!(dir.built(&exe("good")).stdout, "23\n");
+    // A flipped byte inside the asset's data.
+    damaged_error(&damaged(&dir, "flip", |b| {
+        let at = find(b, b"ASSET-MARKER");
+        b[at + 3] ^= 0x20;
+    }));
+    // A flipped byte of the asset's path.
+    damaged_error(&damaged(&dir, "path", |b| {
+        let at = find(b, b"blob.bin");
+        b[at] ^= 0x01;
+    }));
+    // The payload cut in the middle of the asset, the trailer kept.
+    damaged_error(&damaged(&dir, "cut", |b| {
+        let at = find(b, b"ASSET-MARKER") + 5;
+        let trailer: Vec<u8> = b[b.len() - 32..].to_vec();
+        b.truncate(at);
+        b.extend(trailer);
+    }));
+    // The length of the asset made longer than what is left.
+    damaged_error(&damaged(&dir, "long", |b| {
+        let at = find(b, b"ASSET-MARKER") - 8;
+        b[at + 4] = 0x7f;
+    }));
+}
+
+/// A pack whose check sum is right but whose content is not what a build makes.
+fn forged(dir: &Dir, name: &str, edit: impl FnOnce(&mut colibri_lang::pack::Pack)) -> Out {
+    let mut bytes = fs::read(dir.path(&exe("good"))).unwrap();
+    let mut pack = colibri_lang::pack::read_from(&mut std::io::Cursor::new(bytes.clone()))
+        .unwrap()
+        .expect("a built program");
+    let trailer = &bytes[bytes.len() - 32..];
+    let offset = u64::from_le_bytes(trailer[12..20].try_into().unwrap());
+    edit(&mut pack);
+    bytes.truncate(offset as usize);
+    bytes.extend(pack.append_to(offset));
+    let target = dir.path(&exe(name));
+    fs::write(&target, &bytes).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    dir.built(&exe(name))
+}
+
+#[test]
+fn a_pack_with_asset_paths_that_no_build_makes_is_refused_and_a_missing_asset_is_an_error() {
+    use colibri_lang::pack::{Kind, PackFile};
+    let dir = Dir::new("forged");
+    dir.write(
+        "app/colibri.toml",
+        "[package]\nname = \"app\"\n\n[build]\nassets = [\"blob.bin\"]\n",
+    );
+    dir.write(
+        "app/main.colibri",
+        "import assets\n\nfn main() {\n    match assets.read(\"blob.bin\") {\n        ok(b) => print(\"read {b.len()}\")\n        err(e) => print(\"error {e.as[assets.Error]()}\")\n    }\n}\n",
+    );
+    dir.write_bytes("app/blob.bin", b"12345");
+    build(&dir, "app", "good");
+    assert_eq!(dir.built(&exe("good")).stdout, "read 5\n");
+    let asset = |path: &str| PackFile {
+        kind: Kind::Asset,
+        path: path.to_string(),
+        name: path.to_string(),
+        data: b"x".to_vec(),
+    };
+    for (name, path) in [
+        ("up", "../outside"),
+        ("abs", "/etc/hostname"),
+        ("empty", ""),
+        ("dots", "a/./b"),
+        ("back", "a\\b"),
+    ] {
+        let out = forged(&dir, name, |p| p.files.push(asset(path)));
+        damaged_error(&out);
+        assert!(
+            out.stderr.contains("an asset has a path that is not valid"),
+            "{path}: {}",
+            out.stderr
+        );
+    }
+    let out = forged(&dir, "twice", |p| p.files.push(asset("blob.bin")));
+    damaged_error(&out);
+    assert!(
+        out.stderr.contains("an asset is there twice"),
+        "{}",
+        out.stderr
+    );
+    // A pack that lost its asset runs, and the program is told there is none.
+    let out = forged(&dir, "lost", |p| p.files.retain(|f| f.kind != Kind::Asset));
+    assert_eq!(
+        (out.stdout.as_str(), out.code),
+        ("error some(NotFound)\n", 0),
+        "{}",
+        out.stderr
+    );
+}
