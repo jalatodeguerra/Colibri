@@ -37,6 +37,24 @@ pub fn check_with(
 ) -> Result<(), ExitCode> {
     // Git dependencies are fetched and locked here, and nowhere else (the loader only reads).
     depscmd::prepare(file, deps)?;
+    check_on(
+        &colibri::DiskFs,
+        file,
+        interface_files,
+        all_modules,
+        std_interface,
+    )
+}
+
+/// [`check_with`] without the dependency step, reading through `fs` (`colibri build` checks
+/// through a recording file system to learn which files the program is made of).
+pub fn check_on(
+    fs: &dyn colibri::SourceFs,
+    file: &Path,
+    interface_files: &[PathBuf],
+    all_modules: bool,
+    std_interface: &mut dyn FnMut(&str) -> Option<colibri::Interface>,
+) -> Result<(), ExitCode> {
     let color = io::stderr().is_terminal();
     let mut interfaces = Vec::new();
     for path in interface_files {
@@ -62,7 +80,7 @@ pub fn check_with(
         .iter()
         .map(|m| format!("std.{m}"))
         .collect();
-    match colibri::check_path_lazy(file, &config, all_modules, &names, std_interface) {
+    match colibri::check_path_lazy_on(fs, file, &config, all_modules, &names, std_interface) {
         Ok(report) => {
             eprint!("{}", report.render(color));
             if report.has_errors() {

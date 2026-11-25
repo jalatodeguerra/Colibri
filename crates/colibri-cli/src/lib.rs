@@ -1,5 +1,6 @@
 //! Support code for the `colibri` command line tool.
 
+pub mod buildcmd;
 pub mod checkcmd;
 pub mod depscmd;
 pub mod doccmd;
@@ -8,6 +9,7 @@ pub mod fmt;
 pub mod golden;
 pub mod leakcmd;
 pub mod newcmd;
+pub mod pack;
 pub mod profilecmd;
 pub mod repl;
 mod repl_input;

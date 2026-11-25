@@ -26,9 +26,7 @@ use crate::error::{Error, Report};
 use crate::func::Fn;
 use crate::host::{HostFn, Registration, payload_message};
 use crate::iface::{self, ConstEntry, ConstValue, HostFnEntry, Rendered};
-use crate::reload::{
-    Fingerprint, OwnedEntry, ReloadOptions, ReloadOutcome, ReloadState, reads_of,
-};
+use crate::reload::{Fingerprint, OwnedEntry, ReloadOptions, ReloadOutcome, ReloadState, reads_of};
 use crate::types::{TypeDesc, TypeRegistry};
 use colibri_core::leaks::Leak;
 
