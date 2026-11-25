@@ -9,8 +9,11 @@ mod flame;
 pub mod fmt;
 pub mod golden;
 pub mod leakcmd;
+#[doc(hidden)]
+pub mod macho;
 pub mod newcmd;
 pub mod pack;
+pub mod platform;
 pub mod profilecmd;
 pub mod repl;
 mod repl_input;

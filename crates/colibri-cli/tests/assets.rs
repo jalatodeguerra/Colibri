@@ -7,6 +7,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+mod common;
+
 struct Out {
     stdout: String,
     stderr: String,
@@ -382,10 +384,13 @@ fn a_link_out_of_the_package_is_never_read_and_a_build_refuses_it() {
 
 /// The executable `built` made, with a mistake `damage` makes in its bytes.
 fn damaged(dir: &Dir, name: &str, damage: impl FnOnce(&mut Vec<u8>)) -> Out {
-    let mut bytes = fs::read(dir.path(&exe("good"))).unwrap();
+    let mut bytes = common::plain(fs::read(dir.path(&exe("good"))).unwrap());
+    let unsigned_len = bytes.len() as u64;
     damage(&mut bytes);
+    common::fit(&mut bytes, unsigned_len);
     let target = dir.path(&exe(name));
     fs::write(&target, &bytes).unwrap();
+    common::sign(&target);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -476,7 +481,8 @@ fn a_damaged_program_with_assets_is_a_clean_error() {
 /// A pack whose check sum is right but whose content is not what a build makes.
 fn forged(dir: &Dir, name: &str, edit: impl FnOnce(&mut colibri_lang::pack::Pack)) -> Out {
     use colibri_lang::pack::{AssetData, PackAsset};
-    let mut bytes = fs::read(dir.path(&exe("good"))).unwrap();
+    let mut bytes = common::plain(fs::read(dir.path(&exe("good"))).unwrap());
+    let unsigned_len = bytes.len() as u64;
     let mut pack = colibri_lang::pack::read_from(&mut std::io::Cursor::new(bytes.clone()))
         .unwrap()
         .expect("a built program");
@@ -495,8 +501,10 @@ fn forged(dir: &Dir, name: &str, edit: impl FnOnce(&mut colibri_lang::pack::Pack
     edit(&mut pack);
     bytes.truncate(offset as usize);
     bytes.extend(pack.append_to(offset).unwrap());
+    common::fit(&mut bytes, unsigned_len);
     let target = dir.path(&exe(name));
     fs::write(&target, &bytes).unwrap();
+    common::sign(&target);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

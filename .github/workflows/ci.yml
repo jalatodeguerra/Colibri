@@ -51,3 +51,35 @@ jobs:
           for slice in 1 7; do
             COLIBRI_TEST_SLICE=$slice cargo test -p colibri-runtime --test budget
           done
+
+  # DESIGN §17.4: a stripped release `colibri` is under 15 MB, and a built program starts fast.
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p colibri-lang --bin colibri
+      - name: Size gate
+        run: |
+          size=$(stat -c %s target/release/colibri)
+          echo "colibri: $size bytes (limit 15000000)"
+          test "$size" -le 15000000
+      # The goal is 50 ms. A shared runner is slow and noisy, so the step fails only above 250 ms,
+      # which still catches a start-up that has become much slower (reading and checking a large
+      # program at start); the best of 10 runs is taken so one slow run does not decide. The
+      # number is printed for the log. The build uses `--target` and `--runner` on the release
+      # binary, which also checks that the version marker survives `strip` and LTO.
+      - name: Start-up gate
+        run: |
+          target/release/colibri build tests/golden/std/httpd_hello.colibri -o hello \
+            --release --target linux-x86_64 --runner target/release/colibri
+          best=999999
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            start=$(date +%s%N)
+            ./hello > /dev/null
+            ms=$(( ($(date +%s%N) - start) / 1000000 ))
+            test "$ms" -lt "$best" && best=$ms
+          done
+          echo "built httpd hello: best of 10 runs $best ms (goal 50, limit 250)"
+          test "$best" -le 250

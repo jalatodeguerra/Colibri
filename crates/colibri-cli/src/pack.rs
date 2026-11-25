@@ -536,6 +536,30 @@ impl<'a> Reader<'a> {
 fn trailer<R: Read + Seek>(file: &mut R) -> Result<Option<(u64, u64)>, String> {
     let io = |e: std::io::Error| format!("cannot read the program's data: {e}");
     let size = file.seek(SeekFrom::End(0)).map_err(io)?;
+    if let Some(found) = trailer_ending_at(file, size)? {
+        return Ok(Some(found));
+    }
+    // A program signed on macOS has the signature after the data (see `macho`), and up to a few
+    // bytes of padding between the trailer and the signature.
+    let Some(end) = crate::macho::signed_end(file, size).map_err(io)? else {
+        return Ok(None);
+    };
+    for pad in 0..=crate::macho::SLACK {
+        if let Some(at) = end.checked_sub(pad)
+            && let Some(found) = trailer_ending_at(file, at)?
+        {
+            return Ok(Some(found));
+        }
+    }
+    Ok(None)
+}
+
+/// The trailer of the `size` first bytes of a file.
+fn trailer_ending_at<R: Read + Seek>(
+    file: &mut R,
+    size: u64,
+) -> Result<Option<(u64, u64)>, String> {
+    let io = |e: std::io::Error| format!("cannot read the program's data: {e}");
     if size < TRAILER_LEN as u64 {
         return Ok(None);
     }
@@ -561,6 +585,13 @@ fn trailer<R: Read + Seek>(file: &mut R) -> Result<Option<(u64, u64)>, String> {
         );
     }
     Ok(Some((offset, len)))
+}
+
+/// Where the payload of the pack in a file starts and how long it is (the trailer follows it),
+/// found as the reader finds it. For tests.
+#[doc(hidden)]
+pub fn payload_range<R: Read + Seek>(file: &mut R) -> Result<Option<(u64, u64)>, String> {
+    trailer(file)
 }
 
 /// Whether a file already holds a pack (a runner must not).

@@ -944,14 +944,46 @@ argument given to it goes to the program (`os.args()`), including ones such as `
   executable keeps the result: `--release` is how a program built for use is made.
 - Without `-o` the file is named after the script or the package folder, in the current folder.
   A build never overwrites a source file.
-- The executable only runs on the platform that built it. A built Windows executable is
-  unsigned.
+- The executable runs on the platform of the `colibri` that was copied: this one, unless
+  `--target` and `--runner` say otherwise (below).
 - The files of the program keep the names they had when it was built, and so do the dependencies
   (which live in the cache folder of the machine that built it): a stack trace shows those paths,
   also on the machine that runs the program. An argument that is not valid UTF-8 reaches `os.args()`
   with replacement characters.
 - The program is read when it starts and checked then, as `colibri run` does; the files of the
   program are held as text, so the file is about the size of `colibri` plus the source.
+
+#### Another platform
+
+`colibri build` copies the `colibri` that runs it, so by itself it writes programs for its own
+platform. For another one, give the `colibri` of that platform and name the platform:
+
+```console
+$ colibri build tool.colibri --target windows-x86_64 --runner ./colibri-windows/colibri.exe
+built tool.exe (3 source files, 14551040 bytes)
+```
+
+- The platforms are `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64`,
+  `windows-x86_64` and `windows-aarch64`. `--target` and `--runner` go together; `--target` alone
+  is fine for the platform you are on. Nothing is ever downloaded: take the runner from the release
+  of the same `colibri` version (an executable of another version is refused).
+- The runner is looked at, never run. It must be an executable of the target's kind and
+  processor (ELF, PE or Mach-O; a universal Mach-O file needs the target's processor among its
+  slices), it must say that it is `colibri` of this version, and it must not be a built program.
+- The target also decides `@when(os == "..")` and `@when(arch == "..")` while the program is
+  checked and packed, so a cross build holds the files of the target and the executable behaves as
+  it would there. Without `-o`, the name gets `.exe` for a Windows target and nothing else.
+- **macOS.** A change to a signed executable invalidates its signature, and arm64 Macs refuse
+  unsigned code. Built on a Mac, the program is signed ad hoc (`codesign -s -`) when it is
+  written. Built anywhere else, it is left unsigned with a warning: run `codesign -s - PROGRAM`
+  on a Mac, or sign it with your own identity (`codesign -s "Developer ID Application: ..."`),
+  before it is used. To make that possible `colibri build` removes the runner's signature and
+  extends the `__LINKEDIT` segment over the program. A universal runner cannot be prepared that way;
+  take one slice with `lipo -thin`.
+- **Windows.** A built executable is not signed, and the program is appended to the file, which
+  some antivirus programs distrust: if one blocks it, ask it to allow the file. Signing it with
+  Authenticode afterwards is not supported: a signature goes at the end of the file, where the
+  program is looked for.
 
 #### Assets
 

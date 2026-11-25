@@ -114,7 +114,8 @@ enum Command {
     /// source files where it runs, and it runs like `colibri run` (the same output, exit
     /// codes and `os.args()`, every capability granted). Arguments given to it go to the
     /// program, never to `colibri`. The program is checked first; git dependencies are
-    /// resolved as for `run`. It runs on the platform of this `colibri`
+    /// resolved as for `run`. It runs on the platform of this `colibri`, unless `--target` and
+    /// `--runner` name another
     Build {
         /// A script, or a package folder (the current folder by default)
         file: Option<PathBuf>,
@@ -122,6 +123,15 @@ enum Command {
         /// package folder, in the current folder)
         #[arg(short, long, value_name = "FILE")]
         output: Option<PathBuf>,
+        /// Build for another platform (linux, macos or windows, then x86_64 or aarch64:
+        /// `linux-aarch64`). Needs `--runner`, and `@when(os == ..)` and `@when(arch == ..)`
+        /// are decided for this platform
+        #[arg(long, value_name = "PLATFORM")]
+        target: Option<colibri_lang::platform::Target>,
+        /// A `colibri` of the target's platform and of this version, to copy as the runner
+        /// (get it from the release of that version). Needs `--target`. It is never downloaded
+        #[arg(long, value_name = "FILE")]
+        runner: Option<PathBuf>,
         #[command(flatten)]
         build: BuildFlags,
         #[command(flatten)]
@@ -308,15 +318,25 @@ fn main() -> ExitCode {
         Command::Build {
             file,
             output,
+            target,
+            runner,
             build,
             deps,
         } => {
-            colibri_lang::set_build_cfg(build.cfg());
+            let mut cfg = build.cfg();
+            // The files a program reads are chosen by `@when(os == ..)` while it is checked.
+            if let Some(target) = target {
+                cfg.os = target.os_name().to_string();
+                cfg.arch = target.arch_name().to_string();
+            }
+            colibri_lang::set_build_cfg(cfg);
             let file = file.unwrap_or_else(|| PathBuf::from("."));
             colibri_lang::buildcmd::build(&colibri_lang::buildcmd::Options {
                 path: &file,
                 out: output.as_deref(),
                 deps,
+                target,
+                runner: runner.as_deref(),
             })
         }
         Command::Run {
