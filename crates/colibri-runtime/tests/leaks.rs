@@ -254,12 +254,9 @@ fn main() {
     assert!(vm.find_leaks().is_empty());
 }
 
-/// The leaks one program makes on an engine: the path and the `allocated at` sites of each.
-fn leak_reports(kind: colibri::EngineKind, source: &str) -> Vec<(String, Vec<String>)> {
-    let mut vm = colibri::Vm::builder()
-        .engine(kind)
-        .track_leaks(true)
-        .build();
+/// The leaks one program makes: the path and the `allocated at` sites of each.
+fn leak_reports(source: &str) -> Vec<(String, Vec<String>)> {
+    let mut vm = colibri::Vm::builder().track_leaks(true).build();
     vm.load_source("leaks.colibri", source).unwrap();
     vm.run_main().unwrap();
     vm.find_leaks()
@@ -268,16 +265,9 @@ fn leak_reports(kind: colibri::EngineKind, source: &str) -> Vec<(String, Vec<Str
         .collect()
 }
 
-/// The same report on both engines, whatever form of `some(obj)` each makes.
-fn same_report_on_both(source: &str) -> Vec<(String, Vec<String>)> {
-    let tree = leak_reports(colibri::EngineKind::Tree, source);
-    assert_eq!(leak_reports(colibri::EngineKind::Bytecode, source), tree);
-    tree
-}
-
 #[test]
-fn a_path_through_an_optional_field_is_the_same_on_both_engines_with_a_shorter_route_beside_it() {
-    let reports = same_report_on_both(
+fn a_path_through_an_optional_field_is_reported_with_a_shorter_route_beside_it() {
+    let reports = leak_reports(
         r#"
 class M {
     name: str
@@ -306,8 +296,8 @@ fn main() {
 }
 
 #[test]
-fn a_path_through_a_list_holding_both_forms_of_some_is_the_same_on_both_engines() {
-    let reports = same_report_on_both(
+fn a_path_through_a_list_holding_both_forms_of_some_is_reported() {
+    let reports = leak_reports(
         r#"
 class L {
     name: str

@@ -14,9 +14,7 @@ fn temp_file(name: &str, source: &str) -> PathBuf {
 
 fn run_registered(name: &str, source: &str) -> Vec<String> {
     let path = temp_file(name, source);
-    // About which modules get registered, not the engine: pinned to the tree-walker.
     let builder = colibri_lang::vm_builder()
-        .engine(colibri_runtime::EngineKind::Tree)
         .allow_all()
         .stdout(Box::new(std::io::sink()));
     let mut vm = colibri_lang::build_vm(builder, Vec::new());
@@ -150,8 +148,7 @@ fn check_of_toml_gets_the_json_interface_it_names_and_json_alone_never_asks_for_
     assert_eq!(asked, ["std.json"]);
 }
 
-/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests run the programs they
-/// spawn on the engine the environment names (the VM when it names none).
+/// The binary under test.
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

@@ -589,14 +589,9 @@ impl Machine {
         // the next fiber's or the host's.
         let result = self.fold_hook_panics(result);
         match result {
-            Ok(v) | Err(Ctl::Return(v)) => Finish::Done(v),
+            Ok(v) => Finish::Done(v),
             Err(Ctl::Cancel) => Finish::Cancelled,
             Err(Ctl::Panic(info)) => Finish::Panicked(info),
-            Err(Ctl::Break(_, v)) => {
-                self.release(v);
-                Finish::Cancelled
-            }
-            Err(Ctl::Continue(_)) => Finish::Cancelled,
         }
     }
 

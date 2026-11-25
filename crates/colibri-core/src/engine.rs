@@ -1,6 +1,6 @@
 //! What the engine-neutral code needs from an engine.
 //!
-//! An engine (the tree-walking interpreter today, a bytecode VM later) owns a [`Core`] and a
+//! An engine (the bytecode VM) owns a [`Core`] and a
 //! type for one running computation (`Fiber`). Everything in this crate that has to run
 //! Colibri code, build a panic with a stack, or reach a temporary of the running computation
 //! asks the engine through this trait. The shared code is written as extension traits with
@@ -11,7 +11,7 @@
 //! and the instantiations are in the engine's crate (and in the runtime, for the few
 //! shared methods it calls), where they inline.
 
-use colibri_check::hir::{Builtin, FnId};
+use colibri_check::hir::FnId;
 use colibri_check::types::TypeId;
 use colibri_syntax::Span;
 
@@ -36,7 +36,7 @@ pub enum Resumed {
 /// An engine: the owner of a [`Core`] and of the computations that run against it.
 #[doc(hidden)]
 pub trait Engine: Sized {
-    /// The state of one running computation (tree-walker: its `Fiber`; VM: its frame stack).
+    /// The state of one running computation (the VM: its frame stack).
     type Fiber;
 
     /// The state shared with the engine-neutral code.
@@ -160,8 +160,7 @@ pub trait Engine: Sized {
     /// ends. `cancel` resumes it with a cancel signal, so its pause returns `Ctl::Cancel` and it
     /// unwinds. The scheduler's bookkeeping (state, signals, budget) is done by the caller.
     ///
-    /// For the tree-walker this switches to the coroutine's native stack and back. For an
-    /// engine with heap frames it is the same contract with no stack: run the coroutine's
+    /// An engine with heap frames runs the coroutine's
     /// frames from where it paused until it waits again or ends. The engine must not hold a
     /// reference into [`Core`] across the call (the coroutine uses it meanwhile). `slot` is what
     /// the engine gave to `Scheduler::register` for this coroutine. `Gone` means the engine has
@@ -169,18 +168,4 @@ pub trait Engine: Sized {
     /// suspended coroutines, so this is a broken invariant: the coroutine ends as a failure with
     /// an internal error.
     fn resume_stack(&mut self, id: u64, slot: EngineSlot, cancel: bool) -> Resumed;
-
-    // ---- built-ins that pause ----
-
-    /// The built-ins that pause the running coroutine: `join` and `join_result` on a
-    /// `Coroutine` and `join_all` on a `CoGroup` (`op` says which; `recv` is the receiver).
-    /// Pausing is stackful in the tree-walker, so these stay with the engine; the other handle
-    /// methods are in [`crate::coro::Sched`].
-    fn pausing_builtin(
-        &mut self,
-        fiber: &mut Self::Fiber,
-        op: Builtin,
-        recv: &Value,
-        span: Span,
-    ) -> Eval;
 }

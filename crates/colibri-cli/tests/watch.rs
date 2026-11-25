@@ -183,8 +183,7 @@ fn warnings_are_printed_before_the_top_level_code_runs() {
     );
 }
 
-/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests run the programs they
-/// spawn on the engine the environment names (the VM when it names none).
+/// The binary under test.
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

@@ -5,20 +5,15 @@
 //! coroutine meets it and whatever resumed that coroutine: `go`, a wait or a join on the main
 //! fiber, `task.tick` or a tick of the host. Nothing the program wrote runs for it (no `defer`,
 //! no `Drop` hook, not even at shutdown), and it carries the trace of the fiber that raises it.
-//!
-//! Every test runs on the VM only: the tree-walker has no such refusal.
 
-use colibri::{Ctx, EngineKind, Error, HostType, SharedBuffer, TypeBuilder, Vm};
+use colibri::{Ctx, Error, HostType, SharedBuffer, TypeBuilder, Vm};
 use colibri_runtime as colibri;
 
 const REFUSAL: &str = "the bytecode VM does not support a stand-in feature yet";
 
 fn vm() -> (Vm, SharedBuffer) {
     let out = SharedBuffer::new();
-    let mut vm = Vm::builder()
-        .engine(EngineKind::Bytecode)
-        .stdout(Box::new(out.clone()))
-        .build();
+    let mut vm = Vm::builder().stdout(Box::new(out.clone())).build();
     vm.register_fn("blocky", |cx: &mut Ctx| -> i64 { cx.raise(REFUSAL) })
         .unwrap();
     (vm, out)

@@ -1,17 +1,14 @@
-//! What happens at the border between Colibri code and host functions agrees between the
-//! engines: the host function's frame in a trace, the host depth, the call-depth limit, what a
-//! panic or a callback that fails looks like on either side, the type arguments of a call and
-//! the hooks of a host class.
+//! What happens at the border between Colibri code and host functions: the host function's
+//! frame in a trace, the host depth, the call-depth limit, what a panic or a callback that fails
+//! looks like on either side, the type arguments of a call and the hooks of a host class.
 //!
-//! Every scenario runs on the tree-walker and on the bytecode VM with the same host functions,
-//! and the two outcomes (the script's output and how the run ended, stack included) must be
-//! equal. The tests also pin the outcome itself, so two engines that are wrong in the same way
-//! do not pass.
+//! Every scenario runs with host functions, and the outcome (the script's output and how the run
+//! ended, stack included) is pinned.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
-use colibri::{Ctx, EngineKind, Error, HostType, TypeBuilder, Value};
+use colibri::{Ctx, Error, HostType, TypeBuilder, Value};
 use colibri_runtime as colibri;
 
 /// Fetches function handles once the program is loaded, for host functions that call back.
@@ -47,10 +44,9 @@ struct Scenario<'a> {
     depth: usize,
 }
 
-fn run_on(kind: EngineKind, s: &Scenario<'_>, source: &str) -> String {
+fn run_on(s: &Scenario<'_>, source: &str) -> String {
     let out = colibri::SharedBuffer::new();
     let mut vm = colibri::Vm::builder()
-        .engine(kind)
         .max_call_depth(s.depth)
         .stdout(Box::new(out.clone()))
         .build();
@@ -64,12 +60,9 @@ fn run_on(kind: EngineKind, s: &Scenario<'_>, source: &str) -> String {
     describe(&text, result)
 }
 
-/// The same run on both engines; the outcomes must be equal. Returns the outcome.
+/// The run of a scenario. Returns the outcome.
 fn both(s: &Scenario<'_>, source: &str) -> String {
-    let tree = run_on(EngineKind::Tree, s, source);
-    let vm = run_on(EngineKind::Bytecode, s, source);
-    assert_eq!(vm, tree, "the engines differ");
-    tree
+    run_on(s, source)
 }
 
 fn plain<'a>(before: &'a dyn Fn(&mut colibri::Vm, &Handles)) -> Scenario<'a> {
@@ -359,11 +352,8 @@ fn a_host_call_at_the_depth_limit_is_a_stack_overflow() {
 }
 
 /// The steps one entry used running `body` 50 times.
-fn steps_of(kind: EngineKind, body: &str) -> u64 {
-    let mut vm = colibri::Vm::builder()
-        .engine(kind)
-        .instruction_budget(1_000_000)
-        .build();
+fn steps_of(body: &str) -> u64 {
+    let mut vm = colibri::Vm::builder().instruction_budget(1_000_000).build();
     vm.register_fn("noop", || {}).unwrap();
     vm.load_source(
         "a.colibri",
@@ -377,15 +367,10 @@ fn steps_of(kind: EngineKind, body: &str) -> u64 {
 
 #[test]
 fn every_host_call_costs_a_budget_step() {
-    for kind in [EngineKind::Tree, EngineKind::Bytecode] {
-        let with = steps_of(kind, "noop()");
-        let without = steps_of(kind, "let x = i");
-        // The calls are 50 statements like the `let`s, and each also costs the step of the call.
-        assert!(
-            with >= without + 50,
-            "{kind:?}: {with} steps against {without}"
-        );
-    }
+    let with = steps_of("noop()");
+    let without = steps_of("let x = i");
+    // The calls are 50 statements like the `let`s, and each also costs the step of the call.
+    assert!(with >= without + 50, "{with} steps against {without}");
 }
 
 /// A host function `keep` that stores the object it is given, and `lie`, declared `-> T`, that

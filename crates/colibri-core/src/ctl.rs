@@ -1,6 +1,5 @@
 //! The one control channel of the evaluator (ARCHITECTURE §2).
 
-use colibri_check::hir::LoopId;
 use colibri_syntax::Span;
 
 use crate::value::Value;
@@ -8,9 +7,6 @@ use crate::value::Value;
 /// Why evaluation stopped early. No Rust panic is ever part of the semantics.
 #[derive(Debug)]
 pub enum Ctl {
-    Break(LoopId, Value),
-    Continue(LoopId),
-    Return(Value),
     Panic(Box<PanicInfo>),
     /// Coroutine cancellation: unwinds like a panic without a message.
     Cancel,
@@ -49,13 +45,6 @@ pub fn into_panic(ctl: Ctl, fallback: Span) -> Box<PanicInfo> {
         Ctl::Panic(info) => info,
         Ctl::Cancel => Box::new(PanicInfo {
             message: "cancelled".to_string(),
-            span: fallback,
-            stack: Vec::new(),
-            notes: Vec::new(),
-            budget: false,
-        }),
-        Ctl::Break(..) | Ctl::Continue(_) | Ctl::Return(_) => Box::new(PanicInfo {
-            message: "internal error: control flow escaped its function".to_string(),
             span: fallback,
             stack: Vec::new(),
             notes: Vec::new(),

@@ -1,11 +1,10 @@
 //! The Colibri bytecode virtual machine (vm-plan, phase 3).
 //!
 //! HIR from `colibri-check` is compiled to register bytecode ([`bytecode`], `compile`) and run
-//! by a dispatch loop over a heap frame stack (`run`, `fiber`). The machine shares
-//! `colibri-core` with the tree-walking interpreter and implements its `Engine` trait.
+//! by a dispatch loop over a heap frame stack (`run`, `fiber`). The machine builds on
+//! `colibri-core` and implements its `Engine` trait.
 //!
-//! The machine is the default engine behind `colibri-runtime`, which picks it (or the
-//! tree-walking interpreter, with `COLIBRI_ENGINE=tree`) when a `Vm` is built. Hosts do not use
+//! The machine is the engine behind `colibri-runtime`. Hosts do not use
 //! this crate directly; [`run_source`] is a small entry for tests. A construct the compiler has no
 //! instruction for would compile to one that panics with "the bytecode VM does not support
 //! <node> yet", which a checked program does not reach today.

@@ -473,8 +473,7 @@ fn the_hint_for_a_missing_feature_works_in_the_repl() {
     assert_eq!(out.status.code(), Some(2));
 }
 
-/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests run the programs they
-/// spawn on the engine the environment names (the VM when it names none).
+/// The binary under test.
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

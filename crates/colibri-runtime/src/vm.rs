@@ -20,8 +20,7 @@ use colibri_syntax::{Diagnostic, SourceMap};
 use crate::cap::{Cap, CapSet};
 use crate::convert::{Args, FromColibri, Value};
 use crate::ctx::{Caller, Ctx, panic_error};
-use crate::engine::{ClassHooks, EngineKind, HostCx, HostFnImpl, RuntimeEngine};
-use crate::engine_tree::{self, DEFAULT_NATIVE_STACK_BUDGET};
+use crate::engine::{ClassHooks, HostCx, HostFnImpl, RuntimeEngine};
 use crate::engine_vm;
 use crate::error::{Error, Report};
 use crate::func::Fn;
@@ -109,10 +108,7 @@ pub struct VmBuilder {
     coroutine_stack_size: Option<usize>,
     clock: Option<Box<dyn Clock>>,
     cfg: BuildCfg,
-    engine: EngineKind,
     compile_all: bool,
-    /// Why the engine the environment names cannot be used (an unknown `COLIBRI_ENGINE`).
-    engine_error: Option<String>,
 }
 
 impl VmBuilder {
@@ -184,19 +180,15 @@ impl VmBuilder {
         self
     }
 
-    /// How many Colibri calls may be active at once before a "stack overflow" panic. On the
-    /// default engine, the bytecode VM, Colibri calls live in a heap frame stack and use no Rust
-    /// stack. The tree-walker (`COLIBRI_ENGINE=tree`) uses Rust stack for each call (see
-    /// [`VmBuilder::native_stack_budget`]): the `colibri` tool runs on a 256 MB stack for the
-    /// default of 10 000.
+    /// How many Colibri calls may be active at once before a "stack overflow" panic. Colibri
+    /// calls live in a heap frame stack and use no Rust stack.
     pub fn max_call_depth(mut self, depth: usize) -> Self {
         self.max_call_depth = depth.max(1);
         self
     }
 
     /// How many bytes of Rust stack the engine may use below the point where the host calls
-    /// in (with the VM, mostly host calls that call back into Colibri; with the tree-walker,
-    /// every call), before a deep recursion panics with "stack overflow" instead of crashing
+    /// in (mostly host calls that call back into Colibri), before a deep recursion panics with "stack overflow" instead of crashing
     /// the host. The default is 1 MiB, which fits a default test thread; on a thread with a
     /// bigger stack raise it to a little below that stack's size, together with
     /// [`VmBuilder::max_call_depth`].
@@ -227,19 +219,10 @@ impl VmBuilder {
         self
     }
 
-    /// Chooses the engine that runs the program, over what `COLIBRI_ENGINE` says. The default
-    /// is the bytecode VM. Not part of the embedding API.
-    #[doc(hidden)]
-    pub fn engine(mut self, kind: EngineKind) -> Self {
-        self.engine = kind;
-        self.engine_error = None;
-        self
-    }
-
     /// Makes the bytecode VM compile every function when a program is loaded, patched or
     /// extended, instead of at its first call, and panic on a function that does not compile
     /// (a bug: the checker accepted the program). For test suites, so that such a bug surfaces
-    /// at once and not in the one run that reaches the function. The tree-walker ignores it.
+    /// at once and not in the one run that reaches the function.
     #[doc(hidden)]
     pub fn compile_all_at_load(mut self, on: bool) -> Self {
         self.compile_all = on;
@@ -248,14 +231,7 @@ impl VmBuilder {
 
     pub fn build(self) -> Vm {
         let out = self.stdout.unwrap_or_else(|| Box::new(std::io::stdout()));
-        // An unknown engine name (`COLIBRI_ENGINE`) fails every load with the reason (see
-        // `Vm::check_engine`); the default engine stands in meanwhile.
-        let engine_unavailable = self.engine_error;
-        let new_engine = match self.engine {
-            EngineKind::Tree => engine_tree::new_engine,
-            EngineKind::Bytecode => engine_vm::new_engine,
-        };
-        let mut engine = new_engine(out, self.max_call_depth, self.native_stack_budget);
+        let mut engine = engine_vm::new_engine(out, self.max_call_depth, self.native_stack_budget);
         engine.set_compile_all(self.compile_all);
         engine.core_mut().set_trace_drops(self.trace_drops);
         engine.core_mut().set_track_leaks(self.track_leaks);
@@ -274,7 +250,6 @@ impl VmBuilder {
         Vm {
             sources: Rc::new(SourceMap::new()),
             engine,
-            engine_unavailable,
             program: None,
             warnings: Vec::new(),
             warning_hook: None,
@@ -303,8 +278,6 @@ impl VmBuilder {
 pub struct Vm {
     sources: Rc<SourceMap>,
     engine: Box<dyn RuntimeEngine>,
-    /// Why the chosen engine cannot run a program, if it cannot.
-    engine_unavailable: Option<String>,
     program: Option<Rc<Program>>,
     warnings: Vec<Diagnostic>,
     /// Called by a load with the warnings of a program that checked, before any of its code runs.
@@ -402,15 +375,10 @@ impl Caller for Vm {
 
 impl Vm {
     pub fn builder() -> VmBuilder {
-        // Read once, here: the engine of a `Vm` does not change after it is built.
-        let (engine, engine_error) = match EngineKind::from_env() {
-            Ok(kind) => (kind, None),
-            Err(why) => (EngineKind::default(), Some(why)),
-        };
         VmBuilder {
             stdout: None,
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
-            native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
+            native_stack_budget: colibri_vm::DEFAULT_NATIVE_STACK_BUDGET,
             trace_drops: false,
             track_leaks: false,
             caps: CapSet::none(),
@@ -418,9 +386,7 @@ impl Vm {
             coroutine_stack_size: None,
             clock: None,
             cfg: BuildCfg::default(),
-            engine,
             compile_all: false,
-            engine_error,
         }
     }
 
@@ -1021,14 +987,6 @@ impl Vm {
         &mut *self.engine
     }
 
-    /// Fails when the engine chosen for this `Vm` cannot run programs.
-    fn check_engine(&self) -> Result<(), Error> {
-        match &self.engine_unavailable {
-            Some(why) => Err(Error::Internal(why.clone())),
-            None => Ok(()),
-        }
-    }
-
     /// Whether the host function `name` of `module` never waits for anything outside the
     /// program (a pure one): the VM calls it from a coroutine without a native stack of its
     /// own, which any other function gets so that the coroutine can wait inside it.
@@ -1471,7 +1429,6 @@ impl Vm {
         mode: LoadMode,
         watch: Option<OwnedEntry>,
     ) -> Result<(), Error> {
-        self.check_engine()?;
         if self.program.is_some() {
             return Err(Error::AlreadyLoaded);
         }

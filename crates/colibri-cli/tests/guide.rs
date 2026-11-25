@@ -840,8 +840,7 @@ fn colibri_doc_refuses_a_folder_with_pages_it_did_not_write() {
     assert!(empty.join(".DS_Store").exists());
 }
 
-/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests run the programs they
-/// spawn on the engine the environment names (the VM when it names none).
+/// The binary under test.
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

@@ -3,7 +3,7 @@
 //! Every host function, whatever its Rust signature, becomes one non-generic [`RawHostFn`] that
 //! takes the context and the arguments as a slice and returns one value. The generic part
 //! (reading each argument, converting the result) is only the wrapper [`HostFn::into_raw`]
-//! builds, so an engine other than the interpreter can call the same table.
+//! builds, so an engine other than the VM can call the same table.
 
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -140,7 +140,7 @@ impl Registration<'_> {
     /// caller must not be marked. The bytecode VM runs a coroutine's call of any other host
     /// function on a native stack of its own, so that the coroutine can be suspended inside it
     /// (this costs a switch of stacks); a marked function runs on the caller's stack, where
-    /// [`crate::Ctx::can_suspend`] reads `false`. The tree-walker takes no notice.
+    /// [`crate::Ctx::can_suspend`] reads `false`.
     ///
     /// A function that is not marked runs on that stack, which is 1 MiB unless
     /// [`crate::VmBuilder::coroutine_stack_size`] says otherwise; a function that needs more

@@ -252,12 +252,6 @@ pub enum Outcome {
 /// load the file, then call `main` if it has one. Run it on a thread with a big stack (see
 /// [`crate::on_big_stack`]) so deep recursion reaches the call-depth limit.
 pub fn run_golden(path: &Path, source: &str) -> Outcome {
-    run_golden_on(path, source, None)
-}
-
-/// [`run_golden`] on a chosen engine (`None`: the process's, see [`crate::set_engine`] and
-/// `COLIBRI_ENGINE`).
-pub fn run_golden_on(path: &Path, source: &str, engine: Option<colibri::EngineKind>) -> Outcome {
     let name = path.display().to_string();
     let d = parse_directives(source);
     run_with(
@@ -266,18 +260,12 @@ pub fn run_golden_on(path: &Path, source: &str, engine: Option<colibri::EngineKi
         &name,
         &d.caps,
         &d.features,
-        engine,
     )
 }
 
 /// Runs a golden test that is a folder: the files in it are one program, started from
 /// `main.colibri` (see `Vm::load_file`, which makes the folder its implicit package).
 pub fn run_golden_package(dir: &Path) -> Outcome {
-    run_golden_package_on(dir, None)
-}
-
-/// [`run_golden_package`] on a chosen engine.
-pub fn run_golden_package_on(dir: &Path, engine: Option<colibri::EngineKind>) -> Outcome {
     let main = dir.join("main.colibri");
     let d = std::fs::read_to_string(&main)
         .map(|text| parse_directives(&text))
@@ -288,7 +276,6 @@ pub fn run_golden_package_on(dir: &Path, engine: Option<colibri::EngineKind>) ->
         "",
         &d.caps,
         &d.features,
-        engine,
     )
 }
 
@@ -370,20 +357,13 @@ fn run_with(
     blank: &str,
     caps: &[String],
     features: &[String],
-    engine: Option<colibri::EngineKind>,
 ) -> Outcome {
     let out = colibri::SharedBuffer::new();
-    let mut builder = crate::vm_builder();
-    if let Some(kind) = engine {
-        builder = builder.engine(kind);
-        // A runaway program on the VM fails its test instead of hanging the run.
-        if kind == colibri::EngineKind::Bytecode {
-            builder = builder.instruction_budget(2_000_000_000);
-        }
-    }
-    // In a debug build the VM compiles the whole program at load, so a function that cannot be
-    // compiled fails its test even if the run never calls it.
-    let mut builder = builder
+    // A runaway program fails its test instead of hanging the run. In a debug build the VM
+    // compiles the whole program at load, so a function that cannot be compiled fails its test
+    // even if the run never calls it.
+    let mut builder = crate::vm_builder()
+        .instruction_budget(2_000_000_000)
         .compile_all_at_load(cfg!(debug_assertions))
         .trace_drops(true)
         .track_leaks(true)
@@ -770,93 +750,6 @@ fn finish(problems: Vec<String>) -> Result<(), String> {
     }
 }
 
-/// `text` with the number of a run's scratch folder (`colibri-golden-<pid>-<n>`) replaced, so
-/// that two runs of one program compare equal.
-fn same_folder(text: &str) -> String {
-    const MARK: &str = "colibri-golden-";
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find(MARK) {
-        let (head, tail) = rest.split_at(at + MARK.len());
-        out.push_str(head);
-        let digits = tail
-            .find(|c: char| !(c.is_ascii_digit() || c == '-'))
-            .unwrap_or(tail.len());
-        out.push('N');
-        rest = &tail[digits..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// How two engines' outcomes of one golden test differ (stdout, panic text and trace, main's error, the
-/// drop trace, the warnings), or `None` when they agree. The leak report is not compared: a
-/// cycle's shape is an engine detail.
-pub fn diff_outcomes(tree: &Outcome, vm: &Outcome) -> Option<String> {
-    match (tree, vm) {
-        (
-            Outcome::Compiled {
-                stdout: s1,
-                panic: p1,
-                trace: t1,
-                main_err: m1,
-                warnings: w1,
-                drops: d1,
-                ..
-            },
-            Outcome::Compiled {
-                stdout: s2,
-                panic: p2,
-                trace: t2,
-                main_err: m2,
-                warnings: w2,
-                drops: d2,
-                ..
-            },
-        ) => {
-            // Each run has a folder of its own: its number is no difference.
-            let (m1, m2) = (
-                m1.as_deref().map(same_folder),
-                m2.as_deref().map(same_folder),
-            );
-            let (p1, p2) = (
-                p1.as_deref().map(same_folder),
-                p2.as_deref().map(same_folder),
-            );
-            let (s1, s2) = (&same_folder(s1), &same_folder(s2));
-            let mut parts = Vec::new();
-            if s1 != s2 {
-                parts.push(format!("stdout:\n  tree: {s1:?}\n  vm:   {s2:?}"));
-            }
-            // How deep a runaway recursion gets depends on the engine's limits (the tree-walker
-            // measures a coroutine's native stack, the VM counts calls): both stop it cleanly.
-            let overflow = |p: &Option<_>| {
-                p.as_ref()
-                    .is_some_and(|m: &String| m.starts_with("stack overflow"))
-            };
-            let both_overflow = overflow(&p1) && overflow(&p2);
-            if p1 != p2 && !both_overflow {
-                parts.push(format!("panic:\n  tree: {p1:?}\n  vm:   {p2:?}"));
-            }
-            if t1 != t2 && !both_overflow {
-                parts.push(format!("panic trace:\n  tree: {t1:?}\n  vm:   {t2:?}"));
-            }
-            if m1 != m2 {
-                parts.push(format!("main error:\n  tree: {m1:?}\n  vm:   {m2:?}"));
-            }
-            if d1 != d2 {
-                parts.push(format!("drop trace:\n  tree: {d1:?}\n  vm:   {d2:?}"));
-            }
-            if w1 != w2 {
-                parts.push(format!("warnings:\n  tree: {w1:?}\n  vm:   {w2:?}"));
-            }
-            (!parts.is_empty()).then(|| parts.join("\n"))
-        }
-        (a, b) if a == b => None,
-        (a, b) => Some(format!("outcome kind:\n  tree: {a:?}\n  vm:   {b:?}")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -898,37 +791,6 @@ mod tests {
             drops: Vec::new(),
             leaks: Vec::new(),
         }
-    }
-
-    #[test]
-    fn the_engines_differ_when_their_panic_traces_do() {
-        let with_trace = |lines: &[&str]| match compiled("", Some("boom")) {
-            Outcome::Compiled {
-                stdout,
-                panic,
-                main_err,
-                warnings,
-                drops,
-                leaks,
-                ..
-            } => Outcome::Compiled {
-                stdout,
-                panic,
-                trace: lines.iter().map(|s| s.to_string()).collect(),
-                main_err,
-                warnings,
-                drops,
-                leaks,
-            },
-            other => other,
-        };
-        let a = with_trace(&["at line 3", "main line 3"]);
-        assert_eq!(
-            diff_outcomes(&a, &with_trace(&["at line 3", "main line 3"])),
-            None
-        );
-        let diff = diff_outcomes(&a, &with_trace(&["at line 4", "main line 3"])).expect("differs");
-        assert!(diff.contains("panic trace"), "{diff}");
     }
 
     #[test]

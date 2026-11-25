@@ -1,9 +1,9 @@
-//! The lines of a panic's stack trace agree between the engines.
+//! The lines of a panic's stack trace are right.
 
-use colibri_runtime::{EngineKind, Error, Vm};
+use colibri_runtime::{Error, Vm};
 
-fn trace_of(kind: EngineKind, source: &str) -> Vec<(String, u32)> {
-    let mut vm = Vm::builder().engine(kind).build();
+fn trace_of(source: &str) -> Vec<(String, u32)> {
+    let mut vm = Vm::builder().build();
     let result = vm
         .load_source("a.colibri", source)
         .and_then(|()| vm.run_main().map(|_| ()));
@@ -23,24 +23,21 @@ fn boom(n: int) -> int => 10 / n
 
 let b = boom(a - 1)
 ";
-    let tree = trace_of(EngineKind::Tree, src);
-    let vm = trace_of(EngineKind::Bytecode, src);
-    // The script's own frame is at the `let`; before the fix the tree-walker said line 1.
-    assert_eq!(tree.last(), Some(&("<script>".to_string(), 4)), "{tree:?}");
-    assert_eq!(tree.first(), Some(&("boom".to_string(), 2)), "{tree:?}");
-    assert_eq!(vm, tree);
+    let vm = trace_of(src);
+    // The script's own frame is at the `let`.
+    assert_eq!(vm.last(), Some(&("<script>".to_string(), 4)), "{vm:?}");
+    assert_eq!(vm.first(), Some(&("boom".to_string(), 2)), "{vm:?}");
 }
 
 /// The whole panic of a run: message, position and every frame of the stack, with columns.
 fn panic_of(
-    kind: EngineKind,
     source: &str,
 ) -> (
     String,
     Option<colibri_runtime::Location>,
     Vec<colibri_runtime::StackFrame>,
 ) {
-    let mut vm = Vm::builder().engine(kind).build();
+    let mut vm = Vm::builder().build();
     let result = vm
         .load_source("a.colibri", source)
         .and_then(|()| vm.run_main().map(|_| ()));
@@ -55,16 +52,13 @@ fn panic_of(
     }
 }
 
-fn same_panic_on_both_engines(source: &str) -> Vec<colibri_runtime::StackFrame> {
-    let tree = panic_of(EngineKind::Tree, source);
-    let vm = panic_of(EngineKind::Bytecode, source);
-    assert_eq!(vm, tree);
-    tree.2
+fn stack_of_panic(source: &str) -> Vec<colibri_runtime::StackFrame> {
+    panic_of(source).2
 }
 
 #[test]
-fn a_panic_inside_a_map_closure_has_the_same_stack_on_both_engines() {
-    let stack = same_panic_on_both_engines(
+fn a_panic_inside_a_map_closure_has_the_right_stack() {
+    let stack = stack_of_panic(
         "fn check(x: int) -> int => 10 / (x - 3)
 fn main() {
     let xs = [1, 2, 3]
@@ -81,7 +75,7 @@ fn main() {
 }
 
 #[test]
-fn a_panic_inside_every_kind_of_closure_built_in_has_the_same_stack_on_both_engines() {
+fn a_panic_inside_every_kind_of_closure_built_in_has_the_right_stack() {
     for call in [
         "xs.filter(fn(x) => 1 / (x - 2) > 0)",
         "xs.retain(fn(x) => 1 / (x - 2) > 0)",
@@ -98,7 +92,7 @@ fn a_panic_inside_every_kind_of_closure_built_in_has_the_same_stack_on_both_engi
         "some(2).map(fn(x) => 1 / (x - 2))",
         "some(2).and_then(fn(x) => some(1 / (x - 2)))",
     ] {
-        let stack = same_panic_on_both_engines(&format!(
+        let stack = stack_of_panic(&format!(
             "fn main() {{\n    let mut xs = [3, 1, 2]\n    print({call})\n}}"
         ));
         let names: Vec<&str> = stack.iter().map(|f| f.function.as_str()).collect();
@@ -109,10 +103,10 @@ fn a_panic_inside_every_kind_of_closure_built_in_has_the_same_stack_on_both_engi
 }
 
 #[test]
-fn a_panic_of_the_built_in_itself_is_reported_at_its_call_on_both_engines() {
+fn a_panic_of_the_built_in_itself_is_reported_at_its_call() {
     // The guard of the list is checked by code that the VM writes in Colibri; the panic names
     // the line of the call, with no frame of that code.
-    let stack = same_panic_on_both_engines(
+    let stack = stack_of_panic(
         "fn main() {
     let mut xs = [2, 1]
     for x in xs {

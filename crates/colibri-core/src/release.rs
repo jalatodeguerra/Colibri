@@ -305,9 +305,8 @@ pub trait Release: Engine {
 
     /// Releases the value an evaluation produced, when it produced one.
     fn release_outcome(&mut self, result: Eval) {
-        match result {
-            Ok(v) | Err(Ctl::Return(v) | Ctl::Break(_, v)) => self.release(v),
-            Err(_) => {}
+        if let Ok(v) = result {
+            self.release(v);
         }
     }
 
@@ -363,7 +362,7 @@ pub trait Release: Engine {
         let core = self.core_mut();
         core.hook_depth -= 1;
         match result {
-            Ok(v) | Err(Ctl::Return(v)) => self.release(v),
+            Ok(v) => self.release(v),
             Err(Ctl::Panic(info)) => self.core_mut().hook_panics.push(*info),
             Err(_) => {}
         }
@@ -378,7 +377,7 @@ mod tests {
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
 
-    use colibri_check::hir::{Builtin, FnId};
+    use colibri_check::hir::FnId;
     use colibri_check::types::TypeId;
     use colibri_syntax::Span;
 
@@ -501,9 +500,6 @@ mod tests {
         fn release_temps(&mut self, _: &mut FiberState, _: usize) {}
         fn resume_stack(&mut self, _: u64, _: EngineSlot, _: bool) -> Resumed {
             Resumed::Gone
-        }
-        fn pausing_builtin(&mut self, _: &mut FiberState, _: Builtin, _: &Value, _: Span) -> Eval {
-            unreachable!("nothing pauses in these tests")
         }
     }
 

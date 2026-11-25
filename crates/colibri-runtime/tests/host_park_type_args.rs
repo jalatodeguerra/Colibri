@@ -8,15 +8,12 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use colibri::{Ctx, EngineKind, SharedBuffer, Value, Vm};
+use colibri::{Ctx, SharedBuffer, Value, Vm};
 use colibri_runtime as colibri;
 
 fn run(program: &str) -> (Result<(), String>, String, Vec<String>) {
     let out = SharedBuffer::new();
-    let mut vm = Vm::builder()
-        .engine(EngineKind::Bytecode)
-        .stdout(Box::new(out.clone()))
-        .build();
+    let mut vm = Vm::builder().stdout(Box::new(out.clone())).build();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let s = seen.clone();
     vm.register_fn("pick", move |cx: &mut Ctx, v: Value, ms: i64| -> Value {
@@ -79,10 +76,7 @@ fn generic_host_calls_that_park_again_keep_their_type_arguments() {
 #[test]
 fn a_callback_that_starts_a_parking_generic_call_leaves_the_outer_type_arguments_alone() {
     let out = SharedBuffer::new();
-    let mut vm = Vm::builder()
-        .engine(EngineKind::Bytecode)
-        .stdout(Box::new(out.clone()))
-        .build();
+    let mut vm = Vm::builder().stdout(Box::new(out.clone())).build();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let s = seen.clone();
     vm.register_fn("pick", move |cx: &mut Ctx, v: Value, ms: i64| -> Value {

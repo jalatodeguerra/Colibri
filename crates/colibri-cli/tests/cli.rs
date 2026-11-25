@@ -1095,8 +1095,7 @@ fn a_panic_inside_vec_names_the_library_in_the_trace() {
     assert!(stderr.contains("<std>/vec.colibri"), "{stderr}");
 }
 
-/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests run the programs they
-/// spawn on the engine the environment names (the VM when it names none).
+/// The binary under test.
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

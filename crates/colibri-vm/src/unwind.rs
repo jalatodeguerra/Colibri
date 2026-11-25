@@ -119,12 +119,6 @@ impl Machine {
                     }
                 };
             }
-            // The checker does not allow these in a `defer`; they carry nothing to keep.
-            Ctl::Break(_, v) | Ctl::Return(v) => {
-                self.release(v);
-                return result;
-            }
-            Ctl::Continue(_) => return result,
         };
         self.merge_failure(result, failure, "a deferred statement also panicked")
     }

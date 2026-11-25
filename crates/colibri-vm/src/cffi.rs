@@ -6,9 +6,8 @@
 //! where C is called: without it, binding an `extern` function is an error that says so, and
 //! no program can obtain a pointer to dereference.
 //!
-//! This is the tree-walking interpreter's `cffi.rs` over the machine's types. The conversions
-//! cannot live in `colibri-ffi` (it is published, and they name the unpublished core), and the
-//! interpreter's copy goes with the interpreter (vm-plan step 16).
+//! The conversions cannot live in `colibri-ffi` (it is published, and they name the unpublished
+//! core).
 
 use std::collections::BTreeMap;
 use std::rc::Rc;

@@ -1,7 +1,6 @@
 //! The data of the coroutine scheduler (DESIGN §14.2, ARCHITECTURE §16): which coroutines
 //! exist, what each waits for, the clock and the background operations. It knows nothing of how
-//! a coroutine is run. An engine keeps the running state of each coroutine itself (the
-//! tree-walker: a native stack) and is asked to run it through [`crate::engine::Engine`].
+//! a coroutine is run. An engine keeps the running state of each coroutine itself and is asked to run it through [`crate::engine::Engine`].
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -66,7 +65,7 @@ pub enum Wake {
     /// `join_all` on this group (no polling: the coroutine is in the group's waiter list and
     /// is woken, as `Woken`, when no other coroutine of the group is alive).
     Group(u64),
-    /// A background operation (`Interp::await_external`): when its thread has finished. Needs
+    /// A background operation (`Machine::await_external`): when its thread has finished. Needs
     /// no polling: the event loop sleeps until the thread posts its completion.
     External(u64),
 }
@@ -80,8 +79,8 @@ pub enum State {
 }
 
 /// What an engine needs to find its side of a coroutine, kept by the scheduler and handed back
-/// at every resumption. The scheduler does not look inside: for the tree-walker it is the slot
-/// of the coroutine's native stack; for an engine with heap frames it could be the frame list.
+/// at every resumption. The scheduler does not look inside: it can be the slot
+/// of a native stack, or the frame list of an engine with heap frames.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EngineSlot(pub u32);
@@ -127,7 +126,7 @@ impl Hasher for IdHasher {
 /// A table keyed by scheduler ids.
 pub(crate) type IdMap<V> = HashMap<u64, V, BuildHasherDefault<IdHasher>>;
 
-/// The per-`Interp` coroutine scheduler.
+/// The per-`Core` coroutine scheduler.
 #[doc(hidden)]
 pub struct Scheduler {
     pub(crate) entries: Vec<Entry>,
@@ -229,7 +228,7 @@ impl Scheduler {
     /// The bookkeeping of a coroutine that is about to pause until `wake`: `Err` when it must
     /// not (it is cancelled, or the scheduler does not know it) and `fiber` is marked
     /// cancelling; otherwise it is recorded as waiting. The engine then does the pausing
-    /// itself (the tree-walker switches stacks; a VM returns to its loop).
+    /// itself (the VM returns to its loop).
     #[inline]
     pub fn prepare_suspend(
         &mut self,
