@@ -144,6 +144,10 @@ pub struct Scheduler {
     pub(crate) shutting_down: bool,
     pub(crate) stack_size: usize,
     pub(crate) clock: Box<dyn Clock>,
+    /// Whether `clock_sleep` measures the real time it takes (a time profile asks for it).
+    pub(crate) measure_idle: bool,
+    /// The real nanoseconds spent in `clock_sleep` since `measure_idle` was turned on.
+    pub(crate) idle_nanos: u64,
     /// The coroutines waiting for each signal, in wait order.
     pub(crate) signals: IdMap<Vec<u64>>,
     /// The coroutines waiting in `join` or `join_result` for each coroutine, in wait order.
@@ -173,6 +177,8 @@ impl Scheduler {
             shutting_down: false,
             stack_size: DEFAULT_COROUTINE_STACK,
             clock: Box::new(SystemClock::new()),
+            measure_idle: false,
+            idle_nanos: 0,
             signals: IdMap::default(),
             joiners: IdMap::default(),
             group_waiters: IdMap::default(),
@@ -290,6 +296,25 @@ impl Scheduler {
 
     /// Sleeps on the clock; a background operation that finishes ends the sleep early.
     pub fn clock_sleep(&mut self, seconds: f64) {
+        let began = self.measure_idle.then(std::time::Instant::now);
+        self.sleep_on_clock(seconds);
+        if let Some(began) = began {
+            let nanos = u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            self.idle_nanos = self.idle_nanos.saturating_add(nanos);
+        }
+    }
+
+    /// Asks `clock_sleep` to add up the real time it spends sleeping (for a time profile).
+    pub fn measure_idle(&mut self, on: bool) {
+        self.measure_idle = on;
+    }
+
+    /// The real nanoseconds `clock_sleep` has spent sleeping while it was measured.
+    pub fn idle_nanos(&self) -> u64 {
+        self.idle_nanos
+    }
+
+    fn sleep_on_clock(&mut self, seconds: f64) {
         if !self.ext.has_pending() {
             self.clock.sleep(seconds);
         } else {

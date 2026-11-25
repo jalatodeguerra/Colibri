@@ -45,12 +45,13 @@ pub fn run(options: &Options) -> ExitCode {
         builder = builder.stdout(Box::new(captured.clone()));
     }
     let mut vm = crate::build_vm(builder, Vec::new());
-    if let Some(profile) = &options.profile {
-        crate::profilecmd::start(&mut vm, profile);
-    }
     if let Err(e) = vm.load_tests(&options.path) {
         eprint!("{}", e.render(stderr_color));
         return ExitCode::from(1);
+    }
+    // After loading: checking the program is not the tests' time.
+    if let Some(profile) = &options.profile {
+        crate::profilecmd::start(&mut vm, profile);
     }
     let warnings = vm.render_warnings(stderr_color);
     if !warnings.is_empty() {

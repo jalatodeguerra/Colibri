@@ -395,3 +395,78 @@ fn test_profile_covers_every_test() {
     assert!(lines.iter().any(|(s, _)| s.contains(&"count")), "{folded}");
     check_xml(&std::fs::read_to_string(&svg).unwrap());
 }
+
+#[test]
+fn a_file_without_an_extension_gets_svg_and_a_profile_does_not_combine_with_watch() {
+    let dir = folder("ext", &[("p.colibri", PROGRAM)]);
+    let out = colibri_command()
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--profile=out",
+            "--profile-weight=steps",
+            "p.colibri",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(dir.join("out.svg").exists());
+    assert!(dir.join("out.folded").exists());
+    assert!(!dir.join("out").exists());
+
+    let out = colibri_command()
+        .current_dir(&dir)
+        .args(["run", "--watch", "--profile", "p.colibri"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        text(&out.stderr).contains("--watch"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
+fn a_program_that_waits_shows_the_wait_as_idle_not_as_work() {
+    let src = "\
+fn busy(n: int) -> int {
+    let mut t = 0
+    for i in 0..n {
+        t += i
+    }
+    return t
+}
+fn main() {
+    go waiter()
+    busy(3000)
+}
+fn waiter() {
+    wait(0.4)
+    busy(1000)
+}
+";
+    let dir = folder("idle", &[("w.colibri", src)]);
+    let out = colibri_command()
+        .current_dir(&dir)
+        .args(["run", "--profile=w.svg", "w.colibri"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let folded = std::fs::read_to_string(dir.join("w.folded")).unwrap();
+    let ms = |idle: bool| -> f64 {
+        lines(&folded)
+            .iter()
+            .filter(|(s, _)| (s[0] == "[idle]") == idle)
+            .map(|(_, w)| *w)
+            .sum::<u64>() as f64
+            / 1e6
+    };
+    // The coroutine waits 0.4 s; the work around it takes milliseconds.
+    assert!(ms(true) >= 300.0, "idle {} ms\n{folded}", ms(true));
+    assert!(
+        ms(false) < ms(true) / 2.0,
+        "work {} ms\n{folded}",
+        ms(false)
+    );
+}

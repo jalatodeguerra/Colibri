@@ -31,7 +31,7 @@ impl Machine {
                 SafepointKind::Memory | SafepointKind::Debugger => Ok(()),
                 SafepointKind::Profiler => {
                     if let Some(profiler) = self.profiler.as_mut() {
-                        profiler.sample(due, fiber);
+                        profiler.sample(due, fiber, self.core.sched.idle_nanos());
                     }
                     Ok(())
                 }

@@ -870,10 +870,15 @@ last 160 with `[...]` between.
 
 By default a sample weighs the real time since the previous one, so time spent in host
 functions and long built-ins counts; because the sample is taken at the next step boundary,
-that time is charged to the line that made the call. `--profile-weight=steps` weighs by
-steps instead: the profile is then the same on every run. `colibri test --profile` makes one
-profile of all the tests. A program shorter than 1,024 steps has no sample to draw from and
-shows up as one `[unsampled]` frame. Profiling costs a few percent.
+that time is charged to the line that made the call. Time the program spends sleeping (`wait`,
+the event loop between ticks) is not charged to the code that runs next: it is the root
+`[idle]`, so a program that mostly waits shows mostly `[idle]`. Checking the program is left
+out, and a function's first call includes the time to compile it. `--profile-weight=steps`
+weighs by steps instead: the profile is then the same on every run. `colibri test --profile`
+makes one profile of all the tests. `--profile=out` writes `out.svg` and `out.folded`. A
+program shorter than 1,024 steps has no sample to draw from and shows up as one `[unsampled]`
+frame, and a sample taken while no function runs (a host calling in) is `[host]`.
+`--profile` does not combine with `--watch`. Profiling costs a few percent.
 
 ### Formatter
 

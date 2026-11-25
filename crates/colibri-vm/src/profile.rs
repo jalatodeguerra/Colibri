@@ -38,6 +38,8 @@ const ELIDED: &str = "[...]";
 
 /// The stack of a sample that was taken when no frame was left to name (a host calling in).
 const NO_FRAMES: &str = "[host]";
+/// The root of the time the event loop spent sleeping (a time profile).
+const IDLE: &str = "[idle]";
 /// The stack of weight that was never sampled, when the program ended before any sample.
 const UNSAMPLED: &str = "[unsampled]";
 
@@ -116,6 +118,9 @@ pub(crate) struct Profiler {
     samples: HashMap<Box<[u32]>, HashMap<Span, u64>>,
     scratch: Vec<u32>,
     last_time: Instant,
+    /// The scheduler's idle nanoseconds (`Scheduler::idle_nanos`) at the previous sample: the
+    /// time it spent sleeping since is the program waiting, not working.
+    last_idle: u64,
     /// Where the most recent sample landed, for the weight that comes after the last safepoint.
     last: Option<(Box<[u32]>, Span)>,
 }
@@ -134,7 +139,7 @@ fn builtin_name(name: &str) -> String {
 }
 
 impl Profiler {
-    pub(crate) fn new(weight: ProfileWeight) -> Self {
+    pub(crate) fn new(weight: ProfileWeight, idle: u64) -> Self {
         Profiler {
             weight,
             names: Vec::new(),
@@ -144,8 +149,33 @@ impl Profiler {
             samples: HashMap::new(),
             scratch: Vec::new(),
             last_time: Instant::now(),
+            last_idle: idle,
             last: None,
         }
+    }
+
+    /// Starts the clock of a time profile again: what came before (checking and compiling
+    /// the program) is not the program's time.
+    pub(crate) fn restart_clock(&mut self, idle: u64) {
+        self.last_time = Instant::now();
+        self.last_idle = idle;
+    }
+
+    /// The real time since the previous reading, split into the time spent working and the
+    /// time the event loop spent sleeping; the sleeping goes to the `[idle]` root.
+    fn take_time(&mut self, idle: u64) -> u64 {
+        let now = Instant::now();
+        let spent =
+            u64::try_from(now.duration_since(self.last_time).as_nanos()).unwrap_or(u64::MAX);
+        self.last_time = now;
+        let slept = idle.saturating_sub(self.last_idle).min(spent);
+        self.last_idle = idle;
+        if slept > 0 {
+            let id = self.intern(IDLE.to_string());
+            let stack: Box<[u32]> = Box::from([id].as_slice());
+            self.record(stack, Span::new(colibri_syntax::FileId(0), 0, 0), slept);
+        }
+        spent - slept
     }
 
     fn intern(&mut self, name: String) -> u32 {
@@ -190,15 +220,10 @@ impl Profiler {
     }
 
     /// Takes the sample of a safepoint that is due.
-    pub(crate) fn sample(&mut self, due: Due, fiber: &VmFiber) {
+    pub(crate) fn sample(&mut self, due: Due, fiber: &VmFiber, idle: u64) {
         let weight = match self.weight {
             ProfileWeight::Steps => due.intervals.saturating_mul(u64::from(due.every)),
-            ProfileWeight::Time => {
-                let now = Instant::now();
-                let spent = now.duration_since(self.last_time);
-                self.last_time = now;
-                u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX)
-            }
+            ProfileWeight::Time => self.take_time(idle),
         };
         self.scratch.clear();
         let frames = &fiber.frames;
@@ -250,8 +275,7 @@ impl Profiler {
             *by_span.entry(span).or_insert(0) += weight;
         } else {
             let stack: Box<[u32]> = self.scratch.as_slice().into();
-            self.samples
-                .insert(stack.clone(), HashMap::from([(span, weight)]));
+            self.samples.insert(stack, HashMap::from([(span, weight)]));
         }
         match &mut self.last {
             Some((stack, at)) if **stack == *self.scratch.as_slice() => *at = span,
@@ -259,13 +283,21 @@ impl Profiler {
         }
     }
 
+    /// Adds `weight` to `stack` without making it the stack of the last sample.
+    fn record(&mut self, stack: Box<[u32]>, span: Span, weight: u64) {
+        *self
+            .samples
+            .entry(stack)
+            .or_default()
+            .entry(span)
+            .or_insert(0) += weight;
+    }
+
     /// The weight after the last safepoint goes to the stack of the last sample.
-    fn flush(&mut self, steps: u64) {
+    fn flush(&mut self, steps: u64, idle: u64) {
         let weight = match self.weight {
             ProfileWeight::Steps => steps,
-            ProfileWeight::Time => {
-                u64::try_from(self.last_time.elapsed().as_nanos()).unwrap_or(u64::MAX)
-            }
+            ProfileWeight::Time => self.take_time(idle),
         };
         if weight == 0 {
             return;
@@ -285,8 +317,13 @@ impl Profiler {
         self.add(weight, span);
     }
 
-    fn finish(mut self, steps: u64, locate: &dyn Fn(Span) -> Option<(String, u32)>) -> Profile {
-        self.flush(steps);
+    fn finish(
+        mut self,
+        steps: u64,
+        idle: u64,
+        locate: &dyn Fn(Span) -> Option<(String, u32)>,
+    ) -> Profile {
+        self.flush(steps, idle);
         let mut samples = Vec::new();
         for (stack, by_span) in &self.samples {
             let names: Vec<String> = stack
@@ -323,7 +360,9 @@ impl Machine {
     /// Starts sampling every [`PROFILE_SLICE`] steps. A profile already running starts over.
     #[doc(hidden)]
     pub fn start_profile(&mut self, weight: ProfileWeight) {
-        self.profiler = Some(Box::new(Profiler::new(weight)));
+        self.core.sched.measure_idle(true);
+        let idle = self.core.sched.idle_nanos();
+        self.profiler = Some(Box::new(Profiler::new(weight, idle)));
         let every = std::num::NonZeroU32::new(PROFILE_SLICE).expect("a slice");
         self.core.want_safepoints(SafepointKind::Profiler, every);
         // The steps before this call are not the profile's.
@@ -340,6 +379,8 @@ impl Machine {
         let profiler = self.profiler.take()?;
         let steps = self.core.take_pending_steps(SafepointKind::Profiler);
         self.core.drop_safepoints(SafepointKind::Profiler);
-        Some(profiler.finish(steps, locate))
+        let idle = self.core.sched.idle_nanos();
+        self.core.sched.measure_idle(false);
+        Some(profiler.finish(steps, idle, locate))
     }
 }

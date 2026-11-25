@@ -75,11 +75,11 @@ enum Command {
         #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
         /// Sample the running program and write a flame graph (SVG) to FILE (`profile.svg` by
-        /// default) and the folded stacks it was drawn from next to it (`profile.folded`), then
+        /// default) and the folded stacks it was drawn from next to it (`profile.folded`; a FILE without an extension gets `.svg`), then
         /// print the heaviest functions and lines to stderr. A sample is taken about every
         /// 1,024 steps, so a long call into a host function or a built-in is charged to the
-        /// line that made the call; stacks deeper than 200 frames are cut in the middle
-        #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "profile.svg")]
+        /// line that made the call; stacks deeper than 200 frames are cut in the middle; time the program spends waiting is `[idle]`
+        #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "profile.svg", conflicts_with = "watch")]
         profile: Option<PathBuf>,
         /// What a sample weighs with `--profile`: `time` (the default) is real time, so time in
         /// host functions counts; `steps` counts instructions, which gives the same profile on
@@ -134,10 +134,10 @@ enum Command {
         #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
         /// Sample the running program and write a flame graph (SVG) to FILE (`profile.svg` by
-        /// default) and the folded stacks it was drawn from next to it (`profile.folded`), then
+        /// default) and the folded stacks it was drawn from next to it (`profile.folded`; a FILE without an extension gets `.svg`), then
         /// print the heaviest functions and lines to stderr. A sample is taken about every
         /// 1,024 steps, so a long call into a host function or a built-in is charged to the
-        /// line that made the call; stacks deeper than 200 frames are cut in the middle; all the tests make
+        /// line that made the call; stacks deeper than 200 frames are cut in the middle; time the program spends waiting is `[idle]`; all the tests make
         /// one profile
         #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "profile.svg")]
         profile: Option<PathBuf>,

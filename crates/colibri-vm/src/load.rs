@@ -21,6 +21,10 @@ impl Machine {
             self.refused = false;
             self.discard_pending_refusal();
             self.drain_root_drops();
+            // A time profile starts here: checking and compiling were not the program's time.
+            if let Some(profiler) = self.profiler.as_mut() {
+                profiler.restart_clock(self.core.sched.idle_nanos());
+            }
         }
         let result = self.run_module_parts(fiber);
         self.core.end_entry(outermost, true);

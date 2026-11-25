@@ -38,6 +38,13 @@ impl Options {
     pub fn new(file: &Path, weight: Weight) -> Options {
         let svg = if file.as_os_str().is_empty() {
             PathBuf::from(DEFAULT_FILE)
+        } else if file.extension().is_none() {
+            // `--profile=out` is `out.svg` and `out.folded`, not a file named `out`.
+            file.with_file_name(format!(
+                "{}.svg",
+                file.file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+            ))
         } else {
             file.to_path_buf()
         };

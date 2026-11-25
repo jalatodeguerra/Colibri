@@ -149,7 +149,12 @@ impl Budget {
         if self.slice.is_none() {
             return 0;
         }
-        let spent = u64::try_from(self.window.saturating_sub(self.left)).unwrap_or(0);
+        // A charge that overdrew the budget itself (not only the window) is refused: its steps
+        // were never taken, and `used()` leaves them out too.
+        let refused = self.real_left().min(0).unsigned_abs();
+        let spent = u64::try_from(self.window.saturating_sub(self.left))
+            .unwrap_or(0)
+            .saturating_sub(refused);
         self.left = self.real_left();
         self.reserve = 0;
         self.window = self.left;

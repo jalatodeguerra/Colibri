@@ -1545,7 +1545,7 @@ impl Machine {
             | colibri_check::hir::Builtin::ListFindIndex
             | colibri_check::hir::Builtin::ListFold),
         ) = work
-            && self.leaf_hof(fiber, base, a, d, *b)
+            && self.leaf_hof(fiber, base, a, d, *b)?
         {
             return Ok(());
         }
