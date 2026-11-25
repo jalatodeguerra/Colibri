@@ -124,7 +124,7 @@ pub trait Sched: Engine {
         s.running.push(id);
         let saved_budget = fresh.then(|| {
             let allotment = core.budget.allotment;
-            let slice = core.budget.slice();
+            let slice = core.safepoints.slice();
             std::mem::replace(&mut core.budget, Budget::fresh(allotment, slice))
         });
         // No reference into the core is held across this call: the engine runs the

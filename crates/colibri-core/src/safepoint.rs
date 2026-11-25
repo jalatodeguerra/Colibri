@@ -43,12 +43,18 @@ pub struct Safepoints {
     since: [u64; 3],
     /// How many times each kind ran.
     hits: [u64; 3],
+    slice: Option<NonZeroU32>,
 }
 
 impl Safepoints {
     /// The smallest interval asked for.
-    fn slice(&self) -> Option<NonZeroU32> {
-        self.every.iter().flatten().copied().min()
+    #[inline]
+    pub(crate) fn slice(&self) -> Option<NonZeroU32> {
+        self.slice
+    }
+
+    fn refresh(&mut self) {
+        self.slice = self.every.iter().flatten().copied().min();
     }
 }
 
@@ -60,22 +66,22 @@ impl Core {
     pub fn want_safepoints(&mut self, kind: SafepointKind, every: NonZeroU32) {
         self.safepoints.every[kind.index()] = Some(every);
         self.safepoints.since[kind.index()] = 0;
-        let slice = self.safepoints.slice();
-        self.budget.set_slice(slice);
+        self.safepoints.refresh();
+        self.sync_slice();
     }
 
     /// Stops the safepoints of `kind`. With no consumer left the budget counts as before.
     pub fn drop_safepoints(&mut self, kind: SafepointKind) {
         self.safepoints.every[kind.index()] = None;
         self.safepoints.since[kind.index()] = 0;
-        let slice = self.safepoints.slice();
-        self.budget.set_slice(slice);
+        self.safepoints.refresh();
+        self.sync_slice();
     }
 
     /// Gives a budget that was set aside (a suspended entry's) the current slice.
+    #[inline]
     pub(crate) fn sync_slice(&mut self) {
-        let slice = self.safepoints.slice();
-        self.budget.set_slice(slice);
+        self.budget.set_slice(self.safepoints.slice);
     }
 
     /// How many times the safepoint of `kind` has run.

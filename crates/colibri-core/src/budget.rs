@@ -139,10 +139,6 @@ impl Budget {
         self.left.saturating_add(self.reserve)
     }
 
-    pub(crate) fn slice(&self) -> Option<NonZeroU32> {
-        self.slice
-    }
-
     /// Whether no step is left for a fast path that wants one (`real_left() <= 0`). A window with
     /// steps in it is answered without looking at the reserve.
     #[inline(always)]
@@ -151,6 +147,7 @@ impl Budget {
     }
 
     /// Changes the slice of a budget that is running: the window shrinks or grows to it.
+    #[inline]
     pub(crate) fn set_slice(&mut self, slice: Option<NonZeroU32>) {
         if self.slice == slice {
             return;
