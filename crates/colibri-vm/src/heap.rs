@@ -74,7 +74,7 @@ impl Machine {
             return Err(self.internal(fiber, span, "an object without its site"));
         };
         let fields = Self::clone_regs::<ObjInline>(fiber, base, regs);
-        let obj = ClassObj::new(*ty, fields);
+        let obj = ClassObj::new_exact(*ty, fields);
         self.core.track_object(&obj, Some(chunk.spans[pc - 1]));
         Self::put_reg(fiber, base + usize::from(d), Value::Obj(obj));
         Ok(())
@@ -100,7 +100,7 @@ impl Machine {
             self.core.none()
         } else {
             let payload = Self::clone_regs::<PayloadInline>(fiber, base, regs);
-            Value::variant(*ty, *variant, payload)
+            Value::variant_exact(*ty, *variant, payload)
         };
         Self::put_reg(fiber, base + usize::from(d), value);
         Ok(())

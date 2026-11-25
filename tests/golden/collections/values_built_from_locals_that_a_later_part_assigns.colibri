@@ -1,0 +1,30 @@
+// A part of a tuple, list, struct or object that reads a local is evaluated before a later part
+// that assigns the same local: it keeps the old value.
+struct P { a: int, b: int }
+class C { a: int, s: str }
+
+fn main() {
+    let mut i = 1
+    let t = (i, if true { i = 2; i } else { 0 }, i)
+    print(t)
+    let mut s = "x"
+    let l = [s, if true { s = "y"; s } else { "" }, s]
+    print(l)
+    let mut k = 10
+    let p = P { a: k, b: if true { k = 20; k } else { 0 } }
+    print("{p.a} {p.b} {k}")
+    let mut n = 5
+    let mut w = "p"
+    let c = C { a: n, s: if true { n = 6; w = "q"; w } else { "" } }
+    print("{c.a} {c.s} {n}")
+    let mut m = 7
+    let q = P { a: m, b: m }
+    m = 8
+    print("{q.a} {q.b} {m}")
+}
+
+// expect: (1, 2, 2)
+// expect: ["x", "y", "y"]
+// expect: 10 20 20
+// expect: 5 q 6
+// expect: 7 7 8

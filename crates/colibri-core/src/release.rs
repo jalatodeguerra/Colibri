@@ -87,7 +87,15 @@ impl Core {
 
     /// Records the destruction of `obj` when tracing: its `name: str` field if it has one,
     /// else its class name.
+    #[inline]
     fn trace_destroy(&mut self, obj: &ClassObj) {
+        if self.trace.is_some() {
+            self.trace_destroy_traced(obj);
+        }
+    }
+
+    #[inline(never)]
+    fn trace_destroy_traced(&mut self, obj: &ClassObj) {
         // An `Error` is plumbing, not a user object: its kept value is traced when it dies.
         if self.trace.is_none()
             || obj.ty() == colibri_check::types::ERROR_TYPE
@@ -142,6 +150,15 @@ pub trait Release: Engine {
             Value::Struct(rc) if !rc.fields.iter().any(is_container) => return,
             Value::Tuple(rc) if !rc.iter().any(is_container) => return,
             Value::Enum(rc) if !rc.payload.iter().any(is_container) => return,
+            // A collection of scalars and strings is freed whole: no entry has anything to
+            // release, so the worklist (and the `Vec` that would collect the entries) is skipped.
+            Value::List(rc) if rc.with(|xs| !xs.iter().any(is_container)) => return,
+            Value::Map(rc)
+                if rc.with(|m| !m.iter().any(|(k, v)| is_container(k) || is_container(v))) =>
+            {
+                return;
+            }
+            Value::Set(rc) if rc.with(|m| !m.iter().any(|(k, _)| is_container(k))) => return,
             _ => {}
         }
         // The worklist allocates on its first push, so a container with no container

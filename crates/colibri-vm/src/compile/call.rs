@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use colibri_check::hir::{
-    Anchor, Arg, Builtin, Call, Callee, Expr, ExprKind, FnId, Intrinsic, Place, Storage,
+    Anchor, Arg, Builtin, Call, Callee, Expr, ExprKind, FnId, Intrinsic, Lit, Place, Storage,
 };
 use colibri_check::types::Ty;
 use colibri_syntax::Span;
@@ -558,8 +558,14 @@ impl FnCompiler<'_> {
             Builtin::ListPush if args.len() == 2 => {
                 let l = self.anchor_operand(args[0], writes_locals(args[1]));
                 let v = self.operand(args[1], false);
-                self.emit(Op::ListPush { l, v }, span);
-                self.free(v, span);
+                if self.temp_kind(v) == Some(Kind::Inert) {
+                    // A temporary of scalars and strings: the list takes it over.
+                    self.emit(Op::ListPushMove { l, v }, span);
+                    self.free_moved(v);
+                } else {
+                    self.emit(Op::ListPush { l, v }, span);
+                    self.free(v, span);
+                }
                 self.free(l, span);
                 if let Some(d) = dst {
                     self.emit(Op::LoadUnit { d }, span);
@@ -573,6 +579,27 @@ impl FnCompiler<'_> {
                 let l = self.anchor_operand(args[0], false);
                 self.emit(Op::ListLen { d, l }, span);
                 self.free(l, span);
+                if dst.is_none() {
+                    self.free(d, span);
+                }
+            }
+            Builtin::StrStartsWith if args.len() == 2 => {
+                let d = match dst {
+                    Some(d) => d,
+                    None => self.alloc_for(&Ty::Bool),
+                };
+                let s = self.operand(args[0], false);
+                if let ExprKind::Lit(lit @ Lit::Str(_)) = &args[1].kind
+                    && let Ok(k) = u16::try_from(self.add_const(colibri_core::ops::literal(lit)))
+                {
+                    self.emit(Op::StrStartsWithK { d, s, k }, span);
+                    self.free(s, span);
+                } else {
+                    let p = self.operand(args[1], false);
+                    self.emit(Op::StrStartsWith { d, s, p }, span);
+                    self.free(p, span);
+                    self.free(s, span);
+                }
                 if dst.is_none() {
                     self.free(d, span);
                 }
@@ -634,8 +661,11 @@ impl FnCompiler<'_> {
                     },
                     span,
                 );
-                // Whatever the operation drops or replaces may run a `Drop` hook.
-                self.releases += 1;
+                // Whatever the operation drops or replaces may run a `Drop` hook, unless nothing
+                // it touches can hold a class object.
+                if !(self.env.inert(&e.ty) && args.iter().all(|a| self.env.inert(&a.ty))) {
+                    self.releases += 1;
+                }
                 self.free_window(w, span);
                 if dst.is_none() {
                     self.own(d);

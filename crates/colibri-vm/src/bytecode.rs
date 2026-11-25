@@ -499,6 +499,23 @@ pub enum Op {
         d: Reg,
         s: Reg,
     },
+    /// `l.push(v)` where `v` is a temporary the list takes over (it is left `()`).
+    ListPushMove {
+        l: Reg,
+        v: Reg,
+    },
+    /// `d = s.starts_with(p)`.
+    StrStartsWith {
+        d: Reg,
+        s: Reg,
+        p: Reg,
+    },
+    /// `d = s.starts_with(k)`, `k` a string constant.
+    StrStartsWithK {
+        d: Reg,
+        s: Reg,
+        k: u16,
+    },
     /// `d = coerce(s)` for the coercion of the site (a clone of `s` is converted).
     Coerce {
         d: Reg,
@@ -1096,8 +1113,11 @@ impl Op {
             | Op::ObjGet { d, o: s, .. }
             | Op::ListLen { d, l: s }
             | Op::StrLen { d, s }
+            | Op::StrStartsWithK { d, s, .. }
             | Op::ListPush { l: d, v: s }
+            | Op::ListPushMove { l: d, v: s }
             | Op::Unpack { d, s, .. } => end(&[d, s]),
+            Op::StrStartsWith { d, s, p } => end(&[d, s, p]),
             Op::FieldAddF { l, b, .. }
             | Op::FieldSubF { l, b, .. }
             | Op::FieldMulF { l, b, .. }
@@ -1394,8 +1414,16 @@ impl Chunk {
                 format!("Builtin r{d} base=r{base} {}", self.site_text(site))
             }
             Op::ListPush { l, v } => format!("ListPush r{l} r{v}"),
+            Op::ListPushMove { l, v } => format!("ListPushMove r{l} r{v}"),
             Op::ListLen { d, l } => format!("ListLen r{d} r{l}"),
             Op::StrLen { d, s } => format!("StrLen r{d} r{s}"),
+            Op::StrStartsWith { d, s, p } => format!("StrStartsWith r{d} r{s} r{p}"),
+            Op::StrStartsWithK { d, s, k } => {
+                format!(
+                    "StrStartsWithK r{d} r{s} k{k} ({})",
+                    self.const_text(u32::from(k))
+                )
+            }
             Op::Coerce { d, s, site } => format!("Coerce r{d} r{s} {}", self.site_text(site)),
             Op::NewStruct { d, site } => format!("NewStruct r{d} {}", self.site_text(site)),
             Op::NewObject { d, site } => format!("NewObject r{d} {}", self.site_text(site)),

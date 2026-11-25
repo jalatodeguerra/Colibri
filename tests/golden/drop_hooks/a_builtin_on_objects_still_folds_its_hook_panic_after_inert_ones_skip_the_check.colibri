@@ -1,0 +1,24 @@
+// Statements whose built-ins touch only scalars and strings fold no hook panic; one that
+// releases an object (`clear`) does, at its own end, before the next statement runs.
+class Res { name: str }
+impl Drop for Res {
+    fn drop(self) {
+        print("drop {self.name}")
+        panic("hook {self.name}")
+    }
+}
+fn main() {
+    let xs = ["a", "b"]
+    let mut n = 0
+    for x in xs {
+        if x.starts_with("a") { n += 1 }
+    }
+    print("n {n}")
+    let mut ys = [Res { name: "r" }]
+    ys.clear()
+    print("not reached")
+}
+
+// expect: n 1
+// expect: drop r
+// panic: hook r

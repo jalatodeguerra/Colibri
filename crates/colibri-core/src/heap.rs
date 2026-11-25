@@ -450,6 +450,23 @@ impl MapObj {
         self.map.borrow().get(key).cloned()
     }
 
+    /// `get` for an `int` or `str` key (outer `None`: another kind of key).
+    #[inline]
+    pub fn get_plain(&self, key: &Value) -> Option<Option<Value>> {
+        self.map.borrow().get_plain(key).map(|v| v.cloned())
+    }
+
+    /// `insert` for an `int` or `str` key that the guard allows: the previous value of the key.
+    /// Gives `value` back for any other kind of key and when the guard refuses (the caller
+    /// then takes the general path, which says why).
+    #[inline]
+    pub fn insert_plain(&self, key: &Value, value: Value) -> Result<Option<Value>, Value> {
+        if self.guard.check().is_err() {
+            return Err(value);
+        }
+        self.map.borrow_mut().insert_plain(key, value)
+    }
+
     #[inline]
     pub fn contains_key(&self, key: &Value) -> bool {
         self.map.borrow().contains(key)
@@ -688,6 +705,17 @@ impl ClassObj {
     pub fn new(ty: TypeId, fields: impl Into<ObjFields>) -> Rc<ClassObj> {
         let mut fields = fields.into();
         fields.shrink_to_fit();
+        Rc::new(ClassObj {
+            ty,
+            fields: RefCell::new(fields),
+            released: Cell::new(false),
+            hooked: Cell::new(false),
+        })
+    }
+
+    /// [`ClassObj::new`] for fields already of exactly their number (no capacity to give back).
+    #[inline]
+    pub fn new_exact(ty: TypeId, fields: ObjFields) -> Rc<ClassObj> {
         Rc::new(ClassObj {
             ty,
             fields: RefCell::new(fields),

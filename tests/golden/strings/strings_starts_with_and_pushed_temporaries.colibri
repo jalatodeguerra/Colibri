@@ -1,0 +1,56 @@
+// `starts_with` with a literal and with a computed prefix, and lists built from temporaries.
+fn prefix(n: int) -> str {
+    if n > 2 {
+        return "ab"
+    }
+    return ""
+}
+
+fn main() {
+    let s = "héllo wörld"
+    print(s.starts_with("h"))
+    print(s.starts_with("hé"))
+    print(s.starts_with("he"))
+    print(s.starts_with(""))
+    print(s.starts_with("héllo wörld!"))
+    print("".starts_with(""))
+    print("".starts_with("a"))
+    let words = ["abc", "bcd", "abd", ""]
+    let mut n = 0
+    for w in words {
+        if w.starts_with(prefix(3)) { n += 1 }
+        if w.starts_with(prefix(0)) { n += 10 }
+        if w.starts_with("b") { n += 100 }
+    }
+    print(n)
+    let mut parts: List[str] = []
+    let mut nums: List[int] = []
+    let mut pairs: List[(int, str)] = []
+    for i in 0..5 {
+        parts.push("p{i}")
+        parts.push("{i}" + "!")
+        nums.push(i * i)
+        pairs.push((i, "q{i}"))
+    }
+    print(parts)
+    print(nums)
+    print(pairs[4])
+    let first = parts[0]
+    parts.push(first)
+    print(parts.len())
+    print(first)
+}
+
+// expect: true
+// expect: true
+// expect: false
+// expect: true
+// expect: false
+// expect: true
+// expect: false
+// expect: 142
+// expect: ["p0", "0!", "p1", "1!", "p2", "2!", "p3", "3!", "p4", "4!"]
+// expect: [0, 1, 4, 9, 16]
+// expect: (4, "q4")
+// expect: 11
+// expect: p0

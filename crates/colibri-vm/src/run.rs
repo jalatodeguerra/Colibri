@@ -30,26 +30,6 @@ pub(crate) enum Exit {
     Suspend,
 }
 
-/// Appends the decimal form of `x`, as `show` writes an integer (without the formatting
-/// machinery, which is most of the cost of building a short string).
-fn push_int(out: &mut String, x: i64) {
-    let mut digits = [0u8; 20];
-    let mut at = digits.len();
-    let mut n = x.unsigned_abs();
-    loop {
-        at -= 1;
-        digits[at] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
-        }
-    }
-    if x < 0 {
-        out.push('-');
-    }
-    out.extend(digits[at..].iter().map(|&d| char::from(d)));
-}
-
 impl Machine {
     /// Runs the entry frame on top of `fiber` to its end. On a panic every frame down to and
     /// including the entry frame has run its landing pads and been popped (`catch`).
@@ -698,8 +678,12 @@ impl Machine {
                     sync!();
                     tri!(self.op_builtin(fiber, &chunk, base, pc, op));
                 }
-                Op::ListPush { l, v } => {
-                    let item = rd!(v).dup();
+                Op::ListPush { l, v } | Op::ListPushMove { l, v } => {
+                    let item = if matches!(op, Op::ListPushMove { .. }) {
+                        std::mem::replace(wr!(v), Value::Unit)
+                    } else {
+                        rd!(v).dup()
+                    };
                     let Value::List(list) = rd!(l) else {
                         self.release(item);
                         internal!("an ill-typed `push`")
@@ -724,6 +708,22 @@ impl Machine {
                     };
                     let n = text.len() as i64;
                     put!(d, Value::Int(n));
+                }
+                Op::StrStartsWith { d, s, p } => {
+                    let (Value::Str(text), Value::Str(prefix)) = (rd!(s), rd!(p)) else {
+                        internal!("an ill-typed `starts_with`")
+                    };
+                    let yes = text.starts_with(&**prefix);
+                    put!(d, Value::Bool(yes));
+                }
+                Op::StrStartsWithK { d, s, k } => {
+                    let (Value::Str(text), Value::Str(prefix)) =
+                        (rd!(s), &chunk.consts[usize::from(k)])
+                    else {
+                        internal!("an ill-typed `starts_with`")
+                    };
+                    let yes = text.starts_with(&**prefix);
+                    put!(d, Value::Bool(yes));
                 }
                 Op::Coerce { d, s, site } => match &chunk.sites[usize::from(site)] {
                     Site::F32ToFloat => {
@@ -828,12 +828,13 @@ impl Machine {
                     sync!();
                     tri!(self.op_place(fiber, &chunk, base, pc, op));
                 }
-                Op::ListGetAt { .. }
-                | Op::ListSetAt { .. }
-                | Op::MapGetAt { .. }
-                | Op::MapSetAt { .. } => {
+                Op::ListGetAt { .. } | Op::ListSetAt { .. } => {
                     sync!();
                     tri!(self.op_elem(fiber, &chunk, base, pc, op));
+                }
+                Op::MapGetAt { .. } | Op::MapSetAt { .. } => {
+                    sync!();
+                    tri!(self.op_map_at(fiber, &chunk, base, pc, op));
                 }
                 Op::Unhold => {
                     let held = fiber.holds.pop();
@@ -1278,7 +1279,7 @@ impl Machine {
         if let Value::Int(x) = fiber.regs[at] {
             let mut out = std::mem::take(&mut self.scratch);
             out.clear();
-            push_int(&mut out, x);
+            crate::unchecked::push_int(&mut out, x);
             let text: Rc<str> = Rc::from(out.as_str());
             self.scratch = out;
             Self::put_reg(fiber, base + usize::from(d), Value::Str(text));
@@ -1334,7 +1335,7 @@ impl Machine {
             let at = base + usize::from(a + i);
             match &fiber.regs[at] {
                 Value::Str(s) => out.push_str(s),
-                Value::Int(x) => push_int(&mut out, *x),
+                Value::Int(x) => crate::unchecked::push_int(&mut out, *x),
                 _ => {
                     let v = std::mem::replace(&mut fiber.regs[at], Value::Unit);
                     let text = self.show_deep(fiber, &v, span);
