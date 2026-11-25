@@ -621,6 +621,30 @@ impl<'a> FnCompiler<'a> {
         if let Some((r, kind)) = after {
             self.emit_op(Op::Count { r, n: 1, kind }, at_span);
         }
+        // A closure takes a reference to each value it captures.
+        if let Op::MakeClosure { site, .. } = op
+            && let Some(Site::Closure { captures, .. }) = self.sites.get(usize::from(site))
+        {
+            let regs: Vec<Reg> = captures
+                .iter()
+                .filter(|c| {
+                    c.mode != colibri_check::hir::CaptureMode::Weak
+                        && (c.mode == colibri_check::hir::CaptureMode::Cell
+                            || !is_scalar(&self.body.locals[c.outer.0 as usize].ty))
+                })
+                .map(|c| c.outer.0 as Reg)
+                .collect();
+            for r in regs {
+                self.emit_op(
+                    Op::Count {
+                        r,
+                        n: 1,
+                        kind: RcKind::Copy,
+                    },
+                    at_span,
+                );
+            }
+        }
         // A constructor clones the values of its registers.
         if let Op::NewStruct { site, .. }
         | Op::NewObject { site, .. }

@@ -351,6 +351,20 @@ fn relative_name(dir: &Path, name: &str) -> String {
     }
 }
 
+/// `COLIBRI_TEST_COUNT_RC=1` runs every golden with the reference-count counters compiled in
+/// (`--profile-rc`), which must change nothing a golden checks; `0` or unset leaves them out.
+/// Anything else is a mistake in the CI file and fails the run.
+fn count_rc_forced() -> bool {
+    match std::env::var("COLIBRI_TEST_COUNT_RC") {
+        Err(_) => false,
+        Ok(v) => match v.as_str() {
+            "1" => true,
+            "0" => false,
+            _ => panic!("COLIBRI_TEST_COUNT_RC must be 0 or 1, not {v:?}"),
+        },
+    }
+}
+
 fn run_with(
     load: impl FnOnce(&mut colibri::Vm) -> Result<(), colibri::Error>,
     dir: Option<&Path>,
@@ -381,6 +395,9 @@ fn run_with(
     // A fake clock that never sleeps: the event loop jumps to the next due wake.
     let clock = FakeClock::default();
     let mut vm = builder.clock(clock.clone()).build();
+    if count_rc_forced() {
+        vm.start_rc_profile();
+    }
     colibri_std::install_with(&mut vm, hermetic_std(&temp.0))
         .expect("the standard library registers into a new Vm");
     // `import testclock` gives `testclock.advance(seconds)`: moves the fake wall clock, which

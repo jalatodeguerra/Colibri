@@ -2191,14 +2191,18 @@ impl Vm {
 
     /// Makes the code that is loaded from now on count its reference-count traffic by line
     /// (copies, clones and releases of values that have a reference count). Call it before
-    /// loading the program: code that is already compiled is not counted. Not part of the
+    /// loading the program: starting after a load counts only the code compiled later, and
+    /// [`Vm::finish_rc_profile`] does not take the `Count` instructions out of code that is
+    /// already compiled (each stays a cheap call that does nothing). Not part of the
     /// stable interface yet. See [`Vm::finish_rc_profile`].
     #[doc(hidden)]
     pub fn start_rc_profile(&mut self) {
         self.engine.start_rc_profile();
     }
 
-    /// Stops counting and returns the lines (`None` if counting was not started). Counted: the
+    /// Stops counting and returns the lines (`None` if counting was not started). The `Count`
+    /// instructions that were compiled stay in the code after this call; they make a cheap call
+    /// that does nothing. Counted: the
     /// register copies, clones and releases the program's own code makes, the values a
     /// constructor keeps and a list's `push`. Not counted: what built-ins written in Rust do
     /// inside (a `sort` copying its list, `join`, `map` lookups), host functions, field and

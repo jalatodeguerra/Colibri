@@ -914,7 +914,9 @@ computes exactly what it did without the flag; without the flag nothing is count
 nothing is slower. What is not counted: the work that built-ins written in Rust do inside
 (`sort` and `join` copying their items, map lookups), host functions, writes into fields and
 elements, and the cleanup that runs while a panic unwinds. A built-in that is written in
-Colibri (such as `map`) is charged to the line that calls it. `--profile-rc` does not combine
+Colibri (such as `map`) is charged to the line that calls it. Under `--profile-rc` some
+closures that would otherwise run as native loops (`fn(p) => p.name`) go through that
+Colibri loop instead, so their counts describe the loop's traffic. `--profile-rc` does not combine
 with `--watch`.
 
 ### Formatter

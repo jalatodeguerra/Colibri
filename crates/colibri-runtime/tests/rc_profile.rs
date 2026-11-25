@@ -412,3 +412,19 @@ fn main() {
     // An item a trip, and what each trip and the end of the loop release.
     assert_eq!(row(&p, 17), (3, 5, 0), "{p:?}");
 }
+
+#[test]
+fn a_closure_takes_a_reference_to_what_it_captures() {
+    let p = counted(
+        "\
+fn main() {
+    let names = [\"a\", \"b\"]
+    let k = 3
+    let f = fn() => names.len() + k
+    print(f())
+}
+",
+    );
+    // `names` is captured (a reference); `k` is a scalar and is not.
+    assert_eq!(row(&p, 4), (1, 1, 0), "{p:?}");
+}
