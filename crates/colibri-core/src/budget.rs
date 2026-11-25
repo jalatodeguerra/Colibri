@@ -269,13 +269,21 @@ impl Core {
 impl Core {
     /// Closes the window of the budget and credits what it spent to the countdown of the slice,
     /// so that the next budget (the next entry, another coroutine) carries on from there.
+    #[inline]
     pub(crate) fn close_budget(&mut self) {
+        if self.safepoints.slice().is_none() {
+            return;
+        }
         let spent = self.budget.close();
         self.safepoints.credit(spent);
     }
 
     /// Opens the window of a closed budget where the countdown of the slice stands.
+    #[inline]
     pub(crate) fn open_budget(&mut self) {
+        if self.safepoints.slice().is_none() {
+            return;
+        }
         self.budget.open(self.safepoints.progress);
     }
 
