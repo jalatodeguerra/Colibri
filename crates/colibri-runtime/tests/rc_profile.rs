@@ -244,6 +244,21 @@ fn counting_changes_neither_the_output_nor_the_steps_nor_the_end_nor_the_leaks()
 }
 
 #[test]
+fn assigning_to_a_local_drops_the_value_it_held() {
+    let p = counted(
+        "\
+fn main() {
+    let mut xs = [1]
+    xs = [2, 3]
+    print(xs.len())
+}
+",
+    );
+    assert_eq!(row(&p, 3), (0, 1, 0), "{p:?}");
+    assert_eq!(row(&p, 1), (0, 1, 0), "{p:?}");
+}
+
+#[test]
 fn a_push_of_a_value_that_is_kept_is_a_copy() {
     let p = counted(
         "\
@@ -278,6 +293,8 @@ fn main() {
     assert_eq!(row(&p, 2), (2, 1, 0), "{p:?}");
     assert_eq!(row(&p, 3), (2, 1, 0), "{p:?}");
     assert_eq!(row(&p, 1), (0, 0, 0), "{p:?}");
+    assert_eq!(p.lines.len(), 2, "no other line has traffic: {p:?}");
+    assert_eq!(p.total(), 6, "{p:?}");
 }
 
 /// Like [`counted`], for a program that panics.
@@ -363,4 +380,35 @@ fn a_program_that_a_reload_restarts_is_counted() {
     let (outcome, p) = reloaded("restart", &format!("{RELOADABLE}struct S {{ a: int }}\n"));
     assert!(matches!(outcome, colibri::ReloadOutcome::Restarted { .. }));
     assert_eq!(row(&p, 6), (1, 2, 0), "{p:?}");
+}
+
+#[test]
+fn the_items_a_user_iterator_hands_out_are_counted() {
+    let p = counted(
+        "\
+struct Names {
+    n: int
+}
+
+impl Iter[str] for Names {
+    fn next(mut self) -> str? {
+        if self.n <= 0 {
+            return none
+        }
+        self.n -= 1
+        return some(\"n\")
+    }
+}
+
+fn main() {
+    let mut t = 0
+    for s in (Names { n: 3 }) {
+        t += s.len()
+    }
+    print(t)
+}
+",
+    );
+    // An item a trip, and what each trip and the end of the loop release.
+    assert_eq!(row(&p, 17), (3, 5, 0), "{p:?}");
 }
