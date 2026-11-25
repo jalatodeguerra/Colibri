@@ -808,12 +808,13 @@ impl Machine {
                     sync!();
                     tri!(self.op_place(fiber, &chunk, base, pc, op));
                 }
-                Op::ListGetAt { .. }
-                | Op::ListSetAt { .. }
-                | Op::MapGetAt { .. }
-                | Op::MapSetAt { .. } => {
+                Op::ListGetAt { .. } | Op::ListSetAt { .. } => {
                     sync!();
                     tri!(self.op_elem(fiber, &chunk, base, pc, op));
+                }
+                Op::MapGetAt { .. } | Op::MapSetAt { .. } => {
+                    sync!();
+                    tri!(self.op_map_at(fiber, &chunk, base, pc, op));
                 }
                 Op::Unhold => {
                     let held = fiber.holds.pop();

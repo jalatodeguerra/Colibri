@@ -445,6 +445,50 @@ impl Machine {
         Ok(())
     }
 
+    /// `MapGetAt` and `MapSetAt` with an `int` or `str` key, which `colibri_core`'s `get_plain` and
+    /// `insert_plain` look up without the generic comparison; anything else (another kind of key,
+    /// a missing key, a guard that refuses) is `op_elem`'s, which does the same from the start.
+    #[inline(never)]
+    pub(crate) fn op_map_at(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        op: Op,
+    ) -> Result<(), Ctl> {
+        match op {
+            Op::MapGetAt { d, m, k } => {
+                if let Value::Map(map) = &fiber.regs[base + usize::from(m)]
+                    && let Some(Some(v)) = map.get_plain(&fiber.regs[base + usize::from(k)])
+                {
+                    Self::put_reg(fiber, base + usize::from(d), v);
+                    return Ok(());
+                }
+            }
+            Op::MapSetAt { m, k, v } => {
+                let value = std::mem::replace(&mut fiber.regs[base + usize::from(v)], Value::Unit);
+                let done = match &fiber.regs[base + usize::from(m)] {
+                    Value::Map(map) => map.insert_plain(&fiber.regs[base + usize::from(k)], value),
+                    _ => Err(value),
+                };
+                match done {
+                    Ok(old) => {
+                        if let Some(old) = old
+                            && !is_scalar_value(&old)
+                        {
+                            self.release(old);
+                        }
+                        return Ok(());
+                    }
+                    Err(value) => fiber.regs[base + usize::from(v)] = value,
+                }
+            }
+            _ => {}
+        }
+        self.op_elem(fiber, chunk, base, pc, op)
+    }
+
     /// `l.<path> = s` on a plain local slot.
     #[inline(never)]
     pub(crate) fn op_set_path(

@@ -272,6 +272,12 @@ impl OrderedMap {
     /// The position of the entry for `key`, or the index slot where it would be inserted.
     #[inline]
     fn probe(&self, hash: u64, key: &Value) -> Result<usize, usize> {
+        self.probe_with(hash, |k| equal_or_give_up(k, key))
+    }
+
+    /// [`OrderedMap::probe`] with the comparison of a stored key given by the caller.
+    #[inline(always)]
+    fn probe_with(&self, hash: u64, same: impl Fn(&Value) -> bool) -> Result<usize, usize> {
         let mask = self.index.len().wrapping_sub(1);
         if self.index.is_empty() {
             return Err(0);
@@ -290,7 +296,7 @@ impl OrderedMap {
                     let e = &self.entries[p as usize];
                     if e.hash == hash
                         && let Some((k, _)) = &e.kv
-                        && equal_or_give_up(k, key)
+                        && same(k)
                     {
                         return Ok(p as usize);
                     }
@@ -298,6 +304,43 @@ impl OrderedMap {
             }
             i = (i + 1) & mask;
         }
+    }
+
+    /// The value for a key that is an `int` or a `str`, which compare without the generic
+    /// walk; `None` (outer) for any other kind of key, which the caller looks up as usual.
+    #[inline]
+    pub fn get_plain(&self, key: &Value) -> Option<Option<&Value>> {
+        let hash = hash_value(key);
+        let found = match key {
+            Value::Int(i) => self.probe_with(hash, |k| matches!(k, Value::Int(j) if j == i)),
+            Value::Str(s) => self.probe_with(hash, |k| matches!(k, Value::Str(t) if **t == **s)),
+            _ => return None,
+        };
+        Some(match found {
+            Ok(p) => self.entries[p].kv.as_ref().map(|(_, v)| v),
+            Err(_) => None,
+        })
+    }
+
+    /// `insert` for a key that is an `int` or a `str`: replaces the value of an existing key
+    /// (returning the old one; the stored key stays and `key` is not cloned), or adds the entry
+    /// with a clone of `key`. Gives `value` back for any other kind of key.
+    #[inline]
+    pub fn insert_plain(&mut self, key: &Value, value: Value) -> Result<Option<Value>, Value> {
+        let hash = hash_value(key);
+        let found = match key {
+            Value::Int(i) => self.probe_with(hash, |k| matches!(k, Value::Int(j) if j == i)),
+            Value::Str(s) => self.probe_with(hash, |k| matches!(k, Value::Str(t) if **t == **s)),
+            _ => return Err(value),
+        };
+        if let Ok(p) = found {
+            if let Some((_, old)) = self.entries[p].kv.as_mut() {
+                return Ok(Some(std::mem::replace(old, value)));
+            }
+            unreachable!("the index names a removed entry");
+        }
+        self.insert_new(hash, found.unwrap_err(), key.clone(), value);
+        Ok(None)
     }
 
     #[inline]
@@ -339,7 +382,7 @@ impl OrderedMap {
         key: Value,
         value: Value,
     ) -> (Option<Value>, Option<Value>) {
-        let mut slot = match self.probe(hash, &key) {
+        let slot = match self.probe(hash, &key) {
             Ok(p) => {
                 if let Some((_, old)) = self.entries[p].kv.as_mut() {
                     return (Some(std::mem::replace(old, value)), Some(key));
@@ -348,6 +391,13 @@ impl OrderedMap {
             }
             Err(slot) => slot,
         };
+        self.insert_new(hash, slot, key, value);
+        (None, None)
+    }
+
+    /// Adds an entry for a key known to be absent; `slot` is where its probe ended.
+    #[inline]
+    fn insert_new(&mut self, hash: u64, mut slot: usize, key: Value, value: Value) {
         if (self.used + 1) * 3 > self.index.len() * 2 {
             self.rebuild_index();
             slot = self.free_slot(hash);
@@ -363,7 +413,6 @@ impl OrderedMap {
             kv: Some((key, value)),
         });
         self.live += 1;
-        (None, None)
     }
 
     /// The first non-live slot on the probe path of `hash` (the key is known to be absent).
