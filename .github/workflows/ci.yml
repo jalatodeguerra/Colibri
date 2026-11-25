@@ -72,3 +72,11 @@ jobs:
         run: cargo test -p colibri-lang --test golden
         env:
           COLIBRI_ENGINE: both
+      # Release builds take the VM's unchecked paths (`unchecked.rs`), which debug builds check.
+      - name: Golden and VM tests in release, on the VM
+        if: ${{ !cancelled() && matrix.os == 'ubuntu-latest' }}
+        run: |
+          cargo test --release -p colibri-vm --no-fail-fast
+          cargo test --release -p colibri-lang --test golden
+        env:
+          COLIBRI_ENGINE: vm
