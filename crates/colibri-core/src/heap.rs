@@ -713,6 +713,17 @@ impl ClassObj {
         })
     }
 
+    /// [`ClassObj::new`] for fields already of exactly their number (no capacity to give back).
+    #[inline]
+    pub fn new_exact(ty: TypeId, fields: ObjFields) -> Rc<ClassObj> {
+        Rc::new(ClassObj {
+            ty,
+            fields: RefCell::new(fields),
+            released: Cell::new(false),
+            hooked: Cell::new(false),
+        })
+    }
+
     /// Marks the `Drop` hook as run; `true` if it had run before.
     #[inline]
     pub(crate) fn mark_hooked(&self) -> bool {

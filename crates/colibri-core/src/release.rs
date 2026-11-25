@@ -87,7 +87,15 @@ impl Core {
 
     /// Records the destruction of `obj` when tracing: its `name: str` field if it has one,
     /// else its class name.
+    #[inline]
     fn trace_destroy(&mut self, obj: &ClassObj) {
+        if self.trace.is_some() {
+            self.trace_destroy_traced(obj);
+        }
+    }
+
+    #[inline(never)]
+    fn trace_destroy_traced(&mut self, obj: &ClassObj) {
         // An `Error` is plumbing, not a user object: its kept value is traced when it dies.
         if self.trace.is_none()
             || obj.ty() == colibri_check::types::ERROR_TYPE

@@ -246,11 +246,11 @@ impl FnCompiler<'_> {
     /// Evaluates `items` left to right, each into a temporary of its own that stays alive.
     pub(super) fn eval_each(&mut self, items: &[&Expr]) -> Vec<Reg> {
         let mut regs = Vec::with_capacity(items.len());
-        for e in items {
-            let t = self.alloc_for(&e.ty);
-            self.expr(e, t);
-            self.own(t);
-            regs.push(t);
+        for (i, e) in items.iter().enumerate() {
+            // A scalar or string local that no later item assigns is read where it is: a copy of it
+            // would hold nothing that outlives the statement in a way a `Drop` hook can see.
+            let later_writes = items[i + 1..].iter().any(|x| writes_locals(x));
+            regs.push(self.operand(e, later_writes));
         }
         regs
     }

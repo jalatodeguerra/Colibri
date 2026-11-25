@@ -268,6 +268,16 @@ impl Value {
         }))
     }
 
+    /// [`Value::variant`] for a payload already of exactly its length (no capacity to give back).
+    #[inline]
+    pub fn variant_exact(ty: TypeId, variant: u32, payload: Payload) -> Value {
+        Value::Enum(Rc::new(EnumVal {
+            ty,
+            variant,
+            payload,
+        }))
+    }
+
     #[inline]
     pub fn list(items: Vec<Value>) -> Value {
         Value::List(ListObj::new(items))
