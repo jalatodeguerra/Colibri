@@ -39,3 +39,11 @@ jobs:
         run: |
           cargo test --release -p colibri-vm --no-fail-fast
           cargo test --release -p colibri-lang --test golden
+      # The budget's exact numbers must not move when the budget is counted in slices
+      # (safepoints): the same file, run with a slice of one step and of a few.
+      - name: Budget tests under safepoint slices
+        if: ${{ !cancelled() && matrix.os == 'ubuntu-latest' }}
+        run: |
+          for slice in 1 7; do
+            COLIBRI_TEST_SLICE=$slice cargo test -p colibri-runtime --test budget
+          done

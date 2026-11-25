@@ -125,7 +125,9 @@ pub trait Sched: Engine {
         let saved_budget = fresh.then(|| {
             let allotment = core.budget.allotment;
             let slice = core.safepoints.slice();
-            std::mem::replace(&mut core.budget, Budget::fresh(allotment, slice))
+            core.close_budget();
+            let fresh = Budget::fresh(allotment, slice, core.safepoints.progress);
+            std::mem::replace(&mut core.budget, fresh)
         });
         // No reference into the core is held across this call: the engine runs the
         // coroutine, which uses the core through the engine's own pointer.
@@ -133,9 +135,12 @@ pub trait Sched: Engine {
         let core = self.core_mut();
         let exhausted = fresh && core.budget_was_exhausted();
         if let Some(b) = saved_budget {
+            // What the coroutine spent counts toward the slice; the entry it interrupted goes on
+            // from there.
+            core.close_budget();
             core.budget = b;
-            // The consumers may have changed their intervals while the coroutine ran.
             core.sync_slice();
+            core.open_budget();
         }
         let s = &mut core.sched;
         s.running.pop();

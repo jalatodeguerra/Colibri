@@ -34,6 +34,17 @@ impl SafepointKind {
     }
 }
 
+/// One consumer whose interval has passed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Due {
+    pub kind: SafepointKind,
+    /// How many of its intervals have passed since it last ran: more than one after a native
+    /// loop charged many steps at once. A profiler weighs its sample by this.
+    pub intervals: u64,
+    /// The interval the consumer asked for.
+    pub every: u32,
+}
+
 /// What the consumers asked for, and how far each has got.
 #[derive(Debug, Default)]
 pub struct Safepoints {
@@ -41,9 +52,14 @@ pub struct Safepoints {
     every: [Option<NonZeroU32>; 3],
     /// The steps since each kind last ran.
     since: [u64; 3],
-    /// How many times each kind ran.
+    /// How many intervals of each kind have run (a sample that stood for several counts them all).
     hits: [u64; 3],
+    /// The smallest interval asked for.
     slice: Option<NonZeroU32>,
+    /// The steps spent in the slice that is running, across budgets: a host that calls in for 42
+    /// steps at a time, or a coroutine that runs for a few steps between waits, still reaches
+    /// the end of a slice.
+    pub(crate) progress: u64,
 }
 
 impl Safepoints {
@@ -56,6 +72,15 @@ impl Safepoints {
     fn refresh(&mut self) {
         self.slice = self.every.iter().flatten().copied().min();
     }
+
+    /// `spent` steps went by in a budget that is set aside, or that ended its window.
+    pub(crate) fn credit(&mut self, spent: u64) {
+        let Some(slice) = self.slice else { return };
+        for since in &mut self.since {
+            *since = since.saturating_add(spent);
+        }
+        self.progress = self.progress.saturating_add(spent) % u64::from(slice.get());
+    }
 }
 
 impl Core {
@@ -64,18 +89,25 @@ impl Core {
     /// once counts as them all). Asking again changes the interval. Nothing is lost when the
     /// slice changes: the steps are only counted differently.
     pub fn want_safepoints(&mut self, kind: SafepointKind, every: NonZeroU32) {
-        self.safepoints.every[kind.index()] = Some(every);
-        self.safepoints.since[kind.index()] = 0;
-        self.safepoints.refresh();
-        self.sync_slice();
+        self.resync(|sp| sp.every[kind.index()] = Some(every), kind);
     }
 
     /// Stops the safepoints of `kind`. With no consumer left the budget counts as before.
     pub fn drop_safepoints(&mut self, kind: SafepointKind) {
-        self.safepoints.every[kind.index()] = None;
+        self.resync(|sp| sp.every[kind.index()] = None, kind);
+    }
+
+    fn resync(&mut self, change: impl FnOnce(&mut Safepoints), kind: SafepointKind) {
+        self.close_budget();
+        change(&mut self.safepoints);
         self.safepoints.since[kind.index()] = 0;
         self.safepoints.refresh();
+        self.safepoints.progress = match self.safepoints.slice {
+            Some(slice) => self.safepoints.progress % u64::from(slice.get()),
+            None => 0,
+        };
         self.sync_slice();
+        self.open_budget();
     }
 
     /// Gives a budget that was set aside (a suspended entry's) the current slice.
@@ -84,7 +116,7 @@ impl Core {
         self.budget.set_slice(self.safepoints.slice);
     }
 
-    /// How many times the safepoint of `kind` has run.
+    /// How many intervals of the safepoints of `kind` have run.
     pub fn safepoint_hits(&self, kind: SafepointKind) -> u64 {
         self.safepoints.hits[kind.index()]
     }
@@ -98,29 +130,35 @@ impl Core {
         let Some(spent) = self.budget.refill() else {
             return false;
         };
-        for since in &mut self.safepoints.since {
-            *since = since.saturating_add(spent);
-        }
+        self.safepoints.credit(spent);
+        self.safepoints.progress = 0;
         self.safepoint_due = true;
         true
     }
 
-    /// The kinds whose interval has passed, in the order they run; takes the safepoint off the
-    /// due list. The engine's `safepoint` runs them.
-    pub fn take_due_safepoints(&mut self) -> impl Iterator<Item = SafepointKind> + use<> {
+    /// The consumers whose interval has passed, in the order they run (`None` for the others);
+    /// takes the safepoint off the due list. Every due consumer is taken at once: the engine's
+    /// `safepoint` gives each its sample even when an earlier one fails.
+    pub fn take_due_safepoints(&mut self) -> [Option<Due>; 3] {
         self.safepoint_due = false;
         let mut due = [None; 3];
         let sp = &mut self.safepoints;
         for kind in SafepointKind::ALL {
             let i = kind.index();
-            if let Some(every) = sp.every[i]
-                && sp.since[i] >= u64::from(every.get())
-            {
-                sp.since[i] %= u64::from(every.get());
-                sp.hits[i] += 1;
-                due[i] = Some(kind);
+            if let Some(every) = sp.every[i] {
+                let every = u64::from(every.get());
+                if sp.since[i] >= every {
+                    let intervals = sp.since[i] / every;
+                    sp.since[i] %= every;
+                    sp.hits[i] += intervals;
+                    due[i] = Some(Due {
+                        kind,
+                        intervals,
+                        every: every as u32,
+                    });
+                }
             }
         }
-        due.into_iter().flatten()
+        due
     }
 }

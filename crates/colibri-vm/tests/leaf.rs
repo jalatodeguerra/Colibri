@@ -32,6 +32,7 @@ fn run_sliced(
 /// A run under a slice shows what the run without one shows: the output, the panic, the trace, the
 /// steps, and how many native loops ran. Only the safepoints differ.
 fn same_under_slices(src: &str, budget: Option<u64>, depth: usize, no_leaf: bool, base: &Outcome) {
+    let every_step = run_sliced(src, no_leaf, budget, depth, Some(1)).safepoints;
     for slice in SLICES {
         let o = run_sliced(src, no_leaf, budget, depth, Some(slice));
         let what = format!("slice {slice}, no_leaf {no_leaf}, budget {budget:?}: {src}");
@@ -42,11 +43,14 @@ fn same_under_slices(src: &str, budget: Option<u64>, depth: usize, no_leaf: bool
         assert_eq!(o.steps, base.steps, "steps, {what}");
         assert_eq!(o.leaf_runs, base.leaf_runs, "leaf runs, {what}");
         assert_eq!(base.safepoints, 0, "{what}");
-        // A run that went on well past a slice met its end (a native loop's charge is the
-        // largest step that can pass unseen).
-        if base.steps > u64::from(slice) + 200 {
-            assert!(o.safepoints > 0, "safepoints, {what}");
-        }
+        // With a slice of one step every step is a safepoint: the others see that many steps, a
+        // slice at a time.
+        let expected = every_step / u64::from(slice);
+        assert!(
+            o.safepoints.abs_diff(expected) <= 1,
+            "{} safepoints, not about {expected}, {what}",
+            o.safepoints
+        );
     }
 }
 

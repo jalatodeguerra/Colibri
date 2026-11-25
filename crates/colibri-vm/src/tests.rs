@@ -492,7 +492,9 @@ fn safepoint_run(
     }
     let seen = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&seen);
-    m.set_safepoint_probe(Some(Box::new(move |kind| sink.borrow_mut().push(kind))));
+    m.set_safepoint_probe(Some(Box::new(move |due, _| {
+        sink.borrow_mut().push(due.kind)
+    })));
     let mut fiber = VmFiber::new();
     m.call(&mut fiber, fn_id(&program, "main"), Vec::new())
         .expect("main runs");
@@ -548,4 +550,103 @@ fn nothing_runs_without_a_consumer_or_after_it_is_dropped() {
     m.call(&mut fiber, fn_id(&program, "main"), Vec::new())
         .unwrap();
     assert_eq!(m.core().safepoint_hits(Profiler), 0);
+}
+
+/// What a probe saw of one safepoint: the consumer, the depth of the stack, and the top frame's
+/// function and pc.
+#[derive(Clone, Debug)]
+struct Seen {
+    due: colibri_core::safepoint::Due,
+    depth: usize,
+    top: Option<(Option<FnId>, u32)>,
+}
+
+/// Runs `main` of `src` with a profiler safepoint every `every` steps; what each one saw, the
+/// steps of the run, and the function ids by name.
+fn probe_run(src: &str, every: u32, names: &[&str]) -> (Vec<Seen>, u64, Vec<FnId>) {
+    use colibri_core::safepoint::SafepointKind::Profiler;
+    let (mut m, program, _out) = load(src);
+    m.core
+        .want_safepoints(Profiler, std::num::NonZeroU32::new(every).unwrap());
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&seen);
+    m.set_safepoint_probe(Some(Box::new(move |due, fiber| {
+        sink.borrow_mut().push(Seen {
+            due,
+            depth: fiber.frames.len(),
+            top: fiber.frames.last().map(|f| (f.chunk.fn_id, f.pc)),
+        });
+    })));
+    let mut fiber = VmFiber::new();
+    m.call(&mut fiber, fn_id(&program, "main"), Vec::new())
+        .expect("main runs");
+    let steps = m.core().steps_used();
+    let seen = seen.borrow().clone();
+    let ids = names.iter().map(|n| fn_id(&program, n)).collect();
+    (seen, steps, ids)
+}
+
+/// A `for` over a list takes its trips on an inline path: with nothing in the body to charge, that
+/// path must still hand the end of every window to the safepoint, not skip them to the end of the
+/// list.
+#[test]
+fn a_for_over_a_list_with_an_empty_body_meets_every_slice_end() {
+    let src = "fn main() {
+    let xs = (0..3000).to_list()
+    for x in xs {
+    }
+}";
+    for slice in [7u32, 100] {
+        let (seen, steps, _) = probe_run(src, slice, &[]);
+        let hits: u64 = seen.iter().map(|s| s.due.intervals).sum();
+        assert_eq!(hits, steps / u64::from(slice), "slice {slice}");
+    }
+}
+
+/// The call that ends a slice is charged to the caller, but the safepoint runs in the callee: a
+/// debugger that stops at every step stops at its first statement, not its second.
+#[test]
+fn the_safepoint_of_a_call_sees_the_callee_s_first_statement() {
+    let src = "fn f() {
+    let a = 1
+    let b = 2
+    let c = a + b
+    print(c)
+}
+fn main() {
+    f()
+}";
+    let (seen, _, ids) = probe_run(src, 1, &["f"]);
+    let f = ids[0];
+    let first = seen
+        .iter()
+        .find(|s| s.top.is_some_and(|(id, _)| id == Some(f)))
+        .expect("a safepoint inside f");
+    // The callee's frame is on top, at its opening: nothing of its body has run.
+    assert!(first.top.unwrap().1 <= 1, "{first:?}");
+    assert!(first.depth >= 2, "{first:?}");
+}
+
+/// A native loop that charges many steps at once is many intervals, and says so.
+#[test]
+fn a_big_charge_reports_how_many_intervals_it_was() {
+    let src = "fn main() {
+    let xs = (0..1000).to_list()
+    let ys = xs.map(fn(x) => x + 1)
+    print(ys.len())
+    let mut t = 0
+    while t < 40 {
+        t += 1
+    }
+}";
+    let (seen, steps, _) = probe_run(src, 7, &[]);
+    let total: u64 = seen.iter().map(|s| s.due.intervals).sum();
+    let biggest = seen.iter().map(|s| s.due.intervals).max().unwrap();
+    // The map walked 1000 elements in one charge: about 1000 / 7 intervals in one sample.
+    assert!(
+        biggest >= 100,
+        "the biggest sample stood for {biggest} intervals"
+    );
+    assert_eq!(total, steps / 7, "{steps} steps");
+    assert!(seen.iter().all(|s| s.due.every == 7));
 }

@@ -6,15 +6,16 @@ use std::rc::Rc;
 use colibri_runtime as colibri;
 
 /// A builder for the tests of this file. `COLIBRI_TEST_SLICE=n` runs every test with the budget
-/// counted in slices of `n` steps: nothing may change (the file's numbers are exact).
+/// counted in slices of `n` steps: nothing may change (the file's numbers are exact). A value
+/// that is not a positive number is a mistake in the CI step, not a reason to run unsliced.
 fn builder() -> colibri::VmBuilder {
     let b = colibri::Vm::builder();
-    match std::env::var("COLIBRI_TEST_SLICE")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-    {
-        Some(n) => b.safepoint_slice(n),
-        None => b,
+    match std::env::var("COLIBRI_TEST_SLICE") {
+        Err(_) => b,
+        Ok(v) => match v.parse::<u32>() {
+            Ok(n) if n > 0 => b.safepoint_slice(n),
+            _ => panic!("COLIBRI_TEST_SLICE must be a positive number of steps, not {v:?}"),
+        },
     }
 }
 
@@ -629,14 +630,101 @@ fn slices_of_the_budget_change_neither_the_steps_nor_the_outcome() {
         for budget in [50, 1_000, 5_000, 1_000_000] {
             let (out, ended, steps, none) = observe(None, budget, source);
             assert_eq!(none, 0);
+            // With a slice of one step every step of every entry is a safepoint: the others
+            // see that many steps, a slice at a time.
+            let (_, _, _, every_step) = observe(Some(1), budget, source);
             for slice in [1, 7, 4096] {
                 let (o, e, s, hits) = observe(Some(slice), budget, source);
                 let what = format!("slice {slice}, budget {budget}: {source}");
                 assert_eq!((&o, &e, s), (&out, &ended, steps), "{what}");
-                if steps > u64::from(slice) + 200 {
-                    assert!(hits > 0, "no safepoint ran, {what}");
-                }
+                let expected = every_step / u64::from(slice);
+                assert!(
+                    hits.abs_diff(expected) <= 1,
+                    "{hits} safepoints, not about {expected}, {what}"
+                );
             }
         }
+    }
+}
+
+/// A host that calls in for a few steps at a time (a game's `update()` each frame): the steps of
+/// the calls add up toward the slice, so a slice that no single call reaches still ends.
+fn host_calls(slice: Option<u32>, calls: u32) -> (u64, u64) {
+    let mut b = colibri::Vm::builder()
+        .stdout(Box::new(colibri::SharedBuffer::new()))
+        .instruction_budget(1_000_000);
+    if let Some(n) = slice {
+        b = b.safepoint_slice(n);
+    }
+    let mut vm = b.build();
+    vm.load_source(
+        "u.colibri",
+        "fn update() {\n    let mut t = 0\n    for i in 0..10 {\n        t += i\n    }\n}\n",
+    )
+    .unwrap();
+    let update = vm.get_fn::<(), ()>("update").unwrap();
+    let before = vm.safepoints_run();
+    let mut total = 0;
+    for _ in 0..calls {
+        update.call(&mut vm, ()).unwrap();
+        total += vm.steps_used();
+    }
+    (total, vm.safepoints_run() - before)
+}
+
+#[test]
+fn short_host_calls_add_up_to_safepoints() {
+    let (total, none) = host_calls(None, 2000);
+    assert_eq!(none, 0);
+    assert_eq!(total % 2000, 0, "every call takes the same steps");
+    let per_call = total / 2000;
+    assert!(per_call < 100, "{per_call} steps a call: below the slice");
+    assert_eq!(total, 44_000);
+    // The steps of the load before the calls shift the first window; the counts are pinned.
+    for (slice, expected) in [
+        (1u32, 44_000),
+        (7, 6285),
+        (100, 439),
+        (1000, 43),
+        (4096, 10),
+    ] {
+        let (steps, hits) = host_calls(Some(slice), 2000);
+        assert_eq!(steps, total, "slice {slice}");
+        assert_eq!(hits, expected, "slice {slice}, {per_call} steps a call");
+    }
+}
+
+/// Coroutines that run for a few steps between waits: each resumption has a budget of its own,
+/// but the steps of all of them count toward the slice.
+fn ticks(slice: Option<u32>) -> (String, u64, u64) {
+    let out = colibri::SharedBuffer::new();
+    let mut b = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .instruction_budget(10_000_000);
+    if let Some(n) = slice {
+        b = b.safepoint_slice(n);
+    }
+    let mut vm = b.build();
+    vm.load_source(
+        "t.colibri",
+        "fn ping(a: Signal, b: Signal, n: int) {\n    for i in 0..n {\n        wait_for(a)\n        b.emit()\n    }\n}\nfn pong(a: Signal, b: Signal, n: int) {\n    for i in 0..n {\n        a.emit()\n        wait_for(b)\n    }\n}\nfn main() {\n    let a = Signal()\n    let b = Signal()\n    let p = go ping(a, b, 2000)\n    let q = go pong(a, b, 2000)\n    p.join()\n    q.join()\n    print(\"done\")\n}\n",
+    )
+    .unwrap();
+    vm.run_main().unwrap();
+    (out.contents(), vm.steps_used(), vm.safepoints_run())
+}
+
+#[test]
+fn short_coroutine_resumptions_add_up_to_safepoints() {
+    let (out, steps, none) = ticks(None);
+    assert_eq!((out.as_str(), none), ("done\n", 0));
+    // One slice per step counts every step of every resumption.
+    let (out1, steps1, all) = ticks(Some(1));
+    assert_eq!((out1.as_str(), steps1), ("done\n", steps));
+    assert_eq!(all, 12_011, "every step of every resumption");
+    for (slice, expected) in [(7u32, 1715), (100, 119), (1000, 11), (4096, 2)] {
+        let (o, s, hits) = ticks(Some(slice));
+        assert_eq!((o.as_str(), s), ("done\n", steps), "slice {slice}");
+        assert_eq!(hits, expected, "slice {slice}");
     }
 }

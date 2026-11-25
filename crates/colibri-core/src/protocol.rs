@@ -96,7 +96,7 @@ pub trait Protocol: Engine {
     #[cold]
     #[inline(never)]
     fn budget_exhausted(&mut self, fiber: &mut Self::Fiber, span: Span) -> Ctl {
-        self.core_mut().budget.exhaust();
+        self.core_mut().exhaust_budget();
         match self.panic(fiber, span, "the instruction budget is exhausted") {
             Ctl::Panic(mut info) => {
                 info.budget = true;

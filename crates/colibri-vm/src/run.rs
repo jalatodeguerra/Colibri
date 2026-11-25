@@ -869,7 +869,7 @@ impl Machine {
                         let Value::Int(i) = *rd!(a + 1) else {
                             break 'trip false;
                         };
-                        if !chunk.hidden && self.core.budget.none_left() {
+                        if !chunk.hidden && self.core.budget.left <= 0 {
                             break 'trip false;
                         }
                         // A lent slot: the item moves out and nothing keeps a second reference.
@@ -1462,8 +1462,11 @@ impl Machine {
             start = 1;
         }
         self.core.budget.left -= i64::from(steps);
+        // The slice may end at this call: its safepoint runs once the callee's frame is there
+        // (the call is charged to the caller, but a debugger stepping in stops inside).
+        let mut slice_ended = false;
         if fiber.visible_depth() >= self.max_depth || self.core.budget.left < 0 {
-            self.call_refused(fiber, caller, pc)?;
+            slice_ended = self.call_refused(fiber, caller, pc)?;
         }
         let need = new_base + callee.nregs as usize;
         if fiber.regs.len() < need {
@@ -1479,6 +1482,9 @@ impl Machine {
             noted: None,
             temps_mark: fiber.temps.len() as u32,
         });
+        if slice_ended {
+            self.safepoint(fiber)?;
+        }
         Ok(())
     }
 
@@ -1542,17 +1548,24 @@ impl Machine {
         Ok(())
     }
 
-    /// A call that may not be made: too deep, or the window of the budget ended. `Ok` when only
-    /// a slice ended (its safepoint ran) and the call goes on; `Err` when it is refused: too deep,
-    /// or out of budget.
+    /// A call that may not be made: too deep, or the window of the budget ended. `Ok(true)`
+    /// when only a slice ended (its safepoint is due, and the call goes on); `Err` when the call
+    /// is refused: too deep, or out of budget.
     #[cold]
     #[inline(never)]
-    fn call_refused(&mut self, fiber: &mut VmFiber, caller: &Chunk, pc: usize) -> Result<(), Ctl> {
+    fn call_refused(
+        &mut self,
+        fiber: &mut VmFiber,
+        caller: &Chunk,
+        pc: usize,
+    ) -> Result<bool, Ctl> {
         let span = caller.spans[pc - 1];
         if fiber.visible_depth() >= self.max_depth {
             Err(self.overflow(fiber, span))
+        } else if self.core.slice_ended() {
+            Ok(true)
         } else {
-            self.step_over(fiber, span)
+            Err(self.budget_exhausted(fiber, span))
         }
     }
 

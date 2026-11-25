@@ -79,38 +79,41 @@ impl Budget {
     }
 
     /// An armed budget for one resumption of a coroutine by the scheduler.
-    pub fn fresh(allotment: Option<u64>, slice: Option<NonZeroU32>) -> Budget {
+    pub fn fresh(allotment: Option<u64>, slice: Option<NonZeroU32>, progress: u64) -> Budget {
         let mut b = Budget::new();
         b.allotment = allotment;
         b.slice = slice;
-        b.arm();
+        b.arm(progress);
         b.depth = 1;
         b
     }
 
-    fn arm(&mut self) {
+    fn arm(&mut self, progress: u64) {
         let start = self
             .allotment
             .map_or(i64::MAX, |a| i64::try_from(a).unwrap_or(i64::MAX));
-        self.begin_phase(start);
+        self.begin_phase(start, progress);
         self.banked = 0;
         self.state = BudgetState::Normal;
     }
 
     /// Starts a phase of `real` steps, windowed by the slice.
-    fn begin_phase(&mut self, real: i64) {
+    fn begin_phase(&mut self, real: i64, progress: u64) {
         self.phase_start = real;
         self.left = real;
         self.reserve = 0;
-        self.rewindow();
+        self.rewindow(progress);
     }
 
     /// Splits `left + reserve` (when it is not already overdrawn) into a window and the reserve.
-    fn rewindow(&mut self) {
+    /// `progress` steps of the current slice are already spent (in other budgets, or earlier
+    /// entries): the window ends where the slice does.
+    fn rewindow(&mut self, progress: u64) {
         let real = self.left.saturating_add(self.reserve);
         match self.slice {
             Some(slice) if real >= 0 => {
-                self.left = real.min(i64::from(slice.get()) - 1);
+                let room = i64::from(slice.get()) - 1 - i64::try_from(progress).unwrap_or(i64::MAX);
+                self.left = real.min(room.max(0));
                 self.reserve = real - self.left;
             }
             _ => {
@@ -139,21 +142,31 @@ impl Budget {
         self.left.saturating_add(self.reserve)
     }
 
-    /// Whether no step is left for a fast path that wants one (`real_left() <= 0`). A window with
-    /// steps in it is answered without looking at the reserve.
-    #[inline(always)]
-    pub fn none_left(&self) -> bool {
-        self.left <= 0 && self.real_left() <= 0
+    /// Closes the window: the reserve goes back into `left`, so that nothing is split. Says
+    /// how many steps the window spent (0 when there is no slice), for the countdown of the
+    /// slice to carry on elsewhere (`Core::credit`).
+    pub(crate) fn close(&mut self) -> u64 {
+        if self.slice.is_none() {
+            return 0;
+        }
+        let spent = u64::try_from(self.window.saturating_sub(self.left)).unwrap_or(0);
+        self.left = self.real_left();
+        self.reserve = 0;
+        self.window = self.left;
+        spent
     }
 
-    /// Changes the slice of a budget that is running: the window shrinks or grows to it.
-    #[inline]
-    pub(crate) fn set_slice(&mut self, slice: Option<NonZeroU32>) {
-        if self.slice == slice {
-            return;
+    /// Opens a window on a closed budget, `progress` steps into the slice. An idle budget (no
+    /// entry running) is left alone.
+    pub(crate) fn open(&mut self, progress: u64) {
+        if self.depth > 0 {
+            self.rewindow(progress);
         }
+    }
+
+    /// Sets the slice of a closed budget.
+    pub(crate) fn set_slice(&mut self, slice: Option<NonZeroU32>) {
         self.slice = slice;
-        self.rewindow();
     }
 
     fn used(&self) -> u64 {
@@ -180,11 +193,11 @@ impl Budget {
     }
 
     /// The first exhaustion starts the grace; the second ends it.
-    pub(crate) fn exhaust(&mut self) {
+    pub(crate) fn exhaust(&mut self, progress: u64) {
         match self.state {
             BudgetState::Normal => {
                 self.banked += u64::try_from(self.phase_start).unwrap_or(0);
-                self.begin_phase(GRACE_STEPS);
+                self.begin_phase(GRACE_STEPS, progress);
                 self.state = BudgetState::Grace;
             }
             BudgetState::Grace => {
@@ -233,7 +246,7 @@ impl Core {
     pub fn begin_entry(&mut self) -> bool {
         let outermost = self.budget.depth == 0;
         if outermost {
-            self.budget.arm();
+            self.budget.arm(self.safepoints.progress);
         }
         self.budget.depth += 1;
         outermost
@@ -247,7 +260,28 @@ impl Core {
             if record {
                 self.budget.last_used = self.budget.used();
             }
+            self.close_budget();
             self.budget.idle();
         }
+    }
+}
+
+impl Core {
+    /// Closes the window of the budget and credits what it spent to the countdown of the slice,
+    /// so that the next budget (the next entry, another coroutine) carries on from there.
+    pub(crate) fn close_budget(&mut self) {
+        let spent = self.budget.close();
+        self.safepoints.credit(spent);
+    }
+
+    /// Opens the window of a closed budget where the countdown of the slice stands.
+    pub(crate) fn open_budget(&mut self) {
+        self.budget.open(self.safepoints.progress);
+    }
+
+    /// The budget really ran out: the grace begins (or ends).
+    pub(crate) fn exhaust_budget(&mut self) {
+        self.close_budget();
+        self.budget.exhaust(self.safepoints.progress);
     }
 }
