@@ -604,7 +604,7 @@ pub fn collect(
                 "the output is the asset `{path}`: choose another file with `-o`, or write it outside the assets"
             ));
         }
-        assets.push(PackAsset::from_disk(root, &path)?);
+        assets.push(crate::pack::asset_from_disk(root, &path)?);
     }
     Ok(assets)
 }
@@ -612,7 +612,7 @@ pub fn collect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pack::{AssetData, Start};
+    use crate::pack::{AssetData, PackDisk, Start};
     use std::cell::{Cell, RefCell};
     use std::io::Cursor;
     use std::rc::Rc;

@@ -1,0 +1,5 @@
+// A program that does not compile prints its diagnostics on the error stream and never starts.
+// web-exit: 1
+// web-stderr: expected `int`, found `str`
+let x: int = "text"
+print(x)

@@ -39,17 +39,24 @@ mod config;
 mod csv;
 mod datetime;
 mod errors;
+#[cfg(not(target_family = "wasm"))]
 mod fs;
+#[cfg(not(target_family = "wasm"))]
 mod fsfile;
 mod hash;
 mod hex;
+#[cfg(not(target_family = "wasm"))]
 mod http;
+#[cfg(not(target_family = "wasm"))]
 mod io;
 mod json;
 mod math;
+#[cfg(not(target_family = "wasm"))]
 mod net;
+#[cfg(not(target_family = "wasm"))]
 mod os;
 mod path;
+#[cfg(not(target_family = "wasm"))]
 mod process;
 mod rand;
 mod re;
@@ -65,9 +72,19 @@ pub use config::{Clock, EnvSource, ManualClock, StdConfig, SystemClock};
 pub use rand::Rng;
 
 /// The modules of the standard library built so far, in the order they are registered.
+#[cfg(not(target_family = "wasm"))]
 pub const MODULES: &[&str] = &[
     "io", "fs", "path", "os", "math", "rand", "time", "str", "json", "regex", "http", "args",
     "process", "net", "datetime", "base64", "hex", "hash", "csv", "toml", "assets",
+];
+
+/// On the web (`target_family = "wasm"`) the modules that reach the machine are not built:
+/// `io`, `fs`, `os`, `http`, `process` and `net`. Which of the rest a web program may import,
+/// and the compile error for the others, is the web build's own step.
+#[cfg(target_family = "wasm")]
+pub const MODULES: &[&str] = &[
+    "path", "math", "rand", "time", "str", "json", "regex", "args", "datetime", "base64", "hex",
+    "hash", "csv", "toml", "assets",
 ];
 
 /// The text of the `vec` module (`import vec`): Colibri source, not a host module.
@@ -125,10 +142,15 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
     // Only the names are declared now: a module is registered (its interface generated,
     // parsed and checked) when a program imports it or something asks for it by name.
     type Register = fn(&mut Vm) -> Result<(), Error>;
-    let lazy: [(&str, Register); 21] = [
+    // The registration order is the order of `MODULES`; the web build leaves out the modules
+    // that reach the machine.
+    let lazy: Vec<(&str, Register)> = vec![
+        #[cfg(not(target_family = "wasm"))]
         ("io", io::register),
+        #[cfg(not(target_family = "wasm"))]
         ("fs", fs::register),
         ("path", path::register),
+        #[cfg(not(target_family = "wasm"))]
         ("os", os::register),
         ("math", math::register),
         ("rand", rand::register),
@@ -136,9 +158,12 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
         ("str", strs::register),
         ("json", json::register),
         ("regex", re::register),
+        #[cfg(not(target_family = "wasm"))]
         ("http", http::register),
         ("args", args::register),
+        #[cfg(not(target_family = "wasm"))]
         ("process", process::register),
+        #[cfg(not(target_family = "wasm"))]
         ("net", net::register),
         ("datetime", datetime::register),
         ("base64", base64::register),

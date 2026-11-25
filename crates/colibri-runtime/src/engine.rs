@@ -133,6 +133,17 @@ pub(crate) trait RuntimeEngine: HostCx {
     /// Runs the module initialisers and the top-level statements.
     fn run_module(&mut self) -> Result<(), Box<PanicInfo>>;
 
+    /// The first half of [`RuntimeEngine::run_module`]: the module initialisers, and not the
+    /// script's top-level statements.
+    fn run_module_inits(&mut self) -> Result<(), Box<PanicInfo>>;
+
+    /// Whether the program has top-level statements.
+    fn has_script(&self) -> bool;
+
+    /// Starts `main` (`Some`) or the top-level statements (`None`) as a coroutine, and gives its
+    /// handle. It runs to its first pause before this returns.
+    fn start_entry(&mut self, main: Option<FnId>) -> Result<CoreValue, Box<PanicInfo>>;
+
     /// Runs the module-level value initialisers again, after `release_globals`.
     fn run_initialisers(&mut self) -> Result<(), Box<PanicInfo>>;
 

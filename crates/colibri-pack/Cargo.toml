@@ -1,0 +1,10 @@
+[package]
+name = "colibri-pack"
+description = "The format of the pack: a Colibri program written after a runner, or on its own for the web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+colibri-runtime = { path = "../colibri-runtime", default-features = false }

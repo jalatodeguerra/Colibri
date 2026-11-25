@@ -21,7 +21,7 @@ use colibri_syntax::{Diagnostic, Span};
 
 /// The operating systems a condition may name.
 pub const KNOWN_OS: &[&str] = &[
-    "linux", "macos", "windows", "freebsd", "netbsd", "openbsd", "android", "ios",
+    "linux", "macos", "windows", "freebsd", "netbsd", "openbsd", "android", "ios", "web",
 ];
 
 /// The processor architectures a condition may name.
@@ -53,10 +53,20 @@ pub struct BuildCfg {
     pub no_default_features: bool,
 }
 
+/// The operating system of the machine running the program. On the web (`wasm32-unknown-unknown`)
+/// `std` has none (its name is empty), and the system is the page: `web`.
+fn default_os() -> &'static str {
+    if cfg!(target_family = "wasm") {
+        "web"
+    } else {
+        std::env::consts::OS
+    }
+}
+
 impl Default for BuildCfg {
     fn default() -> Self {
         BuildCfg {
-            os: std::env::consts::OS.to_string(),
+            os: default_os().to_string(),
             arch: std::env::consts::ARCH.to_string(),
             debug: true,
             features: Vec::new(),
@@ -470,5 +480,20 @@ mod tests {
             f.enabled(&["net".to_string()], false),
             ["fast", "net", "tls"]
         );
+    }
+
+    #[test]
+    fn the_web_is_an_operating_system_a_condition_may_name() {
+        let src = "@when(os == \"web\")\nfn page() {}\n@when(os == \"linux\")\nfn desktop() {}\n";
+        let (kept, diags) = run(src, &cfg("web", "wasm32", true), &[], &[]);
+        assert_eq!((kept, diags), (vec!["page".to_string()], Vec::new()));
+        let (kept, diags) = run(src, &cfg("linux", "x86_64", true), &[], &[]);
+        assert_eq!((kept, diags), (vec!["desktop".to_string()], Vec::new()));
+    }
+
+    #[test]
+    fn the_default_system_has_a_name_a_condition_could_use() {
+        // On wasm32-unknown-unknown `std::env::consts::OS` is empty.
+        assert!(KNOWN_OS.contains(&BuildCfg::default().os.as_str()));
     }
 }

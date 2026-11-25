@@ -1,0 +1,26 @@
+// The program's `main` waits: on a page that must not block, so it suspends and the timers go on.
+// virtual-ms: 1750
+fn tick_every(name: str, seconds: float, times: int) {
+    for i in 0..times {
+        wait(seconds)
+        print("{name} {i}")
+    }
+}
+
+fn main() {
+    go tick_every("slow", 1.0, 1)
+    go tick_every("fast", 0.5, 3)
+    print("main waits")
+    wait(1.25)
+    print("main woke")
+    wait(0.5)
+    print("main done")
+}
+
+// expect: main waits
+// expect: fast 0
+// expect: slow 0
+// expect: fast 1
+// expect: main woke
+// expect: fast 2
+// expect: main done

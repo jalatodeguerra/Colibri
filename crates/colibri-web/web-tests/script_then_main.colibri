@@ -1,0 +1,16 @@
+// The top-level statements run first and `main` after them, each waiting on its own.
+// virtual-ms: 1000
+print("top")
+wait(0.5)
+print("top woke")
+
+fn main() {
+    print("main")
+    wait(0.5)
+    print("main woke")
+}
+
+// expect: top
+// expect: top woke
+// expect: main
+// expect: main woke

@@ -175,6 +175,19 @@ impl RuntimeEngine for VmEngine {
         self.machine.run_module(&mut self.fiber)
     }
 
+    fn run_module_inits(&mut self) -> Result<(), Box<PanicInfo>> {
+        self.machine.run_module_inits(&mut self.fiber)
+    }
+
+    fn has_script(&self) -> bool {
+        self.machine.has_script()
+    }
+
+    fn start_entry(&mut self, main: Option<FnId>) -> Result<CoreValue, Box<PanicInfo>> {
+        let part = main.map_or(colibri_vm::EntryPart::Script, colibri_vm::EntryPart::Main);
+        self.machine.start_entry(&mut self.fiber, part)
+    }
+
     fn run_initialisers(&mut self) -> Result<(), Box<PanicInfo>> {
         self.machine.run_initialisers(&mut self.fiber)
     }

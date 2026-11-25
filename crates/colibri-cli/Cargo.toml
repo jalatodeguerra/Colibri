@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 colibri-runtime = { path = "../colibri-runtime", default-features = false }
+colibri-pack = { path = "../colibri-pack" }
 colibri-syntax = { path = "../colibri-syntax" }
 colibri-std = { path = "../colibri-std" }
 colibri-lsp = { path = "../colibri-lsp" }

@@ -1,0 +1,20 @@
+# The golden programs the web harness runs (paths below tests/golden), as packs, in node with the
+# wasm build (js/test/run.mjs) and natively through the runner (tests/goldens.rs). Each prints what
+# its `// expect:` lines say. Only programs that use what a web build has: no fs, os, io, process,
+# net or http, nothing that reads the wall clock or a random number, no `task.tick` (the web's
+# `main` is a coroutine, so it cannot tick: a golden that does, or that joins a panicking coroutine
+# only after another wait, is not here).
+basics/print_each_type.colibri
+basics/let_var_const.colibri
+coroutines/event_loop_after_main.colibri
+coroutines/signal_and_timer.colibri
+coroutines/join_value.colibri
+coroutines/go_forms.colibri
+closures/counter_factory_has_private_state.colibri
+closures/returning_closures_curry.colibri
+closures/nested_closures_capture_through.colibri
+std/json_round_trip.colibri
+std/json_value.colibri
+std/json_pretty.colibri
+closures/closures_in_collections.colibri
+strings/case_conversion.colibri

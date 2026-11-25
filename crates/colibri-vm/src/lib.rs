@@ -48,6 +48,7 @@ pub use compile::{CompileEnv, compile_body};
 pub use coro::FiberSlab;
 pub use embed::SessionUndo;
 pub use fiber::VmFiber;
+pub use load::EntryPart;
 pub use host::{HostClassHooks, HostFault, HostImpl};
 pub use machine::{DEFAULT_NATIVE_STACK_BUDGET, Machine};
 pub use profile::{PROFILE_SLICE, Profile, ProfileSample, ProfileWeight};

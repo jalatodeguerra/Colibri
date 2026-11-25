@@ -1,0 +1,17 @@
+// The clock and the random numbers of the standard library come from the page.
+import math
+import rand
+import time
+
+fn main() {
+    let t0 = time.now()
+    wait(0.5)
+    let dt = time.now() - t0
+    print("the clock moved: {dt >= 0.0}")
+    print("random in range: {rand.int(7, 8)} {rand.float() < 1.0}")
+    print("math: {math.floor(2.5)}")
+}
+
+// expect: the clock moved: true
+// expect: random in range: 7 true
+// expect: math: 2.0

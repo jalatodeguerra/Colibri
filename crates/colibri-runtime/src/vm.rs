@@ -42,6 +42,9 @@ enum LoadMode {
     Run,
     /// Check every module of a package and run nothing ([`Vm::load_tests`]).
     Tests,
+    /// Initialise the modules and run nothing else: the top-level statements and `main` are
+    /// started by [`Vm::start_entry`] as coroutines ([`Vm::load_from_deferred`]).
+    Deferred,
     /// Check a REPL session program, with every value in dependency order (it is not one file
     /// read top to bottom); the session runs it ([`Vm::session_commit`]).
     Session,
@@ -283,6 +286,7 @@ impl VmBuilder {
             failed: Vec::new(),
             registering: Vec::new(),
             reload: None,
+            entry: None,
             cfg: self.cfg,
         }
     }
@@ -335,6 +339,25 @@ pub struct Vm {
     /// Where the program came from and which files it was built from, for
     /// [`Vm::reload_changed`]. Kept when a load fails, so that fixing the file loads it.
     reload: Option<ReloadState>,
+    /// The program's entry, when a host runs it as coroutines ([`Vm::start_entry`]).
+    entry: Option<EntryRun>,
+}
+
+/// Where the entry of a program started by [`Vm::start_entry`] is.
+struct EntryRun {
+    stage: EntryStage,
+    /// The handle of the coroutine of this stage.
+    handle: Option<InterpValue>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EntryStage {
+    /// The top-level statements of a script are running.
+    Script,
+    /// `main` is running.
+    Main,
+    /// Both are over.
+    Over,
 }
 
 /// Registers a module that was declared lazily.
@@ -372,6 +395,14 @@ impl Drop for BulkGuard<'_> {
     fn drop(&mut self) {
         self.vm.bulk = self.before;
         self.vm.registering.pop();
+    }
+}
+
+impl Drop for Vm {
+    fn drop(&mut self) {
+        // The engine goes after this, and shuts the program down: the handle must be let go
+        // of before.
+        self.release_entry();
     }
 }
 
@@ -1452,6 +1483,14 @@ impl Vm {
         self.load_entry(fs, entry, LoadMode::Run, None)
     }
 
+    /// [`Vm::load_from`] for a host that cannot block (the web): the modules are initialised, but
+    /// the script's top-level statements and `main` do not run. [`Vm::start_entry`] starts them as
+    /// a coroutine, so that a `wait` in them suspends to the host's own loop, and the host drives
+    /// them with [`Vm::tick`] and [`Vm::entry_step`].
+    pub fn load_from_deferred(&mut self, fs: &dyn SourceFs, entry: Entry<'_>) -> Result<(), Error> {
+        self.load_entry(fs, entry, LoadMode::Deferred, None)
+    }
+
     /// `watch` is set for programs read from disk by `load_file` and `load_package`: it makes
     /// the `Vm` remember the files, for [`Vm::reload_changed`].
     fn load_entry(
@@ -1594,6 +1633,7 @@ impl Vm {
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
         let outcome = match mode {
             LoadMode::Run => self.engine.run_module(),
+            LoadMode::Deferred => self.engine.run_module_inits(),
             LoadMode::Tests | LoadMode::Session => Ok(()),
         };
         self.engine.core_mut().flush();
@@ -1793,6 +1833,125 @@ impl Vm {
         }
         self.engine.release_in_entry(value);
         Ok(())
+    }
+
+    // ---- the entry as coroutines (a host that cannot block) ----
+
+    /// Starts the program of [`Vm::load_from_deferred`]: the top-level statements of a script
+    /// as a coroutine, and `main` as one after them. A `wait` in either suspends it, as in any
+    /// coroutine, so the host's loop goes on. Each runs until its first pause before this
+    /// returns. A panic of a coroutine is reported by the next [`Vm::tick`] (or
+    /// [`Vm::take_coroutine_failure`]), like any coroutine's.
+    pub fn start_entry(&mut self) -> Result<(), Error> {
+        self.program.as_ref().ok_or(Error::NotLoaded)?;
+        let stage = if self.engine.has_script() {
+            EntryStage::Script
+        } else {
+            EntryStage::Main
+        };
+        self.entry = Some(EntryRun {
+            stage,
+            handle: None,
+        });
+        self.begin_entry_stage(stage)
+    }
+
+    fn begin_entry_stage(&mut self, stage: EntryStage) -> Result<(), Error> {
+        let program = self.program.clone().ok_or(Error::NotLoaded)?;
+        let (stage, handle) = match stage {
+            EntryStage::Script => (EntryStage::Script, self.engine.start_entry(None)),
+            EntryStage::Main => match program.main {
+                Some(main) => (EntryStage::Main, self.engine.start_entry(Some(main))),
+                None => {
+                    self.set_entry(EntryStage::Over, None);
+                    return Ok(());
+                }
+            },
+            EntryStage::Over => return Ok(()),
+        };
+        self.engine.core_mut().flush();
+        let handle = handle.map_err(|info| panic_error(self.engine.core(), *info))?;
+        self.set_entry(stage, Some(handle));
+        Ok(())
+    }
+
+    fn set_entry(&mut self, stage: EntryStage, handle: Option<InterpValue>) {
+        self.entry = Some(EntryRun { stage, handle });
+    }
+
+    /// Moves the entry on when a part of it has ended: after the top-level statements `main`
+    /// starts. `Ok(true)` once both are over; `Ok(false)` while one is still running. A `main`
+    /// that returns `Result[()]` and ends in `err(e)` is [`Error::MainReturnedErr`]; a part that
+    /// panicked gives that panic if no tick has reported it. Call it after each
+    /// [`Vm::tick`], and after [`Vm::start_entry`].
+    pub fn entry_step(&mut self) -> Result<bool, Error> {
+        use colibri_core::sched::{DONE, H_RESULT, RUNNING, handle_of, handle_status};
+        loop {
+            let Some(run) = self.entry.as_mut() else {
+                return Ok(true);
+            };
+            let stage = run.stage;
+            if stage == EntryStage::Over {
+                return Ok(true);
+            }
+            let Some(handle) = run.handle.as_ref() else {
+                return Ok(true);
+            };
+            let Some(h) = handle_of(handle) else {
+                return Ok(true);
+            };
+            let status = handle_status(h);
+            if status == RUNNING {
+                return Ok(false);
+            }
+            let result = h.field(H_RESULT);
+            let handle = run.handle.take().expect("the handle was just read");
+            self.engine.release_in_entry(handle);
+            if status != DONE {
+                // Panicked or cancelled: the panic is a failure no tick has returned yet.
+                self.set_entry(EntryStage::Over, None);
+                self.collect_failure()?;
+                return Ok(true);
+            }
+            if stage == EntryStage::Main {
+                self.set_entry(EntryStage::Over, None);
+                let returns_result = self.program.as_ref().is_some_and(|p| {
+                    p.main.is_some_and(|m| {
+                        matches!(&p.fns[m.0 as usize].sig.ret, Ty::Adt(RESULT_TYPE, _))
+                    })
+                });
+                if let Some(value) = result {
+                    if returns_result
+                        && let InterpValue::Enum(e) = &value
+                        && e.variant == VARIANT_ERR
+                        && let Some(payload) = e.payload.first()
+                    {
+                        let message = self.engine.error_report(payload);
+                        self.engine.release_in_entry(value);
+                        return Err(Error::MainReturnedErr { message });
+                    }
+                    self.engine.release_in_entry(value);
+                }
+                return Ok(true);
+            }
+            if let Some(value) = result {
+                self.engine.release_in_entry(value);
+            }
+            self.begin_entry_stage(EntryStage::Main)?;
+        }
+    }
+
+    /// How many seconds until a coroutine needs a tick: `Some(0.0)` for one that is due (or
+    /// polls: `poll` is how often a coroutine that waits on a condition is looked at), `None`
+    /// when nothing will be due until an event happens. What [`Vm::run_event_loop`] sleeps for.
+    pub fn next_wake(&mut self, poll: f64) -> Option<f64> {
+        self.engine.next_wake(poll)
+    }
+
+    /// A panic of a coroutine that no tick reported (it failed while starting or while being
+    /// cancelled): `Err` with it, once.
+    pub fn take_coroutine_failure(&mut self) -> Result<(), Error> {
+        self.collect_failure()
     }
 
     // ---- coroutines ----
@@ -2168,7 +2327,17 @@ impl Vm {
         self.teardown();
     }
 
+    /// Lets go of the handle of the entry's coroutine, if the entry has not ended.
+    fn release_entry(&mut self) {
+        if let Some(run) = self.entry.take()
+            && let Some(handle) = run.handle
+        {
+            self.engine.release_in_entry(handle);
+        }
+    }
+
     fn teardown(&mut self) {
+        self.release_entry();
         self.engine.shutdown();
         self.engine.core_mut().flush();
         if self.program.take().is_some() {

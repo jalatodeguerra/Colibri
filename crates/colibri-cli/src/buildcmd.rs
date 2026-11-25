@@ -25,7 +25,7 @@ use colibri_runtime::{self as colibri, Recorded, RecordingFs};
 use crate::assets;
 use crate::depscmd::{self, DepFlags};
 use crate::macho;
-use crate::pack::{self, Kind, Pack, PackFile, Start};
+use crate::pack::{self, Kind, Pack, PackDisk, PackFile, Start};
 use crate::platform::{self, Target};
 
 /// What `colibri build` was asked for.
