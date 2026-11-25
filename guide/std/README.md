@@ -7,6 +7,7 @@ One page for each module of the standard library. A page lists the constants, ty
 | Module | What it is for | Written in | Needs |
 |--------|----------------|------------|-------|
 | [`args`](args.md) | Command-line argument parsing. | Rust | nothing |
+| [`assets`](assets.md) | The files that ship with the program, listed under `[build] assets` in `colibri.toml`: read from the package folder by `run` and `test`, and from the executable that `colibri build` writes. | Rust | nothing |
 | [`base64`](base64.md) | Base64 encoding and decoding of text and of `Bytes`. | Rust | nothing |
 | [`csv`](csv.md) | CSV text to records or to rows with a header, and back. | Rust | nothing |
 | [`datetime`](datetime.md) | Dates, times and their formatting. | Rust | `os` (some functions) |
