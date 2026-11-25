@@ -161,6 +161,11 @@ fn a_session_display_after_an_ordinary_load_is_the_same_on_both_engines() {
 }
 
 #[test]
+fn the_default_engine_is_the_vm() {
+    assert_eq!(EngineKind::default(), EngineKind::Bytecode);
+}
+
+#[test]
 fn the_tree_engine_runs_programs() {
     let (result, out) = run_on(EngineKind::Tree, "fn main() { print(\"tree\") }");
     result.unwrap();

@@ -5,8 +5,6 @@
 //! has no such limit to lower). Loopback only.
 #![cfg(unix)]
 
-mod common;
-
 use std::io::{BufRead, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
@@ -111,11 +109,9 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
     // instead of guessing when the server has tried to accept past its limit.
     let (log_tx, log_rx) = mpsc::channel::<String>();
     let stderr = child.0.stderr.take().unwrap();
-    let owner = std::thread::current().name().map(String::from);
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
-            common::note_child_stderr(&owner, &line);
             if log_tx.send(line).is_err() {
                 break;
             }
@@ -132,7 +128,6 @@ fn a_server_that_runs_out_of_descriptors_logs_it_and_serves_again_when_connectio
             err.push_str(&line);
             err.push('\n');
         }
-        common::no_refusal(&err);
         panic!("unexpected first line {first:?}; stderr: {err}");
     };
     let addr = addr.to_string();

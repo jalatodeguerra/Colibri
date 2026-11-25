@@ -150,8 +150,8 @@ fn check_of_toml_gets_the_json_interface_it_names_and_json_alone_never_asks_for_
     assert_eq!(asked, ["std.json"]);
 }
 
-/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
-/// spawn on the VM (see `vm_pending.txt` for the ones that cannot pass there yet).
+/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests run the programs they
+/// spawn on the engine the environment names (the VM when it names none).
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

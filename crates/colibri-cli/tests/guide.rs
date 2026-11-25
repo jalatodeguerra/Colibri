@@ -17,8 +17,6 @@
 //!   The package is checked as a whole, and an `output` block after one of its blocks is what
 //!   `colibri run` on the package prints.
 
-mod common;
-
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -275,13 +273,11 @@ fn colibri(dir: &Path, args: &[&str]) -> Ran {
         let _ = guard.0.kill();
         let _ = guard.0.wait();
     }
-    let ran = Ran {
+    Ran {
         code: status.map(|s| s.code().unwrap_or(-1)),
         stdout: String::from_utf8_lossy(&out.join().unwrap()).replace("\r\n", "\n"),
         stderr: String::from_utf8_lossy(&err.join().unwrap()).replace("\r\n", "\n"),
-    };
-    common::no_refusal(&ran.stderr);
-    ran
+    }
 }
 
 /// A fresh folder for the samples of one test, removed at the end.
@@ -844,8 +840,8 @@ fn colibri_doc_refuses_a_folder_with_pages_it_did_not_write() {
     assert!(empty.join(".DS_Store").exists());
 }
 
-/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
-/// spawn on the VM (see `vm_pending.txt` for the ones that cannot pass there yet).
+/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests run the programs they
+/// spawn on the engine the environment names (the VM when it names none).
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

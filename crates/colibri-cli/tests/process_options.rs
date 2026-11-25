@@ -3,8 +3,6 @@
 //! through `process.run`, so the arguments pass through Rust's command-line quoting (the part
 //! that differs most between Unix and Windows), and the child reports what it received.
 
-mod common;
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -33,12 +31,10 @@ fn folder(name: &str) -> PathBuf {
 fn run_script(dir: &Path, parent: &str) -> String {
     let file = dir.join("parent.colibri");
     fs::write(&file, parent).unwrap();
-    let out = common::checked(
-        colibri_command()
-            .args(["run", file.to_str().unwrap()])
-            .output()
-            .unwrap(),
-    );
+    let out = colibri_command()
+        .args(["run", file.to_str().unwrap()])
+        .output()
+        .unwrap();
     assert!(
         out.status.success(),
         "{}{}",
@@ -150,8 +146,8 @@ fn main() {{
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
-/// spawn on the VM (see `vm_pending.txt` for the ones that cannot pass there yet).
+/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests run the programs they
+/// spawn on the engine the environment names (the VM when it names none).
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

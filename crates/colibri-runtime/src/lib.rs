@@ -20,6 +20,12 @@
 //! back as an [`Error::Panic`] and leaves the `Vm` usable. No interpreter type appears in this
 //! API; values cross through [`IntoColibri`] and [`FromColibri`].
 //!
+//! A `Vm` runs the program on the register bytecode VM. The tree-walking interpreter it replaced
+//! stays selectable for a transition period with the environment variable `COLIBRI_ENGINE=tree`
+//! (`COLIBRI_ENGINE=vm` names the default). The two engines agree on what a program prints and
+//! how it ends; they do not agree on the step counts that [`VmBuilder::instruction_budget`] is
+//! measured in, so a budget tuned on one engine is a bound, not an exact figure, on the other.
+//!
 //! # Host functions and state
 //!
 //! Scripts call Rust closures registered with [`Vm::register_fn`]. A closure may take a leading
@@ -55,8 +61,10 @@
 //! entry may run ([`Error::BudgetExhausted`]); [`Vm::find_fn`] gives a [`Callback`] that the
 //! host can keep and call later.
 //!
-//! Each active Colibri call uses Rust stack, so run a `Vm` with a high
-//! [`VmBuilder::max_call_depth`] on a thread with a large stack (the `colibri` tool does).
+//! The VM keeps the frames of Colibri calls on the heap, so [`VmBuilder::max_call_depth`] is not
+//! bounded by the thread's stack there. The tree-walking interpreter uses Rust stack for each
+//! active call: with `COLIBRI_ENGINE=tree`, run a `Vm` with a high `max_call_depth` on a thread
+//! with a large stack (the `colibri` tool does).
 
 // The code `#[colibri::export]` writes names the crate `colibri_runtime`; this makes that name
 // work inside the crate too (its own tests and docs).

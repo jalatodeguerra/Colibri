@@ -2,8 +2,6 @@
 //! each declare an `Item`, a module's interface may name another module's type once it says
 //! it uses that module, and the interface text of all of it round-trips.
 
-mod common;
-
 use colibri::{Cx, FromColibri, HostType, Interface, IntoColibri, TypeBuilder, TypeDesc};
 use colibri::{Handle, TypeRegistry, Value};
 use colibri_runtime as colibri;

@@ -2,8 +2,6 @@
 //! prints. Every wait has a generous timeout and polls, so a slow machine only makes the tests
 //! slower, not flaky.
 
-mod common;
-
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::path::PathBuf;
@@ -64,7 +62,6 @@ impl Watch {
             while let Ok(line) = self.err.try_recv() {
                 self.seen_err.push(line);
             }
-            common::no_refusal(&self.seen_err.join("\n"));
             let seen = if stderr {
                 &self.seen_err
             } else {
@@ -174,12 +171,10 @@ fn warnings_are_printed_before_the_top_level_code_runs() {
         "warnfirst",
         "import os\nfn main() {\n    let x = 1\n    let x = 2\n    print(x)\n}\nos.exit(3)\n",
     );
-    let out = common::checked(
-        colibri_command()
-            .args(["run", "--watch", path.to_str().unwrap()])
-            .output()
-            .expect("the colibri binary runs"),
-    );
+    let out = colibri_command()
+        .args(["run", "--watch", path.to_str().unwrap()])
+        .output()
+        .expect("the colibri binary runs");
     assert_eq!(out.status.code(), Some(3));
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("Warning"),
@@ -188,8 +183,8 @@ fn warnings_are_printed_before_the_top_level_code_runs() {
     );
 }
 
-/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
-/// spawn on the VM (see `vm_pending.txt` for the ones that cannot pass there yet).
+/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests run the programs they
+/// spawn on the engine the environment names (the VM when it names none).
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

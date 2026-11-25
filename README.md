@@ -8,8 +8,8 @@ reference counting instead of a garbage collector. Use it for scripts and comman
 for automation, or as a scripting language embedded in a Rust program.
 
 > **Status: early and pre-release.** The language, standard library and tooling described below
-> work today on a tree-walking interpreter. A bytecode VM will replace it; that work is not
-> started. Expect breaking changes. Features that are planned but not built are marked
+> work today on a register bytecode VM, the default engine. The older tree-walking interpreter is
+> still there, for one transition period, behind `COLIBRI_ENGINE=tree`. Expect breaking changes. Features that are planned but not built are marked
 > **(planned)**.
 
 ```colibri
@@ -866,8 +866,12 @@ fn main() -> Result<(), colibri::Error> {
 }
 ```
 
-`Vm` is the runtime handle; today it runs the tree-walking interpreter, and the bytecode VM will
-take its place behind the same API. The runtime also offers:
+`Vm` is the runtime handle; it runs the program on the bytecode VM. Setting `COLIBRI_ENGINE=tree`
+in the environment selects the older tree-walking interpreter for the transition period, which
+goes away once the VM has run in the field for a while. The two agree on what a program prints and
+how it ends, but not on step counts: an instruction budget is measured in steps that are
+engine-specific and approximate, so treat a budget as a bound, not an exact figure. The runtime
+also offers:
 
 - `#[colibri::export]` to expose Rust structs and methods as Colibri types
 - generational handles to host objects, and callbacks the host can keep and call later
@@ -928,8 +932,9 @@ they have.
 - The language core: structs, classes, enums, `match`, generics with bounds, interfaces,
   closures, `Result`/`Option` error handling, modules and packages, `weak` references, derived
   ordering, `@deprecated` and conditional code with `@when` and features.
-- A tree-walking interpreter over a typed intermediate representation, with a deterministic
-  drop order.
+- A register bytecode VM over a typed intermediate representation, with a deterministic drop
+  order. It is the default engine of `colibri` and of the embedding API; the tree-walking
+  interpreter it replaced is kept behind `COLIBRI_ENGINE=tree` for one transition period.
 - The embedding API, the C FFI, coroutines, the 22 std modules above (TCP sockets and an HTTP/1.1 server included),
   `Bytes` and file handles.
 - Operator interfaces (`Add`, `Sub`, `Mul`, `Div`, `Neg`) with default type parameters, which
@@ -938,11 +943,9 @@ they have.
 
 **Next** (not started):
 
-- A shared runtime core, then the **bytecode VM**, which becomes the engine behind `colibri run`,
-  embedding and hot reload. The interpreter is retired once the VM passes every test. The first
-  speed goal is to beat CPython 3.13 on every program in [`benchmarks/`](benchmarks/README.md);
-  the tree-walking interpreter is about 4 to 10 times slower than CPython today; the bytecode VM
-  is ahead of it on four of the eight programs, level on one and up to 1.3 times slower on three.
+- Retire the tree-walking interpreter, after the transition period. The speed goal is to beat
+  CPython 3.13 on every program in [`benchmarks/`](benchmarks/README.md); the VM is ahead of it
+  on seven of the eight programs there and level on one.
 - `colibri build` for single-file executables and `colibri build --web` for the browser.
 
 **Later:**

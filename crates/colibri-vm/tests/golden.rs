@@ -2,8 +2,6 @@
 //! compares them with the `// expect:` and `// panic:` directives (the format of
 //! `colibri-cli/src/golden.rs`).
 //!
-//! `PENDING` lists the files that do not pass yet, each with a one-word reason. It is a
-//! ratchet: a listed file that passes fails the test, so the list only shrinks.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,9 +15,6 @@ const FILES: &[&str] = &[
     "panics/stack_overflow.colibri",
     "panics/mutual_recursion_stack_overflow.colibri",
 ];
-
-/// Files that do not pass yet, with the one-word reason (the first thing they need).
-const PENDING: &[(&str, &str)] = &[];
 
 #[derive(Default)]
 struct Directives {
@@ -165,7 +160,6 @@ fn golden_run() -> String {
     };
     let mut report = String::new();
     let mut passed = 0;
-    let mut pending_seen = 0;
     let mut not_applicable = 0;
     for path in &files {
         let name = rel(path);
@@ -177,82 +171,17 @@ fn golden_run() -> String {
             not_applicable += 1;
             continue;
         }
-        match classify(&name, run_one(&source, &d), PENDING) {
-            Verdict::Passed => passed += 1,
-            Verdict::Pending => pending_seen += 1,
-            Verdict::Report(text) => report.push_str(&text),
+        match run_one(&source, &d) {
+            Ok(()) => passed += 1,
+            Err(why) => report.push_str(&format!("{name}: FAILS\n{why}\n")),
         }
     }
-    let ran: Vec<String> = files.iter().map(|f| rel(f)).collect();
-    report.push_str(&stale_entries(&ran, PENDING));
-    eprintln!(
-        "golden on the VM: {passed} passed, {pending_seen} pending, {not_applicable} not applicable"
-    );
-    report
-}
-
-/// What the ratchet makes of one file.
-#[derive(Debug, PartialEq)]
-enum Verdict {
-    Passed,
-    Pending,
-    /// A problem, as text for the failure message.
-    Report(String),
-}
-
-/// A file that passes must not be listed; a file that fails must be listed.
-fn classify(name: &str, result: Result<(), String>, pending: &[(&str, &str)]) -> Verdict {
-    let listed = pending.iter().find(|(p, _)| *p == name);
-    match (result, listed) {
-        (Ok(()), None) => Verdict::Passed,
-        (Ok(()), Some((_, reason))) => Verdict::Report(format!(
-            "{name}: passes now but is listed as pending ({reason}); remove it from PENDING\n"
-        )),
-        (Err(_), Some(_)) => Verdict::Pending,
-        (Err(why), None) => Verdict::Report(format!("{name}: FAILS\n{why}\n")),
-    }
-}
-
-/// Pending entries that name a file that was not run.
-fn stale_entries(ran: &[String], pending: &[(&str, &str)]) -> String {
-    let mut report = String::new();
-    for (p, _) in pending {
-        if !ran.iter().any(|f| f == p) {
-            report.push_str(&format!("PENDING names a file that is not run: {p}\n"));
-        }
-    }
+    eprintln!("golden on the VM: {passed} passed, {not_applicable} not applicable");
     report
 }
 
 #[test]
-fn the_ratchet_fails_a_pending_file_that_passes() {
-    let pending = [("a/x.colibri", "lists")];
-    let v = classify("a/x.colibri", Ok(()), &pending);
-    assert!(
-        matches!(&v, Verdict::Report(t) if t.contains("passes now but is listed")),
-        "{v:?}"
-    );
-    assert_eq!(
-        classify("a/x.colibri", Err("no".into()), &pending),
-        Verdict::Pending
-    );
-    assert_eq!(classify("a/y.colibri", Ok(()), &pending), Verdict::Passed);
-}
-
-#[test]
-fn the_ratchet_fails_an_unlisted_failure_and_a_stale_entry() {
-    let v = classify("a/y.colibri", Err("boom".into()), &[]);
-    assert!(
-        matches!(&v, Verdict::Report(t) if t.contains("FAILS") && t.contains("boom")),
-        "{v:?}"
-    );
-    let ran = vec!["a/x.colibri".to_string()];
-    assert_eq!(stale_entries(&ran, &[("a/x.colibri", "w")]), "");
-    assert!(stale_entries(&ran, &[("gone.colibri", "w")]).contains("not run: gone.colibri"));
-}
-
-#[test]
-fn goldens_pass_or_are_listed_as_pending() {
+fn goldens_pass() {
     // Deep expressions in a few files need more than a test thread's stack to check.
     let handle = std::thread::Builder::new()
         .stack_size(256 << 20)

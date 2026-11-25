@@ -81,7 +81,7 @@ enum Command {
         /// were never freed to stderr; `--leaks=error` also exits with 1
         #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
-        /// The engine that runs the program (default: `COLIBRI_ENGINE`, else `tree`)
+        /// The engine that runs the program (default: `COLIBRI_ENGINE`, else `vm`)
         #[arg(long, value_enum, value_name = "ENGINE", hide = true)]
         engine: Option<EngineArg>,
         #[command(flatten)]

@@ -184,17 +184,20 @@ impl VmBuilder {
         self
     }
 
-    /// How many Colibri calls may be active at once before a "stack overflow" panic. Each
-    /// call also uses Rust stack (see [`VmBuilder::native_stack_budget`]): the `colibri` tool
-    /// runs on a 256 MB stack for the default of 10 000.
+    /// How many Colibri calls may be active at once before a "stack overflow" panic. On the
+    /// default engine, the bytecode VM, Colibri calls live in a heap frame stack and use no Rust
+    /// stack. The tree-walker (`COLIBRI_ENGINE=tree`) uses Rust stack for each call (see
+    /// [`VmBuilder::native_stack_budget`]): the `colibri` tool runs on a 256 MB stack for the
+    /// default of 10 000.
     pub fn max_call_depth(mut self, depth: usize) -> Self {
         self.max_call_depth = depth.max(1);
         self
     }
 
-    /// How many bytes of Rust stack the interpreter may use below the point where the host
-    /// calls in, before a deep recursion panics with "stack overflow" instead of crashing the
-    /// host. The default is 1 MiB, which fits a default test thread; on a thread with a
+    /// How many bytes of Rust stack the engine may use below the point where the host calls
+    /// in (with the VM, mostly host calls that call back into Colibri; with the tree-walker,
+    /// every call), before a deep recursion panics with "stack overflow" instead of crashing
+    /// the host. The default is 1 MiB, which fits a default test thread; on a thread with a
     /// bigger stack raise it to a little below that stack's size, together with
     /// [`VmBuilder::max_call_depth`].
     pub fn native_stack_budget(mut self, bytes: usize) -> Self {
@@ -224,8 +227,8 @@ impl VmBuilder {
         self
     }
 
-    /// Chooses the engine that runs the program, over what `COLIBRI_ENGINE` says. Not part of
-    /// the embedding API yet.
+    /// Chooses the engine that runs the program, over what `COLIBRI_ENGINE` says. The default
+    /// is the bytecode VM. Not part of the embedding API.
     #[doc(hidden)]
     pub fn engine(mut self, kind: EngineKind) -> Self {
         self.engine = kind;
@@ -246,7 +249,7 @@ impl VmBuilder {
     pub fn build(self) -> Vm {
         let out = self.stdout.unwrap_or_else(|| Box::new(std::io::stdout()));
         // An unknown engine name (`COLIBRI_ENGINE`) fails every load with the reason (see
-        // `Vm::check_engine`); the interpreter stands in meanwhile.
+        // `Vm::check_engine`); the default engine stands in meanwhile.
         let engine_unavailable = self.engine_error;
         let new_engine = match self.engine {
             EngineKind::Tree => engine_tree::new_engine,

@@ -1,7 +1,5 @@
 //! `colibri repl` with piped input (no prompt, no line editor).
 
-mod common;
-
 use std::io::Write;
 use std::process::Stdio;
 
@@ -14,7 +12,7 @@ fn repl(input: &str) -> (String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("colibri starts");
-    // A REPL that refuses to start (the VM, before it has sessions) is gone before the input
+    // A REPL that fails to start is gone before the input
     // is written; its stderr then says why.
     if let Err(e) = child
         .stdin
@@ -24,7 +22,7 @@ fn repl(input: &str) -> (String, String) {
     {
         assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "input: {e}");
     }
-    let out = common::checked(child.wait_with_output().expect("colibri ends"));
+    let out = child.wait_with_output().expect("colibri ends");
     assert!(out.status.success());
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -415,7 +413,7 @@ fn repl_with(args: &[&str], input: &str) -> (bool, String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("colibri starts");
-    // A REPL that refuses to start (the VM, before it has sessions) is gone before the input
+    // A REPL that fails to start is gone before the input
     // is written; its stderr then says why.
     if let Err(e) = child
         .stdin
@@ -425,7 +423,7 @@ fn repl_with(args: &[&str], input: &str) -> (bool, String, String) {
     {
         assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "input: {e}");
     }
-    let out = common::checked(child.wait_with_output().expect("colibri ends"));
+    let out = child.wait_with_output().expect("colibri ends");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -475,8 +473,8 @@ fn the_hint_for_a_missing_feature_works_in_the_repl() {
     assert_eq!(out.status.code(), Some(2));
 }
 
-/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
-/// spawn on the VM (see `vm_pending.txt` for the ones that cannot pass there yet).
+/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests run the programs they
+/// spawn on the engine the environment names (the VM when it names none).
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }
