@@ -16,7 +16,7 @@ pub mod watch;
 use std::thread;
 
 /// The stack of the thread that runs Colibri code. Each active Colibri call uses Rust stack
-/// in the tree-walking interpreter; this is enough for the default call-depth limit even in
+/// in the tree-walking interpreter (the VM keeps its frames on the heap); this is enough for the default call-depth limit even in
 /// an unoptimised build, so the limit (a deterministic "stack overflow" panic) always fires
 /// before the Rust stack can overflow.
 pub const STACK_SIZE: usize = 256 * 1024 * 1024;

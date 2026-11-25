@@ -4,10 +4,11 @@
 //! by a dispatch loop over a heap frame stack (`run`, `fiber`). The machine shares
 //! `colibri-core` with the tree-walking interpreter and implements its `Engine` trait.
 //!
-//! This is the first slice: integer, float, bool and `str` code with functions, globals,
-//! control flow and `for` over ranges. Every other node compiles to an instruction that
-//! panics with "the bytecode VM does not support <node> yet". Hosts do not use this crate
-//! directly yet; [`run_source`] is a small entry for tests.
+//! The machine is the default engine behind `colibri-runtime`, which picks it (or the
+//! tree-walking interpreter, with `COLIBRI_ENGINE=tree`) when a `Vm` is built. Hosts do not use
+//! this crate directly; [`run_source`] is a small entry for tests. A construct the compiler has no
+//! instruction for would compile to one that panics with "the bytecode VM does not support
+//! <node> yet", which a checked program does not reach today.
 
 // `deny`, not `forbid`: the module `unchecked` (register accesses of the dispatch loop, with the
 // proof in `Chunk::verify_registers`), the three `unsafe` blocks of `cffi` (reads and writes of C memory, which the

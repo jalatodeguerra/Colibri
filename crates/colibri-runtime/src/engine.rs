@@ -3,7 +3,8 @@
 //! [`RuntimeEngine`] is what a [`crate::Vm`] asks of an engine, and [`HostCx`] is the subset a
 //! host function (a [`crate::Ctx`]) needs while it runs. Both are object-safe and
 //! runtime-internal: nothing here is public, so the embedding API does not depend on which
-//! engine is behind it. The tree-walking interpreter implements them in `engine_tree`.
+//! engine is behind it. The bytecode VM (the default) and the tree-walking interpreter implement
+//! them, in `engine_vm` and `engine_tree`.
 //!
 //! An engine owns its main fiber, so the runtime never names a fiber type; a host function
 //! gets the fiber it runs on through its `&mut dyn HostCx`.
@@ -36,21 +37,23 @@ pub(crate) struct ClassHooks {
 
 /// Which engine runs the program.
 ///
-/// Not part of the embedding API yet: it is chosen with `COLIBRI_ENGINE` (`tree` or `vm`) or
-/// the hidden [`crate::VmBuilder::engine`].
+/// Not part of the embedding API: the default is the bytecode VM, and `COLIBRI_ENGINE=tree`
+/// (or the hidden [`crate::VmBuilder::engine`]) selects the tree-walking interpreter while it
+/// is still around.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EngineKind {
-    /// The tree-walking interpreter.
-    #[default]
+    /// The tree-walking interpreter, kept for one transition period.
     Tree,
-    /// The register bytecode VM.
+    /// The register bytecode VM, the default.
+    #[default]
     Bytecode,
 }
 
 impl EngineKind {
     /// The engine the environment variable `COLIBRI_ENGINE` names (`tree` or `vm`), or the
-    /// default when it is unset. An unknown value is an `Err` with the text to report.
+    /// default (the VM) when it is unset or empty. An unknown value is an `Err` with the text to
+    /// report.
     pub(crate) fn from_env() -> Result<EngineKind, String> {
         match std::env::var("COLIBRI_ENGINE") {
             Err(_) => Ok(EngineKind::default()),
@@ -60,8 +63,8 @@ impl EngineKind {
 
     pub(crate) fn parse(text: &str) -> Result<EngineKind, String> {
         match text {
-            "" | "tree" => Ok(EngineKind::Tree),
-            "vm" => Ok(EngineKind::Bytecode),
+            "" | "vm" => Ok(EngineKind::Bytecode),
+            "tree" => Ok(EngineKind::Tree),
             other => Err(format!(
                 "unknown engine `{other}` (COLIBRI_ENGINE is `tree` or `vm`)"
             )),

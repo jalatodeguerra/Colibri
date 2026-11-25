@@ -224,8 +224,8 @@ impl VmBuilder {
         self
     }
 
-    /// Chooses the engine that runs the program, over what `COLIBRI_ENGINE` says. Not part of
-    /// the embedding API yet.
+    /// Chooses the engine that runs the program, over what `COLIBRI_ENGINE` says. The default
+    /// is the bytecode VM. Not part of the embedding API.
     #[doc(hidden)]
     pub fn engine(mut self, kind: EngineKind) -> Self {
         self.engine = kind;
@@ -246,7 +246,7 @@ impl VmBuilder {
     pub fn build(self) -> Vm {
         let out = self.stdout.unwrap_or_else(|| Box::new(std::io::stdout()));
         // An unknown engine name (`COLIBRI_ENGINE`) fails every load with the reason (see
-        // `Vm::check_engine`); the interpreter stands in meanwhile.
+        // `Vm::check_engine`); the default engine stands in meanwhile.
         let engine_unavailable = self.engine_error;
         let new_engine = match self.engine {
             EngineKind::Tree => engine_tree::new_engine,

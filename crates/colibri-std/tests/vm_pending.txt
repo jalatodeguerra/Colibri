@@ -1,7 +1,0 @@
-# Standard library tests that do not pass on the bytecode VM yet (COLIBRI_ENGINE=vm).
-#
-# `test_binary::test  # reason`, the reason being the feature the VM lacks. Each listed test
-# wraps its body in `vm_pending` (tests/common/mod.rs): on the VM it is expected to fail with
-# the VM's refusal of that feature, and one that passes fails the run, so delete its line (and
-# the wrapper) when it starts to pass. `vm_pending_list.rs` checks that every entry names a
-# wrapped test.

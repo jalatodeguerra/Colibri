@@ -34,14 +34,14 @@ jobs:
       # Every crate runs even after one fails, so a run shows all that is broken on a system.
       - run: cargo test --workspace --no-fail-fast
 
-  # The bytecode VM against the same goldens and the runtime's tests. Tests it cannot pass yet
-  # are listed in `tests/golden/vm_pending.txt` and `crates/colibri-runtime/tests/vm_pending.txt`;
-  # one that starts to pass fails the run until it is taken off the list.
-  test-vm:
+  # The tree-walking interpreter, the engine before the bytecode VM, which is the default
+  # everywhere above. `COLIBRI_ENGINE=tree` is kept for one transition period, and the
+  # both-mode goldens compare the two engines until the interpreter is retired.
+  test-tree:
     strategy:
       fail-fast: false
       matrix:
-        # Windows has the small main-thread stack; macOS adds nothing the VM tests need.
+        # Windows has the small main-thread stack; macOS adds nothing the tree tests need.
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -49,24 +49,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-vm
-      - name: Golden tests on the VM
-        run: cargo test -p colibri-lang --test golden
+          shared-key: test-tree
+      # The `colibri` binary reads COLIBRI_ENGINE too, so the programs the command-line tests
+      # spawn run on the interpreter as well.
+      - name: Whole suite on the tree-walker
+        run: cargo test --workspace --no-fail-fast
         env:
-          COLIBRI_ENGINE: vm
-      # Each step runs even when an earlier one failed, to show everything that is broken.
-      - name: Runtime tests on the VM
-        if: ${{ !cancelled() }}
-        run: cargo test -p colibri-runtime -p colibri-vm --no-fail-fast
-        env:
-          COLIBRI_ENGINE: vm
-      # The `colibri` binary reads COLIBRI_ENGINE, so the programs these tests spawn run on the VM
-      # (every test binary of the crate, the goldens again included).
-      - name: Command-line tests on the VM
-        if: ${{ !cancelled() }}
-        run: cargo test -p colibri-lang --no-fail-fast
-        env:
-          COLIBRI_ENGINE: vm
+          COLIBRI_ENGINE: tree
       - name: Golden tests on both engines, outcomes compared
         if: ${{ !cancelled() }}
         run: cargo test -p colibri-lang --test golden
@@ -78,5 +67,3 @@ jobs:
         run: |
           cargo test --release -p colibri-vm --no-fail-fast
           cargo test --release -p colibri-lang --test golden
-        env:
-          COLIBRI_ENGINE: vm

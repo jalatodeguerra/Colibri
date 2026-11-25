@@ -16,9 +16,7 @@ fn host_with_scripts() -> JobHost {
 fn the_log_matches_the_golden_file() {
     let log = host_with_scripts().run(DEFAULT_TICKS).join("\n") + "\n";
     let path = scripts_dir().join("../tests/expected.txt");
-    // Never from the VM: its log is not the reference.
-    let on_vm = std::env::var("COLIBRI_ENGINE").is_ok_and(|v| v == "vm");
-    if std::env::var_os("UPDATE_EXPECTED").is_some() && !on_vm {
+    if std::env::var_os("UPDATE_EXPECTED").is_some() {
         fs::write(&path, &log).unwrap();
     }
     let expected = fs::read_to_string(&path).expect("tests/expected.txt");

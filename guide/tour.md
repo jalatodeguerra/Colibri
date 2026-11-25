@@ -1159,8 +1159,9 @@ test sample::clamp keeps values in range ... ok
 | `colibri lsp` | language server for editors |
 
 `colibri run --leaks` reports reference cycles that were never freed. `colibri build` for
-single-file executables is **planned**; today the program is the source, run by the
-interpreter, and a bytecode VM is planned to replace it.
+single-file executables is **planned**; today the program is the source, run by the bytecode
+VM. `COLIBRI_ENGINE=tree` runs it on the older tree-walking interpreter instead, which is kept
+for a transition period.
 
 ## Embedding and FFI
 

@@ -5,8 +5,6 @@
 // (`/proc` on Linux, `ps` elsewhere). Windows has no `sh` to rely on.
 #![cfg(unix)]
 
-mod common;
-
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -81,12 +79,10 @@ fn check_no_child_is_left(name: &str, ending: &str, code: i32) {
     let file = dir.join("main.colibri");
     fs::write(&file, program(dir.to_str().unwrap(), ending)).unwrap();
     let started = Instant::now();
-    let out = common::checked(
-        colibri_command()
-            .args(["run", file.to_str().unwrap()])
-            .output()
-            .unwrap(),
-    );
+    let out = colibri_command()
+        .args(["run", file.to_str().unwrap()])
+        .output()
+        .unwrap();
     assert_eq!(
         out.status.code(),
         Some(code),
@@ -117,8 +113,8 @@ fn os_exit_leaves_no_child_behind() {
     check_no_child_is_left("exit", "os.exit(3)", 3);
 }
 
-/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests also run the programs they
-/// spawn on the VM (see `vm_pending.txt` for the ones that cannot pass there yet).
+/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests run the programs they
+/// spawn on the engine the environment names (the VM when it names none).
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }

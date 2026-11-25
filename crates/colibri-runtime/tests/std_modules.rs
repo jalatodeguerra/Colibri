@@ -2,8 +2,6 @@
 //! constants in an interface, generic functions that read their type arguments, and
 //! `Ctx::raise`. The library itself is tested in the `colibri-std` crate.
 
-mod common;
-
 use colibri::{Cap, Ctx, Value, ValueKind, reflect};
 use colibri_runtime as colibri;
 

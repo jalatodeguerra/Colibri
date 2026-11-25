@@ -32,8 +32,8 @@ instructions with `valgrind --tool=cachegrind --cache-sim=no target/release/coli
 
 `benchmarks/cg.sh` prints the instructions (cachegrind `I refs`) each engine executes for `fib`
 and `loop` (or the benchmarks named on the command line), where wall time is too noisy to
-compare: `COLIBRI_ENGINE=vm colibri run` picks the bytecode VM, which runs only the programs
-its features cover so far.
+compare: the bytecode VM is the default engine and `COLIBRI_ENGINE=tree colibri run` picks the
+tree-walking interpreter.
 
 ## Baseline
 
@@ -52,7 +52,7 @@ The tree-walking interpreter on 2026-11-19 (Linux x86-64, CPython 3.13), in mill
 
 ## Bytecode VM
 
-The bytecode VM (`COLIBRI_ENGINE=vm`) on 2026-11-25 (Linux x86-64, fat LTO, CPython 3.13, the
+The bytecode VM (the default engine) on 2026-11-25 (Linux x86-64, fat LTO, CPython 3.13, the
 lowest of three runs of best-of-five, machine load below 1.5), in milliseconds:
 
 | Program | VM | CPython | VM is |

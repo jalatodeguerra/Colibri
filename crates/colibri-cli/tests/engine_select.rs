@@ -35,11 +35,46 @@ fn stderr(out: &Output) -> String {
 }
 
 #[test]
-fn the_default_is_the_tree_walker() {
+fn the_default_is_the_vm_and_the_environment_can_select_the_tree_walker() {
     let out = run(&script("default"), None, None);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "ran\n");
+    // The engines are told apart by the steps of one test (engine-specific, EMBEDDING §5): this
+    // test takes 47 on the VM and 48 on the tree-walker, so a budget of 47 lets only the VM
+    // finish it.
+    let file = script("steps");
+    std::fs::write(file.with_file_name("walk.colibri"), STEPS).unwrap();
+    let file = file.with_file_name("walk.colibri");
+    let tests = |env: Option<&str>| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_colibri"));
+        cmd.args(["test", "--budget", "47"]).arg(&file);
+        cmd.env_remove("COLIBRI_ENGINE");
+        if let Some(env) = env {
+            cmd.env("COLIBRI_ENGINE", env);
+        }
+        cmd.output().expect("the colibri binary runs")
+    };
+    let default = tests(None);
+    assert!(default.status.success(), "{}", stderr(&default));
+    let vm = tests(Some("vm"));
+    assert!(vm.status.success(), "{}", stderr(&vm));
+    let tree = tests(Some("tree"));
+    assert!(!tree.status.success(), "the tree-walker needs 48 steps");
 }
+
+const STEPS: &str = r#"struct P { x: int, y: float }
+
+test "walk" {
+    let mut ps = [P { x: 0, y: 0.5 }, P { x: 1, y: 1.5 }, P { x: 2, y: 2.5 }]
+    for round in 0..4 {
+        for mut p in ps {
+            p.x += round
+            p.y *= 2.0
+        }
+    }
+    print("{ps[0].x} {ps[1].x} {ps[2].x} {ps[2].y}")
+}
+"#;
 
 #[test]
 fn the_vm_runs_the_program_from_the_flag_and_from_the_environment() {
