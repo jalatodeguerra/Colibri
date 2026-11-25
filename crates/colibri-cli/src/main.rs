@@ -92,13 +92,15 @@ enum Command {
             requires = "profile"
         )]
         profile_weight: colibri_lang::profilecmd::Weight,
-        /// Count the reference-count traffic of each line (copies, clones and drops of strings,
-        /// lists, structs and other values that have a reference count) and print the lines
-        /// with the most to stderr. It works on its own and does not need `--profile`: the
-        /// program is compiled with a counter next to each such instruction, which costs
-        /// about 10 to 40% of the run time and changes nothing else. Counted: the program's own
-        /// copies, clones and drops, and a list's `push`; not counted: what built-ins written in
-        /// Rust do inside (`sort`, `join`, `map` and the like) and host functions
+        /// Count the reference-count traffic of each line (references taken and given up by
+        /// copying, reading and dropping strings, lists, structs and other values that have a
+        /// reference count, and `x.clone()`) and print the lines with the most to stderr. It
+        /// works on its own and does not need `--profile`. The program is compiled with a
+        /// counter next to each such instruction, which makes it slower (about 2 times for code
+        /// that mostly passes lists and strings around, a few percent for code that does
+        /// arithmetic) and changes nothing else. Not counted: what built-ins written in Rust do
+        /// inside (`sort`, `join`, map lookups), host functions, field and element writes and
+        /// the cleanup of a panic
         #[arg(long, conflicts_with = "watch")]
         profile_rc: bool,
         #[command(flatten)]
@@ -161,13 +163,15 @@ enum Command {
             requires = "profile"
         )]
         profile_weight: colibri_lang::profilecmd::Weight,
-        /// Count the reference-count traffic of each line (copies, clones and drops of strings,
-        /// lists, structs and other values that have a reference count) and print the lines
-        /// with the most to stderr (one report for all the tests). It works on its own and does not need `--profile`: the
-        /// program is compiled with a counter next to each such instruction, which costs
-        /// about 10 to 40% of the run time and changes nothing else. Counted: the program's own
-        /// copies, clones and drops, and a list's `push`; not counted: what built-ins written in
-        /// Rust do inside (`sort`, `join`, `map` and the like) and host functions
+        /// Count the reference-count traffic of each line (references taken and given up by
+        /// copying, reading and dropping strings, lists, structs and other values that have a
+        /// reference count, and `x.clone()`) and print the lines with the most to stderr (one
+        /// report for all the tests). It works on its own and does not need `--profile`. The program is compiled with a
+        /// counter next to each such instruction, which makes it slower (about 2 times for code
+        /// that mostly passes lists and strings around, a few percent for code that does
+        /// arithmetic) and changes nothing else. Not counted: what built-ins written in Rust do
+        /// inside (`sort`, `join`, map lookups), host functions, field and element writes and
+        /// the cleanup of a panic
         #[arg(long)]
         profile_rc: bool,
         #[command(flatten)]

@@ -6,6 +6,7 @@
 //! no such instruction and nothing here runs.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use colibri_syntax::Span;
 
@@ -60,10 +61,31 @@ impl RcProfile {
     }
 }
 
+/// A hasher for the few `u32`s of a span: the lookup is on the path of every counted
+/// instruction, where the standard hasher costs more than the counting.
+#[derive(Default)]
+struct SpanHasher(u64);
+
+impl Hasher for SpanHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u32(u32::from(b));
+        }
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.0 = (self.0.rotate_left(5) ^ u64::from(n)).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
 /// The counters while a run is counting.
 #[derive(Default)]
 pub(crate) struct RcCounter {
-    slots: HashMap<Span, usize>,
+    slots: HashMap<Span, usize, BuildHasherDefault<SpanHasher>>,
     counts: Vec<[u64; 3]>,
     /// The slot of the last count: a loop hits the same few instructions over and over.
     last: Option<(Span, usize)>,
@@ -134,7 +156,10 @@ impl Machine {
         Some(out)
     }
 
-    /// `Op::Count`: the registers `r..r+n` that hold something with a reference count.
+    /// `Op::Count`: the registers `r..r+n` that hold something with a reference count. Kept
+    /// out of the dispatch loop's body: only code compiled for `--profile-rc` runs it.
+    #[inline(never)]
+    #[cold]
     pub(crate) fn op_count(
         &mut self,
         fiber: &VmFiber,
