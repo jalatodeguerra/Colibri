@@ -650,3 +650,36 @@ fn a_big_charge_reports_how_many_intervals_it_was() {
     assert_eq!(total, steps / 7, "{steps} steps");
     assert!(seen.iter().all(|s| s.due.every == 7));
 }
+
+#[test]
+fn a_consumer_that_fails_after_a_native_loop_unwinds_the_call_cleanly() {
+    use colibri_core::safepoint::SafepointKind::Memory;
+    // `xs.map` over 60 elements runs as one native loop that charges its steps at once; the
+    // slice ends there, and the consumer fails. The call ends like a panic: the `defer` runs,
+    // the result is released, and no register holds a value the unwinder does not expect.
+    let items: Vec<String> = (0..60).map(|i| i.to_string()).collect();
+    let src = format!(
+        "fn main() {{\n    defer {{ print(\"d\") }}\n    let xs = [{}]\n    let ys = xs.map(fn(x) => x + 1)\n    print(ys.len())\n}}",
+        items.join(", ")
+    );
+    let (mut m, program, out) = load(&src);
+    m.core
+        .want_safepoints(Memory, std::num::NonZeroU32::new(120).unwrap());
+    m.set_safepoint_failure(Some(Box::new(|due| due.kind == Memory)));
+    let mut fiber = VmFiber::new();
+    let err = m
+        .call(&mut fiber, fn_id(&program, "main"), Vec::new())
+        .expect_err("the consumer's failure ends main");
+    assert!(
+        err.message.contains("safepoint consumer failed"),
+        "{}",
+        err.message
+    );
+    assert_eq!(m.leaf_runs, 1, "the map ran natively");
+    assert_eq!(
+        out.0.borrow().as_slice(),
+        b"d\n",
+        "the defer ran, `print(ys.len())` did not"
+    );
+    assert_eq!(err.stack[0].function, "main");
+}

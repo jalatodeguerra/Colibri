@@ -175,7 +175,8 @@ impl Budget {
     }
 
     fn used(&self) -> u64 {
-        self.banked + u64::try_from(self.phase_start.saturating_sub(self.real_left())).unwrap_or(0)
+        self.banked
+            + u64::try_from(self.phase_start.saturating_sub(self.real_left().max(0))).unwrap_or(0)
     }
 
     /// The window ended below zero: when the reserve covers it, refills the window and says how

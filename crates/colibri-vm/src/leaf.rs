@@ -19,6 +19,7 @@ use std::rc::Rc;
 use colibri_check::hir::Builtin;
 use colibri_core::ctl::Ctl;
 use colibri_core::heap::ListObj;
+use colibri_core::prelude::*;
 use colibri_core::value::{StructVal, Value};
 
 use crate::bytecode::{Chunk, Op};
@@ -1141,13 +1142,19 @@ impl Machine {
             LeafResult::Value(v) => v,
             LeafResult::Option(v) => self.core.option(v),
         };
-        Self::put_reg(fiber, base + usize::from(d), value);
         // The loop charged its steps at once: when that ended the window, the safepoint runs
         // here, with the caller's frame on top, and not inside the next function it calls.
-        // (The pre-check above made sure the budget itself covers the charge.)
-        if self.core.budget.left < 0 && self.core.slice_ended() {
-            self.safepoint(fiber)?;
+        // (The pre-check above made sure the budget itself covers the charge.) It runs before
+        // the result is stored: a consumer that fails ends the call like a panic, and the
+        // register must not hold a value the landing pads do not know about.
+        if self.core.budget.left < 0
+            && self.core.slice_ended()
+            && let Err(ctl) = self.safepoint(fiber)
+        {
+            self.release_all(vec![value]);
+            return Err(ctl);
         }
+        Self::put_reg(fiber, base + usize::from(d), value);
         Ok(true)
     }
 

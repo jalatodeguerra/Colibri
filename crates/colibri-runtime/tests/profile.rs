@@ -79,6 +79,10 @@ fn a_program_shorter_than_a_slice_still_has_all_its_steps_in_the_profile() {
     // No sample was taken, so there is no stack to put the steps on.
     assert_eq!(profile.samples.len(), 1);
     assert_eq!(profile.samples[0].stack, ["[unsampled]"]);
+    assert_eq!(
+        (profile.samples[0].file.as_str(), profile.samples[0].line),
+        ("", 0)
+    );
 }
 
 #[test]
@@ -436,7 +440,7 @@ impl colibri::Clock for FastClock {
     }
     fn sleep(&mut self, seconds: f64) {
         self.now += seconds;
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        std::thread::sleep(std::time::Duration::from_millis(300));
     }
 }
 
@@ -479,7 +483,48 @@ fn main() {
             .sum::<u64>() as f64
             / 1e6
     };
-    // Two sleeps of at least 150 ms are idle; the work between them is a few milliseconds.
-    assert!(ms(true) >= 290.0, "idle {} ms", ms(true));
-    assert!(ms(false) < 140.0, "work {} ms", ms(false));
+    // Two sleeps of at least 300 ms are idle; the work between them takes milliseconds. The
+    // margins are wide (half the idle time) so a slow runner does not make this flaky; with
+    // the sleeps charged to the work, the work would be as long as the idle time.
+    assert!(ms(true) >= 590.0, "idle {} ms", ms(true));
+    assert!(ms(false) * 2.0 < ms(true), "work {} ms", ms(false));
+    // Idle time has no position: it is not a line of the program.
+    for s in profile.samples.iter().filter(|s| s.stack[0] == "[idle]") {
+        assert_eq!((s.file.as_str(), s.line), ("", 0), "{s:?}");
+    }
+}
+
+#[test]
+fn a_run_whose_grace_also_runs_out_adds_up_too() {
+    // The `defer` loops as well: the budget runs out, then the grace of the cleanups does.
+    let src = "\
+fn spin() {
+    let mut t = 0
+    defer {
+        while true {
+            t += 2
+        }
+    }
+    while true {
+        t += 1
+    }
+}
+";
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(colibri::SharedBuffer::new()))
+        .instruction_budget(2000)
+        .build();
+    vm.start_profile(colibri::ProfileWeight::Steps);
+    vm.load_source("g.colibri", src).unwrap();
+    let load = vm.steps_used();
+    let spin = vm.get_fn::<(), ()>("spin").unwrap();
+    let err = spin.call(&mut vm, ()).unwrap_err();
+    assert!(
+        matches!(err, colibri::Error::BudgetExhausted { .. }),
+        "{err:?}"
+    );
+    let used = load + vm.steps_used();
+    assert!(used > 10_000, "the grace ran: {used}");
+    let profile = vm.finish_profile().unwrap();
+    assert_eq!(profile.total(), used);
 }

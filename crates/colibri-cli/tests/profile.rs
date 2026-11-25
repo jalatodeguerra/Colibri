@@ -442,7 +442,7 @@ fn main() {
     busy(3000)
 }
 fn waiter() {
-    wait(0.4)
+    wait(0.6)
     busy(1000)
 }
 ";
@@ -462,8 +462,8 @@ fn waiter() {
             .sum::<u64>() as f64
             / 1e6
     };
-    // The coroutine waits 0.4 s; the work around it takes milliseconds.
-    assert!(ms(true) >= 300.0, "idle {} ms\n{folded}", ms(true));
+    // The coroutine waits 0.6 s; the work around it takes milliseconds.
+    assert!(ms(true) >= 450.0, "idle {} ms\n{folded}", ms(true));
     assert!(
         ms(false) < ms(true) / 2.0,
         "work {} ms\n{folded}",

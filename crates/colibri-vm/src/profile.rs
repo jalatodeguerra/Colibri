@@ -38,6 +38,13 @@ const ELIDED: &str = "[...]";
 
 /// The stack of a sample that was taken when no frame was left to name (a host calling in).
 const NO_FRAMES: &str = "[host]";
+/// The position of a frame that has none (`[idle]`, `[unsampled]`, `[host]`): no file has this
+/// id, so the locator finds no line for it.
+const NO_POSITION: Span = Span {
+    file: colibri_syntax::FileId(u32::MAX),
+    start: 0,
+    end: 0,
+};
 /// The root of the time the event loop spent sleeping (a time profile).
 const IDLE: &str = "[idle]";
 /// The stack of weight that was never sampled, when the program ended before any sample.
@@ -173,7 +180,7 @@ impl Profiler {
         if slept > 0 {
             let id = self.intern(IDLE.to_string());
             let stack: Box<[u32]> = Box::from([id].as_slice());
-            self.record(stack, Span::new(colibri_syntax::FileId(0), 0, 0), slept);
+            self.record(stack, NO_POSITION, slept);
         }
         spent - slept
     }
@@ -265,7 +272,7 @@ impl Profiler {
             let id = self.intern(NO_FRAMES.to_string());
             self.scratch.push(id);
         }
-        let span = at.unwrap_or(Span::new(colibri_syntax::FileId(0), 0, 0));
+        let span = at.unwrap_or(NO_POSITION);
         self.add(weight, span);
     }
 
@@ -306,10 +313,7 @@ impl Profiler {
             Some(last) => last,
             None => {
                 let id = self.intern(UNSAMPLED.to_string());
-                (
-                    Box::from([id].as_slice()),
-                    Span::new(colibri_syntax::FileId(0), 0, 0),
-                )
+                (Box::from([id].as_slice()), NO_POSITION)
             }
         };
         self.scratch.clear();
