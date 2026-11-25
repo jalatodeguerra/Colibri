@@ -264,12 +264,7 @@ fn check_runner(runner: &Path, target: Target) -> Result<(), String> {
         return Err(format!("the runner `{shown}` is not a file"));
     }
     platform::check_format(&mut file, target).map_err(|e| format!("`{shown}`: {e}"))?;
-    if pack::has_pack(&mut file)? {
-        return Err(format!("the runner `{shown}` is a built program already"));
-    }
-    use std::io::Seek;
-    file.rewind()
-        .map_err(|e| format!("cannot read the runner `{shown}`: {e}"))?;
+    // (A runner that is a built program already is refused when it is copied.)
     match platform::runner_version(&mut file)
         .map_err(|e| format!("cannot read the runner `{shown}`: {e}"))?
     {
@@ -516,7 +511,7 @@ mod tests {
         write_executable(&dir.join("runner"), &out, &pack, true).unwrap();
         let built = fs::read(&out).unwrap();
         // The runner's own signature is gone, and what is left of it is untouched.
-        assert!(built.len() > 0x7f00 + 1000);
+        assert_eq!(built.len(), 0x7f00 + pack.append_to(0x7f00).unwrap().len());
         assert_eq!(&built[0x4000 + 200..0x7f00], &runner[0x4000 + 200..0x7f00]);
         // __LINKEDIT reaches the end of the file, so that codesign accepts it.
         let linkedit = crate::macho::tests::linkedit_of(&built[..32 + 144]);

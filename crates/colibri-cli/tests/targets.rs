@@ -365,6 +365,31 @@ fn the_target_decides_which_files_the_program_reads_and_the_name_of_the_output()
     );
 }
 
+#[test]
+fn a_universal_macos_runner_is_taken_with_a_warning_that_it_stays_unsigned() {
+    let dir = Dir::new("fat");
+    dir.write("prog.colibri", "fn main() {\n    print(1)\n}\n");
+    let mut fat = vec![0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 2];
+    for cpu in [0x0100_0007u32, 0x0100_000c] {
+        fat.extend(cpu.to_be_bytes());
+        fat.extend([0u8; 16]);
+    }
+    fs::write(dir.path("fat"), fake(fat, Some(VERSION))).unwrap();
+    let out = dir.colibri(&[
+        "build",
+        "prog.colibri",
+        "-o",
+        "p",
+        "--target",
+        "macos-aarch64",
+        "--runner",
+        "fat",
+    ]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stderr.contains("lipo -thin"), "{}", out.stderr);
+    assert!(dir.path("p").is_file());
+}
+
 /// A thin 64-bit Mach-O of `len` bytes that looks like a linker's output, with a signature.
 #[cfg(not(target_os = "macos"))]
 fn mach_o(len: usize, version: &str) -> Vec<u8> {

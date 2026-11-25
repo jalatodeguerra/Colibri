@@ -208,7 +208,7 @@ pub mod tests {
         c.extend(0u64.to_le_bytes());
         c.extend(fileoff.to_le_bytes());
         c.extend(filesize.to_le_bytes());
-        c.extend([0u8; 16]);
+        c.extend([0x11u8; 16]);
         c
     }
 
@@ -313,6 +313,9 @@ pub mod tests {
         let at = walk(&moved).unwrap().sig.unwrap().0;
         moved[at + 8..at + 12].copy_from_slice(&0x7000u32.to_le_bytes());
         assert!(prepare(&moved, 0x8000).is_err());
+        // An unsigned runner whose __LINKEDIT does not end the file.
+        let unsigned = image(0x6000, 0, false);
+        assert!(prepare(&head_of(&unsigned), 0x6001).is_err());
         // Not a Mach-O.
         assert!(prepare(&[0u8; 64], 64).is_err());
         // A command that is too big.
