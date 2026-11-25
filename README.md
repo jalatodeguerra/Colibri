@@ -936,9 +936,9 @@ they have.
   let a library such as `vec` define its own arithmetic.
 - Tooling: `run`, `check`, `test`, `fmt`, `new`, `repl`, `lsp`, hot reload and the leak detector.
 
-**Next** (not started):
+**Next:**
 
-- Speed: the goal is to beat CPython 3.13 on every program in
+- Speed (in progress): the goal is to beat CPython 3.13 on every program in
   [`benchmarks/`](benchmarks/README.md); the VM is ahead of it on seven of the eight programs
   there and level on one.
 - `colibri build` for single-file executables and `colibri build --web` for the browser.

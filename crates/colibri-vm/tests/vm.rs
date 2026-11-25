@@ -965,7 +965,7 @@ fn the_closure_built_ins_are_calls_of_functions_written_in_colibri() {
 }
 
 #[test]
-fn closure_built_ins_give_the_answers_of_the_native_ones() {
+fn closure_built_ins_give_their_answers() {
     let out = run_ok(
         "fn main() {
     let xs = [5, 2, 8, 1]

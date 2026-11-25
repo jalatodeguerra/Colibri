@@ -33,6 +33,22 @@ instructions with `valgrind --tool=cachegrind --cache-sim=no target/release/coli
 `benchmarks/cg.sh` prints the instructions (cachegrind `I refs`) the VM executes for `fib` and
 `loop` (or the benchmarks named on the command line), where wall time is too noisy to compare.
 
+## Baseline
+
+The first engine, which the bytecode VM replaced, on 2026-11-19 (Linux x86-64, CPython 3.13),
+in milliseconds:
+
+| Program | Colibri | CPython | Colibri is slower by |
+|---------|--------:|--------:|---------------------:|
+| `fib` | 1,000 | 105 | 9.5× |
+| `loop` | 1,057 | 181 | 5.8× |
+| `list` | 701 | 107 | 6.6× |
+| `map` | 572 | 106 | 5.4× |
+| `structs` | 245 | 35 | 7.0× |
+| `objs` | 1,413 | 220 | 6.4× |
+| `closures` | 917 | 169 | 5.4× |
+| `strings` | 238 | 63 | 3.8× |
+
 ## Bytecode VM
 
 The bytecode VM on 2026-11-25 (Linux x86-64, fat LTO, CPython 3.13, the
@@ -62,7 +78,6 @@ structs moves each element into the binding instead of copying it.
 
 The keys of `Map` and `Set` get a cheap hash (an FxHash-style fold with a full finalizer, and an
 inner table that uses it as it is instead of hashing it again with SipHash;
-`crates/colibri-core/src/ordered.rs`). The `map` program spends most of its time in the bytecode
-loop and in building the `"key{i}"` strings, so the hash is a small share of it.
+`crates/colibri-core/src/ordered.rs`).
 
 The programs are micro-benchmarks, so read the ratios as a rough guide.

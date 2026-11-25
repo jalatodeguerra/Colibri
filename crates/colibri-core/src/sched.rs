@@ -1,6 +1,7 @@
 //! The data of the coroutine scheduler (DESIGN §14.2, ARCHITECTURE §16): which coroutines
 //! exist, what each waits for, the clock and the background operations. It knows nothing of how
-//! a coroutine is run. An engine keeps the running state of each coroutine itself and is asked to run it through [`crate::engine::Engine`].
+//! a coroutine is run. An engine keeps the running state of each coroutine itself and is asked
+//! to run it through [`crate::engine::Engine`].
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};

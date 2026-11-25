@@ -188,8 +188,8 @@ impl VmBuilder {
     }
 
     /// How many bytes of Rust stack the engine may use below the point where the host calls
-    /// in (mostly host calls that call back into Colibri), before a deep recursion panics with "stack overflow" instead of crashing
-    /// the host. The default is 1 MiB, which fits a default test thread; on a thread with a
+    /// in (mostly host calls that call back into Colibri), before a deep recursion panics with
+    /// "stack overflow" instead of crashing the host. The default is 1 MiB, which fits a default test thread; on a thread with a
     /// bigger stack raise it to a little below that stack's size, together with
     /// [`VmBuilder::max_call_depth`].
     pub fn native_stack_budget(mut self, bytes: usize) -> Self {
