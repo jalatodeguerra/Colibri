@@ -225,11 +225,17 @@ fn a_package_is_built_from_its_folder() {
     );
     let run = dir.colibri(&["run", "app"]);
     assert_eq!(run.stdout, "42\n", "{}", run.stderr);
-    // No `-o`: the name of the folder, in the current folder, which here is the folder
-    // itself (a file next to `app` would be called `app`, which is the folder).
+    // No `-o`: the name of the folder plus the platform's executable suffix, in the current
+    // folder. Without a suffix that name is the folder itself, which is refused; on Windows
+    // it is `app.exe`, next to the folder.
     let made = dir.colibri(&["build", "app"]);
-    assert_eq!(made.code, 1);
-    assert!(made.stderr.contains("is a folder"), "{}", made.stderr);
+    if std::env::consts::EXE_SUFFIX.is_empty() {
+        assert_eq!(made.code, 1);
+        assert!(made.stderr.contains("is a folder"), "{}", made.stderr);
+    } else {
+        assert_eq!(made.code, 0, "{}", made.stderr);
+        assert!(dir.path(&exe("app")).is_file(), "{}", made.stderr);
+    }
     let made = dir.colibri(&["build", "app", "-o", &exe("appbin")]);
     assert_eq!(made.code, 0, "{}", made.stderr);
     // Two modules; the manifest is not counted as a source file.
