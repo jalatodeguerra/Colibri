@@ -766,13 +766,13 @@ entry, and two `@when` variants of one name are both kept. `colibri repl` takes 
 | `colibri update [names...]` | resolve git dependencies again (branches, tags) and rewrite `colibri.lock`: all of them, or only the ones named (transitive ones too); `--path DIR` is the package folder, `--locked` and `--offline` as for `run` |
 | `colibri repl` | interactive session |
 | `colibri lsp` | language server on stdin and stdout |
-| `colibri build` | **(planned)** one executable with the VM and the program's bytecode |
+| `colibri build [file or folder] [-o FILE]` | write one executable that holds the program and runs it (see below) |
 | `colibri build --web` | **(planned)** the same for the browser, through WebAssembly |
 
 Arguments after the file go to the program (`os.args()`, or the `args` module for parsing);
 put them after `--` if they could be mistaken for the tool's own flags, such as `--watch`.
 
-`run`, `check`, `test` and `update` fetch git dependencies into the cache and write `colibri.lock`;
+`run`, `check`, `test`, `build` and `update` fetch git dependencies into the cache and write `colibri.lock`;
 `--locked` fails instead of changing the lock and `--offline` never uses the network.
 
 ## Tooling
@@ -919,6 +919,37 @@ closures that would otherwise run as native loops (`fn(p) => p.name`) go through
 Colibri loop instead, so their counts describe the loop's traffic. `--profile-rc` does not combine
 with `--watch`.
 
+### Single-file executables
+
+`colibri build` writes one executable that holds a program: a script, or the package in a folder
+(the current folder by default), with the modules it imports and the sources of its git
+dependencies. The standard library is part of `colibri` itself. Copy the file to another machine
+of the same kind and run it; nothing else is needed, not `colibri` and not the source files.
+
+```console
+$ colibri build tool.colibri -o tool
+built tool (3 source files, 14293760 bytes)
+$ ./tool one two
+```
+
+The executable is a copy of the `colibri` that built it, with the program appended. It runs
+the way `colibri run` does: the same output, exit codes (`101` after a panic) and stack traces
+(which name the files as they were named when it was built), and every capability granted. Every
+argument given to it goes to the program (`os.args()`), including ones such as `--version` that
+`colibri` itself would read.
+
+- The program is checked first, and nothing is written if it does not check. Git dependencies are
+  fetched and locked as for `run` (`--locked` and `--offline` work the same).
+- `--feature`, `--no-default-features` and `--release` decide `@when` as they do for `run`, and the
+  executable keeps the result: `--release` is how a program built for use is made.
+- Without `-o` the file is named after the script or the package folder, in the current folder.
+  A build never overwrites a source file.
+- The executable only runs on the platform that built it. On macOS the result is signed again
+  (ad hoc) because appending the program invalidates the signature of `colibri`; a Windows
+  executable is unsigned.
+- The program is read when it starts and checked then, as `colibri run` does; the files of the
+  program are held as text, so the file is about the size of `colibri` plus the source.
+
 ### Formatter
 
 `colibri fmt` has no style settings: there is one canonical layout. `colibri fmt -` formats
@@ -1015,14 +1046,14 @@ they have.
   `Bytes` and file handles.
 - Operator interfaces (`Add`, `Sub`, `Mul`, `Div`, `Neg`) with default type parameters, which
   let a library such as `vec` define its own arithmetic.
-- Tooling: `run`, `check`, `test`, `fmt`, `new`, `repl`, `lsp`, hot reload and the leak detector.
+- Tooling: `run`, `check`, `test`, `fmt`, `new`, `build` (single-file executables), `repl`, `lsp`, hot reload and the leak detector.
 
 **Next:**
 
 - Speed (in progress): the goal is to beat CPython 3.13 on every program in
   [`benchmarks/`](benchmarks/README.md); the VM is ahead of it on seven of the eight programs
   there and level on one.
-- `colibri build` for single-file executables and `colibri build --web` for the browser.
+- `colibri build --web` for the browser, and building for another platform than the one running.
 
 **Later:**
 

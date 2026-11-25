@@ -1153,14 +1153,15 @@ test sample::clamp keeps values in range ... ok
 | `colibri check [file or folder]` | type-check only |
 | `colibri test [file or folder]` | run the tests (`--filter`, `--nocapture`) |
 | `colibri fmt [paths]` | format in place (`--check` only reports) |
+| `colibri build [file or folder] [-o FILE]` | one executable that holds the program |
 | `colibri new <name>` | create a package |
 | `colibri update` | re-resolve git dependencies |
 | `colibri repl` | interactive session |
 | `colibri lsp` | language server for editors |
 
-`colibri run --leaks` reports reference cycles that were never freed. `colibri build` for
-single-file executables is **planned**; today the program is the source, run by the bytecode
-VM.
+`colibri run --leaks` reports reference cycles that were never freed. `colibri build` writes
+one executable that holds the program and runs it like `colibri run`; it is a copy of `colibri`
+with the sources appended, for the platform that built it.
 
 ## Embedding and FFI
 
