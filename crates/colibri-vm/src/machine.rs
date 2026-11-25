@@ -109,6 +109,8 @@ pub struct Machine {
     pub(crate) safepoint_failure: Option<crate::safepoint::Failure>,
     /// The sampling profiler while one runs (`Machine::start_profile`).
     pub(crate) profiler: Option<Box<crate::profile::Profiler>>,
+    /// The reference-count counters while a run counts (`Machine::start_rc_profile`).
+    pub(crate) rc: Option<Box<crate::rc::RcCounter>>,
     /// Tests only: runs at every `print`, so a test can call back into Colibri from inside the
     /// dispatch loop (a native re-entry, like a user `Show` or a `Drop` hook would).
     #[cfg(test)]
@@ -148,6 +150,7 @@ impl Machine {
             safepoint_probe: None,
             safepoint_failure: None,
             profiler: None,
+            rc: None,
             scratch: String::new(),
             #[cfg(test)]
             print_hook: None,
@@ -240,6 +243,7 @@ impl Machine {
             .collect();
         self.uninit = Vec::new();
         self.env = CompileEnv::for_program(program);
+        self.env.count_rc = self.rc.is_some();
         if program.script_from < program.init_order.len() {
             self.uninit = vec![None; program.globals.len()];
             for g in &program.init_order[program.script_from..] {

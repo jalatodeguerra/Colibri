@@ -28,6 +28,8 @@ pub struct Options {
     pub deps: crate::depscmd::DepFlags,
     /// Profile the tests (`--profile`): one profile for the whole run.
     pub profile: Option<crate::profilecmd::Options>,
+    /// Count reference-count traffic by line (`--profile-rc`): one report for the whole run.
+    pub profile_rc: bool,
 }
 
 /// Runs the tests and prints the report to stdout; the exit code is 1 if the program does not
@@ -45,6 +47,10 @@ pub fn run(options: &Options) -> ExitCode {
         builder = builder.stdout(Box::new(captured.clone()));
     }
     let mut vm = crate::build_vm(builder, Vec::new());
+    if options.profile_rc {
+        // Before the load: the counting is part of the code that gets compiled.
+        crate::profilecmd::start_rc(&mut vm);
+    }
     if let Err(e) = vm.load_tests(&options.path) {
         eprint!("{}", e.render(stderr_color));
         return ExitCode::from(1);
@@ -145,6 +151,9 @@ pub fn run(options: &Options) -> ExitCode {
     }
     if let Some(profile) = &options.profile {
         crate::profilecmd::finish(&mut vm, profile);
+    }
+    if options.profile_rc {
+        crate::profilecmd::finish_rc(&mut vm);
     }
     let failed = failures.len();
     let mut summary = format!("\n{passed} passed, {failed} failed");

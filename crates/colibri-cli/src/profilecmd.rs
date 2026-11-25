@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use colibri::{Profile, ProfileWeight};
+use colibri::{Profile, ProfileWeight, RcProfile};
 use colibri_runtime as colibri;
 
 use crate::flame;
@@ -180,6 +180,52 @@ pub fn table(profile: &Profile, written: &[String]) -> String {
         for ((file, line), w) in by_line.iter().take(TOP) {
             let _ = writeln!(out, "{:>5.1}%  {file}:{line}", percent(*w));
         }
+    }
+    out
+}
+
+/// Starts counting reference-count traffic in `vm` (`--profile-rc`). Before the program loads:
+/// the counting is compiled into the code.
+pub fn start_rc(vm: &mut colibri::Vm) {
+    vm.start_rc_profile();
+}
+
+/// Stops counting and prints the report to stderr.
+pub fn finish_rc(vm: &mut colibri::Vm) {
+    if let Some(profile) = vm.finish_rc_profile() {
+        eprint!("{}", rc_table(&profile));
+    }
+}
+
+/// The report of `--profile-rc`: the lines with the most reference-count traffic.
+pub fn rc_table(profile: &RcProfile) -> String {
+    let total = profile.total();
+    let mut out = String::new();
+    let _ = writeln!(out, "rc traffic: {total} operations");
+    if total == 0 {
+        return out;
+    }
+    let percent = |n: u64| n as f64 / total as f64 * 100.0;
+    let _ = writeln!(out, "\n  share    copies     drops    clones  line");
+    for line in profile.top().into_iter().take(TOP) {
+        let _ = writeln!(
+            out,
+            "{:>5.1}%  {:>8}  {:>8}  {:>8}  {}:{}",
+            percent(line.traffic()),
+            line.copies,
+            line.drops,
+            line.clones,
+            line.file,
+            line.line
+        );
+    }
+    if profile.unplaced > 0 {
+        let _ = writeln!(
+            out,
+            "{:>5.1}%  {:>28}  (no line)",
+            percent(profile.unplaced),
+            profile.unplaced
+        );
     }
     out
 }

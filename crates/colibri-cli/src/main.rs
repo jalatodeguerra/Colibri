@@ -92,6 +92,15 @@ enum Command {
             requires = "profile"
         )]
         profile_weight: colibri_lang::profilecmd::Weight,
+        /// Count the reference-count traffic of each line (copies, clones and drops of strings,
+        /// lists, structs and other values that have a reference count) and print the lines
+        /// with the most to stderr. It works on its own and does not need `--profile`: the
+        /// program is compiled with a counter next to each such instruction, which costs
+        /// about 10 to 40% of the run time and changes nothing else. Counted: the program's own
+        /// copies, clones and drops, and a list's `push`; not counted: what built-ins written in
+        /// Rust do inside (`sort`, `join`, `map` and the like) and host functions
+        #[arg(long, conflicts_with = "watch")]
+        profile_rc: bool,
         #[command(flatten)]
         build: BuildFlags,
         #[command(flatten)]
@@ -152,6 +161,15 @@ enum Command {
             requires = "profile"
         )]
         profile_weight: colibri_lang::profilecmd::Weight,
+        /// Count the reference-count traffic of each line (copies, clones and drops of strings,
+        /// lists, structs and other values that have a reference count) and print the lines
+        /// with the most to stderr (one report for all the tests). It works on its own and does not need `--profile`: the
+        /// program is compiled with a counter next to each such instruction, which costs
+        /// about 10 to 40% of the run time and changes nothing else. Counted: the program's own
+        /// copies, clones and drops, and a list's `push`; not counted: what built-ins written in
+        /// Rust do inside (`sort`, `join`, `map` and the like) and host functions
+        #[arg(long)]
+        profile_rc: bool,
         #[command(flatten)]
         build: BuildFlags,
         #[command(flatten)]
@@ -251,6 +269,7 @@ fn main() -> ExitCode {
             leaks,
             profile,
             profile_weight,
+            profile_rc,
             build,
             deps,
         } => {
@@ -264,7 +283,7 @@ fn main() -> ExitCode {
             } else {
                 let profile =
                     profile.map(|f| colibri_lang::profilecmd::Options::new(&f, profile_weight));
-                colibri_lang::runcmd::run(&file, args, leaks, deps, profile.as_ref())
+                colibri_lang::runcmd::run(&file, args, leaks, deps, profile.as_ref(), profile_rc)
             }
         }
         Command::Test {
@@ -275,6 +294,7 @@ fn main() -> ExitCode {
             leaks,
             profile,
             profile_weight,
+            profile_rc,
             build,
             deps,
         } => {
@@ -288,6 +308,7 @@ fn main() -> ExitCode {
                 deps,
                 profile: profile
                     .map(|f| colibri_lang::profilecmd::Options::new(&f, profile_weight)),
+                profile_rc,
             })
         }
         Command::Update { names, path, deps } => depscmd::update(&path, names, deps),

@@ -194,4 +194,12 @@ pub(crate) trait RuntimeEngine: HostCx {
         &mut self,
         locate: &dyn Fn(colibri_syntax::Span) -> Option<(String, u32)>,
     ) -> Option<colibri_vm::Profile>;
+
+    /// Makes the code compiled from now on count reference-count traffic by line.
+    fn start_rc_profile(&mut self);
+    /// Stops counting; `locate` turns a span into a file name and a line.
+    fn finish_rc_profile(
+        &mut self,
+        locate: &dyn Fn(colibri_syntax::Span) -> Option<(String, u32)>,
+    ) -> Option<colibri_vm::RcProfile>;
 }

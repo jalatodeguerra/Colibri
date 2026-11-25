@@ -36,7 +36,7 @@ use colibri_check::types::Ty;
 use colibri_core::value::Value;
 use colibri_syntax::Span;
 
-use crate::bytecode::{Chunk, Op, Reg, Site, UnwindEntry};
+use crate::bytecode::{Chunk, Op, RcKind, Reg, Site, UnwindEntry};
 
 /// What the compiler needs to know about the loaded program.
 #[derive(Debug, Default, Clone)]
@@ -58,6 +58,10 @@ pub struct CompileEnv {
     /// By type id: a struct or enum with no `Drop` hook whose fields are all release-inert
     /// (type parameters count as inert; a use checks its arguments). See [`CompileEnv::inert`].
     pub type_inert: Vec<bool>,
+    /// Compile for `--profile-rc`: an [`Op::Count`] goes with each instruction that copies,
+    /// clones or releases a reference-counted value, so a run can say which lines do it. Off,
+    /// the code is the same as if the mode did not exist.
+    pub count_rc: bool,
 }
 
 impl CompileEnv {
@@ -123,6 +127,7 @@ impl CompileEnv {
         }
         let type_inert = inert_types(program);
         CompileEnv {
+            count_rc: false,
             type_inert,
             checked_globals,
             hook_fns,
@@ -349,12 +354,17 @@ impl Stack {
     }
 }
 
+fn is_scalar_const(v: &Value) -> bool {
+    crate::fiber::is_scalar_value(v)
+}
+
 /// Instructions that cannot raise a panic, so no landing pad covers them. (A `Drop` runs hooks,
 /// but their panics wait for the statement end.)
 fn cannot_fail(op: &Op) -> bool {
     matches!(
         op,
         Op::Drop { .. }
+            | Op::Count { .. }
             | Op::DropN { .. }
             | Op::DropInert { .. }
             | Op::Move { .. }
@@ -444,6 +454,9 @@ pub(crate) struct FnCompiler<'a> {
     /// charges what the native built-in did, see `Op::CallHidden`).
     pub(crate) free: bool,
     failure: Option<Fail>,
+    /// The statement being compiled, for the line a `Count` of an instruction with no span of
+    /// its own goes to.
+    pub(crate) stmt_span: Span,
     /// The pad of each node that has one, once the pads are emitted.
     pad_labels: HashMap<u32, Label>,
 }
@@ -481,6 +494,7 @@ impl<'a> FnCompiler<'a> {
             step_at: None,
             free: colibri_check::is_prelude_span(body.span),
             failure: None,
+            stmt_span: body.span,
             pad_labels: HashMap::new(),
         };
         c.function();
@@ -525,6 +539,146 @@ impl<'a> FnCompiler<'a> {
     // ---- emitting ----
 
     pub(crate) fn emit(&mut self, op: Op, span: Span) -> usize {
+        if self.env.count_rc && !self.in_pad {
+            return self.emit_counted(op, span);
+        }
+        self.emit_op(op, span)
+    }
+
+    /// `emit` for `--profile-rc`: the instructions that move reference counts get an
+    /// `Op::Count`. A release is counted before it (the register is empty afterwards), a copy or
+    /// clone after it. Landing pads are not counted: they run only when a panic unwinds.
+    fn emit_counted(&mut self, op: Op, span: Span) -> usize {
+        // Drops made with the span of the whole body (a window the callee only borrowed) go to
+        // the statement that made them.
+        let at_span = if span == self.body.span {
+            self.stmt_span
+        } else {
+            span
+        };
+        match op {
+            Op::Drop { r } | Op::DropInert { r } | Op::StoreLocal { l: r, .. } => {
+                self.emit_op(
+                    Op::Count {
+                        r,
+                        n: 1,
+                        kind: RcKind::Drop,
+                    },
+                    at_span,
+                );
+            }
+            Op::DropN { r, n } => {
+                self.emit_op(
+                    Op::Count {
+                        r,
+                        n,
+                        kind: RcKind::Drop,
+                    },
+                    at_span,
+                );
+            }
+            _ => {}
+        }
+        let at = self.emit_op(op, span);
+        let after = match op {
+            Op::Copy { d, .. } if !self.reg_is_scalar(d) => Some((d, RcKind::Copy)),
+            Op::ListPush { v, .. } => Some((v, RcKind::Copy)),
+            Op::LoadK { d, k }
+                if self
+                    .consts
+                    .get(k as usize)
+                    .is_some_and(|v| !is_scalar_const(v)) =>
+            {
+                Some((d, RcKind::Copy))
+            }
+            Op::CellGet { d, .. }
+            | Op::GetGlobal { d, .. }
+            | Op::GetGlobalChecked { d, .. }
+            | Op::Unpack { d, .. }
+            | Op::GetField { d, .. }
+            | Op::GetPath { d, .. }
+            | Op::ObjGet { d, .. }
+            | Op::ListGetAt { d, .. }
+            | Op::MapGetAt { d, .. }
+                if !self.reg_is_scalar(d) =>
+            {
+                Some((d, RcKind::Copy))
+            }
+            // `x.clone()`: the deep copy.
+            Op::Builtin { d, site, .. }
+                if matches!(
+                    self.sites.get(usize::from(site)),
+                    Some(Site::Intrinsic {
+                        which: colibri_check::hir::Intrinsic::Builtin(Builtin::Clone),
+                        ..
+                    })
+                ) =>
+            {
+                Some((d, RcKind::Clone))
+            }
+            _ => None,
+        };
+        if let Some((r, kind)) = after {
+            self.emit_op(Op::Count { r, n: 1, kind }, at_span);
+        }
+        // A constructor clones the values of its registers.
+        if let Op::NewStruct { site, .. }
+        | Op::NewObject { site, .. }
+        | Op::NewVariant { site, .. }
+        | Op::NewTuple { site, .. }
+        | Op::NewList { site, .. } = op
+            && let Some(
+                Site::Struct(_, regs)
+                | Site::Object(_, regs)
+                | Site::Variant(_, _, regs)
+                | Site::Regs(regs),
+            ) = self.sites.get(usize::from(site))
+        {
+            let regs: Vec<Reg> = regs
+                .iter()
+                .copied()
+                .filter(|&r| !self.reg_is_scalar(r))
+                .collect();
+            for r in regs {
+                self.emit_op(
+                    Op::Count {
+                        r,
+                        n: 1,
+                        kind: RcKind::Copy,
+                    },
+                    at_span,
+                );
+            }
+        }
+        at
+    }
+
+    /// Counts the item a `for` loop just bound (a reference taken out of the collection).
+    pub(crate) fn count_item(&mut self, r: Reg, span: Span) {
+        if self.env.count_rc && !self.in_pad {
+            self.emit_op(
+                Op::Count {
+                    r,
+                    n: 1,
+                    kind: RcKind::Copy,
+                },
+                span,
+            );
+        }
+    }
+
+    /// Whether the register can only hold a scalar, by its local's or temporary's type.
+    fn reg_is_scalar(&self, r: Reg) -> bool {
+        match usize::from(r).checked_sub(self.nlocals) {
+            None => {
+                self.body.locals[usize::from(r)].storage == Storage::Slot
+                    && is_scalar(&self.body.locals[usize::from(r)].ty)
+            }
+            Some(_) => self.temp_kind(r) == Some(Kind::Scalar),
+        }
+    }
+
+    fn emit_op(&mut self, op: Op, span: Span) -> usize {
         let node = self.state_override.unwrap_or_else(|| self.stack.top());
         // Without a pad or a receiver to hand back, the empty stack has nothing to run.
         let state = if (node == 0 && !self.in_pad && !self.root_is_real()) || cannot_fail(&op) {

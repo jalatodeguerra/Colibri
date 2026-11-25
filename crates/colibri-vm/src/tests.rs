@@ -683,3 +683,74 @@ fn a_consumer_that_fails_after_a_native_loop_unwinds_the_call_cleanly() {
     );
     assert_eq!(err.stack[0].function, "main");
 }
+
+/// Every function body of `src` (and the script) compiled with `count_rc` as given: the
+/// disassembly of each, and whether it is a leaf.
+fn compiled_with_count_rc(src: &str, count_rc: bool) -> Vec<(String, String, bool)> {
+    let (program, _) = check_source(src).expect("the program checks");
+    let mut env = crate::CompileEnv::for_program(&program);
+    env.count_rc = count_rc;
+    let mut out = Vec::new();
+    for (i, f) in program.fns.iter().enumerate() {
+        let id = FnId(i as u32);
+        let chunk = crate::compile_body(&f.body, Some(id), &env).expect("compiles");
+        out.push((f.name.clone(), chunk.disassemble(), chunk.leaf.is_some()));
+    }
+    out
+}
+
+#[test]
+fn count_rc_is_the_only_thing_that_puts_a_count_in_the_code() {
+    let src = include_str!("../../../benchmarks/strings.colibri");
+    let plain = compiled_with_count_rc(src, false);
+    let counting = compiled_with_count_rc(src, true);
+    assert!(
+        plain.iter().all(|(_, text, _)| !text.contains("Count")),
+        "no Count without the mode"
+    );
+    // The mode adds instructions to `main` and to the prelude's code that has copies or drops.
+    let main_of = |all: &[(String, String, bool)]| {
+        all.iter()
+            .find(|(n, ..)| n == "main")
+            .expect("main")
+            .1
+            .clone()
+    };
+    assert!(main_of(&counting).contains("Count r"));
+    // Dropping every `Count` line from the counting code gives the plain code back, apart from
+    // the jump offsets the extra instructions shift: same instructions in the same order.
+    let ops = |text: &str, keep_counts: bool| -> Vec<String> {
+        text.lines()
+            .filter(|l| keep_counts || !l.contains("Count r"))
+            .filter(|l| !l.starts_with("unwind"))
+            .map(|l| {
+                let mut words = l.split_whitespace().skip(1).collect::<Vec<_>>();
+                words.retain(|w| *w != "->" && !w.chars().all(|c| c.is_ascii_digit()));
+                words.join(" ")
+            })
+            .collect()
+    };
+    assert_eq!(
+        ops(&main_of(&counting), false),
+        ops(&main_of(&plain), false),
+        "the counting code is the plain code plus Count instructions"
+    );
+}
+
+#[test]
+fn a_function_of_scalars_stays_a_leaf_under_count_rc() {
+    let src = "
+fn mix(a: int, b: int) -> int {
+    let c = a + b
+    if c < 2 { return b }
+    return c * a
+}
+fn main() { print(mix(3, 4)) }
+";
+    for count_rc in [false, true] {
+        let all = compiled_with_count_rc(src, count_rc);
+        let (_, text, leaf) = all.iter().find(|(n, ..)| n == "mix").expect("mix");
+        assert!(*leaf, "mix is a leaf (count_rc {count_rc})");
+        assert!(!text.contains("Count"), "{text}");
+    }
+}
