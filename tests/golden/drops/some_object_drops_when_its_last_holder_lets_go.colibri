@@ -9,12 +9,19 @@ impl Drop for Res {
 }
 
 fn keep(r: Res?) -> Res? => r
+fn peek(r: Res?) -> bool {
+    let again = r
+    return again.is_some()
+}
 
 fn main() {
     let a = Res { name: "a" }
     let sa: Res? = some(a)
     let sb = sa
     print("one")
+    print(peek(sb))
+    print(peek(sa))
+    print("shared")
     let mut c: Res? = some(Res { name: "c" })
     c = none
     print("two {c.is_none()}")
@@ -28,6 +35,9 @@ fn main() {
 }
 
 // expect: one
+// expect: true
+// expect: true
+// expect: shared
 // expect: drop c
 // expect: two true
 // expect: three

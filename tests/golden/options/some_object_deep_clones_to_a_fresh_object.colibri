@@ -1,0 +1,33 @@
+// `.clone()` of something holding a `some(obj)` copies the object too: the copy has its own, and
+// changing it leaves the original alone (a clone that shared the unboxed option would not).
+class Cell1 { v: int }
+
+struct Holder {
+    slot: Cell1?
+}
+
+fn main() {
+    let original = Holder { slot: some(Cell1 { v: 1 }) }
+    let copy = original.clone()
+    if let some(c) = copy.slot {
+        c.v = 99
+    }
+    if let some(o) = original.slot {
+        print(o.v)
+    }
+    if let some(c) = copy.slot {
+        print(c.v)
+    }
+    let xs: List[Cell1?] = [some(Cell1 { v: 5 })]
+    let ys = xs.clone()
+    if let some(c) = ys[0] {
+        c.v = 6
+    }
+    if let some(c) = xs[0] {
+        print(c.v)
+    }
+}
+
+// expect: 1
+// expect: 99
+// expect: 5
