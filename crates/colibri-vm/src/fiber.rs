@@ -60,7 +60,7 @@ pub struct VmFiber {
     /// holds `()` or a scalar (checked when a frame pops, in debug builds).
     pub(crate) regs: Vec<Value>,
     pub(crate) frames: Vec<Frame>,
-    /// How many of `frames` run a hidden chunk (the prelude's). The depth limit counts the others only, as the tree-walker has no frames for built-ins.
+    /// How many of `frames` run a hidden chunk (the prelude's). The depth limit counts the others only: a built-in adds no visible call.
     pub(crate) hidden: usize,
     /// Values kept alive for `Engine::hold_temp`: what core code holds across user code.
     pub(crate) temps: Vec<Value>,

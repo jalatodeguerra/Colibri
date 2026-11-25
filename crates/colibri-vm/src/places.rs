@@ -1,6 +1,6 @@
 //! Places and `for` loops at run time: reading and writing the part of a value that a place
 //! names, the mutation guard, and the steps of a loop over a collection or an iterator
-//! (vm-plan §1.3, §1.5, §2.5). The rules are the tree-walker's `place.rs` and `forloop.rs`.
+//! (vm-plan §1.3, §1.5, §2.5).
 //!
 //! A place is an anchor (a local, a cell, a global, a class field, a list element or a map
 //! entry) plus a path of struct and tuple projections. The compiler evaluates the anchor's

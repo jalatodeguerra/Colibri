@@ -1,11 +1,10 @@
 //! Patterns and `match` (vm-plan §2.7).
 //!
-//! Arms are tried in order, as the tree-walker's `run_arms` does. A pattern is compiled to tests
-//! and extractions only, in the order the tree-walker visits it: each test is followed by a `Jmp`
+//! Arms are tried in order. A pattern is compiled to tests and extractions only, in the order
+//! the pattern is read: each test is followed by a `Jmp`
 //! to where a failed test goes, and each part a sub-pattern looks at is cloned into a temporary
 //! of its own. Nothing is bound while the pattern is being tried: the bindings are collected and
-//! stored in their locals once the whole pattern held, which is what the tree-walker does with
-//! its list of bindings. So a pattern that fails half way has bound nothing, and what it cloned
+//! stored in their locals once the whole pattern held. So a pattern that fails half way has bound nothing, and what it cloned
 //! on the way is dropped at the label its tests jump to.
 //!
 //! The scrutinee lives for the whole `match` (it is dropped at the end of it, with whatever its

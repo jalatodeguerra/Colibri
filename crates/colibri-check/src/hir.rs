@@ -66,8 +66,8 @@ pub struct Program {
     /// The host functions the program may call, indexed by [`HostFnId`].
     pub host_fns: Vec<HostFnDef>,
     /// The built-ins that take a closure and the prelude function (in Colibri, an entry of
-    /// [`Program::fns`]) that does the same. The tree-walker runs the native versions; the
-    /// bytecode VM calls these, so a closure runs as bytecode and may pause (vm-plan §2.9).
+    /// [`Program::fns`]) that does the same. The bytecode VM calls these, so a closure runs as
+    /// bytecode and may pause (vm-plan §2.9).
     pub builtin_fns: Vec<(Builtin, FnId)>,
     /// How many types after the prelude's come from the host interface: the user's own types
     /// start at `FIRST_USER_TYPE + host_types`.

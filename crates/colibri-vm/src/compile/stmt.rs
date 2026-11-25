@@ -364,7 +364,7 @@ impl FnCompiler<'_> {
         let exit = self.new_label();
         self.bind(head);
         // The trip's scope starts after the step: a failing step (a budget, an iterator's `next`)
-        // is outside it, as in the tree-walker's `run_iteration`.
+        // is outside it.
         let cleanups = self.cleanup_depth();
         // `for mut` writes back through its binding; `for mut _` has none and only holds the guard.
         let write_back = places && matches!(f.binding, ForBinding::Local(_));

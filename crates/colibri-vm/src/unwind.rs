@@ -1,5 +1,6 @@
 //! Unwinding: finding the landing pad of a panic, and folding failures that happen while one
-//! is on its way out (vm-plan §2.4; the rules are the tree-walker's `scope.rs`).
+//! is on its way out (vm-plan §2.4). Every exit of a scope (normal, `break`, `return`, panic, cancel) runs the
+//! same defers and drops in the same order.
 //!
 //! A panic or a cancellation is a `Ctl` that `exec` hands to [`Machine::catch`]. The chunk's
 //! unwind table says which pad covers the instruction the frame is at. The pad is ordinary
