@@ -758,8 +758,9 @@ entry, and two `@when` variants of one name are both kept. `colibri repl` takes 
 | `colibri run --watch` | run and hot-reload on every save (see below) |
 | `colibri run --leaks[=error]` | report reference cycles that were never freed |
 | `colibri run --profile[=FILE]` | sample the program and write a flame graph and its folded stacks (see below) |
+| `colibri run --profile-rc` | count the reference-count copies and drops of each line (see below) |
 | `colibri check [file or folder]` | type-check without running; a folder checks every module |
-| `colibri test [file or folder]` | run the `test "name" { ... }` blocks (`--filter`, `--nocapture`, `--leaks`, `--profile`) |
+| `colibri test [file or folder]` | run the `test "name" { ... }` blocks (`--filter`, `--nocapture`, `--leaks`, `--profile`, `--profile-rc`) |
 | `colibri fmt [paths]` | format files in place (`--check` only reports) |
 | `colibri new <name>` | create a package |
 | `colibri update [names...]` | resolve git dependencies again (branches, tags) and rewrite `colibri.lock`: all of them, or only the ones named (transitive ones too); `--path DIR` is the package folder, `--locked` and `--offline` as for `run` |
@@ -879,6 +880,44 @@ makes one profile of all the tests. `--profile=out` writes `out.svg` and `out.fo
 program shorter than 1,024 steps has no sample to draw from and shows up as one `[unsampled]`
 frame, and a sample taken while no function runs (a host calling in) is `[host]`.
 `--profile` does not combine with `--watch`. Profiling costs a few percent.
+
+#### Reference-count traffic
+
+Strings, lists, maps, structs and the like are shared by reference counting: passing one to a
+function, reading it from a collection or letting it go out of scope takes or gives up a
+reference. `colibri run --profile-rc` counts those operations by line and prints the lines
+with the most, which are the places where a different shape of code (passing less around,
+reading an item once instead of on every trip) pays off:
+
+```console
+$ colibri run --profile-rc names.colibri
+111
+rc traffic: 4003 operations
+
+  share    copies     drops    clones  line
+ 50.0%      1001      1001         0  names.colibri:7
+ 50.0%      1000      1000         0  names.colibri:4
+  0.0%         0         1         0  names.colibri:1
+```
+
+*Copies* are references taken: a value copied into a call, a string literal loaded, a global, a
+field, an element or the item of a `for` read into a register, a value pushed onto a list or
+kept by a constructor. *Drops* are references given up when a temporary or a local dies or a
+variable is assigned over. *Clones* are the deep copies `x.clone()` makes. Lines are ranked by
+the three added together. A local that dies when its function ends is charged to the line of the `fn` (or of the
+`return`), and one that dies at the end of a loop trip to the line of the `for`.
+
+It works on its own and does not need `--profile`; give both for both reports.
+`colibri test --profile-rc` makes one report of all the tests. The program is compiled with a
+counter next to each such instruction, so the run is slower (see `--help`) but prints and
+computes exactly what it did without the flag; without the flag nothing is counted and
+nothing is slower. What is not counted: the work that built-ins written in Rust do inside
+(`sort` and `join` copying their items, map lookups), host functions, writes into fields and
+elements, and the cleanup that runs while a panic unwinds. A built-in that is written in
+Colibri (such as `map`) is charged to the line that calls it. Under `--profile-rc` some
+closures that would otherwise run as native loops (`fn(p) => p.name`) go through that
+Colibri loop instead, so their counts describe the loop's traffic. `--profile-rc` does not combine
+with `--watch`.
 
 ### Formatter
 

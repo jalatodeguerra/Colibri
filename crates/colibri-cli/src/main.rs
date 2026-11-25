@@ -92,6 +92,17 @@ enum Command {
             requires = "profile"
         )]
         profile_weight: colibri_lang::profilecmd::Weight,
+        /// Count the reference-count traffic of each line (references taken and given up by
+        /// copying, reading and dropping strings, lists, structs and other values that have a
+        /// reference count, and `x.clone()`) and print the lines with the most to stderr. It
+        /// works on its own and does not need `--profile`. The program is compiled with a
+        /// counter next to each such instruction, which makes it slower (10 to 30% for most
+        /// programs, up to 2 times for one that mostly passes structs around, not at all for
+        /// arithmetic) and changes nothing else. Not counted: what built-ins written in Rust do
+        /// inside (`sort`, `join`, map lookups), host functions, field and element writes and
+        /// the cleanup of a panic
+        #[arg(long, conflicts_with = "watch")]
+        profile_rc: bool,
         #[command(flatten)]
         build: BuildFlags,
         #[command(flatten)]
@@ -152,6 +163,17 @@ enum Command {
             requires = "profile"
         )]
         profile_weight: colibri_lang::profilecmd::Weight,
+        /// Count the reference-count traffic of each line (references taken and given up by
+        /// copying, reading and dropping strings, lists, structs and other values that have a
+        /// reference count, and `x.clone()`) and print the lines with the most to stderr (one
+        /// report for all the tests). It works on its own and does not need `--profile`. The program is compiled with a
+        /// counter next to each such instruction, which makes it slower (10 to 30% for most
+        /// programs, up to 2 times for one that mostly passes structs around, not at all for
+        /// arithmetic) and changes nothing else. Not counted: what built-ins written in Rust do
+        /// inside (`sort`, `join`, map lookups), host functions, field and element writes and
+        /// the cleanup of a panic
+        #[arg(long)]
+        profile_rc: bool,
         #[command(flatten)]
         build: BuildFlags,
         #[command(flatten)]
@@ -251,6 +273,7 @@ fn main() -> ExitCode {
             leaks,
             profile,
             profile_weight,
+            profile_rc,
             build,
             deps,
         } => {
@@ -264,7 +287,7 @@ fn main() -> ExitCode {
             } else {
                 let profile =
                     profile.map(|f| colibri_lang::profilecmd::Options::new(&f, profile_weight));
-                colibri_lang::runcmd::run(&file, args, leaks, deps, profile.as_ref())
+                colibri_lang::runcmd::run(&file, args, leaks, deps, profile.as_ref(), profile_rc)
             }
         }
         Command::Test {
@@ -275,6 +298,7 @@ fn main() -> ExitCode {
             leaks,
             profile,
             profile_weight,
+            profile_rc,
             build,
             deps,
         } => {
@@ -288,6 +312,7 @@ fn main() -> ExitCode {
                 deps,
                 profile: profile
                     .map(|f| colibri_lang::profilecmd::Options::new(&f, profile_weight)),
+                profile_rc,
             })
         }
         Command::Update { names, path, deps } => depscmd::update(&path, names, deps),

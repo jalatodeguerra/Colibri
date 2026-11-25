@@ -66,6 +66,14 @@ pub enum Op {
         r: Reg,
         n: u16,
     },
+    /// Only in code compiled for `--profile-rc` (`CompileEnv::count_rc`): adds one to the count
+    /// of `kind` at this instruction's line for each of the registers `r..r+n` that holds a
+    /// value with a reference count. It changes nothing else.
+    Count {
+        r: Reg,
+        n: u16,
+        kind: RcKind,
+    },
 
     // ---- locals and cells ----
     /// `l = take(s)`, releasing the value `l` held.
@@ -896,6 +904,18 @@ pub enum Op {
     },
 }
 
+/// What an [`Op::Count`] counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RcKind {
+    /// A reference taken for a register: a copy, a literal, a global, a field, an element or
+    /// the item of a `for` read into a register.
+    Copy,
+    /// A reference released.
+    Drop,
+    /// The deep copy a `x.clone()` makes.
+    Clone,
+}
+
 /// What a [`Op::Pause`] waits for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PauseKind {
@@ -1193,6 +1213,7 @@ impl Op {
             | Op::CallOperator { .. }
             | Op::MakeClosure { .. }
             | Op::ReturnUnit
+            | Op::Count { .. }
             | Op::Print { .. }
             | Op::Show { .. }
             | Op::Format { .. }
@@ -1291,6 +1312,7 @@ impl Chunk {
             Op::Move { d, s } => format!("Move r{d} r{s}"),
             Op::Drop { r } => format!("Drop r{r}"),
             Op::DropN { r, n } => format!("DropN r{r} n={n}"),
+            Op::Count { r, n, kind } => format!("Count r{r} n={n} {kind:?}"),
             Op::DropInert { r } => format!("DropInert r{r}"),
             Op::StoreLocal { l, s } => format!("StoreLocal r{l} r{s}"),
             Op::NewCell { l, s } => format!("NewCell r{l} r{s}"),

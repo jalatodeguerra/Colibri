@@ -39,6 +39,10 @@ jobs:
         run: |
           cargo test --release -p colibri-vm --no-fail-fast
           cargo test --release -p colibri-lang --test golden
+      # The reference-count counters of `--profile-rc` must not change what any golden checks.
+      - name: Golden tests with the reference-count counters compiled in
+        if: ${{ !cancelled() && matrix.os == 'ubuntu-latest' }}
+        run: COLIBRI_TEST_COUNT_RC=1 cargo test --release -p colibri-lang --test golden
       # The budget's exact numbers must not move when the budget is counted in slices
       # (safepoints): the same file, run with a slice of one step and of a few.
       - name: Budget tests under safepoint slices

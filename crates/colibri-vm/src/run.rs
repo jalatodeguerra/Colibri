@@ -339,6 +339,7 @@ impl Machine {
                     }
                 }
 
+                Op::Count { r, n, kind } => self.op_count(fiber, &chunk, base, pc, (r, n, kind)),
                 Op::DropInert { r } => {
                     // A string or bytes value: the plain drop is all it needs.
                     *wr!(r) = Value::Unit;

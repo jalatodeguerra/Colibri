@@ -284,4 +284,15 @@ impl RuntimeEngine for VmEngine {
     ) -> Option<colibri_vm::Profile> {
         self.machine.finish_profile(locate)
     }
+
+    fn start_rc_profile(&mut self) {
+        self.machine.start_rc_profile();
+    }
+
+    fn finish_rc_profile(
+        &mut self,
+        locate: &dyn Fn(colibri_syntax::Span) -> Option<(String, u32)>,
+    ) -> Option<colibri_vm::RcProfile> {
+        self.machine.finish_rc_profile(locate)
+    }
 }

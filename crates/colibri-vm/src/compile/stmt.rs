@@ -117,6 +117,7 @@ impl FnCompiler<'_> {
     }
 
     pub(super) fn stmt(&mut self, s: &Stmt) {
+        self.stmt_span = s.span;
         self.count_statement(s.span);
         let span = s.span;
         if let StmtKind::Defer(deferred) = &s.kind {
@@ -388,6 +389,7 @@ impl FnCompiler<'_> {
         } else {
             self.emit(next, span);
             self.emit_to(Op::Jmp { off: 0 }, span, exit);
+            self.count_item(item, span);
         }
         match &f.binding {
             ForBinding::Local(l) => {
@@ -552,6 +554,7 @@ impl FnCompiler<'_> {
         self.emit(native_next, span);
         self.emit_to(Op::Jmp { off: 0 }, span, exit);
         self.bind(body);
+        self.count_item(item, span);
     }
 
     fn jump_unless_in_range(

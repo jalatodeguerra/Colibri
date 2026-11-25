@@ -2185,8 +2185,38 @@ impl Vm {
     /// or time since the last sample are a final sample.
     #[doc(hidden)]
     pub fn finish_profile(&mut self) -> Option<crate::Profile> {
+        let locate = self.locator();
+        self.engine.finish_profile(&locate)
+    }
+
+    /// Makes the code that is loaded from now on count its reference-count traffic by line
+    /// (copies, clones and releases of values that have a reference count). Call it before
+    /// loading the program: starting after a load counts only the code compiled later, and
+    /// [`Vm::finish_rc_profile`] does not take the `Count` instructions out of code that is
+    /// already compiled (each stays a cheap call that does nothing). Not part of the
+    /// stable interface yet. See [`Vm::finish_rc_profile`].
+    #[doc(hidden)]
+    pub fn start_rc_profile(&mut self) {
+        self.engine.start_rc_profile();
+    }
+
+    /// Stops counting and returns the lines (`None` if counting was not started). The `Count`
+    /// instructions that were compiled stay in the code after this call; they make a cheap call
+    /// that does nothing. Counted: the
+    /// register copies, clones and releases the program's own code makes, the values a
+    /// constructor keeps and a list's `push`. Not counted: what built-ins written in Rust do
+    /// inside (a `sort` copying its list, `join`, `map` lookups), host functions, field and
+    /// element writes, the cleanup a panic runs, and values moved rather than copied.
+    #[doc(hidden)]
+    pub fn finish_rc_profile(&mut self) -> Option<crate::RcProfile> {
+        let locate = self.locator();
+        self.engine.finish_rc_profile(&locate)
+    }
+
+    /// Turns a span into a file name and a 1-based line, for the profilers.
+    fn locator(&self) -> impl std::ops::Fn(colibri_syntax::Span) -> Option<(String, u32)> + use<> {
         let sources = Rc::clone(&self.sources);
-        let locate = move |span: colibri_syntax::Span| {
+        move |span: colibri_syntax::Span| {
             let known = (span.file.0 < sources.next_file_id().0).then_some(span.file)?;
             // A span of the prelude or of a file the program no longer has has no line.
             if colibri_check::is_prelude_span(span) {
@@ -2194,8 +2224,7 @@ impl Vm {
             }
             let (line, _) = sources.line_col(known, span.start);
             Some((sources.name(known).to_string(), line))
-        };
-        self.engine.finish_profile(&locate)
+        }
     }
 
     /// The labels of the class objects destroyed so far, in order, when the `Vm` was built
