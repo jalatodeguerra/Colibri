@@ -21,8 +21,16 @@ use crate::types::{TypeDesc, TypeRegistry};
 /// A Colibri value in flight between Rust and a script. Opaque: convert with
 /// [`IntoColibri`] and [`FromColibri`]; implementations for host types take it apart with
 /// [`Value::field`] and [`Value::variant_index`] and build one with [`Cx::new_struct`].
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Value(pub(crate) Inner);
+
+/// Prints the same for an optional object whichever engine made it (the VM keeps one without its
+/// `Option` box; this shows the box).
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Value").field(&*self.0.unsugar()).finish()
+    }
+}
 
 impl Value {
     /// The `i`th field of a struct value.
