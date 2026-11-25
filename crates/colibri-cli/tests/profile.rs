@@ -160,6 +160,11 @@ fn the_table_on_stderr_lists_functions_and_lines() {
         .collect();
     assert!(functions[0].ends_with("fib"), "fib is the heaviest: {err}");
     assert!(err.contains("p.colibri:3"), "{err}");
+    // A function that recurses counts once in a stack, so no total is over the whole.
+    for row in &functions {
+        let total: f64 = row.split_whitespace().nth(1).unwrap().trim_end_matches('%').parse().unwrap();
+        assert!(total <= 100.0, "{row}");
+    }
     assert!(p.dir.join("prof.svg").exists());
 }
 

@@ -190,3 +190,53 @@ pub fn render(title: &str, stacks: &[(Vec<&str>, u64)], units: &Units) -> String
     svg.push_str("</svg>\n");
     svg
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STEPS: Units = Units {
+        unit: "steps",
+        divisor: 1.0,
+    };
+
+    fn groups(svg: &str) -> usize {
+        svg.matches("<g ").count()
+    }
+
+    #[test]
+    fn the_same_stacks_draw_the_same_picture_in_any_order() {
+        let a = vec![
+            (vec!["main", "a"], 10),
+            (vec!["main", "b", "c"], 20),
+            (vec!["zed"], 5),
+        ];
+        let b = vec![a[2].clone(), a[1].clone(), a[0].clone()];
+        assert_eq!(render("t", &a, &STEPS), render("t", &b, &STEPS));
+    }
+
+    #[test]
+    fn a_frame_is_drawn_unless_it_is_under_a_tenth_of_a_pixel() {
+        // The plot is 1180 px wide: 1 of 5000 is 0.236 px, 1 of 20000 is 0.059 px.
+        let wide = vec![(vec!["main", "big"], 4999), (vec!["main", "small"], 1)];
+        assert_eq!(groups(&render("t", &wide, &STEPS)), 4);
+        let wider = vec![(vec!["main", "big"], 19_999), (vec!["main", "tiny"], 1)];
+        let svg = render("t", &wider, &STEPS);
+        assert_eq!(groups(&svg), 3);
+        assert!(!svg.contains("tiny"));
+    }
+
+    #[test]
+    fn a_name_that_does_not_fit_is_cut_with_two_dots_and_a_narrow_frame_has_no_label() {
+        assert_eq!(label("abcdefghijklmnop", 80.0).as_deref(), Some("abcdefgh.."));
+        assert_eq!(label("abc", 80.0).as_deref(), Some("abc"));
+        assert_eq!(label("abc", 10.0), None);
+    }
+
+    #[test]
+    fn markup_in_a_name_is_escaped() {
+        let svg = render("a<b", &[(vec!["<x & \"y\">"], 1)], &STEPS);
+        assert!(svg.contains("&lt;x &amp; &quot;y&quot;&gt;"));
+        assert!(!svg.contains("<x"));
+    }
+}
