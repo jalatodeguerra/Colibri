@@ -11,6 +11,7 @@ use std::process::ExitCode;
 
 use colibri_runtime::{self as colibri, Recorded, RecordingFs};
 
+use crate::assets;
 use crate::depscmd::{self, DepFlags};
 use crate::pack::{self, Kind, Pack, PackFile, Start};
 
@@ -44,11 +45,11 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
     let recorder = RecordingFs::new(&colibri::DiskFs);
     crate::checkcmd::check_on(&recorder, path, &[], false, &mut colibri_std::interface)?;
     let reads = recorder.into_files();
-    let pack = make_pack(path, reads)?;
     let out = match options.out {
         Some(out) => out.to_path_buf(),
         None => default_out(path),
     };
+    let pack = make_pack(path, reads, &out)?;
     if out.is_dir() {
         return Err(fail(format!(
             "the output `{}` is a folder: choose a file with `-o`",
@@ -73,19 +74,35 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
     let sources = pack
         .files
         .iter()
-        .filter(|f| f.kind != Kind::Asset && f.path.ends_with(".colibri"))
+        .filter(|f| f.path.ends_with(".colibri"))
         .count();
     let size = fs::metadata(&out).map_or(0, |m| m.len());
+    let assets = &pack.assets;
+    for asset in assets.iter().take(MAX_LISTED_ASSETS) {
+        eprintln!("  asset {} ({} bytes)", asset.path, asset.len);
+    }
+    if assets.len() > MAX_LISTED_ASSETS {
+        eprintln!("  ... and {} more assets", assets.len() - MAX_LISTED_ASSETS);
+    }
+    let with_assets = match assets.len() {
+        0 => String::new(),
+        1 => ", 1 asset".to_string(),
+        n => format!(", {n} assets"),
+    };
     eprintln!(
-        "built {} ({sources} source file{}, {size} bytes)",
+        "built {} ({sources} source file{}{with_assets}, {size} bytes)",
         out.display(),
         if sources == 1 { "" } else { "s" }
     );
     Ok(())
 }
 
-/// The pack of the program at `path`, from the files its check read.
-fn make_pack(path: &Path, reads: Vec<Recorded>) -> Result<Pack, ExitCode> {
+/// How many assets the build lists one by one; a package with more gets the rest as a count.
+const MAX_LISTED_ASSETS: usize = 50;
+
+/// The pack of the program at `path`, from the files its check read and the assets its manifest
+/// lists. `out` is the file the executable will be written to.
+fn make_pack(path: &Path, reads: Vec<Recorded>, out: &Path) -> Result<Pack, ExitCode> {
     let cache = colibri::cache_root().ok();
     let mut files = Vec::new();
     let mut checkouts: Vec<String> = Vec::new();
@@ -128,6 +145,9 @@ fn make_pack(path: &Path, reads: Vec<Recorded>) -> Result<Pack, ExitCode> {
             data: Vec::new(),
         });
     }
+    let root = assets::package_root(path);
+    let patterns = assets::declared(&root).map_err(fail)?;
+    let assets = assets::collect(&root, &patterns, out).map_err(fail)?;
     let Some(start) = pack::portable(path) else {
         return Err(fail(format!(
             "the path `{}` is not text, and cannot be packed",
@@ -143,6 +163,8 @@ fn make_pack(path: &Path, reads: Vec<Recorded>) -> Result<Pack, ExitCode> {
         },
         cfg: crate::build_cfg(),
         files,
+        assets,
+        assets_at: 0,
     })
 }
 
@@ -250,7 +272,12 @@ fn write_executable(runner: &Path, out: &Path, pack: &Pack) -> Result<(), String
         use std::io::Seek;
         source.rewind()?;
         let runner_len = std::io::copy(&mut source, &mut file)?;
-        file.write_all(&pack.append_to(runner_len))?;
+        {
+            let mut buffered = std::io::BufWriter::new(&mut file);
+            pack.write_to(&mut buffered, runner_len)
+                .map_err(std::io::Error::other)?;
+            buffered.flush()?;
+        }
         file.set_permissions(permissions)?;
         file.sync_all()?;
         fs::rename(&tmp, out)
@@ -279,6 +306,8 @@ mod tests {
             start: Start::File("p.colibri".to_string()),
             cfg: colibri::BuildCfg::default(),
             files: Vec::new(),
+            assets: Vec::new(),
+            assets_at: 0,
         }
     }
 

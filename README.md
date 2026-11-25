@@ -953,6 +953,60 @@ argument given to it goes to the program (`os.args()`), including ones such as `
 - The program is read when it starts and checked then, as `colibri run` does; the files of the
   program are held as text, so the file is about the size of `colibri` plus the source.
 
+#### Assets
+
+Files that a program reads at run time (a template, a table, an image) are *assets*. A package
+lists them in `colibri.toml`, and the program reads them with `import assets`:
+
+```toml
+[build]
+assets = ["greeting.txt", "data/", "img/*.png", "templates/**/*.html"]
+```
+
+```colibri
+import assets
+
+fn main() {
+    print(assets.read("greeting.txt").expect("greeting"))
+    let logo = assets.read_bytes("img/logo.png").expect("logo")  // Bytes
+    print(assets.list("data").expect("data"))                  // ["deep/", "table.csv"]
+}
+```
+
+- The list is on one line, as every array of `colibri.toml`. A pattern is a path relative to the
+  package folder, written with `/`. `*` stands for any run of
+  characters inside one name, `?` for one character, and `**` for any number of folders. A pattern
+  selects a file when it matches the file or a folder above it, so `data/` (or `data`) is
+  everything below `data`; a trailing `/` insists on a folder. Files whose names start with a dot
+  are selected like any other.
+- `assets.read(path)` gives text (`assets.Error.InvalidData` if the file is not UTF-8),
+  `assets.read_bytes(path)` gives `Bytes`, as `fs.read` and `fs.read_bytes` do, and `assets.list(dir)`
+  gives the sorted names in a folder, with a `/` after the name of a folder; `""` is the package
+  folder. Each returns a `Result`, and the error is an `assets.Error`: `NotFound` (not listed in the
+  manifest, not there, or not a file), `Invalid` (a path that is empty, absolute, has a `.` or `..`
+  piece, a `\`, a `:`, a piece that ends with a `.` or a space or is a Windows device name such as
+  `CON` or `COM1`, or a symbolic link on the way) or `Other`.
+- The module needs no capability. A program reads only what the manifest lists: another file of the
+  package, a file outside it and a path with `..` are errors, and a symbolic link is never followed.
+- `colibri run` and `colibri test` read the files from the package folder, wherever the tool is
+  started from; a built executable reads them from itself. The program cannot tell them apart,
+  and the executable needs neither the source files nor the assets on disk.
+- The package folder is the folder with the `colibri.toml`: the folder given to `colibri run`, or
+  the folder of a script that has a manifest beside it. A script with no manifest has no assets.
+- `colibri build` appends the files to the executable and lists them (`asset data/table.csv (4
+  bytes)`, then `built tool (1 source file, 4 assets, ...)`). It stops if a pattern selects no file
+  (a likely typo), if a selected file is a symbolic link, or if the output would overwrite an asset.
+  Assets of dependencies are not packed: only the manifest of the program counts.
+- A built program does not read its assets when it starts: it keeps them in its file and reads one
+  when the program asks for it, so a large asset costs nothing to a program that does not use it
+  (neither time nor memory). Each asset has a check sum that is verified when it is read; if the
+  executable was damaged, that read is an `assets.Error.Other` and nothing else is affected.
+  `colibri build` does not hold the assets in memory either.
+- Names are looked up exactly as they are spelt in the folder, with the case of the file system
+  that was walked: `assets.read("Logo.PNG")` does not find `logo.png`, also on Windows and macOS, so
+  `colibri run` finds what the built program finds. `colibri build` and `assets.list` walk only
+  the folders a pattern can reach (not `.git` or `target`, unless a pattern names them).
+
 ### Formatter
 
 `colibri fmt` has no style settings: there is one canonical layout. `colibri fmt -` formats
@@ -1017,6 +1071,7 @@ whose logic comes from Colibri scripts (host classes, handles, callbacks and a s
 | `toml` | `toml.parse` into a `json.Value` and typed `toml.decode[T]` |
 | `csv` | CSV text to records or rows with a header, and back |
 | `base64`, `hex` | encoding and decoding of text and of `Bytes` |
+| `assets` | the files listed under `[build] assets` in `colibri.toml`, read from the package folder by `run` and `test` and from the executable after `colibri build` |
 | `hash` | SHA-256 of text and of `Bytes` |
 | `regex` | regular expressions |
 | `http` | a blocking HTTP client that does not block other coroutines; `get_bytes` and `request_bytes` for bodies that are not text |

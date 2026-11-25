@@ -449,6 +449,7 @@ fn a_config_replaces_the_world() {
             seed: Some(5),
             stdin: Some(Box::new(Cursor::new("a\nb"))),
             local_offset: None,
+            assets: None,
         },
     )
     .unwrap();
@@ -914,6 +915,10 @@ fn every_failing_module_declares_its_error_enum_and_keeps_the_erased_signatures(
         ("hex", "enum Error { Invalid }"),
         ("csv", "enum Error { Syntax, Shape, Separator }"),
         ("toml", "enum Error { Syntax, Mismatch, Unsupported }"),
+        (
+            "assets",
+            "enum Error { NotFound, Invalid, InvalidData, Other }",
+        ),
     ];
     for (module, decl) in expected {
         let text = vm.std_module(module).interface_text();
@@ -1007,5 +1012,116 @@ fn reading_input_that_is_not_text_is_an_io_invalid_data_error() {
     assert_eq!(
         out.contents(),
         "true\ncannot read standard input: the data is not valid UTF-8 text\n"
+    );
+}
+
+// ---- assets ----
+
+/// An asset source in memory that remembers what it was asked for.
+struct Held {
+    files: Vec<(&'static str, &'static [u8])>,
+    asked: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl colibri_std::AssetSource for Held {
+    fn read(&mut self, path: &str) -> Result<Vec<u8>, colibri_std::AssetError> {
+        self.asked.borrow_mut().push(format!("read {path}"));
+        match self.files.iter().find(|(p, _)| *p == path) {
+            Some((_, data)) => Ok(data.to_vec()),
+            None if path == "broken" => Err(colibri_std::AssetError::Other("disk on fire".into())),
+            None => Err(colibri_std::AssetError::NotFound("not here".into())),
+        }
+    }
+
+    fn list(&mut self, dir: &str) -> Result<Vec<String>, colibri_std::AssetError> {
+        self.asked.borrow_mut().push(format!("list {dir}"));
+        Ok(vec!["a".to_string(), "sub/".to_string()])
+    }
+}
+
+const ASSETS_PROGRAM: &str = r#"import assets
+fn kind(e: Error) -> str {
+    match e.as[assets.Error]() {
+        some(k) => return "{k}"
+        none => return "other"
+    }
+}
+fn show(path: str) {
+    match assets.read_bytes(path) {
+        ok(b) => print("{path}: {b.len()}")
+        err(e) => print("{path}: {kind(e)} / {e.message()}")
+    }
+}
+fn main() {
+    show("a.txt")
+    show("missing")
+    show("broken")
+    show("../a.txt")
+    show("/a.txt")
+    show("a/./b")
+    show("")
+    match assets.read("bin") {
+        ok(_) => print("bin: text")
+        err(e) => print("bin: {kind(e)}")
+    }
+    print(assets.read("a.txt").expect("text"))
+    print(assets.list("").expect("top"))
+    print(assets.list("d/").expect("d"))
+    match assets.list("../d") {
+        ok(_) => print("list: ok")
+        err(e) => print("list: {kind(e)}")
+    }
+}
+"#;
+
+#[test]
+fn assets_come_from_the_source_the_host_gave_and_a_bad_path_never_reaches_it() {
+    let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let config = StdConfig {
+        assets: Some(Box::new(Held {
+            files: vec![("a.txt", b"hello"), ("bin", &[0xff, 0xfe])],
+            asked: asked.clone(),
+        })),
+        ..StdConfig::default()
+    };
+    let (mut vm, out) = vm_with(config, &[]);
+    run(&mut vm, ASSETS_PROGRAM).unwrap();
+    assert_eq!(
+        out.contents(),
+        "a.txt: 5\n\
+         missing: NotFound / cannot read asset `missing`: not here\n\
+         broken: Other / cannot read asset `broken`: disk on fire\n\
+         ../a.txt: Invalid / cannot read asset `../a.txt`: the path leaves the package folder with `..`\n\
+         /a.txt: Invalid / cannot read asset `/a.txt`: the path is absolute: asset paths are relative to the package folder\n\
+         a/./b: Invalid / cannot read asset `a/./b`: the path has a `.` piece\n\
+         : Invalid / cannot read asset ``: the path is empty\n\
+         bin: InvalidData\nhello\n[\"a\", \"sub/\"]\n[\"a\", \"sub/\"]\nlist: Invalid\n"
+    );
+    // Only well-formed paths were asked for; a folder is asked for without its slash.
+    assert_eq!(
+        *asked.borrow(),
+        [
+            "read a.txt",
+            "read missing",
+            "read broken",
+            "read bin",
+            "read a.txt",
+            "list ",
+            "list d"
+        ]
+    );
+}
+
+#[test]
+fn a_vm_without_an_asset_source_has_no_assets() {
+    let (mut vm, out) = vm_with(StdConfig::default(), &[]);
+    run(
+        &mut vm,
+        "import assets\nfn main() {\n    print(assets.list(\"\").expect(\"top\"))\n    print(assets.read_bytes(\"x\").err().expect(\"no\").message())\n    print(assets.list(\"d\").err().expect(\"no\").message())\n}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        out.contents(),
+        "[]\ncannot read asset `x`: this program has no assets\ncannot list assets in `d`: this program has no assets\n"
     );
 }

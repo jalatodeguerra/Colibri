@@ -231,6 +231,7 @@ dependencies = [
  "colibri-runtime",
  "colibri-std",
  "colibri-syntax",
+ "libc",
  "libtest-mimic",
  "mimalloc",
  "rustyline",

@@ -28,7 +28,11 @@ pub const WATCH_INTERVAL: f64 = 0.15;
 /// Runs `file` (a script or a package folder) and reloads it when its sources change. Returns
 /// only when the program calls `os.exit`.
 pub fn run(file: &Path, args: Vec<String>) -> ExitCode {
-    let mut vm = crate::build_vm(crate::vm_builder().allow_all(), args);
+    let mut vm = crate::build_vm_with_assets(
+        crate::vm_builder().allow_all(),
+        args,
+        Some(crate::assets::for_entry(file)),
+    );
     let mut watcher = Watcher {
         color: io::stderr().is_terminal(),
         last_io_error: None,

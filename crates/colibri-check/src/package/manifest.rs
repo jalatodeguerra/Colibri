@@ -83,6 +83,20 @@ pub struct Manifest {
     pub allow_ffi_spans: Vec<Span>,
     /// `[features]`: the feature flags `@when(name)` can test (DESIGN §3.6).
     pub features: Features,
+    /// `[build]`: what `colibri build` adds to the program.
+    pub build: Build,
+}
+
+/// The `[build]` table of `colibri.toml`:
+///
+/// ```toml
+/// [build]
+/// assets = ["data/", "img/*.png"]   # the files `import assets` can read, see [`super::assets`]
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Build {
+    /// The patterns of `assets`, as written, with the place of each.
+    pub assets: Vec<(String, Span)>,
 }
 
 /// The `[features]` table of `colibri.toml`:
@@ -180,6 +194,7 @@ pub fn from_tables(
     let mut allow_ffi: Vec<(String, Span)> = Vec::new();
     let mut dependencies: Vec<Dependency> = Vec::new();
     let mut features = Features::default();
+    let mut build = Build::default();
     for table in &tables {
         let path: Vec<&str> = table.path.iter().map(String::as_str).collect();
         match path.as_slice() {
@@ -193,6 +208,7 @@ pub fn from_tables(
             }
             ["package"] => package(table, &mut name, &mut ffi, &mut allow_ffi, &mut errors),
             ["features"] => parse_features(table, &mut features, &mut errors),
+            ["build"] => parse_build(table, &mut build, &mut errors),
             ["dependencies"] => {
                 for entry in &table.entries {
                     dependency(
@@ -217,7 +233,9 @@ pub fn from_tables(
                     format!("unknown table `[{}]`", table.path.join(".")),
                     table.span,
                 )
-                .with_hint("`colibri.toml` has `[package]`, `[dependencies]` and `[features]`"),
+                .with_hint(
+                    "`colibri.toml` has `[package]`, `[dependencies]`, `[features]` and `[build]`",
+                ),
             ),
         }
     }
@@ -241,7 +259,48 @@ pub fn from_tables(
         allow_ffi_spans: allow_ffi.iter().map(|(_, s)| *s).collect(),
         allow_ffi: allow_ffi.into_iter().map(|(n, _)| n).collect(),
         features,
+        build,
     })
+}
+
+fn parse_build(table: &Table, build: &mut Build, errors: &mut Vec<Diagnostic>) {
+    for entry in &table.entries {
+        match (entry.key.as_str(), &entry.value.kind) {
+            ("assets", ValueKind::Array(items)) => {
+                for item in items {
+                    match &item.kind {
+                        ValueKind::Str(text) => match super::assets::pattern_problem(text) {
+                            None => build.assets.push((text.clone(), item.span)),
+                            Some(problem) => errors.push(
+                                Diagnostic::error(
+                                    format!("`{text}` is not a valid asset pattern: {problem}"),
+                                    item.span,
+                                )
+                                .with_hint(
+                                    "write a path relative to the package folder, as in `\"data/\"` or `\"img/*.png\"`",
+                                ),
+                            ),
+                        },
+                        _ => errors.push(Diagnostic::error(
+                            "`assets` lists patterns as strings",
+                            item.span,
+                        )),
+                    }
+                }
+            }
+            ("assets", _) => errors.push(
+                Diagnostic::error("`assets` must be a list of patterns", entry.value.span)
+                    .with_hint("write `assets = [\"data/\", \"img/logo.png\"]`"),
+            ),
+            (other, _) => errors.push(
+                Diagnostic::error(
+                    format!("unknown key `{other}` in `[build]`"),
+                    entry.key_span,
+                )
+                .with_hint("the only key is `assets`"),
+            ),
+        }
+    }
 }
 
 fn parse_features(table: &Table, features: &mut Features, errors: &mut Vec<Diagnostic>) {
@@ -893,6 +952,35 @@ mod tests {
             })
             .collect();
         assert_eq!(paths, ["../physics", "libs/audio"]);
+    }
+
+    #[test]
+    fn the_build_table_lists_asset_patterns() {
+        let m = ok(
+            "[package]\nname = \"x\"\n\n[build]\nassets = [\"data/\", \"img/*.png\", \"logo.svg\"]\n",
+        );
+        let texts: Vec<&str> = m.build.assets.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(texts, ["data/", "img/*.png", "logo.svg"]);
+        assert!(ok("[package]\nname = \"x\"\n").build.assets.is_empty());
+        assert!(
+            ok("[package]\nname = \"x\"\n[build]\n")
+                .build
+                .assets
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_bad_build_table_is_named() {
+        let head = "[package]\nname = \"x\"\n[build]\n";
+        let one = |body: &str| errs(&format!("{head}{body}")).join("; ");
+        assert!(one("assets = \"data/\"").contains("must be a list"));
+        // The reader of `colibri.toml` only knows arrays of strings, and says so first.
+        assert!(one("assets = [1]").contains("holds strings"));
+        assert!(one("assets = [\"../x\"]").contains("not a valid asset pattern"));
+        assert!(one("assets = [\"/etc\"]").contains("not a valid asset pattern"));
+        assert!(one("assets = [\"a\\\\b\"]").contains("not a valid asset pattern"));
+        assert!(one("other = \"x\"").contains("unknown key `other` in `[build]`"));
     }
 
     #[test]

@@ -46,7 +46,11 @@ pub fn run(options: &Options) -> ExitCode {
     if !options.nocapture {
         builder = builder.stdout(Box::new(captured.clone()));
     }
-    let mut vm = crate::build_vm(builder, Vec::new());
+    let mut vm = crate::build_vm_with_assets(
+        builder,
+        Vec::new(),
+        Some(crate::assets::for_entry(&options.path)),
+    );
     if options.profile_rc {
         // Before the load: the counting is part of the code that gets compiled.
         crate::profilecmd::start_rc(&mut vm);

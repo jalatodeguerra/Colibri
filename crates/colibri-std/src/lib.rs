@@ -2,7 +2,7 @@
 //!
 //! Every module but `vec` is a *named host module* implemented in Rust through the same machinery as
 //! `vm.module(..)`: [`install`] registers `io`, `fs`, `path`, `os`, `math`, `rand`, `time`, `str`,
-//! `json`, `regex`, `http`, `args`, `process`, `net`, `datetime`, `base64`, `hex`, `hash` and `csv` into a [`Vm`], under the
+//! `json`, `regex`, `http`, `args`, `process`, `net`, `datetime`, `base64`, `hex`, `hash`, `csv`, `toml` and `assets` into a [`Vm`], under the
 //! interface names `std.io`, `std.fs`, ... The checker sees
 //! them exactly as it sees an embedder's own host modules: from interface (`.cbi`) text generated
 //! from the registrations ([`interfaces`] gives it to a checker that has no `Vm`). A script
@@ -32,6 +32,7 @@
 //! ```
 
 mod args;
+mod assets;
 mod base64;
 mod bytes;
 mod config;
@@ -59,13 +60,14 @@ mod values;
 
 use colibri_runtime::{Cap, Error, Interface, Registration, Vm};
 
+pub use assets::{AssetError, AssetSource};
 pub use config::{Clock, EnvSource, ManualClock, StdConfig, SystemClock};
 pub use rand::Rng;
 
 /// The modules of the standard library built so far, in the order they are registered.
 pub const MODULES: &[&str] = &[
     "io", "fs", "path", "os", "math", "rand", "time", "str", "json", "regex", "http", "args",
-    "process", "net", "datetime", "base64", "hex", "hash", "csv", "toml",
+    "process", "net", "datetime", "base64", "hex", "hash", "csv", "toml", "assets",
 ];
 
 /// The text of the `vec` module (`import vec`): Colibri source, not a host module.
@@ -123,7 +125,7 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
     // Only the names are declared now: a module is registered (its interface generated,
     // parsed and checked) when a program imports it or something asks for it by name.
     type Register = fn(&mut Vm) -> Result<(), Error>;
-    let lazy: [(&str, Register); 20] = [
+    let lazy: [(&str, Register); 21] = [
         ("io", io::register),
         ("fs", fs::register),
         ("path", path::register),
@@ -144,6 +146,7 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
         ("hash", hash::register),
         ("csv", csv::register),
         ("toml", tomls::register),
+        ("assets", assets::register),
     ];
     for (name, register) in lazy {
         vm.lazy_std_module(name, register);
@@ -159,7 +162,7 @@ pub fn install_with(vm: &mut Vm, config: StdConfig) -> Result<(), Error> {
 fn declare_no_await(vm: &mut Vm) {
     for module in [
         "io", "path", "os", "math", "rand", "str", "json", "regex", "args", "datetime", "base64",
-        "hex", "hash", "csv", "toml",
+        "hex", "hash", "csv", "toml", "assets",
     ] {
         vm.no_await_module(module, &[]);
     }

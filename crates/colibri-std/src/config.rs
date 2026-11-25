@@ -110,6 +110,17 @@ pub enum EnvSource {
 }
 
 /// Everything the standard library takes from the world, with the real thing as the default.
+///
+/// Build one with struct update syntax, naming only what differs, so that a field added later
+/// (as `assets` was) does not break the code:
+///
+/// ```
+/// let config = colibri_std::StdConfig {
+///     args: vec!["one".to_string()],
+///     ..colibri_std::StdConfig::default()
+/// };
+/// # let _ = config;
+/// ```
 pub struct StdConfig {
     pub clock: Box<dyn Clock>,
     /// What `os.args()` returns: the arguments of the script, not of the `colibri` tool.
@@ -125,6 +136,9 @@ pub struct StdConfig {
     /// The local time zone `datetime` uses, as seconds east of UTC (always this offset, no
     /// daylight saving); the machine's time zone if `None`.
     pub local_offset: Option<i32>,
+    /// Where `assets.read` and friends find the program's assets; none if `None` (every read
+    /// is `assets.Error.NotFound`).
+    pub assets: Option<Box<dyn crate::AssetSource>>,
 }
 
 impl Default for StdConfig {
@@ -137,6 +151,7 @@ impl Default for StdConfig {
             seed: None,
             stdin: None,
             local_offset: None,
+            assets: None,
         }
     }
 }
@@ -152,6 +167,7 @@ pub(crate) struct State {
     pub temp_dir: Option<PathBuf>,
     pub stdin: Option<Box<dyn BufRead>>,
     pub local_offset: Option<i32>,
+    pub assets: Option<Box<dyn crate::AssetSource>>,
     /// The generator behind the free functions of `rand`.
     pub rng: Rng,
     /// The code of `os.exit`, once called.
@@ -173,6 +189,7 @@ impl State {
             temp_dir: config.temp_dir,
             stdin: config.stdin,
             local_offset: config.local_offset,
+            assets: config.assets,
             rng: Rng::from_seed(seed),
             exit: None,
         }
