@@ -15,10 +15,16 @@ fn main() {
     let out = std::path::Path::new(&out);
     std::fs::create_dir_all(out).expect("create the output folder");
     for (name, source) in support::cases() {
-        std::fs::write(out.join(format!("{name}.pack")), support::pack_of(&name, &source))
-            .expect("write a pack");
-        std::fs::write(out.join(format!("{name}.out")), support::expected_output(&source))
-            .expect("write the expected output");
+        std::fs::write(
+            out.join(format!("{name}.pack")),
+            support::pack_of(&name, &source),
+        )
+        .expect("write a pack");
+        std::fs::write(
+            out.join(format!("{name}.out")),
+            support::expected_output(&source),
+        )
+        .expect("write the expected output");
         // Programs that must also take a given time on the clock of the page: see `web-tests`.
         if let Some(ms) = support::virtual_ms(&source) {
             std::fs::write(out.join(format!("{name}.ms")), ms.to_string()).expect("write");

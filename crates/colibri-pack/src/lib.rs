@@ -124,7 +124,6 @@ pub struct PackAsset {
     pub data: AssetData,
 }
 
-
 impl PackAsset {
     /// An asset whose bytes are in memory.
     pub fn held(path: impl Into<String>, data: Vec<u8>) -> PackAsset {
@@ -320,8 +319,9 @@ impl Pack {
     pub fn from_bytes(bytes: &[u8]) -> Result<Pack, String> {
         let mut file = std::io::Cursor::new(bytes);
         let Some((offset, len)) = trailer_ending_at(&mut file, bytes.len() as u64)? else {
-            return Err("this is not a Colibri pack (the data does not end with its marker)"
-                .to_string());
+            return Err(
+                "this is not a Colibri pack (the data does not end with its marker)".to_string(),
+            );
         };
         // The trailer was checked against the size, so the payload is inside `bytes`.
         let payload = &bytes[offset as usize..(offset + len) as usize];
@@ -513,7 +513,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-
 /// The trailer of the `size` first bytes of a file, if it has one: where the payload is and how
 /// long. `Ok(None)` is a file that does not end with the marker.
 pub fn trailer_ending_at<R: Read + Seek>(
@@ -548,3 +547,78 @@ pub fn trailer_ending_at<R: Read + Seek>(
     Ok(Some((offset, len)))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> Pack {
+        Pack {
+            name: "demo".to_string(),
+            start: Start::File("main.colibri".to_string()),
+            cfg: BuildCfg {
+                os: "web".to_string(),
+                arch: "wasm32".to_string(),
+                debug: true,
+                features: vec!["fast".to_string()],
+                no_default_features: false,
+            },
+            files: vec![PackFile {
+                kind: Kind::Source,
+                path: "main.colibri".to_string(),
+                name: "main.colibri".to_string(),
+                data: b"print(1)\n".to_vec(),
+            }],
+            assets: vec![PackAsset::held("a.txt", b"hello".to_vec())],
+            assets_at: 0,
+        }
+    }
+
+    #[test]
+    fn a_pack_file_with_no_runner_in_front_is_read_from_its_bytes() {
+        let bytes = sample().append_held(0).unwrap();
+        let pack = Pack::from_bytes(&bytes).unwrap();
+        assert_eq!(pack.name, "demo");
+        assert_eq!(pack.files, sample().files);
+        assert_eq!(pack.cfg, sample().cfg);
+        // The assets stay in the bytes, where the pack says.
+        let at = pack.assets_at as usize;
+        assert_eq!(&bytes[at..at + 5], b"hello");
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_pack_or_are_cut_short_are_an_error_never_a_panic() {
+        assert!(Pack::from_bytes(b"").is_err());
+        assert!(Pack::from_bytes(b"not a pack at all, but long enough for a trailer....").is_err());
+        let bytes = sample().append_held(0).unwrap();
+        for cut in [1, 10, 31, 32, 40, bytes.len() - 1] {
+            assert!(
+                Pack::from_bytes(&bytes[..cut]).is_err(),
+                "a pack cut to {cut} bytes"
+            );
+        }
+        // A flipped byte of the head fails its check sum.
+        let mut damaged = bytes;
+        damaged[20] ^= 0xff;
+        assert!(Pack::from_bytes(&damaged).is_err());
+    }
+
+    #[test]
+    fn this_crate_writes_no_files_so_an_asset_on_disk_needs_its_writer() {
+        let mut pack = sample();
+        pack.assets = vec![PackAsset {
+            path: "d.bin".to_string(),
+            len: 3,
+            sum: checksum(b"abc"),
+            data: AssetData::Disk {
+                root: PathBuf::from("."),
+            },
+        }];
+        assert!(pack.append_held(0).is_err());
+        let mut out = Vec::new();
+        pack.write_with(&mut out, 0, &mut |_, w| {
+            w.write_all(b"abc").map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(Pack::from_bytes(&out).unwrap().assets.len(), 1);
+    }
+}

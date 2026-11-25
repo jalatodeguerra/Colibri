@@ -102,7 +102,16 @@ impl Machine {
         };
         let span = colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0);
         self.enter_from_host(fiber, false, |this, fiber| {
-            this.start_coroutine(fiber, callee, Vec::new(), Vec::new(), name, None, span, script)
+            this.start_coroutine(
+                fiber,
+                callee,
+                Vec::new(),
+                Vec::new(),
+                name,
+                None,
+                span,
+                script,
+            )
         })
     }
 

@@ -9,6 +9,6 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     if std::env::var("CARGO_CFG_TARGET_FAMILY").is_ok_and(|f| f == "wasm") {
         // Keep in step with `runner::STACK_SIZE`.
-        println!("cargo:rustc-link-arg-cdylib=-zstack-size=16777216");
+        println!("cargo:rustc-link-arg-cdylib=-zstack-size=8388608");
     }
 }

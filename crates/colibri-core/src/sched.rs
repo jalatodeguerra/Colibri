@@ -20,7 +20,8 @@ use crate::heap::ClassObj;
 use crate::value::Value;
 
 /// Why a wait that cannot block fails (the web: the page's thread must never block).
-const NO_BLOCKING: &str = "nothing can complete this background operation without blocking the thread";
+const NO_BLOCKING: &str =
+    "nothing can complete this background operation without blocking the thread";
 
 /// The default size of the native stack of one coroutine.
 pub(crate) const DEFAULT_COROUTINE_STACK: usize = 16 * 1024 * 1024;

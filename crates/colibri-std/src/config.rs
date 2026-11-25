@@ -89,7 +89,11 @@ impl Clock for SystemClock {
 /// Milliseconds as whole nanoseconds; a step back or a NaN is zero, and a huge value saturates.
 #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
 fn ms_to_nanos(ms: f64) -> u64 {
-    if ms <= 0.0 { 0 } else { (ms * 1_000_000.0) as u64 }
+    if ms <= 0.0 {
+        0
+    } else {
+        (ms * 1_000_000.0) as u64
+    }
 }
 
 /// The seed of a generator that was not given one, from `fill`: a source of random bytes (the
@@ -284,7 +288,10 @@ mod tests {
         assert_eq!(seed, 0x0807_0605_0403_0201);
         // The host's bytes decide the seed: different bytes, different sequence.
         let other = seed_from(|bytes| bytes.fill(9));
-        assert_ne!(Rng::from_seed(seed).next_u64(), Rng::from_seed(other).next_u64());
+        assert_ne!(
+            Rng::from_seed(seed).next_u64(),
+            Rng::from_seed(other).next_u64()
+        );
     }
 
     #[test]

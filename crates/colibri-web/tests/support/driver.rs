@@ -18,11 +18,17 @@ struct Capture(Rc<RefCell<Captured>>);
 
 impl Sink for Capture {
     fn stdout(&mut self, text: &[u8]) {
-        self.0.borrow_mut().stdout.push_str(&String::from_utf8_lossy(text));
+        self.0
+            .borrow_mut()
+            .stdout
+            .push_str(&String::from_utf8_lossy(text));
     }
 
     fn stderr(&mut self, text: &[u8]) {
-        self.0.borrow_mut().stderr.push_str(&String::from_utf8_lossy(text));
+        self.0
+            .borrow_mut()
+            .stderr
+            .push_str(&String::from_utf8_lossy(text));
     }
 }
 
@@ -32,7 +38,6 @@ pub struct Outcome {
     pub out: Captured,
     /// The virtual milliseconds the run took.
     pub elapsed_ms: f64,
-    pub ticks: u32,
 }
 
 /// What a thread that runs a [`Runner`] natively needs: more than the engine may use of it (the
@@ -60,7 +65,11 @@ fn run_here(bytes: &[u8]) -> Outcome {
     while runner.state() == State::Running {
         let deadline = runner.next_deadline();
         assert!(deadline >= 0.0, "a running program that nothing will wake");
-        let step = if deadline <= FRAME_MS { FRAME_MS } else { deadline.ceil() };
+        let step = if deadline <= FRAME_MS {
+            FRAME_MS
+        } else {
+            deadline.ceil()
+        };
         elapsed += step;
         ticks += 1;
         assert!(ticks < 1_000_000, "the program does not end");
@@ -69,6 +78,14 @@ fn run_here(bytes: &[u8]) -> Outcome {
     let code = runner.exit_code();
     let state = runner.state();
     drop(runner);
-    let out = Rc::try_unwrap(out).map_err(|_| ()).expect("the runner is gone").into_inner();
-    Outcome { state, exit_code: code, out, elapsed_ms: elapsed, ticks }
+    let out = Rc::try_unwrap(out)
+        .map_err(|_| ())
+        .expect("the runner is gone")
+        .into_inner();
+    Outcome {
+        state,
+        exit_code: code,
+        out,
+        elapsed_ms: elapsed,
+    }
 }

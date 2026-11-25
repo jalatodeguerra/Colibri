@@ -15,11 +15,11 @@ use colibri_pack::{Pack, Start};
 use colibri_runtime::{Entry, Error, Vm};
 
 /// The size of the wasm stack, which `build.rs` asks the linker for.
-pub const STACK_SIZE: usize = 16 * 1024 * 1024;
+pub const STACK_SIZE: usize = 8 * 1024 * 1024;
 
 /// What the engine may use of the stack: a margin is left for the rest of the program. The engine
 /// turns what would be a stack overflow into a Colibri panic before it reaches the end.
-pub const NATIVE_STACK_BUDGET: usize = STACK_SIZE - 4 * 1024 * 1024;
+pub const NATIVE_STACK_BUDGET: usize = STACK_SIZE - 2 * 1024 * 1024;
 
 /// Exit code of a program that panicked (what `colibri run` gives).
 pub const EXIT_PANIC: i32 = 101;
@@ -126,8 +126,7 @@ impl Runner {
         if self.state != State::Running {
             return self.state;
         }
-        // Not negative, not NaN: a host's clock that steps back must not move time back.
-        let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
+        // A negative or NaN `dt` (a host clock that stepped back) moves no time: `Vm::tick` ignores it.
         match self.vm.tick(dt) {
             Ok(()) => self.settle(),
             Err(error) => self.fail(&error),
@@ -205,5 +204,73 @@ impl Runner {
     /// that their `Drop` hooks print what they print.
     fn finish(&mut self) {
         self.vm.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Lines(Rc<RefCell<String>>);
+
+    impl Sink for Lines {
+        fn stdout(&mut self, _: &[u8]) {}
+        fn stderr(&mut self, text: &[u8]) {
+            self.0.borrow_mut().push_str(&String::from_utf8_lossy(text));
+        }
+    }
+
+    #[test]
+    fn the_linker_is_asked_for_the_stack_the_engine_budget_assumes() {
+        let build = include_str!("../build.rs");
+        assert!(
+            build.contains(&format!("-zstack-size={STACK_SIZE}")),
+            "build.rs and runner::STACK_SIZE disagree"
+        );
+        const { assert!(NATIVE_STACK_BUDGET < STACK_SIZE) };
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_pack_fail_the_run_with_a_message_and_do_nothing_after() {
+        let err = Rc::new(RefCell::new(String::new()));
+        let mut runner = Runner::start(b"definitely not a pack", Box::new(Lines(Rc::clone(&err))));
+        assert_eq!(runner.state(), State::Failed);
+        assert_eq!(runner.exit_code(), 1);
+        assert!(
+            err.borrow().contains("not a Colibri pack"),
+            "{}",
+            err.borrow()
+        );
+        assert_eq!(runner.tick(1.0), State::Failed);
+        assert_eq!(runner.next_deadline(), -1.0);
+    }
+
+    #[test]
+    fn a_host_clock_that_steps_back_or_is_not_a_number_moves_no_time() {
+        // `tick` takes seconds from the page's clock: a step back must not run timers early.
+        let pack = colibri_pack::Pack {
+            name: "t".to_string(),
+            start: Start::File("main.colibri".to_string()),
+            cfg: colibri_runtime::BuildCfg::default(),
+            files: vec![colibri_pack::PackFile {
+                kind: colibri_pack::Kind::Source,
+                path: "main.colibri".to_string(),
+                name: "main.colibri".to_string(),
+                data: b"fn main() {\n    wait(1.0)\n    print(\"late\")\n}\n".to_vec(),
+            }],
+            assets: Vec::new(),
+            assets_at: 0,
+        };
+        let bytes = pack.append_held(0).unwrap();
+        let err = Rc::new(RefCell::new(String::new()));
+        let mut runner = Runner::start(&bytes, Box::new(Lines(err)));
+        assert_eq!(runner.state(), State::Running);
+        for dt in [-5.0, f64::NAN, f64::NEG_INFINITY, 0.5] {
+            assert_eq!(runner.tick(dt), State::Running, "dt = {dt}");
+        }
+        let left = runner.next_deadline();
+        assert!((left - 500.0).abs() < 1e-6, "{left}");
+        assert_eq!(runner.tick(0.5), State::Done);
     }
 }

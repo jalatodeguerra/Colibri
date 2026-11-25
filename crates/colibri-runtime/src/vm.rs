@@ -1840,8 +1840,8 @@ impl Vm {
     /// Starts the program of [`Vm::load_from_deferred`]: the top-level statements of a script
     /// as a coroutine, and `main` as one after them. A `wait` in either suspends it, as in any
     /// coroutine, so the host's loop goes on. Each runs until its first pause before this
-    /// returns. A panic of a coroutine is reported by the next [`Vm::tick`] (or
-    /// [`Vm::take_coroutine_failure`]), like any coroutine's.
+    /// returns, and a panic before that pause is this call's error. A panic after a `wait` is
+    /// reported by the [`Vm::tick`] that resumes it, like any coroutine's.
     pub fn start_entry(&mut self) -> Result<(), Error> {
         self.program.as_ref().ok_or(Error::NotLoaded)?;
         let stage = if self.engine.has_script() {
@@ -1853,7 +1853,10 @@ impl Vm {
             stage,
             handle: None,
         });
-        self.begin_entry_stage(stage)
+        self.begin_entry_stage(stage)?;
+        // A part that ended before its first pause hands over to the next, and a panic of that
+        // first run is this call's error.
+        self.entry_step().map(|_| ())
     }
 
     fn begin_entry_stage(&mut self, stage: EntryStage) -> Result<(), Error> {

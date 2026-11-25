@@ -1,6 +1,9 @@
 //! Shared by the native tests and by `examples/make_packs.rs`: a golden test as a pack and the
 //! output it must print.
 
+// Each user of this module (the tests, the example) uses a part of it.
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 
 use colibri_pack::{Kind, Pack, PackFile, Start};
@@ -19,7 +22,11 @@ pub fn web_tests_dir() -> PathBuf {
 /// What `// expect:` lines of a program make: its whole standard output.
 pub fn expected_output(source: &str) -> String {
     let directives = colibri_lang::golden::parse_directives(source);
-    directives.expect.iter().map(|line| format!("{line}\n")).collect()
+    directives
+        .expect
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect()
 }
 
 /// A program (one file) as a pack, what `colibri build --web` writes for it. The configuration
@@ -44,16 +51,22 @@ pub fn pack_of(name: &str, source: &str) -> Vec<u8> {
         assets: Vec::new(),
         assets_at: 0,
     };
-    pack.append_held(0).expect("a pack with no files on disk writes")
+    pack.append_held(0)
+        .expect("a pack with no files on disk writes")
 }
 
 /// The golden programs the web runner runs, from `web-goldens.txt` (paths below `tests/golden`),
 /// and the programs of `web-tests`: their names, sources and pack bytes. A name has no `/`.
 pub fn cases() -> Vec<(String, String)> {
-    let list = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("web-goldens.txt"))
-        .expect("web-goldens.txt");
+    let list =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("web-goldens.txt"))
+            .expect("web-goldens.txt");
     let mut found = Vec::new();
-    for line in list.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+    for line in list
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    {
         let path = golden_dir().join(line);
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("web-goldens.txt names {line}: {e}"));
