@@ -461,10 +461,9 @@ fn host_eq_hooks_and_key_scans_are_charged() {
     assert!(vm.steps_used() > 300 * 299 / 2, "{}", vm.steps_used());
 }
 
-/// The steps of one run of `main` on an engine.
-fn steps_of(kind: colibri::EngineKind, source: &str) -> u64 {
+/// The steps of one run of `main`.
+fn steps_of(source: &str) -> u64 {
     let mut vm = colibri::Vm::builder()
-        .engine(kind)
         .stdout(Box::new(colibri::SharedBuffer::new()))
         .instruction_budget(10_000_000)
         .build();
@@ -474,50 +473,48 @@ fn steps_of(kind: colibri::EngineKind, source: &str) -> u64 {
 }
 
 #[test]
-fn the_closure_built_ins_cost_the_same_steps_on_both_engines() {
-    // Written in Colibri on the VM and native in the tree-walker, they charge alike: a step for
-    // each element of the receiver (whether or not the walk stops early), plus the calls of the
-    // closure.
-    for call in [
-        "xs.map(fn(x) => x + 1).len()",
-        "xs.filter(fn(x) => x > 4).len()",
-        "xs.any(fn(x) => x == 5)",
-        "xs.all(fn(x) => x < 3)",
-        "xs.find(fn(x) => x == 5)",
-        "xs.find_index(fn(x) => x == 5)",
-        "xs.fold(0, fn(a, x) => a + x)",
-        "xs.flat_map(fn(x) => [x, x]).len()",
-        "xs.sorted_by(fn(a, b) => a - b).len()",
-        "some(1).map(fn(x) => x + 1)",
-        "some(1).and_then(fn(x) => some(x + 1))",
-        "[1, 2].map(fn(x) => xs.filter(fn(y) => y > x).len()).len()",
+fn the_closure_built_ins_cost_a_step_for_each_element_and_the_calls_of_the_closure() {
+    // Written in Colibri, they charge a step for each element of the receiver (whether or not
+    // the walk stops early), plus the calls of the closure. The numbers are what the
+    // tree-walker and the VM agreed on before the tree-walker was retired.
+    for (call, steps) in [
+        ("xs.map(fn(x) => x + 1).len()", 18),
+        ("xs.filter(fn(x) => x > 4).len()", 18),
+        ("xs.any(fn(x) => x == 5)", 12),
+        ("xs.all(fn(x) => x < 3)", 12),
+        ("xs.find(fn(x) => x == 5)", 12),
+        ("xs.find_index(fn(x) => x == 5)", 12),
+        ("xs.fold(0, fn(a, x) => a + x)", 18),
+        ("xs.flat_map(fn(x) => [x, x]).len()", 18),
+        ("xs.sorted_by(fn(a, b) => a - b).len()", 25),
+        ("some(1).map(fn(x) => x + 1)", 5),
+        ("some(1).and_then(fn(x) => some(x + 1))", 5),
+        (
+            "[1, 2].map(fn(x) => xs.filter(fn(y) => y > x).len()).len()",
+            36,
+        ),
     ] {
         let source = format!(
             "fn main() {{\n    let xs = [5, 3, 9, 1, 7, 2, 8]\n    let r = {call}\n    print(r)\n}}"
         );
-        let tree = steps_of(colibri::EngineKind::Tree, &source);
-        let vm = steps_of(colibri::EngineKind::Bytecode, &source);
-        assert_eq!(vm, tree, "{call}");
+        assert_eq!(steps_of(&source), steps, "{call}");
     }
-    for stmt in [
-        "ys.retain(fn(x) => x > 4)",
-        "ys.sort_by(fn(a, b) => a - b)",
-        "ys.sort_by_key(fn(x) => 0 - x)",
-        "ys.for_each(fn(x) => print(x))",
+    for (stmt, steps) in [
+        ("ys.retain(fn(x) => x > 4)", 17),
+        ("ys.sort_by(fn(a, b) => a - b)", 24),
+        ("ys.sort_by_key(fn(x) => 0 - x)", 17),
+        ("ys.for_each(fn(x) => print(x))", 17),
     ] {
         let source =
             format!("fn main() {{\n    let mut ys = [5, 3, 9, 1, 7, 2, 8]\n    {stmt}\n}}");
-        let tree = steps_of(colibri::EngineKind::Tree, &source);
-        let vm = steps_of(colibri::EngineKind::Bytecode, &source);
-        assert_eq!(vm, tree, "{stmt}");
+        assert_eq!(steps_of(&source), steps, "{stmt}");
     }
 }
 
 #[test]
-fn a_budget_that_runs_out_inside_a_closure_built_in_stops_both_engines_at_the_same_place() {
-    for kind in [colibri::EngineKind::Tree, colibri::EngineKind::Bytecode] {
+fn a_budget_that_runs_out_inside_a_closure_built_in_stops_at_the_call() {
+    {
         let mut vm = colibri::Vm::builder()
-            .engine(kind)
             .stdout(Box::new(colibri::SharedBuffer::new()))
             .instruction_budget(40)
             .build();
@@ -528,8 +525,8 @@ fn a_budget_that_runs_out_inside_a_closure_built_in_stops_both_engines_at_the_sa
         .unwrap();
         let err = vm.run_main().unwrap_err();
         let (location, stack) = exhausted(&err);
-        assert_eq!(location.as_ref().unwrap().line, 3, "{kind:?}");
-        assert_eq!(stack.last().unwrap().function, "main", "{kind:?}");
+        assert_eq!(location.as_ref().unwrap().line, 3);
+        assert_eq!(stack.last().unwrap().function, "main");
     }
 }
 
@@ -546,12 +543,9 @@ fn main() {
     }
     print(\"{ps[0].x} {ps[1].x} {ps[2].x} {ps[2].y}\")
 }";
-    // A VM-only regression guard, not a contract between engines: step counts are approximate and
-    // engine-specific (EMBEDDING §5), so the exact number is pinned for this engine alone.
-    // The count was 47 before the loop lent the slot (the tree-walker charges one more; that
-    // difference is older than the lending).
-    let vm = steps_of(colibri::EngineKind::Bytecode, source);
-    assert_eq!(vm, 47);
+    // A regression guard: step counts are approximate (EMBEDDING §5), so the exact number is
+    // pinned here. The count was 47 before the loop lent the slot.
+    assert_eq!(steps_of(source), 47);
 }
 
 #[test]
@@ -559,10 +553,9 @@ fn a_budget_that_runs_out_in_a_for_mut_trip_writes_the_elements_back_before_the_
     // The loop lends the element's slot to the loop variable on the VM. The budget dies in the
     // middle of a trip; the trip's landing pad puts the variable back, so a deferred statement
     // of the function (outside the loop, so it may name the list) sees every element.
-    let run = |kind: colibri::EngineKind| {
+    let run = || {
         let out = colibri::SharedBuffer::new();
         let mut vm = colibri::Vm::builder()
-            .engine(kind)
             .stdout(Box::new(out.clone()))
             .instruction_budget(60)
             .build();
@@ -584,14 +577,8 @@ fn main() {
         exhausted(&err);
         (out.contents(), vm.steps_used())
     };
-    let tree = run(colibri::EngineKind::Tree);
-    let vm = run(colibri::EngineKind::Bytecode);
-    assert_eq!(vm, tree);
-    // Some trips ran, and the elements are all there (not `()`, not the old values only).
-    let sum: i64 =
-        vm.0.trim()
-            .split(' ')
-            .map(|n| n.parse::<i64>().unwrap())
-            .sum();
-    assert!(sum > 4, "{}", vm.0);
+    // The deferred print sees every element as the trips left them: the in-flight element is
+    // written back with its trip's increment (the first two elements went round once more than
+    // the last two), and the run stops one step past the budget of 60.
+    assert_eq!(run(), ("6 6 5 5\n".to_string(), 61));
 }

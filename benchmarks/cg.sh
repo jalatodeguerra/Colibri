@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Prints the instructions executed (cachegrind `I refs`) by each benchmark on both engines,
-# a stable number where wall time is noisy. Needs valgrind.
+# Prints the instructions executed (cachegrind `I refs`) by each benchmark, a stable number
+# where wall time is noisy. Needs valgrind.
 #
 #   benchmarks/cg.sh [path to the colibri binary] [benchmark names...]
 #
-# Build the binary first with `cargo build --release`. The default benchmarks are the ones
-# the bytecode VM can run.
+# Build the binary first with `cargo build --release`.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 # A binary given as a relative path is relative to where the script was run from.
@@ -26,24 +25,22 @@ trap 'rm -rf "$out"' EXIT
 
 # `I refs` of one run, as a plain number.
 ir() {
-    local engine="$1" file="$2"
-    COLIBRI_ENGINE="$engine" valgrind --tool=cachegrind --cache-sim=no \
+    local file="$1"
+    valgrind --tool=cachegrind --cache-sim=no \
         --cachegrind-out-file="$out/cg.out" "$COLIBRI" run "$file" 2>&1 >/dev/null |
         sed -n 's/.*I *refs: *//p' | tr -d ','
 }
 
 status=0
-printf '%-10s %16s %16s %8s\n' benchmark "tree Ir" "vm Ir" "vm/tree"
+printf '%-10s %16s\n' benchmark Ir
 for name in "${NAMES[@]}"; do
     src="$name.colibri"
-    tree=$(ir tree "$src") || tree=""
-    vm=$(ir vm "$src") || vm=""
-    if [ -z "$tree" ] || [ -z "$vm" ]; then
-        printf '%-10s %16s %16s %8s\n' "$name" "${tree:-failed}" "${vm:-failed}" "-"
+    count=$(ir "$src") || count=""
+    if [ -z "$count" ]; then
+        printf '%-10s %16s\n' "$name" failed
         status=1
         continue
     fi
-    ratio=$(awk -v a="$vm" -v b="$tree" 'BEGIN { printf "%.2f", a / b }')
-    printf '%-10s %16s %16s %8s\n' "$name" "$tree" "$vm" "$ratio"
+    printf '%-10s %16s\n' "$name" "$count"
 done
 exit $status

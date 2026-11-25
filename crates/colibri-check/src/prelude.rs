@@ -77,10 +77,9 @@ interface Neg {
 "#;
 
 /// The built-ins that take a closure, written in Colibri (vm-plan §2.9): the bytecode VM calls
-/// these instead of running the native versions, so a closure runs as ordinary bytecode and may
-/// pause. The tree-walker keeps its native versions. Each function does what the native one
-/// does, in the same order (a sort compares in the order of core's `merge_order`), and holds
-/// the list as a `for` does, so the guards and their messages are the same. The `__` methods
+/// these, so a closure runs as ordinary bytecode and may pause. Each function visits the elements in
+/// order (a sort compares in the order of core's `merge_order`), and holds the list as a `for`
+/// does, so the guards and their messages are the same. The `__` methods
 /// of lists are built-ins only this text may call. Their names cannot be written in a program
 /// that does not mean to.
 const FN_SOURCE: &str = r#"

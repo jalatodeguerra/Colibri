@@ -1,43 +1,19 @@
 //! Runs every `tests/golden/**/*.colibri` file at the repo root as one trial, and every folder
 //! that holds a `main.colibri` as one trial (its files are one program).
-//!
-//! `COLIBRI_ENGINE` picks the engine the tests run on: `vm` (the default), `tree`, or `both`,
-//! which runs every test on the tree-walker (checked against the directives) and on the VM
-//! and fails when the two outcomes differ.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use colibri_lang::golden::{
-    Directives, Outcome, PackageDirectives, check, check_package, diff_outcomes, parse_directives,
-    run_golden_on, run_golden_package_on,
+    Directives, Outcome, PackageDirectives, check, check_package, parse_directives, run_golden,
+    run_golden_package,
 };
 use colibri_lang::on_big_stack;
-use colibri_runtime::EngineKind;
 use libtest_mimic::{Arguments, Failed, Trial};
 
 enum Test {
     File(PathBuf),
     Package(PathBuf),
-}
-
-/// The engines a run uses.
-#[derive(Clone, Copy, PartialEq)]
-enum Mode {
-    Tree,
-    Vm,
-    Both,
-}
-
-impl Mode {
-    fn from_env() -> Mode {
-        match std::env::var("COLIBRI_ENGINE").as_deref() {
-            Ok("vm") | Err(_) => Mode::Vm,
-            Ok("both") => Mode::Both,
-            Ok("tree") => Mode::Tree,
-            Ok(other) => panic!("COLIBRI_ENGINE={other}: expected `vm`, `tree` or `both`"),
-        }
-    }
 }
 
 enum Source {
@@ -66,15 +42,15 @@ impl Case {
         }
     }
 
-    fn outcome(&self, engine: EngineKind) -> Outcome {
+    fn outcome(&self) -> Outcome {
         match &self.source {
             Source::File { path, source, .. } => {
                 let (path, source) = (path.clone(), source.clone());
-                on_big_stack(move || run_golden_on(&path, &source, Some(engine)))
+                on_big_stack(move || run_golden(&path, &source))
             }
             Source::Package { dir, .. } => {
                 let dir = dir.clone();
-                on_big_stack(move || run_golden_package_on(&dir, Some(engine)))
+                on_big_stack(move || run_golden_package(&dir))
             }
         }
     }
@@ -86,28 +62,13 @@ impl Case {
         }
     }
 
-    /// Runs on `engine` and checks against the directives; a crash is a failure too.
-    fn run_on(&self, engine: EngineKind) -> Result<(), String> {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.judge(&self.outcome(engine))
-        }));
+    /// Runs and checks against the directives; a crash is a failure too.
+    fn run(&self) -> Result<(), String> {
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.judge(&self.outcome())));
         result.unwrap_or_else(|payload| {
             Err(format!("the engine crashed: {}", payload_text(&payload)))
         })
-    }
-
-    /// Both engines: the tree-walker against the directives, the VM against the tree-walker.
-    fn run_both(&self) -> Result<(), String> {
-        let tree = self.outcome(EngineKind::Tree);
-        self.judge(&tree)?;
-        let vm = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.outcome(EngineKind::Bytecode)
-        }))
-        .map_err(|payload| format!("the engine crashed: {}", payload_text(&payload)))?;
-        match diff_outcomes(&tree, &vm) {
-            Some(diff) => Err(format!("the engines differ:\n{diff}")),
-            None => Ok(()),
-        }
     }
 }
 
@@ -160,7 +121,6 @@ fn package_files(dir: &Path, base: &Path, out: &mut Vec<(String, String)>) {
 
 fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden");
-    let mode = Mode::from_env();
     let mut tests = Vec::new();
     collect(&root, &mut tests);
     let key = |t: &Test| match t {
@@ -212,11 +172,7 @@ fn main() {
         let ignored = case.not_run_here();
         let name = case.name.clone();
         let trial = Trial::test(name, move || {
-            let result = match mode {
-                Mode::Tree => case.run_on(EngineKind::Tree),
-                Mode::Vm => case.run_on(EngineKind::Bytecode),
-                Mode::Both => case.run_both(),
-            };
+            let result = case.run();
             result.map_err(Failed::from)
         })
         .with_ignored_flag(ignored);

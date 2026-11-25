@@ -33,36 +33,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Every crate runs even after one fails, so a run shows all that is broken on a system.
       - run: cargo test --workspace --no-fail-fast
-
-  # The tree-walking interpreter, the engine before the bytecode VM, which is the default
-  # everywhere above. `COLIBRI_ENGINE=tree` is kept for one transition period, and the
-  # both-mode goldens compare the two engines until the interpreter is retired.
-  test-tree:
-    strategy:
-      fail-fast: false
-      matrix:
-        # Windows has the small main-thread stack; macOS adds nothing the tree tests need.
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: test-tree
-      # The `colibri` binary reads COLIBRI_ENGINE too, so the programs the command-line tests
-      # spawn run on the interpreter as well.
-      - name: Whole suite on the tree-walker
-        run: cargo test --workspace --no-fail-fast
-        env:
-          COLIBRI_ENGINE: tree
-      - name: Golden tests on both engines, outcomes compared
-        if: ${{ !cancelled() }}
-        run: cargo test -p colibri-lang --test golden
-        env:
-          COLIBRI_ENGINE: both
       # Release builds take the VM's unchecked paths (`unchecked.rs`), which debug builds check.
-      - name: Golden and VM tests in release, on the VM
+      - name: VM tests and golden tests in release
         if: ${{ !cancelled() && matrix.os == 'ubuntu-latest' }}
         run: |
           cargo test --release -p colibri-vm --no-fail-fast

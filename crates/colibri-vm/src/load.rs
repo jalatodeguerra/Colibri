@@ -136,7 +136,6 @@ impl Machine {
         };
         match result {
             Ok(v) => Ok(v),
-            Err(Ctl::Return(v)) => Ok(v),
             Err(ctl) => Err(into_panic(
                 ctl,
                 colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),

@@ -790,10 +790,10 @@ mod tests {
 
     /// Runs `f` with a context over a bare interpreter (no program is loaded).
     fn with_cx<T>(f: impl FnOnce(&mut Cx<'_>) -> T) -> T {
-        let mut engine = crate::engine_tree::new_engine(
+        let mut engine = crate::engine_vm::new_engine(
             Box::new(std::io::sink()),
             100,
-            crate::engine_tree::DEFAULT_NATIVE_STACK_BUDGET,
+            colibri_vm::DEFAULT_NATIVE_STACK_BUDGET,
         );
         f(&mut Ctx::new(&mut *engine))
     }

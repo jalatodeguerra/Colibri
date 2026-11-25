@@ -11,7 +11,7 @@
 //! * strings (and `Bytes`) are *inert*: nothing can observe when they die, so they are dropped
 //!   eagerly too, right after the operation that used them;
 //! * every other value is kept alive until the end of the statement and dropped newest first
-//!   (ARCHITECTURE §2 rule 2), which is what the tree-walker's temporaries stack does.
+//!   (ARCHITECTURE §2 rule 2).
 //!
 //! What has to die when control leaves is one compile-time stack of [`Item`]s: registers to
 //! drop, registered `defer`s, a hook-folding mark at every statement and scope, and `mut self`

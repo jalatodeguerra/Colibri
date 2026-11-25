@@ -55,7 +55,6 @@ pub enum SessionError {
 impl Vm {
     /// Starts (or restarts) a session: an empty program is loaded.
     pub fn session_start(&mut self) -> Result<(), Error> {
-        self.check_engine()?;
         self.reload = None;
         self.teardown();
         // Later entries may import anything: have every module registered, so the host types

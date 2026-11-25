@@ -217,13 +217,9 @@ pub trait Builtins: Engine {
             Builtin::OptionIsSome
             | Builtin::OptionIsNone
             | Builtin::OptionExpect
-            | Builtin::OptionMap
-            | Builtin::OptionAndThen
             | Builtin::ResultIsOk
             | Builtin::ResultIsErr
             | Builtin::ResultExpect
-            | Builtin::ResultMap
-            | Builtin::ResultAndThen
             | Builtin::ResultOk
             | Builtin::ResultErr
             | Builtin::ResultContext
@@ -237,8 +233,38 @@ pub trait Builtins: Engine {
                 return self.cogroup_builtin(fiber, op, &recv, span);
             }
             Builtin::SignalEmit => return self.signal_builtin(fiber, &recv, span),
+            // These pause the running coroutine: the VM compiles them to `Join`.
             Builtin::CoroutineJoin | Builtin::CoroutineJoinResult | Builtin::CoGroupJoinAll => {
-                return self.pausing_builtin(fiber, op, &recv, span);
+                return Err(self.internal(
+                    fiber,
+                    span,
+                    &format!("`{op:?}` reached the native path: the VM compiles it to `Join`"),
+                ));
+            }
+            // The built-ins that take a closure are Colibri code of the prelude
+            // (`colibri_check::prelude::BUILTIN_FNS`), so the closure may pause.
+            Builtin::ListMap
+            | Builtin::ListFilter
+            | Builtin::ListRetain
+            | Builtin::ListAny
+            | Builtin::ListAll
+            | Builtin::ListFind
+            | Builtin::ListFindIndex
+            | Builtin::ListFold
+            | Builtin::ListForEach
+            | Builtin::ListFlatMap
+            | Builtin::ListSortBy
+            | Builtin::ListSortByKey
+            | Builtin::ListSortedBy
+            | Builtin::OptionMap
+            | Builtin::OptionAndThen
+            | Builtin::ResultMap
+            | Builtin::ResultAndThen => {
+                return Err(self.internal(
+                    fiber,
+                    span,
+                    &format!("`{op:?}` reached the native path: it is a function of the prelude"),
+                ));
             }
             Builtin::StrBuilderNew => Value::Obj(ClassObj::new(
                 STR_BUILDER_TYPE,
@@ -310,26 +336,13 @@ pub trait Builtins: Engine {
                 };
                 return self.list_op(fiber, op, &list, args, span);
             }
-            Builtin::ListMap
-            | Builtin::ListFilter
-            | Builtin::ListRetain
-            | Builtin::ListAny
-            | Builtin::ListAll
-            | Builtin::ListFind
-            | Builtin::ListFindIndex
-            | Builtin::ListFold
-            | Builtin::ListForEach
-            | Builtin::ListSort
-            | Builtin::ListSortBy
-            | Builtin::ListSortByKey
+            Builtin::ListSort
             | Builtin::ListMin
             | Builtin::ListMax
             | Builtin::ListSum
             | Builtin::ListJoin
             | Builtin::ListZip
-            | Builtin::ListFlatMap
             | Builtin::ListSorted
-            | Builtin::ListSortedBy
             | Builtin::ListDedup
             | Builtin::ListChunks
             | Builtin::ListWindows

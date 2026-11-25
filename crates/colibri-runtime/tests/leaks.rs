@@ -254,12 +254,9 @@ fn main() {
     assert!(vm.find_leaks().is_empty());
 }
 
-/// The leaks one program makes on an engine: the path and the `allocated at` sites of each.
-fn leak_reports(kind: colibri::EngineKind, source: &str) -> Vec<(String, Vec<String>)> {
-    let mut vm = colibri::Vm::builder()
-        .engine(kind)
-        .track_leaks(true)
-        .build();
+/// The leaks one program makes: the path and the `allocated at` sites of each.
+fn leak_reports(source: &str) -> Vec<(String, Vec<String>)> {
+    let mut vm = colibri::Vm::builder().track_leaks(true).build();
     vm.load_source("leaks.colibri", source).unwrap();
     vm.run_main().unwrap();
     vm.find_leaks()
@@ -268,16 +265,9 @@ fn leak_reports(kind: colibri::EngineKind, source: &str) -> Vec<(String, Vec<Str
         .collect()
 }
 
-/// The same report on both engines, whatever form of `some(obj)` each makes.
-fn same_report_on_both(source: &str) -> Vec<(String, Vec<String>)> {
-    let tree = leak_reports(colibri::EngineKind::Tree, source);
-    assert_eq!(leak_reports(colibri::EngineKind::Bytecode, source), tree);
-    tree
-}
-
 #[test]
-fn a_path_through_an_optional_field_is_the_same_on_both_engines_with_a_shorter_route_beside_it() {
-    let reports = same_report_on_both(
+fn a_path_through_an_optional_field_is_reported_with_a_shorter_route_beside_it() {
+    let reports = leak_reports(
         r#"
 class M {
     name: str
@@ -298,16 +288,15 @@ fn main() {
         reports[0].0,
         r#"M(name: "a") -> next -> M(name: "b") -> next -> M(name: "a")"#
     );
-    assert!(
-        reports[0].1[0].starts_with("M at leaks.colibri:"),
-        "{:?}",
-        reports[0].1
+    assert_eq!(
+        reports[0].1,
+        ["M at leaks.colibri:8", "M at leaks.colibri:9"]
     );
 }
 
 #[test]
-fn a_path_through_a_list_holding_both_forms_of_some_is_the_same_on_both_engines() {
-    let reports = same_report_on_both(
+fn a_path_through_a_list_holding_both_forms_of_some_is_reported() {
+    let reports = leak_reports(
         r#"
 class L {
     name: str
@@ -327,5 +316,9 @@ fn main() {
     assert_eq!(
         reports[0].0,
         r#"L(name: "c") -> xs[0] -> L(name: "d") -> m[7] -> L(name: "c")"#
+    );
+    assert_eq!(
+        reports[0].1,
+        ["L at leaks.colibri:8", "L at leaks.colibri:9"]
     );
 }

@@ -1,6 +1,6 @@
 // A `some(obj)` is one more holder of the object: the object dies, and its hook runs, when the
 // last of the plain references and the `Option`s that hold it is gone, in the order the
-// tree-walker has always had.
+// language has always had.
 class Res { name: str }
 impl Drop for Res {
     fn drop(self) {

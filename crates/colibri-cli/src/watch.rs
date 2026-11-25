@@ -1,7 +1,7 @@
 //! `colibri run --watch`: run a program and keep it up to date with its source files
 //! (DESIGN §16.3, ARCHITECTURE §17).
 //!
-//! The interpreter is single-threaded, so the only moments the code can change are the ones
+//! The runtime is single-threaded, so the only moments the code can change are the ones
 //! where no Colibri code is running:
 //!
 //! * while the event loop of a program that still has coroutines runs, between two ticks (the

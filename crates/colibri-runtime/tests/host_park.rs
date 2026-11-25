@@ -1,21 +1,18 @@
 //! A coroutine that waits in a host function (`Ctx::run_async`) on the bytecode VM: the host
 //! function runs on a native stack of its own, which is parked while the coroutine waits
 //! (vm-plan §3.2). What happens to the function when the coroutine is cancelled, fails or ends
-//! there, seen through the real `Ctx`. Every test runs the VM, whatever `COLIBRI_ENGINE` says.
+//! there, seen through the real `Ctx`. Every test runs the VM.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use colibri::{Ctx, EngineKind, SharedBuffer, Vm};
+use colibri::{Ctx, SharedBuffer, Vm};
 use colibri_runtime as colibri;
 
 fn vm() -> (Vm, SharedBuffer) {
     let out = SharedBuffer::new();
-    let vm = Vm::builder()
-        .engine(EngineKind::Bytecode)
-        .stdout(Box::new(out.clone()))
-        .build();
+    let vm = Vm::builder().stdout(Box::new(out.clone())).build();
     (vm, out)
 }
 
@@ -196,7 +193,6 @@ fn a_host_function_that_needs_a_lot_of_native_stack_works_in_a_coroutine() {
 
     let out = SharedBuffer::new();
     let mut vm = Vm::builder()
-        .engine(EngineKind::Bytecode)
         .coroutine_stack_size(8 << 20)
         .stdout(Box::new(out.clone()))
         .build();

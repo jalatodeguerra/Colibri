@@ -1,6 +1,6 @@
 //! The machine as an [`Engine`]: what `colibri-core` asks of it.
 
-use colibri_check::hir::{Builtin, FnId};
+use colibri_check::hir::FnId;
 use colibri_check::types::TypeId;
 use colibri_core::engine::{Engine, Resumed};
 use colibri_core::fiber::FiberState;
@@ -323,22 +323,6 @@ impl Engine for Machine {
 
     fn resume_stack(&mut self, id: u64, slot: EngineSlot, cancel: bool) -> Resumed {
         self.resume_fiber(id, slot, cancel)
-    }
-
-    fn pausing_builtin(
-        &mut self,
-        fiber: &mut VmFiber,
-        op: Builtin,
-        _recv: &Value,
-        span: Span,
-    ) -> Eval {
-        // `join`, `join_result` and `join_all` pause, and a pause is a frame operation on the VM
-        // (`Op::Join`): the compiler never hands them to core's `builtin`.
-        Err(self.internal(
-            fiber,
-            span,
-            &format!("`{op:?}` reached the native path of the bytecode VM"),
-        ))
     }
 }
 

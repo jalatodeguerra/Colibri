@@ -14,8 +14,8 @@
 //!
 //! This is the one module of the VM that is not safe Rust, besides the C memory of `cffi`. The
 //! host function on the stack holds `&mut Machine` and `&mut VmFiber` across the switches
-//! while the rest of the program uses both. That is the discipline of the tree-walker's
-//! coroutine stacks (`colibri-interp`, `coro.rs`), and it rests on four facts:
+//! while the rest of the program uses both. That is the discipline of native coroutine
+//! stacks, and it rests on four facts:
 //!
 //! 1. The switch is the only way the program passes control to or from the stack, and it is a
 //!    call the compiler cannot see through. Both sides give it the pointers they use before the

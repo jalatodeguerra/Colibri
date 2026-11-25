@@ -55,10 +55,6 @@ fn payload_of(v: &Value, variant: u32) -> Option<Value> {
     is_variant(v, variant)
 }
 
-fn ok_value(v: Value) -> Value {
-    Value::variant(RESULT_TYPE, VARIANT_OK, crate::value::one(v))
-}
-
 fn err_value(v: Value) -> Value {
     Value::variant(RESULT_TYPE, VARIANT_ERR, crate::value::one(v))
 }
@@ -171,28 +167,6 @@ pub trait ResultOps: Engine {
                     return Err(self.panic(fiber, span, format!("{msg}: {why}")));
                 }
                 (None, None) => return Err(bad(self, fiber)),
-            },
-            Builtin::OptionMap => match payload_of(&recv, VARIANT_SOME) {
-                Some(v) => {
-                    let mapped = self.call_value_at(fiber, &arg(args, 1), vec![v], span)?;
-                    self.core().option(Some(mapped))
-                }
-                None => recv,
-            },
-            Builtin::OptionAndThen => match payload_of(&recv, VARIANT_SOME) {
-                Some(v) => self.call_value_at(fiber, &arg(args, 1), vec![v], span)?,
-                None => recv,
-            },
-            Builtin::ResultMap => match payload_of(&recv, VARIANT_OK) {
-                Some(v) => {
-                    let mapped = self.call_value_at(fiber, &arg(args, 1), vec![v], span)?;
-                    ok_value(mapped)
-                }
-                None => recv,
-            },
-            Builtin::ResultAndThen => match payload_of(&recv, VARIANT_OK) {
-                Some(v) => self.call_value_at(fiber, &arg(args, 1), vec![v], span)?,
-                None => recv,
             },
             Builtin::ResultContext => match payload_of(&recv, VARIANT_ERR) {
                 Some(e) => err_value(new_context_error(e, self.message_arg(args, 1))),

@@ -17,14 +17,12 @@
 //!
 //! A [`Vm`] runs one program. Functions are called through typed [`Fn`] handles whose Rust
 //! signature is checked against the Colibri one when the handle is made. A Colibri panic comes
-//! back as an [`Error::Panic`] and leaves the `Vm` usable. No interpreter type appears in this
+//! back as an [`Error::Panic`] and leaves the `Vm` usable. No engine type appears in this
 //! API; values cross through [`IntoColibri`] and [`FromColibri`].
 //!
-//! A `Vm` runs the program on the register bytecode VM. The tree-walking interpreter it replaced
-//! stays selectable for a transition period with the environment variable `COLIBRI_ENGINE=tree`
-//! (`COLIBRI_ENGINE=vm` names the default). The two engines agree on what a program prints and
-//! how it ends; they do not agree on the step counts that [`VmBuilder::instruction_budget`] is
-//! measured in, so a budget tuned on one engine is a bound, not an exact figure, on the other.
+//! A `Vm` runs the program on a register bytecode VM. The step counts that
+//! [`VmBuilder::instruction_budget`] is measured in are approximate, so a budget is a bound, not
+//! an exact figure.
 //!
 //! # Host functions and state
 //!
@@ -62,9 +60,8 @@
 //! host can keep and call later.
 //!
 //! The VM keeps the frames of Colibri calls on the heap, so [`VmBuilder::max_call_depth`] is not
-//! bounded by the thread's stack there. The tree-walking interpreter uses Rust stack for each
-//! active call: with `COLIBRI_ENGINE=tree`, run a `Vm` with a high `max_call_depth` on a thread
-//! with a large stack (the `colibri` tool does).
+//! bounded by the thread's stack. Host functions that call back into Colibri, and the deep
+//! operations on values, do use Rust stack: see [`VmBuilder::native_stack_budget`].
 
 // The code `#[colibri::export]` writes names the crate `colibri_runtime`; this makes that name
 // work inside the crate too (its own tests and docs).
@@ -77,7 +74,6 @@ mod class;
 mod convert;
 mod ctx;
 mod engine;
-mod engine_tree;
 mod engine_vm;
 mod error;
 mod func;
@@ -190,9 +186,8 @@ pub use convert::{Args, Bytes, FromColibri, IntoColibri, Never, TypedError, Valu
 #[doc(hidden)]
 pub use ctx::Incomplete;
 pub use ctx::{Caller, Ctx, Cx};
-#[doc(hidden)]
-pub use engine::EngineKind;
-pub use engine_tree::DEFAULT_NATIVE_STACK_BUDGET;
+/// The default of [`VmBuilder::native_stack_budget`]: 1 MiB.
+pub const DEFAULT_NATIVE_STACK_BUDGET: usize = colibri_vm::DEFAULT_NATIVE_STACK_BUDGET;
 pub use error::{Error, Location, Report, StackFrame};
 pub use func::Fn;
 pub use handle::{Handle, Ref, RefMut};

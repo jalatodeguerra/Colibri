@@ -366,8 +366,8 @@ impl Drop for Notify {
 
 /// The end of a background operation that its owner holds: whoever has it (any thread) gives
 /// the waiting call its result with [`Completer::complete`], once. Made by
-/// `Interp::await_completion`, which waits for it. The pool's own jobs
-/// (`Interp::await_external_with`) are one kind of owner; a thread that watches for events
+/// `Machine::await_completion`, which waits for it. The pool's own jobs
+/// (`Machine::await_external_with`) are one kind of owner; a thread that watches for events
 /// (a poller of sockets) is another.
 ///
 /// What it promises:

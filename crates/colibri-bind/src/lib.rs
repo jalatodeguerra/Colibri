@@ -2,7 +2,7 @@
 //!
 //! The runtime crate re-exports [`export`] as `colibri::export`; use it from there. What the
 //! macro writes uses only paths below `colibri_runtime::__private`, so an engine other than the
-//! interpreter can provide the same names.
+//! VM can provide the same names.
 //!
 //! * `#[colibri::export(value)]` on a struct with only `pub` fields, all convertible, and
 //!   `Copy`: a Colibri `struct`, converted field by field each time it crosses. On an enum

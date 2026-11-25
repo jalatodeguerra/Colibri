@@ -6,7 +6,7 @@
 //! **This file has never been compiled.** colibri-vm's own dependencies on wasm32 are pure Rust
 //! (`corosensei` and `libc` are not dependencies there), so a `cargo check -p colibri-vm --target
 //! wasm32-unknown-unknown` looks possible, but the target is not installed on the machines this
-//! was written on and no CI job builds it. `colibri-interp` and so `colibri-runtime` cannot be
+//! was written on and no CI job builds it. `colibri-runtime` cannot be
 //! built for wasm32 at all (`corosensei`). It stays unbuilt until the web step, which has to make
 //! the runtime build there and then check this stub.
 

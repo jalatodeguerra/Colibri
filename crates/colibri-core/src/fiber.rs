@@ -1,7 +1,7 @@
 //! The part of a running computation that the engine-neutral code reads and writes.
 
 /// What the shared code needs to know about one running computation, wherever the engine keeps
-/// the rest of it (the tree-walker: frames and temporaries in its own `Fiber`).
+/// the rest of it (the VM: frames and temporaries in its own fiber).
 #[derive(Debug, Default, Clone)]
 #[doc(hidden)]
 pub struct FiberState {

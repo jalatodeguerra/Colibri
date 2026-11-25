@@ -3,8 +3,8 @@
 //! [`RuntimeEngine`] is what a [`crate::Vm`] asks of an engine, and [`HostCx`] is the subset a
 //! host function (a [`crate::Ctx`]) needs while it runs. Both are object-safe and
 //! runtime-internal: nothing here is public, so the embedding API does not depend on which
-//! engine is behind it. The bytecode VM (the default) and the tree-walking interpreter implement
-//! them, in `engine_vm` and `engine_tree`.
+//! engine is behind it. The bytecode VM implements
+//! them, in `engine_vm`.
 //!
 //! An engine owns its main fiber, so the runtime never names a fiber type; a host function
 //! gets the fiber it runs on through its `&mut dyn HostCx`.
@@ -33,43 +33,6 @@ pub(crate) struct ClassHooks {
     pub show: Option<HostFnImpl>,
     pub eq: Option<HostFnImpl>,
     pub hash: Option<HostFnImpl>,
-}
-
-/// Which engine runs the program.
-///
-/// Not part of the embedding API: the default is the bytecode VM, and `COLIBRI_ENGINE=tree`
-/// (or the hidden [`crate::VmBuilder::engine`]) selects the tree-walking interpreter while it
-/// is still around.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum EngineKind {
-    /// The tree-walking interpreter, kept for one transition period.
-    Tree,
-    /// The register bytecode VM, the default.
-    #[default]
-    Bytecode,
-}
-
-impl EngineKind {
-    /// The engine the environment variable `COLIBRI_ENGINE` names (`tree` or `vm`), or the
-    /// default (the VM) when it is unset or empty. An unknown value is an `Err` with the text to
-    /// report.
-    pub(crate) fn from_env() -> Result<EngineKind, String> {
-        match std::env::var("COLIBRI_ENGINE") {
-            Err(_) => Ok(EngineKind::default()),
-            Ok(v) => EngineKind::parse(&v),
-        }
-    }
-
-    pub(crate) fn parse(text: &str) -> Result<EngineKind, String> {
-        match text {
-            "" | "vm" => Ok(EngineKind::Bytecode),
-            "tree" => Ok(EngineKind::Tree),
-            other => Err(format!(
-                "unknown engine `{other}` (COLIBRI_ENGINE is `tree` or `vm`)"
-            )),
-        }
-    }
 }
 
 /// What a host function may use of the engine that is running it: the shared state, the fiber
@@ -151,13 +114,11 @@ impl dyn HostCx + '_ {
 /// What a [`crate::Vm`] asks of an engine. Each engine owns its main fiber.
 pub(crate) trait RuntimeEngine: HostCx {
     /// Compile every function when a program is loaded, patched or extended (see
-    /// [`crate::VmBuilder::compile_all_at_load`]). Only the bytecode VM compiles lazily.
-    fn set_compile_all(&mut self, _on: bool) {}
+    /// [`crate::VmBuilder::compile_all_at_load`]); the default is to compile lazily.
+    fn set_compile_all(&mut self, on: bool);
 
-    /// The size of the native stack a coroutine's call of a host function runs on, where the
-    /// engine gives it one of its own (the bytecode VM). The tree-walker's coroutines have one
-    /// native stack each, sized by `coroutine_stack_size` in the scheduler.
-    fn set_host_stack_size(&mut self, _bytes: usize) {}
+    /// The size of the native stack a coroutine's call of a host function runs on.
+    fn set_host_stack_size(&mut self, bytes: usize);
 
     /// Puts a checked program to work: the code tables, the host function slots. Module
     /// initialisers do not run yet.
@@ -218,7 +179,7 @@ pub(crate) trait RuntimeEngine: HostCx {
     fn cancel_all_coroutines(&mut self);
     /// Resumes every due coroutine once.
     fn tick(&mut self, dt: f64) -> Result<(), Box<PanicInfo>>;
-    /// How long until the next coroutine needs a tick (see `Interp::next_wake`).
+    /// How long until the next coroutine needs a tick (see `Machine::next_wake`).
     fn next_wake(&mut self, poll: f64) -> Option<f64>;
     /// Panics that no `tick` has reported yet.
     fn take_coroutine_failure(&mut self) -> Option<Box<PanicInfo>>;

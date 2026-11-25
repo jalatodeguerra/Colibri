@@ -538,4 +538,53 @@ mod tests {
         core.drop_host_heap();
         assert_eq!(*log.borrow(), ["b", "a", "c"]);
     }
+
+    #[test]
+    fn shared_borrows_stack_and_exclude_an_exclusive_one() {
+        let log = Rc::default();
+        let mut core = core();
+        let (i, g) = core.host_insert(any(), "Noisy", noisy("a", &log));
+        let one = core.host_borrow(None, i, g, any(), false).unwrap();
+        let two = core.host_borrow(None, i, g, any(), false).unwrap();
+        assert_eq!(one.downcast_ref::<Noisy>().unwrap().0, "a");
+        assert_eq!(two.downcast_ref::<Noisy>().unwrap().0, "a");
+        let busy = core.host_borrow(None, i, g, any(), true).err().unwrap();
+        assert_eq!(
+            busy,
+            HostBorrowError::InUse {
+                name: "Noisy".into(),
+                holder: None
+            }
+        );
+        assert!(core.host_remove(i, g, any()).is_err());
+        drop(one);
+        assert!(core.host_borrow(None, i, g, any(), true).is_err());
+        drop(two);
+        let mut mine = core.host_borrow(None, i, g, any(), true).unwrap();
+        assert!(mine.downcast_mut::<Noisy>().is_some());
+        // An exclusive borrow excludes everything, including a read.
+        assert!(core.host_borrow(None, i, g, any(), false).is_err());
+        drop(mine);
+        assert!(core.host_borrow(None, i, g, any(), false).is_ok());
+    }
+
+    #[test]
+    fn a_shared_guard_cannot_be_written_through() {
+        let mut core = core();
+        let (i, g) = core.host_insert(any(), "Noisy", noisy("a", &Rc::default()));
+        let mut shared = core.host_borrow(None, i, g, any(), false).unwrap();
+        assert!(shared.downcast_mut::<Noisy>().is_none());
+        assert!(shared.downcast_ref::<String>().is_none());
+    }
+
+    #[test]
+    fn a_wrong_rust_type_is_reported_not_downcast() {
+        let mut core = core();
+        let (i, g) = core.host_insert(any(), "Noisy", noisy("a", &Rc::default()));
+        let wrong = core
+            .host_borrow(None, i, g, AnyTypeId::of::<String>(), false)
+            .err()
+            .unwrap();
+        assert!(matches!(wrong, HostBorrowError::WrongType { .. }));
+    }
 }

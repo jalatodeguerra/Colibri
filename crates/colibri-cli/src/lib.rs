@@ -15,13 +15,14 @@ pub mod watch;
 
 use std::thread;
 
-/// The stack of the thread that runs Colibri code. Each active Colibri call uses Rust stack
-/// in the tree-walking interpreter (the VM keeps its frames on the heap); this is enough for the default call-depth limit even in
-/// an unoptimised build, so the limit (a deterministic "stack overflow" panic) always fires
-/// before the Rust stack can overflow.
+/// The stack of the thread that runs Colibri code. Colibri calls keep their frames on the heap,
+/// but a host function that calls back into Colibri, and the deep operations on values (`show`,
+/// `==`, `clone`), recurse on the Rust stack; this is enough for the default call-depth limit
+/// even in an unoptimised build, so the limit (a deterministic "stack overflow" panic) always
+/// fires before the Rust stack can overflow.
 pub const STACK_SIZE: usize = 256 * 1024 * 1024;
 
-/// What the interpreter may use of that stack: everything but a margin for the rest of the
+/// What the engine may use of that stack: everything but a margin for the rest of the
 /// program.
 pub const NATIVE_STACK_BUDGET: usize = STACK_SIZE - 16 * 1024 * 1024;
 
@@ -39,22 +40,9 @@ pub fn build_cfg() -> colibri_runtime::BuildCfg {
     BUILD_CFG.get().cloned().unwrap_or_default()
 }
 
-static ENGINE: std::sync::OnceLock<colibri_runtime::EngineKind> = std::sync::OnceLock::new();
-
-/// Chooses the engine for this process (`colibri run --engine`), over `COLIBRI_ENGINE`;
-/// `main` calls it once, before anything is loaded.
-pub fn set_engine(kind: colibri_runtime::EngineKind) {
-    let _ = ENGINE.set(kind);
-}
-
 /// A `Vm` builder set up for a thread made by [`on_big_stack`].
 pub fn vm_builder() -> colibri_runtime::VmBuilder {
-    let builder = colibri_runtime::Vm::builder();
-    let builder = match ENGINE.get() {
-        Some(kind) => builder.engine(*kind),
-        None => builder,
-    };
-    builder
+    colibri_runtime::Vm::builder()
         .build_cfg(build_cfg())
         .max_call_depth(colibri_runtime::DEFAULT_MAX_CALL_DEPTH)
         .native_stack_budget(NATIVE_STACK_BUDGET)

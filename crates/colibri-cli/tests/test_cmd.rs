@@ -492,8 +492,7 @@ fn check_still_finds_errors_in_a_script_modules_statements_and_initialisers() {
     assert!(err.contains("gen.colibri:2"), "{err}");
 }
 
-/// The binary under test. It inherits `COLIBRI_ENGINE`, so these tests run the programs they
-/// spawn on the engine the environment names (the VM when it names none).
+/// The binary under test.
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }
