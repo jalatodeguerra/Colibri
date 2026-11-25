@@ -121,6 +121,16 @@ impl Core {
         self.safepoints.hits[kind.index()]
     }
 
+    /// Takes the steps that `kind` has not been told about yet: those charged since its last
+    /// safepoint, the ones of the budget that is open included. A consumer that wants the whole
+    /// total (a profiler at the end of the program) flushes them as a last sample.
+    pub fn take_pending_steps(&mut self, kind: SafepointKind) -> u64 {
+        self.close_budget();
+        let pending = std::mem::take(&mut self.safepoints.since[kind.index()]);
+        self.open_budget();
+        pending
+    }
+
     /// The slow path of a counted-down window that went below zero: when only the slice ended
     /// (the budget has steps left), refills the window, marks a safepoint due and says `true`.
     /// `false`: the budget really ran out.

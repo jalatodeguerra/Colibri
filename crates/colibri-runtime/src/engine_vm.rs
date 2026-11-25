@@ -273,4 +273,15 @@ impl RuntimeEngine for VmEngine {
     fn find_leaks(&self) -> Vec<Leak> {
         self.machine.find_leaks()
     }
+
+    fn start_profile(&mut self, weight: colibri_vm::ProfileWeight) {
+        self.machine.start_profile(weight);
+    }
+
+    fn finish_profile(
+        &mut self,
+        locate: &dyn Fn(colibri_syntax::Span) -> Option<(String, u32)>,
+    ) -> Option<colibri_vm::Profile> {
+        self.machine.finish_profile(locate)
+    }
 }

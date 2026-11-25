@@ -3,10 +3,12 @@
 pub mod checkcmd;
 pub mod depscmd;
 pub mod doccmd;
+mod flame;
 pub mod fmt;
 pub mod golden;
 pub mod leakcmd;
 pub mod newcmd;
+pub mod profilecmd;
 pub mod repl;
 mod repl_input;
 pub mod runcmd;

@@ -8,6 +8,7 @@ use colibri_runtime as colibri;
 
 use crate::depscmd::{self, DepFlags};
 use crate::leakcmd::{self, LeakMode};
+use crate::profilecmd;
 
 /// Exit code of a program that panicked (the convention of Rust's own panics).
 const EXIT_PANIC: u8 = 101;
@@ -15,7 +16,13 @@ const EXIT_PANIC: u8 = 101;
 /// Runs `file`: syncs the dependencies, builds the `Vm`, loads the program (the loader's
 /// compile errors are the diagnostics) and runs it. Only the standard modules the program
 /// imports are registered.
-pub fn run(file: &Path, args: Vec<String>, leaks: Option<LeakMode>, deps: DepFlags) -> ExitCode {
+pub fn run(
+    file: &Path,
+    args: Vec<String>,
+    leaks: Option<LeakMode>,
+    deps: DepFlags,
+    profile: Option<&profilecmd::Options>,
+) -> ExitCode {
     if let Err(code) = depscmd::prepare(file, deps) {
         return code;
     }
@@ -23,20 +30,37 @@ pub fn run(file: &Path, args: Vec<String>, leaks: Option<LeakMode>, deps: DepFla
         crate::vm_builder().allow_all().track_leaks(leaks.is_some()),
         args,
     );
-    run_in(&mut vm, file, leaks)
+    run_with(&mut vm, file, leaks, profile)
 }
 
 /// [`run`] in a `Vm` that has the standard library installed.
 pub fn run_in(vm: &mut colibri::Vm, file: &Path, leaks: Option<LeakMode>) -> ExitCode {
+    run_with(vm, file, leaks, None)
+}
+
+/// [`run_in`], profiling the run when `profile` is given: the profile covers the load, `main`
+/// and the coroutines that keep running after it, and is written before the leak report.
+pub fn run_with(
+    vm: &mut colibri::Vm,
+    file: &Path,
+    leaks: Option<LeakMode>,
+    profile: Option<&profilecmd::Options>,
+) -> ExitCode {
     let color = io::stderr().is_terminal();
     // Warnings are printed once the program has checked and before any of its code runs:
     // its top level may run for a long time.
     vm.on_warnings(move |report| eprint!("{}", report.render(color)));
+    if let Some(options) = profile {
+        profilecmd::start(vm, options);
+    }
     let loaded = vm.load_path(file);
     // After `main`, coroutines keep running (timed by the real clock) until none is left.
     let outcome = loaded
         .and_then(|()| vm.run_main())
         .and_then(|()| vm.run_event_loop());
+    if let Some(options) = profile {
+        profilecmd::finish(vm, options);
+    }
     let code = exit_code(vm, outcome, color);
     // The program is over: coroutines are cancelled and module-level values released, so a
     // cycle that is left is a leak.

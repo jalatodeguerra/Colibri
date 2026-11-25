@@ -28,7 +28,13 @@ impl Machine {
             }
             let outcome: Result<(), Ctl> = match due.kind {
                 // No consumer is built yet: each arrives with its own step.
-                SafepointKind::Memory | SafepointKind::Debugger | SafepointKind::Profiler => Ok(()),
+                SafepointKind::Memory | SafepointKind::Debugger => Ok(()),
+                SafepointKind::Profiler => {
+                    if let Some(profiler) = self.profiler.as_mut() {
+                        profiler.sample(due, fiber);
+                    }
+                    Ok(())
+                }
             };
             if let Err(ctl) = outcome
                 && failure.is_none()
