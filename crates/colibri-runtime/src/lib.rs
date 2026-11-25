@@ -169,6 +169,9 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 /// ```
 pub use colibri_bind::export;
 pub use colibri_check::package::{
+    AssetPatterns, Build, Manifest, asset_path_problem, parse_manifest,
+};
+pub use colibri_check::package::{
     BuildCfg, COMPLETE_MARKER, DiskFs, Entry, MemoryFs, Recorded, RecordingFs, SourceFs,
     cache_root, checkout_dir, feature_name_problem,
 };

@@ -2,6 +2,7 @@
 //! (ARCHITECTURE §11). Nothing here type-checks; the result is what [`crate::check_modules`]
 //! takes.
 
+pub mod assets;
 mod cfg;
 mod fs;
 mod git;
@@ -16,6 +17,7 @@ use std::collections::HashMap;
 use colibri_syntax::Diagnostic;
 use colibri_syntax::ast::{self, NodeId};
 
+pub use assets::{AssetPatterns, path_problem as asset_path_problem};
 pub use cfg::{BuildCfg, Excluded, KNOWN_ARCH, KNOWN_OS};
 pub use fs::{
     DiskFs, MemoryFs, Recorded, RecordingFs, SourceFs, canonical_path, normalize,
@@ -29,7 +31,7 @@ pub use loader::{
 pub use lock::{LOCK_FILE, Lock, LockEntry};
 pub use manifest::parse as parse_manifest;
 pub use manifest::{
-    Dependency, Features, GitSource, GitSpec, Manifest, Source, feature_name_problem,
+    Build, Dependency, Features, GitSource, GitSpec, Manifest, Source, feature_name_problem,
     is_name as is_package_name,
 };
 pub use sync::{SyncOptions, SyncReport, Update, sync};
