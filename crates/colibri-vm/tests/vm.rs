@@ -1023,3 +1023,42 @@ fn wait_until_outside_a_coroutine_panics_before_it_runs_the_condition() {
         )
     );
 }
+
+#[test]
+fn strings_loops_use_starts_with_and_move_their_temporaries_and_skip_the_hook_checks() {
+    let src = "fn words(n: int) -> List[str] {
+    let mut parts: List[str] = []
+    for i in 0..n {
+        parts.push(\"w{i}\")
+    }
+    return parts
+}
+fn pieces(s: str) -> int {
+    let p = s.split(\",\")
+    let q = s.trim()
+    return p.len() + q.len()
+}
+fn count(ws: List[str], p: str) -> int {
+    let mut n = 0
+    for w in ws {
+        if w.starts_with(\"w1\") { n += 1 }
+        if w.starts_with(p) { n += 10 }
+    }
+    return n
+}";
+    let words = dis(src, "words");
+    // The formatted text is a temporary of strings: the list takes it over, with no drop after.
+    assert!(words.contains("ListPushMove r"), "{words}");
+    assert!(!words.contains("ListPush r"), "{words}");
+    let count = dis(src, "count");
+    assert!(count.contains("StrStartsWithK r"), "{count}");
+    assert!(count.contains("StrStartsWith r"), "{count}");
+    assert!(!count.contains("Builtin"), "{count}");
+    // Nothing in the loop can release a class object, so no trip checks for a hook panic: the one
+    // check left is the function's own, after the loop.
+    assert_eq!(count.matches("CheckHooks").count(), 1, "{count}");
+    // A built-in that takes and returns scalars and strings is no release either.
+    let pieces = dis(src, "pieces");
+    assert!(pieces.contains("Builtin(StrSplit)"), "{pieces}");
+    assert!(!pieces.contains("CheckHooks"), "{pieces}");
+}

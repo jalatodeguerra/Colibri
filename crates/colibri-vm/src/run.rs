@@ -678,8 +678,12 @@ impl Machine {
                     sync!();
                     tri!(self.op_builtin(fiber, &chunk, base, pc, op));
                 }
-                Op::ListPush { l, v } => {
-                    let item = rd!(v).dup();
+                Op::ListPush { l, v } | Op::ListPushMove { l, v } => {
+                    let item = if matches!(op, Op::ListPushMove { .. }) {
+                        std::mem::replace(wr!(v), Value::Unit)
+                    } else {
+                        rd!(v).dup()
+                    };
                     let Value::List(list) = rd!(l) else {
                         self.release(item);
                         internal!("an ill-typed `push`")
@@ -704,6 +708,22 @@ impl Machine {
                     };
                     let n = text.len() as i64;
                     put!(d, Value::Int(n));
+                }
+                Op::StrStartsWith { d, s, p } => {
+                    let (Value::Str(text), Value::Str(prefix)) = (rd!(s), rd!(p)) else {
+                        internal!("an ill-typed `starts_with`")
+                    };
+                    let yes = text.starts_with(&**prefix);
+                    put!(d, Value::Bool(yes));
+                }
+                Op::StrStartsWithK { d, s, k } => {
+                    let (Value::Str(text), Value::Str(prefix)) =
+                        (rd!(s), &chunk.consts[usize::from(k)])
+                    else {
+                        internal!("an ill-typed `starts_with`")
+                    };
+                    let yes = text.starts_with(&**prefix);
+                    put!(d, Value::Bool(yes));
                 }
                 Op::Coerce { d, s, site } => match &chunk.sites[usize::from(site)] {
                     Site::F32ToFloat => {
