@@ -109,6 +109,7 @@ pub struct VmBuilder {
     clock: Option<Box<dyn Clock>>,
     cfg: BuildCfg,
     compile_all: bool,
+    safepoint_slice: Option<u32>,
 }
 
 impl VmBuilder {
@@ -229,6 +230,15 @@ impl VmBuilder {
         self
     }
 
+    /// Counts the budget in slices of `steps` and runs a (test-only) safepoint at each end, so
+    /// that tests can check that nothing observable depends on the slice. See
+    /// [`Vm::safepoints_run`].
+    #[doc(hidden)]
+    pub fn safepoint_slice(mut self, steps: u32) -> Self {
+        self.safepoint_slice = Some(steps);
+        self
+    }
+
     pub fn build(self) -> Vm {
         let out = self.stdout.unwrap_or_else(|| Box::new(std::io::stdout()));
         let mut engine = engine_vm::new_engine(out, self.max_call_depth, self.native_stack_budget);
@@ -238,6 +248,11 @@ impl VmBuilder {
         engine
             .core_mut()
             .set_instruction_budget(self.instruction_budget);
+        if let Some(every) = self.safepoint_slice.and_then(std::num::NonZeroU32::new) {
+            engine
+                .core_mut()
+                .want_safepoints(colibri_core::safepoint::SafepointKind::Profiler, every);
+        }
         if let Some(size) = self.coroutine_stack_size {
             engine.core_mut().sched.set_stack_size(size);
             engine.set_host_stack_size(size);
@@ -387,6 +402,7 @@ impl Vm {
             clock: None,
             cfg: BuildCfg::default(),
             compile_all: false,
+            safepoint_slice: None,
         }
     }
 
@@ -1327,6 +1343,15 @@ impl Vm {
     /// the call returns [`Error::BudgetExhausted`]; the `Vm` stays usable.
     pub fn set_instruction_budget(&mut self, steps: Option<u64>) {
         self.engine.core_mut().set_instruction_budget(steps);
+    }
+
+    /// How many safepoints ran (see [`VmBuilder::safepoint_slice`]).
+    #[doc(hidden)]
+    pub fn safepoints_run(&self) -> u64 {
+        colibri_core::safepoint::SafepointKind::ALL
+            .iter()
+            .map(|k| self.engine.core().safepoint_hits(*k))
+            .sum()
     }
 
     /// The steps the latest entry from the host used (including the grace after running out).

@@ -33,6 +33,7 @@ mod machine;
 mod patterns;
 mod places;
 mod run;
+mod safepoint;
 mod source;
 #[allow(unsafe_code)]
 #[cfg_attr(target_arch = "wasm32", path = "stacks_web.rs")]

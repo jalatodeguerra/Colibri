@@ -32,6 +32,10 @@ pub struct Core {
     pub hook_depth: u32,
     /// The instruction budget (EMBEDDING §5).
     pub budget: Budget,
+    /// What the consumers of safepoints asked for (see [`crate::safepoint`]).
+    pub safepoints: crate::safepoint::Safepoints,
+    /// A slice of the budget ended and its safepoint has not run yet.
+    pub safepoint_due: bool,
     /// How many times a map or set key was looked up by scanning the stored keys.
     pub key_scans: u64,
     /// The user-defined types, which `Show` and drop tracing need for names.
@@ -76,6 +80,8 @@ impl Core {
             hook_panics: Vec::new(),
             hook_depth: 0,
             budget: Budget::new(),
+            safepoints: crate::safepoint::Safepoints::default(),
+            safepoint_due: false,
             key_scans: 0,
             types: Rc::from(Vec::new()),
             dispatch: Tables::default(),

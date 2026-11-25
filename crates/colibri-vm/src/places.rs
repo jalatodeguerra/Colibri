@@ -690,7 +690,7 @@ impl Machine {
         let src = base + usize::from(a);
         if lend
             && let [Value::List(list), Value::Int(i), _, Value::Bool(true)] =
-                &mut fiber.regs[src..src + 4]
+                &fiber.regs[src..src + 4]
             && (*i as usize) < list.len()
         {
             // One budget step per trip, before the slot is touched: a failing step leaves the
@@ -699,12 +699,15 @@ impl Machine {
                 self.core.budget.left -= 1;
                 if self.core.budget.left < 0 {
                     let span = chunk.spans[pc - 1];
-                    return Err(self.step_failure(fiber, span));
+                    self.step_over(fiber, span)?;
                 }
             }
-            let item = list.lend_at(*i as usize).unwrap_or(Value::Unit);
-            *i += 1;
-            Self::put_reg(fiber, base + usize::from(d), item);
+            // (The safepoint of a slice that ended may have run: look at the slot again.)
+            if let [Value::List(list), Value::Int(i), ..] = &mut fiber.regs[src..src + 4] {
+                let item = list.lend_at(*i as usize).unwrap_or(Value::Unit);
+                *i += 1;
+                Self::put_reg(fiber, base + usize::from(d), item);
+            }
             return Ok(true);
         }
         if let [Value::List(list), Value::Int(i)] = &mut fiber.regs[src..src + 2]
@@ -716,9 +719,11 @@ impl Machine {
             if !chunk.hidden {
                 self.core.budget.left -= 1;
                 if self.core.budget.left < 0 {
-                    self.release(item);
                     let span = chunk.spans[pc - 1];
-                    return Err(self.step_failure(fiber, span));
+                    if let Err(ctl) = self.step_over(fiber, span) {
+                        self.release(item);
+                        return Err(ctl);
+                    }
                 }
             }
             if var {

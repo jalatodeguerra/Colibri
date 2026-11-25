@@ -3,7 +3,20 @@
 
 use colibri_vm::{Options, Outcome, run_source_with};
 
+/// The slices every comparison is also run under: one step, a few, and a long one.
+const SLICES: [u32; 3] = [1, 7, 4096];
+
 fn run(src: &str, no_leaf: bool, budget: Option<u64>, depth: usize) -> Outcome {
+    run_sliced(src, no_leaf, budget, depth, None)
+}
+
+fn run_sliced(
+    src: &str,
+    no_leaf: bool,
+    budget: Option<u64>,
+    depth: usize,
+    slice: Option<u32>,
+) -> Outcome {
     run_source_with(
         src,
         &Options {
@@ -11,8 +24,34 @@ fn run(src: &str, no_leaf: bool, budget: Option<u64>, depth: usize) -> Outcome {
             instruction_budget: budget.or(Some(50_000_000)),
             trace_drops: false,
             no_leaf,
+            safepoint_slice: slice,
         },
     )
+}
+
+/// A run under a slice shows what the run without one shows: the output, the panic, the trace, the
+/// steps, and how many native loops ran. Only the safepoints differ.
+fn same_under_slices(src: &str, budget: Option<u64>, depth: usize, no_leaf: bool, base: &Outcome) {
+    let every_step = run_sliced(src, no_leaf, budget, depth, Some(1)).safepoints;
+    for slice in SLICES {
+        let o = run_sliced(src, no_leaf, budget, depth, Some(slice));
+        let what = format!("slice {slice}, no_leaf {no_leaf}, budget {budget:?}: {src}");
+        assert_eq!(o.stdout, base.stdout, "stdout, {what}");
+        assert_eq!(o.panic, base.panic, "panic, {what}");
+        assert_eq!(o.trace, base.trace, "trace, {what}");
+        assert_eq!(o.drops, base.drops, "drops, {what}");
+        assert_eq!(o.steps, base.steps, "steps, {what}");
+        assert_eq!(o.leaf_runs, base.leaf_runs, "leaf runs, {what}");
+        assert_eq!(base.safepoints, 0, "{what}");
+        // With a slice of one step every step is a safepoint: the others see that many steps, a
+        // slice at a time.
+        let expected = every_step / u64::from(slice);
+        assert!(
+            o.safepoints.abs_diff(expected) <= 1,
+            "{} safepoints, not about {expected}, {what}",
+            o.safepoints
+        );
+    }
 }
 
 /// The program with the native loops and without: everything the run shows must agree.
@@ -26,6 +65,8 @@ fn same(src: &str, budget: Option<u64>, depth: usize) -> (Outcome, Outcome) {
     assert_eq!(fast.panic, slow.panic, "panic, budget {budget:?}: {src}");
     assert_eq!(fast.trace, slow.trace, "trace, budget {budget:?}: {src}");
     assert_eq!(fast.steps, slow.steps, "steps, budget {budget:?}: {src}");
+    same_under_slices(src, budget, depth, false, &fast);
+    same_under_slices(src, budget, depth, true, &slow);
     (fast, slow)
 }
 
@@ -307,4 +348,26 @@ fn main() {{
         assert!(!fast.stdout.contains("show"), "{call}: {}", fast.stdout);
         assert_eq!(fast.leaf_runs, 0, "{call}");
     }
+}
+
+/// A native loop over a list is the same under a slice: the whole walk is checked against what is
+/// really left, not against the window the slice leaves.
+#[test]
+fn a_slice_does_not_stop_the_native_loop_over_a_long_list() {
+    let src = "fn main() {
+    let mut xs: List[int] = []
+    for i in 0..500 {
+        xs.push(i)
+    }
+    let ys = xs.map(fn(x) => x * 2)
+    let n = xs.fold(0, fn(a, x) => a + x)
+    print(\"{ys.len()} {n}\")
+}";
+    let base = run(src, false, None, 10_000);
+    assert_eq!(base.stdout, "500 124750\n");
+    assert_eq!(base.leaf_runs, 2);
+    same_under_slices(src, None, 10_000, false, &base);
+    let slow = run(src, true, None, 10_000);
+    assert_eq!(slow.steps, base.steps);
+    same_under_slices(src, None, 10_000, true, &slow);
 }

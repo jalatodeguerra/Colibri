@@ -75,6 +75,16 @@ pub trait Engine: Sized {
     /// How many bytes of the native stack a deep operation may use below [`Engine::stack_base`].
     fn native_stack_budget(&self) -> usize;
 
+    /// Runs the consumers of safepoints that are due (`Core::take_due_safepoints`), in their
+    /// fixed order. `Err` ends the running operation (the memory limit); the consumers that are
+    /// due still get their sample. A consumer only looks: it must not change the frames or
+    /// their pcs, nor run program code, because the loop that called goes on with the state it
+    /// has cached. The default has none.
+    fn safepoint(&mut self, _fiber: &mut Self::Fiber) -> crate::ctl::Eval<()> {
+        self.core_mut().take_due_safepoints();
+        Ok(())
+    }
+
     // ---- calling Colibri code ----
 
     /// Calls the function `f`; the callee owns `args`. For a `mut self` method the second

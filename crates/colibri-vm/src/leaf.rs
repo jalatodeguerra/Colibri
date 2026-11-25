@@ -1118,7 +1118,7 @@ impl Machine {
         }
         let n = list.len() as u64;
         let per = u64::from(leaf.steps) + u64::from(leaf.max_body_steps);
-        let left = u64::try_from(self.core.budget.left).unwrap_or(0);
+        let left = u64::try_from(self.core.budget.real_left()).unwrap_or(0);
         if n.checked_mul(per).is_none_or(|need| left < need) {
             return false;
         }

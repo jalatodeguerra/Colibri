@@ -178,7 +178,9 @@ impl Machine {
                 if self.core.budget.left < 0 {
                     sync!();
                     let span = chunk.spans[pc - 1];
-                    throw!(self.step_failure(fiber, span));
+                    if let Err(ctl) = self.step_over(fiber, span) {
+                        throw!(ctl);
+                    }
                 }
             }};
         }
@@ -1461,8 +1463,15 @@ impl Machine {
         }
         self.core.budget.left -= i64::from(steps);
         if fiber.visible_depth() >= self.max_depth || self.core.budget.left < 0 {
-            return Err(self.call_refused(fiber, caller, pc));
+            return self.push_call_slow(fiber, callee, new_base, ret, start, caller, pc);
         }
+        Self::push_frame(fiber, callee, new_base, ret, start);
+        Ok(())
+    }
+
+    /// The part of `push_call` after the checks: the frame of the call.
+    #[inline(always)]
+    fn push_frame(fiber: &mut VmFiber, callee: Rc<Chunk>, new_base: usize, ret: usize, start: u32) {
         let need = new_base + callee.nregs as usize;
         if fiber.regs.len() < need {
             fiber.regs.resize(need, Value::Unit);
@@ -1477,6 +1486,29 @@ impl Machine {
             noted: None,
             temps_mark: fiber.temps.len() as u32,
         });
+    }
+
+    /// A call that the depth or the window of the budget stops: refused, or (when only a slice
+    /// ended) made, and then its safepoint runs, once the callee's frame is there. The call is
+    /// charged to the caller, but a debugger that stops at every step stops inside the callee.
+    #[cold]
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn push_call_slow(
+        &mut self,
+        fiber: &mut VmFiber,
+        callee: Rc<Chunk>,
+        new_base: usize,
+        ret: usize,
+        start: u32,
+        caller: &Chunk,
+        pc: usize,
+    ) -> Result<(), Ctl> {
+        let slice_ended = self.call_refused(fiber, caller, pc)?;
+        Self::push_frame(fiber, callee, new_base, ret, start);
+        if slice_ended {
+            self.safepoint(fiber)?;
+        }
         Ok(())
     }
 
@@ -1540,15 +1572,24 @@ impl Machine {
         Ok(())
     }
 
-    /// A call that cannot be made: too deep, or out of budget.
+    /// A call that may not be made: too deep, or the window of the budget ended. `Ok(true)`
+    /// when only a slice ended (its safepoint is due, and the call goes on); `Err` when the call
+    /// is refused: too deep, or out of budget.
     #[cold]
     #[inline(never)]
-    fn call_refused(&mut self, fiber: &mut VmFiber, caller: &Chunk, pc: usize) -> Ctl {
+    fn call_refused(
+        &mut self,
+        fiber: &mut VmFiber,
+        caller: &Chunk,
+        pc: usize,
+    ) -> Result<bool, Ctl> {
         let span = caller.spans[pc - 1];
         if fiber.visible_depth() >= self.max_depth {
-            self.overflow(fiber, span)
+            Err(self.overflow(fiber, span))
+        } else if self.core.slice_ended() {
+            Ok(true)
         } else {
-            self.step_failure(fiber, span)
+            Err(self.budget_exhausted(fiber, span))
         }
     }
 
