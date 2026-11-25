@@ -82,8 +82,13 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
     }
     if fs::canonicalize(&out).is_ok_and(|o| fs::canonicalize(&runner).is_ok_and(|r| r == o)) {
         return Err(fail(format!(
-            "the output `{}` is the runner itself: choose another with `-o`",
-            out.display()
+            "the output `{}` is {}: choose another with `-o`",
+            out.display(),
+            if options.runner.is_some() {
+                "the runner itself"
+            } else {
+                "the running `colibri` itself"
+            }
         )));
     }
     let mac = crate::build_cfg().os == "macos";
