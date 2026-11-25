@@ -763,7 +763,7 @@ impl<'a> Loader<'a> {
                 .with_hint(fetch_hint));
             }
         };
-        let cache = git::cache_root().map_err(|m| Diagnostic::error(m, span))?;
+        let cache = self.fs.cache_root().map_err(|m| Diagnostic::error(m, span))?;
         let dir = git::checkout_dir(&cache, &entry.url, &entry.commit);
         if !self.fs.is_file(&dir.join(git::COMPLETE_MARKER)) {
             return Err(Diagnostic::error(

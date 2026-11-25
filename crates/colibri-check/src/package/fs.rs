@@ -33,6 +33,101 @@ pub trait SourceFs {
     fn display_name(&self, path: &Path) -> String {
         path.display().to_string()
     }
+    /// The folder that holds the checkouts of git dependencies (`git/checkouts/..` below it),
+    /// or why there is none. The cache of the system by default; a program held in memory
+    /// brings its own (see [`MemoryFs::with_cache_root`]).
+    fn cache_root(&self) -> Result<PathBuf, String> {
+        super::git::cache_root()
+    }
+}
+
+/// A [`SourceFs`] that remembers every file that was read through it, with its text: what a
+/// load of a program reads is exactly the program (its modules, manifests, lock file and the
+/// sources of its dependencies). Looking a file up (`is_file`, `list`) or reading its first
+/// bytes (`read_prefix`) is not a read.
+pub struct RecordingFs<'a> {
+    inner: &'a dyn SourceFs,
+    reads: std::cell::RefCell<Vec<Recorded>>,
+}
+
+/// A file a [`RecordingFs`] saw read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Recorded {
+    /// The path the reader asked for, as it asked.
+    pub path: PathBuf,
+    /// What the inner file system calls the file in messages ([`SourceFs::display_name`]).
+    pub name: String,
+    /// Its text when it was read.
+    pub text: String,
+}
+
+impl<'a> RecordingFs<'a> {
+    pub fn new(inner: &'a dyn SourceFs) -> Self {
+        RecordingFs {
+            inner,
+            reads: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// The files read, in the order they were first read, each once (a file read again keeps
+    /// the text of its last read). Two spellings of one path (`a/./b`, `a/b`) are one file.
+    pub fn into_files(self) -> Vec<Recorded> {
+        let mut out: Vec<(PathBuf, Recorded)> = Vec::new();
+        for read in self.reads.into_inner() {
+            let key = normalize(&read.path);
+            match out.iter_mut().find(|(k, _)| *k == key) {
+                Some(slot) => slot.1 = read,
+                None => out.push((key, read)),
+            }
+        }
+        out.into_iter().map(|(_, r)| r).collect()
+    }
+}
+
+impl SourceFs for RecordingFs<'_> {
+    fn read(&self, path: &Path) -> Result<String, String> {
+        let text = self.inner.read(path)?;
+        self.reads.borrow_mut().push(Recorded {
+            path: path.to_path_buf(),
+            name: self.inner.display_name(path),
+            text: text.clone(),
+        });
+        Ok(text)
+    }
+
+    /// Forwarded as it is: the start of a file (a `CACHEDIR.TAG`) is not a read of the program,
+    /// and the default would read the whole file and record it.
+    fn read_prefix(&self, path: &Path, n: usize) -> Option<Vec<u8>> {
+        self.inner.read_prefix(path, n)
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        self.inner.is_file(path)
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        self.inner.is_dir(path)
+    }
+
+    fn list(&self, dir: &Path) -> Vec<String> {
+        self.inner.list(dir)
+    }
+
+    fn is_symlink(&self, path: &Path) -> bool {
+        self.inner.is_symlink(path)
+    }
+
+    fn canonical(&self, path: &Path) -> PathBuf {
+        self.inner.canonical(path)
+    }
+
+    fn display_name(&self, path: &Path) -> String {
+        self.inner.display_name(path)
+    }
+
+    fn cache_root(&self) -> Result<PathBuf, String> {
+        self.inner.cache_root()
+    }
 }
 
 /// The operating system's files.
@@ -98,6 +193,7 @@ fn or_dot(path: &Path) -> &Path {
 #[derive(Clone, Debug, Default)]
 pub struct MemoryFs {
     files: BTreeMap<PathBuf, MemoryFile>,
+    cache_root: Option<PathBuf>,
 }
 
 /// A file held in memory: the name the host gave it and its text.
@@ -123,6 +219,28 @@ impl MemoryFs {
         };
         self.files.insert(normalize(path), file);
     }
+
+    /// [`MemoryFs::insert`] for a file that is known by another name in messages than the
+    /// path it is found at: a program that was packed up keeps the names its files had.
+    pub fn insert_named(
+        &mut self,
+        path: impl AsRef<Path>,
+        name: impl Into<String>,
+        text: impl Into<String>,
+    ) {
+        let file = MemoryFile {
+            name: name.into(),
+            text: text.into(),
+        };
+        self.files.insert(normalize(path.as_ref()), file);
+    }
+
+    /// Sets the folder the checkouts of git dependencies are looked for in, instead of the
+    /// cache of the system: a packed program holds them itself.
+    pub fn with_cache_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.cache_root = Some(root.into());
+        self
+    }
 }
 
 impl SourceFs for MemoryFs {
@@ -142,6 +260,13 @@ impl SourceFs for MemoryFs {
         self.files
             .keys()
             .any(|f| f.parent().is_some_and(|p| p.starts_with(&dir)) && *f != dir)
+    }
+
+    fn cache_root(&self) -> Result<PathBuf, String> {
+        match &self.cache_root {
+            Some(root) => Ok(root.clone()),
+            None => super::git::cache_root(),
+        }
     }
 
     fn display_name(&self, path: &Path) -> String {

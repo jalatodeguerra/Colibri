@@ -168,7 +168,10 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 /// }
 /// ```
 pub use colibri_bind::export;
-pub use colibri_check::package::{BuildCfg, feature_name_problem};
+pub use colibri_check::package::{
+    BuildCfg, COMPLETE_MARKER, Entry, MemoryFs, Recorded, RecordingFs, SourceFs, cache_root,
+    checkout_dir, feature_name_problem,
+};
 /// Git dependencies and `colibri.lock`: what the command line tool does before it loads a
 /// program (the loader itself never uses the network).
 pub use colibri_check::package::{
@@ -213,7 +216,7 @@ pub mod reflect {
 
 use std::path::Path;
 
-use colibri_check::package::{DiskFs, Entry, MemoryFs, SourceFs};
+use colibri_check::package::DiskFs;
 
 /// What `#[colibri::export]` expands to. Not part of the API: the names may change with the
 /// VM, which is why the macro only goes through this module (EMBEDDING §0 C).
