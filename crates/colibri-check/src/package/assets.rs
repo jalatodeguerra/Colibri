@@ -279,7 +279,9 @@ mod tests {
             ".hidden",
             "a b/c",
             "..x",
-            "x..",
+            "console",
+            "com10",
+            "x.y",
         ] {
             assert_eq!(path_problem(good), None, "{good:?}");
         }
